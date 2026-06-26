@@ -40,6 +40,13 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
     expect(caps.supportsPromptCaching).toBe(false);
   });
 
+  it('returns local chat capabilities for Ollama without tool-loop support', () => {
+    const caps = getProviderCapabilities('ollama:qwen2.5-coder:14b');
+    expect(caps.supportsToolCalling).toBe(false);
+    expect(caps.supportsPromptCaching).toBe(false);
+    expect(caps.supportsParallelTools).toBe(false);
+  });
+
   it('honors Anthropic alias (undated → dated)', () => {
     const caps = getProviderCapabilities('anthropic:claude-haiku-4-5');
     expect(caps.supportsToolCalling).toBe(true);
@@ -78,6 +85,10 @@ describe('classifyCapabilities (D6 — three-tier capability verdict)', () => {
     expect(classifyCapabilities('openrouter:openai/gpt-5.2')).toBe('ok');
     expect(classifyCapabilities('openrouter:anthropic/claude-sonnet-4.6')).toBe('ok');
     expect(classifyCapabilities('openrouter:deepseek/deepseek-chat')).toBe('degraded:no_caching');
+  });
+
+  it('returns unusable:no_tools for Ollama subagent loops', () => {
+    expect(classifyCapabilities('ollama:qwen2.5-coder:14b')).toBe('unusable:no_tools');
   });
 
   it('returns unknown for unrecognized providers', () => {
