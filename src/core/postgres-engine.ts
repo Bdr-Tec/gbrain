@@ -1397,9 +1397,18 @@ export class PostgresEngine implements BrainEngine {
                END
              WHEN jsonb_typeof(config) = 'array'
                THEN COALESCE(
+                 -- #2251: a mixed array (e.g. '["x", {"k":"v"}]') made the bare
+                 -- jsonb_each(elem) throw 'cannot call jsonb_each on a
+                 -- non-object' DURING row production — a WHERE can't guard
+                 -- that, so non-object elements are neutralized inline ('{}'
+                 -- contributes zero rows) and the repair self-heals the row on
+                 -- the next write instead of failing every UPDATE forever.
                  (SELECT jsonb_object_agg(kv.key, kv.value)
                     FROM jsonb_array_elements(config) elem,
-                         jsonb_each(elem) kv),
+                         jsonb_each(
+                           CASE WHEN jsonb_typeof(elem) = 'object'
+                                THEN elem ELSE '{}'::jsonb END
+                         ) kv),
                  '{}'::jsonb
                )
              ELSE '{}'::jsonb

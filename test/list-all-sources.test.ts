@@ -161,7 +161,10 @@ describe('engine.updateSourceConfig', () => {
             THEN COALESCE(
               (SELECT jsonb_object_agg(kv.key, kv.value)
                  FROM jsonb_array_elements(${configExpr}) elem,
-                      jsonb_each(elem) kv),
+                      jsonb_each(
+                        CASE WHEN jsonb_typeof(elem) = 'object'
+                             THEN elem ELSE '{}'::jsonb END
+                      ) kv),
               '{}'::jsonb
             )
           ELSE '{}'::jsonb
@@ -181,5 +184,18 @@ describe('engine.updateSourceConfig', () => {
       [JSON.stringify(patch)],
     );
     expect(good[0].result).toEqual({ x: 1, merged_key: 'v' });
+
+    // 3. #2251: MIXED array (non-object elements alongside objects). The
+    // pre-fix shape called jsonb_each(elem) bare, which throws 'cannot call
+    // jsonb_each on a non-object' DURING row production — every subsequent
+    // updateSourceConfig failed forever, permanently blocking
+    // last_full_cycle_at writes. The CASE-guarded jsonb_each drops non-object
+    // elements (zero rows) and recovers the object keys; the row self-heals
+    // to a flat object on the next write.
+    const mixed = await engine.executeRaw<{ result: Record<string, unknown> }>(
+      guarded(`'["stray-string", {"remote_url": "https://kept"}, 42]'::jsonb`),
+      [JSON.stringify(patch)],
+    );
+    expect(mixed[0].result).toEqual({ remote_url: 'https://kept', merged_key: 'v' });
   });
 });
