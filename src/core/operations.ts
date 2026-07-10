@@ -2621,9 +2621,10 @@ const get_chunks: Operation = {
     slug: { type: 'string', required: true },
   },
   handler: async (ctx, p) => {
-    // v0.31.8 (D20): thread ctx.sourceId.
-    const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
-    return ctx.engine.getChunks(p.slug as string, sourceOpts);
+    // #2555: route through the canonical scope ladder (federated array >
+    // scalar floor > nothing) instead of the pre-#2200 scalar-only pattern —
+    // a federated grant could read the page via get_page but got [] here.
+    return ctx.engine.getChunks(p.slug as string, sourceScopeOpts(ctx));
   },
   scope: 'read',
 };

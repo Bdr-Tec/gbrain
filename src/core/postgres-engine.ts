@@ -2290,13 +2290,26 @@ export class PostgresEngine implements BrainEngine {
     );
   }
 
-  async getChunks(slug: string, opts?: { sourceId?: string }): Promise<Chunk[]> {
+  async getChunks(slug: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<Chunk[]> {
     const sql = this.sql;
-    const sourceId = opts?.sourceId ?? 'default';
+    // #2555: federated grant (sourceIds[]) wins over scalar sourceId, mirroring
+    // getPage's #1393/#2200 precedence; unset falls back to 'default' (the
+    // local-untyped-call contract importCodeFile relies on).
+    const sourceIds = opts?.sourceIds;
+    const sourceCondition =
+      sourceIds && sourceIds.length > 0
+        ? sql`p.source_id = ANY(${sourceIds}::text[])`
+        : sql`p.source_id = ${opts?.sourceId ?? 'default'}`;
+    // #2544: explicit non-vector column list — rowToChunk discards embeddings
+    // at this call site, so `cc.*` shipped every vector over the wire for nothing.
     const rows = await sql`
-      SELECT cc.* FROM content_chunks cc
+      SELECT cc.id, cc.page_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
+             cc.model, cc.token_count, cc.embedded_at, cc.language,
+             cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line,
+             cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified
+      FROM content_chunks cc
       JOIN pages p ON p.id = cc.page_id
-      WHERE p.slug = ${slug} AND p.source_id = ${sourceId}
+      WHERE p.slug = ${slug} AND ${sourceCondition}
       ORDER BY cc.chunk_index
     `;
     return rows.map((r) => rowToChunk(r as Record<string, unknown>));

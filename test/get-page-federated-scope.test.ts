@@ -320,3 +320,56 @@ describe('#2200 engine secondary-fetch methods honor sourceIds[]', () => {
     expect(windowed.map(e => e.summary)).toEqual(['june event']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2555 — get_chunks honors the federated source grant (same class as #1393/
+// #2200, chunk read path). Pre-fix the op used the pre-#2200 scalar pattern
+// and engine.getChunks had no sourceIds[] support: a federated client that
+// could read a page via get_page got [] from get_chunks.
+// ---------------------------------------------------------------------------
+describe('#2555 get_chunks federated scope', () => {
+  const get_chunks = operations.find(o => o.name === 'get_chunks')!;
+
+  beforeEach(async () => {
+    await engine.upsertChunks('secret/beta-doc', [
+      { chunk_index: 0, chunk_text: 'beta chunk zero', chunk_source: 'compiled_truth' },
+      { chunk_index: 1, chunk_text: 'beta chunk one', chunk_source: 'compiled_truth' },
+    ], { sourceId: 'beta' });
+    // Same-slug decoy chunks in 'default' — the cross-source bleed guard.
+    await engine.upsertChunks('secret/beta-doc', [
+      { chunk_index: 0, chunk_text: 'default decoy chunk', chunk_source: 'compiled_truth' },
+    ], { sourceId: 'default' });
+  });
+
+  test('op: federated grant including the page source returns its chunks (the #2555 repro)', async () => {
+    const ctx = ctxOf({ remote: true, sourceId: undefined, auth: { token: 't', clientId: 'c', scopes: [], allowedSources: ['alpha', 'beta'] } as any });
+    const chunks = await get_chunks.handler(ctx, { slug: 'secret/beta-doc' }) as Array<{ chunk_text: string }>;
+    expect(chunks.map(c => c.chunk_text)).toEqual(['beta chunk zero', 'beta chunk one']);
+  });
+
+  test('op: grant excluding the page source stays empty — never falls through to default', async () => {
+    const ctx = ctxOf({ remote: true, sourceId: undefined, auth: { token: 't', clientId: 'c', scopes: [], allowedSources: ['alpha'] } as any });
+    const chunks = await get_chunks.handler(ctx, { slug: 'secret/beta-doc' }) as Array<{ chunk_text: string }>;
+    expect(chunks).toEqual([]);
+  });
+
+  test('op: no grant + default floor sees only the default decoy, never beta chunks', async () => {
+    const ctx = ctxOf({ remote: true, sourceId: 'default', auth: undefined });
+    const chunks = await get_chunks.handler(ctx, { slug: 'secret/beta-doc' }) as Array<{ chunk_text: string }>;
+    expect(chunks.map(c => c.chunk_text)).toEqual(['default decoy chunk']);
+  });
+
+  test('engine: sourceIds[] precedence over scalar; trimmed SELECT keeps the Chunk shape', async () => {
+    // array beats scalar: scalar 'default' would return the decoy; array ['beta'] must win.
+    const prec = await engine.getChunks('secret/beta-doc', { sourceId: 'default', sourceIds: ['beta'] });
+    expect(prec.map(c => c.chunk_text)).toEqual(['beta chunk zero', 'beta chunk one']);
+    // #2544 trim: embedding is deliberately not selected (rowToChunk discards
+    // it here anyway) and the rest of the Chunk shape survives.
+    expect(prec[0].embedding).toBeNull();
+    expect(prec[0].chunk_index).toBe(0);
+    expect(prec[0].chunk_source).toBe('compiled_truth');
+    // Unset opts keep the historical 'default' floor (importCodeFile contract).
+    const def = await engine.getChunks('secret/beta-doc');
+    expect(def.map(c => c.chunk_text)).toEqual(['default decoy chunk']);
+  });
+});
