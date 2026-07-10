@@ -2060,7 +2060,12 @@ export async function registerBuiltinHandlers(
     } as unknown as import('../core/operations.ts').OperationContext;
     return await runUnifyTypes(ctx, {
       target_pack: data.target_pack,
-      apply: data.apply ?? true,
+      // #1575: match the handler's documented contract ('Default false
+      // (dry-run)', UnifyTypesOpts.apply). The prior `?? true` made the
+      // canonical operator invocation destructively retype 25K+ pages by
+      // default while the docs promised a rehearsal. Explicit
+      // `--params '{"apply":true}'` is now the only way to mutate.
+      apply: data.apply ?? false,
       sourceId: data.sourceId,
       onProgress: (msg: string) => {
         job.updateProgress({ phase: 'unify-types', message: msg }).catch(() => {});

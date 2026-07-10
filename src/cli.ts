@@ -32,6 +32,7 @@ import { parseGlobalFlags, setCliOptions, getCliOptions } from './core/cli-optio
 import type { CliOptions } from './core/cli-options.ts';
 import { callRemoteTool, RemoteMcpError, unpackToolResult } from './core/mcp-client.ts';
 import { maybePromptForUpgrade } from './core/thin-client-upgrade-prompt.ts';
+import { CLI_FLAG_REGISTRY } from './core/cli-flag-registry.generated.ts';
 import { VERSION } from './version.ts';
 
 // Build CLI name -> operation lookup
@@ -305,6 +306,21 @@ async function main() {
     if (CLI_ONLY.has(command) && !CLI_ONLY_SELF_HELP.has(command)) {
       printCliOnlyHelp(command);
       return;
+    }
+  }
+
+  // #2185: strict unknown-flag validation — pre-dispatch, pre-engine. A flag
+  // no handler consults (the repro: `init --migrate-only --dry-run` applying
+  // REAL migrations while the user asked for a rehearsal) fails loud here
+  // instead of silently doing the destructive thing. Runs after the --help
+  // short-circuit so `gbrain x --help` never errors; runs before any dispatch
+  // or engine connect so the error is instant and side-effect-free.
+  {
+    const unknown = validateCommandFlags(command, subArgs);
+    if (unknown) {
+      console.error(`Unknown flag ${unknown} for 'gbrain ${command}'.`);
+      console.error(`Run: gbrain ${command} --help`);
+      process.exit(1);
     }
   }
 
@@ -780,6 +796,22 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg.startsWith('--')) {
+      // #2185: `--key=value` inline form. Pre-fix this parsed as junk key
+      // 'key=value' and consumed the NEXT token as its value, corrupting
+      // positional parsing. Recognized here so the strict-flag validator and
+      // the parser agree on the idiom.
+      const eq = arg.indexOf('=');
+      if (eq > 2) {
+        const key = arg.slice(2, eq).replace(/-/g, '_');
+        const def = op.params[key];
+        if (def) {
+          const raw = arg.slice(eq + 1);
+          params[key] = def.type === 'boolean' ? raw !== 'false'
+            : def.type === 'number' ? Number(raw)
+            : raw;
+          continue;
+        }
+      }
       if (arg.startsWith('--no-')) {
         const positiveKey = arg.slice(5).replace(/-/g, '_');
         const positiveDef = op.params[positiveKey];
@@ -819,6 +851,86 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
   }
 
   return params;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// #2185 — strict unknown-flag validation (pre-dispatch, pre-engine).
+// A flag no handler consults must fail loud instead of silently doing the
+// destructive thing (`init --migrate-only --dry-run` applied REAL migrations
+// while the user asked for a rehearsal). Two lanes:
+//   - op commands: legal flags derive from the operation contract
+//     (op.params) + the CLI-local formatter flags, mirroring parseOpArgs's
+//     traversal so values that begin with '--' are never misread.
+//   - CLI_ONLY commands: legal flags come from the generated
+//     CLI_FLAG_REGISTRY (scripts/generate-flag-registry.ts scans each
+//     command's source; freshness + coverage pinned by
+//     test/cli-flag-validation.test.ts).
+// Everything after a literal `--` is passthrough and never validated.
+// ─────────────────────────────────────────────────────────────────
+
+// Exempt by contract, not oversight:
+//  - call: the generic op invoker — arbitrary --param names are its interface.
+//  - config: `config set <key> <value>` values are arbitrary strings.
+//  - jobs submit: job payloads carry handler-defined params (shell lane incl.).
+function flagValidationExempt(command: string, subArgs: string[]): boolean {
+  return command === 'call' || command === 'config'
+    || (command === 'jobs' && subArgs[0] === 'submit');
+}
+
+/** Returns the first unknown flag (e.g. '--dry-run') or null when clean. */
+export function validateCommandFlags(command: string, subArgs: string[]): string | null {
+  if (flagValidationExempt(command, subArgs)) return null;
+  const op = cliOps.get(command) ?? cliAliases.get(command);
+  if (op) return findUnknownOpFlag(op, subArgs);
+  if (CLI_ONLY.has(command)) {
+    const legal = CLI_FLAG_REGISTRY[command];
+    // Registry drift fails OPEN at runtime (never brick a command); the
+    // drift-guard test fails the build instead.
+    if (!legal) return null;
+    return findUnknownFlag(subArgs, new Set(legal));
+  }
+  return null; // unknown command — the dispatcher's own error handles it
+}
+
+/** CLI_ONLY lane: token scan against the generated legal set. */
+export function findUnknownFlag(args: string[], legal: ReadonlySet<string>): string | null {
+  for (const a of args) {
+    if (a === '--') break;
+    const m = /^--([a-z0-9][a-z0-9-]*)(?:=.*)?$/i.exec(a);
+    if (!m) continue;
+    const name = `--${m[1].toLowerCase()}`;
+    if (legal.has(name)) continue;
+    // --no-<flag> negation of a known flag is legal.
+    if (name.startsWith('--no-') && legal.has(`--${name.slice(5)}`)) continue;
+    return name;
+  }
+  return null;
+}
+
+/** Op lane: mirrors parseOpArgs so flag VALUES starting with '--' are skipped. */
+export function findUnknownOpFlag(op: Operation, args: string[]): string | null {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') break;
+    const m = /^--([a-z0-9][a-z0-9-]*)(?:=(.*))?$/i.exec(a);
+    if (!m) continue;
+    const rawKey = m[1].toLowerCase();
+    if (rawKey === 'json' || rawKey === 'explain' || rawKey === 'help') continue;
+    if (rawKey.startsWith('no-')) {
+      const positive = rawKey.slice(3).replace(/-/g, '_');
+      if (op.params[positive]?.type === 'boolean') continue;
+    }
+    const key = rawKey.replace(/-/g, '_');
+    const paramDef = op.params[key];
+    if (paramDef) {
+      // Non-boolean flags consume the next token as their value unless
+      // provided inline via `=` — exactly like parseOpArgs.
+      if (paramDef.type !== 'boolean' && m[2] === undefined) i++;
+      continue;
+    }
+    return `--${rawKey}`;
+  }
+  return null;
 }
 
 async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {

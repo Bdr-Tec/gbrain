@@ -58,7 +58,10 @@ describe('CLI structure', () => {
   test('every handleCliOnly top-level case label is reachable via CLI_ONLY', () => {
     const onlyMatch = cliSource.match(/const CLI_ONLY = new Set(?:<string>)?\(\[([\s\S]*?)\]\)/);
     expect(onlyMatch).not.toBeNull();
-    const members = new Set([...onlyMatch![1].matchAll(/'([^']+)'/g)].map(m => m[1]));
+    // Strip line comments before member extraction — the set literal carries
+    // commentary whose quoted words must not count as members.
+    const onlyBody = onlyMatch![1].replace(/\/\/[^\n]*/g, '');
+    const members = new Set([...onlyBody.matchAll(/'([^']+)'/g)].map(m => m[1]));
 
     const fnStart = cliSource.indexOf('async function handleCliOnly');
     expect(fnStart).toBeGreaterThan(0);

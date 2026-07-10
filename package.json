@@ -36,6 +36,7 @@
     "build:admin-embedded": "bun run scripts/build-admin-embedded.ts",
     "build:schema": "bash scripts/build-schema.sh",
     "build:llms": "bun run scripts/build-llms.ts",
+    "build:flag-registry": "bun run scripts/generate-flag-registry.ts",
     "build:pglite-snapshot": "bun run scripts/build-pglite-snapshot.ts",
     "test": "bash scripts/run-unit-parallel.sh",
     "eval:autocut": "bun test test/search/autocut-eval.test.ts",
