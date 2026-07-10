@@ -53,8 +53,22 @@ export function bigintToStringReplacer(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? value.toString() : value;
 }
 
+// ENG-2 renderer parity: round-trip a local-engine op's return value so
+// renderers see the same shape the routed path produces. Bigint-safe via
+// bigintToStringReplacer. Exported for tests (same import-safety contract as
+// cliAliases/formatResult). (#2450)
+export function normalizeLocalResult(rawResult: unknown): unknown {
+  return JSON.parse(JSON.stringify(rawResult, bigintToStringReplacer));
+}
+
 // CLI-only commands that bypass the operation layer
-export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch']);
+export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch',
+  // v0.42.58 (#2035 class, caught by the handleCliOnly reachability sweep):
+  // these four had full handlers but were never dispatchable — 'Unknown
+  // command' despite documented surfaces ('pages' purge-deleted escape hatch,
+  // 'backfill' generic backfill, 'reconcile-links' doc↔impl edges,
+  // 'notability-eval' gate eval suite).
+  'pages', 'backfill', 'reconcile-links', 'notability-eval']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -305,6 +319,17 @@ async function main() {
     return;
   }
 
+  // v0.42.58 (#2035 class): `gbrain search modes|stats|tune` are the
+  // search-lite dashboards handled by handleCliOnly's 'search' case —
+  // unreachable since v0.32.3 because 'search' can't join CLI_ONLY (the
+  // plain-query path must keep routing to the `search` op below; pre-fix,
+  // `gbrain search modes` silently keyword-searched for the word "modes").
+  // Same pre-dispatch-gate pattern as `sources pull --path` above.
+  if (command === 'search' && ['modes', 'stats', 'tune'].includes(subArgs[0] ?? '')) {
+    await handleCliOnly(command, subArgs);
+    return;
+  }
+
   // CLI-only commands
   if (CLI_ONLY.has(command)) {
     await handleCliOnly(command, subArgs);
@@ -450,10 +475,11 @@ async function main() {
     }
     // ENG-2 (renderer parity by data shape): JSON-round-trip the local-engine
     // path's return value so renderers see the same shape they'd see on the
-    // routed path. Date → ISO string; bigint → string (postgres.js shape);
+    // routed path. Date → ISO string; bigint → string (postgres.js shape, via
+    // bigintToStringReplacer — a bare stringify THROWS on bigint, #2450);
     // Buffer → object. Microsecond-cost; eliminates a whole drift bug class.
-    const result = JSON.parse(JSON.stringify(rawResult, bigintToStringReplacer));
-    const output = formatResult(op.name, result);
+    const result = normalizeLocalResult(rawResult);
+    const output = formatResult(op.name, result, params);
     if (output) process.stdout.write(output);
   } catch (e: unknown) {
     // v0.42.20.0 (codex D4): on error, set exitCode + return so the `finally`
@@ -536,7 +562,7 @@ async function runThinClientRouted(
       signal: sigintController.signal,
     });
     const result = unpackToolResult(raw);
-    const output = formatResult(op.name, result);
+    const output = formatResult(op.name, result, params);
     if (output) process.stdout.write(output);
   } catch (e: unknown) {
     if (e instanceof RemoteMcpError) {
@@ -766,6 +792,10 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
       const paramDef = op.params[key];
       if (paramDef?.type === 'boolean') {
         params[key] = true;
+      } else if (key === 'json') {
+        // Generic operation formatter flag. It is intentionally CLI-local:
+        // do not add it to the operation contract exposed over MCP/tools.
+        params[key] = true;
       } else if (i + 1 < args.length) {
         params[key] = args[++i];
         if (paramDef?.type === 'number') params[key] = Number(params[key]);
@@ -827,7 +857,11 @@ async function makeContext(engine: BrainEngine, params: Record<string, unknown>)
 }
 
 // Exported for tests (same import-safety contract as cliAliases/printOpHelp).
-export function formatResult(opName: string, result: unknown): string {
+export function formatResult(
+  opName: string,
+  result: unknown,
+  params: Record<string, unknown> = {},
+): string {
   switch (opName) {
     case 'volunteer_context': {
       const r = result as any;
@@ -866,6 +900,7 @@ export function formatResult(opName: string, result: unknown): string {
     case 'search':
     case 'query': {
       const results = result as any[];
+      if (params.json === true) return JSON.stringify(results, null, 2) + '\n';
       if (results.length === 0) return 'No results.\n';
       // v0.40.4 — --explain switches to per-stage attribution formatter.
       // Reads CliOptions.explain via the module-level singleton.
@@ -949,7 +984,9 @@ export function formatResult(opName: string, result: unknown): string {
       ).join('\n') + '\n';
     }
     default:
-      return JSON.stringify(result, null, 2) + '\n';
+      // bigintToStringReplacer keeps this fallback renderer crash-proof even
+      // if a future caller hands it a not-yet-normalized result. (#2450)
+      return JSON.stringify(result, bigintToStringReplacer, 2) + '\n';
   }
 }
 
