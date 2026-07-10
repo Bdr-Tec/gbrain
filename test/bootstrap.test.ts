@@ -196,4 +196,125 @@ describe('PGLiteEngine#applyForwardReferenceBootstrap', () => {
       await engine.disconnect();
     }
   }, 30000);
+
+  test('pre-v121 timeline_entries shape: bootstrap adds event_page_id so schema replay survives', async () => {
+    // Production incident (2026-07): a v119 brain upgraded to a v0.42.56
+    // binary wedged in `init --migrate-only` — the schema blob's
+    // `CREATE INDEX idx_timeline_event_page ON timeline_entries(event_page_id)`
+    // ran BEFORE migration v121 could add the column, and initSchema failed
+    // with `column "event_page_id" does not exist` on every attempt.
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      await engine.initSchema();
+      const db = (engine as any).db;
+
+      // Rewind to the pre-v121 shape.
+      await db.exec(`
+        DROP INDEX IF EXISTS idx_timeline_event_page;
+        DROP INDEX IF EXISTS idx_timeline_event_dedup;
+        ALTER TABLE timeline_entries DROP CONSTRAINT IF EXISTS timeline_entries_event_page_id_fkey;
+        ALTER TABLE timeline_entries DROP COLUMN IF EXISTS event_page_id;
+      `);
+
+      await (engine as any).applyForwardReferenceBootstrap();
+
+      const { rows: col } = await db.query(`
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'timeline_entries' AND column_name = 'event_page_id'
+      `);
+      expect(col).toHaveLength(1);
+
+      // The wedge scenario end-to-end: full initSchema (blob replay including
+      // the two indexes + migrations) must now succeed on the rewound brain.
+      await engine.initSchema();
+
+      // Shape assertion for THIS (synthetic, still-stamped) scenario: column +
+      // both partial indexes come back via bootstrap + blob replay. The FK does
+      // NOT converge here by design — it lives in migration v121's guarded DO
+      // block, and a brain still stamped past v121 skips it (the blob's FK is
+      // inline in CREATE TABLE, a no-op on existing tables). Real wedged brains
+      // are never stamped past v121; their full-shape convergence (incl. FK) is
+      // pinned by the wedged-brain recovery test below.
+      const { rows: idx } = await db.query(`
+        SELECT indexname FROM pg_indexes
+        WHERE tablename = 'timeline_entries'
+          AND indexname IN ('idx_timeline_event_page', 'idx_timeline_event_dedup')
+        ORDER BY indexname
+      `);
+      expect(idx.map((r: { indexname: string }) => r.indexname)).toEqual([
+        'idx_timeline_event_dedup',
+        'idx_timeline_event_page',
+      ]);
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
+
+  test('wedged-brain recovery: a brain that already FAILED the v0.42.56 upgrade converges on retry', async () => {
+    // The loudest cohort: operators who upgraded, wedged, and are retrying with
+    // the fixed binary. Simulates the failed attempt (the blob's CREATE INDEX
+    // crashing on the missing column) and asserts the retry converges with no
+    // residue — the failed attempt must not advance the migration ledger or
+    // leave state that blocks the re-run.
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      await engine.initSchema();
+      const db = (engine as any).db;
+
+      const stampedBefore = parseInt((await engine.getConfig('version')) || '1', 10);
+      expect(stampedBefore).toBeGreaterThanOrEqual(121);
+
+      // Rewind to the pre-v121 shape: schema AND the version counter (the
+      // migration ledger is the `version` config key, so a pre-v121 brain
+      // reports 120 and has migrations 121+ pending).
+      await db.exec(`
+        DROP INDEX IF EXISTS idx_timeline_event_page;
+        DROP INDEX IF EXISTS idx_timeline_event_dedup;
+        ALTER TABLE timeline_entries DROP CONSTRAINT IF EXISTS timeline_entries_event_page_id_fkey;
+        ALTER TABLE timeline_entries DROP COLUMN IF EXISTS event_page_id;
+      `);
+      await engine.setConfig('version', '120');
+
+      // The failed old-binary attempt: without the bootstrap probe, the blob's
+      // CREATE INDEX was the first statement to touch the missing column.
+      let wedgeError: Error | null = null;
+      try {
+        await db.exec(
+          `CREATE INDEX IF NOT EXISTS idx_timeline_event_page
+             ON timeline_entries(event_page_id) WHERE event_page_id IS NOT NULL`,
+        );
+      } catch (e) {
+        wedgeError = e as Error;
+      }
+      expect(wedgeError?.message ?? '').toContain('event_page_id');
+
+      // The failed attempt must not have advanced the ledger.
+      expect(parseInt((await engine.getConfig('version')) || '1', 10)).toBe(120);
+
+      // Retry with the fixed binary: full initSchema converges.
+      await engine.initSchema();
+
+      expect(parseInt((await engine.getConfig('version')) || '1', 10)).toBe(stampedBefore);
+      const { rows: col } = await db.query(`
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'timeline_entries' AND column_name = 'event_page_id'
+      `);
+      expect(col).toHaveLength(1);
+      const { rows: fk } = await db.query(`
+        SELECT conname FROM pg_constraint
+        WHERE conname = 'timeline_entries_event_page_id_fkey'
+      `);
+      expect(fk).toHaveLength(1);
+      const { rows: idx } = await db.query(`
+        SELECT indexname FROM pg_indexes
+        WHERE tablename = 'timeline_entries'
+          AND indexname IN ('idx_timeline_event_page', 'idx_timeline_event_dedup')
+      `);
+      expect(idx).toHaveLength(2);
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
 });
