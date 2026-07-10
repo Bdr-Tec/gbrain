@@ -11,6 +11,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { parseLegacyTokenScope } from '../src/mcp/http-transport.ts';
+import { parseTakesHoldersAllowList } from '../src/core/legacy-token-scope.ts';
 
 describe('parseLegacyTokenScope', () => {
   test('array grant → allowedSources (federated read) with first as scalar floor', () => {
@@ -41,5 +42,33 @@ describe('parseLegacyTokenScope', () => {
 
   test('array with non-string junk is filtered to valid sources', () => {
     expect(parseLegacyTokenScope(['a', 5, '', 'b'])).toEqual({ sourceId: 'a', allowedSources: ['a', 'b'] });
+  });
+});
+
+// #2529 — permissions.takes_holders parse contract, shared by the legacy HTTP
+// transport and the OAuth provider behind `serve --http` so the two cannot
+// drift. Imported from the owner module (src/core/legacy-token-scope.ts), not
+// re-exported through a transport.
+describe('parseTakesHoldersAllowList', () => {
+  test('string array passes through unchanged', () => {
+    expect(parseTakesHoldersAllowList(['world', 'brain'])).toEqual(['world', 'brain']);
+  });
+
+  test('empty array is PRESERVED as explicit deny-all (not collapsed)', () => {
+    const result = parseTakesHoldersAllowList([]);
+    expect(result).toBeDefined();
+    expect(result).toEqual([]);
+  });
+
+  test('non-string entries are filtered; empty strings KEPT (deliberate divergence from parseLegacyTokenScope)', () => {
+    expect(parseTakesHoldersAllowList(['world', 42, null, '', 'brain'])).toEqual(['world', '', 'brain']);
+  });
+
+  test('non-array values → undefined (consumer applies fail-closed default)', () => {
+    expect(parseTakesHoldersAllowList('world')).toBeUndefined();
+    expect(parseTakesHoldersAllowList(123)).toBeUndefined();
+    expect(parseTakesHoldersAllowList(null)).toBeUndefined();
+    expect(parseTakesHoldersAllowList(undefined)).toBeUndefined();
+    expect(parseTakesHoldersAllowList({ takes_holders: ['world'] })).toBeUndefined();
   });
 });

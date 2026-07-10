@@ -20,3 +20,22 @@ export function parseLegacyTokenScope(rawSource: unknown): { sourceId: string; a
   }
   return { sourceId: 'default' };
 }
+
+/**
+ * Parse a legacy bearer token's stored `access_tokens.permissions.takes_holders`
+ * grant. Shared by both HTTP transports (`src/mcp/http-transport.ts` and the
+ * OAuth provider behind `serve --http`) so the two cannot drift.
+ *
+ * ARRAY → filtered to string entries, with the empty array PRESERVED as an
+ * explicit deny-all grant (engines translate `[]` to `holder = ANY('{}')`,
+ * which matches nothing). Missing or non-array values → undefined; consumers
+ * apply their own fail-closed default (`['world']`).
+ *
+ * The filter is `typeof === 'string'` ONLY — no `length > 0` like
+ * `parseLegacyTokenScope` above — because the legacy HTTP transport has always
+ * kept empty-string entries and this helper must be a behavior no-op there.
+ */
+export function parseTakesHoldersAllowList(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return (raw as unknown[]).filter((h): h is string => typeof h === 'string');
+}

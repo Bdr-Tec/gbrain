@@ -26,7 +26,7 @@ import { InvalidTokenError, InvalidClientMetadataError } from '@modelcontextprot
 import { hashToken, generateToken, isUndefinedColumnError } from './utils.ts';
 import { hasScope, assertAllowedScopes, parseScopeString, InvalidScopeError } from './scope.ts';
 import type { AuthInfo as CoreAuthInfo } from './operations.ts';
-import { parseLegacyTokenScope } from './legacy-token-scope.ts';
+import { parseLegacyTokenScope, parseTakesHoldersAllowList } from './legacy-token-scope.ts';
 import type { SqlQuery, SqlValue } from './sql-query.ts';
 export type { SqlQuery, SqlValue };
 
@@ -712,6 +712,16 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         ? (permissions as Record<string, unknown>).source_id
         : undefined;
       const { sourceId, allowedSources } = parseLegacyTokenScope(sourceGrant);
+      // #2529: thread the stored takes-holders grant, mirroring the legacy
+      // HTTP transport's validateToken. Undefined (no array grant, or the
+      // pre-v29 no-permissions-column fallback above) → the /mcp dispatch
+      // site defaults to the fail-closed ['world']. An explicit [] grant is
+      // preserved as deny-all.
+      const takesHoldersAllowList = parseTakesHoldersAllowList(
+        permissions && typeof permissions === 'object'
+          ? (permissions as Record<string, unknown>).takes_holders
+          : undefined,
+      );
       return {
         token,
         clientId: name,
@@ -723,6 +733,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         // allowedSources for federated reads, matching legacy HTTP transport.
         sourceId,
         allowedSources,
+        takesHoldersAllowList,
       } as CoreAuthInfo as SdkAuthInfo;
     }
 

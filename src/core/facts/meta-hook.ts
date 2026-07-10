@@ -124,9 +124,18 @@ export function __resetHotMemoryCacheForTests(): void {
   _cache.clear();
 }
 
-/** Stable hash of the (sorted) allow-list. Mirrors the auth contract. */
+/**
+ * Stable hash of the (sorted) allow-list. Mirrors the auth contract.
+ *
+ * The allow-list affects cache IDENTITY only — the payload itself is filtered
+ * by fact visibility (see the `visibility` tier above), never by the takes
+ * allow-list. Keeping `[]` (explicit deny-all grant) distinct from undefined
+ * (no grant) is insurance so a future allowlist-dependent payload is born
+ * safe, not a claim that `[]` suppresses hot memory today.
+ */
 function hashAllowList(list: string[] | undefined): string {
-  if (!list || list.length === 0) return '_';
+  if (!list) return '_';
+  if (list.length === 0) return '(empty)';
   const sorted = [...list].sort();
   return sorted.join('|');
 }

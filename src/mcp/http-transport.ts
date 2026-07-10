@@ -34,7 +34,7 @@ import { VERSION } from '../version.ts';
 import { dispatchToolCall } from './dispatch.ts';
 import { buildDefaultLimiters, type RateLimiter } from './rate-limit.ts';
 import { sqlQueryForEngine } from '../core/sql-query.ts';
-import { parseLegacyTokenScope } from '../core/legacy-token-scope.ts';
+import { parseLegacyTokenScope, parseTakesHoldersAllowList } from '../core/legacy-token-scope.ts';
 export { parseLegacyTokenScope };
 
 const DEFAULT_BODY_CAP = 1024 * 1024; // 1 MiB
@@ -206,10 +206,10 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
         .catch(() => { /* fire-and-forget */ });
       // v0.28: extract per-token takes-holder allow-list. Fail-safe default
       // is ['world'] — a token with no permissions row sees public claims only.
+      // #2529: parse via the shared core helper so this transport and the
+      // OAuth provider behind `serve --http` cannot drift.
       const perms = (row as { permissions?: { takes_holders?: unknown; source_id?: unknown } }).permissions;
-      const allowList = Array.isArray(perms?.takes_holders)
-        ? (perms!.takes_holders as unknown[]).filter(h => typeof h === 'string') as string[]
-        : ['world'];
+      const allowList = parseTakesHoldersAllowList(perms?.takes_holders) ?? ['world'];
       // #1336: honor the operator-set source grant stored on the token.
       const { sourceId, allowedSources } = parseLegacyTokenScope(perms?.source_id);
       const auth: AuthInfo = {
