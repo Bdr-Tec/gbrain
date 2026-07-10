@@ -338,6 +338,77 @@ describe('verifyAccessToken', () => {
     expect(authInfo.sourceId).toBe('default');
     expect(authInfo.allowedSources).toEqual(['default', 'src-a', 'src-b']);
   });
+
+  test('legacy access_tokens fallback honors permissions.takes_holders (#2529)', async () => {
+    await sql`
+      ALTER TABLE access_tokens
+        ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{"takes_holders":["world"]}'::jsonb
+    `;
+
+    const legacyToken = generateToken('gbrain_');
+    const hash = hashToken(legacyToken);
+    await sql`
+      INSERT INTO access_tokens (id, name, token_hash, permissions)
+      VALUES (
+        ${crypto.randomUUID()},
+        ${'legacy-holders-agent'},
+        ${hash},
+        ${JSON.stringify({ takes_holders: ['world', 'team', 'holder-example'] })}::jsonb
+      )
+    `;
+
+    const authInfo = await provider.verifyAccessToken(legacyToken) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toEqual(['world', 'team', 'holder-example']);
+  });
+
+  test('legacy takes_holders: non-array value fails closed to [world]; non-string entries are dropped', async () => {
+    await sql`
+      ALTER TABLE access_tokens
+        ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{"takes_holders":["world"]}'::jsonb
+    `;
+
+    // Scalar (non-array) takes_holders → ['world'].
+    const scalarToken = generateToken('gbrain_');
+    await sql`
+      INSERT INTO access_tokens (id, name, token_hash, permissions)
+      VALUES (${crypto.randomUUID()}, ${'legacy-scalar-holders'}, ${hashToken(scalarToken)},
+              ${JSON.stringify({ takes_holders: 'team' })}::jsonb)
+    `;
+    const scalarAuth = await provider.verifyAccessToken(scalarToken) as CoreAuthInfo;
+    expect(scalarAuth.takesHoldersAllowList).toEqual(['world']);
+
+    // Mixed-type array → non-strings filtered out.
+    const mixedToken = generateToken('gbrain_');
+    await sql`
+      INSERT INTO access_tokens (id, name, token_hash, permissions)
+      VALUES (${crypto.randomUUID()}, ${'legacy-mixed-holders'}, ${hashToken(mixedToken)},
+              ${JSON.stringify({ takes_holders: ['team', 42, null, 'world'] })}::jsonb)
+    `;
+    const mixedAuth = await provider.verifyAccessToken(mixedToken) as CoreAuthInfo;
+    expect(mixedAuth.takesHoldersAllowList).toEqual(['team', 'world']);
+  });
+
+  test('legacy token with malformed permissions fails closed (no throw, [world], default source)', async () => {
+    await sql`
+      ALTER TABLE access_tokens
+        ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{"takes_holders":["world"]}'::jsonb
+    `;
+
+    // A jsonb STRING scalar whose content is not parseable JSON — the driver
+    // hands verifyAccessToken a plain string, JSON.parse throws, and the
+    // catch path must fail closed rather than 500 the request.
+    const badToken = generateToken('gbrain_');
+    await sql`
+      INSERT INTO access_tokens (id, name, token_hash, permissions)
+      VALUES (${crypto.randomUUID()}, ${'legacy-malformed-perms'}, ${hashToken(badToken)},
+              to_jsonb(${'not-json-at-all'}::text))
+    `;
+
+    const authInfo = await provider.verifyAccessToken(badToken) as CoreAuthInfo;
+    expect(authInfo.clientId).toBe('legacy-malformed-perms');
+    expect(authInfo.takesHoldersAllowList).toEqual(['world']);
+    expect(authInfo.sourceId).toBe('default');
+  });
 });
 
 // ---------------------------------------------------------------------------

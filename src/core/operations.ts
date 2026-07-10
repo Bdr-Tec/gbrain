@@ -272,6 +272,15 @@ export interface AuthInfo {
    * case (back-compat).
    */
   allowedSources?: string[];
+  /**
+   * #2529: per-token takes-holder allow-list, sourced from
+   * `access_tokens.permissions.takes_holders` at token-verification time
+   * (legacy bearer tokens — mirrors src/mcp/http-transport.ts). OAuth
+   * clients have no takes_holders storage yet (tracked follow-up), so
+   * verifyAccessToken only populates this on the legacy branch. Consumers
+   * fall back to `['world']` when unset — public claims only.
+   */
+  takesHoldersAllowList?: string[];
 }
 
 export interface OperationContext {

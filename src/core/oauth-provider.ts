@@ -712,6 +712,19 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         ? (permissions as Record<string, unknown>).source_id
         : undefined;
       const { sourceId, allowedSources } = parseLegacyTokenScope(sourceGrant);
+      // #2529: honor the operator-set per-token takes-holder allow-list, the
+      // same way the legacy HTTP transport does (src/mcp/http-transport.ts).
+      // Fail-safe default is ['world'] — a token with no permissions row (or
+      // malformed permissions JSON, caught above) sees public claims only.
+      // OAuth-registered clients have no takes_holders storage on
+      // oauth_clients yet; that lane is a tracked follow-up (TODOS.md), so
+      // only the legacy branch carries the allow-list today.
+      const takesHolders = permissions && typeof permissions === 'object'
+        ? (permissions as Record<string, unknown>).takes_holders
+        : undefined;
+      const takesHoldersAllowList = Array.isArray(takesHolders)
+        ? (takesHolders as unknown[]).filter((h): h is string => typeof h === 'string')
+        : ['world'];
       return {
         token,
         clientId: name,
@@ -723,6 +736,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         // allowedSources for federated reads, matching legacy HTTP transport.
         sourceId,
         allowedSources,
+        takesHoldersAllowList,
       } as CoreAuthInfo as SdkAuthInfo;
     }
 
