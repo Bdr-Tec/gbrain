@@ -433,20 +433,25 @@ export interface OperationContext {
    */
   sourceId: string;
   /**
-   * #2561 — federated read scope for UNQUALIFIED local CLI reads.
+   * #2561 / #3242 — federated read scope for UNQUALIFIED reads.
    *
-   * Set ONLY by the local CLI's context builder (src/cli.ts makeContext), and
-   * only when the source resolved via a non-explicit tier (local_path /
-   * brain_default / sole_non_default / seed_default — NOT --source, NOT
-   * GBRAIN_SOURCE, NOT a .gbrain-source dotfile). Contains the resolved
-   * source first, then every other `config.federated = true` source, so an
-   * unqualified `gbrain search "X"` spans federated sources as
-   * docs/guides/multi-source-brains.md promises.
+   * Set ONLY by trusted server-side context builders — never from caller
+   * params — and only when the caller carries no explicit source scope:
+   *   - local CLI (src/cli.ts makeContext) when the source resolved via a
+   *     non-explicit tier (local_path / brain_default / sole_non_default /
+   *     seed_default — NOT --source, NOT GBRAIN_SOURCE, NOT a dotfile);
+   *   - stdio MCP (src/mcp/server.ts) when GBRAIN_SOURCE is unset;
+   *   - HTTP MCP (src/mcp/http-transport.ts) for legacy bearer tokens with
+   *     NO operator-set `permissions.source_id` grant (the historical
+   *     'default' floor). Tokens WITH an explicit grant never widen.
    *
-   * Consumed exclusively by `federatedSearchScope` and ONLY when
-   * `ctx.remote === false` — a remote caller's scope stays governed by
-   * `ctx.auth.allowedSources` / scalar `ctx.sourceId` (source-isolation
-   * invariant, fail-closed).
+   * Contains the resolved source first, then every other
+   * `config.federated = true` source, so an unqualified read/search spans
+   * federated sources as docs/guides/multi-source-brains.md promises.
+   *
+   * Consumed exclusively by `federatedSearchScope`. Fail-closed remains:
+   * a grant (`ctx.auth.allowedSources`) or a per-call `source_id` always
+   * wins, and a context without this field never widens.
    */
   localFederatedSourceIds?: string[];
 }
@@ -565,25 +570,26 @@ export function resolveRequestedScope(
 }
 
 /**
- * #2561 — source scope for the search-shaped read ops (`search`, `query`).
+ * #2561 / #3242 — source scope for the page-visibility read ops (`search`,
+ * `query`, `get_page`, `list_pages`, `resolve_slugs`).
  *
  * Delegates to `resolveRequestedScope` (the single trust+grant resolver), then
- * widens an UNQUALIFIED trusted-local scalar scope to the CLI-computed
- * federated set (`ctx.localFederatedSourceIds`, resolved source first). This is
- * what makes `sources add --federated` mean something for local search: a
- * federated source participates in unqualified `gbrain search "X"` results.
+ * widens an UNQUALIFIED scalar scope to the transport-computed federated set
+ * (`ctx.localFederatedSourceIds`, resolved source first). This is what makes
+ * `sources add --federated` mean something: a federated source participates in
+ * unqualified reads (#3242 — pages ingested into a `federated: true` source
+ * were invisible to get_page/search/list_pages while resolve_slugs leaked them).
  *
  * The expansion NEVER applies when:
- *   - the caller is not strictly trusted-local (`ctx.remote !== false`) —
- *     remote scope stays grant-governed (fail-closed source isolation);
  *   - a per-call `source_id` was passed (explicit wins, including `__all__`);
- *   - the resolver already produced a federated array (OAuth grant);
- *   - the CLI resolved the source from an explicit signal (--source / env /
- *     dotfile) — makeContext leaves `localFederatedSourceIds` unset then.
+ *   - the resolver already produced a federated array (OAuth grant governs);
+ *   - the transport didn't populate `localFederatedSourceIds` (see that
+ *     field's doc: it is only set for callers with NO explicit source scope,
+ *     and never from caller-controlled params — so trust stays fail-closed).
  *
  * Deliberately NOT inside `sourceScopeOpts`: code-intel ops collapse a
- * multi-element scope to an error (`resolveCodeIntelScope`), and non-search
- * reads (get_page, get_links, …) keep their long-standing scalar behavior.
+ * multi-element scope to an error (`resolveCodeIntelScope`), and the remaining
+ * scalar reads (get_links, get_chunks, …) keep their long-standing behavior.
  */
 export function federatedSearchScope(
   ctx: OperationContext,
@@ -591,7 +597,6 @@ export function federatedSearchScope(
 ): { sourceId?: string; sourceIds?: string[] } {
   const scope = resolveRequestedScope(ctx, sourceIdParam);
   if (
-    ctx.remote === false &&
     sourceIdParam === undefined &&
     scope.sourceId !== undefined &&
     scope.sourceIds === undefined &&
@@ -748,7 +753,9 @@ const get_page: Operation = {
     // with a federated `allowedSources` grant (and no single ctx.sourceId) got
     // an UNSCOPED exact lookup — a cross-source read of any page by slug. getPage
     // now honors sourceIds[] (both engines), so the same scope closes both paths.
-    const sourceOpts = sourceScopeOpts(ctx);
+    // #3242: federatedSearchScope (not bare sourceScopeOpts) so an unqualified
+    // read sees pages in `federated: true` sources, matching search/query.
+    const sourceOpts = federatedSearchScope(ctx);
     const fuzzyScope = sourceOpts;
 
     let page = await ctx.engine.getPage(slug, { includeDeleted, ...sourceOpts });
@@ -1477,7 +1484,11 @@ const list_pages: Operation = {
   params: {
     type: { type: 'string', description: 'Filter by page type' },
     tag: { type: 'string', description: 'Filter by tag' },
-    limit: { type: 'number', description: 'Max results (default 50)' },
+    limit: { type: 'number', description: 'Max results (default 50; remote callers are capped at 100)' },
+    offset: {
+      type: 'number',
+      description: 'Skip first N rows (pagination). Engine-supported since PageFilters gained offset; previously accepted at the CLI and silently dropped.',
+    },
     // v0.29 — surface filter that already exists on PageFilters.
     updated_after: {
       type: 'string',
@@ -1503,16 +1514,67 @@ const list_pages: Operation = {
     // enumerate src-B pages. Pre-fix, ctx.sourceId / ctx.auth?.allowedSources
     // were ignored at this op handler and the engine returned every source's
     // pages indiscriminately.
-    const scope = sourceScopeOpts(ctx);
-    const pages = await ctx.engine.listPages({
+    // #3242: federatedSearchScope so unqualified listing spans federated
+    // sources (same visibility set as search / get_page). Grants still win.
+    const scope = federatedSearchScope(ctx);
+    // The 100-row cap exists to protect remote MCP/OAuth transports from
+    // unbounded result dumps. Local CLI callers (ctx.remote === false — the
+    // same trust boundary that already bypasses scope enforcement, see the
+    // Operation.scope doc above) own the machine, and a full enumeration is a
+    // legitimate local operation, so an explicit limit above 100 is honored.
+    // Anything that is not strictly `false` stays remote/untrusted (defense
+    // in depth, matching the ctx.remote contract).
+    const requestedLimit = p.limit as number | undefined;
+    const isLocal = ctx.remote === false;
+    const limit = isLocal
+      ? clampSearchLimit(requestedLimit, 50, Number.MAX_SAFE_INTEGER)
+      : clampSearchLimit(requestedLimit, 50, 100);
+    if (!isLocal && requestedLimit !== undefined && Number.isFinite(requestedLimit) && requestedLimit > limit) {
+      // Loud clamp, parity with the three search paths ("search limit clamped
+      // from N to 100"). logger.warn goes to stderr — `list` stdout is
+      // tab-separated and consumed by scripts, so it must stay clean.
+      ctx.logger.warn(`[gbrain] Warning: list limit clamped from ${requestedLimit} to ${limit}; use offset to paginate`);
+    }
+    // Thread offset through — PageFilters has supported it all along; the op
+    // layer just never passed it, so `--offset` was accepted and ignored.
+    const requestedOffset = p.offset as number | undefined;
+    const offset =
+      requestedOffset !== undefined && Number.isFinite(requestedOffset) && requestedOffset > 0
+        ? Math.floor(requestedOffset)
+        : undefined;
+    // Probe one row past the effective limit so truncation is detectable
+    // without a COUNT query. The bug class sealed here is SILENT truncation
+    // — an exhaustive consumer (audit, scan, backfill) gets a full-looking
+    // list and never learns rows were dropped, and with the default
+    // updated_desc sort the dropped rows are always the OLDEST, i.e. exactly
+    // the pages such consumers exist to find.
+    const rows = await ctx.engine.listPages({
       type: p.type as any,
       tag: p.tag as string,
-      limit: clampSearchLimit(p.limit as number | undefined, 50, 100),
+      limit: limit + 1,
+      offset,
       includeDeleted: (p.include_deleted as boolean) === true,
       updated_after: typeof p.updated_after === 'string' ? p.updated_after : undefined,
       sort,
       ...scope,
     });
+    const truncated = rows.length > limit;
+    const pages = truncated ? rows.slice(0, limit) : rows;
+    // Warn only when the caller's limit was NOT honored (unset → default 50):
+    // an explicit honored limit that happens to land on more rows is ordinary
+    // pagination, not a trap. Local (CLI) only — same operator-facing stderr
+    // channel as the put_page unknown-type hint above — but with no isTTY
+    // gate: scripted callers are precisely the consumers that cannot detect
+    // truncation any other way, and stderr keeps stdout parseable for them.
+    // (Local explicit limits are honored unbounded since #3322, so the
+    // requestedLimit > limit arm is defense in depth only.)
+    if (truncated && isLocal && (requestedLimit === undefined || requestedLimit > limit)) {
+      console.error(
+        `[list_pages] output truncated at ${limit} rows (default 50). ` +
+        `Pass an explicit limit, page through with sort=updated_asc + ` +
+        `updated_after=<last row's updated_at>, or narrow with type/tag.`,
+      );
+    }
     return pages.map(pg => ({
       slug: pg.slug,
       source_id: pg.source_id,
@@ -2737,7 +2799,11 @@ const resolve_slugs: Operation = {
     partial: { type: 'string', required: true },
   },
   handler: async (ctx, p) => {
-    return ctx.engine.resolveSlugs(p.partial as string);
+    // #3242: was fully UNSCOPED — the one read that leaked every source's
+    // slugs to any caller (the reporter's "resolve_slugs sees them but
+    // get_page doesn't" matrix). Route through the same visibility set as
+    // get_page/search: grant > federated set > scalar source.
+    return ctx.engine.resolveSlugs(p.partial as string, federatedSearchScope(ctx));
   },
   scope: 'read',
 };
@@ -3823,7 +3889,7 @@ const whoami: Operation = {
   name: 'whoami',
   description:
     'Introspect the calling identity. Returns one of three transport shapes: ' +
-    '{transport: "oauth", client_id, client_name, scopes, expires_at}, ' +
+    '{transport: "oauth", client_id, client_name, scopes, expires_at, source_id, federated_read}, ' +
     '{transport: "legacy", token_name, scopes, expires_at: null}, or ' +
     '{transport: "local", scopes: []}, or {transport: "stdio", scopes: []} ' +
     'for the auth-less stdio MCP pipe. Throws unknown_transport when the ' +
@@ -3865,6 +3931,10 @@ const whoami: Operation = {
         client_name: ctx.auth.clientName ?? ctx.auth.clientId,
         scopes: ctx.auth.scopes,
         expires_at: ctx.auth.expiresAt ?? null,
+        // Read-only self-introspection of the token's source grants —
+        // widens nothing; absent grants serialize fail-closed (null / []).
+        source_id: ctx.auth.sourceId ?? null,
+        federated_read: ctx.auth.allowedSources ?? [],
       };
     }
     return {
