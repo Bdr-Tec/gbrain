@@ -551,8 +551,12 @@ export async function undoRetrievalUpgrade(engine: BrainEngine): Promise<
  *
  * IF NOT EXISTS on CREATE INDEX makes the operation safe to re-run during
  * `--resume`.
+ *
+ * Exported (#3390) so the provider-agnostic embedding migration
+ * (src/core/embedding-migration.ts) reuses the SAME dimension-transition
+ * path instead of duplicating the DDL sequence.
  */
-async function runSchemaTransition(engine: BrainEngine, targetDim: number): Promise<void> {
+export async function runSchemaTransition(engine: BrainEngine, targetDim: number): Promise<void> {
   // v0.41 fix: only transition the primary text embedding column.
   // The embedding_image (v0.27.1) and embedding_multimodal (v0.36 / migration
   // v78) columns use SEPARATE multimodal models (e.g. voyage-multimodal-3 at
