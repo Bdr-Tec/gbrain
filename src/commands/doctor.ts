@@ -53,6 +53,7 @@ import { isUndefinedColumnError } from '../core/utils.ts';
 // drift from what search actually filters.
 import { resolveHardExcludes, DEFAULT_HARD_EXCLUDES } from '../core/search/source-boost.ts';
 import { escapeLikePattern, buildVisibilityClause } from '../core/search/sql-ranking.ts';
+import { unverifiedExtractionFragment } from '../core/extraction-review.ts';
 import { hnswIndexExpected, hnswMaxDimsForType } from '../core/vector-index.ts';
 
 export interface Check {
@@ -3621,6 +3622,52 @@ export async function checkLinksExtractionLag(
 }
 
 /**
+ * issue #160 — unverified_extractions doctor check.
+ *
+ * The extraction quarantine lane parks auto-extracted entity stubs
+ * (frontmatter `provenance: 'auto-extracted'` + `status: 'unverified'`)
+ * until the owner promotes or rejects them. A queue nobody reviews decays
+ * into invisible clutter, so this check counts stubs older than N days
+ * (default 7) and nudges toward the review surface. Exported for direct
+ * testing (mirrors checkLinksExtractionLag).
+ */
+export async function checkUnverifiedExtractions(
+  engine: BrainEngine,
+  opts?: { sourceId?: string; days?: number },
+): Promise<Check> {
+  const name = 'unverified_extractions';
+  const days = opts?.days ?? 7;
+  const sourceId = opts?.sourceId;
+  try {
+    const params: unknown[] = [String(days)];
+    let srcClause = '';
+    if (sourceId) {
+      params.push(sourceId);
+      srcClause = 'AND p.source_id = $2';
+    }
+    const rows = await engine.executeRaw<{ n: string | number }>(
+      `SELECT COUNT(*)::int AS n FROM pages p
+       WHERE p.deleted_at IS NULL
+         AND ${unverifiedExtractionFragment('p')}
+         AND p.created_at < now() - ($1 || ' days')::interval
+         ${srcClause}`,
+      params,
+    );
+    const n = Number(rows[0]?.n ?? 0);
+    return {
+      name,
+      status: n > 0 ? 'warn' : 'ok',
+      message: n > 0
+        ? `${n} unverified auto-extracted entity stub(s) older than ${days} days awaiting review. List with 'gbrain extraction-pending'; promote/reject with 'gbrain extraction-review <promote|reject> --slugs <slug,...>'.`
+        : 'No stale unverified extraction stubs',
+      details: { count: n, days, source_id: sourceId ?? null },
+    };
+  } catch (e) {
+    return { name, status: 'warn', message: `Could not check unverified_extractions: ${(e as Error).message}` };
+  }
+}
+
+/**
  * issue #1678 — extract_atoms_backlog doctor check.
  *
  * Closes the "silent backlog" gap: extract_atoms is pack-gated, so on a brain
@@ -6891,6 +6938,10 @@ export async function buildChecks(
     const msg = err instanceof Error ? err.message : String(err);
     checks.push({ name: 'flagged_pages', status: 'ok', message: `Skipped (${msg})` });
   }
+
+  // issue #160: extraction quarantine lane review nudge.
+  progress.heartbeat('unverified_extractions');
+  checks.push(await checkUnverifiedExtractions(engine, { sourceId: orphanRatioSourceId }));
 
   // 11a. Frontmatter integrity (v0.22.4, hardened in v0.38.2.0).
   // scanBrainSources walks every registered source's local_path on disk

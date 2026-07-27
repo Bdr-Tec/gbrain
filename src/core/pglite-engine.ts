@@ -58,6 +58,7 @@ import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import { computeAnomaliesFromBuckets } from './cycle/anomaly.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildRecencyComponentSql, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery } from './search/sql-ranking.ts';
+import { unverifiedExtractionFragment } from './extraction-review.ts';
 import { shouldExcludeFromOrphanReporting, loadOrphanPolicyOverrides } from './orphan-policy.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
 import {
@@ -3405,6 +3406,20 @@ export class PGLiteEngine implements BrainEngine {
       result.set(Number(r.id), { reason: r.reason, detail: r.detail ?? '' });
     }
     return result;
+  }
+
+  async getUnverifiedExtractionPageIds(pageIds: number[]): Promise<Set<number>> {
+    if (pageIds.length === 0) return new Set();
+    // Parity with PostgresEngine.getUnverifiedExtractionPageIds (issue #160).
+    // Predicate is the shared unverifiedExtractionFragment so this query and
+    // the SQL-side source-boost guard can never drift.
+    const { rows } = await this.db.query(
+      `SELECT id FROM pages
+       WHERE id = ANY($1::int[])
+         AND ${unverifiedExtractionFragment('pages')}`,
+      [pageIds]
+    );
+    return new Set((rows as { id: number }[]).map((r) => Number(r.id)));
   }
 
   async getPageTimestamps(slugs: string[]): Promise<Map<string, Date>> {

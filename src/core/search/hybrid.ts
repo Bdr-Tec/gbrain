@@ -77,6 +77,37 @@ export async function stampContentFlags(engine: BrainEngine, results: SearchResu
 }
 
 /**
+ * Extraction quarantine lane (issue #160). Stamps `SearchResult.unverified`
+ * for any result whose page is an unverified auto-extracted entity stub
+ * (frontmatter `provenance: 'auto-extracted'` + `status: 'unverified'`).
+ * MUST run PRE-fusion: rrfFusion/rrfFusionWeighted read the flag to skip the
+ * COMPILED_TRUTH_BOOST for these pages, so a stub fabricated by hostile
+ * ingested text ranks as ordinary content, never with entity authority.
+ * One batched query over the candidate arms' page_ids. Fail-open on the
+ * fetch (a marker-fetch failure must not break retrieval) — the boost then
+ * applies, but the SQL-side source-boost guard still holds.
+ */
+export async function stampUnverifiedExtractions(
+  engine: BrainEngine,
+  results: SearchResult[],
+): Promise<void> {
+  if (results.length === 0) return;
+  try {
+    const ids = [...new Set(
+      results.map((r) => r.page_id).filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
+    )];
+    if (ids.length === 0) return;
+    const unverified = await engine.getUnverifiedExtractionPageIds(ids);
+    if (unverified.size === 0) return;
+    for (const r of results) {
+      if (unverified.has(r.page_id)) r.unverified = true;
+    }
+  } catch {
+    // best-effort: never break retrieval.
+  }
+}
+
+/**
  * v0.42.20.0 — bounded drain (was an unbounded `Promise.allSettled`, codex
  * confirmed; TODOS retrofit). Mirrors `awaitPendingLastRetrievedWrites`: races
  * the in-flight cache writes against a timeout and reports leftovers so the
@@ -1107,6 +1138,9 @@ export async function hybridSearch(
     // valuable exactly when vector is unavailable). The title arm fuses here
     // too — an exact-title lookup on a keyless install is precisely where
     // chunk-grain keyword FTS alone fails (D1).
+    // issue #160: stamp unverified stubs BEFORE fusion so the compiled-truth
+    // boost skips them (flag survives fusion's result spread).
+    await stampUnverifiedExtractions(engine, [...keywordResults, ...titleResults, ...relationalList]);
     let noEmbedResults = keywordResults;
     if (relationalList.length > 0 || titleResults.length > 0) {
       const fk = opts?.rrfK ?? RRF_K;
@@ -1342,6 +1376,9 @@ export async function hybridSearch(
     // v0.43: fuse the relational arm with keyword via RRF so typed-edge
     // answers survive even when vector is unavailable. The title arm fuses
     // here too (same rationale as the no-embedding-provider path — D1).
+    // issue #160: stamp unverified stubs BEFORE fusion (see the
+    // no-embedding-provider path for rationale).
+    await stampUnverifiedExtractions(engine, [...keywordResults, ...titleResults, ...relationalList]);
     let fallbackResults = keywordResults;
     if (relationalList.length > 0 || titleResults.length > 0) {
       const fk = opts?.rrfK ?? RRF_K;
@@ -1430,6 +1467,10 @@ export async function hybridSearch(
   if (relationalList.length > 0 && effectiveModality !== 'image') {
     allLists.push({ list: relationalList, k: baseRrfK });
   }
+
+  // issue #160: stamp unverified auto-extracted stubs across ALL candidate
+  // arms BEFORE fusion so the compiled-truth authority boost skips them.
+  await stampUnverifiedExtractions(engine, allLists.flatMap((l) => l.list));
 
   let fused = rrfFusionWeighted(allLists, detail !== 'high');
 
@@ -1997,7 +2038,9 @@ export function rrfFusionWeighted(
   if (maxScore > 0) {
     for (const e of entries) {
       e.score = e.score / maxScore;
-      const boost = applyBoost && e.result.chunk_source === 'compiled_truth' ? COMPILED_TRUTH_BOOST : 1.0;
+      // issue #160: unverified auto-extracted stubs (stamped pre-fusion by
+      // stampUnverifiedExtractions) never get the compiled-truth authority boost.
+      const boost = applyBoost && e.result.chunk_source === 'compiled_truth' && e.result.unverified !== true ? COMPILED_TRUTH_BOOST : 1.0;
       e.score *= boost;
     }
   }
@@ -2040,8 +2083,9 @@ export function rrfFusion(lists: SearchResult[][], k: number, applyBoost = true)
       const rawScore = e.score;
       e.score = e.score / maxScore;
 
-      // Apply compiled truth boost after normalization (skip for detail=high)
-      const boost = applyBoost && e.result.chunk_source === 'compiled_truth' ? COMPILED_TRUTH_BOOST : 1.0;
+      // Apply compiled truth boost after normalization (skip for detail=high;
+      // skip for unverified auto-extracted stubs — issue #160)
+      const boost = applyBoost && e.result.chunk_source === 'compiled_truth' && e.result.unverified !== true ? COMPILED_TRUTH_BOOST : 1.0;
       e.score *= boost;
 
       if (DEBUG) {

@@ -11,7 +11,7 @@ import type { GBrainConfig } from './config.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
 import { writePageThrough } from './write-through.ts';
-import { hybridSearch, hybridSearchCached, stampContentFlags } from './search/hybrid.ts';
+import { hybridSearch, hybridSearchCached, stampContentFlags, stampUnverifiedExtractions } from './search/hybrid.ts';
 import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from './eval-capture.ts';
@@ -21,6 +21,7 @@ import { isFactsBackstopEligible } from './facts/eligibility.ts';
 import { stripTakesFence } from './takes-fence.ts';
 import { stripFactsFence } from './facts-fence.ts';
 import { getContentFlag } from './quarantine.ts';
+import { unverifiedExtractionFragment, isUnverifiedExtraction, EXTRACTION_STATUS_KEY, STATUS_VERIFIED } from './extraction-review.ts';
 import { bumpLastRetrievedAt } from './last-retrieved.ts';
 import { isSearchMode } from './search/mode.ts';
 import { stampEvidence } from './search/evidence.ts';
@@ -1625,6 +1626,10 @@ const search: Operation = {
       // agent-warning channel (hybridSearch stamps it; this branch bypasses
       // hybridSearch, so stamp explicitly). Fail-open inside the helper.
       await stampContentFlags(ctx.engine, results);
+      // #160: same for the unverified auto-extracted stub marker (no boost
+      // to cancel on this path — keyword-only never applies the compiled-
+      // truth boost — but the provenance marker must still surface).
+      await stampUnverifiedExtractions(ctx.engine, results);
       bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
       maybeCaptureSearch(ctx, queryText, results, Date.now() - startedAt, false);
       return results;
@@ -5587,6 +5592,175 @@ const chronicle_backfill: Operation = {
   cliHints: { name: 'chronicle-backfill' },
 };
 
+// ---------------------------------------------------------------------------
+// Extraction quarantine lane (issue #160)
+//
+// `extractAndEnrich` regex-extracts entity names from arbitrary text and
+// creates people/ + companies/ stub pages. These three ops are its ONLY
+// sanctioned surface:
+//   - extract_entities    — run extraction. Direct authoritative writes need
+//                           BOTH the trusted local CLI (ctx.remote === false)
+//                           AND the explicit --trusted-extraction flag;
+//                           everything else lands in the quarantine lane
+//                           (frontmatter provenance/status markers).
+//   - extraction_pending  — list unverified stubs awaiting review.
+//   - extraction_review   — promote (status → verified) or reject
+//                           (soft-delete) in batch. Owner-only: the review
+//                           decision is the trust gate, so a remote caller
+//                           must never be able to self-promote injected
+//                           content. Fail-closed on ctx.remote.
+// ---------------------------------------------------------------------------
+
+const extract_entities: Operation = {
+  name: 'extract_entities',
+  description: 'Extract entity names (people, companies) from text and create/update their brain stub pages. Stubs from untrusted input land in the quarantine lane (frontmatter `provenance: auto-extracted` + `status: unverified`) — excluded from authoritative retrieval boosts until reviewed. Direct authoritative writes require the trusted local CLI AND --trusted-extraction.',
+  params: {
+    text: { type: 'string', required: true, description: 'The text to extract entities from (email, transcript, pasted content, …).' },
+    source_slug: { type: 'string', required: true, description: 'Slug of the source page the text came from (used for backlinks + timeline attribution).' },
+    trusted_extraction: { type: 'boolean', required: false, description: 'Local CLI only: write stubs directly as authoritative pages, skipping the quarantine lane. Ignored (always quarantined) for remote callers.' },
+  },
+  mutating: true,
+  scope: 'write',
+  handler: async (ctx, p) => {
+    // Trust rule (#160, fail-closed like the CV6 provenance gate above):
+    // `ctx.remote === false` is the ONLY truthy condition that can admit a
+    // direct authoritative write, and even then the caller must opt in
+    // explicitly. Remote/unset trust → quarantine lane, flag ignored.
+    const trusted = ctx.remote === false && p.trusted_extraction === true;
+    if (ctx.dryRun) return { dry_run: true, action: 'extract_entities', trusted };
+    const { extractAndEnrich } = await import('./enrichment-service.ts');
+    const results = await extractAndEnrich(ctx.engine, p.text as string, p.source_slug as string, {
+      trusted,
+      ...(ctx.sourceId ? { sourceId: ctx.sourceId } : {}),
+      // Pure local DB writes — no external API call to pace, so the
+      // system-load capacity gate would only stall the caller.
+      throttle: false,
+    });
+    return {
+      status: 'ok',
+      trusted,
+      quarantined: results.filter((r) => r.quarantined === true).length,
+      count: results.length,
+      entities: results,
+    };
+  },
+  cliHints: { name: 'extract-entities' },
+};
+
+const extraction_pending: Operation = {
+  name: 'extraction_pending',
+  description: 'List unverified auto-extracted entity stubs awaiting owner review (the quarantine lane from extract_entities). Promote or reject them with extraction_review.',
+  params: {
+    limit: { type: 'number', required: false, description: 'Max rows (default 100, cap 500).' },
+    offset: { type: 'number', required: false, description: 'Pagination offset.' },
+  },
+  scope: 'read',
+  handler: async (ctx, p) => {
+    const limit = Math.min(Math.max(Number(p.limit ?? 100) || 100, 1), 500);
+    const offset = Math.max(Number(p.offset ?? 0) || 0, 0);
+    // Read-side source isolation: route through sourceScopeOpts (federated
+    // array > scalar > nothing), applied in SQL below.
+    const scope = sourceScopeOpts(ctx);
+    const params: unknown[] = [];
+    let srcClause = '';
+    if (scope.sourceIds && scope.sourceIds.length > 0) {
+      params.push(scope.sourceIds);
+      srcClause = `AND p.source_id = ANY($${params.length}::text[])`;
+    } else if (scope.sourceId) {
+      params.push(scope.sourceId);
+      srcClause = `AND p.source_id = $${params.length}`;
+    }
+    params.push(limit, offset);
+    const rows = await ctx.engine.executeRaw<{
+      slug: string; title: string; type: string; source_id: string;
+      extracted_from: string | null; created_at: string;
+    }>(
+      `SELECT p.slug, p.title, p.type, p.source_id,
+              p.frontmatter ->> 'source' AS extracted_from,
+              p.created_at::text AS created_at
+       FROM pages p
+       WHERE p.deleted_at IS NULL
+         AND ${unverifiedExtractionFragment('p')}
+         ${srcClause}
+       ORDER BY p.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+    return { count: rows.length, pending: rows };
+  },
+  cliHints: { name: 'extraction-pending' },
+};
+
+const extraction_review: Operation = {
+  name: 'extraction_review',
+  description: 'Promote or reject unverified auto-extracted entity stubs (batch). Promote flips `status` to verified (provenance kept for audit); reject soft-deletes the stub. Owner-only: refused for any non-local caller.',
+  params: {
+    action: { type: 'string', required: true, description: "'promote' or 'reject'." },
+    slugs: { type: 'array', required: true, items: { type: 'string' }, description: 'Stub slugs to act on (batch).' },
+  },
+  mutating: true,
+  scope: 'write',
+  localOnly: true,
+  handler: async (ctx, p) => {
+    // The review decision IS the trust gate — if a remote caller could
+    // promote, injected content could self-promote and the quarantine lane
+    // would be decorative. Fail-closed: only strictly-local callers pass.
+    if (ctx.remote !== false) {
+      throw new OperationError(
+        'permission_denied',
+        'extraction_review is owner-only: promote/reject decisions must come from the trusted local CLI.',
+        'Run `gbrain extraction-review <promote|reject> --slugs ...` on the host machine.',
+      );
+    }
+    const action = p.action as string;
+    if (action !== 'promote' && action !== 'reject') {
+      throw new OperationError('invalid_params', `extraction_review: action must be 'promote' or 'reject'; got '${action}'.`);
+    }
+    // CLI passes `--slugs a,b,c` as one string; MCP passes a real array.
+    const slugs = Array.isArray(p.slugs)
+      ? (p.slugs as string[])
+      : typeof p.slugs === 'string'
+        ? p.slugs.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
+    if (slugs.length === 0) {
+      throw new OperationError('invalid_params', 'extraction_review: slugs must be a non-empty array (CLI: --slugs slug1,slug2).');
+    }
+    if (ctx.dryRun) return { dry_run: true, action: `extraction_review:${action}`, slugs };
+    const results: Array<{ slug: string; status: string }> = [];
+    for (const slug of slugs) {
+      const page = await ctx.engine.getPage(slug, ctx.sourceId ? { sourceId: ctx.sourceId } : undefined);
+      if (!page) {
+        results.push({ slug, status: 'not_found' });
+        continue;
+      }
+      if (!isUnverifiedExtraction(page.frontmatter)) {
+        results.push({ slug, status: 'not_unverified' });
+        continue;
+      }
+      if (action === 'promote') {
+        // Frontmatter-only flip via putPage (no re-chunk/re-embed — content
+        // is unchanged; preserve content_hash so sync doesn't see churn).
+        // provenance stays 'auto-extracted' as the audit trail of HOW the
+        // page came to exist; status → 'verified' records the owner's call.
+        await ctx.engine.putPage(slug, {
+          type: page.type,
+          title: page.title,
+          compiled_truth: page.compiled_truth,
+          timeline: page.timeline,
+          frontmatter: { ...page.frontmatter, [EXTRACTION_STATUS_KEY]: STATUS_VERIFIED },
+          ...(page.content_hash ? { content_hash: page.content_hash } : {}),
+        }, { sourceId: page.source_id });
+        results.push({ slug, status: 'promoted' });
+      } else {
+        await ctx.engine.softDeletePage(slug, { sourceId: page.source_id });
+        results.push({ slug, status: 'rejected' });
+      }
+    }
+    return { status: 'ok', action, results };
+  },
+  cliHints: { name: 'extraction-review', positional: ['action'] },
+};
+
 export const operations: Operation[] = [
   // Page CRUD
   get_page, put_page, delete_page, list_pages,
@@ -5643,6 +5817,8 @@ export const operations: Operation[] = [
   volunteer_chronicle, chronicle_backfill,
   // v0.43 (#2095): push-based context
   volunteer_context,
+  // Extraction quarantine lane (#160): gated entity extraction + review queue
+  extract_entities, extraction_pending, extraction_review,
   // v0.31: hot memory (facts table)
   extract_facts, recall, forget_fact,
   // v0.32.6: contradiction probe MCP surface (M3)

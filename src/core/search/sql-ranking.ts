@@ -18,6 +18,7 @@
  */
 
 import { quarantineFilterFragment } from '../quarantine.ts';
+import { unverifiedExtractionFragment } from '../extraction-review.ts';
 
 /**
  * Escape `%`, `_`, and `\` so a string can be used as a LIKE prefix literal.
@@ -80,7 +81,17 @@ export function buildSourceFactorCase(
     `WHEN ${slugColumn} LIKE ${buildLikePrefixLiteral(prefix)} THEN ${factor}`
   ).join(' ');
 
-  return `(CASE ${whens} ELSE 1.0 END)`;
+  // Extraction quarantine lane (issue #160): unverified auto-extracted stubs
+  // never receive the namespace-authority factor (people/ / companies/ 1.2x)
+  // — they rank as ordinary content until promoted. Only possible when the
+  // slug column is table-qualified so we can reference the sibling
+  // `frontmatter` column; the vector arm's outer re-rank CTE (bare `slug`,
+  // no frontmatter projected) keeps the plain CASE — the fusion-level
+  // compiled-truth boost skip in hybrid.ts still covers those results.
+  const alias = slugColumn.includes('.') ? slugColumn.split('.')[0] : null;
+  const unverifiedGuard = alias ? `WHEN ${unverifiedExtractionFragment(alias!)} THEN 1.0 ` : '';
+
+  return `(CASE ${unverifiedGuard}${whens} ELSE 1.0 END)`;
 }
 
 /**
