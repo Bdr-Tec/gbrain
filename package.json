@@ -74,6 +74,7 @@
     "check:privacy": "scripts/check-privacy.sh",
     "check:proposal-pii": "scripts/check-proposal-pii.sh",
     "check:eval-glossary": "scripts/check-eval-glossary-fresh.sh",
+    "check:skills-manifest": "scripts/check-skills-manifest-fresh.sh",
     "check:test-names": "scripts/check-test-real-names.sh",
     "check:progress": "scripts/check-progress-to-stdout.sh",
     "check:exports-count": "scripts/check-exports-count.sh",
