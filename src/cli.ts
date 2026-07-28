@@ -2253,16 +2253,24 @@ async function handleCliOnly(command: string, args: string[]) {
         //
         // v0.30.1: still works; canonical entrypoint is now `gbrain backfill
         // effective_date`. This command stays as a thin alias for back-compat.
+        //
+        // #1963: pass the already-connected engine. The command used to build
+        // + connect its OWN engine here, which self-deadlocked on the PGLite
+        // data-dir lock (this process already holds it via connectEngine
+        // above) — 30s spin, then exit 1, on every PGLite invocation.
         const { reindexFrontmatterCli } = await import('./commands/reindex-frontmatter.ts');
-        await reindexFrontmatterCli(args);
-        return; // reindexFrontmatterCli handles its own engine lifecycle
+        await reindexFrontmatterCli(engine, args);
+        break;
       }
       case 'backfill': {
         // v0.30.1: first-class generic backfill command. Subcommand dispatch
         // is inside runBackfillCommand (kind | list | --help).
+        // #1963: same double-connect class as reindex-frontmatter — reuse the
+        // connected engine instead of building a second one on the same
+        // PGLite data dir.
         const { runBackfillCommand } = await import('./commands/backfill.ts');
-        await runBackfillCommand(args);
-        return;
+        await runBackfillCommand(engine, args);
+        break;
       }
       case 'code-callers': {
         // v0.20.0 Cathedral II Layer 10 (C4): "who calls <symbol>?"
