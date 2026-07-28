@@ -382,8 +382,10 @@ export class PostgresEngine implements BrainEngine {
     let model: string = DEFAULT_EMBEDDING_MODEL;
     try {
       const gw = await import('./ai/gateway.ts');
+      // Both accessors THROW when the gateway is unconfigured (they never
+      // return falsy), so the catch below is the only fallback path (#3461).
       dims = gw.getEmbeddingDimensions();
-      model = gw.getEmbeddingModel() || model;
+      model = gw.getEmbeddingModel();
     } catch { /* gateway not yet configured — use defaults */ }
 
     const sqlText = getPostgresSchema(dims, model);
@@ -1031,7 +1033,8 @@ export class PostgresEngine implements BrainEngine {
       const rows = await tx`
         SELECT id, source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at,
                effective_date, effective_date_source,
-               source_kind, source_uri, ingested_via, ingested_at
+               source_kind, source_uri, ingested_via, ingested_at,
+               contextual_retrieval_mode
         FROM pages
         WHERE slug = ${slug} ${sourceCondition} ${deletedCondition}
         LIMIT 1
@@ -2437,14 +2440,28 @@ export class PostgresEngine implements BrainEngine {
     // hardcoded default (e.g. zeroentropyai:zembed-1) onto rows whose vectors
     // were produced by a different, config-resolved model — corrupting the
     // provenance that signature-drift staleness + dim-migration logic trust.
-    // Mirrors the resolve-then-fallback pattern used for schema sizing above.
-    let resolvedModel: string = DEFAULT_EMBEDDING_MODEL;
+    //
+    // #3461: getEmbeddingModel() THROWS when the gateway is unconfigured —
+    // it never returns falsy — so an `||` guard here is dead code and the
+    // catch path used to stamp the compile-time default onto rows whose
+    // vectors came from the config-resolved provider. On the throw path we
+    // now fall back to the brain's own `config.embedding_model` row (kept
+    // current by init / migrate / retrieval-upgrade), which names the model
+    // that actually produced this brain's vectors. The compile-time default
+    // is the LAST resort (fresh brain whose config row doesn't exist yet).
+    let resolvedModel: string | null = null;
     try {
       const gw = await import('./ai/gateway.ts');
-      resolvedModel = gw.getEmbeddingModel() || resolvedModel;
+      resolvedModel = gw.getEmbeddingModel();
     } catch {
-      // Gateway unconfigured (unit tests / pre-connect): keep the default.
+      try {
+        const cfg = await sql`SELECT value FROM config WHERE key = 'embedding_model'`;
+        resolvedModel = (cfg[0]?.value as string | undefined) ?? null;
+      } catch {
+        // config table unreadable — fall through to the compile-time default.
+      }
     }
+    if (!resolvedModel) resolvedModel = DEFAULT_EMBEDDING_MODEL;
 
     for (const chunk of chunks) {
       const embeddingStr = chunk.embedding
@@ -2508,6 +2525,11 @@ export class PostgresEngine implements BrainEngine {
     // pure re-embed (chunk_text unchanged) COALESCEs so a caller that only carries embedding
     // doesn't clobber metadata to NULL. Without this, every embed --stale pass nuked code-def's
     // primary index for thousands of chunks at once.
+    //
+    // #3461: `model` mirrors the `embedding` CASE branch-for-branch — the label must
+    // describe whichever vector WINS the upsert. The old COALESCE(EXCLUDED.model, …)
+    // relabeled preserved (older-model) vectors with the current gateway model on every
+    // partial re-embed, corrupting provenance without changing the vector.
     await sql.unsafe(
       `INSERT INTO content_chunks ${cols} VALUES ${rows.join(', ')}
        ON CONFLICT (page_id, chunk_index) DO UPDATE SET
@@ -2521,7 +2543,14 @@ export class PostgresEngine implements BrainEngine {
                 THEN EXCLUDED.embedding
            ELSE content_chunks.embedding
          END,
-         model = COALESCE(EXCLUDED.model, content_chunks.model),
+         model = CASE
+           WHEN EXCLUDED.chunk_text != content_chunks.chunk_text THEN EXCLUDED.model
+           WHEN content_chunks.embedding IS NULL THEN EXCLUDED.model
+           WHEN EXCLUDED.embedded_at IS NOT NULL
+                AND (content_chunks.embedded_at IS NULL OR EXCLUDED.embedded_at > content_chunks.embedded_at)
+                THEN EXCLUDED.model
+           ELSE content_chunks.model
+         END,
          token_count = EXCLUDED.token_count,
          embedded_at = CASE
            WHEN EXCLUDED.chunk_text != content_chunks.chunk_text AND EXCLUDED.embedding IS NULL THEN NULL
