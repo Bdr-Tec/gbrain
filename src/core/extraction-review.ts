@@ -23,6 +23,17 @@
  * Fail-closed trust rule (mirrors OperationContext.remote): only an explicit
  * `trusted: true` writes direct; undefined/false/anything-else quarantines.
  *
+ * Known scope (deliberate, documented — not gaps discovered later):
+ *   - CREATE-path only. The enrichment UPDATE path (timeline append + edge
+ *     onto an EXISTING page when a slug collides) is the separately-tracked
+ *     slug-collision finding referenced in issue #160; this lane does not
+ *     gate it.
+ *   - The markers are ordinary frontmatter keys, not put_page-strip-listed
+ *     (#1699). A caller holding generic remote put_page write scope can
+ *     rewrite a stub without them — but that caller can author an unmarked
+ *     people/ page directly anyway, so stripping here adds no privilege.
+ *     The promotion OP surface (extraction_review) is what stays owner-only.
+ *
  * Sibling of `src/core/quarantine.ts` / `src/core/embed-skip.ts` — same
  * marker-as-frontmatter-JSONB pattern, same "SQL fragment lives next to the
  * marker key so they can never drift" rule. No schema migration needed.

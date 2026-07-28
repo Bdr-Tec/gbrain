@@ -207,9 +207,11 @@ export async function extractAndEnrich(
   engine: BrainEngine,
   text: string,
   sourceSlug: string,
-  opts?: EnrichmentTrustOptions & { throttle?: boolean },
+  opts?: EnrichmentTrustOptions & { throttle?: boolean; maxEntities?: number },
 ): Promise<EnrichmentResult[]> {
-  const entities = extractEntities(text);
+  // Bounded by default (#160 hardening): the greedy regex on a large paste
+  // can produce thousands of hits; each enrichment is several DB round-trips.
+  const entities = extractEntities(text).slice(0, opts?.maxEntities ?? 200);
   if (entities.length === 0) return [];
 
   const requests: EnrichmentRequest[] = entities.map(e => ({

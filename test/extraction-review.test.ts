@@ -41,6 +41,12 @@ import type { SearchResult } from '../src/core/types.ts';
 
 let engine: PGLiteEngine;
 
+function basisEmbedding(idx: number, dim = 1536): Float32Array {
+  const emb = new Float32Array(dim);
+  emb[idx % dim] = 1.0;
+  return emb;
+}
+
 beforeAll(async () => {
   // Deterministic no-embedding-provider path: configure the gateway with NO
   // auth env so hybridSearch never attempts a real embedding call, even on a
@@ -118,13 +124,15 @@ describe('extraction-review markers', () => {
     expect(frag).toContain(STATUS_UNVERIFIED);
   });
 
-  test('buildSourceFactorCase guards unverified stubs on qualified columns only', () => {
+  test('buildSourceFactorCase guards unverified stubs in both forms', () => {
     const qualified = buildSourceFactorCase('p.slug', { 'people/': 1.2 }, 'low');
     expect(qualified).toContain(unverifiedExtractionFragment('p'));
     expect(qualified.indexOf(unverifiedExtractionFragment('p'))).toBeLessThan(qualified.indexOf('people/'));
-    // Bare column (vector outer re-rank CTE, no frontmatter projected): no guard.
-    const bare = buildSourceFactorCase('slug', { 'people/': 1.2 }, 'low');
-    expect(bare).not.toContain('frontmatter');
+    // Vector re-rank form: bare slug column + pre-computed guard column
+    // (projected in hnsw_candidates) — the guard WHEN must come first.
+    const guarded = buildSourceFactorCase('slug', { 'people/': 1.2 }, 'low', 'unverified_stub');
+    expect(guarded).toContain('CASE WHEN unverified_stub THEN 1.0');
+    expect(guarded.indexOf('unverified_stub')).toBeLessThan(guarded.indexOf('people/'));
   });
 });
 
@@ -206,6 +214,24 @@ describe('enrichEntity trust lane', () => {
     expect(isUnverifiedExtraction(page!.frontmatter)).toBe(true);
   });
 
+  test('vector arm: unverified stub gets source factor 1.0, not the people/ 1.2x', async () => {
+    // The 1.2x namespace factor is applied INSIDE searchVector's re-rank SQL,
+    // pre-LIMIT — an unguarded stub would outrank AND could evict legitimate
+    // pages from the candidate pool before fusion ever sees them. Identical
+    // basis embeddings → identical cosine → the score ratio IS the factor.
+    await enrichEntity(engine, { entityName: 'Vec Fake', entityType: 'person', context: 'c', sourceSlug: 's' });
+    await enrichEntity(engine, { entityName: 'Vec Real', entityType: 'person', context: 'c', sourceSlug: 's' }, { trusted: true });
+    const e = basisEmbedding(7);
+    await engine.upsertChunks('people/vec-fake', [{ chunk_index: 0, chunk_text: 'vector text alpha', chunk_source: 'compiled_truth', embedding: e, token_count: 3 }]);
+    await engine.upsertChunks('people/vec-real', [{ chunk_index: 0, chunk_text: 'vector text bravo', chunk_source: 'compiled_truth', embedding: e, token_count: 3 }]);
+    const rows = await engine.searchVector(e, { limit: 10 });
+    const fake = rows.find((r) => r.slug === 'people/vec-fake')!;
+    const real = rows.find((r) => r.slug === 'people/vec-real')!;
+    expect(fake).toBeDefined();
+    expect(real).toBeDefined();
+    expect(real.score / fake.score).toBeCloseTo(1.2, 5);
+  });
+
   test('getUnverifiedExtractionPageIds returns only marked pages', async () => {
     await enrichEntity(engine, { entityName: 'Fake Guy', entityType: 'person', context: 'c', sourceSlug: 's' });
     await enrichEntity(engine, { entityName: 'Real Guy', entityType: 'person', context: 'c', sourceSlug: 's' }, { trusted: true });
@@ -251,6 +277,25 @@ describe('extract_entities op trust boundary', () => {
     expect(out.trusted).toBe(false);
     expect(out.quarantined).toBeGreaterThan(0);
   });
+
+  test('resource guards: oversize text rejected; entity flood capped + surfaced', async () => {
+    // Oversize input → loud invalid_params, nothing written.
+    await expect(extract_entities.handler(ctx(), {
+      text: 'A'.repeat(200_001), source_slug: 'inbox/big',
+    })).rejects.toBeInstanceOf(OperationError);
+    // 300 distinct name-shaped tokens → capped at 200, truncated surfaced.
+    // 300 distinct two-word names (letters only — the extractor regex is
+    // [A-Z][a-z]+ per word, digits would break the match).
+    const flood = Array.from({ length: 300 }, (_, i) =>
+      `Flood Name${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}`,
+    ).join('. ');
+    const out = (await extract_entities.handler(ctx(), { text: flood, source_slug: 'inbox/flood' })) as {
+      count: number; entities_found: number; truncated: boolean;
+    };
+    expect(out.entities_found).toBeGreaterThan(200);
+    expect(out.count).toBe(200);
+    expect(out.truncated).toBe(true);
+  }, 120_000);
 
   test('remote: false WITH --trusted-extraction → direct authoritative write', async () => {
     const out = (await extract_entities.handler(ctx({ remote: false }), {

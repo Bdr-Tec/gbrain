@@ -69,6 +69,24 @@ d('extraction quarantine lane (live Postgres)', () => {
     expect(real.score / fake.score).toBeCloseTo(1.2, 5);
   });
 
+  test('vector arm: unverified stub gets source factor 1.0 in searchVector re-rank', async () => {
+    // The 1.2x people/ factor multiplies raw_score inside the scored CTE,
+    // pre-LIMIT — the guard column projected in hnsw_candidates must zero it
+    // out for unverified stubs. Identical basis embeddings → identical
+    // cosine → the score ratio IS the factor. (1536-dim basis vectors match
+    // the shared e2e schema, same as test/e2e/engine-parity.test.ts.)
+    const basis = new Float32Array(1536);
+    basis[7] = 1.0;
+    await engine.upsertChunks('people/pg-fake', [{ chunk_index: 1, chunk_text: 'vec alpha', chunk_source: 'compiled_truth', embedding: basis, token_count: 2 }]);
+    await engine.upsertChunks('people/pg-real', [{ chunk_index: 1, chunk_text: 'vec bravo', chunk_source: 'compiled_truth', embedding: basis, token_count: 2 }]);
+    const rows = await engine.searchVector(basis, { limit: 10 });
+    const fake = rows.find((r) => r.slug === 'people/pg-fake')!;
+    const real = rows.find((r) => r.slug === 'people/pg-real')!;
+    expect(fake).toBeDefined();
+    expect(real).toBeDefined();
+    expect(real.score / fake.score).toBeCloseTo(1.2, 5);
+  });
+
   test('extraction_pending + extraction_review promote/reject run on Postgres', async () => {
     const pending = (await operationsByName['extraction_pending']!.handler(ctx(), {})) as {
       pending: Array<{ slug: string }>;
