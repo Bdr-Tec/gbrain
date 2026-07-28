@@ -9,7 +9,7 @@ installSigchldHandler();
 import { installSignalHandlers as installCleanupSignalHandlers } from './core/process-cleanup.ts';
 installCleanupSignalHandlers();
 
-import { readFileSync, existsSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync, unlinkSync, fstatSync } from 'fs';
 import { spawn } from 'child_process';
 import {
   readUpdateCache,
@@ -343,6 +343,11 @@ async function main() {
   // transform, and required-param check are all engine-free; refactoring
   // them out of the engine try/catch is safe and unlocks routing.
   const params = parseOpArgs(op, subArgs);
+
+  // #3513: stdin fill moved out of parseOpArgs so a non-TTY stdin with no
+  // piped input can't block the parse forever — the bounded read leaves the
+  // param unset on timeout and the required-param check below fails fast.
+  await applyStdinParam(op, params);
 
   // v0.27.1 (`gbrain query --image <path>`): swap the `image` param from
   // a filesystem path into base64 bytes + mime. The op accepts base64; the
@@ -804,18 +809,95 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
     }
   }
 
-  // Read stdin for content params
-  if (op.cliHints?.stdin && !params[op.cliHints.stdin] && !process.stdin.isTTY) {
-    const stdinContent = readFileSync(0, 'utf-8');
-    const MAX_STDIN = 5_000_000; // 5MB
-    if (Buffer.byteLength(stdinContent, 'utf-8') > MAX_STDIN) {
-      console.error(`Error: stdin content exceeds ${MAX_STDIN} bytes. Split into smaller inputs.`);
-      process.exit(1);
-    }
-    params[op.cliHints.stdin] = stdinContent;
-  }
-
   return params;
+}
+
+/**
+ * #3513: read stdin into an op's stdin-capable param without ever blocking
+ * forever. The old inline `readFileSync(0)` in parseOpArgs assumed non-TTY
+ * implies piped content; a non-TTY stdin with NO input (CI step, cron job,
+ * agent harness holding an unwritten pipe open) blocked the read until kill.
+ *
+ * Strategy by fd kind (fstat):
+ *  - TTY: skip, as before (interactive input is not an op-param source).
+ *  - regular file / /dev/null / anything not a pipe or socket: readFileSync
+ *    returns without blocking (`gbrain put x < file`, `< /dev/null` → '').
+ *  - FIFO/socket: stream-read with a deadline on the FIRST byte only. A real
+ *    pipe (`echo foo | gbrain put x`, heredocs) delivers its first byte
+ *    within milliseconds; once any data arrives the deadline is lifted and
+ *    we read to EOF like readFileSync did (slow producers stay supported).
+ *    An empty-but-closed pipe (`: | gbrain put x`) EOFs immediately → ''.
+ *    A pipe that never delivers a byte times out → param stays unset, so
+ *    the existing required-param usage error fires (fail fast, exit 1).
+ *
+ * GBRAIN_STDIN_TIMEOUT_MS overrides the first-byte deadline (default 5000).
+ * Exported for tests; called by the op dispatch right after parseOpArgs.
+ */
+export async function applyStdinParam(
+  op: Operation,
+  params: Record<string, unknown>,
+): Promise<void> {
+  if (!op.cliHints?.stdin || params[op.cliHints.stdin] || process.stdin.isTTY) return;
+  const content = await readStdinBounded();
+  if (content === null) return; // no input arrived — let the required-param check fail fast
+  const MAX_STDIN = 5_000_000; // 5MB
+  if (Buffer.byteLength(content, 'utf-8') > MAX_STDIN) {
+    console.error(`Error: stdin content exceeds ${MAX_STDIN} bytes. Split into smaller inputs.`);
+    process.exit(1);
+  }
+  params[op.cliHints.stdin] = content;
+}
+
+/** First-byte deadline for pipe/socket stdin (#3513). Env-overridable escape hatch. */
+function stdinFirstByteTimeoutMs(): number {
+  const n = Number(process.env.GBRAIN_STDIN_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 5000;
+}
+
+/**
+ * Returns the full stdin content, '' for a readable-but-empty stdin, or
+ * null when stdin is a pipe/socket that never delivered a byte within the
+ * first-byte deadline (or the fd is closed/unreadable).
+ */
+export async function readStdinBounded(): Promise<string | null> {
+  let isPipeOrSocket: boolean;
+  try {
+    const st = fstatSync(0);
+    isPipeOrSocket = st.isFIFO() || st.isSocket();
+  } catch {
+    return null; // closed/invalid fd — treat as no input
+  }
+  if (!isPipeOrSocket) {
+    // Regular file redirect, /dev/null, etc. — read returns without blocking.
+    try {
+      return readFileSync(0, 'utf-8');
+    } catch {
+      return null;
+    }
+  }
+  return await new Promise<string | null>((resolve) => {
+    const chunks: Buffer[] = [];
+    let gotData = false;
+    const timer = setTimeout(() => {
+      if (!gotData) {
+        process.stdin.destroy();
+        resolve(null);
+      }
+    }, stdinFirstByteTimeoutMs());
+    const finish = () => {
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks).toString('utf-8'));
+    };
+    process.stdin.on('data', (c: Buffer) => {
+      if (!gotData) {
+        gotData = true;
+        clearTimeout(timer); // deadline applies to the FIRST byte only
+      }
+      chunks.push(c);
+    });
+    process.stdin.once('end', finish);
+    process.stdin.once('error', finish);
+  });
 }
 
 /**
