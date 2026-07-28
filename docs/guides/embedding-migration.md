@@ -35,10 +35,13 @@ llama-server, and other bring-your-own-model providers).
    from the pricing table; unknown providers print "estimate unavailable"
    instead of a fabricated number.
 2. **Consent gate.** Prints the plan; requires an interactive `y` or `--yes`.
-   This is the migration's cost gate (mirrors the `reindex-code` gate in
-   [spend-controls](../operations/spend-controls.md)): non-TTY without
-   `--yes` refuses with exit 2. The schema change is destructive to stored
-   vectors, so consent is required regardless of `spend.posture`.
+   Non-TTY without `--yes` refuses with exit 2 (mirrors the `reindex-code`
+   gate in [spend-controls](../operations/spend-controls.md)). Unlike the pure
+   cost gates there, `spend.posture=tokenmax` does **not** bypass this one:
+   posture waives the spend *ceiling*, and this gate also guards a
+   destructive schema rebuild. Under `tokenmax` the dollar figure is marked
+   informational and the confirmation is still asked. `--yes` is the single
+   scripted bypass.
 3. **Live probe.** One tiny embed against the TARGET provider before any
    mutation — validates the API key, model id, and dimension support in a
    single call. A bad key fails here, with nothing changed.

@@ -228,11 +228,19 @@ export async function runMigrateEmbeddings(
     exit(0);
   }
 
-  // ── Consent gate (spend-controls posture: this is the migration's cost
-  // gate — TTY prompt / non-TTY refuse without --yes, exit 2; posture
-  // `tokenmax` still requires consent because the schema transition is
-  // destructive, not just costly).
+  // ── Consent gate. Unlike the pure cost gates in
+  // docs/operations/spend-controls.md, `spend.posture=tokenmax` does NOT
+  // bypass this one: posture waives the SPEND ceiling, and this gate also
+  // guards a destructive schema rebuild (existing vectors are dropped, and
+  // retrieval is degraded until the re-embed finishes). We honor the posture
+  // by marking the dollar figure informational, and still ask.
   if (!flags.yes) {
+    const { resolveSpendPosture } = await import('../core/spend-posture.ts');
+    const posture = await resolveSpendPosture(engine);
+    if (posture === 'tokenmax') {
+      serr('  [migrate] spend.posture=tokenmax: the cost estimate above is informational.');
+      serr('  [migrate] Confirmation is still required — this rebuilds the embedding column (destructive, not just costly).');
+    }
     const isTTY = opts.isTTY ?? Boolean(process.stdin.isTTY);
     if (!isTTY) {
       serr('Refusing to migrate without confirmation in a non-TTY environment. Re-run with --yes.');

@@ -178,6 +178,17 @@ describe('migrate embeddings — full flow on PGLite', () => {
     expect(await columnDims()).toBe(FROM_DIMS);
   });
 
+  test('spend.posture=tokenmax does NOT bypass the gate (guards a destructive rebuild, not just spend)', async () => {
+    await engine.setConfig('spend.posture', 'tokenmax');
+    try {
+      const code = await runMigrate(['--to', 'openai:text-embedding-3-small']);
+      expect(code).toBe(2); // posture waives the spend ceiling, not the consent
+      expect(await columnDims()).toBe(FROM_DIMS);
+    } finally {
+      await engine.unsetConfig('spend.posture');
+    }
+  });
+
   test('interrupted run: partial progress banks, exit 1, state marker kept', async () => {
     currentDims = TO_DIMS;
     failTexts = ['page-4', 'page-5']; // simulate dying mid-run on two pages
