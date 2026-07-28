@@ -55,7 +55,7 @@ export function bigintToStringReplacer(_key: string, value: unknown): unknown {
 }
 
 // CLI-only commands that bypass the operation layer
-export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector']);
+export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector', 'backfill']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -958,7 +958,8 @@ export function applyThinClientSourceScope(
   params.source_id = resolved;
 }
 
-async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {
+// Exported for tests (same import-safety contract as applyThinClientSourceScope).
+export async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {
   // v0.31.8 (D11): resolve sourceId via the canonical 6-tier chain. Honors
   // --source / GBRAIN_SOURCE / .gbrain-source / path-match / brain default /
   // 'default'. Wrapped in try/catch so a doctor / single-source brain that
@@ -970,16 +971,21 @@ async function makeContext(engine: BrainEngine, params: Record<string, unknown>)
   // trusted local boundary) and consumed by federatedSearchScope in
   // operations.ts, which additionally gates on ctx.remote === false.
   let localFederated: string[] | undefined;
+  // params.source is set when a CLI flag was parsed for the op (rare; most
+  // CLI ops don't take --source). Falls through to env/dotfile/path-match.
+  const explicit = (params.source as string | undefined) ?? null;
   try {
     const { resolveSourceWithTier, localFederatedSourceIds } = await import('./core/source-resolver.ts');
-    // params.source is set when a CLI flag was parsed for the op (rare; most
-    // CLI ops don't take --source). Falls through to env/dotfile/path-match.
-    const explicit = (params.source as string | undefined) ?? null;
     const resolved = await resolveSourceWithTier(engine, explicit);
     sourceId = resolved.source_id;
     localFederated = await localFederatedSourceIds(engine, resolved.source_id, resolved.tier);
-  } catch {
-    // Source resolution failed (e.g. sources table doesn't exist on a fresh
+  } catch (err) {
+    // #1712: an EXPLICIT --source that fails to resolve (invalid id, or a
+    // source that doesn't exist) must error loudly — the blanket swallow
+    // turned `--source __all__` and typos into a silent `default` scope,
+    // which is how three bug reports became debugging sessions.
+    if (explicit) throw err;
+    // Ambient resolution failed (e.g. sources table doesn't exist on a fresh
     // pre-init brain). Leave sourceId unset; engine read methods fall through
     // to the cross-source view (D16 back-compat path).
     sourceId = undefined;
@@ -2534,6 +2540,7 @@ TOOLS
   publish <page.md> [--password]     Shareable HTML (strips private data, optional AES-256)
   check-backlinks <check|fix> [dir]  Find/fix missing back-links across brain
   lint <dir|file> [--fix]            Catch LLM artifacts, placeholder dates, bad frontmatter
+  backfill <kind|list>               v0.30.1: run a registered backfill (effective-date, ...)
   orphans [--json] [--count]         Find pages with no inbound wikilinks
   salience [--days N] [--kind P]     v0.29: pages ranked by emotional + activity salience
   anomalies [--since D] [--sigma N]  v0.29: cohort-based statistical anomalies (tag, type)

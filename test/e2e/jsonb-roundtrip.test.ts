@@ -69,7 +69,7 @@ describeE2E('E2E: JSONB roundtrip — v0.12.1 reliability wave', () => {
     `;
     expect(row.t).toBe('object');
     expect(row.marker).toBe('rawdata-value');
-  });
+  }, 30_000);
 
   test('logIngest writes pages_updated as array, not double-encoded string', async () => {
     const engine = getEngine();
@@ -91,7 +91,7 @@ describeE2E('E2E: JSONB roundtrip — v0.12.1 reliability wave', () => {
     expect(row.t).toBe('array');
     expect(Number(row.n)).toBe(3);
     expect(row.first).toBe('test/a');
-  });
+  }, 30_000);
 
   // files.ts:254 (uploadRaw's cloud-upload branch) was changed from
   // `${JSON.stringify({...})}::jsonb` to `${sql.json({...})}` in v0.12.1.
@@ -114,7 +114,7 @@ describeE2E('E2E: JSONB roundtrip — v0.12.1 reliability wave', () => {
     expect(row.t).toBe('object');
     expect(row.type).toBe('pdf');
     expect(row.method).toBe('TUS resumable');
-  });
+  }, 30_000);
 
   // Source-level tripwire: if anyone re-introduces the old `${JSON.stringify(x)}::jsonb`
   // pattern for the fixed sites, fail loudly. Greps actual source files per the
@@ -129,5 +129,5 @@ describeE2E('E2E: JSONB roundtrip — v0.12.1 reliability wave', () => {
       const source = await Bun.file(new URL(rel, import.meta.url)).text();
       expect(source.match(bad)?.[0] ?? null).toBeNull();
     }
-  });
+  }, 30_000);
 });

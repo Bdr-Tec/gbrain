@@ -1179,7 +1179,9 @@ async function runPhaseExtractFacts(
         summary: `extract_facts skipped: ${result.legacyRowsPending} legacy v0.31 facts pending fence backfill`,
         details: {
           legacyRowsPending: result.legacyRowsPending,
-          hint: 'gbrain apply-migrations --yes',
+          // A bare `apply-migrations --yes` no-ops once the v0.32.2 ledger
+          // entry is complete; the retry marker is what re-runs Phase B.
+          hint: 'gbrain apply-migrations --force-retry 0.32.2 && gbrain apply-migrations --yes',
           warnings: result.warnings,
         },
       };
