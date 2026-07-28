@@ -148,6 +148,50 @@ describe('#3037 — one bad chunk no longer darkens its page', () => {
     expect(stamps).toHaveLength(0);
   });
 
+  test('--stale x #3507: fan-out retries the WRAPPED texts and a partially-failed page is not restamped', async () => {
+    // Composition pin for the #3037 + #3538 merge: the per-chunk isolation
+    // retry must re-send the contextually WRAPPED text (raw chunk_text here
+    // would silently strip prefixes on exactly the pages that hit an error),
+    // and restampIfDemotedToTitleTier must NOT fire when isolation left
+    // chunks NULL (the page was not fully re-embedded — restamping would
+    // make contextual_retrieval_mode lie again, the exact #3461 bug).
+    embedBatchBehavior = async (texts: string[]) => {
+      if (texts.length > 1) throw permanentBatchError();
+      if (texts[0].includes('BAD')) throw permanentBatchError();
+      return texts.map(() => new Float32Array(1536));
+    };
+    const stale = THREE_CHUNKS.map(c => ({
+      slug: 'wrapped-page', chunk_index: c.chunk_index, chunk_text: c.chunk_text,
+      chunk_source: c.chunk_source, model: null, token_count: 1, source_id: 'default', page_id: 1,
+    }));
+    const engine = mockEngine({
+      countStaleChunks: async () => 3,
+      listStaleChunks: async () => stale,
+      getPage: async () => ({
+        slug: 'wrapped-page', title: 'My Title', compiled_truth: 'x', timeline: '',
+        source_id: 'default', contextual_retrieval_mode: 'per_chunk_synopsis',
+      }),
+      getChunks: async () => THREE_CHUNKS,
+      upsertChunks: async () => {},
+    });
+
+    const result = await runEmbedCore(engine, { stale: true });
+
+    // Every embed call — the failed batch AND each single-chunk retry —
+    // carries the stored-mode contextual prefix (fenced_code exemption is
+    // pinned upstream in test/embedding-context.test.ts).
+    expect(embedCalls.length).toBeGreaterThan(1);
+    for (const call of embedCalls) {
+      for (const text of call) expect(text).toStartWith('<context>My Title\n</context>\n');
+    }
+    expect(result.embedded).toBe(2);
+    expect(result.failures).toBe(1);
+    // Partially-failed page: neither signature-stamped nor CR-restamped.
+    const calls = (engine as any)._calls as Array<{ method: string }>;
+    expect(calls.filter(c => c.method === 'setPageEmbeddingSignature')).toHaveLength(0);
+    expect(calls.filter(c => c.method === 'updatePageContextualRetrievalState')).toHaveLength(0);
+  });
+
   test('--stale: a fully-failed page is counted on result.failures (no more silent no-op)', async () => {
     embedBatchBehavior = async () => { throw permanentBatchError(); };
     const stale = THREE_CHUNKS.map(c => ({
