@@ -15,13 +15,17 @@ So this eval builds the missing measurement: **four language slices — English,
 
 ## 2. What it measures, and what it does NOT
 
-**Measures:** how well an embedding model alone ranks the right document for a query, per language, on a clustered in-domain corpus.
+**Measures:**
+- How well an embedding model alone ranks the right document for a query, per language, on a clustered in-domain corpus (**mode `vector`**).
+- How much of that difference survives gbrain's real hybrid fusion — keyword arm + title arm + RRF (**mode `e2e`**, §5).
+- Across-run noise, from 3 reps of every config (§5), so a 2pp gap is visibly a finding or visibly a coin flip.
+- Per-model practical cost: corpus backfill wall-clock, vector storage bytes at that width, and single-query p50/p95 latency (§4b).
 
 **Does NOT measure:**
-- gbrain's end-to-end search quality. This is the **vector arm only** (see §5).
+- Reranked search quality. The reranker is **off** in both modes (no reranker key configured); it would absorb more of the embedding delta still.
 - Your brain's content or query distribution.
 - Chunking, ingest, or extraction quality — every document is one chunk by construction.
-- Cost or latency at production scale (embedding spend is a rounding error next to downstream model spend; see the cost anchors in `docs/eval/SEARCH_MODE_METHODOLOGY.md`).
+- Provider *dollar* cost at production scale (embedding spend is a rounding error next to downstream model spend; see the cost anchors in `docs/eval/SEARCH_MODE_METHODOLOGY.md`). The costs measured here are time and bytes, which is what actually bites during a backfill.
 
 ## 3. Corpus — real text, honestly labelled
 
@@ -67,22 +71,62 @@ The pool is deliberately **clustered** inside gbrain's own domain — AI labs, A
 | `qwen3-0.6b@1024` | `ollama:qwen3-embedding:0.6b` | 1024 | open weights — cannot be sunset by a vendor | ran |
 | `bge-m3@1024` | `ollama:bge-m3` | 1024 | second open-weight datapoint, multilingual-first training | ran |
 | `gemini-embedding@1536` | `google:gemini-embedding-001` | 1536 | opportunistic — a `GEMINI_API_KEY` was present | ran |
+| `gemini-embedding@768` | `google:gemini-embedding-001` | 768 | the recipe's default width — the Matryoshka question again, at half the storage | run 2 |
+| `gemini-embedding-2@1536` | `google:gemini-embedding-2` | 1536 | newer multimodal Gemini embedder; **model id verified against `ai.google.dev/gemini-api/docs/embeddings` before it was added**, not assumed | run 2 |
 | `voyage-3.5@1024` | `voyage:voyage-3.5` | 1024 | not keyed at receipt time | **skipped** |
 
 **1280 dims is verified working** end to end on `text-embedding-3-small` — the gateway's Matryoshka `dimensions` passthrough and its dim self-check both accept it, and the returned vectors are 1280-wide.
 
-Adding a candidate is a one-line edit to `CANDIDATES` in `harness-runner.ts`. Unkeyed providers declare `requires_env` and **skip with a message instead of failing the run**, so Voyage slots in with zero code change the moment a key exists. Google needed only an env alias (`GOOGLE_GENERATIVE_AI_API_KEY` ← `GEMINI_API_KEY`), declared as data on the candidate.
+Adding a candidate is a one-line edit to `CANDIDATES` in `harness-runner.ts`. Unkeyed providers declare `requires_env` and **skip with a message instead of failing the run**, so Voyage slots in with zero code change the moment a key exists. Google needed only an env alias (`GOOGLE_GENERATIVE_AI_API_KEY` ← `GEMINI_API_KEY`), declared as data on the candidate — the harness aliases it internally and never prints a key.
 
-## 5. Method — vector-arm-only, deliberately
+**A candidate the provider rejects skips with a logged reason instead of aborting the matrix.** If a model id or a requested width is unsupported, the runner records `{id, reason}` in the receipt's `skipped_with_reason`, prints it, drops that candidate's partial rows from the report (they cover only some slices, so averaging them would compare it on an easier subset), and continues. The partial rows stay in the run JSONL as audit trail, and an `amendment` row records the exclusion.
+
+## 4b. Practical cost, per model
+
+Retrieval quality is not the only thing a maintainer pays. Each run records, per candidate:
+
+| number | what it is | why it decides something |
+|---|---|---|
+| corpus backfill wall-clock | seconds to embed **every doc in every slice**, mean over reps with min–max | a local model 3x slower to backfill is a real product cost even when nDCG ties — it is the difference between `gbrain sync` finishing over lunch and over the weekend |
+| vector storage | pgvector on-disk bytes for that corpus at that width (4 bytes/dim + 8-byte header), plus bytes/doc | the only honest way to price "is the Matryoshka truncation free?" — 1280 vs 1536 is 17% of every brain's vector footprint |
+| query p50 / p95 | **single-query** embed latency, sampled (25 calls per candidate by default, at rep 0) | batched embedding hides per-call cost; production `embedQuery` sends one text per search, so this is the number a user feels |
+
+Latency is measured with one text per call deliberately — the batched path used for scoring amortizes the per-call cost away. Hosted numbers include network RTT from the machine that ran the eval; they are a laptop number, not a datacenter number, and the report says so.
+
+## 5. Method — two modes, reported side by side
 
 1. `configureGateway()` is called with an **explicit config object** per candidate. No gbrain config file is read; **`~/.gbrain` is never touched and no brain is opened.**
 2. Documents and queries are embedded through gbrain's **real** `src/core/ai/gateway.ts` `embed()`, so provider options, Matryoshka `dimensions` passthrough, batching and the dim self-check are all the production code paths — not a re-implementation. Queries use `inputType: 'query'` so asymmetric providers get query-side encoding exactly as `embedQuery()` does.
 3. Each query ranks **all 80 docs in its slice** by cosine similarity.
 4. Scoring goes through the repo's own `recallAtK` / `mrr` / `ndcgAtK` from `src/core/search/eval.ts`.
 
-**Why no hybrid search and no reranker.** gbrain's keyword arm, RRF fusion and cross-encoder reranker each partially *absorb* embedding-quality differences — a good reranker rescues a mediocre embedding's top-50. That is exactly why they are excluded: including them would measure the **system** and systematically **understate** the model delta. This run isolates the variable being chosen. The practical consequence is stated in §7: the end-to-end gbrain deltas will be **smaller** than these numbers.
+### Mode `vector` — the embedding alone
 
-A disposable PGLite brain would add nothing here — pgvector's cosine operator computes the same quantity as the harness's `cosine()`, over the same vectors, so it would produce the same ordering while adding ingest/chunking noise on top. The methodological cost of the shortcut is that gbrain's *own* SQL path is not exercised; that path is already covered by `test/e2e/engine-parity.test.ts`.
+Each query ranks all docs in its slice by cosine. gbrain's keyword arm, RRF fusion and cross-encoder reranker each partially *absorb* embedding-quality differences — a good reranker rescues a mediocre embedding's top-50 — so leaving them out isolates the variable being chosen. This is an **upper bound** on what changing the default buys.
+
+pgvector would add nothing to this mode: its cosine operator computes the same quantity as the harness's `cosine()` over the same vectors, so it produces the same ordering while adding ingest noise. gbrain's own vector SQL path is covered by `test/e2e/engine-parity.test.ts`.
+
+### Mode `e2e` — how much of that delta survives the shipping pipeline
+
+Run 1 reported the vector arm only and called it an upper bound. That is honest, but it does not answer the question a maintainer actually has: *does the Hebrew gap still exist after hybrid search?* So `e2e` measures the production retrieval path minus the reranker:
+
+1. A **disposable in-memory PGLite brain** per slice (`database_path` unset — nothing is written to disk, `~/.gbrain` is still never read or written) holds each doc as one page + one chunk. The schema's own FTS trigger populates `search_vector`, so tokenization — including the CJK ILIKE-bigram branch inside `searchKeyword` — is production behavior, not an approximation.
+2. `engine.searchKeyword()` and `engine.searchTitles()` run for every query with the same `SearchOpts` `hybridSearch` builds for its recall arms: inner limit 50 (= `min(searchLimit 25 × 2, MAX)` for the default `balanced` mode), auto-detected `detail`, and `orFallback: true` (the AND→OR zero-recall relaxation the hybrid keyword arm opts into).
+3. The vector arm and the two lexical arms are fused by gbrain's **own** `rrfFusionWeighted()` at the **real** intent-effective RRF k — `weightsForIntent(classifyQuery(q).intent)` through `effectiveRrfK(RRF_K, …)`, exactly as `hybridSearch` does — with the same compiled-truth boost gate.
+
+The lexical arms are built **once per slice** and reused across every candidate and rep: they are pure functions of (query, corpus) with no dependency on which embedding is under test, and `searchKeyword` is deterministic. The receipt records the non-empty hit count per arm per slice, because a silently-empty keyword arm would make `e2e` a relabelled `vector` run. The harness also throws rather than substituting an empty arm for a query it has no cached lexical result for — the one failure mode that would invalidate the comparison — and a unit check pins that.
+
+**What `e2e` deliberately leaves out**, and why each is defensible here:
+
+- **The reranker.** No reranker key is configured, so this is the real shape of a default gbrain install without one. A reranker would absorb *more* of the gap, so `e2e` is itself an upper bound relative to a reranked deployment. Named, not hidden.
+- **Post-fusion backlink / salience / recency boosts, the alias hop, and the token budget.** All no-ops on this corpus: no links, no timeline entries, no dates, one chunk per page (so dedup is identity), and a top-10 payload well inside the `balanced` 12K-token budget.
+- **`resolveMode()`.** It reads config, and this harness opens no config file; the two knobs it would have supplied (`searchLimit` 25, `intentWeighting` on) are the `balanced` defaults and are applied directly.
+
+### Variance — three reps, not one
+
+Run 1's own threats list said "single run, one seed; re-run variance should be small, but it is unmeasured." Every (candidate × slice × mode) config now runs **3 times** (`--reps`), re-embedding through the provider each time, and the report prints `mean (min–max, sd)` of the run-level nDCG@10 per cell. Any model-to-model gap smaller than that spread is noise regardless of the point estimate.
+
+The bootstrap unit is the **per-query mean across reps**. Pooling rep-rows as independent observations would triple n and fake a tighter CI (three rows for one qid are the same query, not three queries); using only rep 0 would discard two thirds of the measurement. Averaging keeps n = the query count, so **the pre-registered Bonferroni factor does not move with `--reps`**, and it lowers per-query noise. A unit check pins that n does not inflate.
 
 ## 6. Pre-registered expectations
 
@@ -105,7 +149,36 @@ Pairs (`PAIRS` in `harness-runner.ts`), all four slices, three metrics → **Bon
 
 Three of four pre-registered expectations were wrong. That is recorded here rather than buried, per the methodology doc.
 
-## 7. Results
+## 6b. Pre-registered expectations — RUN 2 (e2e mode, 3 reps, wider candidate set, ar + ru slices)
+
+**Written before any run-2 result exists.** Nothing below is back-filled; the run-2 numbers go in §7b, and each prediction gets marked CONFIRMED / PARTLY WRONG / WRONG there the same way run 1's were. Run 1 got 3 of 4 wrong and said so; the point of writing these down is to keep that possible.
+
+The pre-registered `PAIRS` and therefore the Bonferroni family are **unchanged** (5 pairs × slices × 3 metrics). Mode is a reported dimension, not a new correction family: read `vector` for the pre-registered claim and `e2e` as the same claim re-asked of the shipping pipeline. The new candidates (`gemini-embedding@768`, `gemini-embedding-2@1536`) are opportunistic, sit outside the pre-registered pairs, and carry no multiple-comparison budget — same status `gemini-embedding@1536` had in run 1.
+
+**Disclosure, so this is pre-registration and not laundering.** During harness development a 2-slice smoke (`--slices=en,he --reps=2`) ran `3-small@1280` and `3-small@1536` through both modes to prove the wiring. So prediction **E1** below is *informed*, not blind — it is labelled as such. E2–E7 were written without any corresponding measurement.
+
+### On e2e vs vector
+
+- **E1 — e2e SHRINKS the English gaps and does NOT shrink the Hebrew one.** *(Informed by the development smoke — see disclosure above.)* On English every candidate is already near ceiling and the lexical arms are strong (Latin-script exact-title and redirect-alias queries are what BM25 is best at), so fusion should compress the already-within-noise English differences further. On Hebrew the keyword arm should *rescue* `3-small`'s collapse rather than preserve it, because a Hebrew redirect alias is often a literal substring of the target article — meaning the headline "3-small fails Hebrew" gap should be **smaller in e2e than in vector**, possibly much smaller.
+- **E2 — the e2e−vector delta will be NEGATIVE for the strongest models and POSITIVE for the weakest.** Fusion is a leveller: it drags a near-perfect vector ranking down by mixing in a weaker lexical arm, and lifts a poor vector ranking up. If this holds, the practical reading is that **hybrid search absorbs most of the embedding-choice decision on English and less of it off-English.**
+- **E3 — e2e never reverses a run-1 verdict that survived Bonferroni.** The significant Hebrew gaps (`bge-m3` and `qwen3` over `3-small`) should stay directionally the same in e2e even if the magnitude drops. If e2e *flips* a sign, the run-1 recommendation was an artifact of the vector-only lens and this README says so in §7b.
+
+### On the new slices
+
+The `ar` and `ru` slices are new in run 2. Predictions, before any number exists:
+
+- **E4 — Arabic patterns with Hebrew, not with English.** Both are non-Latin, morphologically rich, right-to-left, and under-represented in English-centric training mixes. Predicted: `3-small@1280` lands **below its English score by 15pp or more** on `ar` (nDCG@10, in-script group), and the two open-weight multilingual models beat it there by a margin in the same direction as Hebrew, though smaller — Arabic has far more public multilingual-benchmark presence than Hebrew, so vendors have had more reason to optimize for it.
+- **E5 — Russian is the easy non-Latin case and lands close to English.** Cyrillic is well covered by every candidate's pretraining, and Russian Wikipedia is one of the largest. Predicted: every candidate clears the repo's 0.65 ship-it threshold on `ru`, `3-small@1280` lands **within 8pp of its English score**, and no pre-registered pair is significant on `ru` after Bonferroni. If `ru` *also* separates the models, the story is not "non-Latin scripts are hard" but "this corpus's non-English slices are harder", which would weaken the run-1 language claim — so `ru` is the control that can falsify the framing.
+- **E6 — `bge-m3` remains the best open-weight pick across all six slices.** Its multilingual-first training should hold on `ar` and `ru` the way it held on `he`/`zh`/`ja`.
+
+### On cost and variance
+
+- **E7 — spread will be near zero for the hosted models and non-zero for the Ollama models.** Hosted embedding endpoints are effectively deterministic for a fixed input, so the three reps should agree to 4 decimal places; local inference has more room for nondeterminism. If a hosted model shows real spread, something in the harness or the provider is non-deterministic and that has to be explained before any 1-2pp finding is trusted.
+- **E8 — the open-weight models cost 3x or more in backfill wall-clock, and win on query latency.** A local 0.6B model has no network RTT on the query side but far less throughput on the document side than a hosted batch endpoint. If a local model is *both* slower to backfill and slower per query, "runs on a laptop at zero marginal cost" stops being a free win and the recommendation in §9 has to price it.
+
+## 7. Results — run 1 (vector-arm-only, single rep, 4 slices)
+
+These are the run-1 numbers, produced before e2e mode, reps and the `ar`/`ru` slices existed. They are the vector-arm-only upper bound; §7b carries the run-2 side-by-side.
 
 Full tables, per-query rows and every bootstrap CI: `baseline-runs/2026-07-28-report.md`, `-report.json`, `-run.jsonl`.
 
@@ -150,16 +223,23 @@ Full tables, per-query rows and every bootstrap CI: `baseline-runs/2026-07-28-re
 
 Secondary: `gemini-embedding-001` wins every slice and is the only candidate above 0.94 everywhere. `bge-m3` beats `qwen3-0.6b` on Hebrew (significant) and ties elsewhere, so it is the better open-weight pick.
 
+## 7b. Results — run 2 (vector + e2e, 3 reps, 6 slices)
+
+**Not yet run.** The runner and the pre-registration (§6b) landed first, deliberately. When the matrix in §10 completes, this section gets: the two-mode nDCG@10 tables, the `e2e − vector` shrink table, the across-run spread table, the practical-cost table, and a CONFIRMED / PARTLY WRONG / WRONG verdict on each of E1–E8. Whatever the verdicts are.
+
 ## 8. Threats to validity
 
 Named so a critic does not have to find them.
 
 - **The `nlq` family's queries are LLM-authored.** Documents are real, queries are not. A model whose training distribution is closer to the query author's phrasing is flattered. Mitigation: the `alias` family is fully synthesis-free and shows the **same ordering**, so the headline conclusion does not rest on the authored queries. But the *absolute* `nlq` numbers are indicative only.
 - **Author-written non-English queries may read non-natively.** The Hebrew/Chinese/Japanese `nlq` phrasings were written by an LLM, not by native speakers. A native-speaker review could shift the `nlq` numbers. The `alias` family — real editor-written surface forms — is the defence, and it agrees.
-- **Small n, one run, one seed.** 93-233 queries per slice; 24 per slice in the `nlq` family, which is at the low end of the requested 20-40 floor. Single run with `seed 42`; no across-run variance estimate. Embedding APIs are near-deterministic, so re-run variance should be small, but it is unmeasured.
+- **Small n.** 93-233 queries per slice; 24 per slice in the `nlq` family, which is at the low end of the requested 20-40 floor.
+- **Across-run variance is measured but only 3-deep.** Run 2 repeats every config 3 times and prints the observed spread (§5), which replaces run 1's unmeasured "should be small" assumption. Three reps bound the noise; they do not characterize its distribution, and they cannot catch a provider that drifts over days rather than minutes. The bootstrap seed is still fixed at 42 — that controls resampling, not the embedding calls.
 - **Wikipedia is not a brain.** Encyclopedic prose is cleaner and better-structured than real notes, meeting transcripts, or half-finished pages. It also very likely appears in every candidate's pretraining data, which may compress differences between models. Absolute scores are optimistic; the cross-language *deltas* are the transferable result.
 - **Doc length is a partial confound.** Hebrew and CJK articles are shorter than English ones on the same topic (mean 1919/1864/1885 vs 2000 chars). Character counts are also not comparable across scripts — a Han character carries more information than a Latin one. So "Hebrew is harder" is partly "Hebrew documents are shorter here." The effect is small relative to a 30-point gap, but it is real.
-- **Vector-arm-only overstates the end-to-end impact.** gbrain's keyword arm, RRF and reranker will recover some of the gap. The deltas here are an **upper bound** on what changing the default buys in production. That is the deliberate trade for isolating the variable (§5).
+- **Vector-arm-only overstates the end-to-end impact — which is why `e2e` mode now exists.** The `vector` deltas are an upper bound; `e2e` sizes how much survives real hybrid fusion. But `e2e` has its own ceiling: **the reranker is off**, so a reranked deployment absorbs more of the gap than `e2e` shows, and the post-fusion boost stages are no-ops on this corpus rather than genuinely exercised. `e2e` is "hybrid fusion on a default install without a reranker key", not "everything gbrain can do".
+- **`e2e`'s lexical arms are flattered by an 80-doc pool.** BM25 over 80 documents has far less to confuse it than BM25 over 100K, so the keyword arm's contribution to fusion — and therefore how much of the embedding delta it absorbs — is probably overstated relative to a real brain. Direction unknown at the margin; magnitude suspect.
+- **`e2e` reuses one lexical-arm computation across candidates and reps.** Correct by construction (the arms do not depend on the embedding, and `searchKeyword` is deterministic), but it does mean the reps measure *embedding-side* variance only. Lexical-side variance is zero by design, not by measurement.
 - **Single-gold qrels make the three metrics near-redundant.** With one relevant doc per query, Recall@10 is a hit-rate and nDCG@10 is a monotone function of the gold rank, so nDCG@10 and MRR correlate strongly. They are not three independent pieces of evidence. Recall@10 also **saturates** — `gemini` hits 1.0000 on three slices — so it discriminates poorly at the top; read nDCG@10 and MRR instead.
 - **80-doc pools are small.** A production brain has 10K-100K pages, where near-neighbour confusion is far worse. Absolute scores would drop for everyone.
 - **Bonferroni-60 is conservative** and will call real-but-modest effects "not significant" (e.g. `bge-m3` > `3-small` on Japanese nDCG@10: raw p = 0.0012, adjusted 0.072). Raw p-values are reported alongside so readers can judge.
@@ -182,31 +262,56 @@ Ranked, with confidence:
 
 ## 10. Reproduce
 
+### The full matrix
+
+Every candidate × every discovered slice × both modes × 3 reps. This is the one command:
+
+```bash
+export OPENAI_API_KEY=...                   # 3-small @1280/@1536, 3-large @1536
+export GEMINI_API_KEY=...                   # gemini-embedding-001 @1536/@768, gemini-embedding-2 @1536
+                                            #   (the runner aliases this to
+                                            #    GOOGLE_GENERATIVE_AI_API_KEY internally and
+                                            #    never prints it)
+ollama serve &
+ollama pull bge-m3 && ollama pull qwen3-embedding:0.6b
+
+node evals/embedding-default/harness.mjs --modes=vector,e2e --reps=3
+```
+
+Those are the defaults, so bare `node evals/embedding-default/harness.mjs` runs the same matrix; the flags are spelled out because the receipt records them and a reviewer should be able to see what was asked for. `VOYAGE_API_KEY` adds `voyage-3.5@1024` with no code change.
+
+### Narrower runs
+
 ```bash
 # Corpus (already committed; only needed to rebuild from Wikipedia).
 node evals/embedding-default/build-corpus.mjs --refetch
 
-# Full sweep. Skips any candidate whose key is absent.
-export OPENAI_API_KEY=...            # 3-small, 3-large
-ollama serve && ollama pull qwen3-embedding:0.6b && ollama pull bge-m3
-node evals/embedding-default/harness.mjs
+# One candidate, one slice, one rep — the cheap wiring probe.
+node evals/embedding-default/harness.mjs \
+  --candidates=bge-m3@1024 --slices=en --reps=1 --out=/tmp/x
 
-# One candidate, or a custom output dir.
-node evals/embedding-default/harness.mjs --candidates=bge-m3@1024 --out=/tmp/x
+# Vector-arm-only, matching run 1's method exactly.
+node evals/embedding-default/harness.mjs --modes=vector --reps=1
 
 # Re-derive the report from a committed run, zero API cost.
 node evals/embedding-default/harness.mjs \
   --rescore=evals/embedding-default/baseline-runs/2026-07-28-run.jsonl
 
-# Checks (no key, no network).
+# Checks (no API key, no network — includes a real in-memory PGLite check that
+# e2e fusion runs gbrain's keyword arm rather than silently degrading to
+# vector-only).
 bun test evals/embedding-default/harness-runner.test.ts
 ```
 
-**Cost:** ~$0.05 total for the three OpenAI candidates plus Gemini (4 slices × 80 docs × ~500 tokens + ~700 queries each). Ollama candidates are free and finish in ~80s each on an M-series laptop.
+All flags: `--candidates=` `--slices=` `--modes=` `--reps=` `--batch-size=` `--latency-sample=` `--out=` `--rescore=`.
+
+**Cost:** ~$0.05 per rep for the hosted candidates (slices × 80 docs × ~500 tokens + the query set each), so ~$0.15-0.30 for the full 3-rep matrix depending on slice count, plus ~25 extra single-query calls per hosted candidate for the latency sample. Ollama candidates are free; budget ~80s per candidate per rep for all slices on an M-series laptop, plus a few seconds per slice to build the e2e lexical arms once.
 
 ## 11. Receipt
 
-`baseline-runs/2026-07-28-run.jsonl` opens with a receipt row binding `run_id`, `ran_at`, `harness_sha`, `corpus_sha256`, `topics_sha256`, `seed`, `k`, `bootstrap_resamples`, `retrieval_arm`, the candidate list, the skipped list, the pre-registered pairs and the Bonferroni factor — then one row per (candidate × slice × query) carrying the gold rank and all three metrics. Anyone can re-score it with their own metric implementation.
+`baseline-runs/<date>-run.jsonl` opens with a receipt row binding `run_id`, `ran_at`, `harness_sha`, `corpus_sha256`, `topics_sha256`, `seed`, `k`, `bootstrap_resamples`, `modes`, `reps`, a per-mode `retrieval_arm` description, the per-slice `lexical_arms` non-empty counts (so an empty keyword arm can't hide), the candidate list, the skipped list with reasons, the pre-registered pairs, the Bonferroni factor and the `bootstrap_unit`. Then one row per (candidate × slice × mode × rep × query) carrying the gold rank and all three metrics, one `cost` row per (candidate × rep), and a closing `amendment` row recording any candidate excluded mid-run. Anyone can re-score it with their own metric implementation; `--rescore` applies the amendment the same way the live run does.
+
+`corpus_sha256` always covers **every** discovered slice, even when `--slices` narrows a run, so the hash identifies the corpus and stays comparable across partial runs.
 
 Per-run records also append to `<repo>/.gbrain-evals/eval-results.jsonl` per `docs/eval/SEARCH_MODE_METHODOLOGY.md` §4. **The user's personal `~/.gbrain` brain is never read or written.**
 
