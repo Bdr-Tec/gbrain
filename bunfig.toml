@@ -18,4 +18,15 @@ timeout = 60_000
 # runs, so audit-emitting code paths (content-sanity, shell-audit, etc.)
 # can't leak fixture events into the operator's real ~/.gbrain/audit/. See
 # test/helpers/audit-dir-preload.ts for the full rationale.
-preload = ["./test/helpers/legacy-embedding-preload.ts", "./test/helpers/audit-dir-preload.ts"]
+#
+# #3485: vet DATABASE_URL before any test file loads. The guard used to be
+# reachable only from setupDB(), so the 17 files that build a PostgresEngine
+# straight from process.env.DATABASE_URL never ran it — several of which
+# TRUNCATE/DROP/ALTER whatever answers. A process-wide precondition covers
+# them all, and covers the next such file automatically. See
+# test/helpers/db-guard-preload.ts.
+preload = [
+  "./test/helpers/legacy-embedding-preload.ts",
+  "./test/helpers/audit-dir-preload.ts",
+  "./test/helpers/db-guard-preload.ts",
+]
