@@ -872,7 +872,8 @@ export function applyThinClientSourceScope(
   params.source_id = resolved;
 }
 
-async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {
+// Exported for tests (same import-safety contract as applyThinClientSourceScope).
+export async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {
   // v0.31.8 (D11): resolve sourceId via the canonical 6-tier chain. Honors
   // --source / GBRAIN_SOURCE / .gbrain-source / path-match / brain default /
   // 'default'. Wrapped in try/catch so a doctor / single-source brain that
@@ -884,16 +885,21 @@ async function makeContext(engine: BrainEngine, params: Record<string, unknown>)
   // trusted local boundary) and consumed by federatedSearchScope in
   // operations.ts, which additionally gates on ctx.remote === false.
   let localFederated: string[] | undefined;
+  // params.source is set when a CLI flag was parsed for the op (rare; most
+  // CLI ops don't take --source). Falls through to env/dotfile/path-match.
+  const explicit = (params.source as string | undefined) ?? null;
   try {
     const { resolveSourceWithTier, localFederatedSourceIds } = await import('./core/source-resolver.ts');
-    // params.source is set when a CLI flag was parsed for the op (rare; most
-    // CLI ops don't take --source). Falls through to env/dotfile/path-match.
-    const explicit = (params.source as string | undefined) ?? null;
     const resolved = await resolveSourceWithTier(engine, explicit);
     sourceId = resolved.source_id;
     localFederated = await localFederatedSourceIds(engine, resolved.source_id, resolved.tier);
-  } catch {
-    // Source resolution failed (e.g. sources table doesn't exist on a fresh
+  } catch (err) {
+    // #1712: an EXPLICIT --source that fails to resolve (invalid id, or a
+    // source that doesn't exist) must error loudly — the blanket swallow
+    // turned `--source __all__` and typos into a silent `default` scope,
+    // which is how three bug reports became debugging sessions.
+    if (explicit) throw err;
+    // Ambient resolution failed (e.g. sources table doesn't exist on a fresh
     // pre-init brain). Leave sourceId unset; engine read methods fall through
     // to the cross-source view (D16 back-compat path).
     sourceId = undefined;

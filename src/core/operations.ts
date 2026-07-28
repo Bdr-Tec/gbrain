@@ -28,6 +28,7 @@ import { isSearchMode } from './search/mode.ts';
 import { stampEvidence } from './search/evidence.ts';
 import type { SearchResult } from './types.ts';
 import { CJK_SLUG_CHARS, PAGE_SLUG_SEG } from './cjk.ts';
+import { ALL_SOURCES } from './source-id.ts';
 import * as db from './db.ts';
 import { VERSION } from '../version.ts';
 import {
@@ -486,6 +487,14 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
   // value of `[]` MUST NOT widen scope to "all sources" by being interpreted
   // as "no filter."
   if (allowed && allowed.length > 0) return { sourceIds: allowed };
+  // #1712: the __all__ sentinel spans the brain — but ONLY for trusted local
+  // callers (strictly `remote === false`). For remote/untrusted callers the
+  // literal stays as-is: it can never match a real source id (underscores are
+  // rejected at creation), so the read fail-closes to empty rather than
+  // widening past the caller's grant. Do NOT "simplify" this to `{}`.
+  if (ctx.sourceId === ALL_SOURCES) {
+    return ctx.remote === false ? {} : { sourceId: ctx.sourceId };
+  }
   if (ctx.sourceId) return { sourceId: ctx.sourceId };
   return {};
 }
@@ -553,7 +562,7 @@ export function resolveRequestedScope(
   sourceIdParam: string | undefined,
   allSourcesParam = false,
 ): { sourceId?: string; sourceIds?: string[] } {
-  const wantsAll = allSourcesParam || sourceIdParam === '__all__';
+  const wantsAll = allSourcesParam || sourceIdParam === ALL_SOURCES;
   if (wantsAll) {
     return ctx.remote === false ? {} : sourceScopeOpts(ctx);
   }
