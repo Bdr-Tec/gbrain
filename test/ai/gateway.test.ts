@@ -159,7 +159,10 @@ describe('model-resolver', () => {
   });
 
   test('resolveRecipe throws AIConfigError for unknown provider', () => {
-    expect(() => resolveRecipe('cohere:embed-v3')).toThrow(AIConfigError);
+    // NB: 'cohere' used to be the stand-in for an unregistered provider here.
+    // It is a real recipe as of v0.42.69.0 (the default reranker), so this now
+    // needs a provider id that genuinely isn't in the registry.
+    expect(() => resolveRecipe('nosuchprovider:embed-v3')).toThrow(AIConfigError);
   });
 });
 

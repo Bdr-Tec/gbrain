@@ -9,7 +9,7 @@
  * import it from `../../src/cli.ts`.
  *
  * The single ownership site for: (a) folding file-plane API keys
- * (openai/anthropic/zeroentropy/openrouter/voyage) into the gateway env, and (b) threading
+ * (openai/anthropic/zeroentropy/openrouter/voyage/cohere) into the gateway env, and (b) threading
  * local-server `*_BASE_URL` env vars into base_urls. Both matter for the
  * init-time embedding-key probe — without (a) it would false-warn on
  * config.json-keyed users, and without (b) a live probe could hit the wrong
@@ -44,6 +44,12 @@ export function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
   // multimodal/image embeds despite config.json looking complete. process.env
   // still wins via the later spread.
   if (c.voyage_api_key) envFromConfig.VOYAGE_API_KEY = c.voyage_api_key;
+  // v0.42.69.0: same seam for Cohere, which is now the DEFAULT reranker. The
+  // two comments above document this identical bug shipping twice (ZE, Voyage)
+  // — a key accepted at the file plane that never reaches the gateway env
+  // fails silently in daemon/launchd/MCP contexts. process.env still wins via
+  // the later spread.
+  if (c.cohere_api_key) envFromConfig.COHERE_API_KEY = c.cohere_api_key;
   // Azure OpenAI (keyless/Entra): fold the non-secret endpoint/deployment + the
   // Entra opt-in into the gateway env so the azure-openai recipe works in any
   // shell (incl. non-interactive agent shells). The bearer token is minted at

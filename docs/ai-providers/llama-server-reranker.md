@@ -1,10 +1,95 @@
-# llama-server reranker (local) — Qwen3-Reranker, self-hosted ZE, any ZE-wire-shape provider
+# Self-hosted rerankers — vLLM (recommended), llama-server, any Cohere-dialect endpoint
+
+## Start here: which reranker should you run?
+
+gbrain's default reranker is **`cohere:rerank-v3.5`** (hosted, v0.42.69.0+).
+Set `COHERE_API_KEY` and you are done — no config needed:
+
+```bash
+export COHERE_API_KEY=<your-key>
+gbrain models doctor                 # expect: ✔ reranker_config cohere:rerank-v3.5 ok
+```
+
+For daemon, launchd, and MCP contexts that don't inherit your shell, put the
+key in `~/.gbrain/config.json` instead — it is threaded all the way into the
+gateway:
+
+```json
+{ "cohere_api_key": "<your-key>" }
+```
+
+`gbrain config set cohere_api_key …` writes the DB plane, which `loadConfig()`
+deliberately does **not** merge for any `*_api_key` field (same long-standing
+gap as `zeroentropy_api_key` / `voyage_api_key`). Use the env var or the
+config file.
+
+If you have no key, nothing breaks: search skips the reranker arm entirely and
+returns RRF order (#3421). It does **not** issue a doomed request per query.
+
+If you want rerank with **no API spend or no egress**, self-host. The rest of
+this page is that path.
+
+| Option | Endpoint | Verdict |
+|---|---|---|
+| **vLLM** `--task score` | `/rerank`, `/v1/rerank`, `/v2/rerank` | **Recommended.** vLLM's docs label it the "Cohere Rerank API", which is the dialect `gateway.rerank()` already speaks — so it works through the existing `cohere` recipe by repointing `base_url`. No new recipe, no adapter. |
+| **llama.cpp** `llama-server --reranking` | `/v1/rerank` | Works, but read the scoring warning below before you trust it. Uses the `llama-server-reranker` recipe. |
+
+### vLLM (recommended) — reuse the cohere recipe
+
+Because vLLM serves the Cohere dialect, you do not need a gbrain code change:
+
+```bash
+vllm serve BAAI/bge-reranker-v2-m3 --task score --port 8000
+
+# Point the cohere recipe at your own server. /v1 and /v2 both work on vLLM.
+gbrain config set provider_base_urls.cohere http://your-host:8000/v1
+gbrain config set search.reranker.model cohere:rerank-v3.5   # already the default
+export COHERE_API_KEY=not-used-but-the-recipe-requires-one
+```
+
+The model string after the colon must be one of the recipe's allowlisted ids;
+vLLM ignores the `model` field when it serves a single model, so leaving the
+default is fine. If you need a different id in the request body, use the
+`llama-server-reranker` recipe instead — its allowlist is open.
+
+### ⚠️ llama.cpp scoring correctness — verify your build
+
+llama.cpp [issue #16407](https://github.com/ggml-org/llama.cpp/issues/16407)
+(opened 2025-10-03, **closed as completed 2025-10-09**) reported
+`llama-server --reranking` returning near-zero, uncorrelated scores — on the
+order of `1e-28` — for Qwen3-Reranker (0.6B/4B/8B), and wrong or
+non-matching scores for BGE, mxbai, and Jina rerankers. It is *fixed
+upstream*, but the failure mode is silent: gbrain's fail-open contract cannot
+detect "the server answered 200 with garbage numbers", and neither can
+`gbrain models doctor`. So:
+
+- **Build from a commit after 2025-10-09.** Anything older can silently
+  destroy your ranking quality while looking perfectly healthy.
+- **Sanity-check the scores by hand** after any llama.cpp upgrade:
+
+  ```bash
+  curl -s http://localhost:8081/v1/rerank -H 'Content-Type: application/json' \
+    -d '{"model":"m","query":"how do I reset my password?",
+         "documents":["Password reset instructions","Cheese is a dairy product"]}' \
+  | jq '.results'
+  ```
+
+  The password document must score clearly higher, and scores must not be
+  ~`1e-28`. If they are, your build predates the fix (or the GGUF conversion
+  lost the pooling/rank metadata).
+- Prefer vLLM if you cannot pin and verify a llama.cpp build.
+
+---
+
+## llama-server (local) — Qwen3-Reranker, self-hosted ZE, any Cohere-dialect provider
 
 [`llama-server`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
 is the HTTP wrapper that ships with llama.cpp. With `--reranking`, it
-exposes an OpenAI-style `POST /v1/rerank` endpoint that returns
-`{results: [{index, relevance_score}]}` — exactly the wire shape gbrain
-already drives for ZeroEntropy's hosted reranker. The
+exposes a `POST /v1/rerank` endpoint that returns
+`{results: [{index, relevance_score}]}` — the Cohere rerank dialect, which is
+the single wire shape `gateway.rerank()` drives for every provider it supports
+(Cohere, ZeroEntropy, DashScope, OpenRouter). Voyage (`top_k` / `data[]`) is
+the sole outlier. The
 `llama-server-reranker` recipe (added in v0.40.6.1) routes
 `gateway.rerank()` at your local llama.cpp instance instead of ZE.
 
@@ -13,18 +98,21 @@ Two flavors of "local" this recipe covers:
 - **Qwen3-Reranker** (0.6B / 4B / 8B) — open-weight cross-encoder; pull
   the GGUF from HuggingFace and serve.
 - **Self-hosted ZeroEntropy** (`zerank-2`, `zerank-1-small`) — the
-  weights are on HuggingFace too. GGUF-convert them and serve them the
-  same way. **Quality is not guaranteed to match ZE-hosted:** GGUF
+  weights are on HuggingFace too and are **Apache-2.0** upstream (verified
+  2026-07-28; they were previously CC-BY-NC-4.0 and third-party model pages
+  still say non-commercial — check the upstream repo, not the mirrors). Self-hosting is
+  the way to keep using them after ZE's hosted API sunsets 2026-09-04 —
+  GGUF-convert them and serve them the same way. **Quality is not guaranteed to match ZE-hosted:** GGUF
   conversion + quantization + pooling/rank metadata + tokenizer special
   tokens all affect scores. If you self-host ZE for production
   retrieval, pin your own brain-relevant eval (
   [docs/eval-bench.md](../eval-bench.md)) as a regression guard.
 
-This recipe is the path override + recipe shape. Any provider whose
-request/response wire matches ZE/llama.cpp can use it by just pointing
-at a different base URL. Providers whose wire shape differs (Voyage uses
-`top_k` not `top_n`, returns `data[]` not `results[]`) need a separate
-recipe with adapter hooks — that lands in a follow-up plan.
+This recipe is the path override + recipe shape. Any provider serving the
+Cohere dialect can use it (or the `cohere` recipe) by just pointing at a
+different base URL. Providers whose wire shape differs (Voyage uses `top_k`
+not `top_n`, returns `data[]` not `results[]`) need a separate recipe with
+adapter hooks — that lands in a follow-up plan.
 
 ## Setup
 

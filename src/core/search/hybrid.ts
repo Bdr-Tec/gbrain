@@ -27,7 +27,7 @@ import { applyAutocut, type AutocutDecision } from './autocut.ts';
 import { buildRelationalArm } from './relational-recall.ts';
 import { loadConfigWithEngine } from '../config.ts';
 import { dedupResults } from './dedup.ts';
-import { applyReranker } from './rerank.ts';
+import { applyReranker, type RerankerOpts } from './rerank.ts';
 import { autoDetectDetail, classifyQuery, isAmbiguousModalityQuery } from './query-intent.ts';
 import { isTitlePhraseMatch } from './title-match.ts';
 import { normalizeAlias } from './alias-normalize.ts';
@@ -1598,7 +1598,21 @@ export async function hybridSearch(
     model: resolvedMode.reranker_model,
     timeoutMs: resolvedMode.reranker_timeout_ms,
   };
-  const reranked = rerankerOpts.enabled
+  // #3421 — availability pre-gate, mirroring the embedding arm's
+  // `isAvailable('embedding', …)` guard above. `balanced` is
+  // DEFAULT_SEARCH_MODE and ships `reranker_enabled: true`, so without this an
+  // install with no reranker key issues one doomed HTTP request per query and
+  // burns the full reranker_timeout_ms before applyReranker fails open —
+  // silently, on every search. Probe the RESOLVED per-call model (same reason
+  // the embedding arm probes the resolved column's provider, not the global
+  // default). `rerankerFn` is the test seam: when a caller injects a reranker
+  // no provider auth is involved, so skip the probe (matches how isAvailable
+  // treats an installed chat transport stub).
+  const rerankerUsable =
+    rerankerOpts.enabled &&
+    ((rerankerOpts as RerankerOpts).rerankerFn !== undefined ||
+      isAvailable('reranker', rerankerOpts.model));
+  const reranked = rerankerUsable
     ? await applyReranker(query, deduped, rerankerOpts as any)
     : deduped;
 

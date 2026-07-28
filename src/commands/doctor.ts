@@ -1607,7 +1607,7 @@ export async function checkRerankerHealth(engine: BrainEngine): Promise<Check> {
       return {
         name: 'reranker_health',
         status: 'warn',
-        message: `${authFails.length} reranker auth failure(s) in last 7 days. Fix: verify ZEROENTROPY_API_KEY and run \`gbrain models doctor\`.`,
+        message: `${authFails.length} reranker auth failure(s) in last 7 days. Fix: verify the API key for your configured \`search.reranker.model\` provider (default Cohere: COHERE_API_KEY) and run \`gbrain models doctor\`.`,
       };
     }
 
@@ -1627,7 +1627,7 @@ export async function checkRerankerHealth(engine: BrainEngine): Promise<Check> {
       return {
         name: 'reranker_health',
         status: 'warn',
-        message: `${transientFails.length} transient reranker failure(s) in last 7 days. Search fails open to RRF order; check ZE status if persistent.`,
+        message: `${transientFails.length} transient reranker failure(s) in last 7 days. Search fails open to RRF order; check your reranker provider's status if persistent.`,
       };
     }
 
@@ -1638,9 +1638,9 @@ export async function checkRerankerHealth(engine: BrainEngine): Promise<Check> {
     if (unknownFails.length >= 3) {
       const setupHint = unknownFails.some((f) => {
         const summary = String(f.error_summary ?? '');
-        return summary.includes('ZEROENTROPY_API_KEY') || summary.toLowerCase().includes('api key');
+        return summary.includes('API_KEY') || summary.toLowerCase().includes('api key');
       })
-        ? ' Fix: verify ZEROENTROPY_API_KEY and run `gbrain models doctor`.'
+        ? ' Fix: verify the API key for your configured `search.reranker.model` provider (default Cohere: COHERE_API_KEY) and run `gbrain models doctor`.'
         : '';
       return {
         name: 'reranker_health',

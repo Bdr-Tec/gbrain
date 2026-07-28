@@ -35,9 +35,22 @@ import {
 
 const API_KEY = process.env.ZEROENTROPY_API_KEY;
 
-// Skip the entire file when env is absent. `describe.skipIf` exists in
-// modern bun:test; fall back to in-test guards for older runners.
-const skipAll = !API_KEY;
+/**
+ * ZeroEntropy's hosted API shuts down 2026-09-04 (#3390). On and after that
+ * date these tests can only fail — a stale key still in someone's shell would
+ * turn `bun run test:e2e` red for a reason that has nothing to do with their
+ * change. Skip past the sunset regardless of key presence.
+ * `GBRAIN_ZE_SUNSET_OVERRIDE=1` forces the tests to run anyway (useful only if
+ * ZE extends the date, or when replaying against a self-hosted endpoint).
+ */
+const ZE_SUNSET = Date.parse('2026-09-04T00:00:00Z');
+const sunsetPassed =
+  Date.now() >= ZE_SUNSET && process.env.GBRAIN_ZE_SUNSET_OVERRIDE !== '1';
+
+// Skip the entire file when env is absent (or the hosted API is gone).
+// `describe.skipIf` exists in modern bun:test; fall back to in-test guards
+// for older runners.
+const skipAll = !API_KEY || sunsetPassed;
 
 beforeAll(() => {
   if (skipAll) return;
@@ -56,7 +69,9 @@ afterAll(() => {
 describe('ZE live — embed round-trip', () => {
   test('embed(["text"]) returns Float32Array[2560]', async () => {
     if (skipAll) {
-      console.warn('[skip] ZEROENTROPY_API_KEY not set');
+      console.warn(sunsetPassed
+        ? '[skip] ZeroEntropy hosted API sunset (2026-09-04) — see #3390'
+        : '[skip] ZEROENTROPY_API_KEY not set');
       return;
     }
     const [v] = await embed(['hello world']);
@@ -70,7 +85,9 @@ describe('ZE live — embed round-trip', () => {
 
   test('embedQuery("text") returns Float32Array[2560] (query side)', async () => {
     if (skipAll) {
-      console.warn('[skip] ZEROENTROPY_API_KEY not set');
+      console.warn(sunsetPassed
+        ? '[skip] ZeroEntropy hosted API sunset (2026-09-04) — see #3390'
+        : '[skip] ZEROENTROPY_API_KEY not set');
       return;
     }
     const v = await embedQuery('what is foo');
@@ -82,7 +99,9 @@ describe('ZE live — embed round-trip', () => {
 
   test('embed batch of 3 returns 3 vectors in order', async () => {
     if (skipAll) {
-      console.warn('[skip] ZEROENTROPY_API_KEY not set');
+      console.warn(sunsetPassed
+        ? '[skip] ZeroEntropy hosted API sunset (2026-09-04) — see #3390'
+        : '[skip] ZEROENTROPY_API_KEY not set');
       return;
     }
     const out = await embed(['one', 'two', 'three']);
@@ -110,7 +129,9 @@ const ZE_TEST_TIMEOUT_MS = 30_000;
 describe('ZE live — rerank round-trip', () => {
   test('rerank({query, documents}) returns sorted RerankResult[]', async () => {
     if (skipAll) {
-      console.warn('[skip] ZEROENTROPY_API_KEY not set');
+      console.warn(sunsetPassed
+        ? '[skip] ZeroEntropy hosted API sunset (2026-09-04) — see #3390'
+        : '[skip] ZEROENTROPY_API_KEY not set');
       return;
     }
     const out = await rerank({
@@ -141,7 +162,9 @@ describe('ZE live — rerank round-trip', () => {
 
   test('rerank with top_n=2 returns at most 2 results', async () => {
     if (skipAll) {
-      console.warn('[skip] ZEROENTROPY_API_KEY not set');
+      console.warn(sunsetPassed
+        ? '[skip] ZeroEntropy hosted API sunset (2026-09-04) — see #3390'
+        : '[skip] ZEROENTROPY_API_KEY not set');
       return;
     }
     const out = await rerank({
@@ -157,7 +180,9 @@ describe('ZE live — rerank round-trip', () => {
 describe('ZE live — flexible dims', () => {
   test('1280-dim embedding returns Float32Array[1280]', async () => {
     if (skipAll) {
-      console.warn('[skip] ZEROENTROPY_API_KEY not set');
+      console.warn(sunsetPassed
+        ? '[skip] ZeroEntropy hosted API sunset (2026-09-04) — see #3390'
+        : '[skip] ZEROENTROPY_API_KEY not set');
       return;
     }
     resetGateway();

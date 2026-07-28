@@ -63,6 +63,17 @@ export interface GBrainConfig {
    * config.json file-plane route is wired through today.
    */
   voyage_api_key?: string;
+  /**
+   * Cohere API key (v0.42.69.0). Cohere `rerank-v3.5` is the DEFAULT reranker
+   * as of the ZeroEntropy sunset, so this key sits on the default retrieval
+   * path — the exact situation that bit zeroentropy_api_key (v0.37 CDX2-5+6)
+   * and voyage_api_key (#2662): accepted at the file plane but never threaded
+   * into the gateway env, so daemon/launchd/MCP contexts with no process-env
+   * export failed silently while config.json looked complete. Wired through:
+   * file plane + COHERE_API_KEY env merge below -> buildGatewayConfig env dict
+   * -> recipe reads COHERE_API_KEY.
+   */
+  cohere_api_key?: string;
   /** Azure OpenAI (keyless/Entra). Non-secret endpoint + deployment + Entra opt-in,
    * folded into the gateway env so the azure-openai recipe works in any shell.
    * The bearer token is minted at request time via `az` — no secret stored here. */
@@ -581,6 +592,7 @@ export function loadConfig(): GBrainConfig | null {
     ...(process.env.ANTHROPIC_API_KEY ? { anthropic_api_key: process.env.ANTHROPIC_API_KEY } : {}),
     ...(process.env.ZEROENTROPY_API_KEY ? { zeroentropy_api_key: process.env.ZEROENTROPY_API_KEY } : {}),
     ...(process.env.OPENROUTER_API_KEY ? { openrouter_api_key: process.env.OPENROUTER_API_KEY } : {}),
+    ...(process.env.COHERE_API_KEY ? { cohere_api_key: process.env.COHERE_API_KEY } : {}),
     ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
     ...(process.env.GBRAIN_EMBEDDING_DIMENSIONS ? { embedding_dimensions: parseInt(process.env.GBRAIN_EMBEDDING_DIMENSIONS, 10) } : {}),
     ...(process.env.GBRAIN_EXPANSION_MODEL ? { expansion_model: process.env.GBRAIN_EXPANSION_MODEL } : {}),
@@ -919,6 +931,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'zeroentropy_api_key',
   'openrouter_api_key',
   'voyage_api_key',
+  'cohere_api_key',
   'azure_openai_endpoint',
   'azure_openai_deployment',
   'azure_openai_use_entra',

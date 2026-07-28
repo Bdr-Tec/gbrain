@@ -1,5 +1,39 @@
 # ZeroEntropy — zembed-1 + zerank-2
 
+> ## ⚠️ DEPRECATED — hosted API shuts down 2026-09-04
+>
+> ZeroEntropy announced (2026-07-24) that its hosted endpoints, including
+> `/v1/models/embed` and `/v1/models/rerank`, stop serving on **2026-09-04**
+> (#3390). This page is kept for installs that still point at ZE and for
+> anyone self-hosting the weights.
+>
+> **What changed in gbrain v0.42.69.0:** the default reranker is now
+> `cohere:rerank-v3.5` (see
+> [`llama-server-reranker.md`](llama-server-reranker.md) for the self-host
+> fallback). `zerank-2` is still a valid `search.reranker.model` value — it
+> just stops working on the sunset date.
+>
+> **If you are on ZE today:**
+> - **Reranker** — do nothing. New installs and anyone who never overrode
+>   `search.reranker.model` are already on Cohere. If you *did* override it,
+>   run `gbrain config set search.reranker.model cohere:rerank-v3.5` and set
+>   `COHERE_API_KEY`. Missing key is a non-event: search skips the reranker
+>   arm entirely and returns RRF order (#3421).
+> - **Embedding** — this one is urgent and NOT automatic. Queries embed
+>   through the same endpoint that produced your stored vectors, so on the
+>   sunset date semantic retrieval stops working entirely. Either migrate
+>   (`gbrain migrate embeddings --to <provider:model> --dry-run` first) or
+>   self-host `zembed-1`, whose weights are Apache-2.0 — self-hosting
+>   preserves your existing vectors, migrating re-embeds them.
+> - `gbrain upgrade` prints this as a one-shot banner for affected brains.
+>
+> **Licensing note:** `zerank-1` / `zerank-2` weights are **Apache-2.0**
+> upstream (`huggingface.co/zeroentropy/zerank-2`, verified 2026-07-28). They
+> were previously CC-BY-NC-4.0 and the relicense is recent, so third-party
+> model pages and aggregator listings still say "non-commercial" — check the
+> upstream HuggingFace repo, not the mirrors, before ruling self-hosting out.
+
+
 [ZeroEntropy](https://zeroentropy.dev) ships two specialized small models
 for retrieval pipelines:
 
@@ -81,6 +115,10 @@ stage before v0.35.0.0. It slots between RRF dedup and token-budget
 enforcement in hybrid search.
 
 ### Default-on with `tokenmax` mode
+
+> Since v0.42.69.0 the mode bundles default to `cohere:rerank-v3.5`, not
+> `zeroentropyai:zerank-2`. The prose below describes the enable/disable
+> mechanics, which are unchanged; substitute your chosen model string.
 
 `tokenmax` mode now defaults `search.reranker.enabled = true` with
 `zerank-2`. If you already use `tokenmax` AND have `ZEROENTROPY_API_KEY`

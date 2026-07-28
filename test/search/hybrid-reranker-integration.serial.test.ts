@@ -28,6 +28,7 @@ import {
   configureGateway,
   resetGateway,
   __setEmbedTransportForTests,
+  __setRerankTransportForTests,
 } from '../../src/core/ai/gateway.ts';
 import type { PageInput, SearchOpts } from '../../src/core/types.ts';
 import type { RerankInput, RerankResult } from '../../src/core/ai/gateway.ts';
@@ -276,6 +277,56 @@ describe('hybridSearch — reranker enabled (reorder)', () => {
     expect(out.length).toBeGreaterThan(0);
     // First result has the highest reranker score (0.5).
     expect((out[0] as any).rerank_score).toBe(0.5);
+  });
+});
+
+describe('hybridSearch — reranker availability pre-gate (#3421)', () => {
+  // `balanced` is DEFAULT_SEARCH_MODE and ships reranker_enabled=true, so
+  // without a pre-gate every query on an install with no reranker key issues a
+  // doomed HTTP request and burns the full reranker_timeout_ms, silently.
+  // The gateway here is configured with OPENAI_API_KEY only — no COHERE_API_KEY
+  // — so the default reranker is unavailable. Assert gateway.rerank() is never
+  // reached: the transport stub must stay untouched.
+  test('reranker enabled + no provider key → gateway.rerank is never called', async () => {
+    let transportCalls = 0;
+    __setRerankTransportForTests(async () => {
+      transportCalls++;
+      return new Response(JSON.stringify({ results: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    try {
+      const baseline = await hybridSearch(engine, 'alpha keyword', { limit: 10 });
+      // enabled=true, NO rerankerFn → the real gateway path would be taken.
+      const out = await hybridSearch(engine, 'alpha keyword', {
+        limit: 10,
+        reranker: { enabled: true, topNIn: 30, topNOut: null },
+      });
+      expect(transportCalls).toBe(0);
+      expect(out.map(r => r.slug)).toEqual(baseline.map(r => r.slug));
+    } finally {
+      __setRerankTransportForTests(null);
+    }
+  });
+
+  test('injected rerankerFn is exempt from the gate (test seam still works)', async () => {
+    let called = 0;
+    const out = await hybridSearch(engine, 'alpha keyword', {
+      limit: 10,
+      autocut: false,
+      reranker: {
+        enabled: true,
+        topNIn: 30,
+        topNOut: null,
+        rerankerFn: async (input: RerankInput): Promise<RerankResult[]> => {
+          called++;
+          return input.documents.map((_, i) => ({ index: i, relevanceScore: 0.5 }));
+        },
+      },
+    });
+    expect(called).toBe(1);
+    expect(out.length).toBeGreaterThan(0);
   });
 });
 

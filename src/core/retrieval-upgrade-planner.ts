@@ -72,7 +72,14 @@ import { hnswIndexExpected } from './vector-index.ts';
 /** v0.36.0.0 cutover target: ZeroEntropy zembed-1 at 1024d via Matryoshka. */
 export const ZE_TARGET_EMBEDDING_MODEL = 'zeroentropyai:zembed-1';
 export const ZE_TARGET_EMBEDDING_DIM = 1280;
-export const ZE_TARGET_RERANKER_MODEL = 'zeroentropyai:zerank-2';
+/**
+ * The reranker this planner writes into user config when the ZE retrieval
+ * upgrade is applied. NOT a ZeroEntropy model: ZE's hosted API shuts down
+ * 2026-09-04 (#3390), so persisting `zeroentropyai:zerank-2` into a user's
+ * config here would actively install a dead default. Tracks
+ * DEFAULT_RERANKER_MODEL in src/core/ai/gateway.ts.
+ */
+export const ZE_TARGET_RERANKER_MODEL = 'cohere:rerank-v3.5';
 
 /** Config keys (D12). */
 export const KEY_PROMPT_SHOWN = 'ze_switch_prompt_shown';

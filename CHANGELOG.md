@@ -2,6 +2,72 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.69.0] - 2026-07-28
+
+**The default reranker moves to Cohere `rerank-v3.5` before ZeroEntropy's hosted API shuts down, and search stops calling a reranker it has no key for.**
+
+ZeroEntropy's hosted endpoints stop serving on 2026-09-04. gbrain's default reranker pointed at one of them, so this release moves the default to Cohere `rerank-v3.5` and fixes the thing that made the sunset worse than it needed to be.
+
+The important fix is the one that helps people who never configure a reranker at all: `balanced` is the default search mode and it turns the reranker on, so every query was issuing a request to the reranker provider whether or not a key existed — waiting out the full timeout each time and then quietly falling back to unranked order. Search now checks provider availability first, the same way it already did for embeddings. No key means no request and no wasted wait.
+
+Cohere was picked for the default path because it has the longest proven record of keeping models served: it created the commercial rerank API, has shipped v2 → v3 → v3.5 → v4, and kept v3.5 serving after v4 launched. It is also the most widely integrated reranker across RAG frameworks, and ZeroEntropy's own migration guide names it as the target. Routing the default retrieval path through a proxy was deliberately rejected — OpenRouter reranking stays the opt-in it already was.
+
+No code change was needed to talk to Cohere: the wire shape gbrain already spoke is the Cohere dialect.
+
+Self-hosting is a first-class fallback. vLLM's rerank endpoint is Cohere-compatible, so pointing `provider_base_urls.cohere` at your own vLLM server is the entire setup. The reranker provider doc now leads with that, and carries a correctness check worth running against any llama.cpp build.
+
+### Changed
+
+- Default reranker is now `cohere:rerank-v3.5` across all three search-mode bundles, the gateway default, and the retrieval-upgrade planner (which previously wrote a soon-to-be-dead model string into user config).
+- New `cohere` reranker recipe (`rerank-v3.5`, `rerank-v4.0-fast`, `rerank-v4.0-pro`). Set `COHERE_API_KEY`, or `cohere_api_key` in `~/.gbrain/config.json` — the config-file route is threaded all the way into the gateway, so daemon, launchd, and MCP contexts work without a shell export.
+- `zeroentropyai:zerank-2` remains a supported override until its hosted API sunsets. The provider doc carries a deprecation banner with the migration steps; `gbrain upgrade` already warns affected brains.
+- Reranker provider doc now leads with the self-hosted options (vLLM recommended) and documents the correctness sanity-check for llama.cpp rerank builds.
+- OpenRouter reranker cost estimate corrected — the previous pseudo-rate under-estimated spend by orders of magnitude for budget-capped callers.
+
+### Fixed
+
+- Search no longer issues a reranker request when no reranker provider is reachable. Previously every query on the default mode paid the full reranker timeout before failing over to unranked order, with nothing surfaced to the user. (#3421)
+- `gbrain doctor`'s reranker auth hint no longer names a single provider's environment variable regardless of which reranker is configured.
+- The ZeroEntropy live end-to-end test now skips on and after the sunset date, so a stale key in someone's shell can't turn their test run red for unrelated reasons.
+
+## To take advantage of v0.42.69.0
+
+`gbrain upgrade` handles this. No schema migration ships in this release.
+
+1. **Upgrade:**
+   ```bash
+   gbrain upgrade
+   ```
+
+2. **If you want reranking (on by default in `balanced` and `tokenmax`), set a key:**
+   ```bash
+   export COHERE_API_KEY=<your-key>
+   gbrain models doctor
+   ```
+   For daemon, launchd, and MCP contexts that don't inherit your shell, add
+   `"cohere_api_key": "<your-key>"` to `~/.gbrain/config.json` instead — that
+   route is threaded into the gateway. (`gbrain config set` writes the DB
+   plane, which is not merged for API-key fields; that predates this release.)
+   Skipping this is fine — search runs without the rerank arm rather than retrying a provider it cannot reach.
+
+3. **If you previously overrode `search.reranker.model` to a ZeroEntropy model, move it:**
+   ```bash
+   gbrain config get search.reranker.model
+   gbrain config set search.reranker.model cohere:rerank-v3.5
+   ```
+
+4. **If you embed with a ZeroEntropy model, that is the urgent one and it is not automatic.** Queries embed through the same endpoint that produced your stored vectors, so semantic retrieval stops on the sunset date. Preview a migration or self-host the weights:
+   ```bash
+   gbrain migrate embeddings --to <provider:model> --dry-run
+   ```
+   See `docs/ai-providers/zeroentropy.md`.
+
+5. **Prefer no API spend?** vLLM serves the same dialect:
+   ```bash
+   gbrain config set provider_base_urls.cohere http://your-host:8000/v1
+   ```
+   Walkthrough in `docs/ai-providers/llama-server-reranker.md`.
+
 ## [0.42.66.1] - 2026-07-27
 
 ### Fixed

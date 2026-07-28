@@ -19,8 +19,8 @@ describe('Mode bundle defaults (D6)', () => {
     expect(MODE_BUNDLES.balanced.reranker_enabled).toBe(true);
   });
 
-  test('balanced reranker model is zeroentropyai:zerank-2', () => {
-    expect(MODE_BUNDLES.balanced.reranker_model).toBe('zeroentropyai:zerank-2');
+  test('balanced reranker model is cohere:rerank-v3.5', () => {
+    expect(MODE_BUNDLES.balanced.reranker_model).toBe('cohere:rerank-v3.5');
   });
 
   test('conservative reranker stays off (cheap tier)', () => {

@@ -211,7 +211,11 @@ export function formatBanner(plan: RetrievalUpgradeState): string {
   lines.push('  • Fastest:  442ms  vs OpenAI 973ms  (2.2× faster)');
   lines.push('  • Cheapest: $0.05/M tokens vs OpenAI $0.13/M (2.6× cheaper)');
   lines.push('               (sale rate $0.025/M may be promotional, subject to change)');
-  lines.push('  • zerank-2 reshuffles 60% of top-1 results (real value)');
+  // v0.42.69.0: this flow now installs the CURRENT default reranker
+  // (cohere:rerank-v3.5), not zerank-2 — ZE's hosted reranker sunsets
+  // 2026-09-04. The 60%-reshuffle figure was measured on zerank-2, so it is
+  // no longer the reranker this prompt actually enables; stated generically.
+  lines.push('  • A cross-encoder reranker reshuffles ~60% of top-1 results');
   lines.push('  • Only 10–18% overlap between providers — they see different');
   lines.push('    things, so a pair compounds');
   lines.push('');

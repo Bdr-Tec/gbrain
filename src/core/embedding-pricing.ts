@@ -41,6 +41,18 @@ export const EMBEDDING_PRICING: Record<string, EmbeddingPricing> = {
   // Reused here (not a separate rerank table) because budget-tracker.ts's
   // rerank-kind lookup falls back to this same table for paid providers.
   'zeroentropyai:zerank-2':        { pricePerMTok: 0.025 },
+  // Cohere rerankers — the DEFAULT reranker from v0.42.69.0. Cohere bills PER
+  // SEARCH (one query + up to 100 docs), not per token, and the per-search
+  // rate is client-side-rendered on cohere.com/pricing (third-party trackers
+  // report $1 vs $2 per 1K searches). These are CONSERVATIVE pseudo-rates in
+  // this table's $/1M-token unit so `--max-cost` callers get a bounded
+  // over-estimate instead of a TX2 no_pricing hard-fail on the default path.
+  // Derivation: balanced sends top_n_in=25 chunks ~= 10K estimated tokens
+  // (tracker estimates chars/4), so 0.20/1M ~= $0.002/search — the higher
+  // reported rate. See src/core/ai/recipes/cohere.ts for the full note.
+  'cohere:rerank-v3.5':            { pricePerMTok: 0.20 },
+  'cohere:rerank-v4.0-fast':       { pricePerMTok: 0.20 },
+  'cohere:rerank-v4.0-pro':        { pricePerMTok: 0.20 },
   // Mistral (https://mistral.ai/pricing/api/, verified 2026-07-19)
   'mistral:mistral-embed':         { pricePerMTok: 0.10 },
   'mistral:mistral-embed-2312':    { pricePerMTok: 0.10 },

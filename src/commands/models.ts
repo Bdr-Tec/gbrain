@@ -325,7 +325,7 @@ export async function resolveLiveRerankerTimeoutMs(engine: BrainEngine): Promise
  *
  * CDX2-F11: `assertTouchpoint()` does NOT enforce allowlists for
  * openai-compatible recipes — the probe does it directly here. Without
- * this, `search.reranker.model=zeroentropyai:made-up-name` would silently
+ * this, `search.reranker.model=cohere:made-up-name` would silently
  * pass config probes and fail at first rerank call.
  *
  * v0.40.6.1: resolves via `resolveLiveRerankerModel(engine)` so probe and
@@ -363,7 +363,7 @@ async function probeRerankerConfig(engine: BrainEngine): Promise<ProbeResult> {
         touchpoint: 'reranker_config',
         status: 'config',
         message: `Provider "${recipe.id}" does not declare a reranker touchpoint.`,
-        fix: 'Switch to a provider that does (e.g. zeroentropyai:zerank-2).',
+        fix: 'Switch to a provider that does (e.g. cohere:rerank-v3.5, the default).',
         elapsed_ms: Date.now() - start,
       };
     }

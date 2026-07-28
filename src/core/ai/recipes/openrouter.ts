@@ -215,11 +215,18 @@ export const openrouter: Recipe = {
       default_model: 'cohere/rerank-v3.5',
       // Cohere bills per-search, not per-token. This is a pseudo-per-1M rate
       // for the budget tracker's heuristic (estimates tokens as chars/4).
-      // At ~4K chars/search the tracker estimates ~$0.00025 — in the right
-      // ballpark for the per-search bill. Patch budget-tracker.ts to honour a
-      // `cost_per_search_usd` field for exact accounting.
-      cost_per_1m_tokens_usd: 0.001,
-      price_last_verified: '2026-06-13',
+      // v0.42.69.0 correction: the old 0.001 value was ~250x LOW. OpenRouter
+      // publishes $0.001/search for cohere/rerank-v3.5 (verified
+      // openrouter.ai/cohere/rerank-v3.5, 2026-07-28), and gbrain's `balanced`
+      // shape sends top_n_in=25 chunks ≈ 10K estimated tokens — at 0.001/1M
+      // the tracker estimated $0.00001/search. The old comment's "~$0.00025 at
+      // ~4K chars" was itself arithmetically wrong (4K chars → 1K tokens →
+      // $0.000001). 0.10/1M puts a 10K-token search at exactly $0.001.
+      // Deliberately still a pseudo-rate: the budget tracker has one
+      // $/1M-token unit end to end, so a real `cost_per_search_usd` field is a
+      // tracker change, not a recipe change.
+      cost_per_1m_tokens_usd: 0.10,
+      price_last_verified: '2026-07-28',
       // OpenRouter doesn't publish an explicit payload cap; 5MB matches
       // ZeroEntropy's upstream limit and the gateway's pre-flight ceiling.
       max_payload_bytes: 5_000_000,

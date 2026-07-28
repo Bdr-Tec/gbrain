@@ -119,7 +119,7 @@ const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
 // v0.35.0.0+: reranker default. Used only when search.reranker.enabled is set
 // AND no explicit reranker_model is configured. Mode bundles' per-mode
 // `reranker_model` default to this same value but can be overridden.
-const DEFAULT_RERANKER_MODEL = 'zeroentropyai:zerank-2';
+const DEFAULT_RERANKER_MODEL = 'cohere:rerank-v3.5';
 
 let _config: AIGatewayConfig | null = null;
 const _modelCache = new Map<string, any>();

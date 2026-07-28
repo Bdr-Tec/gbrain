@@ -120,7 +120,7 @@ describe('doctor command', () => {
         } as any);
         expect(check.status).toBe('warn');
         expect(check.message).toContain('unknown');
-        expect(check.message).toContain('ZEROENTROPY_API_KEY');
+        expect(check.message).toContain('API_KEY');
       });
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
