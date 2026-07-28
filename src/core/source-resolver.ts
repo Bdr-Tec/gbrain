@@ -16,7 +16,7 @@
 import { readFileSync, lstatSync, type Stats } from 'fs';
 import { join, dirname, resolve } from 'path';
 import type { BrainEngine } from './engine.ts';
-import { isSourceFederated } from './sources-load.ts';
+import { isSourceFederated, parseSourceConfig } from './sources-load.ts';
 import { SOURCE_ID_RE, isValidSourceId } from './source-id.ts';
 import { isTrustedDotfile, realpathOrResolve } from './path-confine.ts';
 
@@ -199,22 +199,33 @@ export function resolveSourceIdEngineFree(
  * Excludes archived sources (`archived = false`) so a soft-deleted source
  * doesn't auto-resolve. Shared by `resolveSourceId` and `resolveSourceWithTier`
  * so the heuristic can't drift between the two entry points.
+ *
+ * #2928: also refuses to auto-pick a source EXPLICITLY marked isolated
+ * (`gbrain sources unfederate <id>` / `--no-federated` → config.federated =
+ * false). Auto-routing there made an unqualified `query`/`search`/`think`
+ * surface the isolated source's pages — the exact thing unfederate promises
+ * to prevent ("only searched when explicitly named"). UNSET federated stays
+ * eligible: a fresh `sources add` writes no federated key, and the #1434
+ * sole-source convenience must keep working for it. Narrowing-only by
+ * design — an isolated sole source falls through to 'default'; the tier
+ * never widens to some OTHER source it wouldn't have picked before.
  */
 async function pickSoleNonDefaultSource(engine: BrainEngine): Promise<string | null> {
   // archived column was added in v34 (v0.26.5). Older brains may not have
   // it — fall back to the un-archived query in that case via try/catch.
-  let rows: Array<{ id: string }>;
+  let rows: Array<{ id: string; config: unknown }>;
   try {
-    rows = await engine.executeRaw<{ id: string }>(
-      `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default' AND archived = false`,
+    rows = await engine.executeRaw<{ id: string; config: unknown }>(
+      `SELECT id, config FROM sources WHERE local_path IS NOT NULL AND id != 'default' AND archived = false`,
     );
   } catch {
-    rows = await engine.executeRaw<{ id: string }>(
-      `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default'`,
+    rows = await engine.executeRaw<{ id: string; config: unknown }>(
+      `SELECT id, config FROM sources WHERE local_path IS NOT NULL AND id != 'default'`,
     );
   }
-  if (rows.length === 1) return rows[0].id;
-  return null;
+  if (rows.length !== 1) return null;
+  if (parseSourceConfig(rows[0].config).federated === false) return null;
+  return rows[0].id;
 }
 
 /**
