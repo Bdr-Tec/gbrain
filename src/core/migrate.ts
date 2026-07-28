@@ -2,6 +2,7 @@ import type { BrainEngine } from './engine.ts';
 import { slugifyPath } from './sync.ts';
 import { getFtsLanguage } from './fts-language.ts';
 import { hnswMaxDimsForType } from './vector-index.ts';
+import { PAGES_SOURCE_SLUG_UNIQUE_DDL } from './pages-unique-repair.ts';
 
 /**
  * Schema migrations — run automatically on initSchema().
@@ -618,16 +619,12 @@ export const MIGRATIONS: Migration[] = [
         // 0b. Swap pages.UNIQUE(slug) → UNIQUE(source_id, slug).
         //     Deferred from v21 so PR #356 closes the integrity
         //     window. PGLite already did this swap in its v21 path.
+        //     #550: guarded by index SHAPE (columns), not constraint NAME —
+        //     the old conname guard let a wrong-shaped or missing index pass
+        //     as "done", leaving put_page's ON CONFLICT permanently broken.
         await tx.runMigration(23, `
           ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_slug_key;
-          DO $$ BEGIN
-            IF NOT EXISTS (
-              SELECT 1 FROM pg_constraint WHERE conname = 'pages_source_slug_key'
-            ) THEN
-              ALTER TABLE pages ADD CONSTRAINT pages_source_slug_key
-                UNIQUE (source_id, slug);
-            END IF;
-          END $$;
+          ${PAGES_SOURCE_SLUG_UNIQUE_DDL}
         `);
 
         // 1a. source_id with DEFAULT 'default' (idempotent)
@@ -775,14 +772,7 @@ export const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);
 
         ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_slug_key;
-        DO $$ BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint WHERE conname = 'pages_source_slug_key'
-          ) THEN
-            ALTER TABLE pages ADD CONSTRAINT pages_source_slug_key
-              UNIQUE (source_id, slug);
-          END IF;
-        END $$;
+        ${PAGES_SOURCE_SLUG_UNIQUE_DDL}
       `,
     },
   },
@@ -6081,6 +6071,21 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
       );
     }
   } catch { /* best-effort; doctor reports the drift if this couldn't run */ }
+
+  // #550: same drift class for pages(source_id, slug). v23's old guard matched
+  // the constraint NAME, so a brain stamped >= v23 whose constraint never
+  // materialized (or was later dropped) is permanently write-dead — every
+  // put_page ON CONFLICT (source_id, slug) fails while reads look healthy.
+  // Shape-keyed, every-pass, idempotent; skips pre-v21 schemas (no source_id).
+  try {
+    const { repairPagesUniqueIndex } = await import('./pages-unique-repair.ts');
+    const r = await repairPagesUniqueIndex(engine);
+    if (r.repaired) {
+      console.error(
+        `[migrate] healed missing pages(source_id, slug) unique index (#550) — put_page writes restored`,
+      );
+    }
+  } catch { /* best-effort; the pages_unique_index doctor check reports it */ }
 
   if (pending.length === 0) {
     return { applied: 0, current };

@@ -98,6 +98,7 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'ocr_health',
   'orphan_ratio',
   'oversized_pages',
+  'pages_unique_index',
   'quarantined_pages',
   'raw_provenance',
   'flagged_pages',

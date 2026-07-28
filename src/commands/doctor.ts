@@ -3,6 +3,7 @@ import { REPAIR_SOURCE_CONFIG_SQL } from '../core/source-config-sql.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import * as db from '../core/db.ts';
 import { LATEST_VERSION, getIdleBlockers } from '../core/migrate.ts';
+import { checkPagesUniqueIndex, PAGES_UNIQUE_REPAIR_SQL } from '../core/pages-unique-repair.ts';
 import { checkResolvable } from '../core/check-resolvable.ts';
 import { autoFixDryViolations, type AutoFixReport, type FixOutcome } from '../core/dry-fix.ts';
 import { autoDetectSkillsDirReadOnly } from '../core/repo-root.ts';
@@ -533,6 +534,59 @@ export async function childTableOrphansCheck(engine: BrainEngine): Promise<Check
 }
 
 /**
+ * #550 — put_page writability probe.
+ *
+ * Both engines upsert pages with `ON CONFLICT (source_id, slug)`. Inference
+ * needs a NON-PARTIAL unique index (constraint-backed or plain unique index)
+ * whose key columns are exactly {source_id, slug}. Migration v23's original
+ * guard matched the constraint NAME (`pg_constraint.conname`), so a brain
+ * stamped past v23 without that DDL executing is permanently write-dead —
+ * every put_page throws while reads stay green, and neither `initSchema()`
+ * nor `apply-migrations --force-schema` used to bring the index back.
+ *
+ * Probes BY COLUMNS (shape), never by name, and accepts either a unique
+ * constraint or a bare unique index — ON CONFLICT accepts both. FAILs loudly
+ * with the literal repair SQL. OK (not fail) when the pages table or
+ * source_id column doesn't exist yet: a fresh/pre-v21 brain is not broken.
+ */
+export async function pagesUniqueIndexCheck(engine: BrainEngine): Promise<Check> {
+  try {
+    const status = await checkPagesUniqueIndex(engine);
+    if (!status.tablePresent) {
+      return { name: 'pages_unique_index', status: 'ok', message: 'no pages table yet' };
+    }
+    if (!status.sourceIdPresent) {
+      return {
+        name: 'pages_unique_index',
+        status: 'ok',
+        message: 'pages.source_id not present yet (pre-v21 schema) — pending migrations own this',
+      };
+    }
+    if (status.satisfied) {
+      return {
+        name: 'pages_unique_index',
+        status: 'ok',
+        message: `put_page upsert arbiter present (${status.indexName})`,
+      };
+    }
+    return {
+      name: 'pages_unique_index',
+      status: 'fail',
+      message:
+        'No non-partial UNIQUE index on pages(source_id, slug) — every put_page write fails with ' +
+        '"no unique or exclusion constraint matching the ON CONFLICT specification" (#550). ' +
+        `Fix (run against the brain database): ${PAGES_UNIQUE_REPAIR_SQL}`,
+    };
+  } catch (e) {
+    return {
+      name: 'pages_unique_index',
+      status: 'warn',
+      message: `Could not check pages unique index: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+/**
  * Raw-source persistence guarantee (#1978, warn-only v1).
  *
  * Invariant: every synthesized/derived page (dream_generated:true frontmatter
@@ -700,6 +754,11 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
   } catch {
     checks.push({ name: 'timeline_dedup_index', status: 'warn', message: 'Could not check idx_timeline_dedup shape' });
   }
+
+  // 2c. #550: put_page writability — cross-surface parity with buildChecks.
+  // Same drift class as 2b, but on pages(source_id, slug): missing arbiter
+  // index means every put_page fails while reads look healthy.
+  checks.push(await pagesUniqueIndexCheck(engine));
 
   // v0.42.x — Life Chronicle (#2390): orphaned event projections. Reads already
   // hide projections whose event page is soft-deleted (read-time correctness);
@@ -6548,6 +6607,12 @@ export async function buildChecks(
   // surfaces them with paste-ready cleanup SQL.
   progress.heartbeat('child_table_orphans');
   checks.push(await childTableOrphansCheck(engine));
+
+  // 10c'. put_page writability (#550). A missing pages(source_id, slug)
+  // unique index kills EVERY write with an ON CONFLICT inference error while
+  // reads stay green — the one failure mode a version counter can't see.
+  progress.heartbeat('pages_unique_index');
+  checks.push(await pagesUniqueIndexCheck(engine));
 
   // 10d. Raw-source persistence guarantee (#1978, warn-only v1).
   // Every synthesized/derived page must carry a raw trace or an explicit

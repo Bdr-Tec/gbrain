@@ -333,7 +333,10 @@ describe('migrate v23 — files_source_id_page_id_ledger', () => {
     expect(body).toContain('engine.transaction');
     expect(body).toContain('files_page_slug_fkey');
     expect(body).toContain('pages_slug_key');
-    expect(body).toContain('pages_source_slug_key');
+    // #550: the UNIQUE(source_id, slug) swap now routes through the shared
+    // column-shape-guarded DDL (src/core/pages-unique-repair.ts), so the
+    // handler body carries the interpolation marker instead of the literal.
+    expect(body).toContain('PAGES_SOURCE_SLUG_UNIQUE_DDL');
   });
 
   test('v23 backfills files.page_id scoped to default source (Codex fix)', () => {
