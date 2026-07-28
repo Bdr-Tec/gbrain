@@ -74,7 +74,7 @@ describe('recipe: azure-openai', () => {
     expect(auth.headerName).toBe('api-key');
   });
 
-  test('resolveAuth Entra mode (no key) returns Authorization Bearer from the token cache', async () => {
+  test('resolveAuth Entra mode (explicit opt-in, no key) returns Authorization Bearer from the token cache', async () => {
     const { __setEntraTokenForTests } = await import('../../src/core/ai/recipes/azure-openai.ts');
     __setEntraTokenForTests('fake-aad-token');
     try {
@@ -82,6 +82,7 @@ describe('recipe: azure-openai', () => {
       const auth = r.resolveAuth!({
         AZURE_OPENAI_ENDPOINT: FULL_ENV.AZURE_OPENAI_ENDPOINT,
         AZURE_OPENAI_DEPLOYMENT: FULL_ENV.AZURE_OPENAI_DEPLOYMENT,
+        AZURE_OPENAI_USE_ENTRA: '1',
       });
       expect(auth.headerName).toBe('Authorization');
       expect(auth.token).toBe('Bearer fake-aad-token');
@@ -110,7 +111,8 @@ describe('recipe: azure-openai', () => {
     const cfg = r.resolveOpenAICompatConfig!({
       AZURE_OPENAI_ENDPOINT: FULL_ENV.AZURE_OPENAI_ENDPOINT,
       AZURE_OPENAI_DEPLOYMENT: FULL_ENV.AZURE_OPENAI_DEPLOYMENT,
-    }); // no key → Entra mode
+      AZURE_OPENAI_USE_ENTRA: '1',
+    }); // explicit Entra opt-in (no key)
     const capturedAuth: (string | null)[] = [];
     const realFetch = globalThis.fetch;
     globalThis.fetch = ((_input: any, init?: any) => {

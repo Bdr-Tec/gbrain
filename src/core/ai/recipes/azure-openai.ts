@@ -45,9 +45,14 @@ export function __setEntraTokenForTests(token: string | null): void {
   _entraToken = token === null ? null : { token, fetchedAt: Date.now() };
 }
 
-/** Entra/keyless mode: explicit opt-in, or no api-key present (disableLocalAuth). */
+/** Entra/keyless mode: EXPLICIT opt-in only (AZURE_OPENAI_USE_ENTRA=1 /
+ * config azure_openai_use_entra). A missing api-key must NOT silently shell
+ * out to `az` — that surprises CI boxes and every non-Azure-CLI environment,
+ * and it broke the cross-recipe auth iron-rule test. Keyless subscriptions
+ * (disableLocalAuth) set the flag; missing key without the flag keeps the
+ * original loud AIConfigError. */
 function isEntraMode(env: Record<string, string | undefined>): boolean {
-  return env.AZURE_OPENAI_USE_ENTRA === '1' || !env.AZURE_OPENAI_API_KEY;
+  return env.AZURE_OPENAI_USE_ENTRA === '1';
 }
 
 /**
