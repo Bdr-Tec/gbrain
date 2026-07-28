@@ -837,15 +837,19 @@ export async function applyStdinParam(
   op: Operation,
   params: Record<string, unknown>,
 ): Promise<void> {
-  if (!op.cliHints?.stdin || params[op.cliHints.stdin] || process.stdin.isTTY) return;
-  const content = await readStdinBounded();
-  if (content === null) return; // no input arrived — let the required-param check fail fast
-  const MAX_STDIN = 5_000_000; // 5MB
-  if (Buffer.byteLength(content, 'utf-8') > MAX_STDIN) {
-    console.error(`Error: stdin content exceeds ${MAX_STDIN} bytes. Split into smaller inputs.`);
-    process.exit(1);
+  // Branch shape (stdin hint + missing param + `!process.stdin.isTTY` gate +
+  // 5MB cap) is pinned by the R4 regression test for PR #1325's Windows fix
+  // (test/cycle/regression-pr-wave-r1-r2-r4.test.ts) — keep the spelling.
+  if (op.cliHints?.stdin && !params[op.cliHints.stdin] && !process.stdin.isTTY) {
+    const content = await readStdinBounded();
+    if (content === null) return; // no input arrived — let the required-param check fail fast
+    const MAX_STDIN = 5_000_000; // 5MB
+    if (Buffer.byteLength(content, 'utf-8') > MAX_STDIN) {
+      console.error(`Error: stdin content exceeds ${MAX_STDIN} bytes. Split into smaller inputs.`);
+      process.exit(1);
+    }
+    params[op.cliHints.stdin] = content;
   }
-  params[op.cliHints.stdin] = content;
 }
 
 /** First-byte deadline for pipe/socket stdin (#3513). Env-overridable escape hatch. */
