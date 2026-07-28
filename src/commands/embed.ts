@@ -20,6 +20,9 @@ import {
 import { tryAcquireDbLock, type DbLockHandle } from '../core/db-lock.ts';
 import { embedBackfillLockId } from '../core/embed-backfill-lock.ts';
 import { AITransientError } from '../core/ai/errors.ts';
+import { wrapChunkTextsForStoredMode } from '../core/embedding-context.ts';
+import { titleTierCorpusGeneration } from '../core/contextual-retrieval-service.ts';
+import type { Page } from '../core/types.ts';
 
 /** #3037: cap failure samples so a corpus-wide outage doesn't bloat --json. */
 const FAILURE_SAMPLE_CAP = 10;
@@ -34,6 +37,23 @@ function recordFailure(result: EmbedResult, chunkCount: number, slug: string, e:
   if (result.failure_samples.length < FAILURE_SAMPLE_CAP) {
     result.failure_samples.push(`${slug}: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/**
+ * #3507 — after a plain re-embed fully re-embedded a `per_chunk_synopsis`
+ * page at the title-only tier (see wrapChunkTextsForStoredMode), restamp the
+ * page's CR state to 'title' so `contextual_retrieval_mode` keeps describing
+ * the vectors actually in the column. The reindex sweep restores the synopsis
+ * tier later. No-op for every other mode.
+ */
+export async function restampIfDemotedToTitleTier(
+  engine: BrainEngine,
+  page: Pick<Page, 'contextual_retrieval_mode'> | null | undefined,
+  slug: string,
+  sourceId: string,
+): Promise<void> {
+  if (page?.contextual_retrieval_mode !== 'per_chunk_synopsis') return;
+  await engine.updatePageContextualRetrievalState(slug, sourceId, 'title', titleTierCorpusGeneration());
 }
 
 export interface EmbedOpts {
@@ -642,17 +662,23 @@ async function embedPage(
     return;
   }
 
+  // #3507: embed with the page's STORED wrapping convention (title-tier
+  // contextual prefix when the page was embedded wrapped), not raw
+  // chunk_text — otherwise a re-embed silently strips the contextual
+  // prefixes the sync path applied. fenced_code chunks stay unwrapped.
   // #3037: per-chunk failure isolation — one bad chunk must not leave the
-  // page's sibling chunks NULL. Total embed failure is recorded here (where
-  // the chunk count is known) and swallowed: the page stays NULL exactly as
-  // before, but the run now reports it (result.failures → non-zero exit)
-  // instead of pretending success. Abort (shutdown) still propagates.
+  // page's sibling chunks NULL. The wrapped texts (computed once) feed the
+  // fan-out too, so an isolation retry never strips the prefixes. Total
+  // embed failure is recorded here (where the chunk count is known) and
+  // swallowed: the page stays NULL exactly as before, but the run now
+  // reports it (result.failures → non-zero exit) instead of pretending
+  // success. Abort (shutdown) still propagates.
   let embeddings: (Float32Array | null)[];
   let failed = 0;
   let firstError: unknown;
   try {
     ({ embeddings, failed, firstError } = await embedPageTexts(
-      toEmbed.map(c => c.chunk_text),
+      wrapChunkTextsForStoredMode(page, toEmbed),
       signal ? { abortSignal: signal } : {},
     ));
   } catch (e: unknown) {
@@ -686,6 +712,9 @@ async function embedPage(
   // chunks NULL, so don't stamp then either.
   if (failed === 0 && toEmbed.length === chunks.length) {
     await engine.setPageEmbeddingSignature(slug, { sourceId, signature: currentEmbeddingSignature() });
+    // #3507: a fully re-embedded per_chunk_synopsis page landed at the
+    // title tier — keep the stamped mode honest.
+    await restampIfDemotedToTitleTier(engine, page, slug, page.source_id);
   }
   result.embedded += toEmbed.length - failed;
   if (failed > 0) {
@@ -831,10 +860,12 @@ async function embedAll(
     }
 
     try {
+      // #3507: reproduce the page's stored wrapping convention (see embedPage).
       // #3037: per-chunk failure isolation — one bad chunk costs one chunk,
-      // not the whole page's siblings.
+      // not the whole page's siblings. The wrapped texts feed the fan-out
+      // too, so an isolation retry never strips the contextual prefixes.
       const { embeddings, failed, firstError } = await embedPageTexts(
-        toEmbed.map(c => c.chunk_text),
+        wrapChunkTextsForStoredMode(page, toEmbed),
         signal ? { abortSignal: signal } : {},
       );
       // Build a map of new embeddings by chunk_index
@@ -860,6 +891,14 @@ async function embedAll(
       if (failed === 0) {
         await observed(pacer, () =>
           engine.setPageEmbeddingSignature(page.slug, { sourceId: pageSourceId, signature }),
+        );
+        // #3507: --all fully re-embeds; a per_chunk_synopsis page landed at
+        // the title tier — keep the stamped mode honest. #3037: gated on
+        // failed === 0 — a partially-failed page was NOT fully re-embedded,
+        // so restamping would make contextual_retrieval_mode lie again
+        // (the exact #3461 bug).
+        await observed(pacer, () =>
+          restampIfDemotedToTitleTier(engine, page, page.slug, pageSourceId),
         );
       }
       result.embedded += toEmbed.length - failed;
@@ -1180,10 +1219,17 @@ async function embedAllStale(
         const keySourceId = stale[0]?.source_id ?? 'default';
         const slug = stale[0].slug;
         try {
+          // #3507: fetch the page row for its title + stored CR mode so the
+          // re-embed reproduces the page's wrapping convention instead of
+          // silently stripping contextual prefixes — `embed --stale` is the
+          // NORMAL post-model-migration path, so raw-text embedding here
+          // quietly converted whole corpora to the unwrapped convention.
+          const pageRow = await observed(pacer, () => engine.getPage(slug, { sourceId: keySourceId }));
           // #3037: per-chunk failure isolation — one bad chunk costs one
-          // chunk, not the whole page's siblings.
+          // chunk, not the whole page's siblings. The wrapped texts feed the
+          // fan-out too, so an isolation retry never strips the prefixes.
           const { embeddings, failed, firstError } = await embedPageTexts(
-            stale.map(c => c.chunk_text),
+            wrapChunkTextsForStoredMode(pageRow, stale),
             { abortSignal: effectiveSignal },
           );
           // Re-fetch existing chunks and merge to avoid deleting non-stale chunks.
@@ -1213,6 +1259,17 @@ async function embedAllStale(
           if (signature && failed === 0 && stale.length === existing.length) {
             await observed(pacer, () =>
               engine.setPageEmbeddingSignature(slug, { sourceId: keySourceId, signature }),
+            );
+          }
+          // #3507: a FULLY re-embedded per_chunk_synopsis page landed at the
+          // title tier — keep the stamped mode honest. Partially-stale pages
+          // stay stamped as-is (mixed provenance; reindex sweeps fix them).
+          // #3037: `failed === 0` is part of "fully re-embedded" — if the
+          // per-chunk isolation left some chunks NULL, restamping would make
+          // contextual_retrieval_mode lie again (the exact #3461 bug).
+          if (failed === 0 && stale.length === existing.length) {
+            await observed(pacer, () =>
+              restampIfDemotedToTitleTier(engine, pageRow, slug, keySourceId),
             );
           }
           result.embedded += stale.length - failed;
