@@ -162,10 +162,11 @@ export function validatePageSlug(slug: string): void {
   if (slug.length > 255) {
     throw new OperationError('invalid_params', 'page_slug exceeds 255 characters');
   }
-  // v0.32.7: CJK ranges (Han / Hiragana / Katakana / Hangul Syllables) allowed
-  // in segments. ASCII shape rules (lead char, hyphen continuation) preserved.
-  if (!new RegExp(`^${PAGE_SLUG_SEG}(\\/${PAGE_SLUG_SEG})*$`, 'i').test(slug)) {
-    throw new OperationError('invalid_params', `Invalid page_slug: ${slug} (allowed: alphanumeric, CJK, hyphens, forward-slash separated segments)`);
+  // #3417: letters/numbers from any script allowed in segments (u flag required
+  // for the \p{...} classes in PAGE_SLUG_SEG). Shape rules (lead char, hyphen
+  // continuation) preserved.
+  if (!new RegExp(`^${PAGE_SLUG_SEG}(\\/${PAGE_SLUG_SEG})*$`, 'iu').test(slug)) {
+    throw new OperationError('invalid_params', `Invalid page_slug: ${slug} (allowed: letters/numbers in any script, hyphens, forward-slash separated segments)`);
   }
 }
 
