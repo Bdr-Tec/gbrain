@@ -2,21 +2,24 @@
  * #2928 — `gbrain sources unfederate <id>` (config.federated = false) must
  * keep the isolated source out of UNQUALIFIED reads.
  *
- * Root cause is NOT the functions the issue points at (`sourceScopeOpts` /
- * the dead `federatedOnly` loader flag): the read-widening path
- * (`localFederatedSourceIds` → `federatedSearchScope`) already excludes
- * non-federated sources. The intent is lost one step earlier, in source
- * RESOLUTION: `pickSoleNonDefaultSource` (tier 5.5, #1434) auto-picks the
- * single non-default source as the anchor of an unqualified call without
- * consulting config.federated — so an explicitly isolated source becomes the
- * scalar read scope and its pages surface in unqualified query/search/think.
+ * The leak: tier 5.5 (#1434) anchors an unqualified call on the sole
+ * non-default source — correct for writes and for the anchor itself — but
+ * `localFederatedSourceIds` then widened that anchor into the federated set
+ * (`[isolated-src, default]`), mixing the isolated source's pages with
+ * federated sources' pages in unqualified query/search/think, both
+ * directions. The fix is READ-ONLY: an explicitly isolated anchor
+ * (config.federated === false) is never widened; scalar scope stands.
+ *
+ * Deliberately unchanged (pinned below):
+ *   - tier 5.5 write routing — `--no-federated` governs read mixing, not
+ *     where unqualified sync/import land (#1434,
+ *     test/sync-sole-non-default-routing.test.ts);
+ *   - the unscoped-local invariant that sank #3470/#3497: an empty scope
+ *     must stay UNSCOPED ({}), never collapse to 'default'.
  *
  * All imports here exist on master, so this file runs against an unmodified
- * master checkout and fails BEHAVIORALLY there (resolution returns the
- * isolated source).
- *
- * Also pins the unscoped-local invariant that sank #3470/#3497: an empty
- * scope must stay UNSCOPED ({}), never collapse to 'default'.
+ * master checkout and fails BEHAVIORALLY there (the widened scope contains
+ * both sources).
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
@@ -80,29 +83,36 @@ function ctxOf(overrides: Partial<OperationContext> = {}): OperationContext {
   } as OperationContext;
 }
 
-describe('#2928 — unfederated source and the sole_non_default tier', () => {
-  test('explicitly isolated sole source no longer anchors unqualified resolution', async () => {
+describe('#2928 — isolated anchor is never widened into a cross-source read', () => {
+  test('explicitly isolated resolved source gets NO federated widening set', async () => {
     await addSource('isolated-src', { federated: false });
-    const resolved = await resolveClean(null, outsideCwd);
-    // Master auto-picks the isolated source (tier sole_non_default), which
-    // makes an unqualified query/search return its pages — the exact thing
-    // `sources unfederate` promises to prevent.
-    expect(resolved.source_id).toBe('default');
-    expect(resolved.tier).toBe('seed_default');
+    // Master returns ['isolated-src', 'default'] here (the seeded default is
+    // federated), which mixes the isolated source's pages with default's in
+    // every unqualified query/search/think — the #2928 report.
+    const localFed = await localFederatedSourceIds(engine, 'isolated-src', 'sole_non_default');
+    expect(localFed).toBeUndefined();
   });
 
-  test('full unqualified read chain excludes the isolated source from the scope', async () => {
+  test('full unqualified read chain stays scalar: no default pages mixed in', async () => {
     await addSource('isolated-src', { federated: false });
     const resolved = await resolveClean(null, outsideCwd);
+    // Write/anchor routing is UNCHANGED: the sole vault still resolves (#1434).
+    expect(resolved.source_id).toBe('isolated-src');
+    expect(resolved.tier).toBe('sole_non_default');
     const localFed = await localFederatedSourceIds(engine, resolved.source_id, resolved.tier);
     const ctx = ctxOf({
       sourceId: resolved.source_id,
       ...(localFed ? { localFederatedSourceIds: localFed } : {}),
     });
-    const scope = federatedSearchScope(ctx);
-    expect(scope.sourceId).not.toBe('isolated-src');
-    expect(scope.sourceIds ?? []).not.toContain('isolated-src');
-    expect(scope).toEqual({ sourceId: 'default' });
+    // Scalar scope: the isolated source is not mixed with 'default' (and
+    // vice versa). Master produces { sourceIds: ['isolated-src','default'] }.
+    expect(federatedSearchScope(ctx)).toEqual({ sourceId: 'isolated-src' });
+  });
+
+  test('isolated brain_default anchor is not widened either (same seam)', async () => {
+    await addSource('isolated-src', { federated: false });
+    const localFed = await localFederatedSourceIds(engine, 'isolated-src', 'brain_default');
+    expect(localFed).toBeUndefined();
   });
 
   test('UNSET federated keeps the #1434 sole-source convenience (no over-narrowing)', async () => {
@@ -110,6 +120,10 @@ describe('#2928 — unfederated source and the sole_non_default tier', () => {
     const resolved = await resolveClean(null, outsideCwd);
     expect(resolved.source_id).toBe('vault');
     expect(resolved.tier).toBe('sole_non_default');
+    // Only an EXPLICIT federated:false suppresses widening; unset keeps the
+    // pre-#2928 behavior (the seeded 'default' is federated).
+    const localFed = await localFederatedSourceIds(engine, 'vault', 'sole_non_default');
+    expect(localFed).toEqual(['vault', 'default']);
   });
 
   test('federated: true sole source still auto-resolves', async () => {

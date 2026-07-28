@@ -200,32 +200,27 @@ export function resolveSourceIdEngineFree(
  * doesn't auto-resolve. Shared by `resolveSourceId` and `resolveSourceWithTier`
  * so the heuristic can't drift between the two entry points.
  *
- * #2928: also refuses to auto-pick a source EXPLICITLY marked isolated
- * (`gbrain sources unfederate <id>` / `--no-federated` → config.federated =
- * false). Auto-routing there made an unqualified `query`/`search`/`think`
- * surface the isolated source's pages — the exact thing unfederate promises
- * to prevent ("only searched when explicitly named"). UNSET federated stays
- * eligible: a fresh `sources add` writes no federated key, and the #1434
- * sole-source convenience must keep working for it. Narrowing-only by
- * design — an isolated sole source falls through to 'default'; the tier
- * never widens to some OTHER source it wouldn't have picked before.
+ * NOTE (#2928): this tier deliberately does NOT consult config.federated —
+ * `--no-federated` governs READ mixing, not write routing, and unqualified
+ * `sync`/`import` on a single-vault brain must keep landing in the vault
+ * (#1434, pinned by test/sync-sole-non-default-routing.test.ts). The
+ * unfederate read fix lives in `localFederatedSourceIds` below.
  */
 async function pickSoleNonDefaultSource(engine: BrainEngine): Promise<string | null> {
   // archived column was added in v34 (v0.26.5). Older brains may not have
   // it — fall back to the un-archived query in that case via try/catch.
-  let rows: Array<{ id: string; config: unknown }>;
+  let rows: Array<{ id: string }>;
   try {
-    rows = await engine.executeRaw<{ id: string; config: unknown }>(
-      `SELECT id, config FROM sources WHERE local_path IS NOT NULL AND id != 'default' AND archived = false`,
+    rows = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default' AND archived = false`,
     );
   } catch {
-    rows = await engine.executeRaw<{ id: string; config: unknown }>(
-      `SELECT id, config FROM sources WHERE local_path IS NOT NULL AND id != 'default'`,
+    rows = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default'`,
     );
   }
-  if (rows.length !== 1) return null;
-  if (parseSourceConfig(rows[0].config).federated === false) return null;
-  return rows[0].id;
+  if (rows.length === 1) return rows[0].id;
+  return null;
 }
 
 /**
@@ -404,7 +399,10 @@ export async function resolveSourceWithTier(
  *
  *   - explicit tiers (`flag` / `env` / `dotfile`): the user named a source;
  *     scalar scope stands (that IS the qualified case);
- *   - no other federated source exists: keep the scalar fast path unchanged.
+ *   - no other federated source exists: keep the scalar fast path unchanged;
+ *   - #2928: the resolved source is explicitly isolated (config.federated =
+ *     false): it must not be mixed into a cross-source read in EITHER
+ *     direction, so the scalar scope stands.
  *
  * Archived sources are excluded (same rationale as pickSoleNonDefaultSource);
  * the archived column is v34+, so fall back to the un-archived query on older
@@ -426,6 +424,16 @@ export async function localFederatedSourceIds(
     rows = await engine.executeRaw<{ id: string; config: unknown }>(
       `SELECT id, config FROM sources ORDER BY id`,
     );
+  }
+  // #2928: an EXPLICITLY isolated anchor (`sources unfederate` /
+  // `--no-federated` → config.federated = false) opted out of cross-source
+  // read mixing — never widen it into the federated set (which would drag
+  // other sources' pages into its unqualified reads and vice versa). Scalar
+  // scope stands. UNSET federated keeps the pre-#2928 widening behavior;
+  // write routing (tier 5.5 above) is deliberately untouched.
+  const resolvedRow = rows.find((row) => row.id === sourceId);
+  if (resolvedRow && parseSourceConfig(resolvedRow.config).federated === false) {
+    return undefined;
   }
   const ids = [
     sourceId,
