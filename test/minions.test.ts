@@ -709,6 +709,26 @@ describe('MinionQueue: Prune', () => {
     const count = await queue.prune({ olderThan: new Date(Date.now() + 86400000) }); // future date = prune everything old enough
     expect(count).toBe(1); // only the cancelled one
   });
+
+  // #2712: --dry-run used to be silently ignored — the destructive default
+  // ran and deleted rows while the operator believed they were previewing.
+  test('dryRun counts prunable jobs without deleting', async () => {
+    const job1 = await queue.add('sync', {});
+    await queue.cancelJob(job1.id); // terminal → prunable
+
+    const wouldPrune = await queue.prune({ olderThan: new Date(Date.now() + 86400000), dryRun: true });
+    expect(wouldPrune).toBe(1);
+
+    // The row must still exist after a dry run.
+    const stillThere = await queue.getJob(job1.id);
+    expect(stillThere).not.toBeNull();
+    expect(stillThere!.status).toBe('cancelled');
+
+    // A real prune afterwards actually deletes it.
+    const pruned = await queue.prune({ olderThan: new Date(Date.now() + 86400000) });
+    expect(pruned).toBe(1);
+    expect(await queue.getJob(job1.id)).toBeNull();
+  });
 });
 
 // --- Stats (1 test) ---
