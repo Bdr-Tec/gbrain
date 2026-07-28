@@ -5332,12 +5332,16 @@ export class PGLiteEngine implements BrainEngine {
     // pages_with_timeline) and v0.10.3 graph layer (link_coverage, timeline_coverage,
     // most_connected). Both coexist: master's brain_score is the composite
     // dashboard, v0.10.3 metrics give entity-page-level granularity.
+    // #1305: every page-scoped count here excludes soft-deleted rows — same
+    // posture as getStats — so brain_score moves when the user deletes pages.
+    // Chunk/link counts stay raw (storage until the purge phase), matching
+    // getStats, and destructive-removal counts elsewhere deliberately stay raw.
     const { rows: [h] } = await this.db.query(`
       WITH entity_pages AS (
-        SELECT id, slug FROM pages WHERE type IN ('entity', 'person', 'company')
+        SELECT id, slug FROM pages WHERE type IN ('entity', 'person', 'company') AND deleted_at IS NULL
       )
       SELECT
-        (SELECT count(*) FROM pages) as page_count,
+        (SELECT count(*) FROM pages WHERE deleted_at IS NULL) as page_count,
         (SELECT count(*) FROM content_chunks WHERE embedded_at IS NOT NULL)::float /
           GREATEST((SELECT count(*) FROM content_chunks), 1)::float as embed_coverage,
         0 as stale_pages,
@@ -5362,7 +5366,7 @@ export class PGLiteEngine implements BrainEngine {
       SELECT p.slug,
              (SELECT count(*) FROM links l WHERE l.from_page_id = p.id OR l.to_page_id = p.id)::int as link_count
       FROM pages p
-      WHERE p.type IN ('entity', 'person', 'company')
+      WHERE p.type IN ('entity', 'person', 'company') AND p.deleted_at IS NULL
       ORDER BY link_count DESC
       LIMIT 5
     `);
@@ -5381,6 +5385,7 @@ export class PGLiteEngine implements BrainEngine {
               AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)) as islanded,
              EXISTS (SELECT 1 FROM timeline_entries te WHERE te.page_id = p.id) as has_timeline
       FROM pages p
+      WHERE p.deleted_at IS NULL
     `);
 
     const r = h as Record<string, unknown>;
