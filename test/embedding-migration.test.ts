@@ -30,6 +30,7 @@ import {
   planEmbeddingMigration,
   applyEmbeddingMigration,
   completeEmbeddingMigration,
+  reconcilePageSignatures,
   migrationSignature,
   MIGRATION_STATE_KEY,
   MIGRATION_COMPLETED_KEY,
@@ -75,6 +76,17 @@ async function seedEmbedded(slug: string, text: string, signature: string | null
   if (signature !== null) {
     await engine.setPageEmbeddingSignature(slug, { signature });
   }
+}
+
+/** Actual vector(N)/halfvec(N) width of a table's `embedding` column. */
+async function embeddingColWidth(table: string): Promise<number> {
+  const rows = await engine.executeRaw<{ dim: number }>(
+    `SELECT atttypmod AS dim FROM pg_attribute
+      WHERE attrelid = $1::regclass AND attname = 'embedding'
+        AND attnum > 0 AND NOT attisdropped`,
+    [table],
+  );
+  return Number(rows[0]?.dim);
 }
 
 /** Seed a page with one UNembedded chunk (classic NULL-embedding stale). */
@@ -275,6 +287,94 @@ describe('applyEmbeddingMigration', () => {
     if (res2.status !== 'applied') throw new Error('unreachable');
     expect(res2.schema_transitioned).toBe(false);
     expect(res2.invalidated).toBe(0);
+  });
+
+  test('dim change transitions ALL THREE text-embedding-space columns (blocker: query_cache + facts were left at the old width)', async () => {
+    const target = colDim === 512 ? 256 : 512;
+
+    // Pre-condition: all three start at the brain-birth width.
+    expect(await embeddingColWidth('content_chunks')).toBe(colDim);
+    expect(await embeddingColWidth('query_cache')).toBe(colDim);
+    expect(await embeddingColWidth('facts')).toBe(colDim);
+
+    const plan = await planEmbeddingMigration(engine, {
+      to: 'openai:text-embedding-3-small', dim: target,
+    });
+    const res = await applyEmbeddingMigration(engine, plan);
+    expect(res.status).toBe('applied');
+
+    // All three must move together. Before the fix, query_cache and facts
+    // stayed narrow: the query cache silently accepted ZERO rows forever
+    // (store() + lookup() swallow the width error by design) and every
+    // per-fact embed write failed.
+    expect(await embeddingColWidth('content_chunks')).toBe(target);
+    expect(await embeddingColWidth('query_cache')).toBe(target);
+    expect(await embeddingColWidth('facts')).toBe(target);
+  });
+
+  test('post-transition the query cache can actually STORE a row at the new width', async () => {
+    const target = colDim === 512 ? 256 : 512;
+    const plan = await planEmbeddingMigration(engine, {
+      to: 'openai:text-embedding-3-small', dim: target,
+    });
+    expect((await applyEmbeddingMigration(engine, plan)).status).toBe('applied');
+
+    // The real regression symptom: a width-mismatched column makes this
+    // INSERT throw, which query-cache.ts swallows → permanent 0% hit rate.
+    const vec = `[${new Array(target).fill(0.01).join(',')}]`;
+    await engine.executeRaw(
+      `INSERT INTO query_cache (id, query_text, source_id, embedding)
+       VALUES ('post-migrate', 'q', 'default', $1::vector)`,
+      [vec],
+    );
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM query_cache WHERE id = 'post-migrate'`,
+    );
+    expect(Number(rows[0]?.n)).toBe(1);
+  });
+
+  test('post-transition a fact embedding at the new width inserts (blocker: facts writes broke)', async () => {
+    const target = colDim === 512 ? 256 : 512;
+    const plan = await planEmbeddingMigration(engine, {
+      to: 'openai:text-embedding-3-small', dim: target,
+    });
+    expect((await applyEmbeddingMigration(engine, plan)).status).toBe('applied');
+
+    const vec = `[${new Array(target).fill(0.02).join(',')}]`;
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability, source, confidence, embedding)
+       VALUES ('default', 'e', 'f', 'fact', 'private', 'medium', 'test', 1.0, $1::vector)`,
+      [vec],
+    );
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM facts WHERE entity_slug = 'e'`,
+    );
+    expect(Number(rows[0]?.n)).toBe(1);
+  });
+
+  test('reconcilePageSignatures stamps fully-embedded pages and leaves partially-embedded ones alone', async () => {
+    // 'done' — every chunk embedded, but signature still the OLD one (the
+    // batch-boundary shape: embedded correctly, stamp skipped).
+    await seedEmbedded('done', 'abcde', 'old:model:1');
+    // 'partial' — one embedded chunk + one NULL chunk (a real embed failure).
+    await seedEmbedded('partial', 'fghij', 'old:model:1');
+    await engine.upsertChunks('partial', [
+      { chunk_index: 0, chunk_text: 'fghij', chunk_source: 'compiled_truth', token_count: 4 },
+      { chunk_index: 1, chunk_text: 'not embedded', chunk_source: 'compiled_truth', token_count: 4 },
+    ]);
+
+    const plan = await planEmbeddingMigration(engine, {
+      to: 'openai:text-embedding-3-small', dim: colDim,
+    });
+    const n = await reconcilePageSignatures(engine, plan);
+    expect(n).toBe(1); // 'done' only
+
+    const sig = `openai:text-embedding-3-small:${colDim}`;
+    const rows = await engine.executeRaw<{ slug: string; embedding_signature: string | null }>(
+      `SELECT slug, embedding_signature FROM pages WHERE slug IN ('done','partial') ORDER BY slug`,
+    );
+    expect(rows.find(r => r.slug === 'done')?.embedding_signature).toBe(sig);
+    expect(rows.find(r => r.slug === 'partial')?.embedding_signature).toBe('old:model:1');
   });
 
   test('completeEmbeddingMigration clears the state marker and stamps completion', async () => {

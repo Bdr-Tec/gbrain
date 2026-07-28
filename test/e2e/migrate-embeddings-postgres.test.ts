@@ -50,6 +50,16 @@ async function columnDims(): Promise<number> {
   return Number(rows[0]?.dim);
 }
 
+async function embeddingColWidth(table: string): Promise<number> {
+  const rows = await engine.executeRaw<{ dim: number }>(
+    `SELECT atttypmod AS dim FROM pg_attribute
+      WHERE attrelid = $1::regclass AND attname = 'embedding'
+        AND attnum > 0 AND NOT attisdropped`,
+    [table],
+  );
+  return Number(rows[0]?.dim);
+}
+
 async function seedEmbedded(slug: string, text: string, signature: string | null): Promise<void> {
   await engine.putPage(slug, { type: 'note', title: slug, compiled_truth: `# ${slug}` });
   const chunks: ChunkInput[] = [
@@ -163,6 +173,31 @@ d('embedding migration (live Postgres + pgvector)', () => {
     expect(applied.schema_transitioned).toBe(true);
     expect(persisted).toEqual([[toModel, targetDims]]);
     expect(await columnDims()).toBe(targetDims);
+
+    // All THREE dim-pinned text-embedding-space columns move together on real
+    // pgvector (query_cache + facts are created at brain-birth width and no
+    // migration ever ALTERs them — before the fix they stayed narrow, which
+    // silently killed the query cache and every per-fact embed write).
+    expect(await embeddingColWidth('query_cache')).toBe(targetDims);
+    expect(await embeddingColWidth('facts')).toBe(targetDims);
+    // And the rebuilt columns actually ACCEPT a vector at the new width.
+    const nv = `[${new Array(targetDims).fill(0.01).join(',')}]`;
+    await engine.executeRaw(
+      `INSERT INTO query_cache (id, query_text, source_id, embedding)
+       VALUES ('pg-post-migrate', 'q', 'default', $1::vector)`,
+      [nv],
+    );
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability, source, confidence, embedding)
+       VALUES ('default', 'pg-e', 'pg-f', 'fact', 'private', 'medium', 'test', 1.0, $1::vector)`,
+      [nv],
+    );
+    const accepted = await engine.executeRaw<{ qc: number; f: number }>(
+      `SELECT (SELECT count(*)::int FROM query_cache WHERE id = 'pg-post-migrate') AS qc,
+              (SELECT count(*)::int FROM facts WHERE entity_slug = 'pg-e') AS f`,
+    );
+    expect(Number(accepted[0]?.qc)).toBe(1);
+    expect(Number(accepted[0]?.f)).toBe(1);
     expect(await engine.getConfig('embedding_model')).toBe(toModel);
     expect(await engine.getConfig(MIGRATION_STATE_KEY)).toBeTruthy();
 

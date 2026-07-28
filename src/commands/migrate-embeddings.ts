@@ -28,6 +28,7 @@ import {
   planEmbeddingMigration,
   applyEmbeddingMigration,
   completeEmbeddingMigration,
+  reconcilePageSignatures,
   MIGRATION_STATE_KEY,
   type EmbeddingMigrationPlan,
 } from '../core/embedding-migration.ts';
@@ -42,6 +43,7 @@ export interface MigrateEmbeddingsFlags {
   json: boolean;
   noEmbed: boolean;
   ignoreEnvOverride: boolean;
+  batchSize?: number;
   pace?: ReturnType<typeof parsePaceArgs>;
 }
 
@@ -49,6 +51,9 @@ export function parseMigrateEmbeddingsFlags(args: string[]): MigrateEmbeddingsFl
   const toIdx = args.indexOf('--to');
   const dimIdx = args.indexOf('--dim');
   const dimRaw = dimIdx >= 0 ? parseInt(args[dimIdx + 1] ?? '', 10) : NaN;
+  const bsIdx = args.indexOf('--batch-size');
+  const bsRaw = bsIdx >= 0 ? parseInt(args[bsIdx + 1] ?? '', 10) : NaN;
+  const batchSize = Number.isFinite(bsRaw) && bsRaw > 0 ? Math.min(10_000, bsRaw) : undefined;
   return {
     to: toIdx >= 0 ? args[toIdx + 1] : undefined,
     dim: Number.isFinite(dimRaw) && dimRaw > 0 ? dimRaw : undefined,
@@ -57,6 +62,7 @@ export function parseMigrateEmbeddingsFlags(args: string[]): MigrateEmbeddingsFl
     json: args.includes('--json'),
     noEmbed: args.includes('--no-embed'),
     ignoreEnvOverride: args.includes('--ignore-env-override'),
+    ...(batchSize !== undefined && { batchSize }),
     pace: parsePaceArgs(args),
   };
 }
@@ -79,6 +85,7 @@ Flags:
   --no-embed              Apply schema + config + invalidation, but skip the
                           re-embed pass (run \`gbrain embed --stale --include-null-signature\`
                           or \`... --background\` yourself).
+  --batch-size <N>        Stale-chunk batch size for the re-embed (default 2000).
   --pace[=mode]           DB-contention pacing for the re-embed (off|gentle|balanced|aggressive).
   --ignore-env-override   Proceed even when GBRAIN_EMBEDDING_* env vars would
                           override the target at runtime (you know why).
@@ -95,8 +102,12 @@ function renderPlan(plan: EmbeddingMigrationPlan): string {
   lines.push(`  From: ${plan.from_model} (${plan.from_dims}d${plan.column_dims !== null && plan.column_dims !== plan.from_dims ? `; column is actually ${plan.column_dims}d` : ''})`);
   lines.push(`  To:   ${plan.to_model} (${plan.to_dims}d)`);
   if (plan.dim_change) {
-    lines.push(`  Schema: embedding column rebuilt at ${plan.to_dims}d — vector search returns`);
-    lines.push('          degraded (lexical-only) results until the re-embed completes.');
+    lines.push(`  DESTRUCTIVE: the embedding column is rebuilt at ${plan.to_dims}d, which DELETES`);
+    lines.push('          every stored embedding vector in this brain. They are not recoverable —');
+    lines.push('          going back to the old provider means paying for a second full re-embed.');
+    lines.push('          Until the re-embed finishes, semantic search is degraded to lexical-only.');
+    lines.push(`          The query cache and fact embeddings are rebuilt at ${plan.to_dims}d too`);
+    lines.push('          (cache refills on next query; facts re-embed on their next write).');
   }
   lines.push(`  Chunks to re-embed: ${plan.chunks_to_embed}${plan.null_signature_chunks > 0 ? ` (includes ${plan.null_signature_chunks} on pages with no recorded embedding signature)` : ''}`);
   lines.push(
@@ -129,6 +140,39 @@ async function defaultConfirm(question: string): Promise<boolean> {
 }
 
 /**
+ * One tiny embed against the TARGET provider, BEFORE any mutation: validates
+ * the API key, the model id, and dimension support in a single call, so a bad
+ * target fails with the brain untouched instead of after the column is
+ * dropped. Shared by the CLI and the `migrate_embeddings` op (the op used to
+ * skip it, which let `yes:true` drop the column against a bad key).
+ */
+export async function probeTargetProvider(
+  toModel: string,
+  toDims: number,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    const { embed } = await import('../core/ai/gateway.ts');
+    const vecs = await embed(['gbrain embedding migration probe'], {
+      embeddingModel: toModel,
+      dimensions: toDims,
+    });
+    const got = vecs[0]?.length ?? 0;
+    if (got !== toDims) {
+      return {
+        ok: false,
+        message: `Target provider returned ${got}-dim vectors, expected ${toDims}. Pass a valid --dim for ${toModel}.`,
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      message: `Preflight embed against ${toModel} failed — nothing was changed:\n  ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+/**
  * Persist the target model+dims to the FILE plane and reconfigure the
  * in-process gateway. The gateway reads file/env config, not the DB plane —
  * without this the re-embed would silently run against the OLD provider.
@@ -137,25 +181,31 @@ async function defaultConfirm(question: string): Promise<boolean> {
 export async function persistEmbeddingFileConfig(
   toModel: string,
   toDims: number,
-  engineKind: string,
 ): Promise<void> {
   const { loadConfig, saveConfig } = await import('../core/config.ts');
   const { configureGateway } = await import('../core/ai/gateway.ts');
   const { buildGatewayConfig } = await import('../core/ai/build-gateway-config.ts');
   const cfg = loadConfig();
-  if (cfg) {
-    cfg.embedding_model = toModel;
-    cfg.embedding_dimensions = toDims;
-    saveConfig(cfg);
-    configureGateway(buildGatewayConfig(cfg));
-  } else {
-    serr('WARNING: no ~/.gbrain/config.json found; set GBRAIN_EMBEDDING_MODEL/GBRAIN_EMBEDDING_DIMENSIONS in your environment to make the switch stick across processes.');
-    configureGateway(buildGatewayConfig({
-      engine: engineKind === 'pglite' ? 'pglite' : 'postgres',
-      embedding_model: toModel,
-      embedding_dimensions: toDims,
-    } as Parameters<typeof buildGatewayConfig>[0]));
+  if (!cfg) {
+    // REFUSE rather than warn-and-proceed. Without a file plane to write, the
+    // switch would not survive this process: the next `gbrain` invocation
+    // reads file/env config, sees the OLD provider, and re-embeds the brain
+    // back into the old space (paying twice) — or fails outright against a
+    // column that is now the new width. Thrown from inside
+    // applyEmbeddingMigration's try, so it surfaces as status: 'failed'
+    // BEFORE the config/cache steps and the caller exits non-zero.
+    throw new Error(
+      'No ~/.gbrain/config.json found — refusing to migrate.\n' +
+      '  The embed pipeline reads file/env config, so without a file plane this switch\n' +
+      '  would not survive the process and the next run would re-embed into the old space.\n' +
+      '  Fix: run `gbrain init` (or set GBRAIN_EMBEDDING_MODEL + GBRAIN_EMBEDDING_DIMENSIONS\n' +
+      '  in the environment of every gbrain process) and re-run.',
+    );
   }
+  cfg.embedding_model = toModel;
+  cfg.embedding_dimensions = toDims;
+  saveConfig(cfg);
+  configureGateway(buildGatewayConfig(cfg));
 }
 
 export interface RunMigrateEmbeddingsOpts {
@@ -257,27 +307,16 @@ export async function runMigrateEmbeddings(
 
   // ── Live probe BEFORE any mutation: one tiny embed against the TARGET
   // provider validates API key, model id, and dimension support in one call.
-  try {
-    const { embed } = await import('../core/ai/gateway.ts');
-    const probe = await embed(['gbrain embedding migration probe'], {
-      embeddingModel: plan.to_model,
-      dimensions: plan.to_dims,
-    });
-    const got = probe[0]?.length ?? 0;
-    if (got !== plan.to_dims) {
-      serr(`Target provider returned ${got}-dim vectors, expected ${plan.to_dims}. Pass a valid --dim for ${plan.to_model}.`);
-      exit(1);
-    }
-  } catch (e) {
-    serr(`Preflight embed against ${plan.to_model} failed — nothing was changed:`);
-    serr(`  ${e instanceof Error ? e.message : String(e)}`);
+  const probe = await probeTargetProvider(plan.to_model, plan.to_dims);
+  if (!probe.ok) {
+    serr(probe.message);
     exit(1);
   }
 
   // ── Apply: schema + config + invalidation + cache purge.
   const applied = await applyEmbeddingMigration(engine, plan, {
     ignoreEnvOverride: flags.ignoreEnvOverride,
-    persistConfig: (toModel, toDims) => persistEmbeddingFileConfig(toModel, toDims, engine.kind),
+    persistConfig: (toModel, toDims) => persistEmbeddingFileConfig(toModel, toDims),
   });
 
   if (applied.status === 'refused') {
@@ -313,6 +352,7 @@ export async function runMigrateEmbeddings(
     singleFlight: true,
     includeNullSignature: true,
     quiet: flags.json,
+    ...(flags.batchSize !== undefined && { batchSize: flags.batchSize }),
     ...(flags.pace && { pace: flags.pace }),
     onProgress: (done, total) => {
       if (!progressStarted) {
@@ -323,6 +363,15 @@ export async function runMigrateEmbeddings(
     },
   });
   if (progressStarted) progress.finish();
+
+  // Reconcile signatures BEFORE the completion probe: pages straddling a
+  // stale-batch boundary are embedded correctly but left unstamped by the
+  // embed loop's all-or-nothing stamp rule. Without this the probe would call
+  // a fully-migrated brain "incomplete" and the re-run would pay again.
+  const reconciled = await reconcilePageSignatures(engine, plan);
+  if (reconciled > 0) {
+    serr(`  [migrate] reconciled the embedding signature on ${reconciled} fully-embedded page(s) (batch-boundary pages).`);
+  }
 
   const remaining = await engine.countStaleChunks({
     signature: `${plan.to_model}:${plan.to_dims}`,

@@ -233,20 +233,29 @@ export async function applyEmbeddingMigration(
       schemaTransitioned = true;
     }
 
-    // 3. DB-plane config (doctor's embedding_width_consistency reads these).
-    await engine.setConfig('embedding_model', plan.to_model);
-    await engine.setConfig('embedding_dimensions', String(plan.to_dims));
-
-    // 4. File plane + gateway (the embed pipeline reads file/env, not DB).
-    await opts.persistConfig?.(plan.to_model, plan.to_dims);
-
-    // 5. #3391: mark EVERYTHING not in the target space as stale, including
+    // 3. #3391: mark EVERYTHING not in the target space as stale, including
     //    NULL-signature (pre-v108) pages. After a schema transition this is
     //    a cheap no-op (the column rebuild already nulled every embedding).
+    //
+    //    ORDERING (adversarial review): invalidation MUST precede the config
+    //    writes below. On a SAME-dim provider swap there is no schema
+    //    transition to null the vectors, so a crash between "config says new
+    //    provider" and "old vectors invalidated" would leave NEW-space query
+    //    embeddings scored against OLD-space document vectors — silently
+    //    WRONG results. Invalidating first makes the crash window safe:
+    //    config still says the old provider, and the rows are merely stale
+    //    (empty/degraded results, never wrong ones).
     const invalidated = await engine.invalidateStaleSignatureEmbeddings({
       signature: migrationSignature(plan.to_model, plan.to_dims),
       includeNullSignature: true,
     });
+
+    // 4. DB-plane config (doctor's embedding_width_consistency reads these).
+    await engine.setConfig('embedding_model', plan.to_model);
+    await engine.setConfig('embedding_dimensions', String(plan.to_dims));
+
+    // 5. File plane + gateway (the embed pipeline reads file/env, not DB).
+    await opts.persistConfig?.(plan.to_model, plan.to_dims);
 
     // 6. Purge the semantic query cache. The knobs hash folds provider:model
     //    for callers that thread KnobsHashContext, but legacy callers fall
@@ -264,6 +273,50 @@ export async function applyEmbeddingMigration(
   } catch (err) {
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * Stamp the target signature on every page that is fully embedded but not yet
+ * stamped. Call after the re-embed drain, BEFORE the completion probe.
+ *
+ * Why this exists (adversarial review): the embed loop only stamps a page when
+ * `stale.length === existing.length` — i.e. when every one of the page's
+ * chunks was in the SAME batch. `listStaleChunks` is a plain keyset LIMIT with
+ * no page alignment, so on any corpus larger than one batch (default 2000
+ * chunks) the page straddling each boundary is embedded correctly but never
+ * stamped. Without this reconcile the command reports "incomplete" + exit 1 on
+ * a perfectly-migrated brain, and the re-run re-invalidates and PAYS AGAIN for
+ * those pages — breaking the "already-migrated chunks are never re-embedded"
+ * contract.
+ *
+ * Safety: this is only sound because `applyEmbeddingMigration` invalidated
+ * (NULLed) every chunk that was NOT already in the target space. So "page has
+ * zero NULL-embedding chunks" ⇒ "every chunk on this page was embedded in the
+ * target space during this run". Pages with any remaining NULL chunk (a real
+ * embed failure) are deliberately left unstamped so the completion probe still
+ * reports them.
+ *
+ * Returns the number of pages stamped.
+ */
+export async function reconcilePageSignatures(
+  engine: BrainEngine,
+  plan: EmbeddingMigrationPlan,
+): Promise<number> {
+  const sig = migrationSignature(plan.to_model, plan.to_dims);
+  const rows = await engine.executeRaw<{ slug: string }>(
+    `UPDATE pages p
+        SET embedding_signature = $1
+      WHERE p.deleted_at IS NULL
+        AND (p.embedding_signature IS DISTINCT FROM $1)
+        AND EXISTS (SELECT 1 FROM content_chunks c WHERE c.page_id = p.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM content_chunks c
+           WHERE c.page_id = p.id AND c.embedding IS NULL
+        )
+      RETURNING p.slug`,
+    [sig],
+  );
+  return (rows as unknown[]).length;
 }
 
 /**

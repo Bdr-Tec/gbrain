@@ -4578,7 +4578,8 @@ const migrate_embeddings: Operation = {
       throw new Error('migrate_embeddings is local-only. Run `gbrain migrate embeddings` on the host.');
     }
     const {
-      planEmbeddingMigration, applyEmbeddingMigration, completeEmbeddingMigration, migrationSignature,
+      planEmbeddingMigration, applyEmbeddingMigration, completeEmbeddingMigration,
+      reconcilePageSignatures, migrationSignature,
     } = await import('./embedding-migration.ts');
     const to = p.to as string;
     const dim = p.dim as number | undefined;
@@ -4598,15 +4599,27 @@ const migrate_embeddings: Operation = {
     if (ctx.dryRun || p.dry_run === true || p.yes !== true) {
       return { status: p.yes === true || p.dry_run === true ? 'planned' : 'needs_confirmation', plan };
     }
-    const { persistEmbeddingFileConfig } = await import('../commands/migrate-embeddings.ts');
+    const { persistEmbeddingFileConfig, probeTargetProvider } = await import('../commands/migrate-embeddings.ts');
+    // Safety parity with the CLI path: probe the target provider BEFORE any
+    // mutation. Without this, `yes:true` would drop the embedding column and
+    // only then discover the key/model/dim is wrong.
+    const probe = await probeTargetProvider(plan.to_model, plan.to_dims);
+    if (!probe.ok) return { status: 'failed', reason: probe.message, plan };
     const applied = await applyEmbeddingMigration(ctx.engine, plan, {
-      persistConfig: (m, d) => persistEmbeddingFileConfig(m, d, ctx.engine.kind),
+      persistConfig: (m, d) => persistEmbeddingFileConfig(m, d),
     });
     if (applied.status !== 'applied') return { ...applied, plan };
     const { runEmbedCore } = await import('../commands/embed.ts');
+    // singleFlight parity with the CLI path: takes the same per-source
+    // embed-backfill lock so this can't race a queued embed-backfill job on
+    // the NULL→non-NULL upsert (the TODOS:2299 class).
     const embedResult = await runEmbedCore(ctx.engine, {
-      stale: true, catchUp: true, includeNullSignature: true, quiet: true,
+      stale: true, catchUp: true, singleFlight: true, includeNullSignature: true, quiet: true,
     });
+    // Stamp batch-boundary pages before probing for completion (see
+    // reconcilePageSignatures — the embed loop's all-or-nothing stamp rule
+    // skips any page split across two stale batches).
+    const reconciled = await reconcilePageSignatures(ctx.engine, plan);
     const remaining = await ctx.engine.countStaleChunks({
       signature: migrationSignature(plan.to_model, plan.to_dims),
       includeNullSignature: true,
@@ -4617,6 +4630,7 @@ const migrate_embeddings: Operation = {
       plan,
       embedded: embedResult.embedded,
       remaining,
+      signatures_reconciled: reconciled,
       invalidated: applied.invalidated,
       schema_transitioned: applied.schema_transitioned,
       cache_cleared: applied.cache_cleared,
