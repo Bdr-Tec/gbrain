@@ -23,6 +23,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
+import { withEnv } from './helpers/with-env.ts';
 import type { ChunkInput } from '../src/core/types.ts';
 import {
   resolveMigrationTarget,
@@ -209,16 +210,13 @@ describe('planEmbeddingMigration', () => {
 
 describe('applyEmbeddingMigration', () => {
   test('env override refuses BEFORE any mutation', async () => {
-    process.env.GBRAIN_EMBEDDING_MODEL = 'voyage:voyage-3-large';
-    try {
+    await withEnv({ GBRAIN_EMBEDDING_MODEL: 'voyage:voyage-3-large' }, async () => {
       const plan = await planEmbeddingMigration(engine, { to: 'openai:text-embedding-3-small' });
       const res = await applyEmbeddingMigration(engine, plan);
       expect(res.status).toBe('refused');
       expect(await engine.getConfig(MIGRATION_STATE_KEY)).toBeFalsy();
       expect(await engine.getConfig('embedding_model')).toBeFalsy();
-    } finally {
-      delete process.env.GBRAIN_EMBEDDING_MODEL;
-    }
+    });
   });
 
   test('same-dim swap: no schema transition; invalidates legacy + drifted; writes config + state; purges cache', async () => {

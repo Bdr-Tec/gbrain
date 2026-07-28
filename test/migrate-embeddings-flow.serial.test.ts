@@ -16,7 +16,9 @@
  *      signature (including the formerly-NULL one), state marker cleared,
  *      query cache purged, vector search works against the new column.
  *
- * GBRAIN_HOME is pointed at a temp dir so the file-plane config write
+ * Named `.serial.test.ts`: the whole file runs under a temp GBRAIN_HOME +
+ * an installed fake embed transport for its entire lifecycle (beforeAll →
+ * afterAll), which withEnv() cannot wrap. GBRAIN_HOME is pointed at a temp dir so the file-plane config write
  * (persistEmbeddingFileConfig) never touches the developer's ~/.gbrain.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
