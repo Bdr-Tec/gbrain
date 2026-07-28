@@ -420,8 +420,10 @@ export class PGLiteEngine implements BrainEngine {
     let model: string = DEFAULT_EMBEDDING_MODEL;
     try {
       const gw = await import('./ai/gateway.ts');
+      // Both accessors THROW when the gateway is unconfigured (they never
+      // return falsy), so the catch below is the only fallback path (#3461).
       dims = gw.getEmbeddingDimensions();
-      model = gw.getEmbeddingModel() || model;
+      model = gw.getEmbeddingModel();
     } catch { /* gateway not configured — use defaults */ }
 
     await this.db.exec(getPGLiteSchema(dims, model));
@@ -979,7 +981,8 @@ export class PGLiteEngine implements BrainEngine {
     const { rows } = await this.db.query(
       `SELECT id, source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at,
               effective_date, effective_date_source,
-              source_kind, source_uri, ingested_via, ingested_at
+              source_kind, source_uri, ingested_via, ingested_at,
+              contextual_retrieval_mode
        FROM pages WHERE ${where.join(' AND ')} LIMIT 1`,
       params
     );
@@ -2320,15 +2323,26 @@ export class PGLiteEngine implements BrainEngine {
 
     // Provenance fallback for chunks without an explicit `model`: resolve the
     // gateway's runtime model, not the compile-time DEFAULT_EMBEDDING_MODEL.
-    // See postgres-engine.ts _upsertChunksOnce for the full rationale — pglite
-    // mirrors it for parity.
-    let resolvedModel: string = DEFAULT_EMBEDDING_MODEL;
+    // #3461: getEmbeddingModel() THROWS when unconfigured (never returns
+    // falsy) — on the throw path fall back to the brain's own
+    // `config.embedding_model` row, then the compile-time default as the
+    // last resort. See postgres-engine.ts _upsertChunksOnce for the full
+    // rationale — pglite mirrors it for parity.
+    let resolvedModel: string | null = null;
     try {
       const gw = await import('./ai/gateway.ts');
-      resolvedModel = gw.getEmbeddingModel() || resolvedModel;
+      resolvedModel = gw.getEmbeddingModel();
     } catch {
-      // Gateway unconfigured (unit tests / pre-connect): keep the default.
+      try {
+        const cfg = await this.db.query(
+          `SELECT value FROM config WHERE key = 'embedding_model'`,
+        );
+        resolvedModel = ((cfg.rows[0] as { value?: string } | undefined)?.value) ?? null;
+      } catch {
+        // config table unreadable — fall through to the compile-time default.
+      }
     }
+    if (!resolvedModel) resolvedModel = DEFAULT_EMBEDDING_MODEL;
 
     for (const chunk of chunks) {
       const embeddingStr = chunk.embedding
@@ -2381,6 +2395,9 @@ export class PGLiteEngine implements BrainEngine {
     // Code-chunk metadata columns follow the same chunk_text-gated CASE pattern as `embedding`
     // (#769). Re-chunk trusts EXCLUDED outright; pure re-embed COALESCEs so a caller carrying
     // only embedding-shaped fields doesn't clobber metadata to NULL.
+    //
+    // #3461: `model` mirrors the `embedding` CASE branch-for-branch so the label always
+    // describes whichever vector wins the upsert. See postgres-engine.ts for rationale.
     await this.db.query(
       `INSERT INTO content_chunks ${cols} VALUES ${rowParts.join(', ')}
        ON CONFLICT (page_id, chunk_index) DO UPDATE SET
@@ -2394,7 +2411,14 @@ export class PGLiteEngine implements BrainEngine {
                 THEN EXCLUDED.embedding
            ELSE content_chunks.embedding
          END,
-         model = COALESCE(EXCLUDED.model, content_chunks.model),
+         model = CASE
+           WHEN EXCLUDED.chunk_text != content_chunks.chunk_text THEN EXCLUDED.model
+           WHEN content_chunks.embedding IS NULL THEN EXCLUDED.model
+           WHEN EXCLUDED.embedded_at IS NOT NULL
+                AND (content_chunks.embedded_at IS NULL OR EXCLUDED.embedded_at > content_chunks.embedded_at)
+                THEN EXCLUDED.model
+           ELSE content_chunks.model
+         END,
          token_count = EXCLUDED.token_count,
          embedded_at = CASE
            WHEN EXCLUDED.chunk_text != content_chunks.chunk_text AND EXCLUDED.embedding IS NULL THEN NULL
