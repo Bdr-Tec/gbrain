@@ -247,3 +247,24 @@ returns the original RRF order unchanged. Search reliability beats
 reranker quality. If your llama.cpp host goes down, your searches keep
 working — they just stop ranking against the cross-encoder until you
 restart the server.
+
+## Cohere trial-tier caveat (live-verified 2026-07-28)
+
+`rerank-v4.0-pro` is listed in the Cohere recipe but was **unreachable on a
+fresh trial key**. Back-to-back calls with the same key, same second:
+
+| model | result |
+|---|---|
+| `rerank-v3.5` | HTTP 200 in 0.21s |
+| `rerank-v4.0-fast` | HTTP 200 in 0.20s |
+| `rerank-v4.0-pro` | no response at all, 20s+ |
+
+Its siblings answered instantly, so this is model-specific, not account-wide
+throttling. On a trial key, selecting `-pro` means every query waits out the
+recipe's 5s timeout and then fail-opens silently, returning un-reranked order
+with no error surfaced. Use `rerank-v3.5` (the default) or `rerank-v4.0-fast`
+on trial keys; `-pro` is for paid keys.
+
+Also worth knowing: the trial tier throttles bursts. Un-throttled latency is
+~0.2s, but a throttled call can exceed the 5s timeout and hit the same silent
+fail-open path.
