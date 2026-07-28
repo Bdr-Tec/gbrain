@@ -354,6 +354,15 @@ describe('MinionQueue: #1737 per-handler default timeout', () => {
     expect(sub.timeout_ms).toBe(30 * 60 * 1000);
   });
 
+  // #3207 — facts-absorb is one LLM extraction call per page (same shape as
+  // chronicle_extract) but was missing from HANDLER_DEFAULT_TIMEOUT_MS, so it
+  // inherited the tight null-default wall-clock and was dead-lettered
+  // mid-generation on slow chat providers (facts silently lost).
+  test('facts-absorb gets the 10-min LLM-extraction default (#3207)', async () => {
+    const job = await queue.add('facts-absorb', { slug: 'people/alice-example' });
+    expect(job.timeout_ms).toBe(10 * 60 * 1000);
+  });
+
   test('contextual per-chunk reindex gets the 60-min default', async () => {
     const job = await queue.add('contextual_reindex_per_chunk', { page_slug: 'large-transcript' }, undefined, {
       allowProtectedSubmit: true,
