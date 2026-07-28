@@ -1,0 +1,24 @@
+{"qid": "zh:nlq:openai", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "哪家公司开发了 ChatGPT，总部位于旧金山", "script": "han", "in_script": true, "relevant": ["openai"]}
+{"qid": "zh:nlq:anthropic", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "由从另一家大型人工智能公司离职的研究人员创立、专注于人工智能安全的实验室", "script": "han", "in_script": true, "relevant": ["anthropic"]}
+{"qid": "zh:nlq:google-deepmind", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "总部在伦敦的研究实验室，其程序击败了围棋世界冠军", "script": "han", "in_script": true, "relevant": ["google-deepmind"]}
+{"qid": "zh:nlq:geoffrey-hinton", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "被称为深度学习之父之一并共同获得图灵奖的研究者", "script": "han", "in_script": true, "relevant": ["geoffrey-hinton"]}
+{"qid": "zh:nlq:fei-fei-li", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "创建了用于评测视觉模型的大型标注图像数据集的科学家", "script": "han", "in_script": true, "relevant": ["fei-fei-li"]}
+{"qid": "zh:nlq:jensen-huang", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "领导那家芯片公司的人，其处理器被用于训练大型模型", "script": "han", "in_script": true, "relevant": ["jensen-huang"]}
+{"qid": "zh:nlq:sam-altman", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "GPT 系列模型背后那个组织的首席执行官是谁", "script": "han", "in_script": true, "relevant": ["sam-altman"]}
+{"qid": "zh:nlq:transformer", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "基于自注意力机制、取代了循环结构的神经网络架构", "script": "han", "in_script": true, "relevant": ["transformer"]}
+{"qid": "zh:nlq:word-embedding", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "如何把单个词语转换成稠密的数值向量供模型使用", "script": "han", "in_script": true, "relevant": ["word-embedding"]}
+{"qid": "zh:nlq:retrieval-augmented-generation", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "为语言模型提供检索到的外部文档，从而减少它编造事实", "script": "han", "in_script": true, "relevant": ["retrieval-augmented-generation"]}
+{"qid": "zh:nlq:overfitting", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "为什么模型在训练数据上表现很好但在未见过的数据上表现很差", "script": "han", "in_script": true, "relevant": ["overfitting"]}
+{"qid": "zh:nlq:gradient-descent", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "反复沿着使损失变小的方向调整参数", "script": "han", "in_script": true, "relevant": ["gradient-descent"]}
+{"qid": "zh:nlq:tf-idf", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "根据一个词在整个文档集合中的稀有程度来给它加权", "script": "han", "in_script": true, "relevant": ["tf-idf"]}
+{"qid": "zh:nlq:k-nearest-neighbors-algorithm", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "通过查看距离最近的若干已标注样本来给新样本分类", "script": "han", "in_script": true, "relevant": ["k-nearest-neighbors-algorithm"]}
+{"qid": "zh:nlq:cluster-analysis", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "把没有标签的记录分组，使相似的记录归到一起", "script": "han", "in_script": true, "relevant": ["cluster-analysis"]}
+{"qid": "zh:nlq:principal-component-analysis", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "在尽可能保留方差的同时减少维度的数量", "script": "han", "in_script": true, "relevant": ["principal-component-analysis"]}
+{"qid": "zh:nlq:postgresql", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "以扩展生态著名的开源关系型数据库", "script": "han", "in_script": true, "relevant": ["postgresql"]}
+{"qid": "zh:nlq:sqlite", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "把整个数据库保存在一个普通文件里的嵌入式数据库引擎", "script": "han", "in_script": true, "relevant": ["sqlite"]}
+{"qid": "zh:nlq:elasticsearch", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "构建在 Lucene 之上的分布式全文搜索服务器", "script": "han", "in_script": true, "relevant": ["elasticsearch"]}
+{"qid": "zh:nlq:redis", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "常被用作缓存的内存键值存储", "script": "han", "in_script": true, "relevant": ["redis"]}
+{"qid": "zh:nlq:kubernetes", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "在一组机器上调度和编排容器", "script": "han", "in_script": true, "relevant": ["kubernetes"]}
+{"qid": "zh:nlq:y-combinator", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "每年分两批为初创公司提供资金的加速器", "script": "han", "in_script": true, "relevant": ["y-combinator"]}
+{"qid": "zh:nlq:venture-capital", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "投资者如何以换取股权的方式向高风险的早期公司投入资金", "script": "han", "in_script": true, "relevant": ["venture-capital"]}
+{"qid": "zh:nlq:unicode", "lang": "zh", "family": "nlq", "origin": "author-written", "query": "为所有书写系统中的每个字符分配一个编号的标准", "script": "han", "in_script": true, "relevant": ["unicode"]}

@@ -49,3 +49,7 @@ test/fixtures/pglite-snapshot.version
 
 # Private brain reports — never check these in (per CLAUDE.md privacy rule)
 reports/network-intelligence/
+
+# embedding-default eval: raw Wikipedia fetch cache (regenerable via --refetch;
+# the committed corpus/*.jsonl carries pageid+revid for attribution).
+evals/embedding-default/.fetch-cache.json

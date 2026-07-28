@@ -1,0 +1,94 @@
+{"qid":"he:alias:anthropic:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Anthropic","script":"latin","in_script":false,"relevant":["anthropic"]}
+{"qid":"he:alias:google-deepmind:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Google DeepMind","script":"latin","in_script":false,"relevant":["google-deepmind"]}
+{"qid":"he:alias:google-deepmind:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"דיפ מיינד","script":"hebrew","in_script":true,"relevant":["google-deepmind"]}
+{"qid":"he:alias:nvidia:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"NVidia","script":"latin","in_script":false,"relevant":["nvidia"]}
+{"qid":"he:alias:nvidia:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"אנווידיה","script":"hebrew","in_script":true,"relevant":["nvidia"]}
+{"qid":"he:alias:nvidia:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"NVIDIA","script":"latin","in_script":false,"relevant":["nvidia"]}
+{"qid":"he:alias:meta-platforms:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"חברת פייסבוק","script":"hebrew","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"he:alias:meta-platforms:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"פייסבוק (חברה)","script":"hebrew","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"he:alias:demis-hassabis:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"דמיס האסביס","script":"hebrew","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"he:alias:demis-hassabis:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"דמיס חסביס","script":"hebrew","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"he:alias:demis-hassabis:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"דמיס חסאביס","script":"hebrew","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"he:alias:sam-altman:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"סאם אלטמן","script":"hebrew","in_script":true,"relevant":["sam-altman"]}
+{"qid":"he:alias:large-language-model:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מודלי שפה גדולים","script":"hebrew","in_script":true,"relevant":["large-language-model"]}
+{"qid":"he:alias:large-language-model:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"LLM","script":"latin","in_script":false,"relevant":["large-language-model"]}
+{"qid":"he:alias:retrieval-augmented-generation:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"יצירה מבוססת־שליפה","script":"hebrew","in_script":true,"relevant":["retrieval-augmented-generation"]}
+{"qid":"he:alias:convolutional-neural-network:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"רשת עצבית מתפתחת","script":"hebrew","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"he:alias:diffusion-model:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Diffusion model","script":"latin","in_script":false,"relevant":["diffusion-model"]}
+{"qid":"he:alias:generative-adversarial-network:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"רשת אדברסרית גנרטיבית","script":"hebrew","in_script":true,"relevant":["generative-adversarial-network"]}
+{"qid":"he:alias:generative-adversarial-network:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Generative adversarial network","script":"latin","in_script":false,"relevant":["generative-adversarial-network"]}
+{"qid":"he:alias:gradient-descent:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מורד הגרדיאנט","script":"hebrew","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"he:alias:gradient-descent:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מקדם נטיה","script":"hebrew","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"he:alias:neural-network:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"רשת קישרית","script":"hebrew","in_script":true,"relevant":["neural-network"]}
+{"qid":"he:alias:neural-network:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"רשתות נוירונים","script":"hebrew","in_script":true,"relevant":["neural-network"]}
+{"qid":"he:alias:machine-learning:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"למידה חישובית","script":"hebrew","in_script":true,"relevant":["machine-learning"]}
+{"qid":"he:alias:machine-learning:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מכונה לומדת","script":"hebrew","in_script":true,"relevant":["machine-learning"]}
+{"qid":"he:alias:artificial-intelligence:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"אינטליגנציה מלאכותית","script":"hebrew","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"he:alias:artificial-intelligence:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"חשיבה אוטומטית","script":"hebrew","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"he:alias:artificial-intelligence:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"תבונה מלאכותית","script":"hebrew","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"he:alias:chatgpt:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"צ'אט ג'י פי טי","script":"hebrew","in_script":true,"relevant":["chatgpt"]}
+{"qid":"he:alias:chatgpt:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"צ'אט GPT","script":"hebrew","in_script":true,"relevant":["chatgpt"]}
+{"qid":"he:alias:claude:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"קלוד 3","script":"hebrew","in_script":true,"relevant":["claude"]}
+{"qid":"he:alias:claude:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Claude ai","script":"latin","in_script":false,"relevant":["claude"]}
+{"qid":"he:alias:claude:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Claude (מודל שפה)","script":"hebrew","in_script":true,"relevant":["claude"]}
+{"qid":"he:alias:google-gemini:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Bard","script":"latin","in_script":false,"relevant":["google-gemini"]}
+{"qid":"he:alias:google-gemini:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"בארד","script":"hebrew","in_script":true,"relevant":["google-gemini"]}
+{"qid":"he:alias:chatbot:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"צ'טבוט","script":"hebrew","in_script":true,"relevant":["chatbot"]}
+{"qid":"he:alias:k-nearest-neighbors-algorithm:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מודל שכן קרוב","script":"hebrew","in_script":true,"relevant":["k-nearest-neighbors-algorithm"]}
+{"qid":"he:alias:support-vector-machine:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"SVM","script":"latin","in_script":false,"relevant":["support-vector-machine"]}
+{"qid":"he:alias:principal-component-analysis:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"פירוק לגורמים ראשיים","script":"hebrew","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"he:alias:principal-component-analysis:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"ניתוח גורמים ראשיים","script":"hebrew","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"he:alias:bayes-theorem:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"נוסחת בייס","script":"hebrew","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"he:alias:bayes-theorem:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"כלל בייס","script":"hebrew","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"he:alias:data-mining:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"כריית נתונים","script":"hebrew","in_script":true,"relevant":["data-mining"]}
+{"qid":"he:alias:data-mining:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Data Mining","script":"latin","in_script":false,"relevant":["data-mining"]}
+{"qid":"he:alias:natural-language-processing:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"ניתוח מלל","script":"hebrew","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"he:alias:machine-translation:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"תרגום באמצעות מכונה","script":"hebrew","in_script":true,"relevant":["machine-translation"]}
+{"qid":"he:alias:machine-translation:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"תרגום אוטומטי","script":"hebrew","in_script":true,"relevant":["machine-translation"]}
+{"qid":"he:alias:machine-translation:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מכונת תרגום","script":"hebrew","in_script":true,"relevant":["machine-translation"]}
+{"qid":"he:alias:speech-recognition:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"זיהוי קול","script":"hebrew","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"he:alias:speech-recognition:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מערכת זיהוי קול","script":"hebrew","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"he:alias:speech-recognition:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"זיהוי דיבור","script":"hebrew","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"he:alias:computer-vision:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"ראיה ממוחשבת","script":"hebrew","in_script":true,"relevant":["computer-vision"]}
+{"qid":"he:alias:computer-vision:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"אינפוט ויזואלי","script":"hebrew","in_script":true,"relevant":["computer-vision"]}
+{"qid":"he:alias:turing-test:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"ההתנגדות המתמטית","script":"hebrew","in_script":true,"relevant":["turing-test"]}
+{"qid":"he:alias:redis:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"רדיס","script":"hebrew","in_script":true,"relevant":["redis"]}
+{"qid":"he:alias:mysql:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"MariaDB","script":"latin","in_script":false,"relevant":["mysql"]}
+{"qid":"he:alias:mongodb:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מונגודיבי","script":"hebrew","in_script":true,"relevant":["mongodb"]}
+{"qid":"he:alias:mongodb:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מונגו דיבי","script":"hebrew","in_script":true,"relevant":["mongodb"]}
+{"qid":"he:alias:kubernetes:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"K8s","script":"latin","in_script":false,"relevant":["kubernetes"]}
+{"qid":"he:alias:docker:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"דוקר","script":"hebrew","in_script":true,"relevant":["docker"]}
+{"qid":"he:alias:docker:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"דוקר (Docker)","script":"latin","in_script":false,"relevant":["docker"]}
+{"qid":"he:alias:git:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Git","script":"latin","in_script":false,"relevant":["git"]}
+{"qid":"he:alias:linux:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Linux","script":"latin","in_script":false,"relevant":["linux"]}
+{"qid":"he:alias:python:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Python","script":"latin","in_script":false,"relevant":["python"]}
+{"qid":"he:alias:cloud-computing:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מחשוב בענן","script":"hebrew","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"he:alias:cloud-computing:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"ענן המחשוב","script":"hebrew","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"he:alias:cloud-computing:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Cloud Computing","script":"latin","in_script":false,"relevant":["cloud-computing"]}
+{"qid":"he:alias:open-source-software:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Open Source","script":"latin","in_script":false,"relevant":["open-source-software"]}
+{"qid":"he:alias:open-source-software:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מקור פתוח","script":"hebrew","in_script":true,"relevant":["open-source-software"]}
+{"qid":"he:alias:open-source-software:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"קוד חופשי","script":"hebrew","in_script":true,"relevant":["open-source-software"]}
+{"qid":"he:alias:software-as-a-service:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"SaaS","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
+{"qid":"he:alias:software-as-a-service:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Software as a Service","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
+{"qid":"he:alias:big-data:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"ביג דאטה","script":"hebrew","in_script":true,"relevant":["big-data"]}
+{"qid":"he:alias:big-data:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"נתוני עתק","script":"hebrew","in_script":true,"relevant":["big-data"]}
+{"qid":"he:alias:y-combinator:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Y קומבינטור","script":"hebrew","in_script":true,"relevant":["y-combinator"]}
+{"qid":"he:alias:sequoia-capital:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"סקוויה קפיטל","script":"hebrew","in_script":true,"relevant":["sequoia-capital"]}
+{"qid":"he:alias:sequoia-capital:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"סקויה קפיטל","script":"hebrew","in_script":true,"relevant":["sequoia-capital"]}
+{"qid":"he:alias:andreessen-horowitz:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Andreessen Horowitz","script":"latin","in_script":false,"relevant":["andreessen-horowitz"]}
+{"qid":"he:alias:venture-capital:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"הון סיכון","script":"hebrew","in_script":true,"relevant":["venture-capital"]}
+{"qid":"he:alias:initial-public-offering:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"IPO","script":"latin","in_script":false,"relevant":["initial-public-offering"]}
+{"qid":"he:alias:initial-public-offering:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"הנפקה ראשונה","script":"hebrew","in_script":true,"relevant":["initial-public-offering"]}
+{"qid":"he:alias:initial-public-offering:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"הנפקה ראשונית","script":"hebrew","in_script":true,"relevant":["initial-public-offering"]}
+{"qid":"he:alias:startup-company:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"חברת סטרטאפ","script":"hebrew","in_script":true,"relevant":["startup-company"]}
+{"qid":"he:alias:startup-company:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"סטארטאפ","script":"hebrew","in_script":true,"relevant":["startup-company"]}
+{"qid":"he:alias:startup-company:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"סטארט אפ","script":"hebrew","in_script":true,"relevant":["startup-company"]}
+{"qid":"he:alias:unicode:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Unicode","script":"latin","in_script":false,"relevant":["unicode"]}
+{"qid":"he:alias:blockchain:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"Blockchain","script":"latin","in_script":false,"relevant":["blockchain"]}
+{"qid":"he:alias:blockchain:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"שרשרת בלוקים","script":"hebrew","in_script":true,"relevant":["blockchain"]}
+{"qid":"he:alias:cryptocurrency:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מטבע וירטואלי","script":"hebrew","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"he:alias:cryptocurrency:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"אמצעי תשלום מבוזר","script":"hebrew","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"he:alias:cryptocurrency:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מטבע דיגיטלי","script":"hebrew","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"he:alias:semiconductor:0","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"מוליכים למחצה","script":"hebrew","in_script":true,"relevant":["semiconductor"]}
+{"qid":"he:alias:semiconductor:1","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"חצאי מוליכים","script":"hebrew","in_script":true,"relevant":["semiconductor"]}
+{"qid":"he:alias:semiconductor:2","lang":"he","family":"alias","origin":"wikipedia-redirect","query":"סמיקונדקטור","script":"hebrew","in_script":true,"relevant":["semiconductor"]}

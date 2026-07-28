@@ -1,0 +1,116 @@
+{"qid":"ja:alias:openai:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"オープンAI","script":"kana","in_script":true,"relevant":["openai"]}
+{"qid":"ja:alias:anthropic:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アンソロピック","script":"kana","in_script":true,"relevant":["anthropic"]}
+{"qid":"ja:alias:anthropic:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アンスロピック","script":"kana","in_script":true,"relevant":["anthropic"]}
+{"qid":"ja:alias:google-deepmind:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"DeepMind","script":"latin","in_script":false,"relevant":["google-deepmind"]}
+{"qid":"ja:alias:mistral-ai:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Le Chat","script":"latin","in_script":false,"relevant":["mistral-ai"]}
+{"qid":"ja:alias:nvidia:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"NForce","script":"latin","in_script":false,"relevant":["nvidia"]}
+{"qid":"ja:alias:nvidia:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エヌビディア","script":"kana","in_script":true,"relevant":["nvidia"]}
+{"qid":"ja:alias:nvidia:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エヌヴィディア","script":"kana","in_script":true,"relevant":["nvidia"]}
+{"qid":"ja:alias:meta-platforms:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Facebook, Inc.","script":"latin","in_script":false,"relevant":["meta-platforms"]}
+{"qid":"ja:alias:meta-platforms:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Meta, Inc.","script":"latin","in_script":false,"relevant":["meta-platforms"]}
+{"qid":"ja:alias:meta-platforms:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Facebook (企業)","script":"latin","in_script":false,"relevant":["meta-platforms"]}
+{"qid":"ja:alias:ilya-sutskever:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Safe Superintelligence Inc.","script":"latin","in_script":false,"relevant":["ilya-sutskever"]}
+{"qid":"ja:alias:ilya-sutskever:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"イリヤ・サツキヴァー","script":"kana","in_script":true,"relevant":["ilya-sutskever"]}
+{"qid":"ja:alias:ilya-sutskever:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"イリヤ・サツケヴァー","script":"kana","in_script":true,"relevant":["ilya-sutskever"]}
+{"qid":"ja:alias:demis-hassabis:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Demis Hassabis","script":"latin","in_script":false,"relevant":["demis-hassabis"]}
+{"qid":"ja:alias:fei-fei-li:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"フェイフェイ・リー","script":"kana","in_script":true,"relevant":["fei-fei-li"]}
+{"qid":"ja:alias:fei-fei-li:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"李飛飛","script":"han","in_script":true,"relevant":["fei-fei-li"]}
+{"qid":"ja:alias:fei-fei-li:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"フェイ＝フェイ・リー","script":"kana","in_script":true,"relevant":["fei-fei-li"]}
+{"qid":"ja:alias:sam-altman:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サミュエル・H・アルトマン","script":"kana","in_script":true,"relevant":["sam-altman"]}
+{"qid":"ja:alias:sam-altman:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サム・オルトマン","script":"kana","in_script":true,"relevant":["sam-altman"]}
+{"qid":"ja:alias:jensen-huang:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"黃仁勳","script":"han","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"ja:alias:jensen-huang:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ジェン・スン・フアン","script":"kana","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"ja:alias:jensen-huang:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ジェン・スン・ファン","script":"kana","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"ja:alias:bert:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Bidirectional Encoder Representations from Transformers","script":"latin","in_script":false,"relevant":["bert"]}
+{"qid":"ja:alias:gpt-4:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"GPT-4 Turbo","script":"latin","in_script":false,"relevant":["gpt-4"]}
+{"qid":"ja:alias:retrieval-augmented-generation:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"RAG","script":"latin","in_script":false,"relevant":["retrieval-augmented-generation"]}
+{"qid":"ja:alias:retrieval-augmented-generation:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"検索拡張生成","script":"han","in_script":true,"relevant":["retrieval-augmented-generation"]}
+{"qid":"ja:alias:generative-adversarial-network:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Generation adversarial network","script":"latin","in_script":false,"relevant":["generative-adversarial-network"]}
+{"qid":"ja:alias:gradient-descent:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"最速降下法","script":"han","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"ja:alias:gradient-descent:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"勾配降下法","script":"han","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"ja:alias:overfitting:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"過適合","script":"han","in_script":true,"relevant":["overfitting"]}
+{"qid":"ja:alias:overfitting:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"過学習","script":"han","in_script":true,"relevant":["overfitting"]}
+{"qid":"ja:alias:overfitting:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"オーバーフィッティング","script":"kana","in_script":true,"relevant":["overfitting"]}
+{"qid":"ja:alias:deep-learning:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"深層学習","script":"han","in_script":true,"relevant":["deep-learning"]}
+{"qid":"ja:alias:deep-learning:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"深層ニューラルネットワーク","script":"kana","in_script":true,"relevant":["deep-learning"]}
+{"qid":"ja:alias:deep-learning:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Deep Learning","script":"latin","in_script":false,"relevant":["deep-learning"]}
+{"qid":"ja:alias:machine-learning:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"マシンラーニング","script":"kana","in_script":true,"relevant":["machine-learning"]}
+{"qid":"ja:alias:machine-learning:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"統計的学習","script":"han","in_script":true,"relevant":["machine-learning"]}
+{"qid":"ja:alias:artificial-intelligence:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"人工頭脳","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"ja:alias:artificial-intelligence:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"機械知能","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"ja:alias:artificial-intelligence:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"人工知能学","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"ja:alias:chatgpt:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"チャットGPT","script":"kana","in_script":true,"relevant":["chatgpt"]}
+{"qid":"ja:alias:chatgpt:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"チャットgpt","script":"kana","in_script":true,"relevant":["chatgpt"]}
+{"qid":"ja:alias:claude:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Claude Code","script":"latin","in_script":false,"relevant":["claude"]}
+{"qid":"ja:alias:google-gemini:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Google Bard","script":"latin","in_script":false,"relevant":["google-gemini"]}
+{"qid":"ja:alias:google-gemini:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Bard","script":"latin","in_script":false,"relevant":["google-gemini"]}
+{"qid":"ja:alias:google-gemini:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Google Gemini","script":"latin","in_script":false,"relevant":["google-gemini"]}
+{"qid":"ja:alias:chatbot:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"人工無能","script":"han","in_script":true,"relevant":["chatbot"]}
+{"qid":"ja:alias:chatbot:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"おしゃべりボット","script":"kana","in_script":true,"relevant":["chatbot"]}
+{"qid":"ja:alias:chatbot:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"会話ボット","script":"kana","in_script":true,"relevant":["chatbot"]}
+{"qid":"ja:alias:search-engine:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サーチエンジン","script":"kana","in_script":true,"relevant":["search-engine"]}
+{"qid":"ja:alias:search-engine:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"検索サイト","script":"kana","in_script":true,"relevant":["search-engine"]}
+{"qid":"ja:alias:search-engine:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ディレクトリ型検索エンジン","script":"kana","in_script":true,"relevant":["search-engine"]}
+{"qid":"ja:alias:recommender-system:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"レコメンデーションシステム","script":"kana","in_script":true,"relevant":["recommender-system"]}
+{"qid":"ja:alias:recommender-system:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"推薦システム","script":"kana","in_script":true,"relevant":["recommender-system"]}
+{"qid":"ja:alias:recommender-system:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"レコメンドシステム","script":"kana","in_script":true,"relevant":["recommender-system"]}
+{"qid":"ja:alias:cluster-analysis:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラスター解析","script":"kana","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"ja:alias:cluster-analysis:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラスタ解析","script":"kana","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"ja:alias:cluster-analysis:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラスター分析","script":"kana","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"ja:alias:support-vector-machine:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サポートベクトルマシン","script":"kana","in_script":true,"relevant":["support-vector-machine"]}
+{"qid":"ja:alias:random-forest:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Random forest","script":"latin","in_script":false,"relevant":["random-forest"]}
+{"qid":"ja:alias:principal-component-analysis:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"主成分解析","script":"han","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"ja:alias:regression-analysis:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"回帰モデル","script":"kana","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"ja:alias:regression-analysis:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"回帰計算","script":"han","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"ja:alias:regression-analysis:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"回帰式","script":"han","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"ja:alias:bayes-theorem:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ベイズ理論","script":"kana","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"ja:alias:natural-language-processing:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"言語処理","script":"han","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"ja:alias:natural-language-processing:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"自然言語検索","script":"han","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"ja:alias:natural-language-processing:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"統計的自然言語処理","script":"han","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"ja:alias:machine-translation:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"英日翻訳ソフトウエア","script":"kana","in_script":true,"relevant":["machine-translation"]}
+{"qid":"ja:alias:machine-translation:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"自動翻訳","script":"han","in_script":true,"relevant":["machine-translation"]}
+{"qid":"ja:alias:speech-recognition:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"音声操作","script":"han","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"ja:alias:speech-recognition:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"音声入力","script":"han","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"ja:alias:speech-recognition:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"自動音声認識","script":"han","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"ja:alias:computer-vision:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"コンピュータ・ビジョン","script":"kana","in_script":true,"relevant":["computer-vision"]}
+{"qid":"ja:alias:computer-vision:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"コンピューター・ビジョン","script":"kana","in_script":true,"relevant":["computer-vision"]}
+{"qid":"ja:alias:turing-test:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"チューリングテスト","script":"kana","in_script":true,"relevant":["turing-test"]}
+{"qid":"ja:alias:postgresql:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Postgres","script":"latin","in_script":false,"relevant":["postgresql"]}
+{"qid":"ja:alias:postgresql:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ポスグレ","script":"kana","in_script":true,"relevant":["postgresql"]}
+{"qid":"ja:alias:postgresql:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"PgAdmin","script":"latin","in_script":false,"relevant":["postgresql"]}
+{"qid":"ja:alias:sqlite:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"SQLite3","script":"latin","in_script":false,"relevant":["sqlite"]}
+{"qid":"ja:alias:kubernetes:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"K8s","script":"latin","in_script":false,"relevant":["kubernetes"]}
+{"qid":"ja:alias:git:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ギット","script":"kana","in_script":true,"relevant":["git"]}
+{"qid":"ja:alias:git:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Libgit2","script":"latin","in_script":false,"relevant":["git"]}
+{"qid":"ja:alias:linux:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リナックス","script":"kana","in_script":true,"relevant":["linux"]}
+{"qid":"ja:alias:linux:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Linux OS","script":"latin","in_script":false,"relevant":["linux"]}
+{"qid":"ja:alias:linux:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リーヌークス","script":"kana","in_script":true,"relevant":["linux"]}
+{"qid":"ja:alias:cloud-computing:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラウド・コンピューティング","script":"kana","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"ja:alias:cloud-computing:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラウドサービス","script":"kana","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"ja:alias:cloud-computing:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラウド・ベース","script":"kana","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"ja:alias:open-source-software:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"オープンソース・ソフトウェア","script":"kana","in_script":true,"relevant":["open-source-software"]}
+{"qid":"ja:alias:open-source-software:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Open source software","script":"latin","in_script":false,"relevant":["open-source-software"]}
+{"qid":"ja:alias:open-source-software:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"オープンソースソフト","script":"kana","in_script":true,"relevant":["open-source-software"]}
+{"qid":"ja:alias:software-as-a-service:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"SAAS","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
+{"qid":"ja:alias:software-as-a-service:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ソフトウェア プラス サービス","script":"kana","in_script":true,"relevant":["software-as-a-service"]}
+{"qid":"ja:alias:software-as-a-service:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"SaaS","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
+{"qid":"ja:alias:y-combinator:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Y Combinator","script":"latin","in_script":false,"relevant":["y-combinator"]}
+{"qid":"ja:alias:andreessen-horowitz:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"A16z","script":"latin","in_script":false,"relevant":["andreessen-horowitz"]}
+{"qid":"ja:alias:venture-capital:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"起業投資","script":"han","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ja:alias:venture-capital:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"起業投資会社","script":"han","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ja:alias:venture-capital:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Alpha (ベンチャーキャピタル)","script":"kana","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ja:alias:initial-public-offering:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"新規株式公開","script":"han","in_script":true,"relevant":["initial-public-offering"]}
+{"qid":"ja:alias:startup-company:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ベンチャービジネス","script":"kana","in_script":true,"relevant":["startup-company"]}
+{"qid":"ja:alias:startup-company:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ベンチャー企業","script":"kana","in_script":true,"relevant":["startup-company"]}
+{"qid":"ja:alias:startup-company:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"研究開発型企業","script":"han","in_script":true,"relevant":["startup-company"]}
+{"qid":"ja:alias:unicode:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ユニコード","script":"kana","in_script":true,"relevant":["unicode"]}
+{"qid":"ja:alias:unicode:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"UTF","script":"latin","in_script":false,"relevant":["unicode"]}
+{"qid":"ja:alias:unicode:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サロゲートペア","script":"kana","in_script":true,"relevant":["unicode"]}
+{"qid":"ja:alias:blockchain:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ブロックチェーンエンジニア","script":"kana","in_script":true,"relevant":["blockchain"]}
+{"qid":"ja:alias:blockchain:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ブロックチェイン","script":"kana","in_script":true,"relevant":["blockchain"]}
+{"qid":"ja:alias:blockchain:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Blockchain","script":"latin","in_script":false,"relevant":["blockchain"]}
+{"qid":"ja:alias:cryptocurrency:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Counos","script":"latin","in_script":false,"relevant":["cryptocurrency"]}
+{"qid":"ja:alias:semiconductor:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"少数キャリア","script":"kana","in_script":true,"relevant":["semiconductor"]}
+{"qid":"ja:alias:semiconductor:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"多数キャリア","script":"kana","in_script":true,"relevant":["semiconductor"]}
+{"qid":"ja:alias:semiconductor:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"少数キャリヤー","script":"kana","in_script":true,"relevant":["semiconductor"]}
+{"qid":"ja:alias:moore-s-law:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"シリコンサイクル","script":"kana","in_script":true,"relevant":["moore-s-law"]}

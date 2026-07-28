@@ -1,0 +1,113 @@
+# Topic pool for the embedding-default eval corpus.
+#
+# One canonical English Wikipedia title per line. `#` comments + blank lines
+# are ignored. build-corpus.mjs resolves each title's he / zh / ja counterpart
+# via the langlinks API, so the SAME semantic topic set is used in every
+# language slice — language/script is the only variable across slices.
+#
+# Selection rule (documented so a reviewer can judge difficulty): the pool is
+# deliberately CLUSTERED inside gbrain's own domain (AI research, AI labs, AI
+# researchers, retrieval/IR, datastores, venture funding). Near-neighbour
+# clusters make retrieval non-trivial — a pool of 78 unrelated topics would
+# ceiling out at nDCG ~1.0 for every model and measure nothing.
+
+# --- AI labs / companies (near-neighbour cluster) ---
+OpenAI
+Anthropic
+Google DeepMind
+Mistral AI
+Hugging Face
+Nvidia
+Meta Platforms
+
+# --- AI researchers / founders (near-neighbour cluster) ---
+Geoffrey Hinton
+Yann LeCun
+Yoshua Bengio
+Ilya Sutskever
+Demis Hassabis
+Fei-Fei Li
+Sam Altman
+Jensen Huang
+Dario Amodei
+
+# --- Model architectures + training concepts (near-neighbour cluster) ---
+Transformer (deep learning architecture)
+BERT (language model)
+GPT-4
+Word embedding
+Large language model
+Retrieval-augmented generation
+Convolutional neural network
+Diffusion model
+Generative adversarial network
+Gradient descent
+Overfitting
+Neural network (machine learning)
+Deep learning
+Machine learning
+Artificial intelligence
+
+# --- Named model products (very-near-neighbour cluster: all chat LLMs) ---
+ChatGPT
+Claude (AI)
+Google Gemini
+Llama (language model)
+Chatbot
+
+# --- Retrieval / IR / ranking (near-neighbour cluster — gbrain's core domain) ---
+Cosine similarity
+K-nearest neighbors algorithm
+Search engine
+Tf–idf
+Recommender system
+Cluster analysis
+Support vector machine
+Random forest
+Principal component analysis
+Regression analysis
+Bayes' theorem
+Data mining
+
+# --- NLP / perception tasks ---
+Natural language processing
+Machine translation
+Speech recognition
+Computer vision
+Turing test
+
+# --- Datastores + infra (near-neighbour cluster) ---
+PostgreSQL
+SQLite
+Redis
+MySQL
+MongoDB
+Elasticsearch
+Apache Kafka
+Kubernetes
+Docker (software)
+Git
+Linux
+Python (programming language)
+Rust (programming language)
+Cloud computing
+Open-source software
+Software as a service
+Big data
+
+# --- Venture / company formation (near-neighbour cluster) ---
+Y Combinator
+Sequoia Capital
+Andreessen Horowitz
+Venture capital
+Seed money
+Initial public offering
+Startup company
+
+# --- Adjacent tech (dilutes the clusters slightly, as a real brain would) ---
+Unicode
+Blockchain
+Cryptocurrency
+Quantum computing
+Semiconductor
+Moore's law

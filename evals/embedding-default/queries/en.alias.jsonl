@@ -1,0 +1,209 @@
+{"qid":"en:alias:openai:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Openai.com","script":"latin","in_script":true,"relevant":["openai"]}
+{"qid":"en:alias:openai:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"OpenAI API","script":"latin","in_script":true,"relevant":["openai"]}
+{"qid":"en:alias:openai:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"OpenAI LP","script":"latin","in_script":true,"relevant":["openai"]}
+{"qid":"en:alias:anthropic:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"ANTHROP/C","script":"latin","in_script":true,"relevant":["anthropic"]}
+{"qid":"en:alias:anthropic:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Anthropic PBC","script":"latin","in_script":true,"relevant":["anthropic"]}
+{"qid":"en:alias:anthropic:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Anthropic.com","script":"latin","in_script":true,"relevant":["anthropic"]}
+{"qid":"en:alias:google-deepmind:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Deepmind","script":"latin","in_script":true,"relevant":["google-deepmind"]}
+{"qid":"en:alias:google-deepmind:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"DeepMind Technologies","script":"latin","in_script":true,"relevant":["google-deepmind"]}
+{"qid":"en:alias:google-deepmind:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"DeepMind","script":"latin","in_script":true,"relevant":["google-deepmind"]}
+{"qid":"en:alias:mistral-ai:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Mistral (chatbot)","script":"latin","in_script":true,"relevant":["mistral-ai"]}
+{"qid":"en:alias:mistral-ai:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Mixtral 8x22B","script":"latin","in_script":true,"relevant":["mistral-ai"]}
+{"qid":"en:alias:mistral-ai:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Mistral 7B","script":"latin","in_script":true,"relevant":["mistral-ai"]}
+{"qid":"en:alias:hugging-face:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Hugging Face, Inc.","script":"latin","in_script":true,"relevant":["hugging-face"]}
+{"qid":"en:alias:hugging-face:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Gradio","script":"latin","in_script":true,"relevant":["hugging-face"]}
+{"qid":"en:alias:hugging-face:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Huggingface.co","script":"latin","in_script":true,"relevant":["hugging-face"]}
+{"qid":"en:alias:nvidia:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"NVIDIA Corporation","script":"latin","in_script":true,"relevant":["nvidia"]}
+{"qid":"en:alias:nvidia:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"NVidia Corporation","script":"latin","in_script":true,"relevant":["nvidia"]}
+{"qid":"en:alias:nvidia:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"NVIDIA Corp.","script":"latin","in_script":true,"relevant":["nvidia"]}
+{"qid":"en:alias:meta-platforms:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Facebook, Inc","script":"latin","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"en:alias:meta-platforms:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Facebook Inc","script":"latin","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"en:alias:meta-platforms:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Facebook Ads","script":"latin","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"en:alias:geoffrey-hinton:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Geoff Hinton","script":"latin","in_script":true,"relevant":["geoffrey-hinton"]}
+{"qid":"en:alias:geoffrey-hinton:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Geoffrey E. Hinton","script":"latin","in_script":true,"relevant":["geoffrey-hinton"]}
+{"qid":"en:alias:geoffrey-hinton:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Geoffrey Everest Hinton","script":"latin","in_script":true,"relevant":["geoffrey-hinton"]}
+{"qid":"en:alias:yann-lecun:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"LeCun","script":"latin","in_script":true,"relevant":["yann-lecun"]}
+{"qid":"en:alias:yann-lecun:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Yan LeCun","script":"latin","in_script":true,"relevant":["yann-lecun"]}
+{"qid":"en:alias:yann-lecun:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Yann André Le Cun","script":"latin","in_script":true,"relevant":["yann-lecun"]}
+{"qid":"en:alias:ilya-sutskever:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Ilya Sustkever","script":"latin","in_script":true,"relevant":["ilya-sutskever"]}
+{"qid":"en:alias:ilya-sutskever:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Ilya Sustekever","script":"latin","in_script":true,"relevant":["ilya-sutskever"]}
+{"qid":"en:alias:ilya-sutskever:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Ilya Efimovich Sutskever","script":"latin","in_script":true,"relevant":["ilya-sutskever"]}
+{"qid":"en:alias:demis-hassabis:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Hassabis","script":"latin","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"en:alias:demis-hassabis:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Hassabis, Demis","script":"latin","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"en:alias:demis-hassabis:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Sir Demis Hassabis","script":"latin","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"en:alias:fei-fei-li:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Li Feifei","script":"latin","in_script":true,"relevant":["fei-fei-li"]}
+{"qid":"en:alias:fei-fei-li:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Li Fei-Fei","script":"latin","in_script":true,"relevant":["fei-fei-li"]}
+{"qid":"en:alias:sam-altman:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Sam H. Altman","script":"latin","in_script":true,"relevant":["sam-altman"]}
+{"qid":"en:alias:sam-altman:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Samuel Altman","script":"latin","in_script":true,"relevant":["sam-altman"]}
+{"qid":"en:alias:sam-altman:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Samuel H. Altman","script":"latin","in_script":true,"relevant":["sam-altman"]}
+{"qid":"en:alias:jensen-huang:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Jen Hsun Huang","script":"latin","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"en:alias:jensen-huang:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Huang jen hsun","script":"latin","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"en:alias:jensen-huang:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Huang Jen-Hsun","script":"latin","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"en:alias:dario-amodei:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Dario amode","script":"latin","in_script":true,"relevant":["dario-amodei"]}
+{"qid":"en:alias:bert:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Bidirectional Encoder Representations from Transformers","script":"latin","in_script":true,"relevant":["bert"]}
+{"qid":"en:alias:bert:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"RoBERTa","script":"latin","in_script":true,"relevant":["bert"]}
+{"qid":"en:alias:bert:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"DeBERTA","script":"latin","in_script":true,"relevant":["bert"]}
+{"qid":"en:alias:gpt-4:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Generative Pre-trained Transformer 4","script":"latin","in_script":true,"relevant":["gpt-4"]}
+{"qid":"en:alias:gpt-4:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"GPT-4 Turbo","script":"latin","in_script":true,"relevant":["gpt-4"]}
+{"qid":"en:alias:word-embedding:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Word vector space","script":"latin","in_script":true,"relevant":["word-embedding"]}
+{"qid":"en:alias:word-embedding:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Word vectors","script":"latin","in_script":true,"relevant":["word-embedding"]}
+{"qid":"en:alias:word-embedding:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Word vector","script":"latin","in_script":true,"relevant":["word-embedding"]}
+{"qid":"en:alias:large-language-model:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"LLM","script":"latin","in_script":true,"relevant":["large-language-model"]}
+{"qid":"en:alias:large-language-model:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Benchmarks for artificial intelligence","script":"latin","in_script":true,"relevant":["large-language-model"]}
+{"qid":"en:alias:large-language-model:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Large language models","script":"latin","in_script":true,"relevant":["large-language-model"]}
+{"qid":"en:alias:convolutional-neural-network:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"ConvNet","script":"latin","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"en:alias:convolutional-neural-network:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Deep convolutional neural network","script":"latin","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"en:alias:convolutional-neural-network:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Convoluted neural network","script":"latin","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"en:alias:diffusion-model:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Diffusion probabilistic model","script":"latin","in_script":true,"relevant":["diffusion-model"]}
+{"qid":"en:alias:diffusion-model:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Diffusion models","script":"latin","in_script":true,"relevant":["diffusion-model"]}
+{"qid":"en:alias:diffusion-model:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Diffusion probabilistic models","script":"latin","in_script":true,"relevant":["diffusion-model"]}
+{"qid":"en:alias:generative-adversarial-network:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Generative Adversarial Networks","script":"latin","in_script":true,"relevant":["generative-adversarial-network"]}
+{"qid":"en:alias:generative-adversarial-network:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Generative adversarial networks","script":"latin","in_script":true,"relevant":["generative-adversarial-network"]}
+{"qid":"en:alias:generative-adversarial-network:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Generative adversarial neural network","script":"latin","in_script":true,"relevant":["generative-adversarial-network"]}
+{"qid":"en:alias:gradient-descent:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Steepest descent","script":"latin","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"en:alias:gradient-descent:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Gradient ascent","script":"latin","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"en:alias:gradient-descent:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Gradient descent method","script":"latin","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"en:alias:overfitting:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Overfit","script":"latin","in_script":true,"relevant":["overfitting"]}
+{"qid":"en:alias:overfitting:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Underfitting","script":"latin","in_script":true,"relevant":["overfitting"]}
+{"qid":"en:alias:overfitting:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Over-fitted","script":"latin","in_script":true,"relevant":["overfitting"]}
+{"qid":"en:alias:neural-network:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Neural net","script":"latin","in_script":true,"relevant":["neural-network"]}
+{"qid":"en:alias:neural-network:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Neural nets","script":"latin","in_script":true,"relevant":["neural-network"]}
+{"qid":"en:alias:neural-network:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Massive neural network","script":"latin","in_script":true,"relevant":["neural-network"]}
+{"qid":"en:alias:deep-learning:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Deep net","script":"latin","in_script":true,"relevant":["deep-learning"]}
+{"qid":"en:alias:deep-learning:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Deep neural network","script":"latin","in_script":true,"relevant":["deep-learning"]}
+{"qid":"en:alias:deep-learning:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Hierarchy (thinking)","script":"latin","in_script":true,"relevant":["deep-learning"]}
+{"qid":"en:alias:machine-learning:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Statistical learning","script":"latin","in_script":true,"relevant":["machine-learning"]}
+{"qid":"en:alias:machine-learning:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Machine learning algorithm","script":"latin","in_script":true,"relevant":["machine-learning"]}
+{"qid":"en:alias:machine-learning:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Learning algorithms","script":"latin","in_script":true,"relevant":["machine-learning"]}
+{"qid":"en:alias:artificial-intelligence:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"AI","script":"latin","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"en:alias:artificial-intelligence:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"A.I.","script":"latin","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"en:alias:artificial-intelligence:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Machine intelligence","script":"latin","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"en:alias:chatgpt:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Chat.openai.com/chat","script":"latin","in_script":true,"relevant":["chatgpt"]}
+{"qid":"en:alias:chatgpt:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"GPTChat","script":"latin","in_script":true,"relevant":["chatgpt"]}
+{"qid":"en:alias:chatgpt:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Chat Generative Pre-trained Transformer","script":"latin","in_script":true,"relevant":["chatgpt"]}
+{"qid":"en:alias:claude:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Claude 2","script":"latin","in_script":true,"relevant":["claude"]}
+{"qid":"en:alias:claude:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Claude.ai","script":"latin","in_script":true,"relevant":["claude"]}
+{"qid":"en:alias:claude:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Claude 3","script":"latin","in_script":true,"relevant":["claude"]}
+{"qid":"en:alias:google-gemini:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Bard (artificial intelligence)","script":"latin","in_script":true,"relevant":["google-gemini"]}
+{"qid":"en:alias:google-gemini:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Google ChatGPT","script":"latin","in_script":true,"relevant":["google-gemini"]}
+{"qid":"en:alias:google-gemini:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Bard (Google)","script":"latin","in_script":true,"relevant":["google-gemini"]}
+{"qid":"en:alias:llama:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Stanford Alpaca","script":"latin","in_script":true,"relevant":["llama"]}
+{"qid":"en:alias:llama:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Llama 2","script":"latin","in_script":true,"relevant":["llama"]}
+{"qid":"en:alias:llama:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"LLaMA 2","script":"latin","in_script":true,"relevant":["llama"]}
+{"qid":"en:alias:chatbot:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"AIMBot","script":"latin","in_script":true,"relevant":["chatbot"]}
+{"qid":"en:alias:chatbot:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Private virtual personality","script":"latin","in_script":true,"relevant":["chatbot"]}
+{"qid":"en:alias:chatbot:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Chatter bot","script":"latin","in_script":true,"relevant":["chatbot"]}
+{"qid":"en:alias:k-nearest-neighbors-algorithm:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Nearest neighbor (pattern recognition)","script":"latin","in_script":true,"relevant":["k-nearest-neighbors-algorithm"]}
+{"qid":"en:alias:k-nearest-neighbors-algorithm:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Nearest Neighbor (Pattern Recognition)","script":"latin","in_script":true,"relevant":["k-nearest-neighbors-algorithm"]}
+{"qid":"en:alias:k-nearest-neighbors-algorithm:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"K-Nearest Neighbor algorithm","script":"latin","in_script":true,"relevant":["k-nearest-neighbors-algorithm"]}
+{"qid":"en:alias:recommender-system:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Recomendation system","script":"latin","in_script":true,"relevant":["recommender-system"]}
+{"qid":"en:alias:recommender-system:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Recommendation systems","script":"latin","in_script":true,"relevant":["recommender-system"]}
+{"qid":"en:alias:recommender-system:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Recommender systems","script":"latin","in_script":true,"relevant":["recommender-system"]}
+{"qid":"en:alias:cluster-analysis:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Cluster analyses","script":"latin","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"en:alias:cluster-analysis:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Data clustering","script":"latin","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"en:alias:cluster-analysis:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Clustered data","script":"latin","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"en:alias:support-vector-machine:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Support vector machines","script":"latin","in_script":true,"relevant":["support-vector-machine"]}
+{"qid":"en:alias:support-vector-machine:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Transductive Support Vector Machine","script":"latin","in_script":true,"relevant":["support-vector-machine"]}
+{"qid":"en:alias:support-vector-machine:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Support Vector Machines","script":"latin","in_script":true,"relevant":["support-vector-machine"]}
+{"qid":"en:alias:random-forest:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Random forests","script":"latin","in_script":true,"relevant":["random-forest"]}
+{"qid":"en:alias:random-forest:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Random multinomial logit","script":"latin","in_script":true,"relevant":["random-forest"]}
+{"qid":"en:alias:random-forest:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Random naive Bayes","script":"latin","in_script":true,"relevant":["random-forest"]}
+{"qid":"en:alias:principal-component-analysis:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Principal components analysis","script":"latin","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"en:alias:principal-component-analysis:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Hotelling transform","script":"latin","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"en:alias:principal-component-analysis:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Principal component","script":"latin","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"en:alias:regression-analysis:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Regression function","script":"latin","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"en:alias:regression-analysis:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Regression model","script":"latin","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"en:alias:regression-analysis:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Multiple regression","script":"latin","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"en:alias:bayes-theorem:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Bayes' rule","script":"latin","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"en:alias:bayes-theorem:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Bayes' formula","script":"latin","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"en:alias:bayes-theorem:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Bayes rule","script":"latin","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"en:alias:data-mining:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Pattern mining","script":"latin","in_script":true,"relevant":["data-mining"]}
+{"qid":"en:alias:data-mining:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Pattern Mining","script":"latin","in_script":true,"relevant":["data-mining"]}
+{"qid":"en:alias:data-mining:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Knowledge Discovery in Databases","script":"latin","in_script":true,"relevant":["data-mining"]}
+{"qid":"en:alias:natural-language-processing:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"The Natural Language Processing","script":"latin","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"en:alias:natural-language-processing:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Natural language and computation","script":"latin","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"en:alias:natural-language-processing:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Natural language recognition","script":"latin","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"en:alias:machine-translation:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Mechanized translation","script":"latin","in_script":true,"relevant":["machine-translation"]}
+{"qid":"en:alias:machine-translation:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Machine translation system","script":"latin","in_script":true,"relevant":["machine-translation"]}
+{"qid":"en:alias:machine-translation:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Machine Traslation","script":"latin","in_script":true,"relevant":["machine-translation"]}
+{"qid":"en:alias:speech-recognition:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Voice Tag","script":"latin","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"en:alias:speech-recognition:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Automatic speech recognition","script":"latin","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"en:alias:speech-recognition:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Speech to text","script":"latin","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"en:alias:computer-vision:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Image recognition","script":"latin","in_script":true,"relevant":["computer-vision"]}
+{"qid":"en:alias:computer-vision:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Computer vision systems","script":"latin","in_script":true,"relevant":["computer-vision"]}
+{"qid":"en:alias:computer-vision:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Image Recognition Techniques","script":"latin","in_script":true,"relevant":["computer-vision"]}
+{"qid":"en:alias:turing-test:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Turning Test","script":"latin","in_script":true,"relevant":["turing-test"]}
+{"qid":"en:alias:turing-test:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"The Turing Test","script":"latin","in_script":true,"relevant":["turing-test"]}
+{"qid":"en:alias:turing-test:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Turring test","script":"latin","in_script":true,"relevant":["turing-test"]}
+{"qid":"en:alias:postgresql:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Postgres","script":"latin","in_script":true,"relevant":["postgresql"]}
+{"qid":"en:alias:postgresql:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Postgre","script":"latin","in_script":true,"relevant":["postgresql"]}
+{"qid":"en:alias:postgresql:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"PostSQL","script":"latin","in_script":true,"relevant":["postgresql"]}
+{"qid":"en:alias:sqlite:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"SQLlite","script":"latin","in_script":true,"relevant":["sqlite"]}
+{"qid":"en:alias:sqlite:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"SQLite3","script":"latin","in_script":true,"relevant":["sqlite"]}
+{"qid":"en:alias:sqlite:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"SQLLite","script":"latin","in_script":true,"relevant":["sqlite"]}
+{"qid":"en:alias:redis:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Redis database format","script":"latin","in_script":true,"relevant":["redis"]}
+{"qid":"en:alias:mysql:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Libmysqld","script":"latin","in_script":true,"relevant":["mysql"]}
+{"qid":"en:alias:mysql:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Mqsql","script":"latin","in_script":true,"relevant":["mysql"]}
+{"qid":"en:alias:mysql:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"My Structured Query Language","script":"latin","in_script":true,"relevant":["mysql"]}
+{"qid":"en:alias:mongodb:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Mongodb.com","script":"latin","in_script":true,"relevant":["mongodb"]}
+{"qid":"en:alias:elasticsearch:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Compass Project","script":"latin","in_script":true,"relevant":["elasticsearch"]}
+{"qid":"en:alias:elasticsearch:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Shay Banon","script":"latin","in_script":true,"relevant":["elasticsearch"]}
+{"qid":"en:alias:elasticsearch:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Logstash","script":"latin","in_script":true,"relevant":["elasticsearch"]}
+{"qid":"en:alias:apache-kafka:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Kafka (software)","script":"latin","in_script":true,"relevant":["apache-kafka"]}
+{"qid":"en:alias:apache-kafka:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Kafka Streams","script":"latin","in_script":true,"relevant":["apache-kafka"]}
+{"qid":"en:alias:kubernetes:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"K8s","script":"latin","in_script":true,"relevant":["kubernetes"]}
+{"qid":"en:alias:kubernetes:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Google Borg","script":"latin","in_script":true,"relevant":["kubernetes"]}
+{"qid":"en:alias:kubernetes:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Container Attached Storage","script":"latin","in_script":true,"relevant":["kubernetes"]}
+{"qid":"en:alias:docker:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Libcontainer","script":"latin","in_script":true,"relevant":["docker"]}
+{"qid":"en:alias:docker:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Docker Toolbox","script":"latin","in_script":true,"relevant":["docker"]}
+{"qid":"en:alias:docker:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Dockerfile","script":"latin","in_script":true,"relevant":["docker"]}
+{"qid":"en:alias:git:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Junio Hamano","script":"latin","in_script":true,"relevant":["git"]}
+{"qid":"en:alias:git:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Git software","script":"latin","in_script":true,"relevant":["git"]}
+{"qid":"en:alias:git:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Git scm","script":"latin","in_script":true,"relevant":["git"]}
+{"qid":"en:alias:linux:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"GNU/Linux","script":"latin","in_script":true,"relevant":["linux"]}
+{"qid":"en:alias:linux:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Gnu/Linux","script":"latin","in_script":true,"relevant":["linux"]}
+{"qid":"en:alias:linux:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Linux operating system","script":"latin","in_script":true,"relevant":["linux"]}
+{"qid":"en:alias:python:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Python language","script":"latin","in_script":true,"relevant":["python"]}
+{"qid":"en:alias:python:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"PythonLanguage","script":"latin","in_script":true,"relevant":["python"]}
+{"qid":"en:alias:python:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Python computer language","script":"latin","in_script":true,"relevant":["python"]}
+{"qid":"en:alias:rust:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Rust language","script":"latin","in_script":true,"relevant":["rust"]}
+{"qid":"en:alias:rust:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Rust programming language","script":"latin","in_script":true,"relevant":["rust"]}
+{"qid":"en:alias:rust:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Borrow checker","script":"latin","in_script":true,"relevant":["rust"]}
+{"qid":"en:alias:cloud-computing:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Cloud service","script":"latin","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"en:alias:cloud-computing:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Cloud Applications","script":"latin","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"en:alias:cloud-computing:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Computing-in-the-cloud","script":"latin","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"en:alias:open-source-software:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Open-sourcing","script":"latin","in_script":true,"relevant":["open-source-software"]}
+{"qid":"en:alias:open-source-software:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Open software","script":"latin","in_script":true,"relevant":["open-source-software"]}
+{"qid":"en:alias:open-source-software:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Open sourcing","script":"latin","in_script":true,"relevant":["open-source-software"]}
+{"qid":"en:alias:software-as-a-service:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Saasworld","script":"latin","in_script":true,"relevant":["software-as-a-service"]}
+{"qid":"en:alias:software-as-a-service:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"SaaS","script":"latin","in_script":true,"relevant":["software-as-a-service"]}
+{"qid":"en:alias:software-as-a-service:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Cloud application","script":"latin","in_script":true,"relevant":["software-as-a-service"]}
+{"qid":"en:alias:big-data:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Big data analytics","script":"latin","in_script":true,"relevant":["big-data"]}
+{"qid":"en:alias:big-data:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Big analytics","script":"latin","in_script":true,"relevant":["big-data"]}
+{"qid":"en:alias:big-data:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Big data analysis","script":"latin","in_script":true,"relevant":["big-data"]}
+{"qid":"en:alias:sequoia-capital:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Sequoia Capital Operations, LLC","script":"latin","in_script":true,"relevant":["sequoia-capital"]}
+{"qid":"en:alias:sequoia-capital:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Sequoia Capital Operations","script":"latin","in_script":true,"relevant":["sequoia-capital"]}
+{"qid":"en:alias:andreessen-horowitz:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"A16z","script":"latin","in_script":true,"relevant":["andreessen-horowitz"]}
+{"qid":"en:alias:andreessen-horowitz:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Andreesen Horowitz","script":"latin","in_script":true,"relevant":["andreessen-horowitz"]}
+{"qid":"en:alias:andreessen-horowitz:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"AH Capital Management, LLC","script":"latin","in_script":true,"relevant":["andreessen-horowitz"]}
+{"qid":"en:alias:initial-public-offering:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"IPO","script":"latin","in_script":true,"relevant":["initial-public-offering"]}
+{"qid":"en:alias:initial-public-offering:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Initial public offerings","script":"latin","in_script":true,"relevant":["initial-public-offering"]}
+{"qid":"en:alias:initial-public-offering:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Initial Public Offerings","script":"latin","in_script":true,"relevant":["initial-public-offering"]}
+{"qid":"en:alias:startup-company:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Startups","script":"latin","in_script":true,"relevant":["startup-company"]}
+{"qid":"en:alias:startup-company:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Failed startup","script":"latin","in_script":true,"relevant":["startup-company"]}
+{"qid":"en:alias:startup-company:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Start-up companies","script":"latin","in_script":true,"relevant":["startup-company"]}
+{"qid":"en:alias:blockchain:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Blockchains","script":"latin","in_script":true,"relevant":["blockchain"]}
+{"qid":"en:alias:blockchain:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Blockchain 2.0","script":"latin","in_script":true,"relevant":["blockchain"]}
+{"qid":"en:alias:blockchain:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Permissionless blockchain","script":"latin","in_script":true,"relevant":["blockchain"]}
+{"qid":"en:alias:cryptocurrency:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Cryptocurrencies","script":"latin","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"en:alias:cryptocurrency:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Math Based Currency","script":"latin","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"en:alias:cryptocurrency:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Altcoin","script":"latin","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"en:alias:quantum-computing:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Practical quantum computer","script":"latin","in_script":true,"relevant":["quantum-computing"]}
+{"qid":"en:alias:quantum-computing:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Quantum computation","script":"latin","in_script":true,"relevant":["quantum-computing"]}
+{"qid":"en:alias:quantum-computing:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Quantum computers","script":"latin","in_script":true,"relevant":["quantum-computing"]}
+{"qid":"en:alias:semiconductor:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Semiconductors","script":"latin","in_script":true,"relevant":["semiconductor"]}
+{"qid":"en:alias:semiconductor:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Semi-Conductors","script":"latin","in_script":true,"relevant":["semiconductor"]}
+{"qid":"en:alias:semiconductor:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Semiconductor physics","script":"latin","in_script":true,"relevant":["semiconductor"]}
+{"qid":"en:alias:moore-s-law:0","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Moore Law","script":"latin","in_script":true,"relevant":["moore-s-law"]}
+{"qid":"en:alias:moore-s-law:1","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Moore's Drunken Conjecture","script":"latin","in_script":true,"relevant":["moore-s-law"]}
+{"qid":"en:alias:moore-s-law:2","lang":"en","family":"alias","origin":"wikipedia-redirect","query":"Computational power","script":"latin","in_script":true,"relevant":["moore-s-law"]}
