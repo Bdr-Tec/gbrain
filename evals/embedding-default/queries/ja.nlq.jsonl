@@ -1,24 +1,24 @@
-{"qid": "ja:nlq:openai", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "ChatGPT を開発し、サンフランシスコに本社を置く企業はどこか", "script": "kana", "in_script": true, "relevant": ["openai"]}
-{"qid": "ja:nlq:anthropic", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "別の大手AI企業を離れた研究者が設立した、AIの安全性に注力する研究所", "script": "han", "in_script": true, "relevant": ["anthropic"]}
-{"qid": "ja:nlq:google-deepmind", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "囲碁の世界チャンピオンに勝ったプログラムを作ったロンドンの研究所", "script": "kana", "in_script": true, "relevant": ["google-deepmind"]}
-{"qid": "ja:nlq:geoffrey-hinton", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "ディープラーニングの父と呼ばれ、チューリング賞を共同受賞した研究者", "script": "kana", "in_script": true, "relevant": ["geoffrey-hinton"]}
-{"qid": "ja:nlq:fei-fei-li", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "画像認識モデルの評価に使われる大規模なラベル付き画像データセットを作った科学者", "script": "kana", "in_script": true, "relevant": ["fei-fei-li"]}
-{"qid": "ja:nlq:jensen-huang", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "大規模モデルの学習に使われるプロセッサを作る半導体企業を率いているのは誰か", "script": "kana", "in_script": true, "relevant": ["jensen-huang"]}
-{"qid": "ja:nlq:sam-altman", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "GPT シリーズを開発している組織の最高経営責任者は誰か", "script": "han", "in_script": true, "relevant": ["sam-altman"]}
-{"qid": "ja:nlq:transformer", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "自己注意機構に基づき、再帰的な構造を置き換えたニューラルネットワークの構成", "script": "kana", "in_script": true, "relevant": ["transformer"]}
-{"qid": "ja:nlq:word-embedding", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "個々の単語をモデルが扱える密な数値ベクトルに変換する方法", "script": "kana", "in_script": true, "relevant": ["word-embedding"]}
-{"qid": "ja:nlq:retrieval-augmented-generation", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "外部から取得した文書を言語モデルに与えて事実の捏造を減らす手法", "script": "han", "in_script": true, "relevant": ["retrieval-augmented-generation"]}
-{"qid": "ja:nlq:overfitting", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "学習に使ったデータでは高い性能が出るのに未知のデータでは性能が落ちる理由", "script": "kana", "in_script": true, "relevant": ["overfitting"]}
-{"qid": "ja:nlq:gradient-descent", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "損失が小さくなる方向へパラメータを繰り返し更新する手法", "script": "kana", "in_script": true, "relevant": ["gradient-descent"]}
-{"qid": "ja:nlq:tf-idf", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "ある語が文書集合全体でどれだけ珍しいかに応じて重みを付ける方法", "script": "kana", "in_script": true, "relevant": ["tf-idf"]}
-{"qid": "ja:nlq:k-nearest-neighbors-algorithm", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "最も近い既知のラベル付き事例を見て新しい点を分類する方法", "script": "han", "in_script": true, "relevant": ["k-nearest-neighbors-algorithm"]}
-{"qid": "ja:nlq:cluster-analysis", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "ラベルのないデータを似たもの同士がまとまるように分ける手法", "script": "kana", "in_script": true, "relevant": ["cluster-analysis"]}
-{"qid": "ja:nlq:principal-component-analysis", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "できるだけ分散を保ちながら次元の数を減らす方法", "script": "kana", "in_script": true, "relevant": ["principal-component-analysis"]}
-{"qid": "ja:nlq:postgresql", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "拡張機能のエコシステムで知られるオープンソースのリレーショナルデータベース", "script": "kana", "in_script": true, "relevant": ["postgresql"]}
-{"qid": "ja:nlq:sqlite", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "データベース全体を1つの通常のファイルに保存する組み込み型のデータベースエンジン", "script": "kana", "in_script": true, "relevant": ["sqlite"]}
-{"qid": "ja:nlq:elasticsearch", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "Lucene の上に構築された分散型の全文検索サーバ", "script": "han", "in_script": true, "relevant": ["elasticsearch"]}
-{"qid": "ja:nlq:redis", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "キャッシュとしてよく使われるインメモリのキーバリューストア", "script": "kana", "in_script": true, "relevant": ["redis"]}
-{"qid": "ja:nlq:kubernetes", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "複数のマシンにまたがってコンテナをスケジュールし管理する仕組み", "script": "kana", "in_script": true, "relevant": ["kubernetes"]}
-{"qid": "ja:nlq:y-combinator", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "年に二回のバッチでスタートアップに出資するアクセラレーター", "script": "kana", "in_script": true, "relevant": ["y-combinator"]}
-{"qid": "ja:nlq:venture-capital", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "投資家がリスクの高い初期段階の企業に出資し株式を得る仕組み", "script": "han", "in_script": true, "relevant": ["venture-capital"]}
-{"qid": "ja:nlq:unicode", "lang": "ja", "family": "nlq", "origin": "author-written", "query": "あらゆる文字体系のすべての文字に番号を割り当てる規格", "script": "kana", "in_script": true, "relevant": ["unicode"]}
+{"qid":"ja:nlq:openai","lang":"ja","family":"nlq","origin":"author-written","query":"ChatGPT を開発し、サンフランシスコに本社を置く企業はどこか","script":"kana","in_script":true,"relevant":["openai"]}
+{"qid":"ja:nlq:anthropic","lang":"ja","family":"nlq","origin":"author-written","query":"別の大手AI企業を離れた研究者が設立した、AIの安全性に注力する研究所","script":"han","in_script":true,"relevant":["anthropic"]}
+{"qid":"ja:nlq:google-deepmind","lang":"ja","family":"nlq","origin":"author-written","query":"囲碁の世界チャンピオンに勝ったプログラムを作ったロンドンの研究所","script":"kana","in_script":true,"relevant":["google-deepmind"]}
+{"qid":"ja:nlq:geoffrey-hinton","lang":"ja","family":"nlq","origin":"author-written","query":"ディープラーニングの父と呼ばれ、チューリング賞を共同受賞した研究者","script":"kana","in_script":true,"relevant":["geoffrey-hinton"]}
+{"qid":"ja:nlq:yann-lecun","lang":"ja","family":"nlq","origin":"author-written","query":"フェイスブックとインスタグラムを所有する企業で人工知能研究を統括しているのは誰か","script":"kana","in_script":true,"relevant":["yann-lecun"]}
+{"qid":"ja:nlq:jensen-huang","lang":"ja","family":"nlq","origin":"author-written","query":"大規模モデルの学習に使われるプロセッサを作る半導体企業を率いているのは誰か","script":"kana","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"ja:nlq:sam-altman","lang":"ja","family":"nlq","origin":"author-written","query":"GPT シリーズを開発している組織の最高経営責任者は誰か","script":"han","in_script":true,"relevant":["sam-altman"]}
+{"qid":"ja:nlq:transformer","lang":"ja","family":"nlq","origin":"author-written","query":"自己注意機構に基づき、再帰的な構造を置き換えたニューラルネットワークの構成","script":"kana","in_script":true,"relevant":["transformer"]}
+{"qid":"ja:nlq:convolutional-neural-network","lang":"ja","family":"nlq","origin":"author-written","query":"学習したフィルタを画像の上で滑らせて局所的な模様を捉えるネットワーク構成","script":"kana","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"ja:nlq:retrieval-augmented-generation","lang":"ja","family":"nlq","origin":"author-written","query":"外部から取得した文書を言語モデルに与えて事実の捏造を減らす手法","script":"han","in_script":true,"relevant":["retrieval-augmented-generation"]}
+{"qid":"ja:nlq:overfitting","lang":"ja","family":"nlq","origin":"author-written","query":"学習に使ったデータでは高い性能が出るのに未知のデータでは性能が落ちる理由","script":"kana","in_script":true,"relevant":["overfitting"]}
+{"qid":"ja:nlq:gradient-descent","lang":"ja","family":"nlq","origin":"author-written","query":"損失が小さくなる方向へパラメータを繰り返し更新する手法","script":"kana","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"ja:nlq:tf-idf","lang":"ja","family":"nlq","origin":"author-written","query":"ある語が文書集合全体でどれだけ珍しいかに応じて重みを付ける方法","script":"kana","in_script":true,"relevant":["tf-idf"]}
+{"qid":"ja:nlq:nearest-neighbor-search","lang":"ja","family":"nlq","origin":"author-written","query":"大規模な集合の中から与えられた点に最も近い要素を見つけること","script":"kana","in_script":true,"relevant":["nearest-neighbor-search"]}
+{"qid":"ja:nlq:cluster-analysis","lang":"ja","family":"nlq","origin":"author-written","query":"ラベルのないデータを似たもの同士がまとまるように分ける手法","script":"kana","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"ja:nlq:principal-component-analysis","lang":"ja","family":"nlq","origin":"author-written","query":"できるだけ分散を保ちながら次元の数を減らす方法","script":"kana","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"ja:nlq:postgresql","lang":"ja","family":"nlq","origin":"author-written","query":"拡張機能のエコシステムで知られるオープンソースのリレーショナルデータベース","script":"kana","in_script":true,"relevant":["postgresql"]}
+{"qid":"ja:nlq:sqlite","lang":"ja","family":"nlq","origin":"author-written","query":"データベース全体を1つの通常のファイルに保存する組み込み型のデータベースエンジン","script":"kana","in_script":true,"relevant":["sqlite"]}
+{"qid":"ja:nlq:elasticsearch","lang":"ja","family":"nlq","origin":"author-written","query":"Lucene の上に構築された分散型の全文検索サーバ","script":"han","in_script":true,"relevant":["elasticsearch"]}
+{"qid":"ja:nlq:redis","lang":"ja","family":"nlq","origin":"author-written","query":"キャッシュとしてよく使われるインメモリのキーバリューストア","script":"kana","in_script":true,"relevant":["redis"]}
+{"qid":"ja:nlq:kubernetes","lang":"ja","family":"nlq","origin":"author-written","query":"複数のマシンにまたがってコンテナをスケジュールし管理する仕組み","script":"kana","in_script":true,"relevant":["kubernetes"]}
+{"qid":"ja:nlq:y-combinator","lang":"ja","family":"nlq","origin":"author-written","query":"年に二回のバッチでスタートアップに出資するアクセラレーター","script":"kana","in_script":true,"relevant":["y-combinator"]}
+{"qid":"ja:nlq:venture-capital","lang":"ja","family":"nlq","origin":"author-written","query":"投資家がリスクの高い初期段階の企業に出資し株式を得る仕組み","script":"han","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ja:nlq:unicode","lang":"ja","family":"nlq","origin":"author-written","query":"あらゆる文字体系のすべての文字に番号を割り当てる規格","script":"kana","in_script":true,"relevant":["unicode"]}

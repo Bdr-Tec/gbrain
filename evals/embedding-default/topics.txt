@@ -1,14 +1,22 @@
 # Topic pool for the embedding-default eval corpus.
 #
 # One canonical English Wikipedia title per line. `#` comments + blank lines
-# are ignored. build-corpus.mjs resolves each title's he / zh / ja counterpart
-# via the langlinks API, so the SAME semantic topic set is used in every
-# language slice — language/script is the only variable across slices.
+# are ignored. build-corpus.mjs resolves each title's ar / he / ru / zh / ja
+# counterpart via the langlinks API, so the SAME semantic topic set is used in
+# every language slice — language/script is the only variable across slices.
+#
+# The pool is OVER-PROVISIONED on purpose. A topic is only usable if it has an
+# article clearing MIN_DOC_CHARS in EVERY one of the six languages, and Hebrew
+# + Arabic Wikipedia carry many more stubs than English does. The pool is sized
+# so ~200 topics survive that six-way intersection; the survivors are then
+# capped to exactly 200 (see TARGET_DOCS in build-corpus.mjs). Topics that fail
+# in one language are reported in the manifest's `no_article` / `dropped`
+# fields — they are documented, never silently substituted.
 #
 # Selection rule (documented so a reviewer can judge difficulty): the pool is
 # deliberately CLUSTERED inside gbrain's own domain (AI research, AI labs, AI
 # researchers, retrieval/IR, datastores, venture funding). Near-neighbour
-# clusters make retrieval non-trivial — a pool of 78 unrelated topics would
+# clusters make retrieval non-trivial — a pool of 200 unrelated topics would
 # ceiling out at nDCG ~1.0 for every model and measure nothing.
 
 # --- AI labs / companies (near-neighbour cluster) ---
@@ -19,8 +27,46 @@ Mistral AI
 Hugging Face
 Nvidia
 Meta Platforms
+Stability AI
+Databricks
+Palantir Technologies
+Microsoft
+Apple Inc.
+Amazon (company)
+Alphabet Inc.
+Google
+IBM
+Intel
+Advanced Micro Devices
+Qualcomm
+TSMC
+Arm Holdings
+Salesforce
+Oracle Corporation
+SAP
+Adobe Inc.
+Tesla, Inc.
+SpaceX
+Uber
+Airbnb
+Shopify
+Spotify
+Netflix
+Twitter
+LinkedIn
+GitHub
+GitLab
+Dropbox
+Atlassian
+Cloudflare
+Samsung Electronics
+Sony
+Alibaba Group
+Tencent
+Baidu
+ByteDance
 
-# --- AI researchers / founders (near-neighbour cluster) ---
+# --- AI researchers / founders / computing figures (near-neighbour cluster) ---
 Geoffrey Hinton
 Yann LeCun
 Yoshua Bengio
@@ -30,23 +76,104 @@ Fei-Fei Li
 Sam Altman
 Jensen Huang
 Dario Amodei
+Andrew Ng
+Judea Pearl
+Marvin Minsky
+John McCarthy (computer scientist)
+Herbert A. Simon
+Alan Turing
+John von Neumann
+Claude Shannon
+Ada Lovelace
+Grace Hopper
+Donald Knuth
+Edsger W. Dijkstra
+Tim Berners-Lee
+Linus Torvalds
+Guido van Rossum
+Ken Thompson
+Dennis Ritchie
+Bjarne Stroustrup
+Alan Kay
+Vint Cerf
+Barbara Liskov
+Leslie Lamport
+Richard Stallman
+Steve Jobs
+Bill Gates
+Elon Musk
+Jeff Bezos
+Mark Zuckerberg
+Larry Page
+Sergey Brin
+Satya Nadella
+Sundar Pichai
+Peter Thiel
+Marc Andreessen
 
 # --- Model architectures + training concepts (near-neighbour cluster) ---
 Transformer (deep learning architecture)
 BERT (language model)
 GPT-4
+GPT-3
+GPT-2
+Generative pre-trained transformer
 Word embedding
+Word2vec
 Large language model
 Retrieval-augmented generation
 Convolutional neural network
+Recurrent neural network
+Long short-term memory
 Diffusion model
 Generative adversarial network
+Autoencoder
+Variational autoencoder
+Attention (machine learning)
+Vision transformer
+Mixture of experts
 Gradient descent
+Stochastic gradient descent
+Backpropagation
 Overfitting
+Regularization (mathematics)
+Batch normalization
+Loss function
+Activation function
+Softmax function
+Sigmoid function
+Rectifier (neural networks)
+Perceptron
+Multilayer perceptron
 Neural network (machine learning)
 Deep learning
 Machine learning
 Artificial intelligence
+Reinforcement learning
+Supervised learning
+Unsupervised learning
+Self-supervised learning
+Transfer learning
+Reinforcement learning from human feedback
+Fine-tuning (deep learning)
+Prompt engineering
+Hallucination (artificial intelligence)
+Foundation model
+Multimodal learning
+Byte pair encoding
+Perplexity
+Curse of dimensionality
+Bias–variance tradeoff
+Cross-validation (statistics)
+Feature engineering
+Precision and recall
+Confusion matrix
+Receiver operating characteristic
+F-score
+Artificial general intelligence
+AI alignment
+Ethics of artificial intelligence
+Technological singularity
 
 # --- Named model products (very-near-neighbour cluster: all chat LLMs) ---
 ChatGPT
@@ -54,6 +181,17 @@ Claude (AI)
 Google Gemini
 Llama (language model)
 Chatbot
+Stable Diffusion
+DALL-E
+Midjourney
+AlphaGo
+AlphaFold
+AlphaZero
+Deep Blue (chess computer)
+Virtual assistant
+Siri
+Amazon Alexa
+Google Assistant
 
 # --- Retrieval / IR / ranking (near-neighbour cluster — gbrain's core domain) ---
 Cosine similarity
@@ -61,39 +199,219 @@ K-nearest neighbors algorithm
 Search engine
 Tf–idf
 Recommender system
+Collaborative filtering
 Cluster analysis
 Support vector machine
 Random forest
+Decision tree learning
+Gradient boosting
+XGBoost
+AdaBoost
+Naive Bayes classifier
+Logistic regression
+Linear regression
+K-means clustering
+Hierarchical clustering
+DBSCAN
 Principal component analysis
+Singular value decomposition
+Latent semantic analysis
+Latent Dirichlet allocation
+Topic model
 Regression analysis
 Bayes' theorem
 Data mining
+Text mining
+Information retrieval
+Vector space model
+Okapi BM25
+Inverted index
+PageRank
+Web crawler
+Query expansion
+Relevance feedback
+Learning to rank
+Nearest neighbor search
+Locality-sensitive hashing
+Full-text search
+Apache Lucene
+Apache Solr
+Levenshtein distance
+Jaccard index
+Euclidean distance
+Dot product
+Hamming distance
 
 # --- NLP / perception tasks ---
 Natural language processing
 Machine translation
 Speech recognition
+Speech synthesis
 Computer vision
 Turing test
+Sentiment analysis
+Named-entity recognition
+Part-of-speech tagging
+Word-sense disambiguation
+Automatic summarization
+Question answering
+Stemming
+Lemmatisation
+Stop word
+N-gram
+Bag-of-words model
+Optical character recognition
+Digital image processing
+Computer graphics
+Ray tracing (graphics)
+Robotics
+Self-driving car
 
 # --- Datastores + infra (near-neighbour cluster) ---
 PostgreSQL
 SQLite
 Redis
 MySQL
+MariaDB
+Microsoft SQL Server
+Oracle Database
 MongoDB
+Apache Cassandra
+Neo4j
+ClickHouse
+Memcached
 Elasticsearch
 Apache Kafka
+RabbitMQ
+Apache Spark
+Apache Hadoop
 Kubernetes
 Docker (software)
+NoSQL
+SQL
+Relational database
+Graph database
+Document-oriented database
+Data warehouse
+Extract, transform, load
+Database transaction
+Database index
+Database normalization
+Replication (computing)
+CAP theorem
+Consistent hashing
+B-tree
+Hash table
+JSON
+YAML
+XML
+GraphQL
+Representational state transfer
+WebSocket
+Hypertext Transfer Protocol
+HTTPS
+Transport Layer Security
+Transmission Control Protocol
+Domain Name System
+Load balancing (computing)
+Reverse proxy
+Nginx
+Apache HTTP Server
+Cache (computing)
+Content delivery network
+Microservices
+Serverless computing
+Virtual machine
+OS-level virtualization
+Continuous integration
+DevOps
+Amazon Web Services
+Microsoft Azure
+Google Cloud Platform
 Git
 Linux
-Python (programming language)
-Rust (programming language)
 Cloud computing
 Open-source software
 Software as a service
 Big data
+Edge computing
+Internet of things
+Cloud storage
+
+# --- Programming languages + software engineering ---
+Python (programming language)
+Rust (programming language)
+JavaScript
+TypeScript
+Java (programming language)
+C (programming language)
+C++
+C Sharp (programming language)
+Go (programming language)
+Ruby (programming language)
+PHP
+Swift (programming language)
+Kotlin (programming language)
+Scala (programming language)
+Haskell
+Lisp (programming language)
+R (programming language)
+MATLAB
+Assembly language
+HTML
+CSS
+Node.js
+React (software)
+Compiler
+Interpreter (computing)
+Garbage collection (computer science)
+Regular expression
+Version control
+Unit testing
+Agile software development
+Scrum (software development)
+Software design pattern
+Object-oriented programming
+Functional programming
+Recursion (computer science)
+Algorithm
+Data structure
+Big O notation
+Time complexity
+Sorting algorithm
+Binary search
+Dynamic programming
+Graph theory
+Turing machine
+Computational complexity theory
+P versus NP problem
+Operating system
+Kernel (operating system)
+Unix
+MacOS
+Microsoft Windows
+Android (operating system)
+IOS
+Web browser
+World Wide Web
+Internet
+Application programming interface
+Software bug
+Open-source license
+GNU General Public License
+MIT License
+Apache License
+Creative Commons
+
+# --- Security + cryptography ---
+Cryptography
+Public-key cryptography
+RSA (cryptosystem)
+Hash function
+SHA-2
+Advanced Encryption Standard
+Digital signature
+Zero-knowledge proof
 
 # --- Venture / company formation (near-neighbour cluster) ---
 Y Combinator
@@ -103,11 +421,83 @@ Venture capital
 Seed money
 Initial public offering
 Startup company
+Angel investor
+Private equity
+Valuation (finance)
+Due diligence
+Mergers and acquisitions
+Special-purpose acquisition company
+Unicorn (finance)
+Startup accelerator
+Business incubator
+Crowdfunding
+Kickstarter
+Business model
+Minimum viable product
+Subscription business model
+Freemium
+Network effect
+Economies of scale
+Intellectual property
+Patent
+Trademark
+Copyright
+Employee stock option
+
+# --- Math / statistics underpinnings ---
+Statistics
+Probability
+Normal distribution
+Bayesian inference
+Markov chain
+Monte Carlo method
+Hidden Markov model
+Linear algebra
+Matrix (mathematics)
+Eigenvalues and eigenvectors
+Vector space
+Calculus
+Derivative
+Mathematical optimization
+Convex optimization
+Entropy (information theory)
+Information theory
+Signal processing
+Fourier transform
+Fast Fourier transform
 
 # --- Adjacent tech (dilutes the clusters slightly, as a real brain would) ---
 Unicode
 Blockchain
 Cryptocurrency
+Bitcoin
+Ethereum
+Smart contract
+Non-fungible token
 Quantum computing
+Qubit
+Quantum entanglement
 Semiconductor
 Moore's law
+Graphics processing unit
+Central processing unit
+Tensor Processing Unit
+Field-programmable gate array
+Application-specific integrated circuit
+Random-access memory
+Solid-state drive
+Superconductivity
+Nanotechnology
+Biotechnology
+CRISPR
+Genome
+Protein folding
+Bioinformatics
+Neuroscience
+Cognitive science
+Philosophy of mind
+Consciousness
+Automation
+5G
+Wi-Fi
+Bluetooth

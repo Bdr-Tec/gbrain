@@ -15,6 +15,48 @@
 {"qid":"zh:alias:meta-platforms:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Facebook公司","script":"latin","in_script":false,"relevant":["meta-platforms"]}
 {"qid":"zh:alias:meta-platforms:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Facebook, Inc.","script":"latin","in_script":false,"relevant":["meta-platforms"]}
 {"qid":"zh:alias:meta-platforms:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"脸书公司","script":"han","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"zh:alias:palantir-technologies:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Palantir","script":"latin","in_script":false,"relevant":["palantir-technologies"]}
+{"qid":"zh:alias:palantir-technologies:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Palantir Technologies","script":"latin","in_script":false,"relevant":["palantir-technologies"]}
+{"qid":"zh:alias:palantir-technologies:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"帕兰提尔","script":"han","in_script":true,"relevant":["palantir-technologies"]}
+{"qid":"zh:alias:apple-inc:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"苹果公司","script":"han","in_script":true,"relevant":["apple-inc"]}
+{"qid":"zh:alias:apple-inc:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"苹果电脑公司","script":"han","in_script":true,"relevant":["apple-inc"]}
+{"qid":"zh:alias:apple-inc:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"蘋果電腦公司","script":"han","in_script":true,"relevant":["apple-inc"]}
+{"qid":"zh:alias:alphabet-inc:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Alphabet Inc.","script":"latin","in_script":false,"relevant":["alphabet-inc"]}
+{"qid":"zh:alias:alphabet-inc:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Alphabet公司","script":"latin","in_script":false,"relevant":["alphabet-inc"]}
+{"qid":"zh:alias:alphabet-inc:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"字母公司","script":"han","in_script":true,"relevant":["alphabet-inc"]}
+{"qid":"zh:alias:ibm:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"國際商用機器公司","script":"han","in_script":true,"relevant":["ibm"]}
+{"qid":"zh:alias:ibm:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"美国国际商业机器公司","script":"han","in_script":true,"relevant":["ibm"]}
+{"qid":"zh:alias:ibm:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"IBM公司","script":"latin","in_script":false,"relevant":["ibm"]}
+{"qid":"zh:alias:advanced-micro-devices:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"超微半导体","script":"han","in_script":true,"relevant":["advanced-micro-devices"]}
+{"qid":"zh:alias:advanced-micro-devices:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"美国超微公司","script":"han","in_script":true,"relevant":["advanced-micro-devices"]}
+{"qid":"zh:alias:advanced-micro-devices:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Advanced Micro Devices","script":"latin","in_script":false,"relevant":["advanced-micro-devices"]}
+{"qid":"zh:alias:salesforce:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Salesforce","script":"latin","in_script":false,"relevant":["salesforce"]}
+{"qid":"zh:alias:salesforce:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Salesforce.com","script":"latin","in_script":false,"relevant":["salesforce"]}
+{"qid":"zh:alias:salesforce:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"賽福時","script":"han","in_script":true,"relevant":["salesforce"]}
+{"qid":"zh:alias:sap:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"思愛普公司","script":"han","in_script":true,"relevant":["sap"]}
+{"qid":"zh:alias:sap:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"思愛普","script":"han","in_script":true,"relevant":["sap"]}
+{"qid":"zh:alias:sap:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"SAP AG","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"zh:alias:tesla-inc:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"特斯拉汽车公司","script":"han","in_script":true,"relevant":["tesla-inc"]}
+{"qid":"zh:alias:tesla-inc:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Tesla Motors","script":"latin","in_script":false,"relevant":["tesla-inc"]}
+{"qid":"zh:alias:tesla-inc:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"特斯拉汽車","script":"han","in_script":true,"relevant":["tesla-inc"]}
+{"qid":"zh:alias:uber:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Uber","script":"latin","in_script":false,"relevant":["uber"]}
+{"qid":"zh:alias:uber:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"優步時間軸","script":"han","in_script":true,"relevant":["uber"]}
+{"qid":"zh:alias:uber:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Uber中国","script":"latin","in_script":false,"relevant":["uber"]}
+{"qid":"zh:alias:twitter:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"伊隆·馬斯克領導的Twitter","script":"han","in_script":true,"relevant":["twitter"]}
+{"qid":"zh:alias:twitter:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"X（原推特）","script":"han","in_script":true,"relevant":["twitter"]}
+{"qid":"zh:alias:twitter:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"X（原Twitter）","script":"latin","in_script":false,"relevant":["twitter"]}
+{"qid":"zh:alias:github:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Microsoft GitHub","script":"latin","in_script":false,"relevant":["github"]}
+{"qid":"zh:alias:atlassian:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Cenqua","script":"latin","in_script":false,"relevant":["atlassian"]}
+{"qid":"zh:alias:atlassian:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"艾特萊森軟件","script":"han","in_script":true,"relevant":["atlassian"]}
+{"qid":"zh:alias:samsung-electronics:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"三星电子","script":"han","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"zh:alias:samsung-electronics:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Samsung Electronics","script":"latin","in_script":false,"relevant":["samsung-electronics"]}
+{"qid":"zh:alias:samsung-electronics:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"三星電子公司","script":"han","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"zh:alias:alibaba-group:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"阿里巴巴 (公司)","script":"han","in_script":true,"relevant":["alibaba-group"]}
+{"qid":"zh:alias:alibaba-group:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Alibaba.com","script":"latin","in_script":false,"relevant":["alibaba-group"]}
+{"qid":"zh:alias:alibaba-group:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"阿里巴巴公司","script":"han","in_script":true,"relevant":["alibaba-group"]}
+{"qid":"zh:alias:bytedance:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"北京字节跳动科技有限公司","script":"han","in_script":true,"relevant":["bytedance"]}
+{"qid":"zh:alias:bytedance:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"抖音集团","script":"han","in_script":true,"relevant":["bytedance"]}
+{"qid":"zh:alias:bytedance:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"北京抖音信息服务有限公司","script":"han","in_script":true,"relevant":["bytedance"]}
 {"qid":"zh:alias:geoffrey-hinton:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Geoffrey Hinton","script":"latin","in_script":false,"relevant":["geoffrey-hinton"]}
 {"qid":"zh:alias:geoffrey-hinton:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"杰弗里·欣顿","script":"han","in_script":true,"relevant":["geoffrey-hinton"]}
 {"qid":"zh:alias:geoffrey-hinton:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"杰弗里·埃弗里斯特·辛顿","script":"han","in_script":true,"relevant":["geoffrey-hinton"]}
@@ -32,11 +74,51 @@
 {"qid":"zh:alias:jensen-huang:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"黄老板","script":"han","in_script":true,"relevant":["jensen-huang"]}
 {"qid":"zh:alias:dario-amodei:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"达里奥·阿莫迪","script":"han","in_script":true,"relevant":["dario-amodei"]}
 {"qid":"zh:alias:dario-amodei:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Dario Amodei","script":"latin","in_script":false,"relevant":["dario-amodei"]}
+{"qid":"zh:alias:marvin-minsky:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Marvin Minsky","script":"latin","in_script":false,"relevant":["marvin-minsky"]}
+{"qid":"zh:alias:marvin-minsky:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"马文·明斯基","script":"han","in_script":true,"relevant":["marvin-minsky"]}
+{"qid":"zh:alias:marvin-minsky:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Marvin L. Minsky","script":"latin","in_script":false,"relevant":["marvin-minsky"]}
+{"qid":"zh:alias:herbert-a-simon:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"赫伯特·亚历山大·西蒙","script":"han","in_script":true,"relevant":["herbert-a-simon"]}
+{"qid":"zh:alias:herbert-a-simon:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"赫伯特·西蒙","script":"han","in_script":true,"relevant":["herbert-a-simon"]}
+{"qid":"zh:alias:herbert-a-simon:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"西蒙，H.A.","script":"han","in_script":true,"relevant":["herbert-a-simon"]}
+{"qid":"zh:alias:john-von-neumann:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"冯·诺依曼","script":"han","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"zh:alias:john-von-neumann:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"馮·紐曼","script":"han","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"zh:alias:john-von-neumann:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"馮紐曼","script":"han","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"zh:alias:ada-lovelace:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Ada Lovelace","script":"latin","in_script":false,"relevant":["ada-lovelace"]}
+{"qid":"zh:alias:ada-lovelace:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"阿达·奥古斯塔","script":"han","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"zh:alias:ada-lovelace:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"埃达·洛夫莱斯","script":"han","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"zh:alias:edsger-w-dijkstra:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"E·W·戴克斯特拉","script":"han","in_script":true,"relevant":["edsger-w-dijkstra"]}
+{"qid":"zh:alias:edsger-w-dijkstra:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"艾兹格·W·迪科斯彻","script":"han","in_script":true,"relevant":["edsger-w-dijkstra"]}
+{"qid":"zh:alias:edsger-w-dijkstra:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Edsger Dijkstra","script":"latin","in_script":false,"relevant":["edsger-w-dijkstra"]}
+{"qid":"zh:alias:linus-torvalds:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Linus Torvalds","script":"latin","in_script":false,"relevant":["linus-torvalds"]}
+{"qid":"zh:alias:linus-torvalds:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"林納斯·托瓦茲","script":"han","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"zh:alias:linus-torvalds:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"李纳斯·托沃兹","script":"han","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"zh:alias:ken-thompson:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"肯·湯普森","script":"han","in_script":true,"relevant":["ken-thompson"]}
+{"qid":"zh:alias:ken-thompson:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"肯·湯普遜","script":"han","in_script":true,"relevant":["ken-thompson"]}
+{"qid":"zh:alias:ken-thompson:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Ken Thompson","script":"latin","in_script":false,"relevant":["ken-thompson"]}
+{"qid":"zh:alias:bjarne-stroustrup:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"布贾尼·斯特劳斯特卢普","script":"han","in_script":true,"relevant":["bjarne-stroustrup"]}
+{"qid":"zh:alias:bjarne-stroustrup:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"比加尼·斯楚士舒普","script":"han","in_script":true,"relevant":["bjarne-stroustrup"]}
+{"qid":"zh:alias:bjarne-stroustrup:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Bjarne Stroustrup","script":"latin","in_script":false,"relevant":["bjarne-stroustrup"]}
+{"qid":"zh:alias:barbara-liskov:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Barbara Liskov","script":"latin","in_script":false,"relevant":["barbara-liskov"]}
+{"qid":"zh:alias:steve-jobs:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"史提芬·乔布斯","script":"han","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"zh:alias:steve-jobs:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"史提夫·喬布斯","script":"han","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"zh:alias:steve-jobs:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"史提芬·喬布斯","script":"han","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"zh:alias:elon-musk:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"艾伦马斯克","script":"han","in_script":true,"relevant":["elon-musk"]}
+{"qid":"zh:alias:elon-musk:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"艾伦·马斯克","script":"han","in_script":true,"relevant":["elon-musk"]}
+{"qid":"zh:alias:elon-musk:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Elon Musk","script":"latin","in_script":false,"relevant":["elon-musk"]}
+{"qid":"zh:alias:mark-zuckerberg:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"馬克·左克柏","script":"han","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"zh:alias:mark-zuckerberg:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"马克·朱克伯格","script":"han","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"zh:alias:mark-zuckerberg:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"馬克·祖克柏","script":"han","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"zh:alias:sergey-brin:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"謝爾蓋·布林","script":"han","in_script":true,"relevant":["sergey-brin"]}
+{"qid":"zh:alias:sergey-brin:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Sergey Brin","script":"latin","in_script":false,"relevant":["sergey-brin"]}
+{"qid":"zh:alias:sergey-brin:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"些奇·布林","script":"han","in_script":true,"relevant":["sergey-brin"]}
+{"qid":"zh:alias:sundar-pichai:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"桑达·皮采","script":"han","in_script":true,"relevant":["sundar-pichai"]}
+{"qid":"zh:alias:sundar-pichai:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Sundar Pichai","script":"latin","in_script":false,"relevant":["sundar-pichai"]}
+{"qid":"zh:alias:sundar-pichai:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"桑达尔·皮猜","script":"han","in_script":true,"relevant":["sundar-pichai"]}
 {"qid":"zh:alias:transformer:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Transformer","script":"latin","in_script":false,"relevant":["transformer"]}
 {"qid":"zh:alias:transformer:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Transformer模型","script":"latin","in_script":false,"relevant":["transformer"]}
-{"qid":"zh:alias:bert:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"基于变换器的双向编码器表示技术","script":"han","in_script":true,"relevant":["bert"]}
 {"qid":"zh:alias:gpt-4:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"生成型预训练变换模型 4","script":"han","in_script":true,"relevant":["gpt-4"]}
-{"qid":"zh:alias:gpt-4:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"GPT-4 Turbo","script":"latin","in_script":false,"relevant":["gpt-4"]}
+{"qid":"zh:alias:generative-pre-trained-transformer:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"生成预训练转换器","script":"han","in_script":true,"relevant":["generative-pre-trained-transformer"]}
+{"qid":"zh:alias:generative-pre-trained-transformer:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"基于转换器的生成式预训练模型","script":"han","in_script":true,"relevant":["generative-pre-trained-transformer"]}
 {"qid":"zh:alias:large-language-model:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"大语言模型","script":"han","in_script":true,"relevant":["large-language-model"]}
 {"qid":"zh:alias:large-language-model:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"指令微调","script":"han","in_script":true,"relevant":["large-language-model"]}
 {"qid":"zh:alias:large-language-model:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"大型語言模型","script":"han","in_script":true,"relevant":["large-language-model"]}
@@ -50,6 +132,8 @@
 {"qid":"zh:alias:overfitting:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"过适","script":"han","in_script":true,"relevant":["overfitting"]}
 {"qid":"zh:alias:overfitting:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"过度拟合","script":"han","in_script":true,"relevant":["overfitting"]}
 {"qid":"zh:alias:overfitting:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"过拟合","script":"han","in_script":true,"relevant":["overfitting"]}
+{"qid":"zh:alias:perceptron:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"感知元","script":"han","in_script":true,"relevant":["perceptron"]}
+{"qid":"zh:alias:perceptron:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"感知机","script":"han","in_script":true,"relevant":["perceptron"]}
 {"qid":"zh:alias:neural-network:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"類神經網路","script":"han","in_script":true,"relevant":["neural-network"]}
 {"qid":"zh:alias:neural-network:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"人工智慧網路","script":"han","in_script":true,"relevant":["neural-network"]}
 {"qid":"zh:alias:neural-network:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"類神經網絡","script":"han","in_script":true,"relevant":["neural-network"]}
@@ -59,6 +143,14 @@
 {"qid":"zh:alias:artificial-intelligence:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"机器智能","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
 {"qid":"zh:alias:artificial-intelligence:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"人工智能系统","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
 {"qid":"zh:alias:artificial-intelligence:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"智能计算机系统","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"zh:alias:supervised-learning:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"監督式學習","script":"han","in_script":true,"relevant":["supervised-learning"]}
+{"qid":"zh:alias:supervised-learning:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"完全監督學習","script":"han","in_script":true,"relevant":["supervised-learning"]}
+{"qid":"zh:alias:prompt-engineering:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"提示工程師","script":"han","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"zh:alias:prompt-engineering:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"提示注入攻擊","script":"han","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"zh:alias:prompt-engineering:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"提示注碼","script":"han","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"zh:alias:technological-singularity:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"技术极点","script":"han","in_script":true,"relevant":["technological-singularity"]}
+{"qid":"zh:alias:technological-singularity:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"超人剧变","script":"han","in_script":true,"relevant":["technological-singularity"]}
+{"qid":"zh:alias:technological-singularity:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"技術奇點","script":"han","in_script":true,"relevant":["technological-singularity"]}
 {"qid":"zh:alias:chatgpt:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"聊天生成预训练转换器","script":"han","in_script":true,"relevant":["chatgpt"]}
 {"qid":"zh:alias:chatgpt:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Chat.openai.com","script":"latin","in_script":false,"relevant":["chatgpt"]}
 {"qid":"zh:alias:chatgpt:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Chat Generative Pre-trained Transformer","script":"latin","in_script":false,"relevant":["chatgpt"]}
@@ -68,9 +160,8 @@
 {"qid":"zh:alias:chatbot:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"ChatBot","script":"latin","in_script":false,"relevant":["chatbot"]}
 {"qid":"zh:alias:chatbot:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"聊天机器人","script":"han","in_script":true,"relevant":["chatbot"]}
 {"qid":"zh:alias:chatbot:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"聊天機械人","script":"han","in_script":true,"relevant":["chatbot"]}
-{"qid":"zh:alias:k-nearest-neighbors-algorithm:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"最近邻域 (模式识别)","script":"han","in_script":true,"relevant":["k-nearest-neighbors-algorithm"]}
-{"qid":"zh:alias:k-nearest-neighbors-algorithm:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"K-Nearest Neighbours","script":"latin","in_script":false,"relevant":["k-nearest-neighbors-algorithm"]}
-{"qid":"zh:alias:k-nearest-neighbors-algorithm:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"最近鄰居法","script":"han","in_script":true,"relevant":["k-nearest-neighbors-algorithm"]}
+{"qid":"zh:alias:alphafold:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"AlphaFold蛋白質結構數據庫","script":"latin","in_script":false,"relevant":["alphafold"]}
+{"qid":"zh:alias:deep-blue:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"深藍計算機","script":"han","in_script":true,"relevant":["deep-blue"]}
 {"qid":"zh:alias:search-engine:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"垂直搜索","script":"han","in_script":true,"relevant":["search-engine"]}
 {"qid":"zh:alias:search-engine:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Search engine","script":"latin","in_script":false,"relevant":["search-engine"]}
 {"qid":"zh:alias:cluster-analysis:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"聚类","script":"han","in_script":true,"relevant":["cluster-analysis"]}
@@ -80,6 +171,10 @@
 {"qid":"zh:alias:support-vector-machine:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"支持矢量","script":"han","in_script":true,"relevant":["support-vector-machine"]}
 {"qid":"zh:alias:support-vector-machine:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"支援向量機","script":"han","in_script":true,"relevant":["support-vector-machine"]}
 {"qid":"zh:alias:random-forest:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"隨機森林","script":"han","in_script":true,"relevant":["random-forest"]}
+{"qid":"zh:alias:logistic-regression:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"二类评定模型","script":"han","in_script":true,"relevant":["logistic-regression"]}
+{"qid":"zh:alias:logistic-regression:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"逻辑回归","script":"han","in_script":true,"relevant":["logistic-regression"]}
+{"qid":"zh:alias:logistic-regression:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"逻辑回归分析","script":"han","in_script":true,"relevant":["logistic-regression"]}
+{"qid":"zh:alias:singular-value-decomposition:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"SVD分解","script":"latin","in_script":false,"relevant":["singular-value-decomposition"]}
 {"qid":"zh:alias:regression-analysis:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"回归分析","script":"han","in_script":true,"relevant":["regression-analysis"]}
 {"qid":"zh:alias:regression-analysis:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"迴歸","script":"han","in_script":true,"relevant":["regression-analysis"]}
 {"qid":"zh:alias:regression-analysis:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"線性迴歸分析","script":"han","in_script":true,"relevant":["regression-analysis"]}
@@ -89,6 +184,16 @@
 {"qid":"zh:alias:data-mining:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"資料採礦","script":"han","in_script":true,"relevant":["data-mining"]}
 {"qid":"zh:alias:data-mining:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"資料挖掘","script":"han","in_script":true,"relevant":["data-mining"]}
 {"qid":"zh:alias:data-mining:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"資料開採","script":"han","in_script":true,"relevant":["data-mining"]}
+{"qid":"zh:alias:web-crawler:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"网络爬虫","script":"han","in_script":true,"relevant":["web-crawler"]}
+{"qid":"zh:alias:web-crawler:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Spider操作系统","script":"latin","in_script":false,"relevant":["web-crawler"]}
+{"qid":"zh:alias:web-crawler:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"网络蜘蛛","script":"han","in_script":true,"relevant":["web-crawler"]}
+{"qid":"zh:alias:nearest-neighbor-search:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"最鄰近搜索","script":"han","in_script":true,"relevant":["nearest-neighbor-search"]}
+{"qid":"zh:alias:nearest-neighbor-search:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"最近邻搜索","script":"han","in_script":true,"relevant":["nearest-neighbor-search"]}
+{"qid":"zh:alias:nearest-neighbor-search:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"近似最邻近查找","script":"han","in_script":true,"relevant":["nearest-neighbor-search"]}
+{"qid":"zh:alias:euclidean-distance:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"欧几里德规则","script":"han","in_script":true,"relevant":["euclidean-distance"]}
+{"qid":"zh:alias:euclidean-distance:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"欧氏距离","script":"han","in_script":true,"relevant":["euclidean-distance"]}
+{"qid":"zh:alias:euclidean-distance:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"欧几里德距离","script":"han","in_script":true,"relevant":["euclidean-distance"]}
+{"qid":"zh:alias:hamming-distance:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"海明距离","script":"han","in_script":true,"relevant":["hamming-distance"]}
 {"qid":"zh:alias:natural-language-processing:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"自然語言處理","script":"han","in_script":true,"relevant":["natural-language-processing"]}
 {"qid":"zh:alias:natural-language-processing:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"自然语言信息处理","script":"han","in_script":true,"relevant":["natural-language-processing"]}
 {"qid":"zh:alias:natural-language-processing:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"统计自然语言处理","script":"han","in_script":true,"relevant":["natural-language-processing"]}
@@ -103,21 +208,51 @@
 {"qid":"zh:alias:turing-test:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"图灵实验","script":"han","in_script":true,"relevant":["turing-test"]}
 {"qid":"zh:alias:turing-test:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"图灵试验","script":"han","in_script":true,"relevant":["turing-test"]}
 {"qid":"zh:alias:turing-test:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"圖靈試驗","script":"han","in_script":true,"relevant":["turing-test"]}
+{"qid":"zh:alias:sentiment-analysis:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"情感分析","script":"han","in_script":true,"relevant":["sentiment-analysis"]}
+{"qid":"zh:alias:optical-character-recognition:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"OCR","script":"latin","in_script":false,"relevant":["optical-character-recognition"]}
+{"qid":"zh:alias:optical-character-recognition:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"光学文字识别","script":"han","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"zh:alias:optical-character-recognition:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"光學字元辨識","script":"han","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"zh:alias:robotics:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"机器人技术","script":"han","in_script":true,"relevant":["robotics"]}
+{"qid":"zh:alias:robotics:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"机器人未来","script":"han","in_script":true,"relevant":["robotics"]}
+{"qid":"zh:alias:robotics:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"人类与机器人的互动","script":"han","in_script":true,"relevant":["robotics"]}
 {"qid":"zh:alias:postgresql:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Npgsql","script":"latin","in_script":false,"relevant":["postgresql"]}
 {"qid":"zh:alias:postgresql:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Npgsql .NET Data Provider for PostgreSQL","script":"latin","in_script":false,"relevant":["postgresql"]}
 {"qid":"zh:alias:postgresql:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Postgres","script":"latin","in_script":false,"relevant":["postgresql"]}
+{"qid":"zh:alias:microsoft-sql-server:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"MS SQL-Server","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"zh:alias:microsoft-sql-server:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"MS SQLServer","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"zh:alias:microsoft-sql-server:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"MS-SQL","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"zh:alias:apache-cassandra:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Apache Cassandra","script":"latin","in_script":false,"relevant":["apache-cassandra"]}
 {"qid":"zh:alias:apache-kafka:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Apache Kafka","script":"latin","in_script":false,"relevant":["apache-kafka"]}
 {"qid":"zh:alias:kubernetes:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"K8s","script":"latin","in_script":false,"relevant":["kubernetes"]}
 {"qid":"zh:alias:kubernetes:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"K8S","script":"latin","in_script":false,"relevant":["kubernetes"]}
+{"qid":"zh:alias:nosql:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"非关系型数据库","script":"han","in_script":true,"relevant":["nosql"]}
+{"qid":"zh:alias:relational-database:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"关系型数据库","script":"han","in_script":true,"relevant":["relational-database"]}
+{"qid":"zh:alias:relational-database:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"關聯式資料庫","script":"han","in_script":true,"relevant":["relational-database"]}
+{"qid":"zh:alias:relational-database:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"关系式数据库管理系统","script":"han","in_script":true,"relevant":["relational-database"]}
+{"qid":"zh:alias:database-normalization:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"数据库范式","script":"han","in_script":true,"relevant":["database-normalization"]}
+{"qid":"zh:alias:database-normalization:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"资料库正规化","script":"han","in_script":true,"relevant":["database-normalization"]}
+{"qid":"zh:alias:database-normalization:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"数据库正规化","script":"han","in_script":true,"relevant":["database-normalization"]}
+{"qid":"zh:alias:json:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":".json","script":"latin","in_script":false,"relevant":["json"]}
+{"qid":"zh:alias:json:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Application/json","script":"latin","in_script":false,"relevant":["json"]}
+{"qid":"zh:alias:https:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Https","script":"latin","in_script":false,"relevant":["https"]}
+{"qid":"zh:alias:https:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"超文本傳輸安全協議","script":"han","in_script":true,"relevant":["https"]}
+{"qid":"zh:alias:https:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"HTTP Secure","script":"latin","in_script":false,"relevant":["https"]}
+{"qid":"zh:alias:transmission-control-protocol:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"傳輸控制協議","script":"han","in_script":true,"relevant":["transmission-control-protocol"]}
+{"qid":"zh:alias:transmission-control-protocol:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Transmission control protocol","script":"latin","in_script":false,"relevant":["transmission-control-protocol"]}
+{"qid":"zh:alias:transmission-control-protocol:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Transmission Control Protocol","script":"latin","in_script":false,"relevant":["transmission-control-protocol"]}
+{"qid":"zh:alias:load-balancing:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"负载平衡","script":"han","in_script":true,"relevant":["load-balancing"]}
+{"qid":"zh:alias:cache:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Cache","script":"latin","in_script":false,"relevant":["cache"]}
+{"qid":"zh:alias:cache:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"快取","script":"han","in_script":true,"relevant":["cache"]}
+{"qid":"zh:alias:cache:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"快取記憶體","script":"han","in_script":true,"relevant":["cache"]}
+{"qid":"zh:alias:os-level-virtualization:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"操作系统级虚拟化","script":"han","in_script":true,"relevant":["os-level-virtualization"]}
+{"qid":"zh:alias:os-level-virtualization:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"操作系统级虚拟","script":"han","in_script":true,"relevant":["os-level-virtualization"]}
+{"qid":"zh:alias:os-level-virtualization:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"容器化","script":"han","in_script":true,"relevant":["os-level-virtualization"]}
+{"qid":"zh:alias:devops:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"开发运维一体化","script":"han","in_script":true,"relevant":["devops"]}
+{"qid":"zh:alias:microsoft-azure:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Azure服务平台","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
+{"qid":"zh:alias:microsoft-azure:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"微软Azure","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
 {"qid":"zh:alias:linux:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Linux操作系统","script":"latin","in_script":false,"relevant":["linux"]}
 {"qid":"zh:alias:linux:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Linux作業系統","script":"latin","in_script":false,"relevant":["linux"]}
 {"qid":"zh:alias:linux:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Linux 操作系统","script":"latin","in_script":false,"relevant":["linux"]}
-{"qid":"zh:alias:python:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Python程序设计语言","script":"han","in_script":true,"relevant":["python"]}
-{"qid":"zh:alias:python:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Python编程语言","script":"latin","in_script":false,"relevant":["python"]}
-{"qid":"zh:alias:python:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Python语言","script":"latin","in_script":false,"relevant":["python"]}
-{"qid":"zh:alias:rust:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Rust語言","script":"latin","in_script":false,"relevant":["rust"]}
-{"qid":"zh:alias:rust:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Rust程式語言","script":"han","in_script":true,"relevant":["rust"]}
-{"qid":"zh:alias:rust:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Rust Programming Language","script":"latin","in_script":false,"relevant":["rust"]}
 {"qid":"zh:alias:cloud-computing:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"云计算","script":"han","in_script":true,"relevant":["cloud-computing"]}
 {"qid":"zh:alias:cloud-computing:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"云端运算","script":"han","in_script":true,"relevant":["cloud-computing"]}
 {"qid":"zh:alias:cloud-computing:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"云技术","script":"han","in_script":true,"relevant":["cloud-computing"]}
@@ -130,9 +265,94 @@
 {"qid":"zh:alias:big-data:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"大数据","script":"han","in_script":true,"relevant":["big-data"]}
 {"qid":"zh:alias:big-data:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"巨量資料","script":"han","in_script":true,"relevant":["big-data"]}
 {"qid":"zh:alias:big-data:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"大資料","script":"han","in_script":true,"relevant":["big-data"]}
+{"qid":"zh:alias:internet-of-things:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"传感网","script":"han","in_script":true,"relevant":["internet-of-things"]}
+{"qid":"zh:alias:internet-of-things:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Internet of Things","script":"latin","in_script":false,"relevant":["internet-of-things"]}
+{"qid":"zh:alias:internet-of-things:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"IoT","script":"latin","in_script":false,"relevant":["internet-of-things"]}
+{"qid":"zh:alias:python:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Python程序设计语言","script":"han","in_script":true,"relevant":["python"]}
+{"qid":"zh:alias:python:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Python编程语言","script":"latin","in_script":false,"relevant":["python"]}
+{"qid":"zh:alias:python:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Python语言","script":"latin","in_script":false,"relevant":["python"]}
+{"qid":"zh:alias:rust:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Rust語言","script":"latin","in_script":false,"relevant":["rust"]}
+{"qid":"zh:alias:rust:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Rust程式語言","script":"han","in_script":true,"relevant":["rust"]}
+{"qid":"zh:alias:rust:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Rust Programming Language","script":"latin","in_script":false,"relevant":["rust"]}
+{"qid":"zh:alias:javascript:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"JavaScript語言","script":"latin","in_script":false,"relevant":["javascript"]}
+{"qid":"zh:alias:javascript:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"JavaScript程式語言","script":"latin","in_script":false,"relevant":["javascript"]}
+{"qid":"zh:alias:javascript:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"JavaScript編程語言","script":"latin","in_script":false,"relevant":["javascript"]}
+{"qid":"zh:alias:c:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"C編程語言","script":"han","in_script":true,"relevant":["c"]}
+{"qid":"zh:alias:c:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"C编程语言","script":"han","in_script":true,"relevant":["c"]}
+{"qid":"zh:alias:c:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"C 编程语言","script":"han","in_script":true,"relevant":["c"]}
+{"qid":"zh:alias:c-sharp:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"C Sharp (程式語言)","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"zh:alias:c-sharp:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"C＃","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"zh:alias:c-sharp:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Ｃ＃","script":"other","in_script":false,"relevant":["c-sharp"]}
+{"qid":"zh:alias:ruby:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Ruby编程语言","script":"han","in_script":true,"relevant":["ruby"]}
+{"qid":"zh:alias:ruby:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Ruby语言","script":"latin","in_script":false,"relevant":["ruby"]}
+{"qid":"zh:alias:swift:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Swift (程式語言)","script":"latin","in_script":false,"relevant":["swift"]}
+{"qid":"zh:alias:scala:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"SUnit","script":"latin","in_script":false,"relevant":["scala"]}
+{"qid":"zh:alias:scala:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Scala语言","script":"latin","in_script":false,"relevant":["scala"]}
+{"qid":"zh:alias:scala:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Scala.js (programming language)","script":"latin","in_script":false,"relevant":["scala"]}
+{"qid":"zh:alias:r:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"R编程语言","script":"han","in_script":true,"relevant":["r"]}
+{"qid":"zh:alias:r:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"R語言","script":"han","in_script":true,"relevant":["r"]}
+{"qid":"zh:alias:r:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"R lang","script":"latin","in_script":false,"relevant":["r"]}
+{"qid":"zh:alias:assembly-language:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"組合語言","script":"han","in_script":true,"relevant":["assembly-language"]}
+{"qid":"zh:alias:assembly-language:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"汇编器","script":"han","in_script":true,"relevant":["assembly-language"]}
+{"qid":"zh:alias:assembly-language:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Assembly language","script":"latin","in_script":false,"relevant":["assembly-language"]}
+{"qid":"zh:alias:css:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Cascading Style Sheets","script":"latin","in_script":false,"relevant":["css"]}
+{"qid":"zh:alias:css:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"串樣式列表","script":"han","in_script":true,"relevant":["css"]}
+{"qid":"zh:alias:css:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Css語法","script":"latin","in_script":false,"relevant":["css"]}
+{"qid":"zh:alias:react:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"ReactJS","script":"latin","in_script":false,"relevant":["react"]}
+{"qid":"zh:alias:react:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"React.js","script":"latin","in_script":false,"relevant":["react"]}
+{"qid":"zh:alias:react:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"JSX","script":"latin","in_script":false,"relevant":["react"]}
+{"qid":"zh:alias:interpreter:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"解释程序","script":"han","in_script":true,"relevant":["interpreter"]}
+{"qid":"zh:alias:interpreter:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"直译器","script":"han","in_script":true,"relevant":["interpreter"]}
+{"qid":"zh:alias:interpreter:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Interpreter","script":"latin","in_script":false,"relevant":["interpreter"]}
+{"qid":"zh:alias:unit-testing:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Component or Unit testing","script":"latin","in_script":false,"relevant":["unit-testing"]}
+{"qid":"zh:alias:object-oriented-programming:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"面向对象的程序开发","script":"han","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"zh:alias:object-oriented-programming:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"物件導向編程","script":"han","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"zh:alias:object-oriented-programming:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"面向对象编程","script":"han","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"zh:alias:algorithm:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"演算法","script":"han","in_script":true,"relevant":["algorithm"]}
+{"qid":"zh:alias:algorithm:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"计算机算法","script":"han","in_script":true,"relevant":["algorithm"]}
+{"qid":"zh:alias:big-o-notation:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"線性對數","script":"han","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"zh:alias:big-o-notation:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"朗道符号","script":"han","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"zh:alias:big-o-notation:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Landau symbols","script":"latin","in_script":false,"relevant":["big-o-notation"]}
+{"qid":"zh:alias:dynamic-programming:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"動態規劃","script":"han","in_script":true,"relevant":["dynamic-programming"]}
+{"qid":"zh:alias:turing-machine:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"确定型图灵机","script":"han","in_script":true,"relevant":["turing-machine"]}
+{"qid":"zh:alias:turing-machine:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"圖靈機","script":"han","in_script":true,"relevant":["turing-machine"]}
+{"qid":"zh:alias:turing-machine:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"图林机","script":"han","in_script":true,"relevant":["turing-machine"]}
+{"qid":"zh:alias:p-versus-np-problem:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"P=NP問題","script":"latin","in_script":false,"relevant":["p-versus-np-problem"]}
+{"qid":"zh:alias:p-versus-np-problem:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"P/NP問題","script":"latin","in_script":false,"relevant":["p-versus-np-problem"]}
+{"qid":"zh:alias:p-versus-np-problem:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"P=NP","script":"latin","in_script":false,"relevant":["p-versus-np-problem"]}
+{"qid":"zh:alias:kernel:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"核心 (電腦科學)","script":"han","in_script":true,"relevant":["kernel"]}
+{"qid":"zh:alias:kernel:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Kernel","script":"latin","in_script":false,"relevant":["kernel"]}
+{"qid":"zh:alias:microsoft-windows:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Microsoft Windows","script":"latin","in_script":false,"relevant":["microsoft-windows"]}
+{"qid":"zh:alias:microsoft-windows:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Windows操作系统","script":"latin","in_script":false,"relevant":["microsoft-windows"]}
+{"qid":"zh:alias:microsoft-windows:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"视窗操作系统","script":"han","in_script":true,"relevant":["microsoft-windows"]}
+{"qid":"zh:alias:ios:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"IPhone OS","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"zh:alias:ios:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Apple iOS","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"zh:alias:ios:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"DFU","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"zh:alias:world-wide-web:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"WWW","script":"latin","in_script":false,"relevant":["world-wide-web"]}
+{"qid":"zh:alias:world-wide-web:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"萬維網","script":"han","in_script":true,"relevant":["world-wide-web"]}
+{"qid":"zh:alias:world-wide-web:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Web","script":"latin","in_script":false,"relevant":["world-wide-web"]}
+{"qid":"zh:alias:application-programming-interface:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"程序界面","script":"han","in_script":true,"relevant":["application-programming-interface"]}
+{"qid":"zh:alias:application-programming-interface:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"API","script":"latin","in_script":false,"relevant":["application-programming-interface"]}
+{"qid":"zh:alias:application-programming-interface:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"编程接口","script":"han","in_script":true,"relevant":["application-programming-interface"]}
+{"qid":"zh:alias:gnu-general-public-license:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"GNU通用公共协议证书","script":"han","in_script":true,"relevant":["gnu-general-public-license"]}
+{"qid":"zh:alias:gnu-general-public-license:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"GPL","script":"latin","in_script":false,"relevant":["gnu-general-public-license"]}
+{"qid":"zh:alias:gnu-general-public-license:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"GNU通用公共協議證書","script":"han","in_script":true,"relevant":["gnu-general-public-license"]}
+{"qid":"zh:alias:creative-commons:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"创作共用","script":"han","in_script":true,"relevant":["creative-commons"]}
+{"qid":"zh:alias:creative-commons:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Creative Commons","script":"latin","in_script":false,"relevant":["creative-commons"]}
+{"qid":"zh:alias:creative-commons:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"创造共用","script":"han","in_script":true,"relevant":["creative-commons"]}
+{"qid":"zh:alias:public-key-cryptography:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"公钥密码","script":"han","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"zh:alias:public-key-cryptography:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"非对称加密演算法","script":"han","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"zh:alias:public-key-cryptography:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"公開密碼匙","script":"han","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"zh:alias:hash-function:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"散列函数","script":"han","in_script":true,"relevant":["hash-function"]}
+{"qid":"zh:alias:hash-function:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"雜湊函數","script":"han","in_script":true,"relevant":["hash-function"]}
+{"qid":"zh:alias:hash-function:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"哈希函数","script":"han","in_script":true,"relevant":["hash-function"]}
+{"qid":"zh:alias:advanced-encryption-standard:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"AES-256","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"zh:alias:advanced-encryption-standard:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"AES-192","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"zh:alias:advanced-encryption-standard:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"AES-128","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"zh:alias:zero-knowledge-proof:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"零知識協議","script":"han","in_script":true,"relevant":["zero-knowledge-proof"]}
+{"qid":"zh:alias:zero-knowledge-proof:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"零知識證明","script":"han","in_script":true,"relevant":["zero-knowledge-proof"]}
 {"qid":"zh:alias:sequoia-capital:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"紅杉創投","script":"han","in_script":true,"relevant":["sequoia-capital"]}
 {"qid":"zh:alias:sequoia-capital:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Sequoia Capital","script":"latin","in_script":false,"relevant":["sequoia-capital"]}
-{"qid":"zh:alias:andreessen-horowitz:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Andreessen Horowitz","script":"latin","in_script":false,"relevant":["andreessen-horowitz"]}
 {"qid":"zh:alias:venture-capital:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"創業投資","script":"han","in_script":true,"relevant":["venture-capital"]}
 {"qid":"zh:alias:venture-capital:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"風險投資","script":"han","in_script":true,"relevant":["venture-capital"]}
 {"qid":"zh:alias:venture-capital:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"风投","script":"han","in_script":true,"relevant":["venture-capital"]}
@@ -142,6 +362,47 @@
 {"qid":"zh:alias:startup-company:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"初创公司","script":"han","in_script":true,"relevant":["startup-company"]}
 {"qid":"zh:alias:startup-company:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"创业企业","script":"han","in_script":true,"relevant":["startup-company"]}
 {"qid":"zh:alias:startup-company:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"创业公司","script":"han","in_script":true,"relevant":["startup-company"]}
+{"qid":"zh:alias:due-diligence:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"尽调","script":"han","in_script":true,"relevant":["due-diligence"]}
+{"qid":"zh:alias:due-diligence:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"盡責查證","script":"han","in_script":true,"relevant":["due-diligence"]}
+{"qid":"zh:alias:due-diligence:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"盡調","script":"han","in_script":true,"relevant":["due-diligence"]}
+{"qid":"zh:alias:special-purpose-acquisition-company:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"空白支票公司","script":"han","in_script":true,"relevant":["special-purpose-acquisition-company"]}
+{"qid":"zh:alias:startup-accelerator:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"創業加速器","script":"han","in_script":true,"relevant":["startup-accelerator"]}
+{"qid":"zh:alias:crowdfunding:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"公众集资","script":"han","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"zh:alias:crowdfunding:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"众筹","script":"han","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"zh:alias:crowdfunding:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"群眾集資","script":"han","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"zh:alias:minimum-viable-product:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"最小可行產品","script":"han","in_script":true,"relevant":["minimum-viable-product"]}
+{"qid":"zh:alias:economies-of-scale:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"規模經濟","script":"han","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"zh:alias:economies-of-scale:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"經濟規模","script":"han","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"zh:alias:economies-of-scale:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"規模效應","script":"han","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"zh:alias:patent:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"專利","script":"han","in_script":true,"relevant":["patent"]}
+{"qid":"zh:alias:patent:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"专利权","script":"han","in_script":true,"relevant":["patent"]}
+{"qid":"zh:alias:patent:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"專利權","script":"han","in_script":true,"relevant":["patent"]}
+{"qid":"zh:alias:copyright:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"著作权","script":"han","in_script":true,"relevant":["copyright"]}
+{"qid":"zh:alias:copyright:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"版權","script":"han","in_script":true,"relevant":["copyright"]}
+{"qid":"zh:alias:copyright:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"版权所有","script":"han","in_script":true,"relevant":["copyright"]}
+{"qid":"zh:alias:probability:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"機率","script":"han","in_script":true,"relevant":["probability"]}
+{"qid":"zh:alias:probability:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"或然性","script":"han","in_script":true,"relevant":["probability"]}
+{"qid":"zh:alias:probability:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"或然率","script":"han","in_script":true,"relevant":["probability"]}
+{"qid":"zh:alias:bayesian-inference:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"贝叶斯推理","script":"han","in_script":true,"relevant":["bayesian-inference"]}
+{"qid":"zh:alias:bayesian-inference:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"贝叶斯分析","script":"han","in_script":true,"relevant":["bayesian-inference"]}
+{"qid":"zh:alias:bayesian-inference:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"貝氏推論","script":"han","in_script":true,"relevant":["bayesian-inference"]}
+{"qid":"zh:alias:hidden-markov-model:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"隐Markov模型","script":"latin","in_script":false,"relevant":["hidden-markov-model"]}
+{"qid":"zh:alias:hidden-markov-model:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"隱馬爾可夫模型","script":"han","in_script":true,"relevant":["hidden-markov-model"]}
+{"qid":"zh:alias:hidden-markov-model:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"隐马尔科夫模型","script":"han","in_script":true,"relevant":["hidden-markov-model"]}
+{"qid":"zh:alias:matrix:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"矩陣","script":"han","in_script":true,"relevant":["matrix"]}
+{"qid":"zh:alias:matrix:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"矩阵运算","script":"han","in_script":true,"relevant":["matrix"]}
+{"qid":"zh:alias:matrix:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"矩陣列運算","script":"han","in_script":true,"relevant":["matrix"]}
+{"qid":"zh:alias:vector-space:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"线性空间","script":"han","in_script":true,"relevant":["vector-space"]}
+{"qid":"zh:alias:vector-space:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"矢量空间","script":"han","in_script":true,"relevant":["vector-space"]}
+{"qid":"zh:alias:vector-space:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"向量空間","script":"han","in_script":true,"relevant":["vector-space"]}
+{"qid":"zh:alias:derivative:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"可微分","script":"han","in_script":true,"relevant":["derivative"]}
+{"qid":"zh:alias:derivative:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"導數","script":"han","in_script":true,"relevant":["derivative"]}
+{"qid":"zh:alias:derivative:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"可微性","script":"han","in_script":true,"relevant":["derivative"]}
+{"qid":"zh:alias:signal-processing:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"訊號處理","script":"han","in_script":true,"relevant":["signal-processing"]}
+{"qid":"zh:alias:signal-processing:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"多尺度信号分析","script":"han","in_script":true,"relevant":["signal-processing"]}
+{"qid":"zh:alias:fast-fourier-transform:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"快速傅立叶变换","script":"han","in_script":true,"relevant":["fast-fourier-transform"]}
+{"qid":"zh:alias:fast-fourier-transform:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"快速傅里葉算法","script":"han","in_script":true,"relevant":["fast-fourier-transform"]}
+{"qid":"zh:alias:fast-fourier-transform:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"快速傅利葉轉換","script":"han","in_script":true,"relevant":["fast-fourier-transform"]}
 {"qid":"zh:alias:unicode:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"萬國碼","script":"han","in_script":true,"relevant":["unicode"]}
 {"qid":"zh:alias:unicode:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"統一碼","script":"han","in_script":true,"relevant":["unicode"]}
 {"qid":"zh:alias:unicode:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"UNICODE","script":"latin","in_script":false,"relevant":["unicode"]}
@@ -151,9 +412,44 @@
 {"qid":"zh:alias:cryptocurrency:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"山寨币","script":"han","in_script":true,"relevant":["cryptocurrency"]}
 {"qid":"zh:alias:cryptocurrency:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"加密電子貨幣","script":"han","in_script":true,"relevant":["cryptocurrency"]}
 {"qid":"zh:alias:cryptocurrency:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Cryptocurrency","script":"latin","in_script":false,"relevant":["cryptocurrency"]}
+{"qid":"zh:alias:ethereum:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"以太币","script":"han","in_script":true,"relevant":["ethereum"]}
+{"qid":"zh:alias:ethereum:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Ethereum","script":"latin","in_script":false,"relevant":["ethereum"]}
+{"qid":"zh:alias:ethereum:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"乙太幣","script":"han","in_script":true,"relevant":["ethereum"]}
+{"qid":"zh:alias:non-fungible-token:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"非同质化代币","script":"han","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"zh:alias:non-fungible-token:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"非同质代币","script":"han","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"zh:alias:non-fungible-token:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"非同質化代幣","script":"han","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"zh:alias:quantum-entanglement:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"光子糾纏","script":"han","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"zh:alias:quantum-entanglement:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"量子缠结","script":"han","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"zh:alias:quantum-entanglement:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"量子纠缠","script":"han","in_script":true,"relevant":["quantum-entanglement"]}
 {"qid":"zh:alias:semiconductor:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"半導體","script":"han","in_script":true,"relevant":["semiconductor"]}
 {"qid":"zh:alias:semiconductor:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"半導體學","script":"han","in_script":true,"relevant":["semiconductor"]}
 {"qid":"zh:alias:semiconductor:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"半导体物理学","script":"han","in_script":true,"relevant":["semiconductor"]}
 {"qid":"zh:alias:moore-s-law:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Moore's Law","script":"latin","in_script":false,"relevant":["moore-s-law"]}
 {"qid":"zh:alias:moore-s-law:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"莫耳定律","script":"han","in_script":true,"relevant":["moore-s-law"]}
 {"qid":"zh:alias:moore-s-law:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"摩爾定律","script":"han","in_script":true,"relevant":["moore-s-law"]}
+{"qid":"zh:alias:tensor-processing-unit:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"TPU","script":"latin","in_script":false,"relevant":["tensor-processing-unit"]}
+{"qid":"zh:alias:tensor-processing-unit:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"张量处理器","script":"han","in_script":true,"relevant":["tensor-processing-unit"]}
+{"qid":"zh:alias:application-specific-integrated-circuit:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"ASIC","script":"latin","in_script":false,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"zh:alias:application-specific-integrated-circuit:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"特定應用IC","script":"han","in_script":true,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"zh:alias:application-specific-integrated-circuit:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"特殊應用IC","script":"han","in_script":true,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"zh:alias:solid-state-drive:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"固態磁碟","script":"han","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"zh:alias:solid-state-drive:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"固态驱动器","script":"han","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"zh:alias:solid-state-drive:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"固态盘","script":"han","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"zh:alias:nanotechnology:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"納米科技","script":"han","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"zh:alias:nanotechnology:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"纳米科学","script":"han","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"zh:alias:nanotechnology:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"奈米科技","script":"han","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"zh:alias:crispr:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"CRISPR/Cas 系統","script":"latin","in_script":false,"relevant":["crispr"]}
+{"qid":"zh:alias:crispr:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"常間回文重複序列叢集","script":"han","in_script":true,"relevant":["crispr"]}
+{"qid":"zh:alias:crispr:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"常間回文重複序列叢集關聯蛋白系統","script":"han","in_script":true,"relevant":["crispr"]}
+{"qid":"zh:alias:bioinformatics:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"生物資訊","script":"han","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"zh:alias:bioinformatics:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"生物資訊學","script":"han","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"zh:alias:bioinformatics:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"生物信息","script":"han","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"zh:alias:cognitive-science:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"認知科學","script":"han","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"zh:alias:cognitive-science:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"认知学","script":"han","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"zh:alias:cognitive-science:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"認知科學家","script":"han","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"zh:alias:consciousness:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"意識","script":"han","in_script":true,"relevant":["consciousness"]}
+{"qid":"zh:alias:consciousness:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"分別識","script":"han","in_script":true,"relevant":["consciousness"]}
+{"qid":"zh:alias:consciousness:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"Consciousness","script":"latin","in_script":false,"relevant":["consciousness"]}
+{"qid":"zh:alias:5g:0","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"第五代移动通信系统","script":"han","in_script":true,"relevant":["5g"]}
+{"qid":"zh:alias:5g:1","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"第五代流動通訊技術","script":"han","in_script":true,"relevant":["5g"]}
+{"qid":"zh:alias:5g:2","lang":"zh","family":"alias","origin":"wikipedia-redirect","query":"第五代移动通信技术","script":"han","in_script":true,"relevant":["5g"]}

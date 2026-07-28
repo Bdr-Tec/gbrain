@@ -1,0 +1,430 @@
+{"qid":"ru:alias:anthropic:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Антропик","script":"cyrillic","in_script":true,"relevant":["anthropic"]}
+{"qid":"ru:alias:google-deepmind:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"DeepMind Technologies","script":"latin","in_script":false,"relevant":["google-deepmind"]}
+{"qid":"ru:alias:google-deepmind:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"DeepMind Technologies Limited","script":"latin","in_script":false,"relevant":["google-deepmind"]}
+{"qid":"ru:alias:google-deepmind:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"DeepMind","script":"latin","in_script":false,"relevant":["google-deepmind"]}
+{"qid":"ru:alias:nvidia:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Корпорация nVidia","script":"cyrillic","in_script":true,"relevant":["nvidia"]}
+{"qid":"ru:alias:nvidia:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Nvidia Corporation","script":"latin","in_script":false,"relevant":["nvidia"]}
+{"qid":"ru:alias:nvidia:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"NVIDIA Corporation","script":"latin","in_script":false,"relevant":["nvidia"]}
+{"qid":"ru:alias:meta-platforms:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Facebook Inc.","script":"latin","in_script":false,"relevant":["meta-platforms"]}
+{"qid":"ru:alias:meta-platforms:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Facebook, Inc.","script":"latin","in_script":false,"relevant":["meta-platforms"]}
+{"qid":"ru:alias:meta-platforms:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Meta, Inc.","script":"latin","in_script":false,"relevant":["meta-platforms"]}
+{"qid":"ru:alias:apple-inc:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Apple Computer Company","script":"latin","in_script":false,"relevant":["apple-inc"]}
+{"qid":"ru:alias:apple-inc:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Apple Computer, Inc.","script":"latin","in_script":false,"relevant":["apple-inc"]}
+{"qid":"ru:alias:apple-inc:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Apple Computers","script":"latin","in_script":false,"relevant":["apple-inc"]}
+{"qid":"ru:alias:alphabet-inc:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Alphabet Inc","script":"latin","in_script":false,"relevant":["alphabet-inc"]}
+{"qid":"ru:alias:alphabet-inc:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Alphabet Inc.","script":"latin","in_script":false,"relevant":["alphabet-inc"]}
+{"qid":"ru:alias:ibm:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"International Business Machines","script":"latin","in_script":false,"relevant":["ibm"]}
+{"qid":"ru:alias:ibm:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"ИБМ","script":"cyrillic","in_script":true,"relevant":["ibm"]}
+{"qid":"ru:alias:ibm:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Big Blue","script":"latin","in_script":false,"relevant":["ibm"]}
+{"qid":"ru:alias:advanced-micro-devices:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"АМД","script":"cyrillic","in_script":true,"relevant":["advanced-micro-devices"]}
+{"qid":"ru:alias:advanced-micro-devices:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"AMD Inc","script":"latin","in_script":false,"relevant":["advanced-micro-devices"]}
+{"qid":"ru:alias:advanced-micro-devices:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Advanced Micro Devices, Inc.","script":"latin","in_script":false,"relevant":["advanced-micro-devices"]}
+{"qid":"ru:alias:salesforce:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Force.com","script":"latin","in_script":false,"relevant":["salesforce"]}
+{"qid":"ru:alias:salesforce:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Apex (язык программирования)","script":"cyrillic","in_script":true,"relevant":["salesforce"]}
+{"qid":"ru:alias:salesforce:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Jigsaw (бизнес-каталог)","script":"cyrillic","in_script":true,"relevant":["salesforce"]}
+{"qid":"ru:alias:sap:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"SAP AG","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"ru:alias:sap:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"SAP R/3","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"ru:alias:sap:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"SAP SE","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"ru:alias:tesla-inc:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Тесла Моторс","script":"cyrillic","in_script":true,"relevant":["tesla-inc"]}
+{"qid":"ru:alias:tesla-inc:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Tesla Motors","script":"latin","in_script":false,"relevant":["tesla-inc"]}
+{"qid":"ru:alias:tesla-inc:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Tesla Inc.","script":"latin","in_script":false,"relevant":["tesla-inc"]}
+{"qid":"ru:alias:uber:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Убер","script":"cyrillic","in_script":true,"relevant":["uber"]}
+{"qid":"ru:alias:uber:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Uber Technologies Inc.","script":"latin","in_script":false,"relevant":["uber"]}
+{"qid":"ru:alias:twitter:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Twitter.com","script":"latin","in_script":false,"relevant":["twitter"]}
+{"qid":"ru:alias:twitter:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Твиттинг","script":"cyrillic","in_script":true,"relevant":["twitter"]}
+{"qid":"ru:alias:twitter:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Твит","script":"cyrillic","in_script":true,"relevant":["twitter"]}
+{"qid":"ru:alias:github:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Гитхаб","script":"cyrillic","in_script":true,"relevant":["github"]}
+{"qid":"ru:alias:samsung-electronics:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Самсунг Электроникс","script":"cyrillic","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"ru:alias:samsung-electronics:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Samsung Electric Industries","script":"latin","in_script":false,"relevant":["samsung-electronics"]}
+{"qid":"ru:alias:samsung-electronics:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Samsung Electronics Co., Ltd","script":"latin","in_script":false,"relevant":["samsung-electronics"]}
+{"qid":"ru:alias:alibaba-group:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Alibaba.com","script":"latin","in_script":false,"relevant":["alibaba-group"]}
+{"qid":"ru:alias:alibaba-group:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Alibaba","script":"latin","in_script":false,"relevant":["alibaba-group"]}
+{"qid":"ru:alias:alibaba-group:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Tmall.com","script":"latin","in_script":false,"relevant":["alibaba-group"]}
+{"qid":"ru:alias:geoffrey-hinton:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Джеффри Хинтон","script":"cyrillic","in_script":true,"relevant":["geoffrey-hinton"]}
+{"qid":"ru:alias:geoffrey-hinton:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Geoffrey Everest Hinton","script":"latin","in_script":false,"relevant":["geoffrey-hinton"]}
+{"qid":"ru:alias:yann-lecun:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Ян Лекун","script":"cyrillic","in_script":true,"relevant":["yann-lecun"]}
+{"qid":"ru:alias:yann-lecun:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Лекун","script":"cyrillic","in_script":true,"relevant":["yann-lecun"]}
+{"qid":"ru:alias:yann-lecun:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Yann LeCun","script":"latin","in_script":false,"relevant":["yann-lecun"]}
+{"qid":"ru:alias:ilya-sutskever:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Илья Суцкевер","script":"cyrillic","in_script":true,"relevant":["ilya-sutskever"]}
+{"qid":"ru:alias:ilya-sutskever:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Ilya Sutskever","script":"latin","in_script":false,"relevant":["ilya-sutskever"]}
+{"qid":"ru:alias:ilya-sutskever:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Sutskever Ilya","script":"latin","in_script":false,"relevant":["ilya-sutskever"]}
+{"qid":"ru:alias:demis-hassabis:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Demis Hassabis","script":"latin","in_script":false,"relevant":["demis-hassabis"]}
+{"qid":"ru:alias:demis-hassabis:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Демис Хассабис","script":"cyrillic","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"ru:alias:demis-hassabis:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Хассабис","script":"cyrillic","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"ru:alias:sam-altman:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сэм Олтмен","script":"cyrillic","in_script":true,"relevant":["sam-altman"]}
+{"qid":"ru:alias:sam-altman:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сэм Альтман","script":"cyrillic","in_script":true,"relevant":["sam-altman"]}
+{"qid":"ru:alias:sam-altman:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Олтмэн, Сэм","script":"cyrillic","in_script":true,"relevant":["sam-altman"]}
+{"qid":"ru:alias:jensen-huang:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Жэнь-Сунь Хуан","script":"cyrillic","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"ru:alias:jensen-huang:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Хуан Жэньсюнь","script":"cyrillic","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"ru:alias:jensen-huang:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Дженсен Хуанг","script":"cyrillic","in_script":true,"relevant":["jensen-huang"]}
+{"qid":"ru:alias:dario-amodei:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Дарио Амодеи","script":"cyrillic","in_script":true,"relevant":["dario-amodei"]}
+{"qid":"ru:alias:dario-amodei:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Dario Amodei","script":"latin","in_script":false,"relevant":["dario-amodei"]}
+{"qid":"ru:alias:dario-amodei:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Амодей, Дарио","script":"cyrillic","in_script":true,"relevant":["dario-amodei"]}
+{"qid":"ru:alias:marvin-minsky:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Мински, Марвин","script":"cyrillic","in_script":true,"relevant":["marvin-minsky"]}
+{"qid":"ru:alias:marvin-minsky:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Марвин Мински","script":"cyrillic","in_script":true,"relevant":["marvin-minsky"]}
+{"qid":"ru:alias:marvin-minsky:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Марвин Ли Мински","script":"cyrillic","in_script":true,"relevant":["marvin-minsky"]}
+{"qid":"ru:alias:herbert-a-simon:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Герберт Саймон","script":"cyrillic","in_script":true,"relevant":["herbert-a-simon"]}
+{"qid":"ru:alias:herbert-a-simon:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Саймон Г.","script":"cyrillic","in_script":true,"relevant":["herbert-a-simon"]}
+{"qid":"ru:alias:herbert-a-simon:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Саймон Герберт","script":"cyrillic","in_script":true,"relevant":["herbert-a-simon"]}
+{"qid":"ru:alias:john-von-neumann:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Фон Нейман, Джон","script":"cyrillic","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"ru:alias:john-von-neumann:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Джон фон Нейман","script":"cyrillic","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"ru:alias:john-von-neumann:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Нейманн, Джон фон","script":"cyrillic","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"ru:alias:ada-lovelace:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Ада Лавлейс","script":"cyrillic","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ru:alias:ada-lovelace:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Лавлейс А.","script":"cyrillic","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ru:alias:ada-lovelace:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Байрон, Ада","script":"cyrillic","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ru:alias:edsger-w-dijkstra:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Эдсгер Дейкстра","script":"cyrillic","in_script":true,"relevant":["edsger-w-dijkstra"]}
+{"qid":"ru:alias:edsger-w-dijkstra:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Дейкстра, Эдсгер","script":"cyrillic","in_script":true,"relevant":["edsger-w-dijkstra"]}
+{"qid":"ru:alias:edsger-w-dijkstra:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Dijkstra","script":"latin","in_script":false,"relevant":["edsger-w-dijkstra"]}
+{"qid":"ru:alias:linus-torvalds:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Линус Торвальдс","script":"cyrillic","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"ru:alias:linus-torvalds:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Линус Торвалдс","script":"cyrillic","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"ru:alias:linus-torvalds:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Торвалдс, Линус Бенедикт","script":"cyrillic","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"ru:alias:ken-thompson:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Кен Томпсон","script":"cyrillic","in_script":true,"relevant":["ken-thompson"]}
+{"qid":"ru:alias:ken-thompson:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Томпсон К.","script":"cyrillic","in_script":true,"relevant":["ken-thompson"]}
+{"qid":"ru:alias:ken-thompson:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Томпсон Кен","script":"cyrillic","in_script":true,"relevant":["ken-thompson"]}
+{"qid":"ru:alias:bjarne-stroustrup:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Бьерн Страуструп","script":"cyrillic","in_script":true,"relevant":["bjarne-stroustrup"]}
+{"qid":"ru:alias:bjarne-stroustrup:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Бьярне Страуструп","script":"cyrillic","in_script":true,"relevant":["bjarne-stroustrup"]}
+{"qid":"ru:alias:bjarne-stroustrup:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Страуструп, Бьерн","script":"cyrillic","in_script":true,"relevant":["bjarne-stroustrup"]}
+{"qid":"ru:alias:barbara-liskov:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Барбара Лисков","script":"cyrillic","in_script":true,"relevant":["barbara-liskov"]}
+{"qid":"ru:alias:barbara-liskov:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Barbara Jane Liskov","script":"latin","in_script":false,"relevant":["barbara-liskov"]}
+{"qid":"ru:alias:steve-jobs:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Стив Джобс","script":"cyrillic","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"ru:alias:steve-jobs:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Стивен Джобс","script":"cyrillic","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"ru:alias:steve-jobs:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Стивен Пол Джобс","script":"cyrillic","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"ru:alias:elon-musk:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Элон Маск","script":"cyrillic","in_script":true,"relevant":["elon-musk"]}
+{"qid":"ru:alias:elon-musk:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Маск, Элон","script":"cyrillic","in_script":true,"relevant":["elon-musk"]}
+{"qid":"ru:alias:elon-musk:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Маск","script":"cyrillic","in_script":true,"relevant":["elon-musk"]}
+{"qid":"ru:alias:mark-zuckerberg:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Марк Закерберг","script":"cyrillic","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"ru:alias:mark-zuckerberg:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Закерберг, Марк","script":"cyrillic","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"ru:alias:mark-zuckerberg:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Марк Цукерберг","script":"cyrillic","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"ru:alias:sergey-brin:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сергей Брин","script":"cyrillic","in_script":true,"relevant":["sergey-brin"]}
+{"qid":"ru:alias:sergey-brin:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сергей Михайлович Брин","script":"cyrillic","in_script":true,"relevant":["sergey-brin"]}
+{"qid":"ru:alias:sergey-brin:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Sergey Brin","script":"latin","in_script":false,"relevant":["sergey-brin"]}
+{"qid":"ru:alias:sundar-pichai:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сундар Пичаи","script":"cyrillic","in_script":true,"relevant":["sundar-pichai"]}
+{"qid":"ru:alias:sundar-pichai:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Пичаи","script":"cyrillic","in_script":true,"relevant":["sundar-pichai"]}
+{"qid":"ru:alias:sundar-pichai:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сундарараджан Пичаи","script":"cyrillic","in_script":true,"relevant":["sundar-pichai"]}
+{"qid":"ru:alias:transformer:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Transformer (machine learning model)","script":"latin","in_script":false,"relevant":["transformer"]}
+{"qid":"ru:alias:generative-pre-trained-transformer:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Генеративная предварительно обученная трансформерная модель","script":"cyrillic","in_script":true,"relevant":["generative-pre-trained-transformer"]}
+{"qid":"ru:alias:generative-pre-trained-transformer:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Генеративный предобученный трансформер","script":"cyrillic","in_script":true,"relevant":["generative-pre-trained-transformer"]}
+{"qid":"ru:alias:generative-pre-trained-transformer:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Generative pre-trained transformer","script":"latin","in_script":false,"relevant":["generative-pre-trained-transformer"]}
+{"qid":"ru:alias:large-language-model:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Большие языковые модели","script":"cyrillic","in_script":true,"relevant":["large-language-model"]}
+{"qid":"ru:alias:large-language-model:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"LLM","script":"latin","in_script":false,"relevant":["large-language-model"]}
+{"qid":"ru:alias:large-language-model:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Large language model","script":"latin","in_script":false,"relevant":["large-language-model"]}
+{"qid":"ru:alias:retrieval-augmented-generation:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"RAG","script":"latin","in_script":false,"relevant":["retrieval-augmented-generation"]}
+{"qid":"ru:alias:retrieval-augmented-generation:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Генерация, дополненная поиском","script":"cyrillic","in_script":true,"relevant":["retrieval-augmented-generation"]}
+{"qid":"ru:alias:convolutional-neural-network:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Свёрточные нейронные сети","script":"cyrillic","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"ru:alias:convolutional-neural-network:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сверточная нейронная сеть","script":"cyrillic","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"ru:alias:convolutional-neural-network:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Convolutional neural network","script":"latin","in_script":false,"relevant":["convolutional-neural-network"]}
+{"qid":"ru:alias:generative-adversarial-network:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Генеративная состязательная сеть","script":"cyrillic","in_script":true,"relevant":["generative-adversarial-network"]}
+{"qid":"ru:alias:generative-adversarial-network:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Generative adversarial network","script":"latin","in_script":false,"relevant":["generative-adversarial-network"]}
+{"qid":"ru:alias:generative-adversarial-network:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Генеративно-состязательные нейросети","script":"cyrillic","in_script":true,"relevant":["generative-adversarial-network"]}
+{"qid":"ru:alias:gradient-descent:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Метод градиента","script":"cyrillic","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"ru:alias:gradient-descent:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Метод градиентов","script":"cyrillic","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"ru:alias:gradient-descent:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Метод градиент","script":"cyrillic","in_script":true,"relevant":["gradient-descent"]}
+{"qid":"ru:alias:overfitting:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Оверфиттинг","script":"cyrillic","in_script":true,"relevant":["overfitting"]}
+{"qid":"ru:alias:overfitting:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Переподгонка","script":"cyrillic","in_script":true,"relevant":["overfitting"]}
+{"qid":"ru:alias:perceptron:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Персептрон","script":"cyrillic","in_script":true,"relevant":["perceptron"]}
+{"qid":"ru:alias:neural-network:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Нейросеть","script":"cyrillic","in_script":true,"relevant":["neural-network"]}
+{"qid":"ru:alias:neural-network:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Искусственная нейросеть","script":"cyrillic","in_script":true,"relevant":["neural-network"]}
+{"qid":"ru:alias:neural-network:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Нейросети","script":"cyrillic","in_script":true,"relevant":["neural-network"]}
+{"qid":"ru:alias:deep-learning:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Глубинное обучение","script":"cyrillic","in_script":true,"relevant":["deep-learning"]}
+{"qid":"ru:alias:deep-learning:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Deep learning","script":"latin","in_script":false,"relevant":["deep-learning"]}
+{"qid":"ru:alias:machine-learning:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Machine Learning","script":"latin","in_script":false,"relevant":["machine-learning"]}
+{"qid":"ru:alias:machine-learning:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Обучение машин","script":"cyrillic","in_script":true,"relevant":["machine-learning"]}
+{"qid":"ru:alias:machine-learning:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Machine learning","script":"latin","in_script":false,"relevant":["machine-learning"]}
+{"qid":"ru:alias:artificial-intelligence:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"A.I.","script":"latin","in_script":false,"relevant":["artificial-intelligence"]}
+{"qid":"ru:alias:artificial-intelligence:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Artificial intelligence","script":"latin","in_script":false,"relevant":["artificial-intelligence"]}
+{"qid":"ru:alias:artificial-intelligence:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"ИИ","script":"cyrillic","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"ru:alias:supervised-learning:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Supervised learning","script":"latin","in_script":false,"relevant":["supervised-learning"]}
+{"qid":"ru:alias:prompt-engineering:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Инженерия подсказок","script":"cyrillic","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"ru:alias:prompt-engineering:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Промпт-инженерия","script":"cyrillic","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"ru:alias:prompt-engineering:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Промпт","script":"cyrillic","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"ru:alias:technological-singularity:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Компьютерная сингулярность","script":"cyrillic","in_script":true,"relevant":["technological-singularity"]}
+{"qid":"ru:alias:chatgpt:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Чат джи пи ти","script":"cyrillic","in_script":true,"relevant":["chatgpt"]}
+{"qid":"ru:alias:chatgpt:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Чат гпт","script":"cyrillic","in_script":true,"relevant":["chatgpt"]}
+{"qid":"ru:alias:claude:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Claude.ai","script":"latin","in_script":false,"relevant":["claude"]}
+{"qid":"ru:alias:google-gemini:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Bard (чат-бот)","script":"cyrillic","in_script":true,"relevant":["google-gemini"]}
+{"qid":"ru:alias:google-gemini:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Bard","script":"latin","in_script":false,"relevant":["google-gemini"]}
+{"qid":"ru:alias:google-gemini:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Google Gemini","script":"latin","in_script":false,"relevant":["google-gemini"]}
+{"qid":"ru:alias:chatbot:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Программа-собеседник","script":"cyrillic","in_script":true,"relevant":["chatbot"]}
+{"qid":"ru:alias:midjourney:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Миджорни","script":"cyrillic","in_script":true,"relevant":["midjourney"]}
+{"qid":"ru:alias:deep-blue:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Дип Блю","script":"cyrillic","in_script":true,"relevant":["deep-blue"]}
+{"qid":"ru:alias:deep-blue:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Матч Deep Blue — Гарри Каспаров","script":"cyrillic","in_script":true,"relevant":["deep-blue"]}
+{"qid":"ru:alias:search-engine:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Поисковые системы","script":"cyrillic","in_script":true,"relevant":["search-engine"]}
+{"qid":"ru:alias:search-engine:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Search Engine","script":"latin","in_script":false,"relevant":["search-engine"]}
+{"qid":"ru:alias:search-engine:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Интернет-поисковая система","script":"cyrillic","in_script":true,"relevant":["search-engine"]}
+{"qid":"ru:alias:tf-idf:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Tf*idf","script":"latin","in_script":false,"relevant":["tf-idf"]}
+{"qid":"ru:alias:tf-idf:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"TF*IDF","script":"latin","in_script":false,"relevant":["tf-idf"]}
+{"qid":"ru:alias:tf-idf:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"TF·IDF","script":"latin","in_script":false,"relevant":["tf-idf"]}
+{"qid":"ru:alias:recommender-system:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Рекомендательные системы","script":"cyrillic","in_script":true,"relevant":["recommender-system"]}
+{"qid":"ru:alias:recommender-system:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Рекомендательный сервис","script":"cyrillic","in_script":true,"relevant":["recommender-system"]}
+{"qid":"ru:alias:recommender-system:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Рекомендательные технологии","script":"cyrillic","in_script":true,"relevant":["recommender-system"]}
+{"qid":"ru:alias:collaborative-filtering:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Совместная фильтрация","script":"cyrillic","in_script":true,"relevant":["collaborative-filtering"]}
+{"qid":"ru:alias:cluster-analysis:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Кластеризация","script":"cyrillic","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"ru:alias:cluster-analysis:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Cluster analysis","script":"latin","in_script":false,"relevant":["cluster-analysis"]}
+{"qid":"ru:alias:support-vector-machine:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Машина опорных векторов","script":"cyrillic","in_script":true,"relevant":["support-vector-machine"]}
+{"qid":"ru:alias:support-vector-machine:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"SVM","script":"latin","in_script":false,"relevant":["support-vector-machine"]}
+{"qid":"ru:alias:support-vector-machine:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Support vector machine","script":"latin","in_script":false,"relevant":["support-vector-machine"]}
+{"qid":"ru:alias:random-forest:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Random Forest","script":"latin","in_script":false,"relevant":["random-forest"]}
+{"qid":"ru:alias:random-forest:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Случайный лес","script":"cyrillic","in_script":true,"relevant":["random-forest"]}
+{"qid":"ru:alias:random-forest:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Random forest","script":"latin","in_script":false,"relevant":["random-forest"]}
+{"qid":"ru:alias:logistic-regression:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Logit","script":"latin","in_script":false,"relevant":["logistic-regression"]}
+{"qid":"ru:alias:logistic-regression:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Логит-регрессия","script":"cyrillic","in_script":true,"relevant":["logistic-regression"]}
+{"qid":"ru:alias:logistic-regression:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Логит регрессия","script":"cyrillic","in_script":true,"relevant":["logistic-regression"]}
+{"qid":"ru:alias:principal-component-analysis:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Преобразование Кархунена-Лоэва","script":"cyrillic","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"ru:alias:principal-component-analysis:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Преобразование Карунена-Лоэва","script":"cyrillic","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"ru:alias:principal-component-analysis:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Преобразование Карунена - Лоэва","script":"cyrillic","in_script":true,"relevant":["principal-component-analysis"]}
+{"qid":"ru:alias:singular-value-decomposition:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"SVD","script":"latin","in_script":false,"relevant":["singular-value-decomposition"]}
+{"qid":"ru:alias:regression-analysis:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Коэффициент регрессии","script":"cyrillic","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"ru:alias:regression-analysis:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Регрессионная модель","script":"cyrillic","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"ru:alias:bayes-theorem:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Формулы Байеса","script":"cyrillic","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"ru:alias:bayes-theorem:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Формула Байеса","script":"cyrillic","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"ru:alias:bayes-theorem:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Байеса теорема","script":"cyrillic","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"ru:alias:data-mining:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Добыча данных","script":"cyrillic","in_script":true,"relevant":["data-mining"]}
+{"qid":"ru:alias:data-mining:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Открытие знаний в базах данных","script":"cyrillic","in_script":true,"relevant":["data-mining"]}
+{"qid":"ru:alias:data-mining:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Интеллектуальный анализ данных","script":"cyrillic","in_script":true,"relevant":["data-mining"]}
+{"qid":"ru:alias:web-crawler:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Поисковой робот","script":"cyrillic","in_script":true,"relevant":["web-crawler"]}
+{"qid":"ru:alias:web-crawler:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Веб-паук","script":"cyrillic","in_script":true,"relevant":["web-crawler"]}
+{"qid":"ru:alias:web-crawler:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Краулер","script":"cyrillic","in_script":true,"relevant":["web-crawler"]}
+{"qid":"ru:alias:euclidean-distance:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"L2-норма","script":"cyrillic","in_script":true,"relevant":["euclidean-distance"]}
+{"qid":"ru:alias:hamming-distance:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Расстояние Хемминга","script":"cyrillic","in_script":true,"relevant":["hamming-distance"]}
+{"qid":"ru:alias:hamming-distance:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Метрика Хемминга","script":"cyrillic","in_script":true,"relevant":["hamming-distance"]}
+{"qid":"ru:alias:natural-language-processing:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"NLC","script":"latin","in_script":false,"relevant":["natural-language-processing"]}
+{"qid":"ru:alias:natural-language-processing:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Автоматическая обработка текста","script":"cyrillic","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"ru:alias:natural-language-processing:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Natural Language Processing","script":"latin","in_script":false,"relevant":["natural-language-processing"]}
+{"qid":"ru:alias:machine-translation:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Автоматический перевод","script":"cyrillic","in_script":true,"relevant":["machine-translation"]}
+{"qid":"ru:alias:machine-translation:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Электронный перевод","script":"cyrillic","in_script":true,"relevant":["machine-translation"]}
+{"qid":"ru:alias:machine-translation:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Электронный переводчик","script":"cyrillic","in_script":true,"relevant":["machine-translation"]}
+{"qid":"ru:alias:speech-recognition:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Автоматическое распознавание речи","script":"cyrillic","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"ru:alias:speech-recognition:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Голосовой интерфейс","script":"cyrillic","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"ru:alias:computer-vision:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Распознавание изображений","script":"cyrillic","in_script":true,"relevant":["computer-vision"]}
+{"qid":"ru:alias:computer-vision:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Распознавание дорожных знаков","script":"cyrillic","in_script":true,"relevant":["computer-vision"]}
+{"qid":"ru:alias:computer-vision:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Техническое зрение","script":"cyrillic","in_script":true,"relevant":["computer-vision"]}
+{"qid":"ru:alias:turing-test:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Тест Тюринга","script":"cyrillic","in_script":true,"relevant":["turing-test"]}
+{"qid":"ru:alias:turing-test:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Тьюринга тест","script":"cyrillic","in_script":true,"relevant":["turing-test"]}
+{"qid":"ru:alias:sentiment-analysis:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сентимент-анализ","script":"cyrillic","in_script":true,"relevant":["sentiment-analysis"]}
+{"qid":"ru:alias:sentiment-analysis:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Анализ тональности","script":"cyrillic","in_script":true,"relevant":["sentiment-analysis"]}
+{"qid":"ru:alias:optical-character-recognition:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Optical Character Recognition","script":"latin","in_script":false,"relevant":["optical-character-recognition"]}
+{"qid":"ru:alias:optical-character-recognition:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Разпознавание текста","script":"cyrillic","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"ru:alias:optical-character-recognition:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"OCR","script":"latin","in_script":false,"relevant":["optical-character-recognition"]}
+{"qid":"ru:alias:robotics:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Роботехника","script":"cyrillic","in_script":true,"relevant":["robotics"]}
+{"qid":"ru:alias:robotics:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Робототехник","script":"cyrillic","in_script":true,"relevant":["robotics"]}
+{"qid":"ru:alias:robotics:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Шагающие роботы","script":"cyrillic","in_script":true,"relevant":["robotics"]}
+{"qid":"ru:alias:postgresql:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Postgres","script":"latin","in_script":false,"relevant":["postgresql"]}
+{"qid":"ru:alias:postgresql:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"PL/Scheme","script":"latin","in_script":false,"relevant":["postgresql"]}
+{"qid":"ru:alias:postgresql:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Postgres Professional","script":"latin","in_script":false,"relevant":["postgresql"]}
+{"qid":"ru:alias:sqlite:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"SQLite3","script":"latin","in_script":false,"relevant":["sqlite"]}
+{"qid":"ru:alias:mysql:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"MyODBC","script":"latin","in_script":false,"relevant":["mysql"]}
+{"qid":"ru:alias:mysql:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"MySQL Connector","script":"latin","in_script":false,"relevant":["mysql"]}
+{"qid":"ru:alias:mysql:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Maria","script":"latin","in_script":false,"relevant":["mysql"]}
+{"qid":"ru:alias:microsoft-sql-server:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"MS SQL Server","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"ru:alias:microsoft-sql-server:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"MS SQL","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"ru:alias:microsoft-sql-server:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Microsoft SQL Server 2000","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"ru:alias:mongodb:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"10gen","script":"latin","in_script":false,"relevant":["mongodb"]}
+{"qid":"ru:alias:mongodb:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"GridFS","script":"latin","in_script":false,"relevant":["mongodb"]}
+{"qid":"ru:alias:mongodb:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Grid File System","script":"latin","in_script":false,"relevant":["mongodb"]}
+{"qid":"ru:alias:apache-cassandra:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Cassandra","script":"latin","in_script":false,"relevant":["apache-cassandra"]}
+{"qid":"ru:alias:apache-cassandra:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"CQL (Cassandra)","script":"latin","in_script":false,"relevant":["apache-cassandra"]}
+{"qid":"ru:alias:elasticsearch:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Elastic","script":"latin","in_script":false,"relevant":["elasticsearch"]}
+{"qid":"ru:alias:elasticsearch:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"ELK","script":"latin","in_script":false,"relevant":["elasticsearch"]}
+{"qid":"ru:alias:elasticsearch:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Elastic Stack","script":"latin","in_script":false,"relevant":["elasticsearch"]}
+{"qid":"ru:alias:apache-kafka:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Kafka Streams","script":"latin","in_script":false,"relevant":["apache-kafka"]}
+{"qid":"ru:alias:kubernetes:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"K8s","script":"latin","in_script":false,"relevant":["kubernetes"]}
+{"qid":"ru:alias:docker:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Докер (программное обеспечение)","script":"cyrillic","in_script":true,"relevant":["docker"]}
+{"qid":"ru:alias:docker:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Docker, Inc.","script":"latin","in_script":false,"relevant":["docker"]}
+{"qid":"ru:alias:nosql:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Семейство столбцов","script":"cyrillic","in_script":true,"relevant":["nosql"]}
+{"qid":"ru:alias:relational-database:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Реляционные БД","script":"cyrillic","in_script":true,"relevant":["relational-database"]}
+{"qid":"ru:alias:relational-database:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Реляционные базы данных","script":"cyrillic","in_script":true,"relevant":["relational-database"]}
+{"qid":"ru:alias:database-transaction:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Database transaction","script":"latin","in_script":false,"relevant":["database-transaction"]}
+{"qid":"ru:alias:database-transaction:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Транзакции","script":"cyrillic","in_script":true,"relevant":["database-transaction"]}
+{"qid":"ru:alias:database-transaction:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Обработка транзакций","script":"cyrillic","in_script":true,"relevant":["database-transaction"]}
+{"qid":"ru:alias:database-normalization:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Нормальная форма базы данных","script":"cyrillic","in_script":true,"relevant":["database-normalization"]}
+{"qid":"ru:alias:database-normalization:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Нормальные формы","script":"cyrillic","in_script":true,"relevant":["database-normalization"]}
+{"qid":"ru:alias:database-normalization:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Нормализация БД","script":"cyrillic","in_script":true,"relevant":["database-normalization"]}
+{"qid":"ru:alias:b-tree:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Б-дерево","script":"cyrillic","in_script":true,"relevant":["b-tree"]}
+{"qid":"ru:alias:b-tree:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"B-деревья","script":"cyrillic","in_script":true,"relevant":["b-tree"]}
+{"qid":"ru:alias:b-tree:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Б-деревья","script":"cyrillic","in_script":true,"relevant":["b-tree"]}
+{"qid":"ru:alias:json:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":".json","script":"latin","in_script":false,"relevant":["json"]}
+{"qid":"ru:alias:json:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"JSONB","script":"latin","in_script":false,"relevant":["json"]}
+{"qid":"ru:alias:transmission-control-protocol:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Transmission Control Protocol","script":"latin","in_script":false,"relevant":["transmission-control-protocol"]}
+{"qid":"ru:alias:load-balancing:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Выравнивание нагрузки","script":"cyrillic","in_script":true,"relevant":["load-balancing"]}
+{"qid":"ru:alias:load-balancing:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Балансировщик нагрузки","script":"cyrillic","in_script":true,"relevant":["load-balancing"]}
+{"qid":"ru:alias:cache:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Кеш-память","script":"cyrillic","in_script":true,"relevant":["cache"]}
+{"qid":"ru:alias:cache:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Дисковый кеш","script":"cyrillic","in_script":true,"relevant":["cache"]}
+{"qid":"ru:alias:cache:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Дисковый кэш","script":"cyrillic","in_script":true,"relevant":["cache"]}
+{"qid":"ru:alias:os-level-virtualization:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Контейнерная виртуализация","script":"cyrillic","in_script":true,"relevant":["os-level-virtualization"]}
+{"qid":"ru:alias:os-level-virtualization:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Контейнер (виртуализация)","script":"cyrillic","in_script":true,"relevant":["os-level-virtualization"]}
+{"qid":"ru:alias:os-level-virtualization:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Виртуализация на уровне операционной системы","script":"cyrillic","in_script":true,"relevant":["os-level-virtualization"]}
+{"qid":"ru:alias:microsoft-azure:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Microsoft Windows Cloud","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
+{"qid":"ru:alias:microsoft-azure:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Azure Services Platform","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
+{"qid":"ru:alias:microsoft-azure:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Express Logic","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
+{"qid":"ru:alias:linux:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Линукс","script":"cyrillic","in_script":true,"relevant":["linux"]}
+{"qid":"ru:alias:linux:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"GNU-Linux","script":"latin","in_script":false,"relevant":["linux"]}
+{"qid":"ru:alias:linux:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Гну-Линукс","script":"cyrillic","in_script":true,"relevant":["linux"]}
+{"qid":"ru:alias:cloud-computing:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Cloud computing","script":"latin","in_script":false,"relevant":["cloud-computing"]}
+{"qid":"ru:alias:cloud-computing:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Облачная обработка данных","script":"cyrillic","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"ru:alias:cloud-computing:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Облачное программирование","script":"cyrillic","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"ru:alias:open-source-software:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Открытый исходный код","script":"cyrillic","in_script":true,"relevant":["open-source-software"]}
+{"qid":"ru:alias:open-source-software:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Открытое ПО","script":"cyrillic","in_script":true,"relevant":["open-source-software"]}
+{"qid":"ru:alias:open-source-software:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Программное обеспечение с открытым исходным кодом","script":"cyrillic","in_script":true,"relevant":["open-source-software"]}
+{"qid":"ru:alias:software-as-a-service:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Software as a service","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
+{"qid":"ru:alias:software-as-a-service:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Software on-demand","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
+{"qid":"ru:alias:software-as-a-service:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Saas","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
+{"qid":"ru:alias:big-data:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Big Data","script":"latin","in_script":false,"relevant":["big-data"]}
+{"qid":"ru:alias:big-data:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Биг дата","script":"cyrillic","in_script":true,"relevant":["big-data"]}
+{"qid":"ru:alias:big-data:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Big data","script":"latin","in_script":false,"relevant":["big-data"]}
+{"qid":"ru:alias:internet-of-things:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Internet of Things","script":"latin","in_script":false,"relevant":["internet-of-things"]}
+{"qid":"ru:alias:internet-of-things:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"IoT","script":"latin","in_script":false,"relevant":["internet-of-things"]}
+{"qid":"ru:alias:python:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Интроспекция в Python","script":"cyrillic","in_script":true,"relevant":["python"]}
+{"qid":"ru:alias:python:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Пайтон","script":"cyrillic","in_script":true,"relevant":["python"]}
+{"qid":"ru:alias:python:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Интроспекция в Питоне","script":"cyrillic","in_script":true,"relevant":["python"]}
+{"qid":"ru:alias:javascript:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Джаваскрипт","script":"cyrillic","in_script":true,"relevant":["javascript"]}
+{"qid":"ru:alias:javascript:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"ДжаваСкрипт","script":"cyrillic","in_script":true,"relevant":["javascript"]}
+{"qid":"ru:alias:javascript:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Яваскрипт","script":"cyrillic","in_script":true,"relevant":["javascript"]}
+{"qid":"ru:alias:c:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Язык программирования C","script":"cyrillic","in_script":true,"relevant":["c"]}
+{"qid":"ru:alias:c:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Язык C","script":"cyrillic","in_script":true,"relevant":["c"]}
+{"qid":"ru:alias:c:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Язык Си","script":"cyrillic","in_script":true,"relevant":["c"]}
+{"qid":"ru:alias:c-sharp:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Visual C Sharp .NET","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"ru:alias:c-sharp:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"C♯","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"ru:alias:ruby:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Руби IDE","script":"cyrillic","in_script":true,"relevant":["ruby"]}
+{"qid":"ru:alias:ruby:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Рубин (язык программирования)","script":"cyrillic","in_script":true,"relevant":["ruby"]}
+{"qid":"ru:alias:ruby:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Язык программирования Рубин","script":"cyrillic","in_script":true,"relevant":["ruby"]}
+{"qid":"ru:alias:r:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"CRAN","script":"latin","in_script":false,"relevant":["r"]}
+{"qid":"ru:alias:r:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"GNU R","script":"latin","in_script":false,"relevant":["r"]}
+{"qid":"ru:alias:assembly-language:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Ассемблер x86","script":"cyrillic","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ru:alias:assembly-language:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Мнемокод","script":"cyrillic","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ru:alias:assembly-language:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Автокод","script":"cyrillic","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ru:alias:css:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"CSS3","script":"latin","in_script":false,"relevant":["css"]}
+{"qid":"ru:alias:css:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"CSS2","script":"latin","in_script":false,"relevant":["css"]}
+{"qid":"ru:alias:css:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Cascading Style Sheets","script":"latin","in_script":false,"relevant":["css"]}
+{"qid":"ru:alias:react:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"ReactJS","script":"latin","in_script":false,"relevant":["react"]}
+{"qid":"ru:alias:react:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"React.js","script":"latin","in_script":false,"relevant":["react"]}
+{"qid":"ru:alias:interpreter:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Интерпретация (информатика)","script":"cyrillic","in_script":true,"relevant":["interpreter"]}
+{"qid":"ru:alias:interpreter:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Интерпретация (программирование)","script":"cyrillic","in_script":true,"relevant":["interpreter"]}
+{"qid":"ru:alias:unit-testing:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Юнит-тест","script":"cyrillic","in_script":true,"relevant":["unit-testing"]}
+{"qid":"ru:alias:unit-testing:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Юнит-тестирование","script":"cyrillic","in_script":true,"relevant":["unit-testing"]}
+{"qid":"ru:alias:scrum:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Скрам","script":"cyrillic","in_script":true,"relevant":["scrum"]}
+{"qid":"ru:alias:object-oriented-programming:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Объектно-ориентированный подход","script":"cyrillic","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"ru:alias:object-oriented-programming:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"OOP","script":"latin","in_script":false,"relevant":["object-oriented-programming"]}
+{"qid":"ru:alias:object-oriented-programming:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Класс-ориентированное программирование","script":"cyrillic","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"ru:alias:algorithm:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Алгоритмы","script":"cyrillic","in_script":true,"relevant":["algorithm"]}
+{"qid":"ru:alias:algorithm:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Алгорифм","script":"cyrillic","in_script":true,"relevant":["algorithm"]}
+{"qid":"ru:alias:algorithm:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Алгоритмизация","script":"cyrillic","in_script":true,"relevant":["algorithm"]}
+{"qid":"ru:alias:big-o-notation:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"О-большое","script":"cyrillic","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"ru:alias:big-o-notation:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"O-большое","script":"cyrillic","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"ru:alias:big-o-notation:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"O-малое","script":"cyrillic","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"ru:alias:turing-machine:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Машина Тьюринга для умножения чисел","script":"cyrillic","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ru:alias:turing-machine:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Тьюринга машина","script":"cyrillic","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ru:alias:turing-machine:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Детерминированная машина Тьюринга","script":"cyrillic","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ru:alias:p-versus-np-problem:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"P=NP","script":"latin","in_script":false,"relevant":["p-versus-np-problem"]}
+{"qid":"ru:alias:p-versus-np-problem:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"P = NP","script":"latin","in_script":false,"relevant":["p-versus-np-problem"]}
+{"qid":"ru:alias:p-versus-np-problem:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Проблема перебора","script":"cyrillic","in_script":true,"relevant":["p-versus-np-problem"]}
+{"qid":"ru:alias:kernel:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Ядро ОС","script":"cyrillic","in_script":true,"relevant":["kernel"]}
+{"qid":"ru:alias:microsoft-windows:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"MS Windows","script":"latin","in_script":false,"relevant":["microsoft-windows"]}
+{"qid":"ru:alias:microsoft-windows:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Виндоус","script":"cyrillic","in_script":true,"relevant":["microsoft-windows"]}
+{"qid":"ru:alias:microsoft-windows:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Виндоуз","script":"cyrillic","in_script":true,"relevant":["microsoft-windows"]}
+{"qid":"ru:alias:ios:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"IPhone OS","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"ru:alias:ios:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"IOS 3","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"ru:alias:ios:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"IOS 2","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"ru:alias:world-wide-web:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"WWW","script":"latin","in_script":false,"relevant":["world-wide-web"]}
+{"qid":"ru:alias:world-wide-web:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"World Wide Web","script":"latin","in_script":false,"relevant":["world-wide-web"]}
+{"qid":"ru:alias:world-wide-web:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Web","script":"latin","in_script":false,"relevant":["world-wide-web"]}
+{"qid":"ru:alias:application-programming-interface:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Application programming interface","script":"latin","in_script":false,"relevant":["application-programming-interface"]}
+{"qid":"ru:alias:application-programming-interface:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Программный интерфейс","script":"cyrillic","in_script":true,"relevant":["application-programming-interface"]}
+{"qid":"ru:alias:application-programming-interface:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Интерфейс (программирование)","script":"cyrillic","in_script":true,"relevant":["application-programming-interface"]}
+{"qid":"ru:alias:gnu-general-public-license:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"GPL","script":"latin","in_script":false,"relevant":["gnu-general-public-license"]}
+{"qid":"ru:alias:gnu-general-public-license:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"GNU GPL","script":"latin","in_script":false,"relevant":["gnu-general-public-license"]}
+{"qid":"ru:alias:gnu-general-public-license:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Общественная лицензия GNU","script":"cyrillic","in_script":true,"relevant":["gnu-general-public-license"]}
+{"qid":"ru:alias:creative-commons:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Some rights reserved","script":"latin","in_script":false,"relevant":["creative-commons"]}
+{"qid":"ru:alias:creative-commons:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Некоторые права сохранены","script":"cyrillic","in_script":true,"relevant":["creative-commons"]}
+{"qid":"ru:alias:creative-commons:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Креатив коммонс","script":"cyrillic","in_script":true,"relevant":["creative-commons"]}
+{"qid":"ru:alias:public-key-cryptography:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Асимметричный шифр (криптосистема)","script":"cyrillic","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ru:alias:public-key-cryptography:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Асимметричное шифрование","script":"cyrillic","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ru:alias:public-key-cryptography:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Асимметричный шифр","script":"cyrillic","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ru:alias:hash-function:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Хэш-функция","script":"cyrillic","in_script":true,"relevant":["hash-function"]}
+{"qid":"ru:alias:hash-function:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Hash","script":"latin","in_script":false,"relevant":["hash-function"]}
+{"qid":"ru:alias:hash-function:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Хэширование","script":"cyrillic","in_script":true,"relevant":["hash-function"]}
+{"qid":"ru:alias:advanced-encryption-standard:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Rijndael","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"ru:alias:advanced-encryption-standard:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"AES-256","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"ru:alias:advanced-encryption-standard:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"AES 256","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"ru:alias:venture-capital:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Венчурный инвестор","script":"cyrillic","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ru:alias:venture-capital:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Венчурность","script":"cyrillic","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ru:alias:initial-public-offering:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Initial Public Offering","script":"latin","in_script":false,"relevant":["initial-public-offering"]}
+{"qid":"ru:alias:initial-public-offering:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Первичное публичное размещение","script":"cyrillic","in_script":true,"relevant":["initial-public-offering"]}
+{"qid":"ru:alias:initial-public-offering:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"IPO","script":"latin","in_script":false,"relevant":["initial-public-offering"]}
+{"qid":"ru:alias:startup-company:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Венчурный проект","script":"cyrillic","in_script":true,"relevant":["startup-company"]}
+{"qid":"ru:alias:startup-company:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Венчура","script":"cyrillic","in_script":true,"relevant":["startup-company"]}
+{"qid":"ru:alias:due-diligence:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Проверка должной добросовестности","script":"cyrillic","in_script":true,"relevant":["due-diligence"]}
+{"qid":"ru:alias:special-purpose-acquisition-company:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"SPAC","script":"latin","in_script":false,"relevant":["special-purpose-acquisition-company"]}
+{"qid":"ru:alias:crowdfunding:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Народное финансирование","script":"cyrillic","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"ru:alias:crowdfunding:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Фанатская предоплата","script":"cyrillic","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"ru:alias:crowdfunding:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Крауд-финансирование","script":"cyrillic","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"ru:alias:economies-of-scale:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Эффект масштаба производства","script":"cyrillic","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"ru:alias:economies-of-scale:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Экономия от масштаба","script":"cyrillic","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"ru:alias:economies-of-scale:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Экономия на масштабе","script":"cyrillic","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"ru:alias:patent:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Патенты","script":"cyrillic","in_script":true,"relevant":["patent"]}
+{"qid":"ru:alias:patent:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Патент на изобретение","script":"cyrillic","in_script":true,"relevant":["patent"]}
+{"qid":"ru:alias:patent:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Патентование","script":"cyrillic","in_script":true,"relevant":["patent"]}
+{"qid":"ru:alias:copyright:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Авторские права","script":"cyrillic","in_script":true,"relevant":["copyright"]}
+{"qid":"ru:alias:copyright:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Copyright","script":"latin","in_script":false,"relevant":["copyright"]}
+{"qid":"ru:alias:copyright:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Копирайт","script":"cyrillic","in_script":true,"relevant":["copyright"]}
+{"qid":"ru:alias:probability:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Вероятность события","script":"cyrillic","in_script":true,"relevant":["probability"]}
+{"qid":"ru:alias:probability:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Теорема сложения вероятностей","script":"cyrillic","in_script":true,"relevant":["probability"]}
+{"qid":"ru:alias:probability:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Теорема умножения вероятностей","script":"cyrillic","in_script":true,"relevant":["probability"]}
+{"qid":"ru:alias:bayesian-inference:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Байесовский анализ","script":"cyrillic","in_script":true,"relevant":["bayesian-inference"]}
+{"qid":"ru:alias:hidden-markov-model:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"СММ","script":"cyrillic","in_script":true,"relevant":["hidden-markov-model"]}
+{"qid":"ru:alias:hidden-markov-model:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Hidden Markov model","script":"latin","in_script":false,"relevant":["hidden-markov-model"]}
+{"qid":"ru:alias:matrix:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Матрица линейного оператора","script":"cyrillic","in_script":true,"relevant":["matrix"]}
+{"qid":"ru:alias:matrix:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Сумма матриц","script":"cyrillic","in_script":true,"relevant":["matrix"]}
+{"qid":"ru:alias:matrix:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Разница матриц","script":"cyrillic","in_script":true,"relevant":["matrix"]}
+{"qid":"ru:alias:vector-space:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Линейная оболочка","script":"cyrillic","in_script":true,"relevant":["vector-space"]}
+{"qid":"ru:alias:vector-space:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Линейное подпространство","script":"cyrillic","in_script":true,"relevant":["vector-space"]}
+{"qid":"ru:alias:vector-space:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Вектор (алгебра)","script":"cyrillic","in_script":true,"relevant":["vector-space"]}
+{"qid":"ru:alias:derivative:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Производная функция","script":"cyrillic","in_script":true,"relevant":["derivative"]}
+{"qid":"ru:alias:derivative:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Непрерывная дифференцируемость","script":"cyrillic","in_script":true,"relevant":["derivative"]}
+{"qid":"ru:alias:derivative:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Физический смысл производной","script":"cyrillic","in_script":true,"relevant":["derivative"]}
+{"qid":"ru:alias:convex-optimization:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Выпуклая оптимизация","script":"cyrillic","in_script":true,"relevant":["convex-optimization"]}
+{"qid":"ru:alias:signal-processing:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Анализ сигналов","script":"cyrillic","in_script":true,"relevant":["signal-processing"]}
+{"qid":"ru:alias:signal-processing:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Теория обработки сигналов","script":"cyrillic","in_script":true,"relevant":["signal-processing"]}
+{"qid":"ru:alias:signal-processing:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Теория обработки сигнала","script":"cyrillic","in_script":true,"relevant":["signal-processing"]}
+{"qid":"ru:alias:fast-fourier-transform:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"БПФ","script":"cyrillic","in_script":true,"relevant":["fast-fourier-transform"]}
+{"qid":"ru:alias:fast-fourier-transform:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"FFT","script":"latin","in_script":false,"relevant":["fast-fourier-transform"]}
+{"qid":"ru:alias:unicode:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Уникод","script":"cyrillic","in_script":true,"relevant":["unicode"]}
+{"qid":"ru:alias:unicode:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"UTF","script":"latin","in_script":false,"relevant":["unicode"]}
+{"qid":"ru:alias:unicode:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"ISO 10646","script":"latin","in_script":false,"relevant":["unicode"]}
+{"qid":"ru:alias:blockchain:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Blockchain","script":"latin","in_script":false,"relevant":["blockchain"]}
+{"qid":"ru:alias:blockchain:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Block chain","script":"latin","in_script":false,"relevant":["blockchain"]}
+{"qid":"ru:alias:blockchain:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Цепочка блоков","script":"cyrillic","in_script":true,"relevant":["blockchain"]}
+{"qid":"ru:alias:cryptocurrency:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Криптовалюты","script":"cyrillic","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"ru:alias:cryptocurrency:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Альткойн","script":"cyrillic","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"ru:alias:cryptocurrency:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Альткоин","script":"cyrillic","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"ru:alias:ethereum:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Эфириум","script":"cyrillic","in_script":true,"relevant":["ethereum"]}
+{"qid":"ru:alias:ethereum:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Etherium","script":"latin","in_script":false,"relevant":["ethereum"]}
+{"qid":"ru:alias:non-fungible-token:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Non-fungible token","script":"latin","in_script":false,"relevant":["non-fungible-token"]}
+{"qid":"ru:alias:non-fungible-token:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Non-Fungible Token","script":"latin","in_script":false,"relevant":["non-fungible-token"]}
+{"qid":"ru:alias:non-fungible-token:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Уникальные токены","script":"cyrillic","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"ru:alias:quantum-entanglement:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Запутанные состояния","script":"cyrillic","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"ru:alias:quantum-entanglement:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Запутанность","script":"cyrillic","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"ru:alias:quantum-entanglement:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Запутанное состояние","script":"cyrillic","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"ru:alias:semiconductor:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Собственная проводимость","script":"cyrillic","in_script":true,"relevant":["semiconductor"]}
+{"qid":"ru:alias:semiconductor:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Полупроводники","script":"cyrillic","in_script":true,"relevant":["semiconductor"]}
+{"qid":"ru:alias:tensor-processing-unit:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"TPU","script":"latin","in_script":false,"relevant":["tensor-processing-unit"]}
+{"qid":"ru:alias:tensor-processing-unit:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Tensor processing unit","script":"latin","in_script":false,"relevant":["tensor-processing-unit"]}
+{"qid":"ru:alias:tensor-processing-unit:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Google Tensor Processor","script":"latin","in_script":false,"relevant":["tensor-processing-unit"]}
+{"qid":"ru:alias:application-specific-integrated-circuit:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Asic","script":"latin","in_script":false,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"ru:alias:application-specific-integrated-circuit:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Специализированная интегральная схема","script":"cyrillic","in_script":true,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"ru:alias:application-specific-integrated-circuit:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"ASIC","script":"latin","in_script":false,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"ru:alias:solid-state-drive:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"SSD","script":"latin","in_script":false,"relevant":["solid-state-drive"]}
+{"qid":"ru:alias:solid-state-drive:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Solid State Drive","script":"latin","in_script":false,"relevant":["solid-state-drive"]}
+{"qid":"ru:alias:solid-state-drive:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Твердотельный носитель","script":"cyrillic","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"ru:alias:nanotechnology:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Нанотехнологии","script":"cyrillic","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ru:alias:nanotechnology:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Отношение к нанотехнологиям в обществе","script":"cyrillic","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ru:alias:nanotechnology:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Отношение к нанотехнологии в обществе","script":"cyrillic","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ru:alias:crispr:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Короткие палиндромные повторы, регулярно расположенные группами","script":"cyrillic","in_script":true,"relevant":["crispr"]}
+{"qid":"ru:alias:crispr:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"CRISPR-Cas","script":"latin","in_script":false,"relevant":["crispr"]}
+{"qid":"ru:alias:crispr:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"CRISPR/Cas","script":"latin","in_script":false,"relevant":["crispr"]}
+{"qid":"ru:alias:bioinformatics:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Биоинформационные технологии","script":"cyrillic","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"ru:alias:bioinformatics:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Биоинформатик","script":"cyrillic","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"ru:alias:cognitive-science:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Когнитивные науки","script":"cyrillic","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"ru:alias:cognitive-science:1","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Когнитивная наука","script":"cyrillic","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"ru:alias:cognitive-science:2","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Концептология","script":"cyrillic","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"ru:alias:consciousness:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"Осознание","script":"cyrillic","in_script":true,"relevant":["consciousness"]}
+{"qid":"ru:alias:5g:0","lang":"ru","family":"alias","origin":"wikipedia-redirect","query":"5G NR","script":"latin","in_script":false,"relevant":["5g"]}

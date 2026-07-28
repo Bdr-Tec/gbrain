@@ -9,20 +9,88 @@
 {"qid":"ja:alias:meta-platforms:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Facebook, Inc.","script":"latin","in_script":false,"relevant":["meta-platforms"]}
 {"qid":"ja:alias:meta-platforms:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Meta, Inc.","script":"latin","in_script":false,"relevant":["meta-platforms"]}
 {"qid":"ja:alias:meta-platforms:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Facebook (企業)","script":"latin","in_script":false,"relevant":["meta-platforms"]}
+{"qid":"ja:alias:palantir-technologies:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Palantir","script":"latin","in_script":false,"relevant":["palantir-technologies"]}
+{"qid":"ja:alias:palantir-technologies:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Palantir Technologies Inc.","script":"latin","in_script":false,"relevant":["palantir-technologies"]}
+{"qid":"ja:alias:palantir-technologies:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Palantir Technologies","script":"latin","in_script":false,"relevant":["palantir-technologies"]}
+{"qid":"ja:alias:apple-inc:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アップルコンピューター","script":"kana","in_script":true,"relevant":["apple-inc"]}
+{"qid":"ja:alias:apple-inc:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Apple Japan","script":"latin","in_script":false,"relevant":["apple-inc"]}
+{"qid":"ja:alias:apple-inc:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Apple Computer","script":"latin","in_script":false,"relevant":["apple-inc"]}
+{"qid":"ja:alias:alphabet-inc:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アルファベット (企業)","script":"kana","in_script":true,"relevant":["alphabet-inc"]}
+{"qid":"ja:alias:alphabet-inc:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Alphabet Inc.","script":"latin","in_script":false,"relevant":["alphabet-inc"]}
+{"qid":"ja:alias:alphabet-inc:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Alphabet, Inc.","script":"latin","in_script":false,"relevant":["alphabet-inc"]}
+{"qid":"ja:alias:ibm:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"インターナショナル・ビジネス・マシーンズ・コーポレーション","script":"kana","in_script":true,"relevant":["ibm"]}
+{"qid":"ja:alias:ibm:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アイ・ビー・エム","script":"kana","in_script":true,"relevant":["ibm"]}
+{"qid":"ja:alias:ibm:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"インターナショナル・ビジネス・マシーンズ","script":"kana","in_script":true,"relevant":["ibm"]}
+{"qid":"ja:alias:advanced-micro-devices:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Advanced Micro Devices","script":"latin","in_script":false,"relevant":["advanced-micro-devices"]}
+{"qid":"ja:alias:advanced-micro-devices:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"日本AMD","script":"latin","in_script":false,"relevant":["advanced-micro-devices"]}
+{"qid":"ja:alias:advanced-micro-devices:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エーエムディー","script":"kana","in_script":true,"relevant":["advanced-micro-devices"]}
+{"qid":"ja:alias:salesforce:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Salesforce","script":"latin","in_script":false,"relevant":["salesforce"]}
+{"qid":"ja:alias:salesforce:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Salesforce.com","script":"latin","in_script":false,"relevant":["salesforce"]}
+{"qid":"ja:alias:salesforce:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"セールスフォース・ドットコム","script":"kana","in_script":true,"relevant":["salesforce"]}
+{"qid":"ja:alias:sap:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Systems, Applications And Products in Data Processing","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"ja:alias:sap:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Systems, Applications and Products in Data Processing","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"ja:alias:sap:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"SAP AG","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"ja:alias:tesla-inc:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"テスラモータース","script":"kana","in_script":true,"relevant":["tesla-inc"]}
+{"qid":"ja:alias:tesla-inc:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"テスラ・モーターズ","script":"kana","in_script":true,"relevant":["tesla-inc"]}
+{"qid":"ja:alias:tesla-inc:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"TSLA","script":"latin","in_script":false,"relevant":["tesla-inc"]}
+{"qid":"ja:alias:uber:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Uber Taxi","script":"latin","in_script":false,"relevant":["uber"]}
+{"qid":"ja:alias:uber:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ウーバータクシー","script":"kana","in_script":true,"relevant":["uber"]}
+{"qid":"ja:alias:uber:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ウーバー・テクノロジーズ","script":"kana","in_script":true,"relevant":["uber"]}
+{"qid":"ja:alias:shopify:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ショッピファイ","script":"kana","in_script":true,"relevant":["shopify"]}
+{"qid":"ja:alias:twitter:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"旧Twitter","script":"latin","in_script":false,"relevant":["twitter"]}
+{"qid":"ja:alias:twitter:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"旧ツイッター","script":"kana","in_script":true,"relevant":["twitter"]}
+{"qid":"ja:alias:twitter:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"X Premium","script":"latin","in_script":false,"relevant":["twitter"]}
+{"qid":"ja:alias:atlassian:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Atlassian","script":"latin","in_script":false,"relevant":["atlassian"]}
+{"qid":"ja:alias:samsung-electronics:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サムソン電子","script":"kana","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"ja:alias:samsung-electronics:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"三星電子","script":"han","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"ja:alias:samsung-electronics:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"家族のほほえみ","script":"kana","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"ja:alias:alibaba-group:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アリババ・グループ","script":"kana","in_script":true,"relevant":["alibaba-group"]}
+{"qid":"ja:alias:alibaba-group:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"阿里巴巴集団","script":"han","in_script":true,"relevant":["alibaba-group"]}
+{"qid":"ja:alias:bytedance:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"バイトダンス","script":"kana","in_script":true,"relevant":["bytedance"]}
+{"qid":"ja:alias:bytedance:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"字節跳動","script":"han","in_script":true,"relevant":["bytedance"]}
 {"qid":"ja:alias:ilya-sutskever:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Safe Superintelligence Inc.","script":"latin","in_script":false,"relevant":["ilya-sutskever"]}
 {"qid":"ja:alias:ilya-sutskever:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"イリヤ・サツキヴァー","script":"kana","in_script":true,"relevant":["ilya-sutskever"]}
 {"qid":"ja:alias:ilya-sutskever:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"イリヤ・サツケヴァー","script":"kana","in_script":true,"relevant":["ilya-sutskever"]}
 {"qid":"ja:alias:demis-hassabis:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Demis Hassabis","script":"latin","in_script":false,"relevant":["demis-hassabis"]}
-{"qid":"ja:alias:fei-fei-li:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"フェイフェイ・リー","script":"kana","in_script":true,"relevant":["fei-fei-li"]}
-{"qid":"ja:alias:fei-fei-li:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"李飛飛","script":"han","in_script":true,"relevant":["fei-fei-li"]}
-{"qid":"ja:alias:fei-fei-li:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"フェイ＝フェイ・リー","script":"kana","in_script":true,"relevant":["fei-fei-li"]}
 {"qid":"ja:alias:sam-altman:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サミュエル・H・アルトマン","script":"kana","in_script":true,"relevant":["sam-altman"]}
 {"qid":"ja:alias:sam-altman:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サム・オルトマン","script":"kana","in_script":true,"relevant":["sam-altman"]}
 {"qid":"ja:alias:jensen-huang:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"黃仁勳","script":"han","in_script":true,"relevant":["jensen-huang"]}
 {"qid":"ja:alias:jensen-huang:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ジェン・スン・フアン","script":"kana","in_script":true,"relevant":["jensen-huang"]}
 {"qid":"ja:alias:jensen-huang:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ジェン・スン・ファン","script":"kana","in_script":true,"relevant":["jensen-huang"]}
-{"qid":"ja:alias:bert:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Bidirectional Encoder Representations from Transformers","script":"latin","in_script":false,"relevant":["bert"]}
-{"qid":"ja:alias:gpt-4:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"GPT-4 Turbo","script":"latin","in_script":false,"relevant":["gpt-4"]}
+{"qid":"ja:alias:marvin-minsky:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"マーヴィン・ミンスキー","script":"kana","in_script":true,"relevant":["marvin-minsky"]}
+{"qid":"ja:alias:herbert-a-simon:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ハーバート・アレクサンダー・サイモン","script":"kana","in_script":true,"relevant":["herbert-a-simon"]}
+{"qid":"ja:alias:herbert-a-simon:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Herbert A. Simon","script":"latin","in_script":false,"relevant":["herbert-a-simon"]}
+{"qid":"ja:alias:john-von-neumann:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"フォン・ノイマン","script":"kana","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"ja:alias:john-von-neumann:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ナイマン・ヤーノシュ","script":"kana","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"ja:alias:john-von-neumann:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"フォンノイマン","script":"kana","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"ja:alias:ada-lovelace:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エイダ・ラヴレス","script":"kana","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ja:alias:ada-lovelace:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エイダ・バイロン","script":"kana","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ja:alias:ada-lovelace:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"オーガスタ・エイダ・バイロン","script":"kana","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ja:alias:edsger-w-dijkstra:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エズガー・ダイクストラ","script":"kana","in_script":true,"relevant":["edsger-w-dijkstra"]}
+{"qid":"ja:alias:edsger-w-dijkstra:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"EWD","script":"latin","in_script":false,"relevant":["edsger-w-dijkstra"]}
+{"qid":"ja:alias:linus-torvalds:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リーナス・トーパルズ","script":"kana","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"ja:alias:linus-torvalds:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リーヌス・トーヴァルズ","script":"kana","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"ja:alias:linus-torvalds:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リーヌス・トーバルズ","script":"kana","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"ja:alias:ken-thompson:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Ken Thompson","script":"latin","in_script":false,"relevant":["ken-thompson"]}
+{"qid":"ja:alias:bjarne-stroustrup:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ビャーン・ストラウストラップ","script":"kana","in_script":true,"relevant":["bjarne-stroustrup"]}
+{"qid":"ja:alias:bjarne-stroustrup:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ビャーネ・ストラウストラップ","script":"kana","in_script":true,"relevant":["bjarne-stroustrup"]}
+{"qid":"ja:alias:bjarne-stroustrup:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Bjarne Stroustrup","script":"latin","in_script":false,"relevant":["bjarne-stroustrup"]}
+{"qid":"ja:alias:barbara-liskov:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リスコフ","script":"kana","in_script":true,"relevant":["barbara-liskov"]}
+{"qid":"ja:alias:steve-jobs:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"スティーブ・ジョブス","script":"kana","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"ja:alias:steve-jobs:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"スティーヴ・ジョブズ","script":"kana","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"ja:alias:steve-jobs:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"スティーヴン・ジョブズ","script":"kana","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"ja:alias:elon-musk:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"イーロンマスク","script":"kana","in_script":true,"relevant":["elon-musk"]}
+{"qid":"ja:alias:elon-musk:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Elon Musk","script":"latin","in_script":false,"relevant":["elon-musk"]}
+{"qid":"ja:alias:elon-musk:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"イーロン・リーヴ・マスク","script":"kana","in_script":true,"relevant":["elon-musk"]}
+{"qid":"ja:alias:mark-zuckerberg:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ザッカーバーグ","script":"kana","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"ja:alias:mark-zuckerberg:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Mark Zuckerberg","script":"latin","in_script":false,"relevant":["mark-zuckerberg"]}
+{"qid":"ja:alias:sergey-brin:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サーゲイ・ブリン","script":"kana","in_script":true,"relevant":["sergey-brin"]}
+{"qid":"ja:alias:sergey-brin:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Sergey Brin","script":"latin","in_script":false,"relevant":["sergey-brin"]}
+{"qid":"ja:alias:sundar-pichai:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サンダーピチャイ","script":"kana","in_script":true,"relevant":["sundar-pichai"]}
+{"qid":"ja:alias:sundar-pichai:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サンダー・ピチャイ","script":"kana","in_script":true,"relevant":["sundar-pichai"]}
+{"qid":"ja:alias:generative-pre-trained-transformer:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Generative pre-trained transformer","script":"latin","in_script":false,"relevant":["generative-pre-trained-transformer"]}
+{"qid":"ja:alias:generative-pre-trained-transformer:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Generative Pre-trained Transformer","script":"latin","in_script":false,"relevant":["generative-pre-trained-transformer"]}
+{"qid":"ja:alias:generative-pre-trained-transformer:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"生成的事前学習","script":"han","in_script":true,"relevant":["generative-pre-trained-transformer"]}
 {"qid":"ja:alias:retrieval-augmented-generation:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"RAG","script":"latin","in_script":false,"relevant":["retrieval-augmented-generation"]}
 {"qid":"ja:alias:retrieval-augmented-generation:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"検索拡張生成","script":"han","in_script":true,"relevant":["retrieval-augmented-generation"]}
 {"qid":"ja:alias:generative-adversarial-network:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Generation adversarial network","script":"latin","in_script":false,"relevant":["generative-adversarial-network"]}
@@ -39,6 +107,13 @@
 {"qid":"ja:alias:artificial-intelligence:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"人工頭脳","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
 {"qid":"ja:alias:artificial-intelligence:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"機械知能","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
 {"qid":"ja:alias:artificial-intelligence:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"人工知能学","script":"han","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"ja:alias:supervised-learning:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"目的変数","script":"han","in_script":true,"relevant":["supervised-learning"]}
+{"qid":"ja:alias:prompt-engineering:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"プロンプト・エンジニアリング","script":"kana","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"ja:alias:prompt-engineering:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"思考連鎖型プロンプト","script":"han","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"ja:alias:prompt-engineering:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"コンテキスト内学習","script":"kana","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"ja:alias:technological-singularity:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"2045年問題","script":"han","in_script":true,"relevant":["technological-singularity"]}
+{"qid":"ja:alias:technological-singularity:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"テクノロジカルシンギュラリティ","script":"kana","in_script":true,"relevant":["technological-singularity"]}
+{"qid":"ja:alias:technological-singularity:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"テクノロジカルシンギュラリティー","script":"kana","in_script":true,"relevant":["technological-singularity"]}
 {"qid":"ja:alias:chatgpt:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"チャットGPT","script":"kana","in_script":true,"relevant":["chatgpt"]}
 {"qid":"ja:alias:chatgpt:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"チャットgpt","script":"kana","in_script":true,"relevant":["chatgpt"]}
 {"qid":"ja:alias:claude:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Claude Code","script":"latin","in_script":false,"relevant":["claude"]}
@@ -48,12 +123,15 @@
 {"qid":"ja:alias:chatbot:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"人工無能","script":"han","in_script":true,"relevant":["chatbot"]}
 {"qid":"ja:alias:chatbot:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"おしゃべりボット","script":"kana","in_script":true,"relevant":["chatbot"]}
 {"qid":"ja:alias:chatbot:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"会話ボット","script":"kana","in_script":true,"relevant":["chatbot"]}
+{"qid":"ja:alias:midjourney:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ミッドジャーニー","script":"kana","in_script":true,"relevant":["midjourney"]}
+{"qid":"ja:alias:alphafold:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アルファフォールド","script":"kana","in_script":true,"relevant":["alphafold"]}
 {"qid":"ja:alias:search-engine:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サーチエンジン","script":"kana","in_script":true,"relevant":["search-engine"]}
 {"qid":"ja:alias:search-engine:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"検索サイト","script":"kana","in_script":true,"relevant":["search-engine"]}
 {"qid":"ja:alias:search-engine:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ディレクトリ型検索エンジン","script":"kana","in_script":true,"relevant":["search-engine"]}
 {"qid":"ja:alias:recommender-system:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"レコメンデーションシステム","script":"kana","in_script":true,"relevant":["recommender-system"]}
 {"qid":"ja:alias:recommender-system:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"推薦システム","script":"kana","in_script":true,"relevant":["recommender-system"]}
 {"qid":"ja:alias:recommender-system:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"レコメンドシステム","script":"kana","in_script":true,"relevant":["recommender-system"]}
+{"qid":"ja:alias:collaborative-filtering:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Collaborative filtering","script":"latin","in_script":false,"relevant":["collaborative-filtering"]}
 {"qid":"ja:alias:cluster-analysis:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラスター解析","script":"kana","in_script":true,"relevant":["cluster-analysis"]}
 {"qid":"ja:alias:cluster-analysis:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラスタ解析","script":"kana","in_script":true,"relevant":["cluster-analysis"]}
 {"qid":"ja:alias:cluster-analysis:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラスター分析","script":"kana","in_script":true,"relevant":["cluster-analysis"]}
@@ -64,6 +142,12 @@
 {"qid":"ja:alias:regression-analysis:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"回帰計算","script":"han","in_script":true,"relevant":["regression-analysis"]}
 {"qid":"ja:alias:regression-analysis:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"回帰式","script":"han","in_script":true,"relevant":["regression-analysis"]}
 {"qid":"ja:alias:bayes-theorem:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ベイズ理論","script":"kana","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"ja:alias:web-crawler:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クロウラー","script":"kana","in_script":true,"relevant":["web-crawler"]}
+{"qid":"ja:alias:web-crawler:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クローラー","script":"kana","in_script":true,"relevant":["web-crawler"]}
+{"qid":"ja:alias:web-crawler:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クロウラ","script":"kana","in_script":true,"relevant":["web-crawler"]}
+{"qid":"ja:alias:nearest-neighbor-search:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"最近接近傍探索","script":"han","in_script":true,"relevant":["nearest-neighbor-search"]}
+{"qid":"ja:alias:euclidean-distance:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ユークリッド計量","script":"kana","in_script":true,"relevant":["euclidean-distance"]}
+{"qid":"ja:alias:euclidean-distance:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"平方ユークリッド距離","script":"kana","in_script":true,"relevant":["euclidean-distance"]}
 {"qid":"ja:alias:natural-language-processing:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"言語処理","script":"han","in_script":true,"relevant":["natural-language-processing"]}
 {"qid":"ja:alias:natural-language-processing:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"自然言語検索","script":"han","in_script":true,"relevant":["natural-language-processing"]}
 {"qid":"ja:alias:natural-language-processing:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"統計的自然言語処理","script":"han","in_script":true,"relevant":["natural-language-processing"]}
@@ -75,11 +159,50 @@
 {"qid":"ja:alias:computer-vision:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"コンピュータ・ビジョン","script":"kana","in_script":true,"relevant":["computer-vision"]}
 {"qid":"ja:alias:computer-vision:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"コンピューター・ビジョン","script":"kana","in_script":true,"relevant":["computer-vision"]}
 {"qid":"ja:alias:turing-test:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"チューリングテスト","script":"kana","in_script":true,"relevant":["turing-test"]}
+{"qid":"ja:alias:optical-character-recognition:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"文字認識","script":"han","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"ja:alias:optical-character-recognition:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"モバイル文字認識","script":"han","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"ja:alias:optical-character-recognition:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"光学式文字読取装置","script":"han","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"ja:alias:robotics:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ロボティクス","script":"kana","in_script":true,"relevant":["robotics"]}
+{"qid":"ja:alias:robotics:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ロボット工学者","script":"kana","in_script":true,"relevant":["robotics"]}
 {"qid":"ja:alias:postgresql:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Postgres","script":"latin","in_script":false,"relevant":["postgresql"]}
 {"qid":"ja:alias:postgresql:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ポスグレ","script":"kana","in_script":true,"relevant":["postgresql"]}
 {"qid":"ja:alias:postgresql:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"PgAdmin","script":"latin","in_script":false,"relevant":["postgresql"]}
 {"qid":"ja:alias:sqlite:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"SQLite3","script":"latin","in_script":false,"relevant":["sqlite"]}
+{"qid":"ja:alias:microsoft-sql-server:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"MSDE","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"ja:alias:microsoft-sql-server:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Mssql","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"ja:alias:microsoft-sql-server:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Ms sql","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
 {"qid":"ja:alias:kubernetes:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"K8s","script":"latin","in_script":false,"relevant":["kubernetes"]}
+{"qid":"ja:alias:nosql:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ドキュメント指向データベース","script":"kana","in_script":true,"relevant":["nosql"]}
+{"qid":"ja:alias:relational-database:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リレーショナル・データベース","script":"kana","in_script":true,"relevant":["relational-database"]}
+{"qid":"ja:alias:relational-database:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リレーショナルデータベース","script":"kana","in_script":true,"relevant":["relational-database"]}
+{"qid":"ja:alias:relational-database:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Sawzall","script":"latin","in_script":false,"relevant":["relational-database"]}
+{"qid":"ja:alias:database-transaction:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"データベーストランザクション","script":"kana","in_script":true,"relevant":["database-transaction"]}
+{"qid":"ja:alias:database-transaction:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Begin Work (SQL)","script":"latin","in_script":false,"relevant":["database-transaction"]}
+{"qid":"ja:alias:database-transaction:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"BEGIN WORK (SQL)","script":"latin","in_script":false,"relevant":["database-transaction"]}
+{"qid":"ja:alias:database-normalization:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リレーションの正規化","script":"kana","in_script":true,"relevant":["database-normalization"]}
+{"qid":"ja:alias:database-normalization:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"データベース正規化","script":"kana","in_script":true,"relevant":["database-normalization"]}
+{"qid":"ja:alias:database-normalization:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ボイス・コッド正規形","script":"kana","in_script":true,"relevant":["database-normalization"]}
+{"qid":"ja:alias:b-tree:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"B-tree","script":"latin","in_script":false,"relevant":["b-tree"]}
+{"qid":"ja:alias:b-tree:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"B木構造","script":"han","in_script":true,"relevant":["b-tree"]}
+{"qid":"ja:alias:json:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":".json","script":"latin","in_script":false,"relevant":["json"]}
+{"qid":"ja:alias:json:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ECMA-404","script":"latin","in_script":false,"relevant":["json"]}
+{"qid":"ja:alias:https:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"常時SSL","script":"latin","in_script":false,"relevant":["https"]}
+{"qid":"ja:alias:https:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Https://","script":"latin","in_script":false,"relevant":["https"]}
+{"qid":"ja:alias:transmission-control-protocol:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ウィンドウサイズ","script":"kana","in_script":true,"relevant":["transmission-control-protocol"]}
+{"qid":"ja:alias:transmission-control-protocol:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"TCPヘッダ","script":"kana","in_script":true,"relevant":["transmission-control-protocol"]}
+{"qid":"ja:alias:load-balancing:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"負荷分散","script":"han","in_script":true,"relevant":["load-balancing"]}
+{"qid":"ja:alias:load-balancing:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ロードバランス","script":"kana","in_script":true,"relevant":["load-balancing"]}
+{"qid":"ja:alias:load-balancing:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ロードバランサ","script":"kana","in_script":true,"relevant":["load-balancing"]}
+{"qid":"ja:alias:nginx:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エンジンエックス","script":"kana","in_script":true,"relevant":["nginx"]}
+{"qid":"ja:alias:nginx:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"FreeNGINX","script":"latin","in_script":false,"relevant":["nginx"]}
+{"qid":"ja:alias:nginx:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Freenginx","script":"latin","in_script":false,"relevant":["nginx"]}
+{"qid":"ja:alias:cache:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"記憶階層","script":"han","in_script":true,"relevant":["cache"]}
+{"qid":"ja:alias:cache:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"キャッシュシステム","script":"kana","in_script":true,"relevant":["cache"]}
+{"qid":"ja:alias:cache:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"CPU cache","script":"latin","in_script":false,"relevant":["cache"]}
+{"qid":"ja:alias:devops:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"デブオプス","script":"kana","in_script":true,"relevant":["devops"]}
+{"qid":"ja:alias:microsoft-azure:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Windows Strata","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
+{"qid":"ja:alias:microsoft-azure:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Windows Cloud","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
+{"qid":"ja:alias:microsoft-azure:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Windows Azure","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
 {"qid":"ja:alias:git:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ギット","script":"kana","in_script":true,"relevant":["git"]}
 {"qid":"ja:alias:git:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Libgit2","script":"latin","in_script":false,"relevant":["git"]}
 {"qid":"ja:alias:linux:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リナックス","script":"kana","in_script":true,"relevant":["linux"]}
@@ -94,15 +217,122 @@
 {"qid":"ja:alias:software-as-a-service:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"SAAS","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
 {"qid":"ja:alias:software-as-a-service:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ソフトウェア プラス サービス","script":"kana","in_script":true,"relevant":["software-as-a-service"]}
 {"qid":"ja:alias:software-as-a-service:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"SaaS","script":"latin","in_script":false,"relevant":["software-as-a-service"]}
+{"qid":"ja:alias:internet-of-things:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"IoT","script":"latin","in_script":false,"relevant":["internet-of-things"]}
+{"qid":"ja:alias:internet-of-things:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Internet of Things","script":"latin","in_script":false,"relevant":["internet-of-things"]}
+{"qid":"ja:alias:internet-of-things:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"物のインターネット","script":"kana","in_script":true,"relevant":["internet-of-things"]}
+{"qid":"ja:alias:javascript:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"LiveScript","script":"latin","in_script":false,"relevant":["javascript"]}
+{"qid":"ja:alias:javascript:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ジャバスクリプト","script":"kana","in_script":true,"relevant":["javascript"]}
+{"qid":"ja:alias:javascript:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ジャヴァスクリプト","script":"kana","in_script":true,"relevant":["javascript"]}
+{"qid":"ja:alias:c:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"シー言語","script":"han","in_script":true,"relevant":["c"]}
+{"qid":"ja:alias:c:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"C Programming Language","script":"latin","in_script":false,"relevant":["c"]}
+{"qid":"ja:alias:c:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"JIS X 3010","script":"latin","in_script":false,"relevant":["c"]}
+{"qid":"ja:alias:c-sharp:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"C＃","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"ja:alias:c-sharp:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Cシャープ","script":"kana","in_script":true,"relevant":["c-sharp"]}
+{"qid":"ja:alias:c-sharp:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"JIS X 3015","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"ja:alias:ruby:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"JIS X 3017","script":"latin","in_script":false,"relevant":["ruby"]}
+{"qid":"ja:alias:ruby:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ISO/IEC 30170","script":"latin","in_script":false,"relevant":["ruby"]}
+{"qid":"ja:alias:r:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Rプログラム","script":"kana","in_script":true,"relevant":["r"]}
+{"qid":"ja:alias:r:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"プログラム言語R","script":"kana","in_script":true,"relevant":["r"]}
+{"qid":"ja:alias:r:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"CRAN","script":"latin","in_script":false,"relevant":["r"]}
+{"qid":"ja:alias:assembly-language:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アセンブラ言語","script":"kana","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ja:alias:assembly-language:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ニーモニック","script":"kana","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ja:alias:assembly-language:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アセンブラー","script":"kana","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ja:alias:css:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"CSS2","script":"latin","in_script":false,"relevant":["css"]}
+{"qid":"ja:alias:css:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"CSS3","script":"latin","in_script":false,"relevant":["css"]}
+{"qid":"ja:alias:css:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"カスケード・スタイル・シート","script":"kana","in_script":true,"relevant":["css"]}
+{"qid":"ja:alias:react:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"React.js","script":"latin","in_script":false,"relevant":["react"]}
+{"qid":"ja:alias:react:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"リアクト","script":"kana","in_script":true,"relevant":["react"]}
+{"qid":"ja:alias:interpreter:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"インタープリタ","script":"kana","in_script":true,"relevant":["interpreter"]}
+{"qid":"ja:alias:interpreter:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"インタプリタ言語","script":"kana","in_script":true,"relevant":["interpreter"]}
+{"qid":"ja:alias:interpreter:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"インタプリタ方式","script":"kana","in_script":true,"relevant":["interpreter"]}
+{"qid":"ja:alias:unit-testing:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ユニットテスト","script":"kana","in_script":true,"relevant":["unit-testing"]}
+{"qid":"ja:alias:unit-testing:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"単体試験","script":"han","in_script":true,"relevant":["unit-testing"]}
+{"qid":"ja:alias:unit-testing:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ユニットテスティング","script":"kana","in_script":true,"relevant":["unit-testing"]}
+{"qid":"ja:alias:scrum:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"SCRUM","script":"latin","in_script":false,"relevant":["scrum"]}
+{"qid":"ja:alias:scrum:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"スクラム開発","script":"kana","in_script":true,"relevant":["scrum"]}
+{"qid":"ja:alias:object-oriented-programming:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"オブジェクト指向言語","script":"kana","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"ja:alias:object-oriented-programming:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"オブジェクト指向プログラミング言語","script":"kana","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"ja:alias:object-oriented-programming:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Object-oriented programming","script":"latin","in_script":false,"relevant":["object-oriented-programming"]}
+{"qid":"ja:alias:big-o-notation:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"O記法","script":"han","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"ja:alias:big-o-notation:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ランダウ記法","script":"kana","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"ja:alias:big-o-notation:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"オーダー記法","script":"kana","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"ja:alias:dynamic-programming:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ダイナミックプログラミング","script":"kana","in_script":true,"relevant":["dynamic-programming"]}
+{"qid":"ja:alias:dynamic-programming:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ダイナミック・プログラミング","script":"kana","in_script":true,"relevant":["dynamic-programming"]}
+{"qid":"ja:alias:turing-machine:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"位置と内容","script":"han","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ja:alias:turing-machine:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"チューリング機械","script":"kana","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ja:alias:turing-machine:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"チューリング・マシン","script":"kana","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ja:alias:p-versus-np-problem:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"P=NP予想","script":"latin","in_script":false,"relevant":["p-versus-np-problem"]}
+{"qid":"ja:alias:p-versus-np-problem:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"P-NP問題","script":"latin","in_script":false,"relevant":["p-versus-np-problem"]}
+{"qid":"ja:alias:p-versus-np-problem:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"P≠NP","script":"latin","in_script":false,"relevant":["p-versus-np-problem"]}
+{"qid":"ja:alias:kernel:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エクソカーネル","script":"kana","in_script":true,"relevant":["kernel"]}
+{"qid":"ja:alias:microsoft-windows:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Windows","script":"latin","in_script":false,"relevant":["microsoft-windows"]}
+{"qid":"ja:alias:microsoft-windows:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ウィンドウズ","script":"kana","in_script":true,"relevant":["microsoft-windows"]}
+{"qid":"ja:alias:microsoft-windows:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ウインドウズ","script":"kana","in_script":true,"relevant":["microsoft-windows"]}
+{"qid":"ja:alias:ios:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"OS X iPhone","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"ja:alias:ios:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"IPhone OS","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"ja:alias:ios:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"IPhoneOS","script":"latin","in_script":false,"relevant":["ios"]}
+{"qid":"ja:alias:world-wide-web:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ウェブ","script":"kana","in_script":true,"relevant":["world-wide-web"]}
+{"qid":"ja:alias:world-wide-web:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Web","script":"latin","in_script":false,"relevant":["world-wide-web"]}
+{"qid":"ja:alias:world-wide-web:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ワールドワイドウェブ","script":"kana","in_script":true,"relevant":["world-wide-web"]}
+{"qid":"ja:alias:application-programming-interface:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"アプリケーションプログラミングインターフェイス","script":"kana","in_script":true,"relevant":["application-programming-interface"]}
+{"qid":"ja:alias:application-programming-interface:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Application programming interface","script":"latin","in_script":false,"relevant":["application-programming-interface"]}
+{"qid":"ja:alias:application-programming-interface:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Application Programming Interface","script":"latin","in_script":false,"relevant":["application-programming-interface"]}
+{"qid":"ja:alias:gnu-general-public-license:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"GPL","script":"latin","in_script":false,"relevant":["gnu-general-public-license"]}
+{"qid":"ja:alias:gnu-general-public-license:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"GNU GPL","script":"latin","in_script":false,"relevant":["gnu-general-public-license"]}
+{"qid":"ja:alias:gnu-general-public-license:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"General Public License","script":"latin","in_script":false,"relevant":["gnu-general-public-license"]}
+{"qid":"ja:alias:creative-commons:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Creative Commons","script":"latin","in_script":false,"relevant":["creative-commons"]}
+{"qid":"ja:alias:creative-commons:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クリエイティヴ・コモンズ","script":"kana","in_script":true,"relevant":["creative-commons"]}
+{"qid":"ja:alias:creative-commons:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クリエイティブコモンズ","script":"kana","in_script":true,"relevant":["creative-commons"]}
+{"qid":"ja:alias:public-key-cryptography:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"公開鍵暗号方式","script":"han","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ja:alias:public-key-cryptography:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"公開かぎ暗号","script":"han","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ja:alias:public-key-cryptography:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"公開二重鍵暗号","script":"han","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ja:alias:hash-function:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ハッシュ化","script":"kana","in_script":true,"relevant":["hash-function"]}
+{"qid":"ja:alias:hash-function:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ハッシュ値","script":"kana","in_script":true,"relevant":["hash-function"]}
+{"qid":"ja:alias:advanced-encryption-standard:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"FIPS 197","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"ja:alias:advanced-encryption-standard:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Rijndael","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"ja:alias:advanced-encryption-standard:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"AES暗号","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"ja:alias:zero-knowledge-proof:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ゼロ知識対話証明","script":"han","in_script":true,"relevant":["zero-knowledge-proof"]}
+{"qid":"ja:alias:zero-knowledge-proof:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Zkp","script":"latin","in_script":false,"relevant":["zero-knowledge-proof"]}
+{"qid":"ja:alias:zero-knowledge-proof:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Zkip","script":"latin","in_script":false,"relevant":["zero-knowledge-proof"]}
 {"qid":"ja:alias:y-combinator:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Y Combinator","script":"latin","in_script":false,"relevant":["y-combinator"]}
-{"qid":"ja:alias:andreessen-horowitz:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"A16z","script":"latin","in_script":false,"relevant":["andreessen-horowitz"]}
 {"qid":"ja:alias:venture-capital:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"起業投資","script":"han","in_script":true,"relevant":["venture-capital"]}
 {"qid":"ja:alias:venture-capital:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"起業投資会社","script":"han","in_script":true,"relevant":["venture-capital"]}
-{"qid":"ja:alias:venture-capital:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Alpha (ベンチャーキャピタル)","script":"kana","in_script":true,"relevant":["venture-capital"]}
 {"qid":"ja:alias:initial-public-offering:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"新規株式公開","script":"han","in_script":true,"relevant":["initial-public-offering"]}
 {"qid":"ja:alias:startup-company:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ベンチャービジネス","script":"kana","in_script":true,"relevant":["startup-company"]}
 {"qid":"ja:alias:startup-company:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ベンチャー企業","script":"kana","in_script":true,"relevant":["startup-company"]}
 {"qid":"ja:alias:startup-company:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"研究開発型企業","script":"han","in_script":true,"relevant":["startup-company"]}
+{"qid":"ja:alias:due-diligence:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"デューデリジェンス","script":"kana","in_script":true,"relevant":["due-diligence"]}
+{"qid":"ja:alias:due-diligence:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"デュー・ディリジェンス","script":"kana","in_script":true,"relevant":["due-diligence"]}
+{"qid":"ja:alias:due-diligence:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"デュー・デリジェンス","script":"kana","in_script":true,"relevant":["due-diligence"]}
+{"qid":"ja:alias:crowdfunding:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラウド・ファンディング","script":"kana","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"ja:alias:crowdfunding:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"スポーツファンディング","script":"kana","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"ja:alias:crowdfunding:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クラファン","script":"kana","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"ja:alias:economies-of-scale:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"規模の利益","script":"han","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"ja:alias:economies-of-scale:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"スケールメリット","script":"kana","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"ja:alias:economies-of-scale:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"規模の経済性","script":"han","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"ja:alias:patent:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"特許権","script":"han","in_script":true,"relevant":["patent"]}
+{"qid":"ja:alias:patent:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"パテント","script":"kana","in_script":true,"relevant":["patent"]}
+{"qid":"ja:alias:patent:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Patent","script":"latin","in_script":false,"relevant":["patent"]}
+{"qid":"ja:alias:copyright:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"コピーライト","script":"kana","in_script":true,"relevant":["copyright"]}
+{"qid":"ja:alias:copyright:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"著作者の権利","script":"han","in_script":true,"relevant":["copyright"]}
+{"qid":"ja:alias:copyright:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"著作権者","script":"han","in_script":true,"relevant":["copyright"]}
+{"qid":"ja:alias:probability:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"蓋然性","script":"han","in_script":true,"relevant":["probability"]}
+{"qid":"ja:alias:bayesian-inference:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ベイズ推計","script":"kana","in_script":true,"relevant":["bayesian-inference"]}
+{"qid":"ja:alias:bayesian-inference:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ベイズ推論","script":"kana","in_script":true,"relevant":["bayesian-inference"]}
+{"qid":"ja:alias:hidden-markov-model:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"隠れマルコフ","script":"kana","in_script":true,"relevant":["hidden-markov-model"]}
+{"qid":"ja:alias:matrix:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"実行列","script":"han","in_script":true,"relevant":["matrix"]}
+{"qid":"ja:alias:matrix:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"複素行列","script":"han","in_script":true,"relevant":["matrix"]}
+{"qid":"ja:alias:matrix:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"行ベクトル","script":"kana","in_script":true,"relevant":["matrix"]}
+{"qid":"ja:alias:vector-space:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"線形空間","script":"han","in_script":true,"relevant":["vector-space"]}
+{"qid":"ja:alias:vector-space:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"線型空間","script":"han","in_script":true,"relevant":["vector-space"]}
+{"qid":"ja:alias:vector-space:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"実ベクトル空間","script":"kana","in_script":true,"relevant":["vector-space"]}
+{"qid":"ja:alias:derivative:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"微分係数","script":"han","in_script":true,"relevant":["derivative"]}
+{"qid":"ja:alias:derivative:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"導関数","script":"han","in_script":true,"relevant":["derivative"]}
+{"qid":"ja:alias:derivative:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"導函数","script":"han","in_script":true,"relevant":["derivative"]}
+{"qid":"ja:alias:convex-optimization:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"凸計画問題","script":"han","in_script":true,"relevant":["convex-optimization"]}
+{"qid":"ja:alias:signal-processing:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"信号解析","script":"han","in_script":true,"relevant":["signal-processing"]}
+{"qid":"ja:alias:fast-fourier-transform:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Fast Fourier Transform","script":"latin","in_script":false,"relevant":["fast-fourier-transform"]}
+{"qid":"ja:alias:fast-fourier-transform:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"IFFT","script":"latin","in_script":false,"relevant":["fast-fourier-transform"]}
 {"qid":"ja:alias:unicode:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ユニコード","script":"kana","in_script":true,"relevant":["unicode"]}
 {"qid":"ja:alias:unicode:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"UTF","script":"latin","in_script":false,"relevant":["unicode"]}
 {"qid":"ja:alias:unicode:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"サロゲートペア","script":"kana","in_script":true,"relevant":["unicode"]}
@@ -110,7 +340,35 @@
 {"qid":"ja:alias:blockchain:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ブロックチェイン","script":"kana","in_script":true,"relevant":["blockchain"]}
 {"qid":"ja:alias:blockchain:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Blockchain","script":"latin","in_script":false,"relevant":["blockchain"]}
 {"qid":"ja:alias:cryptocurrency:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Counos","script":"latin","in_script":false,"relevant":["cryptocurrency"]}
+{"qid":"ja:alias:ethereum:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"イーサリウム","script":"kana","in_script":true,"relevant":["ethereum"]}
+{"qid":"ja:alias:ethereum:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Ethereum","script":"latin","in_script":false,"relevant":["ethereum"]}
+{"qid":"ja:alias:non-fungible-token:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"NFT (トークン)","script":"kana","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"ja:alias:non-fungible-token:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"NFTゲーム","script":"kana","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"ja:alias:quantum-entanglement:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"量子エンタングルメント","script":"kana","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"ja:alias:quantum-entanglement:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"量子絡み合い","script":"han","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"ja:alias:quantum-entanglement:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"エンタングル","script":"kana","in_script":true,"relevant":["quantum-entanglement"]}
 {"qid":"ja:alias:semiconductor:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"少数キャリア","script":"kana","in_script":true,"relevant":["semiconductor"]}
 {"qid":"ja:alias:semiconductor:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"多数キャリア","script":"kana","in_script":true,"relevant":["semiconductor"]}
 {"qid":"ja:alias:semiconductor:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"少数キャリヤー","script":"kana","in_script":true,"relevant":["semiconductor"]}
 {"qid":"ja:alias:moore-s-law:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"シリコンサイクル","script":"kana","in_script":true,"relevant":["moore-s-law"]}
+{"qid":"ja:alias:tensor-processing-unit:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Tensor processing unit","script":"latin","in_script":false,"relevant":["tensor-processing-unit"]}
+{"qid":"ja:alias:tensor-processing-unit:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Edge TPU","script":"latin","in_script":false,"relevant":["tensor-processing-unit"]}
+{"qid":"ja:alias:tensor-processing-unit:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"テンサー・プロセッシング・ユニット","script":"kana","in_script":true,"relevant":["tensor-processing-unit"]}
+{"qid":"ja:alias:application-specific-integrated-circuit:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"カスタムIC","script":"kana","in_script":true,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"ja:alias:application-specific-integrated-circuit:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"特定用途向け集積回路","script":"han","in_script":true,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"ja:alias:solid-state-drive:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"シリコンディスク","script":"kana","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"ja:alias:solid-state-drive:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"擬似ディスク","script":"kana","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"ja:alias:solid-state-drive:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Flash SSD","script":"latin","in_script":false,"relevant":["solid-state-drive"]}
+{"qid":"ja:alias:nanotechnology:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ナノテク","script":"kana","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ja:alias:nanotechnology:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"超微細技術","script":"han","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ja:alias:nanotechnology:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ナノシステム","script":"kana","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ja:alias:crispr:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"クリスパー","script":"kana","in_script":true,"relevant":["crispr"]}
+{"qid":"ja:alias:bioinformatics:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"生物情報学","script":"han","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"ja:alias:bioinformatics:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"バイオインフォマティックス","script":"kana","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"ja:alias:bioinformatics:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"生物情報科学","script":"han","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"ja:alias:cognitive-science:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"認知科学者","script":"han","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"ja:alias:consciousness:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"意識レベル","script":"kana","in_script":true,"relevant":["consciousness"]}
+{"qid":"ja:alias:consciousness:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"意識研究","script":"han","in_script":true,"relevant":["consciousness"]}
+{"qid":"ja:alias:5g:0","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"5G","script":"latin","in_script":false,"relevant":["5g"]}
+{"qid":"ja:alias:5g:1","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"ファイブジー","script":"kana","in_script":true,"relevant":["5g"]}
+{"qid":"ja:alias:5g:2","lang":"ja","family":"alias","origin":"wikipedia-redirect","query":"Au 5G","script":"latin","in_script":false,"relevant":["5g"]}

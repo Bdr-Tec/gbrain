@@ -2,9 +2,16 @@
 /**
  * Corpus builder for the embedding-default eval.
  *
- * Fetches REAL text (not LLM-generated) from Wikipedia for four language
- * slices — en / he / zh / ja — over the SAME semantic topic set, so
+ * Fetches REAL text (not LLM-generated) from Wikipedia for six language
+ * slices — en / he / ar / ru / zh / ja — over the SAME semantic topic set, so
  * language + script is the only variable across slices.
+ *
+ * The slice set is chosen to separate two confounded explanations of the
+ * Hebrew result in the first run:
+ *   - `ar` is a SECOND right-to-left script  → does the RTL finding generalise?
+ *   - `ru` is non-Latin but LEFT-to-right    → is "non-Latin" the real variable?
+ * Keeping the topic set identical across all six is what makes that
+ * comparison mean anything.
  *
  * Two outputs per slice:
  *   corpus/<slice>.jsonl        docs   — lead-section plaintext extract
@@ -25,18 +32,23 @@
  *
  * Usage:  node build-corpus.mjs            # fetch + write
  *         node build-corpus.mjs --dry-run  # report coverage, write nothing
+ *         node build-corpus.mjs --probe    # langlinks coverage only, no extracts
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const LANGS = ['en', 'he', 'zh', 'ja'];
+const LANGS = ['en', 'he', 'ar', 'ru', 'zh', 'ja'];
+/** Docs per slice. The pool in topics.txt is over-provisioned; survivors of the
+ *  six-way intersection are capped to this so every slice is the same size. */
+const TARGET_DOCS = 200;
 /** Drop a topic unless EVERY language's lead extract clears this. Keeps the
- *  topic set identical across slices (Hebrew Wikipedia has more stubs). */
+ *  topic set identical across slices (Hebrew + Arabic Wikipedia have more
+ *  stubs than English). */
 const MIN_DOC_CHARS = 300;
 /** Cap doc length. ~2000 chars ≈ 500 tokens ≈ one gbrain chunk, so the eval
  *  measures the embedding and not the chunker. */
@@ -177,7 +189,7 @@ async function fetchRedirects(lang, titles) {
   return out;
 }
 
-const normTitle = (s) => s.toLowerCase().replace(/\s*\([^)]*\)\s*$/, '').replace(/[\s_\-–—'’"״׳]/g, '');
+const normTitle = (s) => s.toLowerCase().replace(/\s*\([^)]*\)\s*$/, '').replace(/[\s_\-–—'’"״׳ـ]/g, '');
 
 /**
  * Reject aliases that are not a clean retrieval test.
@@ -210,11 +222,18 @@ function keepAlias(alias, articleTitle, otherTitles) {
  * brand names would not support any claim about Hebrew.
  */
 export function detectScript(s) {
-  const counts = { hebrew: 0, han: 0, kana: 0, latin: 0, other: 0 };
+  const counts = { hebrew: 0, arabic: 0, cyrillic: 0, han: 0, kana: 0, latin: 0, other: 0 };
   for (const ch of s) {
     const c = ch.codePointAt(0);
     if (/[\s\d\p{P}\p{S}]/u.test(ch)) continue;
     if ((c >= 0x0590 && c <= 0x05ff) || (c >= 0xfb1d && c <= 0xfb4f)) counts.hebrew++;
+    // Arabic + Arabic Supplement/Extended + presentation forms A/B.
+    else if ((c >= 0x0600 && c <= 0x06ff) || (c >= 0x0750 && c <= 0x077f)
+             || (c >= 0x08a0 && c <= 0x08ff) || (c >= 0xfb50 && c <= 0xfdff)
+             || (c >= 0xfe70 && c <= 0xfeff)) counts.arabic++;
+    // Cyrillic + Cyrillic Supplement/Extended-A/B.
+    else if ((c >= 0x0400 && c <= 0x052f) || (c >= 0x2de0 && c <= 0x2dff)
+             || (c >= 0xa640 && c <= 0xa69f)) counts.cyrillic++;
     else if ((c >= 0x4e00 && c <= 0x9fff) || (c >= 0x3400 && c <= 0x4dbf)
              || (c >= 0xf900 && c <= 0xfaff)) counts.han++;
     else if ((c >= 0x3040 && c <= 0x30ff) || (c >= 0x31f0 && c <= 0x31ff)) counts.kana++;
@@ -227,7 +246,10 @@ export function detectScript(s) {
 }
 
 /** Which script counts as "in-language" for a given wiki. */
-const IN_SCRIPT = { en: ['latin'], he: ['hebrew'], zh: ['han'], ja: ['han', 'kana'] };
+const IN_SCRIPT = {
+  en: ['latin'], he: ['hebrew'], ar: ['arabic'], ru: ['cyrillic'],
+  zh: ['han'], ja: ['han', 'kana'],
+};
 
 /**
  * Raw Wikipedia responses are cached so re-deriving the corpus (changing a
@@ -237,11 +259,34 @@ const IN_SCRIPT = { en: ['latin'], he: ['hebrew'], zh: ['han'], ja: ['han', 'kan
  * whether or not the cache survives. `--refetch` bypasses it.
  */
 const CACHE_PATH = join(__dirname, '.fetch-cache.json');
+/** Langlinks are cached SEPARATELY from extracts so `--probe` (cheap: ~1 request
+ *  per 20 topics per language) can size the pool without the ~1,200-request
+ *  extract pass, and so the extract pass reuses the probe's work. */
+const TITLE_CACHE_PATH = join(__dirname, '.title-cache.json');
+
+async function resolveTitlesCached(topics) {
+  if (!process.argv.includes('--refetch') && existsSync(TITLE_CACHE_PATH)) {
+    const c = JSON.parse(readFileSync(TITLE_CACHE_PATH, 'utf8'));
+    if (c.langs?.join() === LANGS.join() && c.topics_count === topics.length) {
+      process.stderr.write(`using cached langlinks from ${c.fetched_at} (--refetch to bypass)\n`);
+      return new Map(c.titleMap);
+    }
+  }
+  const titleMap = await resolveTitles(topics);
+  writeFileSync(TITLE_CACHE_PATH, JSON.stringify({
+    fetched_at: new Date().toISOString(), langs: LANGS,
+    topics_count: topics.length, titleMap: [...titleMap],
+  }));
+  return titleMap;
+}
 
 async function fetchAll(topics) {
   if (!process.argv.includes('--refetch')) {
     try {
       const c = JSON.parse(readFileSync(CACHE_PATH, 'utf8'));
+      if (c.langs?.join() !== LANGS.join() || c.topics_count !== topics.length) {
+        throw new Error('cache built for a different lang/topic set');
+      }
       process.stderr.write(`using cached fetches from ${c.fetched_at} (--refetch to bypass)\n`);
       return {
         titleMap: new Map(c.titleMap),
@@ -250,7 +295,7 @@ async function fetchAll(topics) {
       };
     } catch { /* no cache — fetch fresh */ }
   }
-  const titleMap = await resolveTitles(topics);
+  const titleMap = await resolveTitlesCached(topics);
   const withAllLangs = topics.filter((t) => LANGS.every((l) => titleMap.get(t)[l]));
   process.stderr.write(`topics present in all of ${LANGS.join('/')}: ${withAllLangs.length}\n`);
 
@@ -263,6 +308,8 @@ async function fetchAll(topics) {
   }
   writeFileSync(CACHE_PATH, JSON.stringify({
     fetched_at: new Date().toISOString(),
+    langs: LANGS,
+    topics_count: topics.length,
     titleMap: [...titleMap],
     extracts: Object.fromEntries(LANGS.map((l) => [l, [...extracts[l]]])),
     redirects: Object.fromEntries(LANGS.map((l) => [l, [...redirects[l]]])),
@@ -270,20 +317,102 @@ async function fetchAll(topics) {
   return { titleMap, extracts, redirects };
 }
 
+/**
+ * Slugs that COMMITTED author-written nlq queries point at. Those query files
+ * are hand-written, so their gold slug must stay in the corpus or the qrel
+ * dangles. They are pinned through the TARGET_DOCS cap.
+ */
+function pinnedSlugs() {
+  const out = new Set();
+  for (const lang of LANGS) {
+    const p = join(__dirname, 'queries', `${lang}.nlq.jsonl`);
+    if (!existsSync(p)) continue;
+    for (const line of readFileSync(p, 'utf8').split('\n')) {
+      if (line.trim()) out.add(JSON.parse(line).relevant[0]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Topics the PREVIOUS build kept. Pinned so a rebuild is a superset of the last
+ * corpus wherever the language intersection still allows it — otherwise a
+ * re-run silently swaps half the topic set and the new numbers stop being
+ * comparable to the committed receipt. To re-pick the whole set from scratch,
+ * delete corpus/manifest.json first.
+ */
+function previouslyKept() {
+  const p = join(__dirname, 'corpus', 'manifest.json');
+  if (!existsSync(p)) return new Set();
+  return new Set(JSON.parse(readFileSync(p, 'utf8')).topics_kept_list ?? []);
+}
+
+/**
+ * Cap survivors to TARGET_DOCS.
+ *
+ * topics.txt is ordered by cluster, so a plain prefix cut would delete whole
+ * clusters off the tail and destroy the near-neighbour density the corpus
+ * exists to create. An even stride over the survivor list thins every cluster
+ * proportionally instead. Deterministic, and the exact kept list is recorded in
+ * the manifest either way.
+ */
+function selectTopics(survivors) {
+  if (survivors.length <= TARGET_DOCS) return survivors;
+  const pinnedSlug = pinnedSlugs();
+  const pinnedTopic = previouslyKept();
+  const isPinned = (t) => pinnedSlug.has(slugify(t)) || pinnedTopic.has(t);
+  const rest = survivors.filter((t) => !isPinned(t));
+  const need = TARGET_DOCS - (survivors.length - rest.length);
+  const stride = rest.length / need;
+  const picked = new Set(Array.from({ length: need }, (_, i) => rest[Math.floor(i * stride)]));
+  return survivors.filter((t) => isPinned(t) || picked.has(t));
+}
+
 async function main() {
   const dryRun = process.argv.includes('--dry-run');
   const topics = readTopics();
   process.stderr.write(`topics in pool: ${topics.length}\n`);
 
+  if (process.argv.includes('--probe')) {
+    const titleMap = await resolveTitlesCached(topics);
+    const per = Object.fromEntries(LANGS.map((l) =>
+      [l, topics.filter((t) => titleMap.get(t)?.[l]).length]));
+    const all = topics.filter((t) => LANGS.every((l) => titleMap.get(t)?.[l]));
+    const missing = Object.fromEntries(LANGS.filter((l) => l !== 'en').map((l) =>
+      [l, topics.filter((t) => !titleMap.get(t)?.[l])]));
+    process.stdout.write(JSON.stringify({
+      pool: topics.length, per_lang_with_article: per, present_in_all: all.length,
+      missing_count: Object.fromEntries(Object.entries(missing).map(([l, m]) => [l, m.length])),
+      missing,
+    }, null, 2) + '\n');
+    return;
+  }
+
   const { titleMap, extracts, redirects } = await fetchAll(topics);
   const withAllLangs = topics.filter((t) => LANGS.every((l) => titleMap.get(t)?.[l]));
 
+  // Topics with no article at all in some language — the documented coverage
+  // gap. Recorded per language rather than papered over with a substitute.
+  const noArticle = Object.fromEntries(LANGS.filter((l) => l !== 'en').map((l) =>
+    [l, topics.filter((t) => !titleMap.get(t)?.[l])]));
+
   // Keep only topics whose extract clears MIN_DOC_CHARS in EVERY language.
-  const kept = withAllLangs.filter((t) =>
+  const survivors = withAllLangs.filter((t) =>
     LANGS.every((l) => (extracts[l].get(titleMap.get(t)[l])?.text?.length ?? 0) >= MIN_DOC_CHARS));
-  const dropped = withAllLangs.filter((t) => !kept.includes(t));
-  process.stderr.write(`kept (>=${MIN_DOC_CHARS} chars in every language): ${kept.length}\n`);
+  const dropped = withAllLangs.filter((t) => !survivors.includes(t));
+  const kept = selectTopics(survivors);
+  process.stderr.write(`survived (>=${MIN_DOC_CHARS} chars in every language): ${survivors.length}\n`);
+  process.stderr.write(`kept after TARGET_DOCS=${TARGET_DOCS} cap: ${kept.length}\n`);
   if (dropped.length) process.stderr.write(`dropped as too short somewhere: ${dropped.join(', ')}\n`);
+  const unpinned = [...pinnedSlugs()].filter((s) => !kept.some((t) => slugify(t) === s));
+  if (unpinned.length) {
+    // A hand-written nlq query whose gold doc left the corpus is a dangling
+    // qrel — loadSlice() would throw at eval time. Fail here instead, loudly,
+    // so the nlq file gets fixed rather than the corpus quietly shipping broken.
+    const msg = `committed nlq queries reference slugs no longer in the corpus: ${unpinned.join(', ')}`;
+    if (!dryRun) throw new Error(msg);
+    process.stderr.write(`WARNING (--dry-run): ${msg}\n`);
+  }
 
   const summary = {};
   for (const lang of LANGS) {
@@ -356,9 +485,16 @@ async function main() {
     built_at: new Date().toISOString(),
     langs: LANGS,
     topic_pool: topics.length,
+    topics_present_in_all_langs: withAllLangs.length,
+    topics_survived_min_chars: survivors.length,
+    target_docs: TARGET_DOCS,
     topics_kept: kept.length,
     topics_kept_list: kept,
     dropped: dropped,
+    // Coverage gap: no article at all on that language's Wikipedia. Documented,
+    // never substituted with a different topic.
+    no_article: noArticle,
+    cap_selection: `even stride over the ${survivors.length} survivors (previous build's kept list + nlq gold topics pinned), so every cluster thins proportionally and a rebuild stays a superset`,
     min_doc_chars: MIN_DOC_CHARS,
     max_doc_chars: MAX_DOC_CHARS,
     max_aliases_per_topic: MAX_ALIASES_PER_TOPIC,
@@ -371,4 +507,8 @@ async function main() {
   process.stdout.write(JSON.stringify({ per_lang: summary, topics_kept: kept.length }, null, 2) + '\n');
 }
 
-main().catch((e) => { process.stderr.write(String(e?.stack ?? e) + '\n'); process.exit(1); });
+// Only fetch when run directly, so `detectScript` can be imported (the nlq
+// query files are tagged with the same detector the alias family uses).
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e) => { process.stderr.write(String(e?.stack ?? e) + '\n'); process.exit(1); });
+}

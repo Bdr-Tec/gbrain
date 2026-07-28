@@ -1,0 +1,402 @@
+{"qid":"ar:alias:openai:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أوبين أي","script":"arabic","in_script":true,"relevant":["openai"]}
+{"qid":"ar:alias:openai:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"OpenAI","script":"latin","in_script":false,"relevant":["openai"]}
+{"qid":"ar:alias:google-deepmind:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جوجل ديبمايند","script":"arabic","in_script":true,"relevant":["google-deepmind"]}
+{"qid":"ar:alias:google-deepmind:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جوجل ديب مايند","script":"arabic","in_script":true,"relevant":["google-deepmind"]}
+{"qid":"ar:alias:mistral-ai:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ميسترال (ذكاء اصطناعي)","script":"arabic","in_script":true,"relevant":["mistral-ai"]}
+{"qid":"ar:alias:hugging-face:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Hugging Face","script":"latin","in_script":false,"relevant":["hugging-face"]}
+{"qid":"ar:alias:nvidia:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إينفيديا","script":"arabic","in_script":true,"relevant":["nvidia"]}
+{"qid":"ar:alias:nvidia:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"NVIDIA","script":"latin","in_script":false,"relevant":["nvidia"]}
+{"qid":"ar:alias:nvidia:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أنفيديا","script":"arabic","in_script":true,"relevant":["nvidia"]}
+{"qid":"ar:alias:meta-platforms:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"شركة الفيسبوك","script":"arabic","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"ar:alias:meta-platforms:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"شركة فيسبوك","script":"arabic","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"ar:alias:meta-platforms:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"فيسبوك آي إن سي","script":"arabic","in_script":true,"relevant":["meta-platforms"]}
+{"qid":"ar:alias:apple-inc:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Apple Computer","script":"latin","in_script":false,"relevant":["apple-inc"]}
+{"qid":"ar:alias:apple-inc:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ابل كمبيوتر","script":"arabic","in_script":true,"relevant":["apple-inc"]}
+{"qid":"ar:alias:apple-inc:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أبل كمبيوتر","script":"arabic","in_script":true,"relevant":["apple-inc"]}
+{"qid":"ar:alias:alphabet-inc:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"شركة ألفابت","script":"arabic","in_script":true,"relevant":["alphabet-inc"]}
+{"qid":"ar:alias:ibm:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"آي بي أم","script":"arabic","in_script":true,"relevant":["ibm"]}
+{"qid":"ar:alias:ibm:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"IBM","script":"latin","in_script":false,"relevant":["ibm"]}
+{"qid":"ar:alias:ibm:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اي بي ام","script":"arabic","in_script":true,"relevant":["ibm"]}
+{"qid":"ar:alias:advanced-micro-devices:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"قائمة معالجات إي إم دي","script":"arabic","in_script":true,"relevant":["advanced-micro-devices"]}
+{"qid":"ar:alias:advanced-micro-devices:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"قائمة معالجات اي ام دي","script":"arabic","in_script":true,"relevant":["advanced-micro-devices"]}
+{"qid":"ar:alias:advanced-micro-devices:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أ.أم.دي","script":"arabic","in_script":true,"relevant":["advanced-micro-devices"]}
+{"qid":"ar:alias:salesforce:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Force.com","script":"latin","in_script":false,"relevant":["salesforce"]}
+{"qid":"ar:alias:sap:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ساب إى.جي.","script":"arabic","in_script":true,"relevant":["sap"]}
+{"qid":"ar:alias:sap:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"SAP","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"ar:alias:sap:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"SAP AG","script":"latin","in_script":false,"relevant":["sap"]}
+{"qid":"ar:alias:tesla-inc:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Tesla Motors","script":"latin","in_script":false,"relevant":["tesla-inc"]}
+{"qid":"ar:alias:tesla-inc:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تيسلا موتورز","script":"arabic","in_script":true,"relevant":["tesla-inc"]}
+{"qid":"ar:alias:uber:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Uber","script":"latin","in_script":false,"relevant":["uber"]}
+{"qid":"ar:alias:shopify:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Shopify","script":"latin","in_script":false,"relevant":["shopify"]}
+{"qid":"ar:alias:twitter:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Twitter","script":"latin","in_script":false,"relevant":["twitter"]}
+{"qid":"ar:alias:twitter:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Twitter.com","script":"latin","in_script":false,"relevant":["twitter"]}
+{"qid":"ar:alias:twitter:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تغريدة","script":"arabic","in_script":true,"relevant":["twitter"]}
+{"qid":"ar:alias:github:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"GitHub","script":"latin","in_script":false,"relevant":["github"]}
+{"qid":"ar:alias:github:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"GitHub Desktop","script":"latin","in_script":false,"relevant":["github"]}
+{"qid":"ar:alias:github:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جت هاب","script":"arabic","in_script":true,"relevant":["github"]}
+{"qid":"ar:alias:atlassian:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اتلاسيان","script":"arabic","in_script":true,"relevant":["atlassian"]}
+{"qid":"ar:alias:atlassian:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اتلسيان","script":"arabic","in_script":true,"relevant":["atlassian"]}
+{"qid":"ar:alias:atlassian:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أطلسيان","script":"arabic","in_script":true,"relevant":["atlassian"]}
+{"qid":"ar:alias:samsung-electronics:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إلكترونيات سامسونغ","script":"arabic","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"ar:alias:samsung-electronics:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"سامسونج للإلكترونيات","script":"arabic","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"ar:alias:samsung-electronics:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"شركة سامسونغ للالكترونيات","script":"arabic","in_script":true,"relevant":["samsung-electronics"]}
+{"qid":"ar:alias:alibaba-group:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Alibaba Group","script":"latin","in_script":false,"relevant":["alibaba-group"]}
+{"qid":"ar:alias:alibaba-group:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"شركة مجموعة علي بابا","script":"arabic","in_script":true,"relevant":["alibaba-group"]}
+{"qid":"ar:alias:bytedance:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بايت دانس إنترتينمنت","script":"arabic","in_script":true,"relevant":["bytedance"]}
+{"qid":"ar:alias:geoffrey-hinton:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Geoffrey Hinton","script":"latin","in_script":false,"relevant":["geoffrey-hinton"]}
+{"qid":"ar:alias:geoffrey-hinton:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جيوفري هينتون","script":"arabic","in_script":true,"relevant":["geoffrey-hinton"]}
+{"qid":"ar:alias:geoffrey-hinton:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"چيفري هينتون","script":"arabic","in_script":true,"relevant":["geoffrey-hinton"]}
+{"qid":"ar:alias:demis-hassabis:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"دميس حسابيس","script":"arabic","in_script":true,"relevant":["demis-hassabis"]}
+{"qid":"ar:alias:marvin-minsky:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Marvin Minsky","script":"latin","in_script":false,"relevant":["marvin-minsky"]}
+{"qid":"ar:alias:herbert-a-simon:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Herbert Simon","script":"latin","in_script":false,"relevant":["herbert-a-simon"]}
+{"qid":"ar:alias:herbert-a-simon:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Herbert A. Simon","script":"latin","in_script":false,"relevant":["herbert-a-simon"]}
+{"qid":"ar:alias:john-von-neumann:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"John von Neumann","script":"latin","in_script":false,"relevant":["john-von-neumann"]}
+{"qid":"ar:alias:john-von-neumann:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جون فون نويمان","script":"arabic","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"ar:alias:john-von-neumann:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"فون نيومان","script":"arabic","in_script":true,"relevant":["john-von-neumann"]}
+{"qid":"ar:alias:ada-lovelace:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أدا لوفليس","script":"arabic","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ar:alias:ada-lovelace:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أدا أوغستا بايرون","script":"arabic","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ar:alias:ada-lovelace:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أدا أوجستا بايرون","script":"arabic","in_script":true,"relevant":["ada-lovelace"]}
+{"qid":"ar:alias:edsger-w-dijkstra:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إدجر ديجكسترا","script":"arabic","in_script":true,"relevant":["edsger-w-dijkstra"]}
+{"qid":"ar:alias:edsger-w-dijkstra:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ادسخر دیكسترا","script":"arabic","in_script":true,"relevant":["edsger-w-dijkstra"]}
+{"qid":"ar:alias:edsger-w-dijkstra:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Edsger W. Dijkstra","script":"latin","in_script":false,"relevant":["edsger-w-dijkstra"]}
+{"qid":"ar:alias:linus-torvalds:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Linus Torvalds","script":"latin","in_script":false,"relevant":["linus-torvalds"]}
+{"qid":"ar:alias:linus-torvalds:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لينوس تورفالدز","script":"arabic","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"ar:alias:linus-torvalds:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لينوس ترفالدس","script":"arabic","in_script":true,"relevant":["linus-torvalds"]}
+{"qid":"ar:alias:ken-thompson:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"كن تومسون","script":"arabic","in_script":true,"relevant":["ken-thompson"]}
+{"qid":"ar:alias:ken-thompson:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"كين تومسون","script":"arabic","in_script":true,"relevant":["ken-thompson"]}
+{"qid":"ar:alias:ken-thompson:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Ken Thompson","script":"latin","in_script":false,"relevant":["ken-thompson"]}
+{"qid":"ar:alias:bjarne-stroustrup:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Bjarne Stroustrup","script":"latin","in_script":false,"relevant":["bjarne-stroustrup"]}
+{"qid":"ar:alias:barbara-liskov:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"باربارا لیسکف","script":"arabic","in_script":true,"relevant":["barbara-liskov"]}
+{"qid":"ar:alias:barbara-liskov:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"باربارا لیسكف","script":"arabic","in_script":true,"relevant":["barbara-liskov"]}
+{"qid":"ar:alias:barbara-liskov:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Barbara Liskov","script":"latin","in_script":false,"relevant":["barbara-liskov"]}
+{"qid":"ar:alias:steve-jobs:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Steve Jobs","script":"latin","in_script":false,"relevant":["steve-jobs"]}
+{"qid":"ar:alias:steve-jobs:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ستيف جوبس","script":"arabic","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"ar:alias:steve-jobs:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ستيف بول جوبز","script":"arabic","in_script":true,"relevant":["steve-jobs"]}
+{"qid":"ar:alias:elon-musk:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Elon Musk","script":"latin","in_script":false,"relevant":["elon-musk"]}
+{"qid":"ar:alias:elon-musk:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إيلون مسك","script":"arabic","in_script":true,"relevant":["elon-musk"]}
+{"qid":"ar:alias:elon-musk:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إلان مسك","script":"arabic","in_script":true,"relevant":["elon-musk"]}
+{"qid":"ar:alias:mark-zuckerberg:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مارك زوكربرج","script":"arabic","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"ar:alias:mark-zuckerberg:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مارك زوكربرغ","script":"arabic","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"ar:alias:mark-zuckerberg:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"زوكربيرغ","script":"arabic","in_script":true,"relevant":["mark-zuckerberg"]}
+{"qid":"ar:alias:sergey-brin:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Sergey Brin","script":"latin","in_script":false,"relevant":["sergey-brin"]}
+{"qid":"ar:alias:sundar-pichai:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Sundar Pichai","script":"latin","in_script":false,"relevant":["sundar-pichai"]}
+{"qid":"ar:alias:transformer:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الشبكات العصبية غير الترتيبية (حاسوب)","script":"arabic","in_script":true,"relevant":["transformer"]}
+{"qid":"ar:alias:gpt-4:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جي بي تي-4","script":"arabic","in_script":true,"relevant":["gpt-4"]}
+{"qid":"ar:alias:generative-pre-trained-transformer:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"المحول التوليدي المدرب مسبقا","script":"arabic","in_script":true,"relevant":["generative-pre-trained-transformer"]}
+{"qid":"ar:alias:large-language-model:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نموذج اللغة الكبير","script":"arabic","in_script":true,"relevant":["large-language-model"]}
+{"qid":"ar:alias:retrieval-augmented-generation:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"توليد معزز بالاسترجاع","script":"arabic","in_script":true,"relevant":["retrieval-augmented-generation"]}
+{"qid":"ar:alias:retrieval-augmented-generation:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التوليد المعزز بالاسترجاع","script":"arabic","in_script":true,"relevant":["retrieval-augmented-generation"]}
+{"qid":"ar:alias:retrieval-augmented-generation:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التوليد المعزز بالاستحضار","script":"arabic","in_script":true,"relevant":["retrieval-augmented-generation"]}
+{"qid":"ar:alias:convolutional-neural-network:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الشبكات العصبونية الالتفافية","script":"arabic","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"ar:alias:convolutional-neural-network:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"شبكات عصبونية التفافية","script":"arabic","in_script":true,"relevant":["convolutional-neural-network"]}
+{"qid":"ar:alias:convolutional-neural-network:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Convolutional neural network","script":"latin","in_script":false,"relevant":["convolutional-neural-network"]}
+{"qid":"ar:alias:generative-adversarial-network:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الشبكات التوليدية الخصومية","script":"arabic","in_script":true,"relevant":["generative-adversarial-network"]}
+{"qid":"ar:alias:overfitting:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نقص الملاءمة","script":"arabic","in_script":true,"relevant":["overfitting"]}
+{"qid":"ar:alias:overfitting:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"فرط التخصيص","script":"arabic","in_script":true,"relevant":["overfitting"]}
+{"qid":"ar:alias:overfitting:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نقص التعميم","script":"arabic","in_script":true,"relevant":["overfitting"]}
+{"qid":"ar:alias:perceptron:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بيرسبترون","script":"arabic","in_script":true,"relevant":["perceptron"]}
+{"qid":"ar:alias:perceptron:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Perceptron","script":"latin","in_script":false,"relevant":["perceptron"]}
+{"qid":"ar:alias:neural-network:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"شبكات عصبية اصطناعية","script":"arabic","in_script":true,"relevant":["neural-network"]}
+{"qid":"ar:alias:neural-network:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الشبكات العصبونية الاصطناعية","script":"arabic","in_script":true,"relevant":["neural-network"]}
+{"qid":"ar:alias:neural-network:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الشبكات العصبية الاصطناعية","script":"arabic","in_script":true,"relevant":["neural-network"]}
+{"qid":"ar:alias:deep-learning:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التعلم المتعمق والبيانات الضخمة","script":"arabic","in_script":true,"relevant":["deep-learning"]}
+{"qid":"ar:alias:deep-learning:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التعلم المتعمق و البيانات الضخمه","script":"arabic","in_script":true,"relevant":["deep-learning"]}
+{"qid":"ar:alias:deep-learning:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التعلم المتعمق","script":"arabic","in_script":true,"relevant":["deep-learning"]}
+{"qid":"ar:alias:machine-learning:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تعلم الآله","script":"arabic","in_script":true,"relevant":["machine-learning"]}
+{"qid":"ar:alias:machine-learning:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التعلم الألي","script":"arabic","in_script":true,"relevant":["machine-learning"]}
+{"qid":"ar:alias:machine-learning:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Machine learning","script":"latin","in_script":false,"relevant":["machine-learning"]}
+{"qid":"ar:alias:artificial-intelligence:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الذكاء الإصطناعي","script":"arabic","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"ar:alias:artificial-intelligence:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الذكاء الاصطناعي","script":"arabic","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"ar:alias:artificial-intelligence:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ذكاء إصطناعي","script":"arabic","in_script":true,"relevant":["artificial-intelligence"]}
+{"qid":"ar:alias:supervised-learning:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التعليم المراقب (بالإشراف)","script":"arabic","in_script":true,"relevant":["supervised-learning"]}
+{"qid":"ar:alias:supervised-learning:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تعليم مراقب (بالإشراف)","script":"arabic","in_script":true,"relevant":["supervised-learning"]}
+{"qid":"ar:alias:supervised-learning:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التعلم المراقب","script":"arabic","in_script":true,"relevant":["supervised-learning"]}
+{"qid":"ar:alias:prompt-engineering:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"هندسة فورية","script":"arabic","in_script":true,"relevant":["prompt-engineering"]}
+{"qid":"ar:alias:feature-engineering:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"هندسة الميزات","script":"arabic","in_script":true,"relevant":["feature-engineering"]}
+{"qid":"ar:alias:technological-singularity:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التفرد التكنولوجي","script":"arabic","in_script":true,"relevant":["technological-singularity"]}
+{"qid":"ar:alias:technological-singularity:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Intelligence explosion","script":"latin","in_script":false,"relevant":["technological-singularity"]}
+{"qid":"ar:alias:technological-singularity:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تفرد تكنولوجي","script":"arabic","in_script":true,"relevant":["technological-singularity"]}
+{"qid":"ar:alias:chatgpt:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ChatGPT","script":"latin","in_script":false,"relevant":["chatgpt"]}
+{"qid":"ar:alias:chatgpt:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"دردشة جي بي تي","script":"arabic","in_script":true,"relevant":["chatgpt"]}
+{"qid":"ar:alias:chatgpt:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تشات جي بي تي","script":"arabic","in_script":true,"relevant":["chatgpt"]}
+{"qid":"ar:alias:claude:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Claude (language model)","script":"latin","in_script":false,"relevant":["claude"]}
+{"qid":"ar:alias:google-gemini:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جوجل بارد","script":"arabic","in_script":true,"relevant":["google-gemini"]}
+{"qid":"ar:alias:google-gemini:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بارد (ذكاء صناعي)","script":"arabic","in_script":true,"relevant":["google-gemini"]}
+{"qid":"ar:alias:google-gemini:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Google Gemini","script":"latin","in_script":false,"relevant":["google-gemini"]}
+{"qid":"ar:alias:chatbot:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Chatbot","script":"latin","in_script":false,"relevant":["chatbot"]}
+{"qid":"ar:alias:chatbot:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"روبوت الدردشة","script":"arabic","in_script":true,"relevant":["chatbot"]}
+{"qid":"ar:alias:chatbot:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"روبوت دردشة","script":"arabic","in_script":true,"relevant":["chatbot"]}
+{"qid":"ar:alias:deep-blue:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Deep Blue (chess computer)","script":"latin","in_script":false,"relevant":["deep-blue"]}
+{"qid":"ar:alias:siri:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Siri","script":"latin","in_script":false,"relevant":["siri"]}
+{"qid":"ar:alias:search-engine:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"محركات البحث على الإنترنت","script":"arabic","in_script":true,"relevant":["search-engine"]}
+{"qid":"ar:alias:search-engine:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"محركات البحث على إنترنت","script":"arabic","in_script":true,"relevant":["search-engine"]}
+{"qid":"ar:alias:search-engine:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"محرك البحث","script":"arabic","in_script":true,"relevant":["search-engine"]}
+{"qid":"ar:alias:tf-idf:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تي إف-اي دي ديف","script":"arabic","in_script":true,"relevant":["tf-idf"]}
+{"qid":"ar:alias:tf-idf:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Tf-idf","script":"latin","in_script":false,"relevant":["tf-idf"]}
+{"qid":"ar:alias:tf-idf:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تردد المصطلح-معكوس تردد الوثيقة","script":"arabic","in_script":true,"relevant":["tf-idf"]}
+{"qid":"ar:alias:collaborative-filtering:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التصفية التشاركية","script":"arabic","in_script":true,"relevant":["collaborative-filtering"]}
+{"qid":"ar:alias:collaborative-filtering:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تصفية تشاركية","script":"arabic","in_script":true,"relevant":["collaborative-filtering"]}
+{"qid":"ar:alias:cluster-analysis:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التحليل العنقودي","script":"arabic","in_script":true,"relevant":["cluster-analysis"]}
+{"qid":"ar:alias:support-vector-machine:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Support vector machine","script":"latin","in_script":false,"relevant":["support-vector-machine"]}
+{"qid":"ar:alias:support-vector-machine:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"آلة متجه الدعم","script":"arabic","in_script":true,"relevant":["support-vector-machine"]}
+{"qid":"ar:alias:random-forest:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الغابات العشوائية","script":"arabic","in_script":true,"relevant":["random-forest"]}
+{"qid":"ar:alias:logistic-regression:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Logistic regression","script":"latin","in_script":false,"relevant":["logistic-regression"]}
+{"qid":"ar:alias:principal-component-analysis:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Principal component analysis","script":"latin","in_script":false,"relevant":["principal-component-analysis"]}
+{"qid":"ar:alias:singular-value-decomposition:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مجزئ القيمة المفردة","script":"arabic","in_script":true,"relevant":["singular-value-decomposition"]}
+{"qid":"ar:alias:regression-analysis:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تحليل تراجعي","script":"arabic","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"ar:alias:regression-analysis:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تحليل الإنحدار","script":"arabic","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"ar:alias:regression-analysis:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تحليل الارتباط","script":"arabic","in_script":true,"relevant":["regression-analysis"]}
+{"qid":"ar:alias:bayes-theorem:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مبرهنه بايز","script":"arabic","in_script":true,"relevant":["bayes-theorem"]}
+{"qid":"ar:alias:bayes-theorem:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Bayes' theorem","script":"latin","in_script":false,"relevant":["bayes-theorem"]}
+{"qid":"ar:alias:data-mining:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تنقيب البيانات","script":"arabic","in_script":true,"relevant":["data-mining"]}
+{"qid":"ar:alias:data-mining:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التنقيب في البيانات","script":"arabic","in_script":true,"relevant":["data-mining"]}
+{"qid":"ar:alias:data-mining:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Data mining","script":"latin","in_script":false,"relevant":["data-mining"]}
+{"qid":"ar:alias:web-crawler:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"زواحف ويب","script":"arabic","in_script":true,"relevant":["web-crawler"]}
+{"qid":"ar:alias:web-crawler:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Web crawler","script":"latin","in_script":false,"relevant":["web-crawler"]}
+{"qid":"ar:alias:web-crawler:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"زاحف الشبكة","script":"arabic","in_script":true,"relevant":["web-crawler"]}
+{"qid":"ar:alias:nearest-neighbor-search:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Nearest neighbor search","script":"latin","in_script":false,"relevant":["nearest-neighbor-search"]}
+{"qid":"ar:alias:euclidean-distance:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Euclidean distance","script":"latin","in_script":false,"relevant":["euclidean-distance"]}
+{"qid":"ar:alias:natural-language-processing:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"معالجة اللغات الطبيعبة","script":"arabic","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"ar:alias:natural-language-processing:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"معالجة اللغة البشرية","script":"arabic","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"ar:alias:natural-language-processing:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"معالجة لغات طبيعية","script":"arabic","in_script":true,"relevant":["natural-language-processing"]}
+{"qid":"ar:alias:machine-translation:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الترجمة الآلية","script":"arabic","in_script":true,"relevant":["machine-translation"]}
+{"qid":"ar:alias:machine-translation:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ترجمه آليه","script":"arabic","in_script":true,"relevant":["machine-translation"]}
+{"qid":"ar:alias:machine-translation:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Machine translation","script":"latin","in_script":false,"relevant":["machine-translation"]}
+{"qid":"ar:alias:speech-recognition:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مميزالكلام","script":"arabic","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"ar:alias:speech-recognition:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مميز الكلام","script":"arabic","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"ar:alias:speech-recognition:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نظم تمييز الاصوات","script":"arabic","in_script":true,"relevant":["speech-recognition"]}
+{"qid":"ar:alias:computer-vision:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الرؤية الحاسوبية","script":"arabic","in_script":true,"relevant":["computer-vision"]}
+{"qid":"ar:alias:computer-vision:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رؤيه حاسوبيه","script":"arabic","in_script":true,"relevant":["computer-vision"]}
+{"qid":"ar:alias:computer-vision:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Computer vision","script":"latin","in_script":false,"relevant":["computer-vision"]}
+{"qid":"ar:alias:turing-test:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اختبار تورنج","script":"arabic","in_script":true,"relevant":["turing-test"]}
+{"qid":"ar:alias:turing-test:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Turing test","script":"latin","in_script":false,"relevant":["turing-test"]}
+{"qid":"ar:alias:sentiment-analysis:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Sentiment analysis","script":"latin","in_script":false,"relevant":["sentiment-analysis"]}
+{"qid":"ar:alias:optical-character-recognition:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التمييز الضوئي للحروف","script":"arabic","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"ar:alias:optical-character-recognition:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تعرف ضوئي على المحارف العربية","script":"arabic","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"ar:alias:optical-character-recognition:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التعرف الضوئي على المحارف العربية","script":"arabic","in_script":true,"relevant":["optical-character-recognition"]}
+{"qid":"ar:alias:robotics:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"انسالية","script":"arabic","in_script":true,"relevant":["robotics"]}
+{"qid":"ar:alias:robotics:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إنساليات","script":"arabic","in_script":true,"relevant":["robotics"]}
+{"qid":"ar:alias:robotics:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"روبوتيات","script":"arabic","in_script":true,"relevant":["robotics"]}
+{"qid":"ar:alias:postgresql:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"PostgreSQL","script":"latin","in_script":false,"relevant":["postgresql"]}
+{"qid":"ar:alias:postgresql:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بوستجرس","script":"arabic","in_script":true,"relevant":["postgresql"]}
+{"qid":"ar:alias:sqlite:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"SQLite3","script":"latin","in_script":false,"relevant":["sqlite"]}
+{"qid":"ar:alias:sqlite:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أس كيو لايت","script":"arabic","in_script":true,"relevant":["sqlite"]}
+{"qid":"ar:alias:sqlite:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"SQLite","script":"latin","in_script":false,"relevant":["sqlite"]}
+{"qid":"ar:alias:redis:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ريدس","script":"arabic","in_script":true,"relevant":["redis"]}
+{"qid":"ar:alias:mysql:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"MySQL","script":"latin","in_script":false,"relevant":["mysql"]}
+{"qid":"ar:alias:mysql:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ماي سيكويل","script":"arabic","in_script":true,"relevant":["mysql"]}
+{"qid":"ar:alias:microsoft-sql-server:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Microsoft SQL Server","script":"latin","in_script":false,"relevant":["microsoft-sql-server"]}
+{"qid":"ar:alias:microsoft-sql-server:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ميكروسوفت إس كيو إل سيرفر","script":"arabic","in_script":true,"relevant":["microsoft-sql-server"]}
+{"qid":"ar:alias:mongodb:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"MongoDB","script":"latin","in_script":false,"relevant":["mongodb"]}
+{"qid":"ar:alias:elasticsearch:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Elasticsearch","script":"latin","in_script":false,"relevant":["elasticsearch"]}
+{"qid":"ar:alias:docker:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تكنولوجيا docker","script":"arabic","in_script":true,"relevant":["docker"]}
+{"qid":"ar:alias:docker:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Docker (software)","script":"latin","in_script":false,"relevant":["docker"]}
+{"qid":"ar:alias:nosql:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"NoSQL","script":"latin","in_script":false,"relevant":["nosql"]}
+{"qid":"ar:alias:relational-database:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نموذج قاعده البيانات المترابطه","script":"arabic","in_script":true,"relevant":["relational-database"]}
+{"qid":"ar:alias:relational-database:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نموذج قاعدة البيانات المترابطة","script":"arabic","in_script":true,"relevant":["relational-database"]}
+{"qid":"ar:alias:relational-database:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"قواعد بيانات علائقية","script":"arabic","in_script":true,"relevant":["relational-database"]}
+{"qid":"ar:alias:database-normalization:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Database normalization","script":"latin","in_script":false,"relevant":["database-normalization"]}
+{"qid":"ar:alias:b-tree:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"شجرة باير","script":"arabic","in_script":true,"relevant":["b-tree"]}
+{"qid":"ar:alias:b-tree:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"B-tree","script":"latin","in_script":false,"relevant":["b-tree"]}
+{"qid":"ar:alias:b-tree:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بي - تري","script":"arabic","in_script":true,"relevant":["b-tree"]}
+{"qid":"ar:alias:json:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جاي سون (JSON)","script":"arabic","in_script":true,"relevant":["json"]}
+{"qid":"ar:alias:json:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جسون","script":"arabic","in_script":true,"relevant":["json"]}
+{"qid":"ar:alias:graphql:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"غرافل","script":"arabic","in_script":true,"relevant":["graphql"]}
+{"qid":"ar:alias:https:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"HTTPS","script":"latin","in_script":false,"relevant":["https"]}
+{"qid":"ar:alias:https:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بروتوكول نقل النص التشعبي الآمن","script":"arabic","in_script":true,"relevant":["https"]}
+{"qid":"ar:alias:https:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بروتوكول نقل النص الفائق الآمن","script":"arabic","in_script":true,"relevant":["https"]}
+{"qid":"ar:alias:transmission-control-protocol:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"TCP","script":"latin","in_script":false,"relevant":["transmission-control-protocol"]}
+{"qid":"ar:alias:transmission-control-protocol:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تي.سي.بي","script":"arabic","in_script":true,"relevant":["transmission-control-protocol"]}
+{"qid":"ar:alias:transmission-control-protocol:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Transmission Control Protocol","script":"latin","in_script":false,"relevant":["transmission-control-protocol"]}
+{"qid":"ar:alias:nginx:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Nginx","script":"latin","in_script":false,"relevant":["nginx"]}
+{"qid":"ar:alias:cache:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الذاكرة المخبئية","script":"arabic","in_script":true,"relevant":["cache"]}
+{"qid":"ar:alias:cache:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الذاكرة المخبئية : تعريفها, عملها","script":"arabic","in_script":true,"relevant":["cache"]}
+{"qid":"ar:alias:cache:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Cache memory","script":"latin","in_script":false,"relevant":["cache"]}
+{"qid":"ar:alias:os-level-virtualization:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الإفتراضية بمستوى نظام التشغيل","script":"arabic","in_script":true,"relevant":["os-level-virtualization"]}
+{"qid":"ar:alias:os-level-virtualization:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"افتراضية بمستوى نظام التشغيل","script":"arabic","in_script":true,"relevant":["os-level-virtualization"]}
+{"qid":"ar:alias:devops:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"DevOps","script":"latin","in_script":false,"relevant":["devops"]}
+{"qid":"ar:alias:microsoft-azure:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Azure Services Platform","script":"latin","in_script":false,"relevant":["microsoft-azure"]}
+{"qid":"ar:alias:microsoft-azure:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ميكروسوفت أزور","script":"arabic","in_script":true,"relevant":["microsoft-azure"]}
+{"qid":"ar:alias:microsoft-azure:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ميكروسوفت أجور","script":"arabic","in_script":true,"relevant":["microsoft-azure"]}
+{"qid":"ar:alias:git:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Git","script":"latin","in_script":false,"relevant":["git"]}
+{"qid":"ar:alias:git:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"غت (برنامج)","script":"arabic","in_script":true,"relevant":["git"]}
+{"qid":"ar:alias:git:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Git (software)","script":"latin","in_script":false,"relevant":["git"]}
+{"qid":"ar:alias:linux:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لينوكس","script":"arabic","in_script":true,"relevant":["linux"]}
+{"qid":"ar:alias:linux:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Linux","script":"latin","in_script":false,"relevant":["linux"]}
+{"qid":"ar:alias:linux:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Kernel Linux","script":"latin","in_script":false,"relevant":["linux"]}
+{"qid":"ar:alias:cloud-computing:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الحوسبة السحابية","script":"arabic","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"ar:alias:cloud-computing:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تطبيق سحابي","script":"arabic","in_script":true,"relevant":["cloud-computing"]}
+{"qid":"ar:alias:cloud-computing:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Cloud computing","script":"latin","in_script":false,"relevant":["cloud-computing"]}
+{"qid":"ar:alias:open-source-software:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مفتوح المصدر","script":"arabic","in_script":true,"relevant":["open-source-software"]}
+{"qid":"ar:alias:open-source-software:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"برنامج مفتوح المصدر","script":"arabic","in_script":true,"relevant":["open-source-software"]}
+{"qid":"ar:alias:open-source-software:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"البرامج مفتوحة المصدر","script":"arabic","in_script":true,"relevant":["open-source-software"]}
+{"qid":"ar:alias:software-as-a-service:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"خدمة الساس","script":"arabic","in_script":true,"relevant":["software-as-a-service"]}
+{"qid":"ar:alias:software-as-a-service:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"البرامج كخدمة","script":"arabic","in_script":true,"relevant":["software-as-a-service"]}
+{"qid":"ar:alias:software-as-a-service:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الاكتتاب كخدمة","script":"arabic","in_script":true,"relevant":["software-as-a-service"]}
+{"qid":"ar:alias:big-data:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"البيانات الضخمة","script":"arabic","in_script":true,"relevant":["big-data"]}
+{"qid":"ar:alias:big-data:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Big data","script":"latin","in_script":false,"relevant":["big-data"]}
+{"qid":"ar:alias:internet-of-things:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"انترنت الأشياء","script":"arabic","in_script":true,"relevant":["internet-of-things"]}
+{"qid":"ar:alias:internet-of-things:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Internet of Things","script":"latin","in_script":false,"relevant":["internet-of-things"]}
+{"qid":"ar:alias:python:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Python","script":"latin","in_script":false,"relevant":["python"]}
+{"qid":"ar:alias:python:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بايتون","script":"arabic","in_script":true,"relevant":["python"]}
+{"qid":"ar:alias:python:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بيثون","script":"arabic","in_script":true,"relevant":["python"]}
+{"qid":"ar:alias:rust:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Rust (programming language)","script":"latin","in_script":false,"relevant":["rust"]}
+{"qid":"ar:alias:javascript:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Java Script","script":"latin","in_script":false,"relevant":["javascript"]}
+{"qid":"ar:alias:javascript:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جافاسكربت","script":"arabic","in_script":true,"relevant":["javascript"]}
+{"qid":"ar:alias:javascript:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جافا سكربت","script":"arabic","in_script":true,"relevant":["javascript"]}
+{"qid":"ar:alias:c:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لغة برمجة C","script":"arabic","in_script":true,"relevant":["c"]}
+{"qid":"ar:alias:c:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لغة سي","script":"arabic","in_script":true,"relevant":["c"]}
+{"qid":"ar:alias:c:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لغة البرمجة سي","script":"arabic","in_script":true,"relevant":["c"]}
+{"qid":"ar:alias:c-sharp:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"C Sharp","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"ar:alias:c-sharp:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"C-Sharp","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"ar:alias:c-sharp:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"C Sharp (programming language)","script":"latin","in_script":false,"relevant":["c-sharp"]}
+{"qid":"ar:alias:ruby:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Ruby","script":"latin","in_script":false,"relevant":["ruby"]}
+{"qid":"ar:alias:ruby:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Ruby (programming language)","script":"latin","in_script":false,"relevant":["ruby"]}
+{"qid":"ar:alias:swift:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Swift (programming language)","script":"latin","in_script":false,"relevant":["swift"]}
+{"qid":"ar:alias:scala:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Scala (programming language)","script":"latin","in_script":false,"relevant":["scala"]}
+{"qid":"ar:alias:r:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لغة البرمجة R","script":"arabic","in_script":true,"relevant":["r"]}
+{"qid":"ar:alias:r:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لغه البرمجه آر","script":"arabic","in_script":true,"relevant":["r"]}
+{"qid":"ar:alias:r:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لغة البرمجة آر","script":"arabic","in_script":true,"relevant":["r"]}
+{"qid":"ar:alias:assembly-language:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لغة تجميع","script":"arabic","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ar:alias:assembly-language:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أسمبلي","script":"arabic","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ar:alias:assembly-language:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"لغة اسمبلي","script":"arabic","in_script":true,"relevant":["assembly-language"]}
+{"qid":"ar:alias:css:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"CSS","script":"latin","in_script":false,"relevant":["css"]}
+{"qid":"ar:alias:css:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تحكم بأنماط صفحات الويب","script":"arabic","in_script":true,"relevant":["css"]}
+{"qid":"ar:alias:css:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التحكم بأنماط صفحات الويب","script":"arabic","in_script":true,"relevant":["css"]}
+{"qid":"ar:alias:react:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ريأكت","script":"arabic","in_script":true,"relevant":["react"]}
+{"qid":"ar:alias:interpreter:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مترجم (معلوماتية)","script":"arabic","in_script":true,"relevant":["interpreter"]}
+{"qid":"ar:alias:interpreter:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Interpreter (computing)","script":"latin","in_script":false,"relevant":["interpreter"]}
+{"qid":"ar:alias:unit-testing:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Unit testing","script":"latin","in_script":false,"relevant":["unit-testing"]}
+{"qid":"ar:alias:unit-testing:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"فحص الوحدة","script":"arabic","in_script":true,"relevant":["unit-testing"]}
+{"qid":"ar:alias:scrum:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Scrum (software development)","script":"latin","in_script":false,"relevant":["scrum"]}
+{"qid":"ar:alias:scrum:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Scrum (development)","script":"latin","in_script":false,"relevant":["scrum"]}
+{"qid":"ar:alias:scrum:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"سكروم (تطوير البرمجيات)","script":"arabic","in_script":true,"relevant":["scrum"]}
+{"qid":"ar:alias:object-oriented-programming:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"البرمجة كائنية التوجه","script":"arabic","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"ar:alias:object-oriented-programming:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"برمجة موجهة","script":"arabic","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"ar:alias:object-oriented-programming:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"برمجة كائنية","script":"arabic","in_script":true,"relevant":["object-oriented-programming"]}
+{"qid":"ar:alias:algorithm:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الخوارزميات","script":"arabic","in_script":true,"relevant":["algorithm"]}
+{"qid":"ar:alias:algorithm:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"خوارزميات","script":"arabic","in_script":true,"relevant":["algorithm"]}
+{"qid":"ar:alias:algorithm:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الخوارزمية","script":"arabic","in_script":true,"relevant":["algorithm"]}
+{"qid":"ar:alias:big-o-notation:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Big O notation","script":"latin","in_script":false,"relevant":["big-o-notation"]}
+{"qid":"ar:alias:big-o-notation:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رمز O الكبير","script":"arabic","in_script":true,"relevant":["big-o-notation"]}
+{"qid":"ar:alias:dynamic-programming:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Dynamic programming","script":"latin","in_script":false,"relevant":["dynamic-programming"]}
+{"qid":"ar:alias:turing-machine:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"آلة تورينغ","script":"arabic","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ar:alias:turing-machine:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"آلة التورينغ","script":"arabic","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ar:alias:turing-machine:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"آلة التورنغ","script":"arabic","in_script":true,"relevant":["turing-machine"]}
+{"qid":"ar:alias:p-versus-np-problem:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مسألة P-NP","script":"arabic","in_script":true,"relevant":["p-versus-np-problem"]}
+{"qid":"ar:alias:p-versus-np-problem:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مسألة P = NP","script":"arabic","in_script":true,"relevant":["p-versus-np-problem"]}
+{"qid":"ar:alias:p-versus-np-problem:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مسالة P=NP","script":"arabic","in_script":true,"relevant":["p-versus-np-problem"]}
+{"qid":"ar:alias:kernel:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نواة نظام تشغيل","script":"arabic","in_script":true,"relevant":["kernel"]}
+{"qid":"ar:alias:kernel:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نواة نظام التشغيل","script":"arabic","in_script":true,"relevant":["kernel"]}
+{"qid":"ar:alias:kernel:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نواه (نظم تشغيل)","script":"arabic","in_script":true,"relevant":["kernel"]}
+{"qid":"ar:alias:microsoft-windows:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"وندوز","script":"arabic","in_script":true,"relevant":["microsoft-windows"]}
+{"qid":"ar:alias:microsoft-windows:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ويندوز","script":"arabic","in_script":true,"relevant":["microsoft-windows"]}
+{"qid":"ar:alias:microsoft-windows:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Microsoft Windows","script":"latin","in_script":false,"relevant":["microsoft-windows"]}
+{"qid":"ar:alias:ios:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"آي او.إس","script":"arabic","in_script":true,"relevant":["ios"]}
+{"qid":"ar:alias:ios:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"آي أو.اس","script":"arabic","in_script":true,"relevant":["ios"]}
+{"qid":"ar:alias:ios:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نظام تشغيل آي فون","script":"arabic","in_script":true,"relevant":["ios"]}
+{"qid":"ar:alias:world-wide-web:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ويب","script":"arabic","in_script":true,"relevant":["world-wide-web"]}
+{"qid":"ar:alias:world-wide-web:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"كيف تعمل ويب","script":"arabic","in_script":true,"relevant":["world-wide-web"]}
+{"qid":"ar:alias:world-wide-web:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"وب","script":"arabic","in_script":true,"relevant":["world-wide-web"]}
+{"qid":"ar:alias:application-programming-interface:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"API","script":"latin","in_script":false,"relevant":["application-programming-interface"]}
+{"qid":"ar:alias:application-programming-interface:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Application Programming Interface","script":"latin","in_script":false,"relevant":["application-programming-interface"]}
+{"qid":"ar:alias:application-programming-interface:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"واجهة برمجة تطبيقات","script":"arabic","in_script":true,"relevant":["application-programming-interface"]}
+{"qid":"ar:alias:gnu-general-public-license:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"GNU GPL","script":"latin","in_script":false,"relevant":["gnu-general-public-license"]}
+{"qid":"ar:alias:gnu-general-public-license:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رخصة غنو العمومية","script":"arabic","in_script":true,"relevant":["gnu-general-public-license"]}
+{"qid":"ar:alias:gnu-general-public-license:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"GPL","script":"latin","in_script":false,"relevant":["gnu-general-public-license"]}
+{"qid":"ar:alias:creative-commons:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إبداعات مشتركة","script":"arabic","in_script":true,"relevant":["creative-commons"]}
+{"qid":"ar:alias:creative-commons:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رخصة التشارك الإبداعي","script":"arabic","in_script":true,"relevant":["creative-commons"]}
+{"qid":"ar:alias:creative-commons:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Creative Commons","script":"latin","in_script":false,"relevant":["creative-commons"]}
+{"qid":"ar:alias:public-key-cryptography:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بالمفتاح العمومي","script":"arabic","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ar:alias:public-key-cryptography:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مفتاح عمومي","script":"arabic","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ar:alias:public-key-cryptography:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"المفتاح العمومي","script":"arabic","in_script":true,"relevant":["public-key-cryptography"]}
+{"qid":"ar:alias:hash-function:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"دالة هاش","script":"arabic","in_script":true,"relevant":["hash-function"]}
+{"qid":"ar:alias:hash-function:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Hash function","script":"latin","in_script":false,"relevant":["hash-function"]}
+{"qid":"ar:alias:hash-function:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"دالة تجزئة","script":"arabic","in_script":true,"relevant":["hash-function"]}
+{"qid":"ar:alias:advanced-encryption-standard:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"ايه اي اس (تعمية)","script":"arabic","in_script":true,"relevant":["advanced-encryption-standard"]}
+{"qid":"ar:alias:advanced-encryption-standard:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Advanced Encryption Standard","script":"latin","in_script":false,"relevant":["advanced-encryption-standard"]}
+{"qid":"ar:alias:advanced-encryption-standard:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إيه إي إس (تعمية)","script":"arabic","in_script":true,"relevant":["advanced-encryption-standard"]}
+{"qid":"ar:alias:venture-capital:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رأس مال مغامر","script":"arabic","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ar:alias:venture-capital:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رأس المال الاستثماري","script":"arabic","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ar:alias:venture-capital:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"راس المال المغامر","script":"arabic","in_script":true,"relevant":["venture-capital"]}
+{"qid":"ar:alias:initial-public-offering:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اكتتاب عام","script":"arabic","in_script":true,"relevant":["initial-public-offering"]}
+{"qid":"ar:alias:initial-public-offering:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Initial public offering","script":"latin","in_script":false,"relevant":["initial-public-offering"]}
+{"qid":"ar:alias:startup-company:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Startup company","script":"latin","in_script":false,"relevant":["startup-company"]}
+{"qid":"ar:alias:startup-company:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الشركات الناشئة","script":"arabic","in_script":true,"relevant":["startup-company"]}
+{"qid":"ar:alias:startup-company:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الشركة الناشئة","script":"arabic","in_script":true,"relevant":["startup-company"]}
+{"qid":"ar:alias:due-diligence:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"العناية الواجبة","script":"arabic","in_script":true,"relevant":["due-diligence"]}
+{"qid":"ar:alias:due-diligence:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"عناية واجبة","script":"arabic","in_script":true,"relevant":["due-diligence"]}
+{"qid":"ar:alias:startup-accelerator:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مسرع بدء التشغيل","script":"arabic","in_script":true,"relevant":["startup-accelerator"]}
+{"qid":"ar:alias:crowdfunding:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"التمويل الجماعي","script":"arabic","in_script":true,"relevant":["crowdfunding"]}
+{"qid":"ar:alias:crowdfunding:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Crowdfunding","script":"latin","in_script":false,"relevant":["crowdfunding"]}
+{"qid":"ar:alias:economies-of-scale:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"وفورات الإنتاج","script":"arabic","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"ar:alias:economies-of-scale:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اقتصاديات السعة","script":"arabic","in_script":true,"relevant":["economies-of-scale"]}
+{"qid":"ar:alias:economies-of-scale:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Economies of scale","script":"latin","in_script":false,"relevant":["economies-of-scale"]}
+{"qid":"ar:alias:patent:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"براءة الاختراع","script":"arabic","in_script":true,"relevant":["patent"]}
+{"qid":"ar:alias:patent:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"براءة إختراع","script":"arabic","in_script":true,"relevant":["patent"]}
+{"qid":"ar:alias:patent:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"براءة الإختراع","script":"arabic","in_script":true,"relevant":["patent"]}
+{"qid":"ar:alias:copyright:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رخصة حقوق التأليف و النشر","script":"arabic","in_script":true,"relevant":["copyright"]}
+{"qid":"ar:alias:copyright:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"حقوق الطبع","script":"arabic","in_script":true,"relevant":["copyright"]}
+{"qid":"ar:alias:copyright:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"حقوق النشر","script":"arabic","in_script":true,"relevant":["copyright"]}
+{"qid":"ar:alias:probability:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"احتمالات","script":"arabic","in_script":true,"relevant":["probability"]}
+{"qid":"ar:alias:probability:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الاحتمال","script":"arabic","in_script":true,"relevant":["probability"]}
+{"qid":"ar:alias:probability:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Probability","script":"latin","in_script":false,"relevant":["probability"]}
+{"qid":"ar:alias:matrix:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نظرية المصفوفات","script":"arabic","in_script":true,"relevant":["matrix"]}
+{"qid":"ar:alias:matrix:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"مصفوفة رياضية","script":"arabic","in_script":true,"relevant":["matrix"]}
+{"qid":"ar:alias:matrix:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"المصفوفة","script":"arabic","in_script":true,"relevant":["matrix"]}
+{"qid":"ar:alias:vector-space:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"فضاء موجه","script":"arabic","in_script":true,"relevant":["vector-space"]}
+{"qid":"ar:alias:vector-space:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"فضاء اتجاهي","script":"arabic","in_script":true,"relevant":["vector-space"]}
+{"qid":"ar:alias:vector-space:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الفضاء الاتجاهي","script":"arabic","in_script":true,"relevant":["vector-space"]}
+{"qid":"ar:alias:derivative:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اشتقاق ثابت","script":"arabic","in_script":true,"relevant":["derivative"]}
+{"qid":"ar:alias:derivative:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إشتقاق (رياضيات)","script":"arabic","in_script":true,"relevant":["derivative"]}
+{"qid":"ar:alias:derivative:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إشتقاق ثابت","script":"arabic","in_script":true,"relevant":["derivative"]}
+{"qid":"ar:alias:convex-optimization:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تحسين محدب","script":"arabic","in_script":true,"relevant":["convex-optimization"]}
+{"qid":"ar:alias:signal-processing:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"معالجة الإشارات","script":"arabic","in_script":true,"relevant":["signal-processing"]}
+{"qid":"ar:alias:signal-processing:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"معالجة إشارة","script":"arabic","in_script":true,"relevant":["signal-processing"]}
+{"qid":"ar:alias:signal-processing:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تحليل الإشارة","script":"arabic","in_script":true,"relevant":["signal-processing"]}
+{"qid":"ar:alias:fast-fourier-transform:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Fast Fourier transform","script":"latin","in_script":false,"relevant":["fast-fourier-transform"]}
+{"qid":"ar:alias:fast-fourier-transform:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تحويل فوريي السريع","script":"arabic","in_script":true,"relevant":["fast-fourier-transform"]}
+{"qid":"ar:alias:unicode:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"يونكود","script":"arabic","in_script":true,"relevant":["unicode"]}
+{"qid":"ar:alias:unicode:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نظام الحروف الدولي الموحد","script":"arabic","in_script":true,"relevant":["unicode"]}
+{"qid":"ar:alias:unicode:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اليونيكود","script":"arabic","in_script":true,"relevant":["unicode"]}
+{"qid":"ar:alias:blockchain:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بلوك تشين","script":"arabic","in_script":true,"relevant":["blockchain"]}
+{"qid":"ar:alias:blockchain:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Block chain","script":"latin","in_script":false,"relevant":["blockchain"]}
+{"qid":"ar:alias:blockchain:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"بلوكشين","script":"arabic","in_script":true,"relevant":["blockchain"]}
+{"qid":"ar:alias:cryptocurrency:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"العملات المشفرة والأمن","script":"arabic","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"ar:alias:cryptocurrency:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"العملات المعماة والأمن","script":"arabic","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"ar:alias:cryptocurrency:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"عملة مشفرة","script":"arabic","in_script":true,"relevant":["cryptocurrency"]}
+{"qid":"ar:alias:ethereum:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"إثريوم","script":"arabic","in_script":true,"relevant":["ethereum"]}
+{"qid":"ar:alias:non-fungible-token:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الرموز غير القابلة للاستبدال (NFTs)","script":"arabic","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"ar:alias:non-fungible-token:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رمز غير قابل للاستبدال","script":"arabic","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"ar:alias:non-fungible-token:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"رموز غير بدولة","script":"arabic","in_script":true,"relevant":["non-fungible-token"]}
+{"qid":"ar:alias:quantum-entanglement:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"كوانتم إنتانجلمنت","script":"arabic","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"ar:alias:quantum-entanglement:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تشابك كمومي","script":"arabic","in_script":true,"relevant":["quantum-entanglement"]}
+{"qid":"ar:alias:quantum-entanglement:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Quantum entanglement","script":"latin","in_script":false,"relevant":["quantum-entanglement"]}
+{"qid":"ar:alias:semiconductor:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"اشباه موصلات","script":"arabic","in_script":true,"relevant":["semiconductor"]}
+{"qid":"ar:alias:semiconductor:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"أشباه الموصلات","script":"arabic","in_script":true,"relevant":["semiconductor"]}
+{"qid":"ar:alias:semiconductor:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نصف ناقل","script":"arabic","in_script":true,"relevant":["semiconductor"]}
+{"qid":"ar:alias:moore-s-law:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Moore's law","script":"latin","in_script":false,"relevant":["moore-s-law"]}
+{"qid":"ar:alias:tensor-processing-unit:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"وحدة معالجة تينسر","script":"arabic","in_script":true,"relevant":["tensor-processing-unit"]}
+{"qid":"ar:alias:application-specific-integrated-circuit:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الدوائر المتكاملة محددة التطبيق","script":"arabic","in_script":true,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"ar:alias:application-specific-integrated-circuit:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"دائرة متكاملة محددة التطبيق","script":"arabic","in_script":true,"relevant":["application-specific-integrated-circuit"]}
+{"qid":"ar:alias:solid-state-drive:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"محرك الأقراص ذو الحالة الصلبة","script":"arabic","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"ar:alias:solid-state-drive:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"السواقة الجامدة","script":"arabic","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"ar:alias:solid-state-drive:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"سواقة جامدة","script":"arabic","in_script":true,"relevant":["solid-state-drive"]}
+{"qid":"ar:alias:nanotechnology:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"نانو تكنولوجي","script":"arabic","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ar:alias:nanotechnology:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تكنولوجيا الصغائر","script":"arabic","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ar:alias:nanotechnology:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تقنية نانوية","script":"arabic","in_script":true,"relevant":["nanotechnology"]}
+{"qid":"ar:alias:crispr:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"تقنية كريسبر-كاس","script":"arabic","in_script":true,"relevant":["crispr"]}
+{"qid":"ar:alias:crispr:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"كرسبر","script":"arabic","in_script":true,"relevant":["crispr"]}
+{"qid":"ar:alias:crispr:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"CRISPR","script":"latin","in_script":false,"relevant":["crispr"]}
+{"qid":"ar:alias:bioinformatics:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"البيوإنفورماتيك","script":"arabic","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"ar:alias:bioinformatics:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"المعلوماتية الحيوية","script":"arabic","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"ar:alias:bioinformatics:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"معلوماتيه حيويه","script":"arabic","in_script":true,"relevant":["bioinformatics"]}
+{"qid":"ar:alias:cognitive-science:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"علوم إدراكية","script":"arabic","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"ar:alias:cognitive-science:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"علوم عصبية إدراكية","script":"arabic","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"ar:alias:cognitive-science:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"علوم عصبية استعرافية","script":"arabic","in_script":true,"relevant":["cognitive-science"]}
+{"qid":"ar:alias:consciousness:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"الوعي","script":"arabic","in_script":true,"relevant":["consciousness"]}
+{"qid":"ar:alias:consciousness:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"Consciousness","script":"latin","in_script":false,"relevant":["consciousness"]}
+{"qid":"ar:alias:consciousness:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"واعي","script":"arabic","in_script":true,"relevant":["consciousness"]}
+{"qid":"ar:alias:5g:0","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جيل شبكات الهواتف المحمولة الخامس","script":"arabic","in_script":true,"relevant":["5g"]}
+{"qid":"ar:alias:5g:1","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"جيل الأنظمة اللاسلكية الخامس","script":"arabic","in_script":true,"relevant":["5g"]}
+{"qid":"ar:alias:5g:2","lang":"ar","family":"alias","origin":"wikipedia-redirect","query":"هواتف الجيل الخامس","script":"arabic","in_script":true,"relevant":["5g"]}
