@@ -4854,11 +4854,10 @@ export async function buildChecks(
   const checks: Check[] = [];
   let autoFixReport: AutoFixReport | null = null;
 
-  // Progress reporter. `--json` is doctor's own JSON output (list of checks);
-  // progress events stay on stderr regardless, gated by the global --quiet /
-  // --progress-json flags. On a 52K-page brain the DB checks can take minutes,
-  // and without a heartbeat agents can't tell doctor from a hang.
-  const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
+  // Progress reporter. `--json` is doctor's machine-readable output, so plain
+  // progress must not leak to stderr unless the caller explicitly asks for
+  // structured progress with --progress-json.
+  const progress = createProgress(doctorProgressOptions(jsonOutput));
 
   // --- Filesystem checks (always run, no DB needed) ---
 
@@ -6123,7 +6122,7 @@ export async function buildChecks(
     // that doesn't match the gateway's resolved default. Empty-brain vs
     // non-empty-brain branching determines the repair hint:
     //   - empty brain (no embedded chunks) → `gbrain init --force --embedding-model …`
-    //   - non-empty brain → `gbrain retrieval-upgrade --to … --reindex`
+    //   - non-empty brain → `gbrain migrate embeddings --to … --dim …` (#3390)
     // The bug-reporter's `rm -rf ~/.gbrain` recovery is never the right answer.
     let surfacedUnconfiguredDrift = false;
     try {
@@ -6154,7 +6153,7 @@ export async function buildChecks(
           if (totalChunks > 0) {
             const fix = embeddedCount === 0
               ? `No embeddings yet — drop the empty schema and re-init at the right dim:\n        gbrain init --force --pglite --embedding-model ${configuredModel} --embedding-dimensions ${configuredDims}`
-              : `Non-empty brain (${embeddedCount} embedded chunks). Migrate cleanly:\n        gbrain retrieval-upgrade --to ${configuredModel} --reindex`;
+              : `Non-empty brain (${embeddedCount} embedded chunks). Migrate cleanly:\n        gbrain migrate embeddings --to ${configuredModel} --dim ${configuredDims}`;
 
             checks.push({
               name: 'embedding_provider',
@@ -7894,6 +7893,14 @@ export async function runDoctor(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+export function doctorProgressOptions(jsonOutput: boolean) {
+  const cliOpts = getCliOptions();
+  if (jsonOutput && !cliOpts.quiet && !cliOpts.progressJson) {
+    return { mode: 'quiet' as const };
+  }
+  return cliOptsToProgressOptions(cliOpts);
+}
 
 /** Print the auto-fix report in human-readable form. JSON output goes through
  *  outputResults alongside the check list; this is the pretty-print path. */
