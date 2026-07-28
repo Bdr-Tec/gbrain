@@ -40,15 +40,18 @@ restart the shell or add the PATH export to the shell profile.
 
 ## Step 2: API Keys
 
-Ask the user for these. gbrain defaults to the ZeroEntropy embedding + reranker stack
-(as of v0.36.2.0); OpenAI/Voyage are still supported as fallbacks via `gbrain config
-set embedding_model <provider:model>`.
+Ask the user for these. gbrain's default embedder is `openai:text-embedding-3-small`
+at 1280 dimensions (as of v0.42.68.0); Voyage/Google/local providers are supported via
+`gbrain config set embedding_model <provider:model>`.
 
 ```bash
-export ZEROENTROPY_API_KEY=ze-...     # default embedding + reranker (v0.36.2.0+)
-export OPENAI_API_KEY=sk-...          # fallback for vector search; also used for chat models
+export OPENAI_API_KEY=sk-...          # default embedding (text-embedding-3-small, 1280d); also chat models
 export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality via query expansion
 ```
+
+> ZeroEntropy was the default embedder + reranker from v0.36.2.0 through v0.42.67.
+> Its hosted API shuts down 2026-09-04. Brains still on it should run
+> `gbrain migrate embeddings --to openai:text-embedding-3-small --dim 1280`.
 
 Save to shell profile or `.env`. Keys are picked up by `gbrain config set` automatically
 or can be stored in `~/.gbrain/config.json` (file plane). Without any embedding provider,

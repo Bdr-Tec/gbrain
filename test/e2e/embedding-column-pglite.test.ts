@@ -219,12 +219,13 @@ describe('hybridSearch + resolver — unknown column at entry (D11)', () => {
 describe('upsertChunks — model provenance uses gateway-resolved model, not compiled default', () => {
   // Regression (zbrain-rfi): when a caller builds ChunkInputs without an
   // explicit `model` (as src/commands/embed.ts does), the engine used to
-  // stamp the compile-time DEFAULT_EMBEDDING_MODEL ('zeroentropyai:zembed-1')
-  // onto content_chunks.model — even though the vector was produced by the
+  // stamp the compile-time DEFAULT_EMBEDDING_MODEL onto
+  // content_chunks.model — even though the vector was produced by the
   // config-resolved model. That corrupted provenance the signature-drift +
   // dim-migration logic trusts. The engine must fall back to the model the
-  // gateway ACTUALLY resolves at write time.
-  test('unspecified chunk.model records the resolved model, not zeroentropyai:zembed-1', async () => {
+  // gateway ACTUALLY resolves at write time. Asserts against the LIVE
+  // constant so the guard survives a default swap (v0.42.68.0 #3390).
+  test('unspecified chunk.model records the resolved model, not the compiled default', async () => {
     configureGateway({
       embedding_model: 'openai:text-embedding-3-large',
       embedding_dimensions: 1536,
@@ -248,7 +249,8 @@ describe('upsertChunks — model provenance uses gateway-resolved model, not com
     );
     expect(rows.length).toBe(1);
     expect(rows[0].model).toBe('openai:text-embedding-3-large');
-    expect(rows[0].model).not.toBe('zeroentropyai:zembed-1');
+    const { DEFAULT_EMBEDDING_MODEL } = await import('../../src/core/ai/defaults.ts');
+    expect(rows[0].model).not.toBe(DEFAULT_EMBEDDING_MODEL);
 
     resetGateway();
   });

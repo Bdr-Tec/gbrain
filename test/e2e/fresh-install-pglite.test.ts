@@ -3,7 +3,8 @@
  *
  * The headline behavior the v0.37 fix wave exists to fix. Pre-fix, this
  * exact path broke: schema sized to 1536 (stale default), embed pipeline
- * used ZE/1280, first chunk insert failed with vector dim mismatch.
+ * used the 1280-wide default, first chunk insert failed with vector dim
+ * mismatch.
  *
  * Hermetic: in-process (NOT a CLI subprocess), GBRAIN_HOME pinned to a
  * tmpdir, embed transport stubbed via `__setEmbedTransportForTests` so we
@@ -26,36 +27,49 @@ import {
 describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end', () => {
   let tmpHome: string;
   let origHome: string | undefined;
-  let origZeKey: string | undefined;
-  let origOpenaiKey: string | undefined;
-  let origVoyageKey: string | undefined;
+  // Every embedding-provider auth env var we cleared, so afterEach restores
+  // exactly what was there. Enumerated from the recipe registry rather than
+  // hardcoded: a dev machine with MINIMAX_API_KEY (or any of the other 14
+  // providers) set used to trip init's disambiguation gate
+  // ("Multiple embedding providers env-ready: openai, minimax") before the
+  // test body ran, which made this file pass or fail on ambient environment.
+  let clearedProviderKeys: Record<string, string | undefined> = {};
 
-  beforeEach(() => {
+  async function clearNonOpenAIEmbeddingKeys(): Promise<void> {
+    const { RECIPES } = await import('../../src/core/ai/recipes/index.ts');
+    clearedProviderKeys = {};
+    for (const recipe of RECIPES.values()) {
+      if (recipe.id === 'openai') continue;
+      if (!recipe.touchpoints.embedding) continue;
+      for (const key of recipe.auth_env?.required ?? []) {
+        clearedProviderKeys[key] = process.env[key];
+        delete process.env[key];
+      }
+    }
+  }
+
+  beforeEach(async () => {
     tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-e2e-fresh-'));
     origHome = process.env.GBRAIN_HOME;
-    origZeKey = process.env.ZEROENTROPY_API_KEY;
-    // Save + clear OPENAI_API_KEY + VOYAGE_API_KEY so init only sees
-    // one provider as env-ready (ZE). Without this, dev machines with
-    // multi-provider env (Garry's setup) fail init's disambiguation gate
-    // ("Multiple embedding providers env-ready: openai, voyage,
-    // zeroentropyai") before the test body runs.
-    origOpenaiKey = process.env.OPENAI_API_KEY;
-    origVoyageKey = process.env.VOYAGE_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.VOYAGE_API_KEY;
+    // Leave openai as the ONLY env-ready embedding provider, so bare
+    // `init --pglite` resolves the v0.42.68.0 default
+    // (openai:text-embedding-3-small @ DEFAULT_EMBEDDING_DIMENSIONS).
+    await clearNonOpenAIEmbeddingKeys();
+    clearedProviderKeys.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     process.env.GBRAIN_HOME = tmpHome;
     // Stub key so init's setup-hint check passes.
-    process.env.ZEROENTROPY_API_KEY = 'sk-test-ze';
+    process.env.OPENAI_API_KEY = 'sk-test-openai';
   });
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
     if (origHome === undefined) delete process.env.GBRAIN_HOME;
     else process.env.GBRAIN_HOME = origHome;
-    if (origZeKey === undefined) delete process.env.ZEROENTROPY_API_KEY;
-    else process.env.ZEROENTROPY_API_KEY = origZeKey;
-    if (origOpenaiKey !== undefined) process.env.OPENAI_API_KEY = origOpenaiKey;
-    if (origVoyageKey !== undefined) process.env.VOYAGE_API_KEY = origVoyageKey;
+    for (const [key, value] of Object.entries(clearedProviderKeys)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    clearedProviderKeys = {};
     __setEmbedTransportForTests(null);
     // Restore legacy-preload gateway state.
     configureGateway({
@@ -65,7 +79,7 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     });
   });
 
-  test('bare `init --pglite`: schema sized to gateway defaults (ZE/1280)', async () => {
+  test('bare `init --pglite`: schema sized to gateway defaults (openai text-embedding-3-small/1280)', async () => {
     // Reset gateway so init.ts has to resolve defaults from
     // ai/defaults.ts. This is the actual production code path for a
     // fresh install: bare `gbrain init --pglite` with no env or file

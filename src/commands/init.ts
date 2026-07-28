@@ -494,9 +494,9 @@ export async function findEnvKeyTypos(
 /** Emit the fail-loud "no embedding provider" message + paste-ready setup. */
 function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested: string }>): void {
   console.error('\nNo embedding provider configured. Set one of:');
-  console.error('  export OPENAI_API_KEY=sk-…        # openai:text-embedding-3-large (1536d)');
-  console.error('  export ZEROENTROPY_API_KEY=ze-…   # zeroentropyai:zembed-1 (2560d, Matryoshka)');
+  console.error('  export OPENAI_API_KEY=sk-…        # default: openai:text-embedding-3-small (1280d)');
   console.error('  export VOYAGE_API_KEY=pa-…        # voyage:voyage-3-large (1024d)');
+  console.error('  export GOOGLE_GENERATIVE_AI_API_KEY=…  # google:gemini-embedding-001 (768d)');
   console.error('Then re-run: gbrain init --pglite');
   console.error('');
   console.error('Or pick explicitly:');
@@ -527,9 +527,9 @@ async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boo
       // (DEFAULT_EMBEDDING_MODEL), use the gateway's
       // DEFAULT_EMBEDDING_DIMENSIONS instead of the recipe's `default_dims`
       // (which is the recipe's "largest sensible" tier). This keeps
-      // fresh-install schema width aligned with the v0.37.11.0 system
-      // default — for ZE that means 1280 (the Matryoshka step closest to
-      // legacy OpenAI 1536), not the recipe's 2560.
+      // fresh-install schema width aligned with the system default — for
+      // openai:text-embedding-3-small that means 1280 (v0.42.68.0), not
+      // the recipe's 1536.
       const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } =
         await import('../core/ai/defaults.ts');
       const { embeddingDimsForModel } = await import('../core/ai/model-resolver.ts');

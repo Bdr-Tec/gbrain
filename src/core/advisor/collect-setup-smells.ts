@@ -36,14 +36,16 @@ export const collectSetupSmells: AdvisorCollector = {
         collector: 'setup-smells',
         ask_user: true,
       });
-    } else if (!cfg.embedding_model && !cfg.zeroentropy_api_key && !process.env.ZEROENTROPY_API_KEY) {
+    } else if (!cfg.embedding_model && !cfg.openai_api_key && !process.env.OPENAI_API_KEY) {
       // Default provider needs a key; none present anywhere → embeds will fail.
+      // v0.42.68.0 (#3390): the default is openai:text-embedding-3-small, so
+      // the key this checks for is OpenAI's, not ZeroEntropy's.
       findings.push({
         id: 'embedding_key_missing',
         severity: 'warn',
         title: 'No embedding provider key is set — embedding will fail at write time.',
-        detail: 'Set zeroentropy_api_key (or choose another provider via embedding_model).',
-        fix: { command_argv: ['gbrain', 'config', 'set', 'zeroentropy_api_key', '<key>'] },
+        detail: 'Set openai_api_key (or choose another provider via embedding_model).',
+        fix: { command_argv: ['gbrain', 'config', 'set', 'openai_api_key', '<key>'] },
         collector: 'setup-smells',
         ask_user: true,
       });

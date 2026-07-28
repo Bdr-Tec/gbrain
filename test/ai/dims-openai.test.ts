@@ -161,3 +161,65 @@ describe('dimsProviderOptions — prefixed model IDs (OpenRouter / proxy provide
     }
   });
 });
+
+// v0.42.68.0 (#3390) — the default embedding model moved off ZeroEntropy
+// (hosted API sunsets 2026-09-04) to openai:text-embedding-3-small, and
+// KEPT 1280 dimensions on purpose. These tests pin the two properties the
+// swap rests on, so a future "tidy up to 1536" can't land silently.
+describe('default embedding config (v0.42.68.0 #3390)', () => {
+  test('DEFAULT_EMBEDDING_MODEL / DIMENSIONS are openai:text-embedding-3-small @ 1280', async () => {
+    const defaults = await import('../../src/core/ai/defaults.ts');
+    expect(defaults.DEFAULT_EMBEDDING_MODEL).toBe('openai:text-embedding-3-small');
+    expect(defaults.DEFAULT_EMBEDDING_DIMENSIONS).toBe(1280);
+  });
+
+  test('the default width is a valid Matryoshka width for the default model', async () => {
+    // The no-schema-change property: brains created under the previous
+    // 1280-wide ZeroEntropy default keep their vector(1280) column and its
+    // HNSW index because OpenAI text-embedding-3-* accepts any width up to
+    // its native size. Derived from the constants, never hardcoded.
+    const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } =
+      await import('../../src/core/ai/defaults.ts');
+    const bareModel = DEFAULT_EMBEDDING_MODEL.split(':')[1];
+    expect(isOpenAITextEmbedding3Model(bareModel)).toBe(true);
+    expect(isValidOpenAITextEmbedding3Dim(bareModel, DEFAULT_EMBEDDING_DIMENSIONS)).toBe(true);
+    expect(DEFAULT_EMBEDDING_DIMENSIONS)
+      .toBeLessThanOrEqual(maxOpenAITextEmbedding3Dim(bareModel)!);
+  });
+
+  test('dimsProviderOptions passes the default width through to the wire', async () => {
+    const { DEFAULT_EMBEDDING_DIMENSIONS } = await import('../../src/core/ai/defaults.ts');
+    expect(dimsProviderOptions('native-openai', 'text-embedding-3-small', DEFAULT_EMBEDDING_DIMENSIONS))
+      .toEqual({ openai: { dimensions: 1280 } });
+  });
+
+  test('resolveSchemaEmbeddingDim ACCEPTS the shipped default config', async () => {
+    // Regression guard: `dims_options` on the openai recipe is Tier 1 in
+    // isCustomDimValidForProvider and wins over the Matryoshka range check.
+    // It omitted 1280 until #3390, which made `gbrain init` reject its own
+    // default. Drop 1280 from the recipe and this test fails.
+    const { resolveSchemaEmbeddingDim } = await import('../../src/core/embedding-dim-check.ts');
+    const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } =
+      await import('../../src/core/ai/defaults.ts');
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: DEFAULT_EMBEDDING_MODEL,
+      embedding_dimensions: DEFAULT_EMBEDDING_DIMENSIONS,
+    });
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.dim).toBe(1280);
+      expect(got.model).toBe(DEFAULT_EMBEDDING_MODEL);
+      expect(got.provider).toBe('openai');
+    }
+  });
+
+  test('init env-detection lands on the default model when OPENAI_API_KEY is the only key', async () => {
+    // `resolveEmbeddingByEnv` picks touchpoints.embedding.models[0] and only
+    // adopts DEFAULT_EMBEDDING_DIMENSIONS when that equals the canonical
+    // default. If the recipe's model order regresses, a fresh install silently
+    // gets text-embedding-3-large @ 1536 instead of the declared default.
+    const { openai } = await import('../../src/core/ai/recipes/openai.ts');
+    const { DEFAULT_EMBEDDING_MODEL } = await import('../../src/core/ai/defaults.ts');
+    expect(`openai:${openai.touchpoints.embedding!.models![0]}`).toBe(DEFAULT_EMBEDDING_MODEL);
+  });
+});

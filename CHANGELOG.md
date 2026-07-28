@@ -2,6 +2,53 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.68.0] - 2026-07-28
+
+**The default embedding model is now `openai:text-embedding-3-small` at 1280 dimensions. Existing brains keep their column and index — only the vectors are rebuilt.**
+
+ZeroEntropy's hosted API shuts down 2026-09-04. It has been GBrain's default embedder since v0.36.2.0, which means every brain that never picked a model explicitly was going to lose semantic retrieval on that date — not just for new writes, but for existing vectors, because query embedding runs through the same endpoint.
+
+The new default is OpenAI `text-embedding-3-small` at **1280** dimensions. 1280, not 1536, is the whole point: OpenAI's `text-embedding-3-*` family is Matryoshka and accepts any output width up to the model's native size, so a brain created under the previous 1280-wide default keeps its existing `vector(1280)` column *and* its HNSW index. Migrating rebuilds vectors only — no dimension transition, no `ALTER`, no index rebuild.
+
+This release also adds a **default-provider policy** to `CLAUDE.md`: a GBrain default embedding or reranking model must be either open-weight, or from the vendor with the longest proven model-lifetime record. Novel providers can ship as opt-in recipes, never as the default. The v0.36 default stranded every default-config brain on about six weeks' notice; the policy exists so that cannot repeat.
+
+## To take advantage of v0.42.68.0
+
+Fresh installs get the new default with no action. **Existing brains on ZeroEntropy must migrate before 2026-09-04** — `gbrain upgrade` prints a one-time banner with the exact command for your brain's width.
+
+1. **Upgrade and read the banner:**
+   ```bash
+   gbrain upgrade
+   ```
+2. **Migrate off ZeroEntropy** (resumable; preview the cost first). Pass `--dim` at your brain's current width so the existing column and index are reused:
+   ```bash
+   gbrain migrate embeddings --to openai:text-embedding-3-small --dim 1280 --dry-run
+   gbrain migrate embeddings --to openai:text-embedding-3-small --dim 1280
+   ```
+   Check your current width with `gbrain doctor` if you are unsure. A killed run resumes from where it stopped — re-run the same command.
+3. **If you use the ZeroEntropy reranker**, it sunsets on the same date. Either point the `llama-server-reranker` recipe at the Apache-2.0 `zerank` weights you self-host, pick another reranker, or turn it off:
+   ```bash
+   gbrain config set search.reranker.enabled false
+   ```
+4. **Prefer to stay on zembed-1?** The weights are Apache-2.0. Self-host via llama-server or Ollama and point `embedding_model` at the local endpoint; your existing vectors stay valid and no migration is needed.
+5. **If any step fails,** please file an issue at https://github.com/garrytan/gbrain/issues with the output of `gbrain doctor`.
+
+### Itemized changes
+
+#### Changed
+
+- `DEFAULT_EMBEDDING_MODEL` is `openai:text-embedding-3-small`; `DEFAULT_EMBEDDING_DIMENSIONS` stays `1280` (`src/core/ai/defaults.ts`).
+- The `openai` recipe lists `text-embedding-3-small` first, so a fresh install with only `OPENAI_API_KEY` set resolves the declared default instead of the recipe's largest tier.
+- `1280` joins the `openai` recipe's `dims_options`. That list is Tier 1 in dimension validation and wins over the Matryoshka range check, so without it `gbrain init` rejected its own shipped default.
+- The ZeroEntropy sunset banner in `gbrain upgrade` now names the concrete migration target and passes `--dim` at the brain's current width, and reads the database config plane as well as the file plane so brains that never wrote `embedding_model` to `~/.gbrain/config.json` are still detected.
+- `gbrain advisor`'s missing-embedding-key smell checks for an OpenAI key rather than a ZeroEntropy one.
+- `gbrain init`'s no-provider hint leads with the current default.
+- Default-provider policy added to `CLAUDE.md`; README, `INSTALL_FOR_AGENTS.md`, the provider matrix, both tutorials, and the migration guides updated to current truth.
+
+#### Fixed
+
+- `test/e2e/fresh-install-pglite.test.ts` clears every non-OpenAI embedding provider key from the recipe registry instead of a hardcoded pair, so the file no longer passes or fails based on which provider keys happen to be set on the developer's machine.
+
 ## [0.42.66.1] - 2026-07-27
 
 ### Fixed

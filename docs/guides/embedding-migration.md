@@ -3,9 +3,22 @@
 `gbrain migrate embeddings` re-embeds an entire brain onto a different
 embedding provider/model, safely and resumably. It is the forward path off a
 sunsetting provider (for example ZeroEntropy's hosted API, which shuts down
-2026-09-04 and is the shipped default for brains that never picked a model) —
-but it is provider-agnostic: any configured `provider:model` works as a
-target.
+2026-09-04 and was the shipped default from v0.36.2.0 through v0.42.67) — but
+it is provider-agnostic: any configured `provider:model` works as a target.
+
+**Coming off the ZeroEntropy default?** Run:
+
+```bash
+gbrain migrate embeddings --to openai:text-embedding-3-small --dim 1280 --dry-run
+gbrain migrate embeddings --to openai:text-embedding-3-small --dim 1280
+```
+
+`openai:text-embedding-3-small` @ 1280 is the v0.42.68.0 default. `--dim 1280`
+matters: OpenAI text-embedding-3-* is Matryoshka and accepts any width up to
+its native size, so migrating at the width you already have reuses the existing
+`vector(1280)` column and its HNSW index — only the vectors are rebuilt. Omit
+`--dim` and the target resolves to the recipe's 1536, forcing a needless
+dimension transition (schema change + index rebuild).
 
 Also reachable as `gbrain retrieval-upgrade` (the name `doctor` and the
 README reference).

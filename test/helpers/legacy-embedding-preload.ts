@@ -3,9 +3,10 @@
  * so tests written before v0.37 (with hardcoded `new Float32Array(1536)`
  * fixtures) keep working without per-file edits.
  *
- * v0.37 fix wave changed the canonical gateway defaults to
- * `zeroentropyai:zembed-1` / 1280-d (matching the system default chosen
- * in v0.36.0). Tests that don't explicitly configure the gateway
+ * v0.37 fix wave changed the canonical gateway defaults to a 1280-d model
+ * (zeroentropyai:zembed-1 then; openai:text-embedding-3-small as of
+ * v0.42.68.0 — the width is what matters here). Tests that don't
+ * explicitly configure the gateway
  * previously got 1536-d schemas via the stale `getPGLiteSchema()`
  * default; v0.37 fixed that so the schema tracks the gateway default
  * (1280 out of the box). Tests with 1536-d fixtures need the schema to
@@ -14,7 +15,7 @@
  * Imported by `bunfig.toml` via `preload = ["./test/helpers/legacy-embedding-preload.ts"]`.
  *
  * Tests that need a different embedding shape (the new v0.37 tests,
- * future ZE-1280 tests, or specific-provider tests) should call
+ * future 1280-d tests, or specific-provider tests) should call
  * `configureGateway()` explicitly in their own beforeAll, which
  * overwrites this preload.
  */

@@ -19,13 +19,13 @@ describe('v0.37 Lane A — defaults sweep', () => {
     // CDX2-1: these were file-private const; Lane A consumers (schema
     // helpers, registry) need them exported. Importing here is the test.
     const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } = await import('../src/core/ai/gateway.ts');
-    expect(DEFAULT_EMBEDDING_MODEL).toBe('zeroentropyai:zembed-1');
+    expect(DEFAULT_EMBEDDING_MODEL).toBe('openai:text-embedding-3-small');
     expect(DEFAULT_EMBEDDING_DIMENSIONS).toBe(1280);
   });
 
   test('A.0: ai/defaults.ts is the canonical source (leaf module, no SDK pulls)', async () => {
     const defaults = await import('../src/core/ai/defaults.ts');
-    expect(defaults.DEFAULT_EMBEDDING_MODEL).toBe('zeroentropyai:zembed-1');
+    expect(defaults.DEFAULT_EMBEDDING_MODEL).toBe('openai:text-embedding-3-small');
     expect(defaults.DEFAULT_EMBEDDING_DIMENSIONS).toBe(1280);
   });
 
@@ -52,17 +52,18 @@ describe('v0.37 Lane A — defaults sweep', () => {
     expect(sql).toContain('voyage:voyage-4-large');
   });
 
-  test('A.5: embedding-column registry builtin defaults to ZE/1280 on empty config + gateway', async () => {
+  test('A.5: embedding-column registry builtin defaults to openai/1280 on empty config + gateway', async () => {
     // The registry's resolution chain is cfg > gateway > DEFAULT. With
     // no cfg AND no gateway, it should fall through to the canonical
-    // default (ZE/1280). Reset gateway first to exercise that path.
+    // default (openai:text-embedding-3-small/1280 as of v0.42.68.0).
+    // Reset gateway first to exercise that path.
     const { resetGateway } = await import('../src/core/ai/gateway.ts');
     const { getEmbeddingColumnRegistry } = await import('../src/core/search/embedding-column.ts');
     resetGateway();
     try {
       const reg = getEmbeddingColumnRegistry({ engine: 'pglite' } as any);
       expect(reg['embedding']).toBeDefined();
-      expect(reg['embedding'].provider).toBe('zeroentropyai:zembed-1');
+      expect(reg['embedding'].provider).toBe('openai:text-embedding-3-small');
       expect(reg['embedding'].dimensions).toBe(1280);
     } finally {
       // Re-apply legacy preload defaults so the rest of the file's tests

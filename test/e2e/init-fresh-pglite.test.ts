@@ -74,15 +74,21 @@ describe('v0.37 T12 — fresh init env-detection (D1, D2, D3) + persistence (D5)
     // Init may or may not succeed (depends on whether OpenAI key is real for
     // any side effect — but init.ts has no live embed call, just config
     // writes + schema). Assert the auto-pick stderr notice fired.
-    expect(r.stderr).toMatch(/Detected OPENAI_API_KEY|Using openai:text-embedding-3-large/);
+    expect(r.stderr).toMatch(/Detected OPENAI_API_KEY|Using openai:text-embedding-3-small/);
     expect(r.exitCode).toBe(0);
 
-    // Config persisted with the right embedding fields.
+    // Config persisted with the right embedding fields. v0.42.68.0 (#3390):
+    // env-detected OpenAI now lands on the canonical default
+    // (openai:text-embedding-3-small @ DEFAULT_EMBEDDING_DIMENSIONS = 1280),
+    // not the recipe's largest tier. Asserted against the live constants so
+    // this test tracks a future default swap instead of pinning stale literals.
+    const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } =
+      await import('../../src/core/ai/defaults.ts');
     const cfgPath = join(tmpHome, '.gbrain', 'config.json');
     expect(existsSync(cfgPath)).toBe(true);
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
-    expect(cfg.embedding_model).toBe('openai:text-embedding-3-large');
-    expect(cfg.embedding_dimensions).toBe(1536);
+    expect(cfg.embedding_model).toBe(DEFAULT_EMBEDDING_MODEL);
+    expect(cfg.embedding_dimensions).toBe(DEFAULT_EMBEDDING_DIMENSIONS);
     expect(cfg.engine).toBe('pglite');
   }, 240000);
 });
@@ -104,8 +110,8 @@ describe('v0.37 T12 — D3 non-TTY no-key fail-loud', () => {
     // Fail-loud message includes the canonical env var list.
     expect(r.stderr).toContain('No embedding provider configured');
     expect(r.stderr).toContain('OPENAI_API_KEY');
-    expect(r.stderr).toContain('ZEROENTROPY_API_KEY');
     expect(r.stderr).toContain('VOYAGE_API_KEY');
+    expect(r.stderr).toContain('GOOGLE_GENERATIVE_AI_API_KEY');
     // Suggests --no-embedding alternative.
     expect(r.stderr).toContain('--no-embedding');
   }, 60000);

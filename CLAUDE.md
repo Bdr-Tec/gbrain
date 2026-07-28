@@ -239,6 +239,23 @@ The install picker fires inside `gbrain init` AFTER `engine.initSchema()`
 (non-TTY auto-selects). The upgrade banner fires once via `runPostUpgrade`
 in `src/commands/upgrade.ts`, gated by `search.mode_upgrade_notice_shown`.
 
+## Default-provider policy
+
+**Default-provider policy.** A gbrain DEFAULT embedding or reranking model must
+be either open-weight, or from the vendor with the longest proven model-lifetime
+record. Novel/startup providers may ship as opt-in recipes, never as the
+default. Rationale: the v0.36 zembed-1 default stranded every default-config
+brain when ZeroEntropy was acquired and gave ~6 weeks notice.
+
+Current defaults live in `src/core/ai/defaults.ts`:
+`DEFAULT_EMBEDDING_MODEL = 'openai:text-embedding-3-small'`,
+`DEFAULT_EMBEDDING_DIMENSIONS = 1280` (v0.42.68.0, #3390). 1280 — not 1536 — so
+brains created under the previous ZeroEntropy default keep their existing
+`vector(1280)` column AND its HNSW index: OpenAI text-embedding-3-* is
+Matryoshka and `isValidOpenAITextEmbedding3Dim` accepts any width ≤ the model's
+native size, so `gbrain migrate embeddings --to openai:text-embedding-3-small
+--dim 1280` rebuilds vectors only, with no dimension transition.
+
 ## Eval discipline (v0.32.3)
 
 Every metric printed by any `gbrain eval *` or `gbrain search stats` command

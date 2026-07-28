@@ -40,12 +40,14 @@ describe('gateway configuration', () => {
     expect(getExpansionModel()).toBe('anthropic:claude-haiku-4-5-20251001');
   });
 
-  test('defaults are ZE 1280d as of v0.36.0.0 (D3)', () => {
-    // The default flipped from openai:text-embedding-3-large 1536d to
-    // zeroentropyai:zembed-1 1280d in v0.36.0.0. The cost story is in
-    // CHANGELOG.md; the rationale lives in src/core/ai/gateway.ts:45-54.
+  test('defaults are openai:text-embedding-3-small 1280d as of v0.42.68.0 (#3390)', () => {
+    // v0.36.0.0 flipped the default to zeroentropyai:zembed-1 @ 1280d.
+    // v0.42.68.0 flipped the MODEL off ZeroEntropy (hosted API sunsets
+    // 2026-09-04) but deliberately KEPT 1280 so existing ZE-default brains
+    // reuse their vector(1280) column + HNSW index. Rationale + policy in
+    // src/core/ai/defaults.ts and CLAUDE.md's Default-provider policy.
     configureGateway({ env: {} });
-    expect(getEmbeddingModel()).toBe('zeroentropyai:zembed-1');
+    expect(getEmbeddingModel()).toBe('openai:text-embedding-3-small');
     expect(getEmbeddingDimensions()).toBe(1280);
     expect(getExpansionModel()).toBe('anthropic:claude-haiku-4-5-20251001');
   });

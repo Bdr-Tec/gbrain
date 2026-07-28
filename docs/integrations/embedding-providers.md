@@ -15,7 +15,7 @@ gbrain init --pglite --model voyage            # use a non-default provider
 
 ## Init resolves your provider from env keys
 
-As of v0.37, `gbrain init --pglite` auto-detects which provider to use from your env vars. With `OPENAI_API_KEY` set, you get OpenAI. With `ZEROENTROPY_API_KEY` set, you get ZeroEntropy. If multiple provider keys are set, init fires an interactive picker. If no provider keys are set in a non-TTY context (CI, Docker build), init exits 1 with a paste-ready setup hint. Explicit flags (`--embedding-model`, `--no-embedding`) always win over env detection.
+As of v0.37, `gbrain init --pglite` auto-detects which provider to use from your env vars. With `OPENAI_API_KEY` set, you get the default `openai:text-embedding-3-small` at 1280 dimensions. With `ZEROENTROPY_API_KEY` set, you get ZeroEntropy (deprecated — hosted API sunsets 2026-09-04). If multiple provider keys are set, init fires an interactive picker. If no provider keys are set in a non-TTY context (CI, Docker build), init exits 1 with a paste-ready setup hint. Explicit flags (`--embedding-model`, `--no-embedding`) always win over env detection.
 
 The resolved provider + dimensions get persisted to `~/.gbrain/config.json` atomically, so subsequent runs are deterministic across releases.
 
@@ -23,8 +23,8 @@ The resolved provider + dimensions get persisted to `~/.gbrain/config.json` atom
 
 | Provider | env vars | default dims | cost ($/1M tokens) | local? | multimodal? |
 |---|---|---|---|---|---|
+| `openai` (**default**) | `OPENAI_API_KEY` | `text-embedding-3-small` @ 1280 (Matryoshka, any width ≤1536); `text-embedding-3-large` @ 1536 | 0.02 (-small) / 0.13 (-large) | no | no |
 | `zeroentropyai` | `ZEROENTROPY_API_KEY` | 2560 (Matryoshka to 1280/640/320/...) | 0.05 | no | no |
-| `openai` | `OPENAI_API_KEY` | 1536 | 0.13 | no | no |
 | `openrouter` | `OPENROUTER_API_KEY` | 1536 | 0.02 | no | model-dependent |
 | `voyage` | `VOYAGE_API_KEY` | 1024 | 0.18 | no | yes (`voyage-multimodal-3`) |
 | `google` | `GOOGLE_GENERATIVE_AI_API_KEY` | 768 | 0.025 | no | no |
@@ -75,7 +75,9 @@ The doctor distinguishes two repair paths:
 
 ### OpenAI
 
-Default. Set `OPENAI_API_KEY`. Models: `text-embedding-3-large` (3072 max, 1536 default), `text-embedding-3-small` (1536). Matryoshka via the `dimensions` field — gbrain pins it from `embedding_dimensions` config so existing 1536-dim brains stay aligned across SDK upgrades.
+**Default since v0.42.68.0: `openai:text-embedding-3-small` at 1280 dimensions.** Set `OPENAI_API_KEY`. Models: `text-embedding-3-small` (1536 native, $0.02/Mtok), `text-embedding-3-large` (3072 native, 1536 recipe default, $0.13/Mtok). Both are Matryoshka: `isValidOpenAITextEmbedding3Dim` accepts **any integer width up to the model's native size**, so 1280 is a first-class width — that is exactly why the v0.42.68.0 default swap needs no schema change on brains created under the previous 1280-wide ZeroEntropy default. gbrain pins `dimensions` from `embedding_dimensions` config so existing brains stay aligned across SDK upgrades.
+
+Note the split: `DEFAULT_EMBEDDING_DIMENSIONS` (1280) is the zero-config brain width; the openai recipe's `default_dims` (1536) is what `gbrain migrate embeddings --to openai:text-embedding-3-*` resolves when you pass no `--dim`. Pass `--dim 1280` when you want to keep an existing 1280-wide column and its HNSW index in place.
 
 Optional `OPENAI_BASE_URL` — point the native OpenAI provider at an OpenAI-compatible gateway. A bare host is normalized to carry the `/v1` suffix automatically (so `https://gw.example.com` and `https://gw.example.com/v1` both work); when unset, the SDK's default endpoint is untouched. `ANTHROPIC_BASE_URL` gets the same normalization for Anthropic chat/expansion calls.
 
