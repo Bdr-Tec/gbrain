@@ -11,7 +11,7 @@ tools:
   - gbrain schema active
   - gbrain schema use
   - gbrain schema stats
-  - gbrain pages restore
+  - gbrain restore
   - mcp:run_onboard
 triggers:
   - "unify my types"
@@ -143,7 +143,7 @@ WHERE source_id = 'default' AND frontmatter->>'legacy_type' IS NOT NULL;
 Page-to-alias and page-to-link source pages soft-delete with 72h TTL. Restore within that window:
 
 ```bash
-gbrain pages restore <slug>
+gbrain restore <slug>
 ```
 
 Revert the active pack flip:
@@ -197,7 +197,7 @@ Outputs:
 - Active pack flipped to `gbrain-base-v2` atomically at end of successful run.
 
 Side effects:
-- Source pages soft-deleted with 72h restore TTL (`gbrain pages restore <slug>`).
+- Source pages soft-deleted with 72h restore TTL (`gbrain restore <slug>`).
 - One-time cache invalidation on KNOBS_HASH_VERSION bump (5→6); self-healing in `cache.ttl_seconds`.
 - Query-time `--type X` alias-expands via `expandTypeFilter` (D14 back-compat).
 
@@ -212,7 +212,7 @@ DON'T:
 - Submit `unify-types` directly via the MCP `submit_job` op without `--allow-protected`. PROTECTED handlers require trusted local callers; remote MCP rejection is the intentional trust boundary.
 - Edit `mapping_rules` in `gbrain-base-v2.yaml` to skip clusters you don't trust. Fork the pack instead (`gbrain schema fork`) so the source-of-truth migration stays consistent across brains.
 - Run `unify-types` from inside an autopilot tick. The check is `manual_only` per D17 — autopilot deliberately never auto-fires it because pack upgrades are one-time consenting taxonomy decisions.
-- Hard-delete soft-deleted source pages before the 72h restore window. Use `gbrain pages restore <slug>` first if rollback is needed.
+- Hard-delete soft-deleted source pages before the 72h restore window. Use `gbrain restore <slug>` first if rollback is needed.
 - Assume `frontmatter.legacy_type` survives every roundtrip. The marker is canonical for the immediate post-migration window; downstream re-imports may overwrite it.
 
 ## Output Format
