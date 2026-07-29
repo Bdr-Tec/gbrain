@@ -76,7 +76,8 @@ gbrain onboard --check --explain               # per-cluster narrative dry-run
         ↓
 gbrain jobs submit unify-types \               # PROTECTED + manual_only
   --allow-protected \
-  --params '{"target_pack":"gbrain-base-v2"}'
+  --params '{"target_pack":"gbrain-base-v2","apply":true}'
+                                               # omit "apply":true → dry-run (default)
         ↓
 Handler runs 4 phases:
   ┌─────────────────────────────────────┐
@@ -127,7 +128,8 @@ For brains with substantial custom types that deserve their own canonical
 2. Edit your fork to add page_types + mapping_rules covering your
    custom domain.
 3. Target your fork: `gbrain jobs submit unify-types --allow-protected
-   --params '{"target_pack":"my-pack"}'`
+   --params '{"target_pack":"my-pack","apply":true}'` (omit `"apply":true`
+   for a dry-run preview — that is the default)
 
 Your fork can also declare `migration_from: {pack: gbrain-base-v2,
 version: "1.x"}` to register itself as a successor — future agents
