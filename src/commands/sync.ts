@@ -2876,8 +2876,16 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       const newSlug = resolveSlugForPath(to);
       try {
         await engine.updateSlug(oldSlug, newSlug, renameOpts);
-      } catch {
-        // Slug doesn't exist or collision, treat as add
+      } catch (e) {
+        // Slug doesn't exist or collision — fall back to add. #3056: the old
+        // row (if any) is NOT reconciled by this fallback, so a silent miss
+        // here reads as a clean rename while a duplicate row may remain.
+        // Surface the error so the incident is self-diagnosing.
+        console.error(
+          `[sync] rename: updateSlug "${oldSlug}" → "${newSlug}" failed `
+          + `(${e instanceof Error ? e.message : String(e)}); treating as add — `
+          + `the previous row may remain at "${oldSlug}"`,
+        );
       }
       // Reimport at new path (picks up content changes). Wrapped to match the
       // deletes/adds loops: a malformed renamed file is recorded to failedFiles
