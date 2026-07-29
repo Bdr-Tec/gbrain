@@ -47,6 +47,15 @@ const GATEWAY_REFRESH_JOB_NAMES = new Set([
   'embed-backfill',
   'extract-takes-from-pages',
   'embed-catch-up',
+  // #3387: chronicle_extract calls the chat model, so it must re-resolve
+  // models from the ENGINE (the DB config plane) before running. Without
+  // this entry the job sees only the connect-time file/env config, so a
+  // model set via `gbrain config set` is silently ignored and
+  // extract-events.ts's `if (!isAvailable('chat')) return { events: [] }`
+  // returns a silent `no_events`. The bug is invisible when the model comes
+  // from an env var — which is why a live repro can pass while the reported
+  // (DB-plane) configuration still fails.
+  'chronicle_extract',
 ]);
 
 function registerBuiltinJob(
