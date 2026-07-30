@@ -44,7 +44,7 @@ function baseKnobs(): ResolvedSearchKnobs {
 }
 
 describe('KNOBS_HASH_VERSION + version invariants', () => {
-  test('version is 21 (…; 16→17 degradation stamp; 17→18 autocut weak-top floor #1863; 18→19 autocut minKeep floor #3621; 19→20 pre-fusion pool floor #3002; 20→21 recency fallback re-key #895)', () => {
+  test('version is 23 (…; 16→17 degradation stamp; 17→18 autocut weak-top floor #1863; 18→19 autocut minKeep floor #3621; 19→20 pre-fusion pool floor #3002; 20→21 recency fallback re-key #895; 21→22 negative-offset cache-skip gap #4358 residual; 22→23 keywordOrFallback knob #3617)', () => {
     // v0.35.0.0: 1→2 to fold reranker fields. v0.35.6.0: 2→3 to fold
     // floor_ratio. v0.36 wave: piggybacks on v=3 with 7 cross-modal knobs
     // (D2) PLUS column + provider context (D8/CDX-2 cross-column isolation).
@@ -82,7 +82,8 @@ describe('KNOBS_HASH_VERSION + version invariants', () => {
     // #4358 residual: 21→22 — negative-offset requests could read/write the
     // same cache row an offset=0 request shares (pagedRequest previously
     // skipped only offset>0).
-    expect(KNOBS_HASH_VERSION).toBe(22);
+    // #3617: 22→23 — kof= (keyword AND→OR fallback knob) joins the key.
+    expect(KNOBS_HASH_VERSION).toBe(23);
   });
 
   test('hash is 16 hex chars regardless of reranker config', () => {

@@ -77,6 +77,17 @@ export interface ModeBundle {
   /** Zero-LLM intent classifier weight adjustments (PR #897). On for everyone. */
   intentWeighting: boolean;
   /**
+   * Keyword-arm AND→OR zero-recall fallback (fix/title-retrieval-arm, D2).
+   * websearch AND semantics at chunk grain mean one non-co-occurring token
+   * zeroes keyword recall; the fallback retries once with OR-of-terms.
+   * On corpora the FTS config can't stem (CJK/agglutinative text under
+   * 'english') the OR retry can match a large fraction of the corpus, and
+   * ts_rank has no IDF to demote common-token hits — the relaxed rows read
+   * as noise in the RRF blend. This knob lets those corpora turn the
+   * fallback off. Default on (the previous hardcoded behavior).
+   */
+  keywordOrFallback: boolean;
+  /**
    * Per-call token budget cap (PR #897). undefined = no-op (tokenmax).
    * 4000 = tight (conservative, fits Haiku context loop).
    * 12000 = balanced (sweet-spot for Sonnet).
@@ -326,6 +337,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     cache_similarity_threshold: 0.92,
     cache_ttl_seconds: 3600,
     intentWeighting: true,
+    keywordOrFallback: true,
     tokenBudget: 4000,
     expansion: false,
     searchLimit: 10,
@@ -373,6 +385,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     cache_similarity_threshold: 0.92,
     cache_ttl_seconds: 3600,
     intentWeighting: true,
+    keywordOrFallback: true,
     tokenBudget: 12000,
     expansion: false,
     searchLimit: 25,
@@ -434,6 +447,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     cache_similarity_threshold: 0.92,
     cache_ttl_seconds: 3600,
     intentWeighting: true,
+    keywordOrFallback: true,
     tokenBudget: undefined,
     expansion: true,
     searchLimit: 50,
@@ -501,6 +515,7 @@ export interface SearchKeyOverrides {
   cache_similarity_threshold?: number;
   cache_ttl_seconds?: number;
   intentWeighting?: boolean;
+  keywordOrFallback?: boolean;
   tokenBudget?: number;
   expansion?: boolean;
   searchLimit?: number;
@@ -554,6 +569,7 @@ export interface SearchPerCallOpts {
   cache_similarity_threshold?: number;
   cache_ttl_seconds?: number;
   intentWeighting?: boolean;
+  keywordOrFallback?: boolean;
   tokenBudget?: number;
   expansion?: boolean;
   searchLimit?: number;
@@ -658,6 +674,7 @@ export function resolveSearchMode(input: ResolveSearchModeInput): ResolvedSearch
     cache_similarity_threshold: pick('cache_similarity_threshold'),
     cache_ttl_seconds: pick('cache_ttl_seconds'),
     intentWeighting: pick('intentWeighting'),
+    keywordOrFallback: pick('keywordOrFallback'),
     tokenBudget: pick('tokenBudget'),
     expansion: pick('expansion'),
     searchLimit: pick('searchLimit'),
@@ -890,7 +907,13 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // still reach. No new key part; the bump alone invalidates. Same one-time
 // global cold-miss pattern as the bumps above; refills within
 // cache.ttl_seconds (3600s).
-export const KNOBS_HASH_VERSION = 22;
+//
+// bump 22→23 (#3617): `kof=` (keyword AND→OR fallback knob) joins the key.
+// The PR authored this as 18→19; 19 (ack=), 20 (pool floor), 21 (recency
+// fallback) and 22 (#4358 residual) were claimed upstream while it was open,
+// so it takes the next free number per the D8 sequencing convention. Same
+// one-time global cold-miss pattern as the bumps above.
+export const KNOBS_HASH_VERSION = 23;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
@@ -1059,6 +1082,12 @@ export function knobsHash(
     // weak-top floor (v=18) already owns `acm=`. `?? 1` mirrors the defensive
     // read of acj= above for partial-knobs callers.
     `ack=${Math.max(1, Math.floor(knobs.autocut_min_keep ?? 1))}`,
+    // v=23 addition (#3617, append-only): keyword AND→OR fallback knob. A
+    // fallback-on write (OR-relaxed rows blended in) must not be served
+    // to a fallback-off lookup — the zero-strict-recall result sets are
+    // disjoint (relaxed rows vs empty keyword arm). `?? true` mirrors the
+    // module's defensive read of other knobs for partial-knobs callers.
+    `kof=${(knobs.keywordOrFallback ?? true) ? 1 : 0}`,
   ];
   const h = createHash('sha256');
   h.update(parts.join('|'));
@@ -1096,6 +1125,10 @@ export function loadOverridesFromConfig(
   const iw = get('search.intentWeighting');
   if (iw !== undefined) {
     out.intentWeighting = iw === '1' || iw.toLowerCase() === 'true';
+  }
+  const kof = get('search.keywordOrFallback');
+  if (kof !== undefined) {
+    out.keywordOrFallback = kof === '1' || kof.toLowerCase() === 'true';
   }
   const tb = get('search.tokenBudget');
   if (tb !== undefined) {
@@ -1269,6 +1302,7 @@ export const SEARCH_MODE_CONFIG_KEYS: ReadonlyArray<string> = Object.freeze([
   'search.cache.similarity_threshold',
   'search.cache.ttl_seconds',
   'search.intentWeighting',
+  'search.keywordOrFallback',
   'search.tokenBudget',
   'search.expansion',
   'search.searchLimit',
