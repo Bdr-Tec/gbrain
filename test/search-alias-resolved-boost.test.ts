@@ -89,9 +89,10 @@ describe('alias_resolved boost stage', () => {
 });
 
 describe('KNOBS_HASH_VERSION', () => {
-  it('is 23 (20→21 recency fallback re-key #895; 21→22 result-stamp/injection epoch #1663 #3995 #3783 #4220; 22→23 excludePrivate posture fold #4352)', () => {
+  it('is 24 (21→22 result-stamp/injection epoch #1663 #3995 #3783 #4220; 22→23 excludePrivate posture fold #4352; 23→24 keywordOrFallback knob kof=)', () => {
     // mw2: 21→22 result-stamp/injection epoch (#1663 #3995 #3783 #4220).
     // #4352 follow-up: 22→23 private-visibility posture fold (xp=).
-    expect(KNOBS_HASH_VERSION).toBe(23);
+    // 23→24: kof= (keyword AND→OR fallback knob) joins the key.
+    expect(KNOBS_HASH_VERSION).toBe(24);
   });
 });
