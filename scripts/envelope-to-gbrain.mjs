@@ -79,11 +79,15 @@ for (const [i, c] of conversations.entries()) {
   const front = [
     '---',
     'type: conversation',
+    // Every interpolated value below is quoted. An envelope is a third-party
+    // file, so any string carrying a newline would otherwise close its scalar
+    // and inject arbitrary frontmatter keys into the page gbrain ingests — or
+    // duplicate an existing key, which makes the parse throw and silently
+    // strips every provenance field from the page.
     `title: ${JSON.stringify(c.title || 'Untitled conversation')}`,
-    `date: ${date || 'null'}`,
-    // Every interpolated value is quoted. An envelope is a third-party file, so
-    // a provider string carrying a newline would otherwise close this scalar and
-    // inject arbitrary frontmatter keys into the page gbrain ingests.
+    // `date` is the first 10 chars of the envelope's `created_at`; 10 is plenty
+    // to smuggle a newline plus a short key. Absent stays an unquoted YAML null.
+    `date: ${date ? JSON.stringify(date) : 'null'}`,
     `source: ${JSON.stringify(env.meta?.source_provider || 'unknown')}`,
     // Omit the key entirely when the envelope carries no id, rather than
     // emitting the literal `undefined` or a synthesized `conv-N` — the positional

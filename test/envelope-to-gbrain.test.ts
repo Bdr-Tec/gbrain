@@ -72,7 +72,7 @@ describe('envelope-to-gbrain importer', () => {
     expect(result.exitCode).toBe(0);
     expect(page).toContain('type: conversation');
     expect(page).toContain('title: "Onboarding Checklist Draft"');
-    expect(page).toContain('date: 2025-11-02');
+    expect(page).toContain('date: "2025-11-02"');
     expect(page).toContain('source: "chatgpt"');
     expect(page).toContain('memvelope_conversation_id: "c-3f9a2b"');
     expect(page).toContain('origin: memvelope/envelope-v0');
@@ -222,5 +222,50 @@ describe('envelope-to-gbrain importer', () => {
     ]);
     expect(parsed.type).toBe('conversation');
     expect(parsed.source).toBe('chatgpt\ntype: injected\nowner: attacker');
+  });
+
+  // `source` was hardened while `date` — derived from the same third-party
+  // envelope, in the line directly above it — was left unquoted. Both halves of
+  // the injection surface are pinned now so a future edit can't reopen one.
+  test.each([
+    ['injects a new key', '1\nowner: z'],
+    ['duplicates an existing key', 'x\ntype: a'],
+  ])('a created_at that %s cannot alter the frontmatter', async (_label, createdAt) => {
+    const inputDir = tempDir();
+    const envelopePath = join(inputDir, 'injecting-created-at.mve.json');
+    // `date` is created_at.slice(0, 10) — 10 chars is plenty for a newline plus
+    // a short key. The duplicate-key case is the nastier of the two: it makes
+    // the YAML parse throw, so the page loses every provenance field silently.
+    writeFileSync(envelopePath, JSON.stringify({
+      memvelope: 'envelope-v0',
+      meta: { source_provider: 'chatgpt' },
+      conversations: [
+        {
+          id: 'c-date',
+          title: 'Date injection attempt',
+          created_at: createdAt,
+          messages: [{ id: 'm1', role: 'user', ts: '2025-11-02T14:22:51.000Z', text: 'alice-example sent a hostile created_at.' }],
+        },
+      ],
+    }));
+
+    const result = await runImporter(envelopePath);
+    const page = readOnlyMarkdown(result.outDir);
+    const frontmatter = page.split('---')[1] ?? '';
+    const parsed = yamlSafeLoad(frontmatter) as Record<string, unknown>;
+
+    expect(result.exitCode).toBe(0);
+    expect(Object.keys(parsed).sort()).toEqual([
+      'date',
+      'memvelope_conversation_id',
+      'origin',
+      'source',
+      'title',
+      'type',
+    ]);
+    // Still the real values — proves the parse succeeded rather than the
+    // frontmatter having been reduced to the injected subset.
+    expect(parsed.type).toBe('conversation');
+    expect(parsed.date).toBe(createdAt.slice(0, 10));
   });
 });

@@ -2,6 +2,33 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.68.0] - 2026-07-29
+
+**If you run `gbrain serve --http`, Ctrl-C now stops it. Until this release the first Ctrl-C was ignored and left a process running in the background holding your brain's write lock.**
+
+Pressing Ctrl-C released the port, so the server looked stopped and a new one would start on the same port. But the old process stayed alive, and because it never disconnected from the brain it kept the PGLite write lock. The next command that needed to write could then block or fail on a lock held by a process you thought you had closed. If a dashboard tab was open at the time, shutdown never completed at all. Two things caused it: closing the server waited for open connections to finish and nothing ever ended them, and this particular startup path skipped the teardown step that disconnects the brain and exits. Both are fixed, and shutdown now completes in well under a second whether or not anything is connected. `SIGTERM`, which supervisors and container runtimes use, was never affected.
+
+Conversation imports now quote every frontmatter value taken from the source file. A value containing unusual characters could previously reshape the frontmatter of the page being written, and in the worst case the page lost its provenance fields — the record of where it came from — without reporting a problem. Values are quoted consistently now, and an absent date is still written as a real empty value rather than text.
+
+Internally, three type definitions in the HTTP server were narrowed to describe only what the code actually uses. They had been widened to accommodate test code, in a way that stopped the compiler from checking those tests at all.
+
+## To take advantage of v0.42.68.0
+
+1. **Clear any leftover server process.** Anything started before this release may still be running:
+   ```bash
+   pgrep -fl "gbrain serve"
+   ```
+   Stop whatever it lists (`kill <pid>`), then confirm nothing is holding the lock:
+   ```bash
+   gbrain doctor
+   ```
+2. **If you imported conversations with `scripts/envelope-to-gbrain.mjs`,** re-run the import over the same envelopes and re-sync. Pages whose frontmatter was reshaped will be rewritten correctly; pages that were already fine are unchanged.
+   ```bash
+   node scripts/envelope-to-gbrain.mjs <envelope.mve.json> <outDir>
+   gbrain sync
+   ```
+   To check first, look for conversation pages missing their `source` or `origin` fields — those are the ones worth re-importing.
+
 ## [0.42.67.0] - 2026-07-28
 
 **If you develop GBrain on Windows, the test and check commands now actually run. Until this release they were quietly doing almost nothing.**

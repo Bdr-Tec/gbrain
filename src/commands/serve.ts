@@ -144,7 +144,30 @@ export async function runServe(
 
     const { runServeHttp } = await import('./serve-http.ts');
     await runServeHttp(engine, { port, tokenTtl, enableDcr, enableDcrInsecure, publicUrl, logFullParams, bind, suppressBootstrapToken, printAdminToken });
-    return;
+
+    // The lifecycle resolved, so the HTTP server is closed. `serve` skips both
+    // finishCliTeardown and the force-exit seam by design, so returning here
+    // leaves the never-disconnected engine's handles holding an orphaned
+    // process alive — port released but the PID still owning the PGLite write
+    // lock. Disconnect first (checkpoint / pool drain) so the store isn't left
+    // needing recovery, raced against the same deadline the stdio path uses in
+    // case a wedged WASM close would otherwise trap us.
+    // ponytail: on SIGTERM this races process-cleanup's own exit(143) and
+    // loses (it doesn't await a disconnect), which is the outcome we want.
+    // Plumb a settle-reason through runServeHttp if that ever needs to be
+    // guaranteed rather than merely reliable.
+    const httpCleanup = setTimeout(() => {
+      console.error(`GBrain MCP server: cleanup deadline (${CLEANUP_DEADLINE_MS}ms) exceeded — forcing exit`);
+      process.exit(0);
+    }, CLEANUP_DEADLINE_MS);
+    httpCleanup.unref?.();
+    try {
+      await engine.disconnect();
+    } catch (err: unknown) {
+      console.error(`GBrain MCP server: cleanup error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    clearTimeout(httpCleanup);
+    process.exit(0);
   }
 
   // stdio path — install lifecycle handlers BEFORE startMcpServer so that
