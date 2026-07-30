@@ -69,7 +69,10 @@ for (const [i, c] of conversations.entries()) {
   // stops the two from disagreeing about whether an id exists.
   const hasId = typeof c.id === 'string' && c.id.trim() !== '';
   const convId = hasId ? c.id.trim() : `conv-${i + 1}`;
-  const name = `${date || '0000-00-00'}-${slug(convId, `conv-${i + 1}`)}.md`;
+  // `date` is third-party, exactly like `convId`, so it gets the same slug()
+  // treatment. Interpolating it raw let a `created_at` of `../…` resolve the
+  // join below outside outDir and write there.
+  const name = `${slug(date, '0000-00-00')}-${slug(convId, `conv-${i + 1}`)}.md`;
   // gbrain reads YAML frontmatter + markdown body; keep provenance in frontmatter.
   // Emit `type: conversation` so gbrain stores these as conversation pages rather
   // than defaulting to the generic `concept`. gbrain is open-typed — it takes an

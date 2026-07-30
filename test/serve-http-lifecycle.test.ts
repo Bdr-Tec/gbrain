@@ -1,16 +1,19 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'events';
 import { waitForHttpServerLifecycle } from '../src/commands/serve-http.ts';
+import { finishHttpServe } from '../src/commands/serve.ts';
 
 class FakeHttpServer extends EventEmitter {
   listening = true;
   closeCalls = 0;
+  /** Real servers can fail the close callback and still emit 'close'. */
+  closeError: Error | undefined;
 
   close(callback?: (error?: Error) => void): this {
     this.closeCalls++;
     this.listening = false;
     queueMicrotask(() => {
-      callback?.();
+      callback?.(this.closeError);
       this.emit('close');
     });
     return this;
@@ -92,37 +95,91 @@ describe('HTTP server lifecycle', () => {
     expect(gone.destroyed).toBe(false);
   });
 
-  // Whichever signal lands first settles the promise; every later one is a
-  // no-op. A second settle in a daemon is an unhandled rejection, i.e. a
-  // crash-loop. (Note: once settled, the 'error' listener is removed, so a
-  // genuinely later server 'error' becomes an uncaughtException — pre-existing
-  // behavior, and it degrades to a clean exit(1) via the cleanup pass rather
-  // than a silent hang.)
-  test.each([
-    ['close then close', ['close', 'close'], { resolves: 1, rejects: 0 }],
-    ['error then close', ['error', 'close'], { resolves: 0, rejects: 1 }],
-  ])('settles exactly once: %s', async (_label, events, expected) => {
+  // A native Promise already settles once, so asserting resolve-count proves
+  // nothing about the `settled` guard. What the guard actually protects is
+  // finish()'s SIDE EFFECTS — deregistering the shared-cleanup entry, and
+  // detaching listeners. Deregistering twice removes an entry a later caller
+  // may have re-registered.
+  //
+  // The real double-finish path: SIGINT calls closeServer(); the close callback
+  // reports an error (rejecting that promise, whose .catch routes to onError)
+  // while the server also emits 'close' (routing to onClose). Both reach
+  // finish() from the same close.
+  test('runs shutdown side effects once when close both fails and emits close', async () => {
     const server = new FakeHttpServer();
+    server.closeError = new Error('close reported a failure');
     const signals = new EventEmitter();
-    let resolves = 0;
-    let rejects = 0;
+    let deregisterCalls = 0;
+    let settlements = 0;
 
     const lifecycle = waitForHttpServerLifecycle(server, {
       signals,
-      register() { return () => {}; },
-    }).then(() => { resolves++; }, () => { rejects++; });
+      register() { return () => { deregisterCalls++; }; },
+    }).then(() => { settlements++; }, () => { settlements++; });
 
-    for (const event of events) {
-      // Re-emitting after settle would throw for 'error' (no listener left),
-      // so only emit what still has a listener — the point is that the SECOND
-      // signal cannot settle the promise again.
-      if (server.listenerCount(event) > 0) server.emit(event, new Error('boom'));
-    }
+    signals.emit('SIGINT');
     await lifecycle;
+    // Let the rejected closeServer promise deliver its .catch(onError) — the
+    // second finish() attempt lands here, after the first already settled.
+    await new Promise((r) => setTimeout(r, 0));
 
-    expect({ resolves, rejects }).toEqual(expected);
+    expect(deregisterCalls).toBe(1);
+    expect(settlements).toBe(1);
+    expect(server.closeCalls).toBe(1);
     expect(server.listenerCount('close')).toBe(0);
     expect(server.listenerCount('error')).toBe(0);
     expect(signals.listenerCount('SIGINT')).toBe(0);
+  });
+});
+
+// Severing sockets lets close() finish; this is what actually stops the
+// process. Without it the serve path returns to a caller that never tears the
+// engine down, and the orphan keeps the PGLite write lock — which is the
+// user-visible failure (every later CLI write is refused).
+describe('HTTP serve teardown', () => {
+  const codes = () => {
+    const exits: number[] = [];
+    const logs: string[] = [];
+    return { exits, logs, opts: { exit: (c?: number) => { exits.push(c ?? 0); }, log: (m: string) => { logs.push(m); } } };
+  };
+
+  test('disconnects the engine before exiting', async () => {
+    const order: string[] = [];
+    const { exits, opts } = codes();
+    await finishHttpServe(
+      { disconnect: async () => { order.push('disconnect'); } },
+      { ...opts, exit: (c?: number) => { order.push('exit'); exits.push(c ?? 0); } },
+    );
+    // Disconnect FIRST — exiting before the checkpoint is what leaves a store
+    // needing recovery.
+    expect(order).toEqual(['disconnect', 'exit']);
+    expect(exits).toEqual([0]);
+  });
+
+  test('still exits when disconnect throws, and says why', async () => {
+    const { exits, logs, opts } = codes();
+    await finishHttpServe(
+      { disconnect: async () => { throw new Error('pool already destroyed'); } },
+      opts,
+    );
+    expect(exits).toEqual([0]);
+    expect(logs.join('\n')).toContain('pool already destroyed');
+  });
+
+  test('exits exactly once when disconnect outlives the deadline', async () => {
+    const { exits, logs, opts } = codes();
+    let release: (() => void) | undefined;
+    const wedged = new Promise<void>((r) => { release = r; });
+
+    const done = finishHttpServe({ disconnect: () => wedged }, { ...opts, deadlineMs: 5 });
+    await new Promise((r) => setTimeout(r, 30)); // deadline fires here
+    expect(exits).toEqual([0]);
+    expect(logs.join('\n')).toContain('cleanup deadline');
+
+    release!(); // the wedged disconnect finally returns
+    await done;
+    // A second exit here would be the bug: production's process.exit never
+    // returns, so this path is only reachable through the injected seam.
+    expect(exits).toEqual([0]);
   });
 });

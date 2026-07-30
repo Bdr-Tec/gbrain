@@ -14,14 +14,23 @@ Internally, three type definitions in the HTTP server were narrowed to describe 
 
 ## To take advantage of v0.42.68.0
 
-1. **Clear any leftover server process.** Anything started before this release may still be running:
+1. **Clear any leftover server process.** Anything started before this release may still be running. The brain's lock file names the process holding it, and is the reliable way to check — `gbrain doctor` does **not** detect this and will report the brain healthy while a leftover process still holds it:
    ```bash
-   pgrep -fl "gbrain serve"
+   cat ~/.gbrain/brain.pglite/.gbrain-lock/lock
    ```
-   Stop whatever it lists (`kill <pid>`), then confirm nothing is holding the lock:
+   No such file means nothing is holding the brain and you are done. Otherwise it prints JSON naming the `pid` and the exact `command`. What matters is whether that process is still alive:
    ```bash
-   gbrain doctor
+   ps -p <pid>
    ```
+   **Nothing listed** — the lock is stale. GBrain reclaims a stale lock by itself on the next command, so there is nothing to do.
+
+   **A process listed** — that is the leftover. Stop it:
+   ```bash
+   kill <pid>
+   ```
+   `kill` is enough; `SIGTERM` shutdown was never affected by this bug. The lock file may still exist afterwards, which is expected and harmless — once the recorded process is gone, the next command reclaims it.
+
+   Note that `pgrep -f "gbrain serve"` will not find a server started from a source checkout (`bun src/cli.ts serve`), which is why the lock file is the check to trust.
 2. **If you imported conversations with `scripts/envelope-to-gbrain.mjs`,** re-run the import over the same envelopes and re-sync. Pages whose frontmatter was reshaped will be rewritten correctly; pages that were already fine are unchanged.
    ```bash
    node scripts/envelope-to-gbrain.mjs <envelope.mve.json> <outDir>

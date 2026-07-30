@@ -11,6 +11,7 @@
  */
 
 import express from 'express';
+import type { Socket } from 'net';
 import type { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
@@ -66,15 +67,23 @@ type EventSubscriber = {
   once(event: string, listener: (...args: any[]) => void): unknown;
   off(event: string, listener: (...args: any[]) => void): unknown;
 };
-/** Only what socket teardown needs; see {@link EventSubscriber}. */
-type TrackedSocket = {
-  destroy(): unknown;
-  once(event: string, listener: () => void): unknown;
-};
+/**
+ * Only what socket teardown needs. This one IS a `Pick` of the real type, on
+ * purpose: no typechecked test double has to satisfy it (fakes reach it through
+ * `emit`, which is untyped), so binding it to `net.Socket` costs nothing and
+ * buys drift detection. A hand-written structural shape here would be an
+ * unchecked assertion — method parameters are bivariant, so annotating the
+ * listener param would match our own declaration whatever a real socket does.
+ */
+type TrackedSocket = Pick<Socket, 'destroy' | 'once'>;
 type HttpServerLifecycle = EventSubscriber & {
   readonly listening: boolean;
   close(callback?: (error?: Error) => void): unknown;
-  on(event: string, listener: (...args: any[]) => void): unknown;
+  // Narrowed to the one event this module subscribes with `on`, so the listener
+  // parameter is genuinely checked against TrackedSocket. A `(...args: any[])`
+  // signature here would make the annotation at the call site an unchecked
+  // assertion — the same defect this file was just cleaned of.
+  on(event: 'connection', listener: (socket: TrackedSocket) => void): unknown;
 };
 type SignalSource = EventSubscriber;
 type CleanupRegistrar = typeof registerCleanup;

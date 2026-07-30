@@ -3,7 +3,7 @@
  * provenance frontmatter, citation-bearing bodies, and loud collision handling.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // The same parser gbrain uses to ingest frontmatter (src/core/markdown.ts), so
@@ -267,5 +267,40 @@ describe('envelope-to-gbrain importer', () => {
     // frontmatter having been reduced to the injected subset.
     expect(parsed.type).toBe('conversation');
     expect(parsed.date).toBe(createdAt.slice(0, 10));
+  });
+
+  // `created_at` also prefixes the FILENAME, and `join(outDir, name)` resolves
+  // `../` — so hardening only the frontmatter left the same untrusted value
+  // able to write outside the output directory entirely.
+  test('a created_at containing path separators cannot write outside outDir', async () => {
+    const inputDir = tempDir();
+    const parent = tempDir();
+    const outDir = join(parent, 'outdir');
+    const sibling = join(parent, 'victim');
+    mkdirSync(outDir);
+    mkdirSync(sibling); // must exist, or the escape fails on ENOENT for the wrong reason
+
+    const envelopePath = join(inputDir, 'traversing-created-at.mve.json');
+    writeFileSync(envelopePath, JSON.stringify({
+      memvelope: 'envelope-v0',
+      meta: { source_provider: 'chatgpt' },
+      conversations: [
+        {
+          id: 'c-trav',
+          title: 'Traversal attempt',
+          created_at: '../victim/p',
+          messages: [{ id: 'm1', role: 'user', ts: '2025-11-02T14:22:51.000Z', text: 'alice-example sent a traversing created_at.' }],
+        },
+      ],
+    }));
+
+    const result = await runImporter(envelopePath, outDir);
+
+    expect(result.exitCode).toBe(0);
+    expect(readdirSync(sibling)).toEqual([]);
+    expect(markdownFiles(outDir)).toHaveLength(1);
+    // Separators are slugged away rather than the write being rejected, so the
+    // conversation is still imported — just inside outDir where it belongs.
+    expect(markdownFiles(outDir)[0]).not.toContain('/');
   });
 });
