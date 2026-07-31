@@ -7582,33 +7582,44 @@ export async function buildChecks(
         `SELECT storage_path FROM files WHERE mime_type LIKE 'image/%' LIMIT 1000`
       );
       let vanished = 0;
+      let foreign = 0;
       const vanishedPaths: string[] = [];
       const fs = await import('node:fs');
-      const nodePath = await import('node:path');
+      const { resolveAssetPath } = await import('./doctor-asset-paths.ts');
       // storage_path is repo-relative for sync-ingested assets. Resolving
       // against cwd made this check a false-positive WARN whenever doctor
       // ran outside the brain repo.
       const repoRoot = (await engine.getConfig('sync.repo_path')) ?? process.cwd();
       for (const r of rows) {
-        const abs = nodePath.isAbsolute(r.storage_path)
-          ? r.storage_path
-          : nodePath.join(repoRoot, r.storage_path);
+        // #1835: Windows drive paths (D:/…) translate to the WSL automount
+        // (/mnt/d/…) under WSL, and are SKIPPED (not "missing") on hosts
+        // where they cannot exist (macOS / plain Linux) — never joined onto
+        // repoRoot, which produced a false "restore from git" WARN.
+        const resolved = resolveAssetPath(r.storage_path, repoRoot);
+        if (resolved.abs === null) {
+          foreign++;
+          continue;
+        }
         try {
-          fs.statSync(abs);
+          fs.statSync(resolved.abs);
         } catch {
           vanished++;
           if (vanishedPaths.length < 5) vanishedPaths.push(r.storage_path);
         }
       }
+      const checked = rows.length - foreign;
+      const foreignNote = foreign > 0
+        ? ` (${foreign} Windows-drive path(s) skipped — not resolvable on this platform)`
+        : '';
       if (rows.length === 0) {
         checks.push({ name: 'image_assets', status: 'ok', message: 'No image assets indexed yet' });
       } else if (vanished === 0) {
-        checks.push({ name: 'image_assets', status: 'ok', message: `${rows.length} image(s) all present on disk` });
+        checks.push({ name: 'image_assets', status: 'ok', message: `${checked} image(s) all present on disk${foreignNote}` });
       } else {
         checks.push({
           name: 'image_assets',
           status: 'warn',
-          message: `${vanished} of ${rows.length} image(s) missing from disk (e.g. ${vanishedPaths.join(', ')}). ` +
+          message: `${vanished} of ${checked} image(s) missing from disk (e.g. ${vanishedPaths.join(', ')})${foreignNote}. ` +
                    `Fix: restore from git, or \`gbrain sync --skip-failed\` to acknowledge.`,
         });
       }
