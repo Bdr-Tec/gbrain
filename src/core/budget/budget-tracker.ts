@@ -223,6 +223,17 @@ function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
   return null;
 }
 
+/**
+ * True when the budget tracker can price this model, i.e. when setting a cost
+ * cap is meaningful. Callers that apply a *default* cap (rather than one the
+ * user asked for) should skip the cap when this returns false — otherwise
+ * `reserve()` hard-fails with BudgetExhausted(reason:'no_pricing') and the
+ * caller silently does no work.
+ */
+export function isModelPriceable(modelId: string, kind: BudgetKind): boolean {
+  return lookupPricing(modelId, kind) !== null;
+}
+
 function costForUsage(modelId: string, inputTokens: number, outputTokens: number, kind: BudgetKind): number | null {
   const p = lookupPricing(modelId, kind);
   if (!p) return null;
