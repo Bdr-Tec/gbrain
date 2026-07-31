@@ -12,11 +12,12 @@
  * the repo). Nothing caught it because the only prior test asserted that
  * `runFeatures` is defined.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { RECIPE_META, scanFeatures } from '../src/commands/features.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 const REPO_ROOT = join(import.meta.dir, '..');
 const recipePath = (id: string) => join(REPO_ROOT, 'recipes', `${id}.md`);
@@ -99,34 +100,22 @@ describe('configured-detection semantics (drives real scanFeatures)', () => {
     getConfig: async (key: string) => (key === 'sync.repo_path' ? '/some/repo' : null),
   } as unknown as BrainEngine;
 
-  // Every env var RECIPE_META reads, so we can control the whole surface.
-  const SECRET_ENV = [
-    'CLAWVISOR_AGENT_TOKEN', 'GOOGLE_CLIENT_ID', 'X_BEARER_TOKEN',
-    'TWILIO_AUTH_TOKEN', 'CIRCLEBACK_TOKEN', 'NGROK_AUTHTOKEN',
-  ];
-  let saved: Record<string, string | undefined>;
-
-  beforeEach(() => {
-    saved = {};
-    for (const k of SECRET_ENV) {
-      saved[k] = process.env[k];
-      delete process.env[k];
-    }
-  });
-  afterEach(() => {
-    for (const k of SECRET_ENV) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
-    }
-  });
+  // Every env var RECIPE_META reads. Each test controls the whole surface through
+  // withEnv (rule R1: no direct process.env mutation), so leftover env can't leak in.
+  const CLEARED: Record<string, undefined> = {
+    CLAWVISOR_AGENT_TOKEN: undefined, GOOGLE_CLIENT_ID: undefined, X_BEARER_TOKEN: undefined,
+    TWILIO_AUTH_TOKEN: undefined, CIRCLEBACK_TOKEN: undefined, NGROK_AUTHTOKEN: undefined,
+  };
 
   const noIntegrations = async () =>
     (await scanFeatures(stubEngine)).recommendations.find((r) => r.id === 'no-integrations');
 
   test('no relevant secret set → recommends Set Up Integrations for all recipes', async () => {
-    const rec = await noIntegrations();
-    expect(rec).toBeDefined();
-    expect(rec!.pitch).toContain('7 integration recipes');
+    await withEnv(CLEARED, async () => {
+      const rec = await noIntegrations();
+      expect(rec).toBeDefined();
+      expect(rec!.pitch).toContain('7 integration recipes');
+    });
   });
 
   test('one secret per recipe (ANY-of) clears the recommendation', async () => {
@@ -136,24 +125,26 @@ describe('configured-detection semantics (drives real scanFeatures)', () => {
     // Under the buggy `every` predicate, the three multi-path recipes would still
     // demand GOOGLE_CLIENT_ID and this recommendation would reappear — that is the
     // regression this test pins, and it exercises features.ts directly (not a copy).
-    process.env.CLAWVISOR_AGENT_TOKEN = 'x';
-    process.env.X_BEARER_TOKEN = 'x';
-    process.env.TWILIO_AUTH_TOKEN = 'x';
-    process.env.CIRCLEBACK_TOKEN = 'x';
-    process.env.NGROK_AUTHTOKEN = 'x';
-    expect(await noIntegrations()).toBeUndefined();
+    await withEnv({
+      ...CLEARED,
+      CLAWVISOR_AGENT_TOKEN: 'x', X_BEARER_TOKEN: 'x',
+      TWILIO_AUTH_TOKEN: 'x', CIRCLEBACK_TOKEN: 'x', NGROK_AUTHTOKEN: 'x',
+    }, async () => {
+      expect(await noIntegrations()).toBeUndefined();
+    });
   });
 
   test('a single ClawVisor token configures every alternative-auth recipe', async () => {
     // The recommended Option-A path: one ClawVisor token, no Google OAuth. All three
     // any_of recipes must count as configured, so only the four single-path recipes
     // remain unconfigured.
-    process.env.CLAWVISOR_AGENT_TOKEN = 'x';
-    const rec = await noIntegrations();
-    expect(rec).toBeDefined();
-    expect(rec!.pitch).not.toContain('Email to Brain');
-    expect(rec!.pitch).not.toContain('Calendar Sync');
-    expect(rec!.pitch).not.toContain('Credential Gateway');
-    expect(rec!.pitch).toContain('X/Twitter to Brain');
+    await withEnv({ ...CLEARED, CLAWVISOR_AGENT_TOKEN: 'x' }, async () => {
+      const rec = await noIntegrations();
+      expect(rec).toBeDefined();
+      expect(rec!.pitch).not.toContain('Email to Brain');
+      expect(rec!.pitch).not.toContain('Calendar Sync');
+      expect(rec!.pitch).not.toContain('Credential Gateway');
+      expect(rec!.pitch).toContain('X/Twitter to Brain');
+    });
   });
 });
