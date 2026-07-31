@@ -2,6 +2,53 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.69.0] - 2026-08-01
+
+**A community fix wave: 22 contributed fixes, most of them for work your brain was quietly not doing.**
+
+The theme of this release is silent failure. A nightly cycle that reported `ok` while extracting nothing. An `embed` run that left a whole page unsearchable because one chunk in it failed, then exited 0. A health metric that recommended the same step forever because it counted one thing and the fix measured another. None of these looked broken from the outside, which is exactly why they lasted.
+
+**If you run a local or non-Anthropic model, atom extraction was doing nothing.** With a cost cap set, any model absent from the pricing tables made the first work item hard-fail, which latched a budget flag and skipped every remaining item — while the phase still reported success. Local models (`ollama`, `llama-server`) now price at $0, because local inference costs electricity rather than tokens, so their caps stay enforceable. Genuinely unpriced paid providers still skip, but loudly now instead of silently.
+
+**`gbrain embed` no longer lets one bad chunk darken an entire page,** and it exits non-zero when embeddings actually fail. If you have a cron wrapping `gbrain embed`, a brain holding permanently un-embeddable content will now turn that cron red. That is the intended change — it was previously green while silently incomplete.
+
+**Non-Latin and diacritic names now survive mention extraction.** The by-mention tokenizer matched ASCII letters and digits only, so `Đà Nẵng` shredded into one- and two-character fragments and never matched anything. Names in Vietnamese, and any script outside ASCII, are now tokenized properly.
+
+**Self-hosted embedding backends work.** Fixed-dimension OpenAI-compatible servers that reject an explicit `dimensions` parameter no longer get sent one when the requested width already matches the model's native width. A vector search on the embedded database also now asks the index for as many candidates as it was told to consider, instead of silently truncating the pool to the driver default.
+
+**Multi-source brains route correctly in two more places.** A programmatic `sync_brain` call now syncs the source it was handed rather than the global default, and entity slug resolution keeps its path separators instead of flattening `people/alice-example` into an id no page can hold.
+
+**Safer default on a destructive migration.** Submitting the type-unification job without an explicit `apply` now previews instead of applying. If you have that command in a runbook, add `"apply":true` — the playbooks and README were updated to show it.
+
+Also: interrupted imports keep their tail instead of losing progress below the next 100-file boundary; `gbrain init --help` prints its own help instead of a stub; `doctor` stops reporting Windows drive paths as missing files under WSL and bounds its embedding health probe instead of retrying a permanent auth failure three times; cycle lock-release and stamp-write failures are visible instead of swallowed; and references to a `gbrain install` command that never existed are gone from the docs.
+
+### To take advantage of v0.42.69.0
+
+```bash
+gbrain upgrade                    # or: bun install -g gbrain@0.42.69.0
+gbrain doctor                     # confirms the health metric now converges
+gbrain embed --stale              # exits non-zero if anything is genuinely un-embeddable
+```
+
+If you use a local chat model for the nightly cycle, re-run it once and check that atoms actually land:
+
+```bash
+gbrain dream --json | jq '.phases[] | select(.name=="extract_atoms")'
+```
+
+If you have `gbrain jobs submit unify-types` in a runbook or script, add `"apply":true` to its `--params` or it will now preview only.
+
+### For contributors
+
+Two defects existed only in the *combination* of otherwise-sound fixes, and were caught by reviewing the composed branch rather than the individual changes:
+
+- `isModelPriceable` was introduced with a test asserting `llama-server` is unpriced, while a second fix in the same wave priced `llama-server` at $0. Together the assertion inverted. Reconciled by using a genuinely unpriced provider in the test and pinning the positive case: free local providers are priceable at $0, so their caps stay enforced.
+- The type-unification default flipped to dry-run, but three agent-facing playbooks still presented a bare submit as the apply step. Because a second fix in the same wave also edited one of those files, each change looked self-consistent alone. Skills ship downstream via the skillpack, so this would have propagated a playbook whose apply step silently did nothing.
+
+One reviewed fix was deliberately held back: extending the inline subagent drain to Postgres composes badly with this wave's minion connection-recovery work, since the drain calls the same queue operations without the new recovery path and can strand a child job in a per-run queue no worker will claim.
+
+Contributed by @alexey-metaengage (#3652), @time-attack (#3568, #3572, #3567, #3555, #3523, #3144, #3574, #3532, #3545), @brettdavies (#3552, #3553), @mattchronicle (#3364), @rayers (#3589), @zenspam (#3699), @awilhite (#3691), @Grimnoth (#3541), @georgell-ceo (#3634), @Vyacheslav-Zakharov (#3631), @Kyzcreig (#3585), @HammerTech-Z (#3581), @cfeddersen (#3563).
+
 ## [0.42.68.1] - 2026-07-30
 
 **If you run `gbrain reindex-frontmatter` or `gbrain backfill` on the default embedded database, they now work. Until this release both failed every time, after waiting 30 seconds.**
