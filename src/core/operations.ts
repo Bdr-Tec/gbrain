@@ -2761,12 +2761,18 @@ const sync_brain: Operation = {
   localOnly: true,
   handler: async (ctx, p) => {
     const { performSync } = await import('../commands/sync.ts');
+    // #2830: thread ctx.sourceId (D7 pattern, same as revert_version /
+    // put_page) so a no-`repo` call resolves the CALLER's sync anchor.
+    // Without it, performSync read the default source's repo_path/last_commit
+    // and silently synced against the wrong repo on multi-source brains.
+    const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
     return performSync(ctx.engine, {
       repoPath: p.repo as string | undefined,
       dryRun: ctx.dryRun || (p.dry_run as boolean) || false,
       noEmbed: (p.no_embed as boolean) || false,
       noPull: (p.no_pull as boolean) || false,
       full: (p.full as boolean) || false,
+      ...sourceOpts,
     });
   },
   cliHints: { name: 'sync', hidden: true },
