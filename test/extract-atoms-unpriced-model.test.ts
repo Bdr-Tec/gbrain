@@ -12,9 +12,20 @@ describe('isModelPriceable', () => {
     expect(isModelPriceable('claude-haiku-4-5-20251001', 'chat')).toBe(true);
   });
 
+  // NOTE: the examples here must be providers with genuinely unknown pricing.
+  // `ollama` and `llama-server` are NOT: they price at $0 via
+  // FREE_LOCAL_CHAT_PROVIDERS (local inference costs electricity, not tokens),
+  // so a cap against them is enforceable and must not be skipped. `litellm` is
+  // deliberately excluded from that set — a LiteLLM proxy can front a paid
+  // provider — and `groq` is the paid-but-unpriced case this regression bit.
   test('unknown providers are not priceable, so a default cap must be skipped', () => {
     expect(isModelPriceable('litellm:gemma4-12b', 'chat')).toBe(false);
-    expect(isModelPriceable('llama-server:local-model', 'chat')).toBe(false);
+    expect(isModelPriceable('groq:llama-3.3-70b', 'chat')).toBe(false);
+  });
+
+  test('free local providers ARE priceable at $0, so their cap stays enforced', () => {
+    expect(isModelPriceable('ollama:gemma3:27b', 'chat')).toBe(true);
+    expect(isModelPriceable('llama-server:local-model', 'chat')).toBe(true);
   });
 
   test('is a pure predicate — no throw on unusual model ids', () => {
