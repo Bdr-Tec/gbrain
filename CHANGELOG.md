@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.42.68.0] - 2026-07-29
+## [0.42.68.2] - 2026-07-31
 
 **If you run `gbrain serve --http`, Ctrl-C now stops it. Until this release the first Ctrl-C was ignored and left a process running in the background holding your brain's write lock.**
 
@@ -12,7 +12,7 @@ Conversation imports now quote every frontmatter value taken from the source fil
 
 Internally, three type definitions in the HTTP server were narrowed to describe only what the code actually uses. They had been widened to accommodate test code, in a way that stopped the compiler from checking those tests at all.
 
-## To take advantage of v0.42.68.0
+## To take advantage of v0.42.68.2
 
 1. **Clear any leftover server process.** Anything started before this release may still be running. The brain's lock file names the process holding it, and is the reliable way to check — `gbrain doctor` does **not** detect this and will report the brain healthy while a leftover process still holds it:
    ```bash
@@ -37,6 +37,21 @@ Internally, three type definitions in the HTTP server were narrowed to describe 
    gbrain sync
    ```
    To check first, look for conversation pages missing their `source` or `origin` fields — those are the ones worth re-importing.
+
+## [0.42.68.1] - 2026-07-30
+
+**If you run `gbrain reindex-frontmatter` or `gbrain backfill` on the default embedded database, they now work. Until this release both failed every time, after waiting 30 seconds.**
+
+The embedded database allows one process at a time, and holds a lock to enforce it. These two commands opened a second connection to the same database from inside the process that already held that lock, then waited for a lock that could never be released — because the thing holding it was the waiting process itself. The wait ran its full 30 seconds and the command exited with an error naming a blocking process that was, in fact, itself. Both commands now reuse the connection that is already open.
+
+Nothing changes for brains on Postgres, where a second connection was always allowed.
+
+## To take advantage of v0.42.68.1
+
+Nothing to undo — the commands failed without writing anything. Just run whichever you needed:
+```bash
+gbrain reindex-frontmatter
+```
 
 ## [0.42.67.0] - 2026-07-28
 
