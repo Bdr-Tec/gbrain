@@ -90,8 +90,12 @@ The handler is PROTECTED (manual_only per D17) — autopilot will never auto-fir
 ```bash
 gbrain jobs submit unify-types \
   --allow-protected \
-  --params '{"target_pack":"gbrain-base-v2"}'
+  --params '{"target_pack":"gbrain-base-v2","apply":true}'
 ```
+
+`apply` defaults to **false** (dry-run) per the handler contract, so
+`"apply":true` is required here or the job reports success having retyped
+nothing and left the active pack unflipped. Omit it to preview.
 
 Watch progress per phase:
 
