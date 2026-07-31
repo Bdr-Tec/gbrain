@@ -1832,7 +1832,14 @@ async function handleCliOnly(command: string, args: string[]) {
       }
       case 'embed': {
         const { runEmbed } = await import('./commands/embed.ts');
-        await runEmbed(engine, args);
+        // #3037: mirror the `import` case above — the CLI was discarding the
+        // result, so a run where every chunk failed to embed still exited 0
+        // and cron/CI/health gates read total silence as success. Surface
+        // non-zero on failures > 0. (undefined = backgrounded via --background.)
+        const embedResult = await runEmbed(engine, args);
+        if (embedResult && embedResult.failures > 0) {
+          setCliExitVerdict(1);
+        }
         break;
       }
       case 'serve': {
