@@ -1702,7 +1702,14 @@ export async function runCycle(
               await pgliteFileLock!.refresh();
             },
             release: async () => {
-              try { await dbLock!.release(); } catch { /* fall through to file release */ }
+              try {
+                await dbLock!.release();
+              } catch (e) {
+                // #1470: best-effort, but never silent — a swallowed release
+                // failure strands a row in gbrain_cycle_locks and the next
+                // cycle skips with a phantom `cycle_already_running`.
+                console.error(`[cycle] DB lock release failed: ${e instanceof Error ? e.message : String(e)} — a row may remain in gbrain_cycle_locks until TTL expiry`);
+              }
               await pgliteFileLock!.release();
             },
           }
@@ -2491,7 +2498,14 @@ export async function runCycle(
     }
   } finally {
     if (lock) {
-      try { await lock.release(); } catch { /* best-effort */ }
+      try {
+        await lock.release();
+      } catch (e) {
+        // #1470: best-effort, but never silent — a swallowed release failure
+        // strands a row in gbrain_cycle_locks and the next cycle within the
+        // TTL skips with a phantom `cycle_already_running`.
+        console.error(`[cycle] lock.release() failed: ${e instanceof Error ? e.message : String(e)} — a row may remain in gbrain_cycle_locks until TTL expiry`);
+      }
     }
   }
 
