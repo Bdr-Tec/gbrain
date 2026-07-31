@@ -109,8 +109,8 @@ Every primitive ships with a documented rollback:
 | Operation | Rollback |
 |-----------|----------|
 | Retype | `frontmatter.legacy_type = <original>` preserved on every page (D8). One SQL UPDATE restores types: `UPDATE pages SET type = frontmatter->>'legacy_type' WHERE frontmatter ? 'legacy_type'`. |
-| Page-to-link | Source page soft-deleted with 72h TTL. `gbrain pages restore <slug>` within 72h. Link row stays harmless if source restored. |
-| Page-to-alias | Source page soft-deleted with 72h TTL. `gbrain pages restore <slug>` within 72h. Alias row stays harmless (or `DELETE FROM slug_aliases WHERE alias_slug = <slug>` to clean up). |
+| Page-to-link | Source page soft-deleted with 72h TTL. `gbrain restore <slug>` within 72h. Link row stays harmless if source restored. |
+| Page-to-alias | Source page soft-deleted with 72h TTL. `gbrain restore <slug>` within 72h. Alias row stays harmless (or `DELETE FROM slug_aliases WHERE alias_slug = <slug>` to clean up). |
 | Active-pack flip | `gbrain schema use gbrain-base` reverses the flip. |
 
 ## What if my brain doesn't fit?
