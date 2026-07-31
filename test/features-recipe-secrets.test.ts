@@ -1,5 +1,6 @@
 /**
- * Drift guard for `RECIPE_META` in src/commands/features.ts.
+ * Drift guard for `RECIPE_META` in src/commands/features.ts, plus a behavioral
+ * pin on the ANY-of configured-detection predicate.
  *
  * `runFeatures` recommends "Set Up Integrations" for any recipe whose declared
  * secrets are absent from the environment. If a secret NAME in RECIPE_META does
@@ -11,13 +12,37 @@
  * the repo). Nothing caught it because the only prior test asserted that
  * `runFeatures` is defined.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { RECIPE_META } from '../src/commands/features.ts';
+import { RECIPE_META, scanFeatures } from '../src/commands/features.ts';
+import type { BrainEngine } from '../src/core/engine.ts';
 
 const REPO_ROOT = join(import.meta.dir, '..');
 const recipePath = (id: string) => join(REPO_ROOT, 'recipes', `${id}.md`);
+
+/**
+ * Env var names declared under the recipe's frontmatter `secrets:` block.
+ * Scoped to that block so it never picks up `name:` fields from health_checks
+ * (env_exists / http). This is what the drift guard must check membership
+ * against — a secret mentioned only in prose is NOT a declared secret.
+ */
+function frontmatterSecretNames(id: string): string[] {
+  const body = readFileSync(recipePath(id), 'utf-8');
+  const fmMatch = body.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return [];
+  const lines = fmMatch[1].split('\n');
+  const start = lines.findIndex((l) => /^secrets:\s*$/.test(l));
+  if (start === -1) return [];
+  const names: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    // A new top-level key (no leading whitespace) ends the secrets block.
+    if (/^\S/.test(lines[i])) break;
+    const m = lines[i].match(/^\s*-\s*name:\s*([A-Z_][A-Z0-9_]*)\s*$/);
+    if (m) names.push(m[1]);
+  }
+  return names;
+}
 
 describe('RECIPE_META integrity', () => {
   test('every entry points at a recipe file that exists', () => {
@@ -26,15 +51,17 @@ describe('RECIPE_META integrity', () => {
     }
   });
 
-  test('every declared secret name appears in its recipe', () => {
+  test('every declared secret name appears in its recipe frontmatter secrets block', () => {
     const drift: string[] = [];
     for (const entry of RECIPE_META) {
-      const body = readFileSync(recipePath(entry.id), 'utf-8');
+      const declared = new Set(frontmatterSecretNames(entry.id));
       for (const secret of entry.secrets) {
-        if (!body.includes(secret)) drift.push(`${entry.id} -> ${secret}`);
+        if (!declared.has(secret)) drift.push(`${entry.id} -> ${secret}`);
       }
     }
     // A drifted name makes `gbrain features` nag about a configured recipe forever.
+    // Membership is against the frontmatter `secrets:` list, NOT a substring match
+    // over the whole file — a name mentioned only in prose must not pass.
     expect(drift).toEqual([]);
   });
 
@@ -53,30 +80,80 @@ describe('RECIPE_META integrity', () => {
   });
 });
 
-describe('configured-detection semantics', () => {
-  // The gate is ANY-of, not all-of: recipes whose auth is an `any_of` health
-  // check (ClawVisor OR direct OAuth) must count as configured once one path is
-  // present. `every` is what made them permanently unconfigured.
-  const isUnconfigured = (secrets: readonly string[], env: Record<string, string>) =>
-    !secrets.some((s) => env[s]);
+describe('configured-detection semantics (drives real scanFeatures)', () => {
+  // A stub engine that reports a healthy, populated brain so the ONLY recommendation
+  // scanFeatures can produce is 'no-integrations'. That isolates the ANY-of predicate
+  // in src/commands/features.ts from every other recommendation branch.
+  const stubEngine = {
+    getStats: async () => ({
+      page_count: 100,
+      link_count: 50,
+      timeline_entry_count: 20,
+    }),
+    getHealth: async () => ({
+      missing_embeddings: 0,
+      dead_links: 0,
+      embed_coverage: 1,
+      brain_score: 80,
+    }),
+    getConfig: async (key: string) => (key === 'sync.repo_path' ? '/some/repo' : null),
+  } as unknown as BrainEngine;
 
-  test('one present secret is enough for an alternative-auth recipe', () => {
-    const calendar = RECIPE_META.find((r) => r.id === 'calendar-to-brain')!;
-    expect(isUnconfigured(calendar.secrets, { CLAWVISOR_AGENT_TOKEN: 'x' })).toBe(false);
-    expect(isUnconfigured(calendar.secrets, { GOOGLE_CLIENT_ID: 'x' })).toBe(false);
+  // Every env var RECIPE_META reads, so we can control the whole surface.
+  const SECRET_ENV = [
+    'CLAWVISOR_AGENT_TOKEN', 'GOOGLE_CLIENT_ID', 'X_BEARER_TOKEN',
+    'TWILIO_AUTH_TOKEN', 'CIRCLEBACK_TOKEN', 'NGROK_AUTHTOKEN',
+  ];
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = {};
+    for (const k of SECRET_ENV) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of SECRET_ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
   });
 
-  test('no present secret still reports unconfigured', () => {
-    const calendar = RECIPE_META.find((r) => r.id === 'calendar-to-brain')!;
-    expect(isUnconfigured(calendar.secrets, {})).toBe(true);
+  const noIntegrations = async () =>
+    (await scanFeatures(stubEngine)).recommendations.find((r) => r.id === 'no-integrations');
+
+  test('no relevant secret set → recommends Set Up Integrations for all recipes', async () => {
+    const rec = await noIntegrations();
+    expect(rec).toBeDefined();
+    expect(rec!.pitch).toContain('7 integration recipes');
   });
 
-  test('an all-of gate would have reported a configured recipe as unconfigured', () => {
-    // Regression pin for the actual bug: under `every`, a ClawVisor-only user
-    // (the recommended path) never satisfies GOOGLE_CLIENT_ID.
-    const calendar = RECIPE_META.find((r) => r.id === 'calendar-to-brain')!;
-    const env = { CLAWVISOR_AGENT_TOKEN: 'x' };
-    expect(calendar.secrets.every((s) => env[s as keyof typeof env])).toBe(false);
-    expect(calendar.secrets.some((s) => env[s as keyof typeof env])).toBe(true);
+  test('one secret per recipe (ANY-of) clears the recommendation', async () => {
+    // CLAWVISOR_AGENT_TOKEN alone satisfies email/calendar/credential-gateway
+    // (their alternative Google path stays unset); the four single-path recipes get
+    // their one secret. Under the correct `some` predicate, nothing is unconfigured.
+    // Under the buggy `every` predicate, the three multi-path recipes would still
+    // demand GOOGLE_CLIENT_ID and this recommendation would reappear — that is the
+    // regression this test pins, and it exercises features.ts directly (not a copy).
+    process.env.CLAWVISOR_AGENT_TOKEN = 'x';
+    process.env.X_BEARER_TOKEN = 'x';
+    process.env.TWILIO_AUTH_TOKEN = 'x';
+    process.env.CIRCLEBACK_TOKEN = 'x';
+    process.env.NGROK_AUTHTOKEN = 'x';
+    expect(await noIntegrations()).toBeUndefined();
+  });
+
+  test('a single ClawVisor token configures every alternative-auth recipe', async () => {
+    // The recommended Option-A path: one ClawVisor token, no Google OAuth. All three
+    // any_of recipes must count as configured, so only the four single-path recipes
+    // remain unconfigured.
+    process.env.CLAWVISOR_AGENT_TOKEN = 'x';
+    const rec = await noIntegrations();
+    expect(rec).toBeDefined();
+    expect(rec!.pitch).not.toContain('Email to Brain');
+    expect(rec!.pitch).not.toContain('Calendar Sync');
+    expect(rec!.pitch).not.toContain('Credential Gateway');
+    expect(rec!.pitch).toContain('X/Twitter to Brain');
   });
 });

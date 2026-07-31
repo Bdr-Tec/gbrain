@@ -86,7 +86,7 @@ function shouldPitch(rec: FeatureRecommendation, offers: FeatureOffersFile, curr
 
 // --- Scanners ---
 
-async function scanFeatures(engine: BrainEngine): Promise<FeatureScanResult> {
+export async function scanFeatures(engine: BrainEngine): Promise<FeatureScanResult> {
   const stats = await engine.getStats();
   const health = await engine.getHealth();
   const recommendations: FeatureRecommendation[] = [];

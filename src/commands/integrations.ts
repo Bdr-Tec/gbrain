@@ -472,10 +472,63 @@ function checkSecrets(secrets: RecipeSecret[]): { set: string[]; missing: Recipe
 
 type IntegrationStatus = 'available' | 'configured' | 'active';
 
-function getStatus(recipe: ParsedRecipe): IntegrationStatus {
-  const { set, missing } = checkSecrets(recipe.frontmatter.secrets);
-  // All required secrets must be set to be "configured"
-  if (missing.length > 0) return 'available';
+/** Env var names a health check references (via `$VAR`) or names directly. */
+function checkEnvRefs(check: HealthCheck): string[] {
+  if (typeof check === 'string') return [];
+  switch (check.type) {
+    case 'env_exists':
+      return [check.name];
+    case 'http': {
+      const fields = [
+        check.url, check.body, check.auth_token, check.auth_user, check.auth_pass,
+        ...Object.values(check.headers || {}),
+      ].filter((v): v is string => typeof v === 'string');
+      const refs = new Set<string>();
+      for (const f of fields) {
+        for (const m of f.matchAll(/\$([A-Z_][A-Z0-9_]*)/g)) refs.add(m[1]);
+      }
+      return [...refs];
+    }
+    default:
+      return [];
+  }
+}
+
+/**
+ * Is a single `any_of` branch satisfied by the current env? env_exists needs its
+ * var present; http needs every `$VAR` it references present (a sync proxy for the
+ * network check — presence of the auth material, not liveness). command branches
+ * can't be evaluated from env, so they never mark a recipe "configured" on their own.
+ */
+function branchSatisfiedByEnv(check: HealthCheck): boolean {
+  if (typeof check === 'string') return false;
+  if (check.type === 'any_of') return check.checks.some(branchSatisfiedByEnv);
+  if (check.type === 'command') return false;
+  const refs = checkEnvRefs(check);
+  return refs.length > 0 && refs.every(v => !!process.env[v]);
+}
+
+/**
+ * A recipe is auth-configured when its secrets are set. The flat `secrets:` list
+ * conflates alternative auth paths (Option A ClawVisor OR Option B Google), so an
+ * all-of check reports a correctly-configured single-path user as "available". When
+ * the recipe declares its alternatives in an `any_of` health check, honor that: each
+ * `any_of` group needs one branch satisfied by env. Recipes with no `any_of` keep the
+ * original all-secrets-required rule.
+ */
+function authConfigured(recipe: ParsedRecipe): boolean {
+  const anyOfGroups = recipe.frontmatter.health_checks.filter(
+    (c): c is Extract<HealthCheck, { type: 'any_of' }> =>
+      typeof c === 'object' && c.type === 'any_of'
+  );
+  if (anyOfGroups.length > 0) {
+    return anyOfGroups.every(g => g.checks.some(branchSatisfiedByEnv));
+  }
+  return checkSecrets(recipe.frontmatter.secrets).missing.length === 0;
+}
+
+export function getStatus(recipe: ParsedRecipe): IntegrationStatus {
+  if (!authConfigured(recipe)) return 'available';
 
   const heartbeat = readHeartbeat(recipe.frontmatter.id);
   const recentEvents = heartbeat.filter(e =>

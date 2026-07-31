@@ -1,0 +1,73 @@
+/**
+ * Pin for `getStatus` honoring `any_of` auth alternatives (src/commands/integrations.ts).
+ *
+ * The flat frontmatter `secrets:` list conflates alternative auth paths: an any_of
+ * recipe lists CLAWVISOR_URL, CLAWVISOR_AGENT_TOKEN, GOOGLE_CLIENT_ID and
+ * GOOGLE_CLIENT_SECRET, but the user only needs ONE path (Option A ClawVisor OR
+ * Option B Google). The old all-secrets-required check reported a correctly
+ * configured single-path user as "available", contradicting `gbrain features`,
+ * which already treats these as any-of. getStatus now honors the recipe's own
+ * any_of health check.
+ *
+ * Recipes WITHOUT an any_of group must keep the original all-secrets-required rule.
+ */
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { getStatus, parseRecipe } from '../src/commands/integrations.ts';
+
+const REPO_ROOT = join(import.meta.dir, '..');
+const recipe = (id: string) => {
+  const content = readFileSync(join(REPO_ROOT, 'recipes', `${id}.md`), 'utf-8');
+  const parsed = parseRecipe(content, `${id}.md`);
+  if (!parsed) throw new Error(`failed to parse ${id}`);
+  return parsed;
+};
+
+// Every env var these recipes read, so each test controls the whole surface.
+const ENV = [
+  'CLAWVISOR_URL', 'CLAWVISOR_AGENT_TOKEN', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
+  'X_HANDLE', 'X_BEARER_TOKEN',
+];
+let saved: Record<string, string | undefined>;
+beforeEach(() => {
+  saved = {};
+  for (const k of ENV) { saved[k] = process.env[k]; delete process.env[k]; }
+});
+afterEach(() => {
+  for (const k of ENV) {
+    if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+  }
+});
+
+describe('getStatus honors any_of auth alternatives', () => {
+  test('calendar-to-brain: no secrets → available', () => {
+    expect(getStatus(recipe('calendar-to-brain'))).toBe('available');
+  });
+
+  test('calendar-to-brain: ClawVisor path (Option A) alone → configured', () => {
+    // The recommended path: URL + agent token, no Google OAuth. The old all-of
+    // rule returned "available" here because GOOGLE_CLIENT_ID/SECRET were unset.
+    process.env.CLAWVISOR_URL = 'https://clawvisor.example';
+    process.env.CLAWVISOR_AGENT_TOKEN = 'tok';
+    expect(getStatus(recipe('calendar-to-brain'))).toBe('configured');
+  });
+
+  test('calendar-to-brain: Google path (Option B) alone → configured', () => {
+    process.env.GOOGLE_CLIENT_ID = 'gid';
+    expect(getStatus(recipe('calendar-to-brain'))).toBe('configured');
+  });
+});
+
+describe('getStatus keeps all-secrets rule for non-any_of recipes', () => {
+  test('x-to-brain: partial secrets → available', () => {
+    process.env.X_BEARER_TOKEN = 'tok'; // X_HANDLE still missing
+    expect(getStatus(recipe('x-to-brain'))).toBe('available');
+  });
+
+  test('x-to-brain: all secrets → configured', () => {
+    process.env.X_BEARER_TOKEN = 'tok';
+    process.env.X_HANDLE = 'me';
+    expect(getStatus(recipe('x-to-brain'))).toBe('configured');
+  });
+});
