@@ -3391,7 +3391,20 @@ const submit_agent: Operation = {
     }
 
     // Validate each param against the binding.
-    const requestedTools = (p.allowed_tools as string[] | undefined) ?? boundTools;
+    //
+    // An EXPLICIT empty array is not "no restriction" here — downstream the
+    // subagent worker reads empty `allowed_tools` as "the full tool registry"
+    // and empty `allowed_slug_prefixes` as "fall back to the legacy
+    // wiki/agents/<job-id>/ namespace". Both subset loops below pass
+    // vacuously over an empty list, so `{allowed_tools: [], allowed_slug_prefixes: []}`
+    // from a client bound to `['search']` + `['emp-alice/']` would hand its
+    // subagent the whole registry (including put_page) writing outside the
+    // binding. `??` only substitutes null/undefined, so collapse the empty
+    // case to the binding explicitly.
+    const requestedToolsRaw = p.allowed_tools as string[] | undefined;
+    const requestedTools = requestedToolsRaw === undefined || requestedToolsRaw.length === 0
+      ? boundTools
+      : requestedToolsRaw;
     for (const t of requestedTools) {
       if (!boundTools.includes(t)) {
         throw new OperationError(
@@ -3400,7 +3413,21 @@ const submit_agent: Operation = {
         );
       }
     }
-    const requestedSlugPrefixes = (p.allowed_slug_prefixes as string[] | undefined) ?? boundSlugPrefixes ?? [];
+    const requestedSlugPrefixesRaw = p.allowed_slug_prefixes as string[] | undefined;
+    const requestedSlugPrefixes =
+      requestedSlugPrefixesRaw === undefined || requestedSlugPrefixesRaw.length === 0
+        ? (boundSlugPrefixes ?? [])
+        : requestedSlugPrefixesRaw;
+    // A bound client must end up with a non-empty delegated fence: an empty
+    // list reaches the subagent as "use the legacy wiki/agents/<id>/ namespace",
+    // which is outside every bound prefix.
+    if (boundSlugPrefixes !== null && requestedSlugPrefixes.length === 0) {
+      throw new OperationError(
+        'permission_denied',
+        `submit_agent: client ${clientId} is slug-bound but its binding resolved to an empty prefix list, which the subagent would read as the unfenced legacy namespace.`,
+        'Re-scope the client with a non-empty --bound-slug-prefixes.',
+      );
+    }
     if (boundSlugPrefixes !== null) {
       for (const sp of requestedSlugPrefixes) {
         if (!boundSlugPrefixes.some(bp => sp.startsWith(bp) || bp === sp)) {
@@ -3429,6 +3456,14 @@ const submit_agent: Operation = {
     }
 
     // Dry-run echo.
+    // The subagent fence uses `matchesSlugAllowList`, whose grammar makes a
+    // BARE entry match that one slug exactly — so a plain `emp-alice/` binding
+    // would let the delegated agent write nothing. Normalize the
+    // trailing-slash form into the glob the delegated matcher expects, so one
+    // stored column means the same span of slugs on both paths.
+    const delegatedSlugPrefixes = requestedSlugPrefixes.map(sp =>
+      sp.endsWith('/') ? `${sp}*` : sp);
+
     if (ctx.dryRun) {
       return {
         dry_run: true,
@@ -3437,6 +3472,10 @@ const submit_agent: Operation = {
         bound_tools: boundTools,
         bound_source: boundSource,
         bound_max_concurrent: boundMaxConcurrent,
+        // What the delegated job would ACTUALLY be granted, after the binding
+        // is applied — a preview that hides this can't show a widening bug.
+        resolved_tools: requestedTools,
+        resolved_slug_prefixes: delegatedSlugPrefixes,
       };
     }
 
@@ -3450,14 +3489,7 @@ const submit_agent: Operation = {
       prompt: p.prompt as string,
       max_turns: Math.min((p.max_turns as number) ?? 20, 100),
       allowed_tools: requestedTools,
-      // The subagent fence uses `matchesSlugAllowList`, whose grammar is the
-      // `<prefix>/*` glob — a BARE entry matches that one slug exactly. So a
-      // plain `emp-alice/` binding (the form the fence and the docs now use)
-      // would let the delegated agent write nothing at all. Normalize the
-      // trailing-slash form into the glob the delegated matcher expects, so
-      // one stored column means the same span of slugs on both paths.
-      allowed_slug_prefixes: requestedSlugPrefixes.map(sp =>
-        sp.endsWith('/') ? `${sp}*` : sp),
+      allowed_slug_prefixes: delegatedSlugPrefixes,
       __owner_client_id: clientId,
     };
     if (typeof p.model === 'string') jobData.model = p.model;

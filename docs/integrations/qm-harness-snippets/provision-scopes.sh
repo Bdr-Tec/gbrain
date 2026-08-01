@@ -89,12 +89,29 @@ done
 STATE_FILE="${STATE_FILE:-${ROSTER}.state.tsv}"
 SECRETS_OUT="${SECRETS_OUT:-${ROSTER}.new-credentials.tsv}"
 
-# The roster usually lives in the deployment repo, so the default secrets path
-# lands there too — one `git add -A` from committing live credentials.
-if git -C "$(dirname "$SECRETS_OUT")" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "WARN: $SECRETS_OUT is inside a git work tree. Secrets must never be committed;" >&2
-  echo "      gitignore it, or pass --secrets-out /some/path/outside/the/repo." >&2
-fi
+# The roster usually lives in the deployment repo, so the default secrets and
+# state paths land there too — one `git add -A` from committing live
+# credentials. The STATE file matters as much as the secrets file: it maps
+# employee -> client_id, and this script feeds that id straight to
+# `rescope-client`, so whoever can write it decides which client receives a
+# given employee's write authority. Treat both as privileged infrastructure,
+# at the same trust level as the roster itself.
+for f in "$SECRETS_OUT" "$STATE_FILE"; do
+  if git -C "$(dirname "$f")" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "WARN: $f is inside a git work tree. Never commit it;" >&2
+    echo "      gitignore it, or pass --secrets-out/--state-file outside the repo." >&2
+  fi
+done
+
+# A group/world-writable parent directory defeats the symlink and ownership
+# checks below: anyone with write access there can swap the file between our
+# check and our append. Refuse rather than pretend the checks hold.
+for d in "$(dirname "$SECRETS_OUT")" "$(dirname "$STATE_FILE")"; do
+  perms=$(ls -ld "$d" | awk '{print $1}')
+  case "$perms" in
+    ?????w*|????????w*) die "refusing to write credentials into a group/world-writable directory: $d ($perms)" ;;
+  esac
+done
 
 # Secure the credential sinks BEFORE anything is appended. umask only governs
 # files this script creates; a pre-existing world-readable file would receive
