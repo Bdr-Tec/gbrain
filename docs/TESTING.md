@@ -32,9 +32,12 @@ CI, macOS) rejects CRLF and dies on the script's first meaningful line; the Cygw
 bash that ships with Git for Windows tolerates it, so a green local run is not by
 itself evidence that a script is CRLF-clean.
 The root `.gitattributes` pins `*.sh text eol=lf`, which overrides the
-`core.autocrlf=true` default that Git for Windows installs. Working copies cloned
-before that pin need a one-time `git rm --cached -r . -q && git reset --hard` to
-pick it up; see the Windows section of `CONTRIBUTING.md`.
+`core.autocrlf=true` default that Git for Windows installs. It pins `*.md` the
+same way, because the frontmatter readers anchor on a `---` fence followed by a
+Unix line ending and a CRLF checkout makes a document parse as having no
+frontmatter, silently. Working copies cloned
+before those pins need a one-time `git rm --cached -r . -q && git reset --hard` to
+pick them up; see the Windows section of `CONTRIBUTING.md`.
 
 Wallclock figures in the table above are from a Mac dev box. Windows is
 substantially slower because each check pays full process-creation cost, and three
