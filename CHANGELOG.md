@@ -2,6 +2,38 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.70.0] - 2026-08-01
+
+**Community fix wave two: 18 contributed fixes. The headline: several things you asked gbrain to do were being quietly ignored — and now they aren't.**
+
+**`--brain` now actually routes.** The documented `gbrain query "X" --brain media-team` parsed the flag and then ran against your host brain anyway. It now routes to the named brain, and an unknown brain name fails loudly instead of silently answering from the wrong database.
+
+**`sync --dry-run` no longer touches anything.** A dry run could pull from the remote and — if your sync strategy had changed — delete indexed pages before the "dry run" early-return was reached. Previews are now read-only, full stop.
+
+**`apply-migrations --yes` applies.** It previously warned that your schema was behind and then printed "All migrations up to date" with exit 0. If you have wedged brains that upgrade never healed, this was why.
+
+**Links between your pages resolve the way you write them.** Dir-qualified wikilinks with raw Obsidian names (`[[wiki/entities/AI 3.0]]`) now resolve to the sync-slugified page; references in non-whitelisted directories are no longer silently dropped; and a scan bug that could add an edge to a *parent* page you never referenced was caught in the wave's composite review and fixed before shipping.
+
+**Windows and self-hosters.** Markdown files keep LF endings so frontmatter parsers stop mis-reading on Windows checkouts; the archive-crawler path gate no longer denies every real Windows path (and no longer fail-opens on NTFS case-insensitivity); a chat-synopsis tier that was hardcoded to one provider now follows your configured models; vector search asks the index for as many candidates as it was told to consider.
+
+**Quieter, more honest infrastructure.** `serve --http` no longer leaves an orphan holding the database lock after Ctrl-C; a minion child that fails to launch settles immediately instead of hanging its slot; doctor gains checks for content-hash duplicates, undeclared database-only pages, stale heartbeats, and a tamper-evident manifest for the skills directory; federated reads respect per-source isolation settings in two more paths; and the security docs were rewritten to describe fixes without cataloguing attack surface.
+
+### To take advantage of v0.42.70.0
+
+```bash
+gbrain upgrade
+gbrain extract --stale        # re-extracts links under the fixed resolver
+gbrain doctor                 # includes the new silent-failure checks
+```
+
+If your brain uses `link_resolution.global_basename` and was populated before this release, a small number of superseded `wikilink_basename` edges can linger beside their newer typed replacements after re-extraction (edge writes are append-only by design). `gbrain reconcile-links` cleans them up; they are harmless to queries that dedup on target.
+
+### For contributors
+
+The composite review of this wave (two independent max-effort review passes over the combined branch) caught two interaction defects that per-PR review could not: the ungated bare-path scanner reading inside wikilink spans, and an extraction watermark set to a date that same-day stamps would already outrun. Both were fixed in the wave with discriminating tests. One reviewed-and-approved PR was deliberately held out: it conflicts semantically with its author's own sibling PR in this wave, and choosing between their two path-resolution mechanisms is the author's call.
+
+Contributed by @time-attack (#3618, #3085, #3539, #3576, #3533, #3453, #3457, #3560, #3161), @daragao3 (#3619, #3536, #3517, #3578), @paul-0320 (#3613, #3564), @cvillarroel2 (#3678), @mamedov (#3624), @dialthewolff (#3550).
+
 ## [0.42.69.0] - 2026-08-01
 
 **A community fix wave: 22 contributed fixes, most of them for work your brain was quietly not doing.**
