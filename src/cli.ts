@@ -55,12 +55,17 @@ export function bigintToStringReplacer(_key: string, value: unknown): unknown {
 }
 
 // CLI-only commands that bypass the operation layer
-export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector', 'backfill']);
+export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector', 'pages', 'bench', 'backfill']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
 const CLI_ONLY_SELF_HELP = new Set([
   'upgrade', 'post-upgrade', 'check-update',
+  // #3502 sweep: pages + bench print their own usage (pages.ts printHelp,
+  // bench-publish.ts printHelp). Both were documented but undispatchable —
+  // `pages` had a live handleCliOnly case but was missing from CLI_ONLY
+  // (the #2035 calibration bug class); `bench` was never wired at all.
+  'pages', 'bench',
   'embed', 'config',
   'skillpack', 'skillpack-check',
   'integrations', 'friction',
@@ -107,6 +112,11 @@ const CLI_ONLY_SELF_HELP = new Set([
   // `gbrain connect --help` prints its own usage (flags + examples) from
   // runConnect; route around the generic one-line short-circuit.
   'connect',
+  // `gbrain init --help` prints its own usage from runInit; route around the
+  // generic one-line short-circuit (matches `connect`). Without this, `init`
+  // is in CLI_ONLY but not CLI_ONLY_SELF_HELP, so the dispatcher's generic
+  // short-circuit fires and the printInitHelp() guard in init.ts is dead code.
+  'init',
   // #3390 — `gbrain migrate embeddings --help` / `gbrain retrieval-upgrade
   // --help` print the migration flags from runMigrateEmbeddings. `migrate`
   // (engine transfer) keeps its own dispatch too.
@@ -1265,6 +1275,20 @@ async function handleCliOnly(command: string, args: string[]) {
     await runInit(args);
     return;
   }
+  if (command === 'bench') {
+    // #3502 sweep: `gbrain bench publish` was documented (docs/eval-bench.md,
+    // KEY_FILES.md, and eval-gate's own --help text) but never dispatched —
+    // the promised-but-unwired class retrieval-upgrade (#3390) fixed before.
+    // Pure file-in/file-out (NDJSON → baseline); no DB, no engine.
+    if (args[0] === 'publish') {
+      const { runBenchPublish } = await import('./commands/bench-publish.ts');
+      await runBenchPublish(args.slice(1));
+      return;
+    }
+    console.error('Usage: gbrain bench publish --from <captured.ndjson> --to <X.baseline.ndjson> [flags]');
+    console.error('Run `gbrain bench publish --help` for the full flag list.');
+    process.exit(args[0] === '--help' || args[0] === '-h' ? 0 : 2);
+  }
   // v0.37 fix wave (deferred TODO, shipped): one-command wipe-and-reinit.
   // Spawns its own engine internally so no pre-bound engine needed.
   if (command === 'reinit-pglite') {
@@ -1827,7 +1851,14 @@ async function handleCliOnly(command: string, args: string[]) {
       }
       case 'embed': {
         const { runEmbed } = await import('./commands/embed.ts');
-        await runEmbed(engine, args);
+        // #3037: mirror the `import` case above — the CLI was discarding the
+        // result, so a run where every chunk failed to embed still exited 0
+        // and cron/CI/health gates read total silence as success. Surface
+        // non-zero on failures > 0. (undefined = backgrounded via --background.)
+        const embedResult = await runEmbed(engine, args);
+        if (embedResult && embedResult.failures > 0) {
+          setCliExitVerdict(1);
+        }
         break;
       }
       case 'serve': {
