@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.42.70.0] - 2026-08-01
+## [0.42.71.0] - 2026-08-01
 
 **Per-person write isolation inside a shared source, and a guide for putting gbrain behind a multi-user agent harness.**
 
@@ -13,11 +13,7 @@ Until now, `--source` was the only write boundary: a client could write anywhere
 Both prefix spellings work: the `wiki/agents/alice/*` glob that `submit_agent` bindings already use, and the plainer `emp-alice/` form. Change a binding in place with `gbrain auth rescope-client <id> --bound-slug-prefixes <p1,p2|none>` — existing tokens pick it up on their next request, so no secret rotation is needed when someone joins or leaves a team.
 
 **New guide: [gbrain as the company brain for a qm deployment](docs/integrations/qm-harness.md).** qm is a multiplayer agent harness where each employee and each channel gets an isolated agent scope. The guide covers the whole path — one central `gbrain serve --http`, the thin-client binary baked into the sandbox image, one OAuth client per scope, and a roster-driven provisioning script that converges the brain to a list of people and channels. It also states plainly what the model does *not* give you: within a shared source, reads stay source-granular, so prefix isolation is a write boundary, not a privacy boundary.
-
-### To take advantage of v0.42.70.0
-
-```bash
-gbrain upgrade                    # or: bun install -g gbrain@0.42.70.0
+gbrain upgrade                    # or: bun install -g gbrain@0.42.71.0
 gbrain apply-migrations --yes     # required: the fence refuses writes it cannot evaluate
 ```
 
@@ -34,6 +30,34 @@ Verify it took, from a client holding that credential — the first write should
 gbrain put partners/alice-example/notes/test --content "mine"
 gbrain put partners/bob-example/notes/test --content "not mine"
 ```
+
+## [0.42.70.0] - 2026-08-01
+
+**Community fix wave two: 18 contributed fixes. The headline: several things you asked gbrain to do were being quietly ignored — and now they aren't.**
+
+**`--brain` now actually routes.** The documented `gbrain query "X" --brain media-team` parsed the flag and then ran against your host brain anyway. It now routes to the named brain, and an unknown brain name fails loudly instead of silently answering from the wrong database.
+
+**`sync --dry-run` no longer touches anything.** A dry run could pull from the remote and — if your sync strategy had changed — delete indexed pages before the "dry run" early-return was reached. Previews are now read-only, full stop.
+
+**`apply-migrations --yes` applies.** It previously warned that your schema was behind and then printed "All migrations up to date" with exit 0. If you have wedged brains that upgrade never healed, this was why.
+
+**Links between your pages resolve the way you write them.** Dir-qualified wikilinks with raw Obsidian names (`[[wiki/entities/AI 3.0]]`) now resolve to the sync-slugified page; references in non-whitelisted directories are no longer silently dropped; and a scan bug that could add an edge to a *parent* page you never referenced was caught in the wave's composite review and fixed before shipping.
+
+**Windows and self-hosters.** Markdown files keep LF endings so frontmatter parsers stop mis-reading on Windows checkouts; the archive-crawler path gate no longer denies every real Windows path (and no longer fail-opens on NTFS case-insensitivity); a chat-synopsis tier that was hardcoded to one provider now follows your configured models; vector search asks the index for as many candidates as it was told to consider.
+
+**Quieter, more honest infrastructure.** `serve --http` no longer leaves an orphan holding the database lock after Ctrl-C; a minion child that fails to launch settles immediately instead of hanging its slot; doctor gains checks for content-hash duplicates, undeclared database-only pages, stale heartbeats, and a tamper-evident manifest for the skills directory; federated reads respect per-source isolation settings in two more paths; and the security docs were rewritten to describe fixes without cataloguing attack surface.
+gbrain upgrade
+gbrain extract --stale        # re-extracts links under the fixed resolver
+gbrain doctor                 # includes the new silent-failure checks
+```
+
+If your brain uses `link_resolution.global_basename` and was populated before this release, a small number of superseded `wikilink_basename` edges can linger beside their newer typed replacements after re-extraction (edge writes are append-only by design). `gbrain reconcile-links` cleans them up; they are harmless to queries that dedup on target.
+
+### For contributors
+
+The composite review of this wave (two independent max-effort review passes over the combined branch) caught two interaction defects that per-PR review could not: the ungated bare-path scanner reading inside wikilink spans, and an extraction watermark set to a date that same-day stamps would already outrun. Both were fixed in the wave with discriminating tests. One reviewed-and-approved PR was deliberately held out: it conflicts semantically with its author's own sibling PR in this wave, and choosing between their two path-resolution mechanisms is the author's call.
+
+Contributed by @time-attack (#3618, #3085, #3539, #3576, #3533, #3453, #3457, #3560, #3161), @daragao3 (#3619, #3536, #3517, #3578), @paul-0320 (#3613, #3564), @cvillarroel2 (#3678), @mamedov (#3624), @dialthewolff (#3550).
 
 ## [0.42.69.0] - 2026-08-01
 

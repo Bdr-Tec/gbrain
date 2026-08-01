@@ -404,6 +404,18 @@ async function main() {
     if (op.localOnly) {
       refuseThinClient(command, cfgPre!.remote_mcp!.mcp_url);
     }
+    // A thin client has no local mounts — an explicit --brain cannot be
+    // honored and must not be silently dropped (same loud-beats-silent rule
+    // as applyThinClientSourceScope's --source refusal). Ambient tiers
+    // (GBRAIN_BRAIN_ID / .gbrain-mount) are ignored here, matching the
+    // source axis's ambient-with-nowhere-to-send behavior.
+    if (cliOpts.brain) {
+      console.error(
+        '--brain is not supported on a thin-client install: the remote server is a single brain. ' +
+        'Remove the flag, or run from a machine with local mounts (gbrain mounts list).',
+      );
+      process.exit(1);
+    }
     // #2098: the local path resolves --source / GBRAIN_SOURCE / .gbrain-source
     // inside makeContext (ctx.sourceId), which this route never reaches — so
     // scope must be mapped onto the op's source_id wire param before the call.
@@ -1014,6 +1026,10 @@ export async function makeContext(engine: BrainEngine, params: Record<string, un
     // table). Matches dispatch.ts's auto-fill so the contract holds across
     // every transport.
     sourceId: sourceId ?? 'default',
+    // Brain axis: the id connectEngine resolved for this process. Module
+    // state, NEVER params — caller-supplied params.brain must not select a
+    // brain (that would be an untrusted-caller cross-brain hole over MCP).
+    brainId: activeBrainId,
     ...(localFederated ? { localFederatedSourceIds: localFederated } : {}),
   };
 }
@@ -2399,7 +2415,52 @@ async function dispatchReadOnlyCommand(engine: BrainEngine, command: string, arg
 import { buildGatewayConfig } from './core/ai/build-gateway-config.ts';
 export { buildGatewayConfig };
 
+/**
+ * Which brain this process's engine targets. Set by connectEngine after brain
+ * resolution; read by makeContext so ctx.brainId carries the audit id. Never
+ * derived from op params — an untrusted caller must not be able to name a
+ * brain (same fail-closed shape as the #3524 remote source sentinel).
+ */
+let activeBrainId: string = 'host';
+
+/**
+ * Connect to a mounted brain (brain axis, non-host). Routes through
+ * BrainRegistry so:
+ *   - an unknown/disabled mount id throws UnknownBrainError. Fail-closed:
+ *     the pre-fix CLI silently fell back to the host brain, returning
+ *     confident wrong answers (mirror of #3524's explicit --source decision);
+ *   - postgres mounts get a per-instance pool, never the db.ts singleton;
+ *   - NO migrations run against the mount — schema is the publisher's job
+ *     (same decision as BrainRegistry.initMountBrain). Write access control
+ *     is the mount's own DB credential grants: a read-only role rejects
+ *     writes at the database; gbrain does not re-implement that client-side.
+ * The AI gateway still configures from the HOST config (the caller's API
+ * keys + model tiers) — embedding/expansion spend stays the caller's, and
+ * a mount's DB-plane model config is never merged into the caller's gateway.
+ */
+async function connectMountEngine(brainId: string): Promise<BrainEngine> {
+  const config = loadConfig();
+  if (config) {
+    const { configureGateway } = await import('./core/ai/gateway.ts');
+    configureGateway(buildGatewayConfig(config));
+  }
+  const { loadRegistry } = await import('./core/brain-registry.ts');
+  const handle = await loadRegistry().getBrain(brainId);
+  activeBrainId = brainId;
+  return handle.engine;
+}
+
 async function connectEngine(opts?: { probeOnly?: boolean }): Promise<BrainEngine> {
+  // Brain axis: resolve WHICH DATABASE this invocation targets before touching
+  // the host engine. --brain (global flag) / GBRAIN_BRAIN_ID / .gbrain-mount /
+  // mount-path-prefix resolve via the canonical 6-tier chain — the mirror of
+  // the source axis in makeContext. connectEngine is the single choke point
+  // every local CLI command routes through (shared ops, CLI-only commands,
+  // and the search-dashboard path), so routing lands here once.
+  const { resolveBrainId } = await import('./core/brain-resolver.ts');
+  const brainId = resolveBrainId(getCliOptions().brain);
+  if (brainId !== 'host') return connectMountEngine(brainId);
+
   const config = loadConfig();
   if (!config) {
     console.error('No brain configured. Run: gbrain init');

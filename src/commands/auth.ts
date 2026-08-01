@@ -531,7 +531,7 @@ async function rescopeClient(clientId: string, args: string[]) {
   }
   let sourceId: string | undefined;
   let federatedRead: string[] | undefined;
-  // v0.42.70.0: tri-state — undefined = untouched, null = clear ('none'),
+  // v0.42.71.0: tri-state — undefined = untouched, null = clear ('none'),
   // array = replace. Lets roster churn (channel joins/leaves) update the
   // write fence in place instead of register+rotate.
   let boundSlugPrefixes: string[] | null | undefined;

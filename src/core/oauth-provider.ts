@@ -727,7 +727,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       if (allowedSources === undefined && rowSourceId !== undefined) {
         allowedSources = [rowSourceId];
       }
-      // v0.42.70.0: slug-prefix write binding. Array (even empty — the
+      // v0.42.71.0: slug-prefix write binding. Array (even empty — the
       // fence treats [] as deny-all, matching submit_agent's fail-closed
       // posture) when the client carries a binding; undefined when the
       // column is NULL, the projection degraded, or the brain predates
@@ -759,7 +759,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         // operations.ts prefers this array over scalar sourceId when set
         // and non-empty.
         allowedSources,
-        // v0.42.70.0: write fence — consumed by enforceClientSlugFence in
+        // v0.42.71.0: write fence — consumed by enforceClientSlugFence in
         // operations.ts on every direct slug-mutating write op.
         boundSlugPrefixes,
         ...(fenceProjectionDegraded ? { fenceProjectionDegraded: true } : {}),
@@ -1135,7 +1135,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       }
       for (const s of federatedRead) assertValidSourceId(s);
     }
-    // v0.42.70.0: bound_slug_prefixes rescope, so channel-membership churn
+    // v0.42.71.0: bound_slug_prefixes rescope, so channel-membership churn
     // (the qm-harness roster case) updates the write fence in place instead
     // of forcing a register+rotate cycle. Tri-state: undefined = untouched,
     // null = clear the binding (client returns to unbound full-source write

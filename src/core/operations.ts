@@ -230,7 +230,7 @@ function enforceSubagentSlugFence(ctx: OperationContext, slug: string, opName: s
 }
 
 /**
- * OAuth-client slug-fence enforcement (v0.42.70.0 — write-side isolation
+ * OAuth-client slug-fence enforcement (v0.42.71.0 — write-side isolation
  * symmetry). When the authenticated client was registered with
  * --bound-slug-prefixes, every direct slug-mutating write must target a
  * slug under one of those prefixes. Shared by put_page, delete_page,
@@ -451,7 +451,7 @@ export interface AuthInfo {
    */
   allowedSources?: string[];
   /**
-   * v0.42.70.0: slug-prefix WRITE binding from
+   * v0.42.71.0: slug-prefix WRITE binding from
    * `oauth_clients.bound_slug_prefixes`, threaded at token-verification
    * time (same JOIN as sourceId/allowedSources — no per-op roundtrip).
    * When present, every direct slug-mutating write op is fenced to slugs
@@ -2926,9 +2926,7 @@ const get_versions: Operation = {
     slug: { type: 'string', required: true },
   },
   handler: async (ctx, p) => {
-    // v0.31.8 (D20): thread ctx.sourceId.
-    const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
-    const versions = await ctx.engine.getVersions(p.slug as string, sourceOpts);
+    const versions = await ctx.engine.getVersions(p.slug as string, sourceScopeOpts(ctx));
     // Same takes-allow-list privacy boundary as get_page. Snapshots persist
     // historical compiled_truth verbatim, including the takes fence, so
     // a remote token bypassing get_page via /history would re-introduce
@@ -3027,9 +3025,7 @@ const get_raw_data: Operation = {
     source: { type: 'string', description: 'Filter by source' },
   },
   handler: async (ctx, p) => {
-    // v0.31.8 (D20 + D21): thread ctx.sourceId.
-    const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
-    return ctx.engine.getRawData(p.slug as string, p.source as string | undefined, sourceOpts);
+    return ctx.engine.getRawData(p.slug as string, p.source as string | undefined, sourceScopeOpts(ctx));
   },
   scope: 'read',
 };
@@ -3059,9 +3055,7 @@ const get_chunks: Operation = {
     slug: { type: 'string', required: true },
   },
   handler: async (ctx, p) => {
-    // v0.31.8 (D20): thread ctx.sourceId.
-    const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
-    return ctx.engine.getChunks(p.slug as string, sourceOpts);
+    return ctx.engine.getChunks(p.slug as string, sourceScopeOpts(ctx));
   },
   scope: 'read',
 };
