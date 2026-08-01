@@ -108,8 +108,13 @@ jobs:
         with:
           path: artifacts
       - name: Extract CHANGELOG entry for release notes
+        # env-bound, not inlined into the script: VERSION comes from master so
+        # it isn't attacker-reachable today, but a `${{ }}` inside `run:` is
+        # shell injection by construction if that ever changes.
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
-          v="${{ needs.version.outputs.version }}"
+          v="$RELEASE_VERSION"
           if ! bash scripts/changelog-entry.sh "$v" > /tmp/release-notes.md || ! [ -s /tmp/release-notes.md ]; then
             echo "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md) for v$v." > /tmp/release-notes.md
           fi
