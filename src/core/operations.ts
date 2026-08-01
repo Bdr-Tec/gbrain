@@ -230,6 +230,35 @@ function enforceSubagentSlugFence(ctx: OperationContext, slug: string, opName: s
 }
 
 /**
+ * OAuth-client slug-fence enforcement (v0.42.70.0 — write-side isolation
+ * symmetry). When the authenticated client was registered with
+ * --bound-slug-prefixes, every direct slug-mutating write must target a
+ * slug under one of those prefixes. Shared by put_page, delete_page,
+ * restore_page, add_tag, remove_tag, add_link/remove_link (`from`
+ * endpoint), add_timeline_entry, revert_version, and put_raw_data; runs
+ * BEFORE each op's dry-run short-circuit so preview calls surface the
+ * same rejection.
+ *
+ * Semantics deliberately match submit_agent's bound_slug_prefixes check
+ * (plain startsWith, NOT the `/*` glob grammar of the subagent allow-list
+ * above): a non-null binding fences fail-closed (empty array = deny all
+ * writes), no binding / no auth = no fence (local CLI and unbound clients
+ * keep full-source write authority). Register prefixes with a trailing
+ * slash ('wiki/agents/alice/') — a bare 'notes' also admits
+ * 'notes-archive/...' by startsWith construction.
+ */
+function enforceClientSlugFence(ctx: OperationContext, slug: string, opName: string): void {
+  const prefixes = ctx.auth?.boundSlugPrefixes;
+  if (!prefixes) return;
+  if (!prefixes.some((bp) => slug.startsWith(bp))) {
+    throw new OperationError(
+      'permission_denied',
+      `${opName}: slug '${slug}' is not under any of client ${ctx.auth?.clientId ?? '(unknown)'}'s bound_slug_prefixes (${prefixes.join(', ')})`,
+    );
+  }
+}
+
+/**
  * Allowlist validator for uploaded file basenames. Rejects control chars, backslashes,
  * RTL overrides (\u202E), leading dot (hidden files) and leading dash (CLI flag confusion).
  * Allows extension dots and underscores. Max 255 chars.
@@ -308,6 +337,23 @@ export interface AuthInfo {
    * case (back-compat).
    */
   allowedSources?: string[];
+  /**
+   * v0.42.70.0: slug-prefix WRITE binding from
+   * `oauth_clients.bound_slug_prefixes`, threaded at token-verification
+   * time (same JOIN as sourceId/allowedSources — no per-op roundtrip).
+   * When present, every direct slug-mutating write op is fenced to slugs
+   * under one of these prefixes via `enforceClientSlugFence` — the same
+   * plain-startsWith semantics (and the same fail-closed empty-array
+   * posture) as submit_agent's bound_slug_prefixes check, so one column
+   * means one thing everywhere it's read. Closes the write-side half of
+   * shared-source isolation: reads were SQL-fenced via `allowedSources`,
+   * but same-source writes were folder-convention-only.
+   *
+   * Undefined = client has no binding, or the brain predates the
+   * bound_slug_prefixes column → no fence (unbound clients keep
+   * full-source write authority, back-compat).
+   */
+  boundSlugPrefixes?: string[];
 }
 
 export interface OperationContext {
@@ -904,6 +950,7 @@ const put_page: Operation = {
     // short-circuit so preview calls surface the same rejection. See
     // enforceSubagentSlugFence for the fail-closed policy.
     enforceSubagentSlugFence(ctx, slug, 'put_page');
+    enforceClientSlugFence(ctx, slug, 'put_page');
 
     if (ctx.dryRun) return { dry_run: true, action: 'put_page', slug: p.slug };
 
@@ -1421,6 +1468,7 @@ const delete_page: Operation = {
   scope: 'write',
   handler: async (ctx, p) => {
     const slug = p.slug as string;
+    enforceClientSlugFence(ctx, slug, 'delete_page');
     if (ctx.dryRun) return { dry_run: true, action: 'soft_delete_page', slug };
     // v0.31.8 (D7): thread ctx.sourceId so multi-source brains soft-delete the
     // intended row instead of always targeting (default, slug).
@@ -1454,6 +1502,7 @@ const restore_page: Operation = {
   scope: 'write',
   handler: async (ctx, p) => {
     const slug = p.slug as string;
+    enforceClientSlugFence(ctx, slug, 'restore_page');
     if (ctx.dryRun) return { dry_run: true, action: 'restore_page', slug };
     // v0.31.8 (D7): thread ctx.sourceId.
     const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
@@ -2097,6 +2146,7 @@ const add_tag: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    enforceClientSlugFence(ctx, p.slug as string, 'add_tag');
     if (ctx.dryRun) return { dry_run: true, action: 'add_tag', slug: p.slug, tag: p.tag };
     // v0.31.8 (D7): thread ctx.sourceId.
     const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
@@ -2116,6 +2166,7 @@ const remove_tag: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    enforceClientSlugFence(ctx, p.slug as string, 'remove_tag');
     if (ctx.dryRun) return { dry_run: true, action: 'remove_tag', slug: p.slug, tag: p.tag };
     const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
     await ctx.engine.removeTag(p.slug as string, p.tag as string, sourceOpts);
@@ -2169,6 +2220,10 @@ const add_link: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    // Client fence on the `from` endpoint only: the edge originates from
+    // (and renders on) the from page; linking TO a page outside the
+    // binding is a reference, not a mutation of the target.
+    enforceClientSlugFence(ctx, p.from as string, 'add_link');
     if (ctx.dryRun) return { dry_run: true, action: 'add_link', from: p.from, to: p.to };
     // v114 (#1941): default omitted provenance to 'manual' (NOT the engine's
     // 'markdown' default) so hand/tool-created CLI edges are honestly manual,
@@ -2209,6 +2264,7 @@ const remove_link: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    enforceClientSlugFence(ctx, p.from as string, 'remove_link');
     if (ctx.dryRun) return { dry_run: true, action: 'remove_link', from: p.from, to: p.to };
     const linkOpts = ctx.sourceId
       ? { fromSourceId: ctx.sourceId, toSourceId: ctx.sourceId }
@@ -2336,6 +2392,7 @@ const add_timeline_entry: Operation = {
     // confined to the same namespace/allow-list as page writes. Runs before
     // the dry-run short-circuit so preview calls surface the same rejection.
     enforceSubagentSlugFence(ctx, p.slug as string, 'add_timeline_entry');
+    enforceClientSlugFence(ctx, p.slug as string, 'add_timeline_entry');
     if (ctx.dryRun) return { dry_run: true, action: 'add_timeline_entry', slug: p.slug };
     const date = p.date as string;
     // Reject anything that isn't a strict YYYY-MM-DD with year 1900-2199 and
@@ -2732,6 +2789,7 @@ const revert_version: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    enforceClientSlugFence(ctx, p.slug as string, 'revert_version');
     if (ctx.dryRun) return { dry_run: true, action: 'revert_version', slug: p.slug, version_id: p.version_id };
     // v0.31.8 (D7): thread ctx.sourceId so multi-source brains revert the
     // intended page row instead of whichever same-slug row Postgres returns
@@ -2785,6 +2843,7 @@ const put_raw_data: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    enforceClientSlugFence(ctx, p.slug as string, 'put_raw_data');
     if (ctx.dryRun) return { dry_run: true, action: 'put_raw_data', slug: p.slug, source: p.source };
     // v0.31.8 (D7 + D21): thread ctx.sourceId.
     const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};

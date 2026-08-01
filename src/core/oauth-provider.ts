@@ -606,18 +606,31 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     try {
       oauthRows = await this.sql`
         SELECT t.client_id, t.scopes, t.expires_at, t.resource, c.client_name,
-               c.source_id, c.federated_read
+               c.source_id, c.federated_read, c.bound_slug_prefixes
         FROM oauth_tokens t
         LEFT JOIN oauth_clients c ON c.client_id = t.client_id
         WHERE t.token_hash = ${tokenHash} AND t.token_type = 'access'
       `;
     } catch (err) {
+      // v0.42.70.0: brain predates the bound_slug_prefixes column (it lands
+      // in a later migration than source_id/federated_read, so Postgres
+      // reports IT first only when the other two exist). Drop just that
+      // projection — clients on this brain have no write fence yet, same
+      // as before the fence shipped.
+      if (isUndefinedColumnError(err, 'bound_slug_prefixes')) {
+        oauthRows = await this.sql`
+          SELECT t.client_id, t.scopes, t.expires_at, t.resource, c.client_name,
+                 c.source_id, c.federated_read
+          FROM oauth_tokens t
+          LEFT JOIN oauth_clients c ON c.client_id = t.client_id
+          WHERE t.token_hash = ${tokenHash} AND t.token_type = 'access'
+        `;
       // v0.34.1: pre-v60 brain → source_id column missing. Pre-v61 brain →
       // federated_read column missing. Both classes degrade to legacy
       // projection so auth keeps working until the operator runs
       // apply-migrations. Probe both column names so partial-upgrade brains
       // (v60 applied but v61 didn't yet) also fall through cleanly.
-      if (isUndefinedColumnError(err, 'source_id') || isUndefinedColumnError(err, 'federated_read')) {
+      } else if (isUndefinedColumnError(err, 'source_id') || isUndefinedColumnError(err, 'federated_read')) {
         // Try the v60-only projection first (source_id but no federated_read).
         try {
           oauthRows = await this.sql`
@@ -662,6 +675,15 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       const allowedSources = Array.isArray(federatedRaw)
         ? (federatedRaw as string[])
         : undefined;
+      // v0.42.70.0: slug-prefix write binding. Array (even empty — the
+      // fence treats [] as deny-all, matching submit_agent's fail-closed
+      // posture) when the client carries a binding; undefined when the
+      // column is NULL, the projection degraded, or the brain predates
+      // the column.
+      const boundRaw = row.bound_slug_prefixes;
+      const boundSlugPrefixes = Array.isArray(boundRaw)
+        ? (boundRaw as string[])
+        : undefined;
       return {
         token,
         clientId: row.client_id as string,
@@ -677,6 +699,9 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         // operations.ts prefers this array over scalar sourceId when set
         // and non-empty.
         allowedSources,
+        // v0.42.70.0: write fence — consumed by enforceClientSlugFence in
+        // operations.ts on every direct slug-mutating write op.
+        boundSlugPrefixes,
       } as CoreAuthInfo as SdkAuthInfo;
     }
 
@@ -1022,11 +1047,11 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
    */
   async rescopeClient(
     clientId: string,
-    opts: { sourceId?: string; federatedRead?: string[] },
-  ): Promise<{ clientId: string; clientName: string; sourceId: string; federatedRead: string[] }> {
-    const { sourceId, federatedRead } = opts;
-    if (sourceId === undefined && federatedRead === undefined) {
-      throw new Error('rescope-client requires --source and/or --federated-read');
+    opts: { sourceId?: string; federatedRead?: string[]; boundSlugPrefixes?: string[] | null },
+  ): Promise<{ clientId: string; clientName: string; sourceId: string; federatedRead: string[]; boundSlugPrefixes: string[] | null }> {
+    const { sourceId, federatedRead, boundSlugPrefixes } = opts;
+    if (sourceId === undefined && federatedRead === undefined && boundSlugPrefixes === undefined) {
+      throw new Error('rescope-client requires --source, --federated-read, and/or --bound-slug-prefixes');
     }
     if (sourceId !== undefined) assertValidSourceId(sourceId);
     if (federatedRead !== undefined) {
@@ -1035,17 +1060,34 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       }
       for (const s of federatedRead) assertValidSourceId(s);
     }
+    // v0.42.70.0: bound_slug_prefixes rescope, so channel-membership churn
+    // (the qm-harness roster case) updates the write fence in place instead
+    // of forcing a register+rotate cycle. Tri-state: undefined = untouched,
+    // null = clear the binding (client returns to unbound full-source write
+    // authority), non-empty array = replace. Empty array is rejected here —
+    // it means deny-all at the fence, which an operator should express by
+    // revoking write scope, not by an ambiguous empty list.
+    if (Array.isArray(boundSlugPrefixes) && boundSlugPrefixes.length === 0) {
+      throw new Error('--bound-slug-prefixes cannot be an empty list (pass prefixes, or "none" to clear the binding)');
+    }
     let rows: Record<string, unknown>[];
     try {
       rows = await this.sql`
         UPDATE oauth_clients
            SET source_id = COALESCE(${sourceId ?? null}::text, source_id),
-               federated_read = COALESCE(${federatedRead ? pgArray(federatedRead) : null}::text[], federated_read)
+               federated_read = COALESCE(${federatedRead ? pgArray(federatedRead) : null}::text[], federated_read),
+               bound_slug_prefixes = CASE WHEN ${boundSlugPrefixes === undefined}
+                                          THEN bound_slug_prefixes
+                                          ELSE ${boundSlugPrefixes ? pgArray(boundSlugPrefixes) : null}::text[] END
          WHERE client_id = ${clientId}
-         RETURNING client_id, client_name, source_id, federated_read
+         RETURNING client_id, client_name, source_id, federated_read, bound_slug_prefixes
       `;
     } catch (err) {
-      if (isUndefinedColumnError(err, 'source_id') || isUndefinedColumnError(err, 'federated_read')) {
+      if (
+        isUndefinedColumnError(err, 'source_id') ||
+        isUndefinedColumnError(err, 'federated_read') ||
+        isUndefinedColumnError(err, 'bound_slug_prefixes')
+      ) {
         throw new Error('rescope-client requires an up-to-date OAuth schema; run `gbrain apply-migrations --yes` and retry.');
       }
       // FK oauth_clients.source_id → sources(id): translate the raw 23503
@@ -1064,6 +1106,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       clientName: (row.client_name as string | null) ?? '',
       sourceId: (row.source_id as string | null) ?? 'default',
       federatedRead: Array.isArray(row.federated_read) ? (row.federated_read as string[]) : [],
+      boundSlugPrefixes: Array.isArray(row.bound_slug_prefixes) ? (row.bound_slug_prefixes as string[]) : null,
     };
   }
 

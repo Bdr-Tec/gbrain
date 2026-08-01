@@ -1674,7 +1674,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // validator inside rescopeClient.
   app.post('/admin/api/rescope-client', requireAdmin, express.json(), async (req: Request, res: Response) => {
     try {
-      const { clientId, sourceId, federatedRead } = req.body ?? {};
+      const { clientId, sourceId, federatedRead, boundSlugPrefixes } = req.body ?? {};
       if (!clientId || typeof clientId !== 'string') {
         res.status(400).json({ error: 'clientId required' });
         return;
@@ -1688,12 +1688,20 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         res.status(400).json({ error: 'sourceId must be a string' });
         return;
       }
-      const result = await oauthProvider.rescopeClient(clientId, { sourceId, federatedRead });
+      // v0.42.70.0: tri-state write-fence rescope — omitted = untouched,
+      // null = clear, array of strings = replace (mirrors the CLI's
+      // --bound-slug-prefixes p1,p2|none).
+      if (boundSlugPrefixes !== undefined && boundSlugPrefixes !== null &&
+          !(Array.isArray(boundSlugPrefixes) && boundSlugPrefixes.every((s: unknown) => typeof s === 'string'))) {
+        res.status(400).json({ error: 'boundSlugPrefixes must be null or an array of slug-prefix strings' });
+        return;
+      }
+      const result = await oauthProvider.rescopeClient(clientId, { sourceId, federatedRead, boundSlugPrefixes });
       res.json(result);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Rescope failed';
       const status = /No OAuth client found/.test(message) ? 404
-        : /Invalid source_id|requires --source|cannot be empty|does not exist/.test(message) ? 400
+        : /Invalid source_id|requires --source|cannot be empty|does not exist|cannot be an empty list/.test(message) ? 400
         : 500;
       res.status(status).json({ error: message });
     }

@@ -1,0 +1,155 @@
+# qm (multi-user agent harness) — gbrain as the company brain
+
+Connect gbrain to [qm](https://github.com/yc-software/qm) — the multiplayer
+agent harness where each employee and each channel gets an isolated agent
+scope — so every scope's agent can search and write one shared, indexed,
+isolation-enforced company brain. The same recipe fits any harness with
+per-person sandboxes that can run a CLI.
+
+**Shape:** one central `gbrain serve --http` (OAuth 2.1) next to qm's core;
+the `gbrain` binary baked into qm's sandbox image as a thin client; one OAuth
+client per employee, read-fenced by source federation and write-fenced by
+`bound_slug_prefixes`. Zero qm code changes — everything lives in the qm
+*deployment directory*.
+
+qm's native memory (per-scope notebook) stays as-is for fast per-turn recall.
+gbrain adds what qm doesn't have: semantic + hybrid search, cross-scope
+knowledge, entity graphs, and durable memory that outlives a scope.
+
+## Topology
+
+| gbrain concept | qm concept |
+|---|---|
+| one brain (one Postgres/Supabase DB) | the org |
+| source `agents` (path-less, shared) | all agent-written memory |
+| slug prefix `emp-<slug>/` in `agents` | an employee's personal scope |
+| slug prefix `chan-<slug>/` in `agents` | a channel/room scope |
+| source `org-wiki` (git-backed, read-only) | company docs |
+| OAuth client `qm-emp-<slug>` | one employee's agent identity |
+
+Isolation model:
+
+- **Reads** are source-granular, SQL-enforced (`federated_read`): every
+  employee client reads `agents` + the read-only sources you grant.
+- **Writes** are slug-prefix-granular, server-enforced (`bound_slug_prefixes`,
+  v0.42.70.0+): a client can only mutate pages under its own `emp-<slug>/`
+  and its channels' `chan-<x>/` prefixes — on every slug-mutating op
+  (put/delete/restore/tags/links/timeline/revert/raw-data), not by
+  convention.
+- **Tradeoff to state out loud:** read isolation is per-source, so within the
+  shared `agents` source every employee can *read* every prefix (including
+  other employees' `emp-*/`). That matches qm's transparent-by-default,
+  everything-audited posture. If you need hard read privacy for personal
+  memory, give those employees their own write source instead of a prefix
+  (one `sources add emp-<slug>` + `--source emp-<slug>` per client) and keep
+  channel prefixes in `agents` via a second, channels-only client — at the
+  cost of two credentials in that sandbox.
+
+## Host setup (the machine running qm's core, or any box its sandboxes can reach)
+
+```bash
+# 1. Engine: Postgres/Supabase. PGLite is single-process and cannot serve
+#    many concurrent sandboxes.
+gbrain init --supabase --embedding-model voyage:voyage-4-large
+
+# 2. Modes + gates (publish_* default OFF and fail as silent 403s):
+gbrain config set search.mode balanced
+gbrain config set mcp.publish_skills true
+gbrain config set mcp.publish_advisor true
+
+# 3. Read-only org sources + first sync:
+gbrain sources add org-wiki --path ~/brains/org-wiki
+gbrain sync --all        # cron this
+
+# 4. Serve over HTTP MCP (OAuth 2.1):
+gbrain serve --http --bind 0.0.0.0 --port 3131 \
+  --public-url https://brain.acme-example.com
+```
+
+Never hand sandboxes `DATABASE_URL` — direct DB access bypasses OAuth, source
+federation, and the write fence entirely.
+
+## Provision scopes from a roster
+
+[`qm-harness-snippets/provision-scopes.sh`](qm-harness-snippets/provision-scopes.sh)
+converges the brain to a roster file
+([`roster.example.tsv`](qm-harness-snippets/roster.example.tsv)):
+
+```bash
+bash provision-scopes.sh roster.tsv --read-sources org-wiki
+```
+
+- Creates the path-less `agents` source (agent-written memory needs no git
+  clone; if the host has `sync.repo_path` configured, pages also write
+  through to `.sources/agents/` for git-backed durability).
+- Registers `qm-emp-<slug>` clients: `--scopes "read write"`,
+  `--source agents`, `--federated-read agents,org-wiki`,
+  `--bound-slug-prefixes emp-<slug>/,chan-<a>/,...`, per-day budget.
+- **Idempotent:** re-run after every roster edit; existing clients are
+  `rescope-client`ed in place (channel joins/leaves update the write fence
+  without rotating secrets).
+- New client secrets land once in `<roster>.new-credentials.tsv` — deliver
+  each row to its scope (qm keychain / one-time secret drop), then delete
+  the file.
+
+## qm deployment directory
+
+In the org's qm deployment repo (the directory `qm init` produced):
+
+1. **Tool:** copy [`qm-harness-snippets/tool.json`](qm-harness-snippets/tool.json)
+   to `sandbox/tools/gbrain/tool.json` and drop the compiled `gbrain` binary
+   beside it (`bun build --compile --outfile gbrain src/cli.ts`, built for
+   the sandbox image's OS/arch). `auth.credentialPaths` marks
+   `~/.gbrain/config.json` as the scope's resident credential file;
+   `auth.check` wires `gbrain remote doctor` into qm's connector status.
+2. **Skill:** copy [`qm-harness-snippets/SKILL.md`](qm-harness-snippets/SKILL.md)
+   to `sandbox/skills/gbrain/SKILL.md` (edit slug conventions to taste).
+3. Ship it: `qm sandbox build && qm sandbox publish && qm up`.
+
+Per scope, one-time (agent- or operator-run, credentials from the handoff):
+
+```bash
+gbrain init --mcp-only \
+  --issuer-url https://brain.acme-example.com \
+  --mcp-url https://brain.acme-example.com/mcp \
+  --oauth-client-id gbrain_cl_...   # secret via GBRAIN_REMOTE_CLIENT_SECRET
+gbrain remote doctor                # must pass
+```
+
+The config persists on the scope's durable sandbox disk, so this runs once
+per scope, ever.
+
+## Verify isolation before rollout
+
+From two differently-scoped sandboxes (or two thin-client configs):
+
+```bash
+# alice-example (bound to emp-alice-example/, chan-eng/):
+gbrain put emp-alice-example/notes/test --content "mine"        # OK
+gbrain put chan-eng/notes/test --content "shared"               # OK
+gbrain put emp-bob-example/notes/test --content "not mine"      # permission_denied
+gbrain put chan-product/notes/test --content "not my channel"   # permission_denied
+gbrain search "test"                                            # sees agents + org-wiki only
+```
+
+## Cost + operations
+
+- `search.mode balanced` (12K token budget, relational retrieval on) is the
+  right default for a startup fleet; see `docs/guides/search-modes.md` for
+  the cost matrix before changing it.
+- Budgets: `--budget-usd-per-day` per client caps runaway agents; watch
+  spend in the admin SPA (`/admin`) and `gbrain search stats`.
+- Backfills on a live brain: `gbrain embed --stale --pace` (see Pace Mode in
+  CLAUDE.md / `docs/operations/spend-controls.md`).
+
+## Deliberately deferred
+
+- **qm `MemoryService` decorator** (mirror notebook captures into gbrain,
+  fan `recall` out and merge, `volunteer_context` push): needs a qm code
+  change; today's integration is agent-initiated via the CLI + skill.
+- **MCP-native attach:** qm pins `strictMcpConfig` with only its in-process
+  server, so gbrain's MCP-discovered brain-resident skillpacks don't reach
+  qm agents; the sandbox skill above covers it.
+- **Read-side prefix fencing** (hard privacy for `emp-*/` inside a shared
+  source) — tracked upstream; the roster layout is forward-compatible with
+  it.
