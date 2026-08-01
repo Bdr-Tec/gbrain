@@ -103,7 +103,7 @@ describe('configured-detection semantics (drives real scanFeatures)', () => {
   // Every env var RECIPE_META reads. Each test controls the whole surface through
   // withEnv (rule R1: no direct process.env mutation), so leftover env can't leak in.
   const CLEARED: Record<string, undefined> = {
-    CLAWVISOR_AGENT_TOKEN: undefined, GOOGLE_CLIENT_ID: undefined, X_BEARER_TOKEN: undefined,
+    CLAWVISOR_AGENT_TOKEN: undefined, GOOGLE_CLIENT_ID: undefined, X_API_BEARER_TOKEN: undefined,
     TWILIO_AUTH_TOKEN: undefined, CIRCLEBACK_TOKEN: undefined, NGROK_AUTHTOKEN: undefined,
   };
 
@@ -127,7 +127,7 @@ describe('configured-detection semantics (drives real scanFeatures)', () => {
     // regression this test pins, and it exercises features.ts directly (not a copy).
     await withEnv({
       ...CLEARED,
-      CLAWVISOR_AGENT_TOKEN: 'x', X_BEARER_TOKEN: 'x',
+      CLAWVISOR_AGENT_TOKEN: 'x', X_API_BEARER_TOKEN: 'x',
       TWILIO_AUTH_TOKEN: 'x', CIRCLEBACK_TOKEN: 'x', NGROK_AUTHTOKEN: 'x',
     }, async () => {
       expect(await noIntegrations()).toBeUndefined();

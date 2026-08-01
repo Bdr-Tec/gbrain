@@ -29,7 +29,7 @@ const recipe = (id: string) => {
 // withEnv (rule R1: no direct process.env mutation) so leftover env can't leak in.
 const CLEARED: Record<string, undefined> = {
   CLAWVISOR_URL: undefined, CLAWVISOR_AGENT_TOKEN: undefined, GOOGLE_CLIENT_ID: undefined,
-  GOOGLE_CLIENT_SECRET: undefined, X_HANDLE: undefined, X_BEARER_TOKEN: undefined,
+  GOOGLE_CLIENT_SECRET: undefined, X_HANDLE: undefined, X_API_BEARER_TOKEN: undefined,
 };
 
 describe('getStatus honors any_of auth alternatives', () => {
@@ -58,14 +58,14 @@ describe('getStatus honors any_of auth alternatives', () => {
 
 describe('getStatus keeps all-secrets rule for non-any_of recipes', () => {
   test('x-to-brain: partial secrets → available', async () => {
-    await withEnv({ ...CLEARED, X_BEARER_TOKEN: 'tok' }, () => {
+    await withEnv({ ...CLEARED, X_API_BEARER_TOKEN: 'tok' }, () => {
       // X_HANDLE still missing
       expect(getStatus(recipe('x-to-brain'))).toBe('available');
     });
   });
 
   test('x-to-brain: all secrets → configured', async () => {
-    await withEnv({ ...CLEARED, X_BEARER_TOKEN: 'tok', X_HANDLE: 'me' }, () => {
+    await withEnv({ ...CLEARED, X_API_BEARER_TOKEN: 'tok', X_HANDLE: 'me' }, () => {
       expect(getStatus(recipe('x-to-brain'))).toBe('configured');
     });
   });
