@@ -56,12 +56,35 @@ Isolation model:
   skipped for bound clients. `POST /ingest` is refused outright: its handler
   bypasses the op layer *and* discards the source grant for untrusted
   payloads, so it would write into the `default` source.
-- **Known residual:** `add_link`/`remove_link` fence the `from` endpoint only.
-  A bound client can therefore create an edge pointing AT a page it cannot
-  write, and the edge's `context` text surfaces in that page's backlinks and
-  contributes to its search ranking. Fencing `to` as well would break
-  legitimate cross-referencing into `org-wiki`, so this is deliberate —
-  but treat inbound-edge context as untrusted content, same as page bodies.
+### Known limitations — read these before you rely on the fence
+
+The write fence is a **write** boundary within a source. It is not a privacy
+boundary, and it does not make every side effect prefix-clean. As of
+v0.42.70.0:
+
+- **`add_link`/`remove_link` fence the `from` endpoint only.** A bound client
+  can create an edge pointing AT a page it cannot write; the edge's `context`
+  text surfaces in that page's backlinks and contributes to its search
+  ranking. Fencing `to` would break legitimate cross-referencing into
+  `org-wiki`, so this is deliberate — treat inbound-edge context as untrusted
+  content, the same way you treat page bodies.
+- **Reads are source-granular, never prefix-granular.** Everyone entitled to
+  a source can read every prefix in it. If a scope needs genuine read
+  privacy, give it its own source.
+- **A few read ops are still brain-wide** and ignore the federated grant:
+  `get_recent_salience`, `find_anomalies`, `find_contradictions`, and
+  `sources_list`/`sources_status` (which expose source ids, paths and URLs).
+  A read-scoped client can learn facts derived from sources it was not
+  granted. Pre-existing, not introduced by the fence; if that matters for
+  your deployment, withhold those tools at the harness layer for now.
+- **Reads touch `last_retrieved_at`** on the pages they return, including
+  pages in read-only sources. Freshness/usage signals are therefore
+  writable-by-reading; nothing else about the page is.
+- **`POST /ingest` writes land in the `default` source** regardless of the
+  calling client's `source_id`, because the handler discards the source for
+  untrusted payloads. Bound clients are refused the route outright for this
+  reason; if you point a webhook integration at it, scope that brain's
+  `default` source deliberately.
 - **Tradeoff to state out loud:** read isolation is per-source, so within the
   shared `agents` source every employee can *read* every prefix (including
   other employees' `emp-*/`). That matches qm's transparent-by-default,

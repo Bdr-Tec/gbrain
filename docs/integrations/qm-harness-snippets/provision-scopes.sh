@@ -201,7 +201,7 @@ for entry in $EMPLOYEES; do
       --grant-types client_credentials --scopes "read write" \
       --source "$MEMORY_SOURCE" --federated-read "$FED_READ" \
       --bound-slug-prefixes "$prefixes" --budget-usd-per-day "$BUDGET" 2>&1) \
-      || die "register-client failed for '$slug': $out"
+      || die "register-client failed for '$slug' (output withheld: it can contain a secret). Re-run the command by hand to see why."
     client_id=$(echo "$out" | sed -n 's/.*Client ID:[[:space:]]*\(gbrain_cl_[^[:space:]]*\).*/\1/p' | head -1)
     secret=$(echo "$out"    | sed -n 's/.*Client Secret:[[:space:]]*\(gbrain_cs_[^[:space:]]*\).*/\1/p' | head -1)
     if [ -z "$client_id" ] || [ -z "$secret" ]; then

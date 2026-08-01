@@ -2254,12 +2254,16 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // both the prefix fence and the source scope; webhook integrations use
       // unbound clients.
       const boundPrefixes = authInfo.boundSlugPrefixes;
-      if (boundPrefixes) {
+      if (boundPrefixes || authInfo.fenceProjectionDegraded) {
         res.status(403).json({
           error: 'permission_denied',
-          message: 'POST /ingest is not available to clients restricted to slug prefixes ' +
-            `(bound_slug_prefixes: ${boundPrefixes.join(', ')}). Write through the MCP put_page op, ` +
-            'which enforces the prefix fence and your source scope.',
+          message: authInfo.fenceProjectionDegraded
+            ? 'POST /ingest is unavailable: this brain\'s oauth_clients projection is missing ' +
+              'bound_slug_prefixes, so client write bindings cannot be evaluated. ' +
+              'Run `gbrain apply-migrations --yes` on the brain host.'
+            : 'POST /ingest is not available to clients restricted to slug prefixes ' +
+              `(bound_slug_prefixes: ${boundPrefixes!.join(', ')}). Write through the MCP put_page op, ` +
+              'which enforces the prefix fence and your source scope.',
         });
         return;
       }

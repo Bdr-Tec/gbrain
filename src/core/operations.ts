@@ -330,7 +330,11 @@ export function enforceBoundClientOpAllowList(
   auth: AuthInfo | undefined,
   op: Pick<Operation, 'name' | 'scope' | 'mutating'>,
 ): void {
-  if (!auth?.boundSlugPrefixes) return;
+  // A degraded projection means we could not read the binding, not that
+  // there isn't one. Deny every non-read op outright — otherwise the
+  // unfenceable ops stay reachable precisely when the fence is unreadable.
+  const degraded = auth?.fenceProjectionDegraded === true;
+  if (!degraded && !auth?.boundSlugPrefixes) return;
   // Gate on "mutates, or carries any non-read scope" rather than on the two
   // literal scope strings 'write'/'admin': `sources_add` / `sources_remove`
   // carry the bespoke `sources_admin` scope and are `mutating: true`, so a
@@ -339,10 +343,17 @@ export function enforceBoundClientOpAllowList(
   // explicitly allow-listed.
   const isRead = op.scope === 'read' && op.mutating !== true;
   if (isRead) return;
+  if (degraded) {
+    throw new OperationError(
+      'permission_denied',
+      `${op.name}: this brain's oauth_clients projection is missing bound_slug_prefixes, so client write bindings cannot be evaluated. Refusing every non-read operation rather than running unfenced.`,
+      'Run `gbrain apply-migrations --yes` on the brain host.',
+    );
+  }
   if (CLIENT_FENCED_WRITE_OPS.has(op.name)) return;
   throw new OperationError(
     'permission_denied',
-    `${op.name} is not available to slug-bound clients: it can write outside client ${auth.clientId ?? '(unknown)'}'s bound_slug_prefixes (${auth.boundSlugPrefixes.join(', ')}).`,
+    `${op.name} is not available to slug-bound clients: it can write outside client ${auth?.clientId ?? '(unknown)'}'s bound_slug_prefixes (${(auth?.boundSlugPrefixes ?? []).join(', ')}).`,
     'Use put_page / add_timeline_entry / add_link under your own prefixes, or ask an operator to clear the binding with `gbrain auth rescope-client <id> --bound-slug-prefixes none`.',
   );
 }
@@ -1292,7 +1303,11 @@ const put_page: Operation = {
     // sibling post-hooks above already skip for untrusted callers (auto-link
     // at `remote !== false && !trustedWorkspace`, chronicle at
     // `remote !== false`); this one had no gate at all.
-    if (ctx.auth?.boundSlugPrefixes) {
+    // Keyed on "the caller is slug-confined at all", not on ctx.auth alone:
+    // the delegated (submit_agent → subagent) context carries
+    // `allowedSlugPrefixes` but NOT `auth`, so an auth-only test would let a
+    // bound client re-open this path simply by delegating the write.
+    if (ctx.auth?.boundSlugPrefixes || ctx.viaSubagent === true) {
       factsQueued = { skipped: 'slug_bound_client' };
     } else {
     try {
@@ -3435,11 +3450,31 @@ const submit_agent: Operation = {
       prompt: p.prompt as string,
       max_turns: Math.min((p.max_turns as number) ?? 20, 100),
       allowed_tools: requestedTools,
-      allowed_slug_prefixes: requestedSlugPrefixes,
+      // The subagent fence uses `matchesSlugAllowList`, whose grammar is the
+      // `<prefix>/*` glob — a BARE entry matches that one slug exactly. So a
+      // plain `emp-alice/` binding (the form the fence and the docs now use)
+      // would let the delegated agent write nothing at all. Normalize the
+      // trailing-slash form into the glob the delegated matcher expects, so
+      // one stored column means the same span of slugs on both paths.
+      allowed_slug_prefixes: requestedSlugPrefixes.map(sp =>
+        sp.endsWith('/') ? `${sp}*` : sp),
       __owner_client_id: clientId,
     };
     if (typeof p.model === 'string') jobData.model = p.model;
-    if (boundSource) jobData.source_id = boundSource;
+    // Write source for the delegated job comes from the AUTHENTICATED client
+    // whenever we have it. `bound_source_id` is an optional, separately-set
+    // column: unset it defaulted the child to 'default', and if it disagreed
+    // with the token's own source the child followed the column — either way
+    // a correctly slug-fenced client could act on the wrong source.
+    const delegatedSource = ctx.auth?.sourceId ?? boundSource;
+    if (boundSource && ctx.auth?.sourceId && boundSource !== ctx.auth.sourceId) {
+      throw new OperationError(
+        'permission_denied',
+        `submit_agent: client ${clientId}'s bound_source_id (${boundSource}) disagrees with its authenticated source (${ctx.auth.sourceId}); refusing to guess which one governs the delegated write.`,
+        'Re-scope the client so the two agree: `gbrain auth rescope-client <id> --source <source>`.',
+      );
+    }
+    if (delegatedSource) jobData.source_id = delegatedSource;
     const job = await queue.add(
       'subagent',
       jobData,
