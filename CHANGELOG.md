@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.42.71.0] - 2026-08-01
+## [0.42.72.0] - 2026-08-01
 
 **Per-person write isolation inside a shared source, and a guide for putting gbrain behind a multi-user agent harness.**
 
@@ -13,7 +13,7 @@ Until now, `--source` was the only write boundary: a client could write anywhere
 Both prefix spellings work: the `wiki/agents/alice/*` glob that `submit_agent` bindings already use, and the plainer `emp-alice/` form. Change a binding in place with `gbrain auth rescope-client <id> --bound-slug-prefixes <p1,p2|none>` — existing tokens pick it up on their next request, so no secret rotation is needed when someone joins or leaves a team.
 
 **New guide: [gbrain as the company brain for a qm deployment](docs/integrations/qm-harness.md).** qm is a multiplayer agent harness where each employee and each channel gets an isolated agent scope. The guide covers the whole path — one central `gbrain serve --http`, the thin-client binary baked into the sandbox image, one OAuth client per scope, and a roster-driven provisioning script that converges the brain to a list of people and channels. It also states plainly what the model does *not* give you: within a shared source, reads stay source-granular, so prefix isolation is a write boundary, not a privacy boundary.
-gbrain upgrade                    # or: bun install -g gbrain@0.42.71.0
+gbrain upgrade                    # or: bun install -g gbrain@0.42.72.0
 gbrain apply-migrations --yes     # required: the fence refuses writes it cannot evaluate
 ```
 
@@ -30,6 +30,35 @@ Verify it took, from a client holding that credential — the first write should
 gbrain put partners/alice-example/notes/test --content "mine"
 gbrain put partners/bob-example/notes/test --content "not mine"
 ```
+
+## [0.42.71.0] - 2026-08-01
+
+**GBrain now publishes real releases. Every version bump from here on lands on the [Releases page](https://github.com/garrytan/gbrain/releases) with organized notes and downloadable binaries — and binary self-update finally works.**
+
+Until now the repo had no releases at all: `gbrain check-update` could tell you a new version existed, but `gbrain self-upgrade` downloaded from an empty releases API and failed every time, and anyone trying to follow what shipped had to read raw commit history. That's what people have been (rightly) complaining about.
+
+From this release forward, every version bump automatically:
+
+- **Tags the commit** (`v0.42.71.0`) so versions are addressable in git.
+- **Publishes a GitHub Release** whose notes are that version's CHANGELOG entry — the same organized, user-facing writeup, not a commit dump.
+- **Attaches compiled binaries** for macOS (arm64) and Linux (x64), so `gbrain self-upgrade` and fresh binary installs work without a toolchain.
+
+The pipeline is idempotent: a partial release (tag exists, assets incomplete) is repaired on the next run instead of wedging. It runs post-merge, so a flaky release build can never turn master red. Releases for today's two fix waves (v0.42.69.0 and v0.42.70.0) have been backfilled with their CHANGELOG notes so the Releases page tells the whole story of the day; binaries attach from v0.42.71.0 onward.
+
+### To take advantage of v0.42.71.0
+
+```bash
+gbrain check-update            # now resolves against real releases
+gbrain self-upgrade            # now actually downloads a binary
+```
+
+Or browse https://github.com/garrytan/gbrain/releases for organized per-version notes.
+
+### For contributors
+
+`docs/RELEASING.md` gains the release-publication section; `scripts/changelog-entry.sh` extracts a version's CHANGELOG section (used for release notes — keep entries under the standard `## [X.Y.Z.W]` headers and they publish verbatim). The workflow keeps all actions SHA-pinned, tightens top-level permissions to `contents: read` with write scoped to the release job only, and env-binds all interpolations.
+
+Contributed by @time-attack (#3573, closing #3521).
 
 ## [0.42.70.0] - 2026-08-01
 

@@ -1731,7 +1731,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         res.status(400).json({ error: 'sourceId must be a string' });
         return;
       }
-      // v0.42.71.0: tri-state write-fence rescope — omitted = untouched,
+      // v0.42.72.0: tri-state write-fence rescope — omitted = untouched,
       // null = clear, array of strings = replace (mirrors the CLI's
       // --bound-slug-prefixes p1,p2|none).
       if (boundSlugPrefixes !== undefined && boundSlugPrefixes !== null &&

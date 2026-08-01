@@ -230,7 +230,7 @@ function enforceSubagentSlugFence(ctx: OperationContext, slug: string, opName: s
 }
 
 /**
- * OAuth-client slug-fence enforcement (v0.42.71.0 — write-side isolation
+ * OAuth-client slug-fence enforcement (v0.42.72.0 — write-side isolation
  * symmetry). When the authenticated client was registered with
  * --bound-slug-prefixes, every direct slug-mutating write must target a
  * slug under one of those prefixes. Shared by put_page, delete_page,
@@ -451,7 +451,7 @@ export interface AuthInfo {
    */
   allowedSources?: string[];
   /**
-   * v0.42.71.0: slug-prefix WRITE binding from
+   * v0.42.72.0: slug-prefix WRITE binding from
    * `oauth_clients.bound_slug_prefixes`, threaded at token-verification
    * time (same JOIN as sourceId/allowedSources — no per-op roundtrip).
    * When present, every direct slug-mutating write op is fenced to slugs

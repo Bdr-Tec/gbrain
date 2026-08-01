@@ -32,7 +32,7 @@ Isolation model:
 - **Reads** are source-granular, SQL-enforced (`federated_read`): every
   employee client reads `agents` + the read-only sources you grant.
 - **Writes** are slug-prefix-granular, server-enforced (`bound_slug_prefixes`,
-  v0.42.71.0+): a client can only mutate pages under its own `emp-<slug>/`
+  v0.42.72.0+): a client can only mutate pages under its own `emp-<slug>/`
   and its channels' `chan-<x>/` prefixes — on `put_page`, `delete_page`,
   `restore_page`, `add_tag`, `remove_tag`, `add_link`/`remove_link`,
   `add_timeline_entry`, `revert_version` and `put_raw_data`, plus the
@@ -60,7 +60,7 @@ Isolation model:
 
 The write fence is a **write** boundary within a source. It is not a privacy
 boundary, and it does not make every side effect prefix-clean. As of
-v0.42.71.0:
+v0.42.72.0:
 
 - **`add_link`/`remove_link` fence the `from` endpoint only.** A bound client
   can create an edge pointing AT a page it cannot write; the edge's `context`
