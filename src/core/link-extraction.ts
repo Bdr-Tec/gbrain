@@ -35,10 +35,15 @@ import { slugifyPath } from './sync.ts';
 // whitelist no longer drops markdown links / bare-slug refs / slash-shaped
 // wikilinks in non-whitelisted directories). Pages stamped by earlier sweeps
 // are re-flagged so the next --stale sweep re-extracts under both fixes.
-// The watermark is the day AFTER the wave ships: the staleness predicate is
-// strict `<`, so a same-day stamp written by pre-wave code would otherwise
-// read as fresh and never re-extract.
-export const LINK_EXTRACTOR_VERSION_TS = '2026-08-02T00:00:00Z';
+// The watermark MUST NOT be in the future: the stamp path clamps
+// links_extracted_at up to the watermark (so a fresh extraction isn't
+// immediately re-listed), which means a future watermark masks concurrent
+// edits until that date — the exact race D4 guards (test/extract-stale.test.ts).
+// The converse limitation is inherent and accepted: a stamp written by
+// PRE-wave code after this date reads as fresh and won't re-extract until
+// the page is next edited; no fixed watermark can cover code that keeps
+// running past it.
+export const LINK_EXTRACTOR_VERSION_TS = '2026-08-01T00:00:00Z';
 
 // ─── Entity references ──────────────────────────────────────────
 
