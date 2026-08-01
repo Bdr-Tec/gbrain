@@ -14,6 +14,7 @@
 import type { BrainEngine } from './engine.ts';
 import type { PageType, EffectiveDateSource } from './types.ts';
 import { ensureWellFormed } from './text-safe.ts';
+import { slugifyPath } from './sync.ts';
 
 /**
  * v0.42.7 — link-extraction version stamp. Bump this ISO timestamp whenever the
@@ -527,29 +528,30 @@ export async function extractPageLinks(
           linkSource: 'markdown',
         });
       }
-      if (!opts.globalBasename || typeof resolver.resolveBasenameMatches !== 'function') {
-        continue;
-      }
+      if (typeof resolver.resolveBasenameMatches !== 'function') continue;
       // Issue #972 (codex): resolve by the wikilink TARGET (ref.slug — the
       // text inside `[[...]]` before any `|`), NOT the display alias
       // (ref.name = match[2]). `[[struktura|the project]]` must resolve
       // `struktura`, not "the project". The display text is for context only.
       //
-      // The literal may be path-qualified (`[[notes/struktura]]`). The FS
-      // path (resolveSlugAll) strips the dirname before its basename lookup,
-      // but this path passed the raw literal to an index keyed by final
-      // segments only — so every slash-containing wikilink outside
-      // DIR_PATTERN silently resolved to nothing. Query by the final
-      // segment, then use the written path as a disambiguation filter
-      // (the analogue of the FS ancestor walk honoring the written path):
-      // a match must end with the literal, so `[[notes/struktura]]` can
-      // resolve to `vault/notes/struktura` but never to `wiki/struktura`.
-      // The EXACT literal is excluded here — the direct typed candidate
+      // Issue #1964: a dir-qualified wikilink (`[[llm-wiki/entities/AI 3.0]]`)
+      // carries a raw Obsidian path while page slugs are sync-slugified
+      // (`llm-wiki/entities/ai-3.0`). Slugify the path the same way sync does,
+      // then match by exact slug or path-suffix (wiki-root-relative authoring).
+      // This runs regardless of global_basename — it's dir-qualified, so the
+      // cross-dir false-positive risk the flag guards against doesn't apply.
+      // Mirrors the FS path's resolveSlug ancestor walk. Bare `[[name]]`
+      // wikilinks still require the global_basename flag.
+      // The EXACT raw literal is excluded — the direct typed candidate
       // above already covers it (#2576), so keeping it would double-emit.
-      const basename = slashIdx === -1 ? ref.slug : ref.slug.slice(slashIdx + 1);
-      let matches = await resolver.resolveBasenameMatches(basename);
-      if (slashIdx !== -1) {
-        matches = matches.filter(m => m !== ref.slug && m.endsWith(`/${ref.slug}`));
+      let matches: string[] = [];
+      const slugified = ref.slug.includes('/') ? slugifyPath(ref.slug) : '';
+      if (slugified.includes('/')) {
+        const tail = slugified.slice(slugified.lastIndexOf('/') + 1);
+        matches = (await resolver.resolveBasenameMatches(tail))
+          .filter(m => m !== ref.slug && (m === slugified || m.endsWith(`/${slugified}`)));
+      } else if (opts.globalBasename) {
+        matches = await resolver.resolveBasenameMatches(ref.slug);
       }
       if (matches.length === 0) continue;
       const idx = content.indexOf(ref.slug);
