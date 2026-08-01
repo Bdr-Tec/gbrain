@@ -6,6 +6,11 @@ import { LATEST_VERSION, getIdleBlockers } from '../core/migrate.ts';
 import { checkResolvable } from '../core/check-resolvable.ts';
 import { autoFixDryViolations, type AutoFixReport, type FixOutcome } from '../core/dry-fix.ts';
 import { autoDetectSkillsDirReadOnly } from '../core/repo-root.ts';
+import {
+  SKILLS_MANIFEST_FILENAME,
+  verifySkillsManifest,
+  type SkillsManifest,
+} from '../core/skills-integrity.ts';
 import { loadOrDeriveManifest } from '../core/skill-manifest.ts';
 import { parseSkillFrontmatter } from '../core/skill-frontmatter.ts';
 import {
@@ -4845,6 +4850,15 @@ export async function buildChecks(
     checks.push(skillBrainFirstCheck(skillsDir));
   }
 
+  // 2c. Skills manifest integrity (#159): tamper-evidence, not signatures.
+  // Compares the skills tree against its committed skills.lock.json and
+  // WARNS on drift — never fails, never blocks. No manifest (e.g. a user
+  // workspace skills dir, or a compiled binary far from the repo) → ok/skip.
+  // SKILL group — gated.
+  if (scope === 'all' && skillsDir) {
+    checks.push(skillsManifestIntegrityCheck(skillsDir));
+  }
+
   // 3. Half-migrated Minions detection (filesystem-only).
   // If completed.jsonl has any status:"partial" entry with no later
   // status:"complete" for the same version, the install is mid-migration.
@@ -7916,6 +7930,51 @@ export function skillConformanceCheck(skillsDir: string): Check {
  * Test seam: pure function, no `process.exit`. Direct call from tests
  * with a synthetic skills dir under tempdir.
  */
+/**
+ * Skills-manifest integrity check (#159). Verifies the skills tree against
+ * the committed skills.lock.json tamper-evidence manifest. Advisory only:
+ * drift is a WARN (local edits are legitimate), and a missing/unreadable
+ * manifest is an ok/skip — a user's workspace skills dir or a compiled
+ * binary far from the repo has no manifest, and that is not a problem.
+ */
+export function skillsManifestIntegrityCheck(skillsDir: string): Check {
+  const name = 'skills_manifest_integrity';
+  const manifestPath = join(skillsDir, SKILLS_MANIFEST_FILENAME);
+  if (!existsSync(manifestPath)) {
+    return { name, status: 'ok', message: `No ${SKILLS_MANIFEST_FILENAME} in ${skillsDir} — integrity check not applicable` };
+  }
+  let drift: ReturnType<typeof verifySkillsManifest>;
+  let tracked: number;
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as SkillsManifest;
+    tracked = Object.keys(manifest).length;
+    drift = verifySkillsManifest(skillsDir, manifest);
+  } catch (err) {
+    // Fail-safe: an unreadable/unparseable manifest or a filesystem error
+    // skips the check rather than warning — this check must never block.
+    const msg = err instanceof Error ? err.message : String(err);
+    return { name, status: 'ok', message: `Could not verify ${SKILLS_MANIFEST_FILENAME} (${msg}) — integrity check skipped` };
+  }
+  const total = drift.modified.length + drift.missing.length + drift.extra.length;
+  if (total === 0) {
+    return { name, status: 'ok', message: `${tracked} bundled skill files match ${SKILLS_MANIFEST_FILENAME}` };
+  }
+  const sample = (files: string[]): string =>
+    files.slice(0, 5).join(', ') + (files.length > 5 ? `, … +${files.length - 5} more` : '');
+  const parts: string[] = [];
+  if (drift.modified.length > 0) parts.push(`${drift.modified.length} modified (${sample(drift.modified)})`);
+  if (drift.missing.length > 0) parts.push(`${drift.missing.length} missing (${sample(drift.missing)})`);
+  if (drift.extra.length > 0) parts.push(`${drift.extra.length} extra (${sample(drift.extra)})`);
+  return {
+    name,
+    status: 'warn',
+    message:
+      `skills/ drifted from ${SKILLS_MANIFEST_FILENAME} (advisory — local edits are fine): ${parts.join('; ')}. ` +
+      `If intentional, regenerate: bun run scripts/generate-skills-manifest.ts`,
+    details: { modified: drift.modified, missing: drift.missing, extra: drift.extra },
+  };
+}
+
 export function skillBrainFirstCheck(skillsDir: string): Check {
   let manifest: ReturnType<typeof loadOrDeriveManifest>;
   try {

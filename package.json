@@ -75,6 +75,7 @@
     "check:privacy": "bash scripts/check-privacy.sh",
     "check:proposal-pii": "bash scripts/check-proposal-pii.sh",
     "check:eval-glossary": "bash scripts/check-eval-glossary-fresh.sh",
+    "check:skills-manifest": "bash scripts/check-skills-manifest-fresh.sh",
     "check:test-names": "bash scripts/check-test-real-names.sh",
     "check:progress": "bash scripts/check-progress-to-stdout.sh",
     "check:no-tracked-symlinks": "bash scripts/check-no-tracked-symlinks.sh",
