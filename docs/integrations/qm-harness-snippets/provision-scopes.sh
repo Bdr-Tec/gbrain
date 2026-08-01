@@ -96,6 +96,21 @@ if git -C "$(dirname "$SECRETS_OUT")" rev-parse --is-inside-work-tree >/dev/null
   echo "      gitignore it, or pass --secrets-out /some/path/outside/the/repo." >&2
 fi
 
+# Secure the credential sinks BEFORE anything is appended. umask only governs
+# files this script creates; a pre-existing world-readable file would receive
+# secrets first and be chmod'ed only afterwards, and a symlink planted at
+# either path would redirect them entirely.
+for f in "$SECRETS_OUT" "$STATE_FILE"; do
+  [ -L "$f" ] && die "refusing to write credentials through a symlink: $f"
+  if [ -e "$f" ]; then
+    [ -f "$f" ] || die "refusing to write credentials to a non-regular file: $f"
+    [ -O "$f" ] || die "refusing to write credentials to a file owned by another user: $f"
+  else
+    : > "$f"
+  fi
+  chmod 600 "$f"
+done
+
 run() {
   if [ "$DRY_RUN" = 1 ]; then echo "DRY-RUN: $GBRAIN $*" >&2; return 0; fi
   # shellcheck disable=SC2086 — $GBRAIN may carry args ("bun run src/cli.ts")
@@ -162,7 +177,11 @@ for entry in $EMPLOYEES; do
 
   client_id="$(state_lookup "$slug")"
   if [ -n "$client_id" ]; then
-    run auth rescope-client "$client_id" \
+    # --source too, so a re-run actually CONVERGES the client to the roster:
+    # without it, changing --memory-source (or inheriting a state row written
+    # against an older one) silently leaves the old write source in place
+    # while the script reports success.
+    run auth rescope-client "$client_id" --source "$MEMORY_SOURCE" \
       --federated-read "$FED_READ" --bound-slug-prefixes "$prefixes" >/dev/null
     echo "employee '$slug': rescoped $client_id  [write: $prefixes]"
   elif [ "$DRY_RUN" = 1 ]; then
@@ -178,9 +197,10 @@ for entry in $EMPLOYEES; do
     secret=$(echo "$out"    | sed -n 's/.*Client Secret:[[:space:]]*\(gbrain_cs_[^[:space:]]*\).*/\1/p' | head -1)
     if [ -z "$client_id" ] || [ -z "$secret" ]; then
       # The client may well have been created — dying silently would strand a
-      # live credential nobody can find. Name it so the operator can revoke.
-      echo "$out" >&2
-      die "could not parse client id/secret for '$slug'. A client MAY have been created (see output above); check \`gbrain auth list\` and revoke any stray 'qm-emp-$slug'."
+      # live credential nobody can find. Say so WITHOUT echoing the captured
+      # output: it contains the freshly minted secret, and this path ends up
+      # in CI logs.
+      die "could not parse client id/secret for '$slug' from register-client output (output withheld: it contains a secret). A client MAY have been created; check \`gbrain auth list\` and revoke any stray 'qm-emp-$slug'."
     fi
     printf '%s\t%s\n' "$slug" "$client_id" >> "$STATE_FILE"
     printf '%s\t%s\t%s\n' "$slug" "$client_id" "$secret" >> "$SECRETS_OUT"

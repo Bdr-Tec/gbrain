@@ -119,6 +119,19 @@ describe('qm-harness provisioning + write fence (e2e, PGLite)', () => {
     const p3 = await provision();
     if (p3.exitCode !== 0) throw new Error(`provision rescope failed: ${p3.stderr || p3.stdout}`);
 
+    // 4b. An UNBOUND client, standing in for a webhook integration. Registered
+    //     here because PGLite is single-process: once serve --http holds the
+    //     lock, no host-side CLI command can run.
+    const wh = await gbrain([
+      'auth', 'register-client', 'webhook-integration',
+      '--grant-types', 'client_credentials', '--scopes', 'read write',
+    ], hostHome);
+    if (wh.exitCode !== 0) throw new Error(`webhook client registration failed: ${wh.stderr || wh.stdout}`);
+    creds['webhook-integration'] = {
+      clientId: wh.stdout.match(/Client ID:\s+(gbrain_cl_\S+)/)?.[1] ?? '',
+      secret: wh.stdout.match(/Client Secret:\s+(gbrain_cs_\S+)/)?.[1] ?? '',
+    };
+
     // 5. Serve over HTTP MCP (holds the PGLite lock from here on).
     serverPort = 30000 + Math.floor(Math.random() * 30000);
     const env: Record<string, string> = {};
@@ -205,7 +218,10 @@ describe('qm-harness provisioning + write fence (e2e, PGLite)', () => {
   }
 
   test('provisioning minted one bound client per employee, exactly once', () => {
-    expect(Object.keys(creds).sort()).toEqual(['alice-example', 'bob-example']);
+    // Only the roster-provisioned clients; 'webhook-integration' is registered
+    // separately by the suite to prove the /ingest deny is scoped to bound clients.
+    expect(Object.keys(creds).filter(k => k !== 'webhook-integration').sort())
+      .toEqual(['alice-example', 'bob-example']);
     expect(creds['alice-example'].clientId).toStartWith('gbrain_cl_');
     expect(creds['alice-example'].secret).toStartWith('gbrain_cs_');
     expect(rerunCredsGrew).toBe(false);
@@ -254,10 +270,10 @@ describe('qm-harness provisioning + write fence (e2e, PGLite)', () => {
     expect(who.stdout).toContain(creds['alice-example'].clientId);
   });
 
-  test('POST /ingest is fenced too — it bypasses the op layer entirely', async () => {
-    const post = async (slug: string | null) => {
+  test('POST /ingest is closed to bound clients — it bypasses the op layer entirely', async () => {
+    const post = async (token: string, slug: string | null) => {
       const headers: Record<string, string> = {
-        'Authorization': `Bearer ${await mintToken('alice-example')}`,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'text/markdown',
       };
       if (slug) headers['X-Gbrain-Slug'] = slug;
@@ -267,16 +283,36 @@ describe('qm-harness provisioning + write fence (e2e, PGLite)', () => {
       });
       return { status: res.status, body: await res.text() };
     };
-    // Out-of-prefix slug: the exact bypass that let a bound client overwrite
-    // any page (in the DEFAULT source, since untrusted payloads carry no grant).
-    const outside = await post('wiki/ceo-comp');
+    const bound = await mintToken('alice-example');
+
+    // The bypass this closes: /ingest queues a job for a handler that skips
+    // the put_page op layer AND refuses to honor a source id for untrusted
+    // payloads, so the write lands in the `default` source. Fencing only the
+    // slug would still have written the right slug into the wrong source.
+    const outside = await post(bound, 'wiki/ceo-comp');
     expect(outside.status).toBe(403);
-    expect(outside.body).toContain('bound_slug_prefixes');
-    // No slug at all would fall back to the handler's inbox/... default,
-    // which is also outside the binding.
-    expect((await post(null)).status).toBe(403);
-    // In-prefix still works.
-    expect([200, 202]).toContain((await post('emp-alice-example/inbox/note')).status);
+    expect(outside.body).toContain('not available to clients restricted to slug prefixes');
+
+    // Even an IN-prefix slug is refused — the source, not just the slug, is
+    // outside the client's grant.
+    expect((await post(bound, 'emp-alice-example/inbox/note')).status).toBe(403);
+    expect((await post(bound, null)).status).toBe(403);
+  });
+
+  test('/ingest still works for an unbound webhook client (deny is scoped to bound clients)', async () => {
+    expect(creds['webhook-integration'].clientId).toStartWith('gbrain_cl_');
+    const token = await mintToken('webhook-integration');
+
+    const res = await fetch(`http://127.0.0.1:${serverPort}/ingest`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'text/markdown',
+        'X-Gbrain-Slug': 'inbox/webhook-note',
+      },
+      body: '---\ntype: note\ntitle: x\n---\n# from a webhook',
+    });
+    expect([200, 202]).toContain(res.status);
   });
 
   test('write ops that cannot be slug-fenced are denied to a bound client', async () => {

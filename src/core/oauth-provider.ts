@@ -44,6 +44,11 @@ export function assertValidSlugPrefixes(prefixes: readonly string[]): void {
     if (p !== p.trim()) {
       throw new Error(`bound_slug_prefixes entry "${p}" has leading/trailing whitespace; slugs never do, so it would fence nothing`);
     }
+    // Slugs are lowercased by validateSlug before storage, so a prefix with
+    // uppercase in it cannot correspond to anything actually written.
+    if (p !== p.toLowerCase()) {
+      throw new Error(`bound_slug_prefixes entry "${p}" must be lowercase; stored slugs are lowercased, so a mixed-case prefix fences unpredictably`);
+    }
   }
 }
 import type { SqlQuery, SqlValue } from './sql-query.ts';
@@ -697,9 +702,22 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       // array vs undefined matters: empty array = explicit no-federated-
       // read; undefined = column missing on this brain.
       const federatedRaw = row.federated_read;
-      const allowedSources = Array.isArray(federatedRaw)
+      const rowSourceId = (row.source_id as string | null) ?? undefined;
+      let allowedSources = Array.isArray(federatedRaw)
         ? (federatedRaw as string[])
         : undefined;
+      // Degraded-projection safety: `resolveRequestedScope` only authorizes an
+      // explicitly requested `source_id` when `allowedSources` is a NON-EMPTY
+      // array — with it undefined, a remote caller naming any source is
+      // accepted. On a brain missing `federated_read` the ladder above returns
+      // exactly that undefined, so a client scoped to one source could read
+      // every other source by passing `source_id`. Synthesize the client's own
+      // source as its grant so the authorization check stays armed. (Legacy
+      // `access_tokens` keep their historical scope handling below — this only
+      // covers the OAuth rows whose column we just dropped.)
+      if (allowedSources === undefined && rowSourceId !== undefined) {
+        allowedSources = [rowSourceId];
+      }
       // v0.42.70.0: slug-prefix write binding. Array (even empty — the
       // fence treats [] as deny-all, matching submit_agent's fail-closed
       // posture) when the client carries a binding; undefined when the
@@ -719,7 +737,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         // v0.34.1 (#861, D2): source-isolation scope from oauth_clients.
         // Undefined when the row predates v60 or when the brain itself
         // predates v60 (fell through to the legacy projection above).
-        sourceId: (row.source_id as string | null) ?? undefined,
+        sourceId: rowSourceId,
         // v0.34.1 (#876): federated read scope. sourceScopeOpts in
         // operations.ts prefers this array over scalar sourceId when set
         // and non-empty.

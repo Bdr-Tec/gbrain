@@ -2243,33 +2243,25 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       const sourceId = (req.header('x-gbrain-source-id') || `webhook-${authInfo.clientId}`).slice(0, 256);
       const callerSlug = req.header('x-gbrain-slug');
 
-      // Slug-bound clients: /ingest hands its payload to the ingest_capture
-      // minion handler, which deliberately bypasses the put_page op layer —
-      // so no OperationContext exists here and enforceClientSlugFence never
-      // runs. Without this check a client bound to `emp-alice/` could POST
-      // `X-Gbrain-Slug: wiki/anything` and have the worker overwrite that
-      // page (in the DEFAULT source, since untrusted payloads don't carry a
-      // source grant). Fence at the route, using the same predicate the ops
-      // use. A bound client must name a slug — the handler's `inbox/...`
-      // default would land outside the binding too.
+      // Slug-bound clients cannot use /ingest at all. The route hands its
+      // payload to the ingest_capture minion handler, which deliberately
+      // bypasses the put_page op layer — so no OperationContext exists and
+      // enforceClientSlugFence never runs, and because the payload is marked
+      // untrusted the handler also refuses to honor any source id, landing
+      // every write in the DEFAULT source. Fencing just the slug here would
+      // still write the right slug into the WRONG source, outside the
+      // client's grant. These clients have put_page over MCP, which enforces
+      // both the prefix fence and the source scope; webhook integrations use
+      // unbound clients.
       const boundPrefixes = authInfo.boundSlugPrefixes;
       if (boundPrefixes) {
-        if (!callerSlug) {
-          res.status(403).json({
-            error: 'permission_denied',
-            message: 'This client is restricted to specific slug prefixes and must set X-Gbrain-Slug on /ingest ' +
-              `(allowed prefixes: ${boundPrefixes.join(', ')}).`,
-          });
-          return;
-        }
-        if (!slugUnderBoundPrefixes(boundPrefixes, callerSlug)) {
-          res.status(403).json({
-            error: 'permission_denied',
-            message: `X-Gbrain-Slug '${callerSlug}' is not under any of this client's bound_slug_prefixes ` +
-              `(${boundPrefixes.join(', ')}).`,
-          });
-          return;
-        }
+        res.status(403).json({
+          error: 'permission_denied',
+          message: 'POST /ingest is not available to clients restricted to slug prefixes ' +
+            `(bound_slug_prefixes: ${boundPrefixes.join(', ')}). Write through the MCP put_page op, ` +
+            'which enforces the prefix fence and your source scope.',
+        });
+        return;
       }
 
       const event: IngestionEvent = {

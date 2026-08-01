@@ -272,7 +272,15 @@ function enforceClientSlugFence(ctx: OperationContext, slug: string, opName: str
  * rows already in the database.
  */
 export function slugUnderBoundPrefixes(prefixes: readonly string[], slug: string): boolean {
-  return prefixes.some((bp) => bp !== '' && slug.startsWith(bp));
+  // Compare against the CANONICAL slug. `validateSlug` lowercases before the
+  // row is written, so checking the caller's raw string let `EMP-ALICE/x`
+  // satisfy an `EMP-ALICE/` binding, commit as `emp-alice/x`, and only then
+  // trip the resolved-slug re-check — an error returned after the write had
+  // already landed. Registration rejects non-lowercase prefixes going
+  // forward; lowercasing both sides keeps pre-existing rows meaning what
+  // their operator intended.
+  const canonical = slug.toLowerCase();
+  return prefixes.some((bp) => bp !== '' && canonical.startsWith(bp.toLowerCase()));
 }
 
 /**
@@ -291,6 +299,11 @@ export const CLIENT_FENCED_WRITE_OPS: ReadonlySet<string> = new Set([
   'put_page', 'delete_page', 'restore_page', 'add_tag', 'remove_tag',
   'add_link', 'remove_link', 'add_timeline_entry', 'revert_version',
   'put_raw_data', 'think',
+  // submit_agent enforces bound_slug_prefixes itself (it is the op the column
+  // was introduced for — see its bound_* binding check), so denying it here
+  // would break the original feature for clients that legitimately hold both
+  // a binding and `agent` scope.
+  'submit_agent',
 ]);
 
 /**
@@ -300,10 +313,17 @@ export const CLIENT_FENCED_WRITE_OPS: ReadonlySet<string> = new Set([
  */
 export function enforceBoundClientOpAllowList(
   auth: AuthInfo | undefined,
-  op: Pick<Operation, 'name' | 'scope'>,
+  op: Pick<Operation, 'name' | 'scope' | 'mutating'>,
 ): void {
   if (!auth?.boundSlugPrefixes) return;
-  if (op.scope !== 'write' && op.scope !== 'admin') return;
+  // Gate on "mutates, or carries any non-read scope" rather than on the two
+  // literal scope strings 'write'/'admin': `sources_add` / `sources_remove`
+  // carry the bespoke `sources_admin` scope and are `mutating: true`, so a
+  // scope-string check let a bound client DROP AN ENTIRE SOURCE — every page
+  // in it, far outside any prefix. Anything that isn't a plain read must be
+  // explicitly allow-listed.
+  const isRead = op.scope === 'read' && op.mutating !== true;
+  if (isRead) return;
   if (CLIENT_FENCED_WRITE_OPS.has(op.name)) return;
   throw new OperationError(
     'permission_denied',
