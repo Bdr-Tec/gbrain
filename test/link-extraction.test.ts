@@ -587,9 +587,12 @@ describe('extractPageLinks', () => {
       {}, 'concept', resolver,
       // opts.globalBasename omitted (= false) — path is dir-qualified
     );
-    expect(candidates.map(c => c.targetSlug)).toEqual(['llm-wiki/entities/ai-3.0']);
-    expect(candidates[0].linkType).toBe('wikilink_basename');
-    expect(candidates[0].linkSource).toBe('wikilink-resolved');
+    // #2576/#3560 also emits raw-literal + bare-path candidates alongside;
+    // downstream existence checks drop them (no such pages). The resolved
+    // wikilink edge is what this test pins.
+    const resolved = candidates.filter(c => c.linkSource === 'wikilink-resolved');
+    expect(resolved.map(c => c.targetSlug)).toEqual(['llm-wiki/entities/ai-3.0']);
+    expect(resolved[0].linkType).toBe('wikilink_basename');
   });
 
   test('#1964: path-suffix match resolves wiki-root-relative paths against a real index', async () => {
@@ -606,7 +609,10 @@ describe('extractPageLinks', () => {
       'See [[llm-wiki/entities/AI 3.0]].',
       {}, 'concept', resolver,
     );
-    expect(candidates.map(c => c.targetSlug)).toEqual(['vault/llm-wiki/entities/ai-3.0']);
+    // Filter to the resolved wikilink edge — #2576/#3560's raw-literal and
+    // bare-path candidates are emitted alongside and dropped downstream.
+    const resolved = candidates.filter(c => c.linkSource === 'wikilink-resolved');
+    expect(resolved.map(c => c.targetSlug)).toEqual(['vault/llm-wiki/entities/ai-3.0']);
   });
 
   test('opts.skipFrontmatter suppresses the frontmatter pass', async () => {
