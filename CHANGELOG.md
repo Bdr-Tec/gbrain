@@ -2,6 +2,39 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.70.0] - 2026-08-01
+
+**Per-person write isolation inside a shared source, and a guide for putting gbrain behind a multi-user agent harness.**
+
+Until now, `--source` was the only write boundary: a client could write anywhere inside the source it was scoped to, and keeping each person in their own folder was a convention the agent had to honor by itself. Registering a client with `--bound-slug-prefixes` now makes that boundary real. Writes outside the bound prefixes are refused by the server, on every op that can name a page.
+
+**Adding a binding to an existing client narrows it on purpose.** Ops that write by something other than a page slug can't be confined to a prefix, so a bound client is refused them outright rather than left with an unfenced path: `extract_entities`, `extract_facts`, `forget_fact`, `ontology_propose`, `sources_add`/`sources_remove`, and `POST /ingest`. `put_page`'s automatic fact extraction is skipped for the same reason — it writes to entity pages the caller never named. Reads are unaffected, and unbound clients behave exactly as before. The gate keys on "anything that is not a plain read", so an op added in a future release is refused to bound clients until it is explicitly fenced.
+
+Both prefix spellings work: the `wiki/agents/alice/*` glob that `submit_agent` bindings already use, and the plainer `emp-alice/` form. Change a binding in place with `gbrain auth rescope-client <id> --bound-slug-prefixes <p1,p2|none>` — existing tokens pick it up on their next request, so no secret rotation is needed when someone joins or leaves a team.
+
+**New guide: [gbrain as the company brain for a qm deployment](docs/integrations/qm-harness.md).** qm is a multiplayer agent harness where each employee and each channel gets an isolated agent scope. The guide covers the whole path — one central `gbrain serve --http`, the thin-client binary baked into the sandbox image, one OAuth client per scope, and a roster-driven provisioning script that converges the brain to a list of people and channels. It also states plainly what the model does *not* give you: within a shared source, reads stay source-granular, so prefix isolation is a write boundary, not a privacy boundary.
+
+### To take advantage of v0.42.70.0
+
+```bash
+gbrain upgrade                    # or: bun install -g gbrain@0.42.70.0
+gbrain apply-migrations --yes     # required: the fence refuses writes it cannot evaluate
+```
+
+To fence an existing client to a folder:
+
+```bash
+gbrain auth rescope-client <client_id> --bound-slug-prefixes partners/alice-example/
+gbrain auth rescope-client <client_id> --bound-slug-prefixes none   # undo
+```
+
+Verify it took, from a client holding that credential — the first write should succeed and the second should be refused:
+
+```bash
+gbrain put partners/alice-example/notes/test --content "mine"
+gbrain put partners/bob-example/notes/test --content "not mine"
+```
+
 ## [0.42.69.0] - 2026-08-01
 
 **A community fix wave: 22 contributed fixes, most of them for work your brain was quietly not doing.**

@@ -177,6 +177,15 @@ for entry in $EMPLOYEES; do
 
   client_id="$(state_lookup "$slug")"
   if [ -n "$client_id" ]; then
+    # The state file usually sits in the deployment repo, so anyone who can
+    # edit it could otherwise retarget this privileged rescope at an arbitrary
+    # client id (e.g. point alice's row at an admin client). Shape-check it.
+    case "$client_id" in
+      gbrain_cl_) die "state file: empty client id for '$slug'" ;;
+      gbrain_cl_*[!a-zA-Z0-9_]*) die "state file: malformed client id for '$slug': $client_id" ;;
+      gbrain_cl_*) ;;
+      *) die "state file: client id for '$slug' does not look like a gbrain client: $client_id" ;;
+    esac
     # --source too, so a re-run actually CONVERGES the client to the roster:
     # without it, changing --memory-source (or inheriting a state row written
     # against an older one) silently leaves the old write source in place

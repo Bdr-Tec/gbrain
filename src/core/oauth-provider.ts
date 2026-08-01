@@ -727,6 +727,14 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       const boundSlugPrefixes = Array.isArray(boundRaw)
         ? (boundRaw as string[])
         : undefined;
+      // Fail CLOSED on the fence axis. If the projection degraded, we do not
+      // know whether this client carries a binding, and "column absent" is
+      // indistinguishable from "no binding" downstream. On a genuinely
+      // pre-v85 brain no binding can exist and this is harmless; the case
+      // that matters is a partially broken schema (interrupted migration,
+      // restored dump missing one column) where bindings DO exist and every
+      // bound client would otherwise be silently unfenced.
+      const fenceProjectionDegraded = !('bound_slug_prefixes' in row);
       return {
         token,
         clientId: row.client_id as string,
@@ -745,6 +753,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         // v0.42.70.0: write fence — consumed by enforceClientSlugFence in
         // operations.ts on every direct slug-mutating write op.
         boundSlugPrefixes,
+        ...(fenceProjectionDegraded ? { fenceProjectionDegraded: true } : {}),
       } as CoreAuthInfo as SdkAuthInfo;
     }
 
@@ -975,7 +984,15 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     // `startsWith` true for every slug — a binding that looks set in
     // `auth list` and the admin UI while fencing nothing. Reject at
     // registration, the same way source ids are validated.
-    if (agentBindings?.boundSlugPrefixes) assertValidSlugPrefixes(agentBindings.boundSlugPrefixes);
+    if (agentBindings?.boundSlugPrefixes) {
+      // Same rule as rescopeClient: an empty list is ambiguous. It registers
+      // as deny-all for every direct write while printing an empty binding
+      // line, so an operator cannot tell it from an unbound client.
+      if (agentBindings.boundSlugPrefixes.length === 0) {
+        throw new Error('--bound-slug-prefixes cannot be an empty list (pass prefixes, or omit the flag for full-source write authority)');
+      }
+      assertValidSlugPrefixes(agentBindings.boundSlugPrefixes);
+    }
 
     // v0.41.3 (T1+T2): validate token_endpoint_auth_method at the registration
     // boundary. Throws InvalidTokenEndpointAuthMethodError on bad input.

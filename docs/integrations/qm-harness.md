@@ -37,14 +37,31 @@ Isolation model:
   `restore_page`, `add_tag`, `remove_tag`, `add_link`/`remove_link`,
   `add_timeline_entry`, `revert_version` and `put_raw_data`, plus the
   `POST /ingest` webhook route. Not by convention.
-- **Every other write op is denied outright** to a bound client. Ops that
-  write by a key other than a slug — `extract_entities` and `extract_facts`
-  (which mutate `people/*` and `companies/*`), `forget_fact` (targets a fact
-  by numeric id, across sources), `ontology_propose` — cannot be fenced by
-  slug, so a bound client gets `permission_denied` at dispatch. The
-  allow-list lives in `CLIENT_FENCED_WRITE_OPS` (`src/core/operations.ts`),
-  so a write op added later is denied until it is explicitly fenced. Reads
-  and `think` are unaffected (remote callers can't persist from `think`).
+- **Every op that is not a plain read is denied unless allow-listed.** Ops
+  that write by a key other than a slug — `extract_entities` and
+  `extract_facts` (which mutate `people/*` and `companies/*`), `forget_fact`
+  (targets a fact by numeric id, across sources), `ontology_propose`, and the
+  `sources_admin` pair `sources_add`/`sources_remove` — cannot be fenced by
+  slug, so a bound client gets `permission_denied` at dispatch. The gate keys
+  on "not a pure read", not on a list of scope strings, so a write op added
+  later (or one carrying a bespoke scope) is denied until it is explicitly
+  fenced and added to `CLIENT_FENCED_WRITE_OPS` (`src/core/operations.ts`).
+  `think` is allow-listed because remote callers cannot persist from it;
+  `submit_agent` because it enforces this same column itself.
+- **Indirect write paths are gated too, not just the ops.** `put_page`'s
+  facts backstop would otherwise extract entities from the page body and
+  write fact rows (and a `## Facts` fence on git-backed sources) onto
+  `people/*` pages the caller never named — the same capability
+  `extract_facts` is denied for, reached through an in-prefix write. It is
+  skipped for bound clients. `POST /ingest` is refused outright: its handler
+  bypasses the op layer *and* discards the source grant for untrusted
+  payloads, so it would write into the `default` source.
+- **Known residual:** `add_link`/`remove_link` fence the `from` endpoint only.
+  A bound client can therefore create an edge pointing AT a page it cannot
+  write, and the edge's `context` text surfaces in that page's backlinks and
+  contributes to its search ranking. Fencing `to` as well would break
+  legitimate cross-referencing into `org-wiki`, so this is deliberate —
+  but treat inbound-edge context as untrusted content, same as page bodies.
 - **Tradeoff to state out loud:** read isolation is per-source, so within the
   shared `agents` source every employee can *read* every prefix (including
   other employees' `emp-*/`). That matches qm's transparent-by-default,
@@ -110,7 +127,8 @@ In the org's qm deployment repo (the directory `qm init` produced):
    beside it (`bun build --compile --outfile gbrain src/cli.ts`, built for
    the sandbox image's OS/arch). `auth.credentialPaths` marks
    `~/.gbrain/config.json` as the scope's resident credential file;
-   `auth.check` wires `gbrain remote doctor` into qm's connector status.
+   `auth.check` wires `gbrain whoami` into qm's connector status (read-scope;
+   see the note below on why `remote doctor` cannot be used here).
 2. **Skill:** copy [`qm-harness-snippets/SKILL.md`](qm-harness-snippets/SKILL.md)
    to `sandbox/skills/gbrain/SKILL.md` (edit slug conventions to taste).
 3. Ship it: `qm sandbox build && qm sandbox publish && qm up`.

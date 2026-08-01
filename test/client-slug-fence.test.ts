@@ -199,6 +199,39 @@ describe('client slug fence (bound_slug_prefixes on direct writes)', () => {
     });
   });
 
+  describe('both prefix grammars are accepted (the column predates this fence)', () => {
+    // v85 introduced bound_slug_prefixes for submit_agent, whose grammar is
+    // matchesSlugAllowList's `<prefix>/*` glob. Rejecting it here would deny
+    // every direct write to already-configured clients on upgrade.
+    test('a glob-style binding still matches', () => {
+      expect(slugUnderBoundPrefixes(['wiki/agents/alice/*'], 'wiki/agents/alice/notes')).toBe(true);
+      expect(slugUnderBoundPrefixes(['wiki/agents/alice/*'], 'wiki/agents/bob/notes')).toBe(false);
+    });
+
+    test('a trailing-slash binding still matches', () => {
+      expect(slugUnderBoundPrefixes(['emp-alice/'], 'emp-alice/notes')).toBe(true);
+      expect(slugUnderBoundPrefixes(['emp-alice/'], 'emp-alice-evil/notes')).toBe(false);
+    });
+
+    test('the canonical (lowercased) slug is what is matched', () => {
+      // validateSlug lowercases before storage, so the fence must compare the
+      // form that actually gets written — not the caller's raw string.
+      expect(slugUnderBoundPrefixes(['emp-alice/'], 'EMP-ALICE/Notes')).toBe(true);
+      expect(slugUnderBoundPrefixes(['emp-alice/'], 'EMP-BOB/Notes')).toBe(false);
+    });
+  });
+
+  describe('degraded fence projection fails closed', () => {
+    test('writes are refused when bound_slug_prefixes could not be read', async () => {
+      const ctx = makeCtx({
+        auth: { ...boundAuth(undefined), fenceProjectionDegraded: true },
+      });
+      const p = op('put_page').handler(ctx, { slug: 'anything/at-all', content: 'stub' });
+      await expect(p).rejects.toBeInstanceOf(OperationError);
+      await expect(p).rejects.toThrow(/cannot be evaluated/);
+    });
+  });
+
   describe('composition with the subagent fence', () => {
     test('both fences apply: subagent namespace passes but client binding rejects', async () => {
       const ctx = makeCtx({

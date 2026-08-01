@@ -248,6 +248,13 @@ function enforceSubagentSlugFence(ctx: OperationContext, slug: string, opName: s
  * 'notes-archive/...' by startsWith construction.
  */
 function enforceClientSlugFence(ctx: OperationContext, slug: string, opName: string): void {
+  if (ctx.auth?.fenceProjectionDegraded) {
+    throw new OperationError(
+      'permission_denied',
+      `${opName}: this brain's oauth_clients projection is missing bound_slug_prefixes, so the write fence cannot be evaluated. Refusing the write rather than running unfenced.`,
+      'Run `gbrain apply-migrations --yes` on the brain host.',
+    );
+  }
   const prefixes = ctx.auth?.boundSlugPrefixes;
   if (!prefixes) return;
   if (!slugUnderBoundPrefixes(prefixes, slug)) {
@@ -280,7 +287,15 @@ export function slugUnderBoundPrefixes(prefixes: readonly string[], slug: string
   // forward; lowercasing both sides keeps pre-existing rows meaning what
   // their operator intended.
   const canonical = slug.toLowerCase();
-  return prefixes.some((bp) => bp !== '' && canonical.startsWith(bp.toLowerCase()));
+  return prefixes.some((bp) => {
+    // `oauth_clients.bound_slug_prefixes` predates this fence: migration v85
+    // introduced it as submit_agent's binding, whose documented grammar is the
+    // `<prefix>/*` glob of `matchesSlugAllowList`. Accept BOTH spellings, or
+    // upgrading silently denies every direct write to clients already bound
+    // with a glob (`wiki/agents/alice/*` never startsWith-matches a real slug).
+    const base = bp.endsWith('/*') ? bp.slice(0, -1) : bp;
+    return base !== '' && canonical.startsWith(base.toLowerCase());
+  });
 }
 
 /**
@@ -428,6 +443,14 @@ export interface AuthInfo {
    * full-source write authority, back-compat).
    */
   boundSlugPrefixes?: string[];
+  /**
+   * Set when token verification could not read `bound_slug_prefixes` (the
+   * projection degraded on a brain missing an OAuth column). The fence can't
+   * distinguish "no binding" from "binding unknown" otherwise, so writes are
+   * refused rather than silently unfenced. Read/auth degradation is
+   * unaffected — this axis alone fails closed.
+   */
+  fenceProjectionDegraded?: boolean;
 }
 
 export interface OperationContext {
@@ -1260,6 +1283,18 @@ const put_page: Operation = {
     // (MEDIUM facts wait for the dream cycle but DO land via put_page,
     // matching the pre-fix behavior on this surface).
     let factsQueued: { queued: boolean } | { skipped: string } | undefined;
+    // Slug-bound clients do not get the facts backstop. It extracts entities
+    // from the (attacker-controllable) page body and writes fact rows — and,
+    // on a source with a local_path, a `## Facts` fence in the entity's own
+    // .md — keyed to `people/…` / `companies/…` slugs the caller never named.
+    // That is exactly the capability `extract_facts` is denied at dispatch
+    // for, reachable indirectly through a perfectly in-prefix put_page. The
+    // sibling post-hooks above already skip for untrusted callers (auto-link
+    // at `remote !== false && !trustedWorkspace`, chronicle at
+    // `remote !== false`); this one had no gate at all.
+    if (ctx.auth?.boundSlugPrefixes) {
+      factsQueued = { skipped: 'slug_bound_client' };
+    } else {
     try {
       const { runFactsBackstop } = await import('./facts/backstop.ts');
       const r = await runFactsBackstop(
@@ -1291,6 +1326,7 @@ const put_page: Operation = {
       }
     } catch {
       factsQueued = { skipped: 'backstop_error' };
+    }
     }
 
     // v0.42.x (#2390): Life Chronicle backstop. ONLY on a real import
