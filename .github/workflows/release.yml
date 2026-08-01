@@ -82,11 +82,19 @@ jobs:
         with:
           bun-version: 1.3.13
       - run: bun install
-      # --timeout matches every scripts/ runner and covers hook budgets too
-      # (bunfig.toml's timeout key is ignored by bun; hooks default to 5s).
-      - run: bun test --timeout=60000
-      - run: bun run verify
+      # No test re-run here: the Test workflow already gated this exact SHA at
+      # merge (10 shards + E2E). Re-running the whole suite serially on the
+      # release runner is a flakier duplicate gate — it blocked the first
+      # release on ambient-env tests (run 30698650484). The build job's gate
+      # is the artifact itself: compile, then smoke-test the binary.
       - run: bun build --compile --target=${{ matrix.target }} --outfile bin/${{ matrix.artifact }} src/cli.ts
+      - name: Smoke-test the compiled binary
+        run: |
+          chmod +x bin/${{ matrix.artifact }}
+          out="$(./bin/${{ matrix.artifact }} --version)"
+          echo "binary reports: $out"
+          v="$(tr -d '[:space:]' < VERSION)"
+          case "$out" in *"$v"*) echo "version matches VERSION file" ;; *) echo "binary version '$out' does not contain '$v'" >&2; exit 1 ;; esac
       - name: Attest build provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
         with:
