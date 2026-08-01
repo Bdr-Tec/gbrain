@@ -1,0 +1,77 @@
+name: PR Gate
+
+# Strict PR usefulness gate (#3698): classifies every PR to master into
+# merge-lane / close-lane / needs-maintainer BEFORE any human review effort.
+# Verdict + reviewer checklist land in one sticky comment; exactly one
+# gate:* label is applied; close-lane exits 1 (red X = strong signal).
+#
+# SECURITY MODEL (pull_request_target on a 30k-star public repo):
+# - PR code is NEVER checked out or executed. Metadata + diff come from the
+#   GitHub API only; the diff is capped at 120KB.
+# - The checkout below is the BASE repo (master) — rubric/script only.
+#   NEVER add a `ref:` pointing at the PR head.
+# - Attacker-controlled values (title/body/diff) never touch the shell:
+#   every ${{ }} is env-bound; run: scripts use plain env vars.
+# - If ANTHROPIC_API_KEY is missing at runtime, the script NEUTRAL-skips
+#   loudly (sticky comment + warning annotation, exit 0) — never a silent
+#   green, never a red X for a missing secret.
+# Pinned by test/pr-gate-workflow.test.ts.
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+    branches: [master]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Base repo (master) only — provides scripts/pr-gate.mjs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Fetch PR metadata + diff (API only — PR code is never checked out)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pr-gate"
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr-gate/pr.json"
+          # First 100 files is enough: red flags key off pr.json's changed_files
+          # count, and >40 files already flags.
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "$RUNNER_TEMP/pr-gate/files.json"
+          # Diff via the .diff media type; GitHub can 406 on huge diffs —
+          # degrade to a marker instead of failing the gate.
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
+            -H "Accept: application/vnd.github.diff" \
+            > "$RUNNER_TEMP/pr-gate/pr.diff.full" \
+            || printf '[diff unavailable from the GitHub API — too large or unfetchable]\n' \
+              > "$RUNNER_TEMP/pr-gate/pr.diff.full"
+          MAX=122880  # 120KB cap
+          if [ "$(wc -c < "$RUNNER_TEMP/pr-gate/pr.diff.full")" -gt "$MAX" ]; then
+            head -c "$MAX" "$RUNNER_TEMP/pr-gate/pr.diff.full" > "$RUNNER_TEMP/pr-gate/pr.diff"
+            printf '\n\n[TRUNCATED: diff capped at 120KB]\n' >> "$RUNNER_TEMP/pr-gate/pr.diff"
+          else
+            mv "$RUNNER_TEMP/pr-gate/pr.diff.full" "$RUNNER_TEMP/pr-gate/pr.diff"
+          fi
+          rm -f "$RUNNER_TEMP/pr-gate/pr.diff.full"
+
+      - name: Gate verdict (sticky comment + label; exit 1 only on close-lane)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/pr-gate.mjs "$RUNNER_TEMP/pr-gate"
