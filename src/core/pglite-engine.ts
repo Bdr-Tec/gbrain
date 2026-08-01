@@ -972,6 +972,11 @@ export class PGLiteEngine implements BrainEngine {
     return fn(conn);
   }
 
+  // NOTE: the tx-engine handed to `fn` proxies `db` to a PGLite Transaction,
+  // which has query/sql/exec but NO .transaction — so engine methods that
+  // open their own transaction (searchVector since #3613) will throw if
+  // called on the tx-engine. No current callback does; keep it that way or
+  // add pass-through nesting first.
   async transaction<T>(fn: (engine: BrainEngine) => Promise<T>): Promise<T> {
     return this.db.transaction(async (tx) => {
       const txEngine = Object.create(this) as PGLiteEngine;

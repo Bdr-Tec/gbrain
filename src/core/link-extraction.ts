@@ -35,7 +35,10 @@ import { slugifyPath } from './sync.ts';
 // whitelist no longer drops markdown links / bare-slug refs / slash-shaped
 // wikilinks in non-whitelisted directories). Pages stamped by earlier sweeps
 // are re-flagged so the next --stale sweep re-extracts under both fixes.
-export const LINK_EXTRACTOR_VERSION_TS = '2026-08-01T00:00:00Z';
+// The watermark is the day AFTER the wave ships: the staleness predicate is
+// strict `<`, so a same-day stamp written by pre-wave code would otherwise
+// read as fresh and never re-extract.
+export const LINK_EXTRACTOR_VERSION_TS = '2026-08-02T00:00:00Z';
 
 // ─── Entity references ──────────────────────────────────────────
 
@@ -589,7 +592,14 @@ export async function extractPageLinks(
   // that happens to look like a path (`on/off`, `com/foo/bar` inside a URL)
   // is dropped by the callers' page-existence checks, never persisted.
   // Code blocks are stripped first — slugs in code samples are not real refs.
-  const strippedContent = stripCodeBlocks(content);
+  // Wikilink spans are masked too (equal-length blanks, so match indices stay
+  // valid for excerpt()): the wikilink pass above owns `[[...]]` interiors,
+  // and without the mask a dir-qualified wikilink like
+  // `[[llm-wiki/entities/AI 3.0]]` leaves its lowercase prefix
+  // `llm-wiki/entities` as a bare-path match — a spurious edge to the parent
+  // page whenever that page exists.
+  const strippedContent = stripCodeBlocks(content)
+    .replace(/\[\[[^\]]*\]\]/g, (s) => ' '.repeat(s.length));
   const bareRe = new RegExp(
     `\\b(${ANY_DIR_SEGMENT}\\/[a-z0-9][a-z0-9/-]*[a-z0-9])\\b`,
     'g',

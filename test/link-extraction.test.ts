@@ -615,6 +615,31 @@ describe('extractPageLinks', () => {
     expect(resolved.map(c => c.targetSlug)).toEqual(['vault/llm-wiki/entities/ai-3.0']);
   });
 
+  test('wikilink interiors are masked from the bare-path pass (no parent-page edge)', async () => {
+    // Codex wave-i finding: `[[llm-wiki/entities/AI 3.0]]` leaves its
+    // lowercase prefix `llm-wiki/entities` as a bare-path match if the
+    // scanner sees wikilink interiors — a spurious 'markdown' edge to the
+    // PARENT page whenever it exists. The mask blanks `[[...]]` spans before
+    // pass 2; the wikilink pass owns those interiors.
+    const resolver: SlugResolver = {
+      resolve: async () => null,
+      resolveBasenameMatches: async (name) =>
+        name === 'ai-3.0' ? ['llm-wiki/entities/ai-3.0'] : [],
+    };
+    const { candidates } = await extractPageLinks(
+      'llm-wiki/notes/roadmap',
+      'See [[llm-wiki/entities/AI 3.0]] for the model. Also see ops/runbook.',
+      {}, 'concept', resolver,
+    );
+    // The parent-prefix must NOT appear from the wikilink interior...
+    expect(candidates.map(c => c.targetSlug)).not.toContain('llm-wiki/entities');
+    // ...while a genuine bare path in prose still produces its candidate,
+    expect(candidates.map(c => c.targetSlug)).toContain('ops/runbook');
+    // and the wikilink itself still resolves through its own pass.
+    expect(candidates.filter(c => c.linkSource === 'wikilink-resolved')
+      .map(c => c.targetSlug)).toEqual(['llm-wiki/entities/ai-3.0']);
+  });
+
   test('opts.skipFrontmatter suppresses the frontmatter pass', async () => {
     // Real resolver shape that WOULD resolve frontmatter source: too,
     // but skipFrontmatter blocks the path entirely.
