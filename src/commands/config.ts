@@ -35,6 +35,10 @@ export function redactConfigValue(key: string, value: string): string {
   return value;
 }
 
+// #3661: the flags `config set` actually honors. Everything else that looks
+// like a flag is rejected before the write — see the gate in the `set` branch.
+const CONFIG_SET_KNOWN_FLAGS = ['--force', '--coverage-override', '--yes'];
+
 export async function runConfig(engine: BrainEngine, args: string[]) {
   const action = args[0];
 
@@ -151,6 +155,23 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
       process.exit(1);
     }
   } else if (action === 'set' && key && value) {
+    // #3661: `config set` dropped flags it does not implement and wrote
+    // anyway. `--dry-run` — honored by sync/import/extract/quarantine/pages —
+    // printed the usual "Set <key> = <value>" confirmation and persisted the
+    // mutation, so a caller probing a value silently changed live config.
+    // Unknown flags are now refused BEFORE any validation or write runs.
+    const unknownFlags = args
+      .slice(3)
+      .filter(a => a.startsWith('-') && !CONFIG_SET_KNOWN_FLAGS.includes(a));
+    if (unknownFlags.length > 0) {
+      for (const flag of unknownFlags) {
+        console.error(`[config] unknown flag: ${flag}`);
+      }
+      console.error(`[config] \`gbrain config set\` accepts: ${CONFIG_SET_KNOWN_FLAGS.join(', ')}.`);
+      console.error(`[config] Nothing was written.`);
+      process.exit(1);
+    }
+
     // Bootstrap hook-lane keys are FILE-plane canonical: they are read by
     // engine-free processes (the harness hook children and the detached
     // `sources push` child) via loadConfigFileOnly, which never sees the DB
