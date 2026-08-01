@@ -28,11 +28,13 @@ import { ensureWellFormed } from './text-safe.ts';
  * OR updated_at > links_extracted_at`. It is an ISO-8601 string (NOT a number) —
  * the column is TIMESTAMPTZ and the predicate binds it as `::timestamptz`.
  */
-// 2026-07-30: bumped for the #3466 inferTypeByDir fix — unevidenced
-// people/ -> companies/ adjacency now infers 'mentions' instead of
-// 'works_at'; the bump re-flags stamped pages so the next --stale sweep
-// re-extracts them under the corrected inference.
-export const LINK_EXTRACTOR_VERSION_TS = '2026-07-30T00:00:00Z';
+// 2026-08-01: bumped for the fix-wave-i extraction batch — the #3466
+// inferTypeByDir fix (unevidenced people/ -> companies/ adjacency now infers
+// 'mentions' instead of 'works_at') AND the #2576 bug-2 fix (the DIR_PATTERN
+// whitelist no longer drops markdown links / bare-slug refs / slash-shaped
+// wikilinks in non-whitelisted directories). Pages stamped by earlier sweeps
+// are re-flagged so the next --stale sweep re-extracts under both fixes.
+export const LINK_EXTRACTOR_VERSION_TS = '2026-08-01T00:00:00Z';
 
 // ─── Entity references ──────────────────────────────────────────
 
@@ -81,16 +83,30 @@ export const WIKILINK_BASENAME_LINK_TYPE = 'wikilink_basename';
 export type LinkResolutionType = 'qualified' | 'unqualified';
 
 /**
- * Directory prefix whitelist. These are the top-level slug dirs the extractor
- * recognizes as entity references. Upstream canonical + our extensions:
- *   - Gbrain canonical: people, companies, meetings, concepts, deal, civic, project, source, media, yc, projects, reference
- *   - Our domain extensions: tech, finance, personal, openclaw (domain-organized wikis)
- *   - Our entity prefix: entities (we kept some legacy entities/projects/ pages)
+ * Directory prefix whitelist. These are the canonical top-level slug dirs
+ * (gbrain-base pack dirs + historical extensions). #2576 (bug 2): this list
+ * is NO LONGER a drop-gate for markdown links, bare-slug prose refs, or
+ * slash-shaped wikilinks — those now match ANY_DIR_SEGMENT and rely on the
+ * downstream page-existence checks that every persist path already runs
+ * (resolveCandidateSources in extract.ts, the allSlugs filter in put_page
+ * auto-link, and addLinksBatch's INNER JOINs as the final backstop). The
+ * whitelist survives only as the typed fast-path for pass-2b wikilinks;
+ * non-whitelisted `[[dir/...]]` get equivalent treatment in pass 2c.
  */
 const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|projects|source|media|yc|tech|finance|personal|openclaw|entities|reference)';
 
 /**
- * Match `[Name](path)` markdown links pointing to entity directories.
+ * #2576 (bug 2): a plausible top-level slug directory — lowercase alnum
+ * with dashes/underscores, digit-leading allowed (`90-people`). Used where
+ * the hardcoded DIR_PATTERN whitelist used to silently drop every
+ * user-invented directory (`ops/`, `notes/`, custom schema-pack dirs).
+ * Candidates matched through this are validated for page existence
+ * downstream, so a wider net creates no dead edges — only candidates.
+ */
+const ANY_DIR_SEGMENT = '[a-z0-9][a-z0-9_-]*';
+
+/**
+ * Match `[Name](path)` markdown links pointing at page-shaped paths.
  * Accepts both filesystem-relative format (`[Name](../people/slug.md)`)
  * AND engine-slug format (`[Name](people/slug)`).
  *
@@ -98,9 +114,14 @@ const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|pr
  *
  * The regex permits an optional `../` prefix (any number) and an optional
  * `.md` suffix so the same function works for both filesystem and DB content.
+ *
+ * #2576 (bug 2): the first segment is ANY_DIR_SEGMENT, not the DIR_PATTERN
+ * whitelist — `[Pointer](../ops/services/pointer-agent.md)` must produce a
+ * candidate for a brain that has an `ops/` directory. Nonexistent targets
+ * are dropped by the callers' existence checks, exactly as before.
  */
 const ENTITY_REF_RE = new RegExp(
-  `\\[([^\\]]+)\\]\\((?:\\.\\.\\/)*(${DIR_PATTERN}\\/[^)\\s]+?)(?:\\.md)?\\)`,
+  `\\[([^\\]]+)\\]\\((?:\\.\\.\\/)*(${ANY_DIR_SEGMENT}\\/[^)\\s]+?)(?:\\.md)?\\)`,
   'g',
 );
 
@@ -486,6 +507,26 @@ export async function extractPageLinks(
     // pre-v0.40.8.2 behavior of dropping bare wikilinks outside
     // DIR_PATTERN.
     if (ref.needsResolution) {
+      const slashIdx = ref.slug.lastIndexOf('/');
+      // #2576 (bug 2): a slash-shaped wikilink outside DIR_PATTERN
+      // (`[[ops/services/pointer-agent]]`) gets the SAME treatment a
+      // whitelisted dir gets from pass 2b — a direct, verb-typed candidate
+      // for the literal path, emitted regardless of the global_basename
+      // flag. Downstream existence checks (resolveCandidateSources /
+      // put_page's allSlugs filter / addLinksBatch's INNER JOINs) drop it
+      // when no such page exists, exactly as they do for 2b candidates.
+      // Pre-fix these refs were silently dropped (flag off) or demoted to
+      // untyped wikilink_basename edges (flag on).
+      if (slashIdx !== -1 && ref.slug !== slug) {
+        const litIdx = content.indexOf(ref.slug);
+        const litContext = litIdx >= 0 ? excerpt(content, litIdx, 240) : ref.name;
+        candidates.push({
+          targetSlug: ref.slug,
+          linkType: inferLinkType(pageType, litContext, content, ref.slug),
+          context: litContext,
+          linkSource: 'markdown',
+        });
+      }
       if (!opts.globalBasename || typeof resolver.resolveBasenameMatches !== 'function') {
         continue;
       }
@@ -503,11 +544,12 @@ export async function extractPageLinks(
       // (the analogue of the FS ancestor walk honoring the written path):
       // a match must end with the literal, so `[[notes/struktura]]` can
       // resolve to `vault/notes/struktura` but never to `wiki/struktura`.
-      const slashIdx = ref.slug.lastIndexOf('/');
+      // The EXACT literal is excluded here — the direct typed candidate
+      // above already covers it (#2576), so keeping it would double-emit.
       const basename = slashIdx === -1 ? ref.slug : ref.slug.slice(slashIdx + 1);
       let matches = await resolver.resolveBasenameMatches(basename);
       if (slashIdx !== -1) {
-        matches = matches.filter(m => m === ref.slug || m.endsWith(`/${ref.slug}`));
+        matches = matches.filter(m => m !== ref.slug && m.endsWith(`/${ref.slug}`));
       }
       if (matches.length === 0) continue;
       const idx = content.indexOf(ref.slug);
@@ -540,11 +582,14 @@ export async function extractPageLinks(
   }
 
   // 2. Bare slug references (e.g. "see people/alice-chen for context").
-  // Limited to the same entity directories ENTITY_REF_RE covers.
+  // #2576 (bug 2): any dir-shaped path, not just the DIR_PATTERN whitelist —
+  // `see ops/services/pointer-agent` must produce a candidate. Prose noise
+  // that happens to look like a path (`on/off`, `com/foo/bar` inside a URL)
+  // is dropped by the callers' page-existence checks, never persisted.
   // Code blocks are stripped first — slugs in code samples are not real refs.
   const strippedContent = stripCodeBlocks(content);
   const bareRe = new RegExp(
-    `\\b(${DIR_PATTERN}\\/[a-z0-9][a-z0-9/-]*[a-z0-9])\\b`,
+    `\\b(${ANY_DIR_SEGMENT}\\/[a-z0-9][a-z0-9/-]*[a-z0-9])\\b`,
     'g',
   );
   let m: RegExpExecArray | null;
@@ -552,6 +597,8 @@ export async function extractPageLinks(
     // Skip matches that are part of a markdown link (already handled above).
     const charBefore = m.index > 0 ? strippedContent[m.index - 1] : '';
     if (charBefore === '/' || charBefore === '(') continue;
+    // #2576: never emit a self-loop for a page mentioning its own slug.
+    if (m[1] === slug) continue;
     const context = excerpt(strippedContent, m.index, 240);
     candidates.push({
       targetSlug: m[1],

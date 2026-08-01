@@ -100,10 +100,14 @@ describe('extractEntityRefs', () => {
     expect(extractEntityRefs('[Alice(people/alice)')).toEqual([]);
   });
 
-  test('skips non-entity dirs (notes/, ideas/ stay if added later but are accepted now)', () => {
-    // Current regex targets entity dirs explicitly. Notes/ shouldn't match.
+  test('#2576: non-whitelisted dirs (notes/, ops/) ARE extracted as candidates', () => {
+    // Pre-#2576 the DIR_PATTERN whitelist silently dropped these. Now any
+    // dir-shaped path is a candidate; page-existence checks downstream
+    // (resolveCandidateSources / put_page allSlugs / addLinksBatch JOIN)
+    // decide whether an edge is persisted.
     const refs = extractEntityRefs('See [random](notes/random).');
-    expect(refs).toEqual([]);
+    expect(refs.map(r => r.slug)).toEqual(['notes/random']);
+    expect(refs[0].dir).toBe('notes');
   });
 
   test('extracts meeting refs', () => {
@@ -484,8 +488,10 @@ describe('extractPageLinks', () => {
     expect(seen).toContain('struktura');
     expect(seen).not.toContain('notes/struktura');
     expect(candidates.map(c => c.targetSlug)).toEqual(['notes/struktura']);
-    expect(candidates[0].linkType).toBe('wikilink_basename');
-    expect(candidates[0].linkSource).toBe('wikilink-resolved');
+    // #2576: the literal path now yields the direct verb-typed candidate
+    // (parity with whitelisted dirs), not a wikilink_basename demotion.
+    expect(candidates[0].linkType).toBe('mentions');
+    expect(candidates[0].linkSource).toBe('markdown');
   });
 
   test('path-qualified wikilink keeps only matches ending with the written path', async () => {
@@ -516,7 +522,13 @@ describe('extractPageLinks', () => {
       'concepts/x', 'See [[notes/struktura]].',
       {}, 'concept', resolver, { globalBasename: true },
     );
-    expect(candidates.map(c => c.targetSlug)).toEqual(['vault/notes/struktura']);
+    // #2576: the literal path is ALSO emitted as a direct candidate (typed,
+    // linkSource 'markdown') — downstream existence checks drop it when no
+    // `notes/struktura` page exists, so only the suffix match persists.
+    expect(candidates.map(c => c.targetSlug)).toEqual(['notes/struktura', 'vault/notes/struktura']);
+    const suffixMatch = candidates.find(c => c.targetSlug === 'vault/notes/struktura')!;
+    expect(suffixMatch.linkType).toBe('wikilink_basename');
+    expect(suffixMatch.linkSource).toBe('wikilink-resolved');
   });
 
   test('path-qualified self-link is dropped like the bare form', async () => {
