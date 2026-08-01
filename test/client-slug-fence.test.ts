@@ -213,6 +213,23 @@ describe('client slug fence (bound_slug_prefixes on direct writes)', () => {
       expect(slugUnderBoundPrefixes(['emp-alice/'], 'emp-alice-evil/notes')).toBe(false);
     });
 
+    // The `emp-<slug>` scheme makes sibling collisions the common case:
+    // `alice` and `alice-2` are different people. A plain startsWith let a
+    // boundary-less binding reach the neighbour's namespace.
+    test('a boundary-less prefix does NOT reach a sibling namespace', () => {
+      expect(slugUnderBoundPrefixes(['emp-alice'], 'emp-alice/notes')).toBe(true);
+      expect(slugUnderBoundPrefixes(['emp-alice'], 'emp-alice')).toBe(true);
+      expect(slugUnderBoundPrefixes(['emp-alice'], 'emp-alice-2/onboarding')).toBe(false);
+      expect(slugUnderBoundPrefixes(['emp-alice'], 'emp-alicexyz/secret')).toBe(false);
+    });
+
+    test('trailing-slash and glob forms are equally boundary-safe', () => {
+      for (const p of ['emp-alice/', 'emp-alice/*']) {
+        expect(slugUnderBoundPrefixes([p], 'emp-alice/notes')).toBe(true);
+        expect(slugUnderBoundPrefixes([p], 'emp-alice-2/notes')).toBe(false);
+      }
+    });
+
     test('the canonical (lowercased) slug is what is matched', () => {
       // validateSlug lowercases before storage, so the fence must compare the
       // form that actually gets written — not the caller's raw string.

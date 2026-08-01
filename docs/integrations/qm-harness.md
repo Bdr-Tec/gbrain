@@ -71,6 +71,13 @@ v0.42.70.0:
 - **Reads are source-granular, never prefix-granular.** Everyone entitled to
   a source can read every prefix in it. If a scope needs genuine read
   privacy, give it its own source.
+- **`put_page` can create one reverse graph edge outside the fence.** If a
+  page body cites a code location (`src/x.ts:42`) and a code page for it
+  exists *in the same source*, doc↔impl reconciliation adds an edge
+  originating from that code page. It affects graph/backlink ranking, not
+  page content. Unreachable in the layout above (the `agents` source is
+  path-less and holds no code pages); it applies only if you point employee
+  writes at a code-synced source.
 - **A few read ops are still brain-wide** and ignore the federated grant:
   `get_recent_salience`, `find_anomalies`, `find_contradictions`, and
   `sources_list`/`sources_status` (which expose source ids, paths and URLs).

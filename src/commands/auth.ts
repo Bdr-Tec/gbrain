@@ -658,8 +658,12 @@ Usage:
      --bound-brain <id>                                    Bind submit_agent jobs to a brain id
      --bound-slug-prefixes <prefix1,prefix2>               Fence ALL direct slug writes (put_page, delete_page,
                                                           tags, links, timeline, revert, raw data) AND
-                                                          submit_agent to these prefixes. Use trailing
-                                                          slashes ('emp-alice/'). Omit = full-source writes.
+                                                          submit_agent to these prefixes. Each MUST end with
+                                                          '/' or '/*' — a boundary-less 'emp-alice' would also
+                                                          name 'emp-alice-2/...'. Ops that write by something
+                                                          other than a slug (extract_*, forget_fact,
+                                                          ontology_propose, sources_*) and POST /ingest become
+                                                          unavailable to a bound client. Omit = full-source writes.
      --bound-max-concurrent <n>                            Bound submit_agent concurrency (default: 1)
      --budget-usd-per-day <usd>                            Bound submit_agent daily spend cap
   gbrain auth rescope-client <client_id> [options]        Change an existing client's source scope (e.g. a DCR

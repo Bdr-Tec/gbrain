@@ -239,6 +239,10 @@ describe('rescopeClient', () => {
     await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: [''] })).rejects.toThrow('non-empty');
     await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: ['ok/', '  '] })).rejects.toThrow('non-empty');
     await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: [' ok/'] })).rejects.toThrow('whitespace');
+    // A boundary-less entry reads as a character prefix, so it would silently
+    // cover sibling namespaces (emp-alice -> emp-alice-2/...).
+    await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: ['emp-alice'] })).rejects.toThrow('must end with');
+    await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: ['emp-alice/', 'chan-eng'] })).rejects.toThrow('must end with');
     await expect(provider.registerClientManual(
       'empty-prefix-reject', ['client_credentials'], 'read write', [], 'default', undefined, undefined,
       { boundSlugPrefixes: [''] },

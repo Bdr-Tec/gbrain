@@ -49,6 +49,15 @@ export function assertValidSlugPrefixes(prefixes: readonly string[]): void {
     if (p !== p.toLowerCase()) {
       throw new Error(`bound_slug_prefixes entry "${p}" must be lowercase; stored slugs are lowercased, so a mixed-case prefix fences unpredictably`);
     }
+    // Require an explicit segment boundary. Slug namespaces collide on their
+    // own naming scheme — `emp-alice` and `emp-alice-2` are different people —
+    // and a boundary-less entry reads as "everything starting with these
+    // characters". The matcher is boundary-aware regardless, but saying it at
+    // registration is what stops an operator writing a binding whose meaning
+    // isn't what it looks like.
+    if (!p.endsWith('/') && !p.endsWith('/*')) {
+      throw new Error(`bound_slug_prefixes entry "${p}" must end with "/" (or "/*"); a boundary-less prefix reads as a character prefix, so "${p}" would look like it covers only "${p}/..." while naming sibling namespaces like "${p}-2/..."`);
+    }
   }
 }
 import type { SqlQuery, SqlValue } from './sql-query.ts';

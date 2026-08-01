@@ -288,14 +288,27 @@ export function slugUnderBoundPrefixes(prefixes: readonly string[], slug: string
   // their operator intended.
   const canonical = slug.toLowerCase();
   return prefixes.some((bp) => {
-    // `oauth_clients.bound_slug_prefixes` predates this fence: migration v85
-    // introduced it as submit_agent's binding, whose documented grammar is the
-    // `<prefix>/*` glob of `matchesSlugAllowList`. Accept BOTH spellings, or
-    // upgrading silently denies every direct write to clients already bound
-    // with a glob (`wiki/agents/alice/*` never startsWith-matches a real slug).
-    const base = bp.endsWith('/*') ? bp.slice(0, -1) : bp;
-    return base !== '' && canonical.startsWith(base.toLowerCase());
+    const base = normalizeSlugPrefix(bp);
+    if (base === '') return false;
+    // Boundary-aware: a prefix must match whole SEGMENTS. Plain `startsWith`
+    // let a boundary-less `emp-alice` admit `emp-alice-2/onboarding` — and
+    // with the `emp-<slug>` naming this guide recommends, sibling collisions
+    // (`alice` vs `alice-2`) are the common case, not a corner case.
+    return base.endsWith('/')
+      ? canonical.startsWith(base)
+      : canonical === base || canonical.startsWith(`${base}/`);
   });
+}
+
+/**
+ * Canonical form of one stored prefix, lowercased. `oauth_clients.bound_slug_prefixes`
+ * predates this fence — migration v85 introduced it as submit_agent's binding,
+ * whose grammar is the `<prefix>/*` glob of `matchesSlugAllowList` — so both
+ * spellings have to mean the same span of slugs or upgrading silently changes
+ * what an existing client may write.
+ */
+export function normalizeSlugPrefix(prefix: string): string {
+  return (prefix.endsWith('/*') ? prefix.slice(0, -1) : prefix).toLowerCase();
 }
 
 /**
@@ -1142,7 +1155,18 @@ const put_page: Operation = {
     // with falsified provenance. Dedup returns status 'skipped' without
     // touching the DB, so throwing here leaves nothing to roll back.
     if (result.slug && result.slug !== slug) {
-      enforceClientSlugFence(ctx, result.slug, 'put_page');
+      // Deliberately does NOT name the resolved slug: it belongs to a page
+      // outside the binding, and echoing it would turn frontmatter-id guessing
+      // into a slug-enumeration oracle.
+      if (!slugUnderBoundPrefixes(ctx.auth?.boundSlugPrefixes ?? [], result.slug)
+          && ctx.auth?.boundSlugPrefixes) {
+        ctx.logger.warn(`[put_page] dedup resolved '${slug}' to an out-of-fence page; refusing (client ${ctx.auth.clientId ?? 'unknown'})`);
+        throw new OperationError(
+          'permission_denied',
+          `put_page: this content already exists on a page outside your bound_slug_prefixes, so the write would have modified that page instead.`,
+          'Remove the `id:` frontmatter field (or change the content) to write a new page under your own prefix.',
+        );
+      }
     }
 
     // v0.39 T13 — auto-prompt on first unknown-type write.
@@ -3430,7 +3454,18 @@ const submit_agent: Operation = {
     }
     if (boundSlugPrefixes !== null) {
       for (const sp of requestedSlugPrefixes) {
-        if (!boundSlugPrefixes.some(bp => sp.startsWith(bp) || bp === sp)) {
+        // Boundary-aware, same rule as the direct fence: a raw `startsWith`
+        // let a boundary-less binding (`emp-alice`) authorize a requested
+        // prefix in a SIBLING namespace (`emp-alice-2/`), which is then handed
+        // to the child as a full glob grant over another employee's pages.
+        if (!boundSlugPrefixes.some(bp => {
+          const base = normalizeSlugPrefix(bp);
+          const req = normalizeSlugPrefix(sp);
+          if (base === '') return false;
+          return base.endsWith('/')
+            ? req.startsWith(base)
+            : req === base || req.startsWith(`${base}/`);
+        })) {
           throw new OperationError(
             'permission_denied',
             `submit_agent: slug_prefix "${sp}" is not under any of client ${clientId}'s bound_slug_prefixes.`,
