@@ -15,7 +15,10 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { operations, OperationError } from '../src/core/operations.ts';
+import {
+  operations, OperationError, slugUnderBoundPrefixes,
+  enforceBoundClientOpAllowList, CLIENT_FENCED_WRITE_OPS,
+} from '../src/core/operations.ts';
 import type { OperationContext, Operation, AuthInfo } from '../src/core/operations.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
@@ -131,6 +134,68 @@ describe('client slug fence (bound_slug_prefixes on direct writes)', () => {
       const ctx = makeCtx({ auth: boundAuth([]) });
       const p = op('put_page').handler(ctx, { slug: 'anywhere/at-all', content: 'stub' });
       await expect(p).rejects.toBeInstanceOf(OperationError);
+    });
+  });
+
+  describe('empty-string prefix cannot silently disable the fence', () => {
+    // startsWith('') is true for every slug, so a stray '' (an unset variable
+    // in a provisioning template) would render as "bound" while fencing
+    // nothing. Registration rejects it; the matcher ignores it anyway.
+    test("[''] denies every slug rather than allowing every slug", async () => {
+      const ctx = makeCtx({ auth: boundAuth(['']) });
+      const p = op('put_page').handler(ctx, { slug: 'anywhere/at-all', content: 'stub' });
+      await expect(p).rejects.toBeInstanceOf(OperationError);
+    });
+
+    test("a real prefix alongside '' still fences to the real one", async () => {
+      const ctx = makeCtx({ auth: boundAuth(['chan-eng/', '']) });
+      const ok = await op('put_page').handler(ctx, { slug: 'chan-eng/x', content: 'stub' });
+      expect(ok).toMatchObject({ dry_run: true });
+      await expect(op('put_page').handler(ctx, { slug: 'other/x', content: 'stub' }))
+        .rejects.toBeInstanceOf(OperationError);
+    });
+
+    test('slugUnderBoundPrefixes ignores empty prefixes', () => {
+      expect(slugUnderBoundPrefixes([''], 'anything')).toBe(false);
+      expect(slugUnderBoundPrefixes(['a/'], 'a/b')).toBe(true);
+      expect(slugUnderBoundPrefixes(['a/'], 'b/a')).toBe(false);
+    });
+  });
+
+  describe('dispatch allow-list: unfenceable write ops are denied outright', () => {
+    const bound = boundAuth(['emp-alice/']);
+    const unbound = boundAuth(undefined);
+
+    // These write by a key other than a slug (derived entity names, numeric
+    // fact ids), so no per-op fence can confine them.
+    for (const name of ['extract_entities', 'extract_facts', 'forget_fact', 'ontology_propose']) {
+      test(`${name} is denied for a bound client`, () => {
+        const o = operations.find(x => x.name === name);
+        if (!o) throw new Error(`${name} missing`);
+        expect(() => enforceBoundClientOpAllowList(bound, o)).toThrow(/not available to slug-bound clients/);
+        expect(() => enforceBoundClientOpAllowList(unbound, o)).not.toThrow();
+      });
+    }
+
+    test('every fenced write op is allowed', () => {
+      for (const name of CLIENT_FENCED_WRITE_OPS) {
+        const o = operations.find(x => x.name === name);
+        if (!o) throw new Error(`${name} missing from operations`);
+        expect(() => enforceBoundClientOpAllowList(bound, o)).not.toThrow();
+      }
+    });
+
+    test('read ops are never gated', () => {
+      for (const o of operations.filter(x => x.scope === 'read')) {
+        expect(() => enforceBoundClientOpAllowList(bound, o)).not.toThrow();
+      }
+    });
+
+    // The regression this exists to prevent: a write op added later must be
+    // denied by default, not silently unfenced.
+    test('a hypothetical new write op is denied by default', () => {
+      expect(() => enforceBoundClientOpAllowList(bound, { name: 'brand_new_write_op', scope: 'write' }))
+        .toThrow(/not available to slug-bound clients/);
     });
   });
 

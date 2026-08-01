@@ -145,13 +145,19 @@ describe('qm-harness provisioning + write fence (e2e, PGLite)', () => {
     if (!up) throw new Error('serve --http did not come up');
 
     // 6. Thin-client bootstrap for both scopes (the once-per-sandbox step).
+    //    --oauth-client-secret (NOT the env var) on purpose: an env-sourced
+    //    secret is deliberately not persisted to config.json, and qm has no
+    //    per-scope env to keep it in. Every later call below runs WITHOUT the
+    //    env var, so the suite proves the documented setup actually survives
+    //    the init session instead of masking it.
     for (const [slug, home] of [['alice-example', aliceHome], ['bob-example', bobHome]] as const) {
       const tc = await gbrain([
         'init', '--mcp-only',
         '--issuer-url', `http://127.0.0.1:${serverPort}`,
         '--mcp-url', `http://127.0.0.1:${serverPort}/mcp`,
         '--oauth-client-id', creds[slug].clientId,
-      ], home, { GBRAIN_REMOTE_CLIENT_SECRET: creds[slug].secret });
+        '--oauth-client-secret', creds[slug].secret,
+      ], home);
       if (tc.exitCode !== 0) throw new Error(`thin-client init (${slug}) failed: ${tc.stderr || tc.stdout}`);
     }
   }, 300_000);
@@ -166,10 +172,37 @@ describe('qm-harness provisioning + write fence (e2e, PGLite)', () => {
     }
   }, 30_000);
 
-  const asAlice = (args: string[]) =>
-    gbrain(args, aliceHome, { GBRAIN_REMOTE_CLIENT_SECRET: creds['alice-example'].secret });
-  const asBob = (args: string[]) =>
-    gbrain(args, bobHome, { GBRAIN_REMOTE_CLIENT_SECRET: creds['bob-example'].secret });
+  // No GBRAIN_REMOTE_CLIENT_SECRET: auth must come from the persisted config.
+  const asAlice = (args: string[]) => gbrain(args, aliceHome);
+  const asBob = (args: string[]) => gbrain(args, bobHome);
+
+  async function mintToken(slug: string): Promise<string> {
+    const { clientId, secret } = creds[slug];
+    const res = await fetch(`http://127.0.0.1:${serverPort}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}`
+        + `&client_secret=${encodeURIComponent(secret)}&scope=${encodeURIComponent('read write')}`,
+    });
+    if (!res.ok) throw new Error(`token mint failed: ${res.status} ${await res.text()}`);
+    return ((await res.json()) as { access_token: string }).access_token;
+  }
+
+  async function mcpCall(token: string, toolName: string, args: Record<string, unknown>): Promise<string> {
+    const res = await fetch(`http://127.0.0.1:${serverPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: toolName, arguments: args },
+      }),
+    });
+    return res.text();
+  }
 
   test('provisioning minted one bound client per employee, exactly once', () => {
     expect(Object.keys(creds).sort()).toEqual(['alice-example', 'bob-example']);
@@ -213,5 +246,69 @@ describe('qm-harness provisioning + write fence (e2e, PGLite)', () => {
     const read = await asBob(['get', 'chan-eng/notes/standup']);
     expect(read.exitCode).toBe(0);
     expect(read.stdout).toContain('standup');
+  });
+
+  test('the documented health check works on a read+write client (no admin scope)', async () => {
+    const who = await asAlice(['whoami']);
+    expect(who.exitCode).toBe(0);
+    expect(who.stdout).toContain(creds['alice-example'].clientId);
+  });
+
+  test('POST /ingest is fenced too — it bypasses the op layer entirely', async () => {
+    const post = async (slug: string | null) => {
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${await mintToken('alice-example')}`,
+        'Content-Type': 'text/markdown',
+      };
+      if (slug) headers['X-Gbrain-Slug'] = slug;
+      const res = await fetch(`http://127.0.0.1:${serverPort}/ingest`, {
+        method: 'POST', headers,
+        body: '---\ntype: note\ntitle: x\n---\n# injected',
+      });
+      return { status: res.status, body: await res.text() };
+    };
+    // Out-of-prefix slug: the exact bypass that let a bound client overwrite
+    // any page (in the DEFAULT source, since untrusted payloads carry no grant).
+    const outside = await post('wiki/ceo-comp');
+    expect(outside.status).toBe(403);
+    expect(outside.body).toContain('bound_slug_prefixes');
+    // No slug at all would fall back to the handler's inbox/... default,
+    // which is also outside the binding.
+    expect((await post(null)).status).toBe(403);
+    // In-prefix still works.
+    expect([200, 202]).toContain((await post('emp-alice-example/inbox/note')).status);
+  });
+
+  test('write ops that cannot be slug-fenced are denied to a bound client', async () => {
+    // extract_entities mutates people/* and companies/* timelines; extract_facts
+    // appends to any entity's fact fence; forget_fact targets a fact by numeric
+    // id across sources; ontology_propose writes claims keyed to any entity.
+    // None takes a fenceable slug, so all are denied at dispatch rather than
+    // left silently unfenced.
+    const token = await mintToken('alice-example');
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['extract_entities', { text: 'Bob Victim did a bad thing.', source_slug: 'emp-alice-example/notes/hello' }],
+      ['extract_facts', { turn_text: 'Bob Victim admitted it.', entity_hints: ['people/bob-victim'] }],
+      ['forget_fact', { id: 1, reason: 'retracted' }],
+      ['ontology_propose', { entity: 'emp-bob-example/profile', dimension: 'role', value: 'terminated' }],
+    ];
+    for (const [tool, args] of cases) {
+      const body = await mcpCall(token, tool, args);
+      expect(body).toMatch(/not available to slug-bound clients/);
+    }
+  });
+
+  test('a fenced write op still works over the same transport (allow-list is not a blanket deny)', async () => {
+    const token = await mintToken('alice-example');
+    const ok = await mcpCall(token, 'put_page', {
+      slug: 'emp-alice-example/notes/via-mcp', content: '# via mcp',
+    });
+    expect(ok).not.toMatch(/not available to slug-bound clients/);
+    expect(ok).not.toMatch(/permission_denied/);
+
+    const denied = await mcpCall(token, 'put_page', {
+      slug: 'emp-bob-example/notes/nope', content: '# nope',
+    });
+    expect(denied).toMatch(/bound_slug_prefixes/);
   });
 });

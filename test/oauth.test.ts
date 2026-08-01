@@ -234,6 +234,15 @@ describe('rescopeClient', () => {
     await expect(provider.rescopeClient(clientId, {})).rejects.toThrow('requires --source, --federated-read, and/or --bound-slug-prefixes');
     // v0.42.70.0: an explicit empty prefix list is ambiguous (deny-all) — rejected.
     await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: [] })).rejects.toThrow('cannot be an empty list');
+    // An empty/whitespace ENTRY matches every slug under startsWith — it would
+    // look like a binding while fencing nothing. Rejected at every write surface.
+    await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: [''] })).rejects.toThrow('non-empty');
+    await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: ['ok/', '  '] })).rejects.toThrow('non-empty');
+    await expect(provider.rescopeClient(clientId, { boundSlugPrefixes: [' ok/'] })).rejects.toThrow('whitespace');
+    await expect(provider.registerClientManual(
+      'empty-prefix-reject', ['client_credentials'], 'read write', [], 'default', undefined, undefined,
+      { boundSlugPrefixes: [''] },
+    )).rejects.toThrow('non-empty');
     await expect(provider.rescopeClient('gbrain_cl_nonexistent', { sourceId: 'wiki' })).rejects.toThrow('No OAuth client found');
     // FK: write source must exist in sources(id).
     await expect(provider.rescopeClient(clientId, { sourceId: 'no-such-source' })).rejects.toThrow('does not exist');
@@ -262,9 +271,13 @@ describe('rescopeClient', () => {
     const live = await provider.verifyAccessToken(tokens.access_token) as unknown as CoreAuthInfo;
     expect(live.boundSlugPrefixes).toEqual(['emp-carol/', 'chan-eng/']);
 
-    // Rescoping another axis leaves the binding untouched.
+    // Rescoping another axis leaves the binding untouched — and doesn't even
+    // name the column, so brains predating it can still rescope --source.
+    // `undefined` here means "not read this call", distinct from null = unset.
     const other = await provider.rescopeClient(clientId, { federatedRead: ['alpha'] });
-    expect(other.boundSlugPrefixes).toEqual(['emp-carol/', 'chan-eng/']);
+    expect(other.boundSlugPrefixes).toBeUndefined();
+    const stillBound = await provider.verifyAccessToken(tokens.access_token) as unknown as CoreAuthInfo;
+    expect(stillBound.boundSlugPrefixes).toEqual(['emp-carol/', 'chan-eng/']);
 
     // null clears it — client returns to unbound full-source write authority.
     const cleared = await provider.rescopeClient(clientId, { boundSlugPrefixes: null });

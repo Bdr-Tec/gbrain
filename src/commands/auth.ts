@@ -569,7 +569,9 @@ async function rescopeClient(clientId: string, args: string[]) {
       console.log(`OAuth client rescoped: "${result.clientName}" (${result.clientId})\n`);
       console.log(`  Write source:        ${result.sourceId}`);
       console.log(`  Federated reads:     ${result.federatedRead.join(', ') || '<none>'}`);
-      console.log(`  Bound slug prefixes: ${result.boundSlugPrefixes?.join(', ') ?? '<none — full-source write authority>'}`);
+      if (result.boundSlugPrefixes !== undefined) {
+        console.log(`  Bound slug prefixes: ${result.boundSlugPrefixes?.join(', ') ?? '<none — full-source write authority>'}`);
+      }
       console.log('\nTakes effect on the client\'s next request (existing tokens included).');
     });
   } catch (e: any) {

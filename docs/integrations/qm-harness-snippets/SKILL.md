@@ -20,11 +20,19 @@ Your scope's brain credentials arrive via the deployment's secret handoff
 gbrain init --mcp-only \
   --issuer-url "https://brain.<org>.com" \
   --mcp-url "https://brain.<org>.com/mcp" \
-  --oauth-client-id "<client id from the handoff>"
-# secret is read from GBRAIN_REMOTE_CLIENT_SECRET; it lands in
-# ~/.gbrain/config.json which persists on this sandbox's durable disk.
-gbrain remote doctor   # must pass before using any other command
+  --oauth-client-id "<client id from the handoff>" \
+  --oauth-client-secret "<client secret from the handoff>"
+gbrain whoami   # must succeed before using any other command
 ```
+
+Pass the secret with `--oauth-client-secret`, not via `GBRAIN_REMOTE_CLIENT_SECRET`:
+an env-sourced secret is deliberately NOT written to `~/.gbrain/config.json`, so
+every later command would fail with "No client_secret available" once the
+variable is out of scope. The flag persists it to the config file on this
+sandbox's durable disk, which is what the tool's credential capture expects.
+
+Do not run `gbrain remote doctor` — it needs `admin` scope, which your client
+does not have (by design). `gbrain whoami` is the read-scope health check.
 
 ## Reading (do this liberally)
 
@@ -67,4 +75,5 @@ Conventions:
   `gbrain search` FIRST, then answer.
 - You produced knowledge with value beyond this conversation → `gbrain put`.
 - Something looks wrong (auth errors, empty results you don't expect) →
-  `gbrain remote doctor`, and report its output.
+  `gbrain whoami` to confirm which client and scopes you're using, and report
+  its output.

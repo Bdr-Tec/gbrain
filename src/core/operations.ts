@@ -250,12 +250,66 @@ function enforceSubagentSlugFence(ctx: OperationContext, slug: string, opName: s
 function enforceClientSlugFence(ctx: OperationContext, slug: string, opName: string): void {
   const prefixes = ctx.auth?.boundSlugPrefixes;
   if (!prefixes) return;
-  if (!prefixes.some((bp) => slug.startsWith(bp))) {
+  if (!slugUnderBoundPrefixes(prefixes, slug)) {
     throw new OperationError(
       'permission_denied',
       `${opName}: slug '${slug}' is not under any of client ${ctx.auth?.clientId ?? '(unknown)'}'s bound_slug_prefixes (${prefixes.join(', ')})`,
     );
   }
+}
+
+/**
+ * The one place the fence's match rule lives. Exported so non-op write
+ * surfaces that never build an OperationContext (the `/ingest` route in
+ * serve-http.ts) enforce byte-identical semantics instead of re-deriving
+ * them.
+ *
+ * An empty-string prefix is IGNORED rather than honored: `startsWith('')`
+ * is true for every slug, so a stray `''` (an unset shell variable in a
+ * provisioning template) would silently turn a binding into a wildcard
+ * while still rendering as "fenced" to the operator. Registration now
+ * rejects empty prefixes outright; this is the second line of defence for
+ * rows already in the database.
+ */
+export function slugUnderBoundPrefixes(prefixes: readonly string[], slug: string): boolean {
+  return prefixes.some((bp) => bp !== '' && slug.startsWith(bp));
+}
+
+/**
+ * Write ops a slug-bound client may call: every op that routes through
+ * `enforceClientSlugFence`, plus `think` (scope `write`, but remote callers
+ * cannot persist — `save`/`take` are forced false for `remote !== false`).
+ *
+ * This list is an ALLOW-list on purpose. The fence used to be enforced op
+ * by op, which made every unfenced write op a silent hole — `extract_entities`
+ * mutating `people/*` timelines, `forget_fact` rewriting another source's
+ * page by numeric id, `extract_facts` appending to any entity's fact fence.
+ * Enumerating what is SAFE fails closed instead: a write op added later is
+ * denied to bound clients until someone fences it and adds it here.
+ */
+export const CLIENT_FENCED_WRITE_OPS: ReadonlySet<string> = new Set([
+  'put_page', 'delete_page', 'restore_page', 'add_tag', 'remove_tag',
+  'add_link', 'remove_link', 'add_timeline_entry', 'revert_version',
+  'put_raw_data', 'think',
+]);
+
+/**
+ * Fail-closed gate for slug-bound clients, applied at dispatch (the single
+ * choke point both MCP transports share) so it cannot be forgotten per op.
+ * Read ops are untouched — read scope is enforced by source federation.
+ */
+export function enforceBoundClientOpAllowList(
+  auth: AuthInfo | undefined,
+  op: Pick<Operation, 'name' | 'scope'>,
+): void {
+  if (!auth?.boundSlugPrefixes) return;
+  if (op.scope !== 'write' && op.scope !== 'admin') return;
+  if (CLIENT_FENCED_WRITE_OPS.has(op.name)) return;
+  throw new OperationError(
+    'permission_denied',
+    `${op.name} is not available to slug-bound clients: it can write outside client ${auth.clientId ?? '(unknown)'}'s bound_slug_prefixes (${auth.boundSlugPrefixes.join(', ')}).`,
+    'Use put_page / add_timeline_entry / add_link under your own prefixes, or ask an operator to clear the binding with `gbrain auth rescope-client <id> --bound-slug-prefixes none`.',
+  );
 }
 
 /**
@@ -1024,6 +1078,18 @@ const put_page: Operation = {
       source_uri: provenanceUri,
       ingested_via: provenanceVia,
     });
+
+    // The dedup pre-check in importFromContent can resolve the write to a
+    // DIFFERENT page than the one requested (same content_hash, or the same
+    // `frontmatter.id`), and the disk write-through below runs against that
+    // RESOLVED slug. Fence it too: a bound client can read a victim page's
+    // frontmatter id over its federated grant, echo it back in an in-prefix
+    // put_page, and otherwise have write-through rewrite the victim's file
+    // with falsified provenance. Dedup returns status 'skipped' without
+    // touching the DB, so throwing here leaves nothing to roll back.
+    if (result.slug && result.slug !== slug) {
+      enforceClientSlugFence(ctx, result.slug, 'put_page');
+    }
 
     // v0.39 T13 — auto-prompt on first unknown-type write.
     //

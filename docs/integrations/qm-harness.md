@@ -33,9 +33,18 @@ Isolation model:
   employee client reads `agents` + the read-only sources you grant.
 - **Writes** are slug-prefix-granular, server-enforced (`bound_slug_prefixes`,
   v0.42.70.0+): a client can only mutate pages under its own `emp-<slug>/`
-  and its channels' `chan-<x>/` prefixes — on every slug-mutating op
-  (put/delete/restore/tags/links/timeline/revert/raw-data), not by
-  convention.
+  and its channels' `chan-<x>/` prefixes — on `put_page`, `delete_page`,
+  `restore_page`, `add_tag`, `remove_tag`, `add_link`/`remove_link`,
+  `add_timeline_entry`, `revert_version` and `put_raw_data`, plus the
+  `POST /ingest` webhook route. Not by convention.
+- **Every other write op is denied outright** to a bound client. Ops that
+  write by a key other than a slug — `extract_entities` and `extract_facts`
+  (which mutate `people/*` and `companies/*`), `forget_fact` (targets a fact
+  by numeric id, across sources), `ontology_propose` — cannot be fenced by
+  slug, so a bound client gets `permission_denied` at dispatch. The
+  allow-list lives in `CLIENT_FENCED_WRITE_OPS` (`src/core/operations.ts`),
+  so a write op added later is denied until it is explicitly fenced. Reads
+  and `think` are unaffected (remote callers can't persist from `think`).
 - **Tradeoff to state out loud:** read isolation is per-source, so within the
   shared `agents` source every employee can *read* every prefix (including
   other employees' `emp-*/`). That matches qm's transparent-by-default,
@@ -112,12 +121,20 @@ Per scope, one-time (agent- or operator-run, credentials from the handoff):
 gbrain init --mcp-only \
   --issuer-url https://brain.acme-example.com \
   --mcp-url https://brain.acme-example.com/mcp \
-  --oauth-client-id gbrain_cl_...   # secret via GBRAIN_REMOTE_CLIENT_SECRET
-gbrain remote doctor                # must pass
+  --oauth-client-id gbrain_cl_... --oauth-client-secret gbrain_cs_...
+gbrain whoami                       # must succeed
 ```
 
-The config persists on the scope's durable sandbox disk, so this runs once
-per scope, ever.
+Use `--oauth-client-secret`, not `GBRAIN_REMOTE_CLIENT_SECRET`: an env-sourced
+secret is deliberately not written to `~/.gbrain/config.json`
+(`src/commands/init.ts`), so with the env var alone every later command fails
+once it leaves scope — and qm's `sandbox.secretEnv` is org-wide, so there is no
+per-scope env to keep it in. With the flag, the credential lands in the config
+file on the scope's durable disk and this runs once per scope, ever.
+
+`gbrain remote doctor` is **not** the health check here: `run_doctor` is an
+`admin`-scope op and these clients are `read write` on purpose. `gbrain whoami`
+is read-scope and reports the client's identity, source, and grants.
 
 ## Verify isolation before rollout
 
@@ -137,8 +154,12 @@ gbrain search "test"                                            # sees agents + 
 - `search.mode balanced` (12K token budget, relational retrieval on) is the
   right default for a startup fleet; see `docs/guides/search-modes.md` for
   the cost matrix before changing it.
-- Budgets: `--budget-usd-per-day` per client caps runaway agents; watch
-  spend in the admin SPA (`/admin`) and `gbrain search stats`.
+- Budgets: `--budget-usd-per-day` is recorded on the client but only enforced
+  on the `submit_agent` path (`src/core/minions/budget-meter.ts`), which these
+  `read write` clients cannot reach — so it does **not** cap spend from
+  ordinary `search`/`put_page` traffic. Treat runaway-agent containment as an
+  open item: watch the admin SPA (`/admin`) and `gbrain search stats`, and cap
+  at the model/harness layer.
 - Backfills on a live brain: `gbrain embed --stale --pace` (see Pace Mode in
   CLAUDE.md / `docs/operations/spend-controls.md`).
 

@@ -33,9 +33,33 @@
 # ponytail: sequential CLI loop, one gbrain invocation per roster row — fine
 # to hundreds of employees; batch via the admin API if that ever hurts.
 
-set -euo pipefail
+# -f (noglob) is load-bearing, not stylistic: roster lines are word-split
+# unquoted below, so without it a line like `employee * eng` would expand
+# against the working directory and silently provision a filename as a
+# person — i.e. the wrong write fence. Nothing here needs globbing.
+set -euf -o pipefail
+
+# Client secrets and the id state file are written by this script; 077 makes
+# them 0600 instead of the default 0644. Set before the first file is created.
+umask 077
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Slugs become source ids, client names, AND slug-prefix write fences. The
+# fence list is comma-separated, so an unvalidated slug containing a comma
+# would inject an EXTRA prefix and hand the client write access to someone
+# else's namespace. Fail closed on anything that isn't plain kebab-case.
+valid_slug() {
+  case "$1" in
+    '') return 1 ;;
+    -*|*-) return 1 ;;
+    *[!a-z0-9-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+require_slug() {
+  valid_slug "$2" || die "roster: invalid $1 slug '$2' (allowed: lowercase a-z, 0-9, interior hyphens)"
+}
 
 ROSTER="${1:-}"
 [ -n "$ROSTER" ] && [ -f "$ROSTER" ] || die "usage: provision-scopes.sh <roster-file> [flags] (roster not found: '$ROSTER')"
@@ -65,6 +89,13 @@ done
 STATE_FILE="${STATE_FILE:-${ROSTER}.state.tsv}"
 SECRETS_OUT="${SECRETS_OUT:-${ROSTER}.new-credentials.tsv}"
 
+# The roster usually lives in the deployment repo, so the default secrets path
+# lands there too — one `git add -A` from committing live credentials.
+if git -C "$(dirname "$SECRETS_OUT")" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "WARN: $SECRETS_OUT is inside a git work tree. Secrets must never be committed;" >&2
+  echo "      gitignore it, or pass --secrets-out /some/path/outside/the/repo." >&2
+fi
+
 run() {
   if [ "$DRY_RUN" = 1 ]; then echo "DRY-RUN: $GBRAIN $*" >&2; return 0; fi
   # shellcheck disable=SC2086 — $GBRAIN may carry args ("bun run src/cli.ts")
@@ -79,15 +110,29 @@ state_lookup() { # state_lookup <employee-slug> -> client_id or empty
 # ── Pass 1: parse roster, collect declared channels ─────────────────────────
 CHANNELS=""
 EMPLOYEES=""
+lineno=0
 while IFS= read -r line || [ -n "$line" ]; do
+  lineno=$((lineno + 1))
   line="${line%%#*}"
+  line="${line%$'\r'}"   # a CRLF roster would otherwise yield 'emp-alice\r/' prefixes that fence everything out
   [ -z "${line//[[:space:]]/}" ] && continue
-  # shellcheck disable=SC2086 — deliberate word split of the roster line
+  # shellcheck disable=SC2086 — deliberate word split; globbing is off (set -f above)
   set -- $line
+  [ "$#" -le 3 ] || die "roster line $lineno: too many fields ('$line'). Channels are ONE comma-separated field with no spaces: 'employee alice eng,product'"
   case "$1" in
-    channel)  [ -n "${2:-}" ] || die "roster: 'channel' needs a slug"; CHANNELS="$CHANNELS $2" ;;
-    employee) [ -n "${2:-}" ] || die "roster: 'employee' needs a slug"; EMPLOYEES="$EMPLOYEES $2:${3:-}" ;;
-    *) die "roster: unknown entry type '$1' (expected 'channel' or 'employee')" ;;
+    channel)
+      require_slug channel "${2:-}"
+      CHANNELS="$CHANNELS $2"
+      ;;
+    employee)
+      require_slug employee "${2:-}"
+      case " $EMPLOYEES " in *" $2:"*) die "roster line $lineno: employee '$2' listed twice" ;; esac
+      if [ -n "${3:-}" ]; then
+        for c in ${3//,/ }; do require_slug "channel-reference" "$c"; done
+      fi
+      EMPLOYEES="$EMPLOYEES $2:${3:-}"
+      ;;
+    *) die "roster line $lineno: unknown entry type '$1' (expected 'channel' or 'employee')" ;;
   esac
 done < "$ROSTER"
 
@@ -120,22 +165,45 @@ for entry in $EMPLOYEES; do
     run auth rescope-client "$client_id" \
       --federated-read "$FED_READ" --bound-slug-prefixes "$prefixes" >/dev/null
     echo "employee '$slug': rescoped $client_id  [write: $prefixes]"
+  elif [ "$DRY_RUN" = 1 ]; then
+    echo "employee '$slug': WOULD register qm-emp-$slug  [write: $prefixes] [read: $FED_READ]"
+    continue
   else
     out=$(run auth register-client "qm-emp-$slug" \
       --grant-types client_credentials --scopes "read write" \
       --source "$MEMORY_SOURCE" --federated-read "$FED_READ" \
       --bound-slug-prefixes "$prefixes" --budget-usd-per-day "$BUDGET" 2>&1) \
       || die "register-client failed for '$slug': $out"
-    [ "$DRY_RUN" = 1 ] && continue
     client_id=$(echo "$out" | sed -n 's/.*Client ID:[[:space:]]*\(gbrain_cl_[^[:space:]]*\).*/\1/p' | head -1)
     secret=$(echo "$out"    | sed -n 's/.*Client Secret:[[:space:]]*\(gbrain_cs_[^[:space:]]*\).*/\1/p' | head -1)
-    [ -n "$client_id" ] && [ -n "$secret" ] || die "could not parse client id/secret for '$slug' from register-client output"
+    if [ -z "$client_id" ] || [ -z "$secret" ]; then
+      # The client may well have been created — dying silently would strand a
+      # live credential nobody can find. Name it so the operator can revoke.
+      echo "$out" >&2
+      die "could not parse client id/secret for '$slug'. A client MAY have been created (see output above); check \`gbrain auth list\` and revoke any stray 'qm-emp-$slug'."
+    fi
     printf '%s\t%s\n' "$slug" "$client_id" >> "$STATE_FILE"
     printf '%s\t%s\t%s\n' "$slug" "$client_id" "$secret" >> "$SECRETS_OUT"
+    chmod 600 "$STATE_FILE" "$SECRETS_OUT" 2>/dev/null || true  # umask covers new files; this covers pre-existing ones
     new_secrets=$((new_secrets + 1))
     echo "employee '$slug': registered $client_id  [write: $prefixes]"
   fi
 done
+
+# ── Pass 4: flag offboarded employees ───────────────────────────────────────
+# Removing someone from the roster is the highest-stakes edit there is, and
+# this script cannot safely revoke on its own (a typo'd roster would nuke live
+# credentials). Report instead, with the exact command.
+if [ -f "$STATE_FILE" ]; then
+  while IFS=$'\t' read -r st_slug st_client _rest; do
+    [ -n "${st_slug:-}" ] || continue
+    case " $EMPLOYEES " in
+      *" $st_slug:"*) ;;
+      *) echo "STALE: '$st_slug' ($st_client) is no longer in the roster but its credentials still work." >&2
+         echo "       Revoke with: $GBRAIN auth revoke-client $st_client" >&2 ;;
+    esac
+  done < "$STATE_FILE"
+fi
 
 echo
 echo "Done. State: $STATE_FILE"
