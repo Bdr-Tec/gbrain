@@ -65,7 +65,11 @@ import {
   slog,
   serr,
 } from '../core/console-prefix.ts';
-import { loadStorageConfig } from '../core/storage-config.ts';
+import { loadStorageConfig, findDbOnlyCollisions } from '../core/storage-config.ts';
+// #2788: collector-output vs db_only collision warning at .gitignore-write
+// time. integrations.ts is side-effect-free at module load (pure recipe I/O
+// helpers), so a static import is safe here.
+import { getConfiguredCollectorOutputs } from './integrations.ts';
 import { getDefaultSourcePath } from '../core/source-resolver.ts';
 // v0.41.32.0: stamp the durable newest-COMMIT timestamp at sync time so the
 // remote staleness path reads a column instead of shelling out to git.
@@ -5635,6 +5639,24 @@ export function manageGitignore(
   }
   if (!storageConfig || storageConfig.db_only.length === 0) {
     return;
+  }
+
+  // #2788: a configured collector whose output dir sits inside a db_only
+  // path dies silently — the dir is auto-gitignored below, the git-walking
+  // sync never sees its files, and `gbrain import` honors .gitignore too.
+  // Warn at the moment the config takes effect. Recipe scan failure never
+  // blocks the gitignore housekeeping.
+  try {
+    for (const c of findDbOnlyCollisions(getConfiguredCollectorOutputs(), storageConfig.db_only)) {
+      console.warn(
+        `WARNING: collector '${c.id}' writes to '${c.output_path}', which is inside db_only path ` +
+          `'${c.db_only_dir}'. db_only dirs are auto-gitignored, so gbrain sync and gbrain import ` +
+          `will silently skip its files. Remove the prefix from storage.db_only in gbrain.yml, or ` +
+          `move the collector output.`,
+      );
+    }
+  } catch {
+    // recipes unavailable in this context — the doctor check still covers it
   }
 
   // D4 soft-warn: storage tiering has limited effect on PGLite, but the

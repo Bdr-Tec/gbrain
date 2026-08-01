@@ -343,7 +343,7 @@ describe('all recipes', () => {
           expect(typeof check).toBe('string');
         } else {
           // Typed checks must have a valid type
-          expect(['http', 'env_exists', 'command', 'any_of']).toContain((check as any).type);
+          expect(['http', 'env_exists', 'command', 'any_of', 'heartbeat_max_age']).toContain((check as any).type);
         }
       }
     }
