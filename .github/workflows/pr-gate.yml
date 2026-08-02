@@ -12,9 +12,13 @@ name: PR Gate
 #   NEVER add a `ref:` pointing at the PR head.
 # - Attacker-controlled values (title/body/diff) never touch the shell:
 #   every ${{ }} is env-bound; run: scripts use plain env vars.
-# - If ANTHROPIC_API_KEY is missing at runtime, the script NEUTRAL-skips
-#   loudly (sticky comment + warning annotation, exit 0) — never a silent
-#   green, never a red X for a missing secret.
+# - Only the issues API is used (comments + labels), so issues:write is the
+#   single write grant; the checkout drops its credentials.
+# - If ANTHROPIC_API_KEY is missing or the API is unreachable, the script
+#   NEUTRAL-skips loudly (sticky comment + warning annotation, exit 0) and
+#   CLEARS any stale gate:* label — never a silent green, never a red X for a
+#   missing secret, never a stale verdict. A model REFUSAL is not a skip: it
+#   routes to needs-maintainer so refusing is not a way to dodge the gate.
 # Pinned by test/pr-gate-workflow.test.ts.
 
 on:
@@ -22,9 +26,11 @@ on:
     types: [opened, edited, synchronize, reopened]
     branches: [master]
 
+# issues:write is the ONLY write grant. Everything the script calls is the
+# issues API (comments, label create, label add/remove on the PR's issue), so
+# pull-requests:write would be a redundant second grant on the same objects.
 permissions:
   contents: read
-  pull-requests: write
   issues: write
 
 concurrency:
@@ -38,6 +44,10 @@ jobs:
     steps:
       # Base repo (master) only — provides scripts/pr-gate.mjs.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          # Nothing here needs git auth after the clone; don't leave a token
+          # in .git/config for the rest of the job.
+          persist-credentials: false
 
       - name: Fetch PR metadata + diff (API only — PR code is never checked out)
         env:
