@@ -159,10 +159,15 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
     // anyway. `--dry-run` — honored by sync/import/extract/quarantine/pages —
     // printed the usual "Set <key> = <value>" confirmation and persisted the
     // mutation, so a caller probing a value silently changed live config.
-    // Unknown flags are now refused BEFORE any validation or write runs.
-    const unknownFlags = args
-      .slice(3)
-      .filter(a => a.startsWith('-') && !CONFIG_SET_KNOWN_FLAGS.includes(a));
+    // Unknown flags are now refused BEFORE any validation or write runs —
+    // regardless of whether they land after the value
+    // (`config set <key> <value> --dry-run`) or before it
+    // (`config set <key> --dry-run <value>`). Scan every token after the
+    // key and resolve the value as the first non-flag one, so a flag
+    // sitting in the value slot can't slip through as literal config
+    // content.
+    const tail = args.slice(2);
+    const unknownFlags = tail.filter(a => a.startsWith('-') && !CONFIG_SET_KNOWN_FLAGS.includes(a));
     if (unknownFlags.length > 0) {
       for (const flag of unknownFlags) {
         console.error(`[config] unknown flag: ${flag}`);
@@ -171,6 +176,7 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
       console.error(`[config] Nothing was written.`);
       process.exit(1);
     }
+    const value = tail.find(a => !a.startsWith('-')) ?? args[2];
 
     // Bootstrap hook-lane keys are FILE-plane canonical: they are read by
     // engine-free processes (the harness hook children and the detached

@@ -136,6 +136,26 @@ describe('config set rejects unknown flags instead of writing anyway', () => {
     expect(get.stdout.trim()).toBe(BASELINE);
   }, 180_000);
 
+  // Ordering follow-up: the flag can land BEFORE the value too
+  // (`config set <key> --dry-run <value>`), not just after it. The original
+  // #3661 gate only scanned the tail past `<key> <value>`, so a flag sitting
+  // in the value slot was silently treated as a literal value and written.
+  test('an unknown flag placed before the value is also refused (ordering)', async () => {
+    await setBaseline();
+
+    const set = await runCli(['config', 'set', KEY, '--dry-run', 'claude-cli:probe-invalid']);
+    expect(set.exitCode).not.toBe(0);
+    expect(set.stderr).toContain('unknown flag: --dry-run');
+    expect(set.stdout).not.toContain('Set ');
+
+    // The load-bearing assertion: nothing was written, including the flag
+    // token itself, which pre-fix would have landed in the config plane as
+    // the literal value (`value = args[2]` picked up `--dry-run` directly).
+    const get = await runCli(['config', 'get', KEY]);
+    expect(get.exitCode).toBe(0);
+    expect(get.stdout.trim()).toBe(BASELINE);
+  }, 180_000);
+
   // Every flag `config set` implements, so a future edit that narrows the
   // allowlist breaks here instead of silently rejecting a working command.
   const IMPLEMENTED_FLAGS: Array<[string, string]> = [
