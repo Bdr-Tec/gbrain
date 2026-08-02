@@ -11,6 +11,11 @@
  * - Mocked end-to-end runs of runGate() against a stubbed fetch: close-lane
  *   exit code, marker-hijack, sanitization, truncation, refusal routing,
  *   NEUTRAL label clearing, label swap, and the input-hash spend guard.
+ * - The CONTRIBUTING.md #3745 policy: the mechanical screenshot + intent
+ *   detectors (all four embed forms, the in-code-fence negative, the empty
+ *   template, non-English prose), the forced close-lane both halves produce,
+ *   the friendly fix-it comment, and the advisory-only ai_generated route to
+ *   needs-maintainer that must never accuse or close.
  */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -19,6 +24,10 @@ import { join } from 'node:path';
 import {
   checkTitle,
   detectRedFlags,
+  detectPolicyMisses,
+  hasScreenshot,
+  hasIntentParagraph,
+  intentWordCount,
   sanitizeModelText,
   sanitizeList,
   applyMechanicalDowngrades,
@@ -27,6 +36,7 @@ import {
   parseState,
   renderComment,
   runGate,
+  INTENT_MIN_WORDS,
   MAX_ITEMS,
   MAX_STRING,
 } from '../scripts/pr-gate.mjs';
@@ -36,6 +46,39 @@ const SCRIPT_PATH = join(import.meta.dir, '..', 'scripts', 'pr-gate.mjs');
 const WORKFLOW = readFileSync(WORKFLOW_PATH, 'utf8');
 const SCRIPT = readFileSync(SCRIPT_PATH, 'utf8');
 const MARKER = '<!-- gbrain-pr-gate -->';
+
+// A #3745-compliant description: a paragraph in the author's own voice (rough
+// grammar on purpose — the policy prefers it) plus a real screenshot embed.
+const HUMAN_INTENT = [
+  'I hit this last tuesday syncing my notes repo, about 4k files in it. the run just stopped',
+  'somewhere in the middle and printed nothing at all, no error, so i assumed it had finished.',
+  'next morning half my brain was missing and i had to re-import everything by hand which ate',
+  'most of my day. i dont know this codebase well but the silent exit is the part that got me,',
+  'if it had printed anything at all i would have caught it right away instead of a day later.',
+].join(' ');
+const SCREENSHOT_EMBED = '![my terminal](https://github.com/user-attachments/assets/0a1b2c3d-4e5f-6789)';
+const COMPLIANT_BODY = `${HUMAN_INTENT}\n\n${SCREENSHOT_EMBED}\n`;
+
+// .github/pull_request_template.md as of #3745, for branches that predate it.
+const PR_TEMPLATE_FALLBACK = [
+  '**Why are you opening this? (human-written, required)**',
+  '',
+  '<!-- Write this yourself. Not AI-generated, not AI-polished. What were you',
+  '     doing, what went wrong or what you needed, why it matters to you.',
+  '     Rough grammar is fine. PRs without this are closed unreviewed. -->',
+  '',
+  '',
+  '**Screenshot of gbrain in use (required)**',
+  '',
+  '<!-- Your terminal / agent session / logs showing the real need this fixes.',
+  '     Redact private names, keys, and brain contents first. -->',
+  '',
+  '',
+  '**What changed**',
+  '',
+  '',
+  '**How it was tested**',
+].join('\n');
 
 /**
  * Collect every line that belongs to a `run:` script, in all four YAML scalar
@@ -179,6 +222,14 @@ describe('pr-gate script rubric pins', () => {
   test('never passes sampling params (rejected with 400 on claude-sonnet-5)', () => {
     expect(SCRIPT).not.toMatch(/["']?temperature["']?\s*:/);
     expect(SCRIPT).not.toMatch(/["']?top_p["']?\s*:/);
+  });
+
+  test('the rubric asks for intent_authenticity and keeps it advisory (#3745)', () => {
+    expect(SCRIPT).toContain('intent_authenticity');
+    expect(SCRIPT).toContain('intent_authenticity_reason');
+    // The safety rails that keep a false positive from closing a real PR.
+    expect(SCRIPT).toContain('It NEVER closes a PR on its own');
+    expect(SCRIPT).toContain('are evidence of a HUMAN');
   });
 });
 
@@ -417,6 +468,112 @@ describe('detectRedFlags (mechanical, no LLM)', () => {
   });
 });
 
+describe('hasScreenshot (#3745, mechanical)', () => {
+  test('accepts all four embed forms GitHub produces', () => {
+    expect(hasScreenshot('here it is:\n\n![my terminal](https://example.com/shot.png)')).toBe(true);
+    expect(hasScreenshot('https://user-images.githubusercontent.com/1234/98765-abcdef.png')).toBe(true);
+    expect(hasScreenshot('https://github.com/user-attachments/assets/0a1b2c3d-4e5f-6789')).toBe(true);
+    expect(hasScreenshot('<img width="900" alt="run" src="https://example.com/shot.png">')).toBe(true);
+  });
+
+  test('an embed inside a fenced code block does NOT count', () => {
+    // Pasting the syntax is not attaching the picture.
+    expect(hasScreenshot('```md\n![shot](https://example.com/a.png)\n```')).toBe(false);
+    expect(hasScreenshot('~~~\n<img src="a.png">\nhttps://github.com/user-attachments/assets/x\n~~~')).toBe(false);
+    // An unterminated fence swallows the rest of the body, not just to the next line.
+    expect(hasScreenshot('```\n![shot](https://user-images.githubusercontent.com/1/2.png)')).toBe(false);
+    // ...but one real embed outside the fence is enough.
+    expect(
+      hasScreenshot('```\n![example](x.png)\n```\n\n![real](https://github.com/user-attachments/assets/y)'),
+    ).toBe(true);
+  });
+
+  test('claiming a screenshot is not attaching one', () => {
+    expect(hasScreenshot('I attached a screenshot of my terminal, see above.')).toBe(false);
+    expect(hasScreenshot('')).toBe(false);
+    expect(hasScreenshot(undefined)).toBe(false);
+    expect(hasScreenshot(null)).toBe(false);
+  });
+});
+
+describe('intent paragraph detector (#3745, mechanical)', () => {
+  const padding = (n: number) => Array.from({ length: n }, (_, i) => `word${i}`);
+
+  test('a one-liner body is not an intent paragraph', () => {
+    expect(hasIntentParagraph('fixes a thing')).toBe(false);
+    expect(hasIntentParagraph('')).toBe(false);
+    expect(hasIntentParagraph(undefined)).toBe(false);
+  });
+
+  test('the PR template with nothing filled in does not count', () => {
+    // Read the real template when it is present (this branch may predate the
+    // #3745 merge that adds it), so growing the template's own prose past the
+    // bar — which would let an untouched template pass — fails here.
+    const templatePath = join(import.meta.dir, '..', '.github', 'pull_request_template.md');
+    const template = existsSync(templatePath) ? readFileSync(templatePath, 'utf8') : PR_TEMPLATE_FALLBACK;
+    expect(hasIntentParagraph(template)).toBe(false);
+    expect(hasScreenshot(template)).toBe(false);
+    // Filling only the "what changed" section is still not the intent paragraph.
+    expect(hasIntentParagraph(`${template}\nrenames the flag and updates the docs`)).toBe(false);
+  });
+
+  test('40+ words of the author own prose counts', () => {
+    expect(intentWordCount(HUMAN_INTENT)).toBeGreaterThanOrEqual(INTENT_MIN_WORDS);
+    expect(hasIntentParagraph(HUMAN_INTENT)).toBe(true);
+    expect(hasIntentParagraph(COMPLIANT_BODY)).toBe(true);
+    // The threshold is the documented one, exercised from both sides.
+    expect(hasIntentParagraph(padding(INTENT_MIN_WORDS).join(' '))).toBe(true);
+    expect(hasIntentParagraph(padding(INTENT_MIN_WORDS - 1).join(' '))).toBe(false);
+  });
+
+  test('pasted code, logs, checklists and headings are not prose', () => {
+    const many = padding(80).join(' ');
+    expect(hasIntentParagraph('```\n' + many + '\n```')).toBe(false);
+    expect(hasIntentParagraph(padding(80).map((w) => `> ${w}`).join('\n'))).toBe(false);
+    expect(hasIntentParagraph(padding(80).map((w) => `- ${w}`).join('\n'))).toBe(false);
+    expect(hasIntentParagraph(padding(80).map((w, i) => `${i + 1}. ${w}`).join('\n'))).toBe(false);
+    expect(hasIntentParagraph(`## ${many}`)).toBe(false);
+    expect(hasIntentParagraph(`**${many}**`)).toBe(false);
+    // A wall of links/screenshots is not a paragraph either.
+    expect(hasIntentParagraph(padding(80).map((w) => `![${w}](https://example.com/${w}.png)`).join(' '))).toBe(false);
+  });
+
+  test('non-English prose counts — the policy asks for rough words, not English', () => {
+    // Per-character scripts must not read as a single "word" and close a PR
+    // whose author did write their own paragraph.
+    const han =
+      '我在同步笔记仓库的时候遇到了这个问题' +
+      '，大概有四千个文件。同步到一半就停了' +
+      '，没有任何报错信息，所以我以为它已经' +
+      '完成了。第二天早上发现一半的笔记都不' +
+      '见了，只能手动重新导入。';
+    expect(intentWordCount(han)).toBeGreaterThanOrEqual(INTENT_MIN_WORDS);
+    // Diacritics are letters, not separators.
+    expect(hasIntentParagraph(padding(40).map((w) => `${w}ê`).join(' '))).toBe(true);
+  });
+});
+
+describe('detectPolicyMisses (#3745)', () => {
+  const ids = (body: unknown) => detectPolicyMisses(body).map((f) => f.id);
+
+  test('a compliant description has no policy misses', () => {
+    expect(detectPolicyMisses(COMPLIANT_BODY)).toEqual([]);
+  });
+
+  test('flags each half independently', () => {
+    expect(ids(HUMAN_INTENT)).toEqual(['missing_screenshot']);
+    expect(ids(`fixes a thing\n\n${SCREENSHOT_EMBED}`)).toEqual(['missing_intent']);
+    expect(ids('')).toEqual(['missing_intent', 'missing_screenshot']);
+  });
+
+  test('every detail names CONTRIBUTING.md and the policy issue', () => {
+    for (const f of detectPolicyMisses('')) {
+      expect(f.detail).toContain('CONTRIBUTING.md');
+      expect(f.detail).toContain('#3745');
+    }
+  });
+});
+
 describe('applyMechanicalDowngrades (lane is not purely model-decided)', () => {
   const flag = (id: string) => ({ id, detail: `detail for ${id}` });
 
@@ -449,6 +606,43 @@ describe('applyMechanicalDowngrades (lane is not purely model-decided)', () => {
     const r = applyMechanicalDowngrades('merge-lane', [flag('adds_dependency'), flag('too_many_files')]);
     expect(r.lane).toBe('needs-maintainer');
     expect(r.downgrades).toHaveLength(2);
+  });
+
+  test.each(['merge-lane', 'needs-maintainer', 'close-lane'])(
+    'a #3745 policy miss forces close-lane from a %s recommendation',
+    (recommended) => {
+      const r = applyMechanicalDowngrades(recommended, [flag('missing_screenshot')]);
+      expect(r.lane).toBe('close-lane');
+      expect(r.downgrades).toEqual(['detail for missing_screenshot']);
+    },
+  );
+
+  test('a policy miss beats every other flag and reports both halves', () => {
+    const r = applyMechanicalDowngrades('merge-lane', [
+      flag('adds_dependency'),
+      flag('missing_intent'),
+      flag('missing_screenshot'),
+    ]);
+    expect(r.lane).toBe('close-lane');
+    expect(r.downgrades).toEqual(['detail for missing_intent', 'detail for missing_screenshot']);
+  });
+
+  test('ai_generated intent routes to needs-maintainer and NEVER to close-lane', () => {
+    expect(applyMechanicalDowngrades('merge-lane', [], 'ai_generated').lane).toBe('needs-maintainer');
+    expect(applyMechanicalDowngrades('needs-maintainer', [], 'ai_generated').lane).toBe('needs-maintainer');
+    // A model close-lane for OTHER reasons still stands; the signal never adds one.
+    expect(applyMechanicalDowngrades('close-lane', [], 'ai_generated').lane).toBe('close-lane');
+    // The downgrade reads as a routing note, not an accusation.
+    const r = applyMechanicalDowngrades('merge-lane', [], 'ai_generated');
+    expect(r.downgrades).toHaveLength(1);
+    expect(r.downgrades[0]).toContain('a maintainer will read');
+    expect(r.downgrades[0]).not.toMatch(/AI-generated|AI-polished|did not write/i);
+  });
+
+  test('human / unclear / absent intent verdicts change nothing', () => {
+    expect(applyMechanicalDowngrades('merge-lane', [], 'human').lane).toBe('merge-lane');
+    expect(applyMechanicalDowngrades('merge-lane', [], 'unclear').lane).toBe('merge-lane');
+    expect(applyMechanicalDowngrades('merge-lane', [], undefined).lane).toBe('merge-lane');
   });
 });
 
@@ -560,7 +754,9 @@ function fixtureDir(pr: Record<string, unknown> = {}, files: unknown[] = [], dif
     JSON.stringify({
       number: 7,
       title: 'fix(core): a real fix',
-      body: 'fixes a thing',
+      // #3745-compliant by default so every pre-existing case still exercises
+      // the lane logic rather than tripping the policy gate first.
+      body: COMPLIANT_BODY,
       changed_files: 2,
       head: { sha: 'cafebabe' },
       user: { login: 'contributor' },
@@ -782,7 +978,7 @@ describe('runGate end-to-end (mocked fetch)', () => {
   }, 30_000);
 
   test('spend guard: unchanged title+body+head_sha skips the LLM and keeps the verdict', async () => {
-    const pr = { title: 'fix(core): a real fix', body: 'fixes a thing', head: { sha: 'cafebabe' } };
+    const pr = { title: 'fix(core): a real fix', body: COMPLIANT_BODY, head: { sha: 'cafebabe' } };
     const prior = {
       id: 55,
       user: { type: 'Bot', login: 'github-actions[bot]' },
@@ -802,7 +998,7 @@ describe('runGate end-to-end (mocked fetch)', () => {
   });
 
   test('spend guard does not fire when the head sha moved', async () => {
-    const pr = { title: 'fix(core): a real fix', body: 'fixes a thing', head: { sha: 'cafebabe' } };
+    const pr = { title: 'fix(core): a real fix', body: COMPLIANT_BODY, head: { sha: 'cafebabe' } };
     const prior = {
       id: 55,
       user: { type: 'Bot', login: 'github-actions[bot]' },
@@ -818,5 +1014,116 @@ describe('runGate end-to-end (mocked fetch)', () => {
     const code = await runGate(fixtureDir(pr), ENV, fetchImpl);
     expect(code).toBe(0);
     expect(calls.some((c) => c.url.startsWith('https://api.anthropic.com'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The #3745 policy end-to-end: intent paragraph + screenshot are a hard
+// requirement; the model's authenticity read is advisory only.
+// ---------------------------------------------------------------------------
+describe('runGate — CONTRIBUTING.md #3745 policy (mocked fetch)', () => {
+  const SRC_AND_TEST = [
+    { filename: 'src/a.ts', status: 'modified', additions: 2, deletions: 1 },
+    { filename: 'test/a.test.ts', status: 'modified', additions: 5, deletions: 0 },
+  ];
+
+  test('a compliant description (screenshot + intent) is judged normally', async () => {
+    const { calls, fetchImpl } = stubFetch({ anthropic: () => verdictResponse(CLEAN_VERDICT) });
+    const code = await runGate(fixtureDir({ body: COMPLIANT_BODY }, SRC_AND_TEST), ENV, fetchImpl);
+    expect(code).toBe(0);
+    expect(addedLabels(calls)).toEqual(['gate:merge-lane']);
+    expect(calls.some((c) => c.url.startsWith('https://api.anthropic.com'))).toBe(true);
+    const body: string = postedBody(calls);
+    expect(body).not.toContain('Almost there');
+    expect(body).toContain('MERGE LANE');
+  });
+
+  test('a missing screenshot closes the PR (exit 1) with the friendly fix-it comment', async () => {
+    // No anthropic handler: reaching the model at all throws. A PR that will
+    // be closed unreviewed must not cost a review call.
+    const { calls, fetchImpl } = stubFetch({});
+    const code = await runGate(fixtureDir({ body: HUMAN_INTENT }, SRC_AND_TEST), ENV, fetchImpl);
+    expect(code).toBe(1);
+    expect(addedLabels(calls)).toEqual(['gate:close-lane']);
+    expect(calls.some((c) => c.url.startsWith('https://api.anthropic.com'))).toBe(false);
+
+    const body: string = postedBody(calls);
+    expect(body).toContain('Almost there');
+    expect(body).toContain('A screenshot of gbrain in use');
+    expect(body).not.toContain('A paragraph you wrote yourself'); // that half is fine
+    expect(body).toContain('then reopen');
+    expect(body).toContain('not a judgment on the code');
+    expect(body).toContain('CONTRIBUTING.md');
+    // Also recorded where the other deterministic overrides are recorded.
+    expect(body).toContain('Mechanical downgrades applied');
+    expect(body).toContain('#3745');
+    // The fix-it block leads; the rubric heading does not.
+    expect(body.indexOf('Almost there')).toBeLessThan(body.indexOf('**Label:**'));
+    expect(body).not.toContain('fails the strict usefulness rubric');
+    expect(parseState(body)).toMatchObject({ lane: 'close-lane' });
+  });
+
+  test('a missing intent paragraph closes the PR (exit 1)', async () => {
+    const { calls, fetchImpl } = stubFetch({});
+    const code = await runGate(
+      fixtureDir({ body: `fixes a thing\n\n${SCREENSHOT_EMBED}` }, SRC_AND_TEST),
+      ENV,
+      fetchImpl,
+    );
+    expect(code).toBe(1);
+    expect(addedLabels(calls)).toEqual(['gate:close-lane']);
+    const body: string = postedBody(calls);
+    expect(body).toContain('A paragraph you wrote yourself');
+    expect(body).not.toContain('A screenshot of gbrain in use'); // that half is fine
+    expect(body).toContain('then reopen');
+  });
+
+  test('an empty description names both halves', async () => {
+    const { calls, fetchImpl } = stubFetch({});
+    expect(await runGate(fixtureDir({ body: '' }), ENV, fetchImpl)).toBe(1);
+    const body: string = postedBody(calls);
+    expect(body).toContain('A paragraph you wrote yourself');
+    expect(body).toContain('A screenshot of gbrain in use');
+  });
+
+  test('a policy miss overrides even a merge-lane-shaped clean diff', async () => {
+    // Nothing else about this PR is wrong: clean small diff, src + test, good
+    // title. The policy still closes it.
+    const { calls, fetchImpl } = stubFetch({});
+    expect(await runGate(fixtureDir({ body: 'lgtm' }, SRC_AND_TEST), ENV, fetchImpl)).toBe(1);
+    expect(addedLabels(calls)).toEqual(['gate:close-lane']);
+    expect(deletedLabels(calls).sort()).toEqual(['gate:merge-lane', 'gate:needs-maintainer']);
+  });
+
+  test('ai_generated intent routes to needs-maintainer (exit 0) and never accuses', async () => {
+    const { calls, fetchImpl } = stubFetch({
+      anthropic: () =>
+        verdictResponse({
+          ...CLEAN_VERDICT,
+          intent_authenticity: 'ai_generated',
+          intent_authenticity_reason: 'uniform hedging, no first-person specifics, no rough edges',
+        }),
+    });
+    const code = await runGate(fixtureDir({ body: COMPLIANT_BODY }, SRC_AND_TEST), ENV, fetchImpl);
+    expect(code).toBe(0);
+    expect(addedLabels(calls)).toEqual(['gate:needs-maintainer']);
+
+    const body: string = postedBody(calls);
+    expect(body).toContain('a maintainer will read the intent paragraph');
+    // Never the accusation, and never the model's private reasoning.
+    expect(body).not.toMatch(/AI-generated|AI-polished|ai_generated|did not write|uniform hedging/i);
+    expect(parseState(body)).toMatchObject({ lane: 'needs-maintainer' });
+  });
+
+  test('a human / unclear intent verdict leaves the lane alone', async () => {
+    for (const intent of ['human', 'unclear']) {
+      const { calls, fetchImpl } = stubFetch({
+        anthropic: () =>
+          verdictResponse({ ...CLEAN_VERDICT, intent_authenticity: intent, intent_authenticity_reason: 'r' }),
+      });
+      const code = await runGate(fixtureDir({ body: COMPLIANT_BODY }, SRC_AND_TEST), ENV, fetchImpl);
+      expect(code).toBe(0);
+      expect(addedLabels(calls)).toEqual(['gate:merge-lane']);
+    }
   });
 });

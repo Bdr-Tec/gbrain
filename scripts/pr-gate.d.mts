@@ -28,12 +28,24 @@ export declare const MAX_ITEMS: number;
 export declare const NET_SOURCE_LINE_LIMIT: number;
 export declare const DOWNGRADE_FLAG_IDS: string[];
 
+/** CONTRIBUTING.md #3745: human-written intent paragraph + screenshot of gbrain in use. */
+export declare const CONTRIBUTING_URL: string;
+export declare const INTENT_MIN_WORDS: number;
+export declare const POLICY_FLAG_IDS: string[];
+export declare const AI_INTENT_DOWNGRADE: string;
+export declare function stripCodeFences(body: unknown): string;
+export declare function hasScreenshot(body: unknown): boolean;
+export declare function intentWordCount(body: unknown): number;
+export declare function hasIntentParagraph(body: unknown): boolean;
+export declare function detectPolicyMisses(body: unknown): RedFlag[];
+
 export declare function sanitizeModelText(value: unknown, max?: number): string;
 export declare function sanitizeList(value: unknown, maxItems?: number, maxString?: number): string[];
 
 export declare function applyMechanicalDowngrades(
   lane: string,
   flags: RedFlag[],
+  intentAuthenticity?: string,
 ): { lane: string; downgrades: string[] };
 
 export interface GhComment {
@@ -57,6 +69,7 @@ export declare function renderComment(input: {
   flags: RedFlag[];
   neutralReason?: string;
   downgrades?: string[];
+  policyMisses?: RedFlag[];
   state?: { hash: string; lane: string };
 }): string;
 

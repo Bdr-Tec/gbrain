@@ -25,6 +25,11 @@
  * - The lane is NOT purely model-decided: mechanical signals downgrade a
  *   merge-lane recommendation to needs-maintainer, so a persuasive PR body
  *   cannot talk itself into the fast lane.
+ * - CONTRIBUTING.md's #3745 requirement (a human-written intent paragraph AND
+ *   a screenshot of gbrain in use) is checked mechanically. Missing either
+ *   forces close-lane with no model call — that is the documented consequence.
+ *   The model's separate intent_authenticity read is advisory only: at most it
+ *   forces needs-maintainer, and it never appears in the comment.
  * - A refusal or unparseable output routes to needs-maintainer, never to a
  *   green NEUTRAL — a deterministic refusal must not be a way to dodge the
  *   verdict. Only infrastructure failure (missing key, API down) is NEUTRAL,
@@ -44,6 +49,7 @@ const STATE_RE = /<!-- gbrain-pr-gate-state (\{[^\n]*?\}) -->/;
 const BOT_LOGIN = 'github-actions[bot]';
 const MODEL = 'claude-sonnet-5';
 const LANES = ['merge-lane', 'close-lane', 'needs-maintainer'];
+const INTENT_VERDICTS = ['human', 'ai_generated', 'unclear'];
 
 // ---------------------------------------------------------------------------
 // The rubric — the maintainer's standing policy. Keep verbatim-strict.
@@ -78,7 +84,11 @@ NEEDS_MAINTAINER (neutral — lane "needs-maintainer"):
 
 Also produce reviewer_checklist: 3-6 concrete verification steps a human reviewer must do for THIS diff (e.g. 'confirm the claimed bug exists on master at <file>', 'run the eval replay gate — this touches src/core/search/hybrid.ts', 'check engine parity — only pglite-engine.ts modified').
 
-Output strict JSON: lane (one of "merge-lane", "close-lane", "needs-maintainer"), confidence (0 to 1), reasons[] citing concrete evidence from the diff/description, title_ok (does the title follow the version-first rule stated in the payload), reviewer_checklist[].
+Also judge intent_authenticity: does the author's own "why I am opening this" paragraph read as written by a human, or as AI-generated / AI-polished text? Telltales of AI text: uniform hedging, vocabulary like "delve", "leverage", "robust", "seamless", perfectly balanced tri-colons, no first-person specifics, no concrete situation, no rough edges. Answer "human", "ai_generated" or "unclear", plus intent_authenticity_reason (one short line).
+
+This judgment is ADVISORY. It NEVER closes a PR on its own — at most it sends the PR to a human maintainer to read. Rough grammar, terseness, typos and non-native English are evidence of a HUMAN, not of AI. Answer "unclear" whenever the evidence is not clear-cut: wrongly telling a real contributor they did not write their own words is a far worse error than missing an AI-written paragraph.
+
+Output strict JSON: lane (one of "merge-lane", "close-lane", "needs-maintainer"), confidence (0 to 1), reasons[] citing concrete evidence from the diff/description, title_ok (does the title follow the version-first rule stated in the payload), reviewer_checklist[], intent_authenticity, intent_authenticity_reason.
 
 Your lane is a RECOMMENDATION. Mechanical signals computed outside this prompt can downgrade merge-lane to needs-maintainer regardless of what you return, so state the honest verdict rather than the one you think will stick.
 
@@ -94,8 +104,18 @@ const VERDICT_SCHEMA = {
     reasons: { type: 'array', items: { type: 'string' } },
     title_ok: { type: 'boolean' },
     reviewer_checklist: { type: 'array', items: { type: 'string' } },
+    intent_authenticity: { type: 'string', enum: INTENT_VERDICTS },
+    intent_authenticity_reason: { type: 'string' },
   },
-  required: ['lane', 'confidence', 'reasons', 'title_ok', 'reviewer_checklist'],
+  required: [
+    'lane',
+    'confidence',
+    'reasons',
+    'title_ok',
+    'reviewer_checklist',
+    'intent_authenticity',
+    'intent_authenticity_reason',
+  ],
   additionalProperties: false,
 };
 
@@ -161,6 +181,85 @@ export function sanitizeList(value, maxItems = MAX_ITEMS, maxString = MAX_STRING
     .filter((s) => s.length > 0);
   if (list.length > maxItems) out.push(`_${list.length - maxItems} further entries omitted…[truncated]_`);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// CONTRIBUTING.md policy (#3745), checked mechanically — no LLM, no judgment
+// call. Every PR must carry a paragraph the author wrote themselves and a
+// screenshot of gbrain in use. Missing either is "closed without review,
+// reopenable once added", so these two are the only flags that can force a
+// lane rather than merely downgrade one.
+// ---------------------------------------------------------------------------
+export const CONTRIBUTING_URL =
+  'https://github.com/garrytan/gbrain/blob/master/CONTRIBUTING.md#human-authored-intent-required-no-exceptions';
+
+/**
+ * Drop fenced code blocks (``` or ~~~, unterminated fences run to EOF). A
+ * screenshot pasted inside a fence is documentation of the syntax, not proof.
+ */
+const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]{0,3}\1[ \t]*$|$(?![\s\S]))/gm;
+export const stripCodeFences = (body) => String(body ?? '').replace(FENCE_RE, '\n');
+
+const SCREENSHOT_RES = [
+  /!\[[^\]]*\]\(\s*\S/, //                                    markdown image embed
+  /<img\b[^>]*>/i, //                                         raw HTML img tag
+  /https:\/\/user-images\.githubusercontent\.com\/\S/i, //     legacy paste URL
+  /https:\/\/github\.com\/user-attachments\/assets\/\S/i, //   current paste URL
+];
+
+export function hasScreenshot(body) {
+  const text = stripCodeFences(body);
+  return SCREENSHOT_RES.some((re) => re.test(text));
+}
+
+export const INTENT_MIN_WORDS = 40;
+
+// Everything a contributor can paste WITHOUT writing a word themselves: code,
+// quoted logs, checklists, headings, the template's HTML hints, and the
+// template's own bold prompts (a whole line of `**...**` is a heading in
+// disguise). What survives is the author's own prose.
+export function intentWordCount(body) {
+  const prose = stripCodeFences(body)
+    .replace(/<!--[\s\S]*?-->/g, ' ') // HTML comments (the PR template's hints)
+    .replace(/^[ \t]{0,3}#{1,6}[ \t].*$/gm, ' ') // headings
+    .replace(/^[ \t]*\*\*[^\n]*\*\*[ \t]*$/gm, ' ') // bold-only line = template prompt
+    .replace(/^[ \t]{0,3}>.*$/gm, ' ') // blockquotes
+    .replace(/^[ \t]*([-*+]|\d+[.)])[ \t].*$/gm, ' ') // list items
+    .replace(/!?\[[^\]]*\]\([^)]*\)/g, ' ') // links + image embeds
+    .replace(/<[^>]+>/g, ' ') // raw HTML tags
+    .replace(/https?:\/\/\S+/g, ' ') // bare URLs
+    .replace(/`[^`]*`/g, ' ') // inline code
+    // CJK is word-per-character, so space each one out before tokenizing —
+    // otherwise a whole Chinese paragraph counts as a single "word" and a
+    // non-English contributor gets closed for a paragraph they did write.
+    .replace(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/gu, ' $& ');
+  return (prose.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) ?? []).length;
+}
+
+export const hasIntentParagraph = (body) => intentWordCount(body) >= INTENT_MIN_WORDS;
+
+// Keyed in CONTRIBUTING.md's own order: the paragraph, then the screenshot.
+export const POLICY_FLAG_IDS = ['missing_intent', 'missing_screenshot'];
+
+const POLICY_DETAILS = {
+  missing_intent: `no human-written intent paragraph in the PR description (under ${INTENT_MIN_WORDS} words of prose once code, quotes, lists and the template boilerplate are removed) — required by CONTRIBUTING.md (#3745)`,
+  missing_screenshot:
+    'no screenshot of gbrain in use in the PR description — required by CONTRIBUTING.md (#3745)',
+};
+
+// Reader-facing version of the same two asks, for the top of the comment.
+const POLICY_ASKS = {
+  missing_intent:
+    '**A paragraph you wrote yourself** about why you are opening this — what you were doing, what went wrong or what you needed, why it matters to you. Rough grammar is fine and preferred over polish.',
+  missing_screenshot:
+    '**A screenshot of gbrain in use** in that situation — your terminal, your agent session, your logs. Redact private names, keys and brain contents first.',
+};
+
+export function detectPolicyMisses(body) {
+  const misses = [];
+  if (!hasIntentParagraph(body)) misses.push({ id: 'missing_intent', detail: POLICY_DETAILS.missing_intent });
+  if (!hasScreenshot(body)) misses.push({ id: 'missing_screenshot', detail: POLICY_DETAILS.missing_screenshot });
+  return misses;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,9 +380,26 @@ export const DOWNGRADE_FLAG_IDS = [
   'no_test_for_src_change',
 ];
 
-export function applyMechanicalDowngrades(lane, flags) {
-  if (lane !== 'merge-lane') return { lane, downgrades: [] };
-  const hits = flags.filter((f) => DOWNGRADE_FLAG_IDS.includes(f.id));
+/**
+ * The one downgrade that is not a red flag: the model read the intent
+ * paragraph as AI-written. It routes to a human and stops there — never to
+ * close-lane, because a false positive tells a real contributor they did not
+ * write their own words. Phrased so the sticky comment can render it verbatim
+ * without accusing anybody of anything.
+ */
+export const AI_INTENT_DOWNGRADE =
+  'a maintainer will read the intent paragraph on this PR personally before it merges';
+
+export function applyMechanicalDowngrades(lane, flags, intentAuthenticity) {
+  // #3745 is a hard requirement, not a recommendation: a missing intent
+  // paragraph or screenshot closes the PR whatever lane was recommended.
+  const policy = flags.filter((f) => POLICY_FLAG_IDS.includes(f.id));
+  if (policy.length > 0) return { lane: 'close-lane', downgrades: policy.map((f) => f.detail) };
+
+  const hits = lane === 'merge-lane' ? flags.filter((f) => DOWNGRADE_FLAG_IDS.includes(f.id)) : [];
+  if (intentAuthenticity === 'ai_generated' && lane !== 'close-lane') {
+    return { lane: 'needs-maintainer', downgrades: [...hits.map((f) => f.detail), AI_INTENT_DOWNGRADE] };
+  }
   if (hits.length === 0) return { lane, downgrades: [] };
   return { lane: 'needs-maintainer', downgrades: hits.map((f) => f.detail) };
 }
@@ -494,8 +610,30 @@ const LANE_HEADINGS = {
   'needs-maintainer': 'NEEDS MAINTAINER — human judgment required',
 };
 const LANE_MARKS = { 'merge-lane': '✅', 'close-lane': '❌', 'needs-maintainer': '⚠️' };
+const POLICY_HEADING = 'CLOSE LANE — the PR description is missing something required';
 
-export function renderComment({ lane, verdict, titleCheck, flags, neutralReason, downgrades = [], state }) {
+/** Leads the comment on a #3745 miss: what is missing, how to fix it, how to reopen. */
+function policyBlock(policyMisses) {
+  const ids = POLICY_FLAG_IDS.filter((id) => policyMisses.some((f) => f.id === id));
+  return [
+    '**Almost there — before this can be reviewed the description needs:**',
+    '',
+    ...ids.map((id) => `- ${POLICY_ASKS[id]}`),
+    '',
+    `Edit the description to add that, then reopen. This is not a judgment on the code — the policy is in [CONTRIBUTING.md](${CONTRIBUTING_URL}).`,
+  ];
+}
+
+export function renderComment({
+  lane,
+  verdict,
+  titleCheck,
+  flags,
+  neutralReason,
+  downgrades = [],
+  policyMisses = [],
+  state,
+}) {
   const lines = [MARKER];
   if (state) lines.push(`${STATE_PREFIX}${JSON.stringify(state)} -->`);
   lines.push('');
@@ -506,24 +644,32 @@ export function renderComment({ lane, verdict, titleCheck, flags, neutralReason,
       '',
     );
   } else {
-    lines.push(`## PR Gate — ${LANE_MARKS[lane]} ${LANE_HEADINGS[lane]}`, '');
+    const heading = policyMisses.length > 0 ? POLICY_HEADING : LANE_HEADINGS[lane];
+    lines.push(`## PR Gate — ${LANE_MARKS[lane]} ${heading}`, '');
+    if (policyMisses.length > 0) lines.push(...policyBlock(policyMisses), '');
     lines.push(`**Label:** \`${LABELS[lane].name}\` · **Confidence:** ${Number(verdict.confidence) || 0}`, '');
     lines.push('**Why:**');
     for (const r of sanitizeList(verdict.reasons)) lines.push(`- ${r}`);
     if (downgrades.length > 0) {
-      lines.push('', '**Mechanical downgrades applied** (merge-lane → needs-maintainer, regardless of the model verdict):');
+      lines.push('', '**Mechanical downgrades applied** (deterministic, regardless of the model verdict):');
       for (const d of sanitizeList(downgrades)) lines.push(`- ${d}`);
     }
-    lines.push('', '**Reviewer checklist:**');
-    for (const c of sanitizeList(verdict.reviewer_checklist)) lines.push(`- [ ] ${c}`);
+    const checklist = sanitizeList(verdict.reviewer_checklist);
+    if (checklist.length > 0) {
+      lines.push('', '**Reviewer checklist:**');
+      for (const c of checklist) lines.push(`- [ ] ${c}`);
+    }
     lines.push('');
   }
+  // Policy misses already have two sections of their own; a third copy here
+  // just reads as the machine repeating itself at a first-time contributor.
+  const redFlags = flags.filter((f) => !POLICY_FLAG_IDS.includes(f.id));
   lines.push(
     `**Title (version-first rule):** ${titleCheck.ok ? '✅ ok' : `❌ ${titleCheck.reason}`}`,
     '',
-    `**Mechanical red flags:** ${flags.length ? '' : 'none'}`,
+    `**Mechanical red flags:** ${redFlags.length ? '' : 'none'}`,
   );
-  for (const f of flags) lines.push(`- ${f.detail}`);
+  for (const f of redFlags) lines.push(`- ${f.detail}`);
   lines.push(
     '',
     '<sub>Strict usefulness gate (#3698). merge-lane / needs-maintainer exit green; close-lane exits red (strong signal, not a hard block — maintainers decide). PR code is never checked out or executed: verdict is from API metadata + a 120KB-capped diff only.</sub>',
@@ -545,7 +691,8 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
 
   const gh = ghClient(env, fetchImpl);
   const titleCheck = checkTitle(pr.title ?? '');
-  const flags = detectRedFlags({ changedFiles: pr.changed_files ?? files.length, files, diff });
+  const policyMisses = detectPolicyMisses(pr.body);
+  const flags = [...detectRedFlags({ changedFiles: pr.changed_files ?? files.length, files, diff }), ...policyMisses];
   const existing = await findOwnComment(gh, repo, prNumber);
 
   const neutral = async (reason) => {
@@ -570,27 +717,46 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
 
   let verdict;
   let degraded = null;
-  try {
-    verdict = await callAnthropic(apiKey, buildPayload({ pr, files, diff, titleCheck, flags }), fetchImpl);
-  } catch (err) {
-    const detail = String(err?.message ?? err).slice(0, 200);
-    if (err?.kind !== 'refusal' && err?.kind !== 'schema') {
-      return neutral(`Anthropic API unavailable after 2 retries: ${detail}`);
-    }
-    // A refusal or unusable output is NOT a free pass: route to a human.
-    degraded = detail;
+  if (policyMisses.length > 0) {
+    // Closed without review is the documented consequence, so don't spend a
+    // review call proving it. The comment leads with the fix, not the verdict.
+    console.log(
+      `PR gate: #3745 policy miss (${policyMisses.map((f) => f.id).join(', ')}) — close-lane without a model call.`,
+    );
     verdict = {
-      lane: 'needs-maintainer',
-      confidence: 0,
-      reasons: [`No automated verdict — ${detail}. Routed to needs-maintainer rather than skipped.`],
-      reviewer_checklist: ['Classify this PR by hand against the usefulness rubric — the gate could not.'],
+      lane: 'close-lane',
+      confidence: 1,
+      reasons: [
+        'CONTRIBUTING.md requires a human-written intent paragraph and a screenshot of gbrain in use on every PR; this description is missing at least one of them. Reopen once added.',
+      ],
+      reviewer_checklist: [],
     };
+  } else {
+    try {
+      verdict = await callAnthropic(apiKey, buildPayload({ pr, files, diff, titleCheck, flags }), fetchImpl);
+    } catch (err) {
+      const detail = String(err?.message ?? err).slice(0, 200);
+      if (err?.kind !== 'refusal' && err?.kind !== 'schema') {
+        return neutral(`Anthropic API unavailable after 2 retries: ${detail}`);
+      }
+      // A refusal or unusable output is NOT a free pass: route to a human.
+      degraded = detail;
+      verdict = {
+        lane: 'needs-maintainer',
+        confidence: 0,
+        reasons: [`No automated verdict — ${detail}. Routed to needs-maintainer rather than skipped.`],
+        reviewer_checklist: ['Classify this PR by hand against the usefulness rubric — the gate could not.'],
+      };
+    }
   }
 
   // Mechanical overrides beat the LLM: the title verdict is ours, and the
   // downgrade set below is not negotiable by anything in the PR text.
+  // intent_authenticity is deliberately consumed, never rendered — the reason
+  // string is the model's private working, not something to publish at a
+  // contributor on a public PR.
   verdict.title_ok = titleCheck.ok;
-  const { lane, downgrades } = applyMechanicalDowngrades(verdict.lane, flags);
+  const { lane, downgrades } = applyMechanicalDowngrades(verdict.lane, flags, verdict.intent_authenticity);
   verdict.lane = lane;
 
   const body = renderComment({
@@ -599,6 +765,7 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
     titleCheck,
     flags,
     downgrades,
+    policyMisses,
     state: { hash: inputHash, lane },
   });
   await upsertStickyComment(gh, repo, prNumber, existing, body);
