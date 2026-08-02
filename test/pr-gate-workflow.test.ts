@@ -31,6 +31,9 @@ import {
   detectPolicyMisses,
   hasScreenshot,
   hasIntentParagraph,
+  stripCodeFences,
+  modelBody,
+  MODEL_BODY_MAX,
   intentWordCount,
   sanitizeModelText,
   sanitizeList,
@@ -75,16 +78,17 @@ const CONTRIBUTING = readFileSync(CONTRIBUTING_PATH, 'utf8');
 const PR_TEMPLATE = readFileSync(PR_TEMPLATE_PATH, 'utf8');
 
 /**
- * Collect every line that belongs to a `run:` script, in all four YAML scalar
- * spellings: `run: cmd`, `run: |`, `run: >` and their `|-`/`>-`/`|+`/`>+`
- * chomping variants. A folded block hides interpolation from a `|`-only
- * scanner, which is exactly how an env-binding rule rots.
+ * Collect every line that belongs to a `run:` script, in EVERY YAML block
+ * scalar spelling: `run: cmd`, `run: |`, `run: >`, the `-`/`+` chomping
+ * indicators, and the numeric indentation indicator in either order (`|2-`
+ * and `|-2` are both legal headers). A spelling the scanner cannot see hides
+ * interpolation from the env-binding rule, which is exactly how that rule rots.
  */
 function runBlockLines(yaml: string): string[] {
   const lines = yaml.split('\n');
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const block = lines[i].match(/^(\s*)(?:-\s+)?run:\s*[|>][-+]?\d*\s*$/);
+    const block = lines[i].match(/^(\s*)(?:-\s+)?run:\s*[|>][0-9]*[-+]?[0-9]*\s*$/);
     if (block) {
       const baseIndent = block[1].length;
       for (let j = i + 1; j < lines.length; j++) {
@@ -157,6 +161,24 @@ describe('pr-gate workflow security pins', () => {
     expect(runBlockLines(chomped).join('\n')).toContain('${{');
     const single = '      - run: node scripts/x.mjs "${{ github.event.pull_request.body }}"';
     expect(runBlockLines(single).join('\n')).toContain('${{');
+  });
+
+  test('the run: scanner sees indentation indicators in both legal orders', () => {
+    // `|2-` / `>2-` are valid block headers (YAML allows the indentation and
+    // chomping indicators in either order). A scanner that only knew `|-2`
+    // would read `run: >2-` as an ordinary value, skip the whole block, and
+    // report a clean workflow while attacker-controlled text was being
+    // interpolated straight into the shell.
+    for (const header of ['>2-', '|2-', '>2', '|2', '>-2', '|+2', '|', '>']) {
+      const yaml = [
+        'jobs:',
+        '  x:',
+        '    steps:',
+        `      - run: ${header}`,
+        '        echo ${{ github.event.pull_request.title }}',
+      ].join('\n');
+      expect(runBlockLines(yaml).join('\n')).toContain('${{');
+    }
   });
 
   test('all actions are SHA-pinned', () => {
@@ -604,12 +626,90 @@ describe('mechanical flag details are attacker-controlled (filename injection)',
   });
 });
 
+// A closing fence must be the same character and AT LEAST as long as the
+// opening one (CommonMark 4.5). Getting that backwards is not a security hole,
+// it is a false positive that CLOSES compliant PRs: a body documenting fence
+// syntax had everything after the longer fence stripped to EOF, so its intent
+// paragraph vanished and the gate closed it for a paragraph it did contain.
+describe('stripCodeFences (CommonMark fence matching)', () => {
+  const prose = 'real human intent paragraph about my problem '.repeat(15);
+
+  test('a matching 3-backtick fence closes', () => {
+    expect(stripCodeFences('```\nhidden\n```\nvisible')).toContain('visible');
+    expect(stripCodeFences('```\nhidden\n```\nvisible')).not.toContain('hidden');
+  });
+
+  test('a LONGER closing fence closes the block (the false positive)', () => {
+    // The bug: ```` was read as a new opening fence, so `prose` was stripped to
+    // EOF and a legitimate description failed the intent check.
+    const body = `\`\`\`js\ncode\n\`\`\`\`\n${prose}`;
+    expect(stripCodeFences(body)).toContain('real human intent paragraph');
+    expect(stripCodeFences(body)).not.toContain('code');
+    expect(hasIntentParagraph(body)).toBe(true);
+  });
+
+  test('a SHORTER closing fence does not close — the block runs to EOF', () => {
+    const body = `\`\`\`\`\ncode\n\`\`\`\n${prose}`;
+    expect(stripCodeFences(body)).not.toContain('real human intent paragraph');
+    expect(hasIntentParagraph(body)).toBe(false);
+  });
+
+  test('tilde fences behave the same and do not cross-close backticks', () => {
+    expect(stripCodeFences('~~~\nhidden\n~~~\nvisible')).toContain('visible');
+    expect(stripCodeFences('~~~~\nhidden\n~~~\nstill hidden')).not.toContain('still hidden');
+    // A ``` line inside a ~~~ block is content, not a closer.
+    expect(stripCodeFences('~~~\n```\nhidden\n~~~\nvisible')).toContain('visible');
+    expect(stripCodeFences('~~~\n```\nhidden\n~~~\nvisible')).not.toContain('hidden');
+  });
+
+  test('an unterminated fence swallows the rest of the body', () => {
+    expect(stripCodeFences(`\`\`\`\n${prose}`)).not.toContain('real human intent paragraph');
+    expect(hasIntentParagraph(`\`\`\`\n${prose}`)).toBe(false);
+  });
+
+  test('a closing fence may not carry an info string', () => {
+    // ```` ```js ```` opens; a second ` ```js ` line is content, not a closer.
+    expect(stripCodeFences('```js\nhidden\n```js\nstill hidden')).not.toContain('still hidden');
+  });
+});
+
 describe('hasScreenshot (#3745, mechanical)', () => {
   test('accepts all four embed forms GitHub produces', () => {
     expect(hasScreenshot('here it is:\n\n![my terminal](https://example.com/shot.png)')).toBe(true);
     expect(hasScreenshot('https://user-images.githubusercontent.com/1234/98765-abcdef.png')).toBe(true);
     expect(hasScreenshot('https://github.com/user-attachments/assets/0a1b2c3d-4e5f-6789')).toBe(true);
     expect(hasScreenshot('<img width="900" alt="run" src="https://example.com/shot.png">')).toBe(true);
+    // Root-relative and extension-bearing paths still count.
+    expect(hasScreenshot('![shot](/docs/img/run.png)')).toBe(true);
+    expect(hasScreenshot('![shot](run.png)')).toBe(true);
+    expect(hasScreenshot("<img src='https://example.com/a.png'>")).toBe(true);
+    expect(hasScreenshot('<img src=https://example.com/a.png width=900>')).toBe(true);
+  });
+
+  // The floor is deliberately low — anyone can paste any image and clear it.
+  // What it must not accept is the zero-effort forms: a placeholder URL, a tag
+  // with no image behind it, or something hidden where GitHub renders nothing.
+  test('a placeholder URL is not an embed', () => {
+    expect(hasScreenshot('![proof](x)')).toBe(false);
+    expect(hasScreenshot('![proof]()')).toBe(false);
+    expect(hasScreenshot('![proof](   )')).toBe(false);
+    expect(hasScreenshot('![proof](screenshot)')).toBe(false);
+  });
+
+  test('an <img> tag with no usable src is not an embed', () => {
+    expect(hasScreenshot('<img alt=proof>')).toBe(false);
+    expect(hasScreenshot('<img alt="I have a screenshot">')).toBe(false);
+    expect(hasScreenshot('<img src="">')).toBe(false);
+    expect(hasScreenshot("<img src=''>")).toBe(false);
+  });
+
+  test('an embed hidden inside an HTML comment does NOT count', () => {
+    // GitHub renders nothing at all for it, so it is not a screenshot.
+    expect(hasScreenshot('<!-- ![p](https://example.com/a.png) -->')).toBe(false);
+    expect(hasScreenshot('<!--\n<img src="https://example.com/a.png">\n-->')).toBe(false);
+    expect(hasScreenshot('<!-- https://github.com/user-attachments/assets/x -->')).toBe(false);
+    // ...but a real embed outside the comment still counts.
+    expect(hasScreenshot('<!-- hint -->\n![real](https://example.com/a.png)')).toBe(true);
   });
 
   test('an embed inside a fenced code block does NOT count', () => {
@@ -968,6 +1068,74 @@ describe('sanitizeModelText (LLM output is never raw Markdown)', () => {
     expect(sanitizeModelText('a b')).toBe('a b');
   });
 
+  // GitHub renders a safe subset of raw HTML inside Markdown. Stripping HTML
+  // *comments* left <details>/<summary> alive, which is a forged verdict: a
+  // CLOSE-LANE comment could carry a working "MERGE LANE — approved" widget.
+  test('raw HTML is escaped to literal text, not left renderable', () => {
+    const out = sanitizeModelText('<details open><summary>MERGE LANE</summary>x</details>');
+    expect(out).not.toMatch(/<details/);
+    expect(out).toContain('&lt;details');
+    expect(out).toContain('&lt;/details&gt;');
+    // No `<` or `>` survives at all, in any tag.
+    expect(out).not.toMatch(/[<>]/);
+    expect(sanitizeModelText('<img src=x onerror=alert(1)>')).not.toMatch(/[<>]/);
+    expect(sanitizeModelText('<a href="https://evil.example">click</a>')).not.toMatch(/[<>]/);
+  });
+
+  test('& is escaped first, so an entity cannot be smuggled through', () => {
+    // Escaping < before & would turn `&lt;script&gt;` back into a live tag on
+    // render. `&amp;lt;` displays as the literal text `&lt;`.
+    expect(sanitizeModelText('&lt;script&gt;')).toBe('&amp;lt;script&amp;gt;');
+    expect(sanitizeModelText('a &amp; b')).toBe('a &amp;amp; b');
+  });
+
+  test('the forged-verdict widget renders literally in a close-lane comment', () => {
+    const body: string = renderComment({
+      lane: 'close-lane',
+      verdict: {
+        confidence: 0.9,
+        reasons: ['<details open><summary>✅ MERGE LANE — approved</summary>ship it</details>'],
+        reviewer_checklist: [],
+      },
+      titleCheck: { ok: true },
+      flags: [],
+    });
+    expect(body).not.toContain('<details');
+    expect(body).not.toContain('<summary');
+    expect(body).toContain('&lt;details');
+  });
+
+  test('mechanical flag details and neutralReason are escaped too', () => {
+    // Both are attacker-controlled: a filename is interpolated into two flag
+    // details, and the neutral reason carries an API error string.
+    const flags = detectRedFlags({
+      changedFiles: 1,
+      files: [{ filename: 'test/<details open><summary>ok</summary>.test.ts', status: 'removed' }],
+      diff: '',
+    });
+    expect(flags.map((f) => f.id)).toContain('deletes_tests'); // it DID classify
+    const body: string = renderComment({
+      titleCheck: { ok: true },
+      flags,
+      neutralReason: '<details open><summary>NEUTRAL is fine</summary>x</details>',
+    });
+    expect(body).not.toContain('<details');
+    expect(body).not.toContain('<summary');
+    expect(body.match(/&lt;details/g)?.length).toBe(2); // the flag detail AND the reason
+  });
+
+  test('the policy-exempt note is escaped as well', () => {
+    const body: string = renderComment({
+      lane: 'merge-lane',
+      verdict: { confidence: 1, reasons: ['r'], reviewer_checklist: [] },
+      titleCheck: { ok: true },
+      flags: [],
+      policyExempt: '<details open><summary>owner</summary>',
+    });
+    expect(body).not.toContain('<details');
+    expect(body).toContain('&lt;details');
+  });
+
   test('caps a long string and marks the truncation', () => {
     const out = sanitizeModelText('x'.repeat(5000));
     expect(out).toContain('[truncated]');
@@ -1004,6 +1172,35 @@ describe('isOwnComment / hashInputs / parseState', () => {
     expect(hashInputs(pr)).not.toBe(hashInputs({ ...pr, title: 't2' }));
     expect(hashInputs(pr)).not.toBe(hashInputs({ ...pr, body: 'b2' }));
     expect(hashInputs(pr)).not.toBe(hashInputs({ ...pr, head: { sha: 'def' } }));
+  });
+
+  // The model only ever sees modelBody(pr). Hashing the whole body meant a
+  // one-byte edit past the cap minted a new hash and bought a fresh paid call
+  // with byte-identical model input — the exact amplification the guard exists
+  // to stop.
+  test('the hash covers what the model consumes, not the whole body', () => {
+    expect(modelBody({ body: 'x'.repeat(MODEL_BODY_MAX + 500) })).toHaveLength(MODEL_BODY_MAX);
+    const head = `${HUMAN_INTENT}\n\n${SCREENSHOT_EMBED}\n${'padding words here. '.repeat(400)}`;
+    expect(head.length).toBeGreaterThan(MODEL_BODY_MAX);
+    const pr = (tail: string) => ({ title: 't', body: head + tail, head: { sha: 'abc' } });
+    // Same first 6KB, same policy verdict → same inputs → no new call.
+    expect(hashInputs(pr('a'))).toBe(hashInputs(pr('b')));
+    expect(hashInputs(pr(''))).toBe(hashInputs(pr('completely different trailing prose')));
+    // An edit INSIDE the window still mints a new hash.
+    const edited = { title: 't', body: `edited ${head}`, head: { sha: 'abc' } };
+    expect(hashInputs(edited)).not.toBe(hashInputs(pr('')));
+  });
+
+  test('a policy fix past the model cap still invalidates the cached verdict', () => {
+    // The mechanical policy scan reads 16KB, so its outcome is hashed too.
+    // Without that, adding the missing screenshot at 8KB would leave the hash
+    // unchanged and the cached close-lane would be served forever.
+    const filler = 'padding words here. '.repeat(400); // > MODEL_BODY_MAX
+    const before = { title: 't', body: `${HUMAN_INTENT}\n\n${filler}`, head: { sha: 'abc' } };
+    const after = { title: 't', body: `${HUMAN_INTENT}\n\n${filler}\n\n${SCREENSHOT_EMBED}`, head: { sha: 'abc' } };
+    expect(detectPolicyMisses(before.body).map((f) => f.id)).toEqual(['missing_screenshot']);
+    expect(detectPolicyMisses(after.body)).toEqual([]);
+    expect(hashInputs(before)).not.toBe(hashInputs(after));
   });
 
   test('state round-trips through the rendered comment', () => {
@@ -1053,8 +1250,12 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 function stubFetch(opts: {
-  comments?: unknown[];
+  comments?: any[];
   anthropic?: (n: number) => Response;
+  /** Fail the label-add call — models a transient GitHub labels-API blip. */
+  labelAddFails?: () => boolean;
+  /** Persist the sticky comment into `comments`, so a rerun sees the last run's state. */
+  persistComments?: boolean;
 }): { calls: Call[]; fetchImpl: typeof fetch } {
   const calls: Call[] = [];
   let anthropicCount = 0;
@@ -1069,9 +1270,20 @@ function stubFetch(opts: {
       return opts.anthropic(anthropicCount++);
     }
     if (/\/issues\/\d+\/comments\?/.test(u)) return jsonResponse(opts.comments ?? []);
-    if (/\/issues\/comments\/\d+$/.test(u) && method === 'PATCH') return jsonResponse({ id: 99 });
-    if (/\/issues\/\d+\/comments$/.test(u) && method === 'POST') return jsonResponse({ id: 100 }, 201);
-    if (/\/issues\/\d+\/labels$/.test(u) && method === 'POST') return jsonResponse([]);
+    if (/\/issues\/comments\/\d+$/.test(u) && method === 'PATCH') {
+      if (opts.persistComments && opts.comments?.[0]) opts.comments[0].body = body.body;
+      return jsonResponse({ id: 99 });
+    }
+    if (/\/issues\/\d+\/comments$/.test(u) && method === 'POST') {
+      if (opts.persistComments) {
+        opts.comments!.push({ id: 100, user: { type: 'Bot', login: 'github-actions[bot]' }, body: body.body });
+      }
+      return jsonResponse({ id: 100 }, 201);
+    }
+    if (/\/issues\/\d+\/labels$/.test(u) && method === 'POST') {
+      if (opts.labelAddFails?.()) return jsonResponse({ message: 'server error' }, 500);
+      return jsonResponse([]);
+    }
     if (/\/issues\/\d+\/labels\//.test(u) && method === 'DELETE') return jsonResponse([]);
     if (/\/repos\/[^/]+\/[^/]+\/labels$/.test(u) && method === 'POST') return jsonResponse({}, 201);
     return jsonResponse({ message: `unrouted ${method} ${u}` }, 404);
@@ -1274,6 +1486,57 @@ describe('runGate end-to-end (mocked fetch)', () => {
     expect(code).toBe(1); // the stored close-lane verdict still holds
     expect(calls.some((c) => c.url.startsWith('https://api.anthropic.com'))).toBe(false);
     expect(calls.some((c) => c.method === 'PATCH' || c.method === 'POST')).toBe(false); // nothing rewritten
+  });
+
+  // "Exactly one gate:* label" is only true if a failed label call can be
+  // repaired. The sticky comment carries the cached state that makes a rerun
+  // short-circuit, so writing it BEFORE the labels are reconciled turns one
+  // transient 500 into a permanently wrong label set.
+  test('a failed label call is repaired by an identical rerun', async () => {
+    const comments: any[] = [];
+    let failLabels = true;
+    const { calls, fetchImpl } = stubFetch({
+      comments,
+      persistComments: true,
+      labelAddFails: () => failLabels,
+      anthropic: () => verdictResponse(CLEAN_VERDICT),
+    });
+    const dir = fixtureDir({}, [
+      { filename: 'src/a.ts', status: 'modified', additions: 2, deletions: 1 },
+      { filename: 'test/a.test.ts', status: 'modified', additions: 5, deletions: 0 },
+    ]);
+
+    // Run 1: the label API blips. The run fails loudly...
+    await expect(runGate(dir, ENV, fetchImpl)).rejects.toThrow(/label add failed/);
+    // The label add was ATTEMPTED (it is the first write)...
+    expect(addedLabels(calls)).toEqual(['gate:merge-lane']);
+    // ...and because it failed first, NO cached state was persisted, so the
+    // rerun cannot short-circuit on it.
+    expect(comments).toHaveLength(0);
+
+    // Run 2: byte-identical inputs, labels API healthy again.
+    failLabels = false;
+    calls.length = 0;
+    const code = await runGate(dir, ENV, fetchImpl);
+    expect(code).toBe(0);
+    expect(addedLabels(calls)).toEqual(['gate:merge-lane']);
+    expect(deletedLabels(calls).sort()).toEqual(['gate:close-lane', 'gate:needs-maintainer']);
+    expect(parseState(postedBody(calls))).toMatchObject({ lane: 'merge-lane' });
+  });
+
+  test('labels are reconciled before the state block is persisted', async () => {
+    // The ordering itself, pinned directly: whatever else changes, the label
+    // write must not come after the comment that lets a rerun short-circuit.
+    const { calls, fetchImpl } = stubFetch({ anthropic: () => verdictResponse(CLEAN_VERDICT) });
+    await runGate(fixtureDir({}, [
+      { filename: 'src/a.ts', status: 'modified', additions: 2, deletions: 1 },
+      { filename: 'test/a.test.ts', status: 'modified', additions: 5, deletions: 0 },
+    ]), ENV, fetchImpl);
+    const labelAt = calls.findIndex((c) => c.method === 'POST' && /\/issues\/\d+\/labels$/.test(c.url));
+    const commentAt = calls.findIndex((c) => /\/issues\/\d+\/comments$/.test(c.url) && c.method === 'POST');
+    expect(labelAt).toBeGreaterThanOrEqual(0);
+    expect(commentAt).toBeGreaterThanOrEqual(0);
+    expect(labelAt).toBeLessThan(commentAt);
   });
 
   test('spend guard does not fire when the head sha moved', async () => {

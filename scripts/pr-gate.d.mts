@@ -36,6 +36,8 @@ export declare const POLICY_SCAN_MAX: number;
 export declare const POLICY_EXEMPT_ASSOCIATIONS: string[];
 export declare const AI_INTENT_DOWNGRADE: string;
 export declare function stripCodeFences(body: unknown): string;
+export declare const MODEL_BODY_MAX: number;
+export declare function modelBody(pr: { body?: string } | null | undefined): string;
 export declare function hasScreenshot(body: unknown): boolean;
 export declare function intentWordCount(body: unknown): number;
 export declare function hasIntentParagraph(body: unknown): boolean;

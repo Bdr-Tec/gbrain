@@ -14,6 +14,27 @@
  * sticky comment (marker <!-- gbrain-pr-gate -->), applies exactly one
  * gate:* label, and exits 1 only for close-lane.
  *
+ * WHAT THIS GATE IS, AND WHAT IT IS NOT. Read this before hardening anything
+ * here on the assumption that it is a security control.
+ *
+ * IT IS: a triage signal and a reviewer checklist. It sorts incoming PRs so a
+ * maintainer's attention lands on the ones worth reading first, and it tells a
+ * first-time contributor what the repo expects before anybody spends review
+ * time on their diff. Its checks are mechanical FLOORS — cheap filters against
+ * zero-effort submissions.
+ *
+ * IT IS NOT an authorization boundary. Nothing here decides what merges.
+ * close-lane exits red, which is a strong signal, not a hard block. Every
+ * mechanical floor below (a screenshot embed, 40 words of prose, a title
+ * shape) can be satisfied by a determined author who wants to satisfy it —
+ * that is expected and it is fine, because clearing the floor buys a human
+ * read, not a merge. The human reviewer is the decision-maker.
+ *
+ * The parts that ARE hard requirements are the ones protecting the runner and
+ * the comment: PR code is never checked out or executed, and nothing
+ * attacker-controlled reaches Markdown unescaped. Those are load-bearing; the
+ * verdict is advice.
+ *
  * Hostile-input posture (the PR author controls title/body/diff, and can also
  * post comments on their own PR):
  * - Only a comment authored by github-actions[bot] AND starting with the
@@ -164,10 +185,21 @@ export function checkTitle(title) {
 // ---------------------------------------------------------------------------
 // Model-output sanitization. Everything the model produces is attacker-
 // influenced (the PR body is in its context), so nothing it returns may reach
-// Markdown unfiltered: no forged headings, no second marker, no live mentions.
+// Markdown unfiltered: no forged headings, no second marker, no live mentions,
+// and no HTML.
+//
+// GitHub renders a safe subset of raw HTML inside Markdown, and <details> is in
+// it. Stripping HTML *comments* is not enough on its own: a string like
+// `<details open><summary>MERGE LANE — approved</summary>...</details>` renders
+// as a working disclosure widget, so a close-lane comment can be made to LOOK
+// like an approval. Escaping &, < and > makes every tag render as literal text,
+// which is what a quoted model string should look like anyway.
 // ---------------------------------------------------------------------------
 export const MAX_STRING = 300;
 export const MAX_ITEMS = 8;
+
+/** & first, or the escaping escapes its own output. */
+const escapeHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 export function sanitizeModelText(value, max = MAX_STRING) {
   let t = typeof value === 'string' ? value : String(value ?? '');
@@ -176,9 +208,15 @@ export function sanitizeModelText(value, max = MAX_STRING) {
     .replace(/<!--|-->/g, ' ') // dangling halves that could re-pair
     .replace(/\s+/g, ' ') // one line only: \s covers \n \r U+2028 U+2029 — no block context to open
     .trim()
+    // Block markers are stripped BEFORE escaping: escape first and a leading
+    // `>` becomes `&gt;`, surviving as a visible artifact instead of going away.
     .replace(/^[\s>#*+\-=|~]+/, '') // leading block markers (heading, quote, list, table, rule)
     .replace(/@(?=[A-Za-z0-9])/g, '@\u200b') // zero-width break: the mention is inert
     .trim();
+  // Truncating AFTER escaping can cut an entity in half (`&l`), which renders
+  // as those literal characters. It can never re-create a `<`, so it cannot
+  // re-open a tag.
+  t = escapeHtml(t);
   if (t.length > max) t = `${t.slice(0, max)}…[truncated]`;
   return t;
 }
@@ -204,18 +242,7 @@ export const CONTRIBUTING_URL =
   'https://github.com/garrytan/gbrain/blob/master/CONTRIBUTING.md#human-authored-intent-required-no-exceptions';
 
 /**
- * Drop fenced code blocks (``` or ~~~, unterminated fences run to EOF). A
- * screenshot pasted inside a fence is documentation of the syntax, not proof.
- */
-const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]{0,3}\1[ \t]*$|$(?![\s\S]))/gm;
-
-/**
  * The policy scan runs over the FIRST 16KB of the description only.
- *
- * FENCE_RE backtracks superlinearly on a body that is mostly backticks: 65KB of
- * them (GitHub's max body length) measured ~8s across the two policy scans, and
- * the PR body is attacker-supplied on a `pull_request_target` runner. The cap
- * brings the same input to ~0.4s.
  *
  * Tradeoff, stated plainly: a legitimate description whose intent paragraph AND
  * screenshot both sit past 16KB of preamble would be judged on the truncated
@@ -223,24 +250,77 @@ const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]{0,3}\1[ \t]*
  * appear near the top — .github/pull_request_template.md puts them in the first
  * two sections, and 16KB is ~2,500 words of prose before the screenshot. The
  * model payload already caps the same body at 6KB, so the cap here is the looser
- * of the two. Raise it if a real PR ever trips it; do not remove it.
+ * of the two. Raise it if a real PR ever trips it; do not remove it: the body is
+ * attacker-supplied on a `pull_request_target` runner, and this is the bound on
+ * every scan below.
  */
 export const POLICY_SCAN_MAX = 16384;
-export const stripCodeFences = (body) =>
-  String(body ?? '')
-    .slice(0, POLICY_SCAN_MAX)
-    .replace(FENCE_RE, '\n');
+
+const FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,}|~{3,})([^\n]*)$/;
+
+/**
+ * Drop fenced code blocks (``` or ~~~, unterminated fences run to EOF). A
+ * screenshot pasted inside a fence is documentation of the syntax, not proof.
+ *
+ * Line scanner, not one regex, because the CommonMark closing rule needs a
+ * length COMPARISON and a backreference can only express equality. A closing
+ * fence must use the same character and be AT LEAST as long as the opening one,
+ * so ```` closes ``` — under the old `\1` backreference it did not, the engine
+ * read it as a new opening fence, and everything after it was stripped to EOF.
+ * A compliant PR that documented fence syntax then failed the intent check and
+ * was closed. (The scanner is also linear, which retires the superlinear-
+ * backtracking hazard the 16KB cap was sized against.)
+ */
+export const stripCodeFences = (body) => {
+  const out = [];
+  let fence = null; // { char, len } while inside a block
+  for (const line of String(body ?? '').slice(0, POLICY_SCAN_MAX).split('\n')) {
+    const m = FENCE_OPEN_RE.exec(line);
+    if (fence) {
+      // Same character, at least as long, and no info string after it.
+      if (m && m[1][0] === fence.char && m[1].length >= fence.len && m[2].trim() === '') fence = null;
+      continue; // fenced content and the fences themselves are not prose
+    }
+    if (m) {
+      fence = { char: m[1][0], len: m[1].length };
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+};
+
+const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+
+/** Fences and HTML comments both hide text that renders as nothing. */
+const visibleText = (body) => stripCodeFences(body).replace(HTML_COMMENT_RE, ' ');
+
+// A URL that could actually resolve to an image: absolute, root-relative, or
+// something carrying an image extension. `x` is not one.
+const IMAGE_URL_RE = /^(?:https?:\/\/\S|\/\S|\S+\.(?:png|jpe?g|gif|webp|svg|avif|bmp|heic)\b)/i;
 
 const SCREENSHOT_RES = [
-  /!\[[^\]]*\]\(\s*\S/, //                                    markdown image embed
-  /<img\b[^>]*>/i, //                                         raw HTML img tag
-  /https:\/\/user-images\.githubusercontent\.com\/\S/i, //     legacy paste URL
-  /https:\/\/github\.com\/user-attachments\/assets\/\S/i, //   current paste URL
+  // Markdown embed — the URL must look like a URL, not like a placeholder.
+  (t) => [...t.matchAll(/!\[[^\]]*\]\(\s*([^)\s]+)/g)].some((m) => IMAGE_URL_RE.test(m[1])),
+  // Raw HTML img — must carry a src= with a non-empty value.
+  (t) => /<img\b[^>]*\bsrc\s*=\s*(?:"[^"]+"|'[^']+'|[^\s>"'][^\s>]*)/i.test(t),
+  (t) => /https:\/\/user-images\.githubusercontent\.com\/\S/i.test(t), //   legacy paste URL
+  (t) => /https:\/\/github\.com\/user-attachments\/assets\/\S/i.test(t), // current paste URL
 ];
 
+/**
+ * A FLOOR, not proof. This checks that something image-shaped is actually
+ * embedded — it cannot check that the image shows gbrain, or that the author
+ * took it. Anyone who wants to clear it can paste any image at all, and that is
+ * fine: the check exists to filter zero-effort submissions (an empty body, a
+ * "screenshot attached" claim with nothing attached, the syntax pasted inside a
+ * code fence). A human reviewer makes the real call. Do not add cleverness here
+ * expecting it to hold against someone trying — see the IS/IS NOT block at the
+ * top of this file.
+ */
 export function hasScreenshot(body) {
-  const text = stripCodeFences(body);
-  return SCREENSHOT_RES.some((re) => re.test(text));
+  const text = visibleText(body);
+  return SCREENSHOT_RES.some((match) => match(text));
 }
 
 export const INTENT_MIN_WORDS = 40;
@@ -250,8 +330,7 @@ export const INTENT_MIN_WORDS = 40;
 // template's own bold prompts (a whole line of `**...**` is a heading in
 // disguise). What survives is the author's own prose.
 export function intentWordCount(body) {
-  const prose = stripCodeFences(body)
-    .replace(/<!--[\s\S]*?-->/g, ' ') // HTML comments (the PR template's hints)
+  const prose = visibleText(body) // fences + HTML comments (the PR template's hints)
     .replace(/^[ \t]{0,3}#{1,6}[ \t].*$/gm, ' ') // headings
     .replace(/^[ \t]*\*\*[^\n]*\*\*[ \t]*$/gm, ' ') // bold-only line = template prompt
     .replace(/^[ \t]{0,3}>.*$/gm, ' ') // blockquotes
@@ -571,8 +650,8 @@ function buildPayload({ pr, files, diff, titleCheck, flags }) {
     '--- UNTRUSTED PR TITLE ---',
     pr.title ?? '',
     '',
-    '--- UNTRUSTED PR BODY (capped at 6KB) ---',
-    (pr.body ?? '(empty)').slice(0, 6000),
+    `--- UNTRUSTED PR BODY (capped at ${MODEL_BODY_MAX / 1000}KB) ---`,
+    modelBody(pr),
     '',
     '--- CHANGED FILES (first 100) ---',
     fileList,
@@ -673,9 +752,22 @@ async function setLaneLabel(gh, repo, prNumber, lane) {
 // The exemption is part of the input tuple: a draft PR marked ready-for-review
 // changes neither title, body nor head sha, so without it the spend guard would
 // keep serving the verdict computed while the policy check was waived.
+//
+// The tuple hashes what the run actually CONSUMES, not the raw body: the model
+// only ever sees the first MODEL_BODY_MAX bytes, so hashing the whole body made
+// a one-byte edit past that offset mint a new hash and buy a fresh paid call
+// with byte-identical model input. The mechanical policy verdict IS computed
+// from the full (16KB-capped) body, so its outcome is hashed alongside the
+// truncated text — otherwise adding the missing screenshot past 6KB would leave
+// the hash unchanged and the cached close-lane would be served forever.
+export const MODEL_BODY_MAX = 6000;
+export const modelBody = (pr) => (pr?.body ?? '(empty)').slice(0, MODEL_BODY_MAX);
+
 export function hashInputs(pr) {
+  const exemption = policyExemption(pr) ?? '';
+  const policy = exemption ? [] : detectPolicyMisses(pr?.body).map((f) => f.id);
   return createHash('sha256')
-    .update(JSON.stringify([pr.title ?? '', pr.body ?? '', pr.head?.sha ?? '', policyExemption(pr) ?? '']))
+    .update(JSON.stringify([pr.title ?? '', modelBody(pr), pr.head?.sha ?? '', exemption, policy]))
     .digest('hex')
     .slice(0, 16);
 }
@@ -787,6 +879,8 @@ export function renderComment({
   lines.push(
     '',
     '<sub>Strict usefulness gate (#3698). merge-lane / needs-maintainer exit green; close-lane exits red (strong signal, not a hard block — maintainers decide). PR code is never checked out or executed: verdict is from API metadata + a 120KB-capped diff only.</sub>',
+    '',
+    '<sub>This is a triage signal and a reviewer checklist, not an authorization boundary. The mechanical checks are floors a determined author can clear; a human reviewer makes the real call.</sub>',
   );
   return lines.join('\n');
 }
@@ -816,6 +910,7 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
 
   const neutral = async (reason) => {
     console.log(`::warning::PR gate NEUTRAL-skip: ${reason}`);
+    await setLaneLabel(gh, repo, prNumber, null); // no stale verdict survives a skip
     await upsertStickyComment(
       gh,
       repo,
@@ -823,7 +918,6 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
       existing,
       renderComment({ titleCheck, flags, policyExempt, neutralReason: reason }),
     );
-    await setLaneLabel(gh, repo, prNumber, null); // no stale verdict survives a skip
     return 0;
   };
 
@@ -900,8 +994,15 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
     policyExempt,
     state: { hash: inputHash, lane },
   });
-  await upsertStickyComment(gh, repo, prNumber, existing, body);
+  // ORDER IS LOAD-BEARING: labels FIRST, then the comment carrying the cached
+  // state. The comment is what makes a rerun short-circuit on the spend guard,
+  // so persisting it before the labels are reconciled turns a transient label
+  // API failure into a permanent one — the rerun sees "same hash, lane already
+  // decided", returns success, and never repairs the stale/missing/duplicate
+  // label. Written in this order, a failed label call throws with no state
+  // persisted, and the next run redoes the whole thing.
   await setLaneLabel(gh, repo, prNumber, lane);
+  await upsertStickyComment(gh, repo, prNumber, existing, body);
 
   console.log(
     `PR gate verdict: ${lane} (confidence ${verdict.confidence}${degraded ? ', degraded' : ''}${
