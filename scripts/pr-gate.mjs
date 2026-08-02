@@ -19,9 +19,15 @@
  * - Only a comment authored by github-actions[bot] AND starting with the
  *   marker is ever adopted for the sticky update. A contributor pre-posting
  *   the marker gets a fresh bot comment instead of a hijacked one.
- * - EVERY model-produced string is sanitized before it reaches Markdown
- *   (no HTML comments, no live @mentions, no block markers, no newlines,
- *   length- and count-capped).
+ * - EVERY string that is not a literal in THIS file is sanitized before it
+ *   reaches Markdown (no HTML comments, no live @mentions, no block markers,
+ *   no newlines, length- and count-capped). That includes the mechanical
+ *   red-flag details: two of them interpolate PR filenames, and a filename may
+ *   legally contain a newline, so they are attacker-controlled too.
+ * - parseState only reads the state block the bot itself wrote (line 2 of a
+ *   marker-leading comment). A block appearing anywhere else in the body is
+ *   somebody else's text and is ignored, so hostile content cannot forge a
+ *   cached verdict for the spend guard to reuse.
  * - The lane is NOT purely model-decided: mechanical signals downgrade a
  *   merge-lane recommendation to needs-maintainer, so a persuasive PR body
  *   cannot talk itself into the fast lane.
@@ -48,7 +54,8 @@ import { pathToFileURL } from 'node:url';
 
 const MARKER = '<!-- gbrain-pr-gate -->';
 const STATE_PREFIX = '<!-- gbrain-pr-gate-state ';
-const STATE_RE = /<!-- gbrain-pr-gate-state (\{[^\n]*?\}) -->/;
+// Whole-line anchored: the block is only ever read off line 2 (see parseState).
+const STATE_RE = /^<!-- gbrain-pr-gate-state (\{[^\n]*?\}) -->$/;
 const BOT_LOGIN = 'github-actions[bot]';
 const MODEL = 'claude-sonnet-5';
 const LANES = ['merge-lane', 'close-lane', 'needs-maintainer'];
@@ -201,7 +208,28 @@ export const CONTRIBUTING_URL =
  * screenshot pasted inside a fence is documentation of the syntax, not proof.
  */
 const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]{0,3}\1[ \t]*$|$(?![\s\S]))/gm;
-export const stripCodeFences = (body) => String(body ?? '').replace(FENCE_RE, '\n');
+
+/**
+ * The policy scan runs over the FIRST 16KB of the description only.
+ *
+ * FENCE_RE backtracks superlinearly on a body that is mostly backticks: 65KB of
+ * them (GitHub's max body length) measured ~8s across the two policy scans, and
+ * the PR body is attacker-supplied on a `pull_request_target` runner. The cap
+ * brings the same input to ~0.4s.
+ *
+ * Tradeoff, stated plainly: a legitimate description whose intent paragraph AND
+ * screenshot both sit past 16KB of preamble would be judged on the truncated
+ * text and could be closed for a paragraph it does contain. In practice both
+ * appear near the top — .github/pull_request_template.md puts them in the first
+ * two sections, and 16KB is ~2,500 words of prose before the screenshot. The
+ * model payload already caps the same body at 6KB, so the cap here is the looser
+ * of the two. Raise it if a real PR ever trips it; do not remove it.
+ */
+export const POLICY_SCAN_MAX = 16384;
+export const stripCodeFences = (body) =>
+  String(body ?? '')
+    .slice(0, POLICY_SCAN_MAX)
+    .replace(FENCE_RE, '\n');
 
 const SCREENSHOT_RES = [
   /!\[[^\]]*\]\(\s*\S/, //                                    markdown image embed
@@ -265,15 +293,60 @@ export function detectPolicyMisses(body) {
   return misses;
 }
 
+/**
+ * #3745 EXEMPTION — who the policy is for. A deliberate decision, not an
+ * oversight.
+ *
+ * The intent paragraph + screenshot exist to filter INCOMING OUTSIDE
+ * CONTRIBUTIONS: they ask a stranger to show a real situation before a
+ * maintainer spends review time on their diff. They were never aimed at the
+ * repo's own traffic. Release automation cannot take a screenshot of itself,
+ * and /ship writes the description from the CHANGELOG rather than from a
+ * first-person story — so with no exemption EVERY release PR lands in
+ * close-lane. Measured on the last 40 merged PRs: 40 of 40 would be
+ * close-lane on missing_screenshot. A check that is red on every release is a
+ * check somebody disables inside a week, and then it protects nobody.
+ *
+ * Exempt: repo owners / members / collaborators, bot authors, and drafts (a
+ * draft is explicitly work in progress; its description is expected to be
+ * unfinished, and `ready_for_review` re-runs the gate with the exemption gone
+ * — the exemption is folded into hashInputs so the spend guard cannot serve
+ * the draft-era verdict afterwards).
+ *
+ * Waives the intent/screenshot requirement ONLY. An exempt PR still gets the
+ * full usefulness verdict, the title rule, and every mechanical red flag —
+ * including the downgrades that keep a maintainer's own merge-lane honest.
+ *
+ * author_association and user.type are computed by GitHub, not settable by the
+ * author. `draft` IS author-settable, which is why the ready_for_review
+ * trigger and the hash both exist.
+ */
+export const POLICY_EXEMPT_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+
+export function policyExemption(pr) {
+  const assoc = String(pr?.author_association ?? '').toUpperCase();
+  if (POLICY_EXEMPT_ASSOCIATIONS.includes(assoc)) return `maintainer (${assoc.toLowerCase()})`;
+  if (pr?.user?.type === 'Bot') return 'bot author';
+  if (pr?.draft === true) return 'draft PR';
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Mechanical red flags (no LLM).
 // ---------------------------------------------------------------------------
-const SOURCE_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|sql|py|sh)$/;
-const RECIPE_RE = /^src\/core\/ai\/recipes\/[^/]+\.(ts|mts|js|mjs)$/;
+// Every path regex spells its "one path segment" class as [^/\n], never [^/].
+// git allows a newline inside a filename, and JS `.`/`[^/]` both match one, so
+// `[^/]+` lets `recipes/x\n<anything>\nz.ts` satisfy an anchored pattern — the
+// pattern looks single-line but is not. The detail strings built from these
+// matches are rendered into a public comment, so a smuggled newline is a
+// smuggled Markdown line. (Rendering is sanitized too; this is the second
+// layer, and it also keeps the CLASSIFICATION honest.)
+const SOURCE_EXT_RE = /(^|\/)[^/\n]*\.(ts|tsx|js|jsx|mjs|cjs|sql|py|sh)$/;
+const RECIPE_RE = /^src\/core\/ai\/recipes\/[^/\n]+\.(ts|mts|js|mjs)$/;
 export const NET_SOURCE_LINE_LIMIT = 400;
 
 function isTestFile(path) {
-  return /(^|\/)test\//.test(path) || /\.(test|spec)\.(ts|tsx|js|mjs|cjs)$/.test(path);
+  return /(^|\/)test\//.test(path) || /(^|\/)[^/\n]*\.(test|spec)\.(ts|tsx|js|mjs|cjs)$/.test(path);
 }
 
 function addedDependency(files) {
@@ -373,6 +446,11 @@ export function detectRedFlags({ changedFiles, files, diff }) {
 // signals decide. A merge-lane recommendation carrying any of them becomes
 // needs-maintainer no matter how convincing the PR body was.
 // ---------------------------------------------------------------------------
+// Currently every id detectRedFlags can emit — pinned by a test, so a NEW red
+// flag has to be listed here (or deliberately excluded) rather than defaulting
+// to "advisory". `deletes_tests`, `adds_symlink` and `adds_node_modules` were
+// the omissions: a PR deleting test/e2e/engine-parity.test.ts kept merge-lane
+// and a green check as long as the body read well.
 export const DOWNGRADE_FLAG_IDS = [
   'modifies_workflows',
   'adds_dependency',
@@ -381,6 +459,9 @@ export const DOWNGRADE_FLAG_IDS = [
   'too_many_files',
   'large_source_addition',
   'no_test_for_src_change',
+  'deletes_tests',
+  'adds_symlink',
+  'adds_node_modules',
 ];
 
 /**
@@ -589,15 +670,29 @@ async function setLaneLabel(gh, repo, prNumber, lane) {
 // title or body can forge a boundary, and the tuple order is fixed by the
 // literal. Literal NUL bytes did the same job but made the whole file "binary"
 // to grep, which silently defeats any grep-based CI guard over it.
+// The exemption is part of the input tuple: a draft PR marked ready-for-review
+// changes neither title, body nor head sha, so without it the spend guard would
+// keep serving the verdict computed while the policy check was waived.
 export function hashInputs(pr) {
   return createHash('sha256')
-    .update(JSON.stringify([pr.title ?? '', pr.body ?? '', pr.head?.sha ?? '']))
+    .update(JSON.stringify([pr.title ?? '', pr.body ?? '', pr.head?.sha ?? '', policyExemption(pr) ?? '']))
     .digest('hex')
     .slice(0, 16);
 }
 
+/**
+ * Read the state block the BOT wrote, and only that one. renderComment emits it
+ * on line 2, immediately after the marker, so that is the only place we look. A
+ * global search would also match a block sitting in attacker-controlled text
+ * further down the comment (a PR filename can contain newlines), which is a
+ * forged verdict handed straight to the spend guard: the next run would see
+ * "unchanged inputs, lane already decided" and skip the real verdict. A render
+ * with no state of its own therefore yields null even when hostile text is
+ * present.
+ */
 export function parseState(body) {
-  const m = typeof body === 'string' ? body.match(STATE_RE) : null;
+  if (typeof body !== 'string' || !body.startsWith(MARKER)) return null;
+  const m = STATE_RE.exec(body.split('\n')[1] ?? '');
   if (!m) return null;
   try {
     const state = JSON.parse(m[1]);
@@ -639,6 +734,7 @@ export function renderComment({
   neutralReason,
   downgrades = [],
   policyMisses = [],
+  policyExempt = null,
   state,
 }) {
   const lines = [MARKER];
@@ -647,7 +743,9 @@ export function renderComment({
   if (neutralReason) {
     lines.push('## PR Gate — NEUTRAL (skipped)', '', `**Reason:** ${sanitizeModelText(neutralReason)}`, '');
     lines.push(
-      'The **usefulness verdict did not run**, so there is no lane and any previous `gate:*` label was cleared. This is a loud skip, not a pass. The mechanical checks below need no model: they ran, and the CONTRIBUTING.md intent-paragraph + screenshot requirement passed — a miss there is close-lane whether or not the model is reachable.',
+      `The **usefulness verdict did not run**, so there is no lane and any previous \`gate:*\` label was cleared. This is a loud skip, not a pass. The mechanical checks below need no model: they ran, and the CONTRIBUTING.md intent-paragraph + screenshot requirement ${
+        policyExempt ? 'was skipped for this author' : 'passed'
+      } — a miss there is close-lane whether or not the model is reachable.`,
       '',
     );
   } else {
@@ -671,12 +769,21 @@ export function renderComment({
   // Policy misses already have two sections of their own; a third copy here
   // just reads as the machine repeating itself at a first-time contributor.
   const redFlags = flags.filter((f) => !POLICY_FLAG_IDS.includes(f.id));
+  if (policyExempt) {
+    lines.push(
+      `<sub>Policy check skipped: ${sanitizeModelText(policyExempt)} — the CONTRIBUTING.md (#3745) intent-paragraph + screenshot requirement is for incoming outside contributions. Everything else below still ran.</sub>`,
+      '',
+    );
+  }
   lines.push(
     `**Title (version-first rule):** ${titleCheck.ok ? '✅ ok' : `❌ ${titleCheck.reason}`}`,
     '',
     `**Mechanical red flags:** ${redFlags.length ? '' : 'none'}`,
   );
-  for (const f of redFlags) lines.push(`- ${f.detail}`);
+  // Sanitized exactly like the model's strings: adds_recipe and deletes_tests
+  // interpolate PR filenames, and a filename can carry a newline, an @mention
+  // or an HTML comment straight into this comment.
+  for (const d of sanitizeList(redFlags.map((f) => f.detail))) lines.push(`- ${d}`);
   lines.push(
     '',
     '<sub>Strict usefulness gate (#3698). merge-lane / needs-maintainer exit green; close-lane exits red (strong signal, not a hard block — maintainers decide). PR code is never checked out or executed: verdict is from API metadata + a 120KB-capped diff only.</sub>',
@@ -698,13 +805,24 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
 
   const gh = ghClient(env, fetchImpl);
   const titleCheck = checkTitle(pr.title ?? '');
-  const policyMisses = detectPolicyMisses(pr.body);
+  // See policyExemption: #3745 filters incoming outside contributions, so a
+  // maintainer, a bot or a draft is judged on everything EXCEPT the intent
+  // paragraph + screenshot. author_association / draft / user.type all come
+  // from the pr.json the workflow already fetched — no extra API call.
+  const policyExempt = policyExemption(pr);
+  const policyMisses = policyExempt ? [] : detectPolicyMisses(pr.body);
   const flags = [...detectRedFlags({ changedFiles: pr.changed_files ?? files.length, files, diff }), ...policyMisses];
   const existing = await findOwnComment(gh, repo, prNumber);
 
   const neutral = async (reason) => {
     console.log(`::warning::PR gate NEUTRAL-skip: ${reason}`);
-    await upsertStickyComment(gh, repo, prNumber, existing, renderComment({ titleCheck, flags, neutralReason: reason }));
+    await upsertStickyComment(
+      gh,
+      repo,
+      prNumber,
+      existing,
+      renderComment({ titleCheck, flags, policyExempt, neutralReason: reason }),
+    );
     await setLaneLabel(gh, repo, prNumber, null); // no stale verdict survives a skip
     return 0;
   };
@@ -779,6 +897,7 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
     flags,
     downgrades,
     policyMisses,
+    policyExempt,
     state: { hash: inputHash, lane },
   });
   await upsertStickyComment(gh, repo, prNumber, existing, body);
@@ -787,7 +906,7 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
   console.log(
     `PR gate verdict: ${lane} (confidence ${verdict.confidence}${degraded ? ', degraded' : ''}${
       downgrades.length ? `, ${downgrades.length} mechanical downgrade(s)` : ''
-    })`,
+    }${policyExempt ? `, #3745 policy check skipped: ${policyExempt}` : ''})`,
   );
   return lane === 'close-lane' ? 1 : 0;
 }

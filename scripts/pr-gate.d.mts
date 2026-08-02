@@ -32,6 +32,8 @@ export declare const DOWNGRADE_FLAG_IDS: string[];
 export declare const CONTRIBUTING_URL: string;
 export declare const INTENT_MIN_WORDS: number;
 export declare const POLICY_FLAG_IDS: string[];
+export declare const POLICY_SCAN_MAX: number;
+export declare const POLICY_EXEMPT_ASSOCIATIONS: string[];
 export declare const AI_INTENT_DOWNGRADE: string;
 export declare function stripCodeFences(body: unknown): string;
 export declare function hasScreenshot(body: unknown): boolean;
@@ -48,6 +50,14 @@ export declare function applyMechanicalDowngrades(
   intentAuthenticity?: string,
 ): { lane: string; downgrades: string[] };
 
+/** The pr.json fields the #3745 exemption reads (all GitHub-computed). */
+export interface PrIdentity {
+  author_association?: string;
+  draft?: boolean;
+  user?: { type?: string; login?: string };
+}
+export declare function policyExemption(pr: PrIdentity | null | undefined): string | null;
+
 export interface GhComment {
   id?: number;
   body?: unknown;
@@ -55,11 +65,9 @@ export interface GhComment {
 }
 export declare function isOwnComment(comment: GhComment | null | undefined): boolean;
 
-export declare function hashInputs(pr: {
-  title?: string;
-  body?: string;
-  head?: { sha?: string };
-}): string;
+export declare function hashInputs(
+  pr: PrIdentity & { title?: string; body?: string; head?: { sha?: string } },
+): string;
 export declare function parseState(body: unknown): { hash: string; lane?: string } | null;
 
 export declare function renderComment(input: {
@@ -70,6 +78,7 @@ export declare function renderComment(input: {
   neutralReason?: string;
   downgrades?: string[];
   policyMisses?: RedFlag[];
+  policyExempt?: string | null;
   state?: { hash: string; lane: string };
 }): string;
 

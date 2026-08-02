@@ -23,11 +23,30 @@ name: PR Gate
 #   green, never a red X for a missing secret, never a stale verdict. A model
 #   REFUSAL is not a skip: it routes to needs-maintainer so refusing is not a
 #   way to dodge the gate.
+#
+# #3745 EXEMPTION (deliberate — mirrors policyExemption() in
+# scripts/pr-gate.mjs): the intent-paragraph + screenshot requirement filters
+# INCOMING OUTSIDE CONTRIBUTIONS. It is waived for repo owners / members /
+# collaborators, bot authors, and drafts.
+# Release automation cannot take a screenshot of itself, and without the
+# exemption every /ship release PR lands in close-lane
+# (measured: 40 of the last 40 merged PRs) — a check that is red
+# on every release gets switched off within a week, and then it filters
+# nothing. Exempt PRs still get the FULL usefulness verdict, the title rule and
+# every mechanical red flag; only the description requirement is skipped, and
+# the sticky comment says so on its own line.
+# author_association / draft / user.type are read from the pr.json fetched
+# below — GitHub-computed, not author-settable (except `draft`), and already
+# on disk, so nothing new is fetched and there is one source of truth.
+# `ready_for_review` is in the trigger list precisely because `draft` IS
+# author-settable: leaving draft re-runs the gate with the exemption gone, and
+# the exemption is folded into the spend-guard hash so the draft-era verdict
+# cannot be reused.
 # Pinned by test/pr-gate-workflow.test.ts.
 
 on:
   pull_request_target:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
     branches: [master]
 
 # issues:write is the ONLY write grant. Everything the script calls is the
