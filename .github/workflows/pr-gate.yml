@@ -14,11 +14,15 @@ name: PR Gate
 #   every ${{ }} is env-bound; run: scripts use plain env vars.
 # - Only the issues API is used (comments + labels), so issues:write is the
 #   single write grant; the checkout drops its credentials.
-# - If ANTHROPIC_API_KEY is missing or the API is unreachable, the script
-#   NEUTRAL-skips loudly (sticky comment + warning annotation, exit 0) and
-#   CLEARS any stale gate:* label — never a silent green, never a red X for a
-#   missing secret, never a stale verdict. A model REFUSAL is not a skip: it
-#   routes to needs-maintainer so refusing is not a way to dodge the gate.
+# - The mechanical CONTRIBUTING.md #3745 check (intent paragraph + screenshot)
+#   runs BEFORE any API dependency, so a PR missing either still lands in
+#   close-lane during an Anthropic outage — an outage is not a way through.
+# - If ANTHROPIC_API_KEY is missing or the API is unreachable on an otherwise
+#   compliant PR, the script NEUTRAL-skips loudly (sticky comment + warning
+#   annotation, exit 0) and CLEARS any stale gate:* label — never a silent
+#   green, never a red X for a missing secret, never a stale verdict. A model
+#   REFUSAL is not a skip: it routes to needs-maintainer so refusing is not a
+#   way to dodge the gate.
 # Pinned by test/pr-gate-workflow.test.ts.
 
 on:

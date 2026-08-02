@@ -26,14 +26,17 @@
  *   merge-lane recommendation to needs-maintainer, so a persuasive PR body
  *   cannot talk itself into the fast lane.
  * - CONTRIBUTING.md's #3745 requirement (a human-written intent paragraph AND
- *   a screenshot of gbrain in use) is checked mechanically. Missing either
- *   forces close-lane with no model call — that is the documented consequence.
+ *   a screenshot of gbrain in use) is checked mechanically, BEFORE anything
+ *   that can fail: no model, and therefore no API key and no network. Missing
+ *   either forces close-lane — that is the documented consequence, and an
+ *   Anthropic outage must not become a way past it.
  *   The model's separate intent_authenticity read is advisory only: at most it
  *   forces needs-maintainer, and it never appears in the comment.
  * - A refusal or unparseable output routes to needs-maintainer, never to a
  *   green NEUTRAL — a deterministic refusal must not be a way to dodge the
- *   verdict. Only infrastructure failure (missing key, API down) is NEUTRAL,
- *   and NEUTRAL clears stale gate:* labels so no stale verdict survives.
+ *   verdict. Only infrastructure failure (missing key, API down) on an
+ *   otherwise-compliant PR is NEUTRAL, and NEUTRAL clears stale gate:* labels
+ *   so no stale verdict survives.
  *
  * No dependencies — global fetch only (Node 18+).
  */
@@ -582,9 +585,13 @@ async function setLaneLabel(gh, repo, prNumber, lane) {
 // The verdict only depends on title + body + head sha, so if those are
 // unchanged since the last sticky comment there is nothing new to classify.
 // ---------------------------------------------------------------------------
+// JSON.stringify is the separator: it quotes and escapes each field, so no
+// title or body can forge a boundary, and the tuple order is fixed by the
+// literal. Literal NUL bytes did the same job but made the whole file "binary"
+// to grep, which silently defeats any grep-based CI guard over it.
 export function hashInputs(pr) {
   return createHash('sha256')
-    .update(`${pr.title ?? ''} ${pr.body ?? ''} ${pr.head?.sha ?? ''}`)
+    .update(JSON.stringify([pr.title ?? '', pr.body ?? '', pr.head?.sha ?? '']))
     .digest('hex')
     .slice(0, 16);
 }
@@ -640,7 +647,7 @@ export function renderComment({
   if (neutralReason) {
     lines.push('## PR Gate — NEUTRAL (skipped)', '', `**Reason:** ${sanitizeModelText(neutralReason)}`, '');
     lines.push(
-      'The gate did not run, so there is no verdict and any previous `gate:*` label was cleared. This is a loud skip, not a pass.',
+      'The **usefulness verdict did not run**, so there is no lane and any previous `gate:*` label was cleared. This is a loud skip, not a pass. The mechanical checks below need no model: they ran, and the CONTRIBUTING.md intent-paragraph + screenshot requirement passed — a miss there is close-lane whether or not the model is reachable.',
       '',
     );
   } else {
@@ -702,24 +709,16 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
     return 0;
   };
 
-  const apiKey = env.ANTHROPIC_API_KEY;
-  if (!apiKey) return neutral('ANTHROPIC_API_KEY is not configured for this run — verdict skipped.');
-
-  // Spend guard: identical inputs to the last verdict → reuse it, no LLM call.
   const inputHash = hashInputs(pr);
-  const prev = parseState(existing?.body);
-  if (prev && prev.hash === inputHash && LANES.includes(prev.lane)) {
-    console.log(
-      `PR gate: title+body+head_sha unchanged (${inputHash}) since the last verdict — skipping the LLM call, keeping ${prev.lane}.`,
-    );
-    return prev.lane === 'close-lane' ? 1 : 0;
-  }
-
   let verdict;
   let degraded = null;
   if (policyMisses.length > 0) {
-    // Closed without review is the documented consequence, so don't spend a
-    // review call proving it. The comment leads with the fix, not the verdict.
+    // ORDER IS LOAD-BEARING: this branch sits ABOVE the API-key guard and the
+    // model call. #3745 is fully mechanical, so a missing key or a dead
+    // Anthropic must not turn "closed without review" into a green NEUTRAL —
+    // that would make an outage the way through the one hard requirement.
+    // Closed without review is also the documented consequence, so don't spend
+    // a review call proving it. The comment leads with the fix, not the verdict.
     console.log(
       `PR gate: #3745 policy miss (${policyMisses.map((f) => f.id).join(', ')}) — close-lane without a model call.`,
     );
@@ -732,6 +731,20 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
       reviewer_checklist: [],
     };
   } else {
+    const apiKey = env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      return neutral('ANTHROPIC_API_KEY is not configured for this run — the usefulness verdict was skipped.');
+    }
+
+    // Spend guard: identical inputs to the last verdict → reuse it, no LLM call.
+    const prev = parseState(existing?.body);
+    if (prev && prev.hash === inputHash && LANES.includes(prev.lane)) {
+      console.log(
+        `PR gate: title+body+head_sha unchanged (${inputHash}) since the last verdict — skipping the LLM call, keeping ${prev.lane}.`,
+      );
+      return prev.lane === 'close-lane' ? 1 : 0;
+    }
+
     try {
       verdict = await callAnthropic(apiKey, buildPayload({ pr, files, diff, titleCheck, flags }), fetchImpl);
     } catch (err) {

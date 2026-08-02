@@ -12,10 +12,14 @@
  *   exit code, marker-hijack, sanitization, truncation, refusal routing,
  *   NEUTRAL label clearing, label swap, and the input-hash spend guard.
  * - The CONTRIBUTING.md #3745 policy: the mechanical screenshot + intent
- *   detectors (all four embed forms, the in-code-fence negative, the empty
- *   template, non-English prose), the forced close-lane both halves produce,
- *   the friendly fix-it comment, and the advisory-only ai_generated route to
- *   needs-maintainer that must never accuse or close.
+ *   detectors (all four embed forms, the in-code-fence negative, the real
+ *   .github/pull_request_template.md, non-English prose), the forced
+ *   close-lane both halves produce, the friendly fix-it comment, its deep link
+ *   resolving to a heading that actually exists in CONTRIBUTING.md, and the
+ *   advisory-only ai_generated route to needs-maintainer that must never
+ *   accuse or close.
+ * - The policy check outliving the model: a miss closes the PR with no API key
+ *   and through a 500, while a compliant PR keeps the loud NEUTRAL skip.
  */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -36,6 +40,7 @@ import {
   parseState,
   renderComment,
   runGate,
+  CONTRIBUTING_URL,
   INTENT_MIN_WORDS,
   MAX_ITEMS,
   MAX_STRING,
@@ -59,26 +64,12 @@ const HUMAN_INTENT = [
 const SCREENSHOT_EMBED = '![my terminal](https://github.com/user-attachments/assets/0a1b2c3d-4e5f-6789)';
 const COMPLIANT_BODY = `${HUMAN_INTENT}\n\n${SCREENSHOT_EMBED}\n`;
 
-// .github/pull_request_template.md as of #3745, for branches that predate it.
-const PR_TEMPLATE_FALLBACK = [
-  '**Why are you opening this? (human-written, required)**',
-  '',
-  '<!-- Write this yourself. Not AI-generated, not AI-polished. What were you',
-  '     doing, what went wrong or what you needed, why it matters to you.',
-  '     Rough grammar is fine. PRs without this are closed unreviewed. -->',
-  '',
-  '',
-  '**Screenshot of gbrain in use (required)**',
-  '',
-  '<!-- Your terminal / agent session / logs showing the real need this fixes.',
-  '     Redact private names, keys, and brain contents first. -->',
-  '',
-  '',
-  '**What changed**',
-  '',
-  '',
-  '**How it was tested**',
-].join('\n');
+// The real #3745 artifacts the gate enforces. Read from disk, never inlined:
+// a fallback copy would keep passing after the originals drifted.
+const CONTRIBUTING_PATH = join(import.meta.dir, '..', 'CONTRIBUTING.md');
+const PR_TEMPLATE_PATH = join(import.meta.dir, '..', '.github', 'pull_request_template.md');
+const CONTRIBUTING = readFileSync(CONTRIBUTING_PATH, 'utf8');
+const PR_TEMPLATE = readFileSync(PR_TEMPLATE_PATH, 'utf8');
 
 /**
  * Collect every line that belongs to a `run:` script, in all four YAML scalar
@@ -217,6 +208,14 @@ describe('pr-gate script rubric pins', () => {
   test('uses claude-sonnet-5 and the sticky-comment marker', () => {
     expect(SCRIPT).toContain('claude-sonnet-5');
     expect(SCRIPT).toContain(MARKER);
+  });
+
+  test('the script is greppable as text — no NUL bytes anywhere', () => {
+    // One literal \0 makes grep treat the whole file as binary, so any future
+    // grep-based CI guard over it silently matches nothing instead of failing.
+    expect(SCRIPT).not.toMatch(/\u0000/);
+    // ...and so does this test file, or the guard reintroduces what it forbids.
+    expect(readFileSync(import.meta.path, 'utf8')).not.toMatch(/\u0000/);
   });
 
   test('never passes sampling params (rejected with 400 on claude-sonnet-5)', () => {
@@ -505,16 +504,13 @@ describe('intent paragraph detector (#3745, mechanical)', () => {
     expect(hasIntentParagraph(undefined)).toBe(false);
   });
 
-  test('the PR template with nothing filled in does not count', () => {
-    // Read the real template when it is present (this branch may predate the
-    // #3745 merge that adds it), so growing the template's own prose past the
-    // bar — which would let an untouched template pass — fails here.
-    const templatePath = join(import.meta.dir, '..', '.github', 'pull_request_template.md');
-    const template = existsSync(templatePath) ? readFileSync(templatePath, 'utf8') : PR_TEMPLATE_FALLBACK;
-    expect(hasIntentParagraph(template)).toBe(false);
-    expect(hasScreenshot(template)).toBe(false);
+  test('the real PR template with nothing filled in does not count', () => {
+    // Against .github/pull_request_template.md itself: growing the template's
+    // own prose past the bar would let an untouched template pass the gate.
+    expect(hasIntentParagraph(PR_TEMPLATE)).toBe(false);
+    expect(hasScreenshot(PR_TEMPLATE)).toBe(false);
     // Filling only the "what changed" section is still not the intent paragraph.
-    expect(hasIntentParagraph(`${template}\nrenames the flag and updates the docs`)).toBe(false);
+    expect(hasIntentParagraph(`${PR_TEMPLATE}\nrenames the flag and updates the docs`)).toBe(false);
   });
 
   test('40+ words of the author own prose counts', () => {
@@ -571,6 +567,39 @@ describe('detectPolicyMisses (#3745)', () => {
       expect(f.detail).toContain('CONTRIBUTING.md');
       expect(f.detail).toContain('#3745');
     }
+  });
+});
+
+describe('CONTRIBUTING.md deep link (#3745)', () => {
+  // GitHub's heading-anchor slug: lowercase, drop everything outside
+  // [word chars, hyphen, space], collapse spaces to hyphens.
+  const githubAnchor = (heading: string) =>
+    heading.toLowerCase().replace(/[^\w\- ]+/g, '').trim().replace(/ +/g, '-');
+
+  test('the anchor the gate links to is a real heading in CONTRIBUTING.md', () => {
+    // A deep link that 404s to the top of the file is the whole comment's
+    // call to action pointing at nothing.
+    const [url, anchor] = CONTRIBUTING_URL.split('#');
+    expect(url).toBe('https://github.com/garrytan/gbrain/blob/master/CONTRIBUTING.md');
+    expect(anchor).toBeTruthy();
+    const anchors = [...CONTRIBUTING.matchAll(/^#{1,6} +(.+?)\s*$/gm)].map((m) => githubAnchor(m[1]));
+    expect(anchors).toContain(anchor);
+  });
+
+  test('the slugger matches GitHub on the heading shapes in this file', () => {
+    // Guards the guard: a slugger that dropped punctuation handling would
+    // "pass" the test above against an anchor GitHub never generates.
+    expect(githubAnchor('Human-authored intent (required, no exceptions)')).toBe(
+      'human-authored-intent-required-no-exceptions',
+    );
+    expect(githubAnchor('Setup')).toBe('setup');
+  });
+
+  test('CONTRIBUTING.md states the policy the gate enforces', () => {
+    expect(CONTRIBUTING).toContain('## Human-authored intent (required, no exceptions)');
+    expect(CONTRIBUTING).toContain('A paragraph you wrote yourself');
+    expect(CONTRIBUTING).toMatch(/screenshot showing gbrain actually being used/i);
+    expect(CONTRIBUTING).toMatch(/closed without review/i);
   });
 });
 
@@ -1054,6 +1083,7 @@ describe('runGate — CONTRIBUTING.md #3745 policy (mocked fetch)', () => {
     expect(body).toContain('then reopen');
     expect(body).toContain('not a judgment on the code');
     expect(body).toContain('CONTRIBUTING.md');
+    expect(body).toContain(CONTRIBUTING_URL); // the deep link, anchor included
     // Also recorded where the other deterministic overrides are recorded.
     expect(body).toContain('Mechanical downgrades applied');
     expect(body).toContain('#3745');
@@ -1113,6 +1143,59 @@ describe('runGate — CONTRIBUTING.md #3745 policy (mocked fetch)', () => {
     // Never the accusation, and never the model's private reasoning.
     expect(body).not.toMatch(/AI-generated|AI-polished|ai_generated|did not write|uniform hedging/i);
     expect(parseState(body)).toMatchObject({ lane: 'needs-maintainer' });
+  });
+
+  // The policy check is mechanical, so it must outlive the model. If an
+  // outage downgraded a policy miss to a green NEUTRAL, "wait for Anthropic to
+  // 500" would be the documented way past the one hard requirement.
+  test('a policy miss closes the PR with NO API key — an outage is not a way through', async () => {
+    const { calls, fetchImpl } = stubFetch({}); // no anthropic handler: any call throws
+    const code = await runGate(
+      fixtureDir({ body: HUMAN_INTENT }, SRC_AND_TEST),
+      { ...ENV, ANTHROPIC_API_KEY: undefined },
+      fetchImpl,
+    );
+    expect(code).toBe(1);
+    expect(addedLabels(calls)).toEqual(['gate:close-lane']);
+    const body: string = postedBody(calls);
+    expect(body).toContain('Almost there');
+    expect(body).toContain('A screenshot of gbrain in use');
+    expect(body).not.toContain('NEUTRAL');
+  });
+
+  test('a policy miss closes the PR when the API 500s, without reaching the model', async () => {
+    const { calls, fetchImpl } = stubFetch({ anthropic: () => jsonResponse({ error: 'boom' }, 500) });
+    const code = await runGate(fixtureDir({ body: '' }, SRC_AND_TEST), ENV, fetchImpl);
+    expect(code).toBe(1);
+    expect(addedLabels(calls)).toEqual(['gate:close-lane']);
+    expect(calls.some((c) => c.url.startsWith('https://api.anthropic.com'))).toBe(false);
+    expect(postedBody(calls)).not.toContain('NEUTRAL');
+  });
+
+  test('a COMPLIANT PR with no API key still NEUTRAL-skips, reporting what it could compute', async () => {
+    const { calls, fetchImpl } = stubFetch({});
+    const code = await runGate(
+      // Bad title + a src change with no test: both mechanical, both computable
+      // without the model.
+      fixtureDir({ title: 'Update README.md', body: COMPLIANT_BODY }, [
+        { filename: 'src/core/thing.ts', status: 'modified', additions: 12, deletions: 0 },
+      ]),
+      { ...ENV, ANTHROPIC_API_KEY: undefined },
+      fetchImpl,
+    );
+    expect(code).toBe(0);
+    expect(addedLabels(calls)).toEqual([]);
+    expect(deletedLabels(calls).sort()).toEqual([
+      'gate:close-lane',
+      'gate:merge-lane',
+      'gate:needs-maintainer',
+    ]);
+    const body: string = postedBody(calls);
+    expect(body).toContain('NEUTRAL');
+    expect(body).toContain('usefulness verdict did not run');
+    expect(body).toContain('neither version-first'); // the mechanical title check
+    expect(body).toContain('#3665'); // the mechanical red flag
+    expect(body).not.toContain('Almost there'); // nothing to fix in the description
   });
 
   test('a human / unclear intent verdict leaves the lane alone', async () => {
