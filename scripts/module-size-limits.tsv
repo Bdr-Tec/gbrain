@@ -12,7 +12,7 @@ src/commands/sync.ts	4311	ratchet	grown v0.46.22.0 phone wave: github source kin
 src/core/ai/gateway.ts	4428	ratchet	watchlist; merged: dream-wave turn permits + key-aware effective-model reconfigure + env-only worker refresh + discovery endpoint-trust docstring
 src/cli.ts	3486	ratchet	grown v0.46.23.0: awaited stdout delivery (#3423)
 src/core/cycle.ts	3080	ratchet	grown v0.46.20.0 phase-boundary split (resolveCyclePhases + normalizeQueuedSourcePhases + deriveStatus exclusion filter)
-src/commands/serve-http.ts	3194	ratchet	grown v0.46.23.0 review fix wave: github-kind webhook gating + case-insensitive repo match
+src/commands/serve-http.ts	3212	ratchet	grown: /ingest resolves the write source server-side from the client's OAuth scope, and reports it (#3791)
 src/commands/jobs.ts	3027	ratchet	grown v0.46.22.0 phone wave: github source sync job (#4104)
 src/core/search/hybrid.ts	2629	ratchet	grown v0.46.23.0 review fix wave: supersede scoping + edge-existence gate
 src/core/engine.ts	2351	ratchet	grown v0.46.23.0: putPage allowEmptyOverwrite contract (#4335)
