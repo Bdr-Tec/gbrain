@@ -13,9 +13,15 @@
  *   used to red-X (bullet-point prose, non-native English, a terse bug report,
  *   a body that is mostly a stack trace) are pinned as PASSING forever, with
  *   the zero-effort bodies that must still fail beside them.
+ * - CommonMark fence matching in BOTH directions: a closing fence longer than
+ *   its opener closes, and a backtick fence whose info string contains a
+ *   backtick never opens (4.5). Opening a block CommonMark would not open
+ *   strips the author's prose to EOF — the same red X as closing one late.
  * - Mocked end-to-end runs of runGate() against a stubbed fetch: close-lane
  *   exit code, marker-hijack, sanitization, truncation, refusal routing,
- *   NEUTRAL label clearing, label swap, and the input-hash spend guard.
+ *   NEUTRAL label clearing, label swap, and the spend guard — which keys on the
+ *   whole model payload, so a verdict reached while the diff was unavailable is
+ *   not served back once the real diff arrives.
  * - The CONTRIBUTING.md #3745 policy: the mechanical screenshot + intent
  *   detectors (all four embed forms, the in-code-fence negative, the real
  *   .github/pull_request_template.md, non-English prose), the forced
@@ -27,6 +33,7 @@
  *   and through a 500, while a compliant PR keeps the loud NEUTRAL skip.
  */
 import { describe, test, expect } from 'bun:test';
+import { safeLoad as yamlLoad } from 'js-yaml';
 import { readFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -85,16 +92,24 @@ const PR_TEMPLATE = readFileSync(PR_TEMPLATE_PATH, 'utf8');
 /**
  * Collect every line that belongs to a `run:` script, in EVERY YAML block
  * scalar spelling: `run: cmd`, `run: |`, `run: >`, the `-`/`+` chomping
- * indicators, and the numeric indentation indicator in either order (`|2-`
- * and `|-2` are both legal headers). A spelling the scanner cannot see hides
- * interpolation from the env-binding rule, which is exactly how that rule rots.
+ * indicators, the numeric indentation indicator in either order (`|2-` and
+ * `|-2` are both legal headers), and a trailing comment after the header
+ * (`run: | # shell block` is legal YAML — js-yaml parses it as a block, pinned
+ * below). A spelling the scanner cannot see hides interpolation from the
+ * env-binding rule, which is exactly how that rule rots: the comment spelling
+ * used to fall through to the single-line branch, which captured the HEADER
+ * (`| # shell block`) as if it were the whole command and never looked at the
+ * block body at all — a clean report over an interpolating workflow.
  */
 function runBlockLines(yaml: string): string[] {
   const lines = yaml.split('\n');
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const block = lines[i].match(/^(\s*)(?:-\s+)?run:\s*[|>][0-9]*[-+]?[0-9]*\s*$/);
+    const block = lines[i].match(/^(\s*)(?:-\s+)?run:\s*[|>][0-9]*[-+]?[0-9]*([ \t]+#.*)?\s*$/);
     if (block) {
+      // A `${{ }}` in a YAML comment is inert (it is not part of the scalar),
+      // but scan it anyway rather than leave the scanner a hiding place.
+      if (block[2]) out.push(block[2]);
       const baseIndent = block[1].length;
       for (let j = i + 1; j < lines.length; j++) {
         if (lines[j].trim() === '') continue;
@@ -184,6 +199,38 @@ describe('pr-gate workflow security pins', () => {
       ].join('\n');
       expect(runBlockLines(yaml).join('\n')).toContain('${{');
     }
+  });
+
+  test('the run: scanner sees a block header carrying a trailing comment', () => {
+    // Guards the guard against REALITY, not against the scanner's own opinion.
+    // `run: | # shell block` is a legal block header, and the interpolation on
+    // the next line really does end up in the script — so a purely cosmetic
+    // formatting edit must not be able to blind the env-binding rule above.
+    const yaml = [
+      'jobs:',
+      '  x:',
+      '    steps:',
+      '      - run: | # shell block',
+      '          echo ${{ github.event.pull_request.title }}',
+    ].join('\n');
+    const parsed = yamlLoad(yaml) as { jobs: { x: { steps: { run: string }[] } } };
+    expect(parsed.jobs.x.steps[0].run).toContain('${{'); // YAML really puts it in the script…
+    expect(runBlockLines(yaml).join('\n')).toContain('${{'); // …and the scanner really sees it.
+    // The comment composes with every chomping/indentation spelling.
+    for (const header of ['|', '>', '|-', '>2-', '|+2']) {
+      const y = [
+        'jobs:',
+        '  x:',
+        '    steps:',
+        `      - run: ${header} # note`,
+        '          echo ${{ github.head_ref }}',
+      ].join('\n');
+      expect(runBlockLines(y).join('\n')).toContain('${{');
+    }
+    // A `${{ }}` inside the header comment is inert YAML, but it is scanned
+    // anyway — the scanner is not left a hiding place.
+    const inComment = ['jobs:', '  x:', '    steps:', '      - run: | # ${{ github.head_ref }}', '          echo hi'].join('\n');
+    expect(runBlockLines(inComment).join('\n')).toContain('${{');
   });
 
   test('all actions are SHA-pinned', () => {
@@ -675,6 +722,35 @@ describe('stripCodeFences (CommonMark fence matching)', () => {
   test('a closing fence may not carry an info string', () => {
     // ```` ```js ```` opens; a second ` ```js ` line is content, not a closer.
     expect(stripCodeFences('```js\nhidden\n```js\nstill hidden')).not.toContain('still hidden');
+  });
+
+  test('a backtick fence info string may not contain a backtick (CommonMark 4.5)', () => {
+    // The other half of the false-positive class above. Opening a block that
+    // CommonMark never opens costs exactly what closing one late costs: every
+    // line to EOF disappears, the intent paragraph with it, red X on a body
+    // GitHub renders perfectly.
+    const backtickInfo = `\`\`\`foo\`bar\n${prose}`;
+    expect(stripCodeFences(backtickInfo)).toContain('real human intent paragraph');
+    expect(hasIntentParagraph(backtickInfo)).toBe(true);
+
+    // A TILDE fence has no such restriction — this one really does open.
+    const tildeInfo = `~~~foo\`bar\n${prose}`;
+    expect(stripCodeFences(tildeInfo)).not.toContain('real human intent paragraph');
+    expect(hasIntentParagraph(tildeInfo)).toBe(false);
+
+    // And a backtick-free info string still opens a backtick fence, as always.
+    expect(stripCodeFences(`\`\`\`js\n${prose}`)).not.toContain('real human intent paragraph');
+    expect(stripCodeFences('```js\nhidden\n```\nvisible')).toContain('visible');
+    expect(stripCodeFences('```js\nhidden\n```\nvisible')).not.toContain('hidden');
+  });
+
+  test('the reported false positive, end to end: prose + screenshot after such a line', () => {
+    // Verbatim shape of the repro: a line whose info string carries a backtick,
+    // then real prose, then a real embed. Both #3745 halves are present in the
+    // rendered description, so the gate must report neither as missing.
+    const body = `\`\`\`foo\`bar\n${prose}\n${SCREENSHOT_EMBED}`;
+    expect(intentWordCount(body)).toBeGreaterThanOrEqual(INTENT_MIN_WORDS);
+    expect(detectPolicyMisses(body)).toEqual([]);
   });
 });
 
@@ -1359,6 +1435,27 @@ describe('isOwnComment / hashInputs / parseState', () => {
     expect(detectPolicyMisses(before.body).map((f) => f.id)).toEqual(['missing_screenshot']);
     expect(detectPolicyMisses(after.body)).toEqual([]);
     expect(hashInputs(before)).not.toBe(hashInputs(after));
+    // Round 5's property, re-pinned with the payload term present: the policy
+    // outcome must still invalidate even when the model payload is identical.
+    expect(modelBody(before)).toBe(modelBody(after)); // same 6KB window
+    expect(hashInputs(before, 'identical payload')).not.toBe(hashInputs(after, 'identical payload'));
+  });
+
+  // The model reads the changed-file list and the diff too, and the workflow
+  // degrades the diff to a marker line when the API 406s on a huge one. Hashing
+  // only the PR fields froze that: a run that classified with no diff cached its
+  // verdict, and the next run — real diff in hand — matched the hash and served
+  // the diff-blind verdict forever.
+  test('the hash covers the model payload, not just the PR fields', () => {
+    const pr = { title: 't', body: COMPLIANT_BODY, head: { sha: 'abc' } };
+    const noDiff = '--- UNTRUSTED DIFF ---\n[diff unavailable from the GitHub API]';
+    const realDiff = '--- UNTRUSTED DIFF ---\ndiff --git a/src/a.ts b/src/a.ts\n+real';
+    expect(hashInputs(pr, noDiff)).toBe(hashInputs(pr, noDiff));
+    expect(hashInputs(pr, noDiff)).not.toBe(hashInputs(pr, realDiff));
+    // A changed FILE LIST with the same diff is a different payload too.
+    expect(hashInputs(pr, `added src/b.ts\n${realDiff}`)).not.toBe(hashInputs(pr, realDiff));
+    // …and the payload cannot silently drop out: omitting it is its own input.
+    expect(hashInputs(pr, noDiff)).not.toBe(hashInputs(pr));
   });
 
   test('state round-trips through the rendered comment', () => {
@@ -1664,24 +1761,61 @@ describe('runGate end-to-end (mocked fetch)', () => {
     expect(calls.filter((c) => c.url.startsWith('https://api.anthropic.com'))).toHaveLength(3);
   }, 30_000);
 
-  test('spend guard: unchanged title+body+head_sha skips the LLM and keeps the verdict', async () => {
-    const pr = { title: 'fix(core): a real fix', body: COMPLIANT_BODY, head: { sha: 'cafebabe' } };
-    const prior = {
-      id: 55,
-      user: { type: 'Bot', login: 'github-actions[bot]' },
-      body: renderComment({
-        lane: 'close-lane',
-        verdict: { confidence: 0.9, reasons: ['drive-by refactor'], reviewer_checklist: ['c'] },
-        titleCheck: { ok: true },
-        flags: [],
-        state: { hash: hashInputs(pr), lane: 'close-lane' },
-      }),
-    };
-    const { calls, fetchImpl } = stubFetch({ comments: [prior] }); // no anthropic handler: any call throws
-    const code = await runGate(fixtureDir(pr), ENV, fetchImpl);
+  test('spend guard: an unchanged PR skips the LLM and keeps the verdict', async () => {
+    // Round-tripped through the gate's OWN state block rather than a hash
+    // recomputed here: hand-building the expected hash would re-implement
+    // runGate's payload assembly in the test and pin the test's idea of the
+    // inputs instead of the gate's.
+    const dir = fixtureDir({ title: 'fix(core): a real fix', body: COMPLIANT_BODY, head: { sha: 'cafebabe' } });
+    const comments: any[] = [];
+    const first = stubFetch({
+      comments,
+      persistComments: true,
+      anthropic: () => verdictResponse({ ...CLEAN_VERDICT, lane: 'close-lane', reasons: ['drive-by refactor'] }),
+    });
+    expect(await runGate(dir, ENV, first.fetchImpl)).toBe(1);
+    expect(comments).toHaveLength(1);
+
+    // Same dir, same everything. No anthropic handler: any call throws.
+    const { calls, fetchImpl } = stubFetch({ comments });
+    const code = await runGate(dir, ENV, fetchImpl);
     expect(code).toBe(1); // the stored close-lane verdict still holds
     expect(calls.some((c) => c.url.startsWith('https://api.anthropic.com'))).toBe(false);
     expect(calls.some((c) => c.method === 'PATCH' || c.method === 'POST')).toBe(false); // nothing rewritten
+  });
+
+  test('spend guard does not serve a diff-blind verdict once the diff is available', async () => {
+    // The workflow degrades to `[diff unavailable …]` when the GitHub API 406s
+    // on a huge diff. Run 1 therefore classifies with NO diff. Run 2 has the
+    // real one: same title, same body, same head sha — only the payload moved,
+    // and that alone has to buy a second verdict. Otherwise the diff-blind
+    // verdict is the permanent one.
+    const comments: any[] = [];
+    const { calls, fetchImpl } = stubFetch({
+      comments,
+      persistComments: true,
+      anthropic: () => verdictResponse(CLEAN_VERDICT),
+    });
+    const files = [
+      { filename: 'src/a.ts', status: 'modified', additions: 2, deletions: 1 },
+      { filename: 'test/a.test.ts', status: 'modified', additions: 5, deletions: 0 },
+    ];
+    const REAL_DIFF = 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    const anthropicCalls = () => calls.filter((c) => c.url.startsWith('https://api.anthropic.com')).length;
+
+    const unavailable = '[diff unavailable from the GitHub API — too large or unfetchable]\n';
+    await runGate(fixtureDir({}, files, unavailable), ENV, fetchImpl);
+    expect(anthropicCalls()).toBe(1);
+    expect(comments).toHaveLength(1); // the diff-blind verdict is cached
+
+    await runGate(fixtureDir({}, files, REAL_DIFF), ENV, fetchImpl);
+    expect(anthropicCalls()).toBe(2); // …and is NOT what run 2 gets served
+
+    // Control: a third run on the SAME payload still short-circuits. The guard
+    // was fixed, not switched off.
+    calls.length = 0;
+    await runGate(fixtureDir({}, files, REAL_DIFF), ENV, fetchImpl);
+    expect(anthropicCalls()).toBe(0);
   });
 
   // "Exactly one gate:* label" is only true if a failed label call can be

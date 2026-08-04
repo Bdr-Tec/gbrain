@@ -69,6 +69,8 @@ export declare function isOwnComment(comment: GhComment | null | undefined): boo
 
 export declare function hashInputs(
   pr: PrIdentity & { title?: string; body?: string; head?: { sha?: string } },
+  /** The assembled model payload (changed files + diff). runGate always passes it. */
+  payload?: string,
 ): string;
 export declare function parseState(body: unknown): { hash: string; lane?: string } | null;
 

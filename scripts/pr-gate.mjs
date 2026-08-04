@@ -43,12 +43,16 @@
  *   the marker gets a fresh bot comment instead of a hijacked one.
  * - EVERY string that is not a literal in THIS file is sanitized before it
  *   reaches Markdown (no HTML comments, no renderable HTML, no live @mentions,
- *   no live image embeds or links, no block markers, no newlines, length- and
- *   count-capped). Markdown counts as much as HTML here: `![APPROVED](…)` and
- *   `[click to approve](…)` forge a green verdict with no angle brackets at
+ *   no image embeds, no LABELLED links, no block markers, no newlines, length-
+ *   and count-capped). Markdown counts as much as HTML here: `![APPROVED](…)`
+ *   and `[click to approve](…)` forge a green verdict with no angle brackets at
  *   all. That includes the mechanical red-flag details: two of them
  *   interpolate PR filenames, and a filename may legally contain a newline, so
  *   they are attacker-controlled too.
+ *   Deliberate stopping point: a BARE url left in a sanitized string still
+ *   autolinks under GFM. That is a self-labelled link — the reader sees exactly
+ *   where it goes — which is why the escaping targets the MASKING characters
+ *   (`[`/`]`) rather than mangling every URL a model legitimately cites.
  * - parseState only reads the state block the bot itself wrote (line 2 of a
  *   marker-leading comment). A block appearing anywhere else in the body is
  *   somebody else's text and is ignored, so hostile content cannot forge a
@@ -279,6 +283,16 @@ export const POLICY_SCAN_MAX = 16384;
 const FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,}|~{3,})([^\n]*)$/;
 
 /**
+ * CommonMark 4.5: a BACKTICK fence's info string may not contain a backtick,
+ * because ``` `foo` ``` on its own line has to stay an ordinary paragraph with
+ * inline code in it. A TILDE fence's info string may contain anything.
+ *
+ * Only ever asked at the OPENING site. A closing fence may carry no info string
+ * at all, so the rule is already subsumed there.
+ */
+const opensFence = (m) => m[1][0] === '~' || !m[2].includes('`');
+
+/**
  * Drop fenced code blocks (``` or ~~~, unterminated fences run to EOF). A
  * screenshot pasted inside a fence is documentation of the syntax, not proof.
  *
@@ -290,6 +304,11 @@ const FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,}|~{3,})([^\n]*)$/;
  * A compliant PR that documented fence syntax then failed the intent check and
  * was closed. (The scanner is also linear, which retires the superlinear-
  * backtracking hazard the 16KB cap was sized against.)
+ *
+ * Opening too eagerly is the same false-positive class and the same cost: every
+ * line to EOF disappears, the intent paragraph with it, and a compliant
+ * contributor gets a red X. Both rules below therefore err toward NOT opening a
+ * block that CommonMark would not open.
  */
 export const stripCodeFences = (body) => {
   const out = [];
@@ -301,7 +320,7 @@ export const stripCodeFences = (body) => {
       if (m && m[1][0] === fence.char && m[1].length >= fence.len && m[2].trim() === '') fence = null;
       continue; // fenced content and the fences themselves are not prose
     }
-    if (m) {
+    if (m && opensFence(m)) {
       fence = { char: m[1][0], len: m[1].length };
       continue;
     }
@@ -829,8 +848,9 @@ async function setLaneLabel(gh, repo, prNumber, lane) {
 
 // ---------------------------------------------------------------------------
 // Spend guard: `edited` + `synchronize` amplify a single PR into many runs.
-// The verdict only depends on title + body + head sha, so if those are
-// unchanged since the last sticky comment there is nothing new to classify.
+// The verdict is a function of the model payload (and of the mechanical policy
+// outcome), so if that payload is byte-identical to the one behind the last
+// sticky comment there is nothing new to classify.
 // ---------------------------------------------------------------------------
 // JSON.stringify is the separator: it quotes and escapes each field, so no
 // title or body can forge a boundary, and the tuple order is fixed by the
@@ -847,14 +867,31 @@ async function setLaneLabel(gh, repo, prNumber, lane) {
 // from the full (16KB-capped) body, so its outcome is hashed alongside the
 // truncated text — otherwise adding the missing screenshot past 6KB would leave
 // the hash unchanged and the cached close-lane would be served forever.
+//
+// "What the run consumes" is the WHOLE model payload, not just the body. The
+// changed-file list and the diff are in it too, and the workflow degrades the
+// diff to a one-line marker when the API 406s on a huge one. Hashing only the
+// body made that degradation permanent: run 1 fetched no diff and cached a
+// diff-blind verdict, run 2 had the real diff, matched the hash, and served the
+// diff-blind verdict forever. So the assembled payload is folded in as a
+// fixed-width digest — inside the tuple, where JSON.stringify's quoting still
+// makes a forged boundary impossible.
 export const MODEL_BODY_MAX = 6000;
 export const modelBody = (pr) => (pr?.body ?? '(empty)').slice(0, MODEL_BODY_MAX);
 
-export function hashInputs(pr) {
+/**
+ * @param payload the exact string buildPayload() hands the model. Omitted only
+ *   by unit tests comparing two prs against each other; runGate always passes
+ *   it, pinned by the diff-unavailable→available test.
+ */
+export function hashInputs(pr, payload = '') {
   const exemption = policyExemption(pr) ?? '';
   const policy = exemption ? [] : detectPolicyMisses(pr?.body).map((f) => f.id);
+  const payloadDigest = createHash('sha256').update(String(payload ?? '')).digest('hex');
   return createHash('sha256')
-    .update(JSON.stringify([pr.title ?? '', modelBody(pr), pr.head?.sha ?? '', exemption, policy]))
+    .update(
+      JSON.stringify([pr.title ?? '', modelBody(pr), pr.head?.sha ?? '', exemption, policy, payloadDigest]),
+    )
     .digest('hex')
     .slice(0, 16);
 }
@@ -1038,7 +1075,12 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
     return 0;
   };
 
-  const inputHash = hashInputs(pr);
+  // Built once, unconditionally, and hashed: the spend guard must key on the
+  // bytes the model actually sees. Building it on the policy-miss path too
+  // (where no model call happens) keeps ONE hash convention across both paths —
+  // two conventions is how a cached verdict gets served to the wrong inputs.
+  const payload = buildPayload({ pr, files, diff, titleCheck, flags });
+  const inputHash = hashInputs(pr, payload);
   let verdict;
   let degraded = null;
   if (policyMisses.length > 0) {
@@ -1069,13 +1111,13 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
     const prev = parseState(existing?.body);
     if (prev && prev.hash === inputHash && LANES.includes(prev.lane)) {
       console.log(
-        `PR gate: title+body+head_sha unchanged (${inputHash}) since the last verdict — skipping the LLM call, keeping ${prev.lane}.`,
+        `PR gate: model payload unchanged (${inputHash}) since the last verdict — skipping the LLM call, keeping ${prev.lane}.`,
       );
       return prev.lane === 'close-lane' ? 1 : 0;
     }
 
     try {
-      verdict = await callAnthropic(apiKey, buildPayload({ pr, files, diff, titleCheck, flags }), fetchImpl);
+      verdict = await callAnthropic(apiKey, payload, fetchImpl);
     } catch (err) {
       const detail = String(err?.message ?? err).slice(0, 200);
       if (err?.kind !== 'refusal' && err?.kind !== 'schema') {
