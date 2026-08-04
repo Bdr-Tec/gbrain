@@ -23,10 +23,11 @@
  * time on their diff. Its checks are mechanical FLOORS — cheap filters against
  * zero-effort submissions.
  *
- * IT IS NOT an authorization boundary. Nothing here decides what merges.
- * close-lane exits red, which is a strong signal, not a hard block. Every
- * mechanical floor below (a screenshot embed, 40 words of prose, a title
- * shape) can be satisfied by a determined author who wants to satisfy it —
+ * IT IS NOT an authorization boundary. Nothing here decides what merges, and
+ * nothing here closes, reopens or blocks anything. close-lane exits red, which
+ * is a strong signal, not a hard block. Every mechanical floor below (a
+ * screenshot embed, a short paragraph of prose, a title shape) can be
+ * satisfied by a determined author who wants to satisfy it —
  * that is expected and it is fine, because clearing the floor buys a human
  * read, not a merge. The human reviewer is the decision-maker.
  *
@@ -41,10 +42,13 @@
  *   marker is ever adopted for the sticky update. A contributor pre-posting
  *   the marker gets a fresh bot comment instead of a hijacked one.
  * - EVERY string that is not a literal in THIS file is sanitized before it
- *   reaches Markdown (no HTML comments, no live @mentions, no block markers,
- *   no newlines, length- and count-capped). That includes the mechanical
- *   red-flag details: two of them interpolate PR filenames, and a filename may
- *   legally contain a newline, so they are attacker-controlled too.
+ *   reaches Markdown (no HTML comments, no renderable HTML, no live @mentions,
+ *   no live image embeds or links, no block markers, no newlines, length- and
+ *   count-capped). Markdown counts as much as HTML here: `![APPROVED](…)` and
+ *   `[click to approve](…)` forge a green verdict with no angle brackets at
+ *   all. That includes the mechanical red-flag details: two of them
+ *   interpolate PR filenames, and a filename may legally contain a newline, so
+ *   they are attacker-controlled too.
  * - parseState only reads the state block the bot itself wrote (line 2 of a
  *   marker-leading comment). A block appearing anywhere else in the body is
  *   somebody else's text and is ignored, so hostile content cannot forge a
@@ -201,6 +205,20 @@ export const MAX_ITEMS = 8;
 /** & first, or the escaping escapes its own output. */
 const escapeHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/**
+ * Markdown forges a widget with no angle brackets at all, so escaping HTML is
+ * only half the job. In a CLOSE-LANE comment,
+ * `![MERGE LANE — APPROVED](https://evil.example/green.png)` renders a live
+ * image that looks like a green verdict, and `[click to approve](…)` renders a
+ * live link to anywhere. Both survive escapeHtml untouched.
+ *
+ * Backslash-escaping `[` and `]` is the whole fix: Markdown renders `\[` as a
+ * literal `[`, so benign text ("check line \[40\]") looks identical while
+ * inline links, image embeds AND reference links (`[text][ref]`, which need the
+ * same two characters) all render as inert text.
+ */
+const escapeMarkdownLinks = (s) => s.replace(/[[\]]/g, '\\$&');
+
 export function sanitizeModelText(value, max = MAX_STRING) {
   let t = typeof value === 'string' ? value : String(value ?? '');
   t = t
@@ -214,10 +232,12 @@ export function sanitizeModelText(value, max = MAX_STRING) {
     .replace(/@(?=[A-Za-z0-9])/g, '@\u200b') // zero-width break: the mention is inert
     .trim();
   // Truncating AFTER escaping can cut an entity in half (`&l`), which renders
-  // as those literal characters. It can never re-create a `<`, so it cannot
-  // re-open a tag.
-  t = escapeHtml(t);
-  if (t.length > max) t = `${t.slice(0, max)}…[truncated]`;
+  // as those literal characters. It can never re-create a `<` or an unescaped
+  // `[`, so it cannot re-open a tag or a link. A cut landing between a
+  // backslash and its bracket leaves a dangling `\`, which is only cosmetic —
+  // drop it so the truncation marker reads cleanly.
+  t = escapeMarkdownLinks(escapeHtml(t));
+  if (t.length > max) t = `${t.slice(0, max).replace(/\\$/, '')}…[truncated]`;
   return t;
 }
 
@@ -323,18 +343,85 @@ export function hasScreenshot(body) {
   return SCREENSHOT_RES.some((match) => match(text));
 }
 
-export const INTENT_MIN_WORDS = 40;
+/**
+ * A FLOOR against an empty or boilerplate-only description — NOT a quality bar
+ * and NOT a length requirement CONTRIBUTING.md makes (it documents no word
+ * count at all; it asks for "a paragraph you wrote yourself", rough grammar
+ * preferred). 20 words is roughly one honest sentence about what went wrong,
+ * which is the least that can distinguish a real report from "fixes bug" or an
+ * untouched template.
+ *
+ * It was 40, and 40 red-Xed real contributors: a specific first-person bug
+ * report (34 words), a short non-native-English paragraph (38), and a body
+ * that is mostly a stack trace plus a real explanation (28) all failed. Every
+ * one of those is pinned as PASSING in test/pr-gate-workflow.test.ts now. Do
+ * not raise this without re-measuring against those fixtures — a check that is
+ * red on every terse-but-genuine contribution is a check somebody disables
+ * inside a week, and it costs real people on the way there.
+ */
+export const INTENT_MIN_WORDS = 20;
 
-// Everything a contributor can paste WITHOUT writing a word themselves: code,
-// quoted logs, checklists, headings, the template's HTML hints, and the
-// template's own bold prompts (a whole line of `**...**` is a heading in
-// disguise). What survives is the author's own prose.
+// A list marker at the start of a line. Read twice below: to know we are inside
+// a list (where an indented line is the author continuing their own sentence,
+// not pasted output) and to strip the marker while KEEPING the words after it.
+const LIST_MARKER_RE = /^[ \t]*([-*+]|\d+[.)])[ \t]+/;
+
+/**
+ * Indented code blocks (CommonMark 4.4) are pasted output, not prose — the
+ * fenced form is already gone via stripCodeFences, and this is the same content
+ * in the other spelling.
+ *
+ * Two guards keep it from eating the author's own words, which is the error
+ * that matters: an indented line only opens a block after a BLANK line (a code
+ * block cannot interrupt a paragraph), and never inside a list, where
+ * indentation means "continuation of the item I am writing" and stripping it
+ * would re-create the false positive this whole area exists to avoid.
+ */
+function stripIndentedCode(text) {
+  const out = [];
+  let inList = false;
+  let inCode = false;
+  let prevBlank = true;
+  for (const line of text.split('\n')) {
+    const blank = line.trim() === '';
+    const indented = /^(?: {4}|\t)/.test(line);
+    if (LIST_MARKER_RE.test(line)) inList = true;
+    else if (!blank && !indented) inList = false;
+    if (inCode) {
+      if (blank || indented) continue; // a blank line inside the block is still the block
+      inCode = false;
+    } else if (!inList && indented && prevBlank) {
+      inCode = true;
+      continue;
+    }
+    out.push(line);
+    prevBlank = blank;
+  }
+  return out.join('\n');
+}
+
+/**
+ * Counts the words the author actually wrote.
+ *
+ * REMOVED — what a contributor can paste without writing anything: fenced and
+ * indented code, HTML comments (the PR template's hints), headings, raw HTML,
+ * bare URLs, inline code, link/image syntax, and the template's own bold
+ * prompts (a whole line of `**...**` is a heading in disguise). That last one
+ * is what keeps an untouched .github/pull_request_template.md at zero, pinned
+ * against the real file on disk.
+ *
+ * KEPT — the words inside list items and blockquotes. Only the MARKER goes.
+ * Plenty of people write their own story as four bullets or quote-indent it,
+ * and deleting those lines scored such a body 0 and closed it: the single worst
+ * false positive this gate had.
+ */
 export function intentWordCount(body) {
-  const prose = visibleText(body) // fences + HTML comments (the PR template's hints)
+  const prose = stripIndentedCode(visibleText(body)) // + fences and HTML comments
+    .replace(/^[ \t]{0,3}(?:>[ \t]?)+/gm, ' ') // blockquote MARKER only — the words are the author's
+    .replace(new RegExp(LIST_MARKER_RE.source, 'gm'), ' ') // list MARKER only — ditto
+    // After the markers, so `- **What changed**` still reads as a template prompt.
     .replace(/^[ \t]{0,3}#{1,6}[ \t].*$/gm, ' ') // headings
     .replace(/^[ \t]*\*\*[^\n]*\*\*[ \t]*$/gm, ' ') // bold-only line = template prompt
-    .replace(/^[ \t]{0,3}>.*$/gm, ' ') // blockquotes
-    .replace(/^[ \t]*([-*+]|\d+[.)])[ \t].*$/gm, ' ') // list items
     .replace(/!?\[[^\]]*\]\([^)]*\)/g, ' ') // links + image embeds
     .replace(/<[^>]+>/g, ' ') // raw HTML tags
     .replace(/https?:\/\/\S+/g, ' ') // bare URLs
@@ -352,7 +439,7 @@ export const hasIntentParagraph = (body) => intentWordCount(body) >= INTENT_MIN_
 export const POLICY_FLAG_IDS = ['missing_intent', 'missing_screenshot'];
 
 const POLICY_DETAILS = {
-  missing_intent: `no human-written intent paragraph in the PR description (under ${INTENT_MIN_WORDS} words of prose once code, quotes, lists and the template boilerplate are removed) — required by CONTRIBUTING.md (#3745)`,
+  missing_intent: `no human-written intent paragraph in the PR description (under ${INTENT_MIN_WORDS} words of prose once code, headings, links and the template's own boilerplate are removed — bullets and quoted lines DO count) — required by CONTRIBUTING.md (#3745)`,
   missing_screenshot:
     'no screenshot of gbrain in use in the PR description — required by CONTRIBUTING.md (#3745)',
 };
@@ -806,7 +893,16 @@ const LANE_HEADINGS = {
 const LANE_MARKS = { 'merge-lane': '✅', 'close-lane': '❌', 'needs-maintainer': '⚠️' };
 const POLICY_HEADING = 'CLOSE LANE — the PR description is missing something required';
 
-/** Leads the comment on a #3745 miss: what is missing, how to fix it, how to reopen. */
+/**
+ * Leads the comment on a #3745 miss: what is missing, and what actually happens
+ * next.
+ *
+ * Say only what this gate DOES. It posts this comment, sets one `gate:*` label
+ * and exits red — it never closes a PR, so telling an author to "reopen" an
+ * open PR is both wrong and alarming. Editing the description really does
+ * re-run the check: `edited` is in the workflow's trigger list, and the rerun
+ * rewrites this same sticky comment.
+ */
 function policyBlock(policyMisses) {
   const ids = POLICY_FLAG_IDS.filter((id) => policyMisses.some((f) => f.id === id));
   return [
@@ -814,7 +910,7 @@ function policyBlock(policyMisses) {
     '',
     ...ids.map((id) => `- ${POLICY_ASKS[id]}`),
     '',
-    `Edit the description to add that, then reopen. This is not a judgment on the code — the policy is in [CONTRIBUTING.md](${CONTRIBUTING_URL}).`,
+    `Edit the description and this check re-runs on its own, updating this comment. Your PR stays open — nothing here closes it, and a maintainer makes the actual call. This is not a judgment on the code. The policy is in [CONTRIBUTING.md](${CONTRIBUTING_URL}).`,
   ];
 }
 
@@ -827,6 +923,7 @@ export function renderComment({
   downgrades = [],
   policyMisses = [],
   policyExempt = null,
+  labelsCleared = true,
   state,
 }) {
   const lines = [MARKER];
@@ -834,8 +931,15 @@ export function renderComment({
   lines.push('');
   if (neutralReason) {
     lines.push('## PR Gate — NEUTRAL (skipped)', '', `**Reason:** ${sanitizeModelText(neutralReason)}`, '');
+    // Don't claim the labels were cleared when the clearing call failed — a
+    // NEUTRAL run keeps going through a label blip (see runGate), so this
+    // sentence is the one place that could quietly become untrue.
     lines.push(
-      `The **usefulness verdict did not run**, so there is no lane and any previous \`gate:*\` label was cleared. This is a loud skip, not a pass. The mechanical checks below need no model: they ran, and the CONTRIBUTING.md intent-paragraph + screenshot requirement ${
+      `The **usefulness verdict did not run**, so there is no lane and ${
+        labelsCleared
+          ? 'any previous `gate:*` label was cleared'
+          : 'the `gate:*` labels could NOT be updated (that API call failed) — any label still showing is stale'
+      }. This is a loud skip, not a pass. The mechanical checks below need no model: they ran, and the CONTRIBUTING.md intent-paragraph + screenshot requirement ${
         policyExempt ? 'was skipped for this author' : 'passed'
       } — a miss there is close-lane whether or not the model is reachable.`,
       '',
@@ -910,13 +1014,26 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
 
   const neutral = async (reason) => {
     console.log(`::warning::PR gate NEUTRAL-skip: ${reason}`);
-    await setLaneLabel(gh, repo, prNumber, null); // no stale verdict survives a skip
+    // A NEUTRAL run must never be a red X — that is the promise in the
+    // workflow header ("never a red X for a missing secret"), and a missing
+    // key plus one failed label DELETE was breaking it: the throw escaped to
+    // the crash handler, exit 2, and the explanatory comment never posted. A
+    // NEUTRAL has no verdict to record, so label reconciliation is cosmetic
+    // here. Log it, say so in the comment, exit 0. (In the VERDICT path below
+    // a label failure stays fatal on purpose — see the ordering note there.)
+    let labelsCleared = true;
+    try {
+      await setLaneLabel(gh, repo, prNumber, null); // no stale verdict survives a skip
+    } catch (err) {
+      labelsCleared = false;
+      console.log(`::warning::PR gate could not clear gate:* labels on a NEUTRAL run: ${String(err?.message ?? err)}`);
+    }
     await upsertStickyComment(
       gh,
       repo,
       prNumber,
       existing,
-      renderComment({ titleCheck, flags, policyExempt, neutralReason: reason }),
+      renderComment({ titleCheck, flags, policyExempt, labelsCleared, neutralReason: reason }),
     );
     return 0;
   };
@@ -938,7 +1055,7 @@ export async function runGate(dir, env = process.env, fetchImpl = fetch) {
       lane: 'close-lane',
       confidence: 1,
       reasons: [
-        'CONTRIBUTING.md requires a human-written intent paragraph and a screenshot of gbrain in use on every PR; this description is missing at least one of them. Reopen once added.',
+        'CONTRIBUTING.md requires a human-written intent paragraph and a screenshot of gbrain in use on every PR; this description is missing at least one of them.',
       ],
       reviewer_checklist: [],
     };

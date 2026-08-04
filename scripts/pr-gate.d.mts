@@ -81,6 +81,7 @@ export declare function renderComment(input: {
   downgrades?: string[];
   policyMisses?: RedFlag[];
   policyExempt?: string | null;
+  labelsCleared?: boolean;
   state?: { hash: string; lane: string };
 }): string;
 

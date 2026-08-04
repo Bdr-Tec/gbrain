@@ -6,8 +6,13 @@
  *   actions, trigger shape, 120KB diff cap, persist-credentials:false).
  * - scripts/pr-gate.mjs rubric carries the load-bearing phrases.
  * - Unit coverage for the exported title rule, red-flag detector, model-output
- *   sanitizer, and deterministic lane downgrades (importing the script must
- *   not execute main — side-effect guard).
+ *   sanitizer (HTML widgets AND Markdown image/link embeds), and deterministic
+ *   lane downgrades (importing the script must not execute main — side-effect
+ *   guard).
+ * - The false-positive floor: four verbatim real-human descriptions the gate
+ *   used to red-X (bullet-point prose, non-native English, a terse bug report,
+ *   a body that is mostly a stack trace) are pinned as PASSING forever, with
+ *   the zero-effort bodies that must still fail beside them.
  * - Mocked end-to-end runs of runGate() against a stubbed fetch: close-lane
  *   exit code, marker-hijack, sanitization, truncation, refusal routing,
  *   NEUTRAL label clearing, label swap, and the input-hash spend guard.
@@ -750,7 +755,7 @@ describe('intent paragraph detector (#3745, mechanical)', () => {
     expect(hasIntentParagraph(`${PR_TEMPLATE}\nrenames the flag and updates the docs`)).toBe(false);
   });
 
-  test('40+ words of the author own prose counts', () => {
+  test('the author own prose counts, from both sides of the floor', () => {
     expect(intentWordCount(HUMAN_INTENT)).toBeGreaterThanOrEqual(INTENT_MIN_WORDS);
     expect(hasIntentParagraph(HUMAN_INTENT)).toBe(true);
     expect(hasIntentParagraph(COMPLIANT_BODY)).toBe(true);
@@ -759,16 +764,42 @@ describe('intent paragraph detector (#3745, mechanical)', () => {
     expect(hasIntentParagraph(padding(INTENT_MIN_WORDS - 1).join(' '))).toBe(false);
   });
 
-  test('pasted code, logs, checklists and headings are not prose', () => {
+  // The floor is a floor against an EMPTY description, not a quality bar, so it
+  // stays low on purpose. What it must still reject is the zero-effort forms.
+  test('the floor is low but not zero — boilerplate-only bodies still miss it', () => {
+    expect(hasIntentParagraph('fixes bug')).toBe(false);
+    expect(hasIntentParagraph('lorem ipsum dolor sit amet consectetur adipiscing elit sed do')).toBe(false);
+    expect(intentWordCount(PR_TEMPLATE)).toBe(0);
+    expect(INTENT_MIN_WORDS).toBeLessThanOrEqual(20); // raising it is what red-Xed real contributors
+  });
+
+  test('pasted code, headings and link walls are not prose', () => {
     const many = padding(80).join(' ');
     expect(hasIntentParagraph('```\n' + many + '\n```')).toBe(false);
-    expect(hasIntentParagraph(padding(80).map((w) => `> ${w}`).join('\n'))).toBe(false);
-    expect(hasIntentParagraph(padding(80).map((w) => `- ${w}`).join('\n'))).toBe(false);
-    expect(hasIntentParagraph(padding(80).map((w, i) => `${i + 1}. ${w}`).join('\n'))).toBe(false);
     expect(hasIntentParagraph(`## ${many}`)).toBe(false);
     expect(hasIntentParagraph(`**${many}**`)).toBe(false);
     // A wall of links/screenshots is not a paragraph either.
     expect(hasIntentParagraph(padding(80).map((w) => `![${w}](https://example.com/${w}.png)`).join(' '))).toBe(false);
+    // Indented code is the other spelling of a fence: still pasted output.
+    expect(hasIntentParagraph(`log:\n\n${padding(80).map((w) => `    ${w}`).join('\n')}`)).toBe(false);
+  });
+
+  // THE false positive this detector had: deleting whole list/quote LINES
+  // scored an author's own four-bullet story at 0 and closed their PR. Only
+  // the MARKER is boilerplate; the words after it are theirs.
+  test('prose written as bullets or a blockquote is still prose', () => {
+    expect(hasIntentParagraph(padding(30).map((w) => `- ${w}`).join('\n'))).toBe(true);
+    expect(hasIntentParagraph(padding(30).map((w) => `* ${w}`).join('\n'))).toBe(true);
+    expect(hasIntentParagraph(padding(30).map((w, i) => `${i + 1}. ${w}`).join('\n'))).toBe(true);
+    expect(hasIntentParagraph(padding(30).map((w) => `> ${w}`).join('\n'))).toBe(true);
+    expect(hasIntentParagraph(padding(30).map((w) => `>> ${w}`).join('\n'))).toBe(true);
+    // The marker itself contributes nothing — 19 bulleted words is still 19.
+    expect(intentWordCount(padding(19).map((w) => `- ${w}`).join('\n'))).toBe(19);
+    // An indented line under a bullet is the author continuing their sentence,
+    // NOT an indented code block. Stripping it would re-create the bug.
+    expect(intentWordCount('- one two three\n    four five six')).toBe(6);
+    // A bulleted template prompt is still a template prompt, though.
+    expect(intentWordCount('- **What changed**\n- **How it was tested**')).toBe(0);
   });
 
   test('non-English prose counts — the policy asks for rough words, not English', () => {
@@ -783,6 +814,80 @@ describe('intent paragraph detector (#3745, mechanical)', () => {
     expect(intentWordCount(han)).toBeGreaterThanOrEqual(INTENT_MIN_WORDS);
     // Diacritics are letters, not separators.
     expect(hasIntentParagraph(padding(40).map((w) => `${w}ê`).join(' '))).toBe(true);
+  });
+});
+
+/**
+ * THE regression that matters most. Four descriptions in the shape real people
+ * actually write, every one of which the gate red-Xed on a 40-word floor that
+ * also deleted list and quote lines before counting:
+ *
+ *   body                                   before → after
+ *   own prose written as four bullets        0 → 55
+ *   short non-native-English paragraph      38 → 38
+ *   specific first-person bug report        34 → 34
+ *   mostly a stack trace + a real reason    28 → 27
+ *
+ * These are FIXTURES, not examples: keep them verbatim. A change to the floor,
+ * the tokenizer or the strip list that puts any of them back in close-lane is
+ * the gate rejecting a genuine contributor, which costs more than every forgery
+ * risk the earlier rounds chased. If one of these ever fails, the fix is the
+ * detector, not the fixture.
+ */
+describe('real-human descriptions must never land in close-lane (#3745 false positives)', () => {
+  const HUMAN_BODIES: Record<string, string> = {
+    'own prose written as a list': [
+      '- I hit this every single morning when my cron fires at 6am',
+      '- the sync dies and I only notice hours later when my agent has no context',
+      '- took me two days to trace it to the lock file not being released',
+      '- this patch is what I have been running locally since Tuesday and it holds',
+    ].join('\n'),
+
+    'short non-native English': [
+      'Sorry my english not good. I use gbrain for my notes in vietnamese and the names',
+      'always break when i search. This fix make the tokenizer read my language correct.',
+      'I test on my own brain 3000 notes.',
+    ].join(' '),
+
+    'specific first-person bug report': [
+      'My nightly cycle silently stopped extracting atoms three weeks ago and I only found',
+      'out when a query came back empty. The cap was being applied to a local model that',
+      'has no price.',
+    ].join(' '),
+
+    'mostly a stack trace plus a real explanation': [
+      'This crashes every time I run sync on a fresh clone:',
+      '',
+      '```',
+      'Error: ENOENT',
+      '  at foo',
+      '```',
+      '',
+      'I spent an afternoon on it. The path join assumes posix separators and I am on Windows.',
+    ].join('\n'),
+  };
+
+  for (const [name, body] of Object.entries(HUMAN_BODIES)) {
+    test(`passes the intent floor: ${name}`, () => {
+      expect(intentWordCount(body)).toBeGreaterThanOrEqual(INTENT_MIN_WORDS);
+      expect(hasIntentParagraph(body)).toBe(true);
+      // …and therefore the only thing the policy asks them for is the screenshot.
+      expect(detectPolicyMisses(body).map((f) => f.id)).toEqual(['missing_screenshot']);
+      expect(detectPolicyMisses(`${body}\n\n${SCREENSHOT_EMBED}`)).toEqual([]);
+    });
+  }
+
+  test('a full compliant PR from one of them reaches the model, not close-lane', async () => {
+    const { calls, fetchImpl } = stubFetch({ anthropic: () => verdictResponse(CLEAN_VERDICT) });
+    const body = `${HUMAN_BODIES['own prose written as a list']}\n\n${SCREENSHOT_EMBED}`;
+    const files = [
+      { filename: 'src/a.ts', status: 'modified', additions: 2, deletions: 1 },
+      { filename: 'test/a.test.ts', status: 'modified', additions: 5, deletions: 0 },
+    ];
+    const code = await runGate(fixtureDir({ body }, files), ENV, fetchImpl);
+    expect(code).toBe(0);
+    expect(addedLabels(calls)).toEqual(['gate:merge-lane']);
+    expect(postedBody(calls)).not.toContain('Almost there');
   });
 });
 
@@ -1082,6 +1187,59 @@ describe('sanitizeModelText (LLM output is never raw Markdown)', () => {
     expect(sanitizeModelText('<a href="https://evil.example">click</a>')).not.toMatch(/[<>]/);
   });
 
+  // The sibling hole to the <details> one: Markdown forges a widget with no
+  // angle brackets at all, so escapeHtml never sees it. An image embed renders
+  // a green "approved" picture and a link renders a live phishing target,
+  // both inside a CLOSE-LANE comment.
+  test('Markdown image and link syntax is neutralized, not left live', () => {
+    const img = sanitizeModelText('![MERGE LANE — APPROVED](https://evil.example/green.png)');
+    expect(img).not.toMatch(/!\[[^\]]*\]\(/); // no live embed
+    expect(img).toContain('\\[MERGE LANE'); // rendered as the literal text
+    expect(img).toContain('green.png'); // …and nothing was silently dropped
+
+    const link = sanitizeModelText('[click to approve](https://evil.example/phish)');
+    expect(link).not.toMatch(/(?<!\\)\[[^\]]*\]\(/);
+    expect(link).toContain('\\[click to approve\\]');
+
+    // Reference links need the same two characters, so they die with them.
+    expect(sanitizeModelText('[approved][ok]')).toBe('\\[approved\\]\\[ok\\]');
+    // Benign bracketed text still reads identically once GitHub renders it.
+    expect(sanitizeModelText('check line [40] of hybrid.ts')).toBe('check line \\[40\\] of hybrid.ts');
+  });
+
+  test('the forged-approval image renders literally in a close-lane comment', () => {
+    const body: string = renderComment({
+      lane: 'close-lane',
+      verdict: {
+        confidence: 0.9,
+        reasons: ['![✅ MERGE LANE — APPROVED](https://evil.example/green.png)'],
+        reviewer_checklist: ['[click to approve](https://evil.example/phish)'],
+      },
+      titleCheck: { ok: true },
+      flags: [],
+      neutralReason: undefined,
+    });
+    expect(body).not.toMatch(/!\[[^\]]*\]\(/); // no image anywhere in the comment
+    expect(body).toContain('\\[✅ MERGE LANE');
+    expect(body).toContain('\\[click to approve\\]');
+    // The one live link in the comment is ours (CONTRIBUTING.md), never theirs.
+    const liveLinks = [...body.matchAll(/(?<![\\!])\[([^\]]*)\]\(([^)]*)\)/g)].map((m) => m[2]);
+    expect(liveLinks).not.toContain('https://evil.example/phish');
+  });
+
+  // A filename is attacker-controlled and lands in two flag details, so the
+  // same neutralization has to hold on that path.
+  test('a Markdown embed smuggled through a filename is neutralized too', () => {
+    const flags = detectRedFlags({
+      changedFiles: 1,
+      files: [{ filename: 'test/![APPROVED](https://evil.example/green.png).test.ts', status: 'removed' }],
+      diff: '',
+    });
+    expect(flags.map((f) => f.id)).toContain('deletes_tests');
+    const body: string = renderComment({ titleCheck: { ok: true }, flags, neutralReason: 'API down' });
+    expect(body).not.toMatch(/!\[[^\]]*\]\(/);
+  });
+
   test('& is escaped first, so an entity cannot be smuggled through', () => {
     // Escaping < before & would turn `&lt;script&gt;` back into a live tag on
     // render. `&amp;lt;` displays as the literal text `&lt;`.
@@ -1254,6 +1412,8 @@ function stubFetch(opts: {
   anthropic?: (n: number) => Response;
   /** Fail the label-add call — models a transient GitHub labels-API blip. */
   labelAddFails?: () => boolean;
+  /** Fail the label-DELETE call — the same blip on the clear-stale-labels path. */
+  labelDeleteFails?: () => boolean;
   /** Persist the sticky comment into `comments`, so a rerun sees the last run's state. */
   persistComments?: boolean;
 }): { calls: Call[]; fetchImpl: typeof fetch } {
@@ -1284,7 +1444,10 @@ function stubFetch(opts: {
       if (opts.labelAddFails?.()) return jsonResponse({ message: 'server error' }, 500);
       return jsonResponse([]);
     }
-    if (/\/issues\/\d+\/labels\//.test(u) && method === 'DELETE') return jsonResponse([]);
+    if (/\/issues\/\d+\/labels\//.test(u) && method === 'DELETE') {
+      if (opts.labelDeleteFails?.()) return jsonResponse({ message: 'server error' }, 500);
+      return jsonResponse([]);
+    }
     if (/\/repos\/[^/]+\/[^/]+\/labels$/.test(u) && method === 'POST') return jsonResponse({}, 201);
     return jsonResponse({ message: `unrouted ${method} ${u}` }, 404);
   }) as unknown as typeof fetch;
@@ -1459,6 +1622,39 @@ describe('runGate end-to-end (mocked fetch)', () => {
     ]);
   });
 
+  // "never a red X for a missing secret" (workflow header) was false the moment
+  // the labels API also blipped: setLaneLabel threw, the throw escaped to the
+  // crash handler, and the run exited 2 with no comment at all — a red X and no
+  // explanation, on a PR that did nothing wrong.
+  test('a NEUTRAL run survives a label-API failure — comment posts, exit 0', async () => {
+    const { calls, fetchImpl } = stubFetch({ labelDeleteFails: () => true });
+    const code = await runGate(fixtureDir(), { ...ENV, ANTHROPIC_API_KEY: undefined }, fetchImpl);
+    expect(code).toBe(0); // NOT 2
+    const body: string = postedBody(calls);
+    expect(body).toContain('NEUTRAL');
+    // …and the comment does not claim a clearing that did not happen.
+    expect(body).not.toContain('any previous `gate:*` label was cleared');
+    expect(body).toContain('could NOT be updated');
+  });
+
+  test('a NEUTRAL run that clears labels cleanly still says so', async () => {
+    const { calls, fetchImpl } = stubFetch({});
+    expect(await runGate(fixtureDir(), { ...ENV, ANTHROPIC_API_KEY: undefined }, fetchImpl)).toBe(0);
+    expect(postedBody(calls)).toContain('any previous `gate:*` label was cleared');
+  });
+
+  // The VERDICT path keeps the opposite behaviour on purpose: a label failure
+  // there must throw BEFORE the sticky comment persists the spend-guard state,
+  // or the rerun short-circuits and the label stays wrong forever.
+  test('a label failure on the verdict path is still fatal', async () => {
+    const { calls, fetchImpl } = stubFetch({
+      anthropic: () => verdictResponse(CLEAN_VERDICT),
+      labelAddFails: () => true,
+    });
+    await expect(runGate(fixtureDir(), ENV, fetchImpl)).rejects.toThrow(/label add failed/);
+    expect(calls.some((c) => c.method === 'POST' && /\/issues\/\d+\/comments$/.test(c.url))).toBe(false);
+  });
+
   test('an unreachable API is a NEUTRAL skip (exit 0), not a verdict', async () => {
     const { calls, fetchImpl } = stubFetch({ anthropic: () => jsonResponse({ error: 'boom' }, 500) });
     const code = await runGate(fixtureDir(), ENV, fetchImpl);
@@ -1593,7 +1789,15 @@ describe('runGate — CONTRIBUTING.md #3745 policy (mocked fetch)', () => {
     expect(body).toContain('Almost there');
     expect(body).toContain('A screenshot of gbrain in use');
     expect(body).not.toContain('A paragraph you wrote yourself'); // that half is fine
-    expect(body).toContain('then reopen');
+    // The comment may only promise what the gate DOES. It has no close call in
+    // it (grep the script), so telling an author to reopen an open PR is a lie
+    // that reads as a threat to a first-time contributor.
+    expect(body).not.toMatch(/reopen/i);
+    expect(SCRIPT).not.toMatch(/state:\s*['"]closed['"]/); // …and still no close call
+    expect(body).toContain('this check re-runs on its own');
+    expect(body).toContain('Your PR stays open');
+    expect(body).toContain('nothing here closes it');
+    expect(body).toContain('a maintainer makes the actual call');
     expect(body).toContain('not a judgment on the code');
     expect(body).toContain('CONTRIBUTING.md');
     expect(body).toContain(CONTRIBUTING_URL); // the deep link, anchor included
@@ -1618,7 +1822,8 @@ describe('runGate — CONTRIBUTING.md #3745 policy (mocked fetch)', () => {
     const body: string = postedBody(calls);
     expect(body).toContain('A paragraph you wrote yourself');
     expect(body).not.toContain('A screenshot of gbrain in use'); // that half is fine
-    expect(body).toContain('then reopen');
+    expect(body).not.toMatch(/reopen/i);
+    expect(body).toContain('this check re-runs on its own');
   });
 
   test('an empty description names both halves', async () => {
