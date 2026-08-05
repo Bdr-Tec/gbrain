@@ -65,6 +65,7 @@ import { slugifySegment } from '../sync.ts';
 
 const DEFAULT_BUDGET_USD = 0.3;
 const DEFAULT_EXTRACT_ATOMS_MODEL = 'anthropic:claude-haiku-4-5';
+const DEFAULT_MAX_SOURCE_CHARS = 50_000;
 
 /**
  * gbrain#4148: consecutive same-content failures of a content-deterministic
@@ -261,6 +262,7 @@ export async function discoverExtractablePages(
   engine: BrainEngine,
   sourceId: string,
   affectedSlugs?: string[],
+  limit: number = PAGE_DISCOVERY_BUDGET,
 ): Promise<DiscoveredPage[]> {
   const hasFilter = Array.isArray(affectedSlugs) && affectedSlugs.length > 0;
   const sql = `
@@ -293,7 +295,7 @@ export async function discoverExtractablePages(
     sourceId,
     await resolveExtractableTypes(),
     MIN_PAGE_CHARS_FOR_EXTRACTION,
-    PAGE_DISCOVERY_BUDGET,
+    limit,
   ];
   if (hasFilter) params.push(affectedSlugs);
 
@@ -383,6 +385,17 @@ export async function countExtractAtomsBacklog(
     console.error(`[extract_atoms] backlog count failed: ${msg}`);
     return null;
   }
+}
+
+async function resolvePageDiscoveryLimit(engine: BrainEngine): Promise<number> {
+  try {
+    const configured = await engine.getConfig('cycle.extract_atoms.page_discovery_budget');
+    if (configured) {
+      const n = Number(configured);
+      if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    }
+  } catch { /* keep default */ }
+  return PAGE_DISCOVERY_BUDGET;
 }
 
 /**
@@ -486,7 +499,12 @@ export async function runPhaseExtractAtoms(
   if (opts._pages !== undefined) {
     pages = opts._pages;
   } else {
-    pages = await discoverExtractablePages(engine, sourceId, opts.affectedSlugs);
+    pages = await discoverExtractablePages(
+      engine,
+      sourceId,
+      opts.affectedSlugs,
+      await resolvePageDiscoveryLimit(engine),
+    );
   }
 
   // 2. Apply transcript-side source-hash idempotency in ONE batch query
@@ -592,13 +610,25 @@ export async function runPhaseExtractAtoms(
   let budgetExhausted = false;
   let extractModel = DEFAULT_EXTRACT_ATOMS_MODEL;
   let budgetCap = DEFAULT_BUDGET_USD;
+  let maxSourceChars = DEFAULT_MAX_SOURCE_CHARS;
   try {
     const configuredModel = await engine.getConfig('models.dream.extract_atoms');
     if (configuredModel) extractModel = configuredModel;
+    // `models.dream.extract_atoms` is DB-plane/operator-selected config, not
+    // part of the gateway's ordinary `chat_model` bootstrap. Register it before
+    // the call path hits assertTouchpoint so local/user-managed providers such
+    // as Ollama can be used for this phase without requiring hosted API keys.
+    const { registerConfigSelectedChatModel } = await import('../ai/gateway.ts');
+    registerConfigSelectedChatModel(extractModel);
     const configuredBudget = await engine.getConfig('cycle.extract_atoms.budget_usd');
     if (configuredBudget) {
       const n = Number(configuredBudget);
       if (Number.isFinite(n) && n > 0) budgetCap = n;
+    }
+    const configuredMaxSourceChars = await engine.getConfig('cycle.extract_atoms.max_source_chars');
+    if (configuredMaxSourceChars) {
+      const n = Number(configuredMaxSourceChars);
+      if (Number.isFinite(n) && n >= 500) maxSourceChars = Math.floor(n);
     }
   } catch {
     // Keep safe defaults: Haiku + $0.30.
@@ -714,7 +744,7 @@ export async function runPhaseExtractAtoms(
         messages: [
           {
             role: 'user',
-            content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, 50_000)}`,
+            content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, maxSourceChars)}`,
           },
         ],
         maxTokens: 4096,
