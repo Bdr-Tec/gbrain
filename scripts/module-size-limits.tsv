@@ -37,3 +37,4 @@ src/core/github-source.ts	1560	ratchet	new row: crossed the 1500 unlisted cap in
 src/core/bootstrap/harness.ts	1947	ratchet
 src/commands/hook.ts	1550	ratchet	cathedral-5 heartbeat extraction offsets part of the BrainBench-seam growth
 src/core/schema-embedded.ts	1504	ratchet	grown v0.46.26.0: private-queue columns + recovery indexes in the embedded blob
+src/core/oauth-provider.ts	1546	ratchet	new row: crossed the 1500 unlisted cap absorbing #3819 (DCR 400 invalid_client_metadata + scope filtering + custom-scheme redirect_uris + pseudo-scheme guard)
