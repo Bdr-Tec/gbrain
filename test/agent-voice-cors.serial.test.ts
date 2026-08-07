@@ -136,6 +136,15 @@ describe('agent-voice CORS default-deny + origin gate (#2477)', () => {
       });
       expect(sameOrigin.status).toBe(500); // handler reached, not 403
 
+      // Malformed Origin (unparseable by new URL()) must fail closed → 403,
+      // never fall through to the handler. A bypass here would be a real hole.
+      const malformed = await fetch(`${server.base}/session`, {
+        method: 'POST',
+        headers: { Origin: 'http://[::bogus', 'Content-Type': 'text/plain' },
+        body: 'v=0',
+      });
+      expect(malformed.status).toBe(403);
+
       // /tool: gated identically (before the body is even read)…
       const toolGated = await fetch(`${server.base}/tool`, {
         method: 'POST',
