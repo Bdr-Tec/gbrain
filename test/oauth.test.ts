@@ -510,75 +510,82 @@ describe('verifyAccessToken', () => {
     expect(authInfo.allowedSources).toEqual(['default', 'src-a', 'src-b']);
   });
 
-  test('legacy access_tokens fallback honors permissions.takes_holders (#2529)', async () => {
+  // -------------------------------------------------------------------------
+  // #2529 — legacy access_tokens fallback threads permissions.takes_holders
+  // into AuthInfo.takesHoldersAllowList. Each test adds the v29 permissions
+  // column idempotently and inserts `permissions` EXPLICITLY: the column's
+  // NOT NULL DEFAULT is '{"takes_holders":["world"]}', so relying on the
+  // default would silently turn an "absent key" case into a ['world'] case.
+  // -------------------------------------------------------------------------
+
+  async function insertLegacyTokenWithPermissions(
+    name: string,
+    permissions: Record<string, unknown> | undefined,
+  ): Promise<string> {
     await sql`
       ALTER TABLE access_tokens
         ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{"takes_holders":["world"]}'::jsonb
     `;
+    const token = generateToken('gbrain_');
+    const hash = hashToken(token);
+    if (permissions === undefined) {
+      await sql`
+        INSERT INTO access_tokens (id, name, token_hash)
+        VALUES (${crypto.randomUUID()}, ${name}, ${hash})
+      `;
+    } else {
+      await sql`
+        INSERT INTO access_tokens (id, name, token_hash, permissions)
+        VALUES (${crypto.randomUUID()}, ${name}, ${hash}, ${JSON.stringify(permissions)}::jsonb)
+      `;
+    }
+    return token;
+  }
 
-    const legacyToken = generateToken('gbrain_');
-    const hash = hashToken(legacyToken);
-    await sql`
-      INSERT INTO access_tokens (id, name, token_hash, permissions)
-      VALUES (
-        ${crypto.randomUUID()},
-        ${'legacy-holders-agent'},
-        ${hash},
-        ${JSON.stringify({ takes_holders: ['world', 'team', 'holder-example'] })}::jsonb
-      )
-    `;
-
-    const authInfo = await provider.verifyAccessToken(legacyToken) as CoreAuthInfo;
-    expect(authInfo.takesHoldersAllowList).toEqual(['world', 'team', 'holder-example']);
+  test('legacy token with takes_holders grant → takesHoldersAllowList threaded (#2529)', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-grant-agent', { takes_holders: ['world', 'brain'] });
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toEqual(['world', 'brain']);
   });
 
-  test('legacy takes_holders: non-array value fails closed to [world]; non-string entries are dropped', async () => {
-    await sql`
-      ALTER TABLE access_tokens
-        ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{"takes_holders":["world"]}'::jsonb
-    `;
-
-    // Scalar (non-array) takes_holders → ['world'].
-    const scalarToken = generateToken('gbrain_');
-    await sql`
-      INSERT INTO access_tokens (id, name, token_hash, permissions)
-      VALUES (${crypto.randomUUID()}, ${'legacy-scalar-holders'}, ${hashToken(scalarToken)},
-              ${JSON.stringify({ takes_holders: 'team' })}::jsonb)
-    `;
-    const scalarAuth = await provider.verifyAccessToken(scalarToken) as CoreAuthInfo;
-    expect(scalarAuth.takesHoldersAllowList).toEqual(['world']);
-
-    // Mixed-type array → non-strings filtered out.
-    const mixedToken = generateToken('gbrain_');
-    await sql`
-      INSERT INTO access_tokens (id, name, token_hash, permissions)
-      VALUES (${crypto.randomUUID()}, ${'legacy-mixed-holders'}, ${hashToken(mixedToken)},
-              ${JSON.stringify({ takes_holders: ['team', 42, null, 'world'] })}::jsonb)
-    `;
-    const mixedAuth = await provider.verifyAccessToken(mixedToken) as CoreAuthInfo;
-    expect(mixedAuth.takesHoldersAllowList).toEqual(['team', 'world']);
+  test('legacy token with no takes_holders key → undefined (consumer defaults to world)', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-absent-agent', {});
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toBeUndefined();
   });
 
-  test('legacy token with malformed permissions fails closed (no throw, [world], default source)', async () => {
-    await sql`
-      ALTER TABLE access_tokens
-        ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{"takes_holders":["world"]}'::jsonb
-    `;
+  test('legacy token with non-array takes_holders → undefined (fail-closed at consumer)', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-garbage-agent', { takes_holders: 'world' });
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toBeUndefined();
+  });
 
-    // A jsonb STRING scalar whose content is not parseable JSON — the driver
-    // hands verifyAccessToken a plain string, JSON.parse throws, and the
-    // catch path must fail closed rather than 500 the request.
-    const badToken = generateToken('gbrain_');
-    await sql`
-      INSERT INTO access_tokens (id, name, token_hash, permissions)
-      VALUES (${crypto.randomUUID()}, ${'legacy-malformed-perms'}, ${hashToken(badToken)},
-              to_jsonb(${'not-json-at-all'}::text))
-    `;
+  test('legacy token with empty-array takes_holders → [] preserved as explicit deny-all', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-denyall-agent', { takes_holders: [] });
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toBeDefined();
+    expect(authInfo.takesHoldersAllowList).toEqual([]);
+  });
 
-    const authInfo = await provider.verifyAccessToken(badToken) as CoreAuthInfo;
-    expect(authInfo.clientId).toBe('legacy-malformed-perms');
+  test('legacy token with mixed-type takes_holders → non-string entries filtered', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-mixed-agent', { takes_holders: ['world', 42, null] });
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
     expect(authInfo.takesHoldersAllowList).toEqual(['world']);
-    expect(authInfo.sourceId).toBe('default');
+  });
+
+  test('OAuth-client token → takesHoldersAllowList undefined (no per-client storage; fail-closed)', async () => {
+    const { clientId, clientSecret } = await provider.registerClientManual(
+      'takes-oauth-client', ['client_credentials'], 'read',
+    );
+    const tokens = await provider.exchangeClientCredentials(clientId, clientSecret!, 'read');
+    const authInfo = await provider.verifyAccessToken(tokens.access_token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toBeUndefined();
+  });
+
+  test('legacy token relying on the v29 column default → ["world"] (fix invisible to unrestricted tokens)', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-default-agent', undefined);
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toEqual(['world']);
   });
 });
 
@@ -887,19 +894,13 @@ describe('operation scope annotations', () => {
     }
   });
 
-  test('mutating operations are write/admin/sources_admin/users_admin/agent scoped unless remote-gated', () => {
+  test('mutating operations are write/admin/sources_admin/users_admin/agent scoped', () => {
     const { operations } = require('../src/core/operations.ts');
-    const remoteReadOnlyMutatingOps = new Set(['think']);
     for (const op of operations) {
       if (op.mutating) {
-        if (remoteReadOnlyMutatingOps.has(op.name)) {
-          expect(op.scope, `${op.name} remote-gated mutating op should be read-scoped`).toBe('read');
-          continue;
-        }
         // v0.28: sources_admin permits sources_add / sources_remove (mutating
         // sources, not pages); read scope is the only thing too narrow for
-        // a mutating op unless its remote path forces persistence off before
-        // the handler writes. v0.38: 'agent' is a mutating-axis scope for
+        // any mutating op. v0.38: 'agent' is a mutating-axis scope for
         // submit_agent (creates jobs, spends money, but contained by bindings).
         expect(
           ['write', 'admin', 'sources_admin', 'users_admin', 'agent'],

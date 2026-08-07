@@ -480,12 +480,19 @@ export interface AuthInfo {
    */
   allowedSources?: string[];
   /**
-   * #2529: per-token takes-holder allow-list, sourced from
-   * `access_tokens.permissions.takes_holders` at token-verification time
-   * (legacy bearer tokens — mirrors src/mcp/http-transport.ts). OAuth
-   * clients have no takes_holders storage yet (tracked follow-up), so
-   * verifyAccessToken only populates this on the legacy branch. Consumers
-   * fall back to `['world']` when unset — public claims only.
+   * Per-token allow-list for the holder field on `takes`, populated at
+   * token-verification time from `access_tokens.permissions.takes_holders`
+   * for legacy bearer tokens (via `parseTakesHoldersAllowList` in
+   * `src/core/legacy-token-scope.ts`). The HTTP transport threads this into
+   * `OperationContext.takesHoldersAllowList` (documented below).
+   *
+   * `[]` is an explicit deny-all grant and is PRESERVED (never collapsed).
+   * `undefined` means the token row carries no array grant — OAuth clients
+   * have no per-client storage yet (see TODOS.md) — and consumers apply the
+   * fail-closed `['world']` default at the dispatch site.
+   *
+   * Rides the same `as CoreAuthInfo as SdkAuthInfo` cast as `sourceId` /
+   * `allowedSources` above.
    */
   takesHoldersAllowList?: string[];
   /**

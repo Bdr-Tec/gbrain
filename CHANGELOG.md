@@ -2,6 +2,26 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.74.0] - 2026-08-07
+
+**Two fixes for agents that reach a brain over the network: takes-holder visibility now works the way you set it, and the voice recipe is safe by default.**
+
+Legacy bearer tokens served over `gbrain serve --http` now honor the takes-holder allow-list you set with `gbrain auth permissions <token> set-takes-holders`. Before, that setting was read on one serving path but silently ignored on the other, so a remote agent saw only world-held takes no matter what you granted — a token you widened to see brain-held takes saw none of them, and a token you narrowed still saw the public ones. Both directions now behave as configured, an empty grant means "no takes" (not "the default set"), and the two serving paths decode and apply the grant through one shared piece of code so they cannot drift apart again. Tokens with no grant continue to fall back to public-only, so nothing widens on upgrade.
+
+The bundled voice-agent recipe (`recipes/agent-voice`) ships secure by default. Its reference server now refuses cross-origin browser requests unless you name the origins in `AGENT_VOICE_CORS_ORIGIN`, gates the endpoints that spend your OpenAI key or read your brain so a stray web page can't trigger them, and listens on loopback only until you set `HOST` to expose it. The voice page you run locally is unaffected. Because this recipe is copied into your own repo at install time, `gbrain integrations install agent-voice --refresh` picks up the hardened version.
+
+### To take advantage of v0.42.74.0
+
+```bash
+gbrain upgrade
+```
+
+Then, if you serve a brain to remote agents, set each token's takes-holder scope with `gbrain auth permissions <token> set-takes-holders world,brain` (or your desired holders). Voice-recipe operators run `gbrain integrations install agent-voice --refresh --target <your-host-repo>`, then set `AGENT_VOICE_CORS_ORIGIN` if a browser on another origin needs access and `HOST=0.0.0.0` only if the server must listen beyond loopback.
+
+### For contributors
+
+Both issues were reported by external security researchers who supplied fixes. Ship-stage adversarial review hardened two more spots: the two serving paths now share one permissions-decode helper (not just the allow-list parser) so a malformed double-encoded row can't make them disagree, and the hot-memory cache key encodes the allow-list collision-free so the empty-vs-absent distinction holds for every holder value. Credit @Derek95king (takes-holder threading) and @sebastiondev (voice-recipe CORS).
+
 ## [0.42.73.2] - 2026-08-05
 
 **A write that deduplication redirects onto an existing page is now checked against the write scope of whoever asked for it.** When the same content arrives under a new slug, gbrain recognises it and points the write at the page that already holds it. That redirected target is now tested against the caller's own scope — under whichever mechanism confines that caller. One of the two mechanisms was consulted at that point; both are now.
