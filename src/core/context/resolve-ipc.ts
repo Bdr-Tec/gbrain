@@ -18,10 +18,13 @@
  */
 
 import net from 'node:net';
-import { existsSync, unlinkSync, statSync, chmodSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, unlinkSync, statSync, chmodSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import type { EntityCandidate } from './entity-salience.ts';
 import type { PointerBlock } from './retrieval-reflex.ts';
+import type { VolunteeredPage } from './volunteer.ts';
 
 const SOCK_NAME = '.gbrain-resolve.sock';
 const CLIENT_TIMEOUT_MS = 250;
@@ -37,13 +40,99 @@ export interface ResolveRequest {
   sourceId?: string;
   /** v0.43 (#2095, codex D7): suppression mode — 'slug-only' under windowing. */
   suppression?: 'slug-and-title' | 'slug-only';
+  /**
+   * Volunteer-shaped request (harness hook adapters): when present, a NEW
+   * server resolves up to the hard cap internally, applies the pure
+   * confidence gate server-side, logs the GATED set at the delivery point
+   * under `channel`, and responds with `volunteered`. OLD servers ignore
+   * these fields and answer the plain reflex shape — the client re-derives
+   * pages with the same pure gate (gate-function parity is test-pinned).
+   */
+  volunteer?: { maxPages?: number; minConfidence?: number; windowSize?: number };
+  /** Event-attribution channel for the volunteer branch (e.g. 'claude-code'). */
+  channel?: string;
+  /**
+   * Hook caller's working directory. The engine-free source tiers (flag/env/
+   * dotfile) miss repos registered by path containment — a NEW server runs
+   * full resolveSourceId(engine, sourceId ?? null, cwd) so those resolve too.
+   */
+  cwd?: string;
 }
 
-export type ResolveHandler = (req: ResolveRequest) => Promise<PointerBlock | null>;
+/** Volunteer-shaped response: the reflex block plus the server-gated pages. */
+export interface ResolveVolunteerResult {
+  block: PointerBlock | null;
+  volunteered: VolunteeredPage[];
+}
+
+/**
+ * Handler result: plain reflex requests return the block (or null); the
+ * volunteer branch returns { block, volunteered } so the response can carry
+ * the gated pages AND the delivery-point logger can log exactly the gated
+ * set (never the pre-gate pool — logging an abandoned or gated-out pointer
+ * corrupts the volunteered-vs-used precision stats).
+ */
+export type ResolveHandlerResult = PointerBlock | null | ResolveVolunteerResult;
+
+export type ResolveHandler = (req: ResolveRequest) => Promise<ResolveHandlerResult>;
+
+/** What the delivery-point logger receives: volunteer result or plain block. */
+export type DeliveredResult = ResolveVolunteerResult | { block: PointerBlock; volunteered?: undefined };
+
+/** Narrow a handler/delivered result to the volunteer shape. */
+export function isVolunteerResult(r: ResolveHandlerResult | DeliveredResult): r is ResolveVolunteerResult {
+  return !!r && typeof r === 'object' && 'volunteered' in r && Array.isArray((r as ResolveVolunteerResult).volunteered);
+}
+
+/** Wire response for a resolve/volunteer request. */
+export interface ResolveResponse {
+  ok: boolean;
+  block?: PointerBlock | null;
+  volunteered?: VolunteeredPage[];
+  error?: string;
+}
 
 /** Canonical socket path for a PGLite data dir. */
 export function resolveSocketPath(dataDir: string): string {
   return join(dataDir, SOCK_NAME);
+}
+
+/**
+ * Canonical socket path for a brain identified by config, engine-uniform
+ * (harness hook adapters): PGLite brains keep the in-data-dir socket
+ * (existing contract, shared with the ambient reflex); Postgres brains get a
+ * per-connection socket under `~/.gbrain/run/` (0700 dir) keyed by a short
+ * hash of the connection URL, so a one-shot caller can reach a running
+ * serve's engine instead of paying a fresh pooler handshake per prompt.
+ * Returns null when the config identifies no brain.
+ */
+export function resolveSocketPathForConfig(cfg: { engine?: string; database_path?: string; database_url?: string } | null | undefined): string | null {
+  if (!cfg) return null;
+  if (cfg.engine === 'pglite' && cfg.database_path) return resolveSocketPath(cfg.database_path);
+  if (cfg.database_url) {
+    const h = createHash('sha256').update(cfg.database_url).digest('hex').slice(0, 12);
+    return join(homedir(), '.gbrain', 'run', `resolve-${h}.sock`);
+  }
+  return null;
+}
+
+/** Ensure the parent dir of a run-socket exists (0700). Best-effort. */
+export function ensureSocketDir(socketPath: string): void {
+  try {
+    mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
+  } catch {
+    /* best effort */
+  }
+}
+
+/** Options for resolveViaIpc / resolveViaIpcRaw. */
+export interface ResolveViaIpcOpts {
+  /**
+   * Socket budget. Default stays 250ms for the ambient reflex (inline in a
+   * turn); one-shot hook callers pass a larger slice of their own deadline
+   * so a busy-but-alive serve isn't misread as absent.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -54,19 +143,44 @@ export function resolveSocketPath(dataDir: string): string {
 export async function resolveViaIpc(
   socketPath: string,
   req: ResolveRequest,
+  opts: ResolveViaIpcOpts = {},
 ): Promise<PointerBlock | null | typeof IPC_UNAVAILABLE> {
+  const resp = await resolveViaIpcRaw(socketPath, req, opts);
+  // Preserve the original contract exactly: a non-ok response (handler threw)
+  // falls through the ladder, same as a transport failure.
+  if (resp === IPC_UNAVAILABLE || !resp.ok) return IPC_UNAVAILABLE;
+  return resp.block ?? null;
+}
+
+/**
+ * Raw-response client for volunteer-shaped requests: exposes the full wire
+ * response so a hook caller can distinguish a NEW server's `volunteered`
+ * field from an OLD server's plain `{ok, block}` (client re-gates the block)
+ * and surface typed errors (e.g. unknown_source) instead of folding them
+ * into "unavailable". A NON-ok response with an `error` is returned as-is;
+ * transport failures still collapse to IPC_UNAVAILABLE.
+ */
+export async function resolveViaIpcRaw(
+  socketPath: string,
+  req: ResolveRequest,
+  opts: ResolveViaIpcOpts = {},
+): Promise<ResolveResponse | typeof IPC_UNAVAILABLE> {
   if (!existsSync(socketPath)) return IPC_UNAVAILABLE;
+  const timeoutMs =
+    typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+      ? opts.timeoutMs
+      : CLIENT_TIMEOUT_MS;
   return new Promise((resolve) => {
     let settled = false;
     let buf = '';
-    const finish = (v: PointerBlock | null | typeof IPC_UNAVAILABLE) => {
+    const finish = (v: ResolveResponse | typeof IPC_UNAVAILABLE) => {
       if (settled) return;
       settled = true;
       try { sock.destroy(); } catch { /* noop */ }
       resolve(v);
     };
     const sock = net.createConnection(socketPath);
-    sock.setTimeout(CLIENT_TIMEOUT_MS);
+    sock.setTimeout(timeoutMs);
     sock.on('connect', () => {
       sock.write(JSON.stringify(req) + '\n');
     });
@@ -76,8 +190,8 @@ export async function resolveViaIpc(
       const nl = buf.indexOf('\n');
       if (nl < 0) return;
       try {
-        const resp = JSON.parse(buf.slice(0, nl));
-        if (resp && resp.ok) return finish(resp.block ?? null);
+        const resp = JSON.parse(buf.slice(0, nl)) as ResolveResponse;
+        if (resp && typeof resp === 'object' && typeof resp.ok === 'boolean') return finish(resp);
         return finish(IPC_UNAVAILABLE);
       } catch {
         return finish(IPC_UNAVAILABLE);
@@ -102,11 +216,13 @@ export async function startResolveIpcServer(
   handler: ResolveHandler,
   /**
    * v0.43 (#2095, red-team): fired ONLY after the response was successfully
-   * written to the client — the accept-side seam for reflex-channel feedback
-   * logging. A block the client never received (timeout, dead socket) was
-   * never injected into a prompt and must not count as "volunteered".
+   * written to the client — the accept-side seam for feedback logging. A
+   * block the client never received (timeout, dead socket) was never
+   * injected into a prompt and must not count as "volunteered". For
+   * volunteer-shaped results the logger receives the GATED result (never the
+   * pre-gate pool) plus the request, so it can attribute to req.channel.
    */
-  onDelivered?: (block: PointerBlock, req: ResolveRequest) => void,
+  onDelivered?: (result: DeliveredResult, req: ResolveRequest) => void,
 ): Promise<net.Server | null> {
   // Remove a stale socket file if present (a previous serve that didn't clean up).
   cleanupStaleSocket(socketPath);
@@ -122,12 +238,17 @@ export async function startResolveIpcServer(
         if (nl < 0) return;
         const line = buf.slice(0, nl);
         let resp: string;
-        let delivered: { block: PointerBlock; req: ResolveRequest } | null = null;
+        let delivered: { result: DeliveredResult; req: ResolveRequest } | null = null;
         try {
           const req = JSON.parse(line) as ResolveRequest;
-          const block = await handler(req);
-          resp = JSON.stringify({ ok: true, block });
-          if (block) delivered = { block, req };
+          const result = await handler(req);
+          if (isVolunteerResult(result)) {
+            resp = JSON.stringify({ ok: true, block: result.block, volunteered: result.volunteered });
+            if (result.block || result.volunteered.length) delivered = { result, req };
+          } else {
+            resp = JSON.stringify({ ok: true, block: result });
+            if (result) delivered = { result: { block: result }, req };
+          }
         } catch (e) {
           resp = JSON.stringify({ ok: false, error: (e as Error).message });
         }
@@ -136,7 +257,7 @@ export async function startResolveIpcServer(
           // Write accepted — the client (250ms budget) may still have hung
           // up, but this is the closest observable delivery point.
           if (delivered && onDelivered) {
-            try { onDelivered(delivered.block, delivered.req); } catch { /* telemetry only */ }
+            try { onDelivered(delivered.result, delivered.req); } catch { /* telemetry only */ }
           }
         } catch { /* client gone — do NOT log undelivered pointers */ }
         conn.end();

@@ -23,7 +23,12 @@ import { registerBackgroundWorkDrainer } from '../background-work.ts';
 
 export const VOLUNTEER_EVENTS_TTL_DAYS = 90;
 
-export type VolunteerChannel = 'op' | 'reflex' | 'watch';
+export type VolunteerChannel = 'op' | 'reflex' | 'watch' | 'claude-code' | 'codex';
+
+/** Runtime guard for wire-supplied channels (untrusted hook stdin → IPC). */
+export function isVolunteerChannel(v: unknown): v is VolunteerChannel {
+  return v === 'op' || v === 'reflex' || v === 'watch' || v === 'claude-code' || v === 'codex';
+}
 
 /**
  * Map volunteered pages to event rows for one channel — the ONE place the

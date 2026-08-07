@@ -9,11 +9,22 @@ import { dispatchToolCall, validateParams, buildOperationContext } from './dispa
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import {
-  resolveSocketPath,
+  resolveSocketPathForConfig,
+  ensureSocketDir,
   startResolveIpcServer,
   cleanupStaleSocket,
+  isVolunteerResult,
+  type ResolveRequest,
+  type ResolveHandlerResult,
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
+import {
+  gateVolunteeredPointers,
+  candidatesByNorm,
+  VOLUNTEER_MAX_PAGES_CAP,
+} from '../core/context/volunteer.ts';
+import { isVolunteerChannel, logVolunteerEventsFireAndForget, volunteerEventRowsFrom } from '../core/context/volunteer-events.ts';
+import type { WindowEntityCandidate } from '../core/context/entity-salience.ts';
 
 export async function startMcpServer(engine: BrainEngine) {
   const server = new Server(
@@ -76,35 +87,87 @@ export async function startMcpServer(engine: BrainEngine) {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Retrieval Reflex (#1981, D9=C): on a PGLite brain, serve owns the single
-  // connection, so the context engine resolves salient entities THROUGH us over
-  // a local unix socket rather than opening a second (impossible) connection.
+  // Retrieval Reflex (#1981, D9=C) + harness hook adapters: on a PGLite brain,
+  // serve owns the single connection, so the context engine (and one-shot hook
+  // callers) resolve salient entities THROUGH us over a local unix socket
+  // rather than opening a second (impossible) connection. Postgres serves
+  // listen too (socket under ~/.gbrain/run/) so a per-prompt hook rides the
+  // already-open pool instead of paying a fresh pooler handshake every prompt.
   // Best-effort; failure to bind never blocks the MCP server.
   let resolveServer: import('node:net').Server | null = null;
   let resolveSocket: string | null = null;
   try {
     const cfg = loadConfig();
-    if (cfg?.engine === 'pglite' && cfg.database_path) {
-      resolveSocket = resolveSocketPath(cfg.database_path);
+    resolveSocket = resolveSocketPathForConfig(cfg);
+    if (resolveSocket) {
+      ensureSocketDir(resolveSocket);
       const defaultSource = process.env.GBRAIN_SOURCE || 'default';
+      const handler = async (req: ResolveRequest): Promise<ResolveHandlerResult> => {
+        if (req.volunteer) {
+          // Volunteer-shaped request (hook adapters). Untrusted local caller:
+          // validate the requested source instead of trusting it blindly —
+          // an unknown id must be a TYPED error the client can print, or the
+          // adapter's most likely misconfiguration is undiagnosable silence.
+          const { resolveSourceId } = await import('../core/source-resolver.ts');
+          let sourceId: string;
+          try {
+            // Full 6-tier resolution using the hook's cwd: the engine-free
+            // tiers (flag/env/dotfile) miss repos registered by path
+            // containment; we hold the engine, so resolve properly here.
+            sourceId = await resolveSourceId(engine, req.sourceId ?? null, req.cwd || process.cwd());
+          } catch (e) {
+            throw new Error(`unknown_source: ${(e as Error).message}`);
+          }
+          const candidates = (req.candidates ?? []) as WindowEntityCandidate[];
+          // Resolve up to the hard cap so the gate sees the full pool (a
+          // gated-out alias hit must not shadow a passing title hit) —
+          // deliberately ignoring req.maxPointers, which exists only to bound
+          // OLD servers' pre-gate responses.
+          const block = await resolveEntitiesToPointers(engine, sourceId, candidates, {
+            priorContextText: req.priorContextText,
+            maxPointers: VOLUNTEER_MAX_PAGES_CAP * 2,
+            suppression: req.suppression ?? 'slug-only',
+          });
+          const volunteered = block
+            ? gateVolunteeredPointers(block, candidatesByNorm(candidates), {
+                maxPages: req.volunteer.maxPages,
+                minConfidence: req.volunteer.minConfidence,
+                windowSize: req.volunteer.windowSize ?? 1,
+              })
+            : [];
+          return { block, volunteered };
+        }
+        return resolveEntitiesToPointers(
+          engine,
+          req.sourceId || defaultSource,
+          req.candidates ?? [],
+          {
+            priorContextText: req.priorContextText,
+            maxPointers: req.maxPointers,
+            suppression: req.suppression,
+          },
+        );
+      };
       resolveServer = await startResolveIpcServer(
         resolveSocket,
-        (req) =>
-          resolveEntitiesToPointers(
-            engine,
-            req.sourceId || defaultSource,
-            req.candidates ?? [],
-            {
-              priorContextText: req.priorContextText,
-              maxPointers: req.maxPointers,
-              suppression: req.suppression,
-            },
-          ),
-        // The IPC resolve path IS the ambient reflex channel. Logging happens
-        // at DELIVERY (post-write), not inside the resolver — a block the
-        // client's 250ms budget abandoned was never injected, and counting it
-        // would corrupt the volunteered-vs-used precision stats (red-team).
-        (block) => logDeliveredReflexPointers(engine, block.pointers),
+        handler,
+        // Logging happens at DELIVERY (post-write), not inside the resolver —
+        // a block the client's budget abandoned was never injected, and
+        // counting it would corrupt the volunteered-vs-used precision stats
+        // (red-team). Volunteer results log the GATED set under the request's
+        // channel; plain reflex results keep the ambient 'reflex' channel.
+        (result, req) => {
+          if (isVolunteerResult(result)) {
+            if (!result.volunteered.length) return;
+            const channel = isVolunteerChannel(req.channel) ? req.channel : 'reflex';
+            logVolunteerEventsFireAndForget(
+              engine,
+              volunteerEventRowsFrom(result.volunteered, { channel }),
+            );
+          } else if (result.block) {
+            logDeliveredReflexPointers(engine, result.block.pointers);
+          }
+        },
       );
     }
   } catch {

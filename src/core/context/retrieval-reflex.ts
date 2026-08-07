@@ -349,7 +349,11 @@ export function renderPointerBlock(pointers: ReflexPointer[]): string {
  * precision toward zero (corrupting the exact stats users tune
  * min_confidence with).
  */
-export function logDeliveredReflexPointers(engine: BrainEngine, pointers: ReflexPointer[]): void {
+export function logDeliveredReflexPointers(
+  engine: BrainEngine,
+  pointers: ReflexPointer[],
+  channel: import('./volunteer-events.ts').VolunteerChannel = 'reflex',
+): void {
   if (!pointers.length) return;
   void import('./volunteer-events.ts')
     .then(({ logVolunteerEventsFireAndForget, volunteerEventRowsFrom }) => {
@@ -357,7 +361,7 @@ export function logDeliveredReflexPointers(engine: BrainEngine, pointers: Reflex
         engine,
         volunteerEventRowsFrom(
           pointers.map((p) => ({ ...p, rationale: `${p.arm} match "${p.display}"` })),
-          { channel: 'reflex' },
+          { channel },
         ),
       );
     })
