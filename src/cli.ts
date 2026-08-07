@@ -55,7 +55,7 @@ export function bigintToStringReplacer(_key: string, value: unknown): unknown {
 }
 
 // CLI-only commands that bypass the operation layer
-export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector', 'pages', 'bench', 'backfill']);
+export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'volunteer-hook', 'reindex-search-vector', 'pages', 'bench', 'backfill']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -88,6 +88,9 @@ const CLI_ONLY_SELF_HELP = new Set([
   'maintain',
   // v0.43 (#2095): watch ships WATCH_HELP (flags + the stdin-turn protocol).
   'watch',
+  // volunteer-hook ships its own HELP (harness contract + install pointers);
+  // without this the generic short-circuit (the #2035 class) eats --help.
+  'volunteer-hook',
   // v0.37 fix wave (Lane D.4 + CDX2-12): sync's --no-embed flag was
   // unreachable via help because the dispatcher's generic CLI-only
   // short-circuit fired before runSync could print its own usage block.
@@ -147,6 +150,12 @@ for (const op of operations) {
 // GBRAIN_SKIP_STARTUP_HOOKS for any children they spawn.
 const STARTUP_HOOK_SKIP_COMMANDS = new Set([
   'upgrade', 'post-upgrade', 'check-update', 'self-upgrade',
+  // volunteer-hook runs once per user PROMPT (harness hook): a stale update
+  // cache would spawn a detached network-touching check-update child per
+  // prompt and emit UPGRADE_AVAILABLE stderr per turn. NOTE: this path
+  // no-ops under NODE_ENV=test, so membership is pinned by a source grep
+  // (test/volunteer-hook.test.ts), not a runtime test.
+  'volunteer-hook',
 ]);
 
 /**
@@ -1816,6 +1825,17 @@ async function handleCliOnly(command: string, args: string[]) {
     }
   }
 
+  // volunteer-hook dispatches BEFORE connectEngine() (doctor precedent):
+  // rung 1 is the serve resolve-IPC socket (no engine needed), and an eager
+  // connect here would contend with a running serve for the PGLite lock on
+  // every user prompt — the exact failure the IPC-first ladder exists to
+  // avoid. The command manages its own (Postgres-only) fallback connect.
+  if (command === 'volunteer-hook') {
+    const { runVolunteerHookCli } = await import('./commands/volunteer-hook.ts');
+    await runVolunteerHookCli(args);
+    return;
+  }
+
   // Thin-client `jobs` dispatch: `list` and `get` route over MCP (v0.32
   // routing branches in commands/jobs.ts) and never touch a local engine —
   // but falling through to connectEngine() below fabricates an empty
@@ -2738,6 +2758,8 @@ ADMIN
         [--install] [--json]         Print the paste-ready command, or --install to run it
   watch [--json]                     Push-based context: pipe conversation turns in,
                                      volunteered brain pages stream out (#2095)
+  volunteer-hook --harness <h>       One-shot harness hook entry (Claude Code / Codex
+                                     UserPromptSubmit): payload in, envelope out, exit 0
   call <tool> '<json>'               Raw tool invocation
   version                            Version info
   --tools-json                       Tool discovery (JSON)
