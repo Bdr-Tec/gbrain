@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   resolveSocketPath,
+  resolveSocketPathForConfig,
   startResolveIpcServer,
   resolveViaIpc,
   resolveViaIpcRaw,
