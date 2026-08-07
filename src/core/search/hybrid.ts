@@ -15,6 +15,7 @@ import type { SearchResult, SearchOpts, HybridSearchMeta } from '../types.ts';
 import { embed, embedQuery } from '../embedding.ts';
 import { registerBackgroundWorkDrainer } from '../background-work.ts';
 import { resolveEmbeddingColumn, isCacheSafe } from './embedding-column.ts';
+import { resolveHardExcludes } from './source-boost.ts';
 import {
   resolveAdaptiveReturn,
   applyAdaptiveReturn,
@@ -33,6 +34,7 @@ import { normalizeAlias } from './alias-normalize.ts';
 import { stampEvidence } from './evidence.ts';
 import { expandAnchors, hydrateChunks } from './two-pass.ts';
 import { enforceTokenBudget } from './token-budget.ts';
+import { warnOncePerProcess } from '../utils.ts';
 import { recordSearchTelemetry } from './telemetry.ts';
 import {
   weightsForIntent,
@@ -46,6 +48,32 @@ import {
 
 export const RRF_K = 60;
 const COMPILED_TRUTH_BOOST = 2.0;
+
+/**
+ * Which detail levels get the compiled_truth boost (#3430).
+ *
+ * ONLY `low`. The documented contract (`src/core/operations.ts`) is
+ * "low (compiled truth only), medium (default, all with dedup), high (all
+ * chunks)" — so `low` is the level that privileges compiled truth, and both
+ * `medium` and `high` are supposed to see everything on equal footing.
+ *
+ * This was previously spelled `detail !== 'high'`, i.e. written as though
+ * `high` were the special case. Because COMPILED_TRUTH_BOOST is applied AFTER
+ * RRF normalization, and RRF's whole range over a 100-deep pool is 1/60 → 1/160,
+ * a 2.0x multiplier is not a tilt — break-even is `2/(60+r) >= 1/60`, so any
+ * boosted chunk inside the first 60 ranks outranks an unboosted rank-1 chunk.
+ * At the default detail that made search categorically compiled-truth-only:
+ * a page whose answer lived in a `fenced_code` chunk returned the prose chunk,
+ * and the code chunk fell out of the window entirely.
+ *
+ * Extracted as a named predicate rather than left inline at three call sites so
+ * the detail→boost mapping is directly testable. An inline expression can only
+ * be covered through a full `hybridSearch` round trip, which is why the
+ * original inversion went unnoticed.
+ */
+export function shouldBoostCompiledTruth(detail: string | null | undefined): boolean {
+  return detail === 'low';
+}
 const pendingCacheWrites = new Set<Promise<unknown>>();
 
 /**
@@ -71,6 +99,37 @@ export async function stampContentFlags(engine: BrainEngine, results: SearchResu
     }
   } catch {
     // best-effort: a flag-fetch failure must not break retrieval.
+  }
+}
+
+/**
+ * Extraction quarantine lane (issue #160). Stamps `SearchResult.unverified`
+ * for any result whose page is an unverified auto-extracted entity stub
+ * (frontmatter `provenance: 'auto-extracted'` + `status: 'unverified'`).
+ * MUST run PRE-fusion: rrfFusion/rrfFusionWeighted read the flag to skip the
+ * COMPILED_TRUTH_BOOST for these pages, so a stub fabricated by hostile
+ * ingested text ranks as ordinary content, never with entity authority.
+ * One batched query over the candidate arms' page_ids. Fail-open on the
+ * fetch (a marker-fetch failure must not break retrieval) — the boost then
+ * applies, but the SQL-side source-boost guard still holds.
+ */
+export async function stampUnverifiedExtractions(
+  engine: BrainEngine,
+  results: SearchResult[],
+): Promise<void> {
+  if (results.length === 0) return;
+  try {
+    const ids = [...new Set(
+      results.map((r) => r.page_id).filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
+    )];
+    if (ids.length === 0) return;
+    const unverified = await engine.getUnverifiedExtractionPageIds(ids);
+    if (unverified.size === 0) return;
+    for (const r of results) {
+      if (unverified.has(r.page_id)) r.unverified = true;
+    }
+  } catch {
+    // best-effort: never break retrieval.
   }
 }
 
@@ -485,12 +544,18 @@ export async function runPostFusionStages(
   if (opts.recency !== 'off') {
     try {
       const dates = await engine.getEffectiveDates(refs);
-      const { DEFAULT_RECENCY_DECAY, DEFAULT_FALLBACK } = await import('./recency-decay.ts');
+      // Resolve the effective decay map (defaults + gbrain.yml `recency:` +
+      // GBRAIN_RECENCY_DECAY env) instead of the baked-in defaults. The
+      // get_recent_salience SQL path already goes through resolveRecencyDecayMap()
+      // (see sql-ranking.ts); using DEFAULT_RECENCY_DECAY directly here meant the
+      // hot hybridSearch path silently ignored operator overrides, leaving
+      // non-default vault layouts on DEFAULT_FALLBACK regardless of tuning.
+      const { resolveRecencyDecayMap, DEFAULT_FALLBACK } = await import('./recency-decay.ts');
       applyRecencyBoost(
         results,
         dates,
         opts.recency,
-        opts.decayMap ?? DEFAULT_RECENCY_DECAY,
+        opts.decayMap ?? resolveRecencyDecayMap(),
         opts.fallback ?? DEFAULT_FALLBACK,
         Date.now(),
         floorThreshold,
@@ -739,6 +804,21 @@ export interface HybridSearchOpts extends SearchOpts {
    * a fresh per-call deadline. Not part of the public contract.
    */
   _queryEmbedDeadline?: QueryEmbedDeadline;
+
+  /**
+   * INTERNAL — cache-consult outcome threaded from `hybridSearchCached` into
+   * the inner `hybridSearch` so the ONE telemetry record per search (emitted
+   * by the inner function) carries the cache classification: 'miss' when the
+   * semantic cache was consulted and had no row, 'disabled' when the consult
+   * was skipped (cache off, walk/near-symbol/non-default-column/adaptive
+   * skip, or the lookup embed failed). Folded into the RECORDED meta only —
+   * `onMeta` payloads are unchanged. Direct `hybridSearch` callers leave it
+   * undefined and keep recording with no cache field (they never consulted
+   * the cache). The cache-HIT record is emitted by `hybridSearchCached`
+   * itself, since the inner function never runs on a hit. Not part of the
+   * public contract.
+   */
+  _telemetryCacheStatus?: 'miss' | 'disabled';
 }
 
 /**
@@ -787,11 +867,12 @@ export async function embedQueryBounded(
   embedOpts: { embeddingModel?: string; dimensions?: number } | undefined,
   dl: QueryEmbedDeadline,
 ): Promise<Float32Array> {
-  const p = embedQuery(text, { ...(embedOpts ?? {}), abortSignal: dl.signal });
-  p.catch(() => { /* swallow the loser's late rejection */ });
   // Floor the budget so a healthy embed isn't starved when the shared absolute
   // deadline was mostly consumed by prior work (codex). Still bounded overall.
   const remaining = Math.max(MIN_QUERY_EMBED_BUDGET_MS, dl.deadlineAt - Date.now());
+  const signal = AbortSignal.timeout(remaining);
+  const p = embedQuery(text, { ...(embedOpts ?? {}), abortSignal: signal });
+  p.catch(() => { /* swallow the loser's late rejection */ });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(
@@ -804,6 +885,41 @@ export async function embedQueryBounded(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * #3442 — resolve the public `since`/`until` contract (SearchOpts v0.29.1):
+ * ISO-8601 passes through, relative durations ('7d', '2w', '1y') resolve to a
+ * concrete timestamp, and a plain YYYY-MM-DD `until` lands at end-of-day.
+ * The relative form was documented since v0.29.1 but never implemented — the
+ * raw string ('60d') flowed into the engines' `::timestamptz` casts, every
+ * arm failed fail-open, and the date filter was SILENTLY ignored.
+ * Unparseable input now throws loudly instead of degrading.
+ */
+export function resolveDateBoundary(
+  raw: string | undefined,
+  boundary: 'since' | 'until',
+): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const s = String(raw).trim();
+  if (!s) return undefined;
+  const rel = /^(\d+)\s*([dwmy])$/i.exec(s);
+  if (rel) {
+    const n = parseInt(rel[1], 10);
+    const unit = rel[2].toLowerCase();
+    // m = months (30d). Minutes make no sense for an effective_date filter.
+    const days = unit === 'd' ? n : unit === 'w' ? n * 7 : unit === 'm' ? n * 30 : n * 365;
+    return new Date(Date.now() - days * 86400000).toISOString();
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    // Plain date: `until` lands at end-of-day (documented SearchOpts
+    // semantics); `since` keeps UTC start-of-day.
+    return boundary === 'until' ? `${s}T23:59:59.999Z` : s;
+  }
+  if (Number.isFinite(Date.parse(s))) return s;
+  throw new Error(
+    `Invalid ${boundary} value "${s}" — expected ISO-8601 (YYYY-MM-DD or timestamp) or a relative duration like '7d', '2w', '1y'.`,
+  );
 }
 
 export async function hybridSearch(
@@ -900,8 +1016,10 @@ export async function hybridSearch(
     // v0.29.1: since/until take precedence over deprecated afterDate/beforeDate.
     // The engine still consumes the legacy field names; this aliasing keeps
     // PR #618 callers compiling while the new names are the public surface.
-    afterDate: opts?.since ?? opts?.afterDate,
-    beforeDate: opts?.until ?? opts?.beforeDate,
+    // #3442: resolveDateBoundary implements the documented contract (relative
+    // durations + end-of-day for plain-date `until`) at this single seam.
+    afterDate: resolveDateBoundary(opts?.since ?? opts?.afterDate, 'since'),
+    beforeDate: resolveDateBoundary(opts?.until ?? opts?.beforeDate, 'until'),
     // v0.34.1 (#861, D9 — P0 leak seal): thread source-scoping through so the
     // inner engine.searchKeyword / engine.searchVector calls apply the
     // WHERE source_id filter at SQL level. Pre-fix, this explicit pick
@@ -916,6 +1034,11 @@ export async function hybridSearch(
     // it never has to read config. Engines normalize string-or-descriptor
     // via normalizeEngineColumn; the descriptor path is the strict one.
     embeddingColumn: resolvedCol,
+    // D2 fix (fix/title-retrieval-arm, Reviewer F1): the hybrid keyword arm
+    // is a recall arm — opt in to the engine's AND→OR zero-recall fallback.
+    // Direct searchKeyword consumers (countMentions, link-extraction, eval)
+    // do NOT set this and keep the strict-AND contract.
+    orFallback: true,
   };
   // Track what actually ran for the optional onMeta callback (v0.25.0).
   // Caller leaves onMeta undefined → these flags are computed but never
@@ -942,7 +1065,15 @@ export async function hybridSearch(
       // swallow — capture telemetry is best-effort
     }
     try {
-      recordSearchTelemetry(engine, meta, { results_count: lastResultsCount, rank1_score: lastRank1Score });
+      // #2952 — fold the cache-consult outcome (threaded by hybridSearchCached)
+      // into the RECORDED meta only. None of the inner return paths set a
+      // `cache` field themselves, so this is the sole source of the miss /
+      // disabled classification; `onMeta` consumers above still receive the
+      // meta unchanged (the cached wrapper emits its own merged meta to them).
+      const recordedMeta = opts?._telemetryCacheStatus
+        ? { ...meta, cache: { status: opts._telemetryCacheStatus } }
+        : meta;
+      recordSearchTelemetry(engine, recordedMeta, { results_count: lastResultsCount, rank1_score: lastRank1Score });
     } catch {
       // swallow — telemetry must never break the search hot path.
     }
@@ -966,8 +1097,31 @@ export async function hybridSearch(
   const earlyModality = (opts?.crossModal && opts.crossModal !== 'auto')
     ? opts.crossModal
     : (suggestions.suggestedModality ?? 'text');
-  const keywordResults: SearchResult[] =
-    earlyModality === 'image' ? [] : await engine.searchKeyword(query, searchOpts);
+  // D1 fix (fix/title-retrieval-arm): page-grain title candidate arm,
+  // fetched CONCURRENTLY with the keyword arm (Reviewer F7 — independent
+  // engine queries). The chunk FTS vector never includes the page title, so
+  // an exact-title query can be unretrievable by keyword — this arm queries
+  // pages.search_vector (title weight 'A') directly. Runs regardless of
+  // query token count: the alias hop (≤6-token guard) and the title-phrase
+  // boost are re-rank-only, so LONG exact-title queries — where strict-AND
+  // chunk FTS is weakest — need a candidate GENERATOR. Fail-open WITH
+  // SIGNAL (Reviewer F2): a SQL error (e.g. a pre-search_vector brain)
+  // degrades to no title candidates, but warns once per process so a
+  // broken engine arm cannot ship dark.
+  const [keywordResults, titleResults]: [SearchResult[], SearchResult[]] =
+    earlyModality === 'image'
+      ? [[], []]
+      : await Promise.all([
+          engine.searchKeyword(query, searchOpts),
+          engine.searchTitles(query, searchOpts).catch((err: unknown) => {
+            warnOncePerProcess(
+              'search-titles-arm-failed',
+              `[gbrain] searchTitles arm failed (fail-open, title candidates skipped): ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            );
+            return [] as SearchResult[];
+          }),
+        ]);
 
   // v0.29.1: resolve salience/recency from caller (back-compat aliases for
   // PR #618's `recencyBoost` numeric scale) or fall back to the heuristic.
@@ -1042,17 +1196,44 @@ export async function hybridSearch(
   // provider (Voyage, ZE) works fine.
   const { isAvailable } = await import('../ai/gateway.ts');
   const providerProbe = resolvedCol.embeddingModel || undefined;
-  if (!isAvailable('embedding', providerProbe)) {
+  // Image/both/unified routing embeds via the MULTIMODAL provider, not the
+  // text provider — so a multimodal-only install (text provider absent) must
+  // still reach the multimodal branch below. Probe the multimodal provider
+  // explicitly and only short-circuit when neither the text provider nor (for
+  // multimodal-routed queries) the multimodal provider is reachable. Without
+  // this guard a multimodal-only install would fall to keyword-only here and
+  // never run the image/unified vector path.
+  const multimodalProviderProbe =
+    cfgForColumn?.embedding_multimodal_model ?? 'voyage:voyage-multimodal-3';
+  // The LLM intent tie-break (below) can escalate a regex-'text' query to
+  // 'image'/'both'; account for that possibility so an ambiguous query on a
+  // multimodal-only install still reaches the multimodal branch.
+  const mayEscalateToMultimodal =
+    earlyModality === 'text' &&
+    resolvedMode.cross_modal_llm_intent &&
+    isAmbiguousModalityQuery(query);
+  const willTryMultimodal =
+    (resolvedMode.unified_multimodal === true ||
+      earlyModality === 'image' ||
+      earlyModality === 'both' ||
+      mayEscalateToMultimodal) &&
+    isAvailable('embedding', multimodalProviderProbe);
+  if (!isAvailable('embedding', providerProbe) && !willTryMultimodal) {
     // v0.43 — fuse the relational arm with keyword so typed-edge answers
     // survive on the no-embedding-provider path (the relational win is most
-    // valuable exactly when vector is unavailable).
+    // valuable exactly when vector is unavailable). The title arm fuses here
+    // too — an exact-title lookup on a keyless install is precisely where
+    // chunk-grain keyword FTS alone fails (D1).
+    // issue #160: stamp unverified stubs BEFORE fusion so the compiled-truth
+    // boost skips them (flag survives fusion's result spread).
+    await stampUnverifiedExtractions(engine, [...keywordResults, ...titleResults, ...relationalList]);
     let noEmbedResults = keywordResults;
-    if (relationalList.length > 0) {
+    if (relationalList.length > 0 || titleResults.length > 0) {
       const fk = opts?.rrfK ?? RRF_K;
-      noEmbedResults = rrfFusionWeighted(
-        [{ list: keywordResults, k: fk }, { list: relationalList, k: fk }],
-        detailResolved !== 'high',
-      );
+      const noEmbedLists = [{ list: keywordResults, k: fk }];
+      if (titleResults.length > 0) noEmbedLists.push({ list: titleResults, k: fk });
+      if (relationalList.length > 0) noEmbedLists.push({ list: relationalList, k: fk });
+      noEmbedResults = rrfFusionWeighted(noEmbedLists, shouldBoostCompiledTruth(detailResolved));
     }
     if (noEmbedResults.length > 0) {
       await runPostFusionStages(engine, noEmbedResults, postFusionOpts);
@@ -1172,7 +1353,10 @@ export async function hybridSearch(
   if (unifiedRouting) {
     try {
       const { isAvailable: aiIsAvailable, embedQueryMultimodal } = await import('../ai/gateway.ts');
-      if (!aiIsAvailable('embedding')) {
+      // Probe the MULTIMODAL provider, not the global default — on a
+      // multimodal-only install the global default (text) is absent but the
+      // multimodal provider is configured, and unified routing embeds via it.
+      if (!aiIsAvailable('embedding', multimodalProviderProbe)) {
         throw new Error('gateway not configured for embedding — unified multimodal would also fail');
       }
       const unifiedEmbedding = await embedQueryMultimodal(query);
@@ -1207,7 +1391,10 @@ export async function hybridSearch(
     // OR the embed throws, log a structured warning and fall through to text.
     try {
       const { isAvailable: aiIsAvailable, embedQueryMultimodal } = await import('../ai/gateway.ts');
-      if (!aiIsAvailable('embedding')) {
+      // Probe the MULTIMODAL provider, not the global default — the image side
+      // embeds via the multimodal model, which may be configured even when the
+      // text/global-default embedding provider is absent (multimodal-only).
+      if (!aiIsAvailable('embedding', multimodalProviderProbe)) {
         throw new Error('gateway not configured for embedding — multimodal would also fail');
       }
       const imageEmbedding = await embedQueryMultimodal(query);
@@ -1279,14 +1466,18 @@ export async function hybridSearch(
     // post-fusion stages here too — without it, salience='on' silently
     // does nothing on embed failures.
     // v0.43: fuse the relational arm with keyword via RRF so typed-edge
-    // answers survive even when vector is unavailable.
+    // answers survive even when vector is unavailable. The title arm fuses
+    // here too (same rationale as the no-embedding-provider path — D1).
+    // issue #160: stamp unverified stubs BEFORE fusion (see the
+    // no-embedding-provider path for rationale).
+    await stampUnverifiedExtractions(engine, [...keywordResults, ...titleResults, ...relationalList]);
     let fallbackResults = keywordResults;
-    if (relationalList.length > 0) {
+    if (relationalList.length > 0 || titleResults.length > 0) {
       const fk = opts?.rrfK ?? RRF_K;
-      fallbackResults = rrfFusionWeighted(
-        [{ list: keywordResults, k: fk }, { list: relationalList, k: fk }],
-        detail !== 'high',
-      );
+      const fallbackLists = [{ list: keywordResults, k: fk }];
+      if (titleResults.length > 0) fallbackLists.push({ list: titleResults, k: fk });
+      if (relationalList.length > 0) fallbackLists.push({ list: relationalList, k: fk });
+      fallbackResults = rrfFusionWeighted(fallbackLists, shouldBoostCompiledTruth(detail));
     }
     if (fallbackResults.length > 0) {
       await runPostFusionStages(engine, fallbackResults, postFusionOpts);
@@ -1351,6 +1542,15 @@ export async function hybridSearch(
       { list: keywordResults, k: keywordK },
     ];
 
+  // D1 fix (fix/title-retrieval-arm) — title candidate arm as a third
+  // weighted list. Fuses at the keyword arm's intent-effective k (same
+  // lexical-evidence class, no new tunable). Mirrors the keyword list's
+  // inclusion rules: fetch was gated on earlyModality, so no extra modality
+  // check here. Empty for non-matching queries → pure no-op.
+  if (titleResults.length > 0) {
+    allLists.push({ list: titleResults, k: keywordK });
+  }
+
   // v0.43 — relational recall arm (fourth RRF arm), built above so it also
   // contributes on the keyword-only fallback path. Neutral weight (baseRrfK):
   // competes evenly with keyword/vector, not dominating. Empty for
@@ -1360,7 +1560,11 @@ export async function hybridSearch(
     allLists.push({ list: relationalList, k: baseRrfK });
   }
 
-  let fused = rrfFusionWeighted(allLists, detail !== 'high');
+  // issue #160: stamp unverified auto-extracted stubs across ALL candidate
+  // arms BEFORE fusion so the compiled-truth authority boost skips them.
+  await stampUnverifiedExtractions(engine, allLists.flatMap((l) => l.list));
+
+  let fused = rrfFusionWeighted(allLists, shouldBoostCompiledTruth(detail));
 
   // Cosine re-scoring before dedup so semantically better chunks survive.
   // v0.36 (D9): hydrate from the active embedding column so rescore happens
@@ -1631,6 +1835,12 @@ export async function hybridSearchCached(
   const cacheKnobsHash = knobsHash(resolvedForCache, {
     embeddingColumn: resolvedColCached.name,
     embeddingModel: resolvedColCached.embeddingModel,
+    // #2825 — fold the resolved hard-exclude prefix list (defaults ∪
+    // GBRAIN_SEARCH_EXCLUDE ∪ per-call exclude_slug_prefixes, minus
+    // include_slug_prefixes — exactly what the engines' query-build path
+    // resolves) into the cache key so a row written under one exclude
+    // policy can't be served to a lookup under another.
+    hardExcludes: resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes),
   });
 
   // Cache decision: opts.useCache (explicit) wins over global config; global
@@ -1657,12 +1867,19 @@ export async function hybridSearchCached(
     opts?.adaptiveReturn,
     cfgCached as unknown as Record<string, unknown> | null,
   );
+  // #3442: date-filtered requests skip the cache — since/until are not part
+  // of knobsHash, so a filtered result set could be served to an unfiltered
+  // lookup (and vice versa). Relative forms ('60d') also resolve to a
+  // now-relative timestamp, which a persisted cache row can't express.
+  const dateFiltered =
+    Boolean(opts?.since ?? opts?.afterDate) || Boolean(opts?.until ?? opts?.beforeDate);
   const skipCache =
     !cache.isEnabled() ||
     (opts?.walkDepth ?? 0) > 0 ||
     Boolean(opts?.nearSymbol) ||
     isNonDefaultColumn ||
-    adaptiveReturnOn;
+    adaptiveReturnOn ||
+    dateFiltered;
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';
   let cacheSimilarity: number | undefined;
@@ -1737,8 +1954,17 @@ export async function hybridSearchCached(
         ...(hit.meta?.embedding_column ? { embedding_column: hit.meta.embedding_column } : {}),
         ...(hit.meta?.adaptive_return ? { adaptive_return: hit.meta.adaptive_return } : {}),
         ...(hit.meta?.autocut ? { autocut: hit.meta.autocut } : {}),
+        // Per-call budget: prefer the STORED budget record, which carries
+        // the true dropped count from the write-time cut — the
+        // re-application above ran on an already-cut set and reads
+        // dropped=0 (same masking as the miss path's finalMeta). Safe
+        // unconditionally: tokenBudget is folded into knobsHash (`tb=`),
+        // so a hit only ever serves a lookup with the identical resolved
+        // budget as the write — the outer pass can never cut further.
+        // budgetMeta stays as the fallback for legacy rows stored without
+        // a budget record.
         ...(opts?.tokenBudget && opts.tokenBudget > 0
-          ? { token_budget: budgetMeta }
+          ? { token_budget: hit.meta?.token_budget ?? budgetMeta }
           : {}),
       };
       try {
@@ -1746,6 +1972,21 @@ export async function hybridSearchCached(
       } catch {
         // swallow — telemetry is best-effort
       }
+      // #2952 — a cache hit never reaches the inner hybridSearch (the only
+      // other telemetry site), so record the search HERE or it vanishes from
+      // stats entirely (count, results, tokens, rank-1 — not just the hit
+      // counter). Same rank-1 rule as the inner return paths. Tokens are
+      // gated on the MODE-resolved budget, mirroring the inner paths' `if
+      // (resolvedMode.tokenBudget > 0)` meta condition — otherwise a
+      // tokenmax (budget-off) brain would record real tokens on hits but 0
+      // on misses, skewing avg-tokens upward as the hit rate rises (codex).
+      recordSearchTelemetry(engine, cachedMeta, {
+        results_count: budgeted.length,
+        ...(resolvedForCache.tokenBudget && resolvedForCache.tokenBudget > 0
+          ? { tokens_estimate: budgetMeta.used }
+          : {}),
+        rank1_score: budgeted[0] ? (budgeted[0].base_score ?? budgeted[0].score) : undefined,
+      });
       return budgeted;
     }
   }
@@ -1761,6 +2002,10 @@ export async function hybridSearchCached(
     // v0.42.20.0 (Fix 3) — share the query-embed deadline so the inner embed
     // doesn't start a fresh 6s budget after the cache-lookup already spent it.
     _queryEmbedDeadline: queryEmbedDl,
+    // #2952 — classify this search's telemetry record (emitted by the inner
+    // function) with the cache-consult outcome. 'hit' already returned above,
+    // so only miss/disabled reach this call.
+    _telemetryCacheStatus: cacheStatus === 'disabled' ? 'disabled' : 'miss',
     onMeta: (m) => {
       innerMetaBox.current = m;
       // Do NOT call userOnMeta here — we'll emit a merged meta below
@@ -1787,8 +2032,15 @@ export async function hybridSearchCached(
     ...(innerMeta?.embedding_column ? { embedding_column: innerMeta.embedding_column } : {}),
     ...(innerMeta?.adaptive_return ? { adaptive_return: innerMeta.adaptive_return } : {}),
     ...(innerMeta?.autocut ? { autocut: innerMeta.autocut } : {}),
+    // Per-call budget: prefer the INNER meta's budget record. The inner
+    // hybridSearch already enforced the same resolved budget (per-call wins
+    // in resolveSearchMode), so the re-application above sees an
+    // already-cut set and its meta reads dropped=0 — masking the real cut
+    // from onMeta consumers (the `dropped` under-report the restored
+    // search-lite test caught). The outer pass stays as the enforcement
+    // for the cache-HIT path, where no inner run exists.
     ...(opts?.tokenBudget && opts.tokenBudget > 0
-      ? { token_budget: budgetMeta }
+      ? { token_budget: innerMeta?.token_budget ?? budgetMeta }
       : {}),
   };
   try {
@@ -1885,7 +2137,9 @@ export function rrfFusionWeighted(
   if (maxScore > 0) {
     for (const e of entries) {
       e.score = e.score / maxScore;
-      const boost = applyBoost && e.result.chunk_source === 'compiled_truth' ? COMPILED_TRUTH_BOOST : 1.0;
+      // issue #160: unverified auto-extracted stubs (stamped pre-fusion by
+      // stampUnverifiedExtractions) never get the compiled-truth authority boost.
+      const boost = applyBoost && e.result.chunk_source === 'compiled_truth' && e.result.unverified !== true ? COMPILED_TRUTH_BOOST : 1.0;
       e.score *= boost;
     }
   }
@@ -1928,8 +2182,9 @@ export function rrfFusion(lists: SearchResult[][], k: number, applyBoost = true)
       const rawScore = e.score;
       e.score = e.score / maxScore;
 
-      // Apply compiled truth boost after normalization (skip for detail=high)
-      const boost = applyBoost && e.result.chunk_source === 'compiled_truth' ? COMPILED_TRUTH_BOOST : 1.0;
+      // Apply compiled truth boost after normalization (skip for detail=high;
+      // skip for unverified auto-extracted stubs — issue #160)
+      const boost = applyBoost && e.result.chunk_source === 'compiled_truth' && e.result.unverified !== true ? COMPILED_TRUTH_BOOST : 1.0;
       e.score *= boost;
 
       if (DEBUG) {

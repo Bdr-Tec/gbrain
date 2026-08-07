@@ -46,7 +46,14 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
     }
     console.log('GBrain config:');
     for (const [k, v] of Object.entries(config)) {
-      const display = typeof v === 'string' ? redactConfigValue(k, v) : v;
+      // #575: objects interpolated into the template literal printed
+      // `[object Object]` — render them as JSON instead. Sensitive keys
+      // stay redacted whether the value is a string or an object.
+      const display = typeof v === 'string'
+        ? redactConfigValue(k, v)
+        : v !== null && typeof v === 'object'
+          ? (isSensitiveConfigKey(k) ? '***' : JSON.stringify(v))
+          : v;
       console.log(`  ${k}: ${display}`);
     }
     return;
@@ -98,9 +105,25 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
   const value = args[2];
 
   if (action === 'get' && key) {
-    const val = await engine.getConfig(key);
-    if (val !== null) {
-      console.log(val);
+    // #2120: `get` used to read only the DB plane, so a runtime-effective key
+    // in ~/.gbrain/config.json (or env) reported not-found. Resolve the way
+    // the runtime does — env/file plane wins over DB (loadConfig() already
+    // overlays env onto the file) — and report which plane answered on
+    // stderr, keeping stdout a bare value for scripts.
+    const filePlane = loadConfig() as Record<string, unknown> | null;
+    const fileVal = filePlane?.[key];
+    const dbVal = await engine.getConfig(key);
+    const val = fileVal !== undefined && fileVal !== null ? fileVal : dbVal;
+    if (val !== null && val !== undefined) {
+      console.log(typeof val === 'string' ? val : JSON.stringify(val));
+      if (fileVal !== undefined && fileVal !== null) {
+        const shadow = dbVal !== null && dbVal !== undefined
+          ? ' — a DB-plane value also exists and is shadowed at runtime'
+          : '';
+        console.error(`[config] source: file/env plane (~/.gbrain/config.json or env)${shadow}`);
+      } else {
+        console.error(`[config] source: db plane`);
+      }
     } else {
       console.error(`Config key not found: ${key}`);
       process.exit(1);
