@@ -16,7 +16,7 @@ The bundled voice-agent recipe (`recipes/agent-voice`) ships secure by default. 
 gbrain upgrade
 ```
 
-Then, if you serve a brain to remote agents, confirm each token's takes-holder scope with `gbrain auth permissions <token>` and set it with `gbrain auth permissions <token> set-takes-holders world,brain` (or your desired holders). Voice-recipe operators run `gbrain integrations install agent-voice --refresh`, then set `AGENT_VOICE_CORS_ORIGIN` if a browser on another origin needs access and `HOST=0.0.0.0` only if the server must listen beyond loopback.
+Then, if you serve a brain to remote agents, set each token's takes-holder scope with `gbrain auth permissions <token> set-takes-holders world,brain` (or your desired holders). Voice-recipe operators run `gbrain integrations install agent-voice --refresh --target <your-host-repo>`, then set `AGENT_VOICE_CORS_ORIGIN` if a browser on another origin needs access and `HOST=0.0.0.0` only if the server must listen beyond loopback.
 
 ### For contributors
 

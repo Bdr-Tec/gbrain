@@ -1,6 +1,6 @@
 # TODOS
 
-## serve --http takes-holders + agent-voice hardening follow-ups (filed v0.42.56.0)
+## serve --http takes-holders + agent-voice hardening follow-ups (filed v0.42.74.0)
 
 Deferred from the #2529/#2477 security-fix wave (plan-eng-review + codex outside
 voice CLEARED). None block the wave.
