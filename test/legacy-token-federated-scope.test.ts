@@ -11,7 +11,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { parseLegacyTokenScope } from '../src/mcp/http-transport.ts';
-import { parseTakesHoldersAllowList } from '../src/core/legacy-token-scope.ts';
+import { parseTakesHoldersAllowList, coerceLegacyPermissions } from '../src/core/legacy-token-scope.ts';
 
 describe('parseLegacyTokenScope', () => {
   test('array grant → allowedSources (federated read) with first as scalar floor', () => {
@@ -70,5 +70,37 @@ describe('parseTakesHoldersAllowList', () => {
     expect(parseTakesHoldersAllowList(null)).toBeUndefined();
     expect(parseTakesHoldersAllowList(undefined)).toBeUndefined();
     expect(parseTakesHoldersAllowList({ takes_holders: ['world'] })).toBeUndefined();
+  });
+});
+
+// #2529 (ship adversarial review): both transports decode a legacy token's
+// permissions column through this shared coercer so a double-encoded jsonb
+// string scalar (#2339 class) is interpreted identically — the OAuth provider
+// can't honor a grant the legacy HTTP transport silently fails open on.
+describe('coerceLegacyPermissions', () => {
+  test('plain object passes through', () => {
+    expect(coerceLegacyPermissions({ takes_holders: ['world', 'brain'] })).toEqual({ takes_holders: ['world', 'brain'] });
+  });
+
+  test('JSON string (double-encoded jsonb scalar) is decoded to its object', () => {
+    const decoded = coerceLegacyPermissions(JSON.stringify({ takes_holders: [], source_id: 'x' }));
+    expect(decoded).toEqual({ takes_holders: [], source_id: 'x' });
+    // Downstream parse then honors the [] deny-all grant — not fail-open world.
+    expect(parseTakesHoldersAllowList(decoded?.takes_holders)).toEqual([]);
+  });
+
+  test('malformed JSON string → undefined (no grant)', () => {
+    expect(coerceLegacyPermissions('{not valid json')).toBeUndefined();
+  });
+
+  test('JSON string that decodes to a non-object (array/scalar) → undefined', () => {
+    expect(coerceLegacyPermissions('"world"')).toBeUndefined();
+    expect(coerceLegacyPermissions('[1,2]')).toBeUndefined();
+  });
+
+  test('null / undefined / scalar → undefined', () => {
+    expect(coerceLegacyPermissions(null)).toBeUndefined();
+    expect(coerceLegacyPermissions(undefined)).toBeUndefined();
+    expect(coerceLegacyPermissions(42)).toBeUndefined();
   });
 });

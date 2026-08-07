@@ -132,10 +132,15 @@ export function __resetHotMemoryCacheForTests(): void {
  * allow-list. Keeping `[]` (explicit deny-all grant) distinct from undefined
  * (no grant) is insurance so a future allowlist-dependent payload is born
  * safe, not a claim that `[]` suppresses hot memory today.
+ *
+ * Encoding is collision-free: undefined maps to a token no JSON array can
+ * produce, and every concrete list serializes via JSON.stringify. A bare
+ * `sorted.join('|')` would have collided `['a|b']` with `['a','b']`, and bare
+ * sentinels would have collided `['(empty)']` with `[]` — so a holder value
+ * that happened to equal a sentinel could not share a cache bucket it
+ * shouldn't.
  */
 function hashAllowList(list: string[] | undefined): string {
-  if (!list) return '_';
-  if (list.length === 0) return '(empty)';
-  const sorted = [...list].sort();
-  return sorted.join('|');
+  if (!list) return 'none';
+  return JSON.stringify([...list].sort());
 }

@@ -39,3 +39,25 @@ export function parseTakesHoldersAllowList(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   return (raw as unknown[]).filter((h): h is string => typeof h === 'string');
 }
+
+/**
+ * Coerce a legacy token's raw `access_tokens.permissions` column value to a
+ * plain object for grant extraction. A well-formed jsonb column reads back as
+ * an object on both drivers, but a double-encoded jsonb string scalar (the
+ * #2339 class) reads back as a JSON string — decode it here so BOTH the OAuth
+ * provider and the legacy HTTP transport interpret the row identically instead
+ * of one honoring the grant while the other silently fails open. Malformed
+ * strings and non-object/non-string values → undefined (no grant).
+ */
+export function coerceLegacyPermissions(raw: unknown): Record<string, unknown> | undefined {
+  const asObject = (v: unknown): Record<string, unknown> | undefined =>
+    v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+  if (typeof raw === 'string') {
+    try {
+      return asObject(JSON.parse(raw));
+    } catch {
+      return undefined;
+    }
+  }
+  return asObject(raw);
+}
