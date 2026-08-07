@@ -97,7 +97,11 @@ Promote or reject them via `gbrain extraction-pending` / `gbrain
 extraction-review`.
 
 The `search` MCP/CLI op is **cheap-hybrid** (vector + keyword + RRF + pool +
-title + alias, expansion off); `query` is the full-control variant. NamedThingBench
+title + alias, expansion off); `query` is the full-control variant. Route
+concept / landscape / "all-of-X" questions to `query` — expansion recovers
+synonym-phrased matches `search` can miss, and a populated `search` result set
+is not proof of coverage (both are top-K; exhaustive enumeration belongs to
+`list_pages`). NamedThingBench
 (`gbrain eval retrieval-quality`) gates these families on every PR. Diagnose a
 specific miss with `gbrain search diagnose "<q>" --target <slug>`.
 

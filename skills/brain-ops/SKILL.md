@@ -67,8 +67,8 @@ broken brain. See `skills/conventions/quality.md` for format.
 
 Before using ANY external API to research a person, company, or topic:
 
-1. `gbrain search "name"` — keyword search for existing pages
-2. `gbrain query "natural question about name"` — hybrid search for context
+1. `gbrain search "name"` — exact-token lookup for existing pages (cheap hybrid, no expansion)
+2. `gbrain query "natural question about name"` — concept/landscape questions go here FIRST (expansion recovers synonym phrasings; a nonzero `search` count is not proof of completeness)
 3. `gbrain get <slug>` — if you know the slug, read the full page
 4. Check backlinks: who references this entity?
 5. Check timeline: recent events involving this entity

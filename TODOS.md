@@ -1,5 +1,22 @@
 # TODOS
 
+## #2416 follow-ups (query-steering wave)
+
+- [ ] **P2 — MCP-envelope `hint` field for concept-shaped `search` calls.**
+  **What:** surface the concept→query nudge to remote/MCP agent callers, not
+  just the CLI. **Why:** MCP agents are the primary misrouting class the
+  #2416 issue describes; the shipped CLI stderr nudge covers the caller class
+  *least* at risk. **Context:** the `search` op returns a bare
+  `SearchResult[]` (`src/core/operations.ts` — both return sites), so a hint
+  needs an envelope change that ripples into `formatResult`, MCP
+  serialization, and array-shape tests — deliberately kept out of the atomic
+  #2416 commit. The pure classifier already exists
+  (`looksConceptShaped`/`conceptNudge` in `src/core/search/query-intent.ts`);
+  only the transport is missing. Consider a sibling metadata channel (like
+  `_meta.metric_glossary`) rather than changing the array shape.
+  **Depends on:** agreeing an envelope pattern that doesn't break existing
+  MCP consumers.
+
 ## MEMORY_VERBS v1 follow-ups (filed v0.43.0.0 — Cathedral 1)
 
 Deferred from the Cathedral 1 ship (CEO review, EXPANSION mode). Both are
