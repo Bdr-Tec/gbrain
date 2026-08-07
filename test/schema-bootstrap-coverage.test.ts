@@ -168,6 +168,9 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // SCHEMA_SQL replay creates the index. Powers `gbrain extract --stale` + the
   // `links_extraction_lag` doctor check.
   { kind: 'column', table: 'pages', column: 'links_extracted_at' },
+  // v121 — referenced by the timeline event lookup and dedup indexes before
+  // the numbered migration can add the column on an existing brain.
+  { kind: 'column', table: 'timeline_entries', column: 'event_page_id' },
 ];
 
 test('applyForwardReferenceBootstrap covers every forward reference declared in REQUIRED_BOOTSTRAP_COVERAGE', async () => {
@@ -253,6 +256,11 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
       ALTER TABLE pages DROP COLUMN IF EXISTS generation;
       ALTER TABLE pages DROP COLUMN IF EXISTS contextual_retrieval_mode;
       ALTER TABLE pages DROP COLUMN IF EXISTS corpus_generation;
+
+      DROP INDEX IF EXISTS idx_timeline_event_dedup;
+      DROP INDEX IF EXISTS idx_timeline_event_page;
+      ALTER TABLE timeline_entries DROP CONSTRAINT IF EXISTS timeline_entries_event_page_id_fkey;
+      ALTER TABLE timeline_entries DROP COLUMN IF EXISTS event_page_id;
     `);
 
     // Note: we don't strip sources.archived* here because they're inline in the
@@ -260,6 +268,14 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
     // earlier `DROP TABLE IF EXISTS sources CASCADE` already nuked them.
     // The bootstrap's needsPagesBootstrap branch recreates sources without the
     // archive columns; the new needsSourcesArchive probe adds them.
+
+    const { rows: preBootstrapTimelineEventPageId } = await db.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'timeline_entries'
+        AND column_name = 'event_page_id'
+    `);
+    expect(preBootstrapTimelineEventPageId).toHaveLength(0);
 
     // Run bootstrap in isolation (NOT initSchema). This is what we're testing.
     await (engine as any).applyForwardReferenceBootstrap();
@@ -325,6 +341,11 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       ALTER TABLE pages DROP COLUMN IF EXISTS import_filename;
       ALTER TABLE pages DROP COLUMN IF EXISTS salience_touched_at;
       ALTER TABLE pages DROP COLUMN IF EXISTS emotional_weight;
+
+      DROP INDEX IF EXISTS idx_timeline_event_dedup;
+      DROP INDEX IF EXISTS idx_timeline_event_page;
+      ALTER TABLE timeline_entries DROP CONSTRAINT IF EXISTS timeline_entries_event_page_id_fkey;
+      ALTER TABLE timeline_entries DROP COLUMN IF EXISTS event_page_id;
     `);
 
     // Bootstrap, then schema replay. Either step crashing fails the test.
@@ -730,6 +751,17 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   // brains is invisible to them). Migration is column-only, no FK,
   // no index — bootstrap probe would be pure overhead.
   'facts.event_type',
+  // v0.42.56.0 (migration v122, #2390) — Life Chronicle ontology columns.
+  // Same precedent as facts.claim_metric et al: the `facts` table itself is
+  // migration-created (absent from PGLITE_SCHEMA_SQL), so no schema-blob
+  // forward reference can exist; the partial indexes (idx_facts_dimension,
+  // idx_facts_ontology_dedup) live INSIDE the same v122 migration. Every
+  // reader filters `dimension IS NOT NULL`, so NULL on old brains is
+  // invisible. Column-only, no bootstrap probe needed.
+  'facts.dimension',
+  'facts.value',
+  'facts.value_hash',
+  'facts.dim_status',
   // v0.39.1.0 (migration v88) — schema-pack provenance per-source captured as
   // inline canonical closure snapshot on every eval_candidates row. NULL by
   // default; no index in PGLITE_SCHEMA_SQL references it. Migration handles

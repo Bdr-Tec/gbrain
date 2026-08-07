@@ -803,3 +803,180 @@ describe('embedAllStale --source threading (D7)', () => {
     expect((firstCallOpts as { sourceId?: string }).sourceId).toBe('media-corpus');
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// Code metadata preservation across re-embed (regression for #769)
+// ────────────────────────────────────────────────────────────────
+//
+// gbrain v0.30.1 and earlier silently clobbered code-chunk metadata
+// (language, symbol_name, symbol_type, start_line, end_line,
+// parent_symbol_path, doc_comment, symbol_name_qualified) on every
+// re-embed pass. The chunker populated those columns at import time,
+// but embed.ts loaded chunks via getChunks then mapped them to a
+// stripped ChunkInput carrying only 5 fields. upsertChunks then
+// OVERWROTE (not COALESCEd) the metadata columns from EXCLUDED, so
+// re-embed wiped them to NULL. End result on a real brain: 4875 code
+// pages, 47866 chunks, all with NULL language/symbol_name/symbol_type;
+// code-def returned 0 hits across every indexed repo.
+//
+// All three runEmbed paths (--stale autopilot, --all, --slugs) must
+// thread metadata through the re-upsert. Tests below assert that the
+// engine.upsertChunks call carries the same metadata it loaded.
+
+describe('runEmbed preserves code-chunk metadata across re-embed (regression for #769)', () => {
+  const fullCodeChunk = {
+    chunk_index: 0,
+    chunk_text: '[Java] foo/Bar.java:10-20 method baz',
+    chunk_source: 'compiled_truth' as const,
+    embedded_at: null,
+    token_count: 12,
+    language: 'java',
+    symbol_name: 'baz',
+    symbol_type: 'function',
+    start_line: 10,
+    end_line: 20,
+    parent_symbol_path: ['Bar'],
+    doc_comment: 'does the thing',
+    symbol_name_qualified: 'Bar.baz',
+  };
+
+  function metadataOf(chunk: any) {
+    return {
+      language: chunk.language,
+      symbol_name: chunk.symbol_name,
+      symbol_type: chunk.symbol_type,
+      start_line: chunk.start_line,
+      end_line: chunk.end_line,
+      parent_symbol_path: chunk.parent_symbol_path,
+      doc_comment: chunk.doc_comment,
+      symbol_name_qualified: chunk.symbol_name_qualified,
+    };
+  }
+
+  test('--stale (autopilot path) carries code metadata into upsertChunks', async () => {
+    const stale = [{
+      slug: 'code-page',
+      chunk_index: 0,
+      chunk_text: fullCodeChunk.chunk_text,
+      chunk_source: 'compiled_truth',
+      model: null,
+      token_count: 12,
+    }];
+    let upsertChunkArgs: any[] | null = null;
+    const engine = mockEngine({
+      countStaleChunks: async () => 1,
+      listStaleChunks: async () => stale,
+      getChunks: async () => [fullCodeChunk],
+      upsertChunks: async (_slug: string, chunks: any[]) => { upsertChunkArgs = chunks; },
+    });
+
+    await runEmbed(engine, ['--stale']);
+
+    expect(upsertChunkArgs).not.toBeNull();
+    expect(upsertChunkArgs!).toHaveLength(1);
+    expect(metadataOf(upsertChunkArgs![0])).toEqual(metadataOf(fullCodeChunk));
+  });
+
+  test('--all (full re-embed) carries code metadata into upsertChunks', async () => {
+    let upsertChunkArgs: any[] | null = null;
+    const engine = mockEngine({
+      listPages: async () => [{ slug: 'code-page' }],
+      getChunks: async () => [fullCodeChunk],
+      upsertChunks: async (_slug: string, chunks: any[]) => { upsertChunkArgs = chunks; },
+    });
+
+    await runEmbed(engine, ['--all']);
+
+    expect(upsertChunkArgs).not.toBeNull();
+    expect(upsertChunkArgs!).toHaveLength(1);
+    expect(metadataOf(upsertChunkArgs![0])).toEqual(metadataOf(fullCodeChunk));
+  });
+
+  test('--slugs (per-page embed) carries code metadata into upsertChunks', async () => {
+    let upsertChunkArgs: any[] | null = null;
+    const engine = mockEngine({
+      getPage: async () => ({ slug: 'code-page', compiled_truth: 'x', timeline: '' }),
+      getChunks: async () => [fullCodeChunk],
+      upsertChunks: async (_slug: string, chunks: any[]) => { upsertChunkArgs = chunks; },
+    });
+
+    await runEmbed(engine, ['--slugs', 'code-page']);
+
+    expect(upsertChunkArgs).not.toBeNull();
+    expect(upsertChunkArgs!).toHaveLength(1);
+    expect(metadataOf(upsertChunkArgs![0])).toEqual(metadataOf(fullCodeChunk));
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// #3507 — `embed --stale` must reproduce the page's STORED
+// contextual-retrieval wrapping convention instead of embedding raw
+// chunk_text (which silently stripped contextual prefixes on every
+// re-embed, including the normal post-model-migration path).
+// ────────────────────────────────────────────────────────────────
+
+describe('embed --stale contextual-retrieval wrapping (#3507)', () => {
+  const wrapChunks = [
+    { chunk_index: 0, chunk_text: 'prose chunk', chunk_source: 'compiled_truth', embedded_at: null, token_count: 1 },
+    { chunk_index: 1, chunk_text: 'const x = 1;', chunk_source: 'fenced_code', embedded_at: null, token_count: 1 },
+  ];
+  const wrapStale = [
+    { slug: 'wrapped', chunk_index: 0, chunk_text: 'prose chunk', chunk_source: 'compiled_truth' as const, model: null, token_count: 1, source_id: 'default', page_id: 1 },
+    { slug: 'wrapped', chunk_index: 1, chunk_text: 'const x = 1;', chunk_source: 'fenced_code' as any, model: null, token_count: 1, source_id: 'default', page_id: 1 },
+  ];
+
+  function wrappingHarness(mode: string | null) {
+    const seen: string[] = [];
+    const restamps: any[][] = [];
+    embedBatchBehavior = async (texts: string[]) => {
+      seen.push(...texts);
+      return texts.map(() => new Float32Array(1536));
+    };
+    const engine = mockEngine({
+      countStaleChunks: async () => 2,
+      listStaleChunks: async () => wrapStale,
+      getPage: async () => ({
+        slug: 'wrapped',
+        title: 'Widget Notes',
+        source_id: 'default',
+        compiled_truth: 'x',
+        timeline: '',
+        contextual_retrieval_mode: mode,
+      }),
+      getChunks: async () => wrapChunks,
+      upsertChunks: async () => {},
+      updatePageContextualRetrievalState: async (...args: any[]) => { restamps.push(args); },
+    });
+    return { engine, seen, restamps };
+  }
+
+  test('title-mode page: stale re-embed wraps prose with the title prefix; fenced_code stays raw', async () => {
+    const { engine, seen, restamps } = wrappingHarness('title');
+    const result = await runEmbedCore(engine, { stale: true });
+    expect(result.embedded).toBe(2);
+    expect(seen).toContain('<context>Widget Notes\n</context>\nprose chunk');
+    expect(seen).toContain('const x = 1;');
+    expect(restamps).toHaveLength(0); // title tier: stamp already honest
+  });
+
+  test('per_chunk_synopsis page: fully re-embedded page restamps to the title tier', async () => {
+    const { engine, seen, restamps } = wrappingHarness('per_chunk_synopsis');
+    const result = await runEmbedCore(engine, { stale: true });
+    expect(result.embedded).toBe(2);
+    expect(seen).toContain('<context>Widget Notes\n</context>\nprose chunk');
+    expect(restamps).toHaveLength(1);
+    const [slug, sourceId, newMode] = restamps[0];
+    expect(slug).toBe('wrapped');
+    expect(sourceId).toBe('default');
+    expect(newMode).toBe('title');
+  });
+
+  test('page with no stored CR mode embeds raw chunk_text (convention preserved)', async () => {
+    const { engine, seen, restamps } = wrappingHarness(null);
+    const result = await runEmbedCore(engine, { stale: true });
+    expect(result.embedded).toBe(2);
+    expect(seen).toContain('prose chunk');
+    expect(seen.some((t) => t.startsWith('<context>'))).toBe(false);
+    expect(restamps).toHaveLength(0);
+  });
+});
