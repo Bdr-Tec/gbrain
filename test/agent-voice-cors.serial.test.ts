@@ -35,6 +35,8 @@ interface VoiceServer {
   port: number;
   base: string;
   proc: Subprocess<'ignore', 'pipe', 'pipe'>;
+  /** Accumulated stdout — carries the startup bind + CORS posture log lines. */
+  stdout: () => string;
 }
 
 async function spawnVoice(extraEnv: Record<string, string> = {}): Promise<VoiceServer> {
@@ -59,12 +61,22 @@ async function spawnVoice(extraEnv: Record<string, string> = {}): Promise<VoiceS
     stderr: 'pipe',
   });
 
+  // Drain stdout in the background so the startup log lines are assertable.
+  let out = '';
+  (async () => {
+    try {
+      for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
+        out += new TextDecoder().decode(chunk);
+      }
+    } catch { /* stream closed on shutdown */ }
+  })();
+
   const base = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) });
-      if (res.ok) return { port, base, proc };
+      if (res.ok) return { port, base, proc, stdout: () => out };
     } catch { /* not up yet */ }
     await new Promise(r => setTimeout(r, 250));
   }
@@ -207,6 +219,46 @@ describe('agent-voice CORS default-deny + origin gate (#2477)', () => {
         body: 'v=0',
       });
       expect(evilPost.status).toBe(403);
+    } finally {
+      await stopVoice(server);
+    }
+  }, 90_000);
+
+  // The loopback-default bind is the security-relevant half of #2477. A raw
+  // socket probe of a non-loopback interface is flaky in CI (no LAN IP,
+  // firewalls), so pin the HOST knob via the startup log the listen callback
+  // emits: default → 127.0.0.1, HOST override → honored.
+  async function readStartupLog(server: VoiceServer): Promise<string> {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      if (server.stdout().includes('listening on')) break;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    return server.stdout();
+  }
+
+  test('HOST default binds loopback (127.0.0.1)', async () => {
+    const server = await spawnVoice(); // HOST scrubbed from env → default
+    try {
+      const log = await readStartupLog(server);
+      expect(log).toContain(`listening on http://127.0.0.1:${server.port}`);
+      expect(log).toContain('bind: 127.0.0.1');
+      // The default log carries a "set HOST=0.0.0.0 to expose" hint, so the
+      // bind proof is the loopback URL above, not mere absence of "0.0.0.0".
+      expect(log).not.toContain('http://0.0.0.0');
+    } finally {
+      await stopVoice(server);
+    }
+  }, 90_000);
+
+  test('HOST override is honored (0.0.0.0 for containers/LAN)', async () => {
+    const server = await spawnVoice({ HOST: '0.0.0.0' });
+    try {
+      const log = await readStartupLog(server);
+      expect(log).toContain(`listening on http://0.0.0.0:${server.port}`);
+      // Still reachable via loopback when bound to all interfaces.
+      const health = await fetch(`${server.base}/health`);
+      expect(health.status).toBe(200);
     } finally {
       await stopVoice(server);
     }

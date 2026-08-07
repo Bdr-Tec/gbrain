@@ -43,6 +43,7 @@ describeE2E('serve --http honors permissions.takes_holders for legacy bearer tok
   let fullToken: string;
   let worldToken: string;
   let denyAllToken: string;
+  let noGrantToken: string;
 
   async function insertLegacyToken(name: string, takesHolders: string[]): Promise<string> {
     const token = generateToken('gbrain_');
@@ -51,6 +52,20 @@ describeE2E('serve --http honors permissions.takes_holders for legacy bearer tok
       `INSERT INTO access_tokens (id, name, token_hash, permissions)
        VALUES (gen_random_uuid(), $1, $2, $3::text::jsonb)`,
       [name, hashToken(token), JSON.stringify({ takes_holders: takesHolders })],
+    );
+    return token;
+  }
+
+  // A token whose permissions carry NO takes_holders key — the shape an
+  // OAuth-client token or a pre-`set-takes-holders` legacy token has. The
+  // dispatch site must coalesce the undefined grant to the fail-closed
+  // ['world'] default over the wire (serve-http.ts `?? ['world']`).
+  async function insertNoGrantToken(name: string): Promise<string> {
+    const token = generateToken('gbrain_');
+    await getConn().unsafe(
+      `INSERT INTO access_tokens (id, name, token_hash, permissions)
+       VALUES (gen_random_uuid(), $1, $2, '{}'::jsonb)`,
+      [name, hashToken(token)],
     );
     return token;
   }
@@ -76,6 +91,7 @@ describeE2E('serve --http honors permissions.takes_holders for legacy bearer tok
     fullToken = await insertLegacyToken('takes-e2e-full', ['world', 'brain']);
     worldToken = await insertLegacyToken('takes-e2e-world', ['world']);
     denyAllToken = await insertLegacyToken('takes-e2e-denyall', []);
+    noGrantToken = await insertNoGrantToken('takes-e2e-nogrant');
 
     // Start the HTTP server (same pattern as serve-http-oauth.test.ts).
     const { spawn } = await import('child_process');
@@ -135,6 +151,14 @@ describeE2E('serve --http honors permissions.takes_holders for legacy bearer tok
     return res.text();
   }
 
+  // The MCP transport can answer as JSON or SSE (text/event-stream). Assert
+  // the body carries a successful tool result, not a JSON-RPC error envelope,
+  // so a negative-only content check can't pass vacuously on a broken pipeline.
+  function expectToolResultOk(body: string): void {
+    expect(body).toContain('"result"');
+    expect(body).not.toContain('"error"');
+  }
+
   test("['world','brain'] grant sees the brain-held take (the #2529 repro)", async () => {
     const body = await takesListBody(fullToken);
     expect(body).toContain(BRAIN_CLAIM);
@@ -149,7 +173,17 @@ describeE2E('serve --http honors permissions.takes_holders for legacy bearer tok
 
   test('[] grant is explicit deny-all — sees neither take (not silently world)', async () => {
     const body = await takesListBody(denyAllToken);
+    expectToolResultOk(body); // a successful empty result, not an error envelope
     expect(body).not.toContain(BRAIN_CLAIM);
     expect(body).not.toContain(WORLD_CLAIM);
+  }, 15_000);
+
+  test('no takes_holders grant → fail-closed to world-only over the wire (?? default)', async () => {
+    // Pins serve-http.ts `authInfo.takesHoldersAllowList ?? ['world']`: an
+    // undefined grant (OAuth clients, pre-set-takes-holders legacy tokens)
+    // must see world-held takes and NOT brain-held ones through /mcp dispatch.
+    const body = await takesListBody(noGrantToken);
+    expect(body).toContain(WORLD_CLAIM);
+    expect(body).not.toContain(BRAIN_CLAIM);
   }, 15_000);
 });
