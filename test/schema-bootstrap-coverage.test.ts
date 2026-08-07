@@ -168,15 +168,11 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // SCHEMA_SQL replay creates the index. Powers `gbrain extract --stale` + the
   // `links_extraction_lag` doctor check.
   { kind: 'column', table: 'pages', column: 'links_extracted_at' },
-  // v0.42.x (v121) — forward-referenced by `CREATE INDEX idx_timeline_event_page
-  // ON timeline_entries(event_page_id)` and the partial UNIQUE
-  // `idx_timeline_event_dedup ON timeline_entries(event_page_id, date)`.
-  // Pre-v121 brains have timeline_entries without this column; bootstrap adds it
-  // before SCHEMA_SQL replay creates the indexes. Powers the event→timeline
-  // projection (a type:event page projects one dated row keyed to event_page_id).
+  // v121 — referenced by the timeline event lookup and dedup indexes before
+  // the numbered migration can add the column on an existing brain.
   { kind: 'column', table: 'timeline_entries', column: 'event_page_id' },
-  // v7-era — surfaced by the v0.42.58 scanner fix (#2626 class sweep):
-  // both columns are migration-added (v7) AND referenced by blob indexes
+  // v7-era — surfaced by the #2626-class scanner sweep: both columns are
+  // migration-added (v7) AND referenced by blob indexes
   // (`idx_minion_jobs_timeout` partial on timeout_at, the partial UNIQUE
   // `uniq_minion_jobs_idempotency` on idempotency_key). A pre-v7 minion_jobs
   // wedges the blob replay exactly like the v121 incident.
@@ -268,11 +264,8 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
       ALTER TABLE pages DROP COLUMN IF EXISTS contextual_retrieval_mode;
       ALTER TABLE pages DROP COLUMN IF EXISTS corpus_generation;
 
-      -- v121 event_page_id strip: drop the indexes + FK first, then the column,
-      -- so the brain looks like it pre-dates the timeline projection pointer and
-      -- applyForwardReferenceBootstrap has to re-add it.
-      DROP INDEX IF EXISTS idx_timeline_event_page;
       DROP INDEX IF EXISTS idx_timeline_event_dedup;
+      DROP INDEX IF EXISTS idx_timeline_event_page;
       ALTER TABLE timeline_entries DROP CONSTRAINT IF EXISTS timeline_entries_event_page_id_fkey;
       ALTER TABLE timeline_entries DROP COLUMN IF EXISTS event_page_id;
 
@@ -289,6 +282,14 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
     // earlier `DROP TABLE IF EXISTS sources CASCADE` already nuked them.
     // The bootstrap's needsPagesBootstrap branch recreates sources without the
     // archive columns; the new needsSourcesArchive probe adds them.
+
+    const { rows: preBootstrapTimelineEventPageId } = await db.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'timeline_entries'
+        AND column_name = 'event_page_id'
+    `);
+    expect(preBootstrapTimelineEventPageId).toHaveLength(0);
 
     // Run bootstrap in isolation (NOT initSchema). This is what we're testing.
     await (engine as any).applyForwardReferenceBootstrap();
@@ -355,10 +356,8 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       ALTER TABLE pages DROP COLUMN IF EXISTS salience_touched_at;
       ALTER TABLE pages DROP COLUMN IF EXISTS emotional_weight;
 
-      -- v121: strip event_page_id + its indexes/FK so the SCHEMA_SQL replay
-      -- below would crash on idx_timeline_event_page without the bootstrap.
-      DROP INDEX IF EXISTS idx_timeline_event_page;
       DROP INDEX IF EXISTS idx_timeline_event_dedup;
+      DROP INDEX IF EXISTS idx_timeline_event_page;
       ALTER TABLE timeline_entries DROP CONSTRAINT IF EXISTS timeline_entries_event_page_id_fkey;
       ALTER TABLE timeline_entries DROP COLUMN IF EXISTS event_page_id;
 

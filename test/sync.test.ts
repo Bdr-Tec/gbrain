@@ -95,9 +95,10 @@ describe('isSyncable', () => {
     expect(isSyncable('people/README.md')).toBe(false);
   });
 
-  test('rejects ops/ directory', () => {
-    expect(isSyncable('ops/deploy-log.md')).toBe(false);
-    expect(isSyncable('ops/config.md')).toBe(false);
+  test('accepts ops/ — ordinary content directory, not pruned (#2404)', () => {
+    expect(isSyncable('ops/deploy-log.md')).toBe(true);
+    expect(isSyncable('ops/config.md')).toBe(true);
+    expect(isSyncable('ops/tasks.md')).toBe(true);
   });
 
   // ────────────────────────────────────────────────────────────────
@@ -128,8 +129,15 @@ describe('pruneDir', () => {
     expect(pruneDir('.vscode')).toBe(false);
   });
 
-  test('blocks ops (gbrain operational dir)', () => {
-    expect(pruneDir('ops')).toBe(false);
+  test('allows ops — ordinary content dir, not a vendor tree (#2404)', () => {
+    expect(pruneDir('ops')).toBe(true);
+  });
+
+  test('blocks vendored / generated trees', () => {
+    expect(pruneDir('vendor')).toBe(false);
+    expect(pruneDir('dist')).toBe(false);
+    expect(pruneDir('build')).toBe(false);
+    expect(pruneDir('venv')).toBe(false);
   });
 
   test('blocks *.raw sidecar dirs (gbrain convention)', () => {
@@ -414,6 +422,104 @@ describe('performSync dry-run never writes', () => {
     expect(bookmarkAfterDry).toBe(bookmarkAfterReal);
   });
 
+  test('strategy-changing dry-run preserves previously indexed out-of-strategy pages', async () => {
+    const { performSync } = await import('../src/commands/sync.ts');
+    await performSync(engine, {
+      repoPath,
+      noPull: true,
+      noEmbed: true,
+    });
+    const pageBefore = await engine.getPage('people/alice');
+    const bookmarkBefore = await engine.getConfig('sync.last_commit');
+    expect(pageBefore).not.toBeNull();
+    expect(bookmarkBefore).not.toBeNull();
+
+    writeFileSync(join(repoPath, 'people/alice.md'), [
+      '---',
+      'type: person',
+      'title: Alice',
+      '---',
+      '',
+      'Alice changed after the initial sync.',
+    ].join('\n'));
+    execSync('git add -A && git commit -m "update alice"', { cwd: repoPath, stdio: 'pipe' });
+
+    const result = await performSync(engine, {
+      repoPath,
+      strategy: 'code',
+      dryRun: true,
+      noPull: true,
+      noEmbed: true,
+    });
+
+    expect(result.status).toBe('dry_run');
+    const pageAfter = await engine.getPage('people/alice');
+    expect(pageAfter).not.toBeNull();
+    expect(pageAfter!.compiled_truth).toBe(pageBefore!.compiled_truth);
+    expect(await engine.getConfig('sync.last_commit')).toBe(bookmarkBefore);
+  });
+
+  test('strategy-changing real sync deletes previously indexed out-of-strategy pages', async () => {
+    const { performSync } = await import('../src/commands/sync.ts');
+    await performSync(engine, {
+      repoPath,
+      noPull: true,
+      noEmbed: true,
+    });
+    expect(await engine.getPage('people/alice')).not.toBeNull();
+
+    writeFileSync(join(repoPath, 'people/alice.md'), [
+      '---',
+      'type: person',
+      'title: Alice',
+      '---',
+      '',
+      'Alice changed after the initial sync.',
+    ].join('\n'));
+    execSync('git add -A && git commit -m "update alice"', { cwd: repoPath, stdio: 'pipe' });
+
+    await performSync(engine, {
+      repoPath,
+      strategy: 'code',
+      noPull: true,
+      noEmbed: true,
+    });
+
+    expect(await engine.getPage('people/alice')).toBeNull();
+  });
+
+  test('dry-run does not attempt git pull when origin exists', async () => {
+    const { performSync } = await import('../src/commands/sync.ts');
+    const remotePath = mkdtempSync(join(tmpdir(), 'gbrain-sync-dryrun-remote-'));
+
+    try {
+      execSync('git init --bare', { cwd: remotePath, stdio: 'pipe' });
+      execSync(`git remote add origin ${JSON.stringify(remotePath)}`, {
+        cwd: repoPath,
+        stdio: 'pipe',
+      });
+      const messages: string[] = [];
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        messages.push(args.map(String).join(' '));
+      };
+      try {
+        const result = await performSync(engine, {
+          repoPath,
+          dryRun: true,
+          noEmbed: true,
+        });
+        expect(result.status).toBe('dry_run');
+      } finally {
+        console.error = originalError;
+      }
+      expect(messages.some(message => message.includes('sync.git_pull start'))).toBe(false);
+      expect(messages.some(message => message.includes('git pull failed'))).toBe(false);
+    } finally {
+      rmSync(remotePath, { recursive: true, force: true });
+    }
+  });
+
   test('full-sync (--full) dry-run does NOT write to DB or advance the bookmark', async () => {
     const { performSync } = await import('../src/commands/sync.ts');
     // Seed the bookmark so we hit the full-sync-with-bookmark path when --full is set.
@@ -454,6 +560,59 @@ describe('performSync dry-run never writes', () => {
     });
     // Structural assertion: the contract includes `embedded: number`.
     expect(typeof result.embedded).toBe('number');
+  });
+
+  test('--include-gitignored imports ignored files even when git HEAD is unchanged', async () => {
+    const { performSync } = await import('../src/commands/sync.ts');
+    const first = await performSync(engine, {
+      repoPath,
+      noPull: true,
+      noEmbed: true,
+      noExtract: true,
+    });
+    expect(first.status).toBe('first_sync');
+
+    writeFileSync(join(repoPath, '.gitignore'), 'Meetings/\n');
+    execSync('git add .gitignore && git commit -m "ignore generated meetings"', { cwd: repoPath, stdio: 'pipe' });
+    const checkpoint = await performSync(engine, {
+      repoPath,
+      noPull: true,
+      noEmbed: true,
+      noExtract: true,
+    });
+    expect(checkpoint.status).toBe('up_to_date');
+
+    mkdirSync(join(repoPath, 'Meetings'), { recursive: true });
+    writeFileSync(join(repoPath, 'Meetings/weekly.md'), [
+      '---',
+      'type: meeting',
+      'title: Weekly',
+      '---',
+      '',
+      'Generated meeting notes.',
+    ].join('\n'));
+
+    const withoutFlag = await performSync(engine, {
+      repoPath,
+      noPull: true,
+      noEmbed: true,
+      noExtract: true,
+    });
+    expect(withoutFlag.status).toBe('up_to_date');
+    expect(await engine.getPage('meetings/weekly')).toBeNull();
+
+    const withFlag = await performSync(engine, {
+      repoPath,
+      noPull: true,
+      noEmbed: true,
+      noExtract: true,
+      includeGitignored: true,
+    });
+    expect(withFlag.added).toBe(1);
+
+    const page = await engine.getPage('meetings/weekly');
+    expect(page).not.toBeNull();
+    expect(page!.title).toBe('Weekly');
   });
 
   test('detached HEAD skips git pull and ingests local working-tree files', async () => {
@@ -909,5 +1068,90 @@ describe('#1970: unreachable last_commit bookmark recovery', () => {
     // No further changes → up_to_date (converged).
     const settled = await performSync(engine, { repoPath: repo, ...SYNC_OPTS });
     expect(settled.status).toBe('up_to_date');
+  });
+});
+
+describe('v0.42.52.0: 0-changes sync bumps last_sync_at heartbeat (D4 invariant preserved)', () => {
+  let engine: PGLiteEngine;
+  const repos: string[] = [];
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+  });
+
+  beforeEach(async () => {
+    await resetPgliteState(engine);
+  });
+
+  afterEach(() => {
+    while (repos.length) {
+      const d = repos.pop();
+      if (d) rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  function personMd(title: string, body: string): string {
+    return ['---', 'type: person', `title: ${title}`, '---', '', body].join('\n');
+  }
+
+  function mkRepo(files: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-heartbeat-'));
+    repos.push(dir);
+    execSync('git init', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe' });
+    for (const [rel, content] of Object.entries(files)) {
+      mkdirSync(join(dir, rel, '..'), { recursive: true });
+      writeFileSync(join(dir, rel), content);
+    }
+    execSync('git add -A && git commit -m "initial"', { cwd: dir, stdio: 'pipe' });
+    return dir;
+  }
+
+  const SYNC_OPTS = { noPull: true, noEmbed: true, noExtract: true, sourceId: 'default' } as const;
+
+  async function lastSyncAt(): Promise<string | null> {
+    const rows = await engine.executeRaw<{ last_sync_at: string | null }>(
+      `SELECT last_sync_at FROM sources WHERE id = 'default'`,
+    );
+    return rows[0]?.last_sync_at ?? null;
+  }
+
+  test('consecutive 0-changes syncs advance last_sync_at without advancing last_commit', async () => {
+    const { performSync } = await import('../src/commands/sync.ts');
+    const repo = mkRepo({
+      'people/alice.md': personMd('Alice', 'Alice is a person.'),
+    });
+
+    const first = await performSync(engine, { repoPath: repo, ...SYNC_OPTS });
+    expect(first.status).toBe('first_sync');
+    const afterFirst = await lastSyncAt();
+    expect(afterFirst).not.toBeNull();
+    const firstRows = await engine.executeRaw<{ last_commit: string | null }>(
+      `SELECT last_commit FROM sources WHERE id = 'default'`,
+    );
+    const lastCommit = firstRows[0]?.last_commit;
+    expect(lastCommit).not.toBeNull();
+
+    // Wait 1.1s so the DB clock will tick past `afterFirst`.
+    await new Promise((r) => setTimeout(r, 1100));
+
+    const second = await performSync(engine, { repoPath: repo, ...SYNC_OPTS });
+    expect(second.status).toBe('up_to_date');
+    const afterSecond = await lastSyncAt();
+    expect(afterSecond).not.toBeNull();
+    expect(afterSecond).not.toEqual(afterFirst); // heartbeat bumped
+
+    // D4 invariant: last_commit is unchanged on 0-changes sync.
+    const lastCommitRows = await engine.executeRaw<{ last_commit: string | null }>(
+      `SELECT last_commit FROM sources WHERE id = 'default'`,
+    );
+    expect(lastCommitRows[0]?.last_commit).toEqual(lastCommit);
   });
 });
