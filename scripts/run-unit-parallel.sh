@@ -13,7 +13,7 @@
 #
 # Env overrides:
 #   SHARDS=N                     same as --shards
-#   GBRAIN_TEST_SHARD_TIMEOUT    per-shard wallclock cap, seconds (default 1500)
+#   GBRAIN_TEST_SHARD_TIMEOUT    per-shard wallclock cap, seconds (default 3000)
 #   GBRAIN_TEST_SHARD_KILL_AFTER grace after TERM before KILL (default 30)
 #   GBRAIN_TEST_MAX_CONCURRENCY  passed through to bun test (default 4)
 #   GBRAIN_TEST_MEM_PER_FILE_MB  memory budget per concurrent test file used by
@@ -126,7 +126,12 @@ INTRA_CONC="${MAX_CONCURRENCY_OVERRIDE:-${GBRAIN_TEST_MAX_CONCURRENCY:-4}}"
 # had completed in 968s. 1500s cap gives ~55% headroom over observed
 # 4-shard wallclock; real hangs still hit it. Override via
 # GBRAIN_TEST_SHARD_TIMEOUT=N.
-SHARD_TIMEOUT="${GBRAIN_TEST_SHARD_TIMEOUT:-1500}"
+# v0.42.74 sizing: 1500 -> 3000. The suite roughly tripled since the 1500s
+# cap was set (June: ~3900 tests, 92-migration PGLite replay; now: 11k+
+# tests, 120-migration replay per PGLite init). At 4 shards, two shards were
+# killed at 1500s while making steady per-test progress. 3000s keeps the
+# same ~55%-headroom doctrine over observed wallclock; real hangs still die.
+SHARD_TIMEOUT="${GBRAIN_TEST_SHARD_TIMEOUT:-3000}"
 SHARD_KILL_AFTER="${GBRAIN_TEST_SHARD_KILL_AFTER:-30}"
 if ! printf '%s' "$SHARD_KILL_AFTER" | grep -qE '^[0-9]+$' || [ "$SHARD_KILL_AFTER" -lt 1 ]; then
   echo "ERROR: invalid shard kill-after: $SHARD_KILL_AFTER" >&2; exit 2

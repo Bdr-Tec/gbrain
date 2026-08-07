@@ -131,7 +131,7 @@ describe('#2185 subprocess smokes — end-to-end error surface', () => {
   test('init --migrate-only --dry-run fails loud BEFORE any engine work', () => {
     const r = run(['init', '--migrate-only', '--dry-run']);
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("Unknown flag --dry-run for 'gbrain init'");
+    expect(r.stderr).toContain("unknown flag --dry-run for 'gbrain init'");
     // Pre-engine: no migration output may appear.
     expect(r.stderr).not.toContain('migration');
   });
@@ -139,7 +139,7 @@ describe('#2185 subprocess smokes — end-to-end error surface', () => {
   test('typo on an op command fails loud with the command named', () => {
     const r = run(['search', 'needle', '--jsno']);
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("Unknown flag --jsno for 'gbrain search'");
+    expect(r.stderr).toContain("unknown flag --jsno for 'gbrain search'");
   });
 
   test('--help still short-circuits before validation', () => {

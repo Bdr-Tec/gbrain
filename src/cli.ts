@@ -343,7 +343,15 @@ async function main() {
   {
     const unknown = validateCommandFlags(command, subArgs);
     if (unknown) {
-      console.error(`Unknown flag ${unknown} for 'gbrain ${command}'.`);
+      // Message contract shared with init.ts's in-handler check (which this
+      // pre-dispatch validator now reaches first): lowercase 'unknown flag'
+      // on stderr; --json callers get the structured error on stdout with
+      // reason 'invalid_flag' (pinned by test/init-migrate-only.test.ts).
+      const message = `unknown flag ${unknown} for 'gbrain ${command}'`;
+      if (subArgs.includes('--json')) {
+        process.stdout.write(JSON.stringify({ status: 'error', reason: 'invalid_flag', message }) + '\n');
+      }
+      console.error(`gbrain ${command}: ${message}`);
       console.error(`Run: gbrain ${command} --help`);
       process.exit(1);
     }
