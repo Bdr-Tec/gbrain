@@ -15,7 +15,7 @@ src/core/cycle.ts	3123	ratchet	grown v0.46.25.0 fix waves (#4309 #2821) + v0.46.
 src/commands/serve-http.ts	3294	ratchet	grown v0.46.25.0 D2: /mcp per-request teardown (#2844)
 src/commands/jobs.ts	3097	ratchet	grown v0.46.25.0 (--json #3685) + v0.46.26.0: maybeRunWorkerStartupRecovery extraction + stats gating + help text; +typed provider-failure logging on the facts-absorb catch (#4308)
 src/core/search/hybrid.ts	2734	ratchet	grown v0.46.25.0 fix waves: cache scope isolation + pool floor + offset bypass (#3871 #3002); +10 lines for #4358 residual negative-offset cache-skip comment; grown #4356: semantic-cache-hit slice now honors resolved mode's searchLimit instead of a hard `|| 20`; round-1 review comment accuracy fixes (double-resolution caveat)
-src/core/engine.ts	2415	ratchet	grown v0.46.25.0 fix waves: timeline dedup contract + registry write contract (#3827 #1262)
+src/core/engine.ts	2419	ratchet	grown v0.46.25.0 fix waves: timeline dedup contract + registry write contract (#3827 #1262); +4 for the fail-closed TrajectoryOpts.remote contract doc (#3855)
 src/commands/autopilot.ts	2487	ratchet	grown: daemon env-file lane + boot warning + reload-safe install (#2608 #4443)
 src/commands/extract.ts	2066	ratchet	lowered: timeline extractor hoisted to core/timeline-extract.ts (module-cycle fix)
 src/commands/extract-conversation-facts.ts	2089	ratchet	grown v0.46.x per-provider gateway-unavailable copy + save-time resolution caller (#4052)

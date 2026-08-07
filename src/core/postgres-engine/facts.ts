@@ -385,7 +385,10 @@ export async function findTrajectory(deps: PgFactsDeps, opts: import('../engine.
     const useArray = Array.isArray(opts.sourceIds) && opts.sourceIds.length > 0;
     const sourceIds = useArray ? opts.sourceIds! : null;
     const sourceId = opts.sourceId ?? 'default';
-    const remoteFilter = opts.remote === true;
+    // Fail-closed (CV6 / v0.26.9 F7b posture): anything not strictly local
+    // is remote. An omitted flag (cast-bypassed context, caller that forgot
+    // to thread it) degrades to world-only reads, never to a private-fact leak.
+    const remoteFilter = opts.remote !== false;
 
     // Source-scope predicate: array path (federated) wins over scalar.
     // Engine.ts contract: returns chronological points; regressions +
