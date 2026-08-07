@@ -43,7 +43,12 @@ const FLAG_RE = /--[a-z0-9][a-z0-9-]*/g;
 
 function flagsInText(text: string): Set<string> {
   const out = new Set<string>();
-  for (const m of text.matchAll(FLAG_RE)) out.add(m[0]);
+  for (const m of text.matchAll(FLAG_RE)) {
+    // Template-literal prefixes (`--bound-${key}` scans as `--bound-`) are
+    // not real flags — a trailing hyphen would make the validator accept
+    // every typo sharing the prefix.
+    if (!m[0].endsWith('-')) out.add(m[0]);
+  }
   return out;
 }
 

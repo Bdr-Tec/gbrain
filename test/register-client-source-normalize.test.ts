@@ -48,6 +48,20 @@ describe('normalizeSourceInput', () => {
   });
 });
 
+describe('register-client route wiring (structural)', () => {
+  test('normalized source + federatedRead reach registerClientManual in the right positions', () => {
+    // The unit tests above prove the normalizers; this pins the ROUTE —
+    // a transposition of the two new positional args (or a regression to
+    // the hardcoded 'default') would pass every unit test and still ship
+    // clients bound to the wrong source.
+    const { readFileSync } = require('fs');
+    const src = readFileSync(new URL('../src/commands/serve-http.ts', import.meta.url), 'utf-8');
+    expect(src).toContain('sourceId = normalizeSourceInput(source)');
+    expect(src).toContain('federatedReadIds = normalizeFederatedReadInput(federatedRead)');
+    expect(src).toMatch(/registerClientManual\(\s*name,\s*grants,\s*scopeString,\s*uris,\s*sourceId,\s*federatedReadIds,\s*validatedAuthMethod/);
+  });
+});
+
 describe('normalizeFederatedReadInput', () => {
   test('undefined → undefined (let registerClientManual default to [sourceId])', () => {
     expect(normalizeFederatedReadInput(undefined)).toBeUndefined();

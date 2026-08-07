@@ -2645,8 +2645,15 @@ export class PostgresEngine implements BrainEngine {
       const scope = sourceIds
         ? tx`p.source_id = ANY(${sourceIds}::text[])`
         : tx`p.source_id = ${scalarSourceId}`;
+      // #2544: explicit non-vector column list — rowToChunk discards
+      // embeddings at this call site (includeEmbedding defaults false), so
+      // `cc.*` shipped every vector over the wire only to be thrown away.
       const rows = await tx`
-        SELECT cc.* FROM content_chunks cc
+        SELECT cc.id, cc.page_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
+               cc.model, cc.token_count, cc.embedded_at, cc.language,
+               cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line,
+               cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified
+        FROM content_chunks cc
         JOIN pages p ON p.id = cc.page_id
         WHERE p.slug = ${slug} AND ${scope}
         ORDER BY cc.chunk_index

@@ -99,6 +99,67 @@ describe('#2185 acceptance — real usage stays legal', () => {
     expect(validateCommandFlags('embed', ['--stale', '--pace'])).toBeNull();
     expect(validateCommandFlags('sync', ['--full'])).toBeNull();
   });
+
+  // Pre-landing review regression: the validator rejected the CLI-local
+  // flags makeContext consumes OUTSIDE the op contract — `gbrain search
+  // "x" --source y` and `--dry-run` invocations exited 1 as unknown flags.
+  test('op commands accept --source/--dry-run (makeContext CLI-locals, not wire params)', () => {
+    const search = operationsByName.search;
+    expect(findUnknownOpFlag(search, ['needle', '--source', 'yc-media'])).toBeNull();
+    expect(findUnknownOpFlag(search, ['needle', '--source=yc-media'])).toBeNull();
+    // --source's VALUE is consumed, never validated as a flag itself.
+    expect(findUnknownOpFlag(search, ['--source', '--weird-value', 'needle'])).toBeNull();
+    expect(findUnknownOpFlag(search, ['needle', '--dry-run'])).toBeNull();
+    // Still strict right next to them.
+    expect(findUnknownOpFlag(search, ['needle', '--source', 'y', BOGUS])).toBe(BOGUS);
+  });
+
+  test('--json=<v> is coherent between validator and parser (no positional corruption)', async () => {
+    const { parseOpArgs } = await import('../src/cli.ts');
+    const search = operationsByName.search;
+    // Validator accepts any --json form.
+    expect(findUnknownOpFlag(search, ['--json=true', 'needle'])).toBeNull();
+    // Parser sets the boolean and PRESERVES the positional (pre-fix the
+    // junk-key path consumed 'needle' as the value of key 'json=true').
+    const p = parseOpArgs(search, ['--json=true', 'needle']);
+    expect(p.json).toBe(true);
+    expect(p.query).toBe('needle');
+    expect((p as Record<string, unknown>)['json=true']).toBeUndefined();
+    expect(parseOpArgs(search, ['needle', '--json=false']).json).toBe(false);
+    // = forms of bare-only CLI-locals reject loud instead of silently eating tokens.
+    expect(findUnknownOpFlag(search, ['--explain=verbose'])).toBe('--explain');
+  });
+});
+
+describe('#2185 parseOpArgs inline = form (regression rule: changed token consumption)', () => {
+  test('string and number params via =, positional untouched', async () => {
+    const { parseOpArgs } = await import('../src/cli.ts');
+    const search = operationsByName.search;
+    const p = parseOpArgs(search, ['needle', '--limit=5']);
+    expect(p.query).toBe('needle');
+    expect(p.limit).toBe(5);
+  });
+
+  test('boolean =false negates; =0 keeps the raw!==false rule (pinned semantics)', async () => {
+    const { parseOpArgs } = await import('../src/cli.ts');
+    const withBool = operations.find(o =>
+      o.cliHints && Object.values(o.params).some(pp => pp.type === 'boolean'))!;
+    const key = Object.entries(withBool.params).find(([, pp]) => pp.type === 'boolean')![0];
+    const flag = `--${key.replace(/_/g, '-')}`;
+    expect(parseOpArgs(withBool, [`${flag}=false`])[key]).toBe(false);
+    expect(parseOpArgs(withBool, [`${flag}=0`])[key]).toBe(true);
+  });
+
+  test('undeclared =-form key keeps the historical junk-fallthrough (validator rejects it first)', async () => {
+    const { parseOpArgs } = await import('../src/cli.ts');
+    const search = operationsByName.search;
+    // The validator is the strict gate; the parser's legacy behavior for
+    // undeclared keys is unchanged — pinned so a refactor can't silently
+    // change what unvalidated callers (tests, internal) see.
+    expect(findUnknownOpFlag(search, ['--not-a-param=x', 'needle'])).toBe('--not-a-param');
+    const p = parseOpArgs(search, ['--not-a-param=x', 'needle']);
+    expect(p.query).toBeUndefined(); // consumed by the junk key — validator prevents reaching here
+  });
 });
 
 describe('#2185 drift + freshness guards', () => {
@@ -145,6 +206,24 @@ describe('#2185 subprocess smokes — end-to-end error surface', () => {
   test('--help still short-circuits before validation', () => {
     const r = run(['init', '--help']);
     expect(r.status).toBe(0);
-    expect(r.stderr).not.toContain('Unknown flag');
+    expect(r.stderr).not.toContain('unknown flag');
+  });
+
+  test('global flags are accepted on every command (stripped pre-dispatch)', () => {
+    // --quiet is a parseGlobalFlags global: it never reaches the validator.
+    // The bogus flag proves validation still ran on what remained.
+    const r = run(['init', '--migrate-only', '--quiet', '--definitely-bogus-xyz']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("unknown flag --definitely-bogus-xyz for 'gbrain init'");
+    expect(r.stderr).not.toContain('--quiet');
+  });
+
+  test('op command accepts --source end-to-end (the makeContext CLI-local regression)', () => {
+    // Fast path: --help short-circuits AFTER global parse, so a bogus flag
+    // alongside --source proves ordering: --source accepted, bogus rejected.
+    const r = run(['search', 'needle', '--source', 'nope-source', '--definitely-bogus-xyz']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("unknown flag --definitely-bogus-xyz for 'gbrain search'");
+    expect(r.stderr).not.toContain('unknown flag --source');
   });
 });

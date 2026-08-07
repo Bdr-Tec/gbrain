@@ -326,6 +326,43 @@ describe('oom-once', () => {
     const r = runOom();
     expect(r.stderr).toMatch(/mem-(ok|adapted)/);
   }, 120_000);
+
+  it('mixed run: a plain assertion failure stays red even when the OOM phantom rescues green', () => {
+    // The NON_OOM_FAIL gate — the branch that stops the rescue lane from
+    // absolving real failures that happened to share a run with phantoms.
+    const realFail = `import { describe, it, expect } from 'bun:test';
+describe('real-failure', () => {
+  it('expects 1 to equal 2', () => { expect(1).toBe(2); });
+});`;
+    writeFileSync(join(OROOT, 'test', 'c-real-fail.test.ts'), realFail);
+    try {
+      const r = runOom();
+      expect(r.code).not.toBe(0);
+    } finally {
+      rmSync(join(OROOT, 'test', 'c-real-fail.test.ts'), { force: true });
+    }
+  }, 120_000);
+
+  it('a deterministic failure carrying the OOM signature re-fails serially and stays red', () => {
+    // The oom_rescue_failed lane: signature match queues the file, but the
+    // serial re-run confirms the failure is real — run must stay red.
+    const alwaysOom = `import { describe, it } from 'bun:test';
+describe('oom-always', () => {
+  it('always fails with the signature', () => {
+    console.error('Original error: Out of memory');
+    throw new Error('Out of memory (deterministic)');
+  });
+});`;
+    writeFileSync(join(OROOT, 'test', 'd-oom-always.test.ts'), alwaysOom);
+    try {
+      const r = runOom();
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toContain('oom_rescue_failed=');
+      expect(r.stdout + r.stderr).toContain('oom-rescue (serial, confirmed real)');
+    } finally {
+      rmSync(join(OROOT, 'test', 'd-oom-always.test.ts'), { force: true });
+    }
+  }, 120_000);
 });
 
 describe('run-unit-parallel.sh external-kill rescue contract', () => {

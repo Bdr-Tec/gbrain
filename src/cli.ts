@@ -850,6 +850,13 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
       const eq = arg.indexOf('=');
       if (eq > 2) {
         const key = arg.slice(2, eq).replace(/-/g, '_');
+        // CLI-local formatter flag: `--json=true|false` must parse as the
+        // boolean, not fall through to the junk-key path (which would consume
+        // the NEXT token as its value and corrupt positional parsing).
+        if (key === 'json') {
+          params.json = arg.slice(eq + 1) !== 'false';
+          continue;
+        }
         const def = op.params[key];
         if (def) {
           const raw = arg.slice(eq + 1);
@@ -1098,7 +1105,21 @@ export function findUnknownOpFlag(op: Operation, args: string[]): string | null 
     const m = /^--([a-z0-9][a-z0-9-]*)(?:=(.*))?$/i.exec(a);
     if (!m) continue;
     const rawKey = m[1].toLowerCase();
-    if (rawKey === 'json' || rawKey === 'explain' || rawKey === 'help') continue;
+    // CLI-local flags consumed OUTSIDE the op contract (never wire params):
+    //   json/explain — formatter flags; help — short-circuits pre-dispatch;
+    //   source — makeContext's 6-tier source resolution (deleted before wire);
+    //   dry-run — makeContext's ctx.dryRun projection.
+    // Pre-fix, rejecting these broke documented invocations
+    // (`gbrain search "x" --source y`, `gbrain put x --dry-run`).
+    if (rawKey === 'json') continue;
+    if ((rawKey === 'explain' || rawKey === 'help') && m[2] === undefined) continue;
+    if (rawKey === 'source' || rawKey === 'dry-run') {
+      // Non-boolean-style CLI-locals consume the next token as their value
+      // in parseOpArgs (source does; dry-run is boolean-read) — mirror the
+      // parser: source consumes a value when not inline-`=`.
+      if (rawKey === 'source' && m[2] === undefined) i++;
+      continue;
+    }
     if (rawKey.startsWith('no-')) {
       const positive = rawKey.slice(3).replace(/-/g, '_');
       if (op.params[positive]?.type === 'boolean') continue;

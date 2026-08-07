@@ -2316,7 +2316,7 @@ const think: Operation = {
       until: p.until ? String(p.until) : undefined,
       takesHoldersAllowList: ctx.takesHoldersAllowList,
       ...thinkScope,
-      remote: ctx.remote === true,
+      remote: ctx.remote !== false, // fail-closed: anything not strictly false is untrusted (CLAUDE.md invariant)
     });
 
     // Persist if --save was passed locally
@@ -4156,7 +4156,7 @@ const find_trajectory: Operation = {
     const points = await ctx.engine.findTrajectory({
       entitySlug: p.entity_slug,
       ...scope,
-      remote: ctx.remote === true,
+      remote: ctx.remote !== false, // fail-closed: anything not strictly false is untrusted (CLAUDE.md invariant)
       metric,
       kind,
       since,

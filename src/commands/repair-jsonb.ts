@@ -23,7 +23,8 @@
  *   - page_versions.frontmatter            (downstream of pages.frontmatter via
  *                                           INSERT...SELECT FROM pages)
  *   - subagent_messages.content_blocks     (subagent.ts:599 persistMessage —
- *                                           v0.16.0+, fixed in vCURRENT)
+ *                                           v0.16.0+, write path fixed in
+ *                                           v0.42.53.0 #2375)
  *   - subagent_tool_executions.input       (subagent.ts:625/660 persistToolExec
  *                                           Pending/Failed — same wave)
  *   - subagent_tool_executions.output      (subagent.ts:639 persistToolExecComplete
@@ -49,6 +50,15 @@ interface RepairTarget {
   column: string;
   /** Optional secondary key column for logging. */
   keyCol?: string;
+  /**
+   * Only unwrap string scalars whose CONTENT is a JSON container ({...} or
+   * [...]). The subagent columns can legitimately hold jsonb string scalars
+   * (persistToolExec binds `typeof input === 'string' ? input : stringify`,
+   * so a tool's pre-serialized plain-text payload lands as a JSON string) —
+   * an unconditional unwrap would cast non-JSON text and abort the entire
+   * repair run, or corrupt a legitimate value on a second pass.
+   */
+  jsonPayloadOnly?: boolean;
 }
 
 const TARGETS: RepairTarget[] = [
@@ -57,10 +67,18 @@ const TARGETS: RepairTarget[] = [
   { table: 'ingest_log',                column: 'pages_updated',   keyCol: 'source_ref' },
   { table: 'files',                     column: 'metadata',        keyCol: 'storage_path' },
   { table: 'page_versions',             column: 'frontmatter',     keyCol: 'snapshot_at' },
-  { table: 'subagent_messages',         column: 'content_blocks',  keyCol: 'job_id' },
-  { table: 'subagent_tool_executions',  column: 'input',           keyCol: 'tool_use_id' },
-  { table: 'subagent_tool_executions',  column: 'output',          keyCol: 'tool_use_id' },
+  { table: 'subagent_messages',         column: 'content_blocks',  keyCol: 'job_id',      jsonPayloadOnly: true },
+  { table: 'subagent_tool_executions',  column: 'input',           keyCol: 'tool_use_id', jsonPayloadOnly: true },
+  { table: 'subagent_tool_executions',  column: 'output',          keyCol: 'tool_use_id', jsonPayloadOnly: true },
 ];
+
+/** The double-encode predicate for a target (see jsonPayloadOnly). */
+function damagePredicate(t: RepairTarget): string {
+  const base = `jsonb_typeof(${t.column}) = 'string'`;
+  return t.jsonPayloadOnly
+    ? `${base} AND (${t.column} #>> '{}') ~ '^[[:space:]]*[\\[{]'`
+    : base;
+}
 
 export interface RepairResult {
   engine: string;
@@ -141,14 +159,14 @@ export async function repairJsonb(opts: RepairOpts = { dryRun: false }): Promise
 
       if (opts.dryRun) {
         const rows = await sql.unsafe(
-          `SELECT count(*)::int AS n FROM ${t.table} WHERE jsonb_typeof(${t.column}) = 'string'`,
+          `SELECT count(*)::int AS n FROM ${t.table} WHERE ${damagePredicate(t)}`,
         );
         repaired = (rows[0] as unknown as { n: number }).n;
       } else {
         const rows = await sql.unsafe(
           `UPDATE ${t.table}
            SET ${t.column} = (${t.column} #>> '{}')::jsonb
-           WHERE jsonb_typeof(${t.column}) = 'string'
+           WHERE ${damagePredicate(t)}
            RETURNING 1`,
         );
         repaired = rows.length;

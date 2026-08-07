@@ -376,7 +376,7 @@ export async function jsonbIntegrityCheck(
   progress?: Pick<ProgressReporter, 'heartbeat'>,
 ): Promise<Check> {
   try {
-    const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
+    const targets: Array<{ table: string; col: string; expected: 'object' | 'array'; jsonPayloadOnly?: boolean }> = [
       { table: 'pages',                    col: 'frontmatter',    expected: 'object' },
       { table: 'raw_data',                 col: 'data',           expected: 'object' },
       { table: 'ingest_log',               col: 'pages_updated',  expected: 'array'  },
@@ -384,23 +384,30 @@ export async function jsonbIntegrityCheck(
       { table: 'page_versions',            col: 'frontmatter',    expected: 'object' },
       // Subagent persistence — second double-encode site (historical damage
       // rows from the pre-v0.42.53.0 positional bind; write paths fixed in
-      // #2375). Covered by repair-jsonb's matching targets.
-      { table: 'subagent_messages',        col: 'content_blocks', expected: 'array'  },
-      { table: 'subagent_tool_executions', col: 'input',          expected: 'object' },
-      { table: 'subagent_tool_executions', col: 'output',         expected: 'object' },
+      // #2375). Mirrors repair-jsonb's targets incl. jsonPayloadOnly: these
+      // columns can legitimately hold jsonb STRING scalars (persistToolExec
+      // binds pre-serialized string payloads as-is), so only JSON-container
+      // content counts as damage.
+      { table: 'subagent_messages',        col: 'content_blocks', expected: 'array',  jsonPayloadOnly: true },
+      { table: 'subagent_tool_executions', col: 'input',          expected: 'object', jsonPayloadOnly: true },
+      { table: 'subagent_tool_executions', col: 'output',         expected: 'object', jsonPayloadOnly: true },
     ];
     let totalBad = 0;
     const breakdown: string[] = [];
-    for (const { table, col } of targets) {
+    for (const { table, col, jsonPayloadOnly } of targets) {
       progress?.heartbeat(`jsonb_integrity.${table}.${col}`);
       // Skip targets whose table doesn't exist on this brain (subagent_*
       // tables are v0.15+; pre-v0.15 brains naturally lack them).
       const existsRows = await engine.executeRaw<{ exists: boolean }>(
-        `SELECT to_regclass('${table}') IS NOT NULL AS exists`,
+        `SELECT to_regclass($1) IS NOT NULL AS exists`,
+        [table],
       );
       if (!existsRows[0]?.exists) continue;
+      const damage = jsonPayloadOnly
+        ? `jsonb_typeof(${col}) = 'string' AND (${col} #>> '{}') ~ '^[[:space:]]*[\\[{]'`
+        : `jsonb_typeof(${col}) = 'string'`;
       const rows = await engine.executeRaw<{ n: number }>(
-        `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
+        `SELECT count(*)::int AS n FROM ${table} WHERE ${damage}`,
       );
       const n = Number(rows[0]?.n ?? 0);
       if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }

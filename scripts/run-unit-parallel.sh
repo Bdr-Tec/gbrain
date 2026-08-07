@@ -169,7 +169,13 @@ if [ "${GBRAIN_TEST_NO_MEM_ADAPT:-0}" != "1" ]; then
       fi
     done
     if [ "$N" != "$ORIG_N" ] || [ "$INTRA_CONC" != "$ORIG_INTRA" ]; then
-      MEM_NOTE=" | mem-adapted ${ORIG_N}x${ORIG_INTRA}→${N}x${INTRA_CONC} (avail=${AVAIL_MB}MB, ${MEM_PER_FILE_MB}MB/file)"
+      # Fewer shards → more files per shard → each shard legitimately runs
+      # longer. Scale the per-shard cap by the shed ratio so adaptation
+      # doesn't convert memory safety into false WEDGED verdicts.
+      if [ "$N" -lt "$ORIG_N" ]; then
+        SHARD_TIMEOUT=$((SHARD_TIMEOUT * ORIG_N / N))
+      fi
+      MEM_NOTE=" | mem-adapted ${ORIG_N}x${ORIG_INTRA}→${N}x${INTRA_CONC} (avail=${AVAIL_MB}MB, ${MEM_PER_FILE_MB}MB/file, timeout→${SHARD_TIMEOUT}s)"
     else
       MEM_NOTE=" | mem-ok (avail=${AVAIL_MB}MB)"
     fi
@@ -418,6 +424,11 @@ OOM_RE='Out of memory|WebAssembly\.Memory|RuntimeError: [Aa]borted|Aborted\(\)'
 OOM_RESCUE_LIST="$LOG_DIR/oom-rescue-files.txt"
 : > "$OOM_RESCUE_LIST"
 NON_OOM_FAIL=0
+# Set when any shard was killed externally — killed-midrun shards leave lock/
+# state residue that can poison the LATER serial pass, so serial failures are
+# only rescue-eligible under this flag (or their own OOM signature). A flaky
+# serial test in an otherwise-clean run must stay red.
+EXTERNAL_KILL_ANY=0
 
 # failing_files_in_log: attribute each `(fail)` block to the test file whose
 # `path.test.ts:` header most recently preceded it in bun's output.
@@ -466,6 +477,7 @@ for i in $(seq 1 "$N"); do
       s_elapsed=$((s_end - s_start))
       if [ "$s_elapsed" -lt $((SHARD_TIMEOUT * 80 / 100)) ]; then
         shard_external_kill=1
+        EXTERNAL_KILL_ANY=1
       fi
     fi
   fi
@@ -494,10 +506,13 @@ for i in $(seq 1 "$N"); do
 
   if [ "$rc" != "0" ]; then
     if [ "$shard_oom" = "1" ]; then
-      failing_files_in_log "$SHARD_LOG" >> "$OOM_RESCUE_LIST"
-      # A failing shard with the OOM signature but no attributable files
-      # (e.g. bun died before any file header) → rescue the whole shard.
-      if [ -z "$(failing_files_in_log "$SHARD_LOG")" ]; then
+      # One scan, reused for both the queue append and the emptiness check.
+      shard_failing_files=$(failing_files_in_log "$SHARD_LOG")
+      if [ -n "$shard_failing_files" ]; then
+        printf '%s\n' "$shard_failing_files" >> "$OOM_RESCUE_LIST"
+      else
+        # OOM signature but no attributable files (e.g. bun died before any
+        # file header) → rescue the whole shard.
         SHARD="$i/$N" bash scripts/run-unit-shard.sh --dry-run-list 2>/dev/null >> "$OOM_RESCUE_LIST"
       fi
     elif [ "$shard_external_kill" = "1" ]; then
@@ -562,12 +577,13 @@ if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
   cat "$LOG_DIR/serial.log"
   if [ "$SERIAL_RC" != "0" ]; then
     TOTAL_RC=1
-    RESCUE_PENDING=$(grep -c . "$OOM_RESCUE_LIST" 2>/dev/null) || RESCUE_PENDING=0
     if [ "${GBRAIN_TEST_NO_OOM_FALLBACK:-0}" != "1" ] \
-       && { grep -qE "$OOM_RE" "$LOG_DIR/serial.log" || [ "${RESCUE_PENDING:-0}" -gt 0 ]; }; then
-      # Serial files already run at concurrency 1, but ambient pressure from
-      # sibling workspaces can still OOM them — the rescue pass retries after
-      # the parallel fan-out has fully drained.
+       && { grep -qE "$OOM_RE" "$LOG_DIR/serial.log" || [ "$EXTERNAL_KILL_ANY" = "1" ]; }; then
+      # Serial failures are rescue-eligible ONLY with their own OOM signature
+      # or when an externally-killed shard ran earlier in this invocation
+      # (killed-midrun shards leave lock/state residue that poisons the serial
+      # pass). A merely-OOM'd sibling shard is NOT grounds — a flaky serial
+      # test must stay red rather than get silently absolved.
       failing_files_in_log "$LOG_DIR/serial.log" >> "$OOM_RESCUE_LIST"
     else
       NON_OOM_FAIL=1
@@ -636,9 +652,11 @@ if [ "$TOTAL_RC" != "0" ] && [ "${RESCUE_COUNT:-0}" -gt 0 ]; then
     # the rescue verdict, and mark the earlier failure blocks superseded.
     TOTAL_RC=0
     OOM_RESCUED=1
-    TOTAL_PASS=$((TOTAL_PASS + r_pass))
+    # Do NOT fold r_pass into TOTAL_PASS — the failing shard's own summary
+    # already counted the rescued files' passing tests, so folding would
+    # double-count. Rescue results ride in the note instead.
     TOTAL_FAILURES=0
-    OOM_RESCUE_NOTE=" | oom_rescued=${RESCUE_COUNT}files"
+    OOM_RESCUE_NOTE=" | oom_rescued=${RESCUE_COUNT}files(${r_pass}p serial)"
     {
       echo "--- OOM rescue: all $RESCUE_COUNT file(s) passed serially (${r_pass} tests) ---"
       echo "--- failure blocks above were WASM out-of-memory phantoms, superseded ---"

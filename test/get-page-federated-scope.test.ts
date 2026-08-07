@@ -425,4 +425,29 @@ describe('#2555 get_chunks federated scope', () => {
     const def = await engine.getChunks('secret/beta-doc');
     expect(def.map(c => c.chunk_text)).toEqual(['default decoy chunk']);
   });
+
+  test('#2544 structural pin: neither engine SELECTs cc.* in getChunks (the trim survives merges)', async () => {
+    // The behavioral assertion above is vacuous for the trim itself —
+    // rowToChunk hard-nulls embedding regardless of the SELECT. This pin
+    // exists because a master merge once silently restored `SELECT cc.*`
+    // while the doc comment kept claiming the trim: assert the SELECT shape
+    // at the source level for BOTH engines.
+    const { readFileSync } = await import('fs');
+    for (const enginePath of ['src/core/postgres-engine.ts', 'src/core/pglite-engine.ts']) {
+      const src = readFileSync(new URL(`../${enginePath}`, import.meta.url), 'utf-8');
+      const start = src.indexOf('async getChunks(slug');
+      expect(start).toBeGreaterThan(0);
+      // The method's own close (`\n  }` at 2-space indent) — an inline
+      // `async (tx) =>` callback must not truncate the body, and the NEXT
+      // method (e.g. buildStaleChunkWhere's `cc.embedding IS NULL` WHERE
+      // predicate) must not leak in. Strip line comments: the pin targets
+      // the SQL, not prose that may cite the anti-pattern.
+      const end = src.indexOf('\n  }\n', start + 10);
+      const body = src.slice(start, end).replace(/\/\/[^\n]*/g, '');
+      expect(body, `${enginePath} getChunks must not SELECT cc.*`).not.toContain('cc.*');
+      expect(body).toContain('cc.chunk_text');
+      // The vector columns stay unselected.
+      expect(body).not.toMatch(/cc\.embedding\b/);
+    }
+  });
 });

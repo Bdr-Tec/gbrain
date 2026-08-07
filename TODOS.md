@@ -31,6 +31,19 @@ master before starting, several fixes landed independently).
   API now accepts `source` + `federatedRead` (this wave, PR #2016 absorbed);
   the admin SPA form fields + `/admin/api/sources` picker are the UI layer.
   Where: `src/commands/serve-http.ts` admin SPA blob.
+- [ ] **P3 — jsonb-integrity surfaces: batch + share (ship-review follow-up).**
+  doctor's jsonbIntegrityCheck runs 2 queries per target (16 round-trips) and
+  duplicates the TARGETS table with repair-jsonb (already drifted once on the
+  jsonPayloadOnly predicate before being mirrored by hand). Batch the counts
+  into one UNION ALL query and extract a shared targets constant
+  (src/core/jsonb-integrity-targets.ts) consumed by both. Where:
+  `src/commands/doctor.ts` jsonbIntegrityCheck, `src/commands/repair-jsonb.ts`.
+- [ ] **P3 — register-client HTTP-level e2e (ship-review follow-up).** The
+  source/federatedRead lane is covered by unit normalizers + a structural
+  route pin; a DATABASE_URL-gated serve-http e2e (register with bindings →
+  assert stored client via /admin/api/agents; invalid source → 400
+  invalid_source) closes the wire-level gap. Where:
+  `test/e2e/serve-http-oauth.test.ts`.
 - [ ] **P3 — #2536 wedged-migration diagnostics.** The v121 wedge aborted
   initSchema BEFORE runMigrations, so the wedged-migration diagnostics row was
   never written — operators got a bare SQL error with no remediation hint.
