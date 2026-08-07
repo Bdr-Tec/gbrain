@@ -112,6 +112,37 @@ describe('installRecipeIntoHostRepo — happy path', () => {
   });
 });
 
+describe('installRecipeIntoHostRepo — harness hook adapter recipes (push-based context)', () => {
+  it('claude-code-reflex: hook script lands at .claude/hooks/ with the exec bit, skill + resolver row appended', async () => {
+    const result = await installRecipeIntoHostRepo('claude-code-reflex', { target: scratch });
+    expect(result.written).toBeGreaterThan(0);
+    const script = join(scratch, '.claude/hooks/gbrain-volunteer-hook.sh');
+    expect(existsSync(script)).toBe(true);
+    expect(statSync(script).mode & 0o111).not.toBe(0); // exec bit preserved (0755)
+    const body = readFileSync(script, 'utf8');
+    expect(body).toContain('volunteer-hook --harness claude-code');
+    // stderr is the only diagnostic channel — the script must NOT discard it
+    expect(body).not.toContain('2>/dev/null');
+    expect(existsSync(join(scratch, 'skills/claude-code-reflex/SKILL.md'))).toBe(true);
+    const resolver = readFileSync(join(scratch, 'AGENTS.md'), 'utf8');
+    expect(resolver).toContain('claude-code-reflex');
+  });
+
+  it('codex-reflex: experimental adapter installs alongside the claude-code one', async () => {
+    await installRecipeIntoHostRepo('claude-code-reflex', { target: scratch });
+    await installRecipeIntoHostRepo('codex-reflex', { target: scratch });
+    const script = join(scratch, '.claude/hooks/gbrain-volunteer-hook-codex.sh');
+    expect(existsSync(script)).toBe(true);
+    expect(statSync(script).mode & 0o111).not.toBe(0);
+    const body = readFileSync(script, 'utf8');
+    expect(body).toContain('volunteer-hook --harness codex');
+    expect(body).not.toContain('2>/dev/null');
+    expect(existsSync(join(scratch, 'skills/codex-reflex/SKILL.md'))).toBe(true);
+    // both hook scripts coexist in one host repo
+    expect(existsSync(join(scratch, '.claude/hooks/gbrain-volunteer-hook.sh'))).toBe(true);
+  });
+});
+
 describe('installRecipeIntoHostRepo — refusals', () => {
   it('refuses missing target', async () => {
     const ghost = '/tmp/__nonexistent_agent_voice_target__/' + Date.now();
