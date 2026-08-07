@@ -257,3 +257,73 @@ describe('failing-on-purpose', () => {
     }
   });
 });
+
+describe('run-unit-parallel.sh OOM rescue lane', () => {
+  // A fixture that fails WITH the WASM out-of-memory signature on its first
+  // run (no sentinel file yet) and passes once the sentinel exists — exactly
+  // the phantom-failure shape: dies under parallel memory pressure, passes
+  // serially. The runner must (1) detect the signature, (2) re-run the file
+  // at --max-concurrency 1, (3) exit 0 with an oom_rescued note.
+  let OROOT: string;
+
+  beforeAll(() => {
+    OROOT = mkdtempSync(join(tmpdir(), 'gbrain-parallel-oom-'));
+    mkdirSync(join(OROOT, 'scripts'), { recursive: true });
+    mkdirSync(join(OROOT, 'test'), { recursive: true });
+    for (const s of ['run-unit-parallel.sh', 'run-unit-shard.sh', 'run-serial-tests.sh']) {
+      copyFileSync(resolve(REPO_ROOT, 'scripts', s), join(OROOT, 'scripts', s));
+      chmodSync(join(OROOT, 'scripts', s), 0o755);
+    }
+    const passing = `import { describe, it, expect } from 'bun:test';
+describe('passing', () => {
+  it('arithmetic works', () => { expect(1 + 1).toBe(2); });
+});`;
+    const oomOnce = `import { describe, it, expect } from 'bun:test';
+import { existsSync, writeFileSync } from 'fs';
+describe('oom-once', () => {
+  it('fails with the WASM OOM signature on first run, passes on retry', () => {
+    const sentinel = new URL('./oom-sentinel.txt', import.meta.url).pathname;
+    if (!existsSync(sentinel)) {
+      writeFileSync(sentinel, 'ran-once');
+      console.error('Original error: Out of memory');
+      throw new Error('Out of memory (simulated PGLite WASM connect failure)');
+    }
+    expect(1).toBe(1);
+  });
+});`;
+    writeFileSync(join(OROOT, 'test', 'a-pass.test.ts'), passing);
+    writeFileSync(join(OROOT, 'test', 'b-oom-once.test.ts'), oomOnce);
+  });
+
+  afterAll(() => {
+    if (OROOT) rmSync(OROOT, { recursive: true, force: true });
+  });
+
+  function runOom(env: Record<string, string> = {}): { code: number; stdout: string; stderr: string } {
+    rmSync(join(OROOT, 'test', 'oom-sentinel.txt'), { force: true });
+    const result = spawnSync(
+      'bash',
+      [join(OROOT, 'scripts', 'run-unit-parallel.sh'), '--shards', '2'],
+      { cwd: OROOT, encoding: 'utf-8', env: { ...process.env, ...env } },
+    );
+    return { code: result.status ?? -1, stdout: result.stdout || '', stderr: result.stderr || '' };
+  }
+
+  it('rescues an OOM-signature failure serially and exits 0 with an oom_rescued note', () => {
+    const r = runOom();
+    expect(r.stdout + r.stderr).toContain('OOM rescue pass');
+    expect(r.stderr).toContain('oom_rescued=');
+    expect(r.code).toBe(0);
+  }, 120_000);
+
+  it('GBRAIN_TEST_NO_OOM_FALLBACK=1 disables the rescue lane (stays red)', () => {
+    const r = runOom({ GBRAIN_TEST_NO_OOM_FALLBACK: '1' });
+    expect(r.code).not.toBe(0);
+    expect(r.stdout + r.stderr).not.toContain('OOM rescue pass');
+  }, 120_000);
+
+  it('memory-aware sizing is advertised in the banner (mem-ok or mem-adapted)', () => {
+    const r = runOom();
+    expect(r.stderr).toMatch(/mem-(ok|adapted)/);
+  }, 120_000);
+});

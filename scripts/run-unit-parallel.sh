@@ -16,6 +16,24 @@
 #   GBRAIN_TEST_SHARD_TIMEOUT    per-shard wallclock cap, seconds (default 1500)
 #   GBRAIN_TEST_SHARD_KILL_AFTER grace after TERM before KILL (default 30)
 #   GBRAIN_TEST_MAX_CONCURRENCY  passed through to bun test (default 4)
+#   GBRAIN_TEST_MEM_PER_FILE_MB  memory budget per concurrent test file used by
+#                                the adaptive sizing below (default 1536 — a
+#                                PGLite WASM instance reserves ~1-1.5GB)
+#   GBRAIN_TEST_NO_MEM_ADAPT=1   disable memory-aware concurrency reduction
+#   GBRAIN_TEST_NO_OOM_FALLBACK=1 disable the serial OOM-rescue pass
+#
+# Memory safety (two layers; both default-on):
+#   1. ADAPTIVE SIZING — before spawning, total concurrency (shards ×
+#      intra-shard --max-concurrency) is capped to what available memory can
+#      hold at GBRAIN_TEST_MEM_PER_FILE_MB per concurrent file. Concurrent
+#      Conductor workspaces running their own suites shrink the budget
+#      automatically instead of OOMing each other.
+#   2. SERIAL OOM RESCUE — if a failing shard's log carries the PGLite WASM
+#      out-of-memory signature, the failing files are re-run serially
+#      (--max-concurrency 1) after the parallel pass. Phantom OOM failures
+#      pass serially and the run goes green with an oom_rescued note; real
+#      failures fail again and stay red. Plain assertion failures never match
+#      the signature and never trigger the rescue lane.
 #
 # Output files (workspace-local; falls back to /tmp if .context/ unwritable):
 #   .context/test-failures.log   failure blocks (cleared at start)
@@ -36,6 +54,35 @@ detect_cpus() {
   n=$(sysctl -n hw.physicalcpu 2>/dev/null) && [ -n "$n" ] && [ "$n" -gt 0 ] && echo "$n" && return
   n=$(nproc 2>/dev/null) && [ -n "$n" ] && [ "$n" -gt 0 ] && echo "$n" && return
   echo 4
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Available-memory detection (MB). macOS: vm_stat free + inactive +
+# speculative + purgeable pages (inactive/purgeable are reclaimable on
+# pressure, which is exactly the scenario we size for). Linux: MemAvailable.
+# Unknown platform → 0, and the caller skips adaptation entirely.
+# ──────────────────────────────────────────────────────────────────────────
+detect_available_mem_mb() {
+  if command -v vm_stat >/dev/null 2>&1; then
+    vm_stat 2>/dev/null | awk '
+      /page size of/ { psize = $8 }
+      /Pages free/        { free = $NF }
+      /Pages inactive/    { inactive = $NF }
+      /Pages speculative/ { spec = $NF }
+      /Pages purgeable/   { purge = $NF }
+      END {
+        gsub(/\./, "", free); gsub(/\./, "", inactive)
+        gsub(/\./, "", spec); gsub(/\./, "", purge)
+        if (psize == 0) psize = 16384
+        printf "%d\n", (free + inactive + spec + purge) * psize / 1048576
+      }'
+    return
+  fi
+  if [ -r /proc/meminfo ]; then
+    awk '/MemAvailable/ { printf "%d\n", $2 / 1024; found = 1 } END { if (!found) print 0 }' /proc/meminfo
+    return
+  fi
+  echo 0
 }
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -86,6 +133,43 @@ if ! printf '%s' "$SHARD_KILL_AFTER" | grep -qE '^[0-9]+$' || [ "$SHARD_KILL_AFT
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
+# Memory-aware concurrency (layer 1). Total concurrent test files =
+# N shards × INTRA_CONC; each concurrent file can hold a PGLite WASM
+# instance (~1-1.5GB reserved). 4×4 = 16 concurrent instances OOM'd on a
+# 128GB machine when other Conductor workspaces ran their suites at the
+# same time — every PGLite connect across every shard failed at once
+# ("Out of memory" at PGlite.create). Cap total concurrency to what's
+# actually available, keeping a 4GB reserve for the OS + bun itself.
+# Applies to explicit --shards overrides too (an operator who wants an
+# over-committed run sets GBRAIN_TEST_NO_MEM_ADAPT=1).
+# ──────────────────────────────────────────────────────────────────────────
+MEM_PER_FILE_MB="${GBRAIN_TEST_MEM_PER_FILE_MB:-1536}"
+MEM_NOTE=""
+if [ "${GBRAIN_TEST_NO_MEM_ADAPT:-0}" != "1" ]; then
+  AVAIL_MB=$(detect_available_mem_mb)
+  if [ "${AVAIL_MB:-0}" -gt 0 ] 2>/dev/null; then
+    BUDGET_MB=$((AVAIL_MB - 4096))
+    [ "$BUDGET_MB" -lt "$MEM_PER_FILE_MB" ] && BUDGET_MB="$MEM_PER_FILE_MB"
+    MAX_TOTAL=$((BUDGET_MB / MEM_PER_FILE_MB))
+    [ "$MAX_TOTAL" -lt 1 ] && MAX_TOTAL=1
+    ORIG_N="$N"; ORIG_INTRA="$INTRA_CONC"
+    # Shed shards before intra-shard concurrency: fewer bun processes frees
+    # more than narrower ones (each process carries its own heap + WASM).
+    while [ $((N * INTRA_CONC)) -gt "$MAX_TOTAL" ]; do
+      if [ "$N" -gt 1 ]; then N=$((N - 1))
+      elif [ "$INTRA_CONC" -gt 1 ]; then INTRA_CONC=$((INTRA_CONC - 1))
+      else break
+      fi
+    done
+    if [ "$N" != "$ORIG_N" ] || [ "$INTRA_CONC" != "$ORIG_INTRA" ]; then
+      MEM_NOTE=" | mem-adapted ${ORIG_N}x${ORIG_INTRA}→${N}x${INTRA_CONC} (avail=${AVAIL_MB}MB, ${MEM_PER_FILE_MB}MB/file)"
+    else
+      MEM_NOTE=" | mem-ok (avail=${AVAIL_MB}MB)"
+    fi
+  fi
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
 # Output directories. Prefer workspace-local .context/, fall back to /tmp.
 # ──────────────────────────────────────────────────────────────────────────
 LOG_DIR=""
@@ -114,7 +198,7 @@ elif command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout"
 fi
 
 START_TS=$(date +%s)
-echo "[unit-parallel] N=$N shards | --max-concurrency=$INTRA_CONC | timeout=${SHARD_TIMEOUT}s | kill-after=${SHARD_KILL_AFTER}s | logs=$LOG_DIR" >&2
+echo "[unit-parallel] N=$N shards | --max-concurrency=$INTRA_CONC | timeout=${SHARD_TIMEOUT}s | kill-after=${SHARD_KILL_AFTER}s | logs=$LOG_DIR${MEM_NOTE}" >&2
 
 if [ "$DRY_RUN" = "1" ]; then
   echo "[unit-parallel] dry-run: would spawn $N shards with the above settings."
@@ -316,6 +400,27 @@ TOTAL_FAILURES=0
 TOTAL_PASS=0
 TOTAL_SKIP=0
 TOTAL_RC=0
+
+# Layer 2 state (serial OOM rescue). A shard whose log carries the WASM
+# out-of-memory signature gets its failing files queued for a serial re-run;
+# NON_OOM_FAIL records that at least one failure exists that the rescue lane
+# must NOT absolve (plain assertion failures, wedges without the signature).
+OOM_RE='Out of memory|WebAssembly\.Memory|RuntimeError: [Aa]borted|Aborted\(\)'
+OOM_RESCUE_LIST="$LOG_DIR/oom-rescue-files.txt"
+: > "$OOM_RESCUE_LIST"
+NON_OOM_FAIL=0
+
+# failing_files_in_log: attribute each `(fail)` block to the test file whose
+# `path.test.ts:` header most recently preceded it in bun's output.
+failing_files_in_log() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  awk '
+    /^[^ ].*\.test\.ts:$/ { current = substr($0, 1, length($0) - 1); next }
+    /^\(fail\) / && current != "" { print current }
+  ' "$file" | sort -u
+}
+
 for i in $(seq 1 "$N"); do
   SHARD_LOG="$LOG_DIR/shard-$i.log"
   EXIT_FILE="$LOG_DIR/shard-$i.exit"
@@ -330,15 +435,42 @@ for i in $(seq 1 "$N"); do
   TOTAL_FAILURES=$((TOTAL_FAILURES + fail_count))
   TOTAL_SKIP=$((TOTAL_SKIP + skip_count))
 
+  shard_oom=0
+  if [ "$rc" != "0" ] && [ "${GBRAIN_TEST_NO_OOM_FALLBACK:-0}" != "1" ] \
+     && [ -f "$SHARD_LOG" ] && grep -qE "$OOM_RE" "$SHARD_LOG"; then
+    shard_oom=1
+  fi
+
   if [ -f "$WEDGED_FILE" ]; then
     TOTAL_RC=1
+    if [ "$shard_oom" = "1" ]; then
+      # Wedged UNDER memory pressure: we can't attribute failures, so queue
+      # the shard's entire file list for the serial rescue pass.
+      SHARD="$i/$N" bash scripts/run-unit-shard.sh --dry-run-list 2>/dev/null >> "$OOM_RESCUE_LIST"
+      echo "shard $i/$N: WEDGED after ${SHARD_TIMEOUT}s (rc=$rc, OOM signature — queued for serial rescue)" >> "$SUMMARY_FILE"
+    else
+      NON_OOM_FAIL=1
+      echo "shard $i/$N: WEDGED after ${SHARD_TIMEOUT}s (rc=$rc)" >> "$SUMMARY_FILE"
+    fi
     {
       echo "--- shard $i: WEDGED after ${SHARD_TIMEOUT}s ---"
       [ -f "$SHARD_LOG" ] && tail -50 "$SHARD_LOG"
       echo ""
     } >> "$FAILURES_LOG"
-    echo "shard $i/$N: WEDGED after ${SHARD_TIMEOUT}s (rc=$rc)" >> "$SUMMARY_FILE"
     continue
+  fi
+
+  if [ "$rc" != "0" ]; then
+    if [ "$shard_oom" = "1" ]; then
+      failing_files_in_log "$SHARD_LOG" >> "$OOM_RESCUE_LIST"
+      # A failing shard with the OOM signature but no attributable files
+      # (e.g. bun died before any file header) → rescue the whole shard.
+      if [ -z "$(failing_files_in_log "$SHARD_LOG")" ]; then
+        SHARD="$i/$N" bash scripts/run-unit-shard.sh --dry-run-list 2>/dev/null >> "$OOM_RESCUE_LIST"
+      fi
+    else
+      NON_OOM_FAIL=1
+    fi
   fi
 
   echo "shard $i/$N: pass=$pass_count fail=$fail_count skip=$skip_count rc=$rc" >> "$SUMMARY_FILE"
@@ -395,6 +527,15 @@ if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
   cat "$LOG_DIR/serial.log"
   if [ "$SERIAL_RC" != "0" ]; then
     TOTAL_RC=1
+    if [ "${GBRAIN_TEST_NO_OOM_FALLBACK:-0}" != "1" ] \
+       && grep -qE "$OOM_RE" "$LOG_DIR/serial.log"; then
+      # Serial files already run at concurrency 1, but ambient pressure from
+      # sibling workspaces can still OOM them — the rescue pass retries after
+      # the parallel fan-out has fully drained.
+      failing_files_in_log "$LOG_DIR/serial.log" >> "$OOM_RESCUE_LIST"
+    else
+      NON_OOM_FAIL=1
+    fi
     s_fail=$(bun_summary_count "fail" "$LOG_DIR/serial.log")
     TOTAL_FAILURES=$((TOTAL_FAILURES + s_fail))
     if [ "$s_fail" -gt 0 ]; then
@@ -420,6 +561,67 @@ if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
   fi
 fi
 
+# ──────────────────────────────────────────────────────────────────────────
+# Layer 2: serial OOM rescue. Re-run every file that failed inside an
+# OOM-signature shard, one at a time (1 shard, --max-concurrency 1), after
+# the parallel fan-out has fully drained. Phantom failures (the WASM ran out
+# of memory because 16 instances were up at once) pass here and the run goes
+# green with an oom_rescued note; real failures fail again and stay red.
+# ──────────────────────────────────────────────────────────────────────────
+OOM_RESCUED=0
+OOM_RESCUE_NOTE=""
+sort -u "$OOM_RESCUE_LIST" -o "$OOM_RESCUE_LIST" 2>/dev/null
+# grep -c exits 1 on zero matches — assign in two steps so an empty rescue
+# list yields a single "0" (the grep_count double-output bug, same class).
+RESCUE_COUNT=$(grep -c . "$OOM_RESCUE_LIST" 2>/dev/null) || RESCUE_COUNT=0
+if [ "$TOTAL_RC" != "0" ] && [ "${RESCUE_COUNT:-0}" -gt 0 ]; then
+  echo "════════════ OOM rescue pass ($RESCUE_COUNT files, serial) ════════════"
+  echo "[unit-parallel] OOM signature detected — re-running $RESCUE_COUNT failing file(s) at --max-concurrency 1" >&2
+  RESCUE_LOG="$LOG_DIR/oom-rescue.log"
+  # 60s-per-file floor with the shard cap as a minimum: a serial pass over a
+  # big rescue set legitimately takes longer than one parallel shard.
+  RESCUE_TIMEOUT=$((RESCUE_COUNT * 60))
+  [ "$RESCUE_TIMEOUT" -lt "$SHARD_TIMEOUT" ] && RESCUE_TIMEOUT="$SHARD_TIMEOUT"
+  RESCUE_RC=1
+  if [ -n "$TIMEOUT_BIN" ]; then
+    xargs "$TIMEOUT_BIN" --signal=TERM --kill-after="${SHARD_KILL_AFTER}s" "${RESCUE_TIMEOUT}s" \
+      bun test --max-concurrency 1 < "$OOM_RESCUE_LIST" > "$RESCUE_LOG" 2>&1
+    RESCUE_RC=$?
+  else
+    xargs bun test --max-concurrency 1 < "$OOM_RESCUE_LIST" > "$RESCUE_LOG" 2>&1
+    RESCUE_RC=$?
+  fi
+  cat "$RESCUE_LOG"
+  r_pass=$(bun_summary_count "pass" "$RESCUE_LOG")
+  r_fail=$(bun_summary_count "fail" "$RESCUE_LOG")
+  if [ "$RESCUE_RC" = "0" ] && [ "$NON_OOM_FAIL" = "0" ]; then
+    # Every failure in the run was OOM-phantom and every rescued file passed
+    # serially: the run is green. Adjust the headline numbers so they reflect
+    # the rescue verdict, and mark the earlier failure blocks superseded.
+    TOTAL_RC=0
+    OOM_RESCUED=1
+    TOTAL_PASS=$((TOTAL_PASS + r_pass))
+    TOTAL_FAILURES=0
+    OOM_RESCUE_NOTE=" | oom_rescued=${RESCUE_COUNT}files"
+    {
+      echo "--- OOM rescue: all $RESCUE_COUNT file(s) passed serially (${r_pass} tests) ---"
+      echo "--- failure blocks above were WASM out-of-memory phantoms, superseded ---"
+    } >> "$FAILURES_LOG"
+    echo "oom-rescue: $RESCUE_COUNT files pass=$r_pass rc=0 (phantom OOM failures superseded)" >> "$SUMMARY_FILE"
+  else
+    # Real failures confirmed serially (or a non-OOM failure exists anyway).
+    OOM_RESCUE_NOTE=" | oom_rescue_failed=${r_fail}real"
+    awk '
+      /^\(fail\) / { in_block=1; print "--- oom-rescue (serial, confirmed real): " $0; next }
+      in_block {
+        if (/^\(pass\)/ || /^\(skip\)/ || /^[[:space:]]*$/ || /__bun_test_summary__/) { in_block=0; print ""; next }
+        print $0
+      }
+    ' "$RESCUE_LOG" >> "$FAILURES_LOG"
+    echo "oom-rescue: $RESCUE_COUNT files pass=$r_pass fail=$r_fail rc=$RESCUE_RC (real failures confirmed)" >> "$SUMMARY_FILE"
+  fi
+fi
+
 END_TS=$(date +%s)
 ELAPSED=$((END_TS - START_TS))
 
@@ -436,10 +638,10 @@ if [ "$TOTAL_RC" != "0" ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     tail -30 "$FAILURES_LOG"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "[unit-parallel] elapsed=${ELAPSED}s | pass=$TOTAL_PASS fail=$TOTAL_FAILURES skip=$TOTAL_SKIP"
+    echo "[unit-parallel] elapsed=${ELAPSED}s | pass=$TOTAL_PASS fail=$TOTAL_FAILURES skip=$TOTAL_SKIP${OOM_RESCUE_NOTE}"
   } >&2
   exit 1
 fi
 
-echo "[unit-parallel] elapsed=${ELAPSED}s | pass=$TOTAL_PASS fail=$TOTAL_FAILURES skip=$TOTAL_SKIP" >&2
+echo "[unit-parallel] elapsed=${ELAPSED}s | pass=$TOTAL_PASS fail=$TOTAL_FAILURES skip=$TOTAL_SKIP${OOM_RESCUE_NOTE}" >&2
 exit 0
