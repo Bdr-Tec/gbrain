@@ -28,12 +28,14 @@
 #      hold at GBRAIN_TEST_MEM_PER_FILE_MB per concurrent file. Concurrent
 #      Conductor workspaces running their own suites shrink the budget
 #      automatically instead of OOMing each other.
-#   2. SERIAL OOM RESCUE — if a failing shard's log carries the PGLite WASM
-#      out-of-memory signature, the failing files are re-run serially
-#      (--max-concurrency 1) after the parallel pass. Phantom OOM failures
-#      pass serially and the run goes green with an oom_rescued note; real
-#      failures fail again and stay red. Plain assertion failures never match
-#      the signature and never trigger the rescue lane.
+#   2. SERIAL PHANTOM RESCUE — two phantom classes are re-run serially
+#      (--max-concurrency 1) after the parallel pass: (a) failures whose
+#      shard log carries the PGLite WASM out-of-memory signature, and
+#      (b) shards killed EXTERNALLY (SIGTERM/SIGKILL well before the shard
+#      timeout — sibling Conductor workspaces' process cleanup, macOS memory
+#      jetsam). Phantoms pass serially and the run goes green with an
+#      oom_rescued note; real failures fail again and stay red. Plain
+#      assertion failures never match either signature.
 #
 # Output files (workspace-local; falls back to /tmp if .context/ unwritable):
 #   .context/test-failures.log   failure blocks (cleared at start)
@@ -189,7 +191,7 @@ else
   mkdir -p "$LOG_DIR" || { echo "ERROR: cannot create log dir" >&2; exit 2; }
 fi
 # Clear from prior run.
-rm -f "$LOG_DIR"/shard-*.log "$LOG_DIR"/shard-*.exit "$LOG_DIR"/shard-*.wedged 2>/dev/null
+rm -f "$LOG_DIR"/shard-*.log "$LOG_DIR"/shard-*.exit "$LOG_DIR"/shard-*.wedged "$LOG_DIR"/shard-*.start "$LOG_DIR"/shard-*.end 2>/dev/null
 : > "$FAILURES_LOG"
 : > "$SUMMARY_FILE"
 
@@ -222,6 +224,7 @@ SHARD_PIDS=()
 for i in $(seq 1 "$N"); do
   (
     SHARD_LOG="$LOG_DIR/shard-$i.log"
+    date +%s > "$LOG_DIR/shard-$i.start"
     if [ -n "$TIMEOUT_BIN" ]; then
       "$TIMEOUT_BIN" --signal=TERM --kill-after="${SHARD_KILL_AFTER}s" "${SHARD_TIMEOUT}s" \
         env SHARD="$i/$N" \
@@ -251,6 +254,7 @@ for i in $(seq 1 "$N"); do
       kill "$cap_pid" 2>/dev/null
       wait "$cap_pid" 2>/dev/null
     fi
+    date +%s > "$LOG_DIR/shard-$i.end"
     echo "$rc" > "$LOG_DIR/shard-$i.exit"
     { [ "$rc" = "124" ] || [ "$rc" = "137" ]; } && echo "WEDGED" > "$LOG_DIR/shard-$i.wedged"
   ) &
@@ -446,9 +450,32 @@ for i in $(seq 1 "$N"); do
     shard_oom=1
   fi
 
+  # External-kill detection: rc 143 (SIGTERM) / 137 (SIGKILL) with the shard
+  # dying before 80% of the shard timeout means something OUTSIDE the runner
+  # killed it — sibling Conductor workspaces' process cleanup and macOS
+  # memory jetsam both present exactly this way (observed: 3 shards TERM'd +
+  # 1 KILL'd at ~700s under a 3000s cap, all mid-progress). A REAL wedge is
+  # killed BY the runner at ~SHARD_TIMEOUT and stays red. Externally-killed
+  # shards are phantoms: queue for the serial rescue lane like OOM.
+  shard_external_kill=0
+  if [ "$shard_oom" = "0" ] && [ "${GBRAIN_TEST_NO_OOM_FALLBACK:-0}" != "1" ] \
+     && { [ "$rc" = "143" ] || [ "$rc" = "137" ]; }; then
+    s_start=$(cat "$LOG_DIR/shard-$i.start" 2>/dev/null) || s_start=""
+    s_end=$(cat "$LOG_DIR/shard-$i.end" 2>/dev/null) || s_end=""
+    if [ -n "$s_start" ] && [ -n "$s_end" ]; then
+      s_elapsed=$((s_end - s_start))
+      if [ "$s_elapsed" -lt $((SHARD_TIMEOUT * 80 / 100)) ]; then
+        shard_external_kill=1
+      fi
+    fi
+  fi
+
   if [ -f "$WEDGED_FILE" ]; then
     TOTAL_RC=1
-    if [ "$shard_oom" = "1" ]; then
+    if [ "$shard_external_kill" = "1" ]; then
+      SHARD="$i/$N" bash scripts/run-unit-shard.sh --dry-run-list 2>/dev/null >> "$OOM_RESCUE_LIST"
+      echo "shard $i/$N: KILLED externally after ${s_elapsed}s (rc=$rc, well before ${SHARD_TIMEOUT}s cap — queued for serial rescue)" >> "$SUMMARY_FILE"
+    elif [ "$shard_oom" = "1" ]; then
       # Wedged UNDER memory pressure: we can't attribute failures, so queue
       # the shard's entire file list for the serial rescue pass.
       SHARD="$i/$N" bash scripts/run-unit-shard.sh --dry-run-list 2>/dev/null >> "$OOM_RESCUE_LIST"
@@ -473,6 +500,9 @@ for i in $(seq 1 "$N"); do
       if [ -z "$(failing_files_in_log "$SHARD_LOG")" ]; then
         SHARD="$i/$N" bash scripts/run-unit-shard.sh --dry-run-list 2>/dev/null >> "$OOM_RESCUE_LIST"
       fi
+    elif [ "$shard_external_kill" = "1" ]; then
+      SHARD="$i/$N" bash scripts/run-unit-shard.sh --dry-run-list 2>/dev/null >> "$OOM_RESCUE_LIST"
+      echo "shard $i/$N: KILLED externally after ${s_elapsed}s (rc=$rc — queued for serial rescue)" >> "$SUMMARY_FILE"
     else
       NON_OOM_FAIL=1
     fi
@@ -532,8 +562,9 @@ if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
   cat "$LOG_DIR/serial.log"
   if [ "$SERIAL_RC" != "0" ]; then
     TOTAL_RC=1
+    RESCUE_PENDING=$(grep -c . "$OOM_RESCUE_LIST" 2>/dev/null) || RESCUE_PENDING=0
     if [ "${GBRAIN_TEST_NO_OOM_FALLBACK:-0}" != "1" ] \
-       && grep -qE "$OOM_RE" "$LOG_DIR/serial.log"; then
+       && { grep -qE "$OOM_RE" "$LOG_DIR/serial.log" || [ "${RESCUE_PENDING:-0}" -gt 0 ]; }; then
       # Serial files already run at concurrency 1, but ambient pressure from
       # sibling workspaces can still OOM them — the rescue pass retries after
       # the parallel fan-out has fully drained.

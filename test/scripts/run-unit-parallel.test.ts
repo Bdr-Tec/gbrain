@@ -327,3 +327,31 @@ describe('oom-once', () => {
     expect(r.stderr).toMatch(/mem-(ok|adapted)/);
   }, 120_000);
 });
+
+describe('run-unit-parallel.sh external-kill rescue contract', () => {
+  // An externally-killed shard (sibling workspace pkill, memory jetsam)
+  // presents as rc 143/137 well before the shard timeout. Simulating a
+  // mid-run external kill deterministically in a fixture is flaky, so this
+  // pins the load-bearing structure instead: the early-death detector, the
+  // 80%-of-timeout threshold that separates external kills from real wedges,
+  // and the rescue-queue routing for both the wedged and non-wedged branches.
+  it('detects early SIGTERM/SIGKILL deaths against the 80% timeout threshold', () => {
+    const source = readFileSync(PARALLEL_SH_SRC, 'utf-8');
+    expect(source).toContain('[ "$rc" = "143" ] || [ "$rc" = "137" ]');
+    expect(source).toContain('$((SHARD_TIMEOUT * 80 / 100))');
+    expect(source).toContain('shard_external_kill=1');
+  });
+
+  it('routes externally-killed shards into the serial rescue queue, not the red path', () => {
+    const source = readFileSync(PARALLEL_SH_SRC, 'utf-8');
+    const killBranches = source.split('shard_external_kill" = "1"').length - 1;
+    expect(killBranches).toBeGreaterThanOrEqual(2); // wedged + non-wedged branch
+    expect(source).toContain('KILLED externally after ${s_elapsed}s');
+  });
+
+  it('stamps per-shard start/end epochs so early death is measurable', () => {
+    const source = readFileSync(PARALLEL_SH_SRC, 'utf-8');
+    expect(source).toContain('date +%s > "$LOG_DIR/shard-$i.start"');
+    expect(source).toContain('date +%s > "$LOG_DIR/shard-$i.end"');
+  });
+});
