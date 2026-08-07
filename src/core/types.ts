@@ -581,6 +581,13 @@ export interface Chunk {
   parent_symbol_path?: string[] | null;
   doc_comment?: string | null;
   symbol_name_qualified?: string | null;
+  /**
+   * v0.27.1 multimodal. Read side of ChunkInput.modality — must round-trip
+   * through getChunks → embed-stale merge → upsertChunks or image rows get
+   * reset to 'text' (EXCLUDED.modality on the upsert) and vanish from the
+   * image search arm.
+   */
+  modality?: 'text' | 'image';
 }
 
 /**
@@ -693,6 +700,17 @@ export interface SearchResult {
    */
   content_flag?: { reason: string; detail: string };
   /**
+   * Extraction quarantine lane (issue #160): true when the result's page is
+   * an unverified auto-extracted entity stub (frontmatter
+   * `provenance: 'auto-extracted'` + `status: 'unverified'`). Such pages are
+   * excluded from the compiled-truth authority boost and the namespace
+   * source-boost — they rank as ordinary content — and this marker tells the
+   * agent the page has NOT been reviewed by the owner. Stamped pre-fusion by
+   * `stampUnverifiedExtractions` (hybrid.ts). Absent for reviewed/ordinary
+   * pages.
+   */
+  unverified?: boolean;
+  /**
    * v0.36 (cross-modal wave): the chunk's modality discriminator from
    * content_chunks.modality. 'text' for the existing text-embedding rows,
    * 'image' for rows populated by importImageFile. Surfaced so callers /
@@ -716,6 +734,12 @@ export interface SearchResult {
    */
   effective_date?: string | null;
   effective_date_source?: string | null;
+  /** RFC 5322 Message-ID projected from allowlisted email frontmatter. */
+  message_id?: string;
+  /** Gmail thread id projected from allowlisted email frontmatter. */
+  thread_id?: string;
+  /** Exact email subject, projected only when the page has a Message-ID. */
+  source_subject?: string;
   /**
    * v0.40.4 graph signals — populated by applyGraphSignals when the
    * graph_signals mode-bundle knob is on. Surfaced in JSON envelope
@@ -975,6 +999,19 @@ export interface SearchOpts {
    */
   sourceIds?: string[];
   /**
+   * fix/title-retrieval-arm (D2, Reviewer F1): opt-in AND→OR keyword-recall
+   * fallback. When true, `searchKeyword` retries ONCE with OR-of-terms after
+   * the strict websearch AND query returns zero rows (strict results always
+   * win when non-empty). Default false/undefined = strict-AND only — the
+   * pre-fix contract. hybridSearch opts in for its keyword arm; precision
+   * consumers (enrichment countMentions, link-extraction resolution, eval
+   * paths) MUST NOT set this: OR-matches would inflate mention counts and
+   * relax link-candidate resolution ("John Smith" matching every John and
+   * every Smith). `searchTitles` has its own page-grain fallback and
+   * ignores this flag.
+   */
+  orFallback?: boolean;
+  /**
    * v0.27.1 / v0.36 (D11): target column for vector search. Two shapes:
    *
    * 1. String name (legacy + user-facing). Engine and hybridSearch convert
@@ -1166,7 +1203,11 @@ export interface CodeEdgeResult {
 // Links
 export interface Link {
   from_slug: string;
+  /** Exact source identity of the from-page joined by from_page_id. */
+  from_source_id: string;
   to_slug: string;
+  /** Exact source identity of the to-page joined by to_page_id. */
+  to_source_id: string;
   link_type: string;
   context: string;
   /**
@@ -1184,6 +1225,8 @@ export interface Link {
    * multiple pages reference the same (from, to, type) tuple.
    */
   origin_slug?: string | null;
+  /** Exact source identity of origin_slug; null when absent or grant-redacted. */
+  origin_source_id?: string | null;
   /**
    * The frontmatter field name that created this edge (e.g. 'key_people',
    * 'investors'). Used for debug output and the `unresolved` response list.
@@ -1402,10 +1445,20 @@ export interface BrainStats {
 
 export interface BrainHealth {
   page_count: number;
+  /**
+   * Pages inside the linkable scope (src/core/orphan-policy.ts) — the
+   * pages expected to participate in the curated link graph. Excludes
+   * archive (raw/), generated, and daily-log pages; the same scope the
+   * orphans audit uses. Denominator for the no-orphans and
+   * timeline-coverage score components.
+   */
+  linkable_page_count: number;
   embed_coverage: number;
   stale_pages: number;
   /**
-   * Islanded pages — zero inbound AND zero outbound links. A hub page
+   * Islanded pages — zero inbound AND zero outbound links, counted over
+   * LINKABLE pages only (the same scope as the `gbrain orphans` audit, so
+   * doctor cannot report two contradictory orphan numbers). A hub page
    * that has references out but no back-references is NOT an orphan under
    * this definition (it's working as intended as an index). The metric
    * aims at "pages I forgot to connect to anything", not the stricter

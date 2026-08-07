@@ -34,7 +34,7 @@ import { VERSION } from '../version.ts';
 import { dispatchToolCall } from './dispatch.ts';
 import { buildDefaultLimiters, type RateLimiter } from './rate-limit.ts';
 import { sqlQueryForEngine } from '../core/sql-query.ts';
-import { parseLegacyTokenScope } from '../core/legacy-token-scope.ts';
+import { parseLegacyTokenScope, parseTakesHoldersAllowList, coerceLegacyPermissions } from '../core/legacy-token-scope.ts';
 export { parseLegacyTokenScope };
 
 const DEFAULT_BODY_CAP = 1024 * 1024; // 1 MiB
@@ -84,6 +84,14 @@ interface AuthResult {
    * Bounded to the stored grant — never widened to "all".
    */
   auth?: AuthInfo;
+  /**
+   * #3242: true when the token row carries an operator-set
+   * `permissions.source_id` (string OR array — even a malformed one, which
+   * fails closed to 'default' without widening). false = the historical
+   * no-grant 'default' floor; ONLY that case gets the federated read set
+   * (config.federated sources) threaded as localFederatedSourceIds.
+   */
+  hasSourceGrant?: boolean;
 }
 
 /* Legacy token source-scope parsing lives in core/legacy-token-scope.ts and is
@@ -206,10 +214,13 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
         .catch(() => { /* fire-and-forget */ });
       // v0.28: extract per-token takes-holder allow-list. Fail-safe default
       // is ['world'] — a token with no permissions row sees public claims only.
-      const perms = (row as { permissions?: { takes_holders?: unknown; source_id?: unknown } }).permissions;
-      const allowList = Array.isArray(perms?.takes_holders)
-        ? (perms!.takes_holders as unknown[]).filter(h => typeof h === 'string') as string[]
-        : ['world'];
+      // #2529: decode + parse via the shared core helpers so this transport and
+      // the OAuth provider behind `serve --http` cannot drift — including a
+      // double-encoded jsonb string scalar (#2339 class), which both now decode
+      // identically instead of one honoring the grant while the other fails
+      // open to ['world'].
+      const perms = coerceLegacyPermissions((row as { permissions?: unknown }).permissions);
+      const allowList = parseTakesHoldersAllowList(perms?.takes_holders) ?? ['world'];
       // #1336: honor the operator-set source grant stored on the token.
       const { sourceId, allowedSources } = parseLegacyTokenScope(perms?.source_id);
       const auth: AuthInfo = {
@@ -229,6 +240,9 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
         // source unless the token carries an explicit grant (#1336 above).
         sourceId,
         auth,
+        // #3242: distinguish "operator granted a scope" from "historical
+        // no-grant floor" — only the latter widens to federated sources.
+        hasSourceGrant: perms?.source_id != null,
       };
     } catch {
       return { ok: false };
@@ -379,10 +393,21 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
         // takes_search / query (when it returns takes) can server-side filter.
         // v0.34.1 (#861): thread source-isolation scope. Legacy access_tokens
         // path defaults to 'default' per AuthResult.sourceId above.
+        // #3242: a token with NO operator-set source grant reads across the
+        // federated set (config.federated sources), not just the scalar
+        // 'default' floor. Granted tokens (hasSourceGrant) never widen.
+        let localFederated: string[] | undefined;
+        if (auth.hasSourceGrant === false && auth.sourceId) {
+          try {
+            const { localFederatedSourceIds } = await import('../core/source-resolver.ts');
+            localFederated = await localFederatedSourceIds(engine, auth.sourceId, 'seed_default');
+          } catch { /* scalar scope stands */ }
+        }
         const result = await dispatchToolCall(engine, toolName, args, {
           remote: true,
           takesHoldersAllowList: auth.takesHoldersAllowList,
           sourceId: auth.sourceId,
+          ...(localFederated ? { localFederatedSourceIds: localFederated } : {}),
           // #1336: thread the token's federated_read grant so read ops scope
           // to the operator-granted sources via sourceScopeOpts.
           auth: auth.auth,
