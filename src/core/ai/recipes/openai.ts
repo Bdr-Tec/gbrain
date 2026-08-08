@@ -25,19 +25,28 @@ export const openai: Recipe = {
       max_batch_tokens: 100_000,
     },
     expansion: {
-      models: ['gpt-5.2', 'gpt-4o-mini'],
-      cost_per_1m_tokens_usd: 0.15,
-      price_last_verified: '2026-04-20',
+      // gpt-5.6-luna is the high-volume tier ($0.20/M input after the
+      // 2026-07-30 price cut) — cheaper than gpt-4o-mini for output-light
+      // expansion calls at current rates.
+      models: ['gpt-5.6-luna', 'gpt-4o-mini'],
+      cost_per_1m_tokens_usd: 0.20,
+      price_last_verified: '2026-08-08',
     },
     chat: {
-      models: ['gpt-5.2', 'gpt-4o-mini'],
+      // gpt-5.2 dropped off OpenAI's live price sheet with the GPT-5.6
+      // family GA (2026-07-09) — removed so the default-slot guard tests
+      // can't validate defaults against a dead model. Terra is the
+      // balanced mainline tier (same price class gpt-5.2 occupied); Luna
+      // is high-volume; Sol is the frontier tier. gpt-4o-mini remains on
+      // the live sheet.
+      models: ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-4o-mini'],
       supports_tools: true,
       supports_subagent_loop: true,
       supports_prompt_cache: false,
-      max_context_tokens: 200000,
-      cost_per_1m_input_usd: 1.25, // gpt-5.2 baseline
-      cost_per_1m_output_usd: 10.0,
-      price_last_verified: '2026-04-20',
+      max_context_tokens: 1000000, // GPT-5.6 family: 1.05M across all tiers
+      cost_per_1m_input_usd: 2.00, // gpt-5.6-terra baseline
+      cost_per_1m_output_usd: 12.0,
+      price_last_verified: '2026-08-08',
     },
   },
   setup_hint: 'Get an API key at https://platform.openai.com/api-keys, then `export OPENAI_API_KEY=...`',

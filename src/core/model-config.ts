@@ -58,8 +58,12 @@ export const DEFAULT_ALIASES: Record<string, string> = {
   opus:   'anthropic:claude-opus-4-7',
   sonnet: 'anthropic:claude-sonnet-4-6',
   haiku:  'anthropic:claude-haiku-4-5-20251001',
-  gemini: 'google:gemini-3-pro',
-  gpt:    'openai:gpt-5',
+  // gemini: repointed 2026-08-08 — `gemini-3-pro` only ever existed as a
+  // preview id (`gemini-3-pro-preview`) and was shut down; 3.6-flash is the
+  // current GA mainline. gpt: OpenAI's own `gpt-5.6` alias routes to Sol,
+  // the frontier tier, matching the opus-alias convention above.
+  gemini: 'google:gemini-3.6-flash',
+  gpt:    'openai:gpt-5.6-sol',
 };
 
 /**
