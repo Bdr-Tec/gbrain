@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.43.0.0] - 2026-06-12
+## [0.43.0.0] - 2026-08-08
 
 **Your agent now has five memory verbs it can actually reach.** Cathedral 1 freezes
 a stable, versioned memory protocol — `recall`, `remember`, `entity`, `synthesize`,
@@ -43,12 +43,39 @@ migration; the verbs ride the existing facts, pages, and typed-graph tables. The
 contract, per-harness install blocks, and the additive-forever versioning policy live in
 [docs/protocol/MEMORY_VERBS_v1.md](docs/protocol/MEMORY_VERBS_v1.md).
 
+**This release also fixes which search verb your agent reaches for (#2416).** The
+`search` and `query` tool descriptions, the mandatory lookup chain, and the search
+guides had drifted from reality: they described `search` as keyword-only (it has been
+cheap hybrid — vector + keyword, no LLM expansion — for many releases) and told agents
+to try `search` first for everything, falling back to `query` only when results looked
+"thin". For concept questions ("all the X that do Y", "the ecosystem around Z") that
+fallback never fired, and synonym-phrased matches dropped silently.
+
+- **Concept questions now route to `query` by default.** The tool descriptions and the
+  lookup-chain convention are intent-driven: exact known tokens → `search` (cheaper, no
+  expansion call); concept / synonym / exhaustive-set questions → `query` first. Verified
+  with a live LLM routing eval: all concept phrasings route to `query`, and personal
+  questions still route to the salience ops.
+- **"Got results" is no longer treated as "got everything."** The descriptions, docs, and
+  conventions now say it plainly: a populated `search` result set is not proof of
+  coverage, and `query` is still top-K — literal exhaustive enumeration belongs to
+  `list_pages` pagination.
+- **The CLI nudges you when it can help.** A concept-shaped `gbrain search "..."` prints a
+  one-line hint on stderr suggesting the equivalent `gbrain query` call (results stay
+  clean on stdout; `--quiet` silences it; never auto-reroutes).
+- **`think` cost accounting reads consistently.** When no LLM call ran (stubbed or no
+  API key), `usage` is now uniformly `null` in `--json` output rather than sometimes
+  missing.
+
 To take advantage of v0.43.0.0: re-run `gbrain serve` with `--surface verbs` to give
 your coding agent the five-verb memory protocol (or keep `--surface full` for the
 complete operation catalog — both speak the verbs). Run `gbrain protocol conformance`
 to self-certify, and `gbrain protocol stats` to watch adoption. Memories your agent
 saves are readable by every agent connected to the brain by default; pass
-`visibility: "private"` for local-only facts.
+`visibility: "private"` for local-only facts. If your agent instructions or skill
+files copy the old "search first, query if thin" rule, refresh them from
+`skills/conventions/brain-first.md` — the shipped skillpack carries the corrected
+routing.
 ## [0.42.74.0] - 2026-08-07
 
 **Two fixes for agents that reach a brain over the network: takes-holder visibility now works the way you set it, and the voice recipe is safe by default.**
