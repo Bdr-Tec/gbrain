@@ -1,5 +1,28 @@
 # TODOS
 
+## WAL-repair wave follow-ups (#223/#1670/#2575)
+
+- [ ] **P2 — graceful PGLite close on SIGTERM for the remaining long-running paths.**
+  The torn-WAL genesis this wave repairs is an unclean shutdown: `src/core/process-cleanup.ts`
+  releases locks on SIGTERM but never closes the PGlite handle, so `serve` / `jobs work` /
+  `sync` killed mid-write (macOS-upgrade reboot, `systemctl stop`) leave the WAL torn.
+  Autopilot already ships the pattern (d2fd1f29, #3178/#1872: `registerCleanup('autopilot-engine-close', ...)`
+  — abort in-flight work → ≤2s bounded wait inside the 3s cleanup deadline →
+  `engine.disconnect()`, double-call safe; rationale comment at autopilot.ts:438-452).
+  Extend that exact pattern to the remaining long-running PGLite paths (register in
+  connect()/command scope; dedupe so autopilot doesn't double-close), pinned by a serial
+  lifecycle test. Interacts with #2084 exitCode containment + #1337 close ordering — read
+  those comments in pglite-engine.ts first. Auto-repair makes recurrence self-healing
+  meanwhile, so this is prevention, not recovery.
+- [ ] **P3 — pglite upgrade blocker tracker.** Two couplings make a "routine" pglite bump a
+  breaking change: (a) pglite ≥0.5 removes the `@electric-sql/pglite/vector` export that
+  `pglite-engine.ts` imports (verified against npm); (b) the pg_resetwal port
+  (`src/core/pglite-resetwal.ts`) is coupled to the PG17 pg_control layout
+  (`PG_CONTROL_VERSION` 1700 — guarded at runtime by `WalResetUnsupportedError`, so a
+  mismatched bump makes the repair tool refuse every dir rather than corrupt, but it still
+  means the repair feature silently dies). Any future pglite upgrade wave must revisit BOTH
+  together and re-derive the ControlFileData offset table for the new PG major.
+
 ## v0.42.67.0 follow-ups (Windows build tooling)
 
 Filed as follow-ups from v0.42.67.0 (`.gitattributes` LF pin for `*.sh` +
