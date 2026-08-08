@@ -1923,7 +1923,38 @@ voice CLEARED). None block the wave.
   clause (`src/mcp/http-transport.ts` validateToken). Apply the same pattern —
   one fewer write per request on the `serve --http` hot path.
   Where: `src/core/oauth-provider.ts`.
+## nightly dream digest (filed v0.42.73.1)
 
+Operators wire `gbrain dream --json` into a notifier (Telegram, Slack, email) through a
+hand-rolled shell wrapper, then `jq` the counters out of it. That shape is fragile and
+produces a low-signal report. Both problems are ours to fix, not the operator's.
+
+- [ ] **P1 — `gbrain dream --digest` — a notification-ready summary gbrain owns.**
+  Today every operator re-implements the same `jq` pipeline against `.totals` and
+  `.phases[]`. Three failure modes follow. (a) The wrapper guesses at our schema, so a
+  field rename degrades it silently. (b) Deltas are impossible — a wrapper has nowhere to
+  persist last night's totals, so it can only print levels, and an orphan count carries no
+  information without a trend. (c) Wrappers redirect with `2>&1`, which merges our stderr
+  progress stream into the `--json` stdout payload and makes the report unparseable; the
+  usual `|| echo '?'` fallback then renders a dead monitor as a healthy one. Emit a
+  formatted digest directly so none of this is the caller's problem.
+- [ ] **P1 — report by exception, with deltas.** A quiet night is `synced=0 extracted=0
+  embedded=0` — three zeros in the headline while the `warn` phases and the
+  needs-a-human items go unmentioned. Invert it: collapse healthy phases into a single
+  status line, lead with `warn`/`error` phases, and render every counter as a delta
+  against the prior run. Persist prior-run totals so the delta is real. A phase reporting
+  `0 fixes applied` for N consecutive nights while its backlog grows is the signal worth
+  paging on, and no level-only report can express it.
+- [ ] **P2 — fold `advisor` into the digest's action section.** Every number in a nightly
+  report should carry the command that acts on it. `src/core/advisor/` already computes a
+  ranked action list from brain state across its collectors; the digest's
+  "waiting on you" section should call it rather than grow a second ranking heuristic.
+- [ ] **P2 — surface skipped-because-disabled phases.** A dream run can skip many phases
+  purely on config flags. That is invisible in the totals, so a brain can quietly do far
+  less work than its operator believes for months. Name the disabled phases in the digest.
+- [ ] **P3 — document the stdout/stderr contract at the point of use.** `--json` callers
+  must not merge streams. Say so in the `dream` help text and in the cron/scheduling
+  guide, next to the example wrapper.
 ## v0.42.67.0 follow-ups (Windows build tooling)
 
 Filed as follow-ups from v0.42.67.0 (`.gitattributes` LF pin for `*.sh` +
