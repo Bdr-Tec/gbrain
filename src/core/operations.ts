@@ -480,6 +480,22 @@ export interface AuthInfo {
    */
   allowedSources?: string[];
   /**
+   * Per-token allow-list for the holder field on `takes`, populated at
+   * token-verification time from `access_tokens.permissions.takes_holders`
+   * for legacy bearer tokens (via `parseTakesHoldersAllowList` in
+   * `src/core/legacy-token-scope.ts`). The HTTP transport threads this into
+   * `OperationContext.takesHoldersAllowList` (documented below).
+   *
+   * `[]` is an explicit deny-all grant and is PRESERVED (never collapsed).
+   * `undefined` means the token row carries no array grant — OAuth clients
+   * have no per-client storage yet (see TODOS.md) — and consumers apply the
+   * fail-closed `['world']` default at the dispatch site.
+   *
+   * Rides the same `as CoreAuthInfo as SdkAuthInfo` cast as `sourceId` /
+   * `allowedSources` above.
+   */
+  takesHoldersAllowList?: string[];
+  /**
    * v0.42.72.0: slug-prefix WRITE binding from
    * `oauth_clients.bound_slug_prefixes`, threaded at token-verification
    * time (same JOIN as sourceId/allowedSources — no per-op roundtrip).

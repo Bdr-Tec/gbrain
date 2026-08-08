@@ -2004,8 +2004,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // injection via the metaHook. HTTP-specific concerns (mcp_request_log
       // persistence + SSE broadcast) stay here; the dispatcher returns the
       // ToolResult and we read isError + _meta to pick the right branch.
-      const tokenAllowList = (authInfo as AuthInfo & { takesHoldersAllowList?: string[] }).takesHoldersAllowList
-        ?? ['world'];
+      // #2529: takesHoldersAllowList is a typed AuthInfo field populated by
+      // verifyAccessToken from access_tokens.permissions.takes_holders for
+      // legacy bearer tokens ([] preserved as deny-all). The fail-closed
+      // ['world'] default covers OAuth-client tokens (no per-client storage
+      // yet — see TODOS.md) and pre-v29 brains (no permissions column →
+      // isUndefinedColumnError fallback in verifyAccessToken).
+      const tokenAllowList = authInfo.takesHoldersAllowList ?? ['world'];
       // v0.34.1 (#861, D13): AuthInfo.sourceId is now a real typed field
       // populated from oauth_clients.source_id (migration v60 backfilled
       // NULL → 'default'). Pre-fix this site cast through AuthInfo and

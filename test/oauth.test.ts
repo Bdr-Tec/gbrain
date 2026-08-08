@@ -509,6 +509,84 @@ describe('verifyAccessToken', () => {
     expect(authInfo.sourceId).toBe('default');
     expect(authInfo.allowedSources).toEqual(['default', 'src-a', 'src-b']);
   });
+
+  // -------------------------------------------------------------------------
+  // #2529 — legacy access_tokens fallback threads permissions.takes_holders
+  // into AuthInfo.takesHoldersAllowList. Each test adds the v29 permissions
+  // column idempotently and inserts `permissions` EXPLICITLY: the column's
+  // NOT NULL DEFAULT is '{"takes_holders":["world"]}', so relying on the
+  // default would silently turn an "absent key" case into a ['world'] case.
+  // -------------------------------------------------------------------------
+
+  async function insertLegacyTokenWithPermissions(
+    name: string,
+    permissions: Record<string, unknown> | undefined,
+  ): Promise<string> {
+    await sql`
+      ALTER TABLE access_tokens
+        ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{"takes_holders":["world"]}'::jsonb
+    `;
+    const token = generateToken('gbrain_');
+    const hash = hashToken(token);
+    if (permissions === undefined) {
+      await sql`
+        INSERT INTO access_tokens (id, name, token_hash)
+        VALUES (${crypto.randomUUID()}, ${name}, ${hash})
+      `;
+    } else {
+      await sql`
+        INSERT INTO access_tokens (id, name, token_hash, permissions)
+        VALUES (${crypto.randomUUID()}, ${name}, ${hash}, ${JSON.stringify(permissions)}::jsonb)
+      `;
+    }
+    return token;
+  }
+
+  test('legacy token with takes_holders grant → takesHoldersAllowList threaded (#2529)', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-grant-agent', { takes_holders: ['world', 'brain'] });
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toEqual(['world', 'brain']);
+  });
+
+  test('legacy token with no takes_holders key → undefined (consumer defaults to world)', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-absent-agent', {});
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toBeUndefined();
+  });
+
+  test('legacy token with non-array takes_holders → undefined (fail-closed at consumer)', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-garbage-agent', { takes_holders: 'world' });
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toBeUndefined();
+  });
+
+  test('legacy token with empty-array takes_holders → [] preserved as explicit deny-all', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-denyall-agent', { takes_holders: [] });
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toBeDefined();
+    expect(authInfo.takesHoldersAllowList).toEqual([]);
+  });
+
+  test('legacy token with mixed-type takes_holders → non-string entries filtered', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-mixed-agent', { takes_holders: ['world', 42, null] });
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toEqual(['world']);
+  });
+
+  test('OAuth-client token → takesHoldersAllowList undefined (no per-client storage; fail-closed)', async () => {
+    const { clientId, clientSecret } = await provider.registerClientManual(
+      'takes-oauth-client', ['client_credentials'], 'read',
+    );
+    const tokens = await provider.exchangeClientCredentials(clientId, clientSecret!, 'read');
+    const authInfo = await provider.verifyAccessToken(tokens.access_token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toBeUndefined();
+  });
+
+  test('legacy token relying on the v29 column default → ["world"] (fix invisible to unrestricted tokens)', async () => {
+    const token = await insertLegacyTokenWithPermissions('takes-default-agent', undefined);
+    const authInfo = await provider.verifyAccessToken(token) as CoreAuthInfo;
+    expect(authInfo.takesHoldersAllowList).toEqual(['world']);
+  });
 });
 
 // ---------------------------------------------------------------------------
