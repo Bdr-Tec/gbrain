@@ -45,8 +45,8 @@ Answer questions using the brain's knowledge with 3-layer search and synthesis.
 >   heavy version of `query`. Reach for it only when the answer must combine
 >   evidence across pages.
 > Fall back to `search`/`query`/`get_page` when the verbs aren't on the surface
-> (older brains, or `gbrain serve --surface full`). See
-> `docs/protocol/MEMORY_VERBS_v1.md`.
+> (pre-0.43 servers; `--surface full` includes the verbs alongside every other
+> op). See `docs/protocol/MEMORY_VERBS_v1.md`.
 
 ## Contract
 

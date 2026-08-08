@@ -273,7 +273,7 @@ audit trail lives in the source repo's git history.
 
 ## Skills
 
-Read the skill files in `skills/` before doing brain operations. GBrain ships 30 skills
+Read the skill files in `skills/` before doing brain operations. GBrain ships 52 skills
 organized by `skills/RESOLVER.md` (`AGENTS.md` is also accepted as of v0.19):
 
 **Original 8 (conformance-migrated):** ingest (thin router), query, maintain, enrich,

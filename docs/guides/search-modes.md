@@ -27,7 +27,7 @@ on user_asks_about(topic):
         # e.g., "Find anything about Series A" -> gbrain search "Series A"
         # Returns CHUNKS, not full pages
 
-        # IMPORTANT: keyword search returns chunks
+        # IMPORTANT: search returns chunks
         # If the chunk confirms relevance, THEN load the full page:
         if chunk.confirms_relevance:
             full_page = gbrain get <slug_from_chunk>

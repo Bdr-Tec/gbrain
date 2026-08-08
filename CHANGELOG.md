@@ -10,7 +10,8 @@ a stable, versioned memory protocol — `recall`, `remember`, `entity`, `synthes
 protocol to every client. Point any MCP harness at it (`claude mcp add gbrain --
 gbrain serve --surface verbs`, or the Codex/OpenClaw equivalents) and the agent sees
 exactly five self-describing tools instead of a wall of internal ops. Every response
-carries what it is, why it matched, where it came from, and what it cost — and the
+carries what it is, why it matched, where it came from, and what it spent (the token
+budget on `recall`, latency on `entity`, the full cost block on `synthesize`) — and the
 contract never breaks: v1 field names and meanings are frozen, changes are
 additive-forever.
 
@@ -18,8 +19,9 @@ What you can do now that you couldn't before:
 
 - **Remember a fact once, recall it in a fresh session — in any harness.** `remember`
   takes mandatory provenance (where the fact came from) and an optional expiry, dedupes
-  against what's already known, and updates in place when a fact changes
-  ("X joined acme-example" → "X left acme-example"). `recall` retrieves saved facts and,
+  against what's already known, and supersedes the old fact when it changes
+  ("X joined acme-example" → "X left acme-example" — the outdated fact expires, the
+  history stays). `recall` retrieves saved facts and,
   with a query, budget-packed page snippets — the server enforces the token budget and
   tells you what it dropped instead of trusting the client to trim.
 - **Look up one person/company/project as a compact card in well under 100ms, zero LLM

@@ -40,6 +40,20 @@ and the scope record at `~/.gstack/projects/garrytan-gbrain/ceo-plans/2026-06-12
   `src/core/verbs/entity-card.ts` open-threads assembly + a new schema table
   (additive — the card field already exists, so this is a quality upgrade, not
   a contract change).
+- [ ] **P2 — `recall` filter composition vs the spec (found by the v0.43.0.0
+  cross-model doc review).** The handler dispatch is first-match
+  (`supersessions` > `entity` > `session_id` > `since`), so `since` is
+  silently ignored when `entity`/`session_id` is supplied, and `limit` has no
+  server-side cap. Either compose the filters (additive — the spec's "filters
+  the FACTS arm" wording already reads that way) or spell the precedence out
+  in `docs/protocol/MEMORY_VERBS_v1.md`. **Where:** the `recall` handler in
+  `src/core/operations.ts`.
+- [ ] **P3 — widen `synthesize`'s `unavailable` mapping.** Only the
+  missing-key gateway warning maps to the `unavailable` error today; other
+  no-usable-model failures can surface as `internal` (contract-legal but less
+  actionable) or, worst case, a stubbed success. Audit the gateway failure
+  modes and map every model-unusable path to `unavailable` with a fix
+  suggestion. **Where:** the `synthesize` handler in `src/core/verbs.ts`.
 
 ## serve --http takes-holders + agent-voice hardening follow-ups (filed v0.42.74.0)
 

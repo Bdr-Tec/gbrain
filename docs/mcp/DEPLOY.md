@@ -5,8 +5,8 @@
 > dashboard at `/admin`, scoped operations, and a live SSE activity feed.
 > Pre-v0.26 legacy bearer tokens still work — `verifyAccessToken` falls back
 > to the `access_tokens` table and grandfathers tokens to `read+write+admin`.
-> Postgres-only for the legacy fallback (the `access_tokens` table is Postgres-only);
-> OAuth tables work on both PGLite and Postgres. See [SECURITY.md](../../SECURITY.md)
+> Both the legacy fallback and the OAuth tables work on PGLite and Postgres
+> (both engine schemas carry `access_tokens`). See [SECURITY.md](../../SECURITY.md)
 > for env vars and tunable defaults.
 
 Access your brain from any device, any AI client. GBrain ships two transports:

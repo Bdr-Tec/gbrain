@@ -9,7 +9,7 @@ Already running [OpenClaw](https://github.com/garrytan/openclaw) or [Hermes](htt
 ```bash
 bun install -g github:garrytan/gbrain
 gbrain init --pglite                  # 2 seconds; no server
-gbrain skillpack scaffold --all       # 43 skills scaffolded into your agent workspace
+gbrain skillpack scaffold --all       # 52 skills scaffolded into your agent workspace
 gbrain doctor                         # green checks all the way down
 ```
 

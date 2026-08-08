@@ -422,7 +422,7 @@ audit trail lives in the source repo's git history.
 
 ## Skills
 
-Read the skill files in `skills/` before doing brain operations. GBrain ships 30 skills
+Read the skill files in `skills/` before doing brain operations. GBrain ships 52 skills
 organized by `skills/RESOLVER.md` (`AGENTS.md` is also accepted as of v0.19):
 
 **Original 8 (conformance-migrated):** ingest (thin router), query, maintain, enrich,
@@ -1606,7 +1606,7 @@ Retrieve and follow the instructions at:
 https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
 ```
 
-The agent installs GBrain, creates the brain, asks for your API keys, loads 43 skills, configures the dream cycle, and verifies the install end-to-end. ~30 minutes. You answer questions, it does the work.
+The agent installs GBrain, creates the brain, asks for your API keys, loads 52 skills, configures the dream cycle, and verifies the install end-to-end. ~30 minutes. You answer questions, it does the work.
 
 > **Never set up an AI agent platform before?** The [personal-brain tutorial](docs/tutorials/personal-brain.md) walks the whole path end-to-end — picking OpenClaw vs Hermes, deploying it, pointing it at INSTALL_FOR_AGENTS.md, getting the API keys, and verifying the first query. Start there if any of the above is new.
 
@@ -1634,7 +1634,7 @@ gbrain connect https://your-host/mcp --token gbrain_xxx --agent codex --install 
 
 ### Install the full autonomous setup into your existing agent
 
-Want the whole thing — local brain, 43 skills, the overnight dream cycle that enriches while you sleep? Paste this into Codex, Claude Code, Cursor, or another coding agent:
+Want the whole thing — local brain, 52 skills, the overnight dream cycle that enriches while you sleep? Paste this into Codex, Claude Code, Cursor, or another coding agent:
 
 ```
 Retrieve and follow the instructions at:
@@ -1657,7 +1657,7 @@ Postgres-at-scale, Supabase, and thin-client setup paths live in [`docs/INSTALL.
 
 ### Connect GBrain to your AI client (MCP)
 
-GBrain exposes 30+ tools over MCP (stdio and HTTP). The specific snippet depends on which client you use:
+GBrain exposes 110 tools over MCP (stdio and HTTP) — or exactly the five memory verbs with `--surface verbs`. The specific snippet depends on which client you use:
 
 - **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — local: one command, `claude mcp add gbrain -- gbrain serve` (zero server, zero tunnel). Remote with just a bearer token: `gbrain connect https://your-host/mcp --token gbrain_xxx` prints a paste-ready block (or `--install` wires it up and smoke-tests the token).
 - **[Codex](docs/mcp/CODEX.md)** — `gbrain connect https://your-host/mcp --token gbrain_xxx --agent codex` (or `--install`). Codex reads the bearer from `$GBRAIN_REMOTE_TOKEN` at runtime, so the token never lands in Codex config.
@@ -3685,8 +3685,8 @@ Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/mcp/DEPLOY
 > dashboard at `/admin`, scoped operations, and a live SSE activity feed.
 > Pre-v0.26 legacy bearer tokens still work — `verifyAccessToken` falls back
 > to the `access_tokens` table and grandfathers tokens to `read+write+admin`.
-> Postgres-only for the legacy fallback (the `access_tokens` table is Postgres-only);
-> OAuth tables work on both PGLite and Postgres. See [SECURITY.md](../../SECURITY.md)
+> Both the legacy fallback and the OAuth tables work on PGLite and Postgres
+> (both engine schemas carry `access_tokens`). See [SECURITY.md](../../SECURITY.md)
 > for env vars and tunable defaults.
 
 Access your brain from any device, any AI client. GBrain ships two transports:
@@ -4059,7 +4059,7 @@ the same registry.
   implementation-defined (noted per field), implementations may improve the
   derivation without a version bump; the values and their meanings stay fixed.
 
-## Install (the 3-command quickstart)
+## Install (the 4-command quickstart)
 
 ```bash
 gbrain init --pglite                                      # 2-second local brain
@@ -4246,7 +4246,14 @@ plain indexed read, deterministic). It does NOT judge ranking quality.
 Entity-card cases need a seedable page (`put_page`); against verbs-only
 targets they skip honestly. `--synthesize` is cost-gated: with no LLM key it
 asserts the clean `unavailable` error (what CI does); with a key it spends
-real tokens. The fixture set ships as data
+real tokens.
+
+Conformance is a LIVE test that WRITES: it seeds a marker-suffixed synthetic
+entity page (`people/conformance-<marker>`, when the target exposes
+`put_page`) and writes/expires facts through `remember`/`forget`. Point it at
+write-capable credentials and a brain you're comfortable leaving those
+synthetic artifacts in — they're marker-named for easy cleanup, not
+auto-deleted. The fixture set ships as data
 (`test/fixtures/memory-verbs/cases.json`) and seeds BrainBench's
 protocol-compliance arm. gbrain's CI certifies its own stdio + HTTP
 transports; external certification is best-effort tooling until a second

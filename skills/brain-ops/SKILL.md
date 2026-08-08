@@ -164,8 +164,8 @@ the citation is `[gstack:plans/foo]`. That's the whole rule.
 
 ## Tools Used
 
-- `search` — keyword search
-- `query` — hybrid vector+keyword search
+- `search` — cheap hybrid search (vector + keyword, no expansion)
+- `query` — hybrid search + LLM multi-query expansion (concept/landscape questions)
 - `get_page` — read a brain page
 - `put_page` — create/update brain pages
 - `add_link` — cross-reference entities

@@ -39,7 +39,7 @@ the same registry.
   implementation-defined (noted per field), implementations may improve the
   derivation without a version bump; the values and their meanings stay fixed.
 
-## Install (the 3-command quickstart)
+## Install (the 4-command quickstart)
 
 ```bash
 gbrain init --pglite                                      # 2-second local brain
@@ -226,7 +226,14 @@ plain indexed read, deterministic). It does NOT judge ranking quality.
 Entity-card cases need a seedable page (`put_page`); against verbs-only
 targets they skip honestly. `--synthesize` is cost-gated: with no LLM key it
 asserts the clean `unavailable` error (what CI does); with a key it spends
-real tokens. The fixture set ships as data
+real tokens.
+
+Conformance is a LIVE test that WRITES: it seeds a marker-suffixed synthetic
+entity page (`people/conformance-<marker>`, when the target exposes
+`put_page`) and writes/expires facts through `remember`/`forget`. Point it at
+write-capable credentials and a brain you're comfortable leaving those
+synthetic artifacts in — they're marker-named for easy cleanup, not
+auto-deleted. The fixture set ships as data
 (`test/fixtures/memory-verbs/cases.json`) and seeds BrainBench's
 protocol-compliance arm. gbrain's CI certifies its own stdio + HTTP
 transports; external certification is best-effort tooling until a second
