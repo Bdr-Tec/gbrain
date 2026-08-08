@@ -40,6 +40,7 @@ and the scope record at `~/.gstack/projects/garrytan-gbrain/ceo-plans/2026-06-12
   `src/core/verbs/entity-card.ts` open-threads assembly + a new schema table
   (additive — the card field already exists, so this is a quality upgrade, not
   a contract change).
+
 ## serve --http takes-holders + agent-voice hardening follow-ups (filed v0.42.74.0)
 
 Deferred from the #2529/#2477 security-fix wave (plan-eng-review + codex outside

@@ -187,7 +187,7 @@ mount, CEO-class with multiple team brains) and
 
 ## Architecture
 
-Contract-first: `src/core/operations.ts` defines ~90 shared operations (v0.29 adds `get_recent_salience`, `find_anomalies`, `get_recent_transcripts`; v0.42.43.0 adds `volunteer_context` — push-based context, see `docs/guides/push-context.md`). CLI and MCP
+Contract-first: `src/core/operations.ts` defines ~110 shared operations (v0.29 adds `get_recent_salience`, `find_anomalies`, `get_recent_transcripts`; v0.42.43.0 adds `volunteer_context` — push-based context, see `docs/guides/push-context.md`; v0.43.0.0 adds the five frozen MEMORY_VERBS — `recall`, `remember`, `entity`, `synthesize`, `forget` — servable alone via `gbrain serve --surface verbs`, see `docs/protocol/MEMORY_VERBS_v1.md`). CLI and MCP
 server are both generated from this single source. Engine factory (`src/core/engine-factory.ts`)
 dynamically imports the configured engine (`'pglite'` or `'postgres'`). Skills are fat
 markdown files (tool-agnostic, work with both CLI and plugin contexts).
@@ -268,6 +268,7 @@ detail on demand.)
 | push-based context (volunteer/watch/reflex window) | `docs/guides/push-context.md` |
 | schema packs / page types / extraction | `docs/architecture/schema-packs.md`, `type-taxonomy.md`, `lens-packs.md` |
 | thin-client / remote MCP / cross-modal | `docs/architecture/thin-client.md` |
+| memory verbs / MCP tool surface (`--surface`) / conformance | `docs/protocol/MEMORY_VERBS_v1.md` + the `verbs*`/`surface.ts`/`protocol.ts` entries in `KEY_FILES.md` |
 | the CLI surface (commands + flags) | `gbrain --help` / `gbrain --tools-json`, plus the relevant `KEY_FILES.md` entry |
 | running or writing tests | `docs/TESTING.md` |
 | bulk-command progress wiring | `docs/progress-events.md` |
@@ -1613,7 +1614,7 @@ The agent installs GBrain, creates the brain, asks for your API keys, loads 43 s
 
 Already running Claude Code or Codex? There are two ways to wire GBrain in, depending on what you want.
 
-**Just want a memory for your coding agent (recommended starting point).** Spin up a local brain and connect it in two commands — zero server, zero token, zero tunnel. `--surface verbs` gives your agent the five-verb memory protocol (`recall`, `remember`, `entity`, `synthesize`, `forget` — [MEMORY_VERBS v1](docs/protocol/MEMORY_VERBS_v1.md), frozen + additive-forever) instead of the full 90-tool wall; drop the flag for every operation:
+**Just want a memory for your coding agent (recommended starting point).** Spin up a local brain and connect it in two commands — zero server, zero token, zero tunnel. `--surface verbs` gives your agent the five-verb memory protocol (`recall`, `remember`, `entity`, `synthesize`, `forget` — [MEMORY_VERBS v1](docs/protocol/MEMORY_VERBS_v1.md), frozen + additive-forever) instead of the full 110-tool wall; drop the flag for every operation:
 
 ```bash
 gbrain init --pglite                                    # 2-second local brain (no Docker)
