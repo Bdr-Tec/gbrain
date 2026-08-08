@@ -14,7 +14,7 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
     const caps = getProviderCapabilities('openai:gpt-5.6-terra');
     expect(caps.supportsToolCalling).toBe(true);
     expect(caps.supportsPromptCaching).toBe(false); // OpenAI implicit caching doesn't get marked
-    expect(caps.maxContext).toBe(1000000); // GPT-5.6 family: 1.05M across all tiers
+    expect(caps.maxContext).toBe(1000000); // GPT-5.6 advertises 1.05M; recipe pins 1.0M as a conservative floor
   });
 
   it('returns capabilities for Google Gemini', () => {

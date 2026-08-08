@@ -77,4 +77,24 @@ describe('resolveNativeBaseUrl (#1250)', () => {
     } as unknown as AIGatewayConfig;
     expect(resolveNativeBaseUrl('openai', cfg)).toBe('https://config.example/v1');
   });
+
+  test('anthropic reads config-plane base_urls with the same /v1 normalization', () => {
+    const cfg = { env: {}, base_urls: { anthropic: 'https://a.example' } } as unknown as AIGatewayConfig;
+    expect(resolveNativeBaseUrl('anthropic', cfg)).toBe('https://a.example/v1');
+    expect(resolveNativeBaseUrl('openai', cfg)).toBeUndefined();
+  });
+
+  test('empty-string config entry masks the env var (documented ?? semantics) [PIN]', () => {
+    // `??` only skips nullish, so `provider_base_urls.openai: ''` yields ''
+    // → trim-empty → undefined, WITHOUT falling through to the env var.
+    // This matches the pre-existing openai-compat contract at the
+    // `cfg.base_urls?.[recipe.id] ?? recipe.base_url_default` sites — an
+    // empty config entry is "explicitly unset", not "absent". Pinned so a
+    // future fall-through change is a deliberate decision, not drift.
+    const cfg = {
+      env: { OPENAI_BASE_URL: 'https://env.example' },
+      base_urls: { openai: '' },
+    } as unknown as AIGatewayConfig;
+    expect(resolveNativeBaseUrl('openai', cfg)).toBeUndefined();
+  });
 });

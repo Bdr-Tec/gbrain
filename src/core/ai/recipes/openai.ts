@@ -25,9 +25,12 @@ export const openai: Recipe = {
       max_batch_tokens: 100_000,
     },
     expansion: {
-      // gpt-5.6-luna is the high-volume tier ($0.20/M input after the
-      // 2026-07-30 price cut) — cheaper than gpt-4o-mini for output-light
-      // expansion calls at current rates.
+      // gpt-5.6-luna leads because it's the current-generation high-volume
+      // tier ($0.20/M input after the 2026-07-30 price cut). gpt-4o-mini is
+      // nominally cheaper ($0.15/M in, $0.60/M out) but two generations
+      // legacy — the same next-to-retire class this refresh exists to purge
+      // from defaults; it stays second as a fallback while OpenAI keeps it
+      // on the live sheet.
       models: ['gpt-5.6-luna', 'gpt-4o-mini'],
       cost_per_1m_tokens_usd: 0.20,
       price_last_verified: '2026-08-08',
@@ -43,7 +46,7 @@ export const openai: Recipe = {
       supports_tools: true,
       supports_subagent_loop: true,
       supports_prompt_cache: false,
-      max_context_tokens: 1000000, // GPT-5.6 family: 1.05M across all tiers
+      max_context_tokens: 1000000, // GPT-5.6 advertises 1.05M; pinned at 1.0M as a deliberate conservative floor
       cost_per_1m_input_usd: 2.00, // gpt-5.6-terra baseline
       cost_per_1m_output_usd: 12.0,
       price_last_verified: '2026-08-08',

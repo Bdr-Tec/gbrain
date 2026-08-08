@@ -85,4 +85,13 @@ describe('embedding-migrate --to accepts the new tags at their native widths', (
       toDims: 1024,
     });
   });
+
+  test('bare colon tag fails loud, not silently at 768 [PIN]', () => {
+    // 'qwen3-embedding:8b' PASSES the includes(':') qualification guard (it
+    // contains a colon), so the fail-loud contract this file's header relies
+    // on actually comes from resolveRecipe throwing on the unknown provider
+    // 'qwen3-embedding'. Pin that: if recipe resolution ever became lenient,
+    // a bare colon tag would silently plan a 768-wide migration.
+    expect(() => resolveMigrationTarget('qwen3-embedding:8b')).toThrow();
+  });
 });
