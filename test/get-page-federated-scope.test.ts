@@ -445,7 +445,14 @@ describe('#2555 get_chunks federated scope', () => {
       const end = src.indexOf('\n  }\n', start + 10);
       const body = src.slice(start, end).replace(/\/\/[^\n]*/g, '');
       expect(body, `${enginePath} getChunks must not SELECT cc.*`).not.toContain('cc.*');
-      expect(body).toContain('cc.chunk_text');
+      // Every non-vector field rowToChunk reads MUST be selected — omitting
+      // one silently degrades round-trips (embed.ts getChunks→upsertChunks
+      // rewrote image chunks as text when cc.modality was dropped).
+      for (const col of ['chunk_text', 'chunk_source', 'model', 'token_count', 'embedded_at',
+        'language', 'symbol_name', 'symbol_type', 'start_line', 'end_line',
+        'parent_symbol_path', 'doc_comment', 'symbol_name_qualified', 'modality']) {
+        expect(body, `${enginePath} getChunks must select cc.${col}`).toContain(`cc.${col}`);
+      }
       // The vector columns stay unselected.
       expect(body).not.toMatch(/cc\.embedding\b/);
     }

@@ -2516,7 +2516,7 @@ export class PGLiteEngine implements BrainEngine {
       `SELECT cc.id, cc.page_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
               cc.model, cc.token_count, cc.embedded_at, cc.language,
               cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line,
-              cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified
+              cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified, cc.modality
        FROM content_chunks cc
        JOIN pages p ON p.id = cc.page_id
        WHERE p.slug = $1 AND ${sourceIds ? 'p.source_id = ANY($2::text[])' : 'p.source_id = $2'}
