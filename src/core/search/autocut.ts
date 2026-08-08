@@ -42,8 +42,9 @@ export interface AutocutConfig {
    * preserved); above it, the cliff is trusted as before. The reranker
    * (zerank-2) is bimodal — real matches ≈0.95+, weak matches ≈0.3 — so the
    * default 0.5 sits in the empty middle. 0 disables the floor (pre-fix
-   * behavior). Clamped to [0, 1]. Override: `search.autocut_min_top_score`
-   * config → mode bundle.
+   * behavior). Valid range [0, 1]; out-of-range config values are IGNORED
+   * (fall through to bundle / module default — nothing clamps). Override:
+   * `search.autocut_min_top_score` config → mode bundle.
    */
   minTopScore: number;
 }

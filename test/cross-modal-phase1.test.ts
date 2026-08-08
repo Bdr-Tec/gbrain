@@ -146,6 +146,8 @@ describe('D2 — knobsHash differs across cross-modal knob values', () => {
     // v0.43: 9→10 relational recall arm. #1400: 10→11 query-side input_type
     // finally reaches asymmetric providers — pre-fix rows were keyed on
     // document-side query vectors. #2825: 11→12 hard-exclude fold (hx=).
+    // #3390: 12→13 embedding-provider migration. #3430: 13→14 compiled_truth
+    // boost semantics. 14→15 FTS language fold (fts=).
     // 15→16: autocut weak-top floor (acmts=).
     expect(KNOBS_HASH_VERSION).toBe(16);
   });

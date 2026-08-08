@@ -64,6 +64,15 @@ describe('KNOBS_HASH_VERSION + version invariants', () => {
     // pre-fix document-side query vectors must not be served.
     // #2825: 11→12 to fold the resolved hard-exclude prefix list (hx=) —
     // cached rows leaked GBRAIN_SEARCH_EXCLUDE'd slugs across processes.
+    // #3390/#3391: 12→13 embedding-provider migration wave (prov= only
+    // isolates threading callers; the bump makes pre-migration rows
+    // unreachable on upgrade).
+    // #3430: 13→14 — the compiled_truth boost no longer applies at
+    // detail=medium. Results are cached after fusion, so rows ranked under
+    // the old boost semantics must not be served under the new ones.
+    // FTS language: 14→15 to fold the resolved GBRAIN_FTS_LANGUAGE config
+    // name (fts=) — rows written under the previous language must not
+    // survive a reindex-search-vector switch.
     // 15→16: autocut weak-top floor (acmts=) — the floor shifts whether
     // autocut cuts at all, so a different-floor write must not be served.
     expect(KNOBS_HASH_VERSION).toBe(16);

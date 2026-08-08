@@ -89,7 +89,7 @@ describe('alias_resolved boost stage', () => {
 });
 
 describe('KNOBS_HASH_VERSION', () => {
-  it('is 16 (15→16 autocut weak-top floor acmts= added; 11→12 was #2825 hard-exclude fold)', () => {
+  it('is 16 (15→16 autocut weak-top floor acmts= added; 14→15 was the FTS-language fold)', () => {
     expect(KNOBS_HASH_VERSION).toBe(16);
   });
 });

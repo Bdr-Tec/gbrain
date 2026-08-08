@@ -264,7 +264,7 @@ describe('autocutFromConfig', () => {
     expect(autocutFromConfig({ search: { autocut_jump: 5 } }).jumpRatio).toBeUndefined();
     expect(autocutFromConfig({ search: { autocut_jump: 0 } }).jumpRatio).toBeUndefined();
   });
-  test('reads search.autocut_min_top_score (clamped to [0, 1])', () => {
+  test('reads search.autocut_min_top_score (valid range [0, 1]; out-of-range ignored)', () => {
     expect(autocutFromConfig({ search: { autocut_min_top_score: 0.7 } }).minTopScore).toBe(0.7);
     // 0 is valid (disables the floor); 1 is valid (floor at the ceiling).
     expect(autocutFromConfig({ search: { autocut_min_top_score: 0 } }).minTopScore).toBe(0);

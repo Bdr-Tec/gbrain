@@ -412,8 +412,19 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // must not be served to post-fix lookups.
     // #2825: bumped 11→12 to fold the resolved hard-exclude prefix list
     // (hx=) — cached rows leaked GBRAIN_SEARCH_EXCLUDE'd slugs across
-    // processes. 15→16: autocut weak-top floor (acmts=) — the floor shifts
-    // whether autocut cuts at all.
+    // processes.
+    // #3390/#3391: bumped 12→13 for the embedding-provider migration wave —
+    // legacy callers hash prov=default before AND after a provider swap, so
+    // pre-migration cache rows must become unreachable on upgrade.
+    // v0.42.67.x bumped 13→14: the compiled_truth boost no longer applies at
+    // detail=medium (#3430). Cached rows were ranked under the old semantics,
+    // so they must become unreachable rather than be served under the new ones.
+    // Bumped 14→15 to fold the resolved FTS configuration name (fts=) —
+    // GBRAIN_FTS_LANGUAGE retokenizes both the trigger-built search_vector and
+    // the query-side tsquery, so rows written under the previous language must
+    // not survive a `reindex-search-vector` switch.
+    // 15→16: autocut weak-top floor (acmts=) — the floor shifts whether
+    // autocut cuts at all, so a trimmed write must not serve an untrimmed read.
     expect(KNOBS_HASH_VERSION).toBe(16);
   });
 

@@ -250,6 +250,12 @@ fail-closed and tested:
 - **Write-side slug fences** — a client bound to slug prefixes can only write
   under them, and non-read operations are refused for slug-bound clients.
 
+One known soft edge: the backlink-count ranking boost counts referrers
+without source filtering, so the *existence* of out-of-grant referrers can
+nudge result ordering (a count-only signal — no slug or content crosses the
+boundary; direct edge reads are fully scoped). Scoping that counter is a
+filed follow-up.
+
 **Not an enforcement surface: page-level `visibility:` frontmatter.** A
 `visibility: local` (or any other value) key in a page's frontmatter is inert
 metadata — no schema column stores it, no query filters on it, and a remote

@@ -1,5 +1,24 @@
 # TODOS
 
+## Source-federation follow-ups (filed with the Wave 3 fixes, 2026-08)
+
+- [ ] **P3 — Scope `getBacklinkCounts` by the caller's source grant.** The
+  backlink-count ranking boost (hybridSearch) counts referrers with no source
+  filter and groups by bare slug, so out-of-grant referrers nudge ranking as
+  a count-only signal (no slug/content disclosure — direct edge reads are
+  fully scoped in both engines). Pre-existing for A→'default' edges; the
+  opt-in `link_resolution.cross_source` flag widens the class to arbitrary
+  source pairs. Fix: accept `{sourceIds?}` and filter the referrer side in
+  BOTH engines, threaded from hybridSearch's existing scope; engine-parity
+  pin. Documented as a known soft edge in
+  docs/architecture/brains-and-sources.md meanwhile.
+- [ ] **P4 — Reranker score-scale as a recipe property.**
+  `rerankerEmitsNormalizedScores` (rerank.ts) hardcodes raw-logit reranker
+  name substrings; a future raw-logit recipe must remember to join the list
+  or the autocut floor misapplies. Prefer `scoreScale: 'unit' | 'logit'` on
+  reranker recipes, consulted at the hybrid.ts gate. (Kept verbatim from the
+  reviewed #3131 re-land; changing the seam belongs to its own change.)
+
 ## serve --http takes-holders + agent-voice hardening follow-ups (filed v0.42.74.0)
 
 Deferred from the #2529/#2477 security-fix wave (plan-eng-review + codex outside

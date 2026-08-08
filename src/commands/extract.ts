@@ -105,11 +105,17 @@ export async function stampExtracted(
 
 /**
  * v0.42.7 (#1696): pure cross-source resolution for one extracted link
- * candidate. Validates both endpoints exist (else the batch JOIN drops the row),
- * then picks from_source_id / to_source_id: prefer the origin page's source,
- * fall back to 'default', else skip (never push a wrong-source edge). Returns
- * null when the candidate should be skipped. Shared by extractLinksFromDB and
- * extractStaleFromDB so the F10 multi-source resolution can't drift.
+ * candidate. Validates both endpoints exist (else the batch JOIN drops the
+ * row), then picks from_source_id / to_source_id: prefer the origin page's
+ * source, fall back to 'default'. Three return shapes (#2589):
+ *   - `{ fromSlug, fromSourceId, toSourceId }` — edge resolves.
+ *   - `'cross-source-only'` — target exists ONLY in other sources and
+ *     opts.crossSource is off; callers COUNT this drop (never silent).
+ *     With opts.crossSource on, the edge resolves with the
+ *     lexicographically smallest matching source instead.
+ *   - `null` — a missing endpoint; the candidate is skipped.
+ * Shared by extractLinksFromDB and extractStaleFromDB so the F10
+ * multi-source resolution can't drift.
  */
 export function resolveCandidateSources(
   c: LinkCandidate,
@@ -1551,8 +1557,9 @@ async function extractLinksFromDB(
     for (const c of extracted.candidates) {
       // v0.32.8 F10 cross-source link resolution, extracted to the shared pure
       // helper in v0.42.7 (#1696) so extract --stale reuses the exact same
-      // endpoint-validation + from/to source-id picking (null = skip: missing
-      // endpoint OR target only in a non-origin/non-default source).
+      // endpoint-validation + from/to source-id picking (null = missing
+      // endpoint; 'cross-source-only' = counted drop or, with the #2589 flag
+      // on, a resolved cross-source edge — see resolveCandidateSources).
       const resolved = resolveCandidateSources(c, slug, source_id, allSlugs, slugToSources, { crossSource });
       if (resolved === 'cross-source-only') { skippedCrossSource++; continue; }
       if (!resolved) { skippedMissingTarget++; continue; }
@@ -1633,7 +1640,10 @@ async function extractLinksFromDB(
       }
     }
   }
-  return { created, pages: processed, unresolved };
+  // #2589: the counters ride the return value so machine consumers (and the
+  // --json path, which has no summary event on this path) can see the drops —
+  // "counted, never silent" must hold beyond human-mode console lines.
+  return { created, pages: processed, unresolved, skippedMissingTarget, skippedCrossSource };
 }
 
 async function extractTimelineFromDB(
