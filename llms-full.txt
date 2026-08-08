@@ -4033,7 +4033,7 @@ five verbs ── recall ── remember ── entity ── synthesize ── 
    │   self-describing envelopes: protocol_version, evidence, provenance,
    │   budget meta, cost block, enumerated error codes + a populated fix
    ▼
-your brain (gbrain reference implementation; any conformant server)
+your brain (reference implementation: gbrain; any conformant server)
 ```
 
 **Machine-readable spec:** `gbrain protocol --json` emits the input schemas
