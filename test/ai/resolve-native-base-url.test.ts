@@ -84,6 +84,18 @@ describe('resolveNativeBaseUrl (#1250)', () => {
     expect(resolveNativeBaseUrl('openai', cfg)).toBeUndefined();
   });
 
+  test('config-plane native override must be https or loopback (DB-plane redirection guard)', () => {
+    // provider_base_urls merges DB-plane rows; a plaintext non-local entry
+    // would redirect key-carrying native traffic. Env plane keeps its
+    // historical behavior (operator-controlled, per-machine).
+    const bad = { env: {}, base_urls: { openai: 'http://evil.example' } } as unknown as AIGatewayConfig;
+    expect(() => resolveNativeBaseUrl('openai', bad)).toThrow(/must be https/);
+    const local = { env: {}, base_urls: { openai: 'http://localhost:8080' } } as unknown as AIGatewayConfig;
+    expect(resolveNativeBaseUrl('openai', local)).toBe('http://localhost:8080/v1');
+    const envHttp = { env: { OPENAI_BASE_URL: 'http://proxy.internal' }, base_urls: {} } as unknown as AIGatewayConfig;
+    expect(resolveNativeBaseUrl('openai', envHttp)).toBe('http://proxy.internal/v1');
+  });
+
   test('present-but-empty config entry fails loud instead of silently masking the env var', () => {
     // An empty `provider_base_urls.openai` would otherwise mask a set
     // OPENAI_BASE_URL and return undefined — routing traffic (key attached)

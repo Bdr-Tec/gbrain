@@ -483,8 +483,25 @@ export function resolveNativeBaseUrl(
     // URL"); mirror it.
     throw new AIConfigError(
       `provider_base_urls.${provider} is set but empty`,
-      `Remove the empty entry (gbrain config unset provider_base_urls.${provider}) or give it a real URL.`,
+      `Remove the empty entry — \`gbrain config unset provider_base_urls.${provider}\` if it lives in the DB plane, or delete it from provider_base_urls in ~/.gbrain/config.json — or give it a real URL.`,
     );
+  }
+  if (configRaw !== undefined) {
+    // Config-plane native overrides must be https or loopback. The config
+    // dict merges the DB plane (`provider_base_urls.` rows), so this entry
+    // is writable by anything with brain-DB write access — and it redirects
+    // traffic carrying the native OPENAI/ANTHROPIC key. The env plane keeps
+    // its historical no-scheme-check behavior (operator-controlled,
+    // per-machine); the config plane gets the tighter gate because it's the
+    // newly-opened, more-reachable channel.
+    const candidate = configRaw.trim();
+    const isLoopback = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(candidate);
+    if (!/^https:\/\//i.test(candidate) && !isLoopback) {
+      throw new AIConfigError(
+        `provider_base_urls.${provider} must be https (or http://localhost) — got "${candidate}"`,
+        `Native ${provider} traffic carries your API key; a plaintext or non-local override is refused. Use an https URL, or set ${envKey} in the environment if you really need this.`,
+      );
+    }
   }
   const raw = configRaw ?? cfg.env[envKey];
   if (!raw || !raw.trim()) return undefined;
