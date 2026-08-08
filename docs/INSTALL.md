@@ -9,7 +9,7 @@ Already running [OpenClaw](https://github.com/garrytan/openclaw) or [Hermes](htt
 ```bash
 bun install -g github:garrytan/gbrain
 gbrain init --pglite                  # 2 seconds; no server
-gbrain skillpack scaffold --all       # 43 skills scaffolded into your agent workspace
+gbrain skillpack scaffold --all       # every bundled skill scaffolded into your agent workspace
 gbrain doctor                         # green checks all the way down
 ```
 
@@ -144,6 +144,6 @@ gbrain apply-migrations --yes
 gbrain doctor
 ```
 
-All 102 migrations run on first try. Once `gbrain doctor` shows green, the brain works identically to PGLite — same commands, same skills, same data model. The only difference is the storage backend.
+All migrations run on first try. Once `gbrain doctor` shows green, the brain works identically to PGLite — same commands, same skills, same data model. The only difference is the storage backend.
 
 > **Note:** This workaround is temporary. When the upstream WASM runtime fix ships (likely via a Bun update), `--pglite` will work on Tahoe again.

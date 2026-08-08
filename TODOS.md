@@ -19,13 +19,17 @@ wave already encodes.
   silently on upgrade and out-prioritizes a working
   OPENAI_BASE_URL/ANTHROPIC_BASE_URL. When both planes are set and disagree,
   emit a one-shot stderr note naming the winner (doctor or gateway-configure).
-  Consider requiring https for DB-plane-sourced native overrides.
+  (The https-or-loopback gate on config-plane native overrides shipped with
+  the wave; what remains here is only the disagreement notice.)
 - [ ] **P3 — `gbrain config set *_api_key` writes a dead plane.** The DB-plane
   config row is never read by the gateway (loadConfigWithEngine deliberately
-  skips `*_api_key` merges), so `config set litellm_api_key X` stores a secret
-  at rest with zero functional effect — pre-existing class shared by
-  voyage/dashscope/google keys. Either route `*_api_key` sets to the file
-  plane (~/.gbrain/config.json) or refuse with a paste-ready instruction.
+  skips `*_api_key` merges), so e.g. `config set voyage_api_key X` stores a
+  secret at rest with zero functional effect — pre-existing class shared by
+  voyage/dashscope/google keys. `litellm_api_key` + `together_api_key` now
+  refuse with a paste-ready file-plane instruction (shipped with the wave);
+  extend that honesty across the rest of the class, or route `*_api_key` sets
+  to the file plane (~/.gbrain/config.json). docs/INSTALL.md's `config set
+  <key>_api_key` examples inherit whichever resolution lands.
 - [ ] **P3 — models[0]-liveness guard for init auto-pick recipes.** `gbrain
   init` persists `models[0]` as chat_model (init.ts:608). The dead-alias
   liveness guard covers DEFAULT_ALIASES/TIER_DEFAULTS; extend the idea so

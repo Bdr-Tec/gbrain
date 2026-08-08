@@ -13,7 +13,7 @@ All notable changes to GBrain will be documented in this file.
 **If your brain was initialized on Google or OpenAI a while ago,** it may have persisted a now-retired model as its chat model. gbrain validates configured models leniently on purpose, so the failure would only surface at the provider. After upgrading, point it at a live model:
 
 ```bash
-gbrain config set chat_model google:gemini-3.6-flash    # or openai:gpt-5.6-terra
+gbrain config set models.chat google:gemini-3.6-flash    # or openai:gpt-5.6-terra
 ```
 
 **Ollama models you can actually pull.** The catalog's larger embedders now use the real Ollama library tags — `qwen3-embedding:8b` (4096d) and `snowflake-arctic-embed2` (1024d). The previous spellings never matched a pullable tag, so following the docs ended in a 404; the docs are fixed too. Colon-bearing tags must be passed provider-qualified (`ollama:qwen3-embedding:8b`), and the tests pin that path.
@@ -34,7 +34,7 @@ gbrain config set chat_model google:gemini-3.6-flash    # or openai:gpt-5.6-terr
 gbrain upgrade
 ```
 
-Then, if chat on a Google- or OpenAI-keyed brain has been failing with provider errors, run the `config set chat_model` line above. Local-model users pulling the larger Ollama embedders should use the new tag spellings.
+Then, if chat on a Google- or OpenAI-keyed brain has been failing with provider errors, run the `config set models.chat` line above. Local-model users pulling the larger Ollama embedders should use the new tag spellings.
 
 ### For contributors
 
