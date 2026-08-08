@@ -25,7 +25,7 @@ const LOCK_FILE = 'lock';
 // LIVE holder (embed jobs run for many minutes) is never mistaken for stale.
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
-class LiveServeLockError extends Error {}
+export class LiveServeLockError extends Error {}
 
 function isServeCommand(lockData: { subcommand?: unknown; command?: unknown }): boolean {
   // New lock files store the command after the same global-flag parsing used
@@ -71,6 +71,15 @@ export interface LockHandle {
    * the NEW owner's live lock and re-open the concurrent-writer hole).
    */
   ownerToken?: string;
+  /**
+   * WAL-repair gate (#223 auto-repair): true when this acquisition reaped a
+   * prior holder's lock — dead-PID reap or corrupt-lock-file removal. A
+   * corrupt lock file cannot prove its holder is dead, and even a dead-PID
+   * verdict can be wrong under PID reuse, so auto WAL surgery refuses to run
+   * on a reaped acquisition (`'possibly-live-writer'`) and asks for a clean
+   * re-run instead. Never set for in-memory engines.
+   */
+  reaped?: boolean;
 }
 
 /** The on-disk lock identity, used to detect "we were reaped and replaced". */
@@ -172,6 +181,7 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
 
   const timeoutMs = opts?.timeoutMs ?? 30_000; // 30 second default timeout
   const startTime = Date.now();
+  let reaped = false; // see LockHandle.reaped
 
   while (Date.now() - startTime < timeoutMs) {
     // Check for stale lock first
@@ -188,6 +198,7 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
         const alive = isProcessAlive(lockPid);
         if (!alive) {
           // Holder process is gone — reap and try to acquire.
+          reaped = true;
           try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* race condition, try again */ }
         } else {
           if (isServeCommand(lockData)) {
@@ -209,7 +220,9 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
         // A live MCP server is not a stale or corrupt lock. Surface the useful
         // explanation without touching the lock it still owns.
         if (err instanceof LiveServeLockError) throw err;
-        // Corrupt lock file — remove it
+        // Corrupt lock file — remove it. The holder's liveness is UNKNOWABLE
+        // here (unreadable PID), so this counts as a reap for the repair gate.
+        reaped = true;
         try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* race condition */ }
       }
     }
@@ -230,7 +243,7 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
       }), { mode: 0o644 });
 
       const ownerToken = tokenOf({ pid: process.pid, acquired_at: now });
-      return { lockDir, acquired: true, lockPath, ownerToken, heartbeat: startHeartbeat(lockPath, ownerToken) };
+      return { lockDir, acquired: true, lockPath, ownerToken, reaped, heartbeat: startHeartbeat(lockPath, ownerToken) };
     } catch (e: unknown) {
       // mkdir failed — someone else grabbed it between our check and mkdir
       // This is fine, we'll retry
