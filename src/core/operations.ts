@@ -342,7 +342,8 @@ export function normalizeSlugPrefix(prefix: string): string {
 
 /**
  * Write ops a slug-bound client may call: every op that routes through
- * `enforceClientSlugFence`, plus `think` (scope `write`, but remote callers
+ * `enforceClientSlugFence`, plus `think` (scope `read` for remote callers;
+ * it stays on this list because it is `mutating` locally, but remote callers
  * cannot persist — `save`/`take` are forced false for `remote !== false`).
  *
  * This list is an ALLOW-list on purpose. The fence used to be enforced op

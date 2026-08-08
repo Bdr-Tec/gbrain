@@ -118,7 +118,7 @@ trailing-newline and exports-count checks.
 
 ### Writing tests that survive the parallel loop
 
-`bun run test` shards 92+ unit-test files across up to 4 worker processes,
+`bun run test` shards 1000+ unit-test files across up to 4 worker processes,
 capping total concurrency (shards × intra-shard files) to available memory and
 re-running OOM-killed or externally-killed files serially before calling them
 failures (see `docs/TESTING.md` for the rescue-pass details and knobs). Files
