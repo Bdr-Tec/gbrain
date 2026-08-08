@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
-import { xlogFileName } from '../src/core/pglite-resetwal.ts';
+import { xlogFileName, crc32c } from '../src/core/pglite-resetwal.ts';
 import {
   validateWalRepairTarget,
   inspectPgliteDataDir,
@@ -27,7 +27,8 @@ import {
   repairCooldownActive,
   listRepairBackups,
   pruneRepairBackups,
-  walRepairEnabled,
+  WalRepairError,
+  closeRepairEpisodeIfOpen,
 } from '../src/core/pglite-repair.ts';
 
 const SEG_SIZE = 1024 * 1024;
@@ -40,6 +41,7 @@ function makeControl(): Buffer {
   control.writeUInt32LE(8192, 224); // xlogBlcksz
   control.writeUInt32LE(SEG_SIZE, 228); // xlogSegSize
   control.writeBigUInt64LE(3n * BigInt(SEG_SIZE) + 40n, 40); // redo → seg 3
+  control.writeUInt32LE(crc32c([control.subarray(0, 288)]), 288); // valid CRC
   return control;
 }
 
@@ -58,6 +60,18 @@ function makeLayout(opts?: { segments?: string[]; postmasterPid?: boolean }): st
   }
   if (opts?.postmasterPid) writeFileSync(join(dir, 'postmaster.pid'), '12345\n');
   return dir;
+}
+
+/**
+ * Overwrite pg_control with an 8192-byte buffer carrying a WRONG control
+ * version: it PASSES validateWalRepairTarget (size-only check) but FAILS
+ * resetWal's version check — the fixture for the reset-fails-AFTER-backup
+ * (WalRepairError) path.
+ */
+function poisonControlVersion(dir: string): void {
+  const control = makeControl();
+  control.writeUInt32LE(1600, 8);
+  writeFileSync(join(dir, 'global', 'pg_control'), control);
 }
 
 describe('validateWalRepairTarget', () => {
@@ -101,6 +115,20 @@ describe('validateWalRepairTarget', () => {
     symlinkSync(walBackup, join(dir, 'pg_wal'));
     expect(validateWalRepairTarget(dir)).toMatchObject({ ok: false, reason: 'not-pglite-layout' });
   });
+
+  test('refuses a symlinked global/ dir (security review — lstat on pg_control follows the intermediate link)', () => {
+    const dir = makeLayout();
+    // A foreign dir holding a perfectly valid 8192-byte pg_control: without the
+    // global/ lstat check, surgery would write a forged control THROUGH the
+    // link into this directory.
+    const foreign = mkdtempSync(join(tmpdir(), 'pgrepair-foreign-'));
+    writeFileSync(join(foreign, 'pg_control'), makeControl());
+    rmSync(join(dir, 'global'), { recursive: true });
+    symlinkSync(foreign, join(dir, 'global'));
+    const result = validateWalRepairTarget(dir);
+    expect(result).toMatchObject({ ok: false, reason: 'not-pglite-layout' });
+    if (!result.ok) expect(result.detail).toContain('symlink');
+  });
 });
 
 describe('repairPgliteWal — rename-based backup', () => {
@@ -127,8 +155,28 @@ describe('repairPgliteWal — rename-based backup', () => {
 
   test('refuses (typed) on an invalid layout without touching anything', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pgrepair-'));
-    expect(repairPgliteWal(dir)).rejects.toThrow(/refusing repair/);
+    await expect(repairPgliteWal(dir)).rejects.toThrow(/refusing repair/);
     expect(listRepairBackups(dir)).toEqual([]);
+  });
+
+  test('throws WalRepairError after backup and restores the dir when resetWal fails', async () => {
+    const seg = xlogFileName(1, 3n, SEG_SIZE);
+    const dir = makeLayout({ segments: [seg] });
+    poisonControlVersion(dir); // passes validation, fails resetWal
+
+    let caught: unknown;
+    try {
+      await repairPgliteWal(dir);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(WalRepairError);
+    const err = caught as WalRepairError;
+    // The best-effort restore ran and is reported HONESTLY on the error.
+    expect(err.restore.restored).toBe(true);
+    expect(existsSync(join(dir, 'pg_wal'))).toBe(true);
+    expect(existsSync(join(dir, 'pg_wal', seg))).toBe(true); // original segment back
+    expect(existsSync(err.receipt.backupPath)).toBe(true); // forensic backup kept
   });
 });
 
@@ -182,15 +230,31 @@ describe('restoreWalBackup — overwrite order + guards', () => {
 describe('cooldown sidecar + episode retention', () => {
   test('recordRepairAttempt opens an episode on failure, closes on success, caps history', () => {
     const dir = makeLayout();
-    recordRepairAttempt(dir, 'failed', '/b/one');
+    // Real backup dirs: the re-pin rule inspects them for pg_wal (a gutted
+    // pinned backup — restore moved its pg_wal back — must lose the pin).
+    const backupOne = `${dir}.wal-repair-backup-1001`;
+    const backupTwo = `${dir}.wal-repair-backup-1002`;
+    const backupThree = `${dir}.wal-repair-backup-1003`;
+    mkdirSync(join(backupOne, 'pg_wal'), { recursive: true });
+    mkdirSync(join(backupTwo, 'pg_wal'), { recursive: true });
+    mkdirSync(join(backupThree, 'pg_wal'), { recursive: true });
+
+    recordRepairAttempt(dir, 'failed', backupOne);
     let sidecar = readRepairSidecar(dir);
     expect(sidecar.episodeStartedAt).not.toBeNull();
-    expect(sidecar.episodeBackupPath).toBe('/b/one');
-    // Second failure does NOT re-pin the episode backup.
-    recordRepairAttempt(dir, 'failed', '/b/two');
+    expect(sidecar.episodeBackupPath).toBe(backupOne);
+    // Second failure does NOT re-pin while the pinned backup still holds pg_wal.
+    recordRepairAttempt(dir, 'failed', backupTwo);
     sidecar = readRepairSidecar(dir);
-    expect(sidecar.episodeBackupPath).toBe('/b/one');
-    recordRepairAttempt(dir, 'repaired', '/b/one');
+    expect(sidecar.episodeBackupPath).toBe(backupOne);
+    // …but a GUTTED pinned backup loses the pin to the fresh one (red-team:
+    // the episode's protected copy must always be one that still has pg_wal).
+    rmSync(join(backupOne, 'pg_wal'), { recursive: true });
+    recordRepairAttempt(dir, 'failed', backupThree);
+    sidecar = readRepairSidecar(dir);
+    expect(sidecar.episodeBackupPath).toBe(backupThree);
+
+    recordRepairAttempt(dir, 'repaired', backupThree);
     sidecar = readRepairSidecar(dir);
     expect(sidecar.episodeStartedAt).toBeNull();
     expect(sidecar.episodeBackupPath).toBeNull();
@@ -198,18 +262,39 @@ describe('cooldown sidecar + episode retention', () => {
     expect(readRepairSidecar(dir).attempts.length).toBeLessThanOrEqual(10);
   });
 
-  test('repairCooldownActive: active after a recent failure, respects the env knob', async () => {
+  test('unverified success (closeEpisode:false) keeps the episode open; closeRepairEpisodeIfOpen closes it', () => {
     const dir = makeLayout();
-    expect(repairCooldownActive(dir).active).toBe(false);
-    recordRepairAttempt(dir, 'failed', null);
-    expect(repairCooldownActive(dir).active).toBe(true);
-    await withEnv({ GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: '0' }, async () => {
+    const backup = `${dir}.wal-repair-backup-2001`;
+    mkdirSync(join(backup, 'pg_wal'), { recursive: true });
+    recordRepairAttempt(dir, 'failed', backup);
+    // The manual command's unverified "repaired" must NOT close/prune.
+    recordRepairAttempt(dir, 'repaired', backup, { closeEpisode: false });
+    let sidecar = readRepairSidecar(dir);
+    expect(sidecar.episodeStartedAt).not.toBeNull();
+    expect(existsSync(backup)).toBe(true);
+    // A healthy connect closes it.
+    closeRepairEpisodeIfOpen(dir);
+    sidecar = readRepairSidecar(dir);
+    expect(sidecar.episodeStartedAt).toBeNull();
+    expect(sidecar.episodeBackupPath).toBeNull();
+  });
+
+  test('repairCooldownActive: active after a recent failure, respects the env knob', async () => {
+    // Pin a known baseline (default cooldown, repair enabled): an ambient
+    // GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS=0 would flip the assertions.
+    await withEnv({ GBRAIN_PGLITE_WAL_REPAIR: undefined, GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: undefined }, async () => {
+      const dir = makeLayout();
       expect(repairCooldownActive(dir).active).toBe(false);
+      recordRepairAttempt(dir, 'failed', null);
+      expect(repairCooldownActive(dir).active).toBe(true);
+      await withEnv({ GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: '0' }, async () => {
+        expect(repairCooldownActive(dir).active).toBe(false);
+      });
+      // A success clears nothing retroactively, but cooldown keys on the LAST
+      // failed attempt — still inside the window here.
+      recordRepairAttempt(dir, 'repaired', null);
+      expect(repairCooldownActive(dir).active).toBe(true);
     });
-    // A success clears nothing retroactively, but cooldown keys on the LAST
-    // failed attempt — still inside the window here.
-    recordRepairAttempt(dir, 'repaired', null);
-    expect(repairCooldownActive(dir).active).toBe(true);
   });
 
   test('pruneRepairBackups keeps the newest 3 and never the open episode backup', () => {
@@ -294,43 +379,144 @@ describe('attemptWalRepairAndRetry — the never-throws engine seam', () => {
   });
 
   test('guards: disabled / reaped lock / validation-failed — no backup dir is ever created', async () => {
+    const before = process.env.GBRAIN_PGLITE_WAL_REPAIR;
     const dir = makeLayout();
-    await withEnv({ GBRAIN_PGLITE_WAL_REPAIR: 'off' }, async () => {
-      const attempt = await attemptWalRepairAndRetry(dir, async () => 'x');
-      expect(attempt).toMatchObject({ status: 'skipped', reason: 'disabled' });
+    // Pin a known baseline (repair enabled, default cooldown) so an ambient
+    // GBRAIN_PGLITE_WAL_REPAIR=off can't turn every arm into 'disabled'.
+    await withEnv({ GBRAIN_PGLITE_WAL_REPAIR: undefined, GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: undefined }, async () => {
+      await withEnv({ GBRAIN_PGLITE_WAL_REPAIR: 'off' }, async () => {
+        const attempt = await attemptWalRepairAndRetry(dir, async () => 'x');
+        expect(attempt).toMatchObject({ status: 'skipped', reason: 'disabled' });
+      });
+      const reaped = await attemptWalRepairAndRetry(dir, async () => 'x', { reaped: true });
+      expect(reaped).toMatchObject({ status: 'skipped', reason: 'possibly-live-writer' });
+      const invalid = await attemptWalRepairAndRetry('/nope/never', async () => 'x');
+      expect(invalid).toMatchObject({ status: 'skipped', reason: 'validation-failed' });
+      expect(listRepairBackups(dir)).toEqual([]);
     });
-    const reaped = await attemptWalRepairAndRetry(dir, async () => 'x', { reaped: true });
-    expect(reaped).toMatchObject({ status: 'skipped', reason: 'possibly-live-writer' });
-    const invalid = await attemptWalRepairAndRetry('/nope/never', async () => 'x');
-    expect(invalid).toMatchObject({ status: 'skipped', reason: 'validation-failed' });
-    expect(listRepairBackups(dir)).toEqual([]);
-    expect(walRepairEnabled()).toBe(true); // env restored by withEnv
+    // withEnv restored whatever the ambient value was (including "unset").
+    expect(process.env.GBRAIN_PGLITE_WAL_REPAIR).toBe(before);
   });
 
   test('cooldown skip + episode backup reuse across attempts', async () => {
+    // Pin a known baseline: an ambient COOLDOWN_SECONDS=0 would break the
+    // 'recently-failed' gate assertion; an ambient WAL_REPAIR=off breaks all.
+    await withEnv({ GBRAIN_PGLITE_WAL_REPAIR: undefined, GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: undefined }, async () => {
+      const seg = xlogFileName(1, 3n, SEG_SIZE);
+      const dir = makeLayout({ segments: [seg] });
+      // Attempt 1 fails → episode opens with backup #1.
+      const first = await attemptWalRepairAndRetry(dir, async () => { throw new Error('Aborted()'); });
+      expect(first.status).toBe('failed');
+      const backupsAfterFirst = listRepairBackups(dir);
+      expect(backupsAfterFirst.length).toBe(1);
+
+      // Immediate retry is cooldown-gated…
+      const gated = await attemptWalRepairAndRetry(dir, async () => 'x');
+      expect(gated).toMatchObject({ status: 'skipped', reason: 'recently-failed' });
+
+      // …and with the cooldown off, the retry takes a FRESH backup: attempt 1's
+      // restore MOVED pg_wal back out of its backup, so reusing that gutted dir
+      // would let resetWal destroy the only surviving WAL copy (red-team).
+      await withEnv({ GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: '0' }, async () => {
+        const second = await attemptWalRepairAndRetry(dir, async () => 'db');
+        expect(second.status).toBe('repaired');
+        if (second.status === 'repaired') {
+          expect(second.receipt.reusedEpisodeBackup).toBe(false);
+          expect(second.receipt.backupPath).not.toBe(backupsAfterFirst[0]!);
+        }
+      });
+      expect(listRepairBackups(dir).length).toBe(2);
+      expect(readRepairSidecar(dir).episodeStartedAt).toBeNull(); // episode closed
+    });
+  });
+
+  test('episode backup IS reused when it still holds pg_wal (restore was blocked)', async () => {
     const seg = xlogFileName(1, 3n, SEG_SIZE);
     const dir = makeLayout({ segments: [seg] });
-    // Attempt 1 fails → episode opens with backup #1.
-    const first = await attemptWalRepairAndRetry(dir, async () => { throw new Error('Aborted()'); });
-    expect(first.status).toBe('failed');
-    const backupsAfterFirst = listRepairBackups(dir);
-    expect(backupsAfterFirst.length).toBe(1);
+    await withEnv({ GBRAIN_PGLITE_WAL_REPAIR: undefined, GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: '0' }, async () => {
+        // Attempt 1: retry fails AND restore is blocked by the mtime guard
+        // (a foreign future-dated segment appears mid-attempt) — the backup
+        // KEEPS pg_wal.
+        const first = await attemptWalRepairAndRetry(dir, async () => {
+          const foreign = xlogFileName(1, 99n, SEG_SIZE);
+          writeFileSync(join(dir, 'pg_wal', foreign), 'live-writer-bytes');
+          const future = new Date(Date.now() + 60_000);
+          utimesSync(join(dir, 'pg_wal', foreign), future, future);
+          throw new Error('Aborted(). still broken');
+        });
+        expect(first.status).toBe('failed');
+        if (first.status === 'failed') expect(first.restored).toBe(false);
+        const episodeBackup = readRepairSidecar(dir).episodeBackupPath!;
+        expect(existsSync(join(episodeBackup, 'pg_wal'))).toBe(true);
+        // Clear the foreign segment so attempt 2's surgery isn't re-blocked.
+        rmSync(join(dir, 'pg_wal'), { recursive: true, force: true });
+        mkdirSync(join(dir, 'pg_wal', 'archive_status'), { recursive: true });
+        const second = await attemptWalRepairAndRetry(dir, async () => 'db');
+        expect(second.status).toBe('repaired');
+        if (second.status === 'repaired') {
+          expect(second.receipt.reusedEpisodeBackup).toBe(true);
+          expect(second.receipt.backupPath).toBe(episodeBackup);
+        }
+    });
+  });
 
-    // Immediate retry is cooldown-gated…
-    const gated = await attemptWalRepairAndRetry(dir, async () => 'x');
-    expect(gated).toMatchObject({ status: 'skipped', reason: 'recently-failed' });
+  test('seam reports honest restored from WalRepairError (reset fails after backup)', async () => {
+    const seg = xlogFileName(1, 3n, SEG_SIZE);
+    const dir = makeLayout({ segments: [seg] });
+    poisonControlVersion(dir); // backup succeeds, resetWal throws → WalRepairError
+    const attempt = await attemptWalRepairAndRetry(dir, async () => 'x');
+    expect(attempt.status).toBe('failed');
+    if (attempt.status === 'failed') {
+      // `restored` is threaded from WalRepairError.restore — not hardcoded.
+      expect(attempt.restored).toBe(true);
+      expect(attempt.receipt).not.toBeNull();
+      expect(attempt.repairError).toContain('pg_control version');
+    }
+    // Restore actually happened: original segment is back.
+    expect(existsSync(join(dir, 'pg_wal', seg))).toBe(true);
+  });
 
-    // …and with the cooldown off, the retry REUSES the episode backup: no new dir.
+  test('poisoned sidecar episodeBackupPath outside the backup prefix is IGNORED — fresh backup taken', async () => {
+    const dir = makeLayout();
+    // An existing dir that fails the `${dataDir}.wal-repair-backup-` prefix
+    // check: the user-writable sidecar must not be able to point repair's
+    // renames at an arbitrary target.
+    const evil = mkdtempSync(join(tmpdir(), 'pgrepair-evil-'));
+    writeFileSync(`${dir}.wal-repair-attempt.json`, JSON.stringify({
+      episodeStartedAt: Date.now(),
+      episodeBackupPath: evil,
+      attempts: [],
+    }));
     await withEnv({ GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: '0' }, async () => {
-      const second = await attemptWalRepairAndRetry(dir, async () => 'db');
-      expect(second.status).toBe('repaired');
-      if (second.status === 'repaired') {
-        expect(second.receipt.reusedEpisodeBackup).toBe(true);
-        expect(second.receipt.backupPath).toBe(backupsAfterFirst[0]!);
+      const attempt = await attemptWalRepairAndRetry(dir, async () => 'db');
+      expect(attempt.status).toBe('repaired');
+      if (attempt.status === 'repaired') {
+        expect(attempt.receipt.reusedEpisodeBackup).toBe(false);
+        expect(attempt.receipt.backupPath.startsWith(`${dir}.wal-repair-backup-`)).toBe(true);
       }
     });
-    expect(listRepairBackups(dir).length).toBe(1);
-    expect(readRepairSidecar(dir).episodeStartedAt).toBeNull(); // episode closed
+    // The poisoned target was never renamed into or written through.
+    expect(existsSync(evil)).toBe(true);
+    expect(readdirSync(evil)).toEqual([]);
+  });
+
+  test('reap quarantine gates the seam; a marker older than the window does not', async () => {
+    const dir = makeLayout();
+    const marker = `${dir}.lock-reap.json`;
+    writeFileSync(marker, JSON.stringify({ ts: Date.now(), by: 1 }));
+
+    const gated = await attemptWalRepairAndRetry(dir, async () => 'x');
+    expect(gated).toMatchObject({ status: 'skipped', reason: 'possibly-live-writer' });
+    if (gated.status === 'skipped') expect(gated.detail).toContain('reaped');
+    // Gated BEFORE any surgery: no backup dir was created.
+    expect(listRepairBackups(dir)).toEqual([]);
+
+    // Marker older than the 10-minute quarantine → the seam proceeds.
+    writeFileSync(marker, JSON.stringify({ ts: Date.now() - 11 * 60 * 1000, by: 1 }));
+    await withEnv({ GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS: '0' }, async () => {
+      const attempt = await attemptWalRepairAndRetry(dir, async () => 'db');
+      expect(attempt.status).toBe('repaired');
+    });
   });
 });
 

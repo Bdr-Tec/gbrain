@@ -18,7 +18,7 @@
  * output via `--json` for scripted callers.
  */
 
-import { existsSync, renameSync, statSync } from 'fs';
+import { existsSync, renameSync, statSync, rmSync } from 'fs';
 import { dirname } from 'path';
 import { loadConfig, loadConfigFileOnly, gbrainPath } from '../core/config.ts';
 
@@ -122,6 +122,13 @@ export async function runReinitPglite(args: string[]): Promise<void> {
 
   try {
     renameSync(dbPath, bakPath);
+  // WAL-repair state travels with the OLD brain (red-team: a fresh brain at
+  // the same path must not inherit the old brain's open repair episode,
+  // cooldown, or reap quarantine — a stale episodeBackupPath would be reused
+  // over the NEW brain's WAL).
+  for (const sibling of [`${dbPath}.wal-repair-attempt.json`, `${dbPath}.lock-reap.json`]) {
+    try { rmSync(sibling, { force: true }); } catch { /* best-effort */ }
+  }
   } catch (e: unknown) {
     fail(
       opts.jsonOutput,

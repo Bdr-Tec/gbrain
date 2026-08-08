@@ -4651,28 +4651,10 @@ export async function checkCycleFreshness(
  *   - `progress` reporter writes to stderr (heartbeats per check)
  *   - `engine.executeRaw` / handler-leaf calls (the actual probe work)
  */
-/**
- * issue #1685 (GAP A) — the single authoritative "worker is OOM-looping" signal.
- *
- * One `gbrain doctor` line replaces the hours of log archaeology the #1678
- * incident required: `cap=8192MB, N watchdog kills/24h → raise --max-rss`.
- *
- * UNIONS two sources so it's authoritative for BOTH worker modes (CODEX #5):
- *   - SUPERVISED workers: supervisor audit `worker_exited likely_cause=rss_watchdog`,
- *     read cross-week (CODEX #7) so a Mon read doesn't lose a Sun loop.
- *   - BARE `gbrain jobs work`: NO supervisor event is written; the only trace is
- *     `minion_jobs.error_text = 'aborted: watchdog'` (the same source queue_health
- *     subcheck 3 reads). Reading supervisor-only would miss bare workers entirely
- *     and the queue_health cross-reference would point at an unemitted check.
- *
- * Cap (CODEX #6): the breaker alert stamps `max_rss_mb`, but a fail from
- * oomKills>=5 spread over 24h may have no breaker event → no stamped cap. Fall
- * back to `resolveDefaultMaxRssMb()` so the message always renders a number.
- *
- * Returns null when the worker never OOM'd (don't warn installs that never hit
- * it). Pure-ish: filesystem audit read + one minion_jobs count; no process.exit.
- * Exported so `test/doctor-worker-oom-loop.test.ts` drives it directly.
- */
+// ≥2 failed repair attempts inside 7 days = the corruption keeps regenerating.
+const REPAIR_RECURRENCE_WINDOW_MS = 7 * 24 * 3600 * 1000;
+const REPAIR_RECURRENCE_THRESHOLD = 2;
+
 /**
  * WAL-repair wave (#223/#1670/#2575): when the DB failed to connect on a
  * PGLite brain, diagnose the data dir from the FILESYSTEM (the connect error
@@ -4696,11 +4678,14 @@ export function computePgliteDataDirCheck(
   const backupNote = diagnosis.backupDirs.length > 0
     ? ` ${diagnosis.backupDirs.length} repair backup dir(s) on disk (newest: ${diagnosis.backupDirs[0]}) — delete old ones to reclaim space once the brain is healthy.`
     : '';
-  const recentFailed = diagnosis.recentAttempts.filter(
-    (a) => a.outcome === 'failed' && Date.now() - a.ts < 7 * 24 * 3600 * 1000,
+  // Count BOTH outcomes (adversarial review F12): a >1h-period crash loop where
+  // each repair "succeeds" discards a WAL tail per cycle with zero FAILED
+  // attempts on record — escalation must still fire.
+  const recentAttempts = diagnosis.recentAttempts.filter(
+    (a) => Date.now() - a.ts < REPAIR_RECURRENCE_WINDOW_MS,
   ).length;
-  const recurrence = recentFailed >= 2
-    ? ` Auto-repair has failed ${recentFailed}x this week — the corruption keeps regenerating (likely an unclean-shutdown loop). Consider switching engines (docs/ENGINES.md: \`gbrain init --supabase\` or native Postgres).`
+  const recurrence = recentAttempts >= REPAIR_RECURRENCE_THRESHOLD
+    ? ` Auto-repair has run ${recentAttempts}x this week — the corruption keeps regenerating (likely an unclean-shutdown loop). Consider switching engines (docs/ENGINES.md: \`gbrain init --supabase\` or native Postgres).`
     : '';
 
   switch (diagnosis.verdict) {
@@ -4747,13 +4732,37 @@ export function computePgliteDataDirCheck(
         status: 'fail',
         message:
           `PGLite failed to open but the data dir layout validates (${diagnosis.detail}). ` +
-          `Most likely torn WAL/checkpoint state without on-disk markers: ` +
-          `\`gbrain pglite-repair --dry-run\` to diagnose, \`gbrain pglite-repair --yes\` to repair in place.${backupNote}${recurrence}`,
+          `IF the connect error mentions \`Aborted()\` this is likely torn WAL state — ` +
+          `\`gbrain pglite-repair --dry-run\` to diagnose, \`gbrain pglite-repair --yes\` to repair in place ` +
+          `(repair discards the un-checkpointed WAL tail — don't run it for lock-contention or ` +
+          `catalog-corruption errors; 58P01/pgvector load failures need \`gbrain reinit-pglite\` instead).${backupNote}${recurrence}`,
         remediation_status: 'human_only',
       };
   }
 }
 
+/**
+ * issue #1685 (GAP A) — the single authoritative "worker is OOM-looping" signal.
+ *
+ * One `gbrain doctor` line replaces the hours of log archaeology the #1678
+ * incident required: `cap=8192MB, N watchdog kills/24h → raise --max-rss`.
+ *
+ * UNIONS two sources so it's authoritative for BOTH worker modes (CODEX #5):
+ *   - SUPERVISED workers: supervisor audit `worker_exited likely_cause=rss_watchdog`,
+ *     read cross-week (CODEX #7) so a Mon read doesn't lose a Sun loop.
+ *   - BARE `gbrain jobs work`: NO supervisor event is written; the only trace is
+ *     `minion_jobs.error_text = 'aborted: watchdog'` (the same source queue_health
+ *     subcheck 3 reads). Reading supervisor-only would miss bare workers entirely
+ *     and the queue_health cross-reference would point at an unemitted check.
+ *
+ * Cap (CODEX #6): the breaker alert stamps `max_rss_mb`, but a fail from
+ * oomKills>=5 spread over 24h may have no breaker event → no stamped cap. Fall
+ * back to `resolveDefaultMaxRssMb()` so the message always renders a number.
+ *
+ * Returns null when the worker never OOM'd (don't warn installs that never hit
+ * it). Pure-ish: filesystem audit read + one minion_jobs count; no process.exit.
+ * Exported so `test/doctor-worker-oom-loop.test.ts` drives it directly.
+ */
 export async function computeWorkerOomLoopCheck(
   engine: BrainEngine | null,
 ): Promise<Check | null> {
@@ -6038,7 +6047,10 @@ export async function buildChecks(
       const cfg = loadConfig();
       if (cfg?.engine === 'pglite') {
         const { inspectPgliteDataDir } = await import('../core/pglite-repair.ts');
-        const pgliteDataDir = cfg.database_path || gbrainPath('brain.pglite');
+        const { resolve } = await import('node:path');
+        // Absolutize: a RELATIVE database_path would make the sidecar/backup
+        // lookups resolve against doctor's cwd instead of the engine's.
+        const pgliteDataDir = resolve(cfg.database_path || gbrainPath('brain.pglite'));
         checks.push(computePgliteDataDirCheck(pgliteDataDir, inspectPgliteDataDir(pgliteDataDir)));
       }
     } catch {

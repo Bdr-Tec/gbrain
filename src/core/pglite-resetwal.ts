@@ -34,12 +34,23 @@ import { existsSync } from 'node:fs';
 import { mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const PG_CONTROL_FILE_SIZE = 8192;
+// Exported: pglite-repair.ts validates against the same layout literals — the
+// PG17 coupling the TODOS "pglite upgrade blocker" entry says moves together.
+export const PG_CONTROL_FILE_SIZE = 8192;
+const WAL_SEGMENT_RE = /^[0-9A-F]{24}(?:\.partial)?$/;
+/** Is this filename a WAL segment (incl. `.partial`)? Shared layout predicate. */
+export function isWalSegmentName(name: string): boolean {
+  return WAL_SEGMENT_RE.test(name);
+}
 const PG_CONTROL_VERSION = 1700;
 const DB_SHUTDOWNED = 1;
 const XLOG_BLCKSZ = 8192;
 const MIN_WAL_SEG_SIZE = 1024 * 1024;
-const MAX_WAL_SEG_SIZE = 1024 * 1024 * 1024;
+// Postgres-general max is 1GB, but this port targets pglite (ships 16MB
+// segments). A corrupt-but-plausible control field must not be able to drive
+// a 1GB zero-fill allocation + write on the repair path (perf review) — cap
+// at 64MB and fail closed above it.
+const MAX_WAL_SEG_SIZE = 64 * 1024 * 1024;
 const SIZE_OF_XLOG_LONG_PHD = 40;
 const SIZE_OF_XLOG_RECORD = 24;
 const SIZE_OF_CHECKPOINT = 88;
@@ -154,7 +165,11 @@ async function unlinkIfExists(path: string): Promise<void> {
 export async function writeFileAtomicSynced(dir: string, name: string, data: Buffer): Promise<void> {
   const tmpName = `.${name}.tmp-${process.pid}`;
   const tmpPath = join(dir, tmpName);
-  const file = await open(tmpPath, 'w');
+  // 'wx' (exclusive create, never follows an existing symlink) after clearing
+  // any stale tmp: a pre-planted symlink at the predictable tmp path must not
+  // redirect the write (security review).
+  await unlinkIfExists(tmpPath);
+  const file = await open(tmpPath, 'wx');
   try {
     await file.writeFile(data);
     await file.sync();
@@ -205,6 +220,20 @@ export async function resetWal(rootDir: string): Promise<WalResetResult> {
   }
   if (control.readUInt32LE(OFF.pgControlVersion) !== PG_CONTROL_VERSION) {
     throw new WalResetUnsupportedError('Unsupported pg_control version');
+  }
+  // Verify the STORED CRC before trusting (and re-signing) the checkpoint copy
+  // (adversarial review F6): a torn pg_control with an intact version field
+  // but garbage checkpoint counters (nextXid/nextOid/...) would otherwise be
+  // preserved verbatim and laundered under a fresh valid CRC — Postgres then
+  // starts and corrupts silently (xid-wraparound class). Real pg_resetwal
+  // refuses on CRC mismatch; so do we → the caller falls to the rebuild rung.
+  const storedCrc = control.readUInt32LE(OFF.crc);
+  if (crc32c([control.subarray(0, OFF.crc)]) !== storedCrc) {
+    throw new WalResetUnsupportedError(
+      'pg_control CRC mismatch — the control file itself is damaged; WAL reset ' +
+      'would launder corrupt checkpoint counters. Rebuild the brain instead ' +
+      '(`gbrain reinit-pglite`).',
+    );
   }
 
   const walSegSize = control.readUInt32LE(OFF.xlogSegSize);
@@ -260,7 +289,7 @@ export async function resetWal(rootDir: string): Promise<WalResetResult> {
   control.writeUInt32LE(crc32c([control.subarray(0, OFF.crc)]), OFF.crc);
 
   for (const file of await readdir(walDir)) {
-    if (/^[0-9A-F]{24}(?:\.partial)?$/.test(file)) {
+    if (isWalSegmentName(file)) {
       await unlink(join(walDir, file));
     }
   }

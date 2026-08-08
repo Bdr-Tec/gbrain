@@ -35,11 +35,18 @@
  */
 import {
   existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync,
-  mkdirSync, rmSync,
+  mkdirSync, rmSync, renameSync,
 } from 'node:fs';
 import { readFile, rename } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import { resetWal, writeFileAtomicSynced, WalResetUnsupportedError } from './pglite-resetwal.ts';
+import { resetWal, writeFileAtomicSynced, WalResetUnsupportedError, PG_CONTROL_FILE_SIZE, isWalSegmentName } from './pglite-resetwal.ts';
+import { msSinceLastReap, isProcessAlive } from './pglite-lock.ts';
+
+// A recent reap on this data dir — by ANY process — means a holder that may
+// still be alive lost its lock; auto WAL surgery stays off until the window
+// clears (security review: the in-process `reaped` flag alone let the NEXT
+// acquirer look clean while the reaped holder was still writing).
+const REAP_QUARANTINE_MS = 10 * 60 * 1000;
 
 const BACKUP_DIR_MARKER = '.wal-repair-backup-';
 const SIDECAR_SUFFIX = '.wal-repair-attempt.json';
@@ -73,6 +80,23 @@ export interface RestoreResult {
   restored: boolean;
   steps: string[];
   detail?: string;
+}
+
+/**
+ * Thrown by `repairPgliteWal` when the reset failed AFTER the backup was
+ * taken. Carries the receipt and the result of the best-effort restore so the
+ * seam can report `restored` HONESTLY instead of assuming the restore worked
+ * (the `failed-not-restored` message arm depends on this being truthful).
+ */
+export class WalRepairError extends Error {
+  constructor(
+    message: string,
+    readonly receipt: WalRepairReceipt,
+    readonly restore: RestoreResult,
+  ) {
+    super(message);
+    this.name = 'WalRepairError';
+  }
 }
 
 export type WalRepairAttempt<T> =
@@ -132,20 +156,37 @@ export function readRepairSidecar(dataDir: string): RepairSidecar {
 
 function writeRepairSidecar(dataDir: string, sidecar: RepairSidecar): void {
   try {
-    writeFileSync(sidecarPath(dataDir), JSON.stringify(sidecar), { mode: 0o644 });
+    // Atomic tmp+rename: a kill/power-loss mid-write must not truncate the
+    // sidecar to invalid JSON (readRepairSidecar would then silently reset the
+    // episode/cooldown state — codex review). rename is atomic; a torn tmp is
+    // discarded on the next write.
+    const tmp = `${sidecarPath(dataDir)}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(sidecar), { mode: 0o644 });
+    renameSync(tmp, sidecarPath(dataDir));
   } catch { /* best-effort — a sidecar write failure must never block recovery */ }
 }
 
 /**
  * Record a real repair attempt (repaired|failed) and manage episode state:
  * a `failed` attempt opens an episode (if none is open) pinning its backup as
- * the episode backup; a `repaired` attempt closes the episode. Prunes retained
- * backups down to the newest KEEP_EPISODES after a successful close.
+ * the episode backup; a VERIFIED `repaired` attempt closes the episode and
+ * prunes retained backups to the newest KEEP_EPISODES. The manual command
+ * passes `closeEpisode: false` — its "repaired" is unverified (the next
+ * connect proves it), and closing+pruning on unverified success let repeated
+ * manual runs delete the pre-damage forensic backup (red-team finding); the
+ * episode instead closes on the next successful connect
+ * (`closeRepairEpisodeIfOpen`).
+ *
+ * Re-pin rule (red-team finding): a restore MOVES pg_wal back out of the
+ * backup, gutting it — if a later failed attempt took a FRESH backup while an
+ * episode pinned a gutted dir, the pin moves to the fresh backup so the
+ * episode's protected copy is always one that still holds pg_wal.
  */
 export function recordRepairAttempt(
   dataDir: string,
   outcome: 'repaired' | 'failed',
   backupPath: string | null,
+  opts?: { closeEpisode?: boolean },
 ): void {
   const sidecar = readRepairSidecar(dataDir);
   sidecar.attempts.push({ ts: Date.now(), outcome, backupPath });
@@ -156,27 +197,79 @@ export function recordRepairAttempt(
     if (sidecar.episodeStartedAt === null) {
       sidecar.episodeStartedAt = Date.now();
       sidecar.episodeBackupPath = backupPath;
+    } else if (
+      backupPath &&
+      backupPath !== sidecar.episodeBackupPath &&
+      (!sidecar.episodeBackupPath || !existsSync(join(sidecar.episodeBackupPath, 'pg_wal')))
+    ) {
+      sidecar.episodeBackupPath = backupPath;
     }
-  } else {
+  } else if (opts?.closeEpisode !== false) {
     sidecar.episodeStartedAt = null;
     sidecar.episodeBackupPath = null;
   }
   writeRepairSidecar(dataDir, sidecar);
-  if (outcome === 'repaired') {
+  if (outcome === 'repaired' && opts?.closeEpisode !== false) {
     pruneRepairBackups(dataDir);
   }
 }
 
-/** Cooldown: true when the last FAILED attempt is inside the cooldown window. */
+/**
+ * Close any open repair episode after a HEALTHY connect (red-team finding: a
+ * plain successful open never touched the sidecar, so an episode stayed open
+ * forever — doctor kept reporting corruption-likely, and a weeks-stale
+ * episode backup could be reused over much newer data). Cheap no-op when no
+ * sidecar exists. Called by PGLiteEngine.connect() on every non-repaired
+ * success and by the seam's 'repaired' arm via recordRepairAttempt.
+ */
+export function closeRepairEpisodeIfOpen(dataDir: string): void {
+  try {
+    if (!existsSync(sidecarPath(dataDir))) return;
+    const sidecar = readRepairSidecar(dataDir);
+    if (sidecar.episodeStartedAt === null) return;
+    sidecar.episodeStartedAt = null;
+    sidecar.episodeBackupPath = null;
+    writeRepairSidecar(dataDir, sidecar);
+    pruneRepairBackups(dataDir);
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Cooldown: true when the last FAILED attempt is inside the cooldown window.
+ * DELIBERATE: a later successful repair does NOT clear the cooldown — repeated
+ * corruption right after a "success" usually means the unclean-shutdown
+ * genesis is still active, and looping surgery would silently eat a WAL tail
+ * per cycle. The manual `gbrain pglite-repair` command bypasses the cooldown.
+ */
 export function repairCooldownActive(dataDir: string): { active: boolean; detail: string } {
   const seconds = Number(process.env.GBRAIN_PGLITE_WAL_REPAIR_COOLDOWN_SECONDS ?? DEFAULT_COOLDOWN_SECONDS);
   const windowMs = (Number.isFinite(seconds) && seconds >= 0 ? seconds : DEFAULT_COOLDOWN_SECONDS) * 1000;
   if (windowMs === 0) return { active: false, detail: 'cooldown disabled (0s)' };
   const sidecar = readRepairSidecar(dataDir);
+  // Repaired-loop guard (red-team finding): a crash loop where every reopen
+  // aborts but repair "succeeds" each time would silently discard a WAL tail
+  // per cycle with no failed attempt ever recorded. Two successful repairs
+  // inside one window = the corruption genesis is active — stop auto-repair
+  // and let doctor escalate.
+  const repairedInWindow = sidecar.attempts.filter(
+    (a) => a.outcome === 'repaired' && Date.now() - a.ts >= 0 && Date.now() - a.ts < windowMs,
+  ).length;
+  if (repairedInWindow >= 2) {
+    return {
+      active: true,
+      detail:
+        `auto-repair already ran ${repairedInWindow}x in the last ${windowMs / 1000}s — repeated ` +
+        'corruption means the unclean-shutdown genesis is still active; refusing to silently ' +
+        'discard another WAL tail. Run `gbrain doctor`, or `gbrain pglite-repair` manually.',
+    };
+  }
   const lastFailed = [...sidecar.attempts].reverse().find((a) => a.outcome === 'failed');
   if (!lastFailed) return { active: false, detail: 'no prior failed attempt' };
   const ageMs = Date.now() - lastFailed.ts;
-  if (ageMs < windowMs) {
+  // Clock skew (unclean-reboot recovery is exactly when clocks step): a
+  // negative age means the recorded ts is in the future — treat as expired
+  // rather than suppressing auto-repair until wall-clock catches up.
+  if (ageMs >= 0 && ageMs < windowMs) {
     return {
       active: true,
       detail:
@@ -241,8 +334,17 @@ function isSymlink(path: string): boolean {
 export function validateWalRepairTarget(dataDir: string): WalRepairValidation {
   if (!dataDir) return { ok: false, reason: 'missing-dir', detail: 'no data dir configured (in-memory engine)' };
   if (!existsSync(dataDir)) return { ok: false, reason: 'missing-dir', detail: `${dataDir} does not exist` };
-  if (isSymlink(dataDir) || isSymlink(join(dataDir, 'pg_wal')) || isSymlink(join(dataDir, 'global', 'pg_control'))) {
-    return { ok: false, reason: 'not-pglite-layout', detail: 'data dir, pg_wal, or pg_control is a symlink — refusing to run rename-based repair through symlinks' };
+  if (
+    isSymlink(dataDir) ||
+    isSymlink(join(dataDir, 'pg_wal')) ||
+    // `global/` itself must be checked too: lstat on global/pg_control follows
+    // the INTERMEDIATE symlink, so a symlinked global/ would pass and surgery
+    // would write a forged pg_control through it into a foreign directory
+    // (security review finding).
+    isSymlink(join(dataDir, 'global')) ||
+    isSymlink(join(dataDir, 'global', 'pg_control'))
+  ) {
+    return { ok: false, reason: 'not-pglite-layout', detail: 'data dir, pg_wal, global, or pg_control is a symlink — refusing to run rename-based repair through symlinks' };
   }
   let pgVersion: string;
   try {
@@ -256,11 +358,27 @@ export function validateWalRepairTarget(dataDir: string): WalRepairValidation {
   if (!existsSync(join(dataDir, 'base'))) {
     return { ok: false, reason: 'not-pglite-layout', detail: `no base/ directory in ${dataDir}` };
   }
+  // Live-postmaster refusal (red-team finding): real pg_resetwal refuses when
+  // postmaster.pid exists. A LIVE native Postgres 17 data dir passes every
+  // layout check here — without this guard, `gbrain pglite-repair --path` at
+  // such a dir would rename pg_wal out from under a running postmaster the
+  // gbrain lock cannot see. A stale pid file (dead process) stays repairable.
+  try {
+    const pidRaw = readFileSync(join(dataDir, 'postmaster.pid'), 'utf-8').split('\n')[0]?.trim();
+    const pid = Number(pidRaw);
+    if (Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)) {
+      return {
+        ok: false,
+        reason: 'not-pglite-layout',
+        detail: `postmaster.pid names a LIVE process (PID ${pid}) — refusing WAL surgery on a possibly-running database`,
+      };
+    }
+  } catch { /* no postmaster.pid or unreadable — fine */ }
   const controlPath = join(dataDir, 'global', 'pg_control');
   try {
     const size = statSync(controlPath).size;
-    if (size !== 8192) {
-      return { ok: false, reason: 'bad-pg-control', detail: `pg_control is ${size} bytes, expected 8192` };
+    if (size !== PG_CONTROL_FILE_SIZE) {
+      return { ok: false, reason: 'bad-pg-control', detail: `pg_control is ${size} bytes, expected ${PG_CONTROL_FILE_SIZE}` };
     }
   } catch {
     return { ok: false, reason: 'bad-pg-control', detail: `no readable ${controlPath}` };
@@ -289,19 +407,16 @@ export function inspectPgliteDataDir(dataDir: string): PgliteDirDiagnosis {
     base.pgVersion = readFileSync(join(dataDir, 'PG_VERSION'), 'utf-8').trim();
   } catch { /* leave null */ }
   try {
-    base.pgControlOk = statSync(join(dataDir, 'global', 'pg_control')).size === 8192;
+    base.pgControlOk = statSync(join(dataDir, 'global', 'pg_control')).size === PG_CONTROL_FILE_SIZE;
   } catch { /* leave false */ }
   try {
-    base.walSegments = readdirSync(join(dataDir, 'pg_wal')).filter((f) => /^[0-9A-F]{24}(?:\.partial)?$/.test(f)).sort();
+    base.walSegments = readdirSync(join(dataDir, 'pg_wal')).filter(isWalSegmentName).sort();
   } catch { /* leave empty */ }
   try {
     const lockData = JSON.parse(readFileSync(join(dataDir, '.gbrain-lock', 'lock'), 'utf-8')) as { pid?: number };
-    if (typeof lockData.pid === 'number') {
-      try {
-        process.kill(lockData.pid, 0);
-        base.lockHeld = true;
-        base.lockHolderPid = lockData.pid;
-      } catch { /* holder dead — not held */ }
+    if (typeof lockData.pid === 'number' && isProcessAlive(lockData.pid)) {
+      base.lockHeld = true;
+      base.lockHolderPid = lockData.pid;
     }
   } catch { /* no lock / unreadable — not held */ }
 
@@ -341,33 +456,63 @@ export async function repairPgliteWal(
     throw new WalResetUnsupportedError(`refusing repair: ${validation.detail}`);
   }
 
-  let backupPath: string;
+  // Defense-in-depth (security + red-team reviews): the reuse path comes from
+  // the user-writable sidecar JSON — only honor it when it is a real,
+  // non-symlink, traversal-free sibling backup dir of THIS data dir that
+  // STILL CONTAINS pg_wal (a restore MOVES pg_wal back out, gutting the
+  // backup; reusing a gutted backup would let resetWal unlink the only
+  // surviving WAL copy in place). Anything else gets a fresh backup.
+  const safeReusePath =
+    opts?.reuseBackupPath &&
+    opts.reuseBackupPath.startsWith(`${dataDir}${BACKUP_DIR_MARKER}`) &&
+    !opts.reuseBackupPath.includes('..') &&
+    existsSync(opts.reuseBackupPath) &&
+    !isSymlink(opts.reuseBackupPath) &&
+    existsSync(join(opts.reuseBackupPath, 'pg_wal')) &&
+    !isSymlink(join(opts.reuseBackupPath, 'pg_wal'))
+      ? opts.reuseBackupPath
+      : undefined;
   const backedUpFiles: string[] = [];
-  const reusedEpisodeBackup = !!opts?.reuseBackupPath && existsSync(opts.reuseBackupPath);
+  const reusedEpisodeBackup = !!safeReusePath;
 
+  let backupPath: string;
   if (reusedEpisodeBackup) {
-    // Episode reuse: the open episode's backup already holds the pre-damage
-    // state (restore-on-failure returned the dir to exactly that state, or a
-    // restored:false dir is in reset-state whose re-backup would be useless).
-    // resetWal's own deletion loops clear the current segments in place.
-    backupPath = opts!.reuseBackupPath!;
+    // Episode reuse: the open episode's backup still holds pg_wal (enforced by
+    // safeReusePath — a restore MOVES pg_wal back out and guts the backup; a
+    // gutted backup must never be reused or resetWal would unlink the only
+    // surviving WAL copy in place). resetWal's own deletion loops clear the
+    // current segments.
+    backupPath = safeReusePath!;
   } else {
+    // Fresh backup dir: mkdir with recursive:false and fail-closed on
+    // collision (red-team: a predictable pre-existing dir or symlink-to-dir
+    // would silently receive the renames, and restore would later read
+    // pg_control bytes back OUT of it). Retry with a suffix, then verify we
+    // created a real directory.
     backupPath = `${dataDir}${BACKUP_DIR_MARKER}${Date.now()}`;
-    mkdirSync(backupPath, { recursive: true });
-    const walDir = join(dataDir, 'pg_wal');
-    if (existsSync(walDir)) {
-      await rename(walDir, join(backupPath, 'pg_wal'));
-      backedUpFiles.push('pg_wal/');
+    for (let attempt = 0; ; attempt++) {
+      try {
+        mkdirSync(backupPath, { recursive: false });
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === 'EEXIST' && attempt < 5) {
+          backupPath = `${dataDir}${BACKUP_DIR_MARKER}${Date.now()}-${attempt + 1}`;
+          continue;
+        }
+        throw err;
+      }
     }
-    const pidFile = join(dataDir, 'postmaster.pid');
-    if (existsSync(pidFile)) {
-      await rename(pidFile, join(backupPath, 'postmaster.pid'));
-      backedUpFiles.push('postmaster.pid');
+    if (isSymlink(backupPath) || !statSync(backupPath).isDirectory()) {
+      throw new WalResetUnsupportedError(`backup path ${backupPath} is not a real directory`);
     }
-    const control = await readFile(join(dataDir, 'global', 'pg_control'));
-    await writeFileAtomicSynced(backupPath, 'pg_control', Buffer.from(control));
-    backedUpFiles.push('global/pg_control');
   }
+  // Track whether the backup dir received anything, so refusal paths can prune
+  // an empty leftover (adversarial review F11: doctor would otherwise inventory
+  // an empty `<dataDir>.wal-repair-backup-*` as a real backup).
+  const pruneEmptyBackup = () => {
+    if (reusedEpisodeBackup) return;
+    try { if (readdirSync(backupPath).length === 0) rmSync(backupPath, { recursive: true, force: true }); } catch { /* best-effort */ }
+  };
 
   const receipt: WalRepairReceipt = {
     dataDir,
@@ -380,14 +525,46 @@ export async function repairPgliteWal(
     repairedAt: new Date().toISOString(),
   };
 
+  if (!reusedEpisodeBackup) {
+    // Backup phase. Once the FIRST rename lands, any failure here must run a
+    // restore and surface via WalRepairError — a generic throw would read as
+    // "dir never touched" while pg_wal is actually sitting in the backup dir
+    // (red-team finding).
+    let backupStarted = false;
+    try {
+      const walDir = join(dataDir, 'pg_wal');
+      if (existsSync(walDir)) {
+        await rename(walDir, join(backupPath, 'pg_wal'));
+        backupStarted = true;
+        backedUpFiles.push('pg_wal/');
+      }
+      const pidFile = join(dataDir, 'postmaster.pid');
+      if (existsSync(pidFile)) {
+        await rename(pidFile, join(backupPath, 'postmaster.pid'));
+        backupStarted = true;
+        backedUpFiles.push('postmaster.pid');
+      }
+      const control = await readFile(join(dataDir, 'global', 'pg_control'));
+      await writeFileAtomicSynced(backupPath, 'pg_control', Buffer.from(control));
+      backedUpFiles.push('global/pg_control');
+    } catch (err) {
+      if (!backupStarted) { pruneEmptyBackup(); throw err; } // dir genuinely untouched
+      const restore = await restoreWalBackup(receipt);
+      throw new WalRepairError(String((err as Error)?.message ?? err), receipt, restore);
+    }
+  }
+
   try {
     const result = await resetWal(dataDir);
     receipt.resetSegment = result.resetSegment;
     receipt.timelineId = result.timelineId;
     receipt.walSegSize = result.walSegSize;
   } catch (err) {
-    await restoreWalBackup(receipt); // best-effort — never leave backed-up-but-unrepaired
-    throw err;
+    // Best-effort restore — never leave backed-up-but-unrepaired. The result
+    // is THREADED OUT via WalRepairError so callers can report `restored`
+    // honestly (review finding: discarding it let 'failed-restored' lie).
+    const restore = await restoreWalBackup(receipt);
+    throw new WalRepairError(String((err as Error)?.message ?? err), receipt, restore);
   }
   return receipt;
 }
@@ -411,11 +588,18 @@ export async function restoreWalBackup(receipt: WalRepairReceipt): Promise<Resto
     const backupWal = join(backupPath, 'pg_wal');
     const backupControl = join(backupPath, 'pg_control');
 
+    // Symlinked backup CHILDREN would let restore read attacker-chosen
+    // pg_control bytes or rename a foreign pg_wal into the data dir
+    // (red-team) — the top-level checks don't cover them.
+    if (isSymlink(backupWal) || isSymlink(backupControl)) {
+      return { restored: false, steps, detail: `backup at ${backupPath} contains symlinked components — refusing restore` };
+    }
+
     // Mtime guard: any foreign WAL segment newer than this repair's start?
     const backupTs = Date.parse(receipt.repairedAt);
     if (existsSync(walDir)) {
       for (const f of readdirSync(walDir)) {
-        if (!/^[0-9A-F]{24}(?:\.partial)?$/.test(f) || f === receipt.resetSegment) continue;
+        if (!isWalSegmentName(f) || f === receipt.resetSegment) continue;
         try {
           if (statSync(join(walDir, f)).mtimeMs > backupTs) {
             return {
@@ -484,6 +668,22 @@ export async function attemptWalRepairAndRetry<T>(
           'none is running), then re-run; a cleanly-acquired lock enables auto-repair.',
       };
     }
+    const sinceReap = msSinceLastReap(dataDir);
+    // `>= 0` guard (adversarial review F5): a future-dated marker (clock step
+    // during the unclean-reboot recovery this feature exists for) yields a
+    // negative age; treat it as expired rather than quarantining forever —
+    // same policy as repairCooldownActive.
+    if (sinceReap !== null && sinceReap >= 0 && sinceReap < REAP_QUARANTINE_MS) {
+      return {
+        status: 'skipped',
+        reason: 'possibly-live-writer',
+        detail:
+          `a lock on this brain was reaped ${Math.round(sinceReap / 1000)}s ago (possibly from a ` +
+          'still-live process) — auto-repair stays off for ' +
+          `${REAP_QUARANTINE_MS / 60000} minutes after any reap. Confirm no gbrain process is ` +
+          'running, then re-run or use `gbrain pglite-repair`.',
+      };
+    }
     const validation = validateWalRepairTarget(dataDir);
     if (!validation.ok) {
       return { status: 'skipped', reason: 'validation-failed', detail: validation.detail };
@@ -493,20 +693,42 @@ export async function attemptWalRepairAndRetry<T>(
       return { status: 'skipped', reason: 'recently-failed', detail: cooldown.detail };
     }
 
-    process.stderr.write(
-      `gbrain: PGLite failed to open ${dataDir} — attempting automatic WAL repair ` +
-      `(backup at ${dataDir}${BACKUP_DIR_MARKER}*). If this command times out, run ` +
-      `\`gbrain pglite-repair\` to finish. Disable auto-repair with GBRAIN_PGLITE_WAL_REPAIR=off.\n`,
-    );
+    try {
+      process.stderr.write(
+        `gbrain: PGLite failed to open ${dataDir} — attempting automatic WAL repair ` +
+        `(backup at ${dataDir}${BACKUP_DIR_MARKER}*). If this command times out, run ` +
+        `\`gbrain pglite-repair\` to finish. Disable auto-repair with GBRAIN_PGLITE_WAL_REPAIR=off.\n`,
+      );
+    } catch { /* EPIPE under a closed-pipe daemon parent must not read as surgery failure */ }
 
     const sidecar = readRepairSidecar(dataDir);
+    // Stale-episode bound (red-team): an episode left open for a long time
+    // means the pinned backup may predate real data — take a fresh backup.
+    const episodeFresh =
+      sidecar.episodeStartedAt !== null &&
+      Date.now() - sidecar.episodeStartedAt >= 0 &&
+      Date.now() - sidecar.episodeStartedAt < 24 * 3600 * 1000;
     let receipt: WalRepairReceipt;
     try {
       receipt = await repairPgliteWal(dataDir, {
-        reuseBackupPath: sidecar.episodeBackupPath ?? undefined,
+        reuseBackupPath: episodeFresh ? sidecar.episodeBackupPath ?? undefined : undefined,
       });
     } catch (err) {
-      // repairPgliteWal already best-effort-restored; no receipt to restore from.
+      if (err instanceof WalRepairError) {
+        // Reset failed AFTER the backup was taken; report the best-effort
+        // restore's REAL outcome (hardcoding restored:true here made the
+        // 'failed-restored' message lie when the restore itself failed).
+        recordRepairAttempt(dataDir, 'failed', err.receipt.backupPath);
+        return {
+          status: 'failed',
+          receipt: err.receipt,
+          restored: err.restore.restored,
+          repairError: err.message +
+            (err.restore.restored ? '' : ` [restore: ${err.restore.detail}]`),
+        };
+      }
+      // Pre-backup refusal (validation) — the dir was never touched, so there
+      // is nothing to restore and `restored: true` reads as "dir intact".
       recordRepairAttempt(dataDir, 'failed', sidecar.episodeBackupPath);
       return {
         status: 'failed',
@@ -534,10 +756,15 @@ export async function attemptWalRepairAndRetry<T>(
   } catch (err) {
     // The seam's never-throw contract is load-bearing (single lock-release site
     // in connect()'s catch) — any unexpected error degrades to 'failed'.
+    // `restored: true` here is honest: repairPgliteWal/restoreWalBackup handle
+    // their own mutation failures via WalRepairError above, so a throw landing
+    // HERE happened outside surgery and the dir is untouched (red-team: the
+    // old restored:false told users to manually restore a nonexistent backup).
+    try { recordRepairAttempt(dataDir, 'failed', null); } catch { /* best-effort — cooldown still engages when possible */ }
     return {
       status: 'failed',
       receipt: null,
-      restored: false,
+      restored: true,
       repairError: `unexpected repair-path error: ${String((err as Error)?.message ?? err)}`,
     };
   }

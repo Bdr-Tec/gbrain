@@ -25,6 +25,7 @@ import { basename, join } from 'node:path';
 
 import { runPgliteRepair } from '../src/commands/pglite-repair.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 function tmp(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -264,6 +265,60 @@ describe('gbrain pglite-repair — refusals (validate before lock, never mkdir a
   });
 });
 
+describe('gbrain pglite-repair — TTY + config gates', () => {
+  test('8. non-TTY without --yes refuses: exit 1, no_tty_no_yes, zero mutation', async () => {
+    const dir = join(tmp('gbrain-repair-notty-'), 'brain.pglite');
+    makeFakeLayout(dir);
+
+    // Pin stdin to non-TTY: under `bun test` in a terminal stdin can still be
+    // a TTY, which would route into the interactive confirm instead.
+    const origTty = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    const cap = captureConsole();
+    let rc: number;
+    try {
+      rc = await runPgliteRepair(['--path', dir, '--json']); // no --yes
+    } finally {
+      cap.restore();
+      if (origTty) Object.defineProperty(process.stdin, 'isTTY', origTty);
+      else delete (process.stdin as unknown as Record<string, unknown>).isTTY;
+    }
+
+    expect(rc).toBe(1);
+    const out = parseJsonLine(cap.logs);
+    expect(out.status).toBe('error');
+    expect(out.code).toBe('no_tty_no_yes');
+    // Refused BEFORE any surgery: no backup dir, no sidecar.
+    expect(backupDirsBeside(dir)).toEqual([]);
+    expect(existsSync(`${dir}.wal-repair-attempt.json`)).toBe(false);
+  });
+
+  test('9. no --path with a non-pglite configured engine: exit 1, not_pglite', async () => {
+    // Hermetic GBRAIN_HOME (same convention as apply-migrations-pglite-spawn):
+    // configDir() appends '.gbrain', so the config lands at <home>/.gbrain/.
+    const home = tmp('gbrain-repair-home-');
+    mkdirSync(join(home, '.gbrain'), { recursive: true });
+    writeFileSync(
+      join(home, '.gbrain', 'config.json'),
+      JSON.stringify({ engine: 'postgres', database_url: 'postgresql://localhost:5432/x' }) + '\n',
+    );
+
+    const cap = captureConsole();
+    let rc: number;
+    try {
+      rc = await withEnv({ GBRAIN_HOME: home }, () => runPgliteRepair(['--yes', '--json']));
+    } finally {
+      cap.restore();
+    }
+
+    expect(rc).toBe(1);
+    const out = parseJsonLine(cap.logs);
+    expect(out.status).toBe('error');
+    expect(out.code).toBe('not_pglite');
+    expect(out.message).toContain('--path');
+  });
+});
+
 describe('gbrain pglite-repair — the happy path (real PGLite)', () => {
   test('4. corrupt pg_wal → repair in place → data survives, no auto-repair on reconnect', async () => {
     const dir = join(tmp('gbrain-repair-happy-'), 'brain.pglite');
@@ -315,4 +370,49 @@ describe('gbrain pglite-repair — the happy path (real PGLite)', () => {
       await engine2.disconnect();
     }
   }, 180_000);
+});
+
+describe('gbrain pglite-repair — argument + quarantine hardening (adversarial fixes)', () => {
+  test('unknown flag is rejected (exit 2), not silently ignored on a destructive command', async () => {
+    const cap = captureConsole();
+    let rc: number;
+    try {
+      rc = await runPgliteRepair(['--dry-rnu', '--yes', '--json']);
+    } finally {
+      cap.restore();
+    }
+    expect(rc).toBe(2);
+    expect(parseJsonLine(cap.logs).code).toBe('unknown_flag');
+  });
+
+  test('--path with no value is rejected (does NOT retarget the default brain)', async () => {
+    const cap = captureConsole();
+    let rc: number;
+    try {
+      rc = await runPgliteRepair(['--yes', '--json', '--path']);
+    } finally {
+      cap.restore();
+    }
+    expect(rc).toBe(2);
+    expect(parseJsonLine(cap.logs).code).toBe('unknown_flag');
+  });
+
+  test('the command honors the cross-process reap quarantine (F3: a second --yes cannot bypass it)', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'pgrepaircmd-')), 'brain.pglite');
+    makeFakeLayout(dir);
+    // A fresh corrupt-lock reap marker from a prior run — the possibly-live
+    // writer it protects must not be repaired under.
+    writeFileSync(`${dir}.lock-reap.json`, JSON.stringify({ ts: Date.now(), by: 999999 }), { mode: 0o644 });
+    const cap = captureConsole();
+    let rc: number;
+    try {
+      rc = await runPgliteRepair(['--path', dir, '--yes', '--json']);
+    } finally {
+      cap.restore();
+    }
+    expect(rc).toBe(1);
+    expect(parseJsonLine(cap.logs).code).toBe('refused_reap_quarantine');
+    // No surgery: no backup dir created.
+    expect(readdirSync(join(dir, '..')).some((f) => f.includes('.wal-repair-backup-'))).toBe(false);
+  });
 });

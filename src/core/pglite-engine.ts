@@ -48,7 +48,7 @@ import { MARKDOWN_CHUNKER_VERSION } from './chunkers/recursive.ts';
 import { acquireLock, releaseLock, type LockHandle } from './pglite-lock.ts';
 // Engine-live path (#3596): static import, never a lazy `import()` in the
 // connect() catch. No cycle: pglite-repair.ts imports nothing from this file.
-import { attemptWalRepairAndRetry, type WalRepairReceipt } from './pglite-repair.ts';
+import { attemptWalRepairAndRetry, closeRepairEpisodeIfOpen, type WalRepairReceipt } from './pglite-repair.ts';
 import { getFtsLanguage } from './fts-language.ts';
 import type {
   Page, PageInput, PageFilters, PageType,
@@ -286,8 +286,8 @@ function repairContextLine(ctx: PgliteInitRepairContext): string {
       return '  Auto-repair ran, PGLite still failed to start, AND the automatic restore\n' +
         '  itself failed — the data dir is currently in a RESET state. Your\n' +
         `  pre-repair files are intact in the backup at ${ctx.backupPath ?? '<dataDir>.wal-repair-backup-*'};\n` +
-        '  restore manually by moving its `pg_wal` dir and `pg_control` back into\n' +
-        '  the data dir.' +
+        '  restore manually: move the backup\'s `pg_wal` dir back to `<dataDir>/pg_wal`\n' +
+        '  and its `pg_control` file back to `<dataDir>/global/pg_control`.' +
         (ctx.detail ? `\n  Detail: ${ctx.detail}` : '');
     case 'not-attempted':
     default:
@@ -475,6 +475,11 @@ export class PGLiteEngine implements BrainEngine {
           extensions: { vector, pg_trgm },
         }),
       );
+      // Healthy open: close any repair episode left open by a prior failed
+      // attempt (red-team: episodes otherwise stayed open forever — doctor
+      // kept reporting corruption-likely and a weeks-stale episode backup
+      // could be reused over much newer data). Cheap no-op without a sidecar.
+      if (dataDir) closeRepairEpisodeIfOpen(dataDir);
     } catch (err) {
       // v0.13.1: any PGLite.create() failure becomes actionable. v0.41.8.0
       // (#1340): the previous error hint hardcoded the macOS 26.3 link, but

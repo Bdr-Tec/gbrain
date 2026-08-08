@@ -14,7 +14,7 @@
  *   try { ... } finally { await releaseLock(lock); }
  */
 
-import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, statSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, statSync, renameSync } from 'fs';
 import { join } from 'path';
 import { parseGlobalFlags } from './cli-options.ts';
 
@@ -106,11 +106,49 @@ function startHeartbeat(lockPath: string, ownerToken: string): ReturnType<typeof
         return;
       }
       raw.refreshed_at = Date.now();
-      writeFileSync(lockPath, JSON.stringify(raw), { mode: 0o644 });
+      // Atomic tmp+rename (security review): waiting acquirers poll-read this
+      // file every second — an in-place write can be caught mid-flight and a
+      // torn read misclassifies a HEALTHY live holder as a corrupt lock,
+      // getting it reaped. rename makes every read see old-or-new, never torn.
+      const tmpPath = `${lockPath}.tmp-${process.pid}`;
+      writeFileSync(tmpPath, JSON.stringify(raw), { mode: 0o644 });
+      renameSync(tmpPath, lockPath);
     } catch { /* best-effort — file removed or transient FS error */ }
   }, HEARTBEAT_INTERVAL_MS);
   (timer as { unref?: () => void }).unref?.();
   return timer;
+}
+
+/**
+ * Persisted reap marker (security review): written ONLY for corrupt-lock-file
+ * reaps, where the holder's liveness is UNKNOWABLE (the PID can't be read).
+ * The in-process `reaped` flag dies with the acquisition — so the reaper
+ * destroys a possibly-live holder's lock, exits, and the NEXT process
+ * acquires "cleanly" and would run WAL surgery under a live writer. The
+ * marker makes that reap visible across processes: `attemptWalRepairAndRetry`
+ * refuses auto-repair while a recent unknowable-liveness reap is on record.
+ * Dead-PID reaps (affirmative ESRCH verdict) deliberately do NOT write it —
+ * the dead-holder recovery cost stays at one failed command + one re-run.
+ */
+function reapMarkerPath(dataDir: string): string {
+  return `${dataDir}.lock-reap.json`;
+}
+
+function recordReap(dataDir: string): void {
+  try {
+    writeFileSync(reapMarkerPath(dataDir), JSON.stringify({ ts: Date.now(), by: process.pid }), { mode: 0o644 });
+  } catch { /* best-effort — a marker write failure must not block acquisition */ }
+}
+
+/** Milliseconds since the last recorded reap on this data dir, or null. */
+export function msSinceLastReap(dataDir: string | undefined): number | null {
+  if (!dataDir) return null;
+  try {
+    const raw = JSON.parse(readFileSync(reapMarkerPath(dataDir), 'utf-8')) as { ts?: unknown };
+    return typeof raw.ts === 'number' && Number.isFinite(raw.ts) ? Date.now() - raw.ts : null;
+  } catch {
+    return null;
+  }
 }
 
 function getLockDir(dataDir: string | undefined): string {
@@ -123,13 +161,17 @@ function getLockDir(dataDir: string | undefined): string {
   return join(dataDir, LOCK_DIR_NAME);
 }
 
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
+  // Only ESRCH (no such process) is affirmative proof of death. EPERM means
+  // the process EXISTS under another user; ERR_INVALID_ARG_TYPE / a malformed
+  // or non-finite pid means we can't tell — all of which must read as ALIVE,
+  // because a false "dead" reaps a live holder's lock (security/codex review).
+  if (!Number.isInteger(pid) || pid <= 0) return true;
   try {
-    // Sending signal 0 checks existence without actually sending a signal
-    process.kill(pid, 0);
+    process.kill(pid, 0); // signal 0 = existence check, no signal delivered
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code !== 'ESRCH';
   }
 }
 
@@ -197,7 +239,11 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
         // heartbeat" is NOT evidence of death — only a dead PID is.
         const alive = isProcessAlive(lockPid);
         if (!alive) {
-          // Holder process is gone — reap and try to acquire.
+          // Holder process is gone — reap and try to acquire. This verdict is
+          // affirmative (kill-0 threw ESRCH; EPERM reads as alive), so no
+          // cross-process quarantine marker: the same-acquisition `reaped`
+          // flag alone gates repair, keeping the dead-holder recovery cost at
+          // one failed command + one re-run.
           reaped = true;
           try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* race condition, try again */ }
         } else {
@@ -220,9 +266,22 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
         // A live MCP server is not a stale or corrupt lock. Surface the useful
         // explanation without touching the lock it still owns.
         if (err instanceof LiveServeLockError) throw err;
+        // ENOENT = acquisition in flight (a concurrent acquirer did mkdir but
+        // hasn't written the lock file yet) — reaping HERE would destroy a
+        // LIVE acquirer's lock and put two writers on one dir (red-team).
+        // Give the writer a grace window keyed on the lock dir's age.
+        if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+          let lockDirAgeMs = Infinity;
+          try { lockDirAgeMs = Date.now() - statSync(lockDir).mtimeMs; } catch { /* dir gone — retry loop handles */ }
+          if (lockDirAgeMs < 10_000) {
+            await new Promise(r => setTimeout(r, 200));
+            continue;
+          }
+        }
         // Corrupt lock file — remove it. The holder's liveness is UNKNOWABLE
         // here (unreadable PID), so this counts as a reap for the repair gate.
         reaped = true;
+        recordReap(dataDir as string);
         try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* race condition */ }
       }
     }
@@ -234,13 +293,18 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
       // the heartbeat so this holder reads as alive-and-working to others.
       const lockPath = join(lockDir, LOCK_FILE);
       const now = Date.now();
-      writeFileSync(lockPath, JSON.stringify({
+      // Atomic tmp+rename, same torn-read protection as the heartbeat: a
+      // concurrent poll-reader must see the file complete or absent, never
+      // mid-write (a torn read classifies a LIVE holder as corrupt).
+      const initTmp = `${lockPath}.tmp-${process.pid}`;
+      writeFileSync(initTmp, JSON.stringify({
         pid: process.pid,
         acquired_at: now,
         refreshed_at: now,
         command: process.argv.slice(1).join(' '),
         subcommand: parseGlobalFlags(process.argv.slice(2)).rest[0] ?? null,
       }), { mode: 0o644 });
+      renameSync(initTmp, lockPath);
 
       const ownerToken = tokenOf({ pid: process.pid, acquired_at: now });
       return { lockDir, acquired: true, lockPath, ownerToken, reaped, heartbeat: startHeartbeat(lockPath, ownerToken) };

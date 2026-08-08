@@ -41,6 +41,7 @@ function makeControl(opts?: { version?: number; segSize?: number; blcksz?: numbe
   control.writeUInt32LE(opts?.segSize ?? SEG_SIZE, OFF.xlogSegSize);
   const redoSegNo = opts?.redoSegNo ?? 3n;
   control.writeBigUInt64LE(redoSegNo * BigInt(opts?.segSize ?? SEG_SIZE) + 40n, OFF.checkPointCopyRedo);
+  control.writeUInt32LE(crc32c([control.subarray(0, OFF.crc)]), OFF.crc); // valid CRC
   return control;
 }
 
@@ -60,33 +61,44 @@ function makeLayout(opts?: Parameters<typeof makeControl>[0] & { pgVersion?: str
 describe('resetWal — validation refusals (fail-closed)', () => {
   test('refuses PG_VERSION 16', async () => {
     const dir = makeLayout({ pgVersion: '16' });
-    expect(resetWal(dir)).rejects.toThrow(WalResetUnsupportedError);
+    await expect(resetWal(dir)).rejects.toThrow(WalResetUnsupportedError);
   });
 
   test('refuses missing PG_VERSION', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'resetwal-'));
-    expect(resetWal(dir)).rejects.toThrow(WalResetUnsupportedError);
+    await expect(resetWal(dir)).rejects.toThrow(WalResetUnsupportedError);
   });
 
   test('refuses wrong pg_control size', async () => {
     const dir = makeLayout();
     writeFileSync(join(dir, 'global', 'pg_control'), Buffer.alloc(100));
-    expect(resetWal(dir)).rejects.toThrow(/pg_control size/);
+    await expect(resetWal(dir)).rejects.toThrow(/pg_control size/);
   });
 
   test('refuses wrong pg_control version', async () => {
     const dir = makeLayout({ version: 1600 });
-    expect(resetWal(dir)).rejects.toThrow(/pg_control version/);
+    await expect(resetWal(dir)).rejects.toThrow(/pg_control version/);
   });
 
   test('refuses non-power-of-two WAL segment size', async () => {
     const dir = makeLayout({ segSize: 3 * 1024 * 1024 });
-    expect(resetWal(dir)).rejects.toThrow(/segment size/);
+    await expect(resetWal(dir)).rejects.toThrow(/segment size/);
   });
 
   test('refuses unsupported WAL block size', async () => {
     const dir = makeLayout({ blcksz: 4096 });
-    expect(resetWal(dir)).rejects.toThrow(/block size/);
+    await expect(resetWal(dir)).rejects.toThrow(/block size/);
+  });
+
+  test('refuses a pg_control whose stored CRC does not verify (F6: no laundering corrupt counters)', async () => {
+    const dir = makeLayout();
+    // A structurally-valid control (right size/version/seg/block) but with a
+    // damaged checkpoint copy and a STALE crc — real pg_resetwal refuses this.
+    const control = readFileSync(join(dir, 'global', 'pg_control'));
+    control.writeBigUInt64LE(0xdeadbeefn, 56); // trash a checkpointCopy field
+    // leave the old CRC in place → mismatch
+    writeFileSync(join(dir, 'global', 'pg_control'), control);
+    await expect(resetWal(dir)).rejects.toThrow(/CRC mismatch/);
   });
 });
 

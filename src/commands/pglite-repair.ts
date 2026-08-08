@@ -22,7 +22,7 @@
 
 import { createInterface } from 'readline';
 import { loadConfig, gbrainPath } from '../core/config.ts';
-import { acquireLock, releaseLock, LiveServeLockError } from '../core/pglite-lock.ts';
+import { acquireLock, releaseLock, LiveServeLockError, msSinceLastReap } from '../core/pglite-lock.ts';
 import {
   inspectPgliteDataDir,
   listRepairBackups,
@@ -30,6 +30,7 @@ import {
   recordRepairAttempt,
   repairPgliteWal,
   validateWalRepairTarget,
+  WalRepairError,
 } from '../core/pglite-repair.ts';
 
 interface RepairCmdOpts {
@@ -40,6 +41,8 @@ interface RepairCmdOpts {
   help: boolean;
 }
 
+class UnknownFlagError extends Error {}
+
 function parseArgs(args: string[]): RepairCmdOpts {
   const opts: RepairCmdOpts = { dryRun: false, yes: false, jsonOutput: false, customPath: null, help: false };
   for (let i = 0; i < args.length; i++) {
@@ -47,8 +50,17 @@ function parseArgs(args: string[]): RepairCmdOpts {
     if (a === '--dry-run') opts.dryRun = true;
     else if (a === '--yes' || a === '-y') opts.yes = true;
     else if (a === '--json') opts.jsonOutput = true;
-    else if (a === '--path') opts.customPath = args[++i] ?? null;
+    else if (a === '--path') {
+      const val = args[++i];
+      // F1: a valueless --path (typo / shell mangling) must NOT fall through
+      // to the configured default brain and run surgery on the wrong dir.
+      if (val === undefined || val.startsWith('-')) throw new UnknownFlagError('--path requires a directory argument');
+      opts.customPath = val;
+    }
     else if (a === '--help' || a === '-h') opts.help = true;
+    // Reject unknown args on a DESTRUCTIVE command (codex): silently ignoring
+    // a typo like `--dry-rnu` would run a real WAL reset instead of a dry run.
+    else throw new UnknownFlagError(`unknown argument: ${a}`);
   }
   return opts;
 }
@@ -89,7 +101,8 @@ function emitError(jsonOutput: boolean, code: string, message: string): void {
 }
 
 async function promptYesNo(question: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Prompt on stderr: stdout stays clean for --json payloads.
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
   return new Promise((resolve) => {
     rl.question(`${question} [y/N] `, (answer) => {
       rl.close();
@@ -99,7 +112,17 @@ async function promptYesNo(question: string): Promise<boolean> {
 }
 
 export async function runPgliteRepair(args: string[]): Promise<number> {
-  const opts = parseArgs(args);
+  let opts: RepairCmdOpts;
+  try {
+    opts = parseArgs(args);
+  } catch (err) {
+    if (err instanceof UnknownFlagError) {
+      const jsonOut = args.includes('--json');
+      emitError(jsonOut, 'unknown_flag', `${err.message}. Run \`gbrain pglite-repair --help\`.`);
+      return 2;
+    }
+    throw err;
+  }
   if (opts.help) {
     printHelp();
     return 0;
@@ -148,9 +171,15 @@ export async function runPgliteRepair(args: string[]): Promise<number> {
       if (diagnosis.backupDirs.length > 0) {
         console.log(`  Repair backups on disk: ${diagnosis.backupDirs.join(', ')}`);
       }
-      console.log(validation.ok
-        ? '  Repairable: yes — run `gbrain pglite-repair --yes` to reset the WAL in place.'
-        : `  Repairable: NO — ${validation.detail}`);
+      if (!validation.ok) {
+        console.log(`  Repairable: NO — ${validation.detail}`);
+      } else if (diagnosis.verdict === 'looks-healthy') {
+        console.log('  Repairable: yes — but no unclean-shutdown markers found; repair is likely');
+        console.log('  unnecessary. Run `gbrain pglite-repair --yes` ONLY if PGLite fails to open');
+        console.log('  with `RuntimeError: Aborted()` (repair discards the un-checkpointed WAL tail).');
+      } else {
+        console.log('  Repairable: yes — run `gbrain pglite-repair --yes` to reset the WAL in place.');
+      }
     }
     return 0;
   }
@@ -167,15 +196,27 @@ export async function runPgliteRepair(args: string[]): Promise<number> {
     );
     return 1;
   }
+  const sinceReap = msSinceLastReap(dataDir);
+  const REAP_QUARANTINE_MS = 10 * 60 * 1000;
+  if (sinceReap !== null && sinceReap >= 0 && sinceReap < REAP_QUARANTINE_MS) {
+    emitError(
+      opts.jsonOutput,
+      'refused_reap_quarantine',
+      `a lock on this brain was reaped ${Math.round(sinceReap / 1000)}s ago from a holder whose ` +
+        'liveness could not be verified — that process may still be writing. Confirm no gbrain ' +
+        `process is running (\`pgrep -af gbrain\`), wait ${Math.ceil((REAP_QUARANTINE_MS - sinceReap) / 60000)} more minute(s), then re-run.`,
+    );
+    return 1;
+  }
 
   if (!opts.yes) {
     if (!process.stdin.isTTY) {
       emitError(opts.jsonOutput, 'no_tty_no_yes', 'Non-TTY environment requires --yes to confirm the WAL reset.');
       return 1;
     }
-    console.log(`About to reset the WAL of ${dataDir} in place.`);
-    console.log('Data files are preserved; un-checkpointed transactions may be lost.');
-    console.log('The current pg_wal + pg_control are kept in a sibling backup directory.');
+    console.error(`About to reset the WAL of ${dataDir} in place.`);
+    console.error('Data files are preserved; un-checkpointed transactions may be lost.');
+    console.error('The current pg_wal + pg_control are kept in a sibling backup directory.');
     const confirmed = await promptYesNo('Repair now?');
     if (!confirmed) {
       if (opts.jsonOutput) {
@@ -233,19 +274,42 @@ export async function runPgliteRepair(args: string[]): Promise<number> {
 
     process.stderr.write(`Repairing WAL of ${dataDir} in place…\n`);
     const sidecar = readRepairSidecar(dataDir);
+    // F4: only reuse a FRESH (<24h) episode backup — a stale pin may predate
+    // real data (same bound as the auto seam's episodeFresh).
+    const episodeFresh =
+      sidecar.episodeStartedAt !== null &&
+      Date.now() - sidecar.episodeStartedAt >= 0 &&
+      Date.now() - sidecar.episodeStartedAt < 24 * 3600 * 1000;
     let receipt;
     try {
       receipt = await repairPgliteWal(dataDir, {
-        reuseBackupPath: sidecar.episodeBackupPath ?? undefined,
+        reuseBackupPath: episodeFresh ? sidecar.episodeBackupPath ?? undefined : undefined,
       });
     } catch (err) {
+      if (err instanceof WalRepairError) {
+        // Reset failed after the backup was taken — report the restore's REAL
+        // outcome so the user knows whether the dir is back or in reset state.
+        recordRepairAttempt(dataDir, 'failed', err.receipt.backupPath);
+        emitError(
+          opts.jsonOutput,
+          'repair_failed',
+          err.message + (err.restore.restored
+            ? ` (data dir restored to its pre-repair state; backup kept at ${err.receipt.backupPath})`
+            : ` (RESTORE ALSO FAILED — the dir is in a reset state; your pre-repair files are intact at ${err.receipt.backupPath}: ${err.restore.detail ?? ''})`),
+        );
+        return 1;
+      }
       recordRepairAttempt(dataDir, 'failed', sidecar.episodeBackupPath);
       emitError(opts.jsonOutput, 'repair_failed', String((err as Error)?.message ?? err));
       return 1;
     }
-    // "repaired" here means the reset completed; the next connect proves it.
-    // If it still fails, that connect opens a fresh episode.
-    recordRepairAttempt(dataDir, 'repaired', receipt.backupPath);
+    // "repaired" here means the reset completed; the next connect PROVES it.
+    // Record a FAILED attempt (not repaired-with-closeEpisode:false, which
+    // leaves the episode null when none was open — codex): this opens/keeps an
+    // episode pinned to this backup so a later healthy connect closes it and
+    // prunes, and repeated manual runs during one incident reuse the pinned
+    // backup instead of deleting the pre-damage forensic copy.
+    recordRepairAttempt(dataDir, 'failed', receipt.backupPath);
 
     if (opts.jsonOutput) {
       console.log(JSON.stringify({

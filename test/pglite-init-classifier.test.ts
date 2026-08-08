@@ -232,6 +232,27 @@ describe('stringifyPgliteInitError — non-Error rejections (#2674)', () => {
     expect(stringifyPgliteInitError(null)).toBe('null');
     expect(stringifyPgliteInitError(undefined)).toBe('undefined');
   });
+
+  // WAL-repair wave: Emscripten's FS layer throws message-LESS objects (e.g.
+  // `ErrnoError { name: 'ErrnoError', errno: 20 }` when the data dir is a
+  // symlink NODEFS refuses to mount) — never "[object Object]".
+  test('message-less ErrnoError-shaped object yields name + errno', () => {
+    expect(stringifyPgliteInitError({ name: 'ErrnoError', errno: 20 })).toBe('ErrnoError (errno 20)');
+  });
+
+  test('message-less nameless object with other props yields its JSON', () => {
+    expect(stringifyPgliteInitError({ code: 'ENOENT' })).toBe('{"code":"ENOENT"}');
+  });
+
+  test('message-less object with a name and serializable props yields name-prefixed JSON', () => {
+    expect(stringifyPgliteInitError({ name: 'Weird' })).toBe('Weird: {"name":"Weird"}');
+  });
+
+  test('circular object with a name falls back to the bare name (JSON.stringify throws)', () => {
+    const c: Record<string, unknown> = { name: 'Circ' };
+    c.self = c;
+    expect(stringifyPgliteInitError(c)).toBe('Circ');
+  });
 });
 
 describe('#1340 reproducer — exact reporter error string maps to bunfs', () => {
