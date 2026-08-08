@@ -191,6 +191,19 @@ describe('#2185 red-team regressions', () => {
     expect(findUnknownFlag(['--MIGRATE-ONLY'], new Set(['--migrate-only']))).toBe('--MIGRATE-ONLY');
     expect(findUnknownOpFlag(operationsByName.search, ['--LIMIT', '5'])).toBe('--LIMIT');
   });
+
+  test('safety flags need consumption evidence, not prose bleed (codex P1-A)', () => {
+    // upgrade.ts prints a help HINT naming another command's --dry-run; that
+    // literal sits at depth 0 for post-upgrade. Pre-fix the generator
+    // allowlisted it, recreating the exact #2185 repro the wave exists to
+    // kill: `post-upgrade --dry-run` accepted, ignored, migrations run for
+    // real. The generator now requires a tight-quoted standalone literal
+    // (an args read like has('--dry-run')) before granting a safety flag.
+    expect(CLI_FLAG_REGISTRY['post-upgrade']).not.toContain('--dry-run');
+    // backfill genuinely consumes it (has('--dry-run') in backfill.ts) —
+    // the gate must not strip real consumers.
+    expect(CLI_FLAG_REGISTRY['backfill']).toContain('--dry-run');
+  });
 });
 
 describe('#2185 drift + freshness guards', () => {

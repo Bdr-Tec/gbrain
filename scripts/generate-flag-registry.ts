@@ -103,11 +103,26 @@ export function buildFlagRegistry(): Record<string, string[]> {
     blocks.set(marks[i].label, (blocks.get(marks[i].label) ?? '') + body);
   }
 
+  // Safety flags carry destructive-bypass semantics: allowlisting one that
+  // the handler never reads recreates the #2185 repro (`post-upgrade
+  // --dry-run` accepted, ignored, migrations run for real). Presence isn't
+  // enough — upgrade.ts prints a HINT naming another command's --dry-run,
+  // which is depth-0 text for post-upgrade. These flags are only legal with
+  // CONSUMPTION evidence in the command's own code: the flag as a TIGHT-QUOTED
+  // standalone literal (`includes('--dry-run')`, `has('--dry-run')`,
+  // `=== '--dry-run'`). Prose bleed embeds the flag inside a longer string, so
+  // it never has quotes on both sides of the bare flag.
+  const SAFETY_FLAGS = new Set(['--dry-run']);
+  const consumes = (text: string, flag: string): boolean =>
+    new RegExp(`['"\`]${flag}['"\`]`).test(text);
+
   const registry: Record<string, string[]> = {};
   for (const command of commands) {
     const block = blocks.get(command) ?? '';
     const flags = new Set<string>(UNIVERSAL_FLAGS);
-    for (const f of flagsInText(block)) flags.add(f);
+    const depthZero = new Set<string>();
+    let depthZeroText = block;
+    for (const f of flagsInText(block)) { flags.add(f); depthZero.add(f); }
 
     // Modules imported inside the case block, plus one level of each module's
     // own ./relative imports.
@@ -116,13 +131,17 @@ export function buildFlagRegistry(): Record<string, string[]> {
       .filter(p => existsSync(p));
     for (const modPath of commandModules) {
       const modSrc = readFileSync(modPath, 'utf-8');
-      for (const f of flagsInText(modSrc)) flags.add(f);
+      depthZeroText += modSrc;
+      for (const f of flagsInText(modSrc)) { flags.add(f); depthZero.add(f); }
       for (const dep of relativeImports(modSrc, dirname(modPath))) {
         for (const f of flagsInText(readFileSync(dep, 'utf-8'))) flags.add(f);
       }
     }
 
-    for (const f of EXTRA_FLAGS[command] ?? []) flags.add(f);
+    for (const f of EXTRA_FLAGS[command] ?? []) { flags.add(f); depthZero.add(f); }
+    for (const f of SAFETY_FLAGS) {
+      if (flags.has(f) && !consumes(depthZeroText, f)) flags.delete(f);
+    }
     registry[command] = [...flags].sort();
   }
   return registry;
