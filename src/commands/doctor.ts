@@ -404,7 +404,7 @@ export async function jsonbIntegrityCheck(
       );
       if (!existsRows[0]?.exists) continue;
       const damage = jsonPayloadOnly
-        ? `jsonb_typeof(${col}) = 'string' AND (${col} #>> '{}') ~ '^[[:space:]]*[\\[{]'`
+        ? `jsonb_typeof(${col}) = 'string' AND (${col} #>> '{}') ~ '^[[:space:]]*[\\[{]' AND pg_input_is_valid(${col} #>> '{}', 'jsonb')`
         : `jsonb_typeof(${col}) = 'string'`;
       const rows = await engine.executeRaw<{ n: number }>(
         `SELECT count(*)::int AS n FROM ${table} WHERE ${damage}`,

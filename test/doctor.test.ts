@@ -244,6 +244,12 @@ describe('doctor command', () => {
         `INSERT INTO subagent_messages (job_id, message_idx, role, content_blocks)
          VALUES (990001, 1, 'assistant', to_jsonb('plain text payload, not JSON'::text))`,
       );
+      // Container-LOOKING but invalid JSON — matches the shape probe but
+      // pg_input_is_valid must exclude it (repairing it would throw).
+      await engine.executeRaw(
+        `INSERT INTO subagent_messages (job_id, message_idx, role, content_blocks)
+         VALUES (990001, 2, 'assistant', to_jsonb('[INFO] fetch complete'::text))`,
+      );
 
       const damaged = await jsonbIntegrityCheck(engine);
       expect(damaged.status).toBe('warn');

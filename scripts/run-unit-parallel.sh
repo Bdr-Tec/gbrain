@@ -630,18 +630,41 @@ if [ "$TOTAL_RC" != "0" ] && [ "${RESCUE_COUNT:-0}" -gt 0 ]; then
   echo "════════════ OOM rescue pass ($RESCUE_COUNT files, serial) ════════════"
   echo "[unit-parallel] OOM signature detected — re-running $RESCUE_COUNT failing file(s) at --max-concurrency 1" >&2
   RESCUE_LOG="$LOG_DIR/oom-rescue.log"
-  # 60s-per-file floor with the shard cap as a minimum: a serial pass over a
-  # big rescue set legitimately takes longer than one parallel shard.
+  # 60s-per-file floor with the shard cap as a minimum, and 2x the shard cap
+  # as a CEILING: a wedged shard queueing its whole file list must not turn
+  # `bun run test` into an unbounded multi-hour serial re-run — hitting the
+  # ceiling reads as a red rescue, not silence.
   RESCUE_TIMEOUT=$((RESCUE_COUNT * 60))
   [ "$RESCUE_TIMEOUT" -lt "$SHARD_TIMEOUT" ] && RESCUE_TIMEOUT="$SHARD_TIMEOUT"
-  RESCUE_RC=1
-  if [ -n "$TIMEOUT_BIN" ]; then
-    xargs "$TIMEOUT_BIN" --signal=TERM --kill-after="${SHARD_KILL_AFTER}s" "${RESCUE_TIMEOUT}s" \
-      bun test --max-concurrency 1 < "$OOM_RESCUE_LIST" > "$RESCUE_LOG" 2>&1
-    RESCUE_RC=$?
-  else
-    xargs bun test --max-concurrency 1 < "$OOM_RESCUE_LIST" > "$RESCUE_LOG" 2>&1
-    RESCUE_RC=$?
+  [ "$RESCUE_TIMEOUT" -gt $((SHARD_TIMEOUT * 2)) ] && RESCUE_TIMEOUT=$((SHARD_TIMEOUT * 2))
+  # Split the queue: *.serial.test.ts files require one bun PROCESS per file
+  # (run-serial-tests.sh's isolation contract — top-level mock.module leaks
+  # across files in a shared registry); the remainder batches in one process.
+  # Both lanes mirror the shard invocation's --timeout=60000 — bun's default
+  # 5s per-test timeout would re-fail PGLite phantoms (120-migration replay)
+  # and mislabel them 'confirmed real'.
+  grep -v '\.serial\.test\.ts$' "$OOM_RESCUE_LIST" > "$LOG_DIR/oom-rescue-batch.txt" || true
+  grep '\.serial\.test\.ts$' "$OOM_RESCUE_LIST" > "$LOG_DIR/oom-rescue-serial.txt" || true
+  RESCUE_RC=0
+  : > "$RESCUE_LOG"
+  run_rescue() { # $1 = per-invocation timeout seconds; rest = bun test args
+    local t="$1"; shift
+    if [ -n "$TIMEOUT_BIN" ]; then
+      "$TIMEOUT_BIN" --signal=TERM --kill-after="${SHARD_KILL_AFTER}s" "${t}s" \
+        bun test --max-concurrency 1 --timeout=60000 "$@" >> "$RESCUE_LOG" 2>&1
+    else
+      bun test --max-concurrency 1 --timeout=60000 "$@" >> "$RESCUE_LOG" 2>&1
+    fi
+  }
+  if [ -s "$LOG_DIR/oom-rescue-batch.txt" ]; then
+    # shellcheck disable=SC2046
+    run_rescue "$RESCUE_TIMEOUT" $(cat "$LOG_DIR/oom-rescue-batch.txt") || RESCUE_RC=1
+  fi
+  if [ -s "$LOG_DIR/oom-rescue-serial.txt" ]; then
+    while IFS= read -r serial_file; do
+      [ -n "$serial_file" ] || continue
+      run_rescue 300 "$serial_file" || RESCUE_RC=1
+    done < "$LOG_DIR/oom-rescue-serial.txt"
   fi
   cat "$RESCUE_LOG"
   r_pass=$(bun_summary_count "pass" "$RESCUE_LOG")

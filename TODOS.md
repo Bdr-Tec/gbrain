@@ -44,6 +44,14 @@ master before starting, several fixes landed independently).
   assert stored client via /admin/api/agents; invalid source → 400
   invalid_source) closes the wire-level gap. Where:
   `test/e2e/serve-http-oauth.test.ts`.
+- [ ] **P3 — get_chunks `__all__` sentinel narrows to 'default' (red-team,
+  Wave 3 territory).** `sourceScopeOpts` returns `{}` for a trusted local
+  `--source __all__` caller (documented "spans the brain"), but both engines'
+  getChunks map empty scope to the 'default' floor — the one read op where
+  `{}` is reinterpreted. Fold into the Wave 3 source-federation cluster's
+  `__all__` work (an explicit unscoped signal in the engine signature, or
+  handler-side expansion for trusted callers). Where: `src/core/operations.ts`
+  get_chunks, both engines' getChunks.
 - [ ] **P3 — #2536 wedged-migration diagnostics.** The v121 wedge aborted
   initSchema BEFORE runMigrations, so the wedged-migration diagnostics row was
   never written — operators got a bare SQL error with no remediation hint.

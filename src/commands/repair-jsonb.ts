@@ -75,8 +75,12 @@ const TARGETS: RepairTarget[] = [
 /** The double-encode predicate for a target (see jsonPayloadOnly). */
 function damagePredicate(t: RepairTarget): string {
   const base = `jsonb_typeof(${t.column}) = 'string'`;
+  // Container-looking is not enough: '[INFO] fetch complete' matches the
+  // shape probe but is NOT valid JSON — the repair cast would throw and
+  // abort the run. pg_input_is_valid (PG16+, same floor as the IS JSON
+  // predicate updateSourceConfig already relies on) gates on parseability.
   return t.jsonPayloadOnly
-    ? `${base} AND (${t.column} #>> '{}') ~ '^[[:space:]]*[\\[{]'`
+    ? `${base} AND (${t.column} #>> '{}') ~ '^[[:space:]]*[\\[{]' AND pg_input_is_valid(${t.column} #>> '{}', 'jsonb')`
     : base;
 }
 
@@ -171,6 +175,13 @@ export async function repairJsonb(opts: RepairOpts = { dryRun: false }): Promise
         );
         repaired = rows.length;
       }
+    } catch (e) {
+      // One target's failure (unexpected content shape, permission, etc.)
+      // must not abort the remaining targets — earlier repairs are already
+      // committed and the v0_12_2 migration orchestrator JSON-parses our
+      // stdout. Record, report, continue.
+      console.error(`[repair-jsonb] ${t.table}.${t.column} failed: ${(e as Error).message} — continuing with remaining targets`);
+      repaired = 0;
     } finally {
       stopHb();
     }

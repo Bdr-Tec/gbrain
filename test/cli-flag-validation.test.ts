@@ -162,6 +162,37 @@ describe('#2185 parseOpArgs inline = form (regression rule: changed token consum
   });
 });
 
+describe('#2185 red-team regressions', () => {
+  test('dual-lane commands (op AND CLI_ONLY) validate against the DISPATCHED lane', () => {
+    // think/salience/anomalies are both ops and CLI_ONLY members; dispatch
+    // runs handleCliOnly, whose handlers parse flags the op contract never
+    // declares. Pre-fix the validator checked the op lane first and rejected
+    // documented invocations.
+    expect(validateCommandFlags('salience', ['--kind', 'entity'])).toBeNull();
+    expect(validateCommandFlags('think', ['what changed?', '--with-calibration'])).toBeNull();
+    expect(validateCommandFlags('salience', [BOGUS])).toBe(BOGUS);
+  });
+
+  test('--dry-run is a real CLI-local boolean on op commands (trailing position sets it)', async () => {
+    const { parseOpArgs } = await import('../src/cli.ts');
+    // An op WITHOUT a declared dry_run param — pre-fix, trailing --dry-run
+    // set NOTHING (ctx.dryRun stayed false → the REAL destructive action
+    // ran despite the rehearsal request), and leading --dry-run consumed
+    // the next token as its value.
+    const search = operationsByName.search;
+    expect(parseOpArgs(search, ['needle', '--dry-run']).dry_run).toBe(true);
+    const leading = parseOpArgs(search, ['--dry-run', 'needle']);
+    expect(leading.dry_run).toBe(true);
+    expect(leading.query).toBe('needle');
+    expect(parseOpArgs(search, ['needle', '--dry-run=false']).dry_run).toBe(false);
+  });
+
+  test('uppercase flag typos reject loudly in both lanes (handlers are case-sensitive)', () => {
+    expect(findUnknownFlag(['--MIGRATE-ONLY'], new Set(['--migrate-only']))).toBe('--MIGRATE-ONLY');
+    expect(findUnknownOpFlag(operationsByName.search, ['--LIMIT', '5'])).toBe('--LIMIT');
+  });
+});
+
 describe('#2185 drift + freshness guards', () => {
   test('every CLI_ONLY member has a registry entry (drift guard)', () => {
     const missing = [...CLI_ONLY].filter(c => !CLI_FLAG_REGISTRY[c]);

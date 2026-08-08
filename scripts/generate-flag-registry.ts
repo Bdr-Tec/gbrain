@@ -73,10 +73,16 @@ export function buildFlagRegistry(): Record<string, string[]> {
   const onlyBody = onlyMatch[1].replace(/\/\/[^\n]*/g, '');
   const commands = [...onlyBody.matchAll(/'([^']+)'/g)].map(m => m[1]);
 
-  // handleCliOnly body.
+  // handleCliOnly body — bounded at the function's closing brace (column 0).
+  // Unbounded, the LAST case block absorbed every --flag literal in the rest
+  // of cli.ts (printHelp's full flag surface included), handing whichever
+  // command sits last in the switch a ~100-flag junk allowlist that made
+  // strict validation a no-op for it.
   const fnStart = cliSource.indexOf('async function handleCliOnly');
   if (fnStart < 0) throw new Error('handleCliOnly not found in src/cli.ts');
-  const fnSrc = cliSource.slice(fnStart);
+  const fnTail = cliSource.slice(fnStart);
+  const fnEndRel = fnTail.search(/\n\}\n/);
+  const fnSrc = fnEndRel > 0 ? fnTail.slice(0, fnEndRel) : fnTail;
 
   // handleCliOnly dispatches through TWO styles: an `if (command === 'X')`
   // chain (DB-free commands like init/auth/schema) and a switch with

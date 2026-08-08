@@ -351,7 +351,8 @@ async function main() {
       // on stderr; --json callers get the structured error on stdout with
       // reason 'invalid_flag' (pinned by test/init-migrate-only.test.ts).
       const message = `unknown flag ${unknown} for 'gbrain ${command}'`;
-      if (subArgs.includes('--json')) {
+      // Both --json spellings get the structured envelope (--json=false opts out).
+      if (subArgs.some(a => a === '--json' || (a.startsWith('--json=') && a !== '--json=false'))) {
         process.stdout.write(JSON.stringify({ status: 'error', reason: 'invalid_flag', message }) + '\n');
       }
       console.error(`gbrain ${command}: ${message}`);
@@ -853,11 +854,11 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
       const eq = arg.indexOf('=');
       if (eq > 2) {
         const key = arg.slice(2, eq).replace(/-/g, '_');
-        // CLI-local formatter flag: `--json=true|false` must parse as the
-        // boolean, not fall through to the junk-key path (which would consume
-        // the NEXT token as its value and corrupt positional parsing).
-        if (key === 'json') {
-          params.json = arg.slice(eq + 1) !== 'false';
+        // CLI-local booleans: `--json=<v>` / `--dry-run=<v>` must parse as
+        // booleans, not fall through to the junk-key path (which would
+        // consume the NEXT token as a value and corrupt positional parsing).
+        if (key === 'json' || key === 'dry_run') {
+          params[key] = arg.slice(eq + 1) !== 'false';
           continue;
         }
         const def = op.params[key];
@@ -881,9 +882,13 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
       const paramDef = op.params[key];
       if (paramDef?.type === 'boolean') {
         params[key] = true;
-      } else if (key === 'json') {
-        // Generic operation formatter flag. It is intentionally CLI-local:
-        // do not add it to the operation contract exposed over MCP/tools.
+      } else if (key === 'json' || key === 'dry_run') {
+        // CLI-local booleans, intentionally NOT on the operation contract
+        // exposed over MCP/tools: json is the formatter flag; dry_run feeds
+        // makeContext's ctx.dryRun. Both must never consume a value token —
+        // pre-fix, `gbrain delete x --dry-run` (trailing) set NOTHING, so
+        // ctx.dryRun stayed false and the REAL delete ran despite the
+        // rehearsal request (the resurrected #2185 class the red team caught).
         params[key] = true;
       } else if (i + 1 < args.length) {
         params[key] = args[++i];
@@ -1073,8 +1078,11 @@ function flagValidationExempt(command: string, subArgs: string[]): boolean {
 /** Returns the first unknown flag (e.g. '--dry-run') or null when clean. */
 export function validateCommandFlags(command: string, subArgs: string[]): string | null {
   if (flagValidationExempt(command, subArgs)) return null;
-  const op = cliOps.get(command) ?? cliAliases.get(command);
-  if (op) return findUnknownOpFlag(op, subArgs);
+  // Lane order MUST mirror dispatch order (CLI_ONLY first): commands that are
+  // BOTH an op and a CLI_ONLY member (think, salience, anomalies) dispatch to
+  // handleCliOnly, whose handlers parse flags the op contract doesn't declare
+  // (`salience --kind`, `think --with-calibration`) — validating those
+  // against op.params rejected documented invocations.
   if (CLI_ONLY.has(command)) {
     const legal = CLI_FLAG_REGISTRY[command];
     // Registry drift fails OPEN at runtime (never brick a command); the
@@ -1082,6 +1090,8 @@ export function validateCommandFlags(command: string, subArgs: string[]): string
     if (!legal) return null;
     return findUnknownFlag(subArgs, new Set(legal));
   }
+  const op = cliOps.get(command) ?? cliAliases.get(command);
+  if (op) return findUnknownOpFlag(op, subArgs);
   return null; // unknown command — the dispatcher's own error handles it
 }
 
@@ -1091,7 +1101,12 @@ export function findUnknownFlag(args: string[], legal: ReadonlySet<string>): str
     if (a === '--') break;
     const m = /^--([a-z0-9][a-z0-9-]*)(?:=.*)?$/i.exec(a);
     if (!m) continue;
-    const name = `--${m[1].toLowerCase()}`;
+    // Casing typo = unknown flag: every handler in the repo is
+    // case-sensitive-lowercase, so `--MIGRATE-ONLY` passing validation would
+    // just be silently ignored downstream — the exact class this validator
+    // exists to kill.
+    if (/[A-Z]/.test(m[1])) return `--${m[1]}`;
+    const name = `--${m[1]}`;
     if (legal.has(name)) continue;
     // --no-<flag> negation of a known flag is legal.
     if (name.startsWith('--no-') && legal.has(`--${name.slice(5)}`)) continue;
@@ -1107,7 +1122,9 @@ export function findUnknownOpFlag(op: Operation, args: string[]): string | null 
     if (a === '--') break;
     const m = /^--([a-z0-9][a-z0-9-]*)(?:=(.*))?$/i.exec(a);
     if (!m) continue;
-    const rawKey = m[1].toLowerCase();
+    // Casing typo = unknown flag (see findUnknownFlag).
+    if (/[A-Z]/.test(m[1])) return `--${m[1]}`;
+    const rawKey = m[1];
     // CLI-local flags consumed OUTSIDE the op contract (never wire params):
     //   json/explain — formatter flags; help — short-circuits pre-dispatch;
     //   source — makeContext's 6-tier source resolution (deleted before wire);
