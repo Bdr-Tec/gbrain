@@ -166,9 +166,12 @@ The eng-review + Codex outside-voice narrowed the wave to these deferrals:
   covers anthropic + openai; Google was deferred because Gemini's native suffix is unproven
   (its OpenAI-compat route is `/v1beta/openai`). Verify the correct `@ai-sdk/google` suffix,
   then add `google` to the helper. Where: `src/core/ai/gateway.ts:resolveNativeBaseUrl`.
-- [ ] **P3 — Fold Voyage/Google/LiteLLM/OpenRouter API keys into `buildGatewayConfig`.**
-  It folds only OPENAI/ANTHROPIC/ZEROENTROPY file-plane keys today, so `config.json`-set keys
-  for other providers only work if also in `process.env`. Extend the mapping. Where:
+- [x] **P3 — Fold Voyage/Google/LiteLLM/OpenRouter API keys into `buildGatewayConfig`.**
+  It folded only OPENAI/ANTHROPIC/ZEROENTROPY file-plane keys when filed. Voyage (#2662),
+  DashScope, Google (#3500), and OpenRouter folds landed in follow-up waves;
+  `litellm_api_key` + `together_api_key` landed in the v0.42.77.0 provider-freshness
+  wave, completing the list. (The DB-plane `config set *_api_key` dead-plane class is a
+  separate open P3 under "Provider-freshness follow-ups" above.) Where:
   `src/core/ai/build-gateway-config.ts`.
 - [ ] **P3 — OpenRouter per-model custom-dim handling.** OpenRouter declares recipe-wide
   `dims_options` and mixes fixed-dim + arbitrary models, so it's excluded from `trust_custom_dims`.

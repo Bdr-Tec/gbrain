@@ -77,7 +77,7 @@ The doctor distinguishes two repair paths:
 
 Default. Set `OPENAI_API_KEY`. Models: `text-embedding-3-large` (3072 max, 1536 default), `text-embedding-3-small` (1536). Matryoshka via the `dimensions` field — gbrain pins it from `embedding_dimensions` config so existing 1536-dim brains stay aligned across SDK upgrades.
 
-Optional `OPENAI_BASE_URL` — point the native OpenAI provider at an OpenAI-compatible gateway. A bare host is normalized to carry the `/v1` suffix automatically (so `https://gw.example.com` and `https://gw.example.com/v1` both work); when unset, the SDK's default endpoint is untouched. `ANTHROPIC_BASE_URL` gets the same normalization for Anthropic chat/expansion calls.
+Optional `OPENAI_BASE_URL` — point the native OpenAI provider at an OpenAI-compatible gateway. A bare host is normalized to carry the `/v1` suffix automatically (so `https://gw.example.com` and `https://gw.example.com/v1` both work); when unset, the SDK's default endpoint is untouched. `ANTHROPIC_BASE_URL` gets the same normalization for Anthropic chat/expansion calls. The config plane works here too: `provider_base_urls.openai` / `provider_base_urls.anthropic` reach the native providers and win over the env vars, matching every other provider. Config-plane entries must be https or `http://localhost` (a plaintext remote override of key-carrying native traffic is refused), and a present-but-empty entry fails loudly instead of silently masking a set env var.
 
 ### Voyage AI
 
@@ -103,11 +103,11 @@ For GCP service-account / Vertex AI auth (production deployments), see the v0.32
 
 ### OpenRouter
 
-Single OpenAI-compatible API for fan-out to OpenAI, Anthropic, Google, DeepSeek, Meta Llama, Qwen, and dozens of other hosted providers. One key, many models. Set `OPENROUTER_API_KEY` or `openrouter_api_key` in `~/.gbrain/config.json`, then use `openrouter:<provider>/<model>` (e.g. `openrouter:openai/gpt-5.2`, `openrouter:anthropic/claude-sonnet-4.6`).
+Single OpenAI-compatible API for fan-out to OpenAI, Anthropic, Google, DeepSeek, Meta Llama, Qwen, and dozens of other hosted providers. One key, many models. Set `OPENROUTER_API_KEY` or `openrouter_api_key` in `~/.gbrain/config.json`, then use `openrouter:<provider>/<model>` (e.g. `openrouter:openai/gpt-5.6-terra`, `openrouter:anthropic/claude-sonnet-4.6`).
 
 **Embedding**: `openai/text-embedding-3-small` (1536d default, Matryoshka shrink to 512/768/1024). OR's embedding catalog also includes `text-embedding-3-large`, `google/gemini-embedding-2-preview`, `qwen/qwen3-embedding-8b`, `bge-m3` — opt in via `--embedding-model openrouter:<id>`. Pricing matches the upstream provider (OR adds a small markup).
 
-**Chat**: every chat model OR proxies works through `/v1/chat/completions`. The recipe lists 8 curated entry points (GPT-5.2 family, Claude 4.5/4.6/4.7, Gemini 3 Flash Preview, DeepSeek); any other OR catalog ID also works. Tool-calling envelope is supported by the OR endpoint, but per-model capability varies — check https://openrouter.ai/models before counting on tools for a specific slug.
+**Chat**: every chat model OR proxies works through `/v1/chat/completions`. The recipe lists 7 curated entry points (GPT-5.6 Terra, GPT-5.5, Claude 4.5/4.6/4.7, Gemini 3 Flash Preview, DeepSeek); any other OR catalog ID also works. Tool-calling envelope is supported by the OR endpoint, but per-model capability varies — check https://openrouter.ai/models before counting on tools for a specific slug.
 
 **Optional env**:
 - `OPENROUTER_BASE_URL` — point at a self-hosted OR-compatible proxy.
