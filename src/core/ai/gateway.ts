@@ -473,7 +473,20 @@ export function resolveNativeBaseUrl(
   // contract for the openai-compat providers. Before this fallback, the
   // native providers were the only recipes whose base URL could ONLY be
   // set through the environment.
-  const raw = cfg.base_urls?.[provider] ?? cfg.env[envKey];
+  const configRaw = cfg.base_urls?.[provider];
+  if (configRaw !== undefined && !configRaw.trim()) {
+    // Present-but-empty is an explicit misconfiguration, and it would mask a
+    // set env var — for an operator who mandates an egress proxy via
+    // OPENAI_BASE_URL/ANTHROPIC_BASE_URL, silently returning undefined here
+    // would route traffic (key attached) straight to the provider. The
+    // openai-compat plane fails loud on the same shape ("requires a base
+    // URL"); mirror it.
+    throw new AIConfigError(
+      `provider_base_urls.${provider} is set but empty`,
+      `Remove the empty entry (gbrain config unset provider_base_urls.${provider}) or give it a real URL.`,
+    );
+  }
+  const raw = configRaw ?? cfg.env[envKey];
   if (!raw || !raw.trim()) return undefined;
   const trimmed = raw.trim().replace(/\/+$/, '');
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;

@@ -73,14 +73,15 @@ describe('recipe cost anchors stay tied to canonical (refresh drift guard)', () 
     expect(gExp.cost_per_1m_tokens_usd).toBe(canonicalLookup('google:gemini-3.5-flash-lite')!.input);
   });
 
-  test('every refreshed expansion model is also chat-listed and priced (no orphan tiers)', () => {
+  test('every refreshed expansion model is priced (no unpriced tiers)', () => {
+    // Expansion-only models are legitimate: gpt-4o-mini stays in expansion
+    // (tiny prompts, still on the live sheet) but is deliberately NOT
+    // chat-listed — the chat touchpoint's touchpoint-wide max_context_tokens
+    // (1M for the 5.6 family) would over-report its 128K window 8x. The
+    // load-bearing invariant is pricing coverage, not chat membership.
     for (const provider of ['openai', 'google'] as const) {
       const r = getRecipe(provider)!;
       for (const m of r.touchpoints.expansion!.models) {
-        expect(
-          r.touchpoints.chat!.models,
-          `${provider} expansion model "${m}" not in its chat list`,
-        ).toContain(m);
         expect(canonicalLookup(`${provider}:${m}`), `${provider}:${m} unpriced`).toBeDefined();
       }
     }

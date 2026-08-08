@@ -40,9 +40,12 @@ export const openai: Recipe = {
       // family GA (2026-07-09) — removed so the default-slot guard tests
       // can't validate defaults against a dead model. Terra is the
       // balanced mainline tier (same price class gpt-5.2 occupied); Luna
-      // is high-volume; Sol is the frontier tier. gpt-4o-mini remains on
-      // the live sheet.
-      models: ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-4o-mini'],
+      // is high-volume; Sol is the frontier tier. The chat list is
+      // 5.6-only: max_context_tokens below is touchpoint-wide, so listing
+      // the legacy 128K gpt-4o-mini here would over-report its window 8x
+      // to any future pre-flight consumer (it stays in expansion, where
+      // prompts are tiny and it's still on the live sheet).
+      models: ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol'],
       supports_tools: true,
       supports_subagent_loop: true,
       supports_prompt_cache: false,

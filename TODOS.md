@@ -1,5 +1,37 @@
 # TODOS
 
+## Provider-freshness follow-ups (filed with the Wave 2 recipe refresh, 2026-08)
+
+Deferred from the provider-compat freshness wave (review army + red team).
+None block the wave; all are consumers of retirement/override knowledge the
+wave already encodes.
+
+- [ ] **P2 — Doctor check: configured model delisted from its recipe.**
+  `registerExtendedModel` (gateway.ts, v0.31.12) keeps a persisted
+  `chat_model`/`expansion_model` locally valid after its recipe delists it, so
+  existing brains fail only at the provider with no gbrain-side hint. Add a
+  doctor check: configured model resolves to a native recipe but is absent
+  from the touchpoint's models list → warn with the replacement `config set`
+  command. The retirement facts (models + dates) are already in the recipes.
+- [ ] **P2 — Notice when config-plane base_urls overrides a set native env var.**
+  `resolveNativeBaseUrl` now honors `provider_base_urls.openai/anthropic`
+  (config wins). A pre-existing row that was a no-op before the fix activates
+  silently on upgrade and out-prioritizes a working
+  OPENAI_BASE_URL/ANTHROPIC_BASE_URL. When both planes are set and disagree,
+  emit a one-shot stderr note naming the winner (doctor or gateway-configure).
+  Consider requiring https for DB-plane-sourced native overrides.
+- [ ] **P3 — `gbrain config set *_api_key` writes a dead plane.** The DB-plane
+  config row is never read by the gateway (loadConfigWithEngine deliberately
+  skips `*_api_key` merges), so `config set litellm_api_key X` stores a secret
+  at rest with zero functional effect — pre-existing class shared by
+  voyage/dashscope/google keys. Either route `*_api_key` sets to the file
+  plane (~/.gbrain/config.json) or refuse with a paste-ready instruction.
+- [ ] **P3 — models[0]-liveness guard for init auto-pick recipes.** `gbrain
+  init` persists `models[0]` as chat_model (init.ts:608). The dead-alias
+  liveness guard covers DEFAULT_ALIASES/TIER_DEFAULTS; extend the idea so
+  every recipe consumed by init auto-pick keeps a live models[0] (openrouter's
+  quarterly-refresh note is currently the only defense).
+
 ## serve --http takes-holders + agent-voice hardening follow-ups (filed v0.42.74.0)
 
 Deferred from the #2529/#2477 security-fix wave (plan-eng-review + codex outside

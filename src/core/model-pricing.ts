@@ -100,9 +100,13 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
   // The Gemini 2.0 Flash family was shut down by Google 2026-06-01; kept so
   // historical usage/audit rows still price ($0.10/$0.40 verified
   // 2026-06-03 while live). `gemini-2-flash` kept as an alias for the
-  // legacy id spelling.
+  // legacy id spelling; `gemini-2.0-flash-exp` was the google recipe's
+  // models[0] before this refresh, so it's the exact string env-auto-inited
+  // brains persisted as chat_model — without a row, the budget tracker's
+  // fail-closed no_pricing path blocks those brains under any cost cap.
   'google:gemini-2.0-flash':              { input:  0.10, output:  0.40 },
   'google:gemini-2-flash':                { input:  0.10, output:  0.40 },
+  'google:gemini-2.0-flash-exp':          { input:  0.10, output:  0.40 },
   // Gemini 3.x Flash line (verified 2026-08-08). 3.6-flash is the google
   // recipe's chat baseline; 3.5-flash-lite is the expansion default. The
   // 2.5 family is live until 2026-10-16 but deliberately unlisted as a

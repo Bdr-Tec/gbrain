@@ -84,17 +84,19 @@ describe('resolveNativeBaseUrl (#1250)', () => {
     expect(resolveNativeBaseUrl('openai', cfg)).toBeUndefined();
   });
 
-  test('empty-string config entry masks the env var (documented ?? semantics) [PIN]', () => {
-    // `??` only skips nullish, so `provider_base_urls.openai: ''` yields ''
-    // → trim-empty → undefined, WITHOUT falling through to the env var.
-    // This matches the pre-existing openai-compat contract at the
-    // `cfg.base_urls?.[recipe.id] ?? recipe.base_url_default` sites — an
-    // empty config entry is "explicitly unset", not "absent". Pinned so a
-    // future fall-through change is a deliberate decision, not drift.
+  test('present-but-empty config entry fails loud instead of silently masking the env var', () => {
+    // An empty `provider_base_urls.openai` would otherwise mask a set
+    // OPENAI_BASE_URL and return undefined — routing traffic (key attached)
+    // straight to the provider past an env-mandated egress proxy, silently.
+    // The openai-compat plane throws on the same shape ("requires a base
+    // URL"); the native plane mirrors that loud contract.
     const cfg = {
       env: { OPENAI_BASE_URL: 'https://env.example' },
       base_urls: { openai: '' },
     } as unknown as AIGatewayConfig;
-    expect(resolveNativeBaseUrl('openai', cfg)).toBeUndefined();
+    expect(() => resolveNativeBaseUrl('openai', cfg)).toThrow(/set but empty/);
+    // Absent entry (undefined) still falls through to the env var.
+    const cfg2 = { env: { OPENAI_BASE_URL: 'https://env.example' }, base_urls: {} } as unknown as AIGatewayConfig;
+    expect(resolveNativeBaseUrl('openai', cfg2)).toBe('https://env.example/v1');
   });
 });
