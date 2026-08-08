@@ -225,14 +225,25 @@ describe('v0.37 Lane C.3 — ZE key reaches buildGatewayConfig', () => {
       expect(gwCfg.env?.OPENROUTER_API_KEY).toBe('test-or');
       // Same seam for LiteLLM + Together (closed with litellm's chat
       // touchpoint): the fold follows the identical pattern, pinned here so
-      // a future key can't ship without joining this test.
-      const gwCfg2 = buildGatewayConfig({
-        engine: 'pglite',
-        litellm_api_key: 'test-llm',
-        together_api_key: 'test-tg',
-      } as any);
-      expect(gwCfg2.env?.LITELLM_API_KEY).toBe('test-llm');
-      expect(gwCfg2.env?.TOGETHER_API_KEY).toBe('test-tg');
+      // a future key can't ship without joining this test. Clear the env
+      // first — a dev machine exporting these keys would otherwise shadow
+      // the config-plane assertion via the later process-env spread.
+      const savedLlm = process.env.LITELLM_API_KEY;
+      const savedTg = process.env.TOGETHER_API_KEY;
+      delete process.env.LITELLM_API_KEY;
+      delete process.env.TOGETHER_API_KEY;
+      try {
+        const gwCfg2 = buildGatewayConfig({
+          engine: 'pglite',
+          litellm_api_key: 'test-llm',
+          together_api_key: 'test-tg',
+        } as any);
+        expect(gwCfg2.env?.LITELLM_API_KEY).toBe('test-llm');
+        expect(gwCfg2.env?.TOGETHER_API_KEY).toBe('test-tg');
+      } finally {
+        if (savedLlm !== undefined) process.env.LITELLM_API_KEY = savedLlm;
+        if (savedTg !== undefined) process.env.TOGETHER_API_KEY = savedTg;
+      }
     } finally {
       if (savedZe !== undefined) process.env.ZEROENTROPY_API_KEY = savedZe;
       if (savedOai !== undefined) process.env.OPENAI_API_KEY = savedOai;
