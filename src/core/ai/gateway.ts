@@ -468,7 +468,12 @@ export function resolveNativeBaseUrl(
   cfg: AIGatewayConfig,
 ): string | undefined {
   const envKey = provider === 'anthropic' ? 'ANTHROPIC_BASE_URL' : 'OPENAI_BASE_URL';
-  const raw = cfg.env[envKey];
+  // Config plane first: `provider_base_urls.<provider>` reaches here via
+  // cfg.base_urls, matching buildGatewayConfig's "config wins over env"
+  // contract for the openai-compat providers. Before this fallback, the
+  // native providers were the only recipes whose base URL could ONLY be
+  // set through the environment.
+  const raw = cfg.base_urls?.[provider] ?? cfg.env[envKey];
   if (!raw || !raw.trim()) return undefined;
   const trimmed = raw.trim().replace(/\/+$/, '');
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;

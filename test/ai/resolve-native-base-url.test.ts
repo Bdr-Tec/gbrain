@@ -60,4 +60,21 @@ describe('resolveNativeBaseUrl (#1250)', () => {
     expect(resolveNativeBaseUrl('openai', cfgWith({ ANTHROPIC_BASE_URL: 'https://x' }))).toBeUndefined();
     expect(resolveNativeBaseUrl('anthropic', cfgWith({ OPENAI_BASE_URL: 'https://x' }))).toBeUndefined();
   });
+
+  test('config-plane base_urls reaches native providers, same normalization', () => {
+    // provider_base_urls.openai / .anthropic flow into cfg.base_urls via
+    // buildGatewayConfig; before the fallback, native providers ignored the
+    // config plane entirely (env-only).
+    const cfg = { env: {}, base_urls: { openai: 'https://proxy.example' } } as unknown as AIGatewayConfig;
+    expect(resolveNativeBaseUrl('openai', cfg)).toBe('https://proxy.example/v1');
+    expect(resolveNativeBaseUrl('anthropic', cfg)).toBeUndefined();
+  });
+
+  test('config-plane base_urls wins over the env var (matches buildGatewayConfig contract)', () => {
+    const cfg = {
+      env: { OPENAI_BASE_URL: 'https://env.example' },
+      base_urls: { openai: 'https://config.example/v1' },
+    } as unknown as AIGatewayConfig;
+    expect(resolveNativeBaseUrl('openai', cfg)).toBe('https://config.example/v1');
+  });
 });
