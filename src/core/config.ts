@@ -72,6 +72,21 @@ export interface GBrainConfig {
    */
   dashscope_api_key?: string;
   /**
+   * LiteLLM proxy API key. File-plane slot folded into the gateway env as
+   * LITELLM_API_KEY (optional in the litellm-proxy recipe — proxies may run
+   * unauthenticated locally). Closed alongside litellm's chat touchpoint
+   * (v0.42.61.0): once litellm became a full chat provider, daemon/launchd/
+   * MCP contexts hit the same config-plane gap voyage did (#2662). Same
+   * fold pattern (and same DB-plane caveat) as voyage_api_key above.
+   */
+  litellm_api_key?: string;
+  /**
+   * Together AI API key. File-plane slot folded into the gateway env as
+   * TOGETHER_API_KEY (required by the together recipe). Same fold pattern
+   * (and same DB-plane caveat) as voyage_api_key above.
+   */
+  together_api_key?: string;
+  /**
    * Google Gemini API key (#3500). File-plane slot folded into the gateway
    * env as GOOGLE_GENERATIVE_AI_API_KEY (the name the google recipe reads).
    * buildGatewayConfig also accepts process-env GEMINI_API_KEY — the name
