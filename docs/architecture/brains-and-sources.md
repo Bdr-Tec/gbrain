@@ -234,6 +234,31 @@ know the other.
   source. The flags are for when you want to query across the boundary
   deliberately.
 
+## What confines remote callers (and what does not)
+
+When a brain is served to remote agents (HTTP MCP, stdio MCP treated as
+remote), these are the enforcement surfaces — everything on this list is
+fail-closed and tested:
+
+- **Source isolation** — every read resolves through the source-scope ladder
+  (federated grant array > scalar source floor > nothing). A caller without a
+  grant for a source cannot read its pages, chunks, or edges.
+- **Facts visibility** — facts carry `private`/`world` visibility; remote
+  callers see `world` only.
+- **Takes holders** — per-token allow-lists (`gbrain auth permissions <token>
+  set-takes-holders ...`) scope which held takes a remote caller sees.
+- **Write-side slug fences** — a client bound to slug prefixes can only write
+  under them, and non-read operations are refused for slug-bound clients.
+
+**Not an enforcement surface: page-level `visibility:` frontmatter.** A
+`visibility: local` (or any other value) key in a page's frontmatter is inert
+metadata — no schema column stores it, no query filters on it, and a remote
+caller with a source grant retrieves the page like any other. If a page must
+not be readable by remote callers, put it in a source those callers have no
+grant for; that is the supported boundary. (A read-side per-page/per-prefix
+ACL was proposed and declined — it is a new authorization surface that
+belongs to the mounts/brains access-policy design, not a bolt-on filter.)
+
 ## Further reading
 
 - v0.18.0 CHANGELOG — introduced `sources` primitive.
