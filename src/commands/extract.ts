@@ -36,7 +36,7 @@ import type { PageType } from '../core/types.ts';
 import { parseMarkdown } from '../core/markdown.ts';
 import {
   extractPageLinks, parseTimelineEntries, deriveTimelineAnchor, inferLinkType, makeResolver,
-  extractFrontmatterLinks, isGlobalBasenameEnabled, LINK_EXTRACTOR_VERSION_TS,
+  extractFrontmatterLinks, isGlobalBasenameEnabled, isCrossSourceLinksEnabled, LINK_EXTRACTOR_VERSION_TS,
   WIKILINK_BASENAME_LINK_TYPE,
   buildBasenameIndex, queryBasenameIndex, stripCodeBlocks,
   type UnresolvedFrontmatterRef, type LinkCandidate,
@@ -117,7 +117,8 @@ export function resolveCandidateSources(
   pageSourceId: string,
   allSlugs: Set<string>,
   slugToSources: Map<string, string[]>,
-): { fromSlug: string; fromSourceId: string; toSourceId: string } | null {
+  opts: { crossSource?: boolean } = {},
+): { fromSlug: string; fromSourceId: string; toSourceId: string } | 'cross-source-only' | null {
   const fromSlug = c.fromSlug ?? pageSlug;
   if (!allSlugs.has(c.targetSlug)) return null;
   if (!allSlugs.has(fromSlug)) return null;
@@ -130,6 +131,17 @@ export function resolveCandidateSources(
     toSourceId = fromSourceId;
   } else if (targetSources.includes('default')) {
     toSourceId = 'default';
+  } else if (targetSources.length > 0) {
+    // #2589: the target exists ONLY in other sources. Historically this was
+    // a silent null (indistinguishable from a missing endpoint — multi-source
+    // graphs went sparse with dead_links stuck at 0). Behind the opt-in
+    // `link_resolution.cross_source` flag the edge is allowed with a
+    // DETERMINISTIC pick (lexicographically smallest source, so repeated
+    // extracts and both engines converge on the same edge under the
+    // (source_id, slug) composite key); off, callers get a distinguishable
+    // sentinel to COUNT the drop instead of burying it.
+    if (!opts.crossSource) return 'cross-source-only';
+    toSourceId = [...targetSources].sort()[0];
   } else {
     return null;
   }
@@ -1445,6 +1457,9 @@ async function extractLinksFromDB(
   // Issue #972: opt-in global-basename wikilink resolution. Read once
   // per extract run; threaded into each extractPageLinks call.
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // Issue #2589: opt-in cross-source edges (deterministic to_source_id pick);
+  // off, cross-source-only candidates are counted, never silently dropped.
+  const crossSource = await isCrossSourceLinksEnabled(engine);
   // v0.32.8: listAllPageRefs enumerates (slug, source_id) so we can thread
   // sourceId to getPage AND build a cross-source resolution map for link
   // disambiguation. Pre-fix used getAllSlugs() which collapsed
@@ -1481,6 +1496,8 @@ async function extractLinksFromDB(
   let processed = 0, created = 0;
   // #2576: skipped-candidate counter — see extractStaleFromDB's twin.
   let skippedMissingTarget = 0;
+  // #2589: cross-source-only candidates dropped because the flag is off.
+  let skippedCrossSource = 0;
   // v0.42.7 (#1696): pages whose links we extracted this run — stamped after
   // the loop so a manual `gbrain extract links|all --source db` clears the
   // links_extraction_lag doctor signal. Non-dry-run only.
@@ -1536,7 +1553,8 @@ async function extractLinksFromDB(
       // helper in v0.42.7 (#1696) so extract --stale reuses the exact same
       // endpoint-validation + from/to source-id picking (null = skip: missing
       // endpoint OR target only in a non-origin/non-default source).
-      const resolved = resolveCandidateSources(c, slug, source_id, allSlugs, slugToSources);
+      const resolved = resolveCandidateSources(c, slug, source_id, allSlugs, slugToSources, { crossSource });
+      if (resolved === 'cross-source-only') { skippedCrossSource++; continue; }
       if (!resolved) { skippedMissingTarget++; continue; }
       const { fromSlug, fromSourceId, toSourceId } = resolved;
 
@@ -1596,6 +1614,9 @@ async function extractLinksFromDB(
     console.log(`Links: ${label} ${created} from ${processed} pages (db source)`);
     if (skippedMissingTarget > 0) {
       console.log(`Skipped ${skippedMissingTarget} candidate(s) whose target page doesn't exist (references to non-pages are never persisted).`);
+    }
+    if (skippedCrossSource > 0) {
+      console.log(`Skipped ${skippedCrossSource} cross-source candidate(s) — target exists only in another source. Enable with \`gbrain config set link_resolution.cross_source true\` (#2589).`);
     }
     if (includeFrontmatter && unresolved.length > 0) {
       // Top-20 preview of unresolvable frontmatter names so the user can
@@ -1742,7 +1763,7 @@ export async function extractStaleFromDB(
     sourceIdFilter?: string;
     catchUp: boolean;
   },
-): Promise<{ linksCreated: number; timelineCreated: number; pagesProcessed: number; staleRemaining: number; skippedMissingTarget?: number }> {
+): Promise<{ linksCreated: number; timelineCreated: number; pagesProcessed: number; staleRemaining: number; skippedMissingTarget?: number; skippedCrossSource?: number }> {
   const { dryRun, jsonMode, includeFrontmatter, sourceIdFilter, catchUp } = opts;
   const versionTs = LINK_EXTRACTOR_VERSION_TS;
 
@@ -1777,6 +1798,8 @@ export async function extractStaleFromDB(
   // extractLinksFromDB (including the codex-[P1] `sourceId` scoping).
   const resolver = makeResolver(engine, { mode: 'batch', sourceId: sourceIdFilter });
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // Issue #2589: mirrors extractLinksFromDB (see resolveCandidateSources).
+  const crossSource = await isCrossSourceLinksEnabled(engine);
   const allRefs = await engine.listAllPageRefs();
   const allSlugs = new Set<string>();
   const slugToSources = new Map<string, string[]>();
@@ -1798,6 +1821,8 @@ export async function extractStaleFromDB(
   // persisted. Counted so a dropped reference is observable in the summary
   // instead of vanishing silently (the failure mode that hid bug 2).
   let skippedMissingTarget = 0;
+  // #2589: cross-source-only candidates dropped because the flag is off.
+  let skippedCrossSource = 0;
 
   for (;;) {
     const rows = await engine.listStalePagesForExtraction({
@@ -1816,7 +1841,8 @@ export async function extractStaleFromDB(
         { skipFrontmatter: !includeFrontmatter, globalBasename },
       );
       for (const c of extracted.candidates) {
-        const r = resolveCandidateSources(c, page.slug, page.source_id, allSlugs, slugToSources);
+        const r = resolveCandidateSources(c, page.slug, page.source_id, allSlugs, slugToSources, { crossSource });
+        if (r === 'cross-source-only') { skippedCrossSource++; continue; }
         if (!r) { skippedMissingTarget++; continue; }
         linkRows.push({
           from_slug: r.fromSlug, to_slug: c.targetSlug, link_type: c.linkType,
@@ -1881,6 +1907,9 @@ export async function extractStaleFromDB(
     if (skippedMissingTarget > 0) {
       console.log(`Skipped ${skippedMissingTarget} candidate(s) whose target page doesn't exist (references to non-pages are never persisted).`);
     }
+    if (skippedCrossSource > 0) {
+      console.log(`Skipped ${skippedCrossSource} cross-source candidate(s) — target exists only in another source. Enable with \`gbrain config set link_resolution.cross_source true\` (#2589).`);
+    }
     if (budgetHit && staleRemaining > 0) {
       console.log(`Time budget reached — ${staleRemaining} page(s) still stale. Re-run 'gbrain extract --stale' (or pass --catch-up) to continue.`);
     }
@@ -1889,9 +1918,10 @@ export async function extractStaleFromDB(
       action: 'extract_stale_done', links_created: linksCreated, timeline_created: timelineCreated,
       pages_processed: pagesProcessed, stale_remaining: staleRemaining, budget_hit: budgetHit,
       skipped_missing_target: skippedMissingTarget,
+      skipped_cross_source: skippedCrossSource,
     }) + '\n');
   }
-  return { linksCreated, timelineCreated, pagesProcessed, staleRemaining, skippedMissingTarget };
+  return { linksCreated, timelineCreated, pagesProcessed, staleRemaining, skippedMissingTarget, skippedCrossSource };
 }
 
 /**
