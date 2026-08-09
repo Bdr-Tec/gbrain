@@ -255,6 +255,21 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
             `Fix: \`gbrain config set ${source} anthropic:claude-sonnet-4-6\` or pick another known provider.`,
         };
       }
+      if (verdict === 'unusable:no_subagent_loop') {
+        return {
+          name: 'subagent_capability',
+          status: 'warn',
+          message:
+            `${source} is "${resolved}" but that provider's recipe declares supports_subagent_loop: false — ` +
+            `its tool calling is not stable enough across crashes/replays to drive the subagent loop. ` +
+            `The subagent loop cannot run on this model — ` +
+            (source === 'models.subagent'
+              ? `jobs are refused at dispatch. `
+              : `runtime will fall back to claude-sonnet-4-6. `) +
+            `Fix: \`gbrain config set ${source} <provider>:<model>\` with a provider whose recipe declares ` +
+            `supports_subagent_loop: true (e.g. anthropic:claude-sonnet-4-6).`,
+        };
+      }
       if (verdict === 'degraded:no_caching') {
         return {
           name: 'subagent_capability',

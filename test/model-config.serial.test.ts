@@ -153,6 +153,20 @@ describe('resolveModel — 6-tier precedence', () => {
     expect(m).toBe(DEFAULT_ALIASES.sonnet);
   });
 
+  test('subagent tier: loop-incapable models.tier.subagent falls back to TIER_DEFAULTS with warn', async () => {
+    // moonshot supports tools but declares supports_subagent_loop: false —
+    // pre-fix enforceSubagentCapable classified it tools-sufficient and let
+    // the inherited tier value drive the loop.
+    stub.set('models.tier.subagent', 'moonshot:kimi-k2.5');
+    const m = await resolveModel(stub as never, {
+      tier: 'subagent',
+      configKey: 'models.subagent',
+      fallback: TIER_DEFAULTS.subagent,
+    });
+    expect(m).toBe(TIER_DEFAULTS.subagent);
+    expect(stderrCapture).toContain('supports_subagent_loop: false');
+  });
+
   test('deprecation warning fires once per process per key', async () => {
     stub.set('dream.synthesize.model', 'opus');
     await resolveModel(stub as never, {

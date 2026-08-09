@@ -13,6 +13,8 @@
  * and surfaces them via a normalized `ProviderCapabilities` shape that the
  * gateway's `toolLoop()` consumes to decide:
  *   - REFUSE at submit when tool-calling is unsupported (D6 — useless loop)
+ *   - REFUSE at submit/dispatch when the recipe declares
+ *     `supports_subagent_loop: false` (unstable tool_use_id through a proxy)
  *   - WARN at submit when prompt caching is unavailable (D6 — cost regression)
  *   - INFO at submit when parallel tools unsupported (D6 — just slower)
  *
@@ -28,6 +30,16 @@ import { AIConfigError } from './errors.ts';
 export interface ProviderCapabilities {
   /** Provider returns native function/tool calling. Required for the subagent loop. */
   supportsToolCalling: boolean;
+
+  /**
+   * Provider's tool calling is stable enough across crashes/replays (stable
+   * tool_call_ids) to drive the Minions subagent loop. Mirrors the recipe's
+   * `chat.supports_subagent_loop` declaration (`src/core/ai/types.ts`), which
+   * is intentionally separate from — and strictly stronger than —
+   * `supports_tools`: some chat-capable models have flaky tool-calling or
+   * unstable tool_call_id behavior across replays.
+   */
+  supportsSubagentLoop: boolean;
 
   /**
    * Anthropic-style ephemeral prompt cache markers honored. When false, the
@@ -94,6 +106,7 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
 
   return {
     supportsToolCalling: chat.supports_tools === true,
+    supportsSubagentLoop: chat.supports_subagent_loop === true,
     supportsPromptCaching: typeof promptCache === 'function'
       ? promptCache(parsed.modelId)
       : promptCache === true,
@@ -115,8 +128,8 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
  * Tier-1 gate consumed by `enforceSubagentCapable()` in src/core/model-config.ts
  * (D6 + D7). Returns:
  *
- *   - `'ok'` — provider has tool-calling, prompt caching, and parallel tools.
- *     Loop runs at full speed.
+ *   - `'ok'` — provider has tool-calling, a loop-stable declaration, prompt
+ *     caching, and parallel tools. Loop runs at full speed.
  *   - `'degraded:no_caching'` — provider supports tools but lacks prompt
  *     caching. Loop runs but per-turn cost is higher. Warn once per
  *     (source, model) pair.
@@ -124,6 +137,10 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
  *     loop will dispatch serially. Info-log; no warn.
  *   - `'unusable:no_tools'` — provider lacks tool calling entirely. Refuse at
  *     submit; the loop has no way to execute brain ops.
+ *   - `'unusable:no_subagent_loop'` — provider has tool calling but its recipe
+ *     declares `supports_subagent_loop: false` (tool_call_ids not stable
+ *     across crash/replay). Refuse at submit; the loop would start but can't
+ *     reconcile on replay — a correctness issue, not a cost/perf one.
  *   - `'unknown'` — the provider/model isn't in any recipe. Refuse at submit
  *     (defensive: don't spend money on an unrecognized provider).
  *
@@ -135,6 +152,7 @@ export type CapabilityVerdict =
   | 'degraded:no_caching'
   | 'degraded:no_parallel'
   | 'unusable:no_tools'
+  | 'unusable:no_subagent_loop'
   | 'unknown';
 
 export function classifyCapabilities(modelString: string): CapabilityVerdict {
@@ -145,6 +163,7 @@ export function classifyCapabilities(modelString: string): CapabilityVerdict {
     return 'unknown';
   }
   if (!caps.supportsToolCalling) return 'unusable:no_tools';
+  if (!caps.supportsSubagentLoop) return 'unusable:no_subagent_loop';
   if (!caps.supportsPromptCaching) return 'degraded:no_caching';
   if (!caps.supportsParallelTools) return 'degraded:no_parallel';
   return 'ok';

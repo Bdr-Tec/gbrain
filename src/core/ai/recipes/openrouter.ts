@@ -134,11 +134,13 @@ export const openrouterCompatFetch = (async (
  * downstream agent stacks (OpenClaw deployments, etc.) get their own
  * attribution on OR's leaderboard instead of polluting gbrain's.
  *
- * Subagent loops: `supports_subagent_loop: false` is INFORMATIONAL. The real
- * gate is `isAnthropicProvider()` in `src/core/model-config.ts` which
- * hard-pins gbrain's subagent infra to Anthropic-direct (stable tool_use_id
- * across crashes/replays). OR-proxied Anthropic is rejected at submit time
- * regardless of this flag — relaxing the gate is a deeper architectural
+ * Subagent loops: `supports_subagent_loop: false` is enforced by
+ * `classifyCapabilities()` in `src/core/ai/capabilities.ts` — the subagent
+ * tier refuses OR-proxied models at submit or handler dispatch because tool_use_id
+ * stability across crashes/replays can't be guaranteed through the proxy.
+ * (The legacy Anthropic-direct path additionally gates on
+ * `isAnthropicProvider()` in `src/core/model-config.ts` when
+ * `agent.use_gateway_loop` is off.) Relaxing this is a deeper architectural
  * change tracked in TODOS.md.
  */
 export const openrouter: Recipe = {
@@ -225,7 +227,7 @@ export const openrouter: Recipe = {
         'deepseek/deepseek-chat',
       ],
       supports_tools: true,
-      // Informational only — real gate is isAnthropicProvider() upstream.
+      // Enforced — classifyCapabilities() refuses the subagent tier on this flag.
       supports_subagent_loop: false,
       // Family-scoped: OpenAI routes cache automatically; Anthropic routes
       // cache via the compat fetch shim's cache_control rewrite.
