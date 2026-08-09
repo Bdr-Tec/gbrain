@@ -67,6 +67,8 @@ CHECKS=(
   "check:batch-audit-site"
   "check:engine-dynamic-import"
   "check:worker-lock-renewal-shape"
+  "check:bootstrap-tag"
+  "check:bootstrap-templates"
   "typecheck"
 )
 

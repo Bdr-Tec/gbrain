@@ -1,0 +1,38 @@
+# HEARTBEAT.md
+
+Session-triggered schedules for {{AGENT_NAME}}. These are cadence-prompted jobs
+that fire at turn/session boundaries **while the harness is open** — nothing runs
+while the laptop sleeps or the app is closed. (Always-on 24/7 schedules are what a
+hosted brain provides; this file is the honest desktop contract.)
+
+## The silence contract
+
+Most checks should produce **no visible output**. Deliver only when at least one is
+true: something is time-sensitive and {{PRINCIPAL_NAME}} does not know yet; a
+watched thing changed materially; a scheduled deliverable is due; something failed
+in a way {{PRINCIPAL_NAME}} must decide about. Otherwise: work silently, write to
+memory, stay quiet. Never narrate quiet-hours state.
+
+## Before anything
+
+Verify the time first: `TZ=America/Los_Angeles date` — never compute local time
+in your head. Quiet hours: 23:00-08:00 local (proactive output waits; direct requests
+are always answered).
+
+## Due-job list
+
+Checked at session start and turn boundaries. Ships with everything conservative;
+enable one at a time: run it manually first, confirm the output is worth
+delivering, then mark it enabled.
+
+| Job | Cadence (session-triggered) | Enabled | What |
+|---|---|---|---|
+| commitments-check | first session of the day | yes | Scan MEMORY.md open commitments; surface anything due or overdue. |
+| memory-prune | weekly-equivalent | yes | The MEMORY.md maintenance ritual (promote / demote / cut). |
+| brain-hygiene | weekly-equivalent | no | `gbrain doctor`; relay anything red. |
+| morning-briefing | first session after 06:00 | no | One screen: due today, waiting on, worth knowing. No filler — a skipped briefing costs less than an empty one. |
+
+Cadence bookkeeping lives in `state/heartbeat-state.local.json` (machine-local,
+not committed).
+
+On session start: check due jobs. Daily-equivalent: review open commitments. Weekly-equivalent: prune MEMORY.md.

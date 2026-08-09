@@ -66,6 +66,20 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
         run: bun run test:heavy
 
+      # Agent-bootstrap offline Docker e2e [A7] — placeholder registration.
+      # The networkless cold-machine container test (interview → render →
+      # verify with a fake gh) lands with the bootstrap doors task at
+      # tests/docker/bootstrap-e2e.sh. Gated on file existence so this stays
+      # a visible no-op until then. It runs at heavy cadence (nightly +
+      # `heavy-tests` label) by design — never in the PR shard matrix.
+      - name: Bootstrap offline Docker e2e (placeholder)
+        run: |
+          if [ -f tests/docker/bootstrap-e2e.sh ]; then
+            bash tests/docker/bootstrap-e2e.sh
+          else
+            echo "SKIP: tests/docker/bootstrap-e2e.sh not present yet — placeholder until the bootstrap doors task lands."
+          fi
+
       # The heavy runner writes per-script logs to ~/.gbrain/audit/ on every
       # run. Upload those + the rss workload JSON on failure for triage
       # without re-running locally.
