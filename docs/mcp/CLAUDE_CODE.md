@@ -4,6 +4,10 @@
 > tutorial walks both paths (local-from-nothing and connect-to-an-existing-brain)
 > end to end, plus the brain-first protocol that makes it worth it. This page is
 > the connection reference.
+>
+> Want the **full agent** — identity, per-turn context, schedules, and a private
+> repo as its durable body — not just a memory? That's `gbrain bootstrap`:
+> see the paste block in the README and [docs/guides/bootstrap.md](../guides/bootstrap.md).
 
 ## Option 1: Local (recommended, zero server needed)
 

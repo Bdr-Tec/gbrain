@@ -3,6 +3,11 @@
 Read this entire file, then follow the steps. Ask the user for API keys when needed.
 Target: ~30 minutes to a fully working brain.
 
+> **Scope note:** this guide installs the BRAIN (for agent platforms like OpenClaw
+> and Hermes, or a standalone brain). If you are Claude Code or Codex and the human
+> asked you to become their persistent personal agent — identity + memory + private
+> repo — follow `BOOTSTRAP_FOR_AGENTS.md` instead.
+
 ## Step 0: If you are not Claude Code
 
 Read `AGENTS.md` at the repo root first. It's the non-Claude-agent operating
