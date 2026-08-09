@@ -4916,3 +4916,10 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   warn-pass so it can't red-X unrelated work; fixing the leak removes the
   classifier's reason to exist. Start: reproduce with `--inspect` /
   Bun.unsafe process handle dumps on the full shard-2 list.
+- [ ] **P2 — WAL-repair unit tests flake under parallel shard load.**
+  `test/pglite-repair.test.ts` (`repairPgliteWal rename-based backup`,
+  `inspectPgliteDataDir verdicts`) failed once in a full 4-shard run and pass
+  44/44 standalone — load-sensitive, from the v0.42.75.0 WAL auto-repair wave
+  (pre-existing on master; observed during the agent-bootstrap gate runs).
+  Start: run the file under `--max-concurrency=4` alongside PGLite-heavy
+  neighbors to reproduce; suspect tmp-dir or timing assumptions.
