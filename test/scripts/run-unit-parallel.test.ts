@@ -72,7 +72,10 @@ function runWrapper(extraArgs: string[] = []): { code: number; stdout: string; s
   const result = spawnSync(
     'bash',
     [join(TMPROOT, 'scripts', 'run-unit-parallel.sh'), '--shards', '2', ...extraArgs],
-    { cwd: TMPROOT, encoding: 'utf-8', env: { ...process.env } },
+    // Shard-mechanics tests pin explicit --shards behavior with tiny
+    // synthetic files; disable mem-adaptation so a RAM-limited runner (CI's
+    // ~7GB) can't collapse 2 shards -> 1 and break the shard 1/2 expectations.
+    { cwd: TMPROOT, encoding: 'utf-8', env: { ...process.env, GBRAIN_TEST_NO_MEM_ADAPT: '1' } },
   );
   return {
     code: result.status ?? -1,
@@ -209,6 +212,8 @@ describe('passing', () => {
       HOME: process.env.HOME ?? FROOT,
       TMPDIR: process.env.TMPDIR ?? '/tmp',
       GBRAIN_TEST_SHARD_TIMEOUT: '300',
+      // Same rationale as runWrapper: explicit-shard mechanics under test.
+      GBRAIN_TEST_NO_MEM_ADAPT: '1',
     };
   });
 
@@ -304,7 +309,7 @@ describe('oom-once', () => {
     const result = spawnSync(
       'bash',
       [join(OROOT, 'scripts', 'run-unit-parallel.sh'), '--shards', '2'],
-      { cwd: OROOT, encoding: 'utf-8', env: { ...process.env, ...env } },
+      { cwd: OROOT, encoding: 'utf-8', env: { ...process.env, GBRAIN_TEST_NO_MEM_ADAPT: '1', ...env } },
     );
     return { code: result.status ?? -1, stdout: result.stdout || '', stderr: result.stderr || '' };
   }
@@ -323,7 +328,10 @@ describe('oom-once', () => {
   }, 120_000);
 
   it('memory-aware sizing is advertised in the banner (mem-ok or mem-adapted)', () => {
-    const r = runOom();
+    // The one test that needs adaptation ON — override the harness-wide
+    // NO_MEM_ADAPT base (which keeps the shard-mechanics tests deterministic
+    // on RAM-limited CI runners).
+    const r = runOom({ GBRAIN_TEST_NO_MEM_ADAPT: '0' });
     expect(r.stderr).toMatch(/mem-(ok|adapted)/);
   }, 120_000);
 
