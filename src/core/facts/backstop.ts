@@ -70,6 +70,17 @@ export interface FactsBackstopCtx {
   visibility?: 'private' | 'world';
   /** Override the chat model (extract_facts forwards user's model param when set). */
   model?: string;
+  /**
+   * #2108: prefer the durable facts-absorb minion job over the in-process
+   * queue when a live `gbrain jobs work` worker can process it. Set by
+   * put_page for remote/MCP callers (fail-closed spelling at the call site:
+   * `ctx.remote !== false`) — an MCP/remote server process can exit before
+   * the in-process absorb finishes its 5-30s extraction chat, and the exit
+   * drain (cli-force-exit.ts, GBRAIN_DRAIN_TIMEOUT_MS default 2000ms) aborts
+   * it: page persists, facts silently never land. A durable job survives the
+   * process.
+   */
+  preferDurableAbsorb?: boolean;
 }
 
 /** Discriminated return shape based on FactsBackstopCtx.mode. */
@@ -125,6 +136,70 @@ export function __resetBackstopWarningsForTests(): void {
 }
 
 /**
+ * #2108 test seam — override the live-worker probe. Production leaves this
+ * null and probes the file-based worker registry (readWorkers prunes dead
+ * PIDs and filters by brain id).
+ */
+let _liveWorkerProbeOverride: (() => boolean) | null = null;
+export function __setLiveWorkerProbeForTests(p: (() => boolean) | null): void {
+  _liveWorkerProbeOverride = p;
+}
+
+/**
+ * Is a live minion worker available to process a durable facts-absorb job
+ * for this brain? Cheap file-registry read (no DB). Fail-open to `false`:
+ * a probe error must never block the in-process fallback.
+ */
+async function hasLiveMinionWorker(): Promise<boolean> {
+  if (_liveWorkerProbeOverride) return _liveWorkerProbeOverride();
+  try {
+    const { readWorkers } = await import('../minions/worker-registry.ts');
+    return readWorkers().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Submit a durable `facts-absorb` minion job for one page (processed by the
+ * long-lived `gbrain jobs work` daemon; handler in src/commands/jobs.ts).
+ * Content-hash idempotency key: re-submits after edits, dedups rapid
+ * identical writes (idempotent ON CONFLICT returns the existing row).
+ * Throws when minions infra is unavailable (old schema, etc.) — callers
+ * fall back to the in-process queue.
+ */
+async function submitDurableFactsAbsorb(
+  parsedPage: ParsedPageInput,
+  ctx: FactsBackstopCtx,
+): Promise<void> {
+  const { MinionQueue } = await import('../minions/queue.ts');
+  const { createHash } = await import('node:crypto');
+  const contentHash = createHash('sha256')
+    .update(parsedPage.compiled_truth)
+    .digest('hex')
+    .slice(0, 16);
+  const minions = new MinionQueue(ctx.engine);
+  await minions.add(
+    'facts-absorb',
+    {
+      slug: parsedPage.slug,
+      sourceId: ctx.sourceId,
+      source: ctx.source,
+      sessionId: ctx.sessionId,
+      notabilityFilter: ctx.notabilityFilter ?? 'all',
+      visibility: ctx.visibility ?? 'private',
+      ...(ctx.model ? { model: ctx.model } : {}),
+    },
+    {
+      queue: 'default',
+      idempotency_key: `facts-absorb:${ctx.sourceId}:${parsedPage.slug}:${contentHash}`,
+      max_attempts: 3,
+      timeout_ms: 180_000,
+    },
+  );
+}
+
+/**
  * Run the facts pipeline for one page write. See module docstring for
  * the full lifecycle and mode semantics.
  *
@@ -164,36 +239,21 @@ export async function runFactsBackstop(
     // minion job for the long-lived jobs worker instead. Falls through to
     // the in-process queue if durable submission fails (old schema, no
     // minions infra), preserving prior behavior + absorb-log visibility.
+    //
+    // #2108: the remote/MCP put_page path (ctx.preferDurableAbsorb) has the
+    // same doomed shape when the server process exits mid-extraction, so it
+    // ALSO prefers the durable job — but only when a live worker exists for
+    // this brain. Unlike the one-shot CLI (where the in-process queue can
+    // NEVER finish), a long-lived server usually finishes in-process work,
+    // so unconditionally parking jobs in a queue no worker drains would
+    // regress worker-less installs.
     const { isShortLivedCliProcess } = await import('./cli-process-mode.ts');
-    if (isShortLivedCliProcess()) {
+    const wantDurable =
+      isShortLivedCliProcess() ||
+      (ctx.preferDurableAbsorb === true && (await hasLiveMinionWorker()));
+    if (wantDurable) {
       try {
-        const { MinionQueue } = await import('../minions/queue.ts');
-        const { createHash } = await import('node:crypto');
-        const contentHash = createHash('sha256')
-          .update(parsedPage.compiled_truth)
-          .digest('hex')
-          .slice(0, 16);
-        const minions = new MinionQueue(ctx.engine);
-        await minions.add(
-          'facts-absorb',
-          {
-            slug: parsedPage.slug,
-            sourceId: ctx.sourceId,
-            source: ctx.source,
-            sessionId: ctx.sessionId,
-            notabilityFilter: ctx.notabilityFilter ?? 'all',
-            visibility: ctx.visibility ?? 'private',
-            ...(ctx.model ? { model: ctx.model } : {}),
-          },
-          {
-            queue: 'default',
-            // Content-hash key: re-submits after edits, dedups rapid
-            // identical writes (idempotent ON CONFLICT returns existing row).
-            idempotency_key: `facts-absorb:${ctx.sourceId}:${parsedPage.slug}:${contentHash}`,
-            max_attempts: 3,
-            timeout_ms: 180_000,
-          },
-        );
+        await submitDurableFactsAbsorb(parsedPage, ctx);
         return { mode: 'queue', enqueued: true, queueDepth: 0 };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -210,9 +270,59 @@ export async function runFactsBackstop(
       // inside the queue worker were previously invisible (queue counter
       // increments only). Now they land in ingest_log so doctor +
       // dashboard surface failure modes per source.
+      //
+      // #2108: a drain-abort at process exit is NOT a terminal failure.
+      // Nothing is ever stamped as "facts done" on this path (there is no
+      // completion watermark; the absorb-log row is a failure record, and
+      // conversation_facts_backfill's terminal audit row is only written by
+      // that pass) — so re-queue the work durably and say so loudly instead
+      // of losing it in silence. The facts sink drains FIRST (order 0) and
+      // its abort is awaited, so the engine is still connected here.
+      const requeueAborted = async (): Promise<void> => {
+        let requeued = false;
+        try {
+          await submitDurableFactsAbsorb(parsedPage, ctx);
+          requeued = true;
+        } catch {
+          /* minions infra unavailable — the stderr line below still names the loss */
+        }
+        // eslint-disable-next-line no-console
+        console.error(
+          `[facts] absorb aborted at process exit for "${parsedPage.slug}" — facts NOT extracted (the page itself is saved). ` +
+          (requeued
+            ? 'Re-queued as a durable facts-absorb job; the next `gbrain jobs work` / autopilot worker retries it.'
+            : 'Durable re-queue unavailable; rewrite the page or run `gbrain extract-conversation-facts` to retry.'),
+        );
+      };
       try {
-        await runPipeline(parsedPage, ctx, signal);
+        const res = await runPipeline(parsedPage, ctx, signal);
+        // Early-bail abort: runPipelineWithBody returns zeros WITHOUT
+        // throwing when the signal fires before the extraction chat starts.
+        // Same loss shape as the thrown abort — requeue + absorb-log. A
+        // genuinely-zero extraction that raced the abort merely re-runs one
+        // extraction on the worker (idempotency key dedups the job row).
+        if (
+          signal.aborted &&
+          res.inserted + res.duplicate + res.superseded === 0 &&
+          res.fact_ids.length === 0
+        ) {
+          await requeueAborted();
+          const { writeFactsAbsorbLog } = await import('./absorb-log.ts');
+          await writeFactsAbsorbLog(
+            ctx.engine,
+            parsedPage.slug,
+            'pipeline_error',
+            'absorb aborted at process exit before completion',
+            ctx.sourceId,
+          );
+        }
       } catch (err) {
+        const aborted =
+          signal.aborted ||
+          (err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message)));
+        if (aborted) {
+          await requeueAborted();
+        }
         const { classifyFactsAbsorbError, writeFactsAbsorbLog } = await import('./absorb-log.ts');
         const reason = classifyFactsAbsorbError(err);
         const msg = err instanceof Error ? err.message : String(err);

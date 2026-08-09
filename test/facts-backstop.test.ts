@@ -11,7 +11,7 @@
 
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { runFactsBackstop } from '../src/core/facts/backstop.ts';
+import { runFactsBackstop, __setLiveWorkerProbeForTests } from '../src/core/facts/backstop.ts';
 import type { FactsBackstopCtx } from '../src/core/facts/backstop.ts';
 import {
   __setChatTransportForTests,
@@ -299,5 +299,152 @@ describe('runFactsBackstop — stub guard routing (v0.34.5)', () => {
       await (engine as any).db.query(`UPDATE sources SET local_path = NULL WHERE id = 'default'`);
       rmSync(brainDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2108 — durable facts-absorb: remote put_page prefers the minion job; a
+// drain-aborted in-process absorb re-queues durably instead of silent loss.
+// ---------------------------------------------------------------------------
+
+describe('runFactsBackstop — durable facts-absorb (#2108)', () => {
+  const factsCount = async (): Promise<number> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = await (engine as any).db.query(`SELECT COUNT(*)::int AS n FROM facts`);
+    return r.rows[0].n as number;
+  };
+  const absorbJobsFor = async (slug: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = await (engine as any).db.query(
+      `SELECT name, status, data FROM minion_jobs WHERE name = 'facts-absorb' AND data->>'slug' = $1`,
+      [slug],
+    );
+    return r.rows as Array<{ name: string; status: string; data: Record<string, unknown> }>;
+  };
+
+  afterEach(async () => {
+    __setLiveWorkerProbeForTests(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(`DELETE FROM minion_jobs WHERE name = 'facts-absorb'`);
+  });
+
+  test('preferDurableAbsorb + live worker → durable minion job, no in-process work', async () => {
+    __setLiveWorkerProbeForTests(() => true);
+    const page = meetingPage();
+    // NO chat stub: the durable path must not run the LLM in this process.
+    const r = await runFactsBackstop(page, makeCtx({ preferDurableAbsorb: true }));
+    expect(r.mode).toBe('queue');
+    if (r.mode === 'queue') {
+      expect(r.enqueued).toBe(true);
+      expect(r.queueDepth).toBe(0);
+    }
+    const jobs = await absorbJobsFor(page.slug);
+    expect(jobs.length).toBe(1);
+    expect(jobs[0].status).toBe('waiting');
+    expect(jobs[0].data.sourceId).toBe('default');
+    expect(jobs[0].data.source).toBe('mcp:put_page');
+
+    // Idempotency: an identical re-submit dedups on the content-hash key.
+    const r2 = await runFactsBackstop(page, makeCtx({ preferDurableAbsorb: true }));
+    if (r2.mode === 'queue') expect(r2.enqueued).toBe(true);
+    expect((await absorbJobsFor(page.slug)).length).toBe(1);
+  });
+
+  test('preferDurableAbsorb without a live worker → in-process queue fallback', async () => {
+    __setLiveWorkerProbeForTests(() => false);
+    chatStub([]);
+    const page = meetingPage();
+    const r = await runFactsBackstop(page, makeCtx({ preferDurableAbsorb: true }));
+    expect(r.mode).toBe('queue');
+    if (r.mode === 'queue') expect(r.enqueued).toBe(true);
+    // No durable job — the in-process queue owns the work (a live long-lived
+    // process without a worker must keep extracting in-process; parking jobs
+    // no worker drains would be a regression).
+    expect((await absorbJobsFor(page.slug)).length).toBe(0);
+  });
+
+  test('drain-abort → nothing stamped, durable retry job queued, next pass extracts', async () => {
+    const page = meetingPage();
+    const before = await factsCount();
+
+    // Chat transport that hangs until the queue's shutdown abort fires —
+    // simulates the exit drain aborting an in-flight extraction chat.
+    __setChatTransportForTests(
+      (opts: { abortSignal?: AbortSignal }) =>
+        new Promise<ChatResult>((_resolve, reject) => {
+          const fail = () => {
+            const e = new Error('The operation was aborted.');
+            e.name = 'AbortError';
+            reject(e);
+          };
+          if (opts.abortSignal?.aborted) return fail();
+          opts.abortSignal?.addEventListener('abort', fail, { once: true });
+        }),
+    );
+
+    const r = await runFactsBackstop(page, makeCtx()); // default queue mode, in-process
+    expect(r.mode).toBe('queue');
+    if (r.mode === 'queue') expect(r.enqueued).toBe(true);
+
+    // Wait for the job to be claimed in-flight, then simulate the exit drain
+    // abort (background-work.ts calls queue.shutdown() when drain times out).
+    const { getFactsQueue } = await import('../src/core/facts/queue.ts');
+    const q = getFactsQueue();
+    const deadline = Date.now() + 5000;
+    while (q.inflightCount() === 0 && Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    expect(q.inflightCount()).toBeGreaterThan(0);
+    await q.shutdown();
+
+    // Nothing stamped: no facts landed, and no completion watermark exists on
+    // this path (the conversation-facts terminal audit row is only written by
+    // that batch pass — its absence is what makes the next pass re-attempt).
+    expect(await factsCount()).toBe(before);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const terminal = await (engine as any).db.query(
+      `SELECT COUNT(*)::int AS n FROM facts WHERE source = 'cli:extract-conversation-facts:terminal:v2'`,
+    );
+    expect(terminal.rows[0].n).toBe(0);
+
+    // The retry marker IS the durable job row (existing scanned signal — the
+    // jobs worker claims it; no new table).
+    const jobs = await absorbJobsFor(page.slug);
+    expect(jobs.length).toBe(1);
+    expect(jobs[0].status).toBe('waiting');
+
+    // The failure stays visible in the absorb log (non-terminal record).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const log = await (engine as any).db.query(
+      `SELECT COUNT(*)::int AS n FROM ingest_log WHERE source_type = 'facts:absorb' AND source_ref = $1`,
+      [page.slug],
+    );
+    expect(log.rows[0].n).toBeGreaterThanOrEqual(1);
+
+    // Next pass: simulate the jobs worker processing the queued job (the
+    // handler in src/commands/jobs.ts does getPage(slug) → runFactsBackstop
+    // inline). Facts land this time.
+    await engine.putPage(page.slug, {
+      type: 'meeting',
+      title: 'retry fixture',
+      compiled_truth: page.compiled_truth,
+      frontmatter: {},
+    });
+    chatStub([
+      { fact: 'retry-pass-fact-1', kind: 'event', notability: 'high', entity: 'people/retry-example' },
+    ]);
+    const stored = await engine.getPage(page.slug, { sourceId: 'default' });
+    expect(stored).not.toBeNull();
+    const retry = await runFactsBackstop(
+      {
+        slug: stored!.slug,
+        type: stored!.type,
+        compiled_truth: stored!.compiled_truth,
+        frontmatter: (stored!.frontmatter ?? {}) as Record<string, unknown>,
+      },
+      makeCtx({ mode: 'inline' }),
+    );
+    expect(retry.mode).toBe('inline');
+    if (retry.mode === 'inline') expect(retry.inserted).toBe(1);
   });
 });

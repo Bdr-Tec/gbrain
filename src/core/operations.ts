@@ -1393,6 +1393,13 @@ const put_page: Operation = {
           sessionId: (ctx as { source_session?: string }).source_session ?? null,
           source: 'mcp:put_page',
           mode: 'queue',
+          remote: ctx.remote,
+          // #2108: remote/MCP server processes can exit before an in-process
+          // absorb finishes its extraction chat (the exit drain aborts it —
+          // page persists, facts silently never land). Prefer the durable
+          // facts-absorb minion job when a live worker can process it.
+          // Fail-closed spelling: anything not strictly `false` is remote.
+          preferDurableAbsorb: ctx.remote !== false,
         },
       );
       if (r.mode === 'queue' && r.enqueued) {
