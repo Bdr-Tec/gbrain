@@ -55,7 +55,12 @@ export function bigintToStringReplacer(_key: string, value: unknown): unknown {
 }
 
 // CLI-only commands that bypass the operation layer
-export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector', 'pages', 'bench', 'backfill']);
+export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector', 'pages', 'bench', 'backfill',
+// Agent-bootstrap family (ENG-2 three-touchpoint rule): `bootstrap` + `hook`
+// are ENGINE-FREE (dispatched in handleCliOnly before the connectEngine
+// terminator) and must NEVER enter THIN_CLIENT_REFUSED_COMMANDS. `sweep` is
+// the trusted local sweep entry [CX2-5] and needs the engine (switch case).
+'bootstrap', 'hook', 'sweep']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -127,6 +132,11 @@ const CLI_ONLY_SELF_HELP = new Set([
   // --help` print the migration flags from runMigrateEmbeddings. `migrate`
   // (engine transfer) keeps its own dispatch too.
   'migrate', 'retrieval-upgrade',
+  // Agent-bootstrap family: each prints its own detailed usage (BOOTSTRAP_HELP
+  // in bootstrap.ts, the hook USAGE block, SWEEP_HELP). Omitting them here
+  // would leave that help dead code behind the generic stub (the init.ts:117
+  // trap ENG-2 names).
+  'bootstrap', 'hook', 'sweep',
 ]);
 
 // v114 (#1941): alias -> operation lookup, kept separate from `cliOps` so
@@ -1182,7 +1192,10 @@ export function formatResult(opName: string, result: unknown): string {
  * `doctor` is intentionally NOT in this set — task 4 routes it to
  * `runRemoteDoctor` for thin-client installs.
  */
-const THIN_CLIENT_REFUSED_COMMANDS = new Set([
+// Exported for the CLI_ONLY membership tests (#2035 precedent): `bootstrap`
+// and `hook` must NEVER appear here (ENG-2) — they are engine-free and must
+// work on any install shape.
+export const THIN_CLIENT_REFUSED_COMMANDS = new Set([
   'sync', 'embed', 'extract', 'extract-conversation-facts', 'enrich', 'migrate', 'retrieval-upgrade', 'apply-migrations',
   'repair-jsonb', 'orphans', 'integrity', 'serve',
   // v0.43 (#2095): watch streams against a LOCAL engine; thin clients get
@@ -1211,6 +1224,11 @@ const THIN_CLIENT_REFUSED_COMMANDS = new Set([
   // it gets a partial dispatch (list/get route over MCP engine-free, the
   // rest refuse) in the main dispatch before connectEngine().
   'config',
+  // Agent-bootstrap [CX2-5]: the maintenance sweep runs against the LOCAL
+  // engine (the serve-resident sweep's trusted CLI entry). On a thin client
+  // it would fabricate a scratch PGLite and sweep nothing anyone reads.
+  // `bootstrap` and `hook` are deliberately NOT here (ENG-2).
+  'sweep',
 ]);
 
 /**
@@ -1241,6 +1259,7 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   storage: 'storage operates on the local repo on disk. Run on the host.',
   takes: 'takes mutate subcommands edit local .md files; routing the read subcommands lands in v0.31.x. For now: use `takes_list` and `takes_search` MCP tools from your agent, or run on the host.',
   sources: 'sources commands manage local DB + config rows. Per-subcommand thin-client routing lands in v0.31.x. For now: use `sources_list` / `sources_status` MCP tools, or run on the host.',
+  sweep: 'sweep runs the serve-resident maintenance passes against the LOCAL engine. Run it on the host (the serve process also runs it automatically).',
   // v0.32 audit additions
   pages: '`pages purge-deleted` is admin+localOnly (hard-deletes from the local DB). Run on the host.',
   files: '`files list` and `files url` MCP ops are localOnly (paths live on the host filesystem). Use `gbrain files` on the host machine.',
@@ -1343,6 +1362,31 @@ async function handleCliOnly(command: string, args: string[]) {
     // --install talks to the remote, not the local engine.
     const { runConnect } = await import('./commands/connect.ts');
     await runConnect(args);
+    return;
+  }
+  if (command === 'bootstrap') {
+    // Agent-bootstrap dispatcher (plan D3/ENG-2): ENGINE-FREE by contract —
+    // a live serve may hold the PGLite lock mid-install. The `verify`
+    // subcommand manages its OWN engine inside bootstrap.ts (cache.ts
+    // pattern) precisely when no serve is live [CX2-5].
+    const { runBootstrap } = await import('./commands/bootstrap.ts');
+    setCliExitVerdict(await runBootstrap(args));
+    return;
+  }
+  if (command === 'hook') {
+    // `gbrain hook <event>` — harness hook entry (plan D5): NEVER opens an
+    // engine (talks to serve's IPC socket only); fail-open exit-0 contract
+    // lives inside runHook.
+    const { runHook } = await import('./commands/hook.ts');
+    setCliExitVerdict(await runHook(args));
+    return;
+  }
+  if (command === 'sweep' && (args.includes('--help') || args.includes('-h'))) {
+    // SWEEP_HELP is engine-independent and must print on a fresh install
+    // (the sync/capture/enrich pre-engine-bind precedent). runSweep's --help
+    // path returns before touching the engine argument.
+    const { runSweep } = await import('./commands/sweep.ts');
+    await runSweep(null as never, args);
     return;
   }
   if (command === 'upgrade') {
@@ -1906,6 +1950,13 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'call': {
         const { runCall } = await import('./commands/call.ts');
         await runCall(engine, args);
+        break;
+      }
+      case 'sweep': {
+        // [CX2-5] Trusted local sweep entry — succeeds precisely because no
+        // live serve holds the PGLite lock (connectEngine acquired it above).
+        const { runSweep } = await import('./commands/sweep.ts');
+        await runSweep(engine, args);
         break;
       }
       case 'config': {

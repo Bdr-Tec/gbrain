@@ -67,6 +67,13 @@ import { resolveHardExcludes, DEFAULT_HARD_EXCLUDES } from '../core/search/sourc
 import { escapeLikePattern, buildVisibilityClause } from '../core/search/sql-ranking.ts';
 import { unverifiedExtractionFragment } from '../core/extraction-review.ts';
 import { hnswIndexExpected, hnswMaxDimsForType } from '../core/vector-index.ts';
+// Agent-bootstrap doctor group (plan B2/B4/ENG-4 + one-live-serve note).
+import { readReceipt } from '../core/bootstrap/format.ts';
+import { probeLivePgliteHolder, resolveBrainDataDir } from '../core/bootstrap/uninstall.ts';
+import { readRunbookStamp, hooksInstalled, listVerifyRuns } from '../core/bootstrap/status.ts';
+import { resolveGbrainHome } from '../core/gbrain-home.ts';
+import { VERSION as GBRAIN_BINARY_VERSION } from '../version.ts';
+import { execFileSync } from 'child_process';
 
 export interface Check {
   name: string;
@@ -5150,6 +5157,12 @@ export async function buildChecks(
     checks.push(skillsManifestIntegrityCheck(skillsDir));
   }
 
+  // 2d. Agent-bootstrap health (plan B2/B4/ENG-4). Filesystem-first; the
+  // one engine-dependent pairing check degrades gracefully when engine is
+  // null. Emits NOTHING on machines with no bootstrap state, so ordinary
+  // brains keep a clean doctor.
+  checks.push(...(await bootstrapDoctorChecks(engine)));
+
   // 3. Half-migrated Minions detection (filesystem-only).
   // If completed.jsonl has any status:"partial" entry with no later
   // status:"complete" for the same version, the install is mid-migration.
@@ -8116,6 +8129,170 @@ export async function buildChecks(
  * test/doctor-behavioral.test.ts for the in-process seam coverage and
  * test/doctor-cli-smoke.test.ts for the subprocess wrapper coverage.
  */
+/**
+ * Agent-bootstrap check group (plan B2, B4, ENG-4, one-live-serve, C1 skew).
+ *
+ * Gated on bootstrap state actually existing on this machine (install
+ * receipt, hook heartbeat, or push-status) — machines that never ran
+ * `gbrain bootstrap` get ZERO checks from this group. Every probe is
+ * fail-soft: a broken telemetry file degrades to a warn, never a throw.
+ */
+export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise<Check[]> {
+  const checks: Check[] = [];
+  let home: string;
+  try {
+    home = resolveGbrainHome();
+  } catch {
+    return [];
+  }
+  const receipt = readReceipt(home);
+  const pushStatusFile = join(home, 'bootstrap', 'push-status.json');
+  const heartbeatFile = join(home, 'integrations', 'hooks', 'heartbeat.jsonl');
+  const hasBootstrapState = receipt !== null || existsSync(pushStatusFile) || existsSync(heartbeatFile);
+  if (!hasBootstrapState) return [];
+
+  const ws = receipt?.workspace_dir ?? null;
+
+  // 1. Hook heartbeat failure rate [B3 read side]. Hard errors only —
+  // degraded entries are DESIGNED fallbacks (pull-mode, no serve).
+  let hooksSeen = false;
+  try {
+    const { readHeartbeatTail, HEARTBEAT_FAILURE_WINDOW } = await import('./hook.ts');
+    const tail = await readHeartbeatTail(HEARTBEAT_FAILURE_WINDOW);
+    if (tail.length > 0) {
+      hooksSeen = true;
+      const failures = tail.filter((e) => e.outcome === 'error').length;
+      const rate = failures / tail.length;
+      if (rate > 0.5) {
+        checks.push({
+          name: 'bootstrap_hooks_heartbeat',
+          status: 'fail',
+          message: `${failures}/${tail.length} recent hook invocations hard-failed — brain context is not reaching the session. Check \`gbrain bootstrap verify\` and the serve process.`,
+        });
+      } else if (rate > 0.2) {
+        checks.push({
+          name: 'bootstrap_hooks_heartbeat',
+          status: 'warn',
+          message: `${failures}/${tail.length} recent hook invocations hard-failed. Watch it; hooks fail open so sessions still work.`,
+        });
+      } else {
+        checks.push({
+          name: 'bootstrap_hooks_heartbeat',
+          status: 'ok',
+          message: `hook heartbeat healthy (${failures}/${tail.length} hard failures in the trailing window)`,
+        });
+      }
+    }
+  } catch {
+    checks.push({ name: 'bootstrap_hooks_heartbeat', status: 'warn', message: 'hook heartbeat unreadable' });
+  }
+
+  // 2. Push staleness [B4]: fail when the last successful push is >48h old
+  // AND the workspace tree is dirty (recent work provably unpushed).
+  try {
+    if (existsSync(pushStatusFile)) {
+      const s = JSON.parse(readFileSync(pushStatusFile, 'utf8')) as { ts?: string; ok?: boolean; reason?: string };
+      const t = s.ts ? Date.parse(s.ts) : NaN;
+      const stale = Number.isFinite(t) && Date.now() - t > 48 * 60 * 60 * 1000;
+      let dirty = false;
+      if (ws) {
+        try {
+          dirty = execFileSync('git', ['-C', ws, 'status', '--porcelain'], {
+            stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+          }).toString().trim() !== '';
+        } catch { dirty = false; }
+      }
+      if (s.ok === false) {
+        checks.push({
+          name: 'bootstrap_push_health',
+          status: 'warn',
+          message: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'} — run \`gbrain sources push${ws ? ` --path ${ws}` : ''}\``,
+        });
+      } else if (stale && dirty) {
+        checks.push({
+          name: 'bootstrap_push_health',
+          status: 'fail',
+          message: `last successful push ${s.ts} (>48h) with a DIRTY workspace tree — recent agent memory is unpushed [B4]. Run \`gbrain sources push --path ${ws}\`.`,
+        });
+      } else if (stale) {
+        checks.push({ name: 'bootstrap_push_health', status: 'warn', message: `last successful push ${s.ts} (>48h ago); tree clean — likely just idle` });
+      } else {
+        checks.push({ name: 'bootstrap_push_health', status: 'ok', message: `last push ok (${s.ts ?? 'unknown'})` });
+      }
+    }
+  } catch {
+    checks.push({ name: 'bootstrap_push_health', status: 'warn', message: 'push-status.json unreadable' });
+  }
+
+  // 3. One-live-serve / lock collision note. A live serve is the healthy
+  // shape (it provides hook IPC); the note names the v1 contract.
+  try {
+    const dataDir = resolveBrainDataDir(home);
+    const holder = probeLivePgliteHolder(dataDir);
+    if (holder) {
+      checks.push({
+        name: 'bootstrap_serve_lock',
+        status: holder.serve ? 'ok' : 'warn',
+        message: holder.serve
+          ? `live serve (pid ${holder.pid}) owns the brain — hook IPC available. One live serve per brain is the v1 contract; a second simultaneous session collides politely.`
+          : `a non-serve gbrain process (pid ${holder.pid}) holds the PGLite lock — hook IPC and new sessions will fail until it exits.`,
+      });
+    }
+  } catch { /* probe is best-effort */ }
+
+  // 4. [ENG-4] Hooks-in-use + unmigrated brain: the direct-engine hook paths
+  // swallow missing-table errors on pre-v110/v117 schemas, so context
+  // degrades SILENTLY. Pair the two signals into a named warning.
+  const hooksActive = hooksSeen || (ws !== null && hooksInstalled(ws));
+  if (hooksActive && engine) {
+    try {
+      const versionStr = await engine.getConfig('version');
+      const version = parseInt(versionStr || '0', 10);
+      if (version < LATEST_VERSION) {
+        checks.push({
+          name: 'bootstrap_hook_schema_pairing',
+          status: 'warn',
+          message: `hooks are in use but the brain schema is v${version} (< v${LATEST_VERSION}) — hook context can degrade silently on missing tables [ENG-4]. Run \`gbrain apply-migrations --yes\`.`,
+        });
+      }
+    } catch { /* schema_version check above already covers unreadable version */ }
+  }
+
+  // 5. Runbook skew [C1]: the fetched runbook's stamp vs this binary.
+  if (ws) {
+    try {
+      const stamp = readRunbookStamp(ws);
+      if (stamp !== null && stamp !== GBRAIN_BINARY_VERSION) {
+        checks.push({
+          name: 'bootstrap_runbook_skew',
+          status: 'warn',
+          message: `BOOTSTRAP_FOR_AGENTS.md stamp ${stamp} != installed binary ${GBRAIN_BINARY_VERSION} — prefer the binary's instructions; re-fetch the runbook.`,
+        });
+      }
+    } catch { /* best effort */ }
+  }
+
+  // 6. Last verify freshness [B2 read side] — surfaced so "verify weekly"
+  // has a nag with teeth.
+  try {
+    const runs = listVerifyRuns(home);
+    if (runs.length > 0) {
+      const last = runs[0];
+      const t = Date.parse(last.ts);
+      const ageDays = Number.isFinite(t) ? (Date.now() - t) / 86_400_000 : NaN;
+      if (!last.ok) {
+        checks.push({ name: 'bootstrap_last_verify', status: 'warn', message: `last bootstrap verify FAILED (${last.ts}): ${last.checks_failed.join(', ') || 'see snapshot'} — re-run \`gbrain bootstrap verify\`` });
+      } else if (Number.isFinite(ageDays) && ageDays > 14) {
+        checks.push({ name: 'bootstrap_last_verify', status: 'warn', message: `last bootstrap verify passed ${Math.floor(ageDays)}d ago — re-run it as the workspace rot self-check` });
+      } else {
+        checks.push({ name: 'bootstrap_last_verify', status: 'ok', message: `last verify passed (${last.ts})` });
+      }
+    }
+  } catch { /* best effort */ }
+
+  return checks;
+}
+
 export async function runDoctor(
   engine: BrainEngine | null,
   args: string[],
