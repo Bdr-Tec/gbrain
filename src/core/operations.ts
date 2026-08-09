@@ -2287,7 +2287,7 @@ const think: Operation = {
   },
   mutating: true,
   handler: async (ctx, p) => {
-    const remote = ctx.remote ?? true;
+    const remote = ctx.remote !== false; // fail-closed: anything not strictly false is untrusted (CLAUDE.md invariant)
     // Codex P1 #7 + privacy: remote callers cannot persist via MCP.
     const safeSave = remote ? false : Boolean(p.save);
     const safeTake = remote ? false : Boolean(p.take);

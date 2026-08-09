@@ -601,17 +601,22 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
       );
     }
 
-    // #3390: the OTHER two dim-pinned columns that carry TEXT-embedding-space
-    // vectors. Both are created at brain-birth width (migrate.ts v55 for
-    // query_cache, v42 for facts) and NO migration ever ALTERs them, so before
-    // this fix a dimension change left them at the old width:
+    // #3390: the OTHER dim-pinned columns that carry TEXT-embedding-space
+    // vectors. All are created at brain-birth width (migrate.ts v55 for
+    // query_cache, v42 for facts, v37/v126 for takes) and no LATER migration
+    // ever ALTERs them, so before this fix a dimension change left them at
+    // the old width:
     //   - query_cache.embedding stayed narrow → every store() AND lookup()
     //     silently swallowed the width error (by design, so the cache can
     //     never break search), i.e. a PERMANENT 0% hit rate.
     //   - facts.embedding stayed narrow → every per-fact embed write failed
     //     ($N::vector into the old width), and the doctor check that would
     //     warn is skipped on PGLite (the DEFAULT engine).
-    // Both are text-embedding-space columns, so they MUST move with
+    //   - takes.embedding stayed narrow → the #2089 embed takes lane failed
+    //     every write forever while still paying the gateway each run
+    //     (migration v126 only fixes the dim at migration-run time; a LATER
+    //     `gbrain migrate embeddings --to <dim>` has to move it here).
+    // All are text-embedding-space columns, so they MUST move with
     // content_chunks.embedding. The image/multimodal columns above are the
     // deliberate exception (separate models, independent dims).
     for (const t of TEXT_EMBEDDING_DIM_PINNED_TABLES) {
@@ -647,6 +652,17 @@ const TEXT_EMBEDDING_DIM_PINNED_TABLES: ReadonlyArray<{
          ON facts USING hnsw (embedding ${opclass})
          WHERE embedding IS NOT NULL AND expired_at IS NULL`,
   },
+  {
+    // Partial predicate mirrors migrate.ts v37 (and the v126 rebuild)
+    // verbatim. hnswIndexExpected in transitionDimPinnedColumn carries the
+    // #1734 dim-cap gate, matching v126's recreateIndexSql behavior.
+    table: 'takes',
+    index: 'idx_takes_embedding_hnsw',
+    indexSql: (opclass) =>
+      `CREATE INDEX IF NOT EXISTS idx_takes_embedding_hnsw
+         ON takes USING hnsw (embedding ${opclass})
+         WHERE active AND embedding IS NOT NULL`,
+  },
 ];
 
 /**
@@ -658,7 +674,8 @@ const TEXT_EMBEDDING_DIM_PINNED_TABLES: ReadonlyArray<{
  * Dropping the column discards the stored vectors, which is correct: they are
  * in the OLD embedding space and unusable after the swap. query_cache is a
  * cache (refills on the next query); facts re-embed on their next write /
- * `gbrain extract` pass.
+ * `gbrain extract` pass; takes re-embed via the `gbrain embed --stale` takes
+ * lane (staleness predicate is `embedding IS NULL`, which the drop satisfies).
  */
 async function transitionDimPinnedColumn(
   tx: { executeRaw: <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]> },

@@ -288,6 +288,71 @@ describe('applyRetrievalUpgrade — state machine + atomicity (D12, D18)', () =>
     expect(byName.get('embedding_multimodal')).toBe('vector(1024)');
   });
 
+  // Wave-4 review: takes joined TEXT_EMBEDDING_DIM_PINNED_TABLES. Before the
+  // fix, a dim-change transition left takes.embedding at the old width and
+  // the #2089 embed takes lane failed every write forever (while still
+  // paying the gateway each run).
+  test('runSchemaTransition rebuilds takes.embedding at the target dim + recreates the partial HNSW index', async () => {
+    await setLegacyDefaultConfig();
+    await seedPages(150);
+
+    // Seed one take and give it a vector at the OLD width (1536).
+    const page = await engine.putPage('takes/transition-example', {
+      title: 'Takes transition example', type: 'note',
+      compiled_truth: 'A safe placeholder page for the takes dim transition.',
+    });
+    await engine.addTakesBatch([{
+      page_id: page.id, row_num: 1, claim: 'pre-transition claim',
+      kind: 'fact', holder: 'world', weight: 0.9,
+    }]);
+    const stale = (await engine.listStaleTakes()).filter(t => t.claim === 'pre-transition claim');
+    expect(stale).toHaveLength(1);
+    const takeId = Number(stale[0].take_id);
+    // Probe the CURRENT column width for the pre-transition write — the
+    // suite shares one engine, and an earlier apply test may already have
+    // transitioned the takes column (schema persists across resetPgliteState).
+    const cur = await engine.executeRaw<{ atttypmod: number }>(
+      `SELECT atttypmod FROM pg_attribute
+        WHERE attrelid = 'takes'::regclass AND attname = 'embedding'
+          AND attnum > 0 AND NOT attisdropped`,
+    );
+    const curDim = Number(cur[0]?.atttypmod);
+    expect(curDim).toBeGreaterThan(0);
+    const oldVec = new Float32Array(curDim);
+    oldVec[0] = 1;
+    expect(await engine.updateTakeEmbeddingsBatch([{ take_id: takeId, embedding: oldVec }])).toBe(1);
+
+    const plan = await planRetrievalUpgrade(engine);
+    await applyRetrievalUpgrade(engine, plan);
+
+    // Column rebuilt at the target dim (atttypmod IS the pgvector dimension).
+    const dim = await engine.executeRaw<{ atttypmod: number }>(
+      `SELECT atttypmod FROM pg_attribute
+        WHERE attrelid = 'takes'::regclass AND attname = 'embedding'
+          AND attnum > 0 AND NOT attisdropped`,
+    );
+    expect(Number(dim[0]?.atttypmod)).toBe(ZE_TARGET_EMBEDDING_DIM);
+
+    // Partial HNSW index recreated (dim under the #1734 cap), v37 predicate.
+    const idx = await engine.executeRaw<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+        WHERE tablename = 'takes' AND indexname = 'idx_takes_embedding_hnsw'`,
+    );
+    expect(idx).toHaveLength(1);
+    expect(idx[0].indexdef).toContain('hnsw');
+    expect(idx[0].indexdef).toMatch(/WHERE\s+\(?active/i);
+
+    // Old-space vector discarded — the take is back in the stale pool.
+    const restaled = (await engine.listStaleTakes()).filter(t => Number(t.take_id) === takeId);
+    expect(restaled).toHaveLength(1);
+
+    // And the rebuilt column ACCEPTS a vector at the new width end-to-end.
+    const newVec = new Float32Array(ZE_TARGET_EMBEDDING_DIM);
+    newVec[3] = 1;
+    expect(await engine.updateTakeEmbeddingsBatch([{ take_id: takeId, embedding: newVec }])).toBe(1);
+    expect((await engine.getTakeEmbeddings([takeId])).get(takeId)?.length).toBe(ZE_TARGET_EMBEDDING_DIM);
+  });
+
   test('runSchemaTransition restores partial WHERE on idx_chunks_embedding_image', async () => {
     await setLegacyDefaultConfig();
     await seedPages(150);

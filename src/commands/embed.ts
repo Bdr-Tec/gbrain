@@ -440,14 +440,18 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
       // budget hit (or caller abort) inside the pages lane skips takes
       // gracefully — the next run picks them up via the NULL-embedding
       // predicate. Inside this try so the single-flight locks are still held
-      // (a takes backfill is subject to the same per-source mutual exclusion)
-      // and the pacer telemetry in the finally covers takes DB writes too.
+      // — and the lane threads opts.sourceId into its enumerators, so a
+      // `--source X` run touches ONLY X's takes: the work is confined to the
+      // same source(s) whose locks this run actually holds (per-source
+      // mutual exclusion holds for the takes lane too). Pacer telemetry in
+      // the finally covers takes DB writes as well.
       if (!laneAborted && !isAborted(opts.signal)) {
         await embedStaleTakes(engine, result, {
           dryRun: !!opts.dryRun,
           pacer,
           signal: opts.signal,
           quiet: opts.quiet,
+          sourceId: opts.sourceId,
         });
       }
     } finally {
@@ -1403,13 +1407,16 @@ export const TAKES_EMBED_BATCH_SIZE = 64;
 async function embedStaleTakes(
   engine: BrainEngine,
   result: EmbedResult,
-  opts: { dryRun: boolean; pacer: DbPacer; signal?: AbortSignal; quiet?: boolean },
+  opts: { dryRun: boolean; pacer: DbPacer; signal?: AbortSignal; quiet?: boolean; sourceId?: string },
 ): Promise<void> {
+  // Source scope: thread the run's --source through both enumerators so a
+  // scoped run never enumerates (or pays to embed) another source's takes.
+  const scope = opts.sourceId !== undefined ? { sourceId: opts.sourceId } : undefined;
   let staleCount: number;
   try {
     // Defensive Number(): int8 counts can arrive as BigInt/string from a
     // driver; a null/undefined (partial engine double in tests) reads as 0.
-    staleCount = Number(await engine.countStaleTakes()) || 0;
+    staleCount = Number(await engine.countStaleTakes(scope)) || 0;
   } catch (e: unknown) {
     // Pre-v37 brains (or a wedged probe) must not fail the whole embed run
     // over the optional takes lane.
@@ -1424,7 +1431,7 @@ async function embedStaleTakes(
     return;
   }
 
-  const staleTakes = (await engine.listStaleTakes()) ?? [];
+  const staleTakes = (await engine.listStaleTakes(scope)) ?? [];
   if (staleTakes.length === 0) return;
   result.takes_embedded ??= 0;
 
@@ -1451,8 +1458,19 @@ async function embedStaleTakes(
         result.takes_embedded += updated;
         if (failed > 0) {
           recordFailure(result, failed, `takes:${batch[0]?.page_slug ?? '?'}`, firstError);
-          serr(`  [takes] ${failed} claim(s) failed to embed in batch; embedded the other ${updated}`);
+          // `updated` is the RETURNING-based count from the writer; rows the
+          // writer skipped (superseded mid-flight, `AND active` guard) are
+          // called out separately so the arithmetic is honest.
+          const skipped = writes.length - updated;
+          serr(
+            `  [takes] ${failed} claim(s) failed to embed in batch; ${updated} written` +
+            (skipped > 0 ? `, ${skipped} skipped (row retired mid-flight)` : ''),
+          );
         }
+        // NOTE: unlike the chunks lane's catch-up terminal-state warning
+        // (see the countStaleChunks probe after the pages loop), persistently
+        // failing takes are not yet flagged as stuck — deferred, see
+        // TODOS.md "Think-ops follow-ups (Wave 4, 2026-08)".
       } catch (e: unknown) {
         if (isAborted(opts.signal)) break; // shutdown, not a failure
         recordFailure(result, batch.length, `takes:${batch[0]?.page_slug ?? '?'}`, e);

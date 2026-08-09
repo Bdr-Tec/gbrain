@@ -19,6 +19,16 @@ function makeEngine(opts: { knownSources?: string[] } = {}) {
   const pageLookups: unknown[][] = [];
   const engine = {
     getConfig: async () => null,
+    // Wave-4: cmdAdd routes through the shared appendTake helper
+    // (takes-append.ts), whose scoped page lookup is engine.getPage —
+    // the same seam persistThinkTake uses. Record [slug, scope] so the
+    // scoping assertions below stay shape-identical to the old raw-SQL pin.
+    getPage: async (slug: string, pageOpts?: { sourceId?: string; sourceIds?: string[] }) => {
+      pageLookups.push([slug, pageOpts?.sourceIds ?? pageOpts?.sourceId]);
+      if (slug === 'shared/page' && pageOpts?.sourceId === 'dept') return { id: 22, slug };
+      if (slug === 'shared/page' && (pageOpts?.sourceId === 'default' || pageOpts?.sourceId === undefined)) return { id: 11, slug };
+      return null;
+    },
     executeRaw: async (sql: string, params: unknown[] = []) => {
       if (sql.includes('FROM sources WHERE id = $1')) {
         // Default (no `knownSources` override): every id "exists", matching

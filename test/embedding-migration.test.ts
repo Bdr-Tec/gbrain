@@ -165,6 +165,54 @@ describe('#3391 includeNullSignature widening', () => {
     expect(await engine.invalidateStaleSignatureEmbeddings({ signature: 'new:model:1' })).toBe(0);
     expect(await engine.countStaleChunks({ signature: 'new:model:1' })).toBe(0);
   });
+
+  // Wave-4 review: invalidation also re-stales TAKES on the same pages under
+  // the SAME signature predicate — a same-dim provider swap has no schema
+  // transition to drop takes.embedding, and old-space take vectors must not
+  // score against new-space queries. Routine runs (nothing drifted) touch
+  // zero takes, so there is no re-embed churn.
+  test('invalidation re-stales takes on drifted pages; fresh kept; grandfather lifts with the flag', async () => {
+    await seedEmbedded('legacy', 'abcde', null);
+    await seedEmbedded('drifted', 'fghij', 'old:model:1');
+    await seedEmbedded('fresh', 'klmno', 'new:model:1');
+
+    // One EMBEDDED take per page (text-embedding space, same as the chunks).
+    for (const slug of ['legacy', 'drifted', 'fresh']) {
+      const page = await engine.getPage(slug);
+      await engine.addTakesBatch([{
+        page_id: page!.id, row_num: 1, claim: `take on ${slug}`,
+        kind: 'fact', holder: 'world', weight: 0.9,
+      }]);
+    }
+    await engine.executeRaw(
+      `UPDATE takes
+          SET embedding = ('[' || array_to_string(array_fill(0.0::real, ARRAY[$1::int]), ',') || ']')::vector,
+              embedded_at = now()`,
+      [colDim],
+    );
+    expect(await engine.countStaleTakes()).toBe(0);
+
+    // Default (grandfather): only the drifted page's take re-stales; the
+    // returned count remains CHUNKS-only (existing contract).
+    expect(await engine.invalidateStaleSignatureEmbeddings({ signature: 'new:model:1' })).toBe(1);
+    let staleTakes = await engine.listStaleTakes();
+    expect(staleTakes.map(t => t.page_slug)).toEqual(['drifted']);
+    const cleared = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM takes WHERE embedding IS NULL AND embedded_at IS NULL`,
+    );
+    expect(Number(cleared[0]?.n)).toBe(1); // embedded_at cleared alongside
+
+    // Widened (#3391): the legacy (NULL-sig) take re-stales too; fresh kept.
+    await engine.invalidateStaleSignatureEmbeddings({ signature: 'new:model:1', includeNullSignature: true });
+    staleTakes = await engine.listStaleTakes();
+    expect(staleTakes.map(t => t.page_slug).sort()).toEqual(['drifted', 'legacy']);
+    const keptTake = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM takes t
+        JOIN pages p ON p.id = t.page_id
+       WHERE p.slug = 'fresh' AND t.embedding IS NOT NULL`,
+    );
+    expect(Number(keptTake[0]?.n)).toBe(1);
+  });
 });
 
 describe('planEmbeddingMigration', () => {

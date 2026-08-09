@@ -10,6 +10,7 @@ import { runThink, persistSynthesis, persistThinkTake, stripGapsSection } from '
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { canonicalLookup } from '../core/model-pricing.ts';
+import { resolveSourceWithTier, ALL_SOURCES } from '../core/source-resolver.ts';
 
 function flagValue(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -166,7 +167,26 @@ prints what would have been the input (exit 0).
       // nothing consumed it). Same honesty contract as --save: persist or
       // exit non-zero — an explicit --take that writes nothing must be loud.
       if (take) {
-        const persistedTake = await persistThinkTake(engine, result, { anchor });
+        // Wave-4: resolve the caller's ambient source context (GBRAIN_SOURCE /
+        // .gbrain-source dotfile / local_path / brain default — the same
+        // resolveSourceId chain every other CLI surface uses) so a duplicate
+        // anchor slug across sources lands on the CALLER's-context page, not
+        // a planner-chosen one. The seed_default tier means NOTHING was
+        // configured anywhere — keep the historical unscoped posture there
+        // (undefined → unscoped getPage), and __all__ has span-everything
+        // semantics, which for a single-page lookup is also unscoped.
+        // Resolution errors (e.g. GBRAIN_SOURCE naming an unregistered
+        // source) propagate to the catch below — fail-closed, matching the
+        // `gbrain takes` posture.
+        const resolvedSource = await resolveSourceWithTier(engine, undefined);
+        const takeSourceId =
+          resolvedSource.tier === 'seed_default' || resolvedSource.source_id === ALL_SOURCES
+            ? undefined
+            : resolvedSource.source_id;
+        const persistedTake = await persistThinkTake(engine, result, {
+          anchor,
+          ...(takeSourceId !== undefined ? { sourceId: takeSourceId } : {}),
+        });
         takeRow = persistedTake.rowNum;
         takeInserted = persistedTake.inserted;
         for (const w of persistedTake.warnings) result.warnings.push(w);

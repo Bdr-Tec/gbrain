@@ -174,12 +174,14 @@ d('embedding migration (live Postgres + pgvector)', () => {
     expect(persisted).toEqual([[toModel, targetDims]]);
     expect(await columnDims()).toBe(targetDims);
 
-    // All THREE dim-pinned text-embedding-space columns move together on real
-    // pgvector (query_cache + facts are created at brain-birth width and no
-    // migration ever ALTERs them — before the fix they stayed narrow, which
-    // silently killed the query cache and every per-fact embed write).
+    // ALL dim-pinned text-embedding-space columns move together on real
+    // pgvector (query_cache + facts + takes are created at brain-birth width
+    // and no later migration ALTERs them — before the fix they stayed
+    // narrow, which silently killed the query cache, every per-fact embed
+    // write, and every takes-lane embed write).
     expect(await embeddingColWidth('query_cache')).toBe(targetDims);
     expect(await embeddingColWidth('facts')).toBe(targetDims);
+    expect(await embeddingColWidth('takes')).toBe(targetDims);
     // And the rebuilt columns actually ACCEPT a vector at the new width.
     const nv = `[${new Array(targetDims).fill(0.01).join(',')}]`;
     await engine.executeRaw(

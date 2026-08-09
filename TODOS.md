@@ -4886,3 +4886,57 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 + the models-doctor tests.
 
 **Depends on:** nothing.
+
+## Think-ops follow-ups (Wave 4, 2026-08)
+
+### Next-take-row allocation helper (unify 4 hand-rolled copies)
+**Priority:** P3
+
+**What:** the `MAX(row_num)+1` next-row allocation for takes is hand-rolled in
+four places with inconsistent locking: `src/core/takes-append.ts` (DB-only
+fallback, under withPageLock), both engines' `supersedeTake` (in-SQL), and
+`src/core/consolidate.ts`. Extract one shared helper with a consistent locking
+story so a fifth writer can't invent a fifth allocation.
+
+**Why:** every divergent copy is a future duplicate-row or clobber bug of the
+exact class Wave 4 fixed (think-take rows overwritten by fence-allocated rows).
+
+**How to start:** put the allocator next to `appendTake` in
+`src/core/takes-append.ts`; migrate call sites one at a time, pinning each with
+the existing takes-engine / consolidate tests.
+
+### Takes-lane terminal-state warning parity + failure-path tests
+**Priority:** P3
+
+**What:** the chunks lane warns loudly when a catch-up run finishes with
+persistently-failing chunks (embed.ts's post-loop `countStaleChunks` probe);
+the takes lane has no equivalent — the same takes can fail every run silently
+(deferral note sits at the takes-lane batch loop in `src/commands/embed.ts`).
+Add the mirror warning plus failure-path tests: batch-throw (embedPageTexts
+rejects) and probe-throw (countStaleTakes rejects) paths.
+
+### CLI take success-path output test
+**Priority:** P3
+
+**What:** `test/think-take-cli.serial.test.ts` covers the two exit(1) branches
+but not the success path (`Take: appended row #N ...` line + exit 0). The
+review provided a chat-transport seam stub (see
+`test/think-take-op-federated.test.ts`'s `__setChatTransportForTests` canned
+envelope) — drive `runThinkCli` with it and assert the success output.
+
+### v126 HNSW dim-cap branch test (3072d) + real-PG run
+**Priority:** P3
+
+**What:** migration v126's `hnswIndexExpected` gate (skip HNSW above the #1734
+cap) has no test at a >cap dim (e.g. 3072d: column rebuilt, index deliberately
+absent, exact scan still works). Add the PGLite test plus a DATABASE_URL-gated
+real-PG run — PGLite cannot surface real pgvector index-build failures.
+
+### Federated think --take write-policy note
+**Priority:** P4
+
+**What:** a take synthesized under a federated grant [A,B] persists into the
+ANCHOR page's source — documented behavior (the anchor lookup is
+grant-confined; the write inherits the anchor's source). Revisit if per-source
+take provenance ever lands; a grant-scoped caller writing brain-holder takes
+into a mounted source may want an explicit provenance column instead.

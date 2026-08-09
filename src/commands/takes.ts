@@ -19,16 +19,22 @@
  *   6. releases the lock (auto via withPageLock)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { BrainEngine, TakeKind } from '../core/engine.ts';
 import {
   parseTakesFence,
-  upsertTakeRow,
   supersedeRow,
   type ParsedTake,
 } from '../core/takes-fence.ts';
 import { withPageLock } from '../core/page-lock.ts';
+import {
+  appendTake,
+  TakePageNotFoundError,
+  pageFilePath,
+  readBodyOrEmpty,
+  writeBody,
+  resolveBrainDirOrNull,
+} from '../core/takes-append.ts';
 import { resolveSourceId } from '../core/source-resolver.ts';
 import { resolveOwnerHolder } from '../core/owner-holder.ts';
 
@@ -44,24 +50,18 @@ function flagPresent(args: string[], name: string): boolean {
   return args.includes(name);
 }
 
+// CLI-strict wrapper around the shared resolveBrainDirOrNull (takes-append.ts):
+// unresolvable → loud error + exit(1). Core callers (persistThinkTake) use the
+// null-returning form and fall back to DB-only allocation instead.
 async function resolveBrainDir(engine: BrainEngine | null, explicitDir: string | null): Promise<string> {
-  if (explicitDir) {
-    if (!existsSync(explicitDir)) {
-      console.error(`--dir path does not exist: ${explicitDir}`);
-      process.exit(1);
-    }
-    return explicitDir;
+  if (explicitDir && !existsSync(explicitDir)) {
+    console.error(`--dir path does not exist: ${explicitDir}`);
+    process.exit(1);
   }
-  if (engine) {
-    const configured = await engine.getConfig('sync.repo_path');
-    if (configured && existsSync(configured)) return configured;
-  }
+  const dir = engine ? await resolveBrainDirOrNull(engine, explicitDir) : (explicitDir ?? null);
+  if (dir) return dir;
   console.error('No brain directory configured. Pass --dir <path> or run `gbrain init` first.');
   process.exit(1);
-}
-
-function pageFilePath(brainDir: string, slug: string): string {
-  return join(brainDir, `${slug}.md`);
 }
 
 function ensureKind(raw: string | undefined): TakeKind {
@@ -117,15 +117,8 @@ async function resolveTakesSourceId(engine: BrainEngine): Promise<string> {
   return resolveSourceId(engine, null);
 }
 
-function readBodyOrEmpty(path: string): string {
-  if (!existsSync(path)) return '';
-  return readFileSync(path, 'utf-8');
-}
-
-function writeBody(path: string, body: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, body, 'utf-8');
-}
+// readBodyOrEmpty / writeBody / pageFilePath now live in
+// src/core/takes-append.ts (shared with the dual-plane appendTake helper).
 
 // --- Subcommands ---
 
@@ -209,22 +202,23 @@ async function cmdAdd(engine: BrainEngine, args: string[], sourceId?: string): P
   const dirArg = flagValue(args, '--dir');
   const brainDir = await resolveBrainDir(engine, dirArg ?? null);
 
-  await withPageLock(slug, async () => {
-    const path = pageFilePath(brainDir, slug);
-    const body = readBodyOrEmpty(path);
-    const { body: nextBody, rowNum } = upsertTakeRow(body, {
-      claim, kind, holder, weight, source, sinceDate: since, active: true,
+  // Dual-plane append via the shared core helper (takes-append.ts): page
+  // lock → scoped page lookup → fence allocates the row number (file-first)
+  // → DB mirror. Same path persistThinkTake uses, so the planes can't drift.
+  try {
+    const { rowNum } = await appendTake(engine, {
+      slug, sourceId, claim, kind, holder, weight,
+      source, sinceDate: since, brainDir,
     });
-    writeBody(path, nextBody);
-
-    // Mirror to DB. Page may not be in DB yet if not synced — caller must run sync first.
-    const pageId = await getPageId(engine, slug, sourceId);
-    await engine.addTakesBatch([{
-      page_id: pageId, row_num: rowNum, claim, kind, holder, weight,
-      since_date: since, source, active: true, superseded_by: null,
-    }]);
     console.log(`Added take #${rowNum} to ${slug}.`);
-  });
+  } catch (e) {
+    if (e instanceof TakePageNotFoundError) {
+      // Page may not be in DB yet if not synced — caller must run sync first.
+      console.error(`Page not found in brain: ${slug}${sourceId ? ` (source=${sourceId})` : ''}. Run \`gbrain sync\` first.`);
+      process.exit(1);
+    }
+    throw e;
+  }
 }
 
 async function cmdUpdate(engine: BrainEngine, args: string[], sourceId?: string): Promise<void> {

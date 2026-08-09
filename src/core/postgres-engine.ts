@@ -2719,6 +2719,23 @@ export class PostgresEngine implements BrainEngine {
         RETURNING cc.page_id`,
       params as Parameters<typeof this.sql.unsafe>[1],
     );
+    // Takes carry TEXT-embedding-space vectors keyed off the same pages, so a
+    // same-dim provider swap (no schema transition to drop the column) must
+    // re-stale them too — old-space take vectors must never score against
+    // new-space queries. Scoped by the SAME page-signature predicate as the
+    // chunks UPDATE above: routine `embed --stale` runs (where nothing
+    // drifted) touch zero takes, so there is no re-embed churn. The `embed
+    // --stale` takes lane picks the NULLed rows up via `embedding IS NULL`.
+    // Return value stays the CHUNK count (existing contract).
+    await this.sql.unsafe(
+      `UPDATE takes t
+          SET embedding = NULL, embedded_at = NULL
+         FROM pages p
+        WHERE t.page_id = p.id
+          AND t.embedding IS NOT NULL
+          AND ${sigClause}${srcClause}`,
+      params as Parameters<typeof this.sql.unsafe>[1],
+    );
     return (rows as unknown[]).length;
   }
 
@@ -5155,29 +5172,43 @@ export class PostgresEngine implements BrainEngine {
     return out;
   }
 
-  async countStaleTakes(): Promise<number> {
+  async countStaleTakes(opts?: { sourceId?: string }): Promise<number> {
+    // Source scope goes through the page join (takes has no source_id of its
+    // own) so `embed --stale --source X` only counts X's takes.
     const sql = this.sql;
     const [row] = await sql`
-      SELECT count(*)::int AS count FROM takes WHERE active AND embedding IS NULL
+      SELECT count(*)::int AS count
+      FROM takes t
+      JOIN pages p ON p.id = t.page_id
+      WHERE t.active AND t.embedding IS NULL
+        ${opts?.sourceId !== undefined ? sql`AND p.source_id = ${opts.sourceId}` : sql``}
     `;
     return Number((row as { count?: number } | undefined)?.count ?? 0);
   }
 
-  async listStaleTakes(): Promise<StaleTakeRow[]> {
+  async listStaleTakes(opts?: { sourceId?: string }): Promise<StaleTakeRow[]> {
     const sql = this.sql;
     const rows = await sql`
       SELECT t.id AS take_id, p.slug AS page_slug, t.row_num, t.claim
       FROM takes t
       JOIN pages p ON p.id = t.page_id
       WHERE t.active AND t.embedding IS NULL
+        ${opts?.sourceId !== undefined ? sql`AND p.source_id = ${opts.sourceId}` : sql``}
       ORDER BY t.id
       LIMIT 100000
     `;
     return rows as unknown as StaleTakeRow[];
   }
 
-  async updateTakeEmbeddingsBatch(rows: Array<{ take_id: number; embedding: Float32Array }>): Promise<number> {
+  async updateTakeEmbeddingsBatch(rows: Array<{ take_id: number; embedding: Float32Array }>, opts?: BatchOpts): Promise<number> {
     if (rows.length === 0) return 0;
+    // Wave-4: batch primitive → batchRetry, matching the addTakesBatch
+    // precedent so a connection blip mid-backfill retries + audits
+    // instead of failing the whole takes lane batch.
+    return this.batchRetry(opts?.auditSite ?? 'updateTakeEmbeddingsBatch', opts?.signal, () => this._updateTakeEmbeddingsBatchOnce(rows), rows.length);
+  }
+
+  private async _updateTakeEmbeddingsBatchOnce(rows: Array<{ take_id: number; embedding: Float32Array }>): Promise<number> {
     const sql = this.sql;
     let updated = 0;
     for (const r of rows) {

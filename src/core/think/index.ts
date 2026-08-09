@@ -670,29 +670,48 @@ export interface PersistThinkTakeResult {
 }
 
 /**
+ * Cap on the persisted think-take claim. Rationale: the prompt renderer
+ * (sanitize.ts:sanitizeTakeForPrompt) truncates claims at 500 chars anyway,
+ * and fence cells are single-line — a multi-page synthesis answer stored
+ * verbatim as one claim bloats the fence + DB for content nothing ever
+ * reads past. 2000 keeps ample headroom over the 500-char read while
+ * bounding the cell.
+ */
+export const THINK_TAKE_CLAIM_MAX_CHARS = 2000;
+
+/**
  * Persist `gbrain think --take` as the next append-only take row on the
  * anchor page (#2556 — the flag was declared but nothing consumed it, so
  * `think --take` silently wrote nothing on both the CLI and MCP paths).
  *
  * The synthesis answer is the claim; holder='brain' because this is
- * gbrain's own analysis; kind='take' (KIND_VALUES member). DB-plane write
- * via addTakesBatch — the same path extract-takes-from-pages uses; the
- * engines maintain the takes fence at that write site. The row-number
- * computation + insert are serialized under withPageLock(anchor) so a
- * concurrent `takes add` / second think --take can't race MAX(row_num)+1
- * into a duplicate row.
+ * gbrain's own analysis; kind='take' (KIND_VALUES member). Dual-plane
+ * write via the shared appendTake helper (takes-append.ts) — the SAME path
+ * `gbrain takes add` uses: withPageLock(anchor slug) → fence allocates the
+ * row number from the FILE (markdown is the source of truth) → writeBody →
+ * addTakesBatch mirror. When no brain dir resolves (headless / DB-only
+ * brains), appendTake falls back to DB-only MAX(row_num)+1 allocation and
+ * surfaces TAKE_FILE_PLANE_UNAVAILABLE (documented posture: DB-only rows
+ * can be renumbered/overwritten by a later fence reconcile).
+ *
+ * The claim is flattened to a single line (fence cells are single-line;
+ * newlines → ' ') and truncated at THINK_TAKE_CLAIM_MAX_CHARS with the
+ * TAKE_CLAIM_TRUNCATED warning.
  *
  * Signals (never throws for expected shapes, mirroring persistSynthesis):
- *   - TAKE_REQUIRES_ANCHOR      — no anchor given.
- *   - TAKE_EMPTY_NOT_PERSISTED  — synthesis failed or empty answer.
- *   - TAKE_ANCHOR_NOT_FOUND:<s> — anchor page absent in the caller's scope
+ *   - TAKE_REQUIRES_ANCHOR         — no anchor given.
+ *   - TAKE_EMPTY_NOT_PERSISTED     — synthesis failed or empty answer.
+ *   - TAKE_ANCHOR_NOT_FOUND:<s>    — anchor page absent in the caller's scope
  *     (scope resolved via the sourceIds > sourceId precedence, matching
  *     sourceScopeOpts). Remote callers never reach here — the op handler's
  *     fail-closed gate zeroes `take` for them.
+ *   - TAKE_CLAIM_TRUNCATED         — claim exceeded the cap (row still written).
+ *   - TAKE_FILE_PLANE_UNAVAILABLE  — DB-only fallback fired (row still written).
  *
  * Design provenance: community PR #2618 (its successor #3164 was declined
  * for bundled feature scope; the maintainer confirmed this half is a
- * legitimate fix). Re-implemented with the page-lock serialization added.
+ * legitimate fix). Re-implemented with the page-lock serialization added;
+ * Wave-4 review moved the write onto the dual-plane appendTake path.
  */
 export async function persistThinkTake(
   engine: BrainEngine,
@@ -707,36 +726,34 @@ export async function persistThinkTake(
     return { rowNum: null, inserted: 0, warnings: ['TAKE_EMPTY_NOT_PERSISTED'] };
   }
 
-  const pageOpts: { sourceId?: string; sourceIds?: string[] } = {};
-  if (opts.sourceIds !== undefined) pageOpts.sourceIds = opts.sourceIds;
-  else if (opts.sourceId !== undefined) pageOpts.sourceId = opts.sourceId;
-  const page = await engine.getPage(anchor, pageOpts);
-  if (!page) {
-    return { rowNum: null, inserted: 0, warnings: [`TAKE_ANCHOR_NOT_FOUND: ${anchor}`] };
+  const warnings: string[] = [];
+  // Fence cells are single-line: flatten first, then bound the length.
+  let claim = result.answer.trim().replace(/\s*\r?\n\s*/g, ' ');
+  if (claim.length > THINK_TAKE_CLAIM_MAX_CHARS) {
+    claim = claim.slice(0, THINK_TAKE_CLAIM_MAX_CHARS);
+    warnings.push('TAKE_CLAIM_TRUNCATED');
   }
 
-  const { withPageLock } = await import('../page-lock.ts');
-  let rowNum = 0;
-  let inserted = 0;
-  await withPageLock(anchor, async () => {
-    const rows = await engine.executeRaw<{ next: number | string }>(
-      `SELECT (COALESCE(MAX(row_num), 0) + 1)::int AS next FROM takes WHERE page_id = $1`,
-      [page.id],
-    );
-    rowNum = Number(rows[0]?.next ?? 1);
-    inserted = await engine.addTakesBatch([{
-      page_id: page.id,
-      row_num: rowNum,
-      claim: result.answer.trim(),
+  const { appendTake, TakePageNotFoundError } = await import('../takes-append.ts');
+  try {
+    const appended = await appendTake(engine, {
+      slug: anchor,
+      ...(opts.sourceIds !== undefined ? { sourceIds: opts.sourceIds } : {}),
+      ...(opts.sourceId !== undefined ? { sourceId: opts.sourceId } : {}),
+      claim,
       kind: 'take',
       holder: 'brain',
       weight: 0.5,
       source: 'gbrain think',
-      active: true,
-    }]);
-  });
-
-  return { rowNum, inserted, warnings: [] };
+    });
+    warnings.push(...appended.warnings);
+    return { rowNum: appended.rowNum, inserted: appended.inserted, warnings };
+  } catch (e) {
+    if (e instanceof TakePageNotFoundError) {
+      return { rowNum: null, inserted: 0, warnings: [`TAKE_ANCHOR_NOT_FOUND: ${anchor}`] };
+    }
+    throw e;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────

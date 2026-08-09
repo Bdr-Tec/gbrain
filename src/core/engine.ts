@@ -1050,6 +1050,11 @@ export interface BrainEngine {
    * default grandfather clause would silently keep them mixed into the new
    * index. `gbrain migrate embeddings` and `embed --stale
    * --include-null-signature` set this.
+   *
+   * ALSO re-stales `takes` rows (embedding + embedded_at → NULL) on the same
+   * pages, under the SAME signature predicate + source scope — takes carry
+   * text-embedding-space vectors too, and a same-dim provider swap has no
+   * schema transition to drop them. The returned count remains chunks-only.
    */
   invalidateStaleSignatureEmbeddings(opts: { signature: string; sourceId?: string; includeNullSignature?: boolean }): Promise<number>;
   /**
@@ -1552,11 +1557,18 @@ export interface BrainEngine {
   /** Look up embeddings by take id (mirrors getEmbeddingsByChunkIds). */
   getTakeEmbeddings(ids: number[]): Promise<Map<number, Float32Array>>;
 
-  /** Pre-flight count for `gbrain embed --stale`. WHERE active AND embedding IS NULL. */
-  countStaleTakes(): Promise<number>;
+  /**
+   * Pre-flight count for `gbrain embed --stale`. WHERE active AND embedding
+   * IS NULL. `opts.sourceId` scopes via the page join (p.source_id) so a
+   * `--source X` run only counts X's takes.
+   */
+  countStaleTakes(opts?: { sourceId?: string }): Promise<number>;
 
-  /** List stale takes (no embedding column in payload — same pattern as listStaleChunks). */
-  listStaleTakes(): Promise<StaleTakeRow[]>;
+  /**
+   * List stale takes (no embedding column in payload — same pattern as
+   * listStaleChunks). `opts.sourceId` scopes via the page join.
+   */
+  listStaleTakes(opts?: { sourceId?: string }): Promise<StaleTakeRow[]>;
 
   /**
    * #2089: batch-write take embeddings — the writer half of the takes
@@ -1566,8 +1578,12 @@ export interface BrainEngine {
    * row via supersedeTake, and the retired row must not receive the
    * vector. Returns the number of rows actually updated (superseded /
    * deleted ids are silently skipped). Empty input → 0 without a query.
+   *
+   * Wrapped in `batchRetry` like the other batch primitives (addTakesBatch
+   * precedent), so `opts` (auditSite, AbortSignal) is honored; same
+   * no-double-wrap contract as `BatchOpts`.
    */
-  updateTakeEmbeddingsBatch(rows: Array<{ take_id: number; embedding: Float32Array }>): Promise<number>;
+  updateTakeEmbeddingsBatch(rows: Array<{ take_id: number; embedding: Float32Array }>, opts?: BatchOpts): Promise<number>;
 
   /**
    * Update a take's mutable fields. May NOT change claim/kind/holder per the

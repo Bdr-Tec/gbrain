@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { operationsByName } from '../src/core/operations.ts';
-import { runThink, persistSynthesis, persistThinkTake, type ThinkLLMClient } from '../src/core/think/index.ts';
+import { runThink, persistSynthesis, persistThinkTake, THINK_TAKE_CLAIM_MAX_CHARS, type ThinkLLMClient } from '../src/core/think/index.ts';
 import { sanitizeTakeForPrompt, renderTakesBlock } from '../src/core/think/sanitize.ts';
 import { resolveCitations, parseInlineCitations, normalizeStructuredCitations } from '../src/core/think/cite-render.ts';
 import { runGather } from '../src/core/think/gather.ts';
@@ -490,7 +490,11 @@ describe('persistThinkTake — #2556 think --take actually persists', () => {
       engine, synthResult('This page should remember the synthesized placeholder insight.'),
       { anchor: 'notes/think-take-target-example' },
     );
-    expect(persisted).toEqual({ rowNum: 1, inserted: 1, warnings: [] });
+    // Wave-4 dual-plane contract: this hermetic engine has no brain repo
+    // (sync.repo_path unset), so appendTake falls back to DB-only allocation
+    // and surfaces TAKE_FILE_PLANE_UNAVAILABLE. The row still lands.
+    expect(persisted).toMatchObject({ rowNum: 1, inserted: 1 });
+    expect(persisted.warnings).toEqual(['TAKE_FILE_PLANE_UNAVAILABLE']);
     const takes = await engine.listTakes({ page_id: target.id });
     expect(takes).toHaveLength(1);
     expect(takes[0]).toMatchObject({
@@ -504,6 +508,30 @@ describe('persistThinkTake — #2556 think --take actually persists', () => {
       { anchor: 'notes/think-take-target-example' },
     );
     expect(second.rowNum).toBe(2);
+  });
+
+  test('bounds the claim: 2500-char multi-line answer → single-line 2000-char claim + TAKE_CLAIM_TRUNCATED', async () => {
+    const target = await engine.putPage('notes/think-take-truncate-example', {
+      title: 'Think take truncate target', type: 'note',
+      compiled_truth: 'A safe placeholder page for claim-bound persistence.',
+    });
+    // Multi-line answer well past the cap: fence cells are single-line, and
+    // sanitizeTakeForPrompt only ever reads the first 500 chars anyway.
+    const line = 'a'.repeat(99);
+    const answer = Array.from({ length: 25 }, () => line).join('\n'); // 25*99 + 24 = 2499 chars
+    expect(answer.length).toBeGreaterThan(THINK_TAKE_CLAIM_MAX_CHARS);
+
+    const persisted = await persistThinkTake(engine, synthResult(answer), {
+      anchor: 'notes/think-take-truncate-example',
+    });
+    expect(persisted.rowNum).toBe(1);
+    expect(persisted.inserted).toBe(1);
+    expect(persisted.warnings).toContain('TAKE_CLAIM_TRUNCATED');
+
+    const takes = await engine.listTakes({ page_id: target.id });
+    expect(takes).toHaveLength(1);
+    expect(takes[0].claim.length).toBe(THINK_TAKE_CLAIM_MAX_CHARS);
+    expect(takes[0].claim).not.toContain('\n'); // flattened before bounding
   });
 
   test('refuses empty/no-LLM synthesis instead of writing a blank take', async () => {
