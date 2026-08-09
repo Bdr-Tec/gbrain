@@ -392,3 +392,76 @@ describe('countStaleTakes + listStaleTakes', () => {
     expect(stale[0]).toHaveProperty('claim');
   });
 });
+
+// #2089: the writer half of the takes embedding pipeline.
+describe('updateTakeEmbeddingsBatch', () => {
+  test('empty input returns 0 without a query', async () => {
+    expect(await engine.updateTakeEmbeddingsBatch([])).toBe(0);
+  });
+
+  test('round-trip: writes 2 embeddings, stamps embedded_at, decrements stale count', async () => {
+    // Vector width must match the brain's active dim (config row), not a
+    // hardcoded literal — v126 rebuilds takes.embedding at this dim.
+    const dimRows = await engine.executeRaw<{ value: string }>(
+      `SELECT value FROM config WHERE key = 'embedding_dimensions'`,
+    );
+    const dims = parseInt(dimRows[0]?.value ?? '1536', 10);
+
+    const staleBefore = await engine.countStaleTakes();
+    expect(staleBefore).toBeGreaterThanOrEqual(2);
+    const stale = await engine.listStaleTakes();
+    const [a, b] = stale;
+    const embA = new Float32Array(dims);
+    embA[0] = 1;
+    const embB = new Float32Array(dims);
+    embB[1] = 1;
+
+    const updated = await engine.updateTakeEmbeddingsBatch([
+      { take_id: Number(a.take_id), embedding: embA },
+      { take_id: Number(b.take_id), embedding: embB },
+    ]);
+    expect(updated).toBe(2);
+
+    // Read back via getTakeEmbeddings (the paired reader).
+    const map = await engine.getTakeEmbeddings([Number(a.take_id), Number(b.take_id)]);
+    expect(map.size).toBe(2);
+    expect(map.get(Number(a.take_id))!.length).toBe(dims);
+    expect(map.get(Number(a.take_id))![0]).toBeCloseTo(1, 5);
+    expect(map.get(Number(b.take_id))![1]).toBeCloseTo(1, 5);
+
+    // embedded_at stamped on both rows.
+    const rows = await engine.executeRaw<{ embedded_at: string | null }>(
+      `SELECT embedded_at FROM takes WHERE id = ANY($1::bigint[])`,
+      [[Number(a.take_id), Number(b.take_id)]],
+    );
+    expect(rows.length).toBe(2);
+    for (const r of rows) expect(r.embedded_at).not.toBeNull();
+
+    // Stale pool shrank by exactly the two written rows.
+    expect(await engine.countStaleTakes()).toBe(staleBefore - 2);
+  });
+
+  test('inactive (superseded) rows are skipped — count reflects actual updates', async () => {
+    // The supersedeTake suite above retired (alicePageId, row 3). Its row is
+    // active=false with a NULL embedding; the writer must not touch it.
+    const inactiveRows = await engine.executeRaw<{ id: number }>(
+      `SELECT id FROM takes WHERE active = FALSE LIMIT 1`,
+    );
+    expect(inactiveRows.length).toBe(1);
+    const dims = parseInt(
+      (await engine.executeRaw<{ value: string }>(
+        `SELECT value FROM config WHERE key = 'embedding_dimensions'`,
+      ))[0]?.value ?? '1536',
+      10,
+    );
+    const updated = await engine.updateTakeEmbeddingsBatch([
+      { take_id: Number(inactiveRows[0].id), embedding: new Float32Array(dims) },
+    ]);
+    expect(updated).toBe(0);
+    const check = await engine.executeRaw<{ embedding: unknown }>(
+      `SELECT embedding FROM takes WHERE id = $1`,
+      [Number(inactiveRows[0].id)],
+    );
+    expect(check[0]?.embedding).toBeNull();
+  });
+});

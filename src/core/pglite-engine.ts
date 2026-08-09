@@ -5244,6 +5244,26 @@ export class PGLiteEngine implements BrainEngine {
     return rows as unknown as StaleTakeRow[];
   }
 
+  async updateTakeEmbeddingsBatch(rows: Array<{ take_id: number; embedding: Float32Array }>): Promise<number> {
+    if (rows.length === 0) return 0;
+    let updated = 0;
+    for (const r of rows) {
+      // pgvector text literal (searchTakesVector precedent). `AND active`
+      // guards the supersede race: a claim edited mid-embed retires this row
+      // and re-stales as a NEW row — the old row must not get the vector.
+      const vec = `[${Array.from(r.embedding).join(',')}]`;
+      const { rows: ret } = await this.db.query(
+        `UPDATE takes
+            SET embedding = $1::vector, embedded_at = now()
+          WHERE id = $2 AND active
+         RETURNING id`,
+        [vec, r.take_id],
+      );
+      updated += (ret as unknown[]).length;
+    }
+    return updated;
+  }
+
   async updateTake(
     pageId: number,
     rowNum: number,

@@ -196,6 +196,17 @@ export interface EmbedResult {
    * corpus-wide outage doesn't bloat structured output. Additive field.
    */
   failure_samples: string[];
+  /**
+   * #2089: take claims embedded by the takes lane (`--all`/`--stale` runs
+   * only; per-slug runs skip the lane). Present only when the lane ran.
+   * 0-or-absent in dryRun (see `takes_would_embed`).
+   */
+  takes_embedded?: number;
+  /**
+   * #2089: take claims that WOULD be embedded if not for dryRun. Mirrors
+   * `would_embed` naming. Present only when the lane ran in dryRun mode.
+   */
+  takes_would_embed?: number;
   /** True if this run was a dry-run. */
   dryRun: boolean;
   /**
@@ -416,7 +427,7 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
       }
     }
     try {
-      await embedAll(engine, !!opts.stale, !!opts.dryRun, result, opts.onProgress, opts.sourceId, {
+      const laneAborted = await embedAll(engine, !!opts.stale, !!opts.dryRun, result, opts.onProgress, opts.sourceId, {
         batchSize: opts.batchSize,
         priority: opts.priority,
         catchUp: opts.catchUp,
@@ -425,6 +436,20 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
         quiet: opts.quiet,
         includeNullSignature: opts.includeNullSignature,
       }, opts.signal);
+      // #2089: takes lane. Runs AFTER the pages/chunks lane so a wall-clock
+      // budget hit (or caller abort) inside the pages lane skips takes
+      // gracefully — the next run picks them up via the NULL-embedding
+      // predicate. Inside this try so the single-flight locks are still held
+      // (a takes backfill is subject to the same per-source mutual exclusion)
+      // and the pacer telemetry in the finally covers takes DB writes too.
+      if (!laneAborted && !isAborted(opts.signal)) {
+        await embedStaleTakes(engine, result, {
+          dryRun: !!opts.dryRun,
+          pacer,
+          signal: opts.signal,
+          quiet: opts.quiet,
+        });
+      }
     } finally {
       // E1: surface pacing telemetry (human + structured) when pacing was on.
       const snap = pacer.snapshot();
@@ -750,6 +775,11 @@ function preserveCodeMetadata(loaded: any, base: ChunkInput): ChunkInput {
   };
 }
 
+/**
+ * Returns true when the run was cut short (caller abort or, on the stale
+ * path, the internal wall-clock budget) so runEmbedCore can skip the takes
+ * lane instead of starting new work after a timeout (#2089).
+ */
 async function embedAll(
   engine: BrainEngine,
   staleOnly: boolean,
@@ -771,7 +801,7 @@ async function embedAll(
     includeNullSignature?: boolean;
   },
   signal?: AbortSignal,
-) {
+): Promise<boolean> {
   // v0.41.31: current embedding provenance signature. Stamped onto pages
   // when their chunks are (re)embedded so a later model/dimension swap is
   // detectable as stale.
@@ -947,6 +977,8 @@ async function embedAll(
       slog(`Embedded ${result.embedded} chunks across ${pages.length} pages`);
     }
   }
+  // #2089: --all has no wall-clock budget; only a caller abort cuts it short.
+  return isAborted(signal);
 }
 
 /**
@@ -988,7 +1020,7 @@ async function embedAllStale(
   },
   signature?: string,
   externalSignal?: AbortSignal,
-) {
+): Promise<boolean> {
   // D7: thread sourceId so source-scoped runs only count + visit
   // that source's NULL embeddings.
   const sourceOpt = sourceId ? { sourceId } : undefined;
@@ -1051,7 +1083,7 @@ async function embedAllStale(
         slog('Embedded 0 chunks (0 stale found)');
       }
     }
-    return;
+    return isAborted(externalSignal);
   }
 
   if (dryRun) {
@@ -1059,7 +1091,7 @@ async function embedAllStale(
     result.total_chunks += staleCount;
     if (onProgress) onProgress(1, 1, 0);
     if (!staleOpts?.quiet) slog(`[dry-run] Would embed ${staleCount} stale chunks`);
-    return;
+    return isAborted(externalSignal);
   }
 
   // v0.33.3: cursor-paginated stale loading. Instead of pulling all 48K+
@@ -1344,6 +1376,100 @@ async function embedAllStale(
       serr(`\n  [embed] catch-up finished but ${remaining} chunk(s) remain stale after ${result.failures} embed failure(s). These are not embeddable as-is; re-running won't clear them until the underlying error is resolved.`);
     }
   }
+
+  // #2089: report whether the budget/caller abort cut the run short so the
+  // takes lane can be skipped gracefully (same next-run pickup semantics).
+  return effectiveSignal.aborted;
+}
+
+/** #2089: claims per gateway batch in the takes lane. */
+export const TAKES_EMBED_BATCH_SIZE = 64;
+
+/**
+ * #2089: the takes lane. Backfills `takes.embedding` for every stale claim
+ * (active AND embedding IS NULL — supersede creates a new row, so edited
+ * claims re-stale automatically). Runs after the pages/chunks lane in
+ * `--all`/`--stale` runs.
+ *
+ * Reuses `embedPageTexts` — the SAME helper the chunks lane feeds — so
+ * rate-limit backoff, per-item failure isolation, spend gates, and abort
+ * signals apply identically; no second gateway path exists to drift.
+ * DB writes route through `observed(pacer, ...)` + `pacer.pace()` between
+ * batches, mirroring the pages lane's DB-contention pacing.
+ *
+ * Dry-run mirrors the pages lane: count-only (`takes_would_embed`), no
+ * gateway calls, no writes.
+ */
+async function embedStaleTakes(
+  engine: BrainEngine,
+  result: EmbedResult,
+  opts: { dryRun: boolean; pacer: DbPacer; signal?: AbortSignal; quiet?: boolean },
+): Promise<void> {
+  let staleCount: number;
+  try {
+    // Defensive Number(): int8 counts can arrive as BigInt/string from a
+    // driver; a null/undefined (partial engine double in tests) reads as 0.
+    staleCount = Number(await engine.countStaleTakes()) || 0;
+  } catch (e: unknown) {
+    // Pre-v37 brains (or a wedged probe) must not fail the whole embed run
+    // over the optional takes lane.
+    serr(`  [takes] stale-count probe failed; skipping takes lane: ${e instanceof Error ? e.message : e}`);
+    return;
+  }
+  if (staleCount <= 0) return;
+
+  if (opts.dryRun) {
+    result.takes_would_embed = (result.takes_would_embed ?? 0) + staleCount;
+    if (!opts.quiet) slog(`[dry-run] Would embed ${staleCount} stale take claim(s)`);
+    return;
+  }
+
+  const staleTakes = (await engine.listStaleTakes()) ?? [];
+  if (staleTakes.length === 0) return;
+  result.takes_embedded ??= 0;
+
+  // Same createProgress reporter pattern as 'embed.pages' (runEmbed): one
+  // tick per batch, stderr-only, non-TTY plain lines unless --progress-json.
+  const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
+  progress.start('embed.takes', Math.ceil(staleTakes.length / TAKES_EMBED_BATCH_SIZE));
+  try {
+    for (let i = 0; i < staleTakes.length; i += TAKES_EMBED_BATCH_SIZE) {
+      if (isAborted(opts.signal)) break; // bail between batches (pages-loop contract)
+      const batch = staleTakes.slice(i, i + TAKES_EMBED_BATCH_SIZE);
+      try {
+        const { embeddings, failed, firstError } = await embedPageTexts(
+          batch.map((t) => t.claim),
+          opts.signal ? { abortSignal: opts.signal } : {},
+        );
+        const writes: Array<{ take_id: number; embedding: Float32Array }> = [];
+        for (let j = 0; j < batch.length; j++) {
+          const emb = embeddings[j];
+          // int8 ids may arrive as BigInt from the driver — coerce.
+          if (emb) writes.push({ take_id: Number(batch[j].take_id), embedding: emb });
+        }
+        const updated = await observed(opts.pacer, () => engine.updateTakeEmbeddingsBatch(writes));
+        result.takes_embedded += updated;
+        if (failed > 0) {
+          recordFailure(result, failed, `takes:${batch[0]?.page_slug ?? '?'}`, firstError);
+          serr(`  [takes] ${failed} claim(s) failed to embed in batch; embedded the other ${updated}`);
+        }
+      } catch (e: unknown) {
+        if (isAborted(opts.signal)) break; // shutdown, not a failure
+        recordFailure(result, batch.length, `takes:${batch[0]?.page_slug ?? '?'}`, e);
+        serr(`  [takes] Error embedding claim batch: ${e instanceof Error ? e.message : e}`);
+      }
+      progress.tick(1);
+      // Cooperative DB-contention pace between batches (no-op when unpaced).
+      try {
+        await opts.pacer.pace(opts.signal);
+      } catch (e) {
+        if (!(e instanceof AbortError)) throw e;
+      }
+    }
+  } finally {
+    progress.finish();
+  }
+  if (!opts.quiet) slog(`Embedded ${result.takes_embedded} take claim(s)`);
 }
 
 /**

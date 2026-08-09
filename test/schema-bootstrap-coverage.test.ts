@@ -782,6 +782,13 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   'minion_jobs.budget_remaining_cents',
   'minion_jobs.budget_owner_job_id',
   'minion_jobs.budget_root_owner_id',
+  // v126 (#2089) — takes_embedding_active_dims rebuilds takes.embedding at
+  // the brain's configured dim (DROP COLUMN + ADD COLUMN inside the handler).
+  // Same precedent as facts.* / query_cache.*: the `takes` table is
+  // migration-created (v37), absent from PGLITE_SCHEMA_SQL, so no schema-blob
+  // forward reference can exist; the HNSW index recreation lives INSIDE the
+  // same v126 migration. Column-only rebuild, no bootstrap probe needed.
+  'takes.embedding',
 ]);
 
 test('every ALTER TABLE ADD COLUMN in MIGRATIONS is covered by applyForwardReferenceBootstrap (column-only class)', async () => {

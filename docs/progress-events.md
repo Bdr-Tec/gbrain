@@ -136,6 +136,8 @@ Stable phase names shipped in v0.15.2:
 - `doctor.db_checks` (umbrella for all DB-side doctor checks)
 - `orphans.scan`
 - `embed.pages`
+- `embed.takes` (the takes lane of `gbrain embed --all/--stale`; one tick per
+  64-claim batch, total is the stale-take batch count at lane start)
 - `extract.links_fs`, `extract.timeline_fs`, `extract.links_db`, `extract.timeline_db`
 - `import.files`
 - `sync.deletes`, `sync.renames`, `sync.imports`

@@ -732,6 +732,47 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(slugs.indexOf('ep/ec-bob')).toBeLessThan(slugs.indexOf('companies/ec-widget'));
     expect(pg.find((r) => r.slug === 'ep/ec-alice')!.inbound_count).toBe(2);
   });
+
+  // #2089: updateTakeEmbeddingsBatch — the takes-embedding writer. Both
+  // engines must (a) return 0 on empty input, (b) report the same
+  // actually-updated count, (c) round-trip through getTakeEmbeddings, and
+  // (d) surface the row via searchTakesVector afterwards. A drift here
+  // means `gbrain embed --stale` silently under/over-counts on one engine.
+  test('updateTakeEmbeddingsBatch parity: write → read-back → vector-search on both engines', async () => {
+    const slug = 'concepts/fat-code-thin-harness';
+    const CLAIM_A = 'takes-parity claim alpha';
+    const CLAIM_B = 'takes-parity claim beta';
+    for (const eng of [pgEngine, pgliteEngine]) {
+      // Empty input → 0 without touching the DB.
+      expect(await eng.updateTakeEmbeddingsBatch([])).toBe(0);
+
+      const page = await eng.getPage(slug);
+      expect(page).not.toBeNull();
+      await eng.addTakesBatch([
+        { page_id: page!.id, row_num: 90, claim: CLAIM_A, kind: 'take', holder: 'world', weight: 0.5 },
+        { page_id: page!.id, row_num: 91, claim: CLAIM_B, kind: 'take', holder: 'world', weight: 0.5 },
+      ]);
+
+      const stale = (await eng.listStaleTakes()).filter(t => t.claim.startsWith('takes-parity claim'));
+      expect(stale.length).toBe(2);
+
+      const updated = await eng.updateTakeEmbeddingsBatch(
+        stale.map((t, i) => ({ take_id: Number(t.take_id), embedding: basisEmbedding(i + 200) })),
+      );
+      expect(updated).toBe(2);
+
+      const back = await eng.getTakeEmbeddings(stale.map(t => Number(t.take_id)));
+      expect(back.size).toBe(2);
+
+      // Vector search finds the exact-match claim (cosine similarity 1).
+      const hits = await eng.searchTakesVector(basisEmbedding(200), { limit: 5 });
+      expect(hits.map(h => h.claim)).toContain(stale[0].claim);
+
+      // The written rows left the stale pool on this engine.
+      const staleAfter = (await eng.listStaleTakes()).filter(t => t.claim.startsWith('takes-parity claim'));
+      expect(staleAfter.length).toBe(0);
+    }
+  });
 });
 
 // ── relationalFanout parity (v0.43) ─────────────────────────────────────

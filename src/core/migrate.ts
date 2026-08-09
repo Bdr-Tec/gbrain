@@ -1,7 +1,7 @@
 import type { BrainEngine } from './engine.ts';
 import { slugifyPath } from './sync.ts';
 import { getFtsLanguage } from './fts-language.ts';
-import { hnswMaxDimsForType } from './vector-index.ts';
+import { hnswIndexExpected, hnswMaxDimsForType } from './vector-index.ts';
 // runMigrations executes while an initialized engine is live. Keep its helper
 // modules in the static graph rather than importing them from async handlers.
 import {
@@ -5617,6 +5617,86 @@ export const MIGRATIONS: Migration[] = [
       CREATE UNIQUE INDEX IF NOT EXISTS take_proposals_idempotency_idx
         ON take_proposals (source_id, page_slug, content_hash, prompt_version, md5(claim_text));
     `,
+  },
+  {
+    version: 126,
+    name: 'takes_embedding_active_dims',
+    // #2089: takes.embedding shipped in v37 hardcoded to VECTOR(1536). The
+    // takes table is created by migration, NOT by schema.sql, so the
+    // init-time embedding-dim templating never reached it — brains embedded
+    // at any other width (Voyage 1024, ZE 1280, ...) got a column whose
+    // dimension can never match their vectors. This went unnoticed because
+    // the column also had NO WRITER anywhere in the codebase: nothing ever
+    // ran `UPDATE takes SET embedding = ...`, so `searchTakesVector` (and
+    // think's takes_vec arm) was structurally dead on every brain.
+    //
+    // Rebuild the column at the brain's configured dim. Provably lossless:
+    // since no writer ever existed, there are no real embeddings to lose —
+    // the defensive NULLing below only clears hand-written strays, which are
+    // unusable at the corrected width anyway. The same-release embed lane
+    // (`gbrain embed --stale`) backfills every active claim afterwards.
+    //
+    // Idempotent: when the column already has the target dim, this no-ops.
+    // Runs identically on both engines (v37's PGLite variant diverges only
+    // in the RLS DO-block; the column + index DDL is byte-identical).
+    idempotent: true,
+    sql: '',
+    handler: async (engine: BrainEngine) => {
+      // Step 1: resolve the target dim from config (exact v40 pattern):
+      // default 1536, accept only finite integers in 1..4096.
+      let embeddingDim = 1536;
+      try {
+        const dimRows = await engine.executeRaw<{ value: string }>(
+          `SELECT value FROM config WHERE key = 'embedding_dimensions'`,
+        );
+        if (dimRows.length > 0) {
+          const parsed = parseInt(dimRows[0].value, 10);
+          if (Number.isFinite(parsed) && parsed > 0 && parsed <= 4096) {
+            embeddingDim = parsed;
+          }
+        }
+      } catch {
+        // No config row yet — fall back to default (v40 precedent).
+      }
+
+      // Step 2: read the CURRENT dim. For pgvector columns atttypmod IS the
+      // dimension (no varlena header offset like varchar). -1 / missing /
+      // non-positive → unknown → proceed with the rebuild.
+      let currentDim: number | null = null;
+      try {
+        const rows = await engine.executeRaw<{ atttypmod: number }>(
+          `SELECT atttypmod FROM pg_attribute
+            WHERE attrelid = 'takes'::regclass AND attname = 'embedding'`,
+        );
+        const raw = rows.length > 0 ? Number(rows[0].atttypmod) : NaN;
+        currentDim = Number.isFinite(raw) && raw > 0 ? raw : null;
+      } catch {
+        currentDim = null; // probe failed → unknown → rebuild
+      }
+
+      if (currentDim === embeddingDim) return; // already correct — no-op
+
+      // Step 3: rebuild. embeddingDim is a validated integer (never
+      // string-interpolate unvalidated input into DDL). HNSW recreation is
+      // gated by the #1734 dim cap; index DDL mirrors v37 verbatim,
+      // including the partial WHERE clause.
+      const recreateIndexSql = hnswIndexExpected('vector', embeddingDim)
+        ? `CREATE INDEX IF NOT EXISTS idx_takes_embedding_hnsw ON takes
+          USING hnsw (embedding vector_cosine_ops)
+          WHERE active AND embedding IS NOT NULL;`
+        : `-- idx_takes_embedding_hnsw skipped: pgvector HNSW vector indexes support
+        -- at most ${hnswMaxDimsForType('vector')} dimensions; exact vector scans remain available.`;
+      await engine.runMigration(126, `
+        UPDATE takes SET embedding = NULL, embedded_at = NULL WHERE embedding IS NOT NULL;
+        DROP INDEX IF EXISTS idx_takes_embedding_hnsw;
+        ALTER TABLE takes DROP COLUMN embedding;
+        ALTER TABLE takes ADD COLUMN embedding VECTOR(${embeddingDim});
+        ${recreateIndexSql}
+      `);
+      process.stderr.write(
+        `  v126: takes.embedding rebuilt ${currentDim === null ? '(unknown)' : `VECTOR(${currentDim})`} → VECTOR(${embeddingDim}) (#2089; column had no writer, rebuild is lossless)\n`,
+      );
+    },
   },
 ];
 

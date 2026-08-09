@@ -1559,6 +1559,17 @@ export interface BrainEngine {
   listStaleTakes(): Promise<StaleTakeRow[]>;
 
   /**
+   * #2089: batch-write take embeddings — the writer half of the takes
+   * embedding pipeline (`countStaleTakes`/`listStaleTakes` enumerate,
+   * this persists). Sets `embedding` + `embedded_at = now()` on each
+   * ACTIVE row only: a claim superseded mid-embed produces a new stale
+   * row via supersedeTake, and the retired row must not receive the
+   * vector. Returns the number of rows actually updated (superseded /
+   * deleted ids are silently skipped). Empty input → 0 without a query.
+   */
+  updateTakeEmbeddingsBatch(rows: Array<{ take_id: number; embedding: Float32Array }>): Promise<number>;
+
+  /**
    * Update a take's mutable fields. May NOT change claim/kind/holder per the
    * supersession invariants — those route through supersedeTake. Throws
    * `TAKE_ROW_NOT_FOUND` when (page_id, row_num) doesn't exist.
