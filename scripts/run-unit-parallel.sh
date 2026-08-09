@@ -431,12 +431,20 @@ NON_OOM_FAIL=0
 EXTERNAL_KILL_ANY=0
 
 # failing_files_in_log: attribute each `(fail)` block to the test file whose
-# `path.test.ts:` header most recently preceded it in bun's output.
+# `path.test.ts:` header most recently preceded it in bun's output. Under
+# GITHUB_ACTIONS the shard wraps each file section as `::group::path.test.ts:`
+# — strip that prefix or the rescue pass feeds bun literal `::group::...`
+# non-paths that match zero test files (CI-only; local runs have no groups).
 failing_files_in_log() {
   local file="$1"
   [ -f "$file" ] || return 0
   awk '
-    /^[^ ].*\.test\.ts:$/ { current = substr($0, 1, length($0) - 1); next }
+    /^(::group::)?[^ ].*\.test\.ts:$/ {
+      current = $0
+      sub(/^::group::/, "", current)
+      current = substr(current, 1, length(current) - 1)
+      next
+    }
     /^\(fail\) / && current != "" { print current }
   ' "$file" | sort -u
 }
@@ -647,7 +655,7 @@ if [ "$TOTAL_RC" != "0" ] && [ "${RESCUE_COUNT:-0}" -gt 0 ]; then
   grep '\.serial\.test\.ts$' "$OOM_RESCUE_LIST" > "$LOG_DIR/oom-rescue-serial.txt" || true
   RESCUE_RC=0
   : > "$RESCUE_LOG"
-  run_rescue() { # $1 = per-invocation timeout seconds; rest = bun test args
+  run_rescue() { # $1 = per-invocation timeout seconds; rest = test-file args
     local t="$1"; shift
     if [ -n "$TIMEOUT_BIN" ]; then
       "$TIMEOUT_BIN" --signal=TERM --kill-after="${SHARD_KILL_AFTER}s" "${t}s" \
