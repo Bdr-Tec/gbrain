@@ -29,6 +29,30 @@ gbrain config set models.chat google:gemini-3.6-flash    # or openai:gpt-5.6-ter
 - The default evaluation panels (cross-modal slot A, takes-quality) follow the refresh to `openai:gpt-5.6-terra` and `google:gemini-3.6-flash`.
 
 ### To take advantage of v0.42.77.0
+## [0.42.75.0] - 2026-08-08
+
+**The "PGLite crashes on macOS 26" era is over: gbrain now repairs a torn brain in place, automatically, with your data preserved.**
+
+The dreaded `RuntimeError: Aborted()` at startup — the one that made zero-config brains unusable after a macOS upgrade and pushed people onto Homebrew Postgres — was never a macOS or WASM bug. An unclean shutdown (typically the upgrade reboot) tears the write-ahead log inside the data dir, and every open after that dies replaying it. gbrain now detects that failure on any command, backs up the WAL state to a sibling directory, resets it in place (the pg_resetwal recovery Postgres has shipped for decades, ported to run against PGLite data dirs), and reopens your brain — pages, embeddings, and history intact. Transactions that never reached a checkpoint may be lost; that is the standard trade for a database that would otherwise not open at all.
+
+### Added
+- **Automatic WAL repair on startup.** A torn-WAL abort self-heals on the next gbrain command: backup → in-place reset → retry, with a loud notice naming the backup and recommending `gbrain doctor`. Disable with `GBRAIN_PGLITE_WAL_REPAIR=off`.
+- **`gbrain pglite-repair`** — the deliberate version: `--dry-run` gives a read-only diagnosis of the data dir; `--yes` runs the same in-place repair manually. Refuses to operate while any live process holds the brain, and never force-removes another process's lock.
+- **`gbrain doctor` diagnoses unopenable PGLite brains.** A new `pglite_data_dir` check reads the data dir from disk when connect fails, names the right recovery rung (repair vs rebuild), inventories repair backups, and escalates when repairs keep recurring — the signal that something is still killing gbrain mid-write.
+- **Recovery guardrails throughout:** repair runs only under a cleanly-acquired lock (never after taking over another process's lock, with a quarantine window when a lock's holder couldn't be verified); a live database — including a native Postgres one — is refused by a `postmaster.pid` liveness check; repeated attempts inside one corruption episode reuse one backup instead of stacking copies (newest three episodes retained); a cooldown stops repair loops from silently eating data on machines where crashes keep recurring; and every restore path reports honestly whether your original files are back in place or waiting in the backup.
+
+### Changed
+- **`gbrain reinit-pglite` works bare.** The embedding model and dimensions now default from your config file, so the rebuild rung of the recovery ladder is one command mid-outage (explicit flags still win; environment overrides are deliberately ignored so a stale shell export can't change the rebuild target).
+- **Honest error messages.** The startup-abort hint now names the real cause (torn WAL after an unclean shutdown), states exactly what auto-repair did or why it stood down, and lays out the full ladder: repair → rebuild → engine switch. The docs that claimed PGLite is "incompatible with macOS 26.x" have been rewritten (README, INSTALL, ENGINES) — thanks @roysaurav for the original native-Postgres walkthrough, which remains the engine-switch rung.
+- Message-less WASM error objects no longer surface as `[object Object]`.
+
+### Fixed
+- The classifier that routes startup failures now matches the abort message PGLite actually produces (it previously fell through to a generic hint), while catalog corruption keeps routing to rebuild — WAL repair is never suggested for damage it cannot fix.
+- Lock-file reads can no longer misclassify a healthy live holder as corrupt (writes are atomic now), a holder owned by another user is treated as alive, and an in-flight acquisition is no longer mistaken for a corrupt lock.
+
+Credit where due: @yang1996202-cpu (#2575), @AndreLYL (#223), and @roysaurav (#1670) for reports and diagnosis, the #223 thread contributors whose recoveries proved the root cause, and @yestheboxer, whose rejected upstream recovery PR (electric-sql/pglite#994) this port builds on.
+
+### To take advantage of v0.42.75.0
 
 ```bash
 gbrain upgrade
@@ -39,6 +63,7 @@ Then, if chat on a Google- or OpenAI-keyed brain has been failing with provider 
 ### For contributors
 
 The wave re-verified all 21 items of the original provider-compat plan against master first: 16 had already landed via the v0.42.58.0 provider-agnostic wave and its follow-ups, so this release ships only the 5 surviving gaps plus the guards. Review army + red team + cross-model adversarial ran; the follow-ups they filed (doctor check for delisted configured models, env-vs-config base-url disagreement notice, the `*_api_key` config-plane unification, a models[0]-liveness guard for init auto-pick) are in TODOS.md.
+If your brain currently won't open, that's it — the next command repairs it. If you'd rather look first: `gbrain pglite-repair --dry-run`.
 
 ## [0.42.74.0] - 2026-08-07
 
