@@ -252,6 +252,13 @@ export interface SyncResult {
    */
   type_warnings?: Array<{ kind: 'alias_of' | 'undeclared'; type: string; canonical?: string; directory?: string; count: number }>;
   /**
+   * Working-tree files invisible to commit-driven sync (attached HEAD without
+   * --working-tree): untracked/added, modified, and deleted counts AFTER the
+   * same scope/exclude/isSyncable filters imports use. Absent when zero, or
+   * when the working tree was imported (detached HEAD or --working-tree).
+   */
+  uncommitted?: { added: number; modified: number; deleted: number };
+  /**
    * v0.41.13.0 partial-sync fields (only set when status === 'partial').
    *
    * D-V3-1 (honest scope): --timeout aborts ONLY in pre-bookmark phases
@@ -355,6 +362,17 @@ export interface SyncOpts {
    * changes in diffs, so sync uses the full filesystem walker when this is set.
    */
   includeGitignored?: boolean;
+  /**
+   * Import uncommitted working-tree state (untracked files + uncommitted
+   * tracked edits/deletes) on an ATTACHED HEAD, via the same manifest-merge
+   * path detached-HEAD syncs have always used. Off by default: commit-driven
+   * sync stays the contract, and uncommitted drift is counted + reported
+   * either way (see SyncResult.uncommitted). CLI `--working-tree`; persist
+   * with config `sync.include_working_tree=true`. NOTE: the inline cost
+   * estimator does not price working-tree files on attached repos, so the
+   * gate can underestimate an explicit --working-tree run.
+   */
+  workingTree?: boolean;
   /**
    * Number of parallel workers for the import phase. When > 1, each worker
    * gets its own small Postgres connection pool and files are dispatched via
@@ -1121,14 +1139,57 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   const currentVersion = String(CHUNKER_VERSION);
   const versionMismatch = storedVersion !== null && storedVersion !== currentVersion;
   const versionNeverSet = storedVersion === null && opts.sourceId !== undefined;
-  const detachedWorkingTreeManifest = detachedHead ? buildDetachedWorkingTreeManifest(gitContextRoot) : null;
-  const hasDetachedWorkingTreeChanges = detachedWorkingTreeManifest !== null &&
-    (detachedWorkingTreeManifest.added.length > 0 ||
-      detachedWorkingTreeManifest.modified.length > 0 ||
-      detachedWorkingTreeManifest.deleted.length > 0 ||
-      detachedWorkingTreeManifest.renamed.length > 0);
+  // Untracked-gap fix: the working-tree manifest is now built for attached
+  // HEADs too, not just detached ones. Detached HEAD (pre-existing semantics)
+  // or opts.workingTree (opt-in: CLI --working-tree / config
+  // sync.include_working_tree) → the manifest merges into the delta below and
+  // uncommitted state IMPORTS. Attached without the flag → NOT imported, but
+  // counted through the same scope/exclude/isSyncable filters imports use and
+  // reported as `uncommitted` drift + a stderr warning. Before this,
+  // "Already up to date." printed while untracked files sat invisible — sync
+  // reported convergence it had not achieved.
+  const importWorkingTree = detachedHead || opts.workingTree === true;
+  const workingTreeManifest = buildDetachedWorkingTreeManifest(gitContextRoot);
+  const hasWorkingTreeChanges =
+    workingTreeManifest.added.length > 0 ||
+    workingTreeManifest.modified.length > 0 ||
+    workingTreeManifest.deleted.length > 0 ||
+    workingTreeManifest.renamed.length > 0;
 
-  if (lastCommit === headCommit && !versionMismatch && !versionNeverSet && !hasDetachedWorkingTreeChanges) {
+  // #753/#774 scope filter (hoisted above the up_to_date gate so the drift
+  // counter here and the delta filter below apply IDENTICAL predicates):
+  // git-diff paths are git-root-relative; when a subpath scope is active, only
+  // paths under it participate. Back-compat: syncScopeRelPath is '' when
+  // scope == root, so inScope is always true and the filters reduce to the
+  // pre-#774 behavior exactly.
+  const inScope = (p: string): boolean =>
+    !scoped || p === syncScopeRelPath || p.startsWith(syncScopeRelPath + '/');
+  // --exclude patterns match the SCOPE-relative path (what the user of a
+  // scoped source thinks in), same form runImport matches on full sync.
+  const scopeRel = (p: string): string =>
+    scoped && p.startsWith(syncScopeRelPath + '/') ? p.slice(syncScopeRelPath.length + 1) : p;
+  const excluded = (p: string): boolean =>
+    opts.exclude !== undefined && opts.exclude.length > 0 && matchesAnyGlob(scopeRel(p), opts.exclude);
+  const syncOpts = opts.strategy ? { strategy: opts.strategy } : undefined;
+
+  let uncommittedDrift: { added: number; modified: number; deleted: number } | undefined;
+  if (!importWorkingTree && hasWorkingTreeChanges) {
+    const drift = {
+      added: workingTreeManifest.added.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length,
+      modified: workingTreeManifest.modified.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length,
+      deleted: workingTreeManifest.deleted.filter(p => inScope(p) && isSyncable(p, syncOpts)).length,
+    };
+    if (drift.added + drift.modified + drift.deleted > 0) {
+      uncommittedDrift = drift;
+      serr(
+        `[sync] ${drift.added + drift.modified + drift.deleted} uncommitted file(s) are invisible to ` +
+        `commit-driven sync (${drift.added} untracked/added, ${drift.modified} modified, ${drift.deleted} deleted). ` +
+        `Commit them, or run 'gbrain sync --working-tree' to import uncommitted state.`,
+      );
+    }
+  }
+
+  if (lastCommit === headCommit && !versionMismatch && !versionNeverSet && !(importWorkingTree && hasWorkingTreeChanges)) {
     // #3068: the pull failed and nothing local advanced — this run imported
     // NOTHING and the remote may hold commits we could not fetch. Reporting
     // `up_to_date` here (and bumping the heartbeat below) is exactly the
@@ -1172,6 +1233,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       chunksCreated: 0,
       embedded: 0,
       pagesAffected: [],
+      ...(uncommittedDrift ? { uncommitted: uncommittedDrift } : {}),
     };
   }
 
@@ -1202,7 +1264,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // `unavailable`, fall back to the authoritative full reconcile instead of
   // throwing — a slow correct reconcile beats a hard error or a silent walk.
   const delta = computeSyncDelta(gitContextRoot, lastCommit, pin, {
-    detachedManifest: detachedWorkingTreeManifest,
+    detachedManifest: importWorkingTree ? workingTreeManifest : null,
   });
   if (delta.status === 'unavailable') {
     serr(
@@ -1213,21 +1275,9 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   }
   const manifest = delta.manifest;
 
-  // #753/#774 scope filter: git-diff paths are git-root-relative; when a
-  // subpath scope is active, only paths under it participate. Back-compat:
-  // syncScopeRelPath is '' when scope == root, so inScope is always true and
-  // the filters below reduce to the pre-#774 behavior exactly.
-  const inScope = (p: string): boolean =>
-    !scoped || p === syncScopeRelPath || p.startsWith(syncScopeRelPath + '/');
-  // --exclude patterns match the SCOPE-relative path (what the user of a
-  // scoped source thinks in), same form runImport matches on full sync.
-  const scopeRel = (p: string): string =>
-    scoped && p.startsWith(syncScopeRelPath + '/') ? p.slice(syncScopeRelPath.length + 1) : p;
-  const excluded = (p: string): boolean =>
-    opts.exclude !== undefined && opts.exclude.length > 0 && matchesAnyGlob(scopeRel(p), opts.exclude);
-
-  // Filter to syncable files (strategy-aware + scope-aware + exclude-aware)
-  const syncOpts = opts.strategy ? { strategy: opts.strategy } : undefined;
+  // Scope/exclude/isSyncable filter lambdas (`inScope`/`scopeRel`/`excluded`/
+  // `syncOpts`) are hoisted above the up_to_date gate — the untracked-gap
+  // drift counter shares them so both apply identical predicates.
   // #1970 (F-C): a rename whose DESTINATION is unsyncable drops out of BOTH
   // `renamed` (only `r.to` is kept below) AND `deleted` (git emits it as `R`,
   // not `D`), leaving the OLD page stale. Fold the source side into the delete
@@ -2729,8 +2779,12 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     chunksCreated,
     embedded,
     pagesAffected,
+<<<<<<< HEAD
     malformedSkipped: malformedSkipped.length,
     ...(typeWarningsEnabled && typeWarnings.length > 0 ? { type_warnings: typeWarnings } : {}),
+=======
+    ...(uncommittedDrift ? { uncommitted: uncommittedDrift } : {}),
+>>>>>>> 0ed39d1c (fix(sync): surface + optionally import uncommitted working-tree files)
   };
 }
 
@@ -3187,6 +3241,11 @@ Options:
   --include-gitignored Include otherwise-syncable files matched by .gitignore.
                        Forces a full filesystem walk so periodic syncs see
                        ignored untracked content.
+  --working-tree       Also import uncommitted working-tree state (untracked
+                       files + uncommitted edits/deletes). Default: committed
+                       changes only — uncommitted drift is counted and warned,
+                       never silently ignored. Persist with
+                       'gbrain config set sync.include_working_tree true'.
   --dry-run            Show what would be synced without writing.
   --skip-failed        Acknowledge previously-recorded sync failures so
                        the bookmark can advance past unparseable files.
@@ -3252,6 +3311,14 @@ See also:
   const retryFailed = args.includes('--retry-failed');
   const noSchemaPack = args.includes('--no-schema-pack'); // v0.41.37.0 #1569
   const includeGitignored = args.includes('--include-gitignored');
+  // Untracked-gap fix: --working-tree imports uncommitted working-tree state;
+  // config sync.include_working_tree=true persists it (flag wins when passed).
+  let workingTree = args.includes('--working-tree');
+  if (!workingTree) {
+    try {
+      workingTree = (await engine.getConfig('sync.include_working_tree')) === 'true';
+    } catch { /* config read is best-effort — default stays commit-driven */ }
+  }
   const syncAll = args.includes('--all');
   let missingPathMode: MissingPathMode = 'fail';
   try {
@@ -3691,6 +3758,7 @@ See also:
         noExtract,
         skipFailed, retryFailed, noSchemaPack,
         includeGitignored,
+        workingTree,
         sourceId: src.id,
         strategy: cfg.strategy,
         concurrency,
@@ -3922,7 +3990,7 @@ See also:
   const singleSourceInterrupt = new AbortController();
   const onSingleSourceSigint = () => { try { singleSourceInterrupt.abort(new Error('SIGINT')); } catch { /* */ } };
   const opts: SyncOpts = {
-    repoPath, dryRun, full, noPull, noEmbed, noExtract, skipFailed, retryFailed, noSchemaPack, includeGitignored, sourceId,
+    repoPath, dryRun, full, noPull, noEmbed, noExtract, skipFailed, retryFailed, noSchemaPack, includeGitignored, workingTree, sourceId,
     strategy: strategyArg, concurrency,
     srcSubpath,
     exclude: excludePatterns.length > 0 ? excludePatterns : undefined,
@@ -4219,6 +4287,8 @@ export async function syncOneSource(
     /** v0.42.7 #1696: propagate --no-extract into every per-source sync. */
     noExtract?: boolean;
     includeGitignored?: boolean;
+    /** Untracked-gap fix: propagate --working-tree into every per-source sync. */
+    workingTree?: boolean;
   },
 ): Promise<{ result: SyncResult; log: string }> {
   const cfg = (src.config || {}) as { strategy?: 'markdown' | 'code' | 'auto' };
@@ -4234,6 +4304,7 @@ export async function syncOneSource(
     retryFailed: shared.retryFailed,
     noSchemaPack: shared.noSchemaPack,
     includeGitignored: shared.includeGitignored,
+    workingTree: shared.workingTree,
     sourceId: src.id,
     strategy: cfg.strategy,
     concurrency: shared.concurrency,
@@ -4455,11 +4526,27 @@ export function printSyncResult(result: SyncResult, sink: NodeJS.WriteStream = p
   switch (result.status) {
     case 'up_to_date':
       write('Already up to date.');
+      if (result.uncommitted) {
+        const u = result.uncommitted;
+        write(
+          `  NOTE: ${u.added + u.modified + u.deleted} uncommitted file(s) not synced ` +
+          `(${u.added} untracked/added, ${u.modified} modified, ${u.deleted} deleted) — ` +
+          `commit them or run 'gbrain sync --working-tree'.`,
+        );
+      }
       break;
     case 'synced':
       write(`Synced ${result.fromCommit?.slice(0, 8)}..${result.toCommit.slice(0, 8)}:`);
       write(`  +${result.added} added, ~${result.modified} modified, -${result.deleted} deleted, R${result.renamed} renamed`);
       write(`  ${result.chunksCreated} chunks created${result.embedded > 0 ? `, ${result.embedded} pages embedded` : ''}`);
+      if (result.uncommitted) {
+        const u = result.uncommitted;
+        write(
+          `  NOTE: ${u.added + u.modified + u.deleted} uncommitted file(s) not synced ` +
+          `(${u.added} untracked/added, ${u.modified} modified, ${u.deleted} deleted) — ` +
+          `commit them or run 'gbrain sync --working-tree'.`,
+        );
+      }
       break;
     case 'first_sync':
       write(`First sync complete. Checkpoint: ${result.toCommit.slice(0, 8)}`);
