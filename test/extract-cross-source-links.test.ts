@@ -19,11 +19,12 @@
  *    DB config > default false.
  */
 
-import { describe, test, expect, afterEach } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import { resolveCandidateSources } from '../src/commands/extract.ts';
 import { isCrossSourceLinksEnabled } from '../src/core/link-extraction.ts';
 import type { LinkCandidate } from '../src/core/link-extraction.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 function cand(targetSlug: string, fromSlug?: string): LinkCandidate {
   return {
@@ -119,31 +120,29 @@ describe('#2589 resolveCandidateSources — cross-source targets', () => {
 });
 
 describe('#2589 isCrossSourceLinksEnabled — #972 resolution ladder', () => {
-  const saved = process.env.GBRAIN_LINK_RESOLUTION_CROSS_SOURCE;
-  afterEach(() => {
-    if (saved === undefined) delete process.env.GBRAIN_LINK_RESOLUTION_CROSS_SOURCE;
-    else process.env.GBRAIN_LINK_RESOLUTION_CROSS_SOURCE = saved;
-  });
-
   function engineWith(dbVal: string | null): BrainEngine {
     return { getConfig: async () => dbVal } as unknown as BrainEngine;
   }
 
   test('default false (no env, no config)', async () => {
-    delete process.env.GBRAIN_LINK_RESOLUTION_CROSS_SOURCE;
-    expect(await isCrossSourceLinksEnabled(engineWith(null))).toBe(false);
+    await withEnv({ GBRAIN_LINK_RESOLUTION_CROSS_SOURCE: undefined }, async () => {
+      expect(await isCrossSourceLinksEnabled(engineWith(null))).toBe(false);
+    });
   });
 
   test('DB config enables', async () => {
-    delete process.env.GBRAIN_LINK_RESOLUTION_CROSS_SOURCE;
-    expect(await isCrossSourceLinksEnabled(engineWith('true'))).toBe(true);
-    expect(await isCrossSourceLinksEnabled(engineWith('off'))).toBe(false);
+    await withEnv({ GBRAIN_LINK_RESOLUTION_CROSS_SOURCE: undefined }, async () => {
+      expect(await isCrossSourceLinksEnabled(engineWith('true'))).toBe(true);
+      expect(await isCrossSourceLinksEnabled(engineWith('off'))).toBe(false);
+    });
   });
 
   test('env overrides DB config in BOTH directions (operator escape hatch)', async () => {
-    process.env.GBRAIN_LINK_RESOLUTION_CROSS_SOURCE = '1';
-    expect(await isCrossSourceLinksEnabled(engineWith(null))).toBe(true);
-    process.env.GBRAIN_LINK_RESOLUTION_CROSS_SOURCE = '0';
-    expect(await isCrossSourceLinksEnabled(engineWith('true'))).toBe(false);
+    await withEnv({ GBRAIN_LINK_RESOLUTION_CROSS_SOURCE: '1' }, async () => {
+      expect(await isCrossSourceLinksEnabled(engineWith(null))).toBe(true);
+    });
+    await withEnv({ GBRAIN_LINK_RESOLUTION_CROSS_SOURCE: '0' }, async () => {
+      expect(await isCrossSourceLinksEnabled(engineWith('true'))).toBe(false);
+    });
   });
 });
