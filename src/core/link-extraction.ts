@@ -345,7 +345,13 @@ export function extractEntityRefs(content: string): EntityRef[] {
   const mdPattern = new RegExp(ENTITY_REF_RE.source, ENTITY_REF_RE.flags);
   while ((match = mdPattern.exec(stripped)) !== null) {
     const name = match[1];
-    const fullPath = match[2];
+    let fullPath = match[2];
+    // Obsidian's useMarkdownLinks mode percent-encodes link targets
+    // (`[Alice](people/alice%20chen)`). Decode before resolution; a
+    // malformed escape keeps the raw text rather than throwing.
+    if (fullPath.includes('%')) {
+      try { fullPath = decodeURIComponent(fullPath); } catch { /* keep raw */ }
+    }
     const slug = fullPath;
     const dir = fullPath.split('/')[0];
     refs.push({ name, slug, dir });

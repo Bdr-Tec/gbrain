@@ -233,8 +233,14 @@ export function extractMarkdownLinks(content: string): { name: string; relTarget
   const mdPattern = /\[([^\]]+)\]\(([^)]+\.md)\)/g;
   let match;
   while ((match = mdPattern.exec(content)) !== null) {
-    const target = match[2];
+    let target = match[2];
     if (target.includes('://')) continue;
+    // Obsidian's useMarkdownLinks mode percent-encodes link targets
+    // (`[Alice](People/Alice%20Chen.md)`). Decode before resolution; a
+    // malformed escape keeps the raw text rather than throwing.
+    if (target.includes('%')) {
+      try { target = decodeURIComponent(target); } catch { /* keep raw */ }
+    }
     results.push({ name: match[1], relTarget: target });
   }
 

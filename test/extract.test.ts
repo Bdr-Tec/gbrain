@@ -30,6 +30,19 @@ describe('extractMarkdownLinks', () => {
     const content = '[A](a.md) and [B](b.md)';
     expect(extractMarkdownLinks(content)).toHaveLength(2);
   });
+
+  it('percent-decodes targets from Obsidian useMarkdownLinks mode', () => {
+    const content = '[Alice](People/Alice%20Chen.md)';
+    const links = extractMarkdownLinks(content);
+    expect(links).toHaveLength(1);
+    expect(links[0].relTarget).toBe('People/Alice Chen.md');
+  });
+
+  it('keeps a malformed percent-escape raw instead of throwing', () => {
+    const content = '[Bad](People/Alice%ZZ.md)';
+    expect(() => extractMarkdownLinks(content)).not.toThrow();
+    expect(extractMarkdownLinks(content)[0].relTarget).toBe('People/Alice%ZZ.md');
+  });
 });
 
 describe('extractLinksFromFile', () => {
@@ -47,6 +60,20 @@ describe('extractLinksFromFile', () => {
     const allSlugs = new Set(['deals/test']);
     const links = await extractLinksFromFile(content, 'deals/test.md', allSlugs);
     expect(links).toHaveLength(0);
+  });
+
+  it('resolves a percent-encoded Obsidian markdown-link target to its slugified page', async () => {
+    const content = 'See [Alice](People/Alice%20Chen.md).';
+    const allSlugs = new Set(['deals/test', 'people/alice-chen']);
+    const links = await extractLinksFromFile(content, 'deals/test.md', allSlugs);
+    expect(links.length).toBeGreaterThanOrEqual(1);
+    expect(links[0].to_slug).toBe('people/alice-chen');
+  });
+
+  it('does not throw and produces no edge for a malformed percent-escape', async () => {
+    const content = 'See [Alice](People/Alice%ZZ.md).';
+    const allSlugs = new Set(['deals/test', 'people/alice-chen']);
+    await expect(extractLinksFromFile(content, 'deals/test.md', allSlugs)).resolves.toHaveLength(0);
   });
 
   it('extracts frontmatter company links (v0.13, includeFrontmatter opt-in)', async () => {
