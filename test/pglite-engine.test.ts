@@ -1518,3 +1518,58 @@ describe('PGLiteEngine: v0.13.1 kind discriminator', () => {
     expect(engine.kind).toBe('pglite');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────
+// putPage RETURNING-empty regression (#2586 residual)
+// ─────────────────────────────────────────────────────────────────
+// PGLite can return zero rows from INSERT ... ON CONFLICT DO UPDATE ...
+// RETURNING in no-op/trigger edge cases even though the row WAS written
+// (the exec-path quirk PR #2586 chased). putPage must re-read and return
+// the page instead of crashing on rowToPage(undefined) — pre-fix the crash
+// made sync skip the file.
+describe('PGLiteEngine: putPage RETURNING-empty regression (#2586 residual)', () => {
+  beforeEach(truncateAll);
+
+  test('returns the page via re-read when RETURNING yields zero rows', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (engine as any).db;
+    const realQuery = db.query.bind(db);
+    // Simulate the quirk: the INSERT executes (row written) but the result
+    // carries zero rows.
+    db.query = async (sql: string, ...rest: unknown[]) => {
+      const res = await realQuery(sql, ...rest);
+      if (typeof sql === 'string' && sql.includes('INSERT INTO pages') && sql.includes('RETURNING')) {
+        return { ...res, rows: [] };
+      }
+      return res;
+    };
+    try {
+      const page = await engine.putPage('notes/returning-empty', testPage);
+      expect(page).toBeTruthy();
+      expect(page.slug).toBe('notes/returning-empty');
+      expect(page.title).toBe(testPage.title);
+      expect(page.compiled_truth).toBe(testPage.compiled_truth);
+    } finally {
+      db.query = realQuery;
+    }
+  });
+
+  test('throws loudly when the row is genuinely absent after zero-row RETURNING', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (engine as any).db;
+    const realQuery = db.query.bind(db);
+    db.query = async (sql: string, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO pages') && sql.includes('RETURNING')) {
+        // Worst case: the INSERT never executed AND returned no row.
+        return { rows: [] };
+      }
+      return realQuery(sql, ...rest);
+    };
+    try {
+      await expect(engine.putPage('notes/returning-empty-absent', testPage))
+        .rejects.toThrow(/RETURNING produced no row/);
+    } finally {
+      db.query = realQuery;
+    }
+  });
+});
