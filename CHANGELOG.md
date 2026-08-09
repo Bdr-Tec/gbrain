@@ -2,6 +2,27 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.79.0] - 2026-08-09
+
+**`think --take` actually persists, and takes finally get embeddings — vector search over your takes goes from structurally impossible to working.**
+
+**`gbrain think --take` writes the take it promised.** The flag was accepted, validated (`--take` requires `--anchor`), and then consumed by nothing — a silent no-op on both the CLI and MCP paths. Now the synthesis answer is appended as the next take row on the anchor page (holder `brain`, source `gbrain think`), written to both planes the way `takes add` writes: the page's takes fence in your brain repo allocates the row number and the database mirrors it, so a later `takes add` can't collide with it. Claims are bounded (2,000 chars, flattened to one line) with a loud warning when truncation fires; an empty synthesis or missing anchor exits non-zero instead of pretending. Remote callers remain blocked from persistence, and the trust gate now treats an *absent* caller identity as untrusted on every internal forward. When no brain repo is reachable (headless installs), the take lands database-only with an explicit warning naming the posture. Design from a community pull request whose fix half was confirmed legitimate but died carrying unrelated feature scope — credited.
+
+**Takes embeddings exist now.** The takes table has had an embedding column since it shipped — with no writer anywhere in the codebase, and a hardcoded width that only matched the default provider. Vector search over takes (including think's takes-recall arm) was structurally dead on every brain. This release: a migration rebuilds the column at your brain's actual embedding width (provably lossless — there was never a writer, so there is nothing to lose), `gbrain embed --stale` gains a takes lane that backfills every active claim through the same batching, spend gates, pacing, and abort handling the pages lane uses (`--source` scoping honored; dry-run counts via `takes_would_embed`), and takes join the dimension-transition set so future provider migrations rebuild them alongside chunks instead of leaving a permanently failing, permanently re-billed backfill. Provider swaps at the same width now re-stale take embeddings too, so old-space vectors are never scored against new-space queries.
+
+### To take advantage of v0.42.79.0
+
+```bash
+gbrain upgrade
+gbrain embed --stale   # one-time backfill: your takes get embeddings
+```
+
+Then `gbrain think` starts drawing on vector-matched takes automatically. Try `gbrain think "question" --anchor <page> --take` to persist the synthesis as a take on that page.
+
+### For contributors
+
+The think-ops audit re-verified 18 planned items against master first: 10 already fixed, 3 obsolete, leaving `#2556`, `#2089`, and a doc-truth residual. Review army + red team caught two release-blocking issues in the new code before ship — the missing dimension-transition registration (which would have turned every future provider migration into a paid retry loop) and the fence-plane row-number collision (which let one ordinary `takes add` silently overwrite a think-take) — both fixed in-wave with concurrency, federated-scope, CLI-honesty, and migration-rerun-preservation tests added. Follow-ups filed in TODOS.md ("Think-ops follow-ups"). Credit to the #2618 author for the take-persistence design.
+
 ## [0.42.75.0] - 2026-08-08
 
 **The "PGLite crashes on macOS 26" era is over: gbrain now repairs a torn brain in place, automatically, with your data preserved.**
