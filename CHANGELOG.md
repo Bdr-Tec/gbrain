@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.42.78.0] - 2026-08-09
+## [0.42.78.0] - 2026-08-08
 
 **Search stops collapsing rich result pools on weak matches, cross-source wikilinks stop vanishing silently, and the remote-access rules are written down in one place.**
 

@@ -248,7 +248,10 @@ fail-closed and tested:
 - **Takes holders** — per-token allow-lists (`gbrain auth permissions <token>
   set-takes-holders ...`) scope which held takes a remote caller sees.
 - **Write-side slug fences** — a client bound to slug prefixes can only write
-  under them, and non-read operations are refused for slug-bound clients.
+  under them, and only a small fenced allow-list of write operations
+  (`put_page`, `add_link`, `add_timeline_entry`, …) is available to
+  slug-bound clients; every other non-read operation is refused (fail-closed:
+  a write op added later is denied until it is fenced and allow-listed).
 
 One known soft edge: the backlink-count ranking boost counts referrers
 without source filtering, so the *existence* of out-of-grant referrers can
