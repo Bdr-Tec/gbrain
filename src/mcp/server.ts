@@ -12,8 +12,10 @@ import {
   resolveSocketPath,
   startResolveIpcServer,
   cleanupStaleSocket,
+  ensureIpcSecret,
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
+import { assembleTurnContext } from '../core/context/turn-context.ts';
 
 export async function startMcpServer(engine: BrainEngine) {
   const server = new Server(
@@ -54,6 +56,14 @@ export async function startMcpServer(engine: BrainEngine) {
     // see private hunches via takes_list / takes_search / query. Operators
     // who want stdio to see everything should call ops directly via
     // `gbrain call <op>` (sets remote=false in src/cli.ts).
+    // CX2-11: MCP carries `_meta.session_id` as a sibling of `arguments` in
+    // request.params. Thread it (clamped in dispatch) into the typed
+    // OperationContext.sessionId so the hot-memory metaHook's cache keys per
+    // session instead of collapsing every caller onto the null-session key.
+    const rawMetaSession = (request.params as { _meta?: { session_id?: unknown } })?._meta?.session_id;
+    const sessionId = typeof rawMetaSession === 'string' && rawMetaSession.length > 0
+      ? rawMetaSession
+      : undefined;
     return dispatchToolCall(engine, name, params, {
       remote: true,
       // #1061: mark the transport so whoami can report {transport: 'stdio'}
@@ -61,6 +71,7 @@ export async function startMcpServer(engine: BrainEngine) {
       // stdio stays remote/untrusted.
       transport: 'stdio',
       takesHoldersAllowList: ['world'],
+      ...(sessionId ? { sessionId } : {}),
       // v0.31: source defaults to 'default' for stdio (no per-token scope).
       // Operators who want a different source on stdio MCP should set
       // GBRAIN_SOURCE in the env or use --source via `gbrain call`.
@@ -87,24 +98,50 @@ export async function startMcpServer(engine: BrainEngine) {
     if (cfg?.engine === 'pglite' && cfg.database_path) {
       resolveSocket = resolveSocketPath(cfg.database_path);
       const defaultSource = process.env.GBRAIN_SOURCE || 'default';
+      // [S3#6] turn_context requires the shared secret from the data dir
+      // (created 0600 here if absent). If the secret can't be provisioned,
+      // turn_context stays fail-closed ('unauthorized') while the secret-free
+      // resolve kind keeps working.
+      let ipcSecret: string | undefined;
+      try {
+        ipcSecret = ensureIpcSecret(cfg.database_path);
+      } catch { /* turn_context disabled; resolve unaffected */ }
       resolveServer = await startResolveIpcServer(
         resolveSocket,
-        (req) =>
-          resolveEntitiesToPointers(
-            engine,
-            req.sourceId || defaultSource,
-            req.candidates ?? [],
-            {
+        {
+          resolve: (req) =>
+            resolveEntitiesToPointers(
+              engine,
+              req.sourceId || defaultSource,
+              req.candidates ?? [],
+              {
+                priorContextText: req.priorContextText,
+                maxPointers: req.maxPointers,
+                suppression: req.suppression,
+              },
+            ),
+          // IPC v2 [ENG-3]: per-turn context assembly for the hook command.
+          // [CX2-10] Always assembles against the server's OWN registered
+          // source — cross-source requests are rejected in the IPC layer via
+          // boundSourceId below, and the handler never honors a caller source.
+          turn_context: (req) =>
+            assembleTurnContext(engine, {
+              sourceId: defaultSource,
+              window: req.window ?? [],
               priorContextText: req.priorContextText,
-              maxPointers: req.maxPointers,
-              suppression: req.suppression,
-            },
-          ),
-        // The IPC resolve path IS the ambient reflex channel. Logging happens
-        // at DELIVERY (post-write), not inside the resolver — a block the
-        // client's 250ms budget abandoned was never injected, and counting it
-        // would corrupt the volunteered-vs-used precision stats (red-team).
-        (block) => logDeliveredReflexPointers(engine, block.pointers),
+              sessionId: req.sessionId,
+              maxBytes: req.maxBytes,
+            }),
+        },
+        {
+          // The IPC resolve path IS the ambient reflex channel. Logging happens
+          // at DELIVERY (post-write), not inside the resolver — a block the
+          // client's 250ms budget abandoned was never injected, and counting it
+          // would corrupt the volunteered-vs-used precision stats (red-team).
+          onDelivered: (block) => logDeliveredReflexPointers(engine, block.pointers),
+          boundSourceId: defaultSource,
+          secret: ipcSecret,
+        },
       );
     }
   } catch {

@@ -649,6 +649,14 @@ export interface OperationContext {
    */
   sourceId: string;
   /**
+   * CX2-11 — opaque per-session identity, set from MCP `_meta.session_id`
+   * (clamped to 256 chars at the dispatch boundary). Cache/telemetry identity
+   * ONLY — never an auth or trust surface. The hot-memory meta hook keys its
+   * cache on (sourceId, sessionId, allowlist-hash); before this typed field
+   * existed every caller collapsed onto the null-session cache key.
+   */
+  sessionId?: string;
+  /**
    * #2561 / #3242 — federated read scope for UNQUALIFIED reads.
    *
    * Set ONLY by trusted server-side context builders — never from caller
@@ -4481,7 +4489,11 @@ const extract_facts: Operation = {
     }
 
     const sourceId = ctx.sourceId ?? 'default';
-    const visibility: 'private' | 'world' = p.visibility === 'world' ? 'world' : 'private';
+    // [ENG-8] Explicit caller value wins; UNSET resolves through the shared
+    // facts.default_visibility helper (the old ternary coerced unset →
+    // 'private' before any config default could run). Garbage stays 'private'.
+    const { resolveVisibilityParam } = await import('./facts/visibility.ts');
+    const visibility: 'private' | 'world' = await resolveVisibilityParam(ctx.engine, p.visibility);
 
     const r = await runFactsPipeline(p.turn_text as string, {
       engine: ctx.engine,
@@ -5817,6 +5829,9 @@ const ontology_propose: Operation = {
     visibility: { type: 'string', enum: ['private', 'world'], description: 'Default private.' },
   },
   handler: async (ctx, p) => {
+    // [ENG-8] Same unset-vs-explicit ladder as extract_facts: explicit
+    // caller visibility wins; unset resolves facts.default_visibility.
+    const { resolveVisibilityParam } = await import('./facts/visibility.ts');
     return ctx.engine.mergeOntologyFact({
       entitySlug: String(p.entity),
       dimension: String(p.dimension),
@@ -5825,7 +5840,7 @@ const ontology_propose: Operation = {
       source: typeof p.source === 'string' && p.source ? p.source : 'manual',
       validFrom: typeof p.valid_from === 'string' ? p.valid_from : undefined,
       validTo: typeof p.valid_to === 'string' ? p.valid_to : undefined,
-      visibility: p.visibility === 'world' ? 'world' : 'private',
+      visibility: await resolveVisibilityParam(ctx.engine, p.visibility),
       sourceId: ctx.sourceId,
     });
   },

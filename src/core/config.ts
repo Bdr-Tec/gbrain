@@ -1010,6 +1010,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'facts.extraction_model',
   // #2113: output-token cap for the per-turn facts extractor (default 4000).
   'facts.extraction_max_tokens',
+  // [ENG-8] Brain-level default visibility for facts writes when the caller
+  // didn't specify one: 'private' (default) | 'world'. Resolved by
+  // src/core/facts/visibility.ts; explicit caller values always win.
+  'facts.default_visibility',
   // Conversation parser LLM fallback. Deliberately register the exact key,
   // not a conversation_parser.* prefix: fallback is the only live opt-in
   // consumer, while the polish scaffold remains unwired.

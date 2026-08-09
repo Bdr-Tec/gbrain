@@ -47,7 +47,13 @@ export async function getBrainHotMemoryMeta(
   if (name === 'recall' || name === 'extract_facts' || name === 'forget_fact') return undefined;
 
   const sourceId = ctx.sourceId ?? 'default';
-  const sessionId = (ctx as { source_session?: string }).source_session
+  // CX2-11: session identity is the TYPED OperationContext.sessionId field,
+  // set from MCP `_meta.session_id` at the dispatch boundary. The old ad-hoc
+  // `source_session` read is kept as a fallback for legacy embedders, but no
+  // shipped transport ever set it — without the typed field every caller
+  // collapsed onto the null-session cache key.
+  const sessionId = ctx.sessionId
+    ?? (ctx as { source_session?: string }).source_session
     ?? null;
   const allowListHash = hashAllowList(ctx.takesHoldersAllowList);
   const cacheKey = `${sourceId}::${sessionId ?? '_'}::${allowListHash}`;

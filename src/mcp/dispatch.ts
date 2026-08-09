@@ -62,6 +62,14 @@ export interface DispatchOpts {
    */
   localFederatedSourceIds?: string[];
   /**
+   * CX2-11: opaque session identity resolved by the transport (e.g. from the
+   * MCP request-level `_meta.session_id`). Clamped to 256 chars before it
+   * reaches OperationContext. When unset, buildOperationContext falls back to
+   * a `_meta.session_id` carried INSIDE the tool arguments (some clients put
+   * it there). Cache/telemetry identity only — never a trust surface.
+   */
+  sessionId?: string;
+  /**
    * v0.31 (eD3): hook called by the dispatcher AFTER op.handler succeeds
    * to compute `_meta.brain_hot_memory` for the response. Wrapped in its
    * own try/catch (eE4) so a DB blip in the helper degrades to no _meta
@@ -205,11 +213,35 @@ const stderrLogger: OperationContext['logger'] = {
   error: (msg: string) => process.stderr.write(`[error] ${msg}\n`),
 };
 
+/** CX2-11: clamp an opaque session id to 256 chars (cache-key hygiene). */
+const SESSION_ID_MAX_CHARS = 256;
+
+/**
+ * Read `_meta.session_id` out of the tool arguments when present. The MCP
+ * spec carries `_meta` as a sibling of `arguments`, but several clients (and
+ * proxies) fold it into the arguments object — this is the dispatch-level
+ * fallback for those. Non-string / empty values are ignored.
+ */
+function metaSessionIdFrom(params: Record<string, unknown>): string | undefined {
+  const meta = params._meta;
+  if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+    const sid = (meta as Record<string, unknown>).session_id;
+    if (typeof sid === 'string' && sid.length > 0) return sid.slice(0, SESSION_ID_MAX_CHARS);
+  }
+  return undefined;
+}
+
 export function buildOperationContext(
   engine: BrainEngine,
   params: Record<string, unknown>,
   opts: DispatchOpts = {},
 ): OperationContext {
+  // CX2-11: transport-resolved session id wins; arguments-level _meta is the
+  // fallback. Both clamped. Typed field — the meta-hook cache key reads it.
+  const sessionId =
+    (typeof opts.sessionId === 'string' && opts.sessionId.length > 0
+      ? opts.sessionId.slice(0, SESSION_ID_MAX_CHARS)
+      : undefined) ?? metaSessionIdFrom(params);
   return {
     engine,
     config: loadConfig() || { engine: 'postgres' },
@@ -223,6 +255,7 @@ export function buildOperationContext(
     // CLI / HTTP / stdio transports SHOULD pass an explicit sourceId via opts;
     // this fallback covers code paths that historically passed undefined.
     sourceId: opts.sourceId ?? 'default',
+    ...(sessionId ? { sessionId } : {}),
     ...(opts.localFederatedSourceIds ? { localFederatedSourceIds: opts.localFederatedSourceIds } : {}),
     auth: opts.auth,
   };
