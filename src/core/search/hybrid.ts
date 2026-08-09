@@ -1892,7 +1892,15 @@ export async function hybridSearchCached(
     Boolean(opts?.nearSymbol) ||
     isNonDefaultColumn ||
     adaptiveReturnOn ||
-    dateFiltered;
+    dateFiltered ||
+    // A per-call reranker MODEL override changes ranking AND (via the
+    // raw-logit gate) the effective autocut floor, but no reranker field is
+    // in the cache key (rrm= is bundle/config-resolved) — a row written
+    // under one reranker must not serve a caller overriding another. No
+    // production caller passes opts.reranker.model today; this closes the
+    // seam before one does. Deliberately NOT the whole opts.reranker object:
+    // rerankerFn is the test seam and doesn't redefine the effective model.
+    Boolean(opts?.reranker?.model);
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';
   let cacheSimilarity: number | undefined;

@@ -1465,6 +1465,12 @@ export async function isGlobalBasenameEnabled(engine: BrainEngine): Promise<bool
  * and surfaced in the extract summary, never silent (issue #2589: the drop
  * was previously indistinguishable from an unresolved link).
  *
+ * SCOPE: the DB extract paths only (`extract links --source db`,
+ * `extract --stale`) — they resolve against the full multi-source slug map.
+ * The FS-walk paths (dir-driven, incl. the autopilot cycle's extract phase)
+ * build their slug set from the walked files of ONE source, so cross-source
+ * targets aren't resolvable there; FS-walk parity is a filed follow-up.
+ *
  * Resolution order (highest → lowest):
  *   1. Env var `GBRAIN_LINK_RESOLUTION_CROSS_SOURCE=1` (operator override)
  *   2. DB plane via `engine.getConfig('link_resolution.cross_source')`

@@ -55,7 +55,7 @@ async function truncateAll(): Promise<void> {
 beforeEach(async () => {
   await truncateAll();
   delete process.env[ENV_KEY];
-});
+}, 60_000); // PGLite full-migration-chain init needs breathing room (house pattern, see extract-db.test.ts)
 afterEach(() => {
   delete process.env[ENV_KEY];
 });

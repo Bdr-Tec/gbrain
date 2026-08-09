@@ -59,7 +59,7 @@ beforeAll(async () => {
   __setEmbedTransportForTests(async (args: any) => ({
     embeddings: args.values.map(() => FAKE_EMB),
   }) as any);
-});
+}, 60_000); // PGLite full-migration-chain init needs breathing room (house pattern, see extract-db.test.ts)
 
 afterAll(async () => {
   __setEmbedTransportForTests(null);

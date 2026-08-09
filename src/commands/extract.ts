@@ -147,7 +147,11 @@ export function resolveCandidateSources(
     // (source_id, slug) composite key); off, callers get a distinguishable
     // sentinel to COUNT the drop instead of burying it.
     if (!opts.crossSource) return 'cross-source-only';
-    toSourceId = [...targetSources].sort()[0];
+    // Allocation-free deterministic min (bulk loops call this per candidate;
+    // in the motivating federated topology most candidates hit this branch).
+    let min = targetSources[0];
+    for (const s of targetSources) if (s < min) min = s;
+    toSourceId = min;
   } else {
     return null;
   }
@@ -1925,7 +1929,7 @@ export async function extractStaleFromDB(
       console.log(`Skipped ${skippedMissingTarget} candidate(s) whose target page doesn't exist (references to non-pages are never persisted).`);
     }
     if (skippedCrossSource > 0) {
-      console.log(`Skipped ${skippedCrossSource} cross-source candidate(s) — target exists only in another source. Enable with \`gbrain config set link_resolution.cross_source true\` (#2589).`);
+      console.log(`Skipped ${skippedCrossSource} cross-source candidate(s) — target exists only in another source. Enable with \`gbrain config set link_resolution.cross_source true\`, then run \`gbrain extract links --source db\` — a --stale re-run will NOT revisit these pages (their extraction watermark is already stamped) (#2589).`);
     }
     if (budgetHit && staleRemaining > 0) {
       console.log(`Time budget reached — ${staleRemaining} page(s) still stale. Re-run 'gbrain extract --stale' (or pass --catch-up) to continue.`);
