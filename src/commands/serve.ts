@@ -29,6 +29,18 @@ const DEFAULT_BOOT_TIMEOUT_SECONDS = 60;
 // faster polling has no benefit, slower would extend the lock-leak window.
 const PARENT_WATCHDOG_INTERVAL_MS = 5_000;
 
+// Idle maintenance sweep [ENG-5]: cadence of the stdin-inactivity check.
+// Each tick that saw NO stdin data since the previous tick runs a bounded
+// sweep (fence reconcile / link+timeline extraction / corpus ingest — see
+// src/core/sweep.ts). A tick that saw data just resets the flag, so the
+// sweep fires after 10–20 min of true inactivity — the armIdle re-arm
+// semantics expressed through the injectable deps.setInterval seam.
+const IDLE_SWEEP_INTERVAL_MS = 10 * 60_000;
+
+// Small per-run budget for idle sweeps: the serve must snap back to
+// serving tool calls the moment the client wakes up.
+const IDLE_SWEEP_BUDGET_MS = 3_000;
+
 export interface ServeOptions {
   // Test seam — defaults to the live process. The lifecycle plumbing reads
   // these for stdin EOF detection, signal handlers, and exit, so unit
@@ -82,6 +94,14 @@ export interface ServeOptions {
   // Defaults to GBRAIN_SERVE_BOOT_TIMEOUT_SECONDS (seconds; 60 when
   // unset, 0 disables) when omitted.
   bootTimeoutMs?: number;
+  // Test seam for the idle maintenance sweep [ENG-5]. Replaces the sweep
+  // body so unit tests can assert timer wiring without importing the real
+  // sweep core (which opens engine work). Defaults to a lazy-imported
+  // runMaintenanceSweep with a small budget.
+  sweep?: (engine: BrainEngine) => Promise<unknown>;
+  // Kill switch seam for the idle sweep. Defaults to
+  // `process.env.GBRAIN_SWEEP !== '0'` when omitted.
+  sweepEnabled?: boolean;
 }
 
 /**
@@ -301,6 +321,7 @@ function installStdioLifecycle(
 
   let shuttingDown = false;
   let parentWatchdog: unknown = null;
+  let idleSweepTimer: unknown = null;
   const beginShutdown = (reason: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -311,6 +332,13 @@ function installStdioLifecycle(
     if (parentWatchdog !== null) {
       deps.clearInterval(parentWatchdog);
       parentWatchdog = null;
+    }
+
+    // Stop the idle-sweep interval too [ENG-5] — a sweep must never start
+    // while the engine is being disconnected underneath it.
+    if (idleSweepTimer !== null) {
+      deps.clearInterval(idleSweepTimer);
+      idleSweepTimer = null;
     }
 
     deps.log(`GBrain MCP server: graceful exit (${reason})`);
@@ -423,6 +451,51 @@ function installStdioLifecycle(
       }, PARENT_WATCHDOG_INTERVAL_MS);
       (parentWatchdog as { unref?: () => void } | null)?.unref?.();
     }
+  }
+
+  // Idle maintenance sweep [ENG-5]: every IDLE_SWEEP_INTERVAL_MS tick that
+  // saw no stdin data since the previous tick runs one bounded sweep (small
+  // budget). SEPARATE timer from the parent watchdog, through the same
+  // injectable deps.setInterval seam, unref'd per the serve convention so
+  // it can never hold the process open. Cleared in beginShutdown. Kill
+  // switch: GBRAIN_SWEEP=0 (seam: opts.sweepEnabled). Chunk-level stdin
+  // 'data' granularity is sufficient — same rationale as armIdle below.
+  const sweepEnabled = opts.sweepEnabled ?? (process.env.GBRAIN_SWEEP !== '0');
+  if (sweepEnabled) {
+    const runIdleSweep = opts.sweep ?? (async (e: BrainEngine) => {
+      // Lazy import keeps the sweep core off the serve boot path.
+      const { runMaintenanceSweep } = await import('../core/sweep.ts');
+      await runMaintenanceSweep(e, {
+        sourceId: process.env.GBRAIN_SOURCE || 'default',
+        budgetMs: IDLE_SWEEP_BUDGET_MS,
+      });
+    });
+    let stdinSawData = false;
+    let sweepInFlight = false;
+    let dataListenerAttached = false;
+    idleSweepTimer = deps.setInterval(() => {
+      if (shuttingDown) return;
+      if (!dataListenerAttached) {
+        // Attach the activity listener LAZILY on the first tick. Attaching
+        // a 'data' listener at install time would flip stdin into flowing
+        // mode before the MCP SDK's transport attaches its own listener,
+        // racing the JSON-RPC handshake bytes (this timer is default-ON,
+        // unlike the opt-in --stdio-idle-timeout listener below). By the
+        // first tick the transport is long live. No activity signal exists
+        // for this first window yet, so treat it as active and re-arm.
+        deps.stdin.on('data', () => { stdinSawData = true; });
+        dataListenerAttached = true;
+        return;
+      }
+      if (stdinSawData) { stdinSawData = false; return; } // active — re-arm
+      if (sweepInFlight) return; // never overlap sweeps
+      sweepInFlight = true;
+      Promise.resolve()
+        .then(() => runIdleSweep(engine))
+        .catch(() => { /* idle sweep is best-effort; never kill serve */ })
+        .finally(() => { sweepInFlight = false; });
+    }, IDLE_SWEEP_INTERVAL_MS);
+    (idleSweepTimer as { unref?: () => void } | null)?.unref?.();
   }
 
   // Optional idle-timeout safety net. Default OFF; opt-in via

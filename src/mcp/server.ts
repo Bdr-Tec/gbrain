@@ -148,6 +148,23 @@ export async function startMcpServer(engine: BrainEngine) {
     /* resolve IPC is best-effort; never block serve */
   }
 
+  // Startup maintenance sweep [ENG-5][CX-P0.1+P0.3]: the serve process is
+  // the lock owner, so it runs the bounded sweep that ingests the corpus +
+  // reconciles fences/links/timeline for recent workspace writes. Same
+  // best-effort shape as the resolve-IPC block above: fires once ~3s after
+  // connect, unref'd (can never hold the process open), all errors
+  // swallowed inside armStartupSweep. Kill switch: GBRAIN_SWEEP=0 (checked
+  // inside the helper). Lazy import keeps sweep code off the boot path.
+  let startupSweep: { cancel: () => void } | null = null;
+  try {
+    const { armStartupSweep } = await import('../core/sweep.ts');
+    startupSweep = armStartupSweep(engine, {
+      sourceId: process.env.GBRAIN_SOURCE || 'default',
+    });
+  } catch {
+    /* startup sweep is best-effort; never block serve */
+  }
+
   // Exit cleanly when MCP client disconnects (stdin EOF) or on signals.
   // Without this, orphaned serve processes accumulate and contend for the
   // PGLite write lock, causing ingest jobs (email-sync) to time out.
@@ -156,6 +173,7 @@ export async function startMcpServer(engine: BrainEngine) {
     if (shuttingDown) return;
     shuttingDown = true;
     process.stderr.write(`[gbrain-serve] shutdown: ${reason}\n`);
+    try { startupSweep?.cancel(); } catch { /* noop */ }
     try { resolveServer?.close(); } catch { /* noop */ }
     if (resolveSocket) cleanupStaleSocket(resolveSocket);
     Promise.resolve(engine.disconnect?.())
