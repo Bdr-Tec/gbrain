@@ -282,3 +282,110 @@ describe('autopilot-cycle handler — phase passthrough', () => {
     expect(phaseNames).toContain('embed');
   }, 30_000);
 });
+
+// ---------------------------------------------------------------------------
+// Red-team (post-migration v127): worker handlers must never fall back to
+// '.' / worker-daemon cwd when the stored anchor is NULL (v127 clears
+// relative anchors) or relative (legacy row). The 'sync' handler already
+// validated; these pin the same guard on extract / backlinks /
+// autopilot-cycle.
+// ---------------------------------------------------------------------------
+
+describe('extract/backlinks/autopilot-cycle handlers — no cwd fallback (repo-path invariant)', () => {
+  const clearAnchor = async () => {
+    await engine.executeRaw(`DELETE FROM config WHERE key = 'sync.repo_path'`);
+  };
+
+  test('extract: NULL anchor + no data.dir → loud failure naming the fix, not cwd', async () => {
+    await clearAnchor();
+    const handler = (worker as any).handlers.get('extract');
+    expect(handler).toBeDefined();
+    await expect(handler({
+      data: {},
+      signal: { aborted: false } as any,
+      job: { id: 101, name: 'extract' } as any,
+    })).rejects.toThrow(/no sync\.repo_path anchor is configured.*gbrain sync --repo <absolute-path>/s);
+  });
+
+  test('extract: relative stored anchor → refused, not resolved against cwd', async () => {
+    await engine.setConfig('sync.repo_path', '.');
+    try {
+      const handler = (worker as any).handlers.get('extract');
+      await expect(handler({
+        data: {},
+        signal: { aborted: false } as any,
+        job: { id: 102, name: 'extract' } as any,
+      })).rejects.toThrow(/config sync\.repo_path holds a relative path "\."/);
+    } finally {
+      await clearAnchor();
+    }
+  });
+
+  test('extract: relative job.data.dir → refused with the resubmit hint', async () => {
+    const handler = (worker as any).handlers.get('extract');
+    await expect(handler({
+      data: { dir: 'relative/tree' },
+      signal: { aborted: false } as any,
+      job: { id: 103, name: 'extract' } as any,
+    })).rejects.toThrow(/job\.data\.dir holds a relative path.*resubmit/s);
+  });
+
+  test('backlinks: NULL anchor + no data.dir → loud failure, not cwd', async () => {
+    await clearAnchor();
+    const handler = (worker as any).handlers.get('backlinks');
+    expect(handler).toBeDefined();
+    await expect(handler({
+      data: {},
+      signal: { aborted: false } as any,
+      job: { id: 104, name: 'backlinks' } as any,
+    })).rejects.toThrow(/backlinks job has no data\.dir and no sync\.repo_path anchor/);
+  });
+
+  test('backlinks: relative stored anchor → refused', async () => {
+    await engine.setConfig('sync.repo_path', 'brain');
+    try {
+      const handler = (worker as any).handlers.get('backlinks');
+      await expect(handler({
+        data: {},
+        signal: { aborted: false } as any,
+        job: { id: 105, name: 'backlinks' } as any,
+      })).rejects.toThrow(/holds a relative path "brain"/);
+    } finally {
+      await clearAnchor();
+    }
+  });
+
+  test('autopilot-cycle: relative job.data.repoPath → refused (mirrors sync handler)', async () => {
+    const handler = (worker as any).handlers.get('autopilot-cycle');
+    await expect(handler({
+      data: { repoPath: 'relative/tree' },
+      signal: { aborted: false } as any,
+      job: { id: 106, name: 'autopilot-cycle' } as any,
+    })).rejects.toThrow(/job\.data\.repoPath holds a relative path.*[Cc]ancel this job and resubmit/s);
+  });
+
+  test('autopilot-cycle: relative stored anchor → refused; NULL anchor stays null (skip-FS contract)', async () => {
+    await engine.setConfig('sync.repo_path', '.');
+    try {
+      const handler = (worker as any).handlers.get('autopilot-cycle');
+      await expect(handler({
+        data: {},
+        signal: { aborted: false } as any,
+        job: { id: 107, name: 'autopilot-cycle' } as any,
+      })).rejects.toThrow(/config sync\.repo_path holds a relative path/);
+    } finally {
+      await clearAnchor();
+    }
+
+    // NULL anchor: the handler must NOT throw — checkout-less brains run
+    // DB-only phases (v0.41.30 T2 contract). Scope to a cheap phase.
+    const handler = (worker as any).handlers.get('autopilot-cycle');
+    const result = await handler({
+      data: { phases: ['orphans'], pull: false },
+      signal: { aborted: false } as any,
+      job: { id: 108, name: 'autopilot-cycle' } as any,
+    });
+    expect(result).toBeDefined();
+    expect('report' in (result as any)).toBe(true);
+  }, 30_000);
+});

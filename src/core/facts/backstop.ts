@@ -146,18 +146,54 @@ export function __setLiveWorkerProbeForTests(p: (() => boolean) | null): void {
 }
 
 /**
+ * Queue the durable facts-absorb job is submitted to. The live-worker probe
+ * MUST check this same queue — a worker draining a different queue can never
+ * claim the job, so its presence proves nothing.
+ */
+const FACTS_ABSORB_QUEUE = 'default';
+
+/**
+ * Short-TTL memo for the live-worker probe. readWorkers() execs `ps`
+ * synchronously per registry entry, and un-memoized that cost lands inside
+ * EVERY remote put_page. 5s of staleness is harmless here — worst case one
+ * page's facts run in-process (worker just started) or ride the in-process
+ * queue once more (worker just died; the durable submit would have parked
+ * anyway).
+ */
+const WORKER_PROBE_TTL_MS = 5_000;
+let _workerProbeCache: { at: number; value: boolean } | null = null;
+/** Test-only: reset the worker-probe TTL memo. */
+export function __resetWorkerProbeCacheForTests(): void {
+  _workerProbeCache = null;
+}
+
+/**
  * Is a live minion worker available to process a durable facts-absorb job
- * for this brain? Cheap file-registry read (no DB). Fail-open to `false`:
- * a probe error must never block the in-process fallback.
+ * for this brain — on the queue the job actually goes to? Cheap file-registry
+ * read (no DB), memoized for WORKER_PROBE_TTL_MS. Fail-open to `false`: a
+ * probe error must never block the in-process fallback.
+ *
+ * Red-team (#2108 residual): the probe is queue-aware. A queue-blind
+ * presence check let a worker on another queue (`gbrain jobs work --queue
+ * shell`) satisfy the probe while never claiming the 'default'-queue job —
+ * parking it forever AND skipping the in-process fallback: the exact silent
+ * loss #2108 closed.
  */
 async function hasLiveMinionWorker(): Promise<boolean> {
   if (_liveWorkerProbeOverride) return _liveWorkerProbeOverride();
+  const now = Date.now();
+  if (_workerProbeCache !== null && now - _workerProbeCache.at < WORKER_PROBE_TTL_MS) {
+    return _workerProbeCache.value;
+  }
+  let value = false;
   try {
     const { readWorkers } = await import('../minions/worker-registry.ts');
-    return readWorkers().length > 0;
+    value = readWorkers().some((w) => w.queue === FACTS_ABSORB_QUEUE);
   } catch {
-    return false;
+    value = false;
   }
+  _workerProbeCache = { at: now, value };
+  return value;
 }
 
 /**
@@ -191,7 +227,7 @@ async function submitDurableFactsAbsorb(
       ...(ctx.model ? { model: ctx.model } : {}),
     },
     {
-      queue: 'default',
+      queue: FACTS_ABSORB_QUEUE,
       idempotency_key: `facts-absorb:${ctx.sourceId}:${parsedPage.slug}:${contentHash}`,
       max_attempts: 3,
       timeout_ms: 180_000,
@@ -317,9 +353,16 @@ export async function runFactsBackstop(
           );
         }
       } catch (err) {
+        // Red-team: honest abort detection. The old `/abort/i` message sniff
+        // also matched Postgres's routine "current transaction is aborted,
+        // commands ignored until end of transaction block" — a plain DB
+        // failure that would spuriously requeue AND print the exit-drain
+        // stderr banner. The real drain path needs no message sniff:
+        // queue.shutdown() aborts `signal` before in-flight work observes
+        // it, and a gateway fetch abort throws with err.name ===
+        // 'AbortError'. Errors are classified by NAME + signal state only.
         const aborted =
-          signal.aborted ||
-          (err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message)));
+          signal.aborted || (err instanceof Error && err.name === 'AbortError');
         if (aborted) {
           await requeueAborted();
         }

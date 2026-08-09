@@ -32,6 +32,7 @@ import { rankIssues, type RankedIssue } from '../core/doctor-cause-rank.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import type { DbUrlSource } from '../core/config.ts';
 import { gbrainPath, loadConfig } from '../core/config.ts';
+import { requireAbsoluteStoredPath } from '../core/repo-path.ts';
 import { reflexEnabled } from '../core/context/reflex.ts';
 import { resolveSocketPath } from '../core/context/resolve-ipc.ts';
 import { resolveOwnerHolder } from '../core/owner-holder.ts';
@@ -7917,40 +7918,67 @@ export async function buildChecks(
       const { resolveAssetPath } = await import('./doctor-asset-paths.ts');
       // storage_path is repo-relative for sync-ingested assets. Resolving
       // against cwd made this check a false-positive WARN whenever doctor
-      // ran outside the brain repo.
-      const repoRoot = (await engine.getConfig('sync.repo_path')) ?? process.cwd();
-      for (const r of rows) {
-        // #1835: Windows drive paths (D:/…) translate to the WSL automount
-        // (/mnt/d/…) under WSL, and are SKIPPED (not "missing") on hosts
-        // where they cannot exist (macOS / plain Linux) — never joined onto
-        // repoRoot, which produced a false "restore from git" WARN.
-        const resolved = resolveAssetPath(r.storage_path, repoRoot);
-        if (resolved.abs === null) {
-          foreign++;
-          continue;
-        }
+      // ran outside the brain repo — and post-migration-v127 a cleared
+      // anchor must not silently become cwd either (repo-path.ts invariant).
+      // A missing/relative anchor is REPORTED (doctor's loud surface) and
+      // the presence scan skipped, never run against the wrong tree.
+      const anchorRaw = await engine.getConfig('sync.repo_path');
+      let repoRoot: string | null = null;
+      let anchorProblem: string | null = null;
+      if (!anchorRaw) {
+        anchorProblem = 'no sync.repo_path anchor is configured';
+      } else {
         try {
-          fs.statSync(resolved.abs);
-        } catch {
-          vanished++;
-          if (vanishedPaths.length < 5) vanishedPaths.push(r.storage_path);
+          repoRoot = requireAbsoluteStoredPath(anchorRaw, 'config sync.repo_path');
+        } catch (err) {
+          anchorProblem = err instanceof Error ? err.message : String(err);
         }
       }
-      const checked = rows.length - foreign;
-      const foreignNote = foreign > 0
-        ? ` (${foreign} Windows-drive path(s) skipped — not resolvable on this platform)`
-        : '';
-      if (rows.length === 0) {
-        checks.push({ name: 'image_assets', status: 'ok', message: 'No image assets indexed yet' });
-      } else if (vanished === 0) {
-        checks.push({ name: 'image_assets', status: 'ok', message: `${checked} image(s) all present on disk${foreignNote}` });
+      if (repoRoot === null) {
+        if (rows.length === 0) {
+          checks.push({ name: 'image_assets', status: 'ok', message: 'No image assets indexed yet' });
+        } else {
+          checks.push({
+            name: 'image_assets',
+            status: 'warn',
+            message: `${rows.length} image asset(s) indexed but the on-disk presence scan was skipped: ${anchorProblem}. ` +
+                     `Fix: gbrain sync --repo <absolute-path> (or: gbrain config set sync.repo_path <absolute-path>).`,
+          });
+        }
       } else {
-        checks.push({
-          name: 'image_assets',
-          status: 'warn',
-          message: `${vanished} of ${checked} image(s) missing from disk (e.g. ${vanishedPaths.join(', ')})${foreignNote}. ` +
-                   `Fix: restore from git, or \`gbrain sync --skip-failed\` to acknowledge.`,
-        });
+        for (const r of rows) {
+          // #1835: Windows drive paths (D:/…) translate to the WSL automount
+          // (/mnt/d/…) under WSL, and are SKIPPED (not "missing") on hosts
+          // where they cannot exist (macOS / plain Linux) — never joined onto
+          // repoRoot, which produced a false "restore from git" WARN.
+          const resolved = resolveAssetPath(r.storage_path, repoRoot);
+          if (resolved.abs === null) {
+            foreign++;
+            continue;
+          }
+          try {
+            fs.statSync(resolved.abs);
+          } catch {
+            vanished++;
+            if (vanishedPaths.length < 5) vanishedPaths.push(r.storage_path);
+          }
+        }
+        const checked = rows.length - foreign;
+        const foreignNote = foreign > 0
+          ? ` (${foreign} Windows-drive path(s) skipped — not resolvable on this platform)`
+          : '';
+        if (rows.length === 0) {
+          checks.push({ name: 'image_assets', status: 'ok', message: 'No image assets indexed yet' });
+        } else if (vanished === 0) {
+          checks.push({ name: 'image_assets', status: 'ok', message: `${checked} image(s) all present on disk${foreignNote}` });
+        } else {
+          checks.push({
+            name: 'image_assets',
+            status: 'warn',
+            message: `${vanished} of ${checked} image(s) missing from disk (e.g. ${vanishedPaths.join(', ')})${foreignNote}. ` +
+                     `Fix: restore from git, or \`gbrain sync --skip-failed\` to acknowledge.`,
+          });
+        }
       }
     } catch {
       // Pre-v36 brains may not have the files table on PGLite — quiet skip.

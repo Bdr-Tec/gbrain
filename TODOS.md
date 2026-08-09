@@ -1,5 +1,36 @@
 # TODOS
 
+## Sync/facts follow-ups (final wave, 2026-08)
+
+- [ ] **P2 — doctor check: waiting jobs on queues with zero live workers (red-team #1
+  residual).** The facts-absorb probe is queue-aware now, but the general class remains:
+  any durable job submitted to a queue no live `gbrain jobs work` worker drains parks
+  silently. Add a doctor check that joins `minion_jobs` waiting rows against the worker
+  registry (`src/core/minions/worker-registry.ts:readWorkers`) by queue and WARNs with
+  the exact `gbrain jobs work --queue <q>` command per orphaned queue.
+- [ ] **P2 — doctor scan for pre-fix launchd/cron wrapper scripts carrying a relative
+  `--repo`.** Migration v127 clears relative anchors in the DB but can't reach generated
+  wrapper scripts on disk (autopilot.ts:1373 generates absolute paths now; scripts baked
+  by older binaries may still carry `--repo .`). Scan the known install locations and
+  name the regenerate command (`gbrain autopilot --install`).
+- [ ] **P3 — minion-jobs retention trade-off for facts-absorb rows.** Completed
+  facts-absorb rows double as idempotency memory: the content-hash `idempotency_key`
+  dedups re-submits of the same page content. Any future auto-prune of completed
+  `minion_jobs` rows re-opens duplicate extraction (cost, not correctness — the pipeline
+  dedups again at insert). Document the trade-off in the retention design before any
+  auto-prune lands.
+- [ ] **P3 — CI guard: a new migration's version must exceed master's max.** The
+  v126/v127 land-order class: two in-flight branches claiming adjacent version numbers
+  rely on code comments today (a collision silently skips the second migration). A CI
+  check comparing the branch's `MIGRATIONS` max version against master's makes the
+  collision structural instead of social.
+- [ ] **P3 — facts-absorb PROTECTED_JOB_NAMES posture note.** If `facts-absorb` is ever
+  added to PROTECTED_JOB_NAMES, the remote/MCP put_page backstop breaks: `minions.add`
+  from an untrusted context would be refused, and the durable path silently vanishes for
+  exactly the callers #2108 protects (falling back to the doomed in-process absorb).
+  Leave it unprotected deliberately (bounded LLM cost, no shell), or build a
+  trusted-submitter seam first — decide deliberately, don't drive-by.
+
 ## WAL-repair wave follow-ups (#223/#1670/#2575)
 
 - [ ] **P2 — gate auto-repair on an unclean-shutdown marker (adversarial F7).** The classifier

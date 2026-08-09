@@ -25,17 +25,43 @@ export function resolveRepoArg(p: string): string {
 }
 
 /**
+ * Remediation hint for `sources.local_path` rows: the per-source sync repoint
+ * (matches the `sync --all` relative-path skip message shape).
+ */
+export function sourceLocalPathRemediation(sourceId: string): string {
+  return `Fix it once with an absolute path: gbrain sync --source ${sourceId} --repo <absolute-path>.`;
+}
+
+/**
+ * Remediation hint for minion job payloads: a queued row can't be edited in
+ * place — the only fix is a fresh submission.
+ */
+export const JOB_PAYLOAD_REMEDIATION =
+  'Cancel this job and resubmit it with an absolute path.';
+
+/**
  * Guard for repo paths read back from storage. Refuses to resolve a relative
  * value against the current cwd — that is exactly the wrong-tree footgun:
  * whichever directory the next bare invocation happens to run from becomes
  * the sync source.
+ *
+ * `remediation` lets the caller name the fix command that matches WHERE the
+ * bad value is stored (sources.local_path → per-source sync repoint; job
+ * payload → resubmit; default → the config-anchor sync --repo / config set
+ * pair). Optional for backward compatibility.
  */
-export function requireAbsoluteStoredPath(value: string, storageDesc: string): string {
+export function requireAbsoluteStoredPath(
+  value: string,
+  storageDesc: string,
+  remediation?: string,
+): string {
   if (isAbsolute(value)) return value;
+  const fix = remediation ??
+    'Fix it once with an absolute path: gbrain sync --repo <absolute-path> ' +
+    '(or: gbrain config set sync.repo_path <absolute-path>).';
   throw new Error(
     `${storageDesc} holds a relative path "${value}". Refusing to resolve it against ` +
     `the current directory — a bare invocation from the wrong cwd would sync the wrong ` +
-    `tree. Fix it once with an absolute path: gbrain sync --repo <absolute-path> ` +
-    `(or: gbrain config set sync.repo_path <absolute-path>).`,
+    `tree. ${fix}`,
   );
 }

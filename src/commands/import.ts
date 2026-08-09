@@ -43,6 +43,15 @@ export interface RunImportResult {
   errors: number;
   chunksCreated: number;
   failures: Array<{ path: string; error: string }>;
+  /**
+   * #2114 anchor decision (red-team: was stderr-only, invisible to --json
+   * consumers). 'seeded' = sync.repo_path was unset and now points here;
+   * 'repointed' = --set-repo-path moved an existing anchor here; 'kept' =
+   * the existing anchor won (already here, or a different tree without the
+   * flag). Absent when no decision was made (non-git dir, managedBookmark,
+   * or import failures blocked the bookmark block).
+   */
+  anchor?: 'kept' | 'seeded' | 'repointed';
 }
 
 export async function runImport(
@@ -490,13 +499,9 @@ export async function runImport(
   }
 
   const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-  if (jsonOutput) {
-    console.log(JSON.stringify({
-      status: 'success', duration_s: parseFloat(totalTime),
-      imported, skipped, errors, chunks: chunksCreated,
-      total_files: allFiles.length,
-    }));
-  } else {
+  // The --json summary is printed AFTER the anchor-decision block below so it
+  // can carry the `anchor` field (red-team: the decision was stderr-only).
+  if (!jsonOutput) {
     console.log(`\nImport complete (${totalTime}s):`);
     console.log(`  ${imported} pages imported`);
     console.log(`  ${skipped} pages skipped (${skipped - errors} unchanged, ${errors} errors)`);
@@ -560,6 +565,7 @@ export async function runImport(
   // ledger + bookmark via the shared gate (applySyncFailureGate). Skipping the
   // internal handling here prevents double-recording (which would double-count
   // the auto-skip `attempts` streak) and a competing bookmark write.
+  let anchorDecision: 'kept' | 'seeded' | 'repointed' | undefined;
   if (gitHead && !opts.managedBookmark) {
     // Record failures into the central JSONL so doctor can surface them.
     // Use gitHead as the commit so a later sync can tell "same broken
@@ -590,20 +596,38 @@ export async function runImport(
     // --set-repo-path flag; without it the existing anchor wins and we say
     // so on stderr.
     const existingAnchor = await engine.getConfig('sync.repo_path');
-    if (!existingAnchor || existingAnchor === dir) {
+    if (!existingAnchor) {
       await engine.setConfig('sync.repo_path', dir);
+      anchorDecision = 'seeded';
+    } else if (existingAnchor === dir) {
+      await engine.setConfig('sync.repo_path', dir);
+      anchorDecision = 'kept';
     } else if (args.includes('--set-repo-path')) {
       console.error(`sync.repo_path repointed: ${existingAnchor} -> ${dir} (--set-repo-path)`);
       await engine.setConfig('sync.repo_path', dir);
+      anchorDecision = 'repointed';
     } else {
       console.error(
         `sync.repo_path stays at ${existingAnchor} (this import ran in ${dir}). ` +
         `Pass --set-repo-path to repoint the sync anchor to this directory.`,
       );
+      anchorDecision = 'kept';
     }
   }
 
-  return { imported, skipped, errors, chunksCreated, failures };
+  if (jsonOutput) {
+    console.log(JSON.stringify({
+      status: 'success', duration_s: parseFloat(totalTime),
+      imported, skipped, errors, chunks: chunksCreated,
+      total_files: allFiles.length,
+      ...(anchorDecision ? { anchor: anchorDecision } : {}),
+    }));
+  }
+
+  return {
+    imported, skipped, errors, chunksCreated, failures,
+    ...(anchorDecision ? { anchor: anchorDecision } : {}),
+  };
 }
 
 /**

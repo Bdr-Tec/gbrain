@@ -102,7 +102,7 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
   }
 
   const key = args[1];
-  const value = args[2];
+  let value = args[2];
 
   if (action === 'get' && key) {
     // #2120: `get` used to read only the DB plane, so a runtime-effective key
@@ -203,6 +203,24 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
     // they're mid-backfill.
     const coverageOverride =
       args.includes('--coverage-override') || args.includes('--yes');
+
+    // repo-path.ts invariant (red-team): `gbrain config set sync.repo_path .`
+    // re-seeded a relative anchor, bypassing the ingress normalization every
+    // other writer applies (sync --repo, import, sources add, autopilot) —
+    // migration v127 would just clear it again, and until then every anchor
+    // reader hits the loud relative-path refusal. Resolve to absolute at set
+    // time; the confirmation line below prints the RESOLVED value so the user
+    // sees exactly what was persisted.
+    if (key === 'sync.repo_path') {
+      if (value.trim() === '') {
+        console.error(
+          `[config] sync.repo_path cannot be empty. To clear the anchor: gbrain config unset sync.repo_path`,
+        );
+        process.exit(1);
+      }
+      const { resolveRepoArg } = await import('../core/repo-path.ts');
+      value = resolveRepoArg(value);
+    }
 
     // v0.42.42.0 (#2139): validate spend.posture at set time so a typo
     // ('tokenMax', 'max') doesn't silently fall back to gated.

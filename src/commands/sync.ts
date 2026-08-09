@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, statSync, realpathSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { isAbsolute, join, relative, sep } from 'path';
-import { resolveRepoArg, requireAbsoluteStoredPath } from '../core/repo-path.ts';
+import { resolveRepoArg, requireAbsoluteStoredPath, sourceLocalPathRemediation } from '../core/repo-path.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import { DELETE_BATCH_SIZE } from '../core/engine-constants.ts';
 import { importFile } from '../core/import-file.ts';
@@ -1294,7 +1294,7 @@ async function readSyncAnchor(
  * scope it to — collection happens after this point) — see the P2 review
  * finding on `createSyncBaselineCommit`'s callers.
  */
-async function isAnchorOwnedSyncPath(
+export async function isAnchorOwnedSyncPath(
   engine: BrainEngine,
   opts: SyncOpts,
   repoPath: string,
@@ -1303,6 +1303,13 @@ async function isAnchorOwnedSyncPath(
   if (opts.sourceId && opts.sourceId !== 'default') return false;
   const anchor = await readSyncAnchor(engine, opts.sourceId, 'repo_path');
   if (anchor === null) return false;
+  // repo-path.ts invariant (red-team): realpathSync would resolve a relative
+  // stored anchor against THIS process's cwd — exactly the silent resolution
+  // the invariant forbids, and it could "prove" ownership of whatever tree
+  // the process happens to run in. A relative anchor can never vouch for a
+  // path; return no-match (self-heal doesn't fire — performSync's
+  // resolve_repo guard is the loud surface for the bad anchor itself).
+  if (!isAbsolute(anchor)) return false;
   try {
     return realpathSync(anchor) === realpathSync(repoPath);
   } catch {
@@ -1841,6 +1848,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     requireAbsoluteStoredPath(
       storedRepoPath,
       opts.sourceId ? `sources.local_path for "${opts.sourceId}"` : 'config sync.repo_path',
+      opts.sourceId ? sourceLocalPathRemediation(opts.sourceId) : undefined,
     );
   }
   const repoPath = cliRepoPath ?? storedRepoPath;
@@ -5262,7 +5270,11 @@ export async function syncOneSource(
   const repoOpts: SyncOpts = {
     // src is a db row: a stored local_path is refused when relative rather
     // than forwarded as caller intent (repo-path.ts invariant).
-    repoPath: requireAbsoluteStoredPath(src.local_path!, `sources.local_path for "${src.id}"`),
+    repoPath: requireAbsoluteStoredPath(
+      src.local_path!,
+      `sources.local_path for "${src.id}"`,
+      sourceLocalPathRemediation(src.id),
+    ),
     dryRun: shared.dryRun,
     full: shared.full,
     noPull: shared.noPull,

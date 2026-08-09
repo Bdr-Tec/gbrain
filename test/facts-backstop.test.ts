@@ -11,7 +11,11 @@
 
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { runFactsBackstop, __setLiveWorkerProbeForTests } from '../src/core/facts/backstop.ts';
+import {
+  runFactsBackstop,
+  __setLiveWorkerProbeForTests,
+  __resetWorkerProbeCacheForTests,
+} from '../src/core/facts/backstop.ts';
 import type { FactsBackstopCtx } from '../src/core/facts/backstop.ts';
 import {
   __setChatTransportForTests,
@@ -324,6 +328,7 @@ describe('runFactsBackstop — durable facts-absorb (#2108)', () => {
 
   afterEach(async () => {
     __setLiveWorkerProbeForTests(null);
+    __resetWorkerProbeCacheForTests();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (engine as any).db.query(`DELETE FROM minion_jobs WHERE name = 'facts-absorb'`);
   });
@@ -360,6 +365,139 @@ describe('runFactsBackstop — durable facts-absorb (#2108)', () => {
     // No durable job — the in-process queue owns the work (a live long-lived
     // process without a worker must keep extracting in-process; parking jobs
     // no worker drains would be a regression).
+    expect((await absorbJobsFor(page.slug)).length).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------
+  // Red-team #1: the probe must be QUEUE-aware. The durable job goes to
+  // queue 'default'; a worker draining any other queue can never claim it,
+  // so its presence must not park the job (skipping the in-process
+  // fallback = the exact silent loss #2108 closed). These tests exercise
+  // the REAL registry probe (no override) via a temp GBRAIN_HOME.
+  // ---------------------------------------------------------------------
+
+  const withWorkerRegistry = async (
+    fn: (registerLiveWorker: (queue: string) => () => void) => Promise<void>,
+  ): Promise<void> => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { registerWorker } = await import('../src/core/minions/worker-registry.ts');
+    const { withEnv } = await import('./helpers/with-env.ts');
+    const home = mkdtempSync(join(tmpdir(), 'backstop-worker-probe-'));
+    const cleanups: Array<() => void> = [];
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        __resetWorkerProbeCacheForTests();
+        await fn((queue: string) => {
+          const cleanup = registerWorker({
+            pid: process.pid, // this live test process — passes the liveness + PID-reuse guards
+            queue,
+            nice_requested: null,
+            nice_effective: null,
+            started_at: Date.now(),
+          });
+          cleanups.push(cleanup);
+          return cleanup;
+        });
+      });
+    } finally {
+      for (const c of cleanups) c();
+      __resetWorkerProbeCacheForTests();
+      rmSync(home, { recursive: true, force: true });
+    }
+  };
+
+  test('wrong-queue worker does NOT satisfy the probe → in-process fallback (red-team #1)', async () => {
+    await withWorkerRegistry(async (registerLiveWorker) => {
+      registerLiveWorker('shell'); // live worker, but on a queue the job never goes to
+      chatStub([]);
+      const page = meetingPage();
+      const r = await runFactsBackstop(page, makeCtx({ preferDurableAbsorb: true }));
+      expect(r.mode).toBe('queue');
+      if (r.mode === 'queue') expect(r.enqueued).toBe(true);
+      // No durable job parked on a queue nobody drains — the in-process
+      // queue owns the work.
+      expect((await absorbJobsFor(page.slug)).length).toBe(0);
+    });
+  });
+
+  test('default-queue worker satisfies the probe → durable minion job', async () => {
+    await withWorkerRegistry(async (registerLiveWorker) => {
+      registerLiveWorker('default');
+      const page = meetingPage();
+      // NO chat stub: the durable path must not run the LLM in this process.
+      const r = await runFactsBackstop(page, makeCtx({ preferDurableAbsorb: true }));
+      expect(r.mode).toBe('queue');
+      if (r.mode === 'queue') expect(r.enqueued).toBe(true);
+      const jobs = await absorbJobsFor(page.slug);
+      expect(jobs.length).toBe(1);
+      expect(jobs[0].status).toBe('waiting');
+    });
+  });
+
+  test('probe result is memoized (short TTL) — hot-path readWorkers/ps cost', async () => {
+    await withWorkerRegistry(async (registerLiveWorker) => {
+      // First probe: no workers → false, memoized.
+      chatStub([]);
+      const p1 = meetingPage();
+      await runFactsBackstop(p1, makeCtx({ preferDurableAbsorb: true }));
+      expect((await absorbJobsFor(p1.slug)).length).toBe(0);
+
+      // A default-queue worker appears, but WITHOUT a cache reset the
+      // memoized `false` still wins inside the TTL window.
+      registerLiveWorker('default');
+      chatStub([]);
+      const p2 = meetingPage();
+      await runFactsBackstop(p2, makeCtx({ preferDurableAbsorb: true }));
+      expect((await absorbJobsFor(p2.slug)).length).toBe(0);
+
+      // After a reset (TTL-expiry stand-in) the live worker is seen.
+      __resetWorkerProbeCacheForTests();
+      const p3 = meetingPage();
+      await runFactsBackstop(p3, makeCtx({ preferDurableAbsorb: true }));
+      expect((await absorbJobsFor(p3.slug)).length).toBe(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Red-team #5: honest abort detection. A Postgres-style "current
+  // transaction is aborted, commands ignored…" error is a plain pipeline
+  // failure — it must land in the absorb log WITHOUT triggering the
+  // durable requeue + exit-drain stderr banner (the old /abort/i message
+  // sniff matched it).
+  // ---------------------------------------------------------------------
+
+  test("Postgres 'transaction is aborted' error does NOT trigger the durable requeue (red-team #5)", async () => {
+    const page = meetingPage();
+    __setChatTransportForTests(async () => {
+      throw new Error('current transaction is aborted, commands ignored until end of transaction block');
+    });
+
+    const r = await runFactsBackstop(page, makeCtx()); // default queue mode, in-process
+    expect(r.mode).toBe('queue');
+    if (r.mode === 'queue') expect(r.enqueued).toBe(true);
+
+    // Wait for the in-process worker to settle: the absorb-log row is
+    // written AFTER the requeue decision, so its presence proves the
+    // catch block completed.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const logCount = async (): Promise<number> => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const res = await (engine as any).db.query(
+        `SELECT COUNT(*)::int AS n FROM ingest_log WHERE source_type = 'facts:absorb' AND source_ref = $1`,
+        [page.slug],
+      );
+      return res.rows[0].n as number;
+    };
+    const deadline = Date.now() + 5000;
+    while ((await logCount()) === 0 && Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    expect(await logCount()).toBeGreaterThanOrEqual(1);
+
+    // The load-bearing assertion: NOT classified as an abort — no durable
+    // requeue happened.
     expect((await absorbJobsFor(page.slug)).length).toBe(0);
   });
 

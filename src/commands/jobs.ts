@@ -10,7 +10,7 @@ import { WORKER_EXIT_RSS_WATCHDOG } from '../core/minions/worker-exit-codes.ts';
 import type { MinionHandler, MinionJob, MinionJobStatus } from '../core/minions/types.ts';
 import type { PaceKeyOverrides } from '../core/pace-mode.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
-import { requireAbsoluteStoredPath } from '../core/repo-path.ts';
+import { requireAbsoluteStoredPath, JOB_PAYLOAD_REMEDIATION } from '../core/repo-path.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { parseNiceValue, applyNiceness, getEffectiveNiceness, formatNice } from '../core/minions/niceness.ts';
 
@@ -59,6 +59,26 @@ const GATEWAY_REFRESH_JOB_NAMES = new Set([
   'extract-takes-from-pages',
   'embed-catch-up',
 ]);
+
+/**
+ * repo-path.ts invariant, worker-daemon edition (red-team, post-migration
+ * v127): a job handler that needs a filesystem dir must NEVER fall back to
+ * '.' / cwd — the worker daemon's cwd (typically / under launchd) is exactly
+ * the wrong-tree footgun v127 clears anchors to avoid. NULL anchor → loud
+ * failure naming the fix; relative anchor → requireAbsoluteStoredPath's
+ * refusal. Used by the 'extract' and 'backlinks' handlers.
+ */
+function requireConfiguredRepoAnchor(anchor: string | null, jobName: string): string {
+  if (!anchor) {
+    throw new Error(
+      `${jobName} job has no data.dir and no sync.repo_path anchor is configured — ` +
+      `refusing to fall back to the worker's cwd (the wrong-tree footgun). ` +
+      `Resubmit the job with an absolute {"dir": "/abs/path"}, or seed the anchor: ` +
+      `gbrain sync --repo <absolute-path> (or: gbrain config set sync.repo_path <absolute-path>).`,
+    );
+  }
+  return requireAbsoluteStoredPath(anchor, 'config sync.repo_path');
+}
 
 function registerBuiltinJob(
   worker: MinionWorker,
@@ -1428,7 +1448,7 @@ export async function registerBuiltinHandlers(
     // enqueued by an older binary would otherwise resolve against the WORKER
     // daemon's cwd. Fail the job loudly instead.
     const repoPath = typeof job.data.repoPath === 'string'
-      ? requireAbsoluteStoredPath(job.data.repoPath, 'job.data.repoPath')
+      ? requireAbsoluteStoredPath(job.data.repoPath, 'job.data.repoPath', JOB_PAYLOAD_REMEDIATION)
       : undefined;
     const noPull = !resolveJobPull(job.data);
     // noEmbed defaults to true (embed is a separate job — submit `embed --stale`
@@ -1704,9 +1724,14 @@ export async function registerBuiltinHandlers(
     const mode = (typeof job.data.mode === 'string' && ['links', 'timeline', 'all'].includes(job.data.mode))
       ? (job.data.mode as 'links' | 'timeline' | 'all')
       : 'all';
+    // repo-path.ts invariant: job payloads + the config anchor are STORAGE —
+    // a relative dir would resolve against the worker daemon's cwd (typically
+    // / under launchd), and post-migration-127 a cleared anchor must fail
+    // loudly instead of silently becoming '.' (the wrong-tree footgun the
+    // migration exists to close). Mirrors the sibling 'sync' handler.
     const dir = typeof job.data.dir === 'string'
-      ? job.data.dir
-      : (await engine.getConfig('sync.repo_path')) ?? '.';
+      ? requireAbsoluteStoredPath(job.data.dir, 'job.data.dir', JOB_PAYLOAD_REMEDIATION)
+      : requireConfiguredRepoAnchor(await engine.getConfig('sync.repo_path'), 'extract');
     return await runExtractCore(engine, { mode, dir, dryRun: !!job.data.dryRun });
   });
 
@@ -1719,9 +1744,11 @@ export async function registerBuiltinHandlers(
     // (runPhaseBacklinks). The filesystem fixer stays available explicitly
     // via '{"action":"fix"}' or `gbrain check-backlinks fix`.
     const action: 'check' | 'fix' = job.data.action === 'fix' ? 'fix' : 'check';
+    // repo-path.ts invariant: same guard as the 'extract' handler above — no
+    // '.' (worker-cwd) fallback for a NULL/relative stored anchor.
     const dir = typeof job.data.dir === 'string'
-      ? job.data.dir
-      : (await engine.getConfig('sync.repo_path')) ?? '.';
+      ? requireAbsoluteStoredPath(job.data.dir, 'job.data.dir', JOB_PAYLOAD_REMEDIATION)
+      : requireConfiguredRepoAnchor(await engine.getConfig('sync.repo_path'), 'backlinks');
     return await runBacklinksCore({ action, dir, dryRun: !!job.data.dryRun });
   });
 
@@ -1795,9 +1822,18 @@ export async function registerBuiltinHandlers(
     // postgres brain should skip filesystem phases (no_brain_dir) and run the
     // DB-only phases (resolve_symbol_edges, embed, ...) — not silently lint/sync
     // against whatever directory the worker happens to be running in.
-    const repoPath: string | null = typeof job.data.repoPath === 'string'
-      ? job.data.repoPath
-      : (await engine.getConfig('sync.repo_path')) ?? null;
+    //
+    // repo-path.ts invariant (red-team): both the job payload and the config
+    // anchor are STORAGE — a relative value must fail loudly (mirroring the
+    // sibling 'sync' handler), never resolve against the worker daemon's cwd.
+    // Null stays null: checkout-less brains keep their skip-FS-phases contract.
+    let repoPath: string | null;
+    if (typeof job.data.repoPath === 'string') {
+      repoPath = requireAbsoluteStoredPath(job.data.repoPath, 'job.data.repoPath', JOB_PAYLOAD_REMEDIATION);
+    } else {
+      const anchor = await engine.getConfig('sync.repo_path');
+      repoPath = anchor ? requireAbsoluteStoredPath(anchor, 'config sync.repo_path') : null;
+    }
 
     // v0.38 (codex r1 P1-2 + P1-5): per-source dispatch threading.
     //   - source_id: when set, runCycle uses the per-source lock ID and
