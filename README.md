@@ -75,11 +75,11 @@ This is the difference between a search engine and a brain. Search finds the pag
 > `bun remove -g gbrain`, then reinstall from GitHub. `gbrain doctor` detects a
 > shadowing npm install and prints the fix.
 
-GBrain is designed to be installed and operated by an AI agent. Pick the agent you already have — each path below is complete on its own. (Wiring it up by hand instead? Jump to [CLI standalone](#cli-standalone-no-agent) or the [MCP table](#connect-gbrain-to-your-ai-client-mcp).)
+GBrain is designed to be installed and operated by an AI agent. **New to GBrain? Start with Codex** — it runs on the ChatGPT subscription you already have, takes ~15 minutes, and deploys nothing. Already living in Claude Code? Its path is identical. Want GBrain running the way it was designed to run — always on, enriching your brain around the clock? That's OpenClaw or Hermes, at real server + API cost. Each path below is complete on its own. (Wiring it up by hand instead? Jump to [CLI standalone](#cli-standalone-no-agent) or the [MCP table](#connect-gbrain-to-your-ai-client-mcp).)
 
-### For Codex — turn it into your persistent personal agent
+### For Codex — the recommended first step
 
-Works in the **ChatGPT desktop app** (open Codex on a folder) and in the **Codex CLI** (`codex` in a terminal) — same install, same result. Pick the folder that will become your agent's home, and paste:
+Turn Codex into your persistent personal agent. Works in the **ChatGPT desktop app** (open Codex on a folder) and in the **Codex CLI** (`codex` in a terminal) — same install, same result. Pick the folder that will become your agent's home, and paste:
 
 ```
 Read and follow every step of:
@@ -107,9 +107,9 @@ answers. Ask before anything destructive. You are not done until
 
 Everything from the Codex path applies — interview, identity from your own answers, local brain, private repo, keyless mode — plus Claude Code gets **per-turn context hooks** (consent-gated): your brain loads automatically into every prompt, and each session persists itself to your private repo at exit. Restart the session after install and ask "what did I tell you my top jobs were?" — that's the moment it clicks. Full contract, security posture, and uninstall: [docs/guides/bootstrap.md](docs/guides/bootstrap.md).
 
-### For OpenClaw or Hermes — the full autonomous platform
+### For OpenClaw or Hermes — GBrain as intended, always on
 
-The always-on experience: a server-hosted agent with 24/7 crons, continuous ingestion, and the overnight dream cycle that enriches your brain while you sleep. If you don't have a platform running yet, both deploy in one click:
+This is GBrain used the way it was designed to be used: a server-hosted agent with 24/7 crons, continuous ingestion, and the overnight dream cycle that enriches your brain while you sleep — your agent works whether your laptop is open or not. It's also the highest-cost path: a deployed server (8GB+ RAM) plus raw API token usage that scales with how hard your agent runs, well beyond a chat subscription. Start here if you want the full experience from day one; start with Codex above if you want to feel it first. If you don't have a platform running yet, both deploy in one click:
 
 - **[OpenClaw](https://github.com/openclaw/openclaw)** — deploy [AlphaClaw on Render](https://render.com/deploy?repo=https://github.com/chrysb/alphaclaw) (one click, 8GB+ RAM)
 - **[Hermes](https://github.com/NousResearch/hermes-agent)** — deploy on [Railway](https://github.com/praveen-ks-2001/hermes-agent-template) (one click)
