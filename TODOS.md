@@ -4895,7 +4895,7 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 **What:** the `MAX(row_num)+1` next-row allocation for takes is hand-rolled in
 four places with inconsistent locking: `src/core/takes-append.ts` (DB-only
 fallback, under withPageLock), both engines' `supersedeTake` (in-SQL), and
-`src/core/consolidate.ts`. Extract one shared helper with a consistent locking
+`src/core/cycle/phases/consolidate.ts`. Extract one shared helper with a consistent locking
 story so a fifth writer can't invent a fifth allocation.
 
 **Why:** every divergent copy is a future duplicate-row or clobber bug of the

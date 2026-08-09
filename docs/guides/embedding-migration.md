@@ -51,14 +51,16 @@ llama-server, and other bring-your-own-model providers).
    people running deliberate experiments.
 5. **Apply.** When the target width differs from the actual column width,
    runs the same atomic schema transition `ze-switch` uses, in one
-   transaction. It rebuilds **all three dim-pinned text-embedding-space
-   columns** — `content_chunks.embedding`, `query_cache.embedding`, and
-   `facts.embedding` — at the new width, preserving each column's type
-   (`vector` vs `halfvec`) and recreating its HNSW index. Missing any of the
-   three leaves it silently broken: a narrow `query_cache.embedding` makes
-   every cache write and read fail *by design* (the cache swallows errors so
-   it can never break search) for a permanent 0% hit rate, and a narrow
-   `facts.embedding` fails every per-fact embed write. The image/multimodal
+   transaction. It rebuilds **all four dim-pinned text-embedding-space
+   columns** — `content_chunks.embedding`, `query_cache.embedding`,
+   `facts.embedding`, and `takes.embedding` — at the new width, preserving
+   each column's type (`vector` vs `halfvec`) and recreating its HNSW index.
+   Missing any of the four leaves it silently broken: a narrow
+   `query_cache.embedding` makes every cache write and read fail *by design*
+   (the cache swallows errors so it can never break search) for a permanent
+   0% hit rate, a narrow `facts.embedding` fails every per-fact embed write,
+   and a narrow `takes.embedding` fails every `embed --stale` takes-lane
+   write while still paying the embedding gateway each run. The image/multimodal
    columns ARE deliberately untouched — they use separate models whose
    dimensions are independent of the text embedding model.
    Writes `embedding_model` + `embedding_dimensions` to BOTH config planes

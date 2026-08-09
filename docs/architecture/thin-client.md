@@ -65,6 +65,8 @@ Key files:
   dispatch in cli.ts (call `engine.foo()` directly), so each gets its own
   `if (isThinClient(cfg)) { callRemoteTool(...) }` branch that maps CLI flags
   to op params. `think` is a special case: the server's `think` op
-  intentionally disables `--save`/`--take` for remote callers
-  (operations.ts:1103-1135 trust-boundary gate); thin-client `think` warns
+  intentionally disables `--save`/`--take` for remote callers (the think
+  handler's fail-closed trust-boundary gate in operations.ts — persistence
+  requires `ctx.remote !== false`, and blocked callers get
+  `remote_persisted_blocked: true`); thin-client `think` warns
   loudly when those flags are set.

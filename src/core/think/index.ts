@@ -701,7 +701,8 @@ export const THINK_TAKE_CLAIM_MAX_CHARS = 2000;
  * Signals (never throws for expected shapes, mirroring persistSynthesis):
  *   - TAKE_REQUIRES_ANCHOR         — no anchor given.
  *   - TAKE_EMPTY_NOT_PERSISTED     — synthesis failed or empty answer.
- *   - TAKE_ANCHOR_NOT_FOUND:<s>    — anchor page absent in the caller's scope
+ *   - `TAKE_ANCHOR_NOT_FOUND: <s>` (space after the colon) — anchor page
+ *     absent in the caller's scope
  *     (scope resolved via the sourceIds > sourceId precedence, matching
  *     sourceScopeOpts). Remote callers never reach here — the op handler's
  *     fail-closed gate zeroes `take` for them.
