@@ -55,7 +55,12 @@ export interface ExtractTakesFromPagesOpts {
   includeCovered?: boolean;
   /** Owner identifier for the inserted takes. Default 'system'. */
   holder?: string;
-  /** Model override; defaults to facts.extraction_model. */
+  /**
+   * Model override; defaults to the configured chat model via getChatModel()
+   * (#2997 — NOT facts.extraction_model, and deliberately not a tier default:
+   * OAuth/local-only installs have exactly one working model, and a tier
+   * fallback would reintroduce the hardcoded-Haiku failure #2997 fixed).
+   */
   model?: string;
   /** Progress hook called per page. */
   onProgress?: (done: number, total: number, claims: number) => void;
