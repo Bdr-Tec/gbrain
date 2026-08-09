@@ -38,6 +38,61 @@ Every scoreboard row carries a `seam` label: the `openclaw` row exercises the sh
 - CLI exit codes for the new command route through the shared write-fence + aliveness-grace exit seam, so PGLite's WASM exit-code stomping and Bun's exit-time stdout discard can't corrupt the CI contract.
 
 To take advantage of v0.44.0.0: run `gbrain eval brainbench` — no setup, no keys, no brain required. If it ever reports something broken after an upgrade, `bun evals/brainbench/generator/gen.ts` rebuilds the corpus byte-identically and `gbrain eval brainbench --update-baseline` re-derives the baseline from an actual run; both are safe to re-run any time.
+## [0.42.76.0] - 2026-08-08
+
+**Mistyped or unsupported flags now fail loudly instead of being silently ignored — including the ones that were supposed to make a command safe.**
+
+**Strict flag validation, CLI-wide.** Every gbrain command now rejects a flag it does not understand, with a clear error naming the flag and the command, before any work runs. Before, commands read their flags ad hoc and ignored the rest — so `gbrain post-upgrade --dry-run` accepted the flag, ignored it, and applied migrations for real. That class is gone: the legal flags for every command are derived from each command's own source into a generated registry, checked before dispatch, and a command may only advertise a safety flag like `--dry-run` if its code actually reads it. On commands routed through the operations contract, a trailing `--dry-run` is now a real rehearsal switch rather than a no-op. `--json` invocations get the same error as a structured payload, so scripts fail cleanly too.
+
+**A word of warning (intentional breaking change):** cron jobs or scripts that pass stray, misspelled, or long-removed flags have been running on luck — the flag did nothing. Those invocations now exit with an error naming the flag. That is the point: fix the invocation once and it means what it says forever. Everything after `--` is passthrough and remains untouched.
+
+**Upgrades can't wedge on forward-referenced columns anymore — as a class.** The v0.42.56.0-era startup wedge (a schema blob referencing a column that pre-existing brains didn't have yet) had two more latent instances waiting in the jobs table. Both are now probed and healed at startup, and the schema coverage guard was rewritten to cross-reference every column referenced by the embedded schema against the set of columns any migration has ever added — so a new forward reference cannot ship without its startup probe. A recovery test walks the exact journey an affected brain takes: failed upgrade, retry on the fixed binary, converge with no leftover state blocking the way.
+
+**Remote agents get more, within the same fences.** The `think` operation is now available to remote MCP callers as a read-only synthesis — the local CLI can still persist results, while remote callers are forced read-only. Chunk reads now resolve through the same source-scope rules as page reads, so a federated grant that can open a page can also read that page's chunks, and a caller without the grant cannot reach chunks outside its own floor. Chunk payloads also stop carrying raw embedding vectors over the wire — noticeably smaller responses with no behavior change, since no consumer ever read them. Two internal call sites that forward caller identity now treat anything ambiguous as untrusted, matching the fail-closed rule the rest of the codebase already follows.
+
+**Source-bound clients can be minted over HTTP.** The `/admin/api/register-client` endpoint now accepts `source` and `federatedRead` bindings, mirroring the CLI's `--source` / `--federated-read` flags — so an admin UI or provisioning proxy can create a client confined to a specific brain source without shelling out to the CLI. Omitting both preserves the historical default, and invalid source ids get a structured 400.
+
+**`gbrain doctor` and `repair-jsonb` see further and misfire less.** The double-encoded-JSON scan now covers the subagent execution columns, and the damage test requires the stored text to actually parse as JSON before flagging it — a legitimate string value that merely starts with `[` or `{` (a log line, a code snippet) is no longer misclassified, and a repair pass can no longer corrupt it. One damaged table no longer aborts the scan of the rest.
+
+### To take advantage of v0.42.76.0
+## [0.42.75.0] - 2026-08-08
+
+**The "PGLite crashes on macOS 26" era is over: gbrain now repairs a torn brain in place, automatically, with your data preserved.**
+
+The dreaded `RuntimeError: Aborted()` at startup — the one that made zero-config brains unusable after a macOS upgrade and pushed people onto Homebrew Postgres — was never a macOS or WASM bug. An unclean shutdown (typically the upgrade reboot) tears the write-ahead log inside the data dir, and every open after that dies replaying it. gbrain now detects that failure on any command, backs up the WAL state to a sibling directory, resets it in place (the pg_resetwal recovery Postgres has shipped for decades, ported to run against PGLite data dirs), and reopens your brain — pages, embeddings, and history intact. Transactions that never reached a checkpoint may be lost; that is the standard trade for a database that would otherwise not open at all.
+
+### Added
+- **Automatic WAL repair on startup.** A torn-WAL abort self-heals on the next gbrain command: backup → in-place reset → retry, with a loud notice naming the backup and recommending `gbrain doctor`. Disable with `GBRAIN_PGLITE_WAL_REPAIR=off`.
+- **`gbrain pglite-repair`** — the deliberate version: `--dry-run` gives a read-only diagnosis of the data dir; `--yes` runs the same in-place repair manually. Refuses to operate while any live process holds the brain, and never force-removes another process's lock.
+- **`gbrain doctor` diagnoses unopenable PGLite brains.** A new `pglite_data_dir` check reads the data dir from disk when connect fails, names the right recovery rung (repair vs rebuild), inventories repair backups, and escalates when repairs keep recurring — the signal that something is still killing gbrain mid-write.
+- **Recovery guardrails throughout:** repair runs only under a cleanly-acquired lock (never after taking over another process's lock, with a quarantine window when a lock's holder couldn't be verified); a live database — including a native Postgres one — is refused by a `postmaster.pid` liveness check; repeated attempts inside one corruption episode reuse one backup instead of stacking copies (newest three episodes retained); a cooldown stops repair loops from silently eating data on machines where crashes keep recurring; and every restore path reports honestly whether your original files are back in place or waiting in the backup.
+
+### Changed
+- **`gbrain reinit-pglite` works bare.** The embedding model and dimensions now default from your config file, so the rebuild rung of the recovery ladder is one command mid-outage (explicit flags still win; environment overrides are deliberately ignored so a stale shell export can't change the rebuild target).
+- **Honest error messages.** The startup-abort hint now names the real cause (torn WAL after an unclean shutdown), states exactly what auto-repair did or why it stood down, and lays out the full ladder: repair → rebuild → engine switch. The docs that claimed PGLite is "incompatible with macOS 26.x" have been rewritten (README, INSTALL, ENGINES) — thanks @roysaurav for the original native-Postgres walkthrough, which remains the engine-switch rung.
+- Message-less WASM error objects no longer surface as `[object Object]`.
+
+### Fixed
+- The classifier that routes startup failures now matches the abort message PGLite actually produces (it previously fell through to a generic hint), while catalog corruption keeps routing to rebuild — WAL repair is never suggested for damage it cannot fix.
+- Lock-file reads can no longer misclassify a healthy live holder as corrupt (writes are atomic now), a holder owned by another user is treated as alive, and an in-flight acquisition is no longer mistaken for a corrupt lock.
+
+Credit where due: @yang1996202-cpu (#2575), @AndreLYL (#223), and @roysaurav (#1670) for reports and diagnosis, the #223 thread contributors whose recoveries proved the root cause, and @yestheboxer, whose rejected upstream recovery PR (electric-sql/pglite#994) this port builds on.
+
+### To take advantage of v0.42.75.0
+
+```bash
+gbrain upgrade
+```
+
+Nothing to configure. If a cron job or script starts failing with `unknown flag`, that invocation was passing a flag that did nothing — remove or fix the flag and it will not regress silently again.
+
+### For contributors
+
+Community fixes absorbed with credit: @colinagent (#2598 think read-scope; the upgrade-rewind e2e pattern from #2623), @guim4dev (#2016 register-client source bindings), @vinsew (#597 repair-jsonb coverage extension), @javieraldape (#2494/#2531 output-correctness class — BigInt-safe local rendering and the search `--json` regression pin land here; parts of both PRs shipped earlier from master). Thank you — superseded PRs are being closed with notes.
+
+The unit-test runner is now memory-safe on machines running multiple workspaces: shard concurrency adapts to actually-available memory, and a serial rescue lane re-runs files that died to OOM or external kills before calling them failures — a red suite now means real failures, not memory pressure. The flag registry regenerates via `bun run build:flag-registry` and is pinned by freshness, drift, and consumption-evidence guards.
+If your brain currently won't open, that's it — the next command repairs it. If you'd rather look first: `gbrain pglite-repair --dry-run`.
+
 ## [0.42.74.0] - 2026-08-07
 
 **Two fixes for agents that reach a brain over the network: takes-holder visibility now works the way you set it, and the voice recipe is safe by default.**
