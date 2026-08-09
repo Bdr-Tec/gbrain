@@ -2297,7 +2297,7 @@ const think: Operation = {
     // forwards to findTrajectory. CLI callers don't go through this op
     // and get default scope + remote=false from runThink's CLI path.
     const thinkScope = thinkSourceScopeOpts(ctx);
-    const { runThink, persistSynthesis } = await import('./think/index.ts');
+    const { runThink, persistSynthesis, persistThinkTake } = await import('./think/index.ts');
     const result = await runThink(ctx.engine, {
       question: String(p.question),
       anchor: p.anchor ? String(p.anchor) : undefined,
@@ -2314,17 +2314,39 @@ const think: Operation = {
       until: p.until ? String(p.until) : undefined,
       takesHoldersAllowList: ctx.takesHoldersAllowList,
       ...thinkScope,
-      remote: ctx.remote === true,
+      remote: ctx.remote !== false, // fail-closed: anything not strictly false is untrusted (CLAUDE.md invariant)
     });
 
     // Persist if --save was passed locally
     let savedSlug: string | undefined;
     let evidenceInserted = 0;
+    let takeRow: number | null = null;
+    let takeInserted = 0;
     if (safeSave) {
       const persisted = await persistSynthesis(ctx.engine, result);
       savedSlug = persisted.slug;
       evidenceInserted = persisted.evidenceInserted;
       for (const w of persisted.warnings) result.warnings.push(w);
+    }
+    // #2556: --take was declared but nothing consumed it — a silent no-op on
+    // both CLI and MCP. Local callers now get the take row appended to the
+    // anchor page; remote callers stay blocked via the safeTake gate above.
+    if (safeTake) {
+      // thinkSourceScopeOpts speaks runThink's dialect (allowedSources);
+      // persistThinkTake's getPage speaks the engine's (sourceIds). Map
+      // explicitly — spreading thinkScope would silently drop the federated
+      // array and unscope the anchor lookup.
+      const persistedTake = await persistThinkTake(ctx.engine, result, {
+        anchor: p.anchor ? String(p.anchor) : undefined,
+        ...(thinkScope.allowedSources !== undefined
+          ? { sourceIds: thinkScope.allowedSources }
+          : thinkScope.sourceId !== undefined
+            ? { sourceId: thinkScope.sourceId }
+            : {}),
+      });
+      takeRow = persistedTake.rowNum;
+      takeInserted = persistedTake.inserted;
+      for (const w of persistedTake.warnings) result.warnings.push(w);
     }
 
     return {
@@ -2333,6 +2355,8 @@ const think: Operation = {
       // falsy) to null so callers never see an empty-string "slug".
       saved_slug: savedSlug || null,
       evidence_inserted: evidenceInserted,
+      take_row: takeRow,
+      take_inserted: takeInserted,
       remote_persisted_blocked: remote && (Boolean(p.save) || Boolean(p.take)),
     };
   },

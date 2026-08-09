@@ -6,7 +6,7 @@
  * degrades to gather-only output with a warning if missing.
  */
 import type { BrainEngine } from '../core/engine.ts';
-import { runThink, persistSynthesis, stripGapsSection } from '../core/think/index.ts';
+import { runThink, persistSynthesis, persistThinkTake, stripGapsSection } from '../core/think/index.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { canonicalLookup } from '../core/model-pricing.ts';
@@ -114,6 +114,8 @@ prints what would have been the input (exit 0).
   let result: any;
   let savedSlug: string | undefined;
   let evidenceInserted = 0;
+  let takeRow: number | null = null;
+  let takeInserted = 0;
   const cfg = loadConfig();
   if (isThinClient(cfg)) {
     if (save || take) {
@@ -160,6 +162,22 @@ prints what would have been the input (exit 0).
           process.exit(1);
         }
       }
+      // #2556: --take was accepted-and-ignored (validated at parse time, then
+      // nothing consumed it). Same honesty contract as --save: persist or
+      // exit non-zero — an explicit --take that writes nothing must be loud.
+      if (take) {
+        const persistedTake = await persistThinkTake(engine, result, { anchor });
+        takeRow = persistedTake.rowNum;
+        takeInserted = persistedTake.inserted;
+        for (const w of persistedTake.warnings) result.warnings.push(w);
+        if (!persistedTake.rowNum) {
+          console.error(
+            'think: --take requested but no take row was written (empty synthesis ' +
+            'or anchor page not found) — nothing persisted.',
+          );
+          process.exit(1);
+        }
+      }
     } catch (e) {
       // #1698: an unresolvable explicit --model throws here. Clean non-zero exit
       // with the actionable message, not a stack trace.
@@ -179,6 +197,8 @@ prints what would have been the input (exit 0).
       cost_usd: costUsd ?? null,
       saved_slug: savedSlug ?? null,
       evidence_inserted: evidenceInserted,
+      take_row: takeRow,
+      take_inserted: takeInserted,
     }, null, 2));
     return;
   }
@@ -197,6 +217,9 @@ prints what would have been the input (exit 0).
   console.log(`Model: ${result.modelUsed} | Pages: ${result.pagesGathered} | Takes: ${result.takesGathered} | Graph: ${result.graphHits} | Citations: ${result.citations.length}${costSuffix}`);
   if (savedSlug) {
     console.log(`Saved: ${savedSlug} (${evidenceInserted} evidence rows)`);
+  }
+  if (takeRow) {
+    console.log(`Take: appended row #${takeRow} to ${anchor} (holder=brain)`);
   }
   if (result.warnings.length > 0) {
     console.error(`Warnings: ${result.warnings.join(', ')}`);

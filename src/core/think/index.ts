@@ -657,6 +657,88 @@ export async function persistSynthesis(
   return { slug, evidenceInserted: persisted.inserted, warnings: persisted.warnings };
 }
 
+export interface PersistThinkTakeOpts {
+  anchor?: string;
+  sourceId?: string;
+  sourceIds?: string[];
+}
+
+export interface PersistThinkTakeResult {
+  rowNum: number | null;
+  inserted: number;
+  warnings: string[];
+}
+
+/**
+ * Persist `gbrain think --take` as the next append-only take row on the
+ * anchor page (#2556 — the flag was declared but nothing consumed it, so
+ * `think --take` silently wrote nothing on both the CLI and MCP paths).
+ *
+ * The synthesis answer is the claim; holder='brain' because this is
+ * gbrain's own analysis; kind='take' (KIND_VALUES member). DB-plane write
+ * via addTakesBatch — the same path extract-takes-from-pages uses; the
+ * engines maintain the takes fence at that write site. The row-number
+ * computation + insert are serialized under withPageLock(anchor) so a
+ * concurrent `takes add` / second think --take can't race MAX(row_num)+1
+ * into a duplicate row.
+ *
+ * Signals (never throws for expected shapes, mirroring persistSynthesis):
+ *   - TAKE_REQUIRES_ANCHOR      — no anchor given.
+ *   - TAKE_EMPTY_NOT_PERSISTED  — synthesis failed or empty answer.
+ *   - TAKE_ANCHOR_NOT_FOUND:<s> — anchor page absent in the caller's scope
+ *     (scope resolved via the sourceIds > sourceId precedence, matching
+ *     sourceScopeOpts). Remote callers never reach here — the op handler's
+ *     fail-closed gate zeroes `take` for them.
+ *
+ * Design provenance: community PR #2618 (its successor #3164 was declined
+ * for bundled feature scope; the maintainer confirmed this half is a
+ * legitimate fix). Re-implemented with the page-lock serialization added.
+ */
+export async function persistThinkTake(
+  engine: BrainEngine,
+  result: ThinkResult,
+  opts: PersistThinkTakeOpts,
+): Promise<PersistThinkTakeResult> {
+  const anchor = opts.anchor?.trim();
+  if (!anchor) {
+    return { rowNum: null, inserted: 0, warnings: ['TAKE_REQUIRES_ANCHOR'] };
+  }
+  if (result.synthesisOk === false || result.answer.trim().length === 0) {
+    return { rowNum: null, inserted: 0, warnings: ['TAKE_EMPTY_NOT_PERSISTED'] };
+  }
+
+  const pageOpts: { sourceId?: string; sourceIds?: string[] } = {};
+  if (opts.sourceIds !== undefined) pageOpts.sourceIds = opts.sourceIds;
+  else if (opts.sourceId !== undefined) pageOpts.sourceId = opts.sourceId;
+  const page = await engine.getPage(anchor, pageOpts);
+  if (!page) {
+    return { rowNum: null, inserted: 0, warnings: [`TAKE_ANCHOR_NOT_FOUND: ${anchor}`] };
+  }
+
+  const { withPageLock } = await import('../page-lock.ts');
+  let rowNum = 0;
+  let inserted = 0;
+  await withPageLock(anchor, async () => {
+    const rows = await engine.executeRaw<{ next: number | string }>(
+      `SELECT (COALESCE(MAX(row_num), 0) + 1)::int AS next FROM takes WHERE page_id = $1`,
+      [page.id],
+    );
+    rowNum = Number(rows[0]?.next ?? 1);
+    inserted = await engine.addTakesBatch([{
+      page_id: page.id,
+      row_num: rowNum,
+      claim: result.answer.trim(),
+      kind: 'take',
+      holder: 'brain',
+      weight: 0.5,
+      source: 'gbrain think',
+      active: true,
+    }]);
+  });
+
+  return { rowNum, inserted, warnings: [] };
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Gateway adapter for #952 (think over MCP returns "no LLM available").
 // ─────────────────────────────────────────────────────────────────
