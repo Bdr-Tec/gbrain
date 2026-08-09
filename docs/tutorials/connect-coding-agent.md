@@ -6,6 +6,11 @@ you decided three meetings ago, and re-derive context you already have written
 down somewhere. GBrain is the retrieval layer that fixes that: search, synthesis,
 and a self-wiring knowledge graph, wired into your agent over MCP.
 
+> This tutorial is the **memory-only** tier. Want the whole agent — identity,
+> per-turn context, schedules, and a private GitHub repo as its durable body?
+> That's `gbrain bootstrap`: the "For Codex" / "For Claude Code" paste blocks in
+> the README, full contract in [docs/guides/bootstrap.md](../guides/bootstrap.md).
+
 There are two ways to do this. Pick the one that matches where you are:
 
 - **Path A — I already run a brain** (OpenClaw, Hermes, or any `gbrain serve`

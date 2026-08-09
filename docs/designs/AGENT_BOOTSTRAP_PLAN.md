@@ -701,7 +701,7 @@ corpus and fires a scan-gated commit+push. "Your local harness IS your agent."
 | Path | New/changed |
 |---|---|
 | `BOOTSTRAP_FOR_AGENTS.md` | NEW root runbook (fetched by paste block) |
-| `README.md` | paste block inside the "Quick start: Claude Code or Codex" section (resolved D5; INSTALL_FOR_AGENTS.md stays headline) |
+| `README.md` | dedicated "For Codex" / "For Claude Code" paste-block sections, ordered Codex → Claude Code → OpenClaw/Hermes at equal weight (user decision 2026-08-09, supersedes D5's ordering; both platform paths preserved) |
 | `src/commands/bootstrap.ts` (+ `src/commands/bootstrap/*.ts`) | NEW dispatcher + subcommands |
 | `src/commands/hook.ts` | NEW `gbrain hook session-start|user-prompt|stop|session-end` |
 | `src/cli.ts` | CHANGED: `bootstrap`+`hook` in no-engine dispatch branch |
@@ -770,7 +770,7 @@ settings.local.json + config.toml writers (single module owns each host format).
 - **D5 = Codex/Claude-Code-scoped placement.** This is NOT the new headline install —
   most users still use GBrain with OpenClaw/Hermes, so `INSTALL_FOR_AGENTS.md` remains the
   primary paste path at the top of the README. The bootstrap paste block becomes the
-  flagship of the existing **"Quick start: Claude Code or Codex"** README section (and
+  flagship "For Codex" / "For Claude Code" README sections, ahead of the OpenClaw/Hermes path at equal weight (and
   docs/tutorials/connect-coding-agent.md cross-links it). Command name stays
   `gbrain bootstrap`; paste block is pinned to a release tag (supply-chain integrity).
   BOOTSTRAP_FOR_AGENTS.md opens with a scope note: "For Claude Code / Codex. Running
