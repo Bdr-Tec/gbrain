@@ -349,10 +349,10 @@ async function runLinksTimelinePass(
   // Engine batch primitives self-retry; default auditSite labels apply
   // (BATCH_AUDIT_SITES is a closed enum owned by retry.ts).
   if (linkBatch.length > 0) {
-    report.linksExtracted += await engine.addLinksBatch(linkBatch);
+    report.linksExtracted += await engine.addLinksBatch(linkBatch); // gbrain-allow-direct-insert: the sweep IS the extract path for workspace pages — remote put_page skips extraction by design [CX-P0.3]
   }
   if (tlBatch.length > 0) {
-    report.timelineExtracted += await engine.addTimelineEntriesBatch(tlBatch);
+    report.timelineExtracted += await engine.addTimelineEntriesBatch(tlBatch); // gbrain-allow-direct-insert: same extract-path rationale as addLinksBatch above [CX-P0.3]
   }
   // Stamp only when BOTH kinds ran for these pages (extract.ts C3/D6:
   // links_extracted_at covers links AND timeline).
