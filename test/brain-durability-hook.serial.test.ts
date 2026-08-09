@@ -55,7 +55,7 @@ async function waitForOrigin(bare: string, expectSha: string, ms = 30_000): Prom
  * calls ("Unable to create '.../.git/index.lock': File exists"). Wait for the
  * detached push's terminal log line before handing the repo to the test. */
 async function waitForHookPushSettled(ms = 30_000): Promise<void> {
-  const log = join(process.env.GBRAIN_HOME!, 'brain-push.log');
+  const log = join(process.env.HOME!, '.gbrain', 'brain-push.log');
   const terminal = /\[push\] (ok|lock-timeout|LOCAL-ONLY)/;
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
@@ -72,7 +72,10 @@ beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'bdh-'));
   oldHome = process.env.HOME; oldGbrainHome = process.env.GBRAIN_HOME;
   process.env.HOME = mkdtempSync(join(root, 'home-'));
-  process.env.GBRAIN_HOME = join(process.env.HOME, '.gbrain');
+  // CX2-8: GBRAIN_HOME is a PARENT dir (config.ts semantics — `.gbrain` is
+  // appended by both the TS resolver and the bash template), so the
+  // effective home is $HOME/.gbrain.
+  process.env.GBRAIN_HOME = process.env.HOME;
   process.env.GBRAIN_GIT_ALLOW_FILE_TRANSPORT = '1';
   bare = mkdtempSync(join(root, 'origin-')) + '.git';
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare], { stdio: 'ignore', env: process.env });
@@ -179,7 +182,7 @@ describe('post-commit hook (D9 local, D7 self-contained)', () => {
     git(work, 'remote', 'set-url', 'origin', join(root, 'gone2.git'));
     writeFileSync(join(work, 'orphan.md'), 'o\n');
     git(work, 'add', 'orphan.md'); git(work, 'commit', '-qm', 'orphan');
-    const log = join(process.env.GBRAIN_HOME!, 'brain-push.log');
+    const log = join(process.env.HOME!, '.gbrain', 'brain-push.log');
     const deadline = Date.now() + 30_000;
     let found = false;
     while (Date.now() < deadline) {
