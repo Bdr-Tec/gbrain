@@ -202,7 +202,7 @@ export async function runImport(
   const dirArg = args.find((a, i) => !a.startsWith('--') && !flagValues.has(i));
 
   if (!dirArg) {
-    console.error('Usage: gbrain import <dir> [--no-embed] [--workers N] [--fresh] [--source-id <id>] [--include-gitignored] [--json]');
+    console.error('Usage: gbrain import <dir> [--no-embed] [--workers N] [--fresh] [--source-id <id>] [--include-gitignored] [--set-repo-path] [--json]');
     process.exit(1);
   }
   // #1728: capture the import target ONCE as an absolute real path. Every
@@ -578,7 +578,29 @@ export async function runImport(
       );
     }
     await engine.setConfig('sync.last_run', new Date().toISOString());
-    await engine.setConfig('sync.repo_path', dir);
+    // repo-path.ts invariant: never persist a relative repo path. `dir` is
+    // already absolute here (resolveImportTargetDir at arg ingress, #1728) —
+    // this write is how `gbrain import .` used to seed the anchor that a
+    // later bare `gbrain sync` from the wrong cwd resolved into a foreign
+    // tree.
+    //
+    // #2114: set-if-unset. Silently OVERWRITING an existing, different
+    // anchor repointed every later bare `gbrain sync` at whatever tree the
+    // last import happened to touch. Repointing now requires the explicit
+    // --set-repo-path flag; without it the existing anchor wins and we say
+    // so on stderr.
+    const existingAnchor = await engine.getConfig('sync.repo_path');
+    if (!existingAnchor || existingAnchor === dir) {
+      await engine.setConfig('sync.repo_path', dir);
+    } else if (args.includes('--set-repo-path')) {
+      console.error(`sync.repo_path repointed: ${existingAnchor} -> ${dir} (--set-repo-path)`);
+      await engine.setConfig('sync.repo_path', dir);
+    } else {
+      console.error(
+        `sync.repo_path stays at ${existingAnchor} (this import ran in ${dir}). ` +
+        `Pass --set-repo-path to repoint the sync anchor to this directory.`,
+      );
+    }
   }
 
   return { imported, skipped, errors, chunksCreated, failures };

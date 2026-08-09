@@ -5618,6 +5618,45 @@ export const MIGRATIONS: Migration[] = [
         ON take_proposals (source_id, page_slug, content_hash, prompt_version, md5(claim_text));
     `,
   },
+  {
+    // Version 127, NOT 126: an in-flight wave-4 branch has already claimed
+    // v126; the runner is gap-tolerant (sorts by version, filters > current,
+    // LATEST_VERSION = max), so skipping a number is safe while a collision
+    // (two migrations sharing one number) would silently skip the second.
+    version: 127,
+    name: 'repo_path_anchors_absolute_only',
+    // v0.42.x — repo-path invariant (core/repo-path.ts): storage never holds
+    // a relative repo path. Writers now normalize at ingress (sync --repo,
+    // import, sources add, autopilot); this migration clears LEGACY relative
+    // anchors so the dozen-plus readers (sync --all fan-out, jobs, cycle,
+    // remediation, takes, …) can never resolve one against their own cwd —
+    // the wrong-tree footgun that made a bare `gbrain sync` from a foreign
+    // directory import that tree and reconcile the real brain away.
+    //
+    // NULL/DELETE, not fix-up: the cwd that seeded a relative anchor is
+    // unknowable after the fact, so any rewrite would be a guess. A cleared
+    // anchor lands every consumer in its existing, explicit "no repo path —
+    // use --repo / sources add --path" error, and the next successful
+    // `gbrain sync --repo <abs>` re-seeds it normalized.
+    //
+    // Absolute means POSIX ('/…') or Windows drive/UNC ('C:\…', '\\host\…');
+    // everything else is a cwd-dependent trap.
+    idempotent: true,
+    sql: `
+      DELETE FROM config
+       WHERE key = 'sync.repo_path'
+         AND value NOT LIKE '/%'
+         AND value !~ '^[A-Za-z]:[/\\\\]'
+         AND value NOT LIKE '\\\\\\\\%';
+
+      UPDATE sources
+         SET local_path = NULL
+       WHERE local_path IS NOT NULL
+         AND local_path NOT LIKE '/%'
+         AND local_path !~ '^[A-Za-z]:[/\\\\]'
+         AND local_path NOT LIKE '\\\\\\\\%';
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
