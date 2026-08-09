@@ -1614,6 +1614,18 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // `eval run-all` is a pure orchestrator — its engine arg is unused
+  // (`_engine`), the brainbench suite it runs in-process is hermetic (brings
+  // its own PGLite via createBenchmarkBrain), and the remaining suites write
+  // stub records. Bypass connectEngine so run-all works with no brain
+  // configured — e.g. in CI, where `--suites brainbench` otherwise died with
+  // "No brain configured" before reaching the hermetic run.
+  if (command === 'eval' && args[0] === 'run-all') {
+    const { runEvalRunAll } = await import('./commands/eval-run-all.ts');
+    await runEvalRunAll(null, args.slice(1));
+    return;
+  }
+
   // v0.32 EXP-5 (codex review #10): `eval takes-quality replay <receipt>`
   // is the ONLY sub-subcommand that doesn't need a brain — it reads a
   // receipt JSON file from disk and re-renders it. Bypass connectEngine

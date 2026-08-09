@@ -55,7 +55,9 @@ beforeAll(() => {
   const cellKey = Object.keys(doctored.counts).find((k) => doctored.counts[k].gold_total > 0)!;
   doctored.counts[cellKey].gold_failed = -1; // pretends fewer failures than any run can match
   writeFileSync(join(root, 'doctored.json'), JSON.stringify(doctored, null, 2));
-});
+  // The baseline build spawns a full brainbench run (~10-15s); bun's default
+  // 5s hook timeout would SIGTERM it on a loaded shard. Explicit generous cap.
+}, 120_000);
 
 describe('exit contract over a multi-brain run (PGLite exitCode-hijack guard)', () => {
   test('clean run: exit 0, --out is complete valid JSON with the glossary block', () => {
