@@ -2,6 +2,26 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.80.0] - 2026-08-09
+
+**Repo paths can no longer go relative on you, and facts extracted from page writes stop silently vanishing at process exit.**
+
+**Repo paths are absolute at every ingress.** A relative path stored as a sync anchor, a source's local path, or a job payload resolves against whatever the current working directory happens to be — under a launchd/cron daemon that's typically `/`, and the result was gbrain syncing the wrong tree, up to and including reconcile-deleting real pages. Every ingress (`sync --repo`, `sources add --path`, `autopilot --repo`, generated wrapper scripts, `config set sync.repo_path`, job payloads) now resolves to an absolute real path at write time; every read of a stored anchor refuses a relative value loudly, with a remediation hint matched to where the bad value actually lives; and a migration clears legacy relative anchors so the next sync tells you exactly what to run instead of guessing a directory. `gbrain import` no longer silently repoints an existing anchor — it keeps it, tells you, and offers `--set-repo-path` (the anchor decision also rides the `--json` summary). This re-lands a community pull request that was approved — the review ended "Thanks — merging this" — but never actually merged; rebased across the intervening months with credit.
+
+**Facts from page writes survive process exit.** Writing a page queues a background facts-extraction task; when the process exited before the in-flight extraction finished, the page persisted but its facts were silently lost — no error, no retry. Remote (MCP) page writes now prefer the durable background-job path whenever a worker for the right queue is actually alive (the probe checks the queue, is cached, and fails toward the safe in-process fallback), and when an in-process extraction is genuinely aborted at exit, it re-submits itself as a durable job — the job row is the retry marker, deduplicated by content hash — with a loud line saying so. Abort detection keys on real abort signals, not error-message sniffing, so a routine database error can't masquerade as an exit drain.
+
+### To take advantage of v0.42.80.0
+
+```bash
+gbrain upgrade
+```
+
+If your next `gbrain sync` reports a cleared repo anchor, run the `gbrain sync --repo <absolute-path>` command it prints — one time, then it's durable. For durable facts extraction on served brains, keep a worker running: `gbrain jobs work`.
+
+### For contributors
+
+The final two audit passes of the fix-wave sequence found 38 of 40 remaining planned items already fixed on master or deliberately declined — this release ships the two survivors plus their review hardening. The red team's notable catch: the initial worker-liveness probe was queue-blind, which would have silently reintroduced the exact facts-loss class on installs running only non-default-queue workers. Credit @panda850819 (#2530). Migration note: this release's migration is numbered around an in-flight sibling release; land order is pinned in the PR.
+
 ## [0.42.75.0] - 2026-08-08
 
 **The "PGLite crashes on macOS 26" era is over: gbrain now repairs a torn brain in place, automatically, with your data preserved.**
