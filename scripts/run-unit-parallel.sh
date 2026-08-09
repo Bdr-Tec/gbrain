@@ -76,10 +76,12 @@ INTRA_CONC="${MAX_CONCURRENCY_OVERRIDE:-${GBRAIN_TEST_MAX_CONCURRENCY:-4}}"
 # 4-shard default each shard runs 159 files / ~2420 tests with internal
 # wallclock 960-1020s. The 900s value (sized for 8-shard's ~80 files /
 # 1100 tests at 620-770s) false-killed shard 1 at 900s even though it
-# had completed in 968s. 1500s cap gives ~55% headroom over observed
-# 4-shard wallclock; real hangs still hit it. Override via
-# GBRAIN_TEST_SHARD_TIMEOUT=N.
-SHARD_TIMEOUT="${GBRAIN_TEST_SHARD_TIMEOUT:-1500}"
+# had completed in 968s. The cap must track suite growth: at ~9000 tests
+# (agent-bootstrap wave) a healthy shard 3 finished at 1466s and two
+# progressing-normally shards were false-killed at the old 1500s cap.
+# 1800s gives ~25% headroom over the slowest observed healthy shard;
+# real hangs still hit it. Override via GBRAIN_TEST_SHARD_TIMEOUT=N.
+SHARD_TIMEOUT="${GBRAIN_TEST_SHARD_TIMEOUT:-1800}"
 SHARD_KILL_AFTER="${GBRAIN_TEST_SHARD_KILL_AFTER:-30}"
 if ! printf '%s' "$SHARD_KILL_AFTER" | grep -qE '^[0-9]+$' || [ "$SHARD_KILL_AFTER" -lt 1 ]; then
   echo "ERROR: invalid shard kill-after: $SHARD_KILL_AFTER" >&2; exit 2
