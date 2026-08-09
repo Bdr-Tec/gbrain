@@ -36,6 +36,7 @@
   or the autocut floor misapplies. Prefer `scoreScale: 'unit' | 'logit'` on
   reranker recipes, consulted at the hybrid.ts gate. (Kept verbatim from the
   reviewed #3131 re-land; changing the seam belongs to its own change.)
+
 ## WAL-repair wave follow-ups (#223/#1670/#2575)
 
 - [ ] **P2 — gate auto-repair on an unclean-shutdown marker (adversarial F7).** The classifier
