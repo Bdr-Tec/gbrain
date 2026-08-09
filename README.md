@@ -97,9 +97,23 @@ The agent installs GBrain, creates the brain, asks for your API keys, loads 43 s
 
 ### Quick start: Claude Code or Codex
 
-Already running Claude Code or Codex? There are two ways to wire GBrain in, depending on what you want.
+Already running Claude Code or Codex? There are three ways to wire GBrain in, depending on what you want.
 
-**Just want a memory for your coding agent (recommended starting point).** Spin up a local brain and connect it in two commands — zero server, zero token, zero tunnel:
+**Want the full agent — identity, memory, skills, schedules, and a private GitHub repo as its durable body?** You've seen SOUL.md-style agents; this is the whole
+body, installed by your own harness. Open Claude Code or Codex (desktop app or CLI) in the folder you want to become your agent, and paste:
+
+```
+Read and follow every step of:
+https://raw.githubusercontent.com/garrytan/gbrain/latest-stable/BOOTSTRAP_FOR_AGENTS.md
+Goal: set yourself up as my persistent personal agent in this folder, with gbrain
+as your memory. Interview me before writing any identity file — never invent
+answers. Ask before anything destructive. You are not done until
+`gbrain bootstrap verify` exits 0.
+```
+
+It interviews you (~10 minutes, 6 required questions), renders your agent's identity from your own answers, creates a local PGLite brain, wires MCP + per-turn context, and backs the whole thing up to a private GitHub repo it creates and verifies. Works with zero API keys (keyword search + agent-authored memory); one optional key unlocks semantic search and automatic fact extraction. Full walkthrough: [docs/guides/bootstrap.md](docs/guides/bootstrap.md).
+
+**Just want a memory for your coding agent (lightest start).** Spin up a local brain and connect it in two commands — zero server, zero token, zero tunnel, no agent identity:
 
 ```bash
 gbrain init --pglite                     # 2-second local brain (no Docker)

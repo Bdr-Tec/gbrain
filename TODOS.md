@@ -4886,3 +4886,17 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 + the models-doctor tests.
 
 **Depends on:** nothing.
+
+## Agent-bootstrap wave follow-ups (filed at build time)
+
+- [ ] **P2 — `gbrain quota` meter command.** Productize the release-gate quota
+  measurement (script+doc ship with the bootstrap wave) into a command that reports
+  a session/day's token burn against the harness subscription allowance. Blocked on
+  a proven per-harness token-count method — an inaccurate meter erodes the trust it
+  exists to build (CEO review D3.4; not promoted by a passing quota gate, by
+  decision). Start: the spike's measurement scripts under docs/designs/.
+- [ ] **P2 — Networked Docker paste-flow e2e.** The offline container e2e (interview
+  → render → verify with fake gh) ships with the wave; the full networked flow (bun
+  install, gh auth, repo create, MCP registration) stays manual. Unblocks after 10
+  consecutive green offline runs in heavy-tests (CEO review D3.3b). Start:
+  tests/docker/ harness + the fake-gh recording shim.
