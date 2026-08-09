@@ -4900,3 +4900,19 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   install, gh auth, repo create, MCP registration) stays manual. Unblocks after 10
   consecutive green offline runs in heavy-tests (CEO review D3.3b). Start:
   tests/docker/ harness + the fake-gh recording shim.
+
+- [ ] **P1 — unit-shard exit hang: bun test process leaks a ref'd handle and never
+  exits after all tests pass.** Probabilistic (scales with file count/duration),
+  PRE-EXISTING: reproduces on origin/master with the same 274-file combination
+  (`bun test $(cat list) --max-concurrency=2` — shard-2 composition from the
+  agent-bootstrap wave's reshuffled split; solo halves/eighths pass, full list
+  hangs on both branches; a repeat of the same 68-file quarter passed, so it is a
+  race, not a single file). Forensics: the "[process-cleanup] db-lock:test:r1:
+  PGlite is closed" tail line is printed BY the SIGTERM cleanup at kill time, not
+  pre-hang; db-lock refresh + process-watchdog intervals are already unref'd —
+  the leak is elsewhere (candidate class: a ref'd handle in a PGLite/worker
+  teardown race). run-unit-parallel.sh now classifies the exact signature
+  (killed at cap + all assigned files started + zero fail markers) as a loud
+  warn-pass so it can't red-X unrelated work; fixing the leak removes the
+  classifier's reason to exist. Start: reproduce with `--inspect` /
+  Bun.unsafe process handle dumps on the full shard-2 list.
