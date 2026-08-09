@@ -1860,6 +1860,40 @@ master before starting, several fixes landed independently).
   means the repair feature silently dies). Any future pglite upgrade wave must revisit BOTH
   together and re-derive the ControlFileData offset table for the new PG major.
 
+## synthesize_concepts mints orphans the orphan check then penalizes (filed v0.42.74.0)
+
+The `synthesize_concepts` dream phase writes concept pages that nothing links to,
+and the `orphans` phase in the same cycle counts them against the brain score. One
+cycle creates the pages, another docks you for them, and the count grows every night
+the phase runs. Observed on a real brain: the phase reported N concepts synthesized
+and the orphan report listed exactly N orphaned `concepts/` slugs — a 1:1 match, all
+of them machine-generated in that run.
+
+This reads to an operator as a curation failure ("I wrote concept pages and never
+linked them") when nothing was hand-authored at all. It also makes the brain-score
+orphan component drift downward as a direct function of how often the cycle runs,
+which inverts the intent of the metric.
+
+- [ ] **P1 — decide whether synthesized concepts belong in the orphan denominator.**
+  Two candidate fixes, and they are not equivalent. (a) Wire concepts into the graph
+  at synthesis time: when the phase extracts a concept from a set of pages, link those
+  pages to the concept node. This is the better outcome — a concept page nothing can
+  reach is close to useless for retrieval too, so the orphan signal is telling the
+  truth and the synthesis step is what's incomplete. (b) Add `concepts/` to
+  `DENY_PREFIXES` in `src/core/orphan-policy.ts`, the way `extracts/` and `atoms/`
+  already are. Cheap, but it silences a real reachability problem rather than fixing
+  it. Prefer (a); fall back to (b) only if concept nodes are deliberately
+  retrieval-only and never meant to be graph-reachable.
+- [ ] **P2 — near-duplicate concepts suggest the extractor needs a merge step.**
+  The same run produced several near-synonym concept nodes (three variants of one
+  adjectival stem, four of one noun stem). Whatever the orphan decision, an extractor
+  emitting near-duplicates inflates the node count and splits inbound links across
+  synonyms. Consider a similarity merge before write.
+- [ ] **P3 — imported calendar days are a separate leaf class.** `meetings/calendar/
+  <year>/<date>` pages are dated machine imports with no expected inbound links, the
+  same class as the `daily` first-segment exclusion but not matched by it. Either
+  broaden the convention defaults or document that calendar-import prefixes want a
+  per-brain `orphans.exclude_prefixes` entry.
 ## serve --http takes-holders + agent-voice hardening follow-ups (filed v0.42.74.0)
 
 Deferred from the #2529/#2477 security-fix wave (plan-eng-review + codex outside
