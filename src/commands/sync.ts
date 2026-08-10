@@ -254,8 +254,9 @@ export interface SyncResult {
   /**
    * Working-tree files invisible to commit-driven sync (attached HEAD without
    * --working-tree): untracked/added, modified, and deleted counts AFTER the
-   * same scope/exclude/isSyncable filters imports use. Absent when zero, or
-   * when the working tree was imported (detached HEAD or --working-tree).
+   * same scope/exclude/isSyncable filters imports use. Uncommitted renames are
+   * decomposed as add(new path) + delete(old path). Absent when zero, or when
+   * the working tree was imported (detached HEAD or --working-tree).
    */
   uncommitted?: { added: number; modified: number; deleted: number };
   /**
@@ -1175,9 +1176,16 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   let uncommittedDrift: { added: number; modified: number; deleted: number } | undefined;
   if (!importWorkingTree && hasWorkingTreeChanges) {
     const drift = {
-      added: workingTreeManifest.added.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length,
+      // Renames count as add(to) + delete(from) — the same decomposition the
+      // import path applies to renames — so a rename-only dirty tree still
+      // reports drift instead of reproducing the silent gap this counter
+      // exists to close (a staged `git mv` sets hasWorkingTreeChanges but
+      // populates only `renamed`).
+      added: workingTreeManifest.added.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length +
+        workingTreeManifest.renamed.filter(r => inScope(r.to) && !excluded(r.to) && isSyncable(r.to, syncOpts)).length,
       modified: workingTreeManifest.modified.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length,
-      deleted: workingTreeManifest.deleted.filter(p => inScope(p) && isSyncable(p, syncOpts)).length,
+      deleted: workingTreeManifest.deleted.filter(p => inScope(p) && isSyncable(p, syncOpts)).length +
+        workingTreeManifest.renamed.filter(r => inScope(r.from) && isSyncable(r.from, syncOpts)).length,
     };
     if (drift.added + drift.modified + drift.deleted > 0) {
       uncommittedDrift = drift;
@@ -4523,30 +4531,22 @@ async function maybeExtractionNudge(engine: BrainEngine, sourceId?: string): Pro
  */
 export function printSyncResult(result: SyncResult, sink: NodeJS.WriteStream = process.stdout) {
   const write = (line: string) => sink.write(line + '\n');
+  const writeUncommittedNote = (u: NonNullable<SyncResult['uncommitted']>) =>
+    write(
+      `  NOTE: ${u.added + u.modified + u.deleted} uncommitted file(s) not synced ` +
+      `(${u.added} untracked/added, ${u.modified} modified, ${u.deleted} deleted) — ` +
+      `commit them or run 'gbrain sync --working-tree'.`,
+    );
   switch (result.status) {
     case 'up_to_date':
       write('Already up to date.');
-      if (result.uncommitted) {
-        const u = result.uncommitted;
-        write(
-          `  NOTE: ${u.added + u.modified + u.deleted} uncommitted file(s) not synced ` +
-          `(${u.added} untracked/added, ${u.modified} modified, ${u.deleted} deleted) — ` +
-          `commit them or run 'gbrain sync --working-tree'.`,
-        );
-      }
+      if (result.uncommitted) writeUncommittedNote(result.uncommitted);
       break;
     case 'synced':
       write(`Synced ${result.fromCommit?.slice(0, 8)}..${result.toCommit.slice(0, 8)}:`);
       write(`  +${result.added} added, ~${result.modified} modified, -${result.deleted} deleted, R${result.renamed} renamed`);
       write(`  ${result.chunksCreated} chunks created${result.embedded > 0 ? `, ${result.embedded} pages embedded` : ''}`);
-      if (result.uncommitted) {
-        const u = result.uncommitted;
-        write(
-          `  NOTE: ${u.added + u.modified + u.deleted} uncommitted file(s) not synced ` +
-          `(${u.added} untracked/added, ${u.modified} modified, ${u.deleted} deleted) — ` +
-          `commit them or run 'gbrain sync --working-tree'.`,
-        );
-      }
+      if (result.uncommitted) writeUncommittedNote(result.uncommitted);
       break;
     case 'first_sync':
       write(`First sync complete. Checkpoint: ${result.toCommit.slice(0, 8)}`);

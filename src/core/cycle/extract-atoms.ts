@@ -615,11 +615,9 @@ export async function runPhaseExtractAtoms(
     const configuredModel = await engine.getConfig('models.dream.extract_atoms');
     if (configuredModel) extractModel = configuredModel;
     // `models.dream.extract_atoms` is DB-plane/operator-selected config, not
-    // part of the gateway's ordinary `chat_model` bootstrap. Register it before
-    // the call path hits assertTouchpoint so local/user-managed providers such
-    // as Ollama can be used for this phase without requiring hosted API keys.
-    const { registerConfigSelectedChatModel } = await import('../ai/gateway.ts');
-    registerConfigSelectedChatModel(extractModel);
+    // part of the ordinary file-plane `chat_model` bootstrap. Current gateway
+    // recipe resolution accepts configured model ids directly, so local/user-
+    // managed providers such as Ollama can be used without hosted API keys.
     const configuredBudget = await engine.getConfig('cycle.extract_atoms.budget_usd');
     if (configuredBudget) {
       const n = Number(configuredBudget);
@@ -631,7 +629,8 @@ export async function runPhaseExtractAtoms(
       if (Number.isFinite(n) && n >= 500) maxSourceChars = Math.floor(n);
     }
   } catch {
-    // Keep safe defaults: Haiku + $0.30.
+    // Keep safe defaults on any config-read failure: Haiku model, $0.30 cap,
+    // default max_source_chars.
   }
   // A cost cap is only meaningful for a model the tracker can price.
   // BudgetTracker.reserve() hard-fails with BudgetExhausted(reason:'no_pricing')

@@ -585,3 +585,44 @@ describe('#2144: zero-yield tombstone', () => {
     expect(discovered.map((d) => d.slug)).toContain('article/transient-failure');
   });
 });
+
+// Local extract-atoms config knobs (cherry-picked fix): the two new
+// KNOWN_CONFIG_KEYS resolve through runPhaseExtractAtoms —
+//   cycle.extract_atoms.page_discovery_budget caps discovery LIMIT
+//   cycle.extract_atoms.max_source_chars truncates the prompt payload
+describe('local extract-atoms config knobs', () => {
+  test('page_discovery_budget caps discovery; max_source_chars truncates the prompt slice', async () => {
+    await engine.setConfig('cycle.extract_atoms.page_discovery_budget', '1');
+    await engine.setConfig('cycle.extract_atoms.max_source_chars', '600');
+    await seedPage({ slug: 'note/knob-1', type: 'note', compiled_truth: 'z'.repeat(2000) });
+    await seedPage({ slug: 'note/knob-2', type: 'note', compiled_truth: 'z'.repeat(2000) });
+
+    const captured: string[] = [];
+    const capturingChat = async (o: ChatOpts): Promise<ChatResult> => {
+      captured.push(String(o.messages[0]?.content ?? ''));
+      const text = '[{"title":"knob-atom","atom_type":"insight","body":"b"}]';
+      return {
+        text,
+        blocks: [{ type: 'text', text }],
+        stopReason: 'end',
+        usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'anthropic:claude-haiku-4-5',
+        providerId: 'anthropic',
+      };
+    };
+
+    const result = await runPhaseExtractAtoms(engine, {
+      sourceId: 'default',
+      _transcripts: [],
+      _chat: capturingChat as never,
+    });
+
+    // Discovery honored the configured budget: 2 eligible pages, 1 processed.
+    expect(result.details.pages_processed).toBe(1);
+    expect(captured.length).toBe(1);
+    // Payload after the "Source: ...\n\n---\n\n" preamble is sliced to the
+    // configured max_source_chars (default would have been 50_000 → 2000 z's).
+    const body = captured[0].split('\n\n---\n\n')[1] ?? '';
+    expect(body).toBe('z'.repeat(600));
+  }, 30_000);
+});

@@ -106,4 +106,45 @@ describe('sync working-tree drift (untracked gap)', () => {
     // either way the .xyz file must not surface as uncommitted drift.
     expect(result.uncommitted).toBeUndefined();
   }, 60_000);
+
+  test('synced run imports the committed delta AND reports remaining drift (deletes counted, --exclude honored)', async () => {
+    // Committed change: HEAD advances, so this run takes the `synced` path,
+    // not the `up_to_date` path — `uncommitted` must ride on BOTH.
+    writeFileSync(join(repoPath, 'topics/base.md'), '# Base\n\ncommitted edit two\n');
+    commitAll('edit base');
+    // Working-tree drift left behind:
+    //   added   → untracked syncable file
+    //   deleted → tracked file removed from disk, deletion not committed
+    //   excluded → untracked syncable file matched by --exclude (must NOT count)
+    writeFileSync(join(repoPath, 'topics/drift-note.md'), '# Drift\n\nstill uncommitted\n');
+    writeFileSync(join(repoPath, 'topics/skipme.md'), '# Skip\n\nexcluded from sync\n');
+    rmSync(join(repoPath, 'topics/untracked.md'));
+
+    const result = await performSync(engine, { ...baseOpts(), exclude: ['topics/skipme.md'] });
+    expect(result.status).toBe('synced');
+    expect(result.modified).toBe(1); // the committed base.md edit imported
+    // Drift filtered through the same predicates imports use: skipme.md is
+    // excluded, junk.xyz (still on disk from the previous test) is unsyncable.
+    expect(result.uncommitted).toEqual({ added: 1, modified: 0, deleted: 1 });
+    expect(await pageExists('topics/drift-note')).toBe(false);
+    // The uncommitted deletion must NOT have been applied to the brain.
+    expect(await pageExists('topics/untracked')).toBe(true);
+  }, 60_000);
+
+  test('rename-only dirty tree still reports drift (add + delete decomposition)', async () => {
+    // Reviewer-caught gap: a staged `git mv` populates ONLY the manifest's
+    // `renamed` bucket — it set hasWorkingTreeChanges but counted zero drift,
+    // reproducing the silent "Already up to date." this fix exists to kill.
+    commitAll('settle working tree'); // clean slate: prior drift now committed
+    await performSync(engine, baseOpts()); // import the settle commit → anchor at HEAD
+    execSync('git mv topics/base.md topics/base-renamed.md', { cwd: repoPath, stdio: 'pipe' });
+
+    const result = await performSync(engine, baseOpts());
+    expect(result.status).toBe('up_to_date');
+    // Rename decomposes as add(new path) + delete(old path).
+    expect(result.uncommitted).toEqual({ added: 1, modified: 0, deleted: 1 });
+    // Not imported: the renamed page keeps its old slug until committed.
+    expect(await pageExists('topics/base')).toBe(true);
+    expect(await pageExists('topics/base-renamed')).toBe(false);
+  }, 60_000);
 });
