@@ -11,13 +11,13 @@ Seven test command tiers, each with a clear scope:
 
 | Command | What it runs | Wallclock | When to use |
 |---|---|---|---|
-| `bun run test` | Parallel unit-test fast loop. 8-shard fan-out via `scripts/run-unit-parallel.sh`, then a serial pass over `*.serial.test.ts`. Excludes `*.slow.test.ts` and `test/e2e/*`. No pre-checks, no typecheck. | ~85s on a Mac dev box (3650+ tests) | Inner edit loop. Default. |
-| `bun run verify` | CI's authoritative pre-test gate set, fanned out in parallel by `scripts/run-verify-parallel.sh`: the full `check:*` battery (~30 checks — privacy, jsonb, progress, source-id, test-isolation, wasm, …) plus `bun run typecheck`. The `CHECKS` array in that script is the single source of truth — CI literally calls `bun run verify` in a dedicated job. | ~16s (parallel; typecheck dominates) | Before pushing; before `/ship`. |
+| `bun run test` | Parallel unit-test fast loop. Sharded fan-out via `scripts/run-unit-parallel.sh` (default 4 shards — CPU-detected, clamped to a max of 8, and defaulted down to 4 when there's no `--shards`/`SHARDS` override; 4 matches CI's fan-out and avoids PGLite WASM-init contention), then a serial pass over `*.serial.test.ts`. Excludes `*.slow.test.ts` and `test/e2e/*`. No pre-checks, no typecheck. | a few minutes on a Mac dev box | Inner edit loop. Default. |
+| `bun run verify` | CI's authoritative pre-test gate set, fanned out in parallel by `scripts/run-verify-parallel.sh`: the full `check:*` battery (privacy, jsonb, progress, source-id, test-isolation, wasm, …) plus `bun run typecheck`. The `CHECKS` array in that script is the single source of truth — CI literally calls `bun run verify` in a dedicated job. | ~16s (parallel; typecheck dominates) | Before pushing; before `/ship`. |
 | `bun run test:full` | `verify && bun run test && bun run test:slow && [smart e2e]`. The local equivalent of "everything CI runs." Smart e2e: runs e2e only when `DATABASE_URL` is set; else loud skip notice to stderr. | ~3-5min depending on slow + e2e | Pre-merge sanity, before opening a PR. |
 | `bun run test:slow` | Just the `*.slow.test.ts` set (intentional cold-path correctness checks). | seconds-to-minutes | When touching slow-path code. |
 | `bun run test:serial` | Just the `*.serial.test.ts` set (cross-file-contention quarantine; one bun process per file for true module-registry isolation). | ~1s per quarantined file | Debugging a specific quarantined file. |
 | `bun run test:e2e` | Real Postgres E2E. Requires Docker + `DATABASE_URL`. Sequential. | ~5-10min | Pre-ship; nightly. |
-| `bun run check:all` | The historical pre-check scripts (22, chained sequentially in package.json). Overlaps `verify` heavily but is NOT a superset — `verify`'s `CHECKS` array in `scripts/run-verify-parallel.sh` (~30 entries incl. typecheck) is the authoritative gate; `check:all` keeps a few local-only extras (trailing-newline, exports-count, no-legacy-getconnection). | ~10s | Local-only sweep for the extras. |
+| `bun run check:all` | The historical pre-check scripts (chained sequentially in package.json). Overlaps `verify` heavily but is NOT a superset — `verify`'s `CHECKS` array in `scripts/run-verify-parallel.sh` is the authoritative gate; `check:all` keeps a few local-only extras (trailing-newline, exports-count, no-legacy-getconnection). | ~10s | Local-only sweep for the extras. |
 
 ### Shell dispatch and Windows
 
@@ -61,11 +61,16 @@ When `bun run test` finds any failure, the wrapper:
 3. Writes a one-line-per-shard summary to `.context/test-summary.txt` (`shard N/M: pass=X fail=Y skip=Z rc=W`).
 4. Exits non-zero. Empty failure log + non-zero exit = infrastructure problem (wedged shard, killed child); the banner says so.
 
-If a shard wedges (per-shard `GBRAIN_TEST_SHARD_TIMEOUT` cap, default 600s), the wrapper writes `--- shard N: WEDGED after ${SHARD_TIMEOUT}s ---` to the failure log, includes the last 50 lines of the shard log, and proceeds with other shards' results.
+If a shard hits the per-shard `GBRAIN_TEST_SHARD_TIMEOUT` cap (default 2400s — sized so the heaviest count-balanced shard finishes under 4-way contention), the wrapper classifies the kill one of two ways:
+
+- **EXIT-HANG → warn-pass.** If the shard's log had been silent for ≥300s at kill time AND shows zero `(fail)` markers, the shard finished all its work, leaked a handle, and never exited (a pre-existing, master-reproducible PGLite-adjacent leak — see TODOS.md "unit-shard exit hang"). The wrapper prints a `⚠️ shard N/M: EXIT-HANG ... Treating as pass-with-warning` banner, writes `EXIT-HANG (idle Ns, 0 fails) ... warn-pass` to the summary, and does NOT fail the run. Its pass counts are undercounted (bun never printed its final summary). Bun's per-test `--timeout` turns a genuinely hung TEST into a printed `(fail)` — new output — so this classification cannot mask a hung test; the residual maskable case is a file-level import hang in the very last file, which the banner keeps visible.
+- **WEDGED → hard failure.** Anything else (failures present, or the log was still growing) writes `--- shard N: WEDGED after ${SHARD_TIMEOUT}s ---` to the failure log with the last 50 lines of the shard log, marks the run failed, and proceeds with other shards' results.
+
+Triage rule: a `warn-pass` EXIT-HANG line in `.context/test-summary.txt` is NOT a test failure — don't burn time bisecting it; a `WEDGED` line is.
 
 ### File taxonomy
 
-- `*.test.ts` → fast loop (parallel 8-shard fan-out).
+- `*.test.ts` → fast loop (parallel sharded fan-out, default 4 shards).
 - `*.slow.test.ts` → run via `bun run test:slow` only (intentional cold-path tests; would dominate the fast loop's wallclock).
 - `*.serial.test.ts` → run via `bun run test:serial` after the parallel pass completes; one bun process per file (`--max-concurrency=1` within a shared process is not enough — the module registry still leaks `mock.module`). Quarantine for tests that share file-wide state and race when run alongside other files in the same `bun test` process. Several dozen files, discovered by the `*.serial.test.ts` glob — no list to maintain. Typical residents: `mock.module(...)` users (top-level mocks leak across files in a shard process, e.g. `test/embed.serial.test.ts`), env-coupled files (e.g. `test/brain-registry.serial.test.ts`), and process-lifecycle suites that assert on `process.exitCode` (e.g. `test/pglite-engine-disconnect.serial.test.ts`). **Do not put the parallelism back on a serial file unless you've fixed the contention root cause** (it just re-introduces the flake).
 - `test/e2e/*.test.ts` → real-Postgres E2E. Skipped when `DATABASE_URL` is unset.
@@ -82,6 +87,8 @@ Any change under `skills/` must regenerate it: `bun run scripts/generate-skills-
 `gbrain doctor` reports the same drift as a warn-only `skills_manifest_integrity` check.
 
 ### Test-isolation lint and helpers
+
+**This section is the canonical home of the test-isolation discipline** — CONTRIBUTING.md and other docs link here rather than restating the rules.
 
 The cross-file flake class is enforced statically by `scripts/check-test-isolation.sh`, wired into `bun run verify` and `bun run check:all`. Rules (non-serial unit files only; `*.serial.test.ts` and `test/e2e/*` are skipped):
 

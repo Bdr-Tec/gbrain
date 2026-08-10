@@ -81,11 +81,10 @@ search for [any topic in your brain]
 You should see results from your GBrain knowledge base.
 
 > **`list_skills` returns nothing?** Skill discovery is gated by `mcp.publish_skills`
-> on the host. New brains from `gbrain init` default it ON; brains upgraded from an
-> older release stay OFF until you opt in. Enable it on the host with
-> `gbrain config set mcp.publish_skills true`. The core tools (search, query,
-> get_page, put_page, think, find_experts) work regardless. Note: `capture` is a
-> CLI-only command, not an MCP tool — the agent writes over MCP with `put_page`.
+> on the host — enable it with `gbrain config set mcp.publish_skills true`. The core
+> tools (search, query, get_page, put_page, think, find_experts) work regardless;
+> `capture` is CLI-only, so agents write over MCP with `put_page`. Why brains differ
+> on the default: [tutorial A1](../tutorials/connect-coding-agent.md#a1-on-the-host-serve-over-http).
 
 ## Remove
 

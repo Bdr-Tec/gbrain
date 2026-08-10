@@ -13,7 +13,7 @@
 #
 # Env overrides:
 #   SHARDS=N                     same as --shards
-#   GBRAIN_TEST_SHARD_TIMEOUT    per-shard wallclock cap, seconds (default 1500)
+#   GBRAIN_TEST_SHARD_TIMEOUT    per-shard wallclock cap, seconds (default 2400)
 #   GBRAIN_TEST_SHARD_KILL_AFTER grace after TERM before KILL (default 30)
 #   GBRAIN_TEST_MAX_CONCURRENCY  passed through to bun test (default 4)
 #

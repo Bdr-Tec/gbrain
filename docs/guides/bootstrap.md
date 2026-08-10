@@ -75,7 +75,8 @@ zero in keyless mode; with a key, the standard spend gates apply
   the cause.
 - **Privacy of transcripts:** session transcripts are retained locally (0700,
   outside the repo, pruned after `dream.synthesize.corpus_retention_days`, default
-  30) and secret-redacted at write time. They never enter the repo. The extraction
+  30 — set it in the config file, `~/.gbrain/config.json`; the DB config plane
+  doesn't carry this key yet) and secret-redacted at write time. They never enter the repo. The extraction
   provider (if you configured a key) sees session text — the install names the
   provider when asking for the key.
 

@@ -38,7 +38,7 @@ mount, CEO-class with multiple team brains) and
 
 ## Architecture
 
-Contract-first: `src/core/operations.ts` defines ~90 shared operations (v0.29 adds `get_recent_salience`, `find_anomalies`, `get_recent_transcripts`; v0.42.43.0 adds `volunteer_context` — push-based context, see `docs/guides/push-context.md`). CLI and MCP
+Contract-first: `src/core/operations.ts` defines 100+ shared operations (including `volunteer_context` — push-based context, see `docs/guides/push-context.md`). CLI and MCP
 server are both generated from this single source. Engine factory (`src/core/engine-factory.ts`)
 dynamically imports the configured engine (`'pglite'` or `'postgres'`). Skills are fat
 markdown files (tool-agnostic, work with both CLI and plugin contexts).
@@ -191,9 +191,10 @@ Mismatches (tokenmax+Haiku, conservative+Opus) waste capacity differently
 expensive one.
 
 tokenmax adds ~\$1.50 per 1K queries in Haiku expansion calls on top of
-the matrix (\$15/mo @ 10K). Cache hits cut all numbers ~50%. **The cost
-picker copy in `gbrain init` carries the same matrix verbatim** — update
-both when refreshing.
+the matrix (\$15/mo @ 10K). Cache hits cut all numbers ~50%. **The matrix
+has three verbatim homes: this section, the `gbrain init` picker copy
+(`src/commands/init-mode-picker.ts`), and `INSTALL_FOR_AGENTS.md` Step
+3.5** — update all three when refreshing.
 
 **Per-query math vs real-world spend.** The matrix above is what an
 isolated benchmark would measure. Real agent loops with disciplined
@@ -273,8 +274,9 @@ audit trail lives in the source repo's git history.
 
 ## Skills
 
-Read the skill files in `skills/` before doing brain operations. GBrain ships 30 skills
-organized by `skills/RESOLVER.md` (`AGENTS.md` is also accepted as of v0.19):
+Read the skill files in `skills/` before doing brain operations. GBrain ships 50+ skills
+(the current list lives in `skills/manifest.json`) organized by `skills/RESOLVER.md`
+(`AGENTS.md` is also accepted as of v0.19):
 
 **Original 8 (conformance-migrated):** ingest (thin router), query, maintain, enrich,
 briefing, migrate, setup, publish.

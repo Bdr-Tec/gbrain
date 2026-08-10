@@ -57,3 +57,7 @@ A filled copy of this doc committed as `AGENT_BOOTSTRAP_SPIKE_RESULTS.md`
 (scrubbed: no real names beyond the maintainer, no account identifiers), plus the
 gate decision recorded in the design doc: door-1 ships full / ships as documented
 beta / schedule scope cut per quota.
+
+**Gate status:** not yet run — no `AGENT_BOOTSTRAP_SPIKE_RESULTS.md` is committed,
+so no gate decision is recorded and door 1 has not been promoted past the
+documented-beta bar by this instrument. Update this line when the results land.

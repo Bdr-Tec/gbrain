@@ -14,6 +14,36 @@ below with their finding IDs. 0 unresolved decisions.
 
 ---
 
+## As-shipped deltas (read this first — where the code moved after the plan froze)
+
+This plan is layered: later absorption sections (the post-design-review deltas, the
+CX2 series) override earlier prose, and THIS section overrides everything below it.
+The shipped implementation matches the plan except for these deltas:
+
+1. **Verify runs LAST, not before host registration.** [CX2-5]'s determinism goal
+   survived, but the shipped phase order (single TS source:
+   `src/core/bootstrap/status.ts` `PHASES`) is
+   preflight → engine → interview → render → skills → wire → repo → **verify**,
+   and verify runs in-process on the caller-held engine, calling
+   `runMaintenanceSweep` directly — no transient serve. It works pre-registration
+   AND as the weekly re-run (`src/core/bootstrap/verify.ts`).
+2. **Uninstall scope: [CX2-12] wins over the CEO-expansion bullet.** `~/.gbrain` is
+   NEVER deleted wholesale — only receipt-enumerated bootstrap-created state
+   (`src/core/bootstrap/uninstall.ts`).
+3. **Module naming/layout:** `private-repo.ts` shipped as `repo.ts`; additional
+   shipped modules the artifact table doesn't list: `attach.ts, assets.ts,
+   format.ts, host-specs.ts, hooks.ts, lock.ts, status.ts, template-repo.ts,
+   uninstall.ts`.
+4. **Templates layout:** all bootstrap templates live under `templates/bootstrap/`
+   (not at `templates/` root).
+5. **Test filenames:** `test/hook-command.serial.test.ts` and
+   `test/e2e/bootstrap-*.serial.test.ts` — the `.serial` variants the plan's own
+   [A7] mandated; the artifact table predates that.
+6. **README ordering:** the D5 placement was superseded by the 2026-08-09 user
+   decision — per-harness `## Install` sections ordered Codex → Claude Code →
+   OpenClaw/Hermes, with `INSTALL_FOR_AGENTS.md` living inside the OpenClaw/Hermes
+   section (annotated in the artifact table; the D5 prose at the bottom is stale).
+
 ## Post-design-review deltas (2026-08-07, /office-hours APPROVED — these override below)
 
 Product: **"GBrain for Codex" + "GBrain for Claude Code"** (names contingent on
@@ -90,7 +120,9 @@ ChatGPT-app user). CLIs come along via shared machinery.
   kept in sync with templates/ by extending scripts/check-bootstrap-templates.sh to
   diff the template repo content. Build order 2.
 - **`gbrain bootstrap uninstall`** in v1 (was fast-follow): removes MCP registration +
-  hooks + `~/.gbrain` (confirm-gated), leaves the repo ("the body remains yours").
+  hooks + bootstrap-created state (confirm-gated), leaves the repo ("the body remains
+  yours"). [Scope superseded by CX2-12 + as-shipped delta 2: `~/.gbrain` is never
+  deleted wholesale — only receipt-enumerated bootstrap-created state.]
 - **Docker cold-machine e2e (offline parts) in CI** in v1: networkless read-only
   container running interview → render → verify with fake gh (codex-as-agent
   tests/docker shape). The full networked paste flow stays a fast-follow (flake).
@@ -269,6 +301,8 @@ ChatGPT-app user). CLIs come along via shared machinery.
   local-only CLI entry (`gbrain sweep --once`, CLI_ONLY, never over MCP), and
   `bootstrap verify` runs BEFORE host registration on its own transient serve/engine:
   write via op → `sweep --once` → edge query. No timing nondeterminism.
+  [Sequencing superseded by as-shipped delta 1: verify shipped as the LAST phase,
+  in-process on the caller-held engine; the determinism goal is unchanged.]
 - [CX2-6 P1] **Cross-platform lock replaces flock dependence:** flock(1) absent ⇒
   locking silently disabled (brain-repo-durability.ts:137) — macOS is the v1 target.
   One cross-platform lock (atomic mkdir/lockfile with PID+age+token semantics) spans
@@ -767,7 +801,8 @@ settings.local.json + config.toml writers (single module owns each host format).
   your data). The routing-table-size concern is mitigated by frontmatter-trigger routing
   (authoritative since v0.36) and noted for a future curated-profile fast-follow if dispatch
   accuracy suffers in practice.
-- **D5 = Codex/Claude-Code-scoped placement.** This is NOT the new headline install —
+- **D5 = Codex/Claude-Code-scoped placement.** [Superseded by the 2026-08-09 user
+  decision — see as-shipped delta 6 and the artifact table's README row.] This is NOT the new headline install —
   most users still use GBrain with OpenClaw/Hermes, so `INSTALL_FOR_AGENTS.md` remains the
   primary paste path at the top of the README. The bootstrap paste block becomes the
   flagship "For Codex" / "For Claude Code" README sections, ahead of the OpenClaw/Hermes path at equal weight (and

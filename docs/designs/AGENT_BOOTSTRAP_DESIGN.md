@@ -68,7 +68,8 @@ open >10 days from first code commit)
 0. **Spike + quota gate** (manual, gates door-1 ship; per-harness quota measured; a
    p90 day must fit ≤10% of weekly subscription quota or schedule scope is cut).
 1. **Shared body + engine machinery:** `gbrain bootstrap` family, templates, format
-   spec, secret-scan-gated persistence, verify.
+   spec, secret-scan-gated persistence, verify, uninstall (v1 via CEO-review
+   expansion; receipt-keyed scope per the PLAN's CX2-12).
 2. **Codex door ships first** (runbook variant + approvals preflight + capability
    probe; CLI path not spike-gated).
 3. **Claude Code door:** hooks, IPC turn_context, transcript ingestion, greeting
@@ -111,8 +112,11 @@ Paste block + tag-pinned runbook (`BOOTSTRAP_FOR_AGENTS.md`, fetched at the
 `latest-stable` ref — advanced by the release job only after assets publish, so
 published copies never rot); optional GitHub template repo (generated at release from
 the same renderer); binary via `bun install -g github:garrytan/gbrain#latest-stable`
-(never npm). The paste block lives in the README's "Quick start: Claude Code or
-Codex" section; `INSTALL_FOR_AGENTS.md` remains the paste path for agent platforms.
+(never npm). The paste block lives in the README's `## Install` section, as
+per-harness subsections ordered "For Codex — the recommended first step" → "For
+Claude Code" → "For OpenClaw or Hermes" (the 2026-08-09 ordering decision, recorded
+in the PLAN's artifact table). `INSTALL_FOR_AGENTS.md` remains the paste path for
+agent platforms and lives inside the OpenClaw/Hermes subsection.
 
 ## Threat model (v1 summary)
 
