@@ -28,7 +28,14 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { configDir } from '../config.ts';
 import { realpathOrResolve } from '../path-confine.ts';
-import { readManifest, readReceipt, writeReceipt, type AgentManifest, type InstallReceipt } from './format.ts';
+import {
+  guardReceiptOverwrite,
+  readManifest,
+  readReceipt,
+  writeReceipt,
+  type AgentManifest,
+  type InstallReceipt,
+} from './format.ts';
 import { BootstrapError } from './lock.ts';
 
 export type AttachStepKind = 'register_source' | 'hooks_repair' | 'mcp_add' | 'verify';
@@ -82,6 +89,13 @@ export function attachWorkspace(workspaceDir: string, opts: AttachWorkspaceOptio
 
   const gbrainHomeDir = opts.gbrainHomeDir ?? configDir();
   const resolvedWs = realpathOrResolve(workspaceDir);
+  // Pre-write guard [CX2-12]: a receipt from a NEWER gbrain refuses (upgrade
+  // first — readReceipt alone would return null and silently clobber its
+  // created_paths/registrations); an unreadable receipt is backed up loudly.
+  const guard = guardReceiptOverwrite(gbrainHomeDir);
+  if (guard.brokenBackupPath) {
+    console.error(`WARNING: the install receipt was unreadable; backed it up to ${guard.brokenBackupPath} and wrote a fresh one.`);
+  }
   const existing = readReceipt(gbrainHomeDir);
   const sameWorkspace = existing !== null && realpathOrResolve(existing.workspace_dir) === resolvedWs;
 

@@ -21,14 +21,15 @@ are always answered).
 
 ## Due-job list
 
-Checked at session start and turn boundaries. Ships with everything conservative;
-enable one at a time: run it manually first, confirm the output is worth
-delivering, then mark it enabled.
+Checked at session start and turn boundaries. Every job ships DISABLED — the
+enable ritual is one at a time: run the job manually first, confirm the output
+is worth delivering, then (and only then) flip its Enabled cell to `yes`. Never
+enable two jobs in the same session; you cannot tell which one earned its keep.
 
 | Job | Cadence (session-triggered) | Enabled | What |
 |---|---|---|---|
-| commitments-check | first session of the day | yes | Scan MEMORY.md open commitments; surface anything due or overdue. |
-| memory-prune | weekly-equivalent | yes | The MEMORY.md maintenance ritual (promote / demote / cut). |
+| commitments-check | first session of the day | no | Scan MEMORY.md open commitments; surface anything due or overdue. |
+| memory-prune | weekly-equivalent | no | The MEMORY.md maintenance ritual (promote / demote / cut). |
 | brain-hygiene | weekly-equivalent | no | `gbrain doctor`; relay anything red. |
 | morning-briefing | first session after 06:00 | no | One screen: due today, waiting on, worth knowing. No filler — a skipped briefing costs less than an empty one. |
 

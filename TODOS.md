@@ -5001,6 +5001,57 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 
+- [ ] **P1 — `--background --follow` spawns a nonexistent subcommand.**
+  `src/core/cli-options.ts` (~:391) spawns `gbrain jobs follow <id>` after a
+  background submit, but jobs.ts has no `follow` subcommand (`jobs watch
+  --follow` exists and takes no id; `jobs submit --follow` is inline-only).
+  The spawned child hits the unknown-subcommand path, so `--background
+  --follow` submits fine but the live stream never attaches. Fix: implement
+  `jobs follow <id>` (poll get_job + stream progress) or retarget the spawn.
+  Found during the v0.45.0.0 doc audit; KEY_FILES documents current behavior.
+- [ ] **P2 — shared receipt upsert helper.** InstallReceipt construct/merge
+  logic is quadruplicated (bootstrap.ts writeRenderReceipt +
+  appendReceiptRegistration, attach.ts, repo.ts recordRepoInReceipt) with
+  slightly different defaults; guardReceiptOverwrite is wired at each site
+  individually. One `upsertReceipt(home, ws, patch)` in format.ts.
+- [ ] **P2 — promote the atomic tmp+rename write idiom to one core helper.**
+  ~7 hand-rolled copies across format.ts/interview.ts/lock.ts/render.ts/
+  hook.ts/workspace-push.ts/verify.ts; hooks.ts already has a private
+  atomicWriteJson to promote (plus a text variant).
+- [ ] **P2 — extract a shared mkdir-lock primitive.** bootstrap/lock.ts and
+  workspace-push.ts both implement atomic-mkdir + PID/age/token steal rules
+  citing the same pglite-lock learnings (#2058/#2348); three parallel
+  implementations counting pglite-lock. One primitive with injectable stale
+  window + throw-vs-result adapters.
+- [ ] **P2 — move the hook heartbeat read surface into core.** core/bootstrap/
+  status.ts and core/bootstrap/verify.ts dynamic-import readHeartbeatTail
+  from commands/hook.ts (core→commands inversion). A core/hooks-telemetry.ts
+  owning the read/write surface removes the reach-ins.
+- [ ] **P2 — consolidate the two GitHub remote parsers + privacy probes.**
+  workspace-push.ts parseGithubOwnerRepo (accepts ssh:// + trailing /) vs
+  repo.ts parseGithubRemote (scp-form only), and verifyRemotePrivacy (gh repo
+  view) vs verifyRepoPrivate (gh api): grammars/failure classes can drift.
+  One exported parser + one privacy-probe core returning the verdict union.
+- [ ] **P2 — connector-ingest capability probe (with v1.1 connector ingest).**
+  The plan's build-order-2 probe (email/calendar connector availability wired
+  into install output) deferred with the feature it gates; the capability
+  report today covers embeddings + extraction only.
+- [ ] **P2 — G15 retention warnings in doctor.** MEMORY.md size cap + corpus
+  retention + orphaned stop-hook buffers are enforced/pruned but doctor never
+  warns when they accumulate; add the three checks to the bootstrap group.
+- [ ] **P2 — NER-based graph floor in verify.** The graph-floor check asserts
+  wikilink-edge/backlink link-table rows; a true entity-extraction floor
+  (≥1 NER entity + one edge-only query op) needs the extraction path or a
+  keyed provider, so it rides with a keyed-mode verify extension.
+- [ ] **P2 — `--isolated` flag productization.** GBRAIN_HOME threading through
+  MCP registration env, hooks, and uninstall guards ships in v1; the
+  documented `bootstrap --isolated` one-flag wrapper (set env + assert
+  database_path containment + gitignore check, per D2=C) is not yet a flag.
+- [ ] **P2 — sweep N+1 page fetch.** The links/timeline pass getPage-per-slug
+  loop is bounded (batchLimit 20) but serializes round-trips on the live
+  serve connection; add a getPagesBySlugs batch read to both engines (engine
+  parity + bootstrap-probe obligations) and use it.
+
 - [ ] **P2 — `gbrain quota` meter command.** Productize the release-gate quota
   measurement (script+doc ship with the bootstrap wave) into a command that reports
   a session/day's token burn against the harness subscription allowance. Blocked on

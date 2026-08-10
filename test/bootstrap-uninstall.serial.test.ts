@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -160,6 +160,58 @@ describe('uninstallWorkspace', () => {
     expect(result.brain_deleted).toBe(false);
     expect(existsSync(join(home, 'brain.pglite'))).toBe(true);
     expect(existsSync(hooksDir)).toBe(false); // created_paths still removed
+  });
+
+  test('deleteBrain rm FAILURE: brain_deleted false, failure reason surfaced, receipt + telemetry kept (retry possible)', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return; // root ignores modes
+    seedHome({ brain_created_by_bootstrap: true });
+    // A read-only subdir makes rmSync fail mid-removal (EACCES unlinking inside).
+    const protectedDir = join(home, 'brain.pglite', 'protected');
+    mkdirSync(protectedDir, { recursive: true });
+    writeFileSync(join(protectedDir, 'file.txt'), 'x', 'utf8');
+    chmodSync(protectedDir, 0o555);
+    try {
+      const result = await uninstallWorkspace(ws, {
+        gbrainHomeDir: home,
+        deleteBrain: true,
+        confirm: async () => true,
+      });
+      // brain_deleted only after rm succeeded AND the dir is gone — neither here.
+      expect(result.brain_deleted).toBe(false);
+      const failure = result.skipped_paths.find((s) => s.path === join(home, 'brain.pglite'));
+      expect(failure?.reason).toContain('brain deletion failed');
+      // Receipt + bootstrap/ telemetry survive so `uninstall --delete-brain` can retry.
+      expect(result.receipt_removed).toBe(false);
+      expect(readReceipt(home)).not.toBeNull();
+      expect(existsSync(join(home, 'bootstrap', 'install.jsonl'))).toBe(true);
+    } finally {
+      chmodSync(protectedDir, 0o755);
+    }
+  });
+
+  test('deleteBrain containment FAILURE (data dir symlinks out): refused with reason, target survives, receipt kept', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'gbrain-uninstall-braintarget-'));
+    try {
+      writeFileSync(join(outside, 'victim.txt'), 'precious', 'utf8');
+      seedHome({ brain_created_by_bootstrap: true });
+      // Replace the real data dir with a symlink escaping the home.
+      rmSync(join(home, 'brain.pglite'), { recursive: true, force: true });
+      symlinkSync(outside, join(home, 'brain.pglite'));
+
+      const result = await uninstallWorkspace(ws, {
+        gbrainHomeDir: home,
+        deleteBrain: true,
+        confirm: async () => true,
+      });
+      expect(result.brain_deleted).toBe(false);
+      const failure = result.skipped_paths.find((s) => s.reason.includes('brain deletion skipped'));
+      expect(failure?.reason).toContain('outside');
+      expect(existsSync(join(outside, 'victim.txt'))).toBe(true);
+      expect(result.receipt_removed).toBe(false);
+      expect(readReceipt(home)).not.toBeNull();
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   test('deleteBrain without a confirm fn is fail-closed: brain survives', async () => {

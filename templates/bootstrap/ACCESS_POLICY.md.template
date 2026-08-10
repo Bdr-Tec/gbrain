@@ -26,6 +26,22 @@ the `world` visibility tier so your own sessions can recall them; flip
 `facts.default_visibility` to `private` if you plan to expose this brain to other
 surfaces with less trust.
 
+## What the model provider sees
+
+The agent runs on a hosted model. Session text — messages, retrieved brain
+context, and file excerpts pulled into the working context — is sent to that
+model provider as part of normal operation. This is a standing consent baked
+into using a hosted agent: anything that must never reach a provider should not
+enter a session (and should not be filed where retrieval can inject it).
+
+## MCP registration scope
+
+A `project`-scoped MCP registration exposes this brain only to sessions opened
+in this folder. A `user`-scoped registration makes the brain queryable from ANY
+repository opened on this machine — including someone else's checked-out code
+whose files may carry hostile instructions that try to read it. Prefer project
+scope; choose user scope only after accepting that tradeoff.
+
 ## The transcript corpus
 
 Session transcripts are retained locally (outside this repo, mode 0700, pruned

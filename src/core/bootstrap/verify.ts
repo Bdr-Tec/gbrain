@@ -27,7 +27,8 @@
  * keeping the last 5 snapshots. `bootstrap status` + doctor read them.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -35,15 +36,17 @@ import type { BrainEngine } from '../engine.ts';
 import { operations, type Operation, type OperationContext } from '../operations.ts';
 import { loadConfigFileOnly, type GBrainConfig } from '../config.ts';
 import { resolveGbrainHome } from '../gbrain-home.ts';
+import { realpathOrResolve } from '../path-confine.ts';
 import { runMaintenanceSweep } from '../sweep.ts';
 import { detectCapabilities, renderCapabilityReport, type CapabilityReport } from '../capability.ts';
 import { loadWorkspaceAllowlist, matchesGlob, scanFiles, type SecretFinding } from '../secret-scan.ts';
 import { PUSH_DENY_GLOBS, verifyRemotePrivacy, pushStatusPath } from '../workspace-push.ts';
+import { FACTS_DEFAULT_VISIBILITY_KEY } from '../facts/visibility.ts';
 import { byteFloors } from './render.ts';
 import { BOOTSTRAP_TEMPLATES, loadQuestionBank } from './assets.ts';
-import { readManifest } from './format.ts';
+import { readManifest, writeManifest } from './format.ts';
 import { status as interviewStatus } from './interview.ts';
-import { hooksInstalled } from './status.ts';
+import { gitOriginUrl, hooksInstalled } from './status.ts';
 import {
   ensureIpcSecret,
   resolveSocketPath,
@@ -313,15 +316,7 @@ function checkDenyGlobs(ws: string): VerifyCheck {
 function checkRepoPrivacy(ws: string): VerifyCheck {
   const id = 'repo_privacy';
   try {
-    let origin: string | null = null;
-    try {
-      origin = execFileSync('git', ['-C', ws, 'remote', 'get-url', 'origin'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-      }).toString().trim() || null;
-    } catch {
-      origin = null;
-    }
+    const origin = gitOriginUrl(ws);
     if (!origin) {
       return { id, ok: true, detail: 'local-only (no origin remote) — run `gbrain bootstrap repo` any time to add the private body' };
     }
@@ -331,6 +326,115 @@ function checkRepoPrivacy(ws: string): VerifyCheck {
     return { id, ok: false, detail: `origin visibility unverifiable (${verdict.detail}) — refusing to bless an unverified remote [G8]; re-run once gh works` };
   } catch (e) {
     return { id, ok: false, detail: `repo privacy check failed: ${(e as Error).message}` };
+  }
+}
+
+/** [CX-P1.1] Single-principal posture: facts written without an explicit
+ * visibility must be recallable by the owner's own sessions (the harness
+ * reads at visibility='world'). Set-IF-UNSET only, through the engine config
+ * plane — an operator's explicit value (e.g. 'private' for a brain exposed to
+ * other surfaces) is NEVER overridden. The report line names the posture and
+ * where to flip it. */
+async function ensureDefaultVisibilityPosture(engine: BrainEngine): Promise<VerifyCheck> {
+  const id = 'facts_visibility';
+  try {
+    const existing = await engine.getConfig(FACTS_DEFAULT_VISIBILITY_KEY);
+    if (existing == null || existing.trim() === '') {
+      await engine.setConfig(FACTS_DEFAULT_VISIBILITY_KEY, 'world');
+      return {
+        id,
+        ok: true,
+        detail:
+          `facts default visibility: world (set by bootstrap verify — was unset). ` +
+          `Flip with \`gbrain config set ${FACTS_DEFAULT_VISIBILITY_KEY} private\` if less-trusted surfaces will read this brain.`,
+      };
+    }
+    return {
+      id,
+      ok: true,
+      detail:
+        `facts default visibility: ${existing.trim()} (explicit operator value — untouched). ` +
+        `Flip with \`gbrain config set ${FACTS_DEFAULT_VISIBILITY_KEY} <world|private>\`.`,
+    };
+  } catch (e) {
+    return { id, ok: true, warn: true, detail: `could not read/set ${FACTS_DEFAULT_VISIBILITY_KEY}: ${(e as Error).message}` };
+  }
+}
+
+/** Effective MCP-surface posture: bootstrap registrations pin `--surface
+ * full`, but a REGISTRATION THAT PREDATES that pin resolves the config key —
+ * `mcp_surface: 'verbs'` would silently narrow the bootstrap contract
+ * (put_page/get_page/timeline are not memory verbs). Loud WARN naming the fix. */
+function checkMcpSurface(): VerifyCheck {
+  const id = 'mcp_surface';
+  try {
+    const surface = loadConfigFileOnly()?.mcp_surface;
+    if (surface === 'verbs') {
+      return {
+        id,
+        ok: true,
+        warn: true,
+        detail:
+          `config mcp_surface='verbs' narrows a bare \`gbrain serve\` to the five memory verbs — the bootstrap ` +
+          `contract needs the full surface. Fix: re-run \`gbrain bootstrap hooks --repair\` (registrations now pin ` +
+          `--surface full) or \`gbrain config set mcp_surface full\`.`,
+      };
+    }
+    return { id, ok: true, detail: `mcp_surface: ${surface ?? 'full (default)'} — full op surface for registrations` };
+  } catch (e) {
+    return { id, ok: true, warn: true, detail: `mcp_surface config unreadable: ${(e as Error).message}` };
+  }
+}
+
+/**
+ * source_id collision resolution [engine seam]. Render is ENGINE-FREE and the
+ * sources registry lives ONLY in the DB (no registry file exists), so verify —
+ * the one bootstrap subcommand holding an engine — is where a manifest
+ * source_id already registered to a DIFFERENT checkout is detected. On
+ * collision it derives a stable `workspace-<8char-path-hash>` id, persists it
+ * to agent.json (render preserves it on re-render), and names the re-register
+ * steps; every consumer (hooks GBRAIN_SOURCE env, verify, status hints,
+ * attach, repo persistence) reads manifest.source_id, so the derived id
+ * propagates. Returns a sourceId ONLY when it derived one.
+ */
+async function resolveSourceIdCollision(
+  engine: BrainEngine,
+  ws: string,
+): Promise<{ sourceId: string | null; check: VerifyCheck | null }> {
+  const state = readManifest(ws);
+  if (state.state !== 'initialized') return { sourceId: null, check: null };
+  const current = state.manifest.source_id;
+  const brainDir = join(ws, 'brain');
+  try {
+    const rows = await engine.executeRaw<{ local_path: string | null }>(
+      `SELECT local_path FROM sources WHERE id = $1`,
+      [current],
+    );
+    const registered = rows[0]?.local_path ?? null;
+    if (rows.length === 0 || registered === null) return { sourceId: null, check: null };
+    if (realpathOrResolve(registered) === realpathOrResolve(brainDir)) {
+      return { sourceId: null, check: null }; // same checkout — no collision
+    }
+    const hash = createHash('sha256').update(realpathOrResolve(ws)).digest('hex').slice(0, 8);
+    const derived = `workspace-${hash}`;
+    writeManifest(ws, { ...state.manifest, source_id: derived });
+    return {
+      sourceId: derived,
+      check: {
+        id: 'source_id',
+        ok: true,
+        warn: true,
+        detail:
+          `source '${current}' is already registered to a different checkout (${registered}) — derived ` +
+          `'${derived}' and persisted it to agent.json. Register it (gbrain sources add ${derived} --path ${brainDir}) ` +
+          `and re-run \`gbrain bootstrap hooks --repair\` so GBRAIN_SOURCE follows.`,
+      },
+    };
+  } catch (e) {
+    return {
+      sourceId: null,
+      check: { id: 'source_id', ok: true, warn: true, detail: `source-id collision probe failed: ${(e as Error).message}` },
+    };
   }
 }
 
@@ -485,8 +589,9 @@ async function runRoundtrip(
 /** Hooks smoke [D8#8 as amended by CX2-5]: hooks installed → pipe a fixture
  * UserPromptSubmit stdin into runHook('user-prompt') IN-PROCESS against a
  * live in-process IPC server backed by the verify engine (the
- * test/resolve-ipc-v2 pattern). Asserts exit 0 + <800ms + non-empty block or
- * a documented degradation. */
+ * test/resolve-ipc-v2 pattern). Asserts exit 0 + within the hook's own
+ * USER_PROMPT_DEADLINE_MS budget + non-empty block or a documented
+ * degradation. */
 async function checkHooksSmoke(engine: BrainEngine, ws: string, sourceId: string): Promise<VerifyCheck> {
   const id = 'hooks_smoke';
   if (!hooksInstalled(ws)) {
@@ -528,7 +633,9 @@ async function checkHooksSmoke(engine: BrainEngine, ws: string, sourceId: string
       return { id, ok: true, warn: true, detail: 'could not bind the IPC socket (a live serve owns it?) — smoke skipped; the live serve itself is the IPC provider' };
     }
     process.env.GBRAIN_SOURCE = sourceId;
-    const { runHook, readHeartbeatTail } = await import('../../commands/hook.ts');
+    // USER_PROMPT_DEADLINE_MS is the hook's own budget — the smoke compares
+    // against the same constant it enforces (no drifting hardcoded copy).
+    const { runHook, readHeartbeatTail, USER_PROMPT_DEADLINE_MS } = await import('../../commands/hook.ts');
     let out = '';
     const t0 = Date.now();
     const code = await runHook(['user-prompt'], {
@@ -541,10 +648,10 @@ async function checkHooksSmoke(engine: BrainEngine, ws: string, sourceId: string
     const elapsed = Date.now() - t0;
     if (code !== 0) return { id, ok: false, detail: `hook exited ${code} (must fail open with exit 0)` };
     if (out.trim().length > 0) {
-      if (elapsed >= 800) {
-        // [A7] Real latency is a non-gating benchmark — the hard 800ms
+      if (elapsed >= USER_PROMPT_DEADLINE_MS) {
+        // [A7] Real latency is a non-gating benchmark — the hard deadline
         // assertion lives in the hook tests against an injected slow-IPC stub.
-        return { id, ok: true, warn: true, detail: `context block delivered but in ${elapsed}ms (over the 800ms budget on this box) — watch hook latency` };
+        return { id, ok: true, warn: true, detail: `context block delivered but in ${elapsed}ms (over the ${USER_PROMPT_DEADLINE_MS}ms budget on this box) — watch hook latency` };
       }
       return { id, ok: true, detail: `context block delivered in ${elapsed}ms (${out.trim().length} chars)` };
     }
@@ -582,15 +689,7 @@ function checkPushProbe(ws: string): VerifyCheck {
       if (s.ok === true) return { id, ok: true, detail: `last workspace push succeeded (${s.ts ?? 'unknown time'})` };
       return { id, ok: true, warn: true, detail: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'} — run \`gbrain sources push --path ${ws}\`` };
     }
-    let origin: string | null = null;
-    try {
-      origin = execFileSync('git', ['-C', ws, 'remote', 'get-url', 'origin'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-      }).toString().trim() || null;
-    } catch {
-      origin = null;
-    }
+    const origin = gitOriginUrl(ws);
     if (origin) return { id, ok: true, warn: true, detail: 'origin exists but no push recorded yet — run `gbrain sources push` once to prove the persistence path' };
     return { id, ok: true, detail: 'local-only mode — no push expected' };
   } catch (e) {
@@ -652,7 +751,13 @@ function persistVerifyRun(gbrainHomeDir: string, payload: { ts: string; ok: bool
     const dir = join(gbrainHomeDir, 'bootstrap');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const name = `verify-${payload.ts.replace(/[:.]/g, '-')}.json`;
-    writeFileSync(join(dir, name), JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 });
+    // tmp+rename (the writeReceipt pattern): a killed verify never leaves a
+    // torn snapshot for status/doctor to trip on. The .tmp-* name does not
+    // match the retention regex, so a leaked tmp is never counted as a run.
+    const dest = join(dir, name);
+    const tmp = `${dest}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 });
+    renameSync(tmp, dest);
     // Keep the newest VERIFY_SNAPSHOTS_KEPT.
     const runs = readdirSync(dir).filter((n) => /^verify-.*\.json$/.test(n)).sort().reverse();
     for (const stale of runs.slice(VERIFY_SNAPSHOTS_KEPT)) {
@@ -676,13 +781,25 @@ export async function verifyWorkspace(
   ws: string,
   opts: VerifyOpts = {},
 ): Promise<VerifyReport> {
-  const sourceId = opts.sourceId ?? 'workspace';
+  let sourceId = opts.sourceId ?? 'workspace';
   const gbrainHomeDir = opts.gbrainHomeDir ?? resolveGbrainHome();
   const caps = opts.capabilities ?? detectCapabilities();
 
   const checks: VerifyCheck[] = [];
 
   checks.push(await checkDoctorGreen(engine));
+  const engineHealthy = checks.find((c) => c.id === 'doctor_green')?.ok === true;
+
+  if (engineHealthy) {
+    // Transient-engine work while we hold the engine (before/independent of
+    // host registration): the CX-P1.1 visibility posture and the source-id
+    // collision resolution both need the config/sources plane.
+    checks.push(await ensureDefaultVisibilityPosture(engine));
+    const collision = await resolveSourceIdCollision(engine, ws);
+    if (collision.sourceId !== null) sourceId = collision.sourceId;
+    if (collision.check !== null) checks.push(collision.check);
+  }
+
   checks.push(checkTokenSweep(ws));
   checks.push(checkByteFloors(ws));
   checks.push(checkSecretScan(ws));
@@ -690,7 +807,6 @@ export async function verifyWorkspace(
   checks.push(checkRepoPrivacy(ws));
 
   // Round-trip family only makes sense on a reachable engine.
-  const engineHealthy = checks.find((c) => c.id === 'doctor_green')?.ok === true;
   if (engineHealthy) {
     const rt = await runRoundtrip(engine, ws, sourceId, { ...opts, capabilities: caps });
     checks.push(...rt.checks);
@@ -699,6 +815,7 @@ export async function verifyWorkspace(
   }
 
   checks.push({ id: 'capability_report', ok: true, detail: `${caps.mode} mode / ${caps.search} search` });
+  checks.push(checkMcpSurface());
 
   if (opts.skipHooksSmoke) {
     checks.push({ id: 'hooks_smoke', ok: true, detail: 'skipped by caller' });

@@ -94,7 +94,9 @@ function binaryOnPath(name: string): boolean {
   }
 }
 
-function gitOriginUrl(ws: string): string | null {
+/** The workspace's `origin` remote URL, or null (not a repo / no origin).
+ * Shared with verify.ts's origin-probe sites — one 5s-timeout idiom. */
+export function gitOriginUrl(ws: string): string | null {
   try {
     const out = execFileSync('git', ['-C', ws, 'remote', 'get-url', 'origin'], {
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -105,6 +107,42 @@ function gitOriginUrl(ws: string): string | null {
     return out || null;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Template-door privacy gate
+// ---------------------------------------------------------------------------
+
+export type OriginVisibility =
+  | { verdict: 'private' }
+  | { verdict: 'public'; detail: string }
+  | { verdict: 'unknown'; detail: string };
+
+/** Probe an origin's visibility via `gh repo view --json isPrivate` (the same
+ * 5s timeout idiom as gitOriginUrl). gh missing / offline / non-GitHub →
+ * 'unknown', never an invented answer. */
+export function probeOriginVisibility(origin: string): OriginVisibility {
+  try {
+    // env: process.env — Bun's execFileSync otherwise resolves the binary
+    // against the STARTUP env snapshot, making PATH-shimmed test fakes (and
+    // any runtime PATH change) invisible (the workspace-push.ts precedent).
+    const out = execFileSync('gh', ['repo', 'view', origin, '--json', 'isPrivate', '--jq', '.isPrivate'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5_000,
+      env: process.env,
+    })
+      .toString()
+      .trim();
+    if (out === 'true') return { verdict: 'private' };
+    if (out === 'false') return { verdict: 'public', detail: `${origin} is PUBLIC` };
+    return { verdict: 'unknown', detail: `gh returned unexpected output: ${out.slice(0, 80)}` };
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err?.code === 'ENOENT') {
+      return { verdict: 'unknown', detail: 'gh CLI not installed — cannot verify origin visibility' };
+    }
+    return { verdict: 'unknown', detail: `gh repo view failed (${(err?.message ?? 'unknown').slice(0, 120)})` };
   }
 }
 
@@ -372,6 +410,11 @@ export interface StatusReport {
   /** Resume hint of the first non-done phase; null when everything is done. */
   next: string | null;
   runbookSkew?: RunbookSkew;
+  /** Template-door privacy gate: set only for an UNINITIALIZED template clone
+   * whose origin exists and is not verifiably private. 'public' is a hard
+   * stop (the dispatcher exits non-zero — identity files must never land in a
+   * public repo); 'unknown' (no gh / offline) is a loud warning, not a fail. */
+  privacy_gate?: { verdict: 'public' | 'unknown'; origin: string; detail: string };
   support: StatusSupport;
 }
 
@@ -425,6 +468,22 @@ export async function statusReport(ws: string, opts: StatusReportOpts = {}): Pro
   const stamp = readRunbookStamp(ws);
   const runbookSkew = stamp !== null && stamp !== VERSION ? { runbookStamp: stamp, binaryVersion: VERSION } : undefined;
 
+  // Template-door privacy gate: a template clone ("Use this template" flow)
+  // with a PUBLIC origin must hard-stop BEFORE any identity file lands —
+  // status is the resume entrypoint, so the gate lives here. Initialized
+  // workspaces get the same protection from verify's repo_privacy check and
+  // the push-time deny path.
+  let privacyGate: StatusReport['privacy_gate'];
+  if (ctx.manifest.state === 'template') {
+    const origin = gitOriginUrl(ws);
+    if (origin) {
+      const probe = probeOriginVisibility(origin);
+      if (probe.verdict !== 'private') {
+        privacyGate = { verdict: probe.verdict, origin, detail: probe.detail };
+      }
+    }
+  }
+
   // Support blob [B5].
   let lastPush: StatusSupport['last_push'] = null;
   try {
@@ -468,6 +527,7 @@ export async function statusReport(ws: string, opts: StatusReportOpts = {}): Pro
     phases,
     next,
     ...(runbookSkew ? { runbookSkew } : {}),
+    ...(privacyGate ? { privacy_gate: privacyGate } : {}),
     support,
   };
 }

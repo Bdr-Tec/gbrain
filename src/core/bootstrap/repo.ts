@@ -8,9 +8,12 @@
  *    re-run). An initialized clone with a foreign origin is attach territory.
  *  - After create, repo privacy is verified via the GitHub API; the answer
  *    must be the literal `true`. "Couldn't verify" (rate limit / 5xx) is a
- *    typed refuse-and-re-run, NEVER treated as private or public.
+ *    typed refuse-and-re-run, NEVER treated as private or public. The first
+ *    push happens only AFTER the verify passes (create runs without --push).
  *  - Idempotent re-runs key off the REMOTE URL, not the name probe — a name
- *    probe can be fooled by an unrelated repo taking the slug.
+ *    probe can be fooled by an unrelated repo taking the slug. A receipt
+ *    missing repo_url (crash window) adopts an origin only when the authed
+ *    gh user owns it; undefined is never a wildcard.
  *
  * All gh/git interaction goes through an injectable `ExecRunner` so tests use
  * a recording fake; the default spawns via Bun. Commands are argv arrays
@@ -22,7 +25,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { configDir } from '../config.ts';
 import { realpathOrResolve } from '../path-confine.ts';
+import { GITHUB_URL_PLACEHOLDER } from './assets.ts';
 import {
+  guardReceiptOverwrite,
   readManifest,
   readReceipt,
   writeReceipt,
@@ -92,9 +97,9 @@ export function parseGithubRemote(url: string): { owner: string; name: string } 
   return m ? { owner: m[1], name: m[2] } : null;
 }
 
-/** The literal placeholder `bootstrap render` leaves in GITHUB.md until the
- * repo exists (see assets.ts DERIVED_TOKENS / GITHUB_REPO_URL). */
-export const GITHUB_URL_PLACEHOLDER = '(not yet created — bootstrap repo sets this)';
+/** Re-exported for existing consumers; the single definition lives in
+ * assets.ts (shared with render.ts's DERIVED_DEFAULTS). */
+export { GITHUB_URL_PLACEHOLDER };
 
 function requireInitializedManifest(workspaceDir: string): { state: ManifestState; manifest: AgentManifest } {
   const state = readManifest(workspaceDir);
@@ -125,13 +130,44 @@ function isRateLimitOr5xx(stderr: string): boolean {
   return /HTTP 5\d\d|HTTP 429|rate limit/i.test(stderr);
 }
 
+/** The authenticated gh login, or null when it cannot be read/parsed. */
+async function fetchAuthedLogin(runner: ExecRunner): Promise<string | null> {
+  const res = await runner(['gh', 'api', 'user']);
+  if (res.code !== 0) return null;
+  try {
+    const parsed = JSON.parse(res.stdout) as { login?: unknown };
+    return typeof parsed.login === 'string' && parsed.login.length > 0 ? parsed.login : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Privacy verify [G8]: `gh api repos/{owner}/{name} --jq .private` must print
  * the literal `true`. Any failure to VERIFY is VERIFY_UNAVAILABLE (refuse +
  * re-run) — never interpreted as an answer. An affirmative non-`true` answer
- * is the hard REPO_NOT_PRIVATE stop.
+ * is the hard REPO_NOT_PRIVATE stop. Defense in depth: the repo owner must be
+ * the authenticated gh user — a private repo someone ELSE owns is still not
+ * ours to bless.
  */
 async function verifyRepoPrivate(runner: ExecRunner, owner: string, name: string): Promise<void> {
+  const login = await fetchAuthedLogin(runner);
+  if (login === null) {
+    throw new BootstrapError(
+      'VERIFY_UNAVAILABLE',
+      `could not read the authenticated GitHub user to verify ownership of ${owner}/${name} — check \`gh auth status\` and re-run \`gbrain bootstrap repo\`.`,
+      { details: { owner, name } },
+    );
+  }
+  if (login !== owner) {
+    throw new BootstrapError(
+      'ORIGIN_EXISTS',
+      `${owner}/${name} is owned by ${owner}, not the authenticated GitHub user (${login}) — ` +
+        'bootstrap only blesses repos it created under your own account. ' +
+        'If this is a clone of an existing agent workspace, run `gbrain bootstrap attach` instead.',
+      { details: { owner, name, login } },
+    );
+  }
   const res = await runner(['gh', 'api', `repos/${owner}/${name}`, '--jq', '.private']);
   if (res.code !== 0) {
     const reason = isRateLimitOr5xx(res.stderr) ? 'GitHub API rate limit / server error' : `gh api failed: ${res.stderr.trim() || `exit ${res.code}`}`;
@@ -182,6 +218,10 @@ function recordRepoInReceipt(gbrainHomeDir: string, workspaceDir: string, manife
   // writeReceipt assumes the bootstrap/ subdir exists (render creates it);
   // repo may run first after a crash, so create it defensively.
   mkdirSync(join(gbrainHomeDir, 'bootstrap'), { recursive: true });
+  const guard = guardReceiptOverwrite(gbrainHomeDir); // throws on newer-format receipts
+  if (guard.brokenBackupPath) {
+    console.error(`WARNING: the install receipt was unreadable; backed it up to ${guard.brokenBackupPath} and wrote a fresh one.`);
+  }
   writeReceipt(gbrainHomeDir, receipt);
 }
 
@@ -245,8 +285,18 @@ export async function createPrivateRepo(
     const receipt = readReceipt(gbrainHomeDir) as RepoReceipt | null;
     const sameWorkspace =
       receipt !== null && realpathOrResolve(receipt.workspace_dir) === realpathOrResolve(workspaceDir);
-    const urlMatchesReceipt = sameWorkspace && (receipt.repo_url === undefined || receipt.repo_url === originUrl);
-    if (!urlMatchesReceipt) {
+    // Adoption requires an EXACT repo_url match. A receipt without a recorded
+    // repo_url (crash between create and record) may adopt ONLY when the
+    // authenticated gh user owns the origin — undefined is never a wildcard.
+    let adoptable = sameWorkspace && receipt.repo_url === originUrl;
+    if (!adoptable && sameWorkspace && receipt.repo_url === undefined) {
+      const parsedOrigin = parseGithubRemote(originUrl);
+      if (parsedOrigin) {
+        const login = await fetchAuthedLogin(runner);
+        adoptable = login !== null && login === parsedOrigin.owner;
+      }
+    }
+    if (!adoptable) {
       throw new BootstrapError(
         'ORIGIN_EXISTS',
         `this workspace already has an \`origin\` remote (${originUrl}) that bootstrap did not create. ` +
@@ -323,8 +373,9 @@ export async function createPrivateRepo(
     );
   }
 
-  // Create: private, sourced from the workspace, pushed.
-  const create = await runner(['gh', 'repo', 'create', name, '--private', '--source', workspaceDir, '--push']);
+  // Create: private, sourced from the workspace. Deliberately WITHOUT --push:
+  // nothing leaves this machine until the privacy bit is verified [G8].
+  const create = await runner(['gh', 'repo', 'create', name, '--private', '--source', workspaceDir]);
   if (create.code !== 0) {
     throw new BootstrapError(
       'REPO_CREATE_FAILED',
@@ -338,8 +389,20 @@ export async function createPrivateRepo(
   const postOrigin = await runner(['git', '-C', workspaceDir, 'remote', 'get-url', 'origin']);
   const url = postOrigin.code === 0 && postOrigin.stdout.trim() ? postOrigin.stdout.trim() : `https://github.com/${login}/${name}`;
 
-  // PRIVACY VERIFY [G8] — the hard gate. Must be the literal `true`.
+  // PRIVACY VERIFY [G8] — the hard gate, BEFORE the first push. Must be the
+  // literal `true`; only then does any workspace content leave this machine.
   await verifyRepoPrivate(runner, login, name);
+
+  const branchRes = await runner(['git', '-C', workspaceDir, 'rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = branchRes.code === 0 && branchRes.stdout.trim() ? branchRes.stdout.trim() : 'main';
+  const push = await runner(['git', '-C', workspaceDir, 'push', '-u', 'origin', branch]);
+  if (push.code !== 0) {
+    throw new BootstrapError(
+      'REPO_CREATE_FAILED',
+      `git push to the verified-private repo failed: ${push.stderr.trim() || `exit ${push.code}`} — the repo exists and is private; commit your work and re-run \`gbrain bootstrap repo\``,
+      { details: { name, branch, stderr: push.stderr } },
+    );
+  }
 
   updateGithubMd(workspaceDir, url);
   recordRepoInReceipt(gbrainHomeDir, workspaceDir, manifest, url);

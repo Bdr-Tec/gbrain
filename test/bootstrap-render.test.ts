@@ -30,7 +30,7 @@ import {
   DERIVED_DEFAULTS,
 } from '../src/core/bootstrap/render.ts';
 import { BOOTSTRAP_TEMPLATES } from '../src/core/bootstrap/assets.ts';
-import { readManifest, TEMPLATE_PLACEHOLDER_MANIFEST } from '../src/core/bootstrap/format.ts';
+import { readManifest, writeManifest, TEMPLATE_PLACEHOLDER_MANIFEST } from '../src/core/bootstrap/format.ts';
 import { setAnswer, skipAnswer, interviewStatePath } from '../src/core/bootstrap/interview.ts';
 
 const ALL_DESTS = BOOTSTRAP_TEMPLATES.map((t) => t.dest);
@@ -91,6 +91,23 @@ describe('renderWorkspace — happy path', () => {
     expect(r.ok).toBe(true);
     renderWorkspace(ws);
     expect(readFileSync(join(ws, 'SOUL.md'), 'utf8')).toContain('Opening with filler');
+  });
+
+  test('re-render preserves a prior manifest source_id (collision-derived ids survive)', () => {
+    const ws = answeredWs();
+    renderWorkspace(ws);
+    const first = readManifest(ws);
+    if (first.state !== 'initialized') throw new Error('expected initialized');
+    writeManifest(ws, { ...first.manifest, source_id: 'workspace-abcd1234' });
+    renderWorkspace(ws, { force: true });
+    const second = readManifest(ws);
+    if (second.state !== 'initialized') throw new Error('expected initialized');
+    expect(second.manifest.source_id).toBe('workspace-abcd1234');
+    // An explicit opts.sourceId still wins.
+    renderWorkspace(ws, { force: true, sourceId: 'explicit-id' });
+    const third = readManifest(ws);
+    if (third.state !== 'initialized') throw new Error('expected initialized');
+    expect(third.manifest.source_id).toBe('explicit-id');
   });
 
   test('re-render with force preserves the manifest created_at (first render wins)', () => {
@@ -222,6 +239,24 @@ describe('renderWorkspace — content hygiene', () => {
     expect(escapeStructuralMarkers('plain # not leading')).toBe('plain # not leading');
   });
 
+  test('escapeStructuralMarkers unit: tilde fences (3+ tildes) are escaped too', () => {
+    expect(escapeStructuralMarkers('~~~')).toBe('\\~~~');
+    expect(escapeStructuralMarkers('~~~sh')).toBe('\\~~~sh');
+    expect(escapeStructuralMarkers('  ~~~~~')).toBe('  \\~~~~~');
+    expect(escapeStructuralMarkers('~~ two tildes is not a fence')).toBe('~~ two tildes is not a fence');
+    expect(escapeStructuralMarkers('mid ~~~ not leading')).toBe('mid ~~~ not leading');
+  });
+
+  test('[S3#3] hostile answer cannot open a tilde fence', () => {
+    const ws = answeredWs();
+    const r = setAnswer(ws, 'SOUL_WINCE', '~~~\nrm -rf everything\n~~~');
+    expect(r.ok).toBe(true);
+    renderWorkspace(ws);
+    const soul = readFileSync(join(ws, 'SOUL.md'), 'utf8');
+    expect(soul).toContain('\\~~~');
+    expect(/^~~~/m.test(soul)).toBe(false);
+  });
+
   test('set-time {{ escaping survives render without re-interpretation', () => {
     const ws = answeredWs();
     setAnswer(ws, 'VOICE_REGISTER', 'Sound like {{AGENT_NAME}} would');
@@ -277,6 +312,27 @@ describe('renderWorkspace — minimal mode [D4/CX2-14]', () => {
     const soul = readFileSync(join(ws, 'SOUL.md'), 'utf8');
     expect(soul).not.toContain('Trenton');
     expect(soul).toContain('{{AGENT_NAME}}');
+  });
+
+  test('minimal on an INITIALIZED workspace refuses with a typed error unless --force', () => {
+    const ws = answeredWs();
+    renderWorkspace(ws); // real render → initialized manifest
+    let caught: unknown;
+    try {
+      renderWorkspace(ws, { minimal: true });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(BootstrapRenderError);
+    expect((caught as BootstrapRenderError).code).toBe('minimal_on_initialized');
+    expect((caught as BootstrapRenderError).message).toContain('--force');
+    // Nothing was demoted: manifest still initialized, real content intact.
+    expect(readManifest(ws).state).toBe('initialized');
+    expect(readFileSync(join(ws, 'SOUL.md'), 'utf8')).toContain('Trenton');
+
+    // --force is the explicit escape hatch (generator path over a live tree).
+    renderWorkspace(ws, { minimal: true, force: true });
+    expect(readManifest(ws).state).toBe('template');
   });
 });
 

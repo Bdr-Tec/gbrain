@@ -381,6 +381,10 @@ export type CodexMcpRegistration = Omit<ClaudeMcpRegistration, 'scope'>;
  * `claude mcp add` argv for a LOCAL stdio serve. Returns command argv arrays
  * (binary first) — the dispatcher execs them; nothing here touches the
  * filesystem or the network. Shape per TARGETS['claude-code-2026-08'].
+ *
+ * The serve argv pins `--surface full`: bootstrap's contract (put_page,
+ * get_page, timeline, …) needs the full op surface, and a pre-existing
+ * `mcp_surface: verbs` config row must not silently narrow the registration.
  */
 export function registerClaudeMcp(p: ClaudeMcpRegistration): string[][] {
   if (!isAbsolute(p.gbrainBin)) {
@@ -393,7 +397,7 @@ export function registerClaudeMcp(p: ClaudeMcpRegistration): string[][] {
     '-e', `GBRAIN_SOURCE=${p.sourceId}`,
   ];
   if (p.gbrainHome) argv.push('-e', `GBRAIN_HOME=${p.gbrainHome}`);
-  argv.push('--', p.gbrainBin, 'serve');
+  argv.push('--', p.gbrainBin, 'serve', '--surface', 'full');
   return [argv];
 }
 
@@ -401,6 +405,7 @@ export function registerClaudeMcp(p: ClaudeMcpRegistration): string[][] {
  * `codex mcp add` argv for a LOCAL stdio serve (writes ~/.codex/config.toml
  * itself — no TOML writer needed in v1, see TARGETS['codex-2026-08']).
  * Codex registrations are user-global; there is no scope flag.
+ * `--surface full` pins the full op surface (see registerClaudeMcp).
  */
 export function registerCodexMcp(p: CodexMcpRegistration): string[][] {
   if (!isAbsolute(p.gbrainBin)) {
@@ -409,6 +414,6 @@ export function registerCodexMcp(p: CodexMcpRegistration): string[][] {
   const name = p.name ?? 'gbrain';
   const argv = ['codex', 'mcp', 'add', name, '--env', `GBRAIN_SOURCE=${p.sourceId}`];
   if (p.gbrainHome) argv.push('--env', `GBRAIN_HOME=${p.gbrainHome}`);
-  argv.push('--', p.gbrainBin, 'serve');
+  argv.push('--', p.gbrainBin, 'serve', '--surface', 'full');
   return [argv];
 }

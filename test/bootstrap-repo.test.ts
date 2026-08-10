@@ -131,10 +131,15 @@ describe('createPrivateRepo', () => {
     // Repo-local identity from gh api user (login + noreply address).
     expect(calls).toContainEqual(['git', '-C', ws, 'config', 'user.name', 'alice']);
     expect(calls).toContainEqual(['git', '-C', ws, 'config', 'user.email', '123+alice@users.noreply.github.com']);
-    // The create call is exact: private, sourced from the workspace, pushed.
-    expect(calls).toContainEqual(['gh', 'repo', 'create', 'test-agent-workspace-2', '--private', '--source', ws, '--push']);
-    // Privacy verify hit the API for the created repo.
+    // The create call is exact: private, sourced from the workspace, and
+    // WITHOUT --push — nothing leaves this machine before the privacy verify [G8].
+    expect(calls).toContainEqual(['gh', 'repo', 'create', 'test-agent-workspace-2', '--private', '--source', ws]);
+    // Privacy verify hit the API for the created repo…
     expect(calls).toContainEqual(['gh', 'api', 'repos/alice/test-agent-workspace-2', '--jq', '.private']);
+    // …and the first push ran only AFTER the verify passed (create → verify → push).
+    const verifyIdx = calls.findIndex((c) => c.join(' ') === `gh api repos/alice/test-agent-workspace-2 --jq .private`);
+    const pushIdx = calls.findIndex((c) => c.join(' ') === `git -C ${ws} push -u origin main`);
+    expect(pushIdx).toBeGreaterThan(verifyIdx);
 
     // GITHUB.md placeholder replaced with the real URL.
     const githubMd = readFileSync(join(ws, 'GITHUB.md'), 'utf8');

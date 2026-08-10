@@ -219,7 +219,10 @@ export async function uninstallWorkspace(workspaceDir: string, opts: UninstallOp
   }
 
   const steps: UninstallStep[] = [];
+  const removed: string[] = [];
+  const skipped: Array<{ path: string; reason: string }> = [];
   let brainDeleted = false;
+  let brainDeletionFailed = false;
 
   // --- Brain deletion (confirm-gated, surgical) [G2, CX2-12] ----------------
   if (deleteBrainRequested) {
@@ -238,18 +241,36 @@ export async function uninstallWorkspace(workspaceDir: string, opts: UninstallOp
       'The workspace repo and its files remain yours. This cannot be undone.';
     const confirmed = opts.confirm ? await opts.confirm(msg) : false;
     if (confirmed) {
-      if (isPathContained(dataDir, gbrainHomeDir)) {
+      // brain_deleted is only ever true after the rm SUCCEEDED and the dir is
+      // verifiably gone — a containment failure or rm error reports a reason
+      // and keeps the receipt + telemetry so a retry stays possible.
+      if (!isPathContained(dataDir, gbrainHomeDir)) {
+        brainDeletionFailed = true;
+        skipped.push({
+          path: dataDir,
+          reason: 'brain deletion skipped: data dir is outside the gbrain home (or symlinks out) — refusing; remove it yourself if you really mean to',
+        });
+      } else {
+        let rmError: Error | null = null;
         try {
           rmSync(dataDir, { recursive: true, force: true });
-        } catch { /* partially removed — the paths loop below never touches it again */ }
+        } catch (e) {
+          rmError = e as Error;
+        }
+        if (rmError === null && !existsSync(dataDir)) {
+          brainDeleted = true;
+        } else {
+          brainDeletionFailed = true;
+          skipped.push({
+            path: dataDir,
+            reason: `brain deletion failed${rmError ? `: ${rmError.message}` : ': directory still present after rm'} — receipt kept so uninstall --delete-brain can be retried`,
+          });
+        }
       }
-      brainDeleted = true;
     }
   }
 
   // --- created_paths: remove EXACTLY these, each containment-checked --------
-  const removed: string[] = [];
-  const skipped: Array<{ path: string; reason: string }> = [];
   for (const p of receipt.created_paths) {
     let exists = false;
     try {
@@ -290,6 +311,10 @@ export async function uninstallWorkspace(workspaceDir: string, opts: UninstallOp
       rmSync(join(gbrainHomeDir, 'bootstrap'), { recursive: true, force: true });
       receiptRemoved = true;
     } catch { /* best-effort */ }
+  } else if (brainDeletionFailed) {
+    // A confirmed deletion that FAILED keeps the bootstrap/ subdir AND the
+    // receipt: consuming the receipt here would strand the brain (uninstall
+    // is receipt-keyed, so a retry would refuse with NO_RECEIPT).
   } else {
     // Plain uninstall: the receipt alone is consumed (this machine no longer
     // claims bootstrap-created state); telemetry stays for post-mortems.

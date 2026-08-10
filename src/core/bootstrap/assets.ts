@@ -69,6 +69,11 @@ export function readTemplate(t: BootstrapTemplate): string {
  * from runtime state. The templates↔question-bank CI bijection treats
  * (bank keys ∪ DERIVED_TOKENS) as the full legal token set.
  */
+/** The literal GITHUB_REPO_URL placeholder rendered into GITHUB.md until
+ * `bootstrap repo` replaces it — defined ONCE here because repo.ts's
+ * `updateGithubMd` splice and render.ts's DERIVED_DEFAULTS must byte-match. */
+export const GITHUB_URL_PLACEHOLDER = '(not yet created — bootstrap repo sets this)';
+
 export const DERIVED_TOKENS = [
   /** Set by `bootstrap repo` after the private remote exists; renders as a
    * placeholder note until then. */

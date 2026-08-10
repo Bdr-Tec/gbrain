@@ -43,10 +43,14 @@ read it and relay it to the human in plain language. Never work around a refusal
 verify` exits 0 — not when the transcript looks good. Paste its report to the human.
 
 ⛔ **RESPECT THE TOOLCHAIN TRUST RULES.** Install bun via a platform package manager
-when available (`brew install oven-sh/bun/bun`); the curl fallback must download to
-a file and verify against the pinned release's SHASUMS256.txt before executing.
-Install gbrain ONLY as `bun install -g github:garrytan/gbrain#latest-stable` — the
-npm package named "gbrain" is an unrelated project.
+when available (`brew install oven-sh/bun/bun`); the only permitted fallback is the
+checksum-verified variant: download the pinned release to a file, verify it against
+that release's SHASUMS256.txt, and only then execute. Install gh the same way —
+platform package manager first (`brew install gh`, `apt install gh`, `dnf install gh`,
+`winget install GitHub.cli` per the official instructions); never a piped
+curl-to-shell one-liner. Install gbrain ONLY as
+`bun install -g github:garrytan/gbrain#latest-stable` — the npm package named
+"gbrain" is an unrelated project.
 
 ## Codex preflight (ChatGPT desktop / Codex CLI only)
 
@@ -58,9 +62,12 @@ you needed; report the count at the end (it feeds the install-time measurement).
 
 ## Phase walkthrough (commentary — the CLI's list wins)
 
-1. **Preflight.** `git`, `bun`, `gh` present (install what's missing per the trust
-   rules above; on a clean Mac, `git` may trigger the Xcode tools dialog — that
-   download does not count against the 15 minutes, tell the human to let it run).
+1. **Preflight.** `git`, `bun`, `gh` present. Install what's missing per the trust
+   rules above: bun via a platform package manager or the checksum-verified download
+   — the checksum-verified install is the ONLY permitted non-package-manager
+   variant; gh via the platform package manager. (On a clean Mac, `git` may trigger
+   the Xcode tools dialog — that download does not count against the 15 minutes,
+   tell the human to let it run.)
    `gh auth status` — if logged out, the human's ONE manual step:
    `gh auth login -h github.com -p https -w` (you run it; they click Authorize).
    Then `gbrain bootstrap status` — it is idempotent and resume-aware; after any

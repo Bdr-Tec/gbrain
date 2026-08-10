@@ -27,7 +27,7 @@
  * B5 relay instruction), never a stack trace.
  */
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 
 import { VERSION } from '../version.ts';
@@ -58,7 +58,13 @@ import {
   writeClaudeHooks,
   removeClaudeHooks,
 } from '../core/bootstrap/hooks.ts';
-import { readManifest, readReceipt, writeReceipt, type InstallReceipt } from '../core/bootstrap/format.ts';
+import {
+  guardReceiptOverwrite,
+  readManifest,
+  readReceipt,
+  writeReceipt,
+  type InstallReceipt,
+} from '../core/bootstrap/format.ts';
 import { appendInstallLog, statusReport, type StatusReport } from '../core/bootstrap/status.ts';
 import { verifyWorkspace } from '../core/bootstrap/verify.ts';
 
@@ -185,13 +191,16 @@ function logPhase(ctx: LogCtx, phase: string, outcome: 'ok' | 'error' | 'aborted
   });
 }
 
-/** Consent answer resolution: persisted interview answer > bank default. */
+/** Consent answer resolution: persisted interview answer > bank default.
+ * An explicitly SKIPPED answer is a DECLINE ('no'), never the bank default —
+ * skipping HOOKS_CONSENT (bank default 'yes') must not install hooks. */
 function consentAnswer(ws: string, key: string): string | undefined {
   const bank = loadQuestionBank();
   const read = readInterviewState(ws);
   if (read.ok) {
     const a = read.state.answers[key];
-    if (a && a.skipped !== true && a.value) return a.value;
+    if (a?.skipped === true) return 'no';
+    if (a && a.value) return a.value;
   }
   return bank.questions[key]?.default;
 }
@@ -201,6 +210,12 @@ function consentAnswer(ws: string, key: string): string | undefined {
 function writeRenderReceipt(home: string, ws: string): void {
   const state = readManifest(ws);
   if (state.state !== 'initialized') return;
+  // Pre-write guard [CX2-12]: a newer-format receipt refuses (upgrade first);
+  // an unreadable one is backed up loudly, never silently clobbered.
+  const guard = guardReceiptOverwrite(home);
+  if (guard.brokenBackupPath) {
+    console.error(`WARNING: the install receipt was unreadable; backed it up to ${guard.brokenBackupPath} and wrote a fresh one.`);
+  }
   const manifest = state.manifest;
   const resolvedWs = realpathOrResolve(ws);
   const existing = readReceipt(home);
@@ -228,16 +243,24 @@ function appendReceiptRegistration(
   ws: string,
   reg: { host: Harness; scope: string; detail?: string },
 ): void {
+  // Pre-write guard [CX2-12]: newer-format → refuse; unreadable → loud backup.
+  const guard = guardReceiptOverwrite(home);
+  if (guard.brokenBackupPath) {
+    console.error(`WARNING: the install receipt was unreadable; backed it up to ${guard.brokenBackupPath} and wrote a fresh one.`);
+  }
   const existing = readReceipt(home);
   const resolvedWs = realpathOrResolve(ws);
+  // Fresh-receipt identity comes from the workspace manifest (source_id may be
+  // a collision-derived id like 'workspace-<hash>'), never a hardcoded default.
+  const manifest = readManifest(ws);
   const base: InstallReceipt =
     existing !== null && realpathOrResolve(existing.workspace_dir) === resolvedWs
       ? existing
       : {
           receipt_version: 1,
           workspace_dir: resolvedWs,
-          source_id: 'workspace',
-          agent_name: 'agent',
+          source_id: manifest.state === 'initialized' ? manifest.manifest.source_id : 'workspace',
+          agent_name: manifest.state === 'initialized' ? manifest.manifest.agent_name : 'agent',
           created_at: new Date().toISOString(),
           created_by: `gbrain@${VERSION}`,
           brain_created_by_bootstrap: false,
@@ -254,8 +277,18 @@ function appendReceiptRegistration(
 
 async function runStatus(ws: string, rest: string[], home: string): Promise<number> {
   const report: StatusReport = await statusReport(ws, { gbrainHomeDir: home });
+  // Template-door privacy gate: PUBLIC origin on a template clone is a hard
+  // stop (exit non-zero) — identity files must never land in a public repo.
+  const gate = report.privacy_gate;
   if (rest.includes('--json')) {
     console.log(JSON.stringify(report, null, 2));
+    if (gate?.verdict === 'public') {
+      console.error(
+        `STOP: this template clone's origin (${gate.origin}) is PUBLIC. Make the repository private first ` +
+          `(gh repo edit --visibility private --accept-visibility-change-consequences, or the GitHub settings page), then re-run \`gbrain bootstrap status\`.`,
+      );
+      return 1;
+    }
     return 0;
   }
   console.log(`gbrain bootstrap status — ${ws}`);
@@ -276,6 +309,20 @@ async function runStatus(ws: string, rest: string[], home: string): Promise<numb
   }
   console.log('\nSupport (relay verbatim when something is broken):');
   console.log(JSON.stringify(report.support, null, 2));
+  if (gate?.verdict === 'public') {
+    console.error(
+      `\nSTOP: this template clone's origin (${gate.origin}) is PUBLIC. Identity files must never land in a ` +
+        `public repository. Make it private first (gh repo edit --visibility private ` +
+        `--accept-visibility-change-consequences, or the GitHub settings page), then re-run \`gbrain bootstrap status\`.`,
+    );
+    return 1;
+  }
+  if (gate?.verdict === 'unknown') {
+    console.error(
+      `\nWARNING: could not verify the origin's visibility (${gate.detail}). Treat the repository as public ` +
+        'until `gh` can verify it — nothing has been pushed; fix gh (install / `gh auth login` / network) and re-run.',
+    );
+  }
   return 0;
 }
 
@@ -429,13 +476,19 @@ async function runRender(ws: string, rest: string[], home: string): Promise<numb
       /* canonical fallback applies */
     }
 
+    // source_id seam [source-id collision]: render is ENGINE-FREE (D5/ENG-2)
+    // and the sources registry lives only in the DB, so render cannot detect a
+    // 'workspace' id already claimed by another checkout. It therefore passes
+    // NO sourceId: render.ts preserves an existing manifest source_id and
+    // defaults new manifests to 'workspace'; verify (which holds the engine)
+    // detects the collision and persists a derived 'workspace-<hash>' id that
+    // every consumer reads back from the manifest.
     const res = renderWorkspace(ws, {
       force,
       ...(only.length > 0 ? { only } : {}),
       minimal,
       derived,
       createdBy: `gbrain@${VERSION}`,
-      sourceId: 'workspace',
     });
 
     if (only.length === 0 && !minimal) writeRenderReceipt(home, ws);
@@ -507,6 +560,8 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
     console.error('cannot auto-detect the harness — pass --harness claude-code or --harness codex');
     return 2;
   }
+  // --repair is an idempotent-run alias: the same registration/write path as a
+  // first run (marker-keyed dedupe makes re-runs safe); it only changes the log line.
   const repair = rest.includes('--repair');
 
   const state = readManifest(ws);
@@ -660,16 +715,51 @@ async function runAttach(ws: string, rest: string[], home: string): Promise<numb
   });
 }
 
+/** Engine-free brain stats for the --delete-brain confirm text: counts the
+ * write-through .md files under `<ws>/brain` (the committed mirror of the DB —
+ * a floor, since DB-only pages have no file) and names the workspace source
+ * from the manifest. Never opens the engine (uninstall must work while a live
+ * serve holds the PGLite lock refusal path). Exported for direct tests. */
+export function workspaceBrainStats(ws: string): { sources: string[]; pages: number } | null {
+  const brainDir = join(ws, 'brain');
+  let pages = 0;
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 8) return;
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith('.')) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p, depth + 1);
+      else if (e.name.endsWith('.md')) pages++;
+    }
+  };
+  try {
+    walk(brainDir, 0);
+  } catch {
+    return null; // no brain/ dir readable — the module falls back to its receipt-only text
+  }
+  const manifest = readManifest(ws);
+  const sources = manifest.state === 'initialized' ? [manifest.manifest.source_id] : ['workspace'];
+  return { sources, pages };
+}
+
 async function runUninstall(ws: string, rest: string[], home: string, runner: ExecRunner): Promise<number> {
   const deleteBrain = rest.includes('--delete-brain');
   const yes = rest.includes('--yes');
   const homeFlag = flagValue(rest, '--home');
   return withLock(ws, async () => {
+    if (deleteBrain) {
+      // Facts-export offer BEFORE any deletion can run — facts are user
+      // knowledge, not derived state; after the rm there is nothing to export.
+      console.log(
+        'offered: export facts before deletion (`gbrain facts export`) — the brain DB is about to be removed and facts are not derived state',
+      );
+    }
     const result = await uninstallWorkspace(ws, {
       deleteBrain,
       ...(yes ? { confirm: async () => true } : {}),
       gbrainHomeDir: homeFlag ? resolve(homeFlag) : home,
       homeExplicit: homeFlag !== undefined,
+      brainStats: async () => workspaceBrainStats(ws),
     });
 
     // Execute the structured host-registration removals the module returned.
@@ -686,7 +776,12 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
       }
     }
 
-    for (const step of result.steps) console.log(`offered: ${step.description}`);
+    // The facts-export offer already printed BEFORE deletion (above); don't
+    // repeat it after the brain is gone.
+    for (const step of result.steps) {
+      if (step.kind === 'facts_export_offer') continue;
+      console.log(`offered: ${step.description}`);
+    }
     console.log(`removed paths: ${result.removed_paths.join(', ') || '(none)'}`);
     for (const s of result.skipped_paths) console.log(`kept ${s.path} (${s.reason})`);
     console.log(`brain ${result.brain_deleted ? 'DELETED' : 'kept'}; receipt ${result.receipt_removed ? 'consumed' : 'kept'}.`);
@@ -725,6 +820,10 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
     return 2;
   }
 
+  // The install log records the PHASE name, and the hooks subcommand is the
+  // 'wire' phase (status.ts phase list) — one mapping, used at every log site.
+  const logPhaseName = sub === 'hooks' ? 'wire' : sub;
+
   try {
     let code: number;
     switch (sub) {
@@ -755,32 +854,32 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
       default:
         return 2; // unreachable
     }
-    logPhase(logCtx, sub === 'hooks' ? 'wire' : sub, code === 0 ? 'ok' : 'error', t0);
+    logPhase(logCtx, logPhaseName, code === 0 ? 'ok' : 'error', t0);
     return code;
   } catch (e) {
     if (e instanceof BootstrapAbortInjected) {
       // [A7] Simulated kill: artifacts from the phase exist, the finalize
       // (install log 'ok' line) never ran — exactly the crash shape status
       // must resume from. The log records the abort for the post-mortem.
-      logPhase(logCtx, sub === 'hooks' ? 'wire' : sub, 'aborted', t0);
+      logPhase(logCtx, logPhaseName, 'aborted', t0);
       console.error(e.message);
       return 130;
     }
     if (e instanceof BootstrapError) {
       console.error(e.message);
       console.error(SUPPORT_HINT);
-      logPhase(logCtx, sub === 'hooks' ? 'wire' : sub, 'error', t0);
+      logPhase(logCtx, logPhaseName, 'error', t0);
       return e.exitCode;
     }
     if (e instanceof BootstrapRenderError) {
       console.error(e.message);
       console.error(SUPPORT_HINT);
-      logPhase(logCtx, sub === 'hooks' ? 'wire' : sub, 'error', t0);
+      logPhase(logCtx, logPhaseName, 'error', t0);
       return 1;
     }
     console.error(`bootstrap ${sub} failed: ${e instanceof Error ? e.message : String(e)}`);
     console.error(SUPPORT_HINT);
-    logPhase(logCtx, sub === 'hooks' ? 'wire' : sub, 'error', t0);
+    logPhase(logCtx, logPhaseName, 'error', t0);
     return 1;
   }
 }

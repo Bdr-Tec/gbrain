@@ -11,8 +11,9 @@
  *    (assets.ts) resolve from `opts.derived` with canonical fallbacks.
  *  - [S3#3] Interview-sourced values are DATA, not structure: before
  *    insertion, any line of an answer that begins (allowing up to 3 leading
- *    spaces, the markdown heading tolerance) with `#`, `<!--`, or a ```
- *    code fence is prefixed with a backslash — THE DOCUMENTED ESCAPE. A
+ *    spaces, the markdown heading tolerance) with `#`, `<!--`, a ``` code
+ *    fence, or a ~~~ tilde fence is prefixed with a backslash — THE
+ *    DOCUMENTED ESCAPE. A
  *    backslash-prefixed `#` is not a heading, `\<!--` is not a comment
  *    open, and `\``` does not open a fence. The first line of a value is
  *    escaped too even when the token sits mid-line — deliberate
@@ -40,7 +41,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { BOOTSTRAP_TEMPLATES, DERIVED_TOKENS, loadQuestionBank, readTemplate } from './assets.ts';
+import { BOOTSTRAP_TEMPLATES, DERIVED_TOKENS, GITHUB_URL_PLACEHOLDER, loadQuestionBank, readTemplate } from './assets.ts';
 import {
   readManifest,
   writeManifest,
@@ -97,7 +98,8 @@ export interface RenderOptions {
   /** Recorded as agent.json `created_by` (the dispatcher passes the gbrain
    * version). */
   createdBy?: string;
-  /** Recorded as agent.json `source_id`. Default 'workspace'. */
+  /** Recorded as agent.json `source_id`. When unset, an existing initialized
+   * manifest's source_id is preserved; otherwise defaults to 'workspace'. */
   sourceId?: string;
 }
 
@@ -110,7 +112,7 @@ export interface RenderResult {
 /** Canonical fallbacks for DERIVED_TOKENS — also the exact values minimal
  * mode always uses [CX2-14]. */
 export const DERIVED_DEFAULTS: Record<(typeof DERIVED_TOKENS)[number], string> = {
-  GITHUB_REPO_URL: '(not yet created — bootstrap repo sets this)',
+  GITHUB_REPO_URL: GITHUB_URL_PLACEHOLDER,
   CORPUS_RETENTION_DAYS: '30',
 };
 
@@ -134,7 +136,7 @@ export function isBootstrapRenderDest(relPath: string): boolean {
 export function escapeStructuralMarkers(value: string): string {
   return value
     .split('\n')
-    .map((line) => line.replace(/^(\s{0,3})(#|<!--|```)/, '$1\\$2'))
+    .map((line) => line.replace(/^(\s{0,3})(#|<!--|```|~~~)/, '$1\\$2'))
     .join('\n');
 }
 
@@ -207,6 +209,22 @@ function buildResolver(opts: RenderOptions, state: InterviewState | null): (toke
 
 export function renderWorkspace(workspaceDir: string, opts: RenderOptions = {}): RenderResult {
   const minimal = opts.minimal === true;
+
+  // Minimal mode is the template-repo generator path: it lays placeholder
+  // content AND resets the manifest to `initialized: false`. On a LIVE
+  // (initialized) workspace that would demote a real install to a template
+  // clone — refuse unless the caller forces it (typed error, agent-readable).
+  if (minimal && !opts.force) {
+    const existing = readManifest(workspaceDir);
+    if (existing.state === 'initialized') {
+      throw new BootstrapRenderError(
+        'minimal_on_initialized',
+        'render --minimal refused: this workspace is already initialized (agent.json says initialized: true). ' +
+          'Minimal mode writes template placeholders and resets the manifest to an uninitialized template. ' +
+          'If you really mean to, re-run with --force (existing files are backed up first).'
+      );
+    }
+  }
 
   // Validate --only against the known dest list (typo protection).
   const selected = BOOTSTRAP_TEMPLATES.filter((t) => !opts.only || opts.only.includes(t.dest));
@@ -311,6 +329,15 @@ export function renderWorkspace(workspaceDir: string, opts: RenderOptions = {}):
         existing.state === 'initialized' && typeof existing.manifest.created_at === 'string'
           ? existing.manifest.created_at
           : null;
+      // Preserve a prior source_id (verify's collision resolution may have
+      // derived e.g. 'workspace-<hash>' and persisted it — a re-render must
+      // not silently reset it to the default).
+      const priorSourceId =
+        existing.state === 'initialized' &&
+        typeof existing.manifest.source_id === 'string' &&
+        existing.manifest.source_id.length > 0
+          ? existing.manifest.source_id
+          : null;
       const agentName = state?.answers['AGENT_NAME']?.value ?? '{{AGENT_NAME}}';
       const manifest: AgentManifest = {
         format_version: FORMAT_VERSION,
@@ -318,7 +345,7 @@ export function renderWorkspace(workspaceDir: string, opts: RenderOptions = {}):
         agent_name: agentName,
         created_by: opts.createdBy ?? 'gbrain',
         created_at: priorCreatedAt ?? new Date().toISOString(),
-        source_id: opts.sourceId ?? 'workspace',
+        source_id: opts.sourceId ?? priorSourceId ?? 'workspace',
       };
       writeManifest(workspaceDir, manifest);
     }

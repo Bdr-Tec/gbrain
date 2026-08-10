@@ -4,9 +4,12 @@
  * precedent, extended per ENG-2 for the bootstrap family).
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { runBootstrap } from '../src/commands/bootstrap.ts';
 
 import { CLI_ONLY, THIN_CLIENT_REFUSED_COMMANDS } from '../src/cli.ts';
 import { VERSION } from '../src/version.ts';
@@ -193,5 +196,136 @@ describe('statusReport detection + support blob [B5]', () => {
     writeFileSync(join(ws, 'BOOTSTRAP_FOR_AGENTS.md'), `<!-- gbrain-runbook-stamp: ${VERSION} -->\n`);
     const clean = await statusReport(ws, { gbrainHomeDir: home });
     expect(clean.runbookSkew).toBeUndefined();
+  });
+});
+
+describe('template-door privacy gate (recording gh shim)', () => {
+  let tws: string; // template-clone workspace with an origin remote
+  let shimDir: string;
+  let recordFile: string;
+  let savedPath: string | undefined;
+  let savedRecord: string | undefined;
+
+  beforeAll(() => {
+    tws = mkdtempSync(join(tmpdir(), 'gb-status-tmpl-'));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: tws });
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/tester/agent-template.git'], { cwd: tws });
+    // Uninitialized template clone — the gate's trigger state [CX2-1].
+    writeManifest(tws, {
+      format_version: 1,
+      initialized: false,
+      agent_name: '{{AGENT_NAME}}',
+      created_by: 'template',
+      created_at: '1970-01-01T00:00:00.000Z',
+      source_id: 'workspace',
+    });
+
+    shimDir = mkdtempSync(join(tmpdir(), 'gb-status-shim-'));
+    recordFile = join(shimDir, 'record.log');
+    savedPath = process.env.PATH;
+    savedRecord = process.env.GB_FAKE_RECORD;
+    process.env.GB_FAKE_RECORD = recordFile;
+    // Recording gh shim: answer comes from the GB_FAKE_GH_ANSWER env var.
+    writeFileSync(
+      join(shimDir, 'gh'),
+      `#!/bin/sh
+echo "gh $*" >> "$GB_FAKE_RECORD"
+case "$GB_FAKE_GH_ANSWER" in
+  private) echo "true"; exit 0 ;;
+  public) echo "false"; exit 0 ;;
+  *) echo "auth error" >&2; exit 4 ;;
+esac
+`,
+    );
+    chmodSync(join(shimDir, 'gh'), 0o755);
+    process.env.PATH = `${shimDir}:${process.env.PATH ?? ''}`;
+  });
+
+  afterAll(() => {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    if (savedRecord === undefined) delete process.env.GB_FAKE_RECORD;
+    else process.env.GB_FAKE_RECORD = savedRecord;
+    delete process.env.GB_FAKE_GH_ANSWER;
+    rmSync(tws, { recursive: true, force: true });
+    rmSync(shimDir, { recursive: true, force: true });
+  });
+
+  async function captureStatus(): Promise<{ code: number; out: string; err: string }> {
+    const origLog = console.log;
+    const origErr = console.error;
+    let out = '';
+    let err = '';
+    console.log = (...a: unknown[]) => { out += a.map(String).join(' ') + '\n'; };
+    console.error = (...a: unknown[]) => { err += a.map(String).join(' ') + '\n'; };
+    try {
+      const code = await runBootstrap(['status', '--workspace', tws]);
+      return { code, out, err };
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+  }
+
+  test('PUBLIC origin on a template clone → hard fail (exit 1, agent-readable fix)', async () => {
+    process.env.GB_FAKE_GH_ANSWER = 'public';
+    const report = await statusReport(tws, { gbrainHomeDir: home });
+    expect(report.privacy_gate).toEqual({
+      verdict: 'public',
+      origin: 'https://github.com/tester/agent-template.git',
+      detail: expect.stringContaining('PUBLIC'),
+    });
+    // The probe went through gh repo view --json isPrivate (recorded argv).
+    expect(readFileSync(recordFile, 'utf8')).toContain('gh repo view https://github.com/tester/agent-template.git --json isPrivate');
+
+    const r = await captureStatus();
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('PUBLIC');
+    expect(r.err).toContain('private');
+  });
+
+  test('PRIVATE origin → no gate, exit 0', async () => {
+    process.env.GB_FAKE_GH_ANSWER = 'private';
+    const report = await statusReport(tws, { gbrainHomeDir: home });
+    expect(report.privacy_gate).toBeUndefined();
+    const r = await captureStatus();
+    expect(r.code).toBe(0);
+  });
+
+  test('gh unavailable/offline → loud warning, NOT a fail', async () => {
+    delete process.env.GB_FAKE_GH_ANSWER; // shim exits 4 (auth error / offline shape)
+    const report = await statusReport(tws, { gbrainHomeDir: home });
+    expect(report.privacy_gate?.verdict).toBe('unknown');
+    const r = await captureStatus();
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('WARNING');
+    expect(r.err).toContain('visibility');
+  });
+
+  test('initialized workspace never trips the template-door gate', async () => {
+    process.env.GB_FAKE_GH_ANSWER = 'public';
+    // ws (outer fixture) is initialized by the earlier detection test and has
+    // no origin anyway; flip tws to initialized to isolate the discriminator.
+    writeManifest(tws, {
+      format_version: 1,
+      initialized: true,
+      agent_name: 'Testy',
+      created_by: 'test',
+      created_at: new Date().toISOString(),
+      source_id: 'workspace',
+    });
+    try {
+      const report = await statusReport(tws, { gbrainHomeDir: home });
+      expect(report.privacy_gate).toBeUndefined();
+    } finally {
+      writeManifest(tws, {
+        format_version: 1,
+        initialized: false,
+        agent_name: '{{AGENT_NAME}}',
+        created_by: 'template',
+        created_at: '1970-01-01T00:00:00.000Z',
+        source_id: 'workspace',
+      });
+    }
   });
 });

@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { addSource } from '../src/core/sources-ops.ts';
-import { writeManifest } from '../src/core/bootstrap/format.ts';
+import { readManifest, writeManifest } from '../src/core/bootstrap/format.ts';
 import { initState, setAnswer, confirm, readBackHash } from '../src/core/bootstrap/interview.ts';
 import { loadQuestionBank } from '../src/core/bootstrap/assets.ts';
 import { byteFloors } from '../src/core/bootstrap/render.ts';
@@ -206,6 +206,143 @@ describe('verifyWorkspace — keyless pass', () => {
       rmSync(githubPath, { force: true });
       writeFileSync(userPath, userOriginal);
       writeFileSync(soulPath, soulOriginal);
+    }
+  }, 240_000);
+});
+
+describe('verifyWorkspace — engine-plane side effects', () => {
+  test('[CX-P1.1] facts.default_visibility: unset → set to world; explicit private → untouched', async () => {
+    const e2 = new PGLiteEngine();
+    await e2.connect({});
+    await e2.initSchema();
+    const ws2 = mkdtempSync(join(tmpdir(), 'gb-verify-vis-'));
+    try {
+      mkdirSync(join(ws2, 'brain'), { recursive: true });
+      expect(await e2.getConfig('facts.default_visibility')).toBeNull();
+
+      const res = await verifyWorkspace(e2, ws2, {
+        sourceId: 'workspace',
+        gbrainHomeDir: home,
+        capabilities: KEYLESS,
+        skipHooksSmoke: true,
+        sweepBudgetMs: 5_000,
+      });
+      // Fresh engine: posture set to world through the engine config plane…
+      expect(await e2.getConfig('facts.default_visibility')).toBe('world');
+      // …and the report names the posture + where to flip it, in one line.
+      const check = res.checks.find((c) => c.id === 'facts_visibility')!;
+      expect(check.ok).toBe(true);
+      expect(check.detail).toContain('world');
+      expect(check.detail).toContain('facts.default_visibility');
+      expect(check.detail).toContain('gbrain config set');
+
+      // Pre-set explicit value survives verify (set-if-unset, never override).
+      await e2.setConfig('facts.default_visibility', 'private');
+      const res2 = await verifyWorkspace(e2, ws2, {
+        sourceId: 'workspace',
+        gbrainHomeDir: home,
+        capabilities: KEYLESS,
+        skipHooksSmoke: true,
+        sweepBudgetMs: 5_000,
+      });
+      expect(await e2.getConfig('facts.default_visibility')).toBe('private');
+      const check2 = res2.checks.find((c) => c.id === 'facts_visibility')!;
+      expect(check2.detail).toContain('private');
+      expect(check2.detail).toContain('untouched');
+    } finally {
+      await e2.disconnect();
+      rmSync(ws2, { recursive: true, force: true });
+    }
+  }, 240_000);
+
+  test('mcp_surface=verbs in config → loud WARN naming the --surface full fix', async () => {
+    const cfgPath = join(home, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ engine: 'pglite', mcp_surface: 'verbs' }), 'utf8');
+    try {
+      const res = await verifyWorkspace(engine, ws, {
+        sourceId: 'workspace',
+        gbrainHomeDir: home,
+        capabilities: KEYLESS,
+        skipHooksSmoke: true,
+      });
+      const check = res.checks.find((c) => c.id === 'mcp_surface')!;
+      expect(check.ok).toBe(true);
+      expect(check.warn).toBe(true);
+      expect(check.detail).toContain('verbs');
+      expect(check.detail).toContain('--surface full');
+    } finally {
+      rmSync(cfgPath, { force: true });
+    }
+  }, 240_000);
+});
+
+describe('verifyWorkspace — source_id collision resolution', () => {
+  test('single workspace: id registered to THIS checkout stays unchanged (no collision check emitted)', async () => {
+    const res = await verifyWorkspace(engine, ws, {
+      sourceId: 'workspace',
+      gbrainHomeDir: home,
+      capabilities: KEYLESS,
+      skipHooksSmoke: true,
+    });
+    const m = readManifest(ws);
+    expect(m.state).toBe('initialized');
+    if (m.state === 'initialized') expect(m.manifest.source_id).toBe('workspace');
+    expect(res.checks.find((c) => c.id === 'source_id')).toBeUndefined();
+  }, 240_000);
+
+  test("second workspace claiming a taken 'workspace' id derives workspace-<8char-hash> and persists it", async () => {
+    const e2 = new PGLiteEngine();
+    await e2.connect({});
+    await e2.initSchema();
+    const firstBrain = mkdtempSync(join(tmpdir(), 'gb-verify-first-brain-'));
+    const ws2 = mkdtempSync(join(tmpdir(), 'gb-verify-second-ws-'));
+    try {
+      // The brain already has 'workspace' registered to ANOTHER checkout.
+      await addSource(e2, { id: 'workspace', localPath: firstBrain, force: true });
+      mkdirSync(join(ws2, 'brain'), { recursive: true });
+      writeManifest(ws2, {
+        format_version: 1,
+        initialized: true,
+        agent_name: 'Second',
+        created_by: 'test',
+        created_at: new Date().toISOString(),
+        source_id: 'workspace',
+      });
+
+      const res = await verifyWorkspace(e2, ws2, {
+        sourceId: 'workspace',
+        gbrainHomeDir: home,
+        capabilities: KEYLESS,
+        skipHooksSmoke: true,
+        sweepBudgetMs: 5_000,
+      });
+      const m = readManifest(ws2);
+      expect(m.state).toBe('initialized');
+      if (m.state !== 'initialized') throw new Error('unreachable');
+      const derived = m.manifest.source_id;
+      expect(derived).toMatch(/^workspace-[0-9a-f]{8}$/);
+      const check = res.checks.find((c) => c.id === 'source_id')!;
+      expect(check.warn).toBe(true);
+      expect(check.detail).toContain(derived);
+      expect(check.detail).toContain(`gbrain sources add ${derived}`);
+      expect(check.detail).toContain('hooks --repair');
+
+      // Re-run is stable: the derived id is not itself in collision.
+      const res2 = await verifyWorkspace(e2, ws2, {
+        sourceId: derived,
+        gbrainHomeDir: home,
+        capabilities: KEYLESS,
+        skipHooksSmoke: true,
+        sweepBudgetMs: 5_000,
+      });
+      const m2 = readManifest(ws2);
+      if (m2.state !== 'initialized') throw new Error('unreachable');
+      expect(m2.manifest.source_id).toBe(derived);
+      expect(res2.checks.find((c) => c.id === 'source_id')).toBeUndefined();
+    } finally {
+      await e2.disconnect();
+      rmSync(firstBrain, { recursive: true, force: true });
+      rmSync(ws2, { recursive: true, force: true });
     }
   }, 240_000);
 });

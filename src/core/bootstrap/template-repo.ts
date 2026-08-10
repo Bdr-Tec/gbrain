@@ -22,10 +22,6 @@
  * vendored tree at `templates/bootstrap/template-repo/` passes, and
  * `scripts/check-bootstrap-templates.sh` runs the same byte-diff OFFLINE [A1].
  *
- * The render engine (`./render.ts`) is built by a parallel task and may not
- * exist yet, so it is imported lazily; callers get a clear
- * "render engine not built yet" error instead of a module-load failure.
- *
  * Repo-only tooling: invoked via `scripts/generate-template-repo.ts` (CI +
  * guard script). Deliberately NOT wired into src/cli.ts and NOT bundled into
  * the compiled binary's command surface.
@@ -34,6 +30,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { TEMPLATE_PLACEHOLDER_MANIFEST, writeManifest } from './format.ts';
+import { renderWorkspace } from './render.ts';
 
 /** Stamp line contract shared with scripts/check-bootstrap-templates.sh and
  * the release workflow. `{{VERSION}}` is replaced at generation time from the
@@ -153,38 +150,11 @@ export function listTreeFiles(dir: string, prefix = ''): string[] {
   return out.sort();
 }
 
-/**
- * Generate the full template-repo tree into `outDir`.
- *
- * Throws 'render engine not built yet …' while src/core/bootstrap/render.ts
- * (parallel task) is absent — nothing is written in that case.
- */
+/** Generate the full template-repo tree into `outDir`. */
 export async function generateTemplateTree(
   outDir: string,
   opts: GenerateTemplateTreeOptions = {},
 ): Promise<GenerateTemplateTreeResult> {
-  // Lazy import [D4]: the specifier is typed `string` (not a literal) so
-  // typecheck does not attempt module resolution before render.ts lands.
-  const renderSpec: string = './render.ts';
-  let mod: Record<string, unknown>;
-  try {
-    mod = (await import(renderSpec)) as Record<string, unknown>;
-  } catch (e) {
-    throw new Error(
-      'render engine not built yet — the template-repo generator is a thin consumer of ' +
-        'src/core/bootstrap/render.ts (one rendering code path, two consumers [D4]). ' +
-        `Underlying import error: ${(e as Error).message}`,
-    );
-  }
-  const renderWorkspace = mod.renderWorkspace as
-    | ((ws: string, o: { minimal: boolean }) => unknown)
-    | undefined;
-  if (typeof renderWorkspace !== 'function') {
-    throw new Error(
-      'render engine not built yet — src/core/bootstrap/render.ts exists but does not export renderWorkspace()',
-    );
-  }
-
   const version = (opts.version ?? readRepoVersion(opts.repoRoot)).trim();
   if (!version) throw new Error('generateTemplateTree: resolved version is empty');
 

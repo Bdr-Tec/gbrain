@@ -220,6 +220,26 @@ exit 0
   writeFileSync(join(shimDir, 'gbrain'), '#!/bin/sh\nexit 0\n');
   chmodSync(join(shimDir, 'gbrain'), 0o755);
 
+  // git shim: intercept ONLY `push` (recorded, succeeds — the fake origin is
+  // an https URL no real push could reach) and delegate everything else to
+  // the real git. Lets the e2e observe repo.ts's create → privacy-verify →
+  // FIRST-push ordering [G8] without network.
+  const realGit = Bun.which('git');
+  if (!realGit) throw new Error('git not on PATH — the e2e needs a real git to delegate to');
+  writeFileSync(
+    join(shimDir, 'git'),
+    `#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = "push" ]; then
+    echo "git $*" >> "$GB_FAKE_RECORD"
+    exit 0
+  fi
+done
+exec "${realGit}" "$@"
+`,
+  );
+  chmodSync(join(shimDir, 'git'), 0o755);
+
   process.env.PATH = `${shimDir}:${process.env.PATH ?? ''}`;
 }, 60_000);
 
@@ -318,11 +338,17 @@ describe('bootstrap lifecycle (serial e2e)', () => {
     ]);
   }, 60_000);
 
-  test('repo: private repo created via fake gh, privacy verified, URL recorded; re-run reuses', async () => {
+  test('repo: private repo created via fake gh, privacy verified BEFORE first push, URL recorded; re-run reuses', async () => {
     expect(await runBootstrap(['repo', '--workspace', ws], { runner: testRunner })).toBe(0);
     const rec = record();
+    // Create runs WITHOUT --push; the first push happens only AFTER the
+    // privacy bit verified true [G8] (create → verify → push).
     expect(rec).toContain('gh repo create lifeboat-workspace --private --source');
+    expect(rec).not.toContain('--push');
     expect(rec).toContain('gh api repos/tester/lifeboat-workspace --jq .private');
+    const verifyIdx = rec.indexOf('gh api repos/tester/lifeboat-workspace --jq .private');
+    const pushIdx = rec.indexOf(`git -C ${ws} push -u origin`);
+    expect(pushIdx).toBeGreaterThan(verifyIdx);
 
     const origin = execFileSync('git', ['-C', ws, 'remote', 'get-url', 'origin']).toString().trim();
     expect(origin).toBe('https://github.com/tester/lifeboat-workspace.git');

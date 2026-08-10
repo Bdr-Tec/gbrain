@@ -25,21 +25,6 @@ import { join } from 'node:path';
 export const FORMAT_VERSION = 1;
 export const AGENT_MANIFEST_FILENAME = 'agent.json';
 
-/** Directories a format-v1 workspace carries (validated by `bootstrap verify`). */
-export const WORKSPACE_CONTENT_DIRS = ['brain', 'memory', 'skills', 'state'] as const;
-
-/** Identity files rendered from the interview (see templates/bootstrap/). */
-export const WORKSPACE_IDENTITY_FILES = [
-  'SOUL.md',
-  'USER.md',
-  'MEMORY.md',
-  'AGENTS.md',
-  'CLAUDE.md',
-  'HEARTBEAT.md',
-  'ACCESS_POLICY.md',
-  'GITHUB.md',
-] as const;
-
 export interface AgentManifest {
   format_version: number;
   /** false in the published template repo; render flips it true atomically. */
@@ -161,6 +146,54 @@ export function readReceipt(gbrainHomeDir: string): InstallReceipt | null {
   } catch {
     return null;
   }
+}
+
+/** Discriminated receipt state — writers must not treat "newer" or "invalid"
+ * the same as "absent" (silently clobbering created_paths/registrations
+ * strands uninstall) [CX2-12]. */
+export type ReceiptReadState =
+  | { state: 'absent' }
+  | { state: 'ok'; receipt: InstallReceipt }
+  | { state: 'newer'; receiptVersion: number }
+  | { state: 'invalid' };
+
+export function readReceiptState(gbrainHomeDir: string): ReceiptReadState {
+  const path = receiptPath(gbrainHomeDir);
+  if (!existsSync(path)) return { state: 'absent' };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as InstallReceipt;
+    if (parsed.receipt_version === 1) return { state: 'ok', receipt: parsed };
+    if (typeof parsed.receipt_version === 'number' && parsed.receipt_version > 1) {
+      return { state: 'newer', receiptVersion: parsed.receipt_version };
+    }
+    return { state: 'invalid' };
+  } catch {
+    return { state: 'invalid' };
+  }
+}
+
+/**
+ * Pre-write guard every receipt WRITER runs before overwriting: a
+ * newer-format receipt (written by a newer gbrain) refuses with an
+ * upgrade-first error; an unreadable receipt is backed up loudly (never
+ * silently discarded) so `created_paths`/`registrations` remain recoverable.
+ * Returns the backup path when an invalid receipt was moved aside.
+ */
+export function guardReceiptOverwrite(gbrainHomeDir: string): { brokenBackupPath?: string } {
+  const state = readReceiptState(gbrainHomeDir);
+  if (state.state === 'newer') {
+    throw new Error(
+      `the install receipt at ${receiptPath(gbrainHomeDir)} was written by a newer gbrain ` +
+        `(receipt_version ${state.receiptVersion}) — upgrade gbrain before re-running bootstrap.`,
+    );
+  }
+  if (state.state === 'invalid') {
+    const path = receiptPath(gbrainHomeDir);
+    const backup = `${path}.broken-${Date.now()}`;
+    renameSync(path, backup);
+    return { brokenBackupPath: backup };
+  }
+  return {};
 }
 
 export function writeReceipt(gbrainHomeDir: string, receipt: InstallReceipt): void {
