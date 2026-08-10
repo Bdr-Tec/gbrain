@@ -1698,6 +1698,38 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
   dev shells match keyless CI by definition; tests that want keys inject them
   explicitly. Escape hatch `GBRAIN_TEST_KEEP_PROVIDER_KEYS=1` (set by
   scripts/run-e2e.sh).
+
+## sync --working-tree follow-ups (filed v0.43.1.0)
+
+Deferred findings from the v0.43.1.0 ship reviews (adversarial + specialists).
+The shipped fix is safe without them; these harden the opt-in further.
+
+- [ ] **P2 — estimator blind spot.** The inline cost estimator prices attached
+  working-tree files at $0 by design (#2139 phantom-cost class), so a
+  persisted `sync.include_working_tree` + inline embed can spend past
+  `sync.cost_gate_min_usd` on a large dirty tree. Price the working-tree
+  manifest when the opt-in is resolved true.
+- [ ] **P2 — checkpoint/resume vs the workingTree flag.** `op_checkpoint` is
+  keyed (sourceId, lastCommit) and records neither the flag nor a working-tree
+  fingerprint: a killed `--working-tree` run resumed as a plain sync completes
+  commit-only and reports clean `synced` over a mixed snapshot; a working-tree
+  path banked pre-kill then edited before resume keeps the stale content.
+  Record the flag in the checkpoint key or invalidate on mismatch.
+- [ ] **P3 — perpetually-dirty trees vs --ff-only pull.** include_working_tree
+  users run dirty trees by definition; any remote change touching a dirty file
+  wedges pull → partial/pull_failed until manually resolved. Consider
+  auto-stash-pull-pop or a clearer remedy in the pull_failed message.
+- [ ] **P3 — drift missing from dry_run/partial results.** `uncommitted` rides
+  only up_to_date/synced; dry-run and partial JSON consumers see stderr only.
+- [ ] **P3 — collapse the two working-tree git subprocesses** into one
+  `git status --porcelain=v2 -z` pass (halves per-sync probe overhead), and
+  memoize the manifest per (gitContextRoot, headCommit) for `--all` sweeps
+  over monorepo-scoped sources.
+- [ ] **P4 — warn fatigue.** A perpetually-dirty vault now warns every night;
+  consider a dampener (warn on count change, re-warn weekly) so
+  blocked_by_failures/pull_failed stay visible.
+
+
 ## #2416 follow-ups (query-steering wave)
 
 - [x] **P2 — MCP-envelope `hint` field for concept-shaped `search` calls.**
