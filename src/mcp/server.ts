@@ -120,10 +120,15 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
       resolveServer = await startResolveIpcServer(
         resolveSocket,
         {
+          // [CX2-10] Bound-source posture for BOTH kinds: the IPC layer
+          // rejects any resolve/turn_context request naming a source other
+          // than boundSourceId ('source_mismatch'), so the only sourceId that
+          // reaches this handler is the bound one or absent — and the handler
+          // resolves against the server's OWN registered source regardless.
           resolve: (req) =>
             resolveEntitiesToPointers(
               engine,
-              req.sourceId || defaultSource,
+              defaultSource,
               req.candidates ?? [],
               {
                 priorContextText: req.priorContextText,

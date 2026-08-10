@@ -11,6 +11,7 @@ import {
   rmSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -448,6 +449,8 @@ describe('session-end', () => {
     expect(hb?.outcome).toBe('ok');
     expect(hb?.turns).toBe(2);
     expect(hb?.bytes).toBeGreaterThan(0);
+    // COUNT only in telemetry — one planted secret, one redaction [S3#2, S3#7].
+    expect(hb?.redactions).toBe(1);
   });
 
   test('session-id-keyed dedup: resumed session overwrites its corpus file [A6]', async () => {
@@ -566,14 +569,26 @@ describe('heartbeat', () => {
     expect(raw).not.toContain('secret prompt text');
   });
 
-  test('file capped at HEARTBEAT_MAX_LINES with tail rewrite', async () => {
+  test('per-event writes are append-only below the compaction threshold', async () => {
     const p = await heartbeatPath();
     const seed = JSON.stringify({ ts: 't', event: 'stop', outcome: 'ok', duration_ms: 1 });
+    // Above the nominal cap but below the 2x compaction trigger: the hot path
+    // must stay a single O_APPEND write (no read-modify-write per prompt).
     writeFileSync(p, Array.from({ length: HEARTBEAT_MAX_LINES + 100 }, () => seed).join('\n') + '\n');
     await runHook(['stop'], { stdin: JSON.stringify({ session_id: 'cap' }) });
     const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim());
+    expect(lines.length).toBe(HEARTBEAT_MAX_LINES + 101);
+    expect(JSON.parse(lines[lines.length - 1]).event).toBe('stop');
+  });
+
+  test('file compacted to HEARTBEAT_MAX_LINES once it exceeds 2x the cap', async () => {
+    const p = await heartbeatPath();
+    const seed = JSON.stringify({ ts: 't', event: 'stop', outcome: 'ok', duration_ms: 1 });
+    writeFileSync(p, Array.from({ length: 2 * HEARTBEAT_MAX_LINES + 100 }, () => seed).join('\n') + '\n');
+    await runHook(['stop'], { stdin: JSON.stringify({ session_id: 'cap' }) });
+    const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim());
     expect(lines.length).toBe(HEARTBEAT_MAX_LINES);
-    // The newest entry survived the cap.
+    // The newest entry survived the compaction.
     expect(JSON.parse(lines[lines.length - 1]).event).toBe('stop');
   });
 
@@ -583,5 +598,150 @@ describe('heartbeat', () => {
     writeFileSync(p, [mk(1), mk(2), mk(3), mk(4)].join('\n') + '\n');
     const tail = await readHeartbeatTail(2);
     expect(tail.map((e) => e.duration_ms)).toEqual([3, 4]);
+  });
+});
+
+// ── bootstrap-workspace push gate [G4] ──────────────────────────────────────
+//
+// The initialized agent.json manifest is THE security boundary: `gbrain hook
+// <event>` run inside an arbitrary git repo must never spawn the workspace
+// push (which commits). Spawns are observed via the io.spawnPush seam.
+
+function initGitRepoWithDirtyTree(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  writeFileSync(join(dir, 'untracked-work.txt'), 'unsaved work\n');
+}
+
+function gitStatus(dir: string): string {
+  return execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' });
+}
+
+const INITIALIZED_MANIFEST = {
+  format_version: 1,
+  initialized: true,
+  agent_name: 'test-agent',
+  created_by: 'test',
+  created_at: '2026-01-01T00:00:00.000Z',
+  source_id: 'workspace',
+};
+
+describe('bootstrap push gate [G4]', () => {
+  test('git repo + dirty tree + NO agent.json: session-start and session-end never spawn a push, repo untouched', async () => {
+    const repo = join(tmp, 'plain-repo');
+    initGitRepoWithDirtyTree(repo);
+    const before = gitStatus(repo);
+    const spawned: string[] = [];
+    const io = { spawnPush: (root: string) => { spawned.push(root); } };
+
+    const startOut = collectStdout();
+    expect(await runHook(['session-start'], { ...startOut.io, ...io, stdin: '', cwd: repo })).toBe(0);
+    expect(startOut.get()).not.toContain('Unpushed work');
+
+    const endOut = collectStdout();
+    expect(
+      await runHook(['session-end'], {
+        ...endOut.io,
+        ...io,
+        stdin: JSON.stringify({ session_id: 'sess-plain', cwd: repo }),
+      }),
+    ).toBe(0);
+
+    expect(spawned).toEqual([]);
+    expect(gitStatus(repo)).toBe(before); // repo untouched — nothing staged/committed
+  });
+
+  test('initialized:false (template clone) manifest: same untouched guarantee', async () => {
+    const repo = join(tmp, 'template-repo');
+    initGitRepoWithDirtyTree(repo);
+    writeFileSync(
+      join(repo, 'agent.json'),
+      JSON.stringify({ ...INITIALIZED_MANIFEST, initialized: false }, null, 2) + '\n',
+    );
+    const before = gitStatus(repo);
+    const spawned: string[] = [];
+    const io = { spawnPush: (root: string) => { spawned.push(root); } };
+
+    const startOut = collectStdout();
+    await runHook(['session-start'], { ...startOut.io, ...io, stdin: '', cwd: repo });
+    expect(startOut.get()).not.toContain('Unpushed work');
+    await runHook(['session-end'], {
+      ...io,
+      write: () => {},
+      stdin: JSON.stringify({ session_id: 'sess-template', cwd: repo }),
+    });
+
+    expect(spawned).toEqual([]);
+    expect(gitStatus(repo)).toBe(before);
+  });
+
+  test('initialized bootstrap workspace + dirty tree: session-start prints the recovery note and spawns the detached push', async () => {
+    const repo = join(tmp, 'boot-repo');
+    initGitRepoWithDirtyTree(repo);
+    writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    const spawned: string[] = [];
+
+    const out = collectStdout();
+    expect(
+      await runHook(['session-start'], {
+        ...out.io,
+        spawnPush: (root: string) => { spawned.push(root); },
+        stdin: '',
+        cwd: repo,
+      }),
+    ).toBe(0);
+
+    expect(out.get()).toContain('Unpushed work from a previous session detected');
+    expect(spawned).toHaveLength(1);
+    // The spawned root is the git toplevel of the workspace (macOS may prefix
+    // /private on tmpdir paths — compare via git itself).
+    const toplevel = execFileSync('git', ['-C', repo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+    expect(spawned[0]).toBe(toplevel);
+    expect((await lastHeartbeat())?.reason).toBe('push_spawned');
+  });
+
+  test('initialized workspace: session-end also spawns the backstop push', async () => {
+    const repo = join(tmp, 'boot-repo-end');
+    initGitRepoWithDirtyTree(repo);
+    writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    const spawned: string[] = [];
+    await runHook(['session-end'], {
+      write: () => {},
+      spawnPush: (root: string) => { spawned.push(root); },
+      stdin: JSON.stringify({ session_id: 'sess-boot-end', cwd: repo }),
+    });
+    expect(spawned).toHaveLength(1);
+  });
+});
+
+// ── user-prompt deadline degradation [D5/ENG-1] ─────────────────────────────
+
+describe('user-prompt deadline', () => {
+  test('IPC server that accepts but never responds → exit 0, empty stdout, heartbeat reason deadline', async () => {
+    const dataDir = join(tmp, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writePgliteConfig(dataDir);
+    ensureIpcSecret(dataDir); // client finds the secret, so it proceeds to the socket
+    // A black-hole server: accepts the connection, never writes a byte.
+    const blackHole = net.createServer(() => { /* accept and stall */ });
+    await new Promise<void>((r) => blackHole.listen(resolveSocketPath(dataDir), r));
+    servers.push(blackHole);
+
+    const out = collectStdout();
+    expect(
+      await runHook(['user-prompt'], {
+        ...out.io,
+        stdin: JSON.stringify({ prompt: 'hello?' }),
+        // Injected deadline seam (below the 600ms IPC client timeout) so the
+        // test pins the DEADLINE path, not the client-timeout path, without
+        // an 800ms wall-clock wait.
+        userPromptDeadlineMs: 250,
+      }),
+    ).toBe(0);
+    expect(out.get()).toBe(''); // late writes are suppressed post-deadline
+    const hb = await lastHeartbeat();
+    expect(hb?.event).toBe('user-prompt');
+    expect(hb?.outcome).toBe('degraded');
+    expect(hb?.reason).toBe('deadline');
   });
 });

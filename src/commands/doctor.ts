@@ -8223,13 +8223,14 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   // degraded entries are DESIGNED fallbacks (pull-mode, no serve).
   let hooksSeen = false;
   try {
-    const { readHeartbeatTail, HEARTBEAT_FAILURE_WINDOW } = await import('./hook.ts');
+    const { readHeartbeatTail, HEARTBEAT_FAILURE_WINDOW, HEARTBEAT_FAILURE_RATE_THRESHOLD } =
+      await import('./hook.ts');
     const tail = await readHeartbeatTail(HEARTBEAT_FAILURE_WINDOW);
     if (tail.length > 0) {
       hooksSeen = true;
       const failures = tail.filter((e) => e.outcome === 'error').length;
       const rate = failures / tail.length;
-      if (rate > 0.5) {
+      if (rate > HEARTBEAT_FAILURE_RATE_THRESHOLD) {
         checks.push({
           name: 'bootstrap_hooks_heartbeat',
           status: 'fail',
@@ -8257,9 +8258,10 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   // AND the workspace tree is dirty (recent work provably unpushed).
   try {
     if (existsSync(pushStatusFile)) {
+      const { PUSH_STALE_MS } = await import('./hook.ts'); // hook.ts owns the threshold (single source)
       const s = JSON.parse(readFileSync(pushStatusFile, 'utf8')) as { ts?: string; ok?: boolean; reason?: string };
       const t = s.ts ? Date.parse(s.ts) : NaN;
-      const stale = Number.isFinite(t) && Date.now() - t > 48 * 60 * 60 * 1000;
+      const stale = Number.isFinite(t) && Date.now() - t > PUSH_STALE_MS;
       let dirty = false;
       if (ws) {
         try {

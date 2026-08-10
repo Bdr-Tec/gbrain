@@ -70,6 +70,11 @@ export interface ResolveRequest {
   candidates: EntityCandidate[];
   priorContextText?: string;
   maxPointers?: number;
+  /**
+   * Optional source claim. On a server started with opts.boundSourceId, any
+   * OTHER value is rejected with 'source_mismatch' [CX2-10] — same binding as
+   * turn_context. Unbound (legacy positional) servers pass it through.
+   */
   sourceId?: string;
   /** v0.43 (#2095, codex D7): suppression mode — 'slug-only' under windowing. */
   suppression?: 'slug-and-title' | 'slug-only';
@@ -373,10 +378,18 @@ export async function startResolveIpcServer(
           const kind = (parsed as { kind?: unknown }).kind ?? 'resolve';
           if (kind === 'resolve') {
             const req = parsed as ResolveRequest;
-            const block = await handlers.resolve(req);
-            const out: ResolveResponse = { ok: true, block };
-            resp = JSON.stringify(out);
-            if (block) delivered = { block, req };
+            // [CX2-10] Same source binding as turn_context: a bound server
+            // serves ITS registered source only — a resolve request naming a
+            // different source is rejected, never re-routed. Unbound servers
+            // (legacy positional callers) keep the v1 pass-through behavior.
+            if (req.sourceId && opts.boundSourceId && req.sourceId !== opts.boundSourceId) {
+              resp = JSON.stringify({ ok: false, error: 'source_mismatch' } satisfies ResolveResponse);
+            } else {
+              const block = await handlers.resolve(req);
+              const out: ResolveResponse = { ok: true, block };
+              resp = JSON.stringify(out);
+              if (block) delivered = { block, req };
+            }
           } else if (kind === 'turn_context') {
             resp = JSON.stringify(
               await handleTurnContext(parsed as TurnContextRequest, handlers, opts),

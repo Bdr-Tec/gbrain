@@ -29,7 +29,7 @@
  *                  JSON on stdout (≤800ms, ≤10000 chars) [ENG-1,S3#8,A9]
  *   stop           append to the per-session live buffer + 7-day GC [G15]
  *   session-end    transcript → secret-scanned corpus file, retention prune,
- *                  parser-drift detection, best-effort workspace push
+ *                  parser-drift detection, detached background workspace push
  *                  [S3#2,G3,G15]
  */
 
@@ -45,9 +45,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { ensureGbrainHome, resolveGbrainHome } from '../core/gbrain-home.ts';
 import { loadConfig, type GBrainConfig } from '../core/config.ts';
 import {
   IPC_UNAVAILABLE,
@@ -83,6 +83,13 @@ export const CORPUS_RETENTION_DAYS_DEFAULT = 30;
 export const HEARTBEAT_MAX_LINES = 5000;
 /** Trailing-window size for the B3 failure-rate notice. */
 export const HEARTBEAT_FAILURE_WINDOW = 20;
+/**
+ * Trailing-window hard-error rate that trips the B3 digest notice AND the
+ * doctor `bootstrap_hooks_heartbeat` fail (doctor imports this — one source).
+ */
+export const HEARTBEAT_FAILURE_RATE_THRESHOLD = 0.5;
+/** Push-staleness threshold [B4] — shared with doctor's bootstrap_push_health. */
+export const PUSH_STALE_MS = 48 * 60 * 60 * 1000;
 /** user-prompt window: transcript turns fed to turn_context (plan D5: last 4). */
 const USER_PROMPT_WINDOW_TURNS = 4;
 /** user-prompt transcript parse budget (tail bytes — the window only needs the newest turns). */
@@ -106,6 +113,13 @@ export interface HookIo {
   cwd?: string;
   /** TEST SEAM: transcript confinement root (default ~/.claude/projects). */
   transcriptRoot?: string;
+  /**
+   * TEST SEAM: detached-push spawner (default spawnDetachedPush). Receives the
+   * gated bootstrap workspace root; throwing marks the push unavailable.
+   */
+  spawnPush?: (root: string) => void;
+  /** TEST SEAM: user-prompt deadline override (wall-clock flake control). */
+  userPromptDeadlineMs?: number;
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -223,19 +237,17 @@ function readProcessStdin(timeoutMs: number): Promise<string> {
 }
 
 /**
- * Gbrain home resolver: prefer the S3#10 choke point (lazy import so a
- * partially-built tree still fail-opens); fall back to configDir semantics
- * (GBRAIN_HOME is a PARENT dir, `.gbrain` appended) [CX2-8].
+ * Gbrain home resolver: the S3#10 choke point, statically imported [CX2-8].
+ * Only the CALL is guarded — ensureGbrainHome throws solely when the create
+ * fails, and resolveGbrainHome (pure path resolution, same semantics) is the
+ * fail-open fallback; downstream writers under an uncreatable home fail into
+ * their own swallow-and-heartbeat paths.
  */
 async function resolveHome(): Promise<string> {
   try {
-    const mod = await import('../core/gbrain-home.ts');
-    return mod.ensureGbrainHome();
+    return ensureGbrainHome();
   } catch {
-    const override = process.env.GBRAIN_HOME?.trim();
-    const home = override && isAbsolute(override) ? join(override, '.gbrain') : join(homedir(), '.gbrain');
-    mkdirSync(home, { recursive: true, mode: 0o700 });
-    return home;
+    return resolveGbrainHome();
   }
 }
 
@@ -274,11 +286,13 @@ export interface HookHeartbeatEntry {
   duration_ms: number;
   turns?: number;
   bytes?: number;
+  /** Secret-scan redaction COUNT at the session-end corpus write (never content) [S3#2, S3#7]. */
+  redactions?: number;
 }
 
 /** The FULL key allowlist — CI greps the fixture against this [S3#7]. */
 export const HEARTBEAT_ALLOWED_KEYS = [
-  'ts', 'event', 'outcome', 'reason', 'duration_ms', 'turns', 'bytes',
+  'ts', 'event', 'outcome', 'reason', 'duration_ms', 'turns', 'bytes', 'redactions',
 ] as const;
 
 async function hooksTelemetryDir(): Promise<string> {
@@ -298,9 +312,18 @@ export async function hookStatusPath(): Promise<string> {
 }
 
 /**
- * Append a heartbeat entry, capping the file at HEARTBEAT_MAX_LINES (tail
- * rewrite, atomic). Fields are copied EXPLICITLY — the schema allowlist is
- * enforced by construction, not by trust. Never throws.
+ * Compaction trigger: only read the file back when its byte size could hold
+ * more than ~2x HEARTBEAT_MAX_LINES entries. 40B is below any real entry's
+ * size (the ISO ts alone is 24 chars), so this check can never UNDER-trigger.
+ */
+const HEARTBEAT_COMPACT_CHECK_BYTES = 2 * HEARTBEAT_MAX_LINES * 40;
+
+/**
+ * Append a heartbeat entry with a single O_APPEND write (no read-modify-write
+ * per event — readers already tolerate torn lines). Compaction (tail-trim to
+ * HEARTBEAT_MAX_LINES via tmp+rename) runs only when a cheap size/line-count
+ * check says the file exceeds ~2x the cap. Fields are copied EXPLICITLY — the
+ * schema allowlist is enforced by construction, not by trust. Never throws.
  */
 async function writeHeartbeat(entry: HookHeartbeatEntry): Promise<void> {
   try {
@@ -313,19 +336,23 @@ async function writeHeartbeat(entry: HookHeartbeatEntry): Promise<void> {
       duration_ms: entry.duration_ms,
       ...(entry.turns !== undefined ? { turns: entry.turns } : {}),
       ...(entry.bytes !== undefined ? { bytes: entry.bytes } : {}),
+      ...(entry.redactions !== undefined ? { redactions: entry.redactions } : {}),
     });
-    let existing = '';
+    appendFileSync(p, line + '\n', { mode: 0o600 });
+    let size = 0;
     try {
-      existing = readFileSync(p, 'utf8');
+      size = statSync(p).size;
     } catch {
-      /* first write */
+      /* just appended — best effort */
     }
-    const lines = existing.split('\n').filter((l) => l.trim().length > 0);
-    lines.push(line);
-    const kept = lines.length > HEARTBEAT_MAX_LINES ? lines.slice(-HEARTBEAT_MAX_LINES) : lines;
-    const tmp = `${p}.tmp-${process.pid}`;
-    writeFileSync(tmp, kept.join('\n') + '\n', { mode: 0o600 });
-    renameSync(tmp, p);
+    if (size > HEARTBEAT_COMPACT_CHECK_BYTES) {
+      const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+      if (lines.length > 2 * HEARTBEAT_MAX_LINES) {
+        const tmp = `${p}.tmp-${process.pid}`;
+        writeFileSync(tmp, lines.slice(-HEARTBEAT_MAX_LINES).join('\n') + '\n', { mode: 0o600 });
+        renameSync(tmp, p);
+      }
+    }
   } catch {
     /* telemetry never breaks a hook */
   }
@@ -385,12 +412,13 @@ async function hookSessionStart(io: HookIo): Promise<number> {
       // 5. Dirty-tree recovery push [G4] — bootstrap workspaces ONLY (the
       //    initialized agent.json manifest is the gate; `gbrain hook
       //    session-start` run in an arbitrary repo must never commit it).
-      const dirty = await dirtyTreePush(ws);
+      //    The push itself runs as a detached child; the hook only spawns.
+      const dirty = await dirtyTreePush(ws, io);
       if (dirty) {
         if (dirty.note) out.push(dirty.note);
-        if (dirty.degradedReason && outcome === 'ok') {
-          outcome = 'degraded';
-          reason = dirty.degradedReason;
+        if (dirty.reason && outcome === 'ok') {
+          if (dirty.degraded) outcome = 'degraded';
+          reason = reasonCode(dirty.reason);
         }
       }
     })();
@@ -486,8 +514,6 @@ async function lastSessionLine(): Promise<string | null> {
   }
 }
 
-const PUSH_STALE_MS = 48 * 60 * 60 * 1000;
-
 async function pushStatusNote(): Promise<string | null> {
   try {
     const home = await resolveHome();
@@ -517,7 +543,7 @@ async function hookFailureNotice(): Promise<string | null> {
   const tail = await readHeartbeatTail(HEARTBEAT_FAILURE_WINDOW);
   if (tail.length === 0) return null;
   const failures = tail.filter((e) => e.outcome === 'error').length;
-  if (failures / tail.length > 0.5) {
+  if (failures / tail.length > HEARTBEAT_FAILURE_RATE_THRESHOLD) {
     return 'brain context unavailable for recent turns — run gbrain doctor';
   }
   return null;
@@ -538,53 +564,92 @@ async function statusFileNotice(): Promise<string | null> {
   }
 }
 
-function tryExec(bin: string, args: string[], timeoutMs = 3000): string | null {
-  try {
-    return execFileSync(bin, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: timeoutMs,
-      maxBuffer: 4 * 1024 * 1024,
-    })
-      .toString()
-      .trim();
-  } catch {
-    return null;
-  }
+/** Per-git-command timeout for hook quick checks (bounds the child; the event loop stays free). */
+const HOOK_GIT_TIMEOUT_MS = 1000;
+
+/**
+ * Async execFile wrapper: the hook push paths must NEVER block the event
+ * loop with execFileSync — a slow repo/network would keep withDeadline's
+ * timer from ever firing and stall the harness for minutes. null on any
+ * failure (missing binary, non-zero exit, timeout).
+ */
+function tryExecAsync(bin: string, args: string[], timeoutMs = HOOK_GIT_TIMEOUT_MS): Promise<string | null> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        bin,
+        args,
+        { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
+        (err, stdout) => resolve(err ? null : stdout.toString().trim()),
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * Resolve the bootstrap workspace root for a hook event: the git toplevel of
+ * `ws`, gated on an `initialized` agent.json manifest at that root. The gate
+ * is the security boundary — `gbrain hook <event>` run in an arbitrary repo
+ * must never commit or push it. Shared by session-start and session-end.
+ */
+async function resolveBootstrapWorkspaceRoot(ws: string): Promise<string | null> {
+  const root = await tryExecAsync('git', ['-C', ws, 'rev-parse', '--show-toplevel']);
+  if (!root) return null;
+  const manifest = readManifest(root);
+  if (manifest.state !== 'initialized') return null; // not a bootstrap workspace
+  return root;
+}
+
+/**
+ * Fire-and-forget `gbrain sources push --path <root>` as a DETACHED child.
+ * workspacePush must never run inline in a hook — its git chain is fully
+ * synchronous (execFileSync) and would block the event loop past every
+ * deadline. The child owns the push lock/status plumbing; the hook only
+ * announces it. Throws when the child can't be spawned (caller degrades).
+ */
+function spawnDetachedPush(root: string): void {
+  const exec = process.execPath ?? '';
+  const pushArgs = ['sources', 'push', '--path', root];
+  // Compiled binary: execPath IS gbrain. Dev (bun src/cli.ts): re-exec the
+  // entrypoint — the jobs.ts --detach precedent.
+  const argv = /[/\\]gbrain(\.exe)?$/.test(exec) ? pushArgs : [process.argv[1], ...pushArgs];
+  const child = spawn(exec, argv, { detached: true, stdio: 'ignore' });
+  child.unref();
 }
 
 /**
  * [G4] Crashed-session recovery: dirty tree or unpushed commits at session
- * start → attempt a workspace push (lazy import; swallow-and-heartbeat when
- * the module is absent or the push fails). GATED on an `initialized`
- * agent.json manifest at the repo root so this can never commit an
- * arbitrary repo the hook happens to run in.
+ * start → spawn the workspace push in the background (never inline). GATED
+ * on the initialized-manifest bootstrap workspace root (the security
+ * boundary — see resolveBootstrapWorkspaceRoot).
  */
 async function dirtyTreePush(
   ws: string,
-): Promise<{ note?: string; degradedReason?: string } | null> {
+  io: HookIo,
+): Promise<{ note?: string; reason?: string; degraded?: boolean } | null> {
   try {
-    const root = tryExec('git', ['-C', ws, 'rev-parse', '--show-toplevel']);
+    const root = await resolveBootstrapWorkspaceRoot(ws);
     if (!root) return null;
-    const manifest = readManifest(root);
-    if (manifest.state !== 'initialized') return null; // not a bootstrap workspace
-    const dirty = (tryExec('git', ['-C', root, 'status', '--porcelain']) ?? '') !== '';
-    const aheadRaw = tryExec('git', ['-C', root, 'rev-list', '--count', '@{u}..HEAD']);
+    const [status, aheadRaw] = await Promise.all([
+      tryExecAsync('git', ['-C', root, 'status', '--porcelain']),
+      tryExecAsync('git', ['-C', root, 'rev-list', '--count', '@{u}..HEAD']),
+    ]);
+    const dirty = (status ?? '') !== '';
     const ahead = aheadRaw !== null ? parseInt(aheadRaw, 10) || 0 : 0;
     if (!dirty && ahead === 0) return null;
     try {
-      const mod = await import('../core/workspace-push.ts');
-      const res = await mod.workspacePush({ dir: root });
-      if (res.ok && res.status === 'pushed') {
-        return { note: 'Recovered work from a previous session: workspace committed and pushed.' };
-      }
+      (io.spawnPush ?? spawnDetachedPush)(root);
       return {
-        note: `Unpushed work from a previous session detected; push attempt: ${res.status} — run gbrain doctor if this persists`,
-        degradedReason: reasonCode(`push_${res.status}`),
+        note: 'Unpushed work from a previous session detected — recovering unpushed work in background (gbrain sources push).',
+        reason: 'push_spawned',
       };
     } catch {
       return {
         note: 'Unpushed work from a previous session detected; automatic push unavailable — run gbrain doctor',
-        degradedReason: 'push_unavailable',
+        reason: 'push_unavailable',
+        degraded: true,
       };
     }
   } catch {
@@ -682,7 +747,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
 
   let result: UserPromptOutcome;
   try {
-    const raced = await withDeadline(USER_PROMPT_DEADLINE_MS, work);
+    const raced = await withDeadline(io.userPromptDeadlineMs ?? USER_PROMPT_DEADLINE_MS, work);
     if (raced === DEADLINE) {
       expired = true; // late writes are suppressed — a post-deadline block must not appear
       result = { outcome: 'degraded', reason: 'deadline' };
@@ -786,6 +851,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
   let reason: string | undefined;
   let turnsN: number | undefined;
   let bytesN: number | undefined;
+  let redactionsN: number | undefined;
   const degrade = (r: string) => {
     if (outcome === 'ok') {
       outcome = 'degraded';
@@ -831,7 +897,10 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
         let text = toCorpusText(parsed.turns);
         try {
           const scan = await import('../core/secret-scan.ts');
-          text = scan.redactFindings(text).text;
+          const redacted = scan.redactFindings(text);
+          text = redacted.text;
+          // COUNT only — the findings themselves never land in telemetry [S3#7].
+          redactionsN = redacted.redactions.length;
         } catch {
           degrade('scan_unavailable');
         }
@@ -848,9 +917,23 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
   }
 
   // Best-effort workspace push (the no-daemon persistence backstop, plan D6)
-  // — same initialized-manifest gate as session-start [G4].
+  // — same initialized-manifest gate as session-start [G4]. Spawned DETACHED,
+  // never inline: the hook must exit far inside the harness's 60s cap
+  // regardless of repo/network state. Fires on clean trees too (a prior
+  // failure may have left local ahead; workspacePush handles that + its own
+  // in-flight lock in the child).
   try {
-    if (ws) await dirtyTreePushUnconditional(ws);
+    if (ws) {
+      const root = await resolveBootstrapWorkspaceRoot(ws);
+      if (root) {
+        try {
+          (io.spawnPush ?? spawnDetachedPush)(root);
+          if (outcome === 'ok' && !reason) reason = 'push_spawned';
+        } catch {
+          degrade('push_unavailable');
+        }
+      }
+    }
   } catch {
     /* best effort */
   }
@@ -871,24 +954,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
     duration_ms: Date.now() - t0,
     ...(turnsN !== undefined ? { turns: turnsN } : {}),
     ...(bytesN !== undefined ? { bytes: bytesN } : {}),
+    ...(redactionsN !== undefined ? { redactions: redactionsN } : {}),
   });
   return 0;
-}
-
-/**
- * SessionEnd push: fires on clean trees too (workspacePush pushes even with
- * no new commit — a prior failure may have left local ahead). Same
- * bootstrap-workspace manifest gate as [G4].
- */
-async function dirtyTreePushUnconditional(ws: string): Promise<void> {
-  const root = tryExec('git', ['-C', ws, 'rev-parse', '--show-toplevel']);
-  if (!root) return;
-  const manifest = readManifest(root);
-  if (manifest.state !== 'initialized') return;
-  try {
-    const mod = await import('../core/workspace-push.ts');
-    await mod.workspacePush({ dir: root });
-  } catch {
-    /* absent module / push failure — the 15-min cron or next session covers it */
-  }
 }

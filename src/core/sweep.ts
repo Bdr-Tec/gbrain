@@ -29,7 +29,9 @@
  *      → insert). KEYLESS RULE [CX-P0.5]: no extraction provider ⇒ skip
  *      with {reason:'keyless'} — agent-authored fences cover it. A
  *      `<file>.ingested` sidecar (written AFTER success — crash-safe,
- *      exactly-once) marks completion.
+ *      exactly-once) marks completion; a `<file>.in-progress` claim
+ *      sidecar (O_EXCL) fences concurrent sweeps off the same file so
+ *      two processes never double-pay one transcript's LLM call.
  *
  * Budget: a wall-clock budget aborts BETWEEN items (and threads an
  * AbortSignal into the fence pass + corpus extraction); the report
@@ -42,6 +44,7 @@
  */
 
 import { join } from 'node:path';
+import { readdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import type { BrainEngine, LinkBatchInput, TimelineBatchInput } from './engine.ts';
 import type { FactsBackstopCtx } from './facts/backstop.ts';
 import { detectCapabilities, type CapabilityReport } from './capability.ts';
@@ -52,8 +55,28 @@ export const STARTUP_SWEEP_DELAY_MS = 3_000;
 /** Fence begin marker — duplicated from facts-fence.ts to keep this module light. */
 const FACTS_FENCE_BEGIN_MARKER = 'gbrain:facts:begin';
 
+/**
+ * Cap on the candidate set the pass-1 leading-wildcard LIKE scans: the fence
+ * marker can't use an index, so the LIKE runs over a recency-bounded subquery
+ * (newest N rows in the window) instead of every matching-window row — a
+ * bulk-sync day can't turn pass 1 into a whole-table scan.
+ */
+export const FENCE_LIKE_SCAN_CAP = 500;
+
 /** Sidecar suffix marking a corpus file as processed. */
 export const CORPUS_INGESTED_SUFFIX = '.ingested';
+
+/**
+ * Claim sidecar marking a corpus file as being ingested RIGHT NOW. Created
+ * with O_EXCL (`wx`) before the LLM call so a manual `gbrain sweep --once`
+ * and the serve-idle sweep (separate processes on a Postgres brain) can't
+ * both pay for the same transcript. Replaced by the `.ingested` sidecar on
+ * success; removed on failure so the next sweep retries.
+ */
+export const CORPUS_CLAIM_SUFFIX = '.in-progress';
+
+/** Claims older than this belong to dead sweeps and are reclaimable. */
+export const CORPUS_CLAIM_STALE_MS = 60 * 60 * 1000;
 
 export interface SweepOpts {
   /** Source to sweep. Default 'default' (the serve's registered source). */
@@ -139,15 +162,22 @@ export async function runMaintenanceSweep(
       if (overBudget()) {
         skip('budget_exhausted:facts_fence');
       } else {
+        // The leading-wildcard LIKE can't use an index, so it scans only the
+        // newest FENCE_LIKE_SCAN_CAP rows in the recency window (inner
+        // subquery) rather than every row a bulk-sync day may have touched.
         const rows = await engine.executeRaw<{ slug: string }>(
-          `SELECT slug FROM pages
-            WHERE source_id = $1
-              AND deleted_at IS NULL
-              AND updated_at >= $2::timestamptz
-              AND compiled_truth LIKE $3
+          `SELECT slug FROM (
+             SELECT slug, compiled_truth, updated_at FROM pages
+              WHERE source_id = $1
+                AND deleted_at IS NULL
+                AND updated_at >= $2::timestamptz
+              ORDER BY updated_at DESC
+              LIMIT $4
+           ) AS recent
+            WHERE compiled_truth LIKE $3
             ORDER BY updated_at DESC
-            LIMIT $4`,
-          [sourceId, cutoffIso, `%${FACTS_FENCE_BEGIN_MARKER}%`, batchLimit],
+            LIMIT $5`,
+          [sourceId, cutoffIso, `%${FACTS_FENCE_BEGIN_MARKER}%`, FENCE_LIKE_SCAN_CAP, batchLimit],
         );
         if (rows.length > 0) {
           const { runExtractFacts } = await import('./cycle/extract-facts.ts');
@@ -277,22 +307,15 @@ async function runLinksTimelinePass(
   const resolver = makeResolver(engine, { mode: 'batch', sourceId });
   const globalBasename = await isGlobalBasenameEnabled(engine);
 
-  // Full (slug, source_id) map so cross-source wikilinks resolve the same
-  // way extractLinksFromDB's fullRefsForResolver does.
-  const allRefs = await engine.listAllPageRefs();
-  const allSlugs = new Set<string>();
-  const slugToSources = new Map<string, string[]>();
-  for (const ref of allRefs) {
-    allSlugs.add(ref.slug);
-    const list = slugToSources.get(ref.slug) ?? [];
-    list.push(ref.source_id);
-    slugToSources.set(ref.slug, list);
-  }
+  type Extracted = Awaited<ReturnType<typeof extractPageLinks>>;
 
-  const linkBatch: LinkBatchInput[] = [];
   const tlBatch: TimelineBatchInput[] = [];
   const processedRefs: Array<{ slug: string; source_id: string }> = [];
+  const pageCandidates: Array<{ slug: string; candidates: Extracted['candidates'] }> = [];
 
+  // Phase 1: per-page extraction. The per-slug getPage loop stays a loop —
+  // BrainEngine has no batch read-by-slug-list primitive (resolveSlugsByPaths
+  // is path→slug only), and the loop is bounded by batchLimit (default 20).
   for (let i = 0; i < recent.length; i++) {
     if (overBudget()) {
       skip('budget_exhausted:links_timeline', recent.length - i);
@@ -311,21 +334,8 @@ async function runLinksTimelinePass(
         slug, fullContent, page.frontmatter, page.type, resolver,
         { skipFrontmatter: true, globalBasename },
       );
-      for (const c of extracted.candidates) {
-        const resolved = resolveCandidateSources(c, slug, sourceId, allSlugs, slugToSources);
-        if (!resolved) continue;
-        linkBatch.push({
-          from_slug: resolved.fromSlug,
-          to_slug: c.targetSlug,
-          link_type: c.linkType,
-          context: c.context,
-          link_source: c.linkSource,
-          origin_slug: c.originSlug,
-          origin_field: c.originField,
-          from_source_id: resolved.fromSourceId,
-          to_source_id: resolved.toSourceId,
-          origin_source_id: sourceId,
-        });
+      if (extracted.candidates.length > 0) {
+        pageCandidates.push({ slug, candidates: extracted.candidates });
       }
     }
 
@@ -346,6 +356,44 @@ async function runLinksTimelinePass(
     processedRefs.push({ slug, source_id: sourceId });
   }
 
+  // Phase 2: endpoint validation is scoped to the slugs the candidates
+  // actually name — NOT engine.listAllPageRefs() (the full (slug, source_id)
+  // map, O(all pages) per sweep; the extract command amortizes that cost over
+  // a whole-brain run, a recurring bounded sweep must not). The targeted
+  // lookup keeps listAllPageRefs' visibility semantics (deleted_at IS NULL),
+  // so resolveCandidateSources' F10 resolution is unchanged — it just sees
+  // only the rows it can possibly use. Zero candidates ⇒ zero queries.
+  const linkBatch: LinkBatchInput[] = [];
+  if (pageCandidates.length > 0) {
+    const needed = new Set<string>();
+    for (const { slug, candidates } of pageCandidates) {
+      needed.add(slug);
+      for (const c of candidates) {
+        needed.add(c.targetSlug);
+        if (c.fromSlug) needed.add(c.fromSlug);
+      }
+    }
+    const { allSlugs, slugToSources } = await lookupRefsForSlugs(engine, [...needed]);
+    for (const { slug, candidates } of pageCandidates) {
+      for (const c of candidates) {
+        const resolved = resolveCandidateSources(c, slug, sourceId, allSlugs, slugToSources);
+        if (!resolved) continue;
+        linkBatch.push({
+          from_slug: resolved.fromSlug,
+          to_slug: c.targetSlug,
+          link_type: c.linkType,
+          context: c.context,
+          link_source: c.linkSource,
+          origin_slug: c.originSlug,
+          origin_field: c.originField,
+          from_source_id: resolved.fromSourceId,
+          to_source_id: resolved.toSourceId,
+          origin_source_id: sourceId,
+        });
+      }
+    }
+  }
+
   // Engine batch primitives self-retry; default auditSite labels apply
   // (BATCH_AUDIT_SITES is a closed enum owned by retry.ts).
   if (linkBatch.length > 0) {
@@ -362,11 +410,48 @@ async function runLinksTimelinePass(
 }
 
 /**
+ * (slug, source_id) refs for EXACTLY the given slugs, chunked IN-list —
+ * the bounded replacement for listAllPageRefs in the sweep's pass 2. Same
+ * visibility as listAllPageRefs (deleted_at IS NULL).
+ */
+async function lookupRefsForSlugs(
+  engine: BrainEngine,
+  slugs: string[],
+): Promise<{ allSlugs: Set<string>; slugToSources: Map<string, string[]> }> {
+  const allSlugs = new Set<string>();
+  const slugToSources = new Map<string, string[]>();
+  const CHUNK = 200;
+  for (let i = 0; i < slugs.length; i += CHUNK) {
+    const chunk = slugs.slice(i, i + CHUNK);
+    const placeholders = chunk.map((_, j) => `$${j + 1}`).join(', ');
+    const rows = await engine.executeRaw<{ slug: string; source_id: string }>(
+      `SELECT slug, source_id FROM pages
+        WHERE deleted_at IS NULL AND slug IN (${placeholders})`,
+      chunk,
+    );
+    for (const ref of rows) {
+      allSlugs.add(ref.slug);
+      const list = slugToSources.get(ref.slug) ?? [];
+      list.push(ref.source_id);
+      slugToSources.set(ref.slug, list);
+    }
+  }
+  return { allSlugs, slugToSources };
+}
+
+/**
  * Pass 3 body. One `runFactsPipeline` call per unprocessed corpus file —
  * the narrowest existing entry that takes raw transcript text through
  * extract → resolve → dedup → insert. Visibility left unset so the
  * pipeline resolves the operator default via resolveDefaultVisibility
  * (backstop.ts:359, [ENG-8]). Sidecar written AFTER success only.
+ *
+ * Concurrency: a `<file>.in-progress` claim sidecar (O_EXCL create) fences
+ * each file before its LLM call — a manual `gbrain sweep --once` racing the
+ * serve-idle sweep never double-spends on the same transcript. Success
+ * replaces the claim with the `.ingested` sidecar; failure removes the claim
+ * (next sweep retries); claims older than CORPUS_CLAIM_STALE_MS belong to
+ * dead sweeps and are reclaimed.
  */
 async function runCorpusIngestPass(
   engine: BrainEngine,
@@ -377,7 +462,6 @@ async function runCorpusIngestPass(
   },
 ): Promise<void> {
   const { sourceId, batchLimit, overBudget, signal, report, skip, log } = ctx;
-  const { readdirSync, readFileSync, writeFileSync, existsSync } = await import('node:fs');
 
   // Corpus dir: dream's session corpus (transcripts.ts:66 precedent);
   // default ~/.gbrain/transcripts/corpus (GBRAIN_HOME-aware via configDir).
@@ -389,21 +473,22 @@ async function runCorpusIngestPass(
 
   let entries: string[];
   try {
-    entries = readdirSync(dir);
+    entries = await readdir(dir);
   } catch {
     return; // no corpus dir = nothing to ingest (not an error)
   }
 
+  // ONE readdir feeds both the .txt listing and the sidecar checks (the old
+  // shape ran two existsSync probes per file on top of the readdir).
+  const entrySet = new Set(entries);
   const txtFiles = entries.filter(n => n.endsWith('.txt')).sort();
   if (txtFiles.length === 0) return;
 
-  const alreadyIngested = txtFiles.filter(n =>
-    existsSync(join(dir, n + CORPUS_INGESTED_SUFFIX)),
-  );
+  const alreadyIngested = txtFiles.filter(n => entrySet.has(n + CORPUS_INGESTED_SUFFIX));
   skip('already_ingested', alreadyIngested.length);
 
   const candidates = txtFiles
-    .filter(n => !existsSync(join(dir, n + CORPUS_INGESTED_SUFFIX)))
+    .filter(n => !entrySet.has(n + CORPUS_INGESTED_SUFFIX))
     .slice(0, batchLimit);
   if (candidates.length === 0) return;
 
@@ -433,14 +518,32 @@ async function runCorpusIngestPass(
     }
     const name = candidates[i];
     const full = join(dir, name);
+
+    // Atomic claim BEFORE any spend — the losing sweep skips, never re-pays.
+    const claimPath = full + CORPUS_CLAIM_SUFFIX;
+    if (!(await acquireCorpusClaim(claimPath))) {
+      skip('corpus_in_progress');
+      continue;
+    }
+
+    let abortLoop = false;
     try {
-      const raw = readFileSync(full, 'utf-8');
+      // Re-check under the claim: another sweep may have finished this file
+      // between our readdir and our claim (it releases its claim only after
+      // writing the .ingested sidecar, so this closes the double-spend gap).
+      const doneAlready = await stat(full + CORPUS_INGESTED_SUFFIX).then(() => true, () => false);
+      if (doneAlready) {
+        skip('already_ingested');
+        continue;
+      }
+
+      const raw = await readFile(full, 'utf-8');
 
       // Anti-loop: never ingest dream-generated outputs. Marking them
       // processed is safe — the classification is deterministic and
       // permanent, and the sidecar stops the sweep re-reading them forever.
       if (isDreamOutput(raw)) {
-        writeFileSync(
+        await writeFile(
           full + CORPUS_INGESTED_SUFFIX,
           JSON.stringify({ ingested_at: new Date().toISOString(), skipped: 'dream_output' }) + '\n',
         );
@@ -464,7 +567,7 @@ async function runCorpusIngestPass(
 
       // Sidecar AFTER success — a crash before this line re-processes the
       // file next sweep (dedup absorbs the repeats), never loses it.
-      writeFileSync(
+      await writeFile(
         full + CORPUS_INGESTED_SUFFIX,
         JSON.stringify({
           ingested_at: new Date().toISOString(),
@@ -476,12 +579,42 @@ async function runCorpusIngestPass(
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
         skip('budget_exhausted:corpus', candidates.length - i);
-        break;
+        abortLoop = true;
+      } else {
+        skip('corpus_file_error');
+        log(`[sweep] corpus ingest failed for ${name}: ${e instanceof Error ? e.message : String(e)}`);
       }
-      skip('corpus_file_error');
-      log(`[sweep] corpus ingest failed for ${name}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      // Success (its .ingested sidecar now stands in) and failure (retry next
+      // sweep) both release the claim.
+      await rm(claimPath, { force: true }).catch(() => {});
     }
+    if (abortLoop) break;
   }
+}
+
+/**
+ * Try to claim a corpus file for ingestion. O_EXCL (`wx`) create is the
+ * atomic primitive; a live existing claim (< CORPUS_CLAIM_STALE_MS old)
+ * means another sweep owns the file. Stale claims are removed and re-raced
+ * (one contender wins the second `wx`). Never throws.
+ */
+async function acquireCorpusClaim(claimPath: string): Promise<boolean> {
+  const body = JSON.stringify({ claimed_at: new Date().toISOString(), pid: process.pid }) + '\n';
+  const tryCreate = () =>
+    writeFile(claimPath, body, { flag: 'wx', mode: 0o600 }).then(() => true, () => false);
+
+  if (await tryCreate()) return true;
+  try {
+    const st = await stat(claimPath);
+    if (Date.now() - st.mtimeMs <= CORPUS_CLAIM_STALE_MS) return false; // live claim
+  } catch {
+    // Claim vanished between wx-create and stat — its owner just released.
+    // Treat as contended; a later sweep picks the file up if still needed.
+    return false;
+  }
+  await rm(claimPath, { force: true }).catch(() => {});
+  return tryCreate();
 }
 
 // ── Serve-startup arming [ENG-5] ─────────────────────────────────────────

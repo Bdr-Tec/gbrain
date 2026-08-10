@@ -7,7 +7,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -16,10 +16,12 @@ import {
   runMaintenanceSweep,
   armStartupSweep,
   CORPUS_INGESTED_SUFFIX,
+  CORPUS_CLAIM_SUFFIX,
   STARTUP_SWEEP_DELAY_MS,
   type SweepReport,
 } from '../src/core/sweep.ts';
-import { isTotalFailure } from '../src/commands/sweep.ts';
+import { isTotalFailure, runSweep, SWEEP_HELP } from '../src/commands/sweep.ts';
+import { currentExitCode, _resetCliExitVerdictForTests } from '../src/core/cli-force-exit.ts';
 import type { CapabilityReport } from '../src/core/capability.ts';
 import { __setChatTransportForTests, type ChatResult } from '../src/core/ai/gateway.ts';
 import { runServe, type ServeOptions } from '../src/commands/serve.ts';
@@ -308,6 +310,159 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
   });
 });
 
+describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () => {
+  const stubChatResult = (fact: string): ChatResult => ({
+    text: JSON.stringify({
+      facts: [{ fact, kind: 'fact', entity: null, confidence: 0.9, notability: 'medium' }],
+    }),
+    blocks: [],
+    stopReason: 'end',
+    usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0 },
+    model: 'anthropic:test-stub',
+    providerId: 'anthropic',
+  });
+
+  test('two concurrent sweeps on one corpus dir ingest each file exactly once', async () => {
+    writeFileSync(join(corpusDir, 'race-a.txt'), 'Alice will demo the widget on Monday.\n');
+    writeFileSync(join(corpusDir, 'race-b.txt'), 'Bob owns the acme-example follow-up.\n');
+
+    let chatCalls = 0;
+    __setChatTransportForTests(async (): Promise<ChatResult> => {
+      chatCalls += 1;
+      // Hold the call open so the two sweeps genuinely overlap in pass 3.
+      await new Promise((r) => setTimeout(r, 50));
+      return stubChatResult(`extracted fact ${chatCalls}`);
+    });
+
+    const [r1, r2] = await Promise.all([
+      runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED }),
+      runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED }),
+    ]);
+
+    // The whole point: one LLM call per FILE, never per (file × sweep).
+    expect(chatCalls).toBe(2);
+    expect(r1.corpusIngested + r2.corpusIngested).toBe(2);
+    expect(existsSync(join(corpusDir, 'race-a.txt' + CORPUS_INGESTED_SUFFIX))).toBe(true);
+    expect(existsSync(join(corpusDir, 'race-b.txt' + CORPUS_INGESTED_SUFFIX))).toBe(true);
+    // No claim leftovers — success replaces the claim with the .ingested sidecar.
+    expect(existsSync(join(corpusDir, 'race-a.txt' + CORPUS_CLAIM_SUFFIX))).toBe(false);
+    expect(existsSync(join(corpusDir, 'race-b.txt' + CORPUS_CLAIM_SUFFIX))).toBe(false);
+  });
+
+  test('a fresh claim held by another sweep skips the file — zero LLM spend, claim untouched', async () => {
+    writeFileSync(join(corpusDir, 'claimed.txt'), 'Claimed elsewhere.\n');
+    const claim = join(corpusDir, 'claimed.txt' + CORPUS_CLAIM_SUFFIX);
+    writeFileSync(claim, '{}\n');
+
+    let chatCalls = 0;
+    __setChatTransportForTests(async (): Promise<ChatResult> => {
+      chatCalls += 1;
+      throw new Error('must not be called');
+    });
+
+    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    expect(r.corpusIngested).toBe(0);
+    expect(chatCalls).toBe(0);
+    expect(r.skipped).toContainEqual({ reason: 'corpus_in_progress', count: 1 });
+    // The live claim belongs to the other sweep — this run must not release it.
+    expect(existsSync(claim)).toBe(true);
+    expect(existsSync(join(corpusDir, 'claimed.txt' + CORPUS_INGESTED_SUFFIX))).toBe(false);
+  });
+
+  test('a stale claim (>1h, dead sweep) is reclaimed and the file ingested', async () => {
+    writeFileSync(join(corpusDir, 'stale-claim.txt'), 'Left behind by a crashed sweep.\n');
+    const claim = join(corpusDir, 'stale-claim.txt' + CORPUS_CLAIM_SUFFIX);
+    writeFileSync(claim, '{}\n');
+    const old = (Date.now() - 2 * 3600 * 1000) / 1000;
+    utimesSync(claim, old, old);
+
+    let chatCalls = 0;
+    __setChatTransportForTests(async (): Promise<ChatResult> => {
+      chatCalls += 1;
+      return stubChatResult('reclaimed fact');
+    });
+
+    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    expect(r.corpusIngested).toBe(1);
+    expect(chatCalls).toBe(1);
+    expect(existsSync(join(corpusDir, 'stale-claim.txt' + CORPUS_INGESTED_SUFFIX))).toBe(true);
+    expect(existsSync(claim)).toBe(false);
+  });
+
+  test('claim removed after a failed ingest so the next sweep retries', async () => {
+    // A directory named like a corpus file: readFile throws EISDIR after the
+    // claim is acquired — a deterministic mid-ingest failure (runFactsPipeline
+    // itself absorbs provider errors, so a throwing transport won't do).
+    mkdirSync(join(corpusDir, 'flaky.txt'));
+    __setChatTransportForTests(async (): Promise<ChatResult> => {
+      throw new Error('must not be reached');
+    });
+
+    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    expect(r.corpusIngested).toBe(0);
+    expect(r.skipped).toContainEqual({ reason: 'corpus_file_error', count: 1 });
+    // Neither sidecar remains: no .ingested (it failed), no claim (released).
+    expect(existsSync(join(corpusDir, 'flaky.txt' + CORPUS_CLAIM_SUFFIX))).toBe(false);
+    expect(existsSync(join(corpusDir, 'flaky.txt' + CORPUS_INGESTED_SUFFIX))).toBe(false);
+  });
+});
+
+describe('runMaintenanceSweep — bounded link resolution (no listAllPageRefs)', () => {
+  /** Proxy over the real engine recording every METHOD CALL by name. */
+  function loggingEngine(target: BrainEngine, log: string[]): BrainEngine {
+    return new Proxy(target as unknown as Record<string | symbol, unknown>, {
+      get(t, prop, recv) {
+        const v = Reflect.get(t, prop, recv);
+        if (typeof v === 'function') {
+          return (...args: unknown[]) => {
+            log.push(String(prop));
+            return (v as (...a: unknown[]) => unknown).apply(t, args);
+          };
+        }
+        return v;
+      },
+    }) as unknown as BrainEngine;
+  }
+
+  test('directly-resolving candidates never touch listAllPageRefs; links still extracted', async () => {
+    await seedPage('people/alice-example', 'person', 'Alice Example founder profile.');
+    await seedPage(
+      'notes/bounded-example',
+      'note',
+      'Talked with [Alice](people/alice-example) about the roadmap.',
+    );
+
+    const log: string[] = [];
+    const r = await runMaintenanceSweep(loggingEngine(engine, log), {
+      sourceId: 'default',
+      capabilities: KEYLESS,
+    });
+    expect(r.linksExtracted).toBeGreaterThanOrEqual(1);
+    // The bounded resolver path: endpoint refs come from a candidate-scoped
+    // lookup, never the whole-brain (slug, source_id) enumeration.
+    expect(log).not.toContain('listAllPageRefs');
+    expect(log).toContain('getPage');
+  });
+
+  test('timeline-only sweep (zero link candidates) skips the ref lookup entirely', async () => {
+    await seedPage(
+      'notes/tl-only-example',
+      'note',
+      ['# TL', '', '## Timeline', '', '- **2026-03-04** | timeline only entry', ''].join('\n'),
+    );
+    const log: string[] = [];
+    const r = await runMaintenanceSweep(loggingEngine(engine, log), {
+      sourceId: 'default',
+      capabilities: KEYLESS,
+    });
+    expect(r.timelineExtracted).toBe(1);
+    expect(log).not.toContain('listAllPageRefs');
+    // Exactly two raw queries: the pass-1 fence scan and the pass-2 recency
+    // scan. No candidates ⇒ no third (ref-lookup) query.
+    expect(log.filter((m) => m === 'executeRaw').length).toBe(2);
+  });
+});
+
 describe('runMaintenanceSweep — budget + never-throw', () => {
   test('zero budget → every pass reports partial, nothing throws', async () => {
     await seedPage('people/budget-example', 'person', FENCE_BODY);
@@ -541,5 +696,118 @@ describe('armStartupSweep [ENG-5]', () => {
     });
     captured[0]();
     await settle(); // an unhandled rejection here would fail the test run
+  });
+});
+
+// ── runSweep CLI wrapper — arg parsing + output modes [CX2-5] ───────────────
+//
+// No engine needed: usage errors return before any engine touch, and a
+// --budget-ms 0 run budget-skips all three passes before the first query
+// (proven with a recording proxy). Exit verdicts go through the gbrain-owned
+// setCliExitVerdict channel — read via currentExitCode(), reset per run.
+
+describe('runSweep CLI arg parsing [CX2-5]', () => {
+  /** Engine proxy that records every property touch (0 touches expected). */
+  function recordingEngine(touches: string[]): BrainEngine {
+    return new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          touches.push(String(prop));
+          return () => Promise.resolve([]);
+        },
+      },
+    ) as unknown as BrainEngine;
+  }
+
+  interface SweepCliRun {
+    verdict: number;
+    stdout: string[];
+    stderr: string[];
+  }
+
+  async function runSweepCli(engine: BrainEngine, args: string[]): Promise<SweepCliRun> {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const savedExitCode = process.exitCode;
+    _resetCliExitVerdictForTests();
+    console.log = (...a: unknown[]) => { stdout.push(a.map(String).join(' ')); };
+    console.error = (...a: unknown[]) => { stderr.push(a.map(String).join(' ')); };
+    try {
+      await runSweep(engine, args);
+      return { verdict: currentExitCode(), stdout, stderr };
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+      _resetCliExitVerdictForTests();
+      process.exitCode = savedExitCode; // setCliExitVerdict mirrors here — undo
+    }
+  }
+
+  test('--help prints the help text and never touches the engine', async () => {
+    const touches: string[] = [];
+    const r = await runSweepCli(recordingEngine(touches), ['--help']);
+    expect(r.verdict).toBe(0);
+    expect(r.stdout.join('\n')).toContain(SWEEP_HELP.trim().split('\n')[0]);
+    expect(touches).toEqual([]);
+  });
+
+  test('missing --once → verdict 2 with the usage hint; engine untouched', async () => {
+    const touches: string[] = [];
+    const r = await runSweepCli(recordingEngine(touches), []);
+    expect(r.verdict).toBe(2);
+    expect(r.stderr.join('\n')).toContain('--once is required');
+    expect(touches).toEqual([]);
+  });
+
+  test('--budget-ms rejects a non-integer → verdict 2 naming the flag', async () => {
+    const r = await runSweepCli(recordingEngine([]), ['--once', '--budget-ms', 'abc']);
+    expect(r.verdict).toBe(2);
+    expect(r.stderr.join('\n')).toContain('--budget-ms requires a non-negative integer');
+    expect(r.stderr.join('\n')).toContain('"abc"');
+  });
+
+  test('--budget-ms rejects a negative value → verdict 2', async () => {
+    const r = await runSweepCli(recordingEngine([]), ['--once', '--budget-ms', '-5']);
+    expect(r.verdict).toBe(2);
+    expect(r.stderr.join('\n')).toContain('--budget-ms');
+  });
+
+  test('--budget-ms with a MISSING value → verdict 2 (not a crash)', async () => {
+    const r = await runSweepCli(recordingEngine([]), ['--once', '--budget-ms']);
+    expect(r.verdict).toBe(2);
+    expect(r.stderr.join('\n')).toContain('(missing)');
+  });
+
+  test('--batch-limit shares the integer validation → verdict 2', async () => {
+    const r = await runSweepCli(recordingEngine([]), ['--once', '--batch-limit', '1.5']);
+    expect(r.verdict).toBe(2);
+    expect(r.stderr.join('\n')).toContain('--batch-limit');
+  });
+
+  test('--budget-ms 0 --json → machine-readable report on stdout, verdict 0, zero engine touches', async () => {
+    const touches: string[] = [];
+    const r = await runSweepCli(recordingEngine(touches), ['--once', '--budget-ms', '0', '--json']);
+    expect(r.verdict).toBe(0); // budget-skip is partial, NOT total failure
+    expect(r.stdout.length).toBe(1); // exactly the JSON blob
+    const report = JSON.parse(r.stdout[0]) as SweepReport;
+    const reasons = report.skipped.map((s) => s.reason).sort();
+    expect(reasons).toEqual([
+      'budget_exhausted:corpus',
+      'budget_exhausted:facts_fence',
+      'budget_exhausted:links_timeline',
+    ]);
+    expect(touches).toEqual([]); // budget gate fires before the first query
+  });
+
+  test('--source threads into the human summary line', async () => {
+    const r = await runSweepCli(recordingEngine([]), ['--once', '--budget-ms', '0', '--source', 'my-src']);
+    expect(r.verdict).toBe(0);
+    const out = r.stdout.join('\n');
+    expect(out).toContain('Sweep complete');
+    expect(out).toContain('source=my-src');
+    expect(out).toContain('budget_exhausted:facts_fence');
   });
 });

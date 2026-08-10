@@ -379,11 +379,72 @@ describe('server self-budget [G11]', () => {
       { secret, boundSourceId: 'default' },
     );
     servers.push(server!);
-    const resp = await requestTurnContext(sock, { secret, window: [] }, { timeoutMs: 1500 });
+    // Wide client timeout on purpose: the SERVER's own 400ms budget is what's
+    // under test, and a tight client timeout flakes under CI load (the client
+    // giving up would return IPC_UNAVAILABLE, not the degraded response).
+    const resp = await requestTurnContext(sock, { secret, window: [] }, { timeoutMs: 10000 });
     const r = resp as TurnContextResponse;
     expect(r.ok).toBe(true);
     expect(r.protocol).toBe(2);
     expect(r.block).toBeNull();
     expect(r.degradedReason).toBe('server_budget');
+  });
+});
+
+describe('resolve kind honors boundSourceId [CX2-10]', () => {
+  test('bound server rejects a cross-source resolve request; handler never runs', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    let resolveCalls = 0;
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => { resolveCalls += 1; return null; } },
+      { boundSourceId: 'default' },
+    );
+    servers.push(server!);
+    const resp = await rawRequest(
+      sock,
+      JSON.stringify({ candidates: [{ display: 'A', query: 'A' }], sourceId: 'other-team-brain' }),
+    ) as { ok: boolean; error?: string };
+    expect(resp.ok).toBe(false);
+    expect(resp.error).toBe('source_mismatch');
+    expect(resolveCalls).toBe(0);
+  });
+
+  test('bound server accepts the matching source claim and absent sourceId', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    let resolveCalls = 0;
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => { resolveCalls += 1; return null; } },
+      { boundSourceId: 'default' },
+    );
+    servers.push(server!);
+    const matching = await resolveViaIpc(sock, {
+      candidates: [{ display: 'A', query: 'A' }],
+      sourceId: 'default',
+    });
+    expect(matching).toBeNull(); // resolved (nothing found), NOT rejected
+    const absent = await resolveViaIpc(sock, { candidates: [{ display: 'A', query: 'A' }] });
+    expect(absent).toBeNull();
+    expect(resolveCalls).toBe(2);
+  });
+
+  test('unbound legacy server passes a caller sourceId through unchanged', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    let seenSourceId: string | undefined;
+    const server = await startResolveIpcServer(sock, async (req) => {
+      seenSourceId = req.sourceId;
+      return null;
+    });
+    servers.push(server!);
+    const got = await resolveViaIpc(sock, {
+      candidates: [{ display: 'A', query: 'A' }],
+      sourceId: 'any-source-at-all',
+    });
+    expect(got).toBeNull(); // served, not rejected — legacy behavior intact
+    expect(seenSourceId).toBe('any-source-at-all');
   });
 });

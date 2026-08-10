@@ -94,62 +94,78 @@ export async function assembleTurnContext(
       : TURN_CONTEXT_DEFAULT_MAX_BYTES;
   const window = Array.isArray(opts.window) ? opts.window : [];
 
-  // 1. Reflex pointers — window candidate extraction + precision-biased
-  //    resolution, slug-only suppression (the windowed contract, codex D7).
-  let pointers: ReflexPointer[] = [];
-  try {
-    const candidates = extractCandidatesFromWindow(window);
-    if (candidates.length) {
-      const block = await resolveEntitiesToPointers(engine, opts.sourceId, candidates, {
-        priorContextText: opts.priorContextText,
-        suppression: 'slug-only',
-        maxPointers: DEFAULT_MAX_POINTERS,
-      });
-      pointers = block?.pointers ?? [];
-    }
-  } catch {
-    pointers = [];
-  }
+  // Sections 1+2 form a dependent chain (volunteer dedupes against the
+  // pointers surfaced THIS turn); section 3 is independent, so the two arms
+  // run concurrently — the caller sits behind the 400ms IPC server budget
+  // [G11], and serializing an independent DB read wastes it. Each arm keeps
+  // its own try/catch degradation (an error empties that arm, never the block).
 
-  // 2. Volunteered pages (≤3), excluding slugs already surfaced as pointers
-  //    this turn; priorContextText suppression handles earlier turns.
-  let volunteered: VolunteeredPage[] = [];
-  try {
-    if (window.length) {
-      const excludeSlugs = new Set(pointers.map((p) => p.slug));
-      volunteered = await volunteerContext(engine, window, {
-        sourceIds: [opts.sourceId],
-        priorContext: opts.priorContextText,
-        excludeSlugs,
-        maxPages: MAX_VOLUNTEERED_PAGES,
-      });
+  // Arm A: reflex pointers → volunteered pages.
+  const pointersVolunteerArm = (async (): Promise<{
+    pointers: ReflexPointer[];
+    volunteered: VolunteeredPage[];
+  }> => {
+    // 1. Reflex pointers — window candidate extraction + precision-biased
+    //    resolution, slug-only suppression (the windowed contract, codex D7).
+    let pointers: ReflexPointer[] = [];
+    try {
+      const candidates = extractCandidatesFromWindow(window);
+      if (candidates.length) {
+        const block = await resolveEntitiesToPointers(engine, opts.sourceId, candidates, {
+          priorContextText: opts.priorContextText,
+          suppression: 'slug-only',
+          maxPointers: DEFAULT_MAX_POINTERS,
+        });
+        pointers = block?.pointers ?? [];
+      }
+    } catch {
+      pointers = [];
     }
-  } catch {
-    volunteered = [];
-  }
 
-  // 3. Hot facts through the meta-hook's cache + payload shape [ENG-11].
+    // 2. Volunteered pages (≤3), excluding slugs already surfaced as pointers
+    //    this turn; priorContextText suppression handles earlier turns.
+    let volunteered: VolunteeredPage[] = [];
+    try {
+      if (window.length) {
+        const excludeSlugs = new Set(pointers.map((p) => p.slug));
+        volunteered = await volunteerContext(engine, window, {
+          sourceIds: [opts.sourceId],
+          priorContext: opts.priorContextText,
+          excludeSlugs,
+          maxPages: MAX_VOLUNTEERED_PAGES,
+        });
+      }
+    } catch {
+      volunteered = [];
+    }
+    return { pointers, volunteered };
+  })();
+
+  // Arm B: hot facts through the meta-hook's cache + payload shape [ENG-11].
   //    remote: true is the load-bearing bit [S3#1]: it pins the meta-hook's
   //    visibility tier to ['world'] so a private fact can NEVER cross the IPC
   //    boundary, exactly matching what a remote MCP caller would see.
-  let facts: TurnContextFact[] = [];
-  try {
-    const metaCtx: OperationContext = {
-      engine,
-      config: {} as GBrainConfig,
-      logger: noopLogger,
-      dryRun: false,
-      remote: true, // S3#1 — never widen past the remote/world posture
-      sourceId: opts.sourceId,
-      sessionId: opts.sessionId,
-      takesHoldersAllowList: ['world'],
-    };
-    const meta = await getBrainHotMemoryMeta('turn_context', metaCtx);
-    const hot = meta?.brain_hot_memory as { facts?: TurnContextFact[] } | undefined;
-    facts = Array.isArray(hot?.facts) ? [...hot.facts] : [];
-  } catch {
-    facts = [];
-  }
+  const factsArm = (async (): Promise<TurnContextFact[]> => {
+    try {
+      const metaCtx: OperationContext = {
+        engine,
+        config: {} as GBrainConfig,
+        logger: noopLogger,
+        dryRun: false,
+        remote: true, // S3#1 — never widen past the remote/world posture
+        sourceId: opts.sourceId,
+        sessionId: opts.sessionId,
+        takesHoldersAllowList: ['world'],
+      };
+      const meta = await getBrainHotMemoryMeta('turn_context', metaCtx);
+      const hot = meta?.brain_hot_memory as { facts?: TurnContextFact[] } | undefined;
+      return Array.isArray(hot?.facts) ? [...hot.facts] : [];
+    } catch {
+      return [];
+    }
+  })();
+
+  const [{ pointers, volunteered }, facts] = await Promise.all([pointersVolunteerArm, factsArm]);
 
   // 4. Render + budget [ENG-1]: trim facts first, then volunteered pages,
   //    then pointers — always lowest-confidence first.

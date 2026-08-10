@@ -21,12 +21,37 @@ import { effectiveConfidence } from './decay.ts';
 const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_TOP_K = 10;
 
+/**
+ * Hard bound on cache entries. The key folds caller-controlled
+ * `_meta.session_id`, so without a bound a remote caller could grow the map
+ * without limit by minting fresh session ids per call. On overflow the entry
+ * with the OLDEST expiry is evicted (it dies soonest anyway; with a uniform
+ * TTL this is insertion order).
+ */
+export const HOT_MEMORY_CACHE_MAX_ENTRIES = 1000;
+
 interface CacheEntry {
   expiresAt: number;
   payload: Record<string, unknown> | undefined;
 }
 
 const _cache = new Map<string, CacheEntry>();
+
+/** Bounded set: evict the oldest-expiry entry when inserting at capacity. */
+function cacheSet(key: string, entry: CacheEntry): void {
+  if (!_cache.has(key) && _cache.size >= HOT_MEMORY_CACHE_MAX_ENTRIES) {
+    let oldestKey: string | null = null;
+    let oldestExpiry = Infinity;
+    for (const [k, v] of _cache) {
+      if (v.expiresAt < oldestExpiry) {
+        oldestExpiry = v.expiresAt;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey !== null) _cache.delete(oldestKey);
+  }
+  _cache.set(key, entry);
+}
 
 /**
  * Build the `_meta.brain_hot_memory` payload for an MCP tool-call response.
@@ -63,8 +88,12 @@ export async function getBrainHotMemoryMeta(
 
   // Cache hit?
   const cached = _cache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.payload;
+  if (cached) {
+    if (cached.expiresAt > Date.now()) return cached.payload;
+    // Expired: evict BEFORE the rebuild. If the rebuild below throws (the
+    // caller's try/catch absorbs it), the dead entry must not linger — with
+    // remote-influencable keys, lingering corpses defeat the size bound.
+    _cache.delete(cacheKey);
   }
 
   // Build a fresh payload. Visibility tier: remote → world-only;
@@ -84,7 +113,7 @@ export async function getBrainHotMemoryMeta(
     });
   }
   if (rows.length === 0) {
-    _cache.set(cacheKey, { expiresAt: Date.now() + ttl, payload: undefined });
+    cacheSet(cacheKey, { expiresAt: Date.now() + ttl, payload: undefined });
     return undefined;
   }
 
@@ -110,7 +139,7 @@ export async function getBrainHotMemoryMeta(
       })),
     },
   };
-  _cache.set(cacheKey, { expiresAt: Date.now() + ttl, payload });
+  cacheSet(cacheKey, { expiresAt: Date.now() + ttl, payload });
   return payload;
 }
 
@@ -128,6 +157,11 @@ export function bumpHotMemoryCache(sourceId: string, sessionId: string | null): 
 /** Test helper: clear the cache. */
 export function __resetHotMemoryCacheForTests(): void {
   _cache.clear();
+}
+
+/** Test helper: direct cache access (expiry mutation + size/eviction pins). */
+export function __hotMemoryCacheForTests(): Map<string, { expiresAt: number; payload: Record<string, unknown> | undefined }> {
+  return _cache;
 }
 
 /**
