@@ -392,7 +392,9 @@ async function resolvePageDiscoveryLimit(engine: BrainEngine): Promise<number> {
     const configured = await engine.getConfig('cycle.extract_atoms.page_discovery_budget');
     if (configured) {
       const n = Number(configured);
-      if (Number.isFinite(n) && n > 0) return Math.floor(n);
+      // Ceiling: discovery selects full compiled_truth bodies per row, so an
+      // oversized budget materializes that many pages in one result set.
+      if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), 10_000);
     }
   } catch { /* keep default */ }
   return PAGE_DISCOVERY_BUDGET;

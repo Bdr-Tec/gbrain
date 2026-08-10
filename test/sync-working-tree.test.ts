@@ -147,4 +147,43 @@ describe('sync working-tree drift (untracked gap)', () => {
     expect(await pageExists('topics/base')).toBe(true);
     expect(await pageExists('topics/base-renamed')).toBe(false);
   }, 60_000);
+
+  test('sync.include_working_tree config imports without the flag (resolved in performSync, not the CLI)', async () => {
+    // Adversarial-review finding: config resolution lived only in the CLI
+    // layer, so the dream cycle's own "set sync.include_working_tree=true"
+    // remedy was a no-op for every programmatic caller. Now performSync
+    // resolves it when opts.workingTree is undefined.
+    commitAll('settle rename'); // finalize test 5's staged rename
+    await performSync(engine, baseOpts()); // anchor at HEAD
+    writeFileSync(join(repoPath, 'topics/config-driven.md'), '# Config\n\nimported via config\n');
+
+    await engine.setConfig('sync.include_working_tree', 'true');
+    try {
+      const result = await performSync(engine, baseOpts()); // no workingTree flag
+      expect(result.status).toBe('synced');
+      expect(await pageExists('topics/config-driven')).toBe(true);
+    } finally {
+      await engine.unsetConfig('sync.include_working_tree');
+    }
+  }, 60_000);
+
+  test('working-tree mass-delete valve refuses >50% uncommitted deletions', async () => {
+    // Adversarial-review finding: merged working-tree deletes bypassed the
+    // #2828 reconcile valve — a transient tree state (mid-rebase, accidental
+    // rm -rf) on a scheduled working-tree sync could sweep the source.
+    mkdirSync(join(repoPath, 'bulk'), { recursive: true });
+    for (let i = 0; i < 12; i++) {
+      writeFileSync(join(repoPath, `bulk/page-${i}.md`), `# Bulk ${i}\n\ncontent ${i}\n`);
+    }
+    commitAll('add bulk pages');
+    const settled = await performSync(engine, { ...baseOpts(), workingTree: true });
+    expect(settled.status).toBe('synced');
+    for (let i = 0; i < 12; i++) rmSync(join(repoPath, `bulk/page-${i}.md`));
+
+    const result = await performSync(engine, { ...baseOpts(), workingTree: true });
+    // Valve fires: deletes skipped loudly, nothing swept.
+    expect(result.deleted).toBe(0);
+    expect(await pageExists('bulk/page-0')).toBe(true);
+    expect(await pageExists('bulk/page-11')).toBe(true);
+  }, 60_000);
 });

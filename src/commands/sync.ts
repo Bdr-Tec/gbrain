@@ -1142,20 +1142,43 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   const versionNeverSet = storedVersion === null && opts.sourceId !== undefined;
   // Untracked-gap fix: the working-tree manifest is now built for attached
   // HEADs too, not just detached ones. Detached HEAD (pre-existing semantics)
-  // or opts.workingTree (opt-in: CLI --working-tree / config
-  // sync.include_working_tree) → the manifest merges into the delta below and
-  // uncommitted state IMPORTS. Attached without the flag → NOT imported, but
-  // counted through the same scope/exclude/isSyncable filters imports use and
-  // reported as `uncommitted` drift + a stderr warning. Before this,
-  // "Already up to date." printed while untracked files sat invisible — sync
-  // reported convergence it had not achieved.
-  const importWorkingTree = detachedHead || opts.workingTree === true;
-  const workingTreeManifest = buildDetachedWorkingTreeManifest(gitContextRoot);
-  const hasWorkingTreeChanges =
-    workingTreeManifest.added.length > 0 ||
-    workingTreeManifest.modified.length > 0 ||
-    workingTreeManifest.deleted.length > 0 ||
-    workingTreeManifest.renamed.length > 0;
+  // or a resolved workingTree opt-in → the manifest merges into the delta
+  // below and uncommitted state IMPORTS. Attached without the opt-in → NOT
+  // imported, but counted through the same scope/exclude/isSyncable filters
+  // imports use and reported as `uncommitted` drift + a stderr warning.
+  // Before this, "Already up to date." printed while untracked files sat
+  // invisible — sync reported convergence it had not achieved.
+  //
+  // The config fallback resolves HERE (not the CLI layer) so EVERY caller —
+  // dream cycle, minion sync jobs, sync_brain — honors the persisted
+  // `sync.include_working_tree` the warnings recommend. Per-call flag wins;
+  // the config read is best-effort (a config error never breaks a sync).
+  let workingTreeResolved = opts.workingTree;
+  if (workingTreeResolved === undefined) {
+    try {
+      workingTreeResolved = (await engine.getConfig('sync.include_working_tree')) === 'true';
+    } catch { workingTreeResolved = false; }
+  }
+  const importWorkingTree = detachedHead || workingTreeResolved === true;
+  // Fail-open guard: the manifest builder shells out under a 30s/100MiB git
+  // budget and THROWS on breach; a monster untracked dir must not convert
+  // every previously-working up-to-date sync into a hard error. Drift
+  // counting degrades to empty with a stderr note; an EXPLICIT working-tree
+  // import request fails closed with the reason (importing without the
+  // manifest would silently skip the very files the caller asked for).
+  let workingTreeManifest: SyncManifest;
+  try {
+    workingTreeManifest = buildDetachedWorkingTreeManifest(gitContextRoot);
+  } catch (e) {
+    if (importWorkingTree) {
+      throw new Error(
+        `working-tree manifest unavailable (${e instanceof Error ? e.message.slice(0, 160) : String(e)}) — ` +
+        `cannot import uncommitted state; re-run without --working-tree or fix the repo state`,
+      );
+    }
+    serr('[sync] working-tree drift probe failed — drift counting skipped this run.');
+    workingTreeManifest = { added: [], modified: [], deleted: [], renamed: [] };
+  }
 
   // #753/#774 scope filter (hoisted above the up_to_date gate so the drift
   // counter here and the delta filter below apply IDENTICAL predicates):
@@ -1173,28 +1196,36 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     opts.exclude !== undefined && opts.exclude.length > 0 && matchesAnyGlob(scopeRel(p), opts.exclude);
   const syncOpts = opts.strategy ? { strategy: opts.strategy } : undefined;
 
+  // Filtered working-tree counts. Renames decompose as add(to) + delete(from)
+  // — the same decomposition the import path applies — so a rename-only dirty
+  // tree still reports drift instead of reproducing the silent gap this
+  // counter exists to close (a staged `git mv` populates only `renamed`).
+  const wtCounts = {
+    added: workingTreeManifest.added.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length +
+      workingTreeManifest.renamed.filter(r => inScope(r.to) && !excluded(r.to) && isSyncable(r.to, syncOpts)).length,
+    modified: workingTreeManifest.modified.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length,
+    deleted: workingTreeManifest.deleted.filter(p => inScope(p) && isSyncable(p, syncOpts)).length +
+      workingTreeManifest.renamed.filter(r => inScope(r.from) && isSyncable(r.from, syncOpts)).length,
+  };
+  const wtSyncableTotal = wtCounts.added + wtCounts.modified + wtCounts.deleted;
+  // Fast-path gate: detached HEADs keep the pre-existing RAW-manifest gate;
+  // attached repos gate on SYNCABLE changes so a stray unsyncable scratch
+  // file can't defeat the up_to_date fast path on every scheduled run.
+  const hasWorkingTreeChanges = detachedHead
+    ? (workingTreeManifest.added.length > 0 ||
+        workingTreeManifest.modified.length > 0 ||
+        workingTreeManifest.deleted.length > 0 ||
+        workingTreeManifest.renamed.length > 0)
+    : wtSyncableTotal > 0;
+
   let uncommittedDrift: { added: number; modified: number; deleted: number } | undefined;
-  if (!importWorkingTree && hasWorkingTreeChanges) {
-    const drift = {
-      // Renames count as add(to) + delete(from) — the same decomposition the
-      // import path applies to renames — so a rename-only dirty tree still
-      // reports drift instead of reproducing the silent gap this counter
-      // exists to close (a staged `git mv` sets hasWorkingTreeChanges but
-      // populates only `renamed`).
-      added: workingTreeManifest.added.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length +
-        workingTreeManifest.renamed.filter(r => inScope(r.to) && !excluded(r.to) && isSyncable(r.to, syncOpts)).length,
-      modified: workingTreeManifest.modified.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)).length,
-      deleted: workingTreeManifest.deleted.filter(p => inScope(p) && isSyncable(p, syncOpts)).length +
-        workingTreeManifest.renamed.filter(r => inScope(r.from) && isSyncable(r.from, syncOpts)).length,
-    };
-    if (drift.added + drift.modified + drift.deleted > 0) {
-      uncommittedDrift = drift;
-      serr(
-        `[sync] ${drift.added + drift.modified + drift.deleted} uncommitted file(s) are invisible to ` +
-        `commit-driven sync (${drift.added} untracked/added, ${drift.modified} modified, ${drift.deleted} deleted). ` +
-        `Commit them, or run 'gbrain sync --working-tree' to import uncommitted state.`,
-      );
-    }
+  if (!importWorkingTree && wtSyncableTotal > 0) {
+    uncommittedDrift = wtCounts;
+    serr(
+      `[sync] ${wtSyncableTotal} uncommitted file(s) are invisible to ` +
+      `commit-driven sync (${wtCounts.added} untracked/added, ${wtCounts.modified} modified, ${wtCounts.deleted} deleted). ` +
+      `Commit them, or run 'gbrain sync --working-tree' to import uncommitted state.`,
+    );
   }
 
   if (lastCommit === headCommit && !versionMismatch && !versionNeverSet && !(importWorkingTree && hasWorkingTreeChanges)) {
@@ -1348,6 +1379,34 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     filtered.modified = filtered.modified.map(scopeRel);
     filtered.deleted = filtered.deleted.map(scopeRel);
     filtered.renamed = filtered.renamed.map(r => ({ from: scopeRel(r.from), to: scopeRel(r.to) }));
+  }
+
+  // Working-tree mass-delete valve: merged working-tree deletes bypass the
+  // full-reconcile valve (#2828), but the hazard is the same — a transient
+  // uncommitted tree state (mid-rebase checkout, accidental rm -rf) hit by a
+  // scheduled --working-tree/config sync must not sweep the source. Same
+  // ratio + same env escape hatch. Deletes are skipped loudly; adds and
+  // modifies still import, and committing the deletions (or
+  // GBRAIN_ALLOW_MASS_RECONCILE=1) re-enables them.
+  if (importWorkingTree && !detachedHead && filtered.deleted.length >= 10 && !massReconcileAllowed()) {
+    try {
+      const rows = await engine.executeRaw<{ count: number }>(
+        opts.sourceId
+          ? `SELECT count(*)::int AS count FROM pages WHERE deleted_at IS NULL AND source_id = $1`
+          : `SELECT count(*)::int AS count FROM pages WHERE deleted_at IS NULL`,
+        opts.sourceId ? [opts.sourceId] : [],
+      );
+      const pageCount = Number(rows[0]?.count ?? 0);
+      if (pageCount > 0 && filtered.deleted.length > pageCount * MASS_RECONCILE_RATIO) {
+        serr(
+          `\n  WARNING: refusing to delete ${filtered.deleted.length} page(s) from a working-tree ` +
+          `sync (> ${Math.round(MASS_RECONCILE_RATIO * 100)}% of ${pageCount} page(s)). An uncommitted ` +
+          `tree deleting this much is almost always transient (mid-rebase, accidental rm) — commit the ` +
+          `deletions to apply them, or re-run with GBRAIN_ALLOW_MASS_RECONCILE=1. Adds/modifies still import.\n`,
+        );
+        filtered.deleted = [];
+      }
+    } catch { /* valve is best-effort — a count failure must not block the sync */ }
   }
 
   // NAV-4: warn when --exclude filtered out every candidate change — almost
@@ -2787,12 +2846,9 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     chunksCreated,
     embedded,
     pagesAffected,
-<<<<<<< HEAD
     malformedSkipped: malformedSkipped.length,
     ...(typeWarningsEnabled && typeWarnings.length > 0 ? { type_warnings: typeWarnings } : {}),
-=======
     ...(uncommittedDrift ? { uncommitted: uncommittedDrift } : {}),
->>>>>>> 0ed39d1c (fix(sync): surface + optionally import uncommitted working-tree files)
   };
 }
 
@@ -3254,6 +3310,9 @@ Options:
                        changes only — uncommitted drift is counted and warned,
                        never silently ignored. Persist with
                        'gbrain config set sync.include_working_tree true'.
+                       Caution: imports untracked files as-is — unignored
+                       scratch files and secrets included; review 'git status'
+                       before enabling, especially as persisted config.
   --dry-run            Show what would be synced without writing.
   --skip-failed        Acknowledge previously-recorded sync failures so
                        the bookmark can advance past unparseable files.
@@ -3319,14 +3378,11 @@ See also:
   const retryFailed = args.includes('--retry-failed');
   const noSchemaPack = args.includes('--no-schema-pack'); // v0.41.37.0 #1569
   const includeGitignored = args.includes('--include-gitignored');
-  // Untracked-gap fix: --working-tree imports uncommitted working-tree state;
-  // config sync.include_working_tree=true persists it (flag wins when passed).
-  let workingTree = args.includes('--working-tree');
-  if (!workingTree) {
-    try {
-      workingTree = (await engine.getConfig('sync.include_working_tree')) === 'true';
-    } catch { /* config read is best-effort — default stays commit-driven */ }
-  }
+  // Untracked-gap fix: --working-tree imports uncommitted working-tree state.
+  // The config fallback (sync.include_working_tree) resolves inside
+  // performSync so every caller honors it; the CLI passes undefined when the
+  // flag is absent.
+  const workingTree = args.includes('--working-tree') ? true : undefined;
   const syncAll = args.includes('--all');
   let missingPathMode: MissingPathMode = 'fail';
   try {
