@@ -155,6 +155,36 @@ const CLI_ONLY_SELF_HELP = new Set([
   'bootstrap', 'hook', 'sweep',
 ]);
 
+/**
+ * Commands in CLI_ONLY_SELF_HELP whose handler honours `--help` as its first
+ * action, before reading the engine. Dispatching them here keeps `--help`
+ * answerable with no brain configured.
+ *
+ * Membership is behaviour, not taste: each entry is pinned by
+ * test/cli-help-without-brain.test.ts, which runs the CLI with an empty
+ * GBRAIN_HOME and requires exit 0 plus real help output.
+ */
+const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, args: string[]) => unknown>> = {
+  models: async () => (await import('./commands/models.ts')).runModels as never,
+  watch: async () => (await import('./commands/watch.ts')).runWatch as never,
+  skillopt: async () => (await import('./commands/skillopt.ts')).runSkillOptCommand as never,
+  maintain: async () => (await import('./commands/maintain.ts')).runMaintain as never,
+  'extract-conversation-facts': async () =>
+    (await import('./commands/extract-conversation-facts.ts')).runExtractConversationFacts as never,
+};
+
+/** Returns true when the command's own help was printed. */
+async function printSelfHelpWithoutEngine(command: string, args: string[]): Promise<boolean> {
+  const load = SELF_HELP_WITHOUT_ENGINE[command];
+  if (!load) return false;
+  const run = await load();
+  // The engine is never read on the help path; passing a placeholder keeps the
+  // handler signatures untouched. skillopt already declares `BrainEngine | null`
+  // for exactly this reason.
+  await run(null as never, args);
+  return true;
+}
+
 // v114 (#1941): alias -> operation lookup, kept separate from `cliOps` so
 // aliases don't double-list in printHelp's auto-generated section. Collisions
 // with a primary CLI name, a CLI_ONLY command, or another alias throw at module
@@ -343,15 +373,25 @@ async function main() {
 
   // Per-command --help
   if (hasHelpFlag(subArgs)) {
+    // `eval brainbench` ships a published foreign-runner flag surface — its
+    // own usage() must win over the generic eval stub (codex P3). Fall
+    // through to handleCliOnly's no-DB brainbench route, which prints it.
+    const selfHelpSub = command === 'eval' && subArgs[0] === 'brainbench';
     const op = cliOps.get(command) ?? cliAliases.get(command);
-    if (op) {
+    if (op && !selfHelpSub) {
       printOpHelp(op, command);
       return;
     }
-    if (CLI_ONLY.has(command) && !CLI_ONLY_SELF_HELP.has(command)) {
+    if (!selfHelpSub && CLI_ONLY.has(command) && !CLI_ONLY_SELF_HELP.has(command)) {
       printCliOnlyHelp(command);
       return;
     }
+    // Self-help members whose handler answers --help before it touches the
+    // engine. Without this they fall through to the normal dispatch, which
+    // connects first — so `gbrain models --help` on a machine with no brain
+    // exits 1 with "No brain configured", and the handler's own help block is
+    // unreachable. That is the state a reader is most likely to be in.
+    if (await printSelfHelpWithoutEngine(command, subArgs)) return;
   }
 
   // #2185: strict unknown-flag validation — pre-dispatch, pre-engine. A flag
@@ -1089,9 +1129,16 @@ export function applyThinClientSourceScope(
 //  - call: the generic op invoker — arbitrary --param names are its interface.
 //  - config: `config set <key> <value>` values are arbitrary strings.
 //  - jobs submit: job payloads carry handler-defined params (shell lane incl.).
+//  - eval brainbench: owns the 0/1/2 CI exit-code contract (0 pass · 1
+//    regression · 2 error/inconclusive) via its own arg parser. The global
+//    validator's exit(1) on an unknown flag would be read by a CI harness as a
+//    memory REGRESSION rather than a typo; brainbench maps a bad flag to exit 2
+//    (error) with its own usage. Its legal flags still land in the generated
+//    registry (the generator scans eval's modules), so freshness/drift hold.
 function flagValidationExempt(command: string, subArgs: string[]): boolean {
   return command === 'call' || command === 'config'
-    || (command === 'jobs' && subArgs[0] === 'submit');
+    || (command === 'jobs' && subArgs[0] === 'submit')
+    || (command === 'eval' && subArgs[0] === 'brainbench');
 }
 
 /** Returns the first unknown flag (e.g. '--dry-run') or null when clean. */
@@ -1931,6 +1978,18 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // `eval run-all` is a pure orchestrator — its engine arg is unused
+  // (`_engine`), the brainbench suite it runs in-process is hermetic (brings
+  // its own PGLite via createBenchmarkBrain), and the remaining suites write
+  // stub records. Bypass connectEngine so run-all works with no brain
+  // configured — e.g. in CI, where `--suites brainbench` otherwise died with
+  // "No brain configured" before reaching the hermetic run.
+  if (command === 'eval' && args[0] === 'run-all') {
+    const { runEvalRunAll } = await import('./commands/eval-run-all.ts');
+    await runEvalRunAll(null, args.slice(1));
+    return;
+  }
+
   // v0.32 EXP-5 (codex review #10): `eval takes-quality replay <receipt>`
   // is the ONLY sub-subcommand that doesn't need a brain — it reads a
   // receipt JSON file from disk and re-renders it. Bypass connectEngine
@@ -1941,6 +2000,23 @@ async function handleCliOnly(command: string, args: string[]) {
     const { runReplayNoBrain } = await import('./commands/eval-takes-quality.ts');
     setCliExitVerdict(await runReplayNoBrain(args.slice(2)));
     return;
+  }
+
+  // BrainBench brings its own in-memory PGLite (longmemeval pattern) and is
+  // hermetic by default — no gateway, no user brain, no config required. The
+  // command owns its exit codes (0 pass / 1 regression / 2 error) and exits
+  // explicitly via its grace-tick exit path (PGLite exitCode-hijack guard).
+  if (command === 'eval' && args[0] === 'brainbench') {
+    const { runEvalBrainBench } = await import('./commands/eval-brainbench.ts');
+    if (args.includes('--llm') && !args.includes('--help') && !args.includes('-h')) {
+      // --llm is the one mode that talks to a provider; mirror the
+      // longmemeval gateway bootstrap so extraction calls are priced.
+      const config = loadConfig() ?? ({} as GBrainConfig);
+      const { configureGateway } = await import('./core/ai/gateway.ts');
+      configureGateway(buildGatewayConfig(config));
+    }
+    await runEvalBrainBench(args.slice(1));
+    return; // unreachable — runEvalBrainBench always exits — but keeps control flow explicit
   }
 
   // v0.28.8: longmemeval brings its own in-memory PGLite. Bypassing
@@ -2941,7 +3017,8 @@ PAGES
   get <slug>                         Read a page
   put <slug> [< file.md]             Write/update a page
   delete <slug>                      Delete a page
-  list [--type T] [--tag T] [-n N]   List pages
+  list [--type T] [--tag T] [--limit N]
+                                     List pages
 
 SEARCH
   search <query>                     Keyword search (tsvector)

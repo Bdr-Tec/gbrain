@@ -1118,6 +1118,12 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'embed.backfill_cooldown_min',
   'embed.backfill_max_usd_per_source_24h',
   'embed.backfill_max_usd',
+  // Brain-level default source. Read by source-resolver.ts tier 5
+  // (`engine.getConfig('sources.default')`) and written by
+  // `gbrain sources default <id>`. Listed here so `gbrain config set`
+  // stops claiming "Nothing in gbrain reads this" for a key the resolver
+  // reads on every unqualified call.
+  'sources.default',
 ];
 
 /**

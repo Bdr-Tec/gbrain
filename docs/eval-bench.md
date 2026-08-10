@@ -8,6 +8,15 @@ For the **NDJSON wire format** consumed by gbrain-evals, see
 [`eval-capture.md`](./eval-capture.md). This doc is the human dev loop
 that lives on top of that format.
 
+If you're touching **memory behavior** rather than retrieval ranking — the
+Retrieval Reflex push path, conversation→facts write-back, cross-session
+continuity, source isolation — the gate for that layer is **BrainBench**
+(`gbrain eval brainbench`): see [`eval/BRAINBENCH.md`](./eval/BRAINBENCH.md).
+The two stack: this doc's capture→baseline→replay loop gates query-level
+result sets; BrainBench gates the memory behaviors above them, with its own
+committed baseline (`evals/brainbench/baselines/main.json`) compared against
+MAIN's copy in CI so a PR can't self-approve a regression.
+
 ## The eval gate loop
 
 `gbrain bench publish` + `gbrain eval gate` stitch captured eval rows into
