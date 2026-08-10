@@ -12,6 +12,7 @@ triggers:
   - "cold start"
   - "fill my brain"
   - "bootstrap brain"
+  - "bootstrap my data"
   - "import my data"
   - "day one"
   - "get started"
