@@ -307,6 +307,10 @@ ChatGPT-app user). CLIs come along via shared machinery.
   locking silently disabled (brain-repo-durability.ts:137) — macOS is the v1 target.
   One cross-platform lock (atomic mkdir/lockfile with PID+age+token semantics) spans
   scan → stage → commit → pull → push, coordinated with the post-commit hook.
+  [As-shipped delta: a TOCTOU fix reordered the scanned phase to stage FIRST, then
+  secret-scan the STAGED index blobs (`git cat-file`), so scanned bytes == committed
+  bytes; unscannable staged blobs fail closed (`blocked_unscannable`). Lock span
+  otherwise unchanged.]
 - [CX2-7 P1] **Push ordering pinned:** commit FIRST, then divergenceSafePull, then
   push (the existing durability ordering, brain-repo-durability.ts:200 —
   divergenceSafePull returns skipped_dirty on a dirty tree, git-remote.ts:489); test:
