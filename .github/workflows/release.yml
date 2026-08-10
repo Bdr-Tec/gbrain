@@ -237,6 +237,9 @@ jobs:
           # `ps`, runner traces, and error messages echoing the remote URL
           # could surface it).
           ASKPASS="$(mktemp)"
+          # shellcheck disable=SC2016  # $1/$TEMPLATE_REPO_PAT are literal on
+          # purpose — they must expand when /bin/sh runs the askpass script at
+          # git's credential prompt, not when this outer shell writes the file.
           printf '%s\n' '#!/bin/sh' \
             'case "$1" in Username*) printf "x-access-token\n" ;; *) printf "%s\n" "$TEMPLATE_REPO_PAT" ;; esac' \
             > "$ASKPASS"
