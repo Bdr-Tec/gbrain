@@ -1704,6 +1704,7 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
 Deferred findings from the v0.43.1.0 ship reviews (adversarial + specialists).
 The shipped fix is safe without them; these harden the opt-in further.
 
+- [ ] **P1 — doctor.test.ts subagent_capability test is not hermetic.** `checkSubagentCapability`'s ANTHROPIC_API_KEY drift check reads the real `~/.gbrain/config.json` via `loadConfig()`, so the "ok path" unit test fails on any dev machine with a non-Anthropic chat_model and no ANTHROPIC_API_KEY env (passes in CI). Pre-existing on master (files identical); stub the file-config read in the test or inject it into the check.
 - [ ] **P2 — estimator blind spot.** The inline cost estimator prices attached
   working-tree files at $0 by design (#2139 phantom-cost class), so a
   persisted `sync.include_working_tree` + inline embed can spend past
