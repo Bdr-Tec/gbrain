@@ -79,7 +79,13 @@ interface CompiledPattern {
 
 const CORE_PATTERNS: ReadonlyArray<{ name: string; source: string }> = [
   { name: 'anthropic', source: 'sk-ant-[A-Za-z0-9_-]{16,}' },
+  // Prefixed OpenAI forms (sk-proj-/sk-svcacct-/sk-None-) allow `_`/`-` in the
+  // body, which the bare sk- pattern below deliberately does not. Ordered
+  // before it so the claimed-span dedupe attributes the whole key here.
+  { name: 'openai', source: 'sk-(?:proj|svcacct|None)-[A-Za-z0-9_-]{20,}' },
   { name: 'openai', source: 'sk-[A-Za-z0-9]{20,}' },
+  // Voyage key shape mirrors PROVIDER_KEY_SHAPES in bootstrap/interview.ts.
+  { name: 'voyage', source: 'pa-[A-Za-z0-9_-]{20,}' },
   { name: 'github_pat', source: 'github_pat_[A-Za-z0-9_]{22,}' },
   { name: 'github_token', source: 'gh[pousr]_[A-Za-z0-9]{36,}' },
   { name: 'slack', source: 'xox[baprs]-[A-Za-z0-9-]{10,}' },
@@ -151,7 +157,11 @@ export function loadWorkspaceAllowlist(workspaceRoot: string): string[] {
  * segment, `?` is one non-slash char. Shared by the scan allowlist and the
  * workspace-push deny-glob backstop (one glob dialect everywhere).
  */
+const GLOB_REGEX_CACHE = new Map<string, RegExp>();
+
 export function globToRegExp(glob: string): RegExp {
+  const cached = GLOB_REGEX_CACHE.get(glob);
+  if (cached) return cached;
   let g = glob;
   if (g.endsWith('/')) g += '**'; // `foo/` means everything under foo/
   let re = '';
@@ -177,7 +187,9 @@ export function globToRegExp(glob: string): RegExp {
       re += c;
     }
   }
-  return new RegExp(`^${re}$`);
+  const compiled = new RegExp(`^${re}$`);
+  GLOB_REGEX_CACHE.set(glob, compiled);
+  return compiled;
 }
 
 /**
@@ -288,18 +300,23 @@ export function scanText(text: string, opts: ScanOpts = {}): SecretFinding[] {
   return out;
 }
 
-/** Bytes to sniff for NUL when deciding a file is binary. */
-const BINARY_SNIFF_BYTES = 8192;
+/** Bytes to sniff for NUL when deciding content is binary. */
+export const BINARY_SNIFF_BYTES = 8192;
 
 /** scanFiles skips anything larger (the push gate applies the same cap). */
 export const SCAN_MAX_FILE_BYTES = 25 * 1024 * 1024;
 
+/** True when the first BINARY_SNIFF_BYTES of the buffer contain a NUL byte. */
+export function looksBinaryBuffer(buf: Uint8Array): boolean {
+  const n = Math.min(buf.length, BINARY_SNIFF_BYTES);
+  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
+  return false;
+}
+
 function looksBinary(path: string): boolean {
   try {
-    const fd = readFileSync(path); // small files dominate; callers size-cap first
-    const n = Math.min(fd.length, BINARY_SNIFF_BYTES);
-    for (let i = 0; i < n; i++) if (fd[i] === 0) return true;
-    return false;
+    // small files dominate; callers size-cap first
+    return looksBinaryBuffer(readFileSync(path));
   } catch {
     return true; // unreadable → skip like a binary
   }

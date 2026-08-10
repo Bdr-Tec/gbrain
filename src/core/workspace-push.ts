@@ -16,17 +16,20 @@
  *   1. resolve the repo ROOT via `git rev-parse --show-toplevel` [CX2-3] —
  *      a workspace layout registers `repo/brain` as the source dir while the
  *      enclosing repo owns `.git`; push always operates on the root.
- *   2. candidate files = `git ls-files --cached --others --exclude-standard`
- *      (size-capped, binary-skipped for scanning).
- *   3. deny-glob backstop [G6]: a TRACKED file matching the deny list
+ *   2. deny-glob backstop [G6]: a TRACKED file matching the deny list
  *      (`*.pglite`, `.env*`, `*.pem`, `*.key`, `.gbrain/**`) HARD-FAILS the
  *      push regardless of .gitignore state (a truncated .gitignore can't
- *      leak). Untracked deny matches are excluded from staging, loudly.
- *   4. secret scan (src/core/secret-scan.ts): findings block the commit and
- *      name file+pattern; per-finding override via `<ws>/.gbrain-scan-allow`.
- *   5. `git add -A` + commit (skipped when clean). Repo-local git identity
- *      (`gbrain-bootstrap` / `bootstrap@localhost`) is set ONLY when none
- *      exists, so a commit can never fail on a fresh machine.
+ *      leak). Untracked deny matches — INCLUDING gitignored ones — are
+ *      excluded from staging, loudly.
+ *   3. `git add -A` FIRST, then un-stage any staged deny match. Repo-local
+ *      git identity (`gbrain-bootstrap` / `bootstrap@localhost`) is set ONLY
+ *      when none exists, so a commit can never fail on a fresh machine.
+ *   4. secret scan (src/core/secret-scan.ts) over the STAGED blobs
+ *      (`git cat-file -p :<path>`, size-capped, binary-skipped) so scanned
+ *      bytes == committed bytes — no scan→stage TOCTOU window. Findings
+ *      block the commit (index restored to HEAD, disk untouched) and name
+ *      file+pattern; per-finding override via `<ws>/.gbrain-scan-allow`.
+ *   5. commit (skipped when clean).
  *   6. COMMIT FIRST, then `divergenceSafePull` [CX2-7] — pulling before
  *      committing returns `skipped_dirty` and strands local work.
  *   7. push — even on a clean tree: a prior failed run may have left local
@@ -43,7 +46,7 @@
  */
 
 import {
-  existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'fs';
 import { dirname, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
@@ -52,7 +55,7 @@ import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, detectDefaultBranch, 
 import { ensureGbrainHome } from './gbrain-home.ts';
 import { isProcessAlive } from './pglite-lock.ts';
 import {
-  loadWorkspaceAllowlist, matchesGlob, pathAllowlisted, scanText,
+  loadWorkspaceAllowlist, looksBinaryBuffer, matchesGlob, pathAllowlisted, scanText,
   SCAN_ALLOW_FILENAME, SCAN_MAX_FILE_BYTES,
   type SecretFinding,
 } from './secret-scan.ts';
@@ -246,6 +249,16 @@ function tryGit(root: string, args: string[], opts: { timeoutMs?: number; auth?:
   }
 }
 
+/** Raw-bytes git output (no encoding) — for reading staged blobs verbatim. */
+function gitBuffer(root: string, args: string[], timeoutMs = 60_000): Buffer {
+  return execFileSync('git', ['-C', root, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs,
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, ...GIT_ENV },
+  });
+}
+
 /**
  * Mirror of git-remote.ts's private `durableSsrfFlags()`: push acts on an
  * ALREADY-configured origin; the file transport honors the same env escape
@@ -348,7 +361,11 @@ function writePushStatus(status: { ts: string; ok: boolean; reason?: string; ahe
   try {
     const p = pushStatusPath();
     mkdirSync(dirname(p), { recursive: true, mode: 0o700 });
-    writeFileSync(p, JSON.stringify(status, null, 2) + '\n', { mode: 0o600 });
+    // tmp+rename (the writeReceipt pattern): a concurrent reader never sees a
+    // torn half-written status file.
+    const tmp = `${p}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(status, null, 2) + '\n', { mode: 0o600 });
+    renameSync(tmp, p);
   } catch { /* best-effort — status telemetry never fails a push */ }
 }
 
@@ -402,12 +419,14 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
   try {
     if (opts.holdLockMs && opts.holdLockMs > 0) await sleep(opts.holdLockMs);
 
-    // 2. candidates + tracked set.
+    // 2. deny-glob inputs: tracked + untracked listings. `--others` deliberately WITHOUT
+    // --exclude-standard: a gitignored deny match (brain.pglite behind a
+    // `*.pglite` ignore line) is still reported loudly in excludedUntracked.
     let tracked: string[];
-    let candidates: string[];
+    let untracked: string[];
     try {
       tracked = listZ(root, ['ls-files', '--cached']);
-      candidates = listZ(root, ['ls-files', '--cached', '--others', '--exclude-standard']);
+      untracked = listZ(root, ['ls-files', '--others']);
     } catch (e) {
       return finish({
         ok: false, status: 'error', repoRoot: root, branch,
@@ -415,7 +434,7 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
       });
     }
 
-    // 3. deny-glob backstop [G6]: TRACKED match = hard fail, .gitignore state
+    // Deny-glob backstop [G6]: TRACKED match = hard fail, .gitignore state
     // irrelevant (that's the point — a truncated .gitignore can't leak).
     const denyMatch = (p: string) => PUSH_DENY_GLOBS.some((g) => matchesGlob(g, p));
     const trackedDeny = tracked.filter(denyMatch);
@@ -430,58 +449,14 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
         denyMatches: trackedDeny, reason,
       });
     }
-    const untrackedDeny = candidates.filter((p) => !tracked.includes(p)).filter(denyMatch);
+    // `--others` excludes index entries, so every listing IS untracked.
+    const untrackedDeny = untracked.filter(denyMatch);
 
-    // 4. secret scan over text candidates (size-capped, binary-skipped).
-    const allowlist = loadWorkspaceAllowlist(root);
-    const findings: SecretFinding[] = [];
-    for (const rel of candidates) {
-      if (denyMatch(rel)) continue; // never staged — no need to scan
-      if (pathAllowlisted(rel, allowlist)) continue; // user-declared safe path
-      const abs = join(root, rel);
-      let size: number;
-      try {
-        const st = statSync(abs);
-        if (!st.isFile()) continue; // symlinks/dirs — git tracks the link, we don't read through it
-        size = st.size;
-      } catch {
-        continue; // deleted since ls-files — the commit will record the deletion
-      }
-      if (size > PUSH_MAX_SCAN_BYTES) continue;
-      let buf: Buffer;
-      try {
-        buf = readFileSync(abs);
-      } catch {
-        continue;
-      }
-      const sniff = Math.min(buf.length, 8192);
-      let binary = false;
-      for (let i = 0; i < sniff; i++) {
-        if (buf[i] === 0) { binary = true; break; }
-      }
-      if (binary) continue;
-      for (const f of scanText(buf.toString('utf-8'), { allowlist })) {
-        findings.push({ ...f, file: rel });
-      }
-    }
-    if (findings.length > 0) {
-      const summary = findings
-        .slice(0, 10)
-        .map((f) => `${f.file}:${f.line} [${f.pattern}]`)
-        .join(', ');
-      const reason =
-        `secret scan found ${findings.length} finding(s): ${summary}` +
-        `${findings.length > 10 ? ', …' : ''} — nothing committed. ` +
-        `Add a fingerprint or glob line to ${SCAN_ALLOW_FILENAME} to override a false positive.`;
-      log(`PUSH BLOCKED: ${reason}`);
-      return finish({
-        ok: false, status: 'blocked_secrets', repoRoot: root, branch, findings, reason,
-      });
-    }
-
-    // 5. stage + commit (COMMIT FIRST — see step 6) [CX2-7].
-    let committed = false;
+    // 3. stage FIRST — the scan below reads the STAGED blobs, so scanned
+    // bytes == committed bytes (scanning disk before `add -A` left a TOCTOU
+    // window where a file mutated after the snapshot was committed unscanned).
     const excludedUntracked: string[] = [];
+    let stagedForScan: string[];
     try {
       ensureLocalIdentity(root);
       git(root, ['add', '-A'], { timeoutMs: 120_000 });
@@ -500,6 +475,54 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
           excludedUntracked.push(p); // ignored-but-deny-matched: never staged, still reported
         }
       }
+      stagedForScan = staged.filter((p) => !denyMatch(p));
+    } catch (e) {
+      return finish({
+        ok: false, status: 'error', repoRoot: root, branch,
+        reason: `stage/commit failed: ${(e as Error).message.slice(0, 200)}`,
+      });
+    }
+
+    // 4. secret scan over the STAGED content (size-capped, binary-skipped).
+    // `git cat-file -p :<path>` reads the index blob verbatim (no filters) —
+    // exactly what a commit would record.
+    const allowlist = loadWorkspaceAllowlist(root);
+    const findings: SecretFinding[] = [];
+    for (const rel of stagedForScan) {
+      if (pathAllowlisted(rel, allowlist)) continue; // user-declared safe path
+      let blob: Buffer;
+      try {
+        blob = gitBuffer(root, ['cat-file', '-p', `:${rel}`]);
+      } catch {
+        continue; // staged deletion (no index blob) or blob beyond maxBuffer
+      }
+      if (blob.length > PUSH_MAX_SCAN_BYTES) continue;
+      if (looksBinaryBuffer(blob)) continue;
+      for (const f of scanText(blob.toString('utf-8'), { allowlist })) {
+        findings.push({ ...f, file: rel });
+      }
+    }
+    if (findings.length > 0) {
+      // Restore the index to HEAD (disk files untouched) — a blocked push
+      // leaves nothing staged and nothing committed, same as before.
+      tryGit(root, ['reset', '-q']);
+      const summary = findings
+        .slice(0, 10)
+        .map((f) => `${f.file}:${f.line} [${f.pattern}]`)
+        .join(', ');
+      const reason =
+        `secret scan found ${findings.length} finding(s): ${summary}` +
+        `${findings.length > 10 ? ', …' : ''} — nothing committed. ` +
+        `Add a fingerprint or glob line to ${SCAN_ALLOW_FILENAME} to override a false positive.`;
+      log(`PUSH BLOCKED: ${reason}`);
+      return finish({
+        ok: false, status: 'blocked_secrets', repoRoot: root, branch, findings, reason,
+      });
+    }
+
+    // 5. commit (COMMIT FIRST, then pull — see step 6) [CX2-7].
+    let committed = false;
+    try {
       const clean = tryGit(root, ['diff', '--cached', '--quiet']) !== null;
       if (!clean) {
         git(root, ['commit', '-m', opts.commitMessage ?? 'gbrain: workspace push'], { timeoutMs: 60_000 });

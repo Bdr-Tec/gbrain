@@ -19,6 +19,10 @@ import {
 
 // Synthetic fixture values (never real keys).
 const OPENAI = 'sk-' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4';
+const OPENAI_PROJ = 'sk-proj-' + 'Ab1_Cd2-Ef3gH4iJ5kL6mN7oP8';
+const OPENAI_SVCACCT = 'sk-svcacct-' + 'Zz1_Yy2-Xx3wV4uT5sR6qP7oN8';
+const OPENAI_NONE = 'sk-None-' + 'Qq1_Ww2-Ee3rT4yU5iO6pA7sD8';
+const VOYAGE = 'pa-' + 'Vv1Bb2Nn3Mm4Kk5Jj6Hh7Gg8Ff9';
 const ANTHROPIC = 'sk-ant-' + 'api03-Zz9Yy8Xx7Ww6Vv5Uu4Tt3';
 const GHP = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
 const GHO = 'gho_' + 'B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9';
@@ -62,6 +66,21 @@ describe('scanText — pattern classes', () => {
     const ghLines = findings.filter((f) => f.pattern === 'github_token').map((f) => f.line).sort();
     expect(ghLines).toEqual([4, 5]);
     expect(findings.length).toBe(8);
+  });
+
+  test('prefixed OpenAI forms (sk-proj-/sk-svcacct-/sk-None-) fire as openai, once each', () => {
+    for (const key of [OPENAI_PROJ, OPENAI_SVCACCT, OPENAI_NONE]) {
+      const findings = scanText(`key=${key}`);
+      expect(findings.map((f) => f.pattern)).toEqual(['openai']);
+      expect(JSON.stringify(findings).includes(key)).toBe(false);
+    }
+  });
+
+  test('a Voyage key (pa-…, PROVIDER_KEY_SHAPES shape) fires as voyage', () => {
+    const findings = scanText(`voyage_api_key: ${VOYAGE}`);
+    expect(findings.map((f) => f.pattern)).toEqual(['voyage']);
+    expect(JSON.stringify(findings).includes(VOYAGE)).toBe(false);
+    expect(findings[0]!.redactedPreview).toContain('<REDACTED:voyage>');
   });
 
   test('an anthropic key is NOT double-reported as a generic openai match', () => {
@@ -186,6 +205,15 @@ describe('redactFindings (corpus-write mode, S3#2)', () => {
     // non-secret content survives byte-for-byte
     expect(out.startsWith('intro\nsaid: my key is ')).toBe(true);
     expect(out.endsWith(' ok?\nand slack <REDACTED:slack>\nrepeat <REDACTED:openai>\n')).toBe(true);
+  });
+
+  test('prefixed openai + voyage keys are redacted in place', () => {
+    const text = `proj: ${OPENAI_PROJ}\nvoyage: ${VOYAGE}\n`;
+    const { text: out, redactions } = redactFindings(text);
+    expect(out.includes(OPENAI_PROJ)).toBe(false);
+    expect(out.includes(VOYAGE)).toBe(false);
+    expect(out).toBe('proj: <REDACTED:openai>\nvoyage: <REDACTED:voyage>\n');
+    expect(redactions.map((r) => r.pattern).sort()).toEqual(['openai', 'voyage']);
   });
 
   test('allowlisted values are left intact (declared safe)', () => {

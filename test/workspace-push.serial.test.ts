@@ -181,6 +181,22 @@ describe('deny-glob backstop [G6]', () => {
   test('the deny list covers the documented classes', () => {
     expect(PUSH_DENY_GLOBS).toEqual(['*.pglite', '.env*', '*.pem', '*.key', '.gbrain/**']);
   });
+
+  test('a GITIGNORED deny match is named in excludedUntracked and never reaches the index', async () => {
+    writeFileSync(join(work, '.gitignore'), '*.pglite\n');
+    writeFileSync(join(work, 'brain.pglite'), Buffer.from([0, 1, 2, 0]));
+    writeFileSync(join(work, 'note.md'), 'keep me\n');
+    const r = await push();
+    expect(r.status).toBe('pushed');
+    expect(r.excludedUntracked).toContain('brain.pglite');
+    const shipped = git(bare, 'ls-tree', '-r', '--name-only', 'main');
+    expect(shipped).toContain('note.md');
+    expect(shipped).toContain('.gitignore');
+    expect(shipped).not.toContain('brain.pglite');
+    // never staged, still on disk
+    expect(git(work, 'ls-files', '--cached')).not.toContain('brain.pglite');
+    expect(existsSync(join(work, 'brain.pglite'))).toBe(true);
+  }, T);
 });
 
 describe('secret-scan gate', () => {
@@ -205,6 +221,29 @@ describe('secret-scan gate', () => {
     const r2 = await push();
     expect(r2.status).toBe('pushed');
     expect(git(bare, 'ls-tree', '-r', '--name-only', 'main')).toContain('notes.md');
+  }, T);
+
+  test('TOCTOU: the scan reads STAGED bytes, not disk bytes (clean filter injects at stage time)', async () => {
+    // A `clean` filter rewrites content on `git add`, so the INDEX blob (what
+    // a commit would record) differs from the on-disk file — the same shape
+    // as a file mutated between a disk snapshot and staging. The disk file is
+    // benign; only the staged bytes carry the secret. A disk-based scan
+    // would pass this; the index-based scan must block.
+    writeFileSync(join(work, '.gitattributes'), 'payload.md filter=inject\n');
+    git(work, 'config', 'filter.inject.clean', `sed s/SECRET_PLACEHOLDER/${OPENAI}/`);
+    writeFileSync(join(work, 'payload.md'), 'my key: SECRET_PLACEHOLDER\n');
+    const before = commitCount(work);
+    const r = await push();
+    expect(r.status).toBe('blocked_secrets');
+    expect(r.ok).toBe(false);
+    expect(r.findings?.length).toBe(1);
+    expect(r.findings?.[0]?.file).toBe('payload.md');
+    expect(r.findings?.[0]?.pattern).toBe('openai');
+    expect(JSON.stringify(r).includes(OPENAI)).toBe(false); // value never surfaces
+    expect(commitCount(work)).toBe(before); // NOTHING committed
+    // block restored the index — nothing left staged, disk untouched
+    expect(git(work, 'diff', '--cached', '--name-only')).toBe('');
+    expect(readFileSync(join(work, 'payload.md'), 'utf-8')).toContain('SECRET_PLACEHOLDER');
   }, T);
 });
 
@@ -231,6 +270,34 @@ describe('commit-first-then-pull [CX2-7]', () => {
     expect(subjects).toContain('local change');
     expect(subjects).toContain('remote change');
     expect(git(work, 'status', '--porcelain')).toBe(''); // nothing stranded
+  }, T);
+
+  test('CONFLICTING divergence → pull_conflict; local commit survives, rebase aborted', async () => {
+    // Both clones add the same file with different content → rebase conflict.
+    const other = mkdtempSync(join(root, 'other-'));
+    execFileSync('git', ['-c', 'protocol.file.allow=always', 'clone', '-q', bare, other], {
+      stdio: 'ignore', env: process.env,
+    });
+    git(other, 'config', 'user.email', 'o@o.o');
+    git(other, 'config', 'user.name', 'other');
+    writeFileSync(join(other, 'shared.md'), 'remote version\n');
+    git(other, 'add', 'shared.md');
+    git(other, 'commit', '-qm', 'remote change');
+    git(other, 'push', '-q', 'origin', 'main');
+
+    writeFileSync(join(work, 'shared.md'), 'local version\n');
+    const r = await push({ commitMessage: 'local conflicting change' });
+    expect(r.status).toBe('pull_conflict');
+    expect(r.ok).toBe(false);
+    expect(r.committed).toBe(true);
+    expect(r.reason).toContain('conflict');
+    // local commit survives; the aborted rebase left a clean tree
+    expect(git(work, 'log', '--format=%s', '-1', 'HEAD')).toBe('local conflicting change');
+    expect(git(work, 'status', '--porcelain')).toBe('');
+    // origin still holds the other clone's commit — nothing force-pushed
+    expect(git(bare, 'log', '--format=%s', '-1', 'main')).toBe('remote change');
+    // B4: failure status written
+    expect(JSON.parse(readFileSync(pushStatusPath(), 'utf-8')).ok).toBe(false);
   }, T);
 });
 
