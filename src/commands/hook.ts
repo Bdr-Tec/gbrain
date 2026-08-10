@@ -79,6 +79,17 @@ export const DIGEST_SECTIONS = ['standing rules', 'open commitments', 'active co
 export const STOP_BUFFER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /** Default corpus retention when `dream.synthesize.corpus_retention_days` is unset [G15]. */
 export const CORPUS_RETENTION_DAYS_DEFAULT = 30;
+/**
+ * Sweep sidecar suffixes — DUPLICATED from sweep.ts on purpose: hook.ts is
+ * engine-free by construction (module header D5), and sweep.ts eagerly imports
+ * capability.ts, so a value-import here would drag that in. A corpus (re)write
+ * MUST invalidate any prior completion/claim marker so the serve sweep
+ * re-ingests the appended transcript of a resumed session (otherwise the new
+ * turns are skipped forever). Keep these in sync with sweep.ts's
+ * CORPUS_INGESTED_SUFFIX / CORPUS_CLAIM_SUFFIX.
+ */
+export const CORPUS_INGESTED_SUFFIX = '.ingested';
+export const CORPUS_CLAIM_SUFFIX = '.in-progress';
 /** Heartbeat file line cap [S3#7]. */
 export const HEARTBEAT_MAX_LINES = 5000;
 /** Trailing-window size for the B3 failure-rate notice. */
@@ -906,8 +917,26 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
         }
         const dir = await corpusDir(cfg);
         // Session-id-keyed filename: a resumed session OVERWRITES its own
-        // corpus file — dedup by construction [A6].
-        writeFileSync(join(dir, `${sessionId}.txt`), text, { mode: 0o600 });
+        // corpus file — dedup by construction [A6]. The write is ATOMIC
+        // (tmp+rename) so a concurrent sweep never reads a torn half-write,
+        // and the stale `.ingested`/`.in-progress` sidecars are dropped AFTER
+        // the rename so the sweep re-processes the appended transcript (a
+        // resumed session's new turns were being permanently skipped when the
+        // completion sidecar survived the overwrite).
+        const corpusFile = join(dir, `${sessionId}.txt`);
+        const tmpCorpus = `${corpusFile}.tmp-${process.pid}`;
+        writeFileSync(tmpCorpus, text, { mode: 0o600 });
+        renameSync(tmpCorpus, corpusFile);
+        try {
+          rmSync(corpusFile + CORPUS_INGESTED_SUFFIX, { force: true });
+        } catch {
+          /* best effort — sidecar invalidation never fails the hook */
+        }
+        try {
+          rmSync(corpusFile + CORPUS_CLAIM_SUFFIX, { force: true });
+        } catch {
+          /* best effort */
+        }
         gcOldFiles(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000); // [G15]
       }
     }

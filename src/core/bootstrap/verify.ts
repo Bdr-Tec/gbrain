@@ -177,10 +177,14 @@ async function sweepProbeLeftovers(engine: BrainEngine, ws: string, sourceId: st
     }
   }
   try {
-    await engine.executeRaw(`DELETE FROM facts WHERE source_id = $1 AND fact LIKE $2`, [
-      sourceId,
-      `%${VERIFY_MAGIC_TOKEN}%`,
-    ]);
+    // Scope the delete to the EXACT probe page(s) this run wrote (via the
+    // v51 fence column source_markdown_slug), NEVER a `fact LIKE %token%`
+    // substring match — a user fact that merely mentions the token string
+    // must survive verify's cleanup [G13].
+    await engine.executeRaw(
+      `DELETE FROM facts WHERE source_id = $1 AND source_markdown_slug IN ($2, $3)`,
+      [sourceId, VERIFY_PROBE_SLUG, VERIFY_PROBE_ENTITY_SLUG],
+    );
   } catch {
     /* facts table may not exist on a pre-migration brain — doctor_green names that */
   }
@@ -575,7 +579,12 @@ async function runRoundtrip(
     }
   }
   try {
-    await engine.executeRaw(`DELETE FROM facts WHERE source_id = $1 AND fact LIKE $2`, [sourceId, `%${VERIFY_MAGIC_TOKEN}%`]);
+    // Exact-identity delete (see sweepProbeLeftovers): only facts whose fence
+    // lives on a probe page, never a token substring match over user facts.
+    await engine.executeRaw(
+      `DELETE FROM facts WHERE source_id = $1 AND source_markdown_slug IN ($2, $3)`,
+      [sourceId, VERIFY_PROBE_SLUG, VERIFY_PROBE_ENTITY_SLUG],
+    );
   } catch {
     /* best effort */
   }

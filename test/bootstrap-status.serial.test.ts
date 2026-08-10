@@ -4,7 +4,7 @@
  * precedent, extended per ENG-2 for the bootstrap family).
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -282,6 +282,34 @@ esac
     expect(r.code).toBe(1);
     expect(r.err).toContain('PUBLIC');
     expect(r.err).toContain('private');
+  });
+
+  test('[FIX6] `bootstrap render` refuses a PUBLIC origin BEFORE writing identity files', async () => {
+    process.env.GB_FAKE_GH_ANSWER = 'public';
+    // Precondition: no identity file has been rendered yet.
+    expect(existsSync(join(tws, 'SOUL.md'))).toBe(false);
+
+    const origLog = console.log;
+    const origErr = console.error;
+    let out = '';
+    let err = '';
+    console.log = (...a: unknown[]) => { out += a.map(String).join(' ') + '\n'; };
+    console.error = (...a: unknown[]) => { err += a.map(String).join(' ') + '\n'; };
+    let code: number;
+    try {
+      code = await runBootstrap(['render', '--workspace', tws]);
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+    void out;
+    expect(code).toBe(1);
+    expect(err).toContain('render refused');
+    expect(err).toContain('PUBLIC');
+    expect(err).toContain('private');
+    // Refused BEFORE any identity file was written.
+    expect(existsSync(join(tws, 'SOUL.md'))).toBe(false);
+    expect(existsSync(join(tws, 'USER.md'))).toBe(false);
   });
 
   test('PRIVATE origin → no gate, exit 0', async () => {

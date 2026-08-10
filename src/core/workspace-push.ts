@@ -55,7 +55,7 @@ import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, detectDefaultBranch, 
 import { ensureGbrainHome } from './gbrain-home.ts';
 import { isProcessAlive } from './pglite-lock.ts';
 import {
-  loadWorkspaceAllowlist, looksBinaryBuffer, matchesGlob, pathAllowlisted, scanText,
+  loadWorkspaceAllowlist, matchesGlob, pathAllowlisted, scanText,
   SCAN_ALLOW_FILENAME, SCAN_MAX_FILE_BYTES,
   type SecretFinding,
 } from './secret-scan.ts';
@@ -67,6 +67,7 @@ export type WorkspacePushStatus =
   | 'skipped_in_flight'     // another push holds the lock — clean skip [G14/A5]
   | 'blocked_tracked_deny'  // a TRACKED file matches the deny globs [G6]
   | 'blocked_secrets'       // unallowlisted secret-scan findings [D6]
+  | 'blocked_unscannable'   // a staged blob could not be scanned — fail CLOSED
   | 'refused_visibility'    // remote not verifiably private [G8]
   | 'pull_conflict'         // divergenceSafePull aborted a conflicted rebase
   | 'push_failed'           // push rejected / origin unreachable
@@ -88,6 +89,8 @@ export interface WorkspacePushResult {
   /** Untracked deny-glob matches excluded from staging (kept on disk). */
   excludedUntracked?: string[];
   findings?: SecretFinding[];
+  /** Staged paths the secret scan could not read (fail-closed block reason). */
+  unscannable?: string[];
 }
 
 export interface WorkspacePushOpts {
@@ -483,21 +486,47 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
       });
     }
 
-    // 4. secret scan over the STAGED content (size-capped, binary-skipped).
+    // 4. secret scan over the STAGED content. This is the SOLE
+    // block-secrets-before-they-leave control, so it FAILS CLOSED: the only
+    // benign "no blob" case is a staged DELETION (removes content — nothing to
+    // leak); every OTHER unscannable case (cat-file error, oversized blob)
+    // BLOCKS the push naming the path, rather than silently exempting it.
     // `git cat-file -p :<path>` reads the index blob verbatim (no filters) —
     // exactly what a commit would record.
+    let stagedDeletions: Set<string>;
+    try {
+      stagedDeletions = new Set(listZ(root, ['diff', '--cached', '--name-only', '--diff-filter=D']));
+    } catch {
+      // Can't enumerate deletions → treat nothing as a deletion (fail closed:
+      // a real deletion then reports unscannable, which is safe — it blocks,
+      // never leaks).
+      stagedDeletions = new Set();
+    }
     const allowlist = loadWorkspaceAllowlist(root);
     const findings: SecretFinding[] = [];
+    const unscannable: string[] = [];
     for (const rel of stagedForScan) {
       if (pathAllowlisted(rel, allowlist)) continue; // user-declared safe path
+      if (stagedDeletions.has(rel)) continue;        // deletion — no content to scan
       let blob: Buffer;
       try {
         blob = gitBuffer(root, ['cat-file', '-p', `:${rel}`]);
-      } catch {
-        continue; // staged deletion (no index blob) or blob beyond maxBuffer
+      } catch (e) {
+        // NOT a deletion (checked above) — we cannot prove this file is clean.
+        // A blob we can't read (missing index entry, over maxBuffer, git error)
+        // must never sail through the only pre-push secret gate.
+        unscannable.push(`${rel} (unreadable: ${(e as Error).message.slice(0, 80)})`);
+        continue;
       }
-      if (blob.length > PUSH_MAX_SCAN_BYTES) continue;
-      if (looksBinaryBuffer(blob)) continue;
+      if (blob.length > PUSH_MAX_SCAN_BYTES) {
+        // Too big to scan in-memory → block rather than exempt.
+        unscannable.push(`${rel} (${blob.length}B exceeds the ${PUSH_MAX_SCAN_BYTES}B scan cap)`);
+        continue;
+      }
+      // Binary (NUL-sniffed) files are scanned ANYWAY — a NUL byte doesn't mean
+      // the blob is secret-free (an ASCII key can sit inside a "binary" file).
+      // Buffer.toString('utf-8') keeps ASCII runs intact so the named patterns
+      // still fire; invalid byte sequences become U+FFFD and simply don't match.
       for (const f of scanText(blob.toString('utf-8'), { allowlist })) {
         findings.push({ ...f, file: rel });
       }
@@ -517,6 +546,20 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
       log(`PUSH BLOCKED: ${reason}`);
       return finish({
         ok: false, status: 'blocked_secrets', repoRoot: root, branch, findings, reason,
+      });
+    }
+    if (unscannable.length > 0) {
+      // Fail CLOSED: an unscannable staged file could hide a secret. Restore
+      // the index to HEAD (nothing staged, nothing committed) and block.
+      tryGit(root, ['reset', '-q']);
+      const summary = unscannable.slice(0, 10).join(', ') + (unscannable.length > 10 ? ', …' : '');
+      const reason =
+        `secret scan could not read ${unscannable.length} staged file(s): ${summary} — nothing committed. ` +
+        `The pre-push secret gate fails closed: remove the file from the index (git rm --cached <path>), ` +
+        `keep it under the scan cap (${PUSH_MAX_SCAN_BYTES}B), or allowlist it in ${SCAN_ALLOW_FILENAME}.`;
+      log(`PUSH BLOCKED: ${reason}`);
+      return finish({
+        ok: false, status: 'blocked_unscannable', repoRoot: root, branch, unscannable, reason,
       });
     }
 

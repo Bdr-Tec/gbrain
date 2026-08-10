@@ -416,6 +416,17 @@ async function runPush(engine: BrainEngine, args: string[]): Promise<void> {
       }
       process.exit(5);
       break;
+    case 'blocked_unscannable':
+      if (!json) {
+        console.error('PUSH BLOCKED — staged file(s) the secret scan could not read (fail-closed):');
+        for (const p of res.unscannable ?? []) console.error(`  ${p}`);
+        console.error(
+          'Remove from the index (git rm --cached <path>), keep it under the scan cap, ' +
+            `or allowlist it in ${SCAN_ALLOW_FILENAME}.`,
+        );
+      }
+      process.exit(5);
+      break;
     case 'refused_visibility':
       if (!json) {
         console.error(`PUSH REFUSED: ${res.reason}`);

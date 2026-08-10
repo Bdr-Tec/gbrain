@@ -120,6 +120,93 @@ describe('consent-skip is a decline (HOOKS_CONSENT)', () => {
   }, 30_000);
 });
 
+describe('MCP registration verification [FIX7]', () => {
+  const gbrainBin = process.execPath;
+  const OURS = `gbrain:\n  command: ${gbrainBin} serve --surface full\n  env: GBRAIN_SOURCE=workspace`;
+  const FOREIGN = `gbrain:\n  command: /somewhere/else/gbrain serve --surface full\n  env: GBRAIN_SOURCE=other-workspace`;
+
+  /** Stateful recording MCP host: models add/remove/get/list against a single
+   * current registration string so `mcp get` reflects reality across re-adds. */
+  function mcpHost(opts: { initialReg?: string | null; getSupported?: boolean }): {
+    runner: ExecRunner;
+    calls: string[][];
+  } {
+    const calls: string[][] = [];
+    let currentReg: string | null = opts.initialReg ?? null;
+    const getSupported = opts.getSupported ?? true;
+    const runner: ExecRunner = async (argv: string[]) => {
+      calls.push(argv);
+      const sub = argv[1];
+      const verb = argv[2];
+      if (sub !== 'mcp') return { code: 0, stdout: '', stderr: '' };
+      if (verb === 'add') {
+        if (currentReg !== null) return { code: 1, stdout: '', stderr: 'MCP server gbrain already exists' };
+        currentReg = OURS; // a fresh add registers THIS workspace
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (verb === 'remove') {
+        currentReg = null;
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (verb === 'get') {
+        if (!getSupported) return { code: 1, stdout: '', stderr: 'unknown command: get' };
+        if (currentReg === null) return { code: 1, stdout: '', stderr: 'no such MCP server' };
+        return { code: 0, stdout: currentReg, stderr: '' };
+      }
+      if (verb === 'list') {
+        return { code: 0, stdout: currentReg ? 'gbrain: stdio serve' : '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    return { runner, calls };
+  }
+
+  async function runHooks(runner: ExecRunner) {
+    return capture(() =>
+      runBootstrap(['hooks', '--workspace', ws, '--harness', 'claude-code', '--gbrain-bin', gbrainBin], { runner }),
+    );
+  }
+
+  test('fresh registration → smoke verifies the server targets THIS workspace', async () => {
+    const { runner, calls } = mcpHost({ initialReg: null });
+    const r = await runHooks(runner);
+    expect(r.result).toBe(0);
+    expect(r.out).toContain('verified targeting this workspace');
+    expect(calls.some((c) => c[1] === 'mcp' && c[2] === 'remove')).toBe(false);
+  }, 30_000);
+
+  test('already registered AND points at this workspace → kept, no re-register', async () => {
+    const { runner, calls } = mcpHost({ initialReg: OURS });
+    const r = await runHooks(runner);
+    expect(r.result).toBe(0);
+    expect(r.out).toContain('already registered for this workspace — kept');
+    expect(calls.some((c) => c[1] === 'mcp' && c[2] === 'remove')).toBe(false);
+    const adds = calls.filter((c) => c[1] === 'mcp' && c[2] === 'add').length;
+    expect(adds).toBe(1); // only the initial (already-exists) attempt
+  }, 30_000);
+
+  test('already registered but points ELSEWHERE → remove + re-add, never silently blessed', async () => {
+    const { runner, calls } = mcpHost({ initialReg: FOREIGN });
+    const r = await runHooks(runner);
+    expect(r.result).toBe(0);
+    expect(r.err).toContain('targets a DIFFERENT workspace');
+    expect(calls.some((c) => c[1] === 'mcp' && c[2] === 'remove' && c[3] === 'gbrain')).toBe(true);
+    const adds = calls.filter((c) => c[1] === 'mcp' && c[2] === 'add').length;
+    expect(adds).toBe(2); // initial (foreign) + re-add after remove
+    // After the fix, the smoke confirms the corrected registration.
+    expect(r.out).toContain('verified targeting this workspace');
+  }, 30_000);
+
+  test('host without `mcp get` → inconclusive, kept with a note (never a false bless)', async () => {
+    const { runner } = mcpHost({ initialReg: OURS, getSupported: false });
+    const r = await runHooks(runner);
+    expect(r.result).toBe(0);
+    expect(r.out).toContain('could not confirm it targets this workspace');
+    // Falls back to the list-substring probe for the smoke line.
+    expect(r.out).toContain('full target unverified');
+  }, 30_000);
+});
+
 describe('receipt overwrite guard wired into every writer [CX2-12]', () => {
   function writeNewerReceipt(dir: string): void {
     mkdirSync(join(dir, 'bootstrap'), { recursive: true });

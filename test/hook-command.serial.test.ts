@@ -473,6 +473,46 @@ describe('session-end', () => {
     expect(readFileSync(join(corpusDir, 'sess-dup.txt'), 'utf8')).toContain('resumed pass content');
   });
 
+  test('resumed session rewrite drops the stale .ingested/.in-progress sidecars so the sweep re-ingests', async () => {
+    const projRoot = join(tmp, 'projects');
+    const ws = join(tmp, 'ws');
+    mkdirSync(ws, { recursive: true });
+
+    // First pass: session-end writes the corpus file.
+    const t1 = seedTranscript(join(projRoot, 'p1'), 'r.jsonl', [userLine('first pass content')]);
+    await runHook(['session-end'], {
+      stdin: JSON.stringify({ session_id: 'sess-resume', transcript_path: t1, cwd: ws }),
+      transcriptRoot: projRoot,
+    });
+    const corpusDir = join(home(), 'transcripts', 'corpus');
+    const corpusFile = join(corpusDir, 'sess-resume.txt');
+    expect(existsSync(corpusFile)).toBe(true);
+
+    // Simulate the sweep having ingested it (completion sidecar) and a stale
+    // claim being left behind.
+    writeFileSync(corpusFile + '.ingested', JSON.stringify({ ingested_at: new Date().toISOString() }) + '\n');
+    writeFileSync(corpusFile + '.in-progress', JSON.stringify({ claimed_at: new Date().toISOString() }) + '\n');
+    expect(existsSync(corpusFile + '.ingested')).toBe(true);
+
+    // Second pass: the session resumes with appended content.
+    const t2 = seedTranscript(join(projRoot, 'p1'), 'r.jsonl', [
+      userLine('first pass content'),
+      assistantLine('appended resumed content'),
+    ]);
+    await runHook(['session-end'], {
+      stdin: JSON.stringify({ session_id: 'sess-resume', transcript_path: t2, cwd: ws }),
+      transcriptRoot: projRoot,
+    });
+
+    // The corpus reflects the appended content …
+    expect(readFileSync(corpusFile, 'utf8')).toContain('appended resumed content');
+    // … and the stale sidecars are GONE so the next sweep re-processes it.
+    expect(existsSync(corpusFile + '.ingested')).toBe(false);
+    expect(existsSync(corpusFile + '.in-progress')).toBe(false);
+    // No torn tmp file left behind by the atomic write.
+    expect(readdirSync(corpusDir).filter((f) => f.includes('.tmp-'))).toEqual([]);
+  });
+
   test('retention prune: corpus files past the default 30d window are removed [G15]', async () => {
     const corpusDir = join(home(), 'transcripts', 'corpus');
     mkdirSync(corpusDir, { recursive: true });

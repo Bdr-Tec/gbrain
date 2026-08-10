@@ -144,10 +144,17 @@ describe('allowlist', () => {
     expect(remaining.map((r) => r.pattern)).toEqual(['slack']);
   });
 
-  test('a short fingerprint prefix (<8 hex) never matches', () => {
+  test('a short fingerprint prefix (<16 hex) never matches', () => {
     const [f] = scanText(`x=${OPENAI}`);
-    const shortEntry = f!.fingerprint.slice(0, 'sha256:'.length + 4);
-    expect(scanText(`x=${OPENAI}`, { allowlist: [shortEntry] }).length).toBe(1);
+    // 4 hex — well below the floor.
+    const tiny = f!.fingerprint.slice(0, 'sha256:'.length + 4);
+    expect(scanText(`x=${OPENAI}`, { allowlist: [tiny] }).length).toBe(1);
+    // 12 hex — used to pass under the old 8-hex floor; now rejected.
+    const twelve = f!.fingerprint.slice(0, 'sha256:'.length + 12);
+    expect(twelve.length).toBe('sha256:'.length + 12);
+    expect(scanText(`x=${OPENAI}`, { allowlist: [twelve] }).length).toBe(1);
+    // The full 16-hex fingerprint (what the tool emits) still suppresses.
+    expect(scanText(`x=${OPENAI}`, { allowlist: [f!.fingerprint] }).length).toBe(0);
   });
 
   test('loadWorkspaceAllowlist: absent file → EMPTY default [CX2-15]', () => {
@@ -221,6 +228,48 @@ describe('redactFindings (corpus-write mode, S3#2)', () => {
     const { text: out, redactions } = redactFindings(`x=${OPENAI}`, { allowlist: [f!.fingerprint] });
     expect(out).toBe(`x=${OPENAI}`);
     expect(redactions).toEqual([]);
+  });
+
+  test('a full PEM block is redacted whole — no base64 body line survives', () => {
+    // Synthetic key material (never a real key). The body lines are the leak
+    // the header-only pattern used to leave in the corpus.
+    const body = [
+      'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj',
+      'MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu',
+      'NMoSfm76oqFvAp8Gy0iz5sxjZmSnXyCdPEovGhLa0VzMaQ8s+CLOyS56YyCFGeJZ',
+    ].join('\n');
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${body}\n-----END RSA PRIVATE KEY-----`;
+    const text = `notes before\n${pem}\nnotes after\n`;
+
+    const { text: out, redactions } = redactFindings(text);
+    // The body base64 must be GONE — not just the header line.
+    for (const line of body.split('\n')) {
+      expect(out.includes(line)).toBe(false);
+    }
+    expect(out.includes('-----END RSA PRIVATE KEY-----')).toBe(false);
+    expect(out).toContain('<REDACTED:private_key_pem>');
+    // Surrounding prose survives.
+    expect(out.startsWith('notes before\n')).toBe(true);
+    expect(out.endsWith('\nnotes after\n')).toBe(true);
+    const pemRedactions = redactions.filter((r) => r.pattern === 'private_key_pem');
+    expect(pemRedactions.length).toBe(1);
+    // The finding preview never leaks the body either.
+    expect(pemRedactions[0]!.redactedPreview).toContain('<REDACTED:private_key_pem>');
+    for (const line of body.split('\n')) {
+      expect(pemRedactions[0]!.redactedPreview.includes(line)).toBe(false);
+    }
+  });
+
+  test('scanText finds a full PEM block; a lone header still blocks the push', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEF\n-----END RSA PRIVATE KEY-----';
+    const full = scanText(`k:\n${pem}\n`);
+    expect(full.map((f) => f.pattern)).toEqual(['private_key_pem']);
+    expect(full[0]!.line).toBe(2); // header line
+    expect(JSON.stringify(full).includes('MIIEvQIBADANBgkqhkiG9w0BAQEF')).toBe(false);
+
+    // Lone/truncated header (no END) — the push-block gate must still fire.
+    const header = scanText('leaked: -----BEGIN RSA PRIVATE KEY-----\n');
+    expect(header.map((f) => f.pattern)).toEqual(['private_key_pem']);
   });
 });
 

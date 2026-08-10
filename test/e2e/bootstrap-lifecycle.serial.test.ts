@@ -220,10 +220,12 @@ exit 0
   writeFileSync(join(shimDir, 'gbrain'), '#!/bin/sh\nexit 0\n');
   chmodSync(join(shimDir, 'gbrain'), 0o755);
 
-  // git shim: intercept ONLY `push` (recorded, succeeds — the fake origin is
-  // an https URL no real push could reach) and delegate everything else to
-  // the real git. Lets the e2e observe repo.ts's create → privacy-verify →
-  // FIRST-push ordering [G8] without network.
+  // git shim: intercept `push` (recorded, succeeds — the fake origin is an
+  // https URL no real push could reach) and `ls-remote` (reports the branch
+  // exists, so the FIX3 adoption re-run sees a genuinely-pushed remote instead
+  // of trying to reach github.com). Everything else delegates to real git —
+  // so repo.ts's create → privacy-verify → ensure-commit → FIRST-push ordering
+  // [G8] and the real add/commit run without network.
   const realGit = Bun.which('git');
   if (!realGit) throw new Error('git not on PATH — the e2e needs a real git to delegate to');
   writeFileSync(
@@ -232,6 +234,11 @@ exit 0
 for a in "$@"; do
   if [ "$a" = "push" ]; then
     echo "git $*" >> "$GB_FAKE_RECORD"
+    exit 0
+  fi
+  if [ "$a" = "ls-remote" ]; then
+    echo "git $*" >> "$GB_FAKE_RECORD"
+    echo "0000000000000000000000000000000000000000	refs/heads/main"
     exit 0
   fi
 done

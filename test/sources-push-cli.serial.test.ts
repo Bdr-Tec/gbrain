@@ -253,6 +253,17 @@ describe('exit 5 — blocked and refused', () => {
     expect(r.stderr.join('\n')).toContain('PUSH REFUSED');
     expect(originHead(bare)).toBe(before); // nothing left the machine
   }, T);
+
+  test('unscannable staged blob (over the scan cap) → exit 5, fail-closed', async () => {
+    writeFileSync(join(work, 'big.bin'), Buffer.alloc(26 * 1024 * 1024, 0x61));
+    const before = originHead(bare);
+    const r = await runPushCli(untouchableEngine, ['--path', work, '--allow-unverified-remote']);
+    expect(r.exitCode).toBe(5);
+    const err = r.stderr.join('\n');
+    expect(err).toContain('PUSH BLOCKED');
+    expect(err).toContain('big.bin');
+    expect(originHead(bare)).toBe(before); // nothing left the machine
+  }, T);
 });
 
 // ── exit 1: push failure ────────────────────────────────────────────────────

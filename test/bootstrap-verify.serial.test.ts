@@ -169,6 +169,49 @@ describe('verifyWorkspace — keyless pass', () => {
     expect(runs[0].ok).toBe(true); // newest = this run
   }, 240_000);
 
+  test('a user fact that merely CONTAINS the magic-token substring survives verify [8b]', async () => {
+    // A real user fact from a different page, plus a legacy NULL-slug fact,
+    // both mentioning the token STRING. The probe cleanup must scope to the
+    // probe page's source_markdown_slug, never a `fact LIKE %token%` match, so
+    // neither of these is swept.
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, fact, source, source_markdown_slug, visibility)
+       VALUES ($1, $2, 'user', $3, 'world')`,
+      ['workspace', `a real note that mentions ${VERIFY_MAGIC_TOKEN} in passing`, 'wiki/real-user-note'],
+    );
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, fact, source, visibility)
+       VALUES ($1, $2, 'user', 'world')`,
+      ['workspace', `a legacy NULL-slug fact mentioning ${VERIFY_MAGIC_TOKEN}`],
+    );
+
+    const res = await verifyWorkspace(engine, ws, {
+      sourceId: 'workspace',
+      gbrainHomeDir: home,
+      capabilities: KEYLESS,
+    });
+    expect(res.ok).toBe(true);
+
+    // The probe fact (source_markdown_slug = probe slug) IS cleaned up …
+    const probeFacts = await engine.executeRaw<{ id: number }>(
+      `SELECT id FROM facts WHERE source_id = $1 AND source_markdown_slug = $2`,
+      ['workspace', VERIFY_PROBE_SLUG],
+    );
+    expect(probeFacts.length).toBe(0);
+
+    // … but BOTH user facts that merely mention the token string survive.
+    const survivors = await engine.executeRaw<{ fact: string }>(
+      `SELECT fact FROM facts WHERE source_id = $1 AND fact LIKE $2`,
+      ['workspace', `%${VERIFY_MAGIC_TOKEN}%`],
+    );
+    expect(survivors.length).toBe(2);
+
+    // Cleanup so later tests start from a clean facts table.
+    await engine.executeRaw(`DELETE FROM facts WHERE source_id = $1 AND fact LIKE $2`, [
+      'workspace', `%${VERIFY_MAGIC_TOKEN}%`,
+    ]);
+  }, 240_000);
+
   test('failure shapes: unresolved token + under-floor USER.md + planted secret all surface', async () => {
     const soulPath = join(ws, 'SOUL.md');
     const userPath = join(ws, 'USER.md');

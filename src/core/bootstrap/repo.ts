@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { configDir } from '../config.ts';
 import { realpathOrResolve } from '../path-confine.ts';
+import { loadWorkspaceAllowlist, scanFiles, SCAN_ALLOW_FILENAME } from '../secret-scan.ts';
 import { GITHUB_URL_PLACEHOLDER } from './assets.ts';
 import {
   guardReceiptOverwrite,
@@ -226,6 +227,153 @@ function recordRepoInReceipt(gbrainHomeDir: string, workspaceDir: string, manife
 }
 
 // ---------------------------------------------------------------------------
+// First-push content + push-target binding [FIX3, FIX4]
+// ---------------------------------------------------------------------------
+
+/** Files git would include in a commit right now (staged + untracked, minus
+ * ignored), relative to the workspace — the input to the pre-commit scan. */
+async function stagedAndUntrackedFiles(runner: ExecRunner, workspaceDir: string): Promise<string[]> {
+  const res = await runner([
+    'git', '-C', workspaceDir, 'ls-files', '--cached', '--others', '--exclude-standard', '-z',
+  ]);
+  if (res.code !== 0) return [];
+  return res.stdout.split('\0').filter((s) => s.length > 0);
+}
+
+/** Secret scan the given workspace-relative files; throw on any finding. This
+ * is the SAME scanner bootstrap verify uses (src/core/secret-scan.ts) — the
+ * first push is NEVER made without it. */
+function secretScanOrThrow(workspaceDir: string, relFiles: string[]): void {
+  const allowlist = loadWorkspaceAllowlist(workspaceDir);
+  const findings = scanFiles(relFiles.map((f) => join(workspaceDir, f)), {
+    allowlist,
+    workspaceRoot: workspaceDir,
+  });
+  if (findings.length > 0) {
+    const sample = findings.slice(0, 5).map((f) => `${f.file}:${f.line} [${f.pattern}]`).join('; ');
+    throw new BootstrapError(
+      'SECRET_SCAN_BLOCKED',
+      `secret scan found ${findings.length} finding(s) before the first push: ${sample}` +
+        `${findings.length > 5 ? '; …' : ''} — nothing was committed or pushed. ` +
+        `Remove the secret(s), or allowlist a false positive in ${SCAN_ALLOW_FILENAME}, then re-run \`gbrain bootstrap repo\`.`,
+      { details: { findings: findings.length } },
+    );
+  }
+}
+
+/**
+ * Guarantee at least one commit exists so the first push has content — the
+ * freshly-rendered workspace is uncommitted, so a bare `git push` would fail
+ * ("src refspec ... does not match") and (on retry) the adoption path would
+ * false-succeed against an empty remote. Stages everything, runs the secret
+ * scan (NEVER bypassed), commits. No-op when a commit already exists and the
+ * tree is clean.
+ */
+async function ensureWorkspaceCommit(runner: ExecRunner, workspaceDir: string): Promise<void> {
+  const head = await runner(['git', '-C', workspaceDir, 'rev-parse', '--verify', 'HEAD']);
+  const hasCommit = head.code === 0;
+  const statusRes = await runner(['git', '-C', workspaceDir, 'status', '--porcelain']);
+  const dirty = statusRes.code === 0 && statusRes.stdout.trim().length > 0;
+  if (hasCommit && !dirty) return; // there is already something to push
+
+  const add = await runner(['git', '-C', workspaceDir, 'add', '-A']);
+  if (add.code !== 0) {
+    throw new BootstrapError(
+      'REPO_CREATE_FAILED',
+      `git add failed before the first commit: ${add.stderr.trim() || `exit ${add.code}`}`,
+    );
+  }
+
+  // Secret scan the staged+untracked set — do NOT bypass it [G8/D6].
+  const files = await stagedAndUntrackedFiles(runner, workspaceDir);
+  secretScanOrThrow(workspaceDir, files);
+
+  const staged = await runner(['git', '-C', workspaceDir, 'diff', '--cached', '--name-only']);
+  const nothingStaged = staged.code === 0 && staged.stdout.trim().length === 0;
+  if (nothingStaged) {
+    if (hasCommit) return; // clean commit already exists; nothing new to add
+    throw new BootstrapError(
+      'REPO_CREATE_FAILED',
+      'the workspace has no files to commit — render identity files first (`gbrain bootstrap render`), then re-run `gbrain bootstrap repo`',
+    );
+  }
+
+  const commit = await runner(['git', '-C', workspaceDir, 'commit', '-m', 'gbrain: bootstrap workspace']);
+  if (commit.code !== 0 && !hasCommit) {
+    throw new BootstrapError(
+      'REPO_CREATE_FAILED',
+      `git commit failed before the first push: ${commit.stderr.trim() || `exit ${commit.code}`}`,
+    );
+  }
+}
+
+/** The current branch, defaulting to 'main' (a pre-first-commit HEAD reports
+ * 'HEAD' / errors). */
+async function currentBranch(runner: ExecRunner, workspaceDir: string): Promise<string> {
+  const res = await runner(['git', '-C', workspaceDir, 'rev-parse', '--abbrev-ref', 'HEAD']);
+  const b = res.code === 0 ? res.stdout.trim() : '';
+  return b && b !== 'HEAD' ? b : 'main';
+}
+
+/**
+ * [FIX4/G8] Bind the just-verified privacy result to the ACTUAL push target.
+ * A concurrent `git remote set-url origin …` between verify and push could
+ * redirect content elsewhere; re-read origin and refuse unless it still parses
+ * to the owner/name we verified private.
+ */
+async function assertOriginMatches(
+  runner: ExecRunner,
+  workspaceDir: string,
+  owner: string,
+  name: string,
+): Promise<void> {
+  const res = await runner(['git', '-C', workspaceDir, 'remote', 'get-url', 'origin']);
+  const url = res.code === 0 ? res.stdout.trim() : '';
+  const parsed = url ? parseGithubRemote(url) : null;
+  if (!parsed || parsed.owner !== owner || parsed.name !== name) {
+    throw new BootstrapError(
+      'ORIGIN_EXISTS',
+      `origin now resolves to ${url || '(unset)'}, not the verified-private ${owner}/${name} — refusing to push. ` +
+        'The remote changed after the privacy verification; restore it (git remote set-url origin <the created repo>) ' +
+        'and re-run `gbrain bootstrap repo`.',
+      { details: { expected: `${owner}/${name}`, actual: url } },
+    );
+  }
+}
+
+/**
+ * [FIX3] The adoption/idempotent path must not report reused-success against an
+ * empty remote (a prior run that created the repo + set origin but whose push
+ * failed). Lightweight `ls-remote` check: if the branch is already on the
+ * remote, the workspace is genuinely pushed; otherwise complete the push
+ * (scan-gated, bound to the verified origin [FIX4]).
+ */
+async function ensureRemoteHasWorkspace(
+  runner: ExecRunner,
+  workspaceDir: string,
+  owner: string,
+  name: string,
+): Promise<void> {
+  const branch = await currentBranch(runner, workspaceDir);
+  const ls = await runner(['git', '-C', workspaceDir, 'ls-remote', '--heads', 'origin', branch]);
+  const remoteHasBranch = ls.code === 0 && ls.stdout.trim().length > 0;
+  if (remoteHasBranch) return; // genuinely pushed — reused success is honest
+
+  await ensureWorkspaceCommit(runner, workspaceDir);
+  const pushBranch = await currentBranch(runner, workspaceDir);
+  await assertOriginMatches(runner, workspaceDir, owner, name);
+  const push = await runner(['git', '-C', workspaceDir, 'push', '-u', 'origin', pushBranch]);
+  if (push.code !== 0) {
+    throw new BootstrapError(
+      'REPO_CREATE_FAILED',
+      `completing the deferred first push to ${owner}/${name} failed: ${push.stderr.trim() || `exit ${push.code}`} — ` +
+        'the repo exists and is private; commit your work and re-run `gbrain bootstrap repo`',
+      { details: { branch: pushBranch, stderr: push.stderr } },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // createPrivateRepo
 // ---------------------------------------------------------------------------
 
@@ -317,6 +465,10 @@ export async function createPrivateRepo(
     await verifyRepoPrivate(runner, parsed.owner, parsed.name);
     updateGithubMd(workspaceDir, originUrl);
     recordRepoInReceipt(gbrainHomeDir, workspaceDir, manifest, originUrl);
+    // [FIX3] Don't report reused-success on an empty remote — a prior run may
+    // have created the repo + set origin but failed to push. Verify the remote
+    // actually has our branch; complete the (scan-gated) push if it doesn't.
+    await ensureRemoteHasWorkspace(runner, workspaceDir, parsed.owner, parsed.name);
     return { url: originUrl, name: parsed.name, reused: true };
   }
 
@@ -393,8 +545,14 @@ export async function createPrivateRepo(
   // literal `true`; only then does any workspace content leave this machine.
   await verifyRepoPrivate(runner, login, name);
 
-  const branchRes = await runner(['git', '-C', workspaceDir, 'rev-parse', '--abbrev-ref', 'HEAD']);
-  const branch = branchRes.code === 0 && branchRes.stdout.trim() ? branchRes.stdout.trim() : 'main';
+  // [FIX3] Ensure the first push has content: a freshly-rendered workspace is
+  // uncommitted, so stage + secret-scan + commit before pushing (create →
+  // verify → commit → push; the scan is never bypassed).
+  await ensureWorkspaceCommit(runner, workspaceDir);
+
+  const branch = await currentBranch(runner, workspaceDir);
+  // [FIX4] Bind the verified privacy result to the actual push target.
+  await assertOriginMatches(runner, workspaceDir, login, name);
   const push = await runner(['git', '-C', workspaceDir, 'push', '-u', 'origin', branch]);
   if (push.code !== 0) {
     throw new BootstrapError(

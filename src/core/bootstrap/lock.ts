@@ -41,6 +41,9 @@ export type BootstrapErrorCode =
   | 'ORIGIN_EXISTS'
   /** `gh repo create` (or a required git step) failed. */
   | 'REPO_CREATE_FAILED'
+  /** The pre-push secret scan found an unallowlisted secret in the workspace —
+   * nothing is committed or pushed until it is removed/allowlisted [G8/D6]. */
+  | 'SECRET_SCAN_BLOCKED'
   /** Privacy verify returned an affirmative non-private answer — hard stop. */
   | 'REPO_NOT_PRIVATE'
   /** Privacy verify could not complete (rate limit / 5xx) — refuse and name

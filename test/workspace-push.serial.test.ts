@@ -247,6 +247,83 @@ describe('secret-scan gate', () => {
   }, T);
 });
 
+describe('secret-scan gate — fails CLOSED on unscannable staged blobs', () => {
+  test('a staged blob that fails cat-file (non-deletion) BLOCKS the push', async () => {
+    // A gitlink to a nested repo whose commit is not in the parent object db:
+    // it stages as an ADD (not a deletion) and `git cat-file -p :sub` fails —
+    // exactly the "cannot prove this file is clean" case that must fail closed.
+    const sub = join(work, 'sub');
+    execFileSync('git', ['init', '-q', '-b', 'main', sub], { stdio: 'ignore', env: process.env });
+    git(sub, 'config', 'user.email', 's@s.s');
+    git(sub, 'config', 'user.name', 'subtester');
+    writeFileSync(join(sub, 'f.txt'), 'x\n');
+    git(sub, 'add', 'f.txt');
+    git(sub, 'commit', '-qm', 'subinit');
+    const subSha = git(sub, 'rev-parse', 'HEAD');
+    git(work, 'update-index', '--add', '--cacheinfo', `160000,${subSha},sub`);
+    // sanity: it's an addition, and cat-file can't read it
+    expect(git(work, 'diff', '--cached', '--name-only', '--diff-filter=D')).toBe('');
+
+    const before = originHead(bare);
+    const beforeCount = commitCount(work);
+    const r = await push();
+    expect(r.status).toBe('blocked_unscannable');
+    expect(r.ok).toBe(false);
+    expect(r.unscannable?.some((u) => u.startsWith('sub'))).toBe(true);
+    expect(r.reason).toContain('sub');
+    // fail-closed = nothing committed, nothing pushed, index restored to HEAD
+    expect(commitCount(work)).toBe(beforeCount);
+    expect(originHead(bare)).toBe(before);
+    expect(git(work, 'diff', '--cached', '--name-only')).toBe('');
+    // B4: failure status recorded
+    expect(JSON.parse(readFileSync(pushStatusPath(), 'utf-8')).ok).toBe(false);
+  }, T);
+
+  test('an oversized staged blob (> scan cap) BLOCKS the push', async () => {
+    // 26MiB > SCAN_MAX_FILE_BYTES (25MiB): too big to scan in-memory, so it
+    // must block rather than sail through the sole pre-push secret gate.
+    writeFileSync(join(work, 'big.bin'), Buffer.alloc(26 * 1024 * 1024, 0x61));
+    const before = originHead(bare);
+    const beforeCount = commitCount(work);
+    const r = await push();
+    expect(r.status).toBe('blocked_unscannable');
+    expect(r.ok).toBe(false);
+    expect(r.unscannable?.some((u) => u.startsWith('big.bin'))).toBe(true);
+    expect(r.reason).toContain('scan cap');
+    expect(commitCount(work)).toBe(beforeCount); // nothing committed
+    expect(originHead(bare)).toBe(before);       // nothing pushed
+    expect(git(work, 'diff', '--cached', '--name-only')).toBe('');
+  }, T);
+
+  test('a staged DELETION is skipped (benign) — the push proceeds', async () => {
+    // README.md exists from init; delete it and add a benign note. The staged
+    // deletion has no content to leak, so it is skipped, not blocked.
+    rmSync(join(work, 'README.md'));
+    writeFileSync(join(work, 'note.md'), 'keep me\n');
+    const r = await push();
+    expect(r.status).toBe('pushed');
+    expect(r.ok).toBe(true);
+    const shipped = git(bare, 'ls-tree', '-r', '--name-only', 'main');
+    expect(shipped).toContain('note.md');
+    expect(shipped).not.toContain('README.md'); // deletion pushed through
+  }, T);
+
+  test('a binary (NUL) staged blob is scanned anyway — an embedded ASCII key still blocks', async () => {
+    // A NUL byte no longer means "safe": an ASCII key sitting inside a binary
+    // blob must still fire the gate.
+    writeFileSync(
+      join(work, 'blob.bin'),
+      Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from(`key ${OPENAI}\n`)]),
+    );
+    const r = await push();
+    expect(r.status).toBe('blocked_secrets');
+    expect(r.ok).toBe(false);
+    expect(r.findings?.[0]?.file).toBe('blob.bin');
+    expect(r.findings?.[0]?.pattern).toBe('openai');
+    expect(JSON.stringify(r).includes(OPENAI)).toBe(false);
+  }, T);
+});
+
 describe('commit-first-then-pull [CX2-7]', () => {
   test('dirty local + advanced remote → both commits survive', async () => {
     // Advance the remote from a second clone.

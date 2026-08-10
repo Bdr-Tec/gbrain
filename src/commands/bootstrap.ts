@@ -65,7 +65,13 @@ import {
   writeReceipt,
   type InstallReceipt,
 } from '../core/bootstrap/format.ts';
-import { appendInstallLog, statusReport, type StatusReport } from '../core/bootstrap/status.ts';
+import {
+  appendInstallLog,
+  gitOriginUrl,
+  probeOriginVisibility,
+  statusReport,
+  type StatusReport,
+} from '../core/bootstrap/status.ts';
 import { verifyWorkspace } from '../core/bootstrap/verify.ts';
 
 export const BOOTSTRAP_HELP = `gbrain bootstrap — paste-in agent install (Claude Code / Codex)
@@ -162,6 +168,39 @@ function resolveGbrainBin(): string | null {
   // Compiled-binary case: this process IS the gbrain binary.
   if (basename(process.execPath).startsWith('gbrain')) return process.execPath;
   return null;
+}
+
+/**
+ * [FIX7] Does the host's existing `gbrain` MCP registration target THIS
+ * workspace's serve? An "already exists/registered" error is NOT proof the
+ * registration is ours — it could point at a different workspace's binary or
+ * a stale/foreign install. Verify via `<host> mcp get <name>` that the command
+ * carries both the expected absolute gbrain binary AND GBRAIN_SOURCE=<sourceId>.
+ *
+ * Returns 'match' (ours), 'mismatch' (points elsewhere — caller re-registers or
+ * warns), or 'unknown' (the host has no `mcp get` / empty output — inconclusive,
+ * never silently blessed).
+ */
+async function verifyMcpTargetsWorkspace(
+  runner: ExecRunner,
+  harness: Harness,
+  name: string,
+  gbrainBin: string,
+  sourceId: string,
+): Promise<'match' | 'mismatch' | 'unknown'> {
+  const bin = harness === 'claude-code' ? 'claude' : 'codex';
+  let res;
+  try {
+    res = await runner([bin, 'mcp', 'get', name]);
+  } catch {
+    return 'unknown';
+  }
+  if (res.code !== 0) return 'unknown';
+  const out = `${res.stdout}\n${res.stderr}`;
+  if (out.trim() === '') return 'unknown';
+  const hasBin = out.includes(gbrainBin);
+  const hasSource = out.includes(`GBRAIN_SOURCE=${sourceId}`);
+  return hasBin && hasSource ? 'match' : 'mismatch';
 }
 
 async function withLock<T>(ws: string, fn: () => Promise<T>): Promise<T> {
@@ -441,6 +480,33 @@ async function runRender(ws: string, rest: string[], home: string): Promise<numb
   const minimal = rest.includes('--minimal');
   const only = flagValues(rest, '--only');
 
+  // Public-origin gate [FIX6]: identity files (SOUL.md/USER.md/…) must NEVER
+  // land in a public repo. `bootstrap status` enforces this for the template
+  // door, but a direct `bootstrap render` could bypass it — so enforce here,
+  // BEFORE anything is written. PUBLIC → hard refuse; unknown (no gh /
+  // offline / non-GitHub) → warn and proceed (render writes locally; nothing
+  // is pushed by render).
+  const origin = gitOriginUrl(ws);
+  if (origin) {
+    const vis = probeOriginVisibility(origin);
+    if (vis.verdict === 'public') {
+      console.error(
+        `render refused: this workspace's origin (${origin}) is PUBLIC. Identity files must never land in a ` +
+          `public repository. Make it private first (gh repo edit --visibility private ` +
+          `--accept-visibility-change-consequences, or the GitHub settings page), then re-run \`gbrain bootstrap render\`.`,
+      );
+      console.error(SUPPORT_HINT);
+      return 1;
+    }
+    if (vis.verdict === 'unknown') {
+      console.error(
+        `WARNING: could not verify the origin's visibility (${vis.detail}). Proceeding with render — ` +
+          'treat the repository as public until `gh` can verify it (install gh / `gh auth login` / network); ' +
+          'render writes locally and nothing is pushed.',
+      );
+    }
+  }
+
   // DISPATCHER-LEVEL render gate (the interview module doesn't gate — this
   // dispatcher does): a full non-minimal render requires complete + CONFIRMED
   // answers [A8]. --only re-renders (e.g. repo's GITHUB.md refresh) ride the
@@ -596,6 +662,7 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
         ? registerClaudeMcp({ gbrainBin, scope: mcpScope, sourceId, ...(gbrainHome ? { gbrainHome } : {}) })
         : registerCodexMcp({ gbrainBin, sourceId, ...(gbrainHome ? { gbrainHome } : {}) });
     for (const argv of argvs) {
+      const mcpName = argv[3] ?? 'gbrain'; // ['<host>','mcp','add',<name>,…]
       const res = await runner(argv);
       if (res.code === 127) {
         console.error(
@@ -605,26 +672,60 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
         return 2;
       }
       if (res.code !== 0) {
-        // Idempotent re-runs commonly fail with "already exists" — treat as ok.
         const already = /already exists|already registered/i.test(res.stderr + res.stdout);
         if (!already) {
           console.error(`MCP registration failed (${argv.join(' ')}): ${res.stderr.trim() || `exit ${res.code}`}`);
           return 1;
         }
-        console.log('MCP server already registered — kept.');
+        // [FIX7] "already registered" is NOT proof the registration is OURS.
+        // Verify it targets this workspace's serve; if it points elsewhere,
+        // remove + re-add rather than blessing a foreign/stale registration.
+        const verdict = await verifyMcpTargetsWorkspace(runner, harness, mcpName, gbrainBin, sourceId);
+        if (verdict === 'match') {
+          console.log('MCP server already registered for this workspace — kept.');
+        } else if (verdict === 'mismatch') {
+          console.error(
+            `existing '${mcpName}' MCP registration targets a DIFFERENT workspace/binary — replacing it.`,
+          );
+          await runner([argv[0], 'mcp', 'remove', mcpName]);
+          const re = await runner(argv);
+          if (re.code !== 0 && !/already exists|already registered/i.test(re.stderr + re.stdout)) {
+            console.error(`MCP re-registration failed (${argv.join(' ')}): ${re.stderr.trim() || `exit ${re.code}`}`);
+            return 1;
+          }
+        } else {
+          console.log(
+            `MCP server '${mcpName}' already registered — could not confirm it targets this workspace ` +
+              `(\`${argv[0]} mcp get ${mcpName}\` to inspect); kept.`,
+          );
+        }
       }
     }
 
-    // 2. Registration smoke — `<host> mcp list` should name our server.
-    // (probeBrainIdentity is the remote-HTTP bearer probe and does not apply
-    // to a local stdio registration; the list probe is the local equivalent.)
+    // 2. Registration smoke [FIX7]: confirm the EXPECTED server (binary path +
+    // GBRAIN_SOURCE), not merely a 'gbrain' substring in `mcp list`. Falls back
+    // to the list probe only when the host has no `mcp get`.
     try {
       const listBin = harness === 'claude-code' ? 'claude' : 'codex';
-      const probe = await runner([listBin, 'mcp', 'list']);
-      if (probe.code === 0 && /gbrain/.test(probe.stdout)) {
-        console.log(`MCP registered with ${harness} (scope: ${harness === 'claude-code' ? mcpScope : 'user-global'}).`);
+      const scopeLabel = harness === 'claude-code' ? mcpScope : 'user-global';
+      const verdict = await verifyMcpTargetsWorkspace(runner, harness, 'gbrain', gbrainBin, sourceId);
+      if (verdict === 'match') {
+        console.log(`MCP registered with ${harness} (scope: ${scopeLabel}) — verified targeting this workspace.`);
+      } else if (verdict === 'mismatch') {
+        console.error(
+          `WARNING: \`${listBin} mcp get gbrain\` does not show this workspace's serve ` +
+            `(binary/source mismatch) — re-run \`gbrain bootstrap hooks --harness ${harness} --repair\`.`,
+        );
       } else {
-        console.log(`MCP registration submitted; could not confirm via \`${listBin} mcp list\` (best-effort probe).`);
+        const probe = await runner([listBin, 'mcp', 'list']);
+        if (probe.code === 0 && /\bgbrain\b/.test(probe.stdout)) {
+          console.log(
+            `MCP registration submitted (server 'gbrain' present; full target unverified — ` +
+              `\`${listBin} mcp get gbrain\` to inspect).`,
+          );
+        } else {
+          console.log(`MCP registration submitted; could not confirm via \`${listBin} mcp list\` (best-effort probe).`);
+        }
       }
     } catch {
       /* smoke is best-effort */

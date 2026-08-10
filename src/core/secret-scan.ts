@@ -90,8 +90,25 @@ const CORE_PATTERNS: ReadonlyArray<{ name: string; source: string }> = [
   { name: 'github_token', source: 'gh[pousr]_[A-Za-z0-9]{36,}' },
   { name: 'slack', source: 'xox[baprs]-[A-Za-z0-9-]{10,}' },
   { name: 'aws_access_key', source: 'AKIA[0-9A-Z]{16}' },
-  { name: 'private_key_pem', source: '-----BEGIN [A-Z ]*PRIVATE KEY-----' },
+  // NOTE: private_key_pem is NOT here — a PEM key spans multiple lines and the
+  // per-line scanner below cannot see the base64 body. It is matched over the
+  // WHOLE text by PEM_BLOCK_RE (see scanPemBlocks) so redaction covers the
+  // body+footer, not just the header line.
 ];
+
+/**
+ * Whole-block PEM private key: header + (optional) base64 body + (optional)
+ * footer, matched multiline. The header-only pattern used to leave the base64
+ * body in the redacted corpus (the redaction replaced only the header line);
+ * matching the whole span means the key body is scrubbed. The body+footer are
+ * OPTIONAL so a lone/truncated header (a body-only leak, or a header with no
+ * END) still fires the push-block gate — value is then just the header. The
+ * lazy `[\s\S]*?` stops at the first END marker so two adjacent keys don't
+ * collapse into one span. `-----BEGIN CERTIFICATE-----` never matches (the
+ * literal `PRIVATE KEY` is required).
+ */
+export const PEM_BLOCK_RE =
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?/g;
 
 // Opt-in: `secret|token|password|api key`-shaped assignment whose value has
 // high Shannon entropy. Keyword-anchored (compiled inline below so the group
@@ -210,12 +227,21 @@ function isFingerprintEntry(entry: string): boolean {
   return entry.startsWith('sha256:');
 }
 
-/** True when the full sha256 hex of a matched value is allowlisted (≥8-hex prefix). */
+/**
+ * Minimum fingerprint-prefix length (hex chars) an allowlist entry must carry
+ * to suppress a finding. 16 hex = 64 bits: an 8-hex (32-bit) floor was low
+ * enough that a short allowlist entry could collide with an UNRELATED secret's
+ * hash and silently un-report it. The emitted fingerprint is exactly 16 hex,
+ * so a copy-pasted fingerprint still matches at the floor.
+ */
+export const ALLOWLIST_FINGERPRINT_MIN_HEX = 16;
+
+/** True when the full sha256 hex of a matched value is allowlisted (≥16-hex prefix). */
 function valueAllowlisted(fullHex: string, allowlist: string[]): boolean {
   for (const entry of allowlist) {
     if (!isFingerprintEntry(entry)) continue;
     const prefix = entry.slice('sha256:'.length).toLowerCase();
-    if (prefix.length >= 8 && fullHex.startsWith(prefix)) return true;
+    if (prefix.length >= ALLOWLIST_FINGERPRINT_MIN_HEX && fullHex.startsWith(prefix)) return true;
   }
   return false;
 }
@@ -234,9 +260,36 @@ interface RawHit {
   lineText: string;
 }
 
+/**
+ * Whole-text PEM private-key pass. Runs over the FULL text (not per-line) so
+ * the base64 body between header and footer is part of the matched value and
+ * therefore gets redacted, never left behind. `lineText` is set to the whole
+ * matched block so buildPreview / redactSecretsInText replace the entire span
+ * with `<REDACTED:private_key_pem>`.
+ */
+function scanPemBlocks(text: string): RawHit[] {
+  const hits: RawHit[] = [];
+  PEM_BLOCK_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PEM_BLOCK_RE.exec(text)) !== null) {
+    const value = m[0];
+    if (value.length === 0) {
+      PEM_BLOCK_RE.lastIndex++; // zero-width safety
+      continue;
+    }
+    // 1-based line of the header start.
+    const line = text.slice(0, m.index).split('\n').length;
+    hits.push({ pattern: 'private_key_pem', line, value, lineText: value });
+  }
+  return hits;
+}
+
 function scanInternal(text: string, opts: ScanOpts): RawHit[] {
   const patterns = compilePatterns(opts);
-  const hits: RawHit[] = [];
+  // PEM blocks first: their full-span value must be redacted before any
+  // per-line replacement can touch the region (base64 bodies never match the
+  // named patterns, so order is a belt-and-suspenders guarantee).
+  const hits: RawHit[] = scanPemBlocks(text);
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
