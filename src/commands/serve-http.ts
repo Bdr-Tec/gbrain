@@ -33,6 +33,7 @@ import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/sco
 import { normalizeSourceInput, normalizeFederatedReadInput } from '../core/source-id.ts';
 import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
 import { paramDefToSchema } from '../mcp/tool-defs.ts';
+import { filterOpsForSurface } from '../mcp/surface.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildError, serializeError } from '../core/errors.ts';
@@ -475,6 +476,12 @@ interface ServeHttpOptions {
    * tracking the regenerated value through other means.
    */
   suppressBootstrapToken?: boolean;
+  /**
+   * MEMORY_VERBS v1: tool-surface mode. 'verbs' = exactly the five protocol
+   * verbs; 'full' (default) = every non-localOnly operation. Enforced on the
+   * tool list AND in dispatch (fail-closed).
+   */
+  surface?: 'verbs' | 'full';
   /**
    * #2624: force-print the generated admin bootstrap token even on a
    * non-TTY (containerized) start. By default the raw token is only printed
@@ -1859,7 +1866,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // ---------------------------------------------------------------------------
   // MCP tool calls (bearer auth + scope enforcement)
   // ---------------------------------------------------------------------------
-  const mcpOperations = operations.filter(op => !op.localOnly);
+  // MEMORY_VERBS v1: surface filter applies AFTER the localOnly filter; the
+  // same set feeds dispatch as allowedOps so hidden ops are uncallable, not
+  // just unlisted [c2].
+  const surface = options.surface ?? 'full';
+  const mcpOperations = filterOpsForSurface(operations.filter(op => !op.localOnly), surface);
+  const surfaceAllowedOps: ReadonlySet<string> | undefined =
+    surface === 'full' ? undefined : new Set(mcpOperations.map(o => o.name));
 
   // v0.36.x #1076: MCP Streamable HTTP spec — GET /mcp opens an optional SSE
   // backchannel for server-initiated messages. gbrain's transport is stateless
@@ -1922,6 +1935,9 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
             ),
             required: Object.entries(op.params).filter(([, v]) => v.required).map(([k]) => k),
           },
+          // MEMORY_VERBS v1: ToolAnnotations emitted only when the op defines
+          // them — existing tools stay byte-identical (mirrors buildToolDefs).
+          ...(op.annotations ? { annotations: op.annotations } : {}),
         })),
       };
     });
@@ -2047,6 +2063,9 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           takesHoldersAllowList: tokenAllowList,
           sourceId: tokenSourceId,
           metaHook: getBrainHotMemoryMeta,
+          // MEMORY_VERBS v1: fail-closed surface enforcement + usage attribution.
+          ...(surfaceAllowedOps ? { allowedOps: surfaceAllowedOps } : {}),
+          surface,
           // v0.31 follow-up fix: thread auth so the whoami op (and any
           // future scope-aware handlers) can introspect the caller. The
           // original D12/eE1 refactor moved dispatch into dispatchToolCall
