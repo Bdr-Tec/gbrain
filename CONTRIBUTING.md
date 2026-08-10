@@ -93,7 +93,7 @@ lifecycle is [`docs/TESTING.md`](docs/TESTING.md). The short version:
 
 ```bash
 # Inner edit loop (~85s on a Mac dev box)
-bun run test                      # parallel 8-shard fan-out + serial post-pass
+bun run test                      # parallel 4-shard fan-out (memory-adaptive) + serial post-pass
 bun test test/markdown.test.ts    # specific unit test
 
 # Pre-push gate (19+ parallel checks + typecheck)
@@ -129,10 +129,13 @@ historical sweep including the trailing-newline and exports-count checks.
 
 ### Writing tests that survive the parallel loop
 
-`bun run test` shards the unit-test files (1000+) across 8 worker processes.
-Files in the same shard share a process, so process-global state leaks between
-them. Four lint rules (`scripts/check-test-isolation.sh`, R1–R4) enforce
-isolation: no direct `process.env` mutation (use `withEnv()` from
+`bun run test` shards 1000+ unit-test files across up to 4 worker processes,
+capping total concurrency (shards × intra-shard files) to available memory and
+re-running OOM-killed or externally-killed files serially before calling them
+failures (see `docs/TESTING.md` for the rescue-pass details and knobs). Files
+in the same shard share a process, so process-global state leaks between them.
+Four lint rules (`scripts/check-test-isolation.sh`, R1–R4) enforce isolation:
+no direct `process.env` mutation (use `withEnv()` from
 `test/helpers/with-env.ts`), no `mock.module(...)` outside `*.serial.test.ts`,
 and every `new PGLiteEngine(` goes inside the canonical `beforeAll` block with
 a paired `afterAll(disconnect)`.
@@ -188,6 +191,15 @@ automatically appears in the CLI, MCP server, and tools-json:
 For CLI-only commands (init, upgrade, import, export, files, embed, doctor, sync):
 1. Create `src/commands/mycommand.ts`
 2. Add the case to `src/cli.ts`
+3. Regenerate the flag registry: `bun run build:flag-registry`. The CLI rejects
+   unknown flags before dispatch; each CLI-only command's legal flag set is
+   derived from its source into `src/core/cli-flag-registry.generated.ts`.
+   `test/cli-flag-validation.test.ts` pins registry freshness, drift, and
+   consumption evidence (a safety flag like `--dry-run` may only be advertised
+   if the command's code actually reads it), so a stale registry fails the
+   build. At runtime a missing registry entry fails open — a forgotten regen
+   never bricks a command. Rerun the regen whenever you add or remove a flag
+   on an existing command, too.
 
 Parity tests (`test/parity.test.ts`) verify CLI/MCP/tools-json stay in sync.
 

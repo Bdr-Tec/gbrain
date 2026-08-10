@@ -52,10 +52,11 @@ carries the routing-seam picture):
   thin-client routing branches. These commands bypass the operation-layer
   dispatch in cli.ts (call `engine.foo()` directly), so each gets its own
   `if (isThinClient(cfg)) { callRemoteTool(...) }` branch that maps CLI flags
-  to op params. `think` is a special case: the server's `think` op
-  intentionally disables `--save`/`--take` for remote callers (the
-  `safeSave`/`safeTake` trust-boundary gate in the `think` handler in
-  `operations.ts`); thin-client `think` warns loudly when those flags are set.
+  to op params. `think` is a special case: the server's `think` op is
+  read-scoped for OAuth/MCP and intentionally disables `--save`/`--take` for
+  remote callers (the `safeSave`/`safeTake` trust-boundary gate in the `think`
+  handler in `operations.ts`); thin-client `think` warns loudly when those
+  flags are set.
 
 Cross-modal search files (image query, SSRF-guarded image loading, spend
 tracking, multimodal reindex) are indexed per-file in

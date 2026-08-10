@@ -383,19 +383,38 @@ export async function jsonbIntegrityCheck(
   progress?: Pick<ProgressReporter, 'heartbeat'>,
 ): Promise<Check> {
   try {
-    const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
-      { table: 'pages',         col: 'frontmatter',    expected: 'object' },
-      { table: 'raw_data',      col: 'data',           expected: 'object' },
-      { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
-      { table: 'files',         col: 'metadata',       expected: 'object' },
-      { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
+    const targets: Array<{ table: string; col: string; expected: 'object' | 'array'; jsonPayloadOnly?: boolean }> = [
+      { table: 'pages',                    col: 'frontmatter',    expected: 'object' },
+      { table: 'raw_data',                 col: 'data',           expected: 'object' },
+      { table: 'ingest_log',               col: 'pages_updated',  expected: 'array'  },
+      { table: 'files',                    col: 'metadata',       expected: 'object' },
+      { table: 'page_versions',            col: 'frontmatter',    expected: 'object' },
+      // Subagent persistence — second double-encode site (historical damage
+      // rows from the pre-v0.42.53.0 positional bind; write paths fixed in
+      // #2375). Mirrors repair-jsonb's targets incl. jsonPayloadOnly: these
+      // columns can legitimately hold jsonb STRING scalars (persistToolExec
+      // binds pre-serialized string payloads as-is), so only JSON-container
+      // content counts as damage.
+      { table: 'subagent_messages',        col: 'content_blocks', expected: 'array',  jsonPayloadOnly: true },
+      { table: 'subagent_tool_executions', col: 'input',          expected: 'object', jsonPayloadOnly: true },
+      { table: 'subagent_tool_executions', col: 'output',         expected: 'object', jsonPayloadOnly: true },
     ];
     let totalBad = 0;
     const breakdown: string[] = [];
-    for (const { table, col } of targets) {
+    for (const { table, col, jsonPayloadOnly } of targets) {
       progress?.heartbeat(`jsonb_integrity.${table}.${col}`);
+      // Skip targets whose table doesn't exist on this brain (subagent_*
+      // tables are v0.15+; pre-v0.15 brains naturally lack them).
+      const existsRows = await engine.executeRaw<{ exists: boolean }>(
+        `SELECT to_regclass($1) IS NOT NULL AS exists`,
+        [table],
+      );
+      if (!existsRows[0]?.exists) continue;
+      const damage = jsonPayloadOnly
+        ? `jsonb_typeof(${col}) = 'string' AND (${col} #>> '{}') ~ '^[[:space:]]*[\\[{]' AND pg_input_is_valid(${col} #>> '{}', 'jsonb')`
+        : `jsonb_typeof(${col}) = 'string'`;
       const rows = await engine.executeRaw<{ n: number }>(
-        `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
+        `SELECT count(*)::int AS n FROM ${table} WHERE ${damage}`,
       );
       const n = Number(rows[0]?.n ?? 0);
       if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
@@ -4932,6 +4951,46 @@ export async function computePoolReapHealthCheck(
  * Policy-skill install state is reported in details (it ships into the HOST
  * repo, so absence in gbrain's own skills dir is expected, not a failure).
  */
+/**
+ * MEMORY_VERBS v1 (Cathedral 1, E4) — usage-sidecar health. Read-only,
+ * fail-open. Stats only (local JSONL, never uploaded; never source of truth):
+ *   - no sidecar file        → ok, "no verb calls recorded yet" (fresh install)
+ *   - recent events parse    → ok, names the last verb + timestamp
+ *   - file exists, unreadable→ warn (observability degraded, verbs unaffected)
+ */
+export async function buildMemoryVerbsCheck(): Promise<Check> {
+  const name = 'memory_verbs_usage';
+  try {
+    const { readVerbUsage, usageLogPath } = await import('../core/verbs/usage-log.ts');
+    if (!existsSync(usageLogPath())) {
+      return {
+        name,
+        status: 'ok',
+        message: 'no verb calls recorded yet (sidecar appears on first remember/recall/entity/synthesize/forget)',
+      };
+    }
+    const events = await readVerbUsage({ days: 30 });
+    if (events.length === 0) {
+      return { name, status: 'ok', message: 'sidecar present; no verb calls in the last 30 days' };
+    }
+    const last = events[events.length - 1];
+    const byVerb = new Map<string, number>();
+    for (const e of events) byVerb.set(e.verb, (byVerb.get(e.verb) ?? 0) + 1);
+    const mix = [...byVerb.entries()].map(([v, n]) => `${v}:${n}`).join(' ');
+    return {
+      name,
+      status: 'ok',
+      message: `${events.length} verb calls in 30d (${mix}); last ${last.verb} at ${last.ts} — local JSONL only, never uploaded`,
+    };
+  } catch (e) {
+    return {
+      name,
+      status: 'warn',
+      message: `verb usage sidecar unreadable (${e instanceof Error ? e.message : String(e)}) — observability degraded; verbs unaffected`,
+    };
+  }
+}
+
 export function buildRetrievalReflexCheck(skillsDir: string | null): Check {
   const name = 'retrieval_reflex_health';
   try {
@@ -5123,6 +5182,13 @@ export async function buildChecks(
   // so it never claims "enabled via host"; it reports observed activity instead.
   if (scope === 'all') {
     checks.push(buildRetrievalReflexCheck(skillsDir));
+  }
+
+  // 1c. MEMORY_VERBS v1 usage sidecar health (Cathedral 1, E4). Read-only,
+  // fail-open: reports whether the local JSONL sidecar is present + parseable
+  // and when a verb last fired. Local file only — never uploaded.
+  if (scope === 'all') {
+    checks.push(await buildMemoryVerbsCheck());
   }
 
   // 2. Skill conformance (SKILL group — gated)

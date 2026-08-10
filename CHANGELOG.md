@@ -2,6 +2,99 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.43.0.0] - 2026-08-08
+
+**Your agent now has five memory verbs it can actually reach.** Cathedral 1 freezes
+a stable, versioned memory protocol — `recall`, `remember`, `entity`, `synthesize`,
+`forget` — over the brain's operation catalog, the way Postgres speaks one wire
+protocol to every client. Point any MCP harness at it (`claude mcp add gbrain --
+gbrain serve --surface verbs`, or the Codex/OpenClaw equivalents) and the agent sees
+exactly five self-describing tools instead of a wall of internal ops. Every response
+carries what it is, why it matched, where it came from, and what it spent (the token
+budget on `recall`, latency on `entity`, the full cost block on `synthesize`) — and the
+contract never breaks: v1 field names and meanings are frozen, changes are
+additive-forever.
+
+What you can do now that you couldn't before:
+
+- **Remember a fact once, recall it in a fresh session — in any harness.** `remember`
+  takes mandatory provenance (where the fact came from) and an optional expiry, dedupes
+  against what's already known, and supersedes the old fact when it changes
+  ("X joined acme-example" → "X left acme-example" — the outdated fact expires, the
+  history stays). `recall` retrieves saved facts and,
+  with a query, budget-packed page snippets — the server enforces the token budget and
+  tells you what it dropped instead of trusting the client to trim.
+- **Look up one person/company/project as a compact card in well under 100ms, zero LLM
+  calls.** `entity` resolves a name to a privacy-safe card (who/what, aliases,
+  last-touched, open threads, top typed edges) — or, on a miss, near-miss suggestions
+  instead of a dead end.
+- **Reason across pages when you actually need it.** `synthesize` is the explicitly
+  expensive verb (it says so in its own description), with a best-effort cost block so
+  agents choose it deliberately. No API key configured? It says `unavailable` with a
+  fix, never a fake answer.
+- **Certify any memory server against the contract.** `gbrain protocol --json` publishes
+  the machine-readable spec; `gbrain protocol conformance [--target <endpoint>]` runs the
+  frozen-contract test suite against gbrain's own server or any MCP endpoint — and
+  provably fails servers that don't comply. `gbrain protocol stats` shows per-verb
+  adoption and your real time-to-first-use, all from a local file that never leaves
+  your machine.
+
+`gbrain serve` keeps every operation by default (`--surface full`) — existing installs
+are unchanged. The new `--surface verbs` is the quickstart surface for agents. No schema
+migration; the verbs ride the existing facts, pages, and typed-graph tables. The full
+contract, per-harness install blocks, and the additive-forever versioning policy live in
+[docs/protocol/MEMORY_VERBS_v1.md](docs/protocol/MEMORY_VERBS_v1.md).
+
+**This release also fixes which search verb your agent reaches for (#2416).** The
+`search` and `query` tool descriptions, the mandatory lookup chain, and the search
+guides had drifted from reality: they described `search` as keyword-only (it has been
+cheap hybrid — vector + keyword, no LLM expansion — for many releases) and told agents
+to try `search` first for everything, falling back to `query` only when results looked
+"thin". For concept questions ("all the X that do Y", "the ecosystem around Z") that
+fallback never fired, and synonym-phrased matches dropped silently.
+
+- **Concept questions now route to `query` by default.** The tool descriptions and the
+  lookup-chain convention are intent-driven: exact known tokens → `search` (cheaper, no
+  expansion call); concept / synonym / exhaustive-set questions → `query` first. Verified
+  with a live LLM routing eval: all concept phrasings route to `query`, and personal
+  questions still route to the salience ops.
+- **"Got results" is no longer treated as "got everything."** The descriptions, docs, and
+  conventions now say it plainly: a populated `search` result set is not proof of
+  coverage, and `query` is still top-K — literal exhaustive enumeration belongs to
+  `list_pages` pagination.
+- **The CLI nudges you when it can help.** A concept-shaped `gbrain search "..."` prints a
+  one-line hint on stderr suggesting the equivalent `gbrain query` call (results stay
+  clean on stdout; `--quiet` silences it; never auto-reroutes).
+- **`think` cost accounting reads consistently.** When no LLM call ran (stubbed or no
+  API key), `usage` is now uniformly `null` in `--json` output rather than sometimes
+  missing.
+
+To take advantage of v0.43.0.0: re-run `gbrain serve` with `--surface verbs` to give
+your coding agent the five-verb memory protocol (or keep `--surface full` for the
+complete operation catalog — both speak the verbs). Run `gbrain protocol conformance`
+to self-certify, and `gbrain protocol stats` to watch adoption. Memories your agent
+saves are readable by every agent connected to the brain by default; pass
+`visibility: "private"` for local-only facts. If your agent instructions or skill
+files copy the old "search first, query if thin" rule, refresh them from
+`skills/conventions/brain-first.md` — the shipped skillpack carries the corrected
+routing.
+## [0.42.76.0] - 2026-08-08
+
+**Mistyped or unsupported flags now fail loudly instead of being silently ignored — including the ones that were supposed to make a command safe.**
+
+**Strict flag validation, CLI-wide.** Every gbrain command now rejects a flag it does not understand, with a clear error naming the flag and the command, before any work runs. Before, commands read their flags ad hoc and ignored the rest — so `gbrain post-upgrade --dry-run` accepted the flag, ignored it, and applied migrations for real. That class is gone: the legal flags for every command are derived from each command's own source into a generated registry, checked before dispatch, and a command may only advertise a safety flag like `--dry-run` if its code actually reads it. On commands routed through the operations contract, a trailing `--dry-run` is now a real rehearsal switch rather than a no-op. `--json` invocations get the same error as a structured payload, so scripts fail cleanly too.
+
+**A word of warning (intentional breaking change):** cron jobs or scripts that pass stray, misspelled, or long-removed flags have been running on luck — the flag did nothing. Those invocations now exit with an error naming the flag. That is the point: fix the invocation once and it means what it says forever. Everything after `--` is passthrough and remains untouched.
+
+**Upgrades can't wedge on forward-referenced columns anymore — as a class.** The v0.42.56.0-era startup wedge (a schema blob referencing a column that pre-existing brains didn't have yet) had two more latent instances waiting in the jobs table. Both are now probed and healed at startup, and the schema coverage guard was rewritten to cross-reference every column referenced by the embedded schema against the set of columns any migration has ever added — so a new forward reference cannot ship without its startup probe. A recovery test walks the exact journey an affected brain takes: failed upgrade, retry on the fixed binary, converge with no leftover state blocking the way.
+
+**Remote agents get more, within the same fences.** The `think` operation is now available to remote MCP callers as a read-only synthesis — the local CLI can still persist results, while remote callers are forced read-only. Chunk reads now resolve through the same source-scope rules as page reads, so a federated grant that can open a page can also read that page's chunks, and a caller without the grant cannot reach chunks outside its own floor. Chunk payloads also stop carrying raw embedding vectors over the wire — noticeably smaller responses with no behavior change, since no consumer ever read them. Two internal call sites that forward caller identity now treat anything ambiguous as untrusted, matching the fail-closed rule the rest of the codebase already follows.
+
+**Source-bound clients can be minted over HTTP.** The `/admin/api/register-client` endpoint now accepts `source` and `federatedRead` bindings, mirroring the CLI's `--source` / `--federated-read` flags — so an admin UI or provisioning proxy can create a client confined to a specific brain source without shelling out to the CLI. Omitting both preserves the historical default, and invalid source ids get a structured 400.
+
+**`gbrain doctor` and `repair-jsonb` see further and misfire less.** The double-encoded-JSON scan now covers the subagent execution columns, and the damage test requires the stored text to actually parse as JSON before flagging it — a legitimate string value that merely starts with `[` or `{` (a log line, a code snippet) is no longer misclassified, and a repair pass can no longer corrupt it. One damaged table no longer aborts the scan of the rest.
+
+### To take advantage of v0.42.76.0
 ## [0.42.75.0] - 2026-08-08
 
 **The "PGLite crashes on macOS 26" era is over: gbrain now repairs a torn brain in place, automatically, with your data preserved.**
@@ -31,6 +124,13 @@ Credit where due: @yang1996202-cpu (#2575), @AndreLYL (#223), and @roysaurav (#1
 gbrain upgrade
 ```
 
+Nothing to configure. If a cron job or script starts failing with `unknown flag`, that invocation was passing a flag that did nothing — remove or fix the flag and it will not regress silently again.
+
+### For contributors
+
+Community fixes absorbed with credit: @colinagent (#2598 think read-scope; the upgrade-rewind e2e pattern from #2623), @guim4dev (#2016 register-client source bindings), @vinsew (#597 repair-jsonb coverage extension), @javieraldape (#2494/#2531 output-correctness class — BigInt-safe local rendering and the search `--json` regression pin land here; parts of both PRs shipped earlier from master). Thank you — superseded PRs are being closed with notes.
+
+The unit-test runner is now memory-safe on machines running multiple workspaces: shard concurrency adapts to actually-available memory, and a serial rescue lane re-runs files that died to OOM or external kills before calling them failures — a red suite now means real failures, not memory pressure. The flag registry regenerates via `bun run build:flag-registry` and is pinned by freshness, drift, and consumption-evidence guards.
 If your brain currently won't open, that's it — the next command repairs it. If you'd rather look first: `gbrain pglite-repair --dry-run`.
 
 ## [0.42.74.0] - 2026-08-07
