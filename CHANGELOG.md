@@ -2,6 +2,64 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.0.0] - 2026-08-10
+
+**Your coding agent can now become your personal agent.** Paste one block into Codex or Claude Code and it sets itself up as a persistent agent with a memory that survives across sessions: it interviews you, writes its own identity files from your answers, spins up a local brain, and keeps a private GitHub repo as its durable body. Close the laptop and reopen it tomorrow, and it still knows who you are, who you're talking to, and what you told it last time. This is the OpenClaw/Hermes experience — identity, memory, schedules, persistence — running on the subscription you already pay for, with nothing to deploy.
+
+**Start with Codex.** It runs on your ChatGPT subscription, takes about fifteen minutes, and deploys nothing. Claude Code is the same install. OpenClaw and Hermes are still the way to run GBrain exactly as designed — always on, enriching around the clock — at real server and API cost; Codex is the recommended first step for anyone new to GBrain.
+
+### How to use it
+
+Pick the folder that will become your agent's home and paste (Codex shown; the Claude Code block is identical):
+
+```
+Read and follow every step of:
+https://raw.githubusercontent.com/garrytan/gbrain/latest-stable/BOOTSTRAP_FOR_AGENTS.md
+Goal: set yourself up as my persistent personal agent in this folder, with gbrain
+as your memory. Interview me before writing any identity file — never invent
+answers. Ask before anything destructive. You are not done until
+`gbrain bootstrap verify` exits 0.
+```
+
+The agent runs `gbrain bootstrap` — a new command family (`status`, `interview`, `render`, `repo`, `hooks`, `verify`, `attach`, `uninstall`) that drives the whole install. It works with **zero API keys**: your harness's model is the LLM, so the agent authors memory directly and search runs keyword-only; add one optional key (OpenAI, Anthropic, or Voyage) to unlock semantic search and automatic fact extraction. Everything is consent-gated — hooks, background push, MCP scope — and nothing runs while your harness is closed (the honest desktop contract; true 24/7 is what a hosted brain adds).
+
+### What you get
+
+- **A memory that compounds.** On Claude Code, session hooks inject relevant brain context at the start of each prompt and ingest the transcript when the session ends; on Codex, the rendered `AGENTS.md` carries the same pull protocol. Facts you state get written back through the brain's own tools and resurface next session.
+- **A portable body.** Your workspace is a private GitHub repo (privacy verified via the API before anything is pushed, secret-scanned before every commit). Clone it on a second machine and run `gbrain bootstrap attach`. It mounts anywhere GBrain runs — the exit plan if a provider ever changes its terms.
+- **Multi-model install.** Works in the ChatGPT desktop app, the Codex CLI, Claude Code desktop, and the Claude Code CLI. Same body format, two doors.
+
+### What to know after upgrading
+
+Existing installs are untouched — this is a new, opt-in surface. If you want it, run the paste block in a fresh folder. `gbrain doctor` gained bootstrap health checks (hook heartbeat, push staleness, serve/lock collisions, runbook skew); if anything looks off after an install, `gbrain doctor` names it and prints the fix.
+
+### What we caught and fixed before merging
+
+This shipped through a full review pass (architecture, security, adversarial, cross-model). Highlights, in plain terms: the credential scanner now recognizes today's API-key formats and reads the exact bytes being committed rather than a stale snapshot, so a key can't slip through a timing gap; private-key material is redacted whole, not just its header; and the scanner fails safe — an unreadable or oversized file blocks the push instead of passing unscanned. The GitHub repo is confirmed to belong to you and to be private before any content leaves the machine.
+
+## To take advantage of v0.45.0.0
+
+`gbrain upgrade` should do this automatically. If it didn't, or if `gbrain doctor`
+warns about a partial migration:
+
+1. **Run the orchestrator manually:**
+   ```bash
+   gbrain apply-migrations --yes
+   ```
+2. **To try the new agent-bootstrap surface,** paste the block above into Codex
+   or Claude Code in a fresh folder, or read
+   [`docs/guides/bootstrap.md`](docs/guides/bootstrap.md) for the full contract.
+   Existing brains need no action — bootstrap is an opt-in new surface, not a
+   change to how your current install works.
+3. **Verify the outcome:**
+   ```bash
+   gbrain doctor
+   gbrain stats
+   ```
+4. **If any step fails or the numbers look wrong,** please file an issue:
+   https://github.com/garrytan/gbrain/issues with the output of `gbrain doctor`
+   and `~/.gbrain/upgrade-errors.jsonl` if it exists.
+
 ## [0.44.0.0] - 2026-06-12
 
 **BrainBench: agent memory now has a scorecard.** `gbrain eval brainbench` is a public, reproducible, cross-harness conformance suite for the four ways agent memory fails — and from this release forward, every memory PR must hold or move its numbers against a committed baseline that CI compares against master's own copy.

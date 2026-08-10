@@ -5025,6 +5025,40 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   --follow` submits fine but the live stream never attaches. Fix: implement
   `jobs follow <id>` (poll get_job + stream progress) or retarget the spawn.
   Found during the v0.45.0.0 doc audit; KEY_FILES documents current behavior.
+- [ ] **P1 — bootstrap status is not workspace-scoped.** status.ts reads the
+  newest GLOBAL verify snapshot + global push-status, so a green verify in
+  workspace A can report workspace B as verified/healthy. Key the verify
+  snapshots + push-status by workspace path (or store them under the
+  workspace's own state dir) so status reflects the workspace it runs in.
+  Found by the v0.45.0.0 adversarial pass (Codex P2, raised to P1 — multi-
+  workspace is the graduation/multi-device story).
+- [ ] **P2 — mkdir-lock ABA steal race (folds into the shared-primitive TODO).**
+  Both acquirePushLock (workspace-push.ts) and acquireBootstrapLock (lock.ts)
+  steal a dead+stale lock as rmSync-then-mkdir with no re-verify between, so
+  two simultaneous stealers can both believe they hold it (same known class as
+  pglite-lock; git index.lock bounds the push damage). When extracting the
+  shared mkdir-lock primitive, harden the steal: re-read + token-compare the
+  stale owner immediately before rmSync, or use an atomic rename-based steal.
+  Cross-model finding (Claude + Codex) v0.45.0.0 adversarial.
+- [ ] **P2 — uninstall TOCTOU on a live PGLite DB.** uninstall probes the serve
+  lock then recursively deletes later; a serve starting in between wins the
+  race. Gated today by the lock probe + refuse-on-live-serve, so this is the
+  residual known lock-class window — close it when the shared lock primitive
+  lands (hold the lock across the probe→delete span). Codex P1 v0.45.0.0.
+- [ ] **P2 — sweep fairness: recency-only selection starves old pages.**
+  sweep.ts pass 2 repeatedly takes the newest batchLimit pages with no
+  extraction-watermark filter, so frequently-updated pages monopolize every
+  sweep and older pages never get link/timeline extraction. Add an
+  extracted-watermark (or round-robin) so the backlog drains. Codex P2.
+- [ ] **P2 — untracked deny-glob exclusion is invisible under detached push.**
+  A first-time deny-glob file (e.g. a fresh .env) is dropped from staging and
+  reported only via the logger callback + excludedUntracked — but session-end/
+  session-start auto-push runs via spawnDetachedPush with stdio:'ignore', so
+  the warning is discarded. Fail-safe (never leaves the machine) but the user
+  gets a false "synced" impression. Surface excluded deny-matches via the
+  heartbeat/push-status file so doctor + status can report them. Claude
+  adversarial (minor) v0.45.0.0.
+
 - [ ] **P2 — shared receipt upsert helper.** InstallReceipt construct/merge
   logic is quadruplicated (bootstrap.ts writeRenderReceipt +
   appendReceiptRegistration, attach.ts, repo.ts recordRepoInReceipt) with
