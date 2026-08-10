@@ -232,4 +232,15 @@ jobs:
           # History-less by design: each release force-publishes one commit
           # whose message binds (gbrain version, vendored tree hash) [C3].
           git commit -q -m "gbrain v${RELEASE_VERSION} template (tree ${TEMPLATE_TREE_HASH:-unvendored})"
-          git push --force "https://x-access-token:${TEMPLATE_REPO_PAT}@github.com/${TEMPLATE_REPO}.git" HEAD:main
+          # Out-of-band credential: a one-shot GIT_ASKPASS script reads the
+          # PAT from env at prompt time, so the token never rides argv (where
+          # `ps`, runner traces, and error messages echoing the remote URL
+          # could surface it).
+          ASKPASS="$(mktemp)"
+          printf '%s\n' '#!/bin/sh' \
+            'case "$1" in Username*) printf "x-access-token\n" ;; *) printf "%s\n" "$TEMPLATE_REPO_PAT" ;; esac' \
+            > "$ASKPASS"
+          chmod +x "$ASKPASS"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+            git push --force "https://github.com/${TEMPLATE_REPO}.git" HEAD:main
+          rm -f "$ASKPASS"
