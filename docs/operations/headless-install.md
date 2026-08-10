@@ -69,7 +69,7 @@ RUN bun install -g github:garrytan/gbrain#latest-stable
 RUN gbrain init --pglite --no-embedding   # keyless install — done; no runtime re-init needed
 ```
 
-`gbrain bootstrap verify` (and the agent-bootstrap flow generally) prints an honest capability report for this posture — `gbrain capabilities: keyless mode`, per-touchpoint lines, and the one-key upsell (`src/core/capability.ts`). Keyless installs for the agent-bootstrap path are covered in `docs/guides/bootstrap.md`; this doc covers the Docker/CI shape. Adding a single provider key later upgrades in place via Pattern 2's runtime `gbrain init --force`.
+`gbrain bootstrap verify` (and the agent-bootstrap flow generally) prints an honest capability report for this posture — a "keyless mode" banner, per-touchpoint lines, and the one-key upsell (`src/core/capability.ts`). Keyless installs for the agent-bootstrap path are covered in `docs/guides/bootstrap.md`; this doc covers the Docker/CI shape. Adding a single provider key later upgrades in place via Pattern 2's runtime `gbrain init --force`.
 
 Since every embedding cost gate is structurally moot with no key, none of `docs/operations/spend-controls.md` applies until you add one.
 
