@@ -6314,7 +6314,7 @@ export async function buildChecks(
           status: 'warn',
           message:
             'Auto-RLS event trigger missing. New tables created outside gbrain may not get RLS. ' +
-            'Fix: gbrain apply-migrations --force-retry 35',
+            'Fix: recreate it with the SQL in docs/guides/rls-and-you.md ("What if the trigger gets dropped?").',
         });
       } else if (rows[0].evtenabled !== 'O' && rows[0].evtenabled !== 'A') {
         checks.push({

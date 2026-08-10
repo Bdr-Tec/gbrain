@@ -3302,9 +3302,9 @@ const file_url: Operation = {
 
 const submit_job: Operation = {
   name: 'submit_job',
-  description: 'Submit a background job to the Minions queue. Built-in types: sync, embed, lint, import, extract, backlinks, autopilot-cycle. The `shell` type is CLI-only and rejected over MCP.',
+  description: 'Submit a background job to the Minions queue. Built-in types are registered by registerBuiltinHandlers (src/commands/jobs.ts) — e.g. sync, embed, lint, import, extract, backlinks, autopilot-cycle, subagent, and more; submitting an unknown name with --follow prints the full list. The `shell` type is CLI-only and rejected over MCP.',
   params: {
-    name: { type: 'string', required: true, description: 'Job type (sync, embed, lint, import, extract, backlinks, autopilot-cycle; shell is CLI-only)' },
+    name: { type: 'string', required: true, description: 'Job type (e.g. sync, embed, lint, import, extract, backlinks, autopilot-cycle; shell is CLI-only). Full registry: registerBuiltinHandlers in src/commands/jobs.ts.' },
     data: { type: 'object', description: 'Job payload (JSON)' },
     queue: { type: 'string', description: 'Queue name (default: "default")' },
     priority: { type: 'number', description: 'Priority (0 = highest, default: 0)' },

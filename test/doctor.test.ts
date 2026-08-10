@@ -338,8 +338,13 @@ describe('doctor command', () => {
     expect(block).toMatch(/evtenabled\s*!==\s*'O'[\s\S]*?evtenabled\s*!==\s*'A'/);
     // PGLite skip path is required (no event triggers there).
     expect(block).toMatch(/engine\.kind\s*===\s*'pglite'/);
-    // Recovery command names the migration version explicitly.
-    expect(block).toContain('--force-retry 35');
+    // Recovery hint points at the doc that carries the recreate SQL.
+    // (`gbrain apply-migrations --force-retry 35` was the old hint; it can't
+    // work — --force-retry targets the vX.Y.Z orchestrator registry, and the
+    // v35 trigger lives in the numeric MIGRATIONS array which the flag can't
+    // reach. Pin against regression.)
+    expect(block).toContain('docs/guides/rls-and-you.md');
+    expect(block).not.toContain('--force-retry 35');
   });
 
   // v0.31.7 IRON-RULE regression test for #376 + #536.
