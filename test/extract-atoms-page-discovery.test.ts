@@ -626,3 +626,84 @@ describe('local extract-atoms config knobs', () => {
     expect(body).toBe('z'.repeat(600));
   }, 30_000);
 });
+
+// Invalid-value fallbacks for the two knobs: garbage config must degrade to
+// the compiled-in defaults, never crash or zero out discovery.
+describe('local extract-atoms config knobs — invalid-value fallbacks', () => {
+  /**
+   * Observe the EFFECTIVE discovery limit by spying on executeRaw: the
+   * page-discovery SQL binds the resolved budget as `LIMIT $4`. This pins
+   * resolvePageDiscoveryLimit's parse/clamp behavior without exporting it.
+   */
+  async function effectiveDiscoveryLimit(): Promise<number> {
+    const realExecute = engine.executeRaw.bind(engine);
+    let limitParam: number | undefined;
+    (engine as unknown as { executeRaw: typeof engine.executeRaw }).executeRaw = (async (
+      sql: string,
+      params?: unknown[],
+    ) => {
+      if (sql.includes('atoms_scan_hash') && sql.includes('LIMIT $4')) {
+        limitParam = Number((params ?? [])[3]);
+      }
+      return realExecute(sql as never, params as never);
+    }) as typeof engine.executeRaw;
+    try {
+      await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: stubChat('[]') });
+    } finally {
+      (engine as unknown as { executeRaw: typeof engine.executeRaw }).executeRaw = realExecute;
+    }
+    if (limitParam === undefined) throw new Error('page-discovery query was never observed');
+    return limitParam;
+  }
+
+  test('page_discovery_budget: non-positive/NaN fall back to default; floats floored; oversized clamped to 10000', async () => {
+    // Unset → compiled-in PAGE_DISCOVERY_BUDGET (50).
+    expect(await effectiveDiscoveryLimit()).toBe(50);
+    const cases: Array<[string, number]> = [
+      ['0', 50],        // not > 0 → default
+      ['-5', 50],       // negative → default
+      ['abc', 50],      // NaN → default
+      ['2.7', 2],       // positive finite float is FLOORED (not rejected)
+      ['20000', 10000], // ceiling clamp — discovery materializes full bodies per row
+    ];
+    for (const [value, expected] of cases) {
+      await engine.setConfig('cycle.extract_atoms.page_discovery_budget', value);
+      expect(await effectiveDiscoveryLimit()).toBe(expected);
+    }
+  }, 60_000);
+
+  function capturingChat(captured: string[]): (o: ChatOpts) => Promise<ChatResult> {
+    return async (o: ChatOpts) => {
+      captured.push(String(o.messages[0]?.content ?? ''));
+      const text = '[]';
+      return {
+        text,
+        blocks: [{ type: 'text', text }],
+        stopReason: 'end',
+        usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'anthropic:claude-haiku-4-5',
+        providerId: 'anthropic',
+      };
+    };
+  }
+
+  test("max_source_chars: '499' (below the 500 floor) rejected — default leaves a 2000-char payload untruncated", async () => {
+    await engine.setConfig('cycle.extract_atoms.max_source_chars', '499');
+    await seedPage({ slug: 'note/floor-reject', type: 'note', compiled_truth: 'z'.repeat(2000) });
+    const captured: string[] = [];
+    await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: capturingChat(captured) as never });
+    expect(captured.length).toBe(1);
+    const body = captured[0].split('\n\n---\n\n')[1] ?? '';
+    expect(body).toBe('z'.repeat(2000)); // default 50_000 → no truncation
+  }, 30_000);
+
+  test("max_source_chars: '500' (at the floor) accepted — payload sliced to 500", async () => {
+    await engine.setConfig('cycle.extract_atoms.max_source_chars', '500');
+    await seedPage({ slug: 'note/floor-accept', type: 'note', compiled_truth: 'z'.repeat(2000) });
+    const captured: string[] = [];
+    await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: capturingChat(captured) as never });
+    expect(captured.length).toBe(1);
+    const body = captured[0].split('\n\n---\n\n')[1] ?? '';
+    expect(body).toBe('z'.repeat(500));
+  }, 30_000);
+});
