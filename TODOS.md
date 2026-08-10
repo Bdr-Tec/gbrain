@@ -1722,6 +1722,8 @@ The shipped fix is safe without them; these harden the opt-in further.
   auto-stash-pull-pop or a clearer remedy in the pull_failed message.
 - [ ] **P3 — drift missing from dry_run/partial results.** `uncommitted` rides
   only up_to_date/synced; dry-run and partial JSON consumers see stderr only.
+  The `sync --all --json` per-source envelope also omits it (explicit field
+  projection in sync.ts) — add `uncommitted` there when fixing this.
 - [ ] **P3 — collapse the two working-tree git subprocesses** into one
   `git status --porcelain=v2 -z` pass (halves per-sync probe overhead), and
   memoize the manifest per (gitContextRoot, headCommit) for `--all` sweeps

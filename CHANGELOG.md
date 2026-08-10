@@ -3132,9 +3132,10 @@ delete), so a rename-only dirty tree can't slip back into silence.
   `cycle.extract_atoms.max_source_chars`.
 
 ### Changed
-- Sync results (`--json` included) carry an `uncommitted` drift summary, and
-  `gbrain sync` prints a NOTE naming the counts and the remedy on both
-  "up to date" and synced runs.
+- Sync results carry an `uncommitted` drift summary (surfaced via `sync_brain`
+  over MCP and in `gbrain dream --json` phase details), and `gbrain sync`
+  prints a NOTE naming the counts and the remedy on both "up to date" and
+  synced runs.
 - The dream cycle's sync phase reports `warn` with the drift count when a
   brain repo has uncommitted syncable files.
 
@@ -3154,10 +3155,16 @@ delete), so a rename-only dirty tree can't slip back into silence.
 gbrain upgrade
 ```
 
-Nothing to configure. If sync starts warning about uncommitted files, that is
-the fix working — commit them, or opt in with
+The sync fix needs no configuration. If sync starts warning about uncommitted
+files, that is the fix working — commit them, or opt in with
 `gbrain config set sync.include_working_tree true` after reviewing what's
 untracked.
+
+To run atom extraction on a local model, point the phase at it:
+`gbrain config set models.dream.extract_atoms ollama:llama3.2:3b` (any local
+tag works), then tune `cycle.extract_atoms.page_discovery_budget` (pages
+considered per run, default 50) and `cycle.extract_atoms.max_source_chars`
+(per-page prompt cap, default 50000) to taste.
 
 ## [0.43.0.0] - 2026-08-08
 
