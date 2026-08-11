@@ -201,14 +201,23 @@ exit 0
   );
   chmodSync(join(shimDir, 'claude'), 0o755);
 
+  // STATEFUL codex shim: `mcp add` records the exact command+env line, `mcp
+  // get` echoes it back, `mcp list`/`remove` reflect real state. This is what
+  // lets verifyMcpTargetsWorkspace ([FIX7]) actually pass/fail — an inert shim
+  // that always printed "gbrain" made the mismatch detector unfalsifiable.
+  // State lives next to the argv record so it's cleaned up with shimDir.
   writeFileSync(
     join(shimDir, 'codex'),
     `#!/bin/sh
 echo "codex $*" >> "$GB_FAKE_RECORD"
+STATE="$(dirname "$GB_FAKE_RECORD")/codex-mcp.state"
 case "$1 $2" in
-  "mcp add") exit 0 ;;
-  "mcp list") echo "gbrain"; exit 0 ;;
-  "mcp remove") exit 0 ;;
+  "mcp add") printf '%s\\n' "$*" > "$STATE"; exit 0 ;;
+  "mcp get")
+    [ -f "$STATE" ] || { echo "no such MCP server: $3" >&2; exit 1; }
+    cat "$STATE"; exit 0 ;;
+  "mcp list") [ -f "$STATE" ] && echo "gbrain: stdio serve"; exit 0 ;;
+  "mcp remove") rm -f "$STATE"; exit 0 ;;
 esac
 exit 0
 `,
@@ -442,12 +451,18 @@ describe('bootstrap lifecycle (serial e2e)', () => {
       // binding [G1]); NO hooks written — the pull protocol is the per-turn
       // seam, stated plainly.
       const gbrainBin = join(shimDir, 'gbrain');
-      expect(
-        await runBootstrap(['hooks', '--workspace', ws2, '--harness', 'codex', '--gbrain-bin', gbrainBin], {
+      const { result: hooksCode, out: hooksOut } = await captureStdout(() =>
+        runBootstrap(['hooks', '--workspace', ws2, '--harness', 'codex', '--gbrain-bin', gbrainBin], {
           runner: testRunner,
         }),
-      ).toBe(0);
+      );
+      expect(hooksCode).toBe(0);
       expect(record()).toContain('codex mcp add gbrain --env GBRAIN_SOURCE=workspace');
+      // [FIX7] the stateful shim echoes the recorded reg on `mcp get`, so the
+      // registration smoke VERIFIES it targets THIS workspace (binary + source)
+      // rather than falling back to the substring probe. A regressed
+      // verifyMcpTargetsWorkspace (mismatch/unknown) would change this line.
+      expect(hooksOut).toContain('MCP registered with codex (scope: user-global) — verified targeting this workspace.');
       expect(existsSync(join(ws2, '.claude', 'settings.local.json'))).toBe(false);
       const receipt = readReceipt(home);
       // Receipt is machine-scoped last-attach-wins: ws2's registration replaced ws's record.

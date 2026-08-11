@@ -103,6 +103,58 @@ EOF
 chmod +x "$SCRATCH/bin/gh"
 export PATH="$SCRATCH/bin:$PATH"
 
+# ── Fake codex shim (stateful MCP registry, offline) ────────────────────────
+# The container has no real codex, but the registration step must still be
+# EXERCISED (not skipped). `mcp add` records the exact command+env line; `mcp
+# get` echoes it back so verifyMcpTargetsWorkspace ([FIX7]) can genuinely
+# confirm the serve targets this workspace (binary path + GBRAIN_SOURCE).
+# State path rides an exported env var so it survives the bun->codex spawn.
+step "fake codex shim"
+export GB_CODEX_STATE="$SCRATCH/codex-mcp.state"
+cat > "$SCRATCH/bin/codex" <<'EOF'
+#!/bin/sh
+STATE="${GB_CODEX_STATE:-/tmp/codex-mcp.state}"
+case "$1 $2" in
+  --version*) echo "codex 0.0.0 (offline-fake)"; exit 0 ;;
+  "mcp add") printf '%s\n' "$*" > "$STATE"; exit 0 ;;
+  "mcp get")
+    [ -f "$STATE" ] || { echo "no such MCP server: $3" >&2; exit 1; }
+    cat "$STATE"; exit 0 ;;
+  "mcp list") [ -f "$STATE" ] && echo "gbrain: stdio serve"; exit 0 ;;
+  "mcp remove") rm -f "$STATE"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$SCRATCH/bin/codex"
+# Absolute gbrain binary for the registration argv (never executed — the codex
+# path writes no hooks and the MCP add is faked).
+FAKE_GBRAIN="$SCRATCH/bin/gbrain-bin"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE_GBRAIN"
+chmod +x "$FAKE_GBRAIN"
+
+# ── Fake git push shim (offline) ────────────────────────────────────────────
+# The fake gh adds an https origin, so repo.ts's real `git push` would try to
+# reach github.com — impossible under --network none (and it prompts for
+# credentials when network IS allowed for the local smoke). Intercept `push`
+# (absorbed — nothing leaves the container) and `ls-remote` (reports the branch
+# exists) exactly like the in-repo lifecycle e2e's git shim; delegate every
+# other subcommand (init/add/commit/remote/rev-parse) to real git. Capture the
+# real git path BEFORE this shim shadows it on PATH.
+REAL_GIT="$(command -v git)"
+[ -n "$REAL_GIT" ] || fail "git not on PATH — the e2e needs a real git to delegate to"
+cat > "$SCRATCH/bin/git" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+  if [ "\$a" = "push" ]; then exit 0; fi
+  if [ "\$a" = "ls-remote" ]; then
+    echo "0000000000000000000000000000000000000000	refs/heads/main"
+    exit 0
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$SCRATCH/bin/git"
+
 # ── Engine phase artifact: keyless PGLite config ─────────────────────────────
 step "engine config"
 cat > "$GBRAIN_HOME/.gbrain/config.json" <<EOF
@@ -177,5 +229,18 @@ grep -Fq '"ok": true' "$SCRATCH/verify.json" || fail "verify did not pass"
 grep -Fq '"mode": "keyless"' "$SCRATCH/verify.json" || fail "capability report is not keyless"
 grep -Fq 'smoke not applicable' "$SCRATCH/verify.json" || fail "hooks_smoke degradation not named"
 
+# ── Codex door: exercise MCP registration through the fake stateful codex ────
+# No real codex binary, but the argv/registration step MUST run (not skip). The
+# stateful shim lets the [FIX7] smoke actually verify the serve targets this
+# workspace; the codex path writes NO .claude hooks (pull protocol covers it).
+step "codex MCP registration (fake stateful codex)"
+codex_out="$(gbrain bootstrap hooks --workspace "$WS" --harness codex --gbrain-bin "$FAKE_GBRAIN" 2>&1)"
+printf '%s\n' "$codex_out"
+printf '%s\n' "$codex_out" | grep -Fq "verified targeting this workspace" \
+  || fail "codex MCP registration was not verified as targeting this workspace"
+[ -f "$WS/.claude/settings.local.json" ] && fail "codex path must not write Claude hooks"
+grep -Fq "GBRAIN_SOURCE=" "$GB_CODEX_STATE" || fail "codex registration did not bind GBRAIN_SOURCE"
+grep -Fq "serve --surface full" "$GB_CODEX_STATE" || fail "codex registration did not pin the full op surface"
+
 echo
-echo "PASS: offline bootstrap e2e (interview -> render -> repo -> abort/resume -> keyless verify)"
+echo "PASS: offline bootstrap e2e (interview -> render -> repo -> abort/resume -> keyless verify -> codex MCP)"

@@ -26,6 +26,8 @@ import {
 } from '../src/core/bootstrap/verify.ts';
 import { listVerifyRuns } from '../src/core/bootstrap/status.ts';
 import type { CapabilityReport } from '../src/core/capability.ts';
+import { operations, type OperationContext } from '../src/core/operations.ts';
+import { loadCorpusPages, loadCorpusQueries } from './helpers/bootstrap-corpus.ts';
 
 const KEYLESS: CapabilityReport = {
   embeddings: { available: false },
@@ -387,5 +389,61 @@ describe('verifyWorkspace — source_id collision resolution', () => {
       rmSync(firstBrain, { recursive: true, force: true });
       rmSync(ws2, { recursive: true, force: true });
     }
+  }, 240_000);
+});
+
+describe('verifyWorkspace — real corpus graph floor + qrels recall', () => {
+  test('auto-link builds real multi-entity edges; verify passes on the populated brain; gold queries recall the expected pages', async () => {
+    // Seed the synthetic world into the SAME workspace source verify checks,
+    // through the real put_page handler so auto-link builds REAL edges — a
+    // 12-page graph, not the 2-node self-planted probe pair verify writes.
+    const loaded = await loadCorpusPages(engine, { sourceId: 'workspace' });
+    expect(loaded).toContain('people/alice-example');
+    expect(loaded).toContain('companies/ridge-platform');
+
+    // Real edges exist from the wikilinks in the page bodies (not the probe):
+    // alice-example → ridge-platform, with multiple outbound edges on a real
+    // entity, and the reverse edge answers through the backlink table.
+    const aliceLinks = await engine.getLinks('people/alice-example', { sourceId: 'workspace' });
+    const aliceTargets = aliceLinks.map((l) => l.to_slug);
+    expect(aliceTargets).toContain('companies/ridge-platform');
+    expect(aliceTargets.length).toBeGreaterThanOrEqual(2);
+    const ridgeBacklinks = await engine.getBacklinks('companies/ridge-platform', { sourceId: 'workspace' });
+    expect(ridgeBacklinks.map((l) => l.from_slug)).toContain('people/alice-example');
+
+    // verify still runs green end-to-end on the now-populated brain, and its
+    // graph_floor / roundtrip checks pass alongside the real corpus graph.
+    const res = await verifyWorkspace(engine, ws, {
+      sourceId: 'workspace',
+      gbrainHomeDir: home,
+      capabilities: KEYLESS,
+      skipHooksSmoke: true,
+    });
+    if (!res.ok) console.error(res.report);
+    expect(res.ok).toBe(true);
+    expect(check(res.checks, 'graph_floor')[0].ok).toBe(true);
+    for (const c of check(res.checks, 'roundtrip')) expect(c.ok).toBe(true);
+
+    // qrels: each gold page-recall case returns its expected slug through the
+    // REAL keyword-search query op (keyless), over the multi-page corpus.
+    const queryOp = operations.find((o) => o.name === 'query')!;
+    const ctx: OperationContext = {
+      engine,
+      config: { engine: 'pglite' } as never,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      dryRun: false,
+      remote: false,
+      sourceId: 'workspace',
+    };
+    const goldPageCases = loadCorpusQueries().filter((q) => q.kind === 'page');
+    expect(goldPageCases.length).toBeGreaterThan(0);
+    const misses: string[] = [];
+    for (const q of goldPageCases) {
+      const result = await queryOp.handler(ctx, { query: q.query, limit: 10, expand: false });
+      if (!JSON.stringify(result).includes(q.expect_slug!)) {
+        misses.push(`${q.id}: "${q.query}" did not recall ${q.expect_slug}`);
+      }
+    }
+    expect(misses).toEqual([]);
   }, 240_000);
 });

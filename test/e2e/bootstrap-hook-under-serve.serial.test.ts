@@ -39,6 +39,12 @@ import { resolveSocketPath, ipcSecretPath } from '../../src/core/context/resolve
 import { LiveServeLockError } from '../../src/core/pglite-lock.ts';
 import { createEngine } from '../../src/core/engine-factory.ts';
 import { addSource } from '../../src/core/sources-ops.ts';
+import {
+  loadCorpusPages,
+  loadCorpusBeliefs,
+  loadCorpusBeliefData,
+  loadCorpusQueries,
+} from '../helpers/bootstrap-corpus.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..');
 const TRANSCRIPT_FIXTURE = join(REPO_ROOT, 'test', 'fixtures', 'conversation-formats', 'claude-code.jsonl');
@@ -120,12 +126,20 @@ beforeAll(async () => {
   mkdirSync(join(ws, 'brain'), { recursive: true });
 
   // Pre-init the brain in-process (schema + source) so the serve subprocess
-  // boots fast and doesn't spend its boot budget on migrations.
+  // boots fast and doesn't spend its boot budget on migrations. Also SEED the
+  // synthetic corpus (pages + world/private beliefs) into the serve's source
+  // BEFORE the serve takes the single-writer lock — the serve then reads this
+  // committed data when it assembles turn context, so Pin 1 can assert on real
+  // recalled content (world belief present, private belief fenced out) instead
+  // of accepting an empty block [GAP 2].
   const engineConfig = { engine: 'pglite' as const, database_path: dbDir };
   const engine = await createEngine(engineConfig);
   await engine.connect(engineConfig);
   await engine.initSchema();
   await addSource(engine, { id: 'workspace', localPath: join(ws, 'brain'), force: true });
+  await loadCorpusPages(engine, { sourceId: 'workspace' });
+  const seededBeliefs = await loadCorpusBeliefs(engine, { sourceId: 'workspace' });
+  if (seededBeliefs < 1) throw new Error('corpus beliefs failed to seed — GAP 2 has nothing to recall');
   await engine.disconnect();
 
   // REAL serve subprocess. stdin stays open (a stdin EOF is serve's shutdown
@@ -198,17 +212,25 @@ describe('bootstrap hook under a live serve (serial e2e) [A7]', () => {
     expect(existsSync(ipcSecretPath(dbDir))).toBe(true);
   }, 30_000);
 
-  test('Pin 1: user-prompt hook with a LIVE serve → exit 0 + context JSON or a documented degradation heartbeat', async () => {
+  test('Pin 1: user-prompt hook with a LIVE serve → exit 0 + additionalContext carrying the recalled WORLD belief, never the PRIVATE one', async () => {
     // Transcript fixture under the confinement seam root.
     const projRoot = join(tmpParent, 'projects');
     mkdirSync(join(projRoot, 'p1'), { recursive: true });
     const transcript = join(projRoot, 'p1', 'session.jsonl');
     copyFileSync(TRANSCRIPT_FIXTURE, transcript);
 
+    // Drive the turn off a real gold recall case: its query is the prompt, its
+    // expected substring is a WORLD belief we seeded, and its must_not is the
+    // PRIVATE sibling belief the visibility fence must keep out of the block.
+    const beliefCase = loadCorpusQueries().find((q) => q.id === 'belief-recall-alice-standups');
+    expect(beliefCase).toBeDefined();
+    expect(beliefCase!.expect_substring).toBeDefined();
+    expect(beliefCase!.must_not_substring).toBeDefined();
+
     const out = collectStdout();
     const code = await runHook(['user-prompt'], {
       stdin: JSON.stringify({
-        prompt: 'what do we know about widget-co?',
+        prompt: beliefCase!.query,
         session_id: 'hook-under-serve-1',
         transcript_path: transcript,
       }),
@@ -224,16 +246,28 @@ describe('bootstrap hook under a live serve (serial e2e) [A7]', () => {
     expect(hb.event).toBe('user-prompt');
     expect(hb.outcome).not.toBe('error');
 
+    // Every distinctive fragment of a PRIVATE belief that must NEVER cross the
+    // IPC boundary (the meta-hook pins visibility=['world'] for the hook path).
+    const privateFragments = loadCorpusBeliefData()
+      .filter((b) => b.visibility === 'private')
+      .map((b) => b.text);
+
     if (payload.length > 0) {
-      // Non-empty additionalContext JSON — the full happy-path contract.
+      // Happy path: assert the REAL recalled content, not length>0. The
+      // assembled block must carry the seeded WORLD belief the gold case
+      // expects, and NONE of the private beliefs.
       const parsed = JSON.parse(payload) as {
         hookSpecificOutput: { hookEventName: string; additionalContext: string };
       };
       expect(parsed.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
-      expect(parsed.hookSpecificOutput.additionalContext.length).toBeGreaterThan(0);
+      const ctx = parsed.hookSpecificOutput.additionalContext;
+      expect(ctx).toContain(beliefCase!.expect_substring!);
+      expect(ctx).not.toContain(beliefCase!.must_not_substring!);
+      for (const frag of privateFragments) expect(ctx).not.toContain(frag);
     } else {
       // Empty stdout MUST be a documented degradation recorded in the
-      // heartbeat — never a silent nothing, never a wiring-broken reason.
+      // heartbeat — never a silent nothing, never a wiring-broken reason. A
+      // degraded turn also, trivially, leaked no private content.
       expect(hb.reason).toBeDefined();
       expect(DOCUMENTED_LIVE_SERVE_REASONS.has(hb.reason!)).toBe(true);
     }

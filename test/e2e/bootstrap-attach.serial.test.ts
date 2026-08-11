@@ -35,6 +35,26 @@ import { attachWorkspace } from '../../src/core/bootstrap/attach.ts';
 import { readManifest, readReceipt } from '../../src/core/bootstrap/format.ts';
 import { initState, setAnswer, confirm, readBackHash } from '../../src/core/bootstrap/interview.ts';
 import { realpathOrResolve } from '../../src/core/path-confine.ts';
+import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
+import { addSource } from '../../src/core/sources-ops.ts';
+import { importFromFile } from '../../src/core/import-file.ts';
+import { verifyWorkspace } from '../../src/core/bootstrap/verify.ts';
+import { operations, type OperationContext } from '../../src/core/operations.ts';
+import type { CapabilityReport } from '../../src/core/capability.ts';
+import { CORPUS_DIR } from '../helpers/bootstrap-corpus.ts';
+
+/** Keyless capability report — machine 2 re-ingests + verifies with ZERO keys. */
+const KEYLESS: CapabilityReport = {
+  embeddings: { available: false },
+  extraction: { available: false },
+  search: 'keyword-only',
+  mode: 'keyless',
+};
+
+/** A page authored ONLY on machine 1, committed to the repo, cloned to machine 2. */
+const MACHINE1_PAGE_SLUG = 'companies/summit-robotics';
+/** A distinctive fact that exists nowhere but machine 1's authored repo page. */
+const MACHINE1_MARKER = 'The flagship warehouse pilot runs at the Rivermouth fulfillment center.';
 
 const SAVED_ENV: Record<string, string | undefined> = {};
 const ENV_KEYS = [
@@ -128,6 +148,17 @@ beforeAll(async () => {
   const renderCode = await (await captureStd(() => runBootstrap(['render', '--workspace', ws1]))).result;
   expect(renderCode).toBe(0);
   expect(readManifest(ws1).state).toBe('initialized');
+
+  // Author a corpus page into machine 1's brain/ BEFORE the commit — a real
+  // synthetic page carrying a machine-1-only fact (the Rivermouth marker). It
+  // lives ONLY in the repo, so machine 2 can only learn it by re-ingesting the
+  // clone [multi-device promise: hot facts arrive via the repo].
+  const corpusPage = readFileSync(join(CORPUS_DIR, 'pages', 'companies__summit-robotics.md'), 'utf8');
+  mkdirSync(join(ws1, 'brain', 'companies'), { recursive: true });
+  writeFileSync(
+    join(ws1, 'brain', 'companies', 'summit-robotics.md'),
+    `${corpusPage.trimEnd()}\n\n## Operations\n\n${MACHINE1_MARKER}\n`,
+  );
 
   // git init + commit + local bare 'origin' + clone → machine 2.
   git(ws1, ['init', '-q', '-b', 'main']);
@@ -238,6 +269,81 @@ describe('bootstrap attach (machine-2 adoption, serial e2e)', () => {
       { host: 'claude-code', scope: 'project', detail: 'mcp+hooks' },
     ]);
   }, 60_000);
+
+  test('machine-2 full round-trip: repo page re-ingests into a FRESH brain, verify passes, and a machine-1-only fact is recalled', async () => {
+    // A fresh machine-2 PGLite brain — nothing pre-seeded. The only path a fact
+    // can reach it is the cloned repo tree. Hermetic in-memory engine (the
+    // proven in-process verify pattern) so teardown is clean.
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+    try {
+      // Register the cloned brain/ as the workspace source (what `bootstrap
+      // attach` → `gbrain sources add` does on machine 2).
+      await addSource(engine, { id: 'workspace', localPath: join(ws2, 'brain'), force: true });
+
+      // Precondition: the machine-1-authored page is NOT in the fresh DB — it
+      // exists ONLY as a committed repo file cloned from machine 1.
+      expect(await engine.getPage(MACHINE1_PAGE_SLUG, { sourceId: 'workspace' })).toBeNull();
+      const clonedFile = join(ws2, 'brain', 'companies', 'summit-robotics.md');
+      expect(existsSync(clonedFile)).toBe(true);
+      expect(readFileSync(clonedFile, 'utf8')).toContain(MACHINE1_MARKER);
+
+      // Re-ingest through the REAL per-file import path (the primitive `gbrain
+      // sync` runs on each changed file), scoped to the workspace source.
+      const rel = join('companies', 'summit-robotics.md');
+      const imp = await importFromFile(engine, clonedFile, rel, { sourceId: 'workspace', noEmbed: true });
+      expect(imp.status).toBe('imported');
+      expect(imp.slug).toBe(MACHINE1_PAGE_SLUG);
+
+      // The page + its machine-1-authored content now live in machine 2's DB.
+      const page = await engine.getPage(MACHINE1_PAGE_SLUG, { sourceId: 'workspace' });
+      expect(page).not.toBeNull();
+      expect(page!.title).toBe('Summit Robotics');
+      expect(page!.compiled_truth ?? '').toContain(MACHINE1_MARKER);
+
+      // The clone's origin is a local bare path gh cannot prove private; drop it
+      // so repo_privacy resolves to the honest local-only pass. The multi-device
+      // fact transport under test is orthogonal to remote-privacy verification.
+      execFileSync('git', ['-C', ws2, 'remote', 'remove', 'origin']);
+
+      // `bootstrap verify` core runs GREEN on machine 2, keyless.
+      const res = await verifyWorkspace(engine, ws2, {
+        sourceId: 'workspace',
+        gbrainHomeDir: join(machine2Home, '.gbrain'),
+        capabilities: KEYLESS,
+        skipHooksSmoke: true,
+      });
+      if (!res.ok) console.error(res.report);
+      expect(res.ok).toBe(true);
+      expect(res.checks.find((c) => c.id === 'roundtrip')!.ok).toBe(true);
+
+      // Recall the machine-1-only fact through the REAL keyword-search query op.
+      // The Rivermouth marker was authored on machine 1 and reached machine 2
+      // ONLY via the repo, so a hit proves the multi-device promise end to end.
+      const queryOp = operations.find((o) => o.name === 'query')!;
+      const ctx: OperationContext = {
+        engine,
+        config: { engine: 'pglite' } as never,
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+        dryRun: false,
+        remote: false,
+        sourceId: 'workspace',
+      };
+      const markerHit = await queryOp.handler(ctx, { query: 'Rivermouth fulfillment center warehouse', limit: 10, expand: false });
+      expect(JSON.stringify(markerHit)).toContain(MACHINE1_PAGE_SLUG);
+      const goldHit = await queryOp.handler(ctx, { query: 'warehouse navigation robots startup', limit: 10, expand: false });
+      expect(JSON.stringify(goldHit)).toContain(MACHINE1_PAGE_SLUG);
+    } finally {
+      // The query op fires retrieval telemetry (last_retrieved_at / search
+      // stats) as a background write. PGLite serializes one connection, so a
+      // yield-then-flush drains that in-flight write BEFORE close() — issuing
+      // db.close() with a query still queued otherwise deadlocks disconnect.
+      await new Promise((r) => setTimeout(r, 100));
+      await engine.executeRaw('SELECT 1').catch(() => {});
+      await engine.disconnect();
+    }
+  }, 240_000);
 
   test('template clone (initialized: false) is REFUSED with the agent-readable render pointer [CX2-1]', async () => {
     const ws3 = mkdtempSync(join(tmpdir(), 'gb-att-ws3-'));
