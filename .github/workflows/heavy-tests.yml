@@ -130,15 +130,17 @@ jobs:
       # a stock runner reports a green no-op rather than failing.
       - name: Run real-agent door tests
         run: |
-          FILES=""
+          files=()
           for f in \
             test/e2e/bootstrap-real-claude.serial.test.ts \
             test/e2e/bootstrap-real-codex.serial.test.ts; do
-            [ -f "$f" ] && FILES="$FILES $f"
+            [ -f "$f" ] && files+=("$f")
           done
-          if [ -z "$FILES" ]; then
+          if [ "${#files[@]}" -eq 0 ]; then
             echo "SKIP: no real-agent door test files present yet."
             exit 0
           fi
-          echo "Running:$FILES"
-          bun test $FILES
+          echo "Running: ${files[*]}"
+          # --timeout: real-agent turns are slow (live claude/codex); the door
+          # tests self-skip without authed binaries so this is a no-op elsewhere.
+          bun test --timeout=600000 "${files[@]}"
