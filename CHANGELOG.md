@@ -24,6 +24,10 @@ worker therefore passes without creating a second unmanaged process.
   when nothing manages workers.
 
 ### Fixed
+- Page ingest no longer aborts an entire document (or batch run) when the body
+  or a chunk contains a raw NUL byte or lone UTF-16 surrogate: pages body
+  columns and chunk_text are sanitized at write time in both engines, the same
+  policy as links/timeline/takes free-text. (#3998)
 - A live supervisor plus a legacy worker PID is reported as a duplicate
   topology that requires operator review.
 - Smoke-test worker detection is hermetically covered without touching live
