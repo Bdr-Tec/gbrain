@@ -123,3 +123,37 @@ One command: `gbrain doctor`. It covers hook health, push staleness, serve/lock
 collisions, schema state, and prints fixes. `gbrain bootstrap status --json` emits
 a support blob (versions, harness, last verify/push, hook failure rate) your agent
 can relay verbatim when you report a problem.
+
+## Real-agent e2e
+
+Most bootstrap tests drive the dispatcher with PATH-shimmed `claude`/`codex`
+recorders — fast, hermetic, no API cost. Two additional "door" tests drive the
+ACTUAL binaries end to end so we catch real-world drift (a `codex mcp add` flag
+that changed shape, a harness that stopped calling our MCP server):
+
+- `test/e2e/bootstrap-real-claude.serial.test.ts` — real `claude -p` over MCP.
+- `test/e2e/bootstrap-real-codex.serial.test.ts` — real `codex exec`. It runs the
+  keyless-`init` → interview → render → `gbrain bootstrap hooks --harness codex`
+  path (executing the real `codex mcp add` into a hermetic `~/.codex/config.toml`),
+  asserts the rendered `AGENTS.md` carries the Gate-3 brain-first pull protocol
+  (Codex has no hook system, so the pull protocol is its per-turn seam), then
+  spends one live `codex exec` turn to prove real codex → gbrain MCP → brain →
+  a seeded, brain-only fact (falling back to a shell `gbrain query` if headless
+  stdio-MCP is unavailable).
+
+These pay real API cost and take 30s–2min per turn, so they are NOT in the PR
+shard. Everything is hermetic (temp `HOME` / `CODEX_HOME` / `CLAUDE_CONFIG_DIR` /
+`GBRAIN_HOME` per test — the operator's real `~/.claude`, `~/.gbrain`, `~/.codex`
+are never touched; auth is copied read-only). Each file self-SKIPS via
+`describe.skipIf` when its binary or auth is absent, so on a machine without the
+tool it is a clean no-op that never fails. CI wires them into the `real-agent-e2e`
+job in `.github/workflows/heavy-tests.yml` (nightly + the `real-agent-e2e` /
+`heavy-tests` label); on a stock runner they self-skip. To actually exercise the
+binaries you need a runner with authed `claude`/`codex` and the provider creds
+(`GSTACK_ANTHROPIC_API_KEY`/`ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`) exported.
+
+Run locally (where both are installed + authed):
+
+```bash
+bun test test/e2e/bootstrap-real-codex.serial.test.ts
+```

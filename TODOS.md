@@ -5018,6 +5018,19 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 
+- [ ] **P2 — compiled `gbrain` binary cannot `serve` a PGLite brain.** `bun
+  build --compile` does not embed PGLite's WASM/extension payloads
+  (`pglite.data`, `vector.tar.gz`, `pg_trgm.tar.gz`) — they're absent from the
+  read-only `/$bunfs` (Bun vfs #1340), so `bin/gbrain serve` fails to open a
+  PGLite data dir. Real installs use `bun install -g` (runs `serve` via bun on
+  source), so normal users are unaffected — but the release also publishes
+  compiled binaries for self-update, and `gbrain serve` from one on PGLite
+  would fail. Fix: embed the WASM/extension assets in the compile step (so the
+  compiled binary is serve-capable and the real-agent e2e MCP server can use
+  it for fast startup), OR document that PGLite `serve` requires the bun-run
+  path. Found building the real-agent e2e (the harness falls back to `bun run
+  src/cli.ts serve`, measured ~300ms tools/list, so speed isn't the blocker —
+  this is purely the compiled-binary capability gap).
 - [ ] **P1 — `--background --follow` spawns a nonexistent subcommand.**
   `src/core/cli-options.ts` (~:391) spawns `gbrain jobs follow <id>` after a
   background submit, but jobs.ts has no `follow` subcommand (`jobs watch
@@ -5114,6 +5127,16 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   install, gh auth, repo create, MCP registration) stays manual. Unblocks after 10
   consecutive green offline runs in heavy-tests (CEO review D3.3b). Start:
   tests/docker/ harness + the fake-gh recording shim.
+- [ ] **P2 — Real-agent door e2e needs a provisioned runner.** The real-binary door
+  tests (`test/e2e/bootstrap-real-{claude,codex}.serial.test.ts`) drive the ACTUAL
+  `claude`/`codex` binaries against a real gbrain and pay API cost. They self-SKIP
+  (`describe.skipIf` on binary/auth) everywhere else, so the `real-agent-e2e` job in
+  `.github/workflows/heavy-tests.yml` is a green no-op on stock GitHub runners. To
+  actually EXERCISE them we need a self-hosted / manually-provisioned runner with
+  authed `claude` + `codex` and provider creds exported
+  (`GSTACK_ANTHROPIC_API_KEY`/`ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`). Until then they
+  run locally on an operator machine only. Start: stand up a labeled runner with the
+  binaries pre-authed, or a scheduled self-hosted lane.
 
 - [ ] **P1 — unit-shard exit hang: bun test process leaks a ref'd handle and never
   exits after all tests pass.** Probabilistic (scales with file count/duration),
