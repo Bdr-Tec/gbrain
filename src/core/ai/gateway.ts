@@ -51,7 +51,8 @@ import {
   OPENROUTER_CACHE_HEADER,
   openrouterRequiresExplicitPromptCache,
 } from './recipes/openrouter.ts';
-import { resolveModel, resolveModelDetailed, resolveEffectiveChatModel, resolveEffectiveExpansionModel } from '../model-config.ts';
+import { resolveModelDetailed, resolveEffectiveChatModel, resolveEffectiveExpansionModel } from '../model-config.ts';
+import { snapshotConfigReader } from '../config-snapshot.ts';
 import { parseLlmJson } from '../llm-json.ts';
 import type { BrainEngine } from '../engine.ts';
 import { dimsProviderOptions } from './dims.ts';
@@ -544,15 +545,26 @@ export async function reconfigureGatewayWithEngine(engine: BrainEngine): Promise
     env: cfg.env ?? process.env,
     baseUrl: resolveNativeBaseUrl('openai', cfg),
   });
+
+  // The two resolutions below each walk a 5-tier precedence chain that reads
+  // up to 4 config keys, plus alias expansion. Against the engine that is
+  // many sequential round trips before the CLI does any work — seconds of
+  // `gbrain stats`'s wall clock on a hosted brain, for reads the server
+  // answered in microseconds. Take one snapshot of the config table (AFTER
+  // the discovery refresh above, so tier defaults see fresh discovery) and
+  // resolve every model against it. Same keys, same precedence, one round
+  // trip.
+  const reader = await snapshotConfigReader(engine);
+
   // Resolve expansion (utility tier) and chat (reasoning tier). Embedding is
   // intentionally NOT re-resolved here — switching embedding models invalidates
   // the vector index. Out of scope per v0.31.12 plan ("Embedding tier knob").
-  const expansionDetailed = await resolveModelDetailed(engine, {
+  const expansionDetailed = await resolveModelDetailed(reader, {
     configKey: 'models.expansion',
     tier: 'utility',
     fallback: cfg.expansion_model ?? DEFAULT_EXPANSION_MODEL,
   });
-  const chatDetailed = await resolveModelDetailed(engine, {
+  const chatDetailed = await resolveModelDetailed(reader, {
     configKey: 'models.chat',
     tier: 'reasoning',
     fallback: cfg.chat_model ?? DEFAULT_CHAT_MODEL,

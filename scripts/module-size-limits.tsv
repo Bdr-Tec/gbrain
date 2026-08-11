@@ -5,8 +5,8 @@
 # Columns: path	max_lines	policy	note
 src/commands/doctor.ts	4341	ratchet	+34: schema_columns check (gbrain#4421) — read-only detectMissingColumns() verification, adjacent to schema_version; lowered: conversation_format_coverage peeled to doctor/checks/conversation-coverage.ts (#4193)
 src/core/operations.ts	303	ratchet	peel target: containment sprint C4-C7
-src/core/postgres-engine.ts	6018	ratchet	grown v0.46.25.0 fix waves (#1262 #3827 #4389) + v0.46.26.0: private-queue token bootstrap probe + semantic takes retrieval PR (2 lines)
-src/core/pglite-engine.ts	5972	ratchet	grown v0.46.24.0 overnight wave: registry-aware writes + stale/invalidate plane unification (#1262); peeled cjk-search (#4299); +1: semantic takes retrieval delegate (#3776)
+src/core/postgres-engine.ts	6034	ratchet	grown v0.46.25.0 fix waves (#1262 #3827 #4389) + v0.46.26.0: private-queue token bootstrap probe + semantic takes retrieval PR (2 lines); +5: NUL-sanitize shared chunk_text local (#3998); +11: getAllConfig bulk read (#3980)
+src/core/pglite-engine.ts	5984	ratchet	grown v0.46.24.0 overnight wave: registry-aware writes + stale/invalidate plane unification (#1262); peeled cjk-search (#4299); +1: semantic takes retrieval delegate (#3776); +5: NUL-sanitize shared chunk_text local (#3998); +7: getAllConfig bulk read (#3980)
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	5297	ratchet	grown v0.46.25.0 fix waves: delete-slug resolver + msys healing (#3942 #2955) + #3570 rename-sentinel operator-exit safety (cross-source-scoped resolve, tracked-file liveness index, orphaned-sentinel self-heal) + semgrep path-containment guard + tracked-file liveness index untracked-file gap fix; +33: #4027 --include-hidden dot-prune waiver (opts threading + help text)
 src/core/ai/gateway.ts	4441	ratchet	grown v0.46.25.0 D2: env-key snapshot stash (#2119)
@@ -15,14 +15,14 @@ src/core/cycle.ts	3123	ratchet	grown v0.46.25.0 fix waves (#4309 #2821) + v0.46.
 src/commands/serve-http.ts	3294	ratchet	grown v0.46.25.0 D2: /mcp per-request teardown (#2844)
 src/commands/jobs.ts	3097	ratchet	grown v0.46.25.0 (--json #3685) + v0.46.26.0: maybeRunWorkerStartupRecovery extraction + stats gating + help text; +typed provider-failure logging on the facts-absorb catch (#4308)
 src/core/search/hybrid.ts	2734	ratchet	grown v0.46.25.0 fix waves: cache scope isolation + pool floor + offset bypass (#3871 #3002); +10 lines for #4358 residual negative-offset cache-skip comment; grown #4356: semantic-cache-hit slice now honors resolved mode's searchLimit instead of a hard `|| 20`; round-1 review comment accuracy fixes (double-resolution caveat)
-src/core/engine.ts	2421	ratchet	grown v0.46.25.0 fix waves: timeline dedup contract + registry write contract (#3827 #1262); +4 for the fail-closed TrajectoryOpts.remote contract doc (#3855); +2 for FactListOpts.unconsolidatedOnly (#4070)
+src/core/engine.ts	2433	ratchet	grown v0.46.25.0 fix waves: timeline dedup contract + registry write contract (#3827 #1262); +4 for the fail-closed TrajectoryOpts.remote contract doc (#3855); +2 for FactListOpts.unconsolidatedOnly (#4070); +14: getAllConfig bulk-read contract (#3980)
 src/commands/autopilot.ts	2487	ratchet	grown: daemon env-file lane + boot warning + reload-safe install (#2608 #4443)
 src/commands/extract.ts	2066	ratchet	lowered: timeline extractor hoisted to core/timeline-extract.ts (module-cycle fix)
 src/commands/extract-conversation-facts.ts	2089	ratchet	grown v0.46.x per-provider gateway-unavailable copy + save-time resolution caller (#4052)
 src/core/import-file.ts	2016	ratchet	grown v0.46.24.0 overnight wave: embedding_plane_split named error (#4287)
 src/core/cycle/synthesize.ts	2725	ratchet	merged waves + v0.46.26.0: rolling lease via shared throttled renewer
 src/commands/embed.ts	2046	ratchet	grown v0.46.25.0 delegated wave (#3971)
-src/core/types.ts	1882	ratchet	grown v0.46.22.0 phone wave: supersession rerank result fields + effective-date page filters (#4056 #4389)
+src/core/types.ts	1891	ratchet	grown v0.46.22.0 phone wave: supersession rerank result fields + effective-date page filters (#4056 #4389); +9: SalienceOpts/AnomaliesOpts source scope (#3867)
 src/commands/skillpack.ts	1360	ratchet
 src/core/minions/queue.ts	2423	ratchet	grown v0.46.26.0 private-queue lifecycle: recovery classifier + monotonic lease + makeThrottledLeaseRenewer
 src/commands/init.ts	1950	ratchet	grown v0.46.x keyless capability notices
@@ -38,3 +38,4 @@ src/core/bootstrap/harness.ts	1947	ratchet
 src/commands/hook.ts	1550	ratchet	cathedral-5 heartbeat extraction offsets part of the BrainBench-seam growth
 src/core/schema-embedded.ts	1504	ratchet	grown v0.46.26.0: private-queue columns + recovery indexes in the embedded blob
 src/core/oauth-provider.ts	1546	ratchet	new row: crossed the 1500 unlisted cap absorbing #3819 (DCR 400 invalid_client_metadata + scope filtering + custom-scheme redirect_uris + pseudo-scheme guard)
+src/core/config.ts	1530	ratchet	new row: crossed the 1500 unlisted cap absorbing #3980 (config-table snapshot serving the DB-plane reads + #2119 merge)
