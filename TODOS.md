@@ -5018,19 +5018,22 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 
-- [ ] **P2 — compiled `gbrain` binary cannot `serve` a PGLite brain.** `bun
-  build --compile` does not embed PGLite's WASM/extension payloads
-  (`pglite.data`, `vector.tar.gz`, `pg_trgm.tar.gz`) — they're absent from the
-  read-only `/$bunfs` (Bun vfs #1340), so `bin/gbrain serve` fails to open a
-  PGLite data dir. Real installs use `bun install -g` (runs `serve` via bun on
-  source), so normal users are unaffected — but the release also publishes
-  compiled binaries for self-update, and `gbrain serve` from one on PGLite
-  would fail. Fix: embed the WASM/extension assets in the compile step (so the
-  compiled binary is serve-capable and the real-agent e2e MCP server can use
-  it for fast startup), OR document that PGLite `serve` requires the bun-run
-  path. Found building the real-agent e2e (the harness falls back to `bun run
-  src/cli.ts serve`, measured ~300ms tools/list, so speed isn't the blocker —
-  this is purely the compiled-binary capability gap).
+- [x] **P2 — compiled `gbrain` binary can now `serve` a PGLite brain.** FIXED:
+  `src/core/pglite-embedded-assets.ts` embeds PGLite's runtime payload
+  (`pglite.wasm`, `initdb.wasm`, `pglite.data`, `vector.tar.gz`,
+  `pg_trgm.tar.gz`) with Bun's `import ... with { type: 'file' }` and hands them
+  to PGLite via `PGliteOptions` (`pgliteWasmModule` / `initdbWasmModule` /
+  `fsBundle` + custom `vector`/`pg_trgm` extensions whose `setup()` returns a
+  `bundlePath` pointing at the embedded tarball, materialized to a temp file
+  because `createReadStream` — unlike `readFileSync` — can't read `/$bunfs`
+  paths). `src/core/pglite-engine.ts` spreads `getEmbeddedPgliteOptions()` at
+  both `PGlite.create()` sites, so the Bun-vfs #1340 ENOENT no longer fires for
+  a correctly-built binary. Guarded by `scripts/check-pglite-embedded.sh`
+  (compiles a smoketest and asserts a real PGLite query round-trips), wired into
+  `bun run verify` + `check:all` + `check:pglite-embedded`. The real-agent e2e
+  harness (`test/helpers/agent-harness.ts`) now resolves to the fast compiled
+  MCP server; the `bun run` fallback stays as a safety net. Upstream Bun issue
+  (still open since Nov 2024) is now moot for gbrain.
 - [ ] **P1 — `--background --follow` spawns a nonexistent subcommand.**
   `src/core/cli-options.ts` (~:391) spawns `gbrain jobs follow <id>` after a
   background submit, but jobs.ts has no `follow` subcommand (`jobs watch

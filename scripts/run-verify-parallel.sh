@@ -45,6 +45,7 @@ CHECKS=(
   "check:no-tracked-symlinks"
   "check:test-isolation"
   "check:wasm"
+  "check:pglite-embedded"
   "check:admin-build"
   "check:admin-scope-drift"
   "check:cli-exec"

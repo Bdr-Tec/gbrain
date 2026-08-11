@@ -1,7 +1,10 @@
 import { PGlite } from '@electric-sql/pglite';
-import { vector } from '@electric-sql/pglite/vector';
-import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import type { Transaction } from '@electric-sql/pglite';
+// Engine-live path: static top-level import (no lazy `import()`). Supplies
+// PGLite's WASM/fsBundle/extension assets embedded via `with { type: 'file' }`
+// so a `bun build --compile` binary can serve a PGLite brain (Bun vfs #1340).
+// The embedded `extensions` REPLACE the stock `{ vector, pg_trgm }` imports.
+import { getEmbeddedPgliteOptions } from './pglite-embedded-assets.ts';
 import type {
   BrainEngine,
   BatchOpts,
@@ -467,12 +470,16 @@ export class PGLiteEngine implements BrainEngine {
     // a snapshot/restore around these awaits does NOT contain them. That is
     // why the CLI's exit paths read gbrain's own verdict
     // (cli-force-exit.ts currentExitCode), never ambient process.exitCode.
+    // Embedded WASM/fsBundle/extension assets (Bun vfs #1340). Resolved once
+    // here so both the initial create and the WAL-repair retry below share the
+    // same compiled modules. Its `extensions` replaces the stock vector/pg_trgm.
+    const embedded = await getEmbeddedPgliteOptions();
     try {
       this._db = await preservingProcessExitCode(() =>
         PGlite.create({
           dataDir,
           loadDataDir,
-          extensions: { vector, pg_trgm },
+          ...embedded,
         }),
       );
       // Healthy open: close any repair episode left open by a prior failed
@@ -507,7 +514,7 @@ export class PGLiteEngine implements BrainEngine {
               // in-memory-only (see above), and dataDir is persistent here.
               PGlite.create({
                 dataDir,
-                extensions: { vector, pg_trgm },
+                ...embedded,
               }),
             ),
             { reaped: this._lock?.reaped },

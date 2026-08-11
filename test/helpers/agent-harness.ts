@@ -499,14 +499,18 @@ let _compileBuildDir: string | null = null;
 
 /**
  * Verify a freshly-built `gbrain` binary can actually stand up a PGLite brain.
- * `bun build --compile` bundles the code into a read-only vfs (`/$bunfs/root`)
- * but does NOT embed PGLite's WASM runtime + extension tarballs (`pglite.data`,
- * `vector.tar.gz`, `pg_trgm.tar.gz`), so a compiled `gbrain init --pglite`
- * fails at `initSchema()` with an ENOENT on those assets (Bun vfs #1340). A
- * compiled binary that can't open PGLite is useless as our door-test MCP server
- * (the brain is keyless PGLite), so we probe before trusting it. `init` is the
- * cheapest exercise of the WASM path that terminates on its own (unlike
- * `serve`, which either waits on stdin or bails early on a brain-less home).
+ * As of the embedded-assets fix (src/core/pglite-embedded-assets.ts), `bun
+ * build --compile` binaries DO carry PGLite's WASM runtime + extension tarballs
+ * (`pglite.wasm`, `initdb.wasm`, `pglite.data`, `vector.tar.gz`,
+ * `pg_trgm.tar.gz`) — embedded via `with { type: 'file' }` and fed to PGLite
+ * through PGliteOptions — so a compiled `gbrain init --pglite` now succeeds
+ * where it used to ENOENT on those assets (Bun vfs #1340). This probe is the
+ * runtime backstop: it confirms the embedding held for THIS binary before we
+ * trust it as the door-test MCP server (the brain is keyless PGLite). If the
+ * embedding ever regresses, the probe fails and we fall back to `bun run`.
+ * `init` is the cheapest exercise of the WASM path that terminates on its own
+ * (unlike `serve`, which either waits on stdin or bails early on a brain-less
+ * home). scripts/check-pglite-embedded.sh guards the same property in CI.
  */
 function probeCompiledPglite(binPath: string): { ok: boolean; reason: string } {
   const probeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gb-agent-probe-'));
@@ -596,13 +600,12 @@ process.on('exit', () => {
  * (GBRAIN_HOME/GBRAIN_SOURCE) is layered on by the caller and stays identical
  * across both kinds.
  *
- * NOTE: with the current `bun build --compile` command the compiled binary
- * canNOT serve a PGLite brain (its WASM/extension payload isn't embedded —
- * Bun vfs #1340), so this resolves to `bun-run` in practice today. The
- * bun-run server is measured ready to answer `tools/list` in ~300ms, so the
- * door tests lean on the bounded SMOKE retry (not server speed) for
- * robustness. The compiled path stays wired so this self-heals the day the
- * build embeds those assets.
+ * NOTE: the `bun build --compile` binary now embeds PGLite's WASM/extension
+ * payload (src/core/pglite-embedded-assets.ts, Bun vfs #1340), so this resolves
+ * to the fast `compiled` path in practice. The `bun-run` fallback stays wired
+ * as a safety net for sandboxes where compile is unavailable or the probe fails
+ * (its server is measured ready to answer `tools/list` in ~300ms, and the door
+ * tests lean on the bounded SMOKE retry, not server speed, for robustness).
  */
 export function resolveGbrainServerCommand(repoRoot: string, extraArgs: string[] = []): GbrainServerCommand {
   const { binPath, reason } = ensureCompiledGbrain(repoRoot);
