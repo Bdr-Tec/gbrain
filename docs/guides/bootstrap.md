@@ -20,7 +20,7 @@ follows is `BOOTSTRAP_FOR_AGENTS.md` at the repo root, fetched at the
 | `agent.json` manifest + `brain/`, `memory/`, `skills/`, `state/` | workspace | — |
 | Local brain (PGLite) | `~/.gbrain/` (never in the repo) | while a session's MCP serve is open |
 | MCP registration (`gbrain serve`) | project scope by default | spawned by your harness per session |
-| Hooks (Claude Code, consent-gated) | `.claude/settings.local.json` (gitignored) | each prompt; fail-open; `GBRAIN_HOOKS=0` disables |
+| Hooks (Claude Code, ON by default) | `.claude/settings.local.json` (gitignored) | each prompt; fail-open; `--no-hooks` opts out at install, `GBRAIN_HOOKS=0` disables at runtime |
 | Session persistence | SessionEnd hook → scan-gated commit+push | at session end |
 | Optional 15-min push job | launchd/cron (consent-gated) | while logged in |
 | Private GitHub repo | your account, created by `bootstrap repo` | privacy verified via API |

@@ -1,5 +1,5 @@
 {
-  "$schema_note": "Question bank for `gbrain bootstrap interview`. One entry per key; keys map 1:1 to {{TOKEN}}s in templates/bootstrap/*.template. `asked` keys are put to the human (12 max, 6 required); `consent` keys are operational consents asked contextually during install phases; everything else defaults silently. Answers live in <workspace>/state/interview.json — EXCEPT keys marked persist:false, which bypass answer persistence entirely and go to the 0600 config sink (CX2-13). maxLength is enforced at --set time (G10); values containing {{ or control characters are escaped at set time.",
+  "$schema_note": "Question bank for `gbrain bootstrap interview`. One entry per key; keys map 1:1 to {{TOKEN}}s in templates/bootstrap/*.template. `asked` keys are put to the human (12 max, 6 required); `consent` keys are operational consents — those marked `silent:true` resolve from `default` at install time and are NEVER prompted (installing gbrain IS the consent; off-ramps like --no-hooks / GBRAIN_HOOKS=0 / `gbrain search modes` replace the prompt), the rest are asked contextually during their `phase`; everything else defaults silently. Answers live in <workspace>/state/interview.json — EXCEPT keys marked persist:false, which bypass answer persistence entirely and go to the 0600 config sink (CX2-13). maxLength is enforced at --set time (G10); values containing {{ or control characters are escaped at set time.",
   "version": 1,
   "maxQuestions": 12,
   "interviewKeys": [
@@ -108,8 +108,9 @@
 
     "SEARCH_MODE": {
       "consent": true,
+      "silent": true,
       "phase": "engine",
-      "question": "Search mode controls how much brain context each query returns (and what it costs downstream). conservative ≈ small payloads, balanced ≈ default, tokenmax ≈ maximum recall. Pick one (default: balanced).",
+      "question": "(silent — defaults to balanced; no one knows these modes at install. Change any time with `gbrain search modes`.) conservative ≈ small payloads, balanced ≈ default, tokenmax ≈ maximum recall.",
       "default": "balanced",
       "allowed": ["conservative", "balanced", "tokenmax"],
       "maxLength": 16
@@ -132,8 +133,9 @@
     },
     "HOOKS_CONSENT": {
       "consent": true,
+      "silent": true,
       "phase": "wire",
-      "question": "May I install hooks so your brain loads automatically every turn? (Claude Code only. Declining still works — the protocol falls back to explicit brain calls.)",
+      "question": "(silent — ON by default: per-turn brain context is the whole point of installing gbrain for your agent. Claude Code only. Off-ramps: `--no-hooks` at install, `GBRAIN_HOOKS=0` at runtime, `gbrain bootstrap uninstall` to remove.)",
       "default": "yes",
       "allowed": ["yes", "no"],
       "maxLength": 4

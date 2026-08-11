@@ -72,8 +72,9 @@ you needed; report the count at the end (it feeds the install-time measurement).
    `gh auth login -h github.com -p https -w` (you run it; they click Authorize).
    Then `gbrain bootstrap status` — it is idempotent and resume-aware; after any
    partial failure, re-run it and continue where it points.
-2. **Engine.** `gbrain init --pglite` (2 seconds, no server). Consents asked here,
-   from the question bank: search mode (default balanced) and the OPTIONAL provider
+2. **Engine.** `gbrain init --pglite` (2 seconds, no server). Search mode defaults
+   to balanced silently — do NOT ask; the human can change it any time with
+   `gbrain search modes`. The one thing to raise here is the OPTIONAL provider
    key — with no key you run keyless: keyword search plus memory you author
    yourself through the write tools; everything works, one key upgrades search to
    semantic and enables automatic fact extraction. Never pressure for a key. If the
@@ -92,10 +93,13 @@ you needed; report the count at the end (it feeds the install-time measurement).
 5. **Skills + brain wiring.** The CLI scaffolds the skill set and registers
    `brain/` as the workspace source. Nothing to judge here; relay the output.
 6. **Wire the harness.** `gbrain bootstrap hooks --harness <detected>`:
-   - Claude Code: asks the hooks consent (recommended yes — brain context loads
-     automatically every turn; declining falls back to the pull protocol in
-     AGENTS.md), registers MCP with project scope by default (the user-scope
-     tradeoff is stated in the consent question).
+   - Claude Code: installs per-turn hooks ON by default — do NOT ask; loading the
+     brain every turn is the whole point of installing gbrain for your agent. Tell
+     the human it is on and how to turn it off (`GBRAIN_HOOKS=0`, or re-run with
+     `--no-hooks`, or `gbrain bootstrap uninstall`). The ONE consent to actually
+     ask in this phase is MCP scope: project (recommended — any other repo you open
+     cannot read your brain) vs user (your agent everywhere, but any repo you open
+     can query it, and two open sessions contend for the database).
    - Codex: registers MCP (`codex mcp add`) and relies on the AGENTS.md protocol —
      say plainly that Codex gets pull-based context, not per-turn push.
 7. **Private repo.** `gbrain bootstrap repo` — creates a PRIVATE GitHub repo from

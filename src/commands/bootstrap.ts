@@ -90,8 +90,10 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
   render [--force] [--only F] [--minimal]
                                   Render identity files from the confirmed answers.
                                   Never clobbers; --force backs up first.
-  hooks [--harness claude-code|codex] [--repair] [--gbrain-bin <path>]
-                                  Register MCP (+ hooks on Claude Code, consent-gated).
+  hooks [--harness claude-code|codex] [--repair] [--no-hooks] [--gbrain-bin <path>]
+                                  Register MCP (+ per-turn hooks on Claude Code,
+                                  ON by default; --no-hooks opts out, GBRAIN_HOOKS=0
+                                  disables at runtime).
   repo                            Create the dedicated PRIVATE GitHub repo, verify the
                                   privacy bit via the API, push.
   verify [--json]                 The whole install contract (round-trip, graph floor,
@@ -629,6 +631,11 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   // --repair is an idempotent-run alias: the same registration/write path as a
   // first run (marker-keyed dedupe makes re-runs safe); it only changes the log line.
   const repair = rest.includes('--repair');
+  // Per-turn hooks are ON by default (installing gbrain-for-your-agent IS the
+  // consent — declining defeats the product), so they are no longer prompted.
+  // `--no-hooks` is the explicit install-time opt-out; `GBRAIN_HOOKS=0` and
+  // `uninstall` are the runtime/after off-ramps.
+  const noHooks = rest.includes('--no-hooks');
 
   const state = readManifest(ws);
   if (state.state !== 'initialized') {
@@ -651,7 +658,9 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   }
 
   const mcpScope = ((consentAnswer(ws, 'MCP_SCOPE') ?? 'project').toLowerCase() === 'user' ? 'user' : 'project') as 'project' | 'user';
-  const hooksConsent = (consentAnswer(ws, 'HOOKS_CONSENT') ?? 'yes').toLowerCase() === 'yes';
+  // HOOKS_CONSENT is a silent default (bank: 'yes') — hooks install unless the
+  // human explicitly opts out with --no-hooks (or a persisted 'no' answer).
+  const hooksConsent = !noHooks && (consentAnswer(ws, 'HOOKS_CONSENT') ?? 'yes').toLowerCase() === 'yes';
   const gbrainHome = process.env.GBRAIN_HOME?.trim() || undefined;
 
   return withLock(ws, async () => {
@@ -740,10 +749,14 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
           env: { GBRAIN_SOURCE: sourceId, ...(gbrainHome ? { GBRAIN_HOME: gbrainHome } : {}) },
         });
         hooksWritten = true;
-        console.log(`hooks installed (${r.installed.length} event(s)) in ${r.settingsPath}${repair ? ' [repair]' : ''}`);
+        console.log(`hooks installed (${r.installed.length} event(s)) in ${r.settingsPath}${repair ? ' [repair]' : ''} — your brain now loads every turn. Turn off any time with GBRAIN_HOOKS=0, or re-run with --no-hooks.`);
         for (const note of r.notes) console.error(note);
       } else {
-        console.log('hooks declined — the AGENTS.md pull protocol covers per-turn context instead.');
+        console.log(
+          noHooks
+            ? 'hooks skipped (--no-hooks) — the AGENTS.md pull protocol covers per-turn context instead; re-enable with `gbrain bootstrap hooks --harness claude-code`.'
+            : 'hooks declined (HOOKS_CONSENT set to no) — the AGENTS.md pull protocol covers per-turn context instead; re-enable with `gbrain bootstrap hooks --harness claude-code`.',
+        );
       }
     } else {
       console.log('Codex has no hook system — per-turn context is the AGENTS.md pull protocol (stated plainly, not a bug).');

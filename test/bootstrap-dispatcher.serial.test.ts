@@ -120,6 +120,87 @@ describe('consent-skip is a decline (HOOKS_CONSENT)', () => {
   }, 30_000);
 });
 
+describe('per-turn hooks are ON by default (v0.45 flip); --no-hooks opts out', () => {
+  // Self-contained fixtures: the file-level `ws` deliberately SKIPS
+  // HOOKS_CONSENT (for the decline test), so the default-on path needs a
+  // fresh workspace that LEAVES the consent at its bank default ('yes').
+  const scratch: string[] = [];
+  function freshWorkspace(): { fws: string; fhome: string; fparent: string } {
+    const fparent = mkdtempSync(join(tmpdir(), 'gb-flip-'));
+    const fhome = join(fparent, '.gbrain');
+    mkdirSync(fhome, { recursive: true });
+    const fws = mkdtempSync(join(tmpdir(), 'gb-flip-ws-'));
+    scratch.push(fparent, fws);
+    const prev = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = fparent;
+    try {
+      expect(initState(fws).ok).toBe(true);
+      for (const [key, value] of Object.entries(REQUIRED_ANSWERS)) {
+        const r = setAnswer(fws, key, value);
+        if (!r.ok) throw new Error(r.message);
+      }
+      expect(setAnswer(fws, 'MCP_SCOPE', 'project').ok).toBe(true);
+      // HOOKS_CONSENT left UNSET → bank default 'yes' applies (the flip).
+      const h = readBackHash(fws);
+      if (!h.ok) throw new Error(h.message);
+      expect(confirm(fws, h.hash).ok).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = prev;
+    }
+    return { fws, fhome, fparent };
+  }
+  afterAll(() => {
+    for (const d of scratch) rmSync(d, { recursive: true, force: true });
+  });
+
+  async function withHome<T>(parent: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = parent;
+    try {
+      return await fn();
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = prev;
+    }
+  }
+
+  test('a plain hooks run installs hooks without being asked (default yes) and surfaces the kill switch', async () => {
+    const { fws, fhome, fparent } = freshWorkspace();
+    const out = await withHome(fparent, async () => {
+      expect((await capture(() => runBootstrap(['render', '--workspace', fws]))).result).toBe(0);
+      const { runner } = makeRunner();
+      return capture(() =>
+        runBootstrap(['hooks', '--workspace', fws, '--harness', 'claude-code', '--gbrain-bin', process.execPath], { runner }),
+      );
+    });
+    expect(out.result).toBe(0);
+    expect(out.out).toContain('hooks installed');
+    expect(out.out).toContain('GBRAIN_HOOKS=0'); // default-on is never silent
+    expect(existsSync(join(fws, '.claude', 'settings.local.json'))).toBe(true);
+    expect(readReceipt(fhome)?.registrations).toEqual([{ host: 'claude-code', scope: 'project', detail: 'mcp+hooks' }]);
+  }, 30_000);
+
+  test('--no-hooks opts out even when consent defaults yes; MCP still registers', async () => {
+    const { fws, fhome, fparent } = freshWorkspace();
+    const { out, calls } = await withHome(fparent, async () => {
+      expect((await capture(() => runBootstrap(['render', '--workspace', fws]))).result).toBe(0);
+      const r = makeRunner();
+      const out = await capture(() =>
+        runBootstrap(['hooks', '--workspace', fws, '--harness', 'claude-code', '--no-hooks', '--gbrain-bin', process.execPath], {
+          runner: r.runner,
+        }),
+      );
+      return { out, calls: r.calls };
+    });
+    expect(out.result).toBe(0);
+    expect(out.out).toContain('--no-hooks');
+    expect(existsSync(join(fws, '.claude', 'settings.local.json'))).toBe(false);
+    expect(calls.some((argv) => argv[0] === 'claude' && argv[1] === 'mcp' && argv[2] === 'add')).toBe(true);
+    expect(readReceipt(fhome)?.registrations).toEqual([{ host: 'claude-code', scope: 'project', detail: 'mcp' }]);
+  }, 30_000);
+});
+
 describe('MCP registration verification [FIX7]', () => {
   const gbrainBin = process.execPath;
   const OURS = `gbrain:\n  command: ${gbrainBin} serve --surface full\n  env: GBRAIN_SOURCE=workspace`;
