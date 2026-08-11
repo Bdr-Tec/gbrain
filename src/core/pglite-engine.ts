@@ -1405,10 +1405,30 @@ export class PGLiteEngine implements BrainEngine {
     return rows.length > 0;
   }
 
-  async purgeDeletedPages(olderThanHours: number): Promise<{ slugs: string[]; count: number }> {
+  async purgeDeletedPages(
+    olderThanHours: number,
+    opts?: { dryRun?: boolean },
+  ): Promise<{ slugs: string[]; count: number; pages?: { slug: string; deleted_at: Date }[] }> {
     // Clamp to non-negative integer; cascade through FKs (content_chunks,
     // page_links, chunk_relations) on DELETE.
     const hours = Math.max(0, Math.floor(olderThanHours));
+    if (opts?.dryRun) {
+      // SAME WHERE predicate as the DELETE below (same cutoff arithmetic,
+      // same DB now() clock source) — only the verb differs, so preview and
+      // purge agree modulo rows crossing the cutoff between statements.
+      const { rows } = await this.db.query(
+        `SELECT slug, deleted_at FROM pages
+         WHERE deleted_at IS NOT NULL
+           AND deleted_at < now() - ($1 || ' hours')::interval
+         ORDER BY deleted_at ASC, slug ASC`,
+        [hours]
+      );
+      const pages = (rows as { slug: string; deleted_at: Date | string }[]).map((r) => ({
+        slug: r.slug,
+        deleted_at: r.deleted_at instanceof Date ? r.deleted_at : new Date(r.deleted_at),
+      }));
+      return { slugs: pages.map((p) => p.slug), count: pages.length, pages };
+    }
     const { rows } = await this.db.query(
       `DELETE FROM pages
        WHERE deleted_at IS NOT NULL
