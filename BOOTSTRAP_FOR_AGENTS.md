@@ -87,7 +87,8 @@ you needed; report the count at the end (it feeds the install-time measurement).
    MCP scope. It is not one of the 12 interview questions; consents ride alongside
    the bank. The choice: project (recommended — any other repo you open cannot
    read your brain) vs user (your agent everywhere, but any repo you open can
-   query it, and two open sessions contend for the database). Record it with
+   reach it — read and write — and two open sessions contend for the database).
+   Record it with
    `gbrain bootstrap interview --set MCP_SCOPE <project|user>` BEFORE the
    read-back, so the confirmation covers it. On Codex, skip this question
    entirely — the wiring step states the Codex reality instead.
