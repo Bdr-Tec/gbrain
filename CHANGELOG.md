@@ -2,6 +2,69 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.10.0] - 2026-08-12
+
+**Hermes joins the tested-install club: a real-binary harness now proves gbrain works inside Hermes, and `gbrain friction diff` tells you whether an install problem is the agent's or ours.**
+
+GBrain has long said "works with OpenClaw and Hermes." For OpenClaw that claim was
+backed by tests; for Hermes it was backed by hope. This release closes that gap with a
+full end-to-end harness: a Hermes runner for the claw-test friction lab, a real-binary
+"door" test that registers gbrain into an actual Hermes install over MCP and asks it to
+recall a seeded fact, and a CI job that installs a pinned Hermes release and runs the
+door on demand. Every Hermes CLI behavior the harness relies on was pinned by observing
+a real install — the flag-order traps, the interactive prompts, the exit-code quirks —
+and those observations ship as documentation so your own Hermes setup benefits too.
+
+The live claw-test lane also got honest: it now stages the scenario workspace before the
+agent starts and verifies real outcomes after it finishes, so an agent that does nothing
+and exits cleanly finally FAILS the run instead of passing it. And with two runners in
+the registry, the new `gbrain friction diff --base openclaw --compare hermes` turns
+friction reports into a comparison instrument: pain unique to one agent is that agent's
+contract problem; pain common to both is ours.
+
+## To take advantage of v0.45.10.0
+
+`gbrain upgrade` is enough — no schema migration.
+
+1. **Running Hermes?** Wire gbrain in with one command (full guide at
+   `docs/mcp/HERMES.md`, including the non-obvious flag-order and prompt gotchas):
+   ```bash
+   printf 'Y\n' | hermes mcp add gbrain --env GBRAIN_HOME=$HOME --connect-timeout 60 --command $(which gbrain) --args serve
+   hermes mcp test gbrain
+   ```
+2. **Want the friction lab on your own agent?**
+   ```bash
+   gbrain claw-test --live --agent hermes     # or --agent openclaw
+   gbrain friction diff --base openclaw --compare hermes
+   ```
+3. **If anything looks wrong,** file an issue at https://github.com/garrytan/gbrain/issues
+   with `gbrain doctor` output.
+
+### Itemized changes
+
+**Added**
+- Hermes runner for the claw-test harness: `gbrain claw-test --live --agent hermes` drives a real Hermes install headlessly (`$HERMES_BIN` override supported; `--list-agents` shows availability for both runners).
+- `gbrain friction diff --base <run-or-agent> --compare <run-or-agent>`: cross-agent friction comparison with unique-to-each and changed sections, count deltas, and a compatibility banner that warns when runs cover different scenarios or versions. `--json` for machines.
+- Real-binary Hermes install door e2e (`test/e2e/install-real-hermes.serial.test.ts`): registers this checkout's gbrain into a hermetic Hermes home via a live MCP handshake (110 tools discovered), verifies both the CLI and direct-config registration surfaces, and proves recall of a seeded fact in a paid one-shot turn. Triple-gated so it can never burn tokens by accident.
+- Label-gated `hermes-door` CI job: installs a digest-and-tag-pinned Hermes release, refuses to go green if nothing actually ran, and uploads scrubbed evidence on failure.
+- Per-client MCP docs for Hermes (`docs/mcp/HERMES.md`) and OpenClaw (`docs/mcp/OPENCLAW.md`), plus a dev-facing pin of every observed Hermes CLI behavior (`docs/mcp/HERMES-CLI-PIN.md`) and an install snippet in `INSTALL_FOR_AGENTS.md`.
+- Generic agent-workspace compatibility test pinning the documented "any repo with a workspace" install flow (detection, scaffold additivity, resolver health).
+
+**Changed**
+- claw-test live mode now stages the scenario before the agent runs (fresh-install: brain pages + routing file + init; upgrade: seed replay) and verifies outcomes after it exits — doctor health, a scenario-declared query returning results, expected files existing, and for upgrades a non-mutating schema-version probe that a do-nothing agent cannot satisfy.
+- The brief handed to live agents now matches the current CLI exactly (extract argument shape, doctor status vocabulary), and bare `gbrain` inside a live run resolves to the harness's own binary via a per-run PATH shim.
+- Every claw-test run opens and closes with a machine-readable marker carrying the agent name and scenario, so friction analytics can resolve runs by agent; scripted runs are now labeled `scripted` instead of borrowing an agent's name.
+- Scenario oracle configuration is validated on load — misdeclared oracles fail loudly instead of silently not being enforced.
+
+**Fixed**
+- claw-test now works out of the box when gbrain runs from source (`bun run src/cli.ts`): child invocations resolve to a real gbrain launcher instead of the bun runtime itself, which previously made the default harness unusable outside compiled builds.
+- Upgrade-scenario runs in BOTH modes fail loudly when the scenario ships no seed dump, instead of quietly initializing a current database and reporting an "upgrade" that never exercised a migration.
+- Every harness child process now runs under a wall-clock timeout, and live-agent timeouts kill the agent's whole process tree — a hung child no longer wedges a run (or a CI job) forever.
+- Agent-side friction entries now survive the run's tempdir cleanup: they merge into your friction log before the workspace is deleted, so `friction render` and `friction diff` finally see both halves of a live run.
+- `claw-test --list-agents` no longer races CLI teardown; output is complete and ordered.
+- Live runs keep the agent's gbrain children pointed at the run's own hermetic brain even when the surrounding shell exports a database-pointing environment variable — the harness's verification and the agent's work can no longer land in two different places.
+- The test real-name guard now correctly distinguishes the public Hermes platform (documented and tested) from private deployment names (still banned).
+
 ## [0.45.8.0] - 2026-08-12
 
 **25 community bug fixes in one wave. Your MCP server, sync, and doctor all get more careful.**
