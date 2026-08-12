@@ -31,6 +31,7 @@
   "conventions/calibration.md": "eda7ca76f80c8a17ae546110484389f805c5b21fc0a57f951bbe8b6abba26e03",
   "conventions/cron-via-minions.md": "badb1cd6cd825d6f1ac0b6b28cc47e5d80facc783a3e59a14146ae901ee0f933",
   "conventions/cross-modal.yaml": "c012c3d72614a87b1ee698173dce2a0fb0d057a54df7aab87993c4b07fff6280",
+  "conventions/exec-output.md": "2bf371ac3ec4987eff7cc13cd3ea8cc97c46bd43f588eec024ff27f3171bc58f",
   "conventions/model-routing.md": "fb7ae8746a578500d6789b68ff40049037aa4d337b65b42f7c1745ae7080c2db",
   "conventions/path-discipline.md": "8af5415721bd115e6979c96688bcf542a32675809ada9aaedbb6706a40926954",
   "conventions/quality.md": "8aa681001114689d34268ccadaf0e2ff07b8f68aa5987c093a8c4a7a744f12a6",
