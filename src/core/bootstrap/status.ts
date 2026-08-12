@@ -31,7 +31,7 @@ import { join } from 'node:path';
 
 import { VERSION } from '../../version.ts';
 import { loadConfigFileOnly } from '../config.ts';
-import { binaryOnPath } from '../execution-env.ts';
+import { binaryOnPath, detectExecutionEnvironment, type ExecutionEnvironment } from '../execution-env.ts';
 import { resolveGbrainHome } from '../gbrain-home.ts';
 import { classifyGh403, githubOwnerRepoString } from '../repo-visibility.ts';
 
@@ -426,6 +426,11 @@ export interface StatusReport {
   phases: PhaseStatus[];
   /** Resume hint of the first non-done phase; null when everything is done. */
   next: string | null;
+  /** WHERE this install is running [D-cloud]: 'local' | 'cloud-sandbox' |
+   * 'ephemeral-container'. Installing agents branch on this — cron is skipped
+   * in containers, repo creation is redirected in cloud sandboxes, and the
+   * runbook's cloud section keys off it. */
+  execution_environment: ExecutionEnvironment;
   runbookSkew?: RunbookSkew;
   /** Template-door privacy gate: set only for an UNINITIALIZED template clone
    * whose origin exists and is not verifiably private. 'public' is a hard
@@ -543,6 +548,7 @@ export async function statusReport(ws: string, opts: StatusReportOpts = {}): Pro
     workspace: ws,
     phases,
     next,
+    execution_environment: detectExecutionEnvironment(),
     ...(runbookSkew ? { runbookSkew } : {}),
     ...(privacyGate ? { privacy_gate: privacyGate } : {}),
     support,

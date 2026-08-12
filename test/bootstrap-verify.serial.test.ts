@@ -141,6 +141,8 @@ describe('verifyWorkspace — keyless pass', () => {
     expect(check(res.checks, 'secret_scan')[0].ok).toBe(true);
     expect(check(res.checks, 'deny_globs')[0].ok).toBe(true);
     expect(check(res.checks, 'repo_privacy')[0].ok).toBe(true); // local-only
+    // execution_env is informational and NEVER gates [D-cloud].
+    expect(check(res.checks, 'execution_env')[0].ok).toBe(true);
     for (const c of check(res.checks, 'roundtrip')) expect(c.ok).toBe(true);
     expect(check(res.checks, 'graph_floor')[0].ok).toBe(true);
     expect(check(res.checks, 'magic_moment')[0].ok).toBe(true);

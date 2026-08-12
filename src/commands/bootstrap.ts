@@ -34,6 +34,7 @@ import { VERSION } from '../version.ts';
 import { loadConfig, loadConfigFileOnly, toEngineConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
 import { resolveGbrainHome } from '../core/gbrain-home.ts';
+import { detectExecutionEnvironment } from '../core/execution-env.ts';
 import { realpathOrResolve } from '../core/path-confine.ts';
 import { loadQuestionBank } from '../core/bootstrap/assets.ts';
 import {
@@ -607,37 +608,57 @@ async function runRepo(ws: string, rest: string[], home: string, runner: ExecRun
 
     abortIfInjected('repo');
 
-    // PERSIST_CRON consent [D3 resolved]: opt-in 15-min scan-gated push job
-    // via the existing sources-harden machinery. Best-effort: a harden
-    // failure never fails the repo phase — the SessionEnd push backstop is
-    // always on.
+    // PERSIST_CRON consent [D3 resolved]: opt-in background persistence via
+    // the existing sources-harden machinery — a git post-commit auto-push plus
+    // a 30-minute scheduled pull that keeps multi-machine checkouts fresh
+    // (honest copy [D9]: the event-driven pushes do the durability work; the
+    // timer is the freshener). Best-effort: a harden failure never fails the
+    // repo phase — the per-turn and session-end pushes are always on.
     const persist = (consentAnswer(ws, 'PERSIST_CRON') ?? 'no').toLowerCase();
+    const envKind = detectExecutionEnvironment();
     if (persist === 'yes') {
       try {
         const { hardenBrainRepo } = await import('../core/brain-repo-durability.ts');
         const state = readManifest(ws);
         const sourceId = state.state === 'initialized' ? state.manifest.source_id : 'workspace';
+        // Containers/cloud sandboxes have no reliable scheduler — install the
+        // container-friendly half (post-commit hook + helper) and say so,
+        // instead of failing a crontab write that could never survive anyway.
+        const installCron = envKind === 'local';
         const report = await hardenBrainRepo({
           repoPath: ws,
           sourceId,
-          installCron: true,
+          installCron,
           verify: false,
           logger: (l: string) => process.stderr.write(`[harden] ${l}\n`),
         });
         const attention = report.steps.filter((s) => s.status === 'needs_attention');
-        console.log(
-          attention.length === 0
-            ? 'background persistence enabled (15-min scan-gated push job installed).'
-            : `background persistence partially enabled — needs attention: ${attention.map((s) => `${s.step}: ${s.detail}`).join('; ')}`,
-        );
+        if (attention.length > 0) {
+          console.log(
+            `background persistence partially enabled — needs attention: ${attention.map((s) => `${s.step}: ${s.detail}`).join('; ')}`,
+          );
+        } else if (installCron) {
+          console.log(
+            'background persistence enabled (post-commit auto-push + 30-min scheduled pull installed).',
+          );
+        } else {
+          console.log(
+            `background persistence enabled for this ${envKind === 'cloud-sandbox' ? 'cloud sandbox' : 'container'}: ` +
+              'post-commit auto-push installed; per-turn and session-end pushes are already on. ' +
+              'No scheduler exists in this environment, so the 30-min pull is skipped — run ' +
+              '`gbrain sources harden` on a persistent machine to add it.',
+          );
+        }
       } catch (e) {
         console.error(
           `note: background-persistence install failed (${(e as Error).message}). ` +
-            'Session-end pushes still persist your work; re-try later with `gbrain sources harden`.',
+            'Per-turn and session-end pushes still persist your work; re-try later with `gbrain sources harden`.',
         );
       }
     } else {
-      console.log('background persistence declined — the session-end push remains the persistence backstop.');
+      console.log(
+        'background persistence declined — the per-turn and session-end pushes remain the persistence backstop.',
+      );
     }
     return 0;
   });

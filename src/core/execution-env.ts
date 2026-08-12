@@ -80,10 +80,13 @@ export function detectExecutionEnvironment(signals: EnvProbeSignals = {}): Execu
 }
 
 /** Whether `name` resolves on PATH. Moved here from bootstrap/status.ts so
- * environment-aware code (cron install, preflight) shares one probe. */
+ * environment-aware code (cron install, preflight) shares one probe. The
+ * LIVE process.env.PATH is passed explicitly: Bun otherwise resolves against
+ * the startup env snapshot, making runtime PATH changes (and PATH-shimmed
+ * test fakes) invisible — the workspace-push.ts / status.ts precedent. */
 export function binaryOnPath(name: string): boolean {
   try {
-    return Bun.which(name) !== null;
+    return Bun.which(name, { PATH: process.env.PATH ?? '' }) !== null;
   } catch {
     return false;
   }

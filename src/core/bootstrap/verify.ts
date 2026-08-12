@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { operations, type Operation, type OperationContext } from '../operations.ts';
 import { loadConfigFileOnly, type GBrainConfig } from '../config.ts';
+import { detectExecutionEnvironment } from '../execution-env.ts';
 import { resolveGbrainHome } from '../gbrain-home.ts';
 import { realpathOrResolve } from '../path-confine.ts';
 import { runMaintenanceSweep } from '../sweep.ts';
@@ -330,6 +331,37 @@ async function checkRepoPrivacy(ws: string): Promise<VerifyCheck> {
     return { id, ok: false, detail: `origin visibility unverifiable (${verdict.detail}) — refusing to bless an unverified remote [G8]; re-run once gh works` };
   } catch (e) {
     return { id, ok: false, detail: `repo privacy check failed: ${(e as Error).message}` };
+  }
+}
+
+/** Informational, NEVER gating [D-cloud]: name the detected execution
+ * environment and its expected degradations so an installing agent (and the
+ * pasted verify report) states them as facts instead of rediscovering them
+ * as mystery failures. */
+function checkExecutionEnvironment(): VerifyCheck {
+  const id = 'execution_env';
+  try {
+    const env = detectExecutionEnvironment();
+    if (env === 'cloud-sandbox') {
+      return {
+        id,
+        ok: true,
+        detail:
+          'cloud sandbox detected — expected degradations: no crontab (scheduled pull skipped; per-turn/session-end pushes cover it); ' +
+          'GitHub GraphQL always blocked and REST scoped to session-attached repos (privacy verification falls back to git protocol); ' +
+          'pushes restricted to the session\'s working branch; only repo-committed files carry into the next session',
+      };
+    }
+    if (env === 'ephemeral-container') {
+      return {
+        id,
+        ok: true,
+        detail: 'container detected — no reliable scheduler (scheduled pull skipped); event-driven pushes cover persistence',
+      };
+    }
+    return { id, ok: true, detail: 'local machine — full persistence surface available' };
+  } catch (e) {
+    return { id, ok: true, detail: `environment detection failed (${(e as Error).message}) — treated as local` };
   }
 }
 
@@ -814,6 +846,7 @@ export async function verifyWorkspace(
   checks.push(checkSecretScan(ws));
   checks.push(checkDenyGlobs(ws));
   checks.push(await checkRepoPrivacy(ws));
+  checks.push(checkExecutionEnvironment());
 
   // Round-trip family only makes sense on a reachable engine.
   if (engineHealthy) {

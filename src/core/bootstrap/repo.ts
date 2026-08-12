@@ -36,6 +36,7 @@ import { join } from 'node:path';
 import { configDir } from '../config.ts';
 import { realpathOrResolve } from '../path-confine.ts';
 import { classifyGh403, defaultRunner, parseGithubOwnerRepo, type ExecRunner } from '../repo-visibility.ts';
+import { detectExecutionEnvironment } from '../execution-env.ts';
 import { loadWorkspaceAllowlist, scanFiles, SCAN_ALLOW_FILENAME } from '../secret-scan.ts';
 import { GITHUB_URL_PLACEHOLDER } from './assets.ts';
 import {
@@ -674,6 +675,22 @@ export async function createPrivateRepo(
     // present), so a re-run skipped the repo phase and never pushed the workspace.
     recordRepoInReceipt(gbrainHomeDir, workspaceDir, manifest, originUrl);
     return { url: originUrl, name: parsed.name, disposition: viaUrlMatch ? 'reused' : 'adopted', reused: true };
+  }
+
+  // Cloud-sandbox guard: `gh repo create` inside a proxied cloud session
+  // makes a repo the session is NOT attached to — REST verification 403s and
+  // the proxy denies every push to it, so creation there is a dead end by
+  // construction. Fail fast with the flow that works instead. (Adoption of an
+  // EXISTING attached origin above is untouched — that is the sanctioned path.)
+  if (detectExecutionEnvironment() === 'cloud-sandbox') {
+    throw new BootstrapError(
+      'CLOUD_SANDBOX_REPO',
+      'this is a cloud sandbox session — a repo created from inside it would not be attached to the ' +
+        "session's GitHub scope (verification and pushes are blocked by the proxy). " +
+        'Create the private repo from a normal machine or github.com, open a cloud session ON that repo, ' +
+        'then run `gbrain bootstrap attach`.',
+      { exitCode: 2 },
+    );
   }
 
   // Ensure a git repo exists (main branch on fresh init).

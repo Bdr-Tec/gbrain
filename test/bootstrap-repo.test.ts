@@ -713,3 +713,42 @@ describe('repo helpers', () => {
     expect(parseGithubRemote('https://gitlab.com/alice/repo')).toBeNull();
   });
 });
+
+// ── cloud-sandbox create guard [D-cloud] ────────────────────────────────────
+//
+// A repo created from inside a proxied cloud session is never attached to the
+// session's GitHub scope — REST verification 403s and pushes are denied — so
+// createPrivateRepo must fail FAST with the flow that works (create outside,
+// open the session ON the repo, `gbrain bootstrap attach`) instead of leaving
+// a half-created, unpushable repo behind.
+
+describe('createPrivateRepo cloud-sandbox guard [CLOUD_SANDBOX_REPO]', () => {
+  const K = 'CLAUDE_CODE_REMOTE';
+  let savedRemote: string | undefined;
+  beforeEach(() => {
+    savedRemote = process.env[K];
+  });
+  afterEach(() => {
+    if (savedRemote === undefined) delete process.env[K];
+    else process.env[K] = savedRemote;
+  });
+
+  test('cloud sandbox + no existing origin → CLOUD_SANDBOX_REPO before any create call', async () => {
+    process.env[K] = 'true';
+    const { runner, calls } = makeRunner(happyRules());
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('CLOUD_SANDBOX_REPO');
+    expect(err.message).toContain('gbrain bootstrap attach');
+    // No repo was created and nothing was pushed.
+    expect(calls.some((c) => c.join(' ').includes('repo create'))).toBe(false);
+    expect(calls.some((c) => c.join(' ').includes('push'))).toBe(false);
+  });
+
+  test('local env: the same rules create normally (guard is cloud-only)', async () => {
+    delete process.env[K];
+    const { runner, calls } = makeRunner(happyRules());
+    const result = await createPrivateRepo(ws, { runner, gbrainHomeDir: home });
+    expect(result.disposition).toBe('created');
+    expect(calls.some((c) => c.join(' ').includes('repo create'))).toBe(true);
+  });
+});

@@ -3,8 +3,15 @@
  * Asserts the cron is DB-free (gbrain sources pull --path, NOT `pull <id>`),
  * secret-free, self-disabling, and that the launchd plist is periodic.
  */
-import { describe, test, expect } from 'bun:test';
-import { renderCronWrapper, generateBrainPullPlist } from '../src/core/brain-repo-durability.ts';
+import { describe, test, expect, afterEach } from 'bun:test';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import {
+  renderCronWrapper,
+  generateBrainPullPlist,
+  installDurabilityCron,
+} from '../src/core/brain-repo-durability.ts';
 
 const TOKEN = 'ghp_SHOULD_NEVER_APPEAR';
 
@@ -40,5 +47,43 @@ describe('generateBrainPullPlist (D12 launchd)', () => {
     expect(plist).toContain('<string>com.gbrain.brain-pull.wiki</string>');
     expect(plist).toContain('/home/u/.gbrain/brain-pull-wiki.sh');
     expect(plist.includes(TOKEN)).toBe(false);
+  });
+});
+
+describe('installDurabilityCron — crontab probe [B2/D-cloud]', () => {
+  const savedPath = process.env.PATH;
+  const savedHome = process.env.GBRAIN_HOME;
+  afterEach(() => {
+    process.env.PATH = savedPath;
+    if (savedHome === undefined) delete process.env.GBRAIN_HOME;
+    else process.env.GBRAIN_HOME = savedHome;
+  });
+
+  test('crontab absent on a non-darwin host → skipped (expected in containers), never needs_attention', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'no-bin-'));
+    process.env.PATH = empty; // no crontab resolvable
+    process.env.GBRAIN_HOME = mkdtempSync(join(tmpdir(), 'gb-cron-'));
+    const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, false, 'linux');
+    expect(r.status).toBe('skipped');
+    expect(r.detail).toContain('no crontab on this host');
+    expect(r.detail).toContain('post-commit auto-push');
+  });
+
+  test('crontab present but failing → needs_attention (a real breakage stays loud)', () => {
+    const shim = mkdtempSync(join(tmpdir(), 'shim-cron-'));
+    // -l lists empty; writing the new tab (crontab -) fails.
+    writeFileSync(join(shim, 'crontab'), '#!/bin/sh\ncase "$1" in -l) exit 0;; esac\nexit 1\n', { mode: 0o755 });
+    process.env.PATH = `${shim}:${savedPath}`;
+    process.env.GBRAIN_HOME = mkdtempSync(join(tmpdir(), 'gb-cron2-'));
+    const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, false, 'linux');
+    expect(r.status).toBe('needs_attention');
+    expect(r.detail).toContain('crontab install failed');
+  });
+
+  test('dry-run on a crontab-less host still reports the honest skip', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'no-bin2-'));
+    process.env.PATH = empty;
+    const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, true, 'linux');
+    expect(r.status).toBe('skipped');
   });
 });

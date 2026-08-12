@@ -39,6 +39,7 @@ import {
 import { findResolverFile, RESOLVER_FILENAMES } from './resolver-filenames.ts';
 import { redactSecretsInText } from './minions/handlers/shell-redact.ts';
 import { ensureGbrainHome, resolveGbrainHome } from './gbrain-home.ts';
+import { binaryOnPath } from './execution-env.ts';
 // Static import → bundled into the --compile binary so the taxonomy never drifts
 // and needs no runtime skills/ directory.
 import filingRulesDoc from '../../skills/_brain-filing-rules.json';
@@ -566,10 +567,30 @@ export function generateBrainPullPlist(label: string, wrapperPath: string, home:
 </plist>`;
 }
 
-function installDurabilityCron(sourceId: string, repoPath: string, branch: string, intervalSec: number, dryRun: boolean): { status: StepStatus; detail: string } {
+export function installDurabilityCron(
+  sourceId: string,
+  repoPath: string,
+  branch: string,
+  intervalSec: number,
+  dryRun: boolean,
+  platform: NodeJS.Platform = process.platform,
+): { status: StepStatus; detail: string } {
+  // Probe FIRST [D-cloud/B2]: containers and cloud sandboxes ship without
+  // crontab, and that is EXPECTED there — the honest answer is a skip that
+  // names what still covers persistence, not a needs_attention that reads
+  // like a bug (and no wrapper file is written for a job that can't exist).
+  if (platform !== 'darwin' && !binaryOnPath('crontab')) {
+    return {
+      status: 'skipped',
+      detail:
+        'no crontab on this host (container/cloud sandbox) — scheduled pull skipped; ' +
+        'the post-commit auto-push and per-turn/session-end pushes cover persistence here. ' +
+        'Run `gbrain sources harden <id>` on a persistent machine to add the scheduled pull.',
+    };
+  }
   const wrapper = dryRun ? cronWrapperPath(sourceId) : writeCronWrapper(sourceId, repoPath, branch);
   const home = process.env.HOME || '';
-  if (process.platform === 'darwin') {
+  if (platform === 'darwin') {
     const plistPath = launchdPlistPath(sourceId);
     if (dryRun) return { status: 'fixed', detail: `would install launchd ${cronLabel(sourceId)} every ${intervalSec}s (dry-run)` };
     mkdirSync(dirname(plistPath), { recursive: true });
@@ -583,12 +604,15 @@ function installDurabilityCron(sourceId: string, repoPath: string, branch: strin
   const marker = `# ${cronLabel(sourceId)}`;
   const cronLine = `*/${minutes} * * * * ${wrapper} ${marker}`;
   if (dryRun) return { status: 'fixed', detail: `would install crontab (every ${minutes}m) (dry-run)` };
+  // env: process.env on both calls — Bun otherwise resolves `crontab` against
+  // the STARTUP env snapshot, making runtime PATH changes (and PATH-shimmed
+  // test fakes) invisible (the workspace-push.ts / status.ts precedent).
   let existingCron = '';
-  try { existingCron = execSync('crontab -l 2>/dev/null', { encoding: 'utf-8' }); } catch { /* none */ }
+  try { existingCron = execSync('crontab -l 2>/dev/null', { encoding: 'utf-8', env: process.env }); } catch { /* none */ }
   const kept = existingCron.split('\n').filter(l => l && !l.includes(marker));
   const next = [...kept, cronLine, ''].join('\n');
   try {
-    execSync('crontab -', { input: next, stdio: ['pipe', 'ignore', 'ignore'] });
+    execSync('crontab -', { input: next, stdio: ['pipe', 'ignore', 'ignore'], env: process.env });
     return { status: 'fixed', detail: `crontab every ${minutes}m` };
   } catch (e) {
     return { status: 'needs_attention', detail: `crontab install failed: ${(e as Error).message.slice(0, 120)}` };
