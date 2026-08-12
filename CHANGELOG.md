@@ -2,6 +2,104 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.0.0] - 2026-08-12
+
+Brain currency, part one: a brain is only useful if it's CURRENT, and until now
+the machinery keeping it current could die without anyone noticing. This release
+makes autopilot's health honest end-to-end — status that reads the heartbeat,
+a daemon that takes itself out of rotation when its repo vanishes, migrations
+that pause it instead of racing it, and staleness reporting that can no longer
+say "fresh" forever.
+
+### Fixed
+
+- **A dead autopilot can no longer report healthy.** `gbrain autopilot --status`
+  now reads the daemon's heartbeat instead of checking that install artifacts
+  exist, and gains real exit codes for cron and CI gates: 0 fresh (or nothing
+  installed), 1 needs attention (stale heartbeat, never ran, or paused), 2 the
+  daemon took itself out of rotation. Status runs without touching the
+  database, so it keeps working during the exact outages it exists to
+  diagnose. Staleness tolerance scales with the tick interval and accounts
+  for the adaptive scheduler's longer healthy-brain sleeps, and a garbage
+  interval value can no longer silence the alarm.
+- **Content-relative staleness now has a wall-clock ceiling.** A source whose
+  content stopped moving (or whose local clone vanished) previously reported
+  fresh forever off the stored content timestamp. `sync_freshness`,
+  `federation_health`, and `gbrain status` now ramp toward stale past a
+  ceiling (default 72h; `GBRAIN_STALENESS_CEILING_HOURS` to tune) — ramping,
+  not stepping, so the warn tier still fires before the fail tier instead of
+  both alarms tripping at once.
+- **The documented agent-scheduler chain works on keyless brains.**
+  `gbrain sync --repo <path> && gbrain embed --stale` used to exit 1 on every
+  brain installed without an embedding key, breaking the always-current cron
+  for external agent schedulers. A bare stale embed now refuses cleanly
+  (exit 0, stderr hint); explicit embed requests (a slug, a slugs list, the
+  all flag) still exit 1.
+- **Engine migrations and the autopilot daemon no longer race.**
+  `gbrain migrate --to <engine>` claims a cooperative pause marker before
+  touching the target — the marker doubles as a migration mutex, so a second
+  concurrent migrate refuses to run instead of corrupting the first one's
+  resume state, and a marker it cannot write refuses the migration outright
+  rather than running unfenced. Background job workers stop picking up new
+  work while the marker is parked. It then waits for in-flight
+  sync/embed/cycle work and running jobs to actually drain (watching the DB
+  lock table, capped by `GBRAIN_MIGRATE_QUIESCE_SECONDS`) instead of
+  sleeping a blind grace period.
+  The marker is released even when the migration fails or is killed: cleanup
+  registers the moment the claim lands, adoption of a dead run's orphan is
+  pid-liveness-checked (a live migrate's marker is never stolen), and the
+  daemon itself clears an orphan whose owning process died. After a clean
+  flip the daemon detects the engine change on its next tick and relaunches
+  onto the new engine — previously it kept syncing into the abandoned source
+  engine until its process happened to restart — and the migration warns if
+  an exported connection-string env var would override the new config.
+- **Self-disable requires three consecutive misses.** A repo on an external
+  or cloud-synced volume that is briefly absent at login no longer
+  permanently takes the daemon out of rotation; one successful probe resets
+  the strike counter.
+- **A cron'd status monitor no longer reads as an install.** Machines whose
+  only crontab reference is the recommended health-gate line stop reporting
+  "installed but never ran".
+- **Malformed connection URLs stop the daemon immediately** with a clear
+  config verdict instead of spending the whole reconnect budget retrying a
+  value only the operator can fix.
+
+### Added
+
+- **Autopilot self-disable guard.** The generated wrapper now stops the daemon
+  for real when its `--repo` path vanishes: it writes an explanatory marker,
+  then boots the job out of the supervisor (`launchctl bootout` on macOS,
+  `systemctl --user disable --now` on systemd) — a bare `exit 0` under
+  KeepAlive/Restart=always is just a quieter respawn loop. `--status` explains
+  why it stopped; a reinstall against a restored path clears the marker;
+  `--uninstall` clears it too.
+- **`paused` status state.** A daemon parked by a migration (or by an orphaned
+  pause marker) now reports `paused` with exit 1 and the marker path, instead
+  of "running" off its still-fresh heartbeat.
+- **Harness e2e tier.** A real-launchd lifecycle test on macOS (install →
+  load → self-disable → status, under a per-run unique label) plus a
+  shimmed-supervisor lifecycle that runs on every platform, and an
+  agent-scheduler contract test that drives the documented sync-and-embed
+  shell chain end-to-end against a keyless brain — including the
+  pull-failure case that must break the chain.
+- **Honest staleness numbers in `gbrain status`.** Source rows now carry
+  `hours_since_last_sync` (raw wall-clock truth) alongside the
+  threshold-relative `staleness_hours` that drives the fresh/stale/severe
+  class, so the escalation ordering and the human-facing number stop being
+  the same field.
+- **Shared numeric env resolver.** `GBRAIN_*` numeric env vars now resolve
+  through one warn-once helper (`src/core/env-number.ts`), so a typo'd value
+  falls back loudly exactly once instead of NaN-ing a threshold silently.
+
+### To take advantage of v0.46.0.0
+
+- `gbrain upgrade`, then wire your scheduler's health gate to
+  `gbrain autopilot --status` — the exit code is now trustworthy.
+- If autopilot is installed, reinstall once (`gbrain autopilot --install
+  --repo <path>`) so the generated wrapper picks up the self-disable guard.
+- Keyless installs: your sync-and-embed cron chain now exits 0; no action
+  needed beyond upgrading.
+
 ## [0.45.2.0] - 2026-08-11
 
 **Make your agent's repo yourself, then let it move in.** If you'd rather own the GitHub repo up front, create a new empty private repo under your own account, clone it, open it in Claude Code or Codex, and paste the bootstrap block — bootstrap now detects your empty repo and adopts it instead of creating one, verifying it is private before anything is pushed. The default (open an empty folder and let bootstrap make the repo) is unchanged and now stated plainly in the docs. Either way, the folder you open becomes your agent's durable, private body.
