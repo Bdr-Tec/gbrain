@@ -273,6 +273,11 @@
       "name": "data-loss-gate",
       "path": "data-loss-gate/SKILL.md",
       "description": ">"
+    },
+    {
+      "name": "fact-check",
+      "path": "fact-check/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {
