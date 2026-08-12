@@ -2,6 +2,22 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.10.0] - 2026-08-12
+
+**The install now ends by telling you the two things that matter: you own the brain, and here's the first skill to run.** A working install used to finish on a health report and three tour prompts — technically complete, but a new user walked away without the two facts that make gbrain worth trusting and worth using. Now `gbrain bootstrap verify` ends with a hand-off: **what you own** (every memory is a markdown file in YOUR private GitHub repo — read it, take it to a second machine, delete it and the brain is gone; or the local-only variant with the one command that gives it a durable home) and **what to do next** (run the `cold-start` skill — say "fill my brain" and your agent imports your Gmail, calendar, and contacts through ClawVisor, an OAuth vault so the agent never holds raw tokens, or offline archives like Google Takeout, one consented phase at a time).
+
+The structural fix underneath: `cold-start` — the skill designed exactly for "I just installed this, now what?" — was excluded from the downstream skill bundle, so the paste-in install audience it was written for could never scaffold it. It's now bundled, it's the #1 recommended skill (ahead of the book-mirror flagship, because every flagship skill only becomes magical once the brain holds your real life), and a new drift guard fails CI if any recommended skill ever becomes unscaffoldable again.
+
+To take advantage of v0.45.10.0: existing installs can run `gbrain skillpack scaffold cold-start` and say "fill my brain"; fresh installs get the full hand-off automatically.
+
+### Added
+- **The verify hand-off block.** On PASS, `gbrain bootstrap verify` prints (and returns in `--json` as `handoff`) the ownership statement — with the actual repo URL, or the local-only variant pointing at `gbrain bootstrap repo` — followed by the cold-start next action. The runbook's Hand off section now instructs the installing agent to make both land ("say them plainly, confirm they landed") and to OFFER running cold-start on the spot.
+- **`cold-start` ships in the downstream bundle** (61 skills) and leads the recommended set, so the post-install advisory, `gbrain advisor`, and `gbrain skillpack scaffold --all` all surface it. Its prior bundle exclusion ("host onboarding flow") predated the personal-agent bootstrap and was reversed deliberately.
+- **Recommended-set drift guard**: every recommended slug must be scaffoldable from the plugin bundle — recommended-but-unscaffoldable is a dead-end call-to-action and now fails the suite.
+
+### Changed
+- README's Codex and Claude Code paths spell out the same two follow-ups after the click moment: ownership (markdown in a repo you own) and cold-start as the first skill, with ClawVisor named as the credential path and offline archives as the no-gateway alternative.
+
 ## [0.45.9.0] - 2026-08-12
 
 **The first five minutes stop making you think.** We built a real-terminal harness that drives the actual install the way a new user does — every picker, prompt, silence window, and line of copy — and then fixed what it surfaced. Keyless `gbrain init` used to dead-end at an error before it created anything; now it just works, keyless, and says so. A fresh brain used to scroll ~240 lines of internal migration names; now it prints one line. The success screen used to bury the one thing to do next under eight competing calls to action; now the copy-paste memory demo is the last, obvious thing on screen. And the "here's the magic" moment in the README now points at the trick that only a brain can do — tell it something, restart, ask for it back — instead of a question your identity files answer for free.
