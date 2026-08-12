@@ -288,6 +288,11 @@
       "name": "brain-ingest-gate",
       "path": "brain-ingest-gate/SKILL.md",
       "description": ">"
+    },
+    {
+      "name": "correction-pipeline",
+      "path": "correction-pipeline/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {
