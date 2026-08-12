@@ -323,6 +323,11 @@
       "name": "bulk-ingestion",
       "path": "bulk-ingestion/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "research-compendium",
+      "path": "research-compendium/SKILL.md",
+      "description": ">"
     }
   ],
   "dependencies": {

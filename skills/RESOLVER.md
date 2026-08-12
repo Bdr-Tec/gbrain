@@ -41,6 +41,7 @@ wins; fix the row.
 | "company brain", "team brain", "brainify", "sanitize the brain" | `skills/company-brainify/SKILL.md` |
 | "citation graph", "citation graph ingest", "typed citation graph", "build a reference graph" | `skills/citation-graph-ingest/SKILL.md` |
 | "give me the link", "where is the page", "why does this link 404", "brain link discipline" | `skills/brain-link-discipline/SKILL.md` |
+| "compendium", "research everything about", "read them all and summarize", "definitive guide" | `skills/research-compendium/SKILL.md` |
 
 ## Content & media ingestion
 
