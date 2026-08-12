@@ -293,6 +293,11 @@
       "name": "correction-pipeline",
       "path": "correction-pipeline/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "company-brainify",
+      "path": "company-brainify/SKILL.md",
+      "description": ">"
     }
   ],
   "dependencies": {

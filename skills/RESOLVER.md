@@ -38,6 +38,7 @@ wins; fix the row.
 | "resolve before asking", "before asking the user", "unidentified contact", "unknown relationship" | `skills/resolve-before-asking/SKILL.md` |
 | "move this to brain", "migrate to brain", "copy these files into the brain", "bulk import into the brain" | `skills/brain-ingest-gate/SKILL.md` |
 | "that's wrong", "that's not true", "I never said that", "where did you get that" | `skills/correction-pipeline/SKILL.md` |
+| "company brain", "team brain", "brainify", "sanitize the brain" | `skills/company-brainify/SKILL.md` |
 
 ## Content & media ingestion
 
