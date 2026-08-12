@@ -12,7 +12,6 @@
     "cold-start": "host onboarding flow",
     "ask-user": "pre-wave curation (recorded as-is; revisit individually)",
     "brain-taxonomist": "pre-wave curation (recorded as-is; revisit individually)",
-    "eiirp": "pre-wave curation — scheduled to flip to bundled when the wave's auto-fire gate merge lands",
     "schema-unify": "schema unification is a brain-owner migration activity",
     "skill-optimizer": "requires host-side skillopt engine access and benchmark files"
   }
