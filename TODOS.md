@@ -1,5 +1,15 @@
 # TODOS
 
+## Ambient recall follow-ups (filed v0.45.7.0, issue #1)
+
+Deferred from the ambient-recall wave (`context_pack` + `delta` frozen verbs +
+boundary runtime; CEO+ENG cleared, plan at
+`~/.claude/plans/system-instruction-you-are-working-vectorized-gem.md`). Each was
+explicitly scoped OUT with a one-line rationale — none is a bug, all are additive.
+
+- [ ] **Autonomous transcript watchers (D3=B).** The shipped event contract covers session boundaries (start, compaction, heartbeat) but relies on the harness emitting a lifecycle event. A per-harness transcript watcher would drive ambient recall for harnesses that can't emit — but watchers are fragile and compaction is often invisible on disk. Add per harness that proves it can't emit a boundary event. Priority: P3.
+- [ ] **Materialized `thread_state` table.** `delta`'s thread-change arm derives open-thread deltas from facts/timeline `updated_at` scans. If a perf gate ever forces it, materialize a `thread_state` table instead of deriving. Not needed until the derive-path SLO is threatened. Priority: P3.
+- [ ] **Codex native boundary hooks.** Codex has no hooks upstream (`CODEX_HAS_HOOKS=false`), so its ambient path is pull-only (AGENTS.md gate tells it to call `context_pack`/`delta` at boundaries). When Codex ships a hook mechanism, register the boundary events the way the Claude Code lane does; the IPC `context_pack` kind + `--harness codex` attribution channel are already reserved for it. Priority: P3.
 ## Brain-currency harness-e2e follow-ups (filed with the PR-A wave)
 
 - [ ] **P1 — Extend engine-identity convergence to the other long-lived planes.**

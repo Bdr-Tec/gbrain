@@ -38,7 +38,7 @@ mount, CEO-class with multiple team brains) and
 
 ## Architecture
 
-Contract-first: `src/core/operations.ts` defines 100+ shared operations (including `volunteer_context` — push-based context, see `docs/guides/push-context.md` — and the five frozen MEMORY_VERBS `recall`/`remember`/`entity`/`synthesize`/`forget`, servable alone via `gbrain serve --surface verbs`, see `docs/protocol/MEMORY_VERBS_v1.md`). CLI and MCP
+Contract-first: `src/core/operations.ts` defines 100+ shared operations (including `volunteer_context` — push-based context, see `docs/guides/push-context.md` — and the seven frozen MEMORY_VERBS `recall`/`remember`/`entity`/`synthesize`/`forget`/`context_pack`/`delta` — the last two are v0.45.7 ambient-recall boundary verbs (budget-packed pack + "what changed since"), all seven stamp `protocol_version: 1`, servable alone via `gbrain serve --surface verbs`, see `docs/protocol/MEMORY_VERBS_v1.md` + `docs/guides/ambient-recall.md`). CLI and MCP
 server are both generated from this single source. Engine factory (`src/core/engine-factory.ts`)
 dynamically imports the configured engine (`'pglite'` or `'postgres'`). Skills are fat
 markdown files (tool-agnostic, work with both CLI and plugin contexts).
@@ -481,7 +481,7 @@ ms, max waiters) for `--json`; a one-line summary prints to stderr.
 
 ## Version locations (single source of truth: `VERSION` file)
 
-Every release advances the version in **five files at once**. Keep these in
+Every release advances the version in **six files at once**. Keep these in
 sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
 package.json drift), but the canonical list lives here so future runs and
 the auto-update agent know where to look.
@@ -497,7 +497,7 @@ four numeric segments are required first. Historical 3-segment versions
 (`0.31.3`, `0.22.1`) remain valid in `git log` and migration filenames
 (`skills/migrations/v0.21.0.md`); do NOT rewrite them. Going forward only.
 
-**Required (every release must update all five):**
+**Required (every release must update all six):**
 
 | File | What lives there | Format |
 |---|---|---|
@@ -506,6 +506,7 @@ four numeric segments are required first. Historical 3-segment versions
 | `CHANGELOG.md` | Top entry header `## [0.31.4.1] - YYYY-MM-DD` plus the "To take advantage of v0.31.4.1" block. | Standard Keep-a-Changelog header. |
 | `TODOS.md` | Any TODO entries that mention "follow-up from vX.Y.Z.W" use the version of the release that filed them. Update only when filing NEW follow-up TODOs. | Inline `vX.Y.Z.W` references in TODO bodies. |
 | `CLAUDE.md` | The Key Files section's per-file annotations carry `vX.Y.Z.W (#NNN)` tags noting which release introduced a behavior. Update whenever a wave's annotations get folded in. | Inline `vX.Y.Z.W (#NNN, contributed by @user)` references. |
+| `openclaw.plugin.json` | OpenClaw plugin manifest (v0.45.6.0, #4033). Hand-maintained; `test/openclaw-plugin-manifest.test.ts` fails the suite if it drifts from `package.json`. Merges from master auto-resolve it to master's version — re-bump it with the trio. | `"version": "0.45.7.0"` |
 
 **Auto-derived (no manual edit; refreshed by their own commands):**
 

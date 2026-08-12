@@ -2,6 +2,28 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.7.0] - 2026-08-12
+
+**Ambient recall: your brain shows up at the moments that matter, not just when you ask.** Long-lived agents lose the thread at session boundaries — a fresh start with no warm context, a compaction that drops verbatim detail nothing rehydrates, a heartbeat that re-derives state from scratch. This release adds two new memory verbs that assemble a budget-packed, zero-LLM bundle of exactly what a boundary needs, and wires them into the agent's lifecycle hooks so a warm pack lands automatically at session start and after compaction. It's opt-in, fail-open, and reaches every host: Claude Code gets it pushed through hooks; Codex and any MCP host pull the same two verbs at their own boundaries. Whether your brain is embedded (PGLite) or managed (Postgres), the ambient value is the same.
+
+### Added
+- **`context_pack` — a deterministic, budget-packed boundary bundle.** `gbrain context-pack --entities a,b,c --budget-tokens 4000` returns entity cards, open threads, and top facts for a set of standing entities, trimmed to the token budget (cards first, then facts) with no model call in the path — sub-second on a large brain. Response reports `budget_used` and `dropped_count`. World-visible by default; private facts are included only for a local trusted caller that passes `--include-private`, and never over a remote connection.
+- **`delta` — cheap "what changed since".** `gbrain delta --since <ISO8601>` returns only the pages, facts, and thread changes newer than a timestamp — the right shape for a heartbeat that wants to maintain warm state in proportion to what changed, not re-read everything. Pass a stable `--session-id` and each call advances a per-session cursor so the next wake sees only what's new, with at-least-once delivery when a change tail spills past the budget.
+- **Boundary runtime for Claude Code.** Session start injects a warm context pack; a pre-compaction hook banks the window's standing entities so the session that resumes after a compaction rehydrates what the summary lost. Every boundary hook fails open and honors `GBRAIN_HOOKS=0`.
+- **Ambient-recall guide + published latency classes.** New `docs/guides/ambient-recall.md` maps where each verb belongs — `entity` per message, `context_pack`/`delta` at boundaries, `synthesize` never in the ambient path — with per-harness recipes. The memory-verbs protocol doc now carries a latency table for all seven verbs.
+
+### Changed
+- The frozen memory-verb set grows from five to seven — `context_pack` and `delta` join `recall`/`remember`/`entity`/`synthesize`/`forget`. The wire protocol is unchanged: all seven verbs stamp `protocol_version: 1`, so existing harnesses keep working untouched and simply gain two tools.
+
+### Fixed
+- `gbrain delta --session-id <id>` no longer hangs after printing its response — the CLI now exits cleanly on first wake (a background cleanup task raced process teardown). This is the exact command the heartbeat template tells agents to run.
+- On a Postgres brain whose config carries a leftover local database path, the pre-compaction hook now degrades cleanly instead of probing a local socket that has no server behind it — matching the session-start hook's behavior.
+- The `--surface verbs` startup banner now reports the actual verb count instead of a hardcoded five.
+
+### Hardening
+- The boundary behavior is now pinned end to end, not just in units: a real spawned serve answers the compact→session-start warm-pack round trip over its real socket; a real stdio MCP session on `--surface verbs` advertises and serves exactly the seven verbs fail-closed; the new verbs are exercised over real HTTP with per-token session-cursor isolation; keyset pagination and the session-cursor table are parity-pinned on real Postgres; migration shape, sub-second latency gates, CLI invocations, and a live-Codex boundary-call check round it out (~55 new tests).
+
+To take advantage of v0.45.7.0: upgrade with `bun install -g github:garrytan/gbrain#latest-stable`. A schema migration runs automatically on first use — a new per-session cursor table, additive, no existing data touched. Codex and other MCP hosts see the two new verbs immediately; Claude Code installs pick up the boundary hooks on the next `gbrain bootstrap`. Read `docs/guides/ambient-recall.md` for where each verb belongs and how to wire your heartbeat to `delta`.
 ## [0.45.6.0] - 2026-08-12
 
 **Seventeen new production skills, distilled from a 324-skill audit of a mature personal-agent deployment.** The built-in pack grows from ~52 to 69 skills and picks up the trust disciplines a memory product lives or dies by: corrections that fix the source instead of papering over it, a confirmation gate before anything irreversible, claim verification before anything ships, an ingest gate that stops duplicate and misfiled pages at the door, and a sanitization procedure for turning a personal brain into a team brain. Every import was adversarially reviewed, privacy-scrubbed onto generic placeholders, pinned to its upstream source, and shipped with routing fixtures.

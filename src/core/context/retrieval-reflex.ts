@@ -294,14 +294,22 @@ function displayForRow(row: PageRow, displayByNorm: Map<string, string>): string
  * Exported for the MEMORY_VERBS v1 entity card (verbs/entity-card.ts) — the
  * card's `summary` field runs through THIS boundary, not a parallel one.
  */
-export function safeSynopsis(row: PageRow): string {
+export function safeSynopsis(
+  row: PageRow,
+  opts: { keepVisibility?: ('private' | 'world')[] } = {},
+): string {
+  // v0.45.7 ambient recall: world-only by default (the injected-context posture).
+  // The ONLY widening caller is the entity-card builder for a trusted-local
+  // include_private pack (entity-card.ts) — the pointer/volunteer arms always
+  // run world-only (turn mode never widens).
+  const keepVisibility = opts.keepVisibility ?? ['world'];
   const fmSummary = row.frontmatter?.summary;
   if (typeof fmSummary === 'string' && fmSummary.trim()) {
     return clip(collapse(fmSummary), SYNOPSIS_MAX);
   }
   const body = row.compiled_truth ?? '';
   if (!body) return '';
-  const stripped = stripFactsFence(stripTakesFence(body), { keepVisibility: ['world'] });
+  const stripped = stripFactsFence(stripTakesFence(body), { keepVisibility });
   // Drop frontmatter block, markdown headings, and blank lines; first real prose line.
   const firstProse = stripped
     .replace(/^---[\s\S]*?---\s*/m, '')

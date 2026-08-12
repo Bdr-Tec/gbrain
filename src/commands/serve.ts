@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import type { BrainEngine } from '../core/engine.ts';
 import { startMcpServer } from '../mcp/server.ts';
+import { VERB_NAMES } from '../core/verbs.ts';
 
 // Maximum time the stdio path will wait for engine.disconnect() (PGLite
 // close + advisory lock release) before forcing exit. Keeps a wedged
@@ -236,7 +237,9 @@ export async function runServe(
   // and is intentionally NOT wired into this stdio plumbing.
   console.error(
     surface === 'verbs'
-      ? 'Starting GBrain MCP server (stdio) — serving 5 memory verbs (MEMORY_VERBS v1)...'
+      // v0.45.7: count derives from VERB_NAMES (7 with context_pack + delta)
+      // so the banner can't drift from the frozen set again.
+      ? `Starting GBrain MCP server (stdio) — serving ${VERB_NAMES.length} memory verbs (MEMORY_VERBS v1)...`
       : 'Starting GBrain MCP server (stdio)...',
   );
 

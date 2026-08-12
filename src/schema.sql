@@ -761,6 +761,23 @@ CREATE INDEX IF NOT EXISTS context_volunteer_events_src_time_idx
 CREATE INDEX IF NOT EXISTS context_volunteer_events_src_slug_idx
   ON context_volunteer_events (source_id, slug);
 
+-- session_context_state (v0.45.7 / migration v126 — ambient recall issue #1):
+-- per-session cursor + boundary-tie dedup for the `delta` verb + heartbeat
+-- runtime. Key (source_id, client_id, session_id); client_id 'local' sentinel
+-- for CLI/hook, remote auth client id otherwise. jsonb DDL-literal defaults.
+CREATE TABLE IF NOT EXISTS session_context_state (
+  source_id         TEXT NOT NULL,
+  client_id         TEXT NOT NULL DEFAULT 'local',
+  session_id        TEXT NOT NULL,
+  standing_entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+  surfaced_slugs    JSONB NOT NULL DEFAULT '[]'::jsonb,
+  last_wake_at      TIMESTAMPTZ,
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (source_id, client_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS session_context_state_updated_idx
+  ON session_context_state (updated_at);
+
 -- migration_impact_log moved BELOW minion_jobs (was here, lines 645-676)
 -- because its `job_id BIGINT REFERENCES minion_jobs(id)` FK requires
 -- minion_jobs to exist FIRST during SCHEMA_SQL replay. v0.41.25.0 fix.
