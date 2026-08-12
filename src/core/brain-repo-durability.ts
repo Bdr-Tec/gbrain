@@ -539,6 +539,9 @@ function launchdPlistPath(sourceId: string): string {
   return join(process.env.HOME || '', 'Library', 'LaunchAgents', `${cronLabel(sourceId)}.plist`);
 }
 
+/** Default scheduled-pull interval — ONE definition (harden + doctor probe). */
+export const DEFAULT_PULL_INTERVAL_SEC = 1800;
+
 export interface DurabilityJobStatus {
   kind: 'launchd' | 'crontab' | 'none';
   wrapperPresent: boolean;
@@ -558,7 +561,7 @@ export interface DurabilityJobStatus {
  */
 export function durabilityJobStatus(
   sourceId: string,
-  intervalSec = 1800,
+  intervalSec = DEFAULT_PULL_INTERVAL_SEC,
   platform: NodeJS.Platform = process.platform,
 ): DurabilityJobStatus {
   const wrapperPresent = existsSync(cronWrapperPath(sourceId));
@@ -604,11 +607,12 @@ export function renderCronWrapper(sourceId: string, repoPath: string, branch: st
 # Sources the shell profile for secrets, then runs the hardened, DB-free pull.
 [ -f ~/.zshenv ] && source ~/.zshenv 2>/dev/null
 source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null || true
-# Self-disable if the captured checkout is gone (rename/relocation). Tests the
-# repo DIR, never its git marker: in worktrees and submodules that marker is a
-# FILE, so a dir test there would wrongly self-disable a live checkout.
-if [ ! -d '${q(repoPath)}' ]; then
-  echo "$(date -u +%FT%TZ) [cron] path gone, skipping: ${q(repoPath)}" >> "${q(logPath)}" 2>/dev/null || true
+# Self-disable when the captured checkout is no longer a git working tree:
+# gone, OR its path reused by a non-git directory. git rev-parse recognizes
+# both the classic .git-dir layout AND worktrees/submodules (where the git
+# marker is a FILE), so a bare dir test would wrongly disable a live worktree.
+if ! git -C '${q(repoPath)}' rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "$(date -u +%FT%TZ) [cron] not a git work tree, skipping: ${q(repoPath)}" >> "${q(logPath)}" 2>/dev/null || true
   exit 0
 fi
 exec '${q(cli)}' sources pull --path '${q(repoPath)}' --branch '${q(branch)}'
@@ -796,7 +800,7 @@ export async function hardenBrainRepo(opts: HardenOpts): Promise<DurabilityRepor
   const dryRun = !!opts.dryRun;
   const installCron = opts.installCron !== false;
   const verify = opts.verify !== false;
-  const intervalSec = opts.intervalSec ?? 1800;
+  const intervalSec = opts.intervalSec ?? DEFAULT_PULL_INTERVAL_SEC;
   const redact = opts.pat ? (s: string) => redactSecretsInText(s, new Map([['github_pat', opts.pat!]])) : (s: string) => s;
   const log = (l: string) => opts.logger?.(redact(l));
 

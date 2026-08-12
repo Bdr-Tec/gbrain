@@ -16,7 +16,8 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFileSync, spawnSync } from 'child_process';
 import {
-  workspacePush, acquirePushLock, pushLockDir, pushStatusPath, readPushStatuses, verifyRemotePrivacy,
+  workspacePush, acquirePushLock, pushLockDir, pushStatusPath, pushStatusPathForRoot,
+  readPushStatuses, summarizePushStatuses, verifyRemotePrivacy,
   parseGithubOwnerRepo, resolveWorkspaceRoot, PUSH_LOCK_STALE_MS, PUSH_DENY_GLOBS,
 } from '../src/core/workspace-push.ts';
 import { SCAN_ALLOW_FILENAME } from '../src/core/secret-scan.ts';
@@ -524,5 +525,80 @@ describe('error paths', () => {
     const status = readPushStatuses()[0]!;
     expect(status.ok).toBe(false);
     expect(existsSync(pushLockDir(work))).toBe(false);
+  }, T);
+});
+
+describe('unverified-remote escape hatches [D18/S3]', () => {
+  test('env hatch: unverifiable origin + GBRAIN_ALLOW_UNVERIFIED_REMOTE=1 → pushed (WARN path)', async () => {
+    process.env.GBRAIN_ALLOW_UNVERIFIED_REMOTE = '1';
+    try {
+      writeFileSync(join(work, 'note.md'), 'env hatch\n');
+      // file origin → ladder unverifiable; env hatch downgrades it to allowed.
+      const r = await workspacePush({ dir: work, branch: 'main' });
+      expect(r.ok).toBe(true);
+      expect(r.status).toBe('pushed');
+    } finally {
+      delete process.env.GBRAIN_ALLOW_UNVERIFIED_REMOTE;
+    }
+  }, T);
+
+  test('config hatch: push.allow_unverified_remote=true in the file plane → pushed', async () => {
+    mkdirSync(join(process.env.HOME!, '.gbrain'), { recursive: true });
+    writeFileSync(
+      join(process.env.HOME!, '.gbrain', 'config.json'),
+      JSON.stringify({ engine: 'pglite', push: { allow_unverified_remote: true } }),
+    );
+    writeFileSync(join(work, 'note2.md'), 'config hatch\n');
+    const r = await workspacePush({ dir: work, branch: 'main' });
+    expect(r.ok).toBe(true);
+    expect(r.status).toBe('pushed');
+  }, T);
+
+  test('CRITICAL [S3]: a hatch never covers a PROVEN-PUBLIC origin — still refused', async () => {
+    const shim = mkdtempSync(join(root, 'shim-pub-'));
+    writeFileSync(join(shim, 'gh'), '#!/bin/sh\necho false\n', { mode: 0o755 });
+    process.env.PATH = `${shim}:${saved.PATH}`;
+    process.env.GBRAIN_ALLOW_UNVERIFIED_REMOTE = '1';
+    try {
+      git(work, 'remote', 'set-url', 'origin', 'https://github.com/acme-example/widget-co.git');
+      writeFileSync(join(work, 'note3.md'), 'must not leave\n');
+      const r = await workspacePush({ dir: work, branch: 'main' });
+      expect(r.ok).toBe(false);
+      expect(r.status).toBe('refused_visibility');
+      expect(r.reason).toContain('does NOT cover proven-public');
+    } finally {
+      delete process.env.GBRAIN_ALLOW_UNVERIFIED_REMOTE;
+      git(work, 'remote', 'set-url', 'origin', bare);
+    }
+  }, T);
+});
+
+describe('per-root masking [D13]', () => {
+  test('one root failing + another succeeding: the failure is never masked (reader + summarize)', async () => {
+    const otherRoot = mkdtempSync(join(root, 'other-ws-'));
+    mkdirSync(join(process.env.HOME!, '.gbrain', 'bootstrap'), { recursive: true });
+    writeFileSync(
+      pushStatusPathForRoot(otherRoot),
+      JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'refused_visibility', repoRoot: otherRoot }) + '\n',
+    );
+    writeFileSync(join(work, 'ok.md'), 'fine\n');
+    const r = await push();
+    expect(r.ok).toBe(true); // this workspace pushed fine…
+    const entries = readPushStatuses();
+    const { failing } = summarizePushStatuses(entries);
+    expect(failing).toHaveLength(1); // …and the OTHER root's failure survives
+    expect(failing[0]!.repoRoot).toBe(otherRoot);
+  }, T);
+
+  test('ghost roots are filtered: a failing record for a DELETED workspace stops feeding the surfaces', async () => {
+    const ghost = mkdtempSync(join(root, 'ghost-ws-'));
+    mkdirSync(join(process.env.HOME!, '.gbrain', 'bootstrap'), { recursive: true });
+    writeFileSync(
+      pushStatusPathForRoot(ghost),
+      JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'refused_visibility', repoRoot: ghost }) + '\n',
+    );
+    rmSync(ghost, { recursive: true, force: true });
+    const { failing } = summarizePushStatuses(readPushStatuses());
+    expect(failing).toHaveLength(0);
   }, T);
 });

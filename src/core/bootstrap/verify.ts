@@ -344,6 +344,35 @@ function checkMcpJsonHygiene(ws: string): VerifyCheck {
   }
 }
 
+/** [D12 upgrade-path guard]: an event carried by BOTH hook files double-fires
+ * every turn (possible when the committed carrier arrives via git pull onto a
+ * machine whose local file predates the dedupe-aware writers). Warn-only. */
+function checkHookCarrierOverlap(ws: string): VerifyCheck {
+  const id = 'hook_carrier_overlap';
+  try {
+    const events = (['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'] as const).filter((event) => {
+      const has = (rel: string): boolean => {
+        try {
+          const parsed = JSON.parse(readFileSync(join(ws, rel), 'utf8')) as { hooks?: Record<string, unknown> };
+          const groups = parsed?.hooks?.[event];
+          return Array.isArray(groups) && JSON.stringify(groups).includes('"_gbrain"');
+        } catch {
+          return false;
+        }
+      };
+      return has(join('.claude', 'settings.json')) && has(join('.claude', 'settings.local.json'));
+    });
+    if (events.length === 0) return { id, ok: true, detail: 'no event fires from both hook carriers' };
+    return {
+      id,
+      ok: true, // warn-only self-repair channel
+      detail: `WARN: ${events.join(', ')} fire from BOTH .claude/settings.json and settings.local.json (double-fire) — run \`gbrain bootstrap hooks --repair\` to dedupe`,
+    };
+  } catch (e) {
+    return { id, ok: true, detail: `carrier overlap probe failed (${(e as Error).message})` };
+  }
+}
+
 async function checkRepoPrivacy(ws: string): Promise<VerifyCheck> {
   const id = 'repo_privacy';
   try {
@@ -874,6 +903,7 @@ export async function verifyWorkspace(
   checks.push(await checkRepoPrivacy(ws));
   checks.push(checkExecutionEnvironment());
   checks.push(checkMcpJsonHygiene(ws));
+  checks.push(checkHookCarrierOverlap(ws));
 
   // Round-trip family only makes sense on a reachable engine.
   if (engineHealthy) {

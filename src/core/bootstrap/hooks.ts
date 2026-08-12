@@ -147,6 +147,16 @@ export function buildPortableClaudeHookCommand(event: ClaudeHookEvent, env: Clau
 
 /** Events the COMMITTED settings file already carries with our marker [D12]
  * — the local writer skips these so one event never fires from both files. */
+/** Pull the GBRAIN_SOURCE value out of a rendered portable hook command so the
+ * exact-match check is agnostic to the (operator-chosen) source id. Returns
+ * null when the command isn't shaped like ours. */
+function extractHookSource(command: string): string | null {
+  const m = /command -v gbrain >\/dev\/null 2>&1 && env GBRAIN_SOURCE=('[^']*'|[^ ]+) gbrain hook /.exec(command);
+  if (!m) return null;
+  const raw = m[1]!;
+  return raw.startsWith("'") ? raw.slice(1, -1).replace(/'\\''/g, "'") : raw;
+}
+
 export function committedHookEvents(workspaceDir: string): Set<ClaudeHookEvent> {
   const carried = new Set<ClaudeHookEvent>();
   try {
@@ -161,7 +171,20 @@ export function committedHookEvents(workspaceDir: string): Set<ClaudeHookEvent> 
         (g) =>
           typeof g === 'object' && g !== null &&
           Array.isArray((g as HookMatcherGroup).hooks) &&
-          ((g as HookMatcherGroup).hooks as unknown[]).some(isOurs),
+          ((g as HookMatcherGroup).hooks as unknown[]).some(
+            (h) =>
+              isOurs(h) &&
+              // A committed file is repo-contributor-writable: a marker + a
+              // bare `includes('gbrain hook')` substring is spoofable
+              // (`evil; # gbrain hook` suppresses the real local install AND
+              // runs attacker code). Require the EXACT portable-command shape
+              // this event would render — the anchored `command -v gbrain …`
+              // guard + `|| exit 0` structure a foreign command can't fake.
+              typeof (h as HookCommandEntry).command === 'string' &&
+              (h as HookCommandEntry).command === buildPortableClaudeHookCommand(event, {
+                GBRAIN_SOURCE: extractHookSource((h as HookCommandEntry).command as string) ?? '',
+              }),
+          ),
       );
       if (ours) carried.add(event);
     }
@@ -364,6 +387,12 @@ export function writeCommittedClaudeHooks(
   workspaceDir: string,
   opts: { env: ClaudeHookEnv; events?: ClaudeHookEvent[]; timeoutSecs?: Partial<Record<ClaudeHookEvent, number>> },
 ): WriteClaudeHooksResult {
+  if (opts.env.GBRAIN_HOME) {
+    throw new Error(
+      'GBRAIN_HOME is machine-specific and must not be embedded in the COMMITTED hook carrier ' +
+        '(the file travels between machines) — isolated installs stay on the local carrier',
+    );
+  }
   for (const [k, v] of Object.entries(opts.env)) {
     if (typeof v === 'string' && /[\n\r\0]/.test(v)) {
       throw new Error(`env ${k} contains control characters — refusing to embed in a hook command`);

@@ -25,10 +25,11 @@ describe('renderCronWrapper (D2 DB-free)', () => {
     expect(w).not.toMatch(/sources pull '?wiki'?(\s|$)/); // never `sources pull wiki`
   });
 
-  test('self-disables when the captured checkout is gone (repo DIR test — the git marker is a FILE in worktrees)', () => {
-    expect(w).toContain("if [ ! -d '/data/clones/wiki' ]");
+  test('self-disables via git rev-parse (recognizes worktrees where the git marker is a FILE), not a bare dir test', () => {
+    expect(w).toContain("if ! git -C '/data/clones/wiki' rev-parse --is-inside-work-tree");
     expect(w).not.toContain("-d '/data/clones/wiki/.git'");
-    expect(w).toContain('path gone, skipping');
+    expect(w).not.toContain("-d '/data/clones/wiki'");
+    expect(w).toContain('not a git work tree, skipping');
   });
 
   test('sources the shell profile (secret-free) and never bakes a token', () => {
@@ -140,4 +141,39 @@ describe('durabilityJobStatus — presence + liveness [D7]', () => {
   function installName() {
     return durabilityJobStatus('wiki', 1800, 'linux');
   }
+});
+
+describe('durabilityJobStatus — darwin launchd liveness [D7]', () => {
+  const savedPath = process.env.PATH;
+  const savedHome = process.env.HOME;
+  afterEach(() => {
+    process.env.PATH = savedPath;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  });
+
+  function darwinFixture(launchctlExit: number): ReturnType<typeof durabilityJobStatus> {
+    const home = mkdtempSync(join(tmpdir(), 'jb-mac-'));
+    process.env.HOME = home;
+    const plistDir = join(home, 'Library', 'LaunchAgents');
+    const { mkdirSync: mk } = require('node:fs') as typeof import('node:fs');
+    mk(plistDir, { recursive: true });
+    writeFileSync(join(plistDir, 'com.gbrain.brain-pull.wiki.plist'), '<plist/>');
+    const shim = mkdtempSync(join(tmpdir(), 'shim-lc-'));
+    writeFileSync(join(shim, 'launchctl'), `#!/bin/sh\nexit ${launchctlExit}\n`, { mode: 0o755 });
+    process.env.PATH = shim;
+    return durabilityJobStatus('wiki', 1800, 'darwin');
+  }
+
+  test('plist present + launchctl reports loaded → live', () => {
+    const s = darwinFixture(0);
+    expect(s.kind).toBe('launchd');
+    expect(s.live).toBe(true);
+  });
+
+  test('plist present but NOT loaded (the dead-job shape [D7]) → live=false', () => {
+    const s = darwinFixture(1);
+    expect(s.kind).toBe('launchd');
+    expect(s.live).toBe(false);
+  });
 });

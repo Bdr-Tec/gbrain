@@ -8474,10 +8474,20 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   // are expected to have none.
   try {
     if (ws !== null && receipt !== null) {
-      const { durabilityJobStatus } = await import('../core/brain-repo-durability.ts');
       const { detectExecutionEnvironment } = await import('../core/execution-env.ts');
-      const { readInterviewState } = await import('../core/bootstrap/interview.ts');
       const envKind = detectExecutionEnvironment();
+      if (envKind !== 'local') {
+        // Answered BEFORE the subprocess probes — cloud/container doctor
+        // runs must not pay launchctl/crontab spawns for an answer that is
+        // discarded (no scheduler exists there by design).
+        checks.push({
+          name: 'bootstrap_durability_job',
+          status: 'ok',
+          message: `no scheduler in this environment (${envKind}) — expected; per-turn and session-end pushes cover persistence`,
+        });
+      } else {
+      const { durabilityJobStatus } = await import('../core/brain-repo-durability.ts');
+      const { readInterviewState } = await import('../core/bootstrap/interview.ts');
       const sourceId = receipt.source_id ?? 'workspace';
       const js = durabilityJobStatus(sourceId);
       let consented = false;
@@ -8485,13 +8495,7 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
         const iv = readInterviewState(ws);
         consented = iv.ok && (iv.state.answers['PERSIST_CRON']?.value ?? '').toLowerCase() === 'yes';
       } catch { consented = false; }
-      if (envKind !== 'local') {
-        checks.push({
-          name: 'bootstrap_durability_job',
-          status: 'ok',
-          message: `no scheduler in this environment (${envKind}) — expected; per-turn and session-end pushes cover persistence`,
-        });
-      } else if (!consented) {
+      if (!consented) {
         if (js.kind !== 'none') {
           checks.push({ name: 'bootstrap_durability_job', status: 'ok', message: `${js.kind} pull job present (not required by consent — fine)` });
         }
@@ -8520,8 +8524,13 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
           status: 'warn',
           message: `${js.kind} job present but the pull log is stale (no run within 2× the interval) — the job may be dead; re-run \`gbrain sources harden ${sourceId}\``,
         });
+      } else if (js.kind === 'crontab' && js.logFresh === undefined) {
+        // The crontab LINE existing proves installation, not that the cron
+        // daemon runs it — with no pull log yet we can't claim liveness.
+        checks.push({ name: 'bootstrap_durability_job', status: 'ok', message: 'crontab pull job installed (no run logged yet — liveness confirmed once it first fires)' });
       } else {
         checks.push({ name: 'bootstrap_durability_job', status: 'ok', message: `${js.kind} pull job present and live` });
+      }
       }
     }
   } catch { /* best-effort — durability probing never fails doctor */ }

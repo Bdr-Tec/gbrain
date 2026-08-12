@@ -981,6 +981,26 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
       }
     }
 
+    // Per-root hook-lane state [D13]: remove this workspace's push-status,
+    // debounce, and announce files — a dead root's failing record would
+    // otherwise re-fire the failure banner forever (it can never be cleared
+    // by a re-push once the workspace is gone).
+    try {
+      const { pushStatusPathForRoot, workspaceRootHash } = await import('../core/workspace-push.ts');
+      const { execFileSync } = await import('node:child_process');
+      let root = ws;
+      try {
+        root = execFileSync('git', ['-C', ws, 'rev-parse', '--show-toplevel'], {
+          stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000, env: process.env,
+        }).toString().trim() || ws;
+      } catch { /* not a repo — use ws as-is */ }
+      const { rmSync } = await import('node:fs');
+      const statusFile = pushStatusPathForRoot(root);
+      for (const f of [statusFile, `${statusFile}.announced`, join(resolveGbrainHome(), 'bootstrap', `stop-push-${workspaceRootHash(root)}.json`)]) {
+        rmSync(f, { force: true });
+      }
+    } catch { /* best-effort */ }
+
     // Durability teardown [B6]: uninstall previously left the launchd/cron
     // job, the untracked post-commit hook, and the credential wiring behind.
     // Best-effort — a teardown hiccup never fails the uninstall. The COMMITTED

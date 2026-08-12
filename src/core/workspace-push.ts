@@ -351,8 +351,8 @@ export async function verifyRemotePrivacy(root: string): Promise<RemotePrivacyVe
  * single-writer lock, so the file plane is the only channel that always works. */
 export function configAllowsUnverifiedRemote(): boolean {
   try {
-    const cfg = loadConfigFileOnly() as { push?: Record<string, unknown> } | null;
-    const v = cfg?.push?.allow_unverified_remote;
+    const cfg = loadConfigFileOnly();
+    const v = cfg?.push?.allow_unverified_remote as unknown;
     return v === true || v === 'true' || v === '1';
   } catch {
     return false;
@@ -412,10 +412,23 @@ export function readPushStatuses(): PushStatusEntry[] {
   } catch {
     return [];
   }
-  const perRoot = names.map((n) => parse(join(dir, n))).filter((e): e is PushStatusEntry => e !== null);
-  if (perRoot.length > 0) return perRoot;
-  const legacy = parse(pushStatusPath());
-  return legacy ? [legacy] : [];
+  // The legacy file is consulted only when NO per-root FILES exist on disk —
+  // if per-root files exist but are all corrupt, an empty result is the honest
+  // answer (doctor pairs it with pushStatusFilesExist for the loud warn); a
+  // stale pre-upgrade record must never shadow live-but-unreadable state.
+  if (names.length === 0) {
+    const legacy = parse(pushStatusPath());
+    return legacy ? [legacy] : [];
+  }
+  return names
+    .map((n) => parse(join(dir, n)))
+    .filter((e): e is PushStatusEntry => e !== null)
+    // A record whose workspace no longer exists on disk is a ghost: it can
+    // never be cleared by a re-push (the root is gone), so it must not feed
+    // the failure banner / staleness note forever (deleted Conductor
+    // workspaces are routine). Entries without repoRoot (legacy shape in a
+    // per-root file) are kept — absence of evidence is not a ghost.
+    .filter((e) => e.repoRoot === undefined || existsSync(e.repoRoot));
 }
 
 /** True when any push-status file exists on disk (parseable or not). The
@@ -431,19 +444,45 @@ export function pushStatusFilesExist(): boolean {
   return existsSync(pushStatusPath());
 }
 
-/** The per-root status for one workspace, or null. */
+/** The per-root status for one workspace, or null. Direct keyed read first —
+ * the scan is only a fallback for legacy records carrying a repoRoot field. */
 export function readPushStatusForRoot(root: string): PushStatusEntry | null {
-  const entries = readPushStatuses();
-  const keyed = entries.find((e) => e.file === pushStatusPathForRoot(root));
-  if (keyed) return keyed;
-  return entries.find((e) => e.repoRoot === root) ?? null;
+  const keyedPath = pushStatusPathForRoot(root);
+  try {
+    const s = JSON.parse(readFileSync(keyedPath, 'utf8')) as Omit<PushStatusEntry, 'file'>;
+    return { ...s, file: keyedPath };
+  } catch {
+    /* fall through to the scan */
+  }
+  return readPushStatuses().find((e) => e.repoRoot === root) ?? null;
+}
+
+/** One aggregation for every status surface (SessionStart note, doctor,
+ * banner counting): the failing entries and the stalest success timestamp. */
+/** Failure reasons carry remote-influenced text (git stderr → rung log →
+ * push-status.reason). Clamp to a safe printable charset + length before ANY
+ * model- or human-visible surface embeds it (banner, doctor, status blob) so
+ * it can't become an injection or formatting vector — the free-form
+ * counterpart to hook.ts's reasonCode() for typed codes. */
+export function sanitizePushReason(reason: string | undefined): string {
+  if (!reason) return 'unknown reason';
+  return reason.replace(/[^\x20-\x7E]/g, ' ').replace(/[`$\\]/g, "'").slice(0, 140);
+}
+
+export function summarizePushStatuses(entries: PushStatusEntry[]): {
+  failing: PushStatusEntry[];
+  stalestTs: number | null;
+} {
+  const failing = entries.filter((e) => e.ok === false);
+  const stamps = entries.map((e) => Date.parse(e.ts ?? '')).filter((t) => Number.isFinite(t));
+  return { failing, stalestTs: stamps.length > 0 ? Math.min(...stamps) : null };
 }
 
 function writePushStatus(
-  status: { ts: string; ok: boolean; reason?: string; ahead?: number; repoRoot?: string },
+  status: { ts: string; ok: boolean; reason?: string; ahead?: number; repoRoot: string },
 ): void {
   try {
-    const p = status.repoRoot ? pushStatusPathForRoot(status.repoRoot) : pushStatusPath();
+    const p = pushStatusPathForRoot(status.repoRoot);
     mkdirSync(dirname(p), { recursive: true, mode: 0o700 });
     // tmp+rename (the writeReceipt pattern): a concurrent reader never sees a
     // torn half-written status file.
@@ -670,8 +709,10 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
       });
     }
     // Escape-hatch resolution [D18], most explicit first: CLI flag > env var >
-    // file-plane config. Every path warns loudly — the override trusts the
-    // remote on the operator's word and should be unset once verification works.
+    // file-plane config. Every path warns loudly. The hatches downgrade ONLY
+    // the `unverifiable` verdict — the ladder still runs and an affirmatively
+    // PUBLIC origin refuses regardless, matching every piece of user-facing
+    // copy ("for self-hosted git you trust", never "push to public repos").
     const unverifiedVia = opts.allowUnverifiedRemote
       ? 'the allow-unverified-remote flag'
       : process.env.GBRAIN_ALLOW_UNVERIFIED_REMOTE === '1'
@@ -679,21 +720,29 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
         : configAllowsUnverifiedRemote()
           ? 'config push.allow_unverified_remote (sticky — unset it once verification works)'
           : null;
-    if (unverifiedVia !== null) {
-      log(`WARN: repo-visibility verification SKIPPED via ${unverifiedVia} — you are trusting this remote`);
-    } else {
+    {
       const privacy = await verifyRemotePrivacy(root);
-      if (privacy.verdict !== 'private') {
-        const reason =
-          privacy.verdict === 'not_private'
-            ? `origin is not private: ${privacy.detail} — refusing to push workspace contents`
-            : `cannot verify origin visibility (${privacy.detail}) — refusing to push. ` +
-              `Pass --allow-unverified-remote (or set GBRAIN_ALLOW_UNVERIFIED_REMOTE=1, or ` +
-              '`gbrain config set push.allow_unverified_remote true`) for self-hosted git you trust.';
+      if (privacy.verdict === 'not_private') {
+        const reason = `origin is not private: ${privacy.detail} — refusing to push workspace contents` +
+          (unverifiedVia !== null ? ` (the unverified-remote override via ${unverifiedVia} does NOT cover proven-public origins)` : '');
         log(`PUSH REFUSED: ${reason}`);
         return finish({
           ok: false, status: 'refused_visibility', repoRoot: root, branch, committed, reason,
         });
+      }
+      if (privacy.verdict === 'unverifiable') {
+        if (unverifiedVia !== null) {
+          log(`WARN: origin visibility unverifiable — pushing anyway via ${unverifiedVia}; you are trusting this remote`);
+        } else {
+          const reason =
+            `cannot verify origin visibility (${privacy.detail}) — refusing to push. ` +
+            `Pass --allow-unverified-remote (or set GBRAIN_ALLOW_UNVERIFIED_REMOTE=1, or ` +
+            '`gbrain config set push.allow_unverified_remote true`) for self-hosted git you trust.';
+          log(`PUSH REFUSED: ${reason}`);
+          return finish({
+            ok: false, status: 'refused_visibility', repoRoot: root, branch, committed, reason,
+          });
+        }
       }
     }
 

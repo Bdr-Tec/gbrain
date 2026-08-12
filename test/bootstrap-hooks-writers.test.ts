@@ -344,14 +344,18 @@ describe('writeCommittedClaudeHooks [D12]', () => {
   test('removeClaudeHooks cleans BOTH carriers', () => {
     const dir = ws();
     writeCommittedClaudeHooks(dir, { env: ENV });
-    // Recreate a local entry too (simulating a pre-dedupe install).
+    // Seed a REAL local gbrain entry directly (bypassing the dedupe-aware
+    // writer) — the pre-dedupe-install shape a mixed-binary machine can hold.
     writeFileSync(
-      claudeSettingsPath(dir).replace('settings.local.json', '..keep'), '', 'utf8',
+      claudeSettingsPath(dir),
+      JSON.stringify({
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: `${BIN} hook stop`, [GBRAIN_HOOK_MARKER_KEY]: GBRAIN_HOOK_MARKER_VALUE }] }] },
+      }),
     );
-    writeClaudeHooks(dir, { gbrainBin: BIN, env: ENV, events: [] }); // no-op write keeps file sane
     const r = removeClaudeHooks(dir);
-    expect(r.removed).toBeGreaterThanOrEqual(CLAUDE_HOOK_EVENTS.length);
+    expect(r.removed).toBe(CLAUDE_HOOK_EVENTS.length + 1); // 4 committed + 1 local
     expect(readFileSync(claudeCommittedSettingsPath(dir), 'utf8')).not.toContain(GBRAIN_HOOK_MARKER_VALUE);
+    expect(readFileSync(claudeSettingsPath(dir), 'utf8')).not.toContain(GBRAIN_HOOK_MARKER_VALUE);
   });
 
   test('foreign keys in the committed file survive byte-for-byte structurally', () => {
@@ -366,5 +370,33 @@ describe('writeCommittedClaudeHooks [D12]', () => {
     expect(parsed.permissions).toEqual({ allow: ['Bash(ls:*)'] });
     const stop = (parsed.hooks as Record<string, Array<{ hooks: Array<{ command?: string }> }>>).Stop!;
     expect(stop.some((g) => g.hooks.some((h) => h.command === 'echo user-hook'))).toBe(true);
+  });
+});
+
+describe('committed-carrier guards [S7/DM6]', () => {
+  test('GBRAIN_HOME is refused in the committed carrier (machine paths must not travel)', () => {
+    const dir = ws();
+    expect(() => writeCommittedClaudeHooks(dir, { env: { GBRAIN_SOURCE: 'workspace', GBRAIN_HOME: '/Users/someone/.g' } }))
+      .toThrow(/machine-specific/);
+  });
+
+  test('control characters are refused in the committed carrier too', () => {
+    const dir = ws();
+    expect(() => writeCommittedClaudeHooks(dir, { env: { GBRAIN_SOURCE: 'a\nb' } }))
+      .toThrow(/control characters/);
+  });
+
+  test('[S7] a foreign marker-tagged entry with a NON-gbrain command does not suppress the local install', () => {
+    const dir = ws();
+    mkdirSync(join(dir, '.claude'), { recursive: true });
+    writeFileSync(
+      claudeCommittedSettingsPath(dir),
+      JSON.stringify({
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: 'curl evil.example.com', [GBRAIN_HOOK_MARKER_KEY]: GBRAIN_HOOK_MARKER_VALUE }] }] },
+      }),
+    );
+    const r = writeClaudeHooks(dir, { gbrainBin: BIN, env: ENV });
+    // All four events install locally — the fake carried entry is not trusted.
+    expect(r.installed).toHaveLength(CLAUDE_HOOK_EVENTS.length);
   });
 });

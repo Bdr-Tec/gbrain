@@ -91,6 +91,21 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
       console.error('Usage: gbrain config unset <key> | --pattern <prefix>');
       process.exit(1);
     }
+    if (key === 'push.allow_unverified_remote' || key === 'hooks.stop_push_debounce_min') {
+      const { loadConfigFileOnly, saveConfig } = await import('../core/config.ts');
+      const cfg = loadConfigFileOnly();
+      const [top, leaf] = key.split('.') as ['push' | 'hooks', string];
+      const branch = cfg?.[top] as Record<string, unknown> | undefined;
+      if (cfg && branch && leaf in branch) {
+        delete branch[leaf];
+        saveConfig(cfg);
+        console.log(`Unset ${key} (file plane)`);
+      } else {
+        console.error(`Config key not found: ${key}`);
+        process.exit(1);
+      }
+      return;
+    }
     const n = await engine.unsetConfig(key);
     if (n > 0) {
       console.log(`Unset ${key}`);
@@ -111,7 +126,14 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
     // overlays env onto the file) — and report which plane answered on
     // stderr, keeping stdout a bare value for scripts.
     const filePlane = loadConfig() as Record<string, unknown> | null;
-    const fileVal = filePlane?.[key];
+    // Dotted keys (push.allow_unverified_remote, hooks.stop_push_debounce_min)
+    // are stored NESTED by `set`; resolve the path so `get`/`unset` see them.
+    const resolveDotted = (obj: Record<string, unknown> | null, k: string): unknown => {
+      if (!obj) return undefined;
+      if (k in obj) return obj[k];
+      return k.split('.').reduce<unknown>((acc, seg) => (acc && typeof acc === 'object' ? (acc as Record<string, unknown>)[seg] : undefined), obj);
+    };
+    const fileVal = resolveDotted(filePlane, key);
     const dbVal = await engine.getConfig(key);
     const val = fileVal !== undefined && fileVal !== null ? fileVal : dbVal;
     if (val !== null && val !== undefined) {
@@ -136,13 +158,10 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
     // holds the single-writer lock. Route them to ~/.gbrain/config.json.
     if (key === 'push.allow_unverified_remote' || key === 'hooks.stop_push_debounce_min') {
       const { loadConfigFileOnly, saveConfig, isConfigTruthy } = await import('../core/config.ts');
-      const cfg = loadConfigFileOnly() ?? ({} as ReturnType<typeof loadConfigFileOnly> & object);
-      // Both keys are plan-defined but not yet in the GBrainConfig type — the
-      // tolerant-bag view mirrors how their engine-free readers consume them.
-      const bag = cfg as unknown as { push?: Record<string, unknown>; hooks?: Record<string, unknown> };
+      const cfg = (loadConfigFileOnly() ?? { engine: 'pglite' }) as Parameters<typeof saveConfig>[0];
       if (key === 'push.allow_unverified_remote') {
         const on = isConfigTruthy(value);
-        bag.push = { ...(bag.push ?? {}), allow_unverified_remote: on };
+        cfg.push = { ...(cfg.push ?? {}), allow_unverified_remote: on };
         saveConfig(cfg);
         console.log(`Set ${key} = ${on} (file plane: ~/.gbrain/config.json)`);
         if (on) {
@@ -158,7 +177,7 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
           console.error(`[config] ${key} must be an integer >= 0 (minutes; 0 = push every turn)`);
           process.exit(1);
         }
-        bag.hooks = { ...(bag.hooks ?? {}), stop_push_debounce_min: n };
+        cfg.hooks = { ...(cfg.hooks ?? {}), stop_push_debounce_min: n };
         saveConfig(cfg);
         console.log(`Set ${key} = ${n} (file plane: ~/.gbrain/config.json)`);
       }

@@ -34,9 +34,10 @@
  *       launder a public repo into "private".
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ensureGbrainHome } from './gbrain-home.ts';
+import { durableSsrfFlags } from './git-remote.ts';
 import { isCredentialInjectingProxy } from './execution-env.ts';
 
 // ── Subprocess seam (canonical home; bootstrap/repo.ts re-exports) ─────────
@@ -111,13 +112,30 @@ export function githubOwnerRepoString(url: string): string | null {
  * The anonymous smart-HTTP probe URL for an https origin, or null when the
  * origin has no https probe surface (scp/ssh non-github, file paths).
  * github.com ssh/scp origins are converted to their https equivalent.
+ * URL userinfo is STRIPPED: an origin with embedded credentials would make
+ * the "anonymous" probe authenticated, misreading a private repo as public.
  */
 export function anonProbeUrl(originUrl: string): string | null {
   const gh = parseGithubOwnerRepo(originUrl);
   if (gh) return `https://github.com/${gh.owner}/${gh.repo}.git/info/refs?service=git-upload-pack`;
   const s = originUrl.trim().replace(/\/+$/, '');
   if (!/^https:\/\//.test(s)) return null;
-  return `${s}/info/refs?service=git-upload-pack`;
+  try {
+    const u = new URL(s);
+    u.username = '';
+    u.password = '';
+    return `${u.toString().replace(/\/+$/, '')}/info/refs?service=git-upload-pack`;
+  } catch {
+    return null; // unparseable https-looking string — no probe surface
+  }
+}
+
+/** True when a gh stderr/body is a 403 authored by a sandbox egress proxy
+ * (session scoping), as opposed to a real GitHub API 403. One predicate for
+ * the three call sites that must keep the HTTP-403 pre-check and the
+ * classification paired. */
+export function isProxyBlocked403(text: string): boolean {
+  return /HTTP 403/i.test(text) && classifyGh403(text) === 'proxy';
 }
 
 // ── gh 403 classification ───────────────────────────────────────────────────
@@ -215,13 +233,11 @@ export async function verifyRepoVisibility(opts: VerifyRepoVisibilityOpts): Prom
     if (res.code === 127) {
       rungs.push({ rung: 'rest', outcome: 'gh not installed' });
     } else if (/HTTP 403/i.test(res.stderr)) {
-      const cls = classifyGh403(res.stderr);
       rungs.push({
         rung: 'rest',
-        outcome:
-          cls === 'proxy'
-            ? 'blocked by an egress proxy (repo not attached to this session) — falling back to git protocol'
-            : `403 (${cls}) — falling back to git protocol`,
+        outcome: isProxyBlocked403(res.stderr)
+          ? 'blocked by an egress proxy (repo not attached to this session) — falling back to git protocol'
+          : `403 (${classifyGh403(res.stderr)}) — falling back to git protocol`,
       });
     } else {
       rungs.push({ rung: 'rest', outcome: `failed (${(res.stderr.trim() || `exit ${res.code}`).slice(0, 120)})` });
@@ -231,10 +247,20 @@ export async function verifyRepoVisibility(opts: VerifyRepoVisibilityOpts): Prom
   }
 
   // Rung 2 — authed existence: the repo's own credential config answers
-  // "does this origin exist and can OUR credentials read it".
-  const lsArgv = opts.repoDir
-    ? ['git', '-C', opts.repoDir, 'ls-remote', url, 'HEAD']
-    : ['git', 'ls-remote', url, 'HEAD'];
+  // "does this origin exist and can OUR credentials read it". Hardened like
+  // every other remote-touching git call: SSRF config flags (no ext helpers,
+  // no redirect-follow, file transport only behind the test/self-hosted env
+  // escape) and end-of-options so a dash-prefixed origin can never be parsed
+  // as an option (the upload-pack command-execution class).
+  const lsArgv = [
+    'git',
+    ...(opts.repoDir ? ['-C', opts.repoDir] : []),
+    ...durableSsrfFlags(),
+    'ls-remote',
+    '--end-of-options',
+    url,
+    'HEAD',
+  ];
   const ls = await runWithTimeout(runner, lsArgv, timeoutMs);
   if (ls.code !== 0) {
     rungs.push({ rung: 'authed-ls-remote', outcome: `failed (${(ls.stderr.trim() || `exit ${ls.code}`).slice(0, 120)})` });
@@ -261,7 +287,10 @@ export async function verifyRepoVisibility(opts: VerifyRepoVisibilityOpts): Prom
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
-      const res = await fetchImpl(probeUrl, { redirect: 'follow', signal: ctl.signal });
+      // redirect: manual — a redirected probe proves nothing about THIS origin
+      // (and following it would extend the request surface); 3xx falls through
+      // to the unexpected-status arm → unverifiable, fail-closed.
+      const res = await fetchImpl(probeUrl, { redirect: 'manual', signal: ctl.signal });
       status = res.status;
       contentType = res.headers.get('content-type') ?? '';
       wwwAuthenticate = res.headers.get('www-authenticate') ?? '';
@@ -276,11 +305,19 @@ export async function verifyRepoVisibility(opts: VerifyRepoVisibilityOpts): Prom
   }
 
   if (status === 401 || status === 404) {
-    // [D14] attribution required before the push-authorizing verdict.
-    const attributed =
-      wwwAuthenticate.length > 0 || (gh !== null && githubAttributed);
+    // [D14] attribution required before the push-authorizing PRIVATE verdict.
+    // RFC 7235 makes www-authenticate mandatory on EVERY 401 — a middlebox's
+    // included — so the challenge alone is NEVER proof. github.com origins
+    // require the GitHub request-id header. For NON-github origins there is no
+    // trustable attribution signal at all (a spoofing/inspecting middlebox
+    // 401s identically to a real private server), so a 401 there is
+    // `unverifiable` — the operator confirms via the escape hatch rather than
+    // us laundering a possibly-public repo into a push authorization. Both
+    // adversarial reviewers flagged the prior "challenge ⇒ private" as a
+    // public-repo-exfil path; fail closed.
+    const attributed = gh !== null && githubAttributed;
     if (attributed) {
-      rungs.push({ rung: 'anon-refs', outcome: `${status} with auth challenge (not anonymously readable)` });
+      rungs.push({ rung: 'anon-refs', outcome: `${status} with GitHub-attributed auth challenge (not anonymously readable)` });
       return {
         verdict: 'private',
         via: 'git-protocol',
@@ -288,7 +325,10 @@ export async function verifyRepoVisibility(opts: VerifyRepoVisibilityOpts): Prom
         rungs,
       };
     }
-    rungs.push({ rung: 'anon-refs', outcome: `${status} WITHOUT an auth challenge — possible middlebox, not trusted as a privacy signal` });
+    const why = gh !== null
+      ? `${status} without GitHub attribution (x-github-request-id) — possible middlebox`
+      : `${status} on a non-github origin — no trustable attribution signal`;
+    rungs.push({ rung: 'anon-refs', outcome: `${why}, not trusted as a privacy signal` });
     return { verdict: 'unverifiable', detail: `un-attributed ${status} on the anonymous probe (${rungLog(rungs)}) — ${UNVERIFIED_REMOTE_HINT}`, rungs };
   }
 
@@ -329,6 +369,19 @@ export async function verifyRepoVisibility(opts: VerifyRepoVisibilityOpts): Prom
 
 export const VISIBILITY_CACHE_TTL_MS = 60 * 60 * 1000;
 
+/** Cache key = origin URL with any userinfo (`user:pat@`) stripped — a PAT in
+ * an https remote must never be persisted into the on-disk cache file. */
+function cacheKey(originUrl: string): string {
+  try {
+    const u = new URL(originUrl);
+    u.username = '';
+    u.password = '';
+    return u.toString();
+  } catch {
+    return originUrl; // scp/ssh/file forms carry no URL userinfo
+  }
+}
+
 interface VisibilityCacheEntry {
   verdict: 'private';
   via: VisibilityVia;
@@ -348,7 +401,7 @@ export function readCachedPrivateVerdict(
   try {
     const raw = readFileSync(opts.path ?? visibilityCachePath(), 'utf8');
     const map = JSON.parse(raw) as Record<string, VisibilityCacheEntry>;
-    const entry = map[originUrl];
+    const entry = map[cacheKey(originUrl)];
     if (!entry || entry.verdict !== 'private') return null;
     const at = Date.parse(entry.verified_at);
     if (!Number.isFinite(at) || now - at > VISIBILITY_CACHE_TTL_MS) return null;
@@ -383,7 +436,7 @@ export function writeVisibilityCache(
   } catch {
     map = {};
   }
-  map[originUrl] = { verdict: 'private', via: verdict.via, verified_at: new Date(now).toISOString() };
+  map[cacheKey(originUrl)] = { verdict: 'private', via: verdict.via, verified_at: new Date(now).toISOString() };
   try {
     mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.tmp-${process.pid}`;
@@ -394,7 +447,3 @@ export function writeVisibilityCache(
   }
 }
 
-/** Test/ops helper: true when the cache file exists at the default path. */
-export function visibilityCacheExists(): boolean {
-  return existsSync(visibilityCachePath());
-}

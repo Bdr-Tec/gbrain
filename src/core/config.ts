@@ -27,6 +27,10 @@ function getConfigPath() { return configPath(); }
 
 export interface GBrainConfig {
   engine: 'postgres' | 'pglite';
+  /** File-plane hook-lane keys (read by engine-free hook/push children).
+   * `gbrain config set` routes these two dotted keys here, not to the DB. */
+  push?: { allow_unverified_remote?: boolean };
+  hooks?: { stop_push_debounce_min?: number | string };
   database_url?: string;
   database_path?: string;
   openai_api_key?: string;

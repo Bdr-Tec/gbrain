@@ -33,10 +33,8 @@ import { VERSION } from '../../version.ts';
 import { loadConfigFileOnly } from '../config.ts';
 import { binaryOnPath, detectExecutionEnvironment, type ExecutionEnvironment } from '../execution-env.ts';
 import { resolveGbrainHome } from '../gbrain-home.ts';
-import { classifyGh403, githubOwnerRepoString } from '../repo-visibility.ts';
+import { githubOwnerRepoString, isProxyBlocked403 } from '../repo-visibility.ts';
 
-// Re-export: binaryOnPath lived here through v0.45.x; execution-env.ts owns it now.
-export { binaryOnPath } from '../execution-env.ts';
 import { BOOTSTRAP_TEMPLATES } from './assets.ts';
 import {
   readManifest,
@@ -130,7 +128,12 @@ export type OriginVisibility =
  * gh missing / offline / non-GitHub / 403 → 'unknown', never an invented
  * answer; a proxy-shaped 403 names the real fix. */
 export function probeOriginVisibility(origin: string): OriginVisibility {
-  const ownerRepo = githubOwnerRepoString(origin) ?? origin;
+  const ownerRepo = githubOwnerRepoString(origin);
+  if (ownerRepo === null) {
+    // Never send a non-github origin string into a REST path — self-hosted
+    // hostnames (or URL-embedded credentials) must not reach api.github.com.
+    return { verdict: 'unknown', detail: 'origin is not a github.com URL — cannot verify via REST' };
+  }
   try {
     // env: process.env — Bun's execFileSync otherwise resolves the binary
     // against the STARTUP env snapshot, making PATH-shimmed test fakes (and
@@ -151,7 +154,7 @@ export function probeOriginVisibility(origin: string): OriginVisibility {
       return { verdict: 'unknown', detail: 'gh CLI not installed — cannot verify origin visibility' };
     }
     const stderr = (err?.stderr ?? '').toString();
-    if (/HTTP 403/i.test(stderr) && classifyGh403(stderr) === 'proxy') {
+    if (isProxyBlocked403(stderr)) {
       return {
         verdict: 'unknown',
         detail: 'GitHub REST blocked by this sandbox\'s egress proxy (repo not attached to the session) — push-time verification falls back to git protocol',
@@ -519,11 +522,21 @@ export async function statusReport(ws: string, opts: StatusReportOpts = {}): Pro
     }
   }
 
-  // Support blob [B5].
+  // Support blob [B5]. Push status via the shared per-root reader [D8/D13]:
+  // a failing workspace wins over another's success; else the newest record.
   let lastPush: StatusSupport['last_push'] = null;
   try {
-    const p = join(gbrainHomeDir, 'bootstrap', 'push-status.json');
-    if (existsSync(p)) lastPush = JSON.parse(readFileSync(p, 'utf8')) as StatusSupport['last_push'];
+    const { readPushStatuses, summarizePushStatuses } = await import('../workspace-push.ts');
+    const entries = readPushStatuses();
+    const { failing } = summarizePushStatuses(entries);
+    const pick = failing[0] ?? entries.sort((a, b) => Date.parse(b.ts ?? '') - Date.parse(a.ts ?? ''))[0];
+    if (pick) {
+      lastPush = {
+        ...(pick.ts !== undefined ? { ts: pick.ts } : {}),
+        ...(pick.ok !== undefined ? { ok: pick.ok } : {}),
+        ...(pick.reason !== undefined ? { reason: pick.reason } : {}),
+      };
+    }
   } catch {
     lastPush = null;
   }

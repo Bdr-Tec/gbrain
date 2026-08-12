@@ -35,7 +35,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { configDir } from '../config.ts';
 import { realpathOrResolve } from '../path-confine.ts';
-import { classifyGh403, defaultRunner, parseGithubOwnerRepo, type ExecRunner } from '../repo-visibility.ts';
+import { defaultRunner, isProxyBlocked403, parseGithubOwnerRepo, type ExecRunner } from '../repo-visibility.ts';
 import { detectExecutionEnvironment } from '../execution-env.ts';
 import { loadWorkspaceAllowlist, scanFiles, SCAN_ALLOW_FILENAME } from '../secret-scan.ts';
 import { GITHUB_URL_PLACEHOLDER } from './assets.ts';
@@ -78,6 +78,11 @@ export interface RepoReceipt extends InstallReceipt {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** The one copy of the cloud repo-adoption instruction (two error sites). */
+export const CLOUD_ATTACH_FLOW_HINT =
+  'Create the private repo from a normal machine (or github.com), open a cloud session ON that repo, ' +
+  'then run `gbrain bootstrap attach`.';
 
 /** GitHub repo-name slug: lowercase, alnum runs joined by '-'. */
 export function slugifyRepoName(name: string): string {
@@ -261,16 +266,13 @@ async function verifyRepoPrivate(runner: ExecRunner, owner: string, name: string
     // Classify the failure so the operator gets the REAL fix: a sandbox
     // egress proxy blocking REST for a repo not attached to the session is a
     // different problem from a token/rate-limit failure [D14 messaging].
-    const is403 = /HTTP 403/i.test(res.stderr);
-    const proxyBlocked = is403 && classifyGh403(res.stderr) === 'proxy';
+    const proxyBlocked = isProxyBlocked403(res.stderr);
     const reason = proxyBlocked
       ? "this sandbox's egress proxy blocks GitHub REST for repos not attached to the session"
       : isRateLimitOr5xx(res.stderr)
         ? 'GitHub API rate limit / server error'
         : `gh api failed: ${res.stderr.trim() || `exit ${res.code}`}`;
-    const nextStep = proxyBlocked
-      ? 'Create the private repo from a normal machine (or github.com), open this cloud session ON that repo, then run `gbrain bootstrap attach`.'
-      : 'The repo may be fine — re-run `gbrain bootstrap repo` to verify.';
+    const nextStep = proxyBlocked ? CLOUD_ATTACH_FLOW_HINT : 'The repo may be fine — re-run `gbrain bootstrap repo` to verify.';
     throw new BootstrapError(
       'VERIFY_UNAVAILABLE',
       `could not verify that ${owner}/${name} is private (${reason}). ` +
@@ -687,8 +689,7 @@ export async function createPrivateRepo(
       'CLOUD_SANDBOX_REPO',
       'this is a cloud sandbox session — a repo created from inside it would not be attached to the ' +
         "session's GitHub scope (verification and pushes are blocked by the proxy). " +
-        'Create the private repo from a normal machine or github.com, open a cloud session ON that repo, ' +
-        'then run `gbrain bootstrap attach`.',
+        CLOUD_ATTACH_FLOW_HINT,
       { exitCode: 2 },
     );
   }

@@ -936,6 +936,12 @@ function bootRepo(name: string, opts: { repoPhase?: boolean; clean?: boolean } =
   if (opts.clean) {
     execFileSync('git', ['-C', repo, 'add', '-A'], { stdio: 'ignore' });
     execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { stdio: 'ignore' });
+    // Model a FULLY-PUSHED clean repo: origin/<branch> == HEAD, so treeNeedsPush
+    // measures zero commits ahead (a committed-but-never-pushed repo correctly
+    // reports needs-push under the new origin-ref-based measure).
+    const branch = execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim();
+    const head = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    execFileSync('git', ['-C', repo, 'update-ref', `refs/remotes/origin/${branch}`, head], { stdio: 'ignore' });
   }
   return repo;
 }
@@ -1050,8 +1056,16 @@ describe('stop-hook per-turn push [D3]', () => {
       JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'refused_visibility', repoRoot: toplevel }) + '\n',
       { mode: 0o600 },
     );
+    // Inside the 60s failing-retry floor: still debounced (no spawn storm)…
     await runHook(['stop'], stopIo(repo, spawned));
-    expect(spawned).toHaveLength(2); // debounce bypassed while failing
+    expect(spawned).toHaveLength(1);
+    // …but once the floor passes, the failing status bypasses the 60-MINUTE
+    // debounce window (age the state file past the floor).
+    const stateFile = join(home(), 'bootstrap', stopPushStateFiles()[0]!);
+    const aged = JSON.parse(readFileSync(stateFile, 'utf8')) as { ts: string; root: string };
+    writeFileSync(stateFile, JSON.stringify({ ...aged, ts: new Date(Date.now() - 90_000).toISOString() }) + '\n');
+    await runHook(['stop'], stopIo(repo, spawned));
+    expect(spawned).toHaveLength(2); // floor passed → failing status bypassed the 60min window
   });
 
   test('[D3] two workspaces debounce independently (per-root state, no clobber)', async () => {
@@ -1078,6 +1092,13 @@ describe('stop-hook per-turn push [D3]', () => {
 // ── push-failure banner [D5/D13/D19] ────────────────────────────────────────
 
 describe('user-prompt push-failure banner [D5]', () => {
+  // repoRoot must EXIST on disk: entries for deleted workspaces are ghosts
+  // the reader filters out by design (they could never be cleared).
+  const bannerRoot = () => {
+    const r = join(tmp, 'banner-brain');
+    mkdirSync(r, { recursive: true });
+    return r;
+  };
   const failingStatus = (root: string, ts = new Date().toISOString()) => {
     mkdirSync(join(home(), 'bootstrap'), { recursive: true });
     writeFileSync(
@@ -1088,7 +1109,8 @@ describe('user-prompt push-failure banner [D5]', () => {
   };
 
   test('failing push-status → banner-only payload on a degraded path, with BOTH additionalContext and systemMessage', async () => {
-    failingStatus('/tmp/some-brain');
+    const root = bannerRoot();
+    failingStatus(root);
     const out = collectStdout();
     // No config at all → degraded no_pglite_path; the banner must still land.
     expect(await runHook(['user-prompt'], { ...out.io, stdin: JSON.stringify({ prompt: 'hi' }) })).toBe(0);
@@ -1097,12 +1119,13 @@ describe('user-prompt push-failure banner [D5]', () => {
       systemMessage?: string;
     };
     expect(payload.hookSpecificOutput?.additionalContext).toContain('FAILING');
-    expect(payload.hookSpecificOutput?.additionalContext).toContain('/tmp/some-brain');
+    expect(payload.hookSpecificOutput?.additionalContext).toContain('banner-brain');
     expect(payload.systemMessage).toContain('NOT on GitHub');
   });
 
   test('banner announces once per failure ts, then stays quiet [D19]', async () => {
-    failingStatus('/tmp/some-brain');
+    const root = bannerRoot();
+    failingStatus(root);
     const first = collectStdout();
     await runHook(['user-prompt'], { ...first.io, stdin: JSON.stringify({ prompt: 'hi' }) });
     expect(first.get()).toContain('FAILING');
@@ -1112,7 +1135,7 @@ describe('user-prompt push-failure banner [D5]', () => {
   });
 
   test('a NEW failure ts re-announces immediately; a persisting one re-fires after the 30-min floor [D19]', async () => {
-    const root = '/tmp/some-brain';
+    const root = bannerRoot();
     failingStatus(root, '2026-08-12T00:00:00.000Z');
     const first = collectStdout();
     await runHook(['user-prompt'], { ...first.io, stdin: JSON.stringify({ prompt: 'x' }) });
@@ -1131,9 +1154,10 @@ describe('user-prompt push-failure banner [D5]', () => {
 
   test('CRITICAL regression: ok push-status → NO banner, stdout empty on degraded paths', async () => {
     mkdirSync(join(home(), 'bootstrap'), { recursive: true });
+    const okRoot = bannerRoot();
     writeFileSync(
-      pushStatusPathForRoot('/tmp/some-brain'),
-      JSON.stringify({ ts: new Date().toISOString(), ok: true, repoRoot: '/tmp/some-brain' }) + '\n',
+      pushStatusPathForRoot(okRoot),
+      JSON.stringify({ ts: new Date().toISOString(), ok: true, repoRoot: okRoot }) + '\n',
     );
     const out = collectStdout();
     await runHook(['user-prompt'], { ...out.io, stdin: JSON.stringify({ prompt: 'hi' }) });
@@ -1144,7 +1168,8 @@ describe('user-prompt push-failure banner [D5]', () => {
     const dataDir = join(tmp, 'data');
     writePgliteConfig(dataDir);
     await startServer({ dataDir, blockText: 'BRAIN CONTEXT BLOCK' });
-    failingStatus('/tmp/some-brain');
+    const root = bannerRoot();
+    failingStatus(root);
     const out = collectStdout();
     await runHook(['user-prompt'], { ...out.io, stdin: JSON.stringify({ prompt: 'hi', session_id: 'sess-banner' }) });
     const payload = JSON.parse(out.get()) as {

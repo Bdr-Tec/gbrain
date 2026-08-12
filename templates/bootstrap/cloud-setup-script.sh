@@ -12,10 +12,14 @@ command -v bun >/dev/null 2>&1 || npm install -g bun
 # 2. gbrain from the canonical GitHub source. NEVER `npm install -g gbrain`:
 #    the npm registry package with that name is unrelated squatter code.
 GBRAIN_DIR=/opt/gbrain
+# Pinned to latest-stable — the SAME ref the canonical local install uses.
 if [ ! -d "$GBRAIN_DIR/.git" ]; then
-  git clone --depth 1 https://github.com/garrytan/gbrain "$GBRAIN_DIR"
+  git clone --depth 1 --branch latest-stable https://github.com/garrytan/gbrain "$GBRAIN_DIR"
 else
-  git -C "$GBRAIN_DIR" pull --ff-only || true
+  # Fail loud (set -e) on a broken update — never npm-install + run stale code
+  # as root against a half-updated checkout.
+  git -C "$GBRAIN_DIR" fetch --depth 1 origin latest-stable
+  git -C "$GBRAIN_DIR" checkout -q FETCH_HEAD
 fi
 cd "$GBRAIN_DIR"
 # npm (not bun) for dependency fetching — same proxy constraint as above.

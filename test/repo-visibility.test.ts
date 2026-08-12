@@ -148,21 +148,39 @@ describe('verifyRepoVisibility — verdict matrix', () => {
     expect(v.verdict).toBe('public');
   });
 
-  test('gh missing (127) → git rungs: ls-remote ok + attributed 401 → private/git-protocol', async () => {
+  test('gh missing (127) → git rungs: ls-remote ok + github-attributed 401 → private/git-protocol', async () => {
     const v = await ladder({
       gh: { code: 127, stderr: 'ENOENT' },
       git: { code: 0 },
-      probe: { status: 401, wwwAuthenticate: 'Basic realm="GitHub"' },
+      probe: { status: 401, wwwAuthenticate: 'Basic realm="GitHub"', githubRequestId: true },
     });
     expect(v.verdict).toBe('private');
     expect(v.verdict === 'private' && v.via).toBe('git-protocol');
+  });
+
+  test('[D14] github origin: a 401 with ONLY a www-authenticate challenge (RFC-mandated on every 401, middleboxes included) is NOT attribution → unverifiable', async () => {
+    const v = await ladder({
+      gh: { code: 127 },
+      git: { code: 0 },
+      probe: { status: 401, wwwAuthenticate: 'Basic realm="corp-proxy"' },
+    });
+    expect(v.verdict).toBe('unverifiable');
+  });
+
+  test('[D14] non-github origin: a 401 challenge is NOT trustable attribution (a middlebox 401s identically) → unverifiable, fail-closed', async () => {
+    const v = await ladder({
+      url: 'https://git.example.com/team/brain.git',
+      git: { code: 0 },
+      probe: { status: 401, wwwAuthenticate: 'Basic realm="git"' },
+    });
+    expect(v.verdict).toBe('unverifiable');
   });
 
   test('proxy-403 REST → git rungs, and the rung log names the proxy', async () => {
     const v = await ladder({
       gh: { code: 1, stderr: PROXY_403 },
       git: { code: 0 },
-      probe: { status: 401, wwwAuthenticate: 'Basic realm="GitHub"' },
+      probe: { status: 401, wwwAuthenticate: 'Basic realm="GitHub"', githubRequestId: true },
     });
     expect(v.verdict).toBe('private');
     expect(v.rungs.map((r) => r.outcome).join(' ')).toContain('egress proxy');
@@ -245,6 +263,17 @@ describe('verifyRepoVisibility — verdict matrix', () => {
     const v = await ladder({ url: 'git@example.com:team/brain.git', git: { code: 0 }, probe: { status: 200 } });
     expect(v.verdict).toBe('unverifiable');
     expect(v.rungs.some((r) => r.outcome.includes('no https probe surface'))).toBe(true);
+  });
+
+  test('anon probe answering an unexpected status (500) → unverifiable, names the status', async () => {
+    const v = await ladder({
+      gh: { code: 127 },
+      git: { code: 0 },
+      probe: { status: 500 },
+    });
+    expect(v.verdict).toBe('unverifiable');
+    expect(v.detail).toContain('HTTP 500');
+    expect(v.detail).toContain('GBRAIN_ALLOW_UNVERIFIED_REMOTE');
   });
 
   test('rung timeout is recorded and degrades to unverifiable, never hangs', async () => {
