@@ -15,6 +15,7 @@ import {
   isImageFilePath as isImageFilePathFromSync,
   matchesAnyGlob,
   pruneDir,
+  isPathPruned,
   SYNC_SKIP_FILES,
   type SyncStrategy,
 } from '../core/sync.ts';
@@ -158,6 +159,15 @@ export async function runImport(
      * Threaded by performFullSync for `gbrain sync --exclude`.
      */
     exclude?: string[];
+    /**
+     * #2404-class: repeatable glob patterns (same dialect as `exclude`)
+     * that waive the leading-dot prune heuristic for matching paths — see
+     * `isPathPruned` in core/sync.ts. Unlike `exclude`, this cannot be a
+     * post-collection filter: a pruned path is never collected in the
+     * first place, so it has to reach `collectSyncableFiles` itself.
+     * Threaded by performFullSync for `gbrain sync --include-hidden`.
+     */
+    includeHidden?: string[];
     /**
      * Opt out of the git-visible fast path and walk the filesystem directly,
      * so markdown/code files matched by .gitignore can still be imported.
@@ -358,6 +368,7 @@ export async function runImport(
   const malformedExcluded: string[] = [];
   let allFiles = collectSyncableFiles(dir, {
     strategy, includeGitignored,
+    includeHidden: opts.includeHidden,
     onExcluded: (rel) => { malformedExcluded.push(rel); },
   });
   console.error(
@@ -847,6 +858,8 @@ interface CollectOpts {
    * file — no rename guidance, no skipped count (structured-review finding).
    */
   onExcluded?: (relPath: string) => void;
+  /** See `RunImportOpts.includeHidden` — same repeatable-glob semantics. */
+  includeHidden?: string[];
 }
 
 /**
@@ -870,17 +883,21 @@ function isCollectibleForWalker(
   path: string,
   strategy: SyncStrategy,
   multimodalOn: boolean,
+  includeHidden?: string[],
 ): boolean {
   // #2607: apply the SAME segment-level prune gate as incremental sync's
-  // `classifySync` (core/sync.ts). The FS walk below prunes at descent time,
+  // `classifySync` (core/sync.ts) — via the shared `isPathPruned`, so this
+  // and `classifySync` cannot drift the way #923/#202 drifted before
+  // `PRUNE_DIR_NAMES` existed. The FS walk below prunes at descent time,
   // but the git fast path enumerates via `git ls-files` and historically
   // filtered only by extension — so `sync --full` imported (and resurrected
   // previously-deleted) pages under dot-dirs / vendored trees that incremental
   // sync excludes. Full and incremental must agree on the exclusion set.
-  // (In the FS-walk route `path` is a basename, so this is the same dot-file
-  // check pruneDir already applied there — no behavior change on that route.)
-  const segments = path.split('/');
-  if (segments.some((seg) => !pruneDir(seg))) return false;
+  // (In the FS-walk route `path` is a basename, so `includeHidden` has no
+  // segment to waive there — that route's directory-level prune already ran
+  // via unmodified `pruneDir` before a file entry is ever reached; see
+  // `isPathPruned`'s doc comment for that scope note.)
+  if (isPathPruned(path, includeHidden)) return false;
 
   // Malformed filenames (brackets / control chars — markdown-link syntax as a
   // literal filename) are rejected on BOTH collection routes, same as
@@ -890,6 +907,7 @@ function isCollectibleForWalker(
   // Metafiles are directory scaffolding (READMEs / index / log / schema /
   // resolver), not typed brain pages — same exclusion `sync`'s `isSyncable`
   // applies. Guards both the FS-walk and the git-fast-path collection routes.
+  const segments = path.split('/');
   const basename = segments[segments.length - 1] || '';
   if ((SYNC_SKIP_FILES as readonly string[]).includes(basename)) return false;
 
@@ -925,6 +943,7 @@ function gitListSyncableFiles(
   strategy: SyncStrategy,
   multimodalOn: boolean,
   onExcluded?: (relPath: string) => void,
+  includeHidden?: string[],
 ): string[] | null {
   let stdout: string;
   try {
@@ -943,7 +962,7 @@ function gitListSyncableFiles(
     // exclusion is reportable — other filters (strategy, prune, metafile)
     // are silent by design; this one hides renameable content.
     if (hasMalformedPathSegment(rel)) { onExcluded?.(rel); continue; }
-    if (!isCollectibleForWalker(rel, strategy, multimodalOn)) continue;
+    if (!isCollectibleForWalker(rel, strategy, multimodalOn, includeHidden)) continue;
     const full = join(dir, rel);
     let st;
     try {
@@ -988,7 +1007,7 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
   // PLUS untracked-not-ignored, so uncommitted source is still indexed. Non-git
   // dirs (or git unavailable) fall through to the FS walk below.
   if (!opts.includeGitignored) {
-    const gitFiles = gitListSyncableFiles(dir, strategy, multimodalOn, opts.onExcluded);
+    const gitFiles = gitListSyncableFiles(dir, strategy, multimodalOn, opts.onExcluded, opts.includeHidden);
     if (gitFiles) return gitFiles;
   }
 
