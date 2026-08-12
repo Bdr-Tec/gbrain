@@ -54,6 +54,12 @@ export interface ClaudeHookEnv {
   GBRAIN_SOURCE: string;
   /** Set only for --isolated installs (PARENT dir; config appends `.gbrain`). */
   GBRAIN_HOME?: string;
+  /**
+   * 'harness' on #4043 harness-mode wiring: `gbrain hook` yields when the
+   * lane is harness AND the cwd carries a workspace bootstrap install, so
+   * the same event never fires twice (Claude Code merges settings scopes).
+   */
+  GBRAIN_HOOK_LANE?: string;
 }
 
 export interface WriteClaudeHooksOpts {
@@ -151,6 +157,7 @@ export function buildClaudeHookCommand(
 ): string {
   const assignments: string[] = [`GBRAIN_SOURCE=${env.GBRAIN_SOURCE}`];
   if (env.GBRAIN_HOME) assignments.push(`GBRAIN_HOME=${env.GBRAIN_HOME}`);
+  if (env.GBRAIN_HOOK_LANE) assignments.push(`GBRAIN_HOOK_LANE=${env.GBRAIN_HOOK_LANE}`);
   const parts = ['env', ...assignments, gbrainBin, 'hook', CLAUDE_HOOK_SUBCOMMAND[event]];
   return parts.map(shellQuote).join(' ');
 }

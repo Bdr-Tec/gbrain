@@ -191,6 +191,24 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
   // for silence, and a disabled hook writing telemetry would be a lie).
   if (process.env.GBRAIN_HOOKS === '0') return 0;
 
+  // #4043 harness-lane defer guard: Claude Code MERGES user- and
+  // project-scope hook settings, so a machine wired by `bootstrap harness`
+  // (user scope) plus a real workspace bootstrap install (settings.local.json,
+  // bootstrap-v1 marker) would fire the same event twice. The workspace
+  // install wins; the harness lane yields silently. Fail-open: any read
+  // hiccup means run normally.
+  if (process.env.GBRAIN_HOOK_LANE === 'harness') {
+    try {
+      const local = join(process.cwd(), '.claude', 'settings.local.json');
+      if (existsSync(local)) {
+        const raw = readFileSync(local, 'utf8');
+        if (raw.includes('"_gbrain"') && raw.includes('"bootstrap-v1"')) return 0;
+      }
+    } catch {
+      /* fail-open */
+    }
+  }
+
   switch (event) {
     case 'session-start':
       return hookSessionStart(io);
