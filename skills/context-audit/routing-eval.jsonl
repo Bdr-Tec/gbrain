@@ -13,4 +13,4 @@
 // Negative: identity CONTENT change — the interview owns this, not the token auditor.
 {"intent":"Re-run the identity interview, I want to change my agent's personality","expected_skill":"soul-audit","ambiguous_with":["context-audit"]}
 // Negative: install/runtime health, not context size.
-{"intent":"Is gbrain healthy? Check the brain and jobs","expected_skill":"skillpack-check"}
+{"intent":"Check the brain and jobs — is everything still running fine?","expected_skill":"skillpack-check"}

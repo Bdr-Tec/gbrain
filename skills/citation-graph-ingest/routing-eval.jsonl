@@ -7,7 +7,7 @@
 {"intent":"Create a typed citation graph for these papers — extends, relies on, refutes","expected_skill":"citation-graph-ingest"}
 {"intent":"Build a reference graph over the ingested filings so we can trace which ones supersede which","expected_skill":"citation-graph-ingest"}
 {"intent":"I want to reason over a domain corpus, not just similarity-search it — graph the citations","expected_skill":"citation-graph-ingest"}
-{"intent":"Fix the broken citations in my essay pages","expected_skill":"citation-fixer"}
+{"intent":"Fix broken citations in my essay pages","expected_skill":"citation-fixer"}
 {"intent":"Verify this academic claim from the book against the original paper","expected_skill":"academic-verify"}
-{"intent":"Show me doc-a-example's direct connections with gbrain graph-query","expected_skill":null}
-{"intent":"Audit how the ingested court documents cite each other and map the references","expected_skill":"citation-graph-ingest","ambiguous_with":["citation-fixer"]}
+{"intent":"Just walk one hop out from doc-a-example with the gbrain graph CLI","expected_skill":null}
+{"intent":"Audit how the ingested court documents cite each other — build a reference graph of it","expected_skill":"citation-graph-ingest","ambiguous_with":["citation-fixer"]}

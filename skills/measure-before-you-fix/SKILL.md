@@ -8,10 +8,10 @@ description: |
   behind) from gbrain doctor, autopilot, sync, and cron monitors — runs
   BEFORE any timeout raise, threshold change, or pipeline rewrite.
 triggers:
-  - "timeout"
+  - "keeps timing out"
   - "ETIMEDOUT"
-  - "stale"
-  - "freshness"
+  - "why is this data stale"
+  - "freshness alert"
   - "wedged"
   - "job is slow"
   - "sync is stuck"

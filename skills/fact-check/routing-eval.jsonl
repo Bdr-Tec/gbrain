@@ -10,4 +10,4 @@
 // Negative: nothing verifiable to check.
 {"intent": "what's for breakfast", "expected_skill": null, "ambiguous_with": []}
 // Ambiguous vs academic-verify: a single research-claim depth trace.
-{"intent": "check the claims in this study — is the 40% reduction number real", "expected_skill": "academic-verify", "ambiguous_with": ["fact-check"]}
+{"intent": "check this study — is the 40% reduction number real, did it ever replicate", "expected_skill": "academic-verify", "ambiguous_with": ["fact-check"]}

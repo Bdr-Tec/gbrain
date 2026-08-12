@@ -1,7 +1,7 @@
 // Routing eval fixtures for skills/data-loss-gate. Each positive intent
 // includes at least one trigger string as substring.
 {"intent": "rm -rf the old imports directory to free up space", "expected_skill": "data-loss-gate"}
-{"intent": "delete every page in the sources/acme-example folder, all 400 of them", "expected_skill": "data-loss-gate"}
+{"intent": "bulk delete every page in the sources/acme-example folder, all 400 of them", "expected_skill": "data-loss-gate"}
 {"intent": "run a bulk forget over the stale facts from last quarter", "expected_skill": "data-loss-gate"}
 {"intent": "truncate the content_chunks table and re-embed from scratch", "expected_skill": "data-loss-gate"}
 {"intent": "cleanup: purge the soft-deleted pages and remove the source widget-co", "expected_skill": "data-loss-gate"}

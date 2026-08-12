@@ -33,10 +33,10 @@ wins; fix the row.
 | "validate frontmatter", "check frontmatter", "fix frontmatter", "frontmatter audit", "brain lint" | `skills/frontmatter-guard/SKILL.md` |
 | "what search mode", "is my cache hot", "tune my retrieval", "compare search modes", "clear search overrides" | `gbrain search modes/stats/tune` directly. See `skills/conventions/search-modes.md` |
 | "eval results", "search benchmark", "haters-immune methodology", "regression check on retrieval" | `gbrain eval run-all` / `gbrain eval compare`. See `docs/eval/SEARCH_MODE_METHODOLOGY.md` |
-| "delete", "cleanup", "rm -rf", "purge" | `skills/data-loss-gate/SKILL.md` |
+| "bulk delete", "wipe the", "rm -rf", "purge the", "bulk forget" | `skills/data-loss-gate/SKILL.md` |
 | "fact check", "fact-check", "verify the facts", "check the claims" | `skills/fact-check/SKILL.md` |
 | "resolve before asking", "before asking the user", "unidentified contact", "unknown relationship" | `skills/resolve-before-asking/SKILL.md` |
-| "move this to brain", "migrate to brain", "copy these files into the brain", "bulk import into the brain" | `skills/brain-ingest-gate/SKILL.md` |
+| "move this to brain", "migrate to brain", "copy these files into the brain", "is this already in the brain" | `skills/brain-ingest-gate/SKILL.md` |
 | "that's wrong", "that's not true", "I never said that", "where did you get that" | `skills/correction-pipeline/SKILL.md` |
 | "company brain", "team brain", "brainify", "sanitize the brain" | `skills/company-brainify/SKILL.md` |
 | "citation graph", "citation graph ingest", "typed citation graph", "build a reference graph" | `skills/citation-graph-ingest/SKILL.md` |
@@ -91,7 +91,7 @@ wins; fix the row.
 | Webhook setup, external event processing | `skills/webhook-transforms/SKILL.md` |
 | "Spawn agent", "background task", "parallel tasks", "steer agent", "pause/resume agent", "gbrain jobs submit", "submit a gbrain job", "submit a shell job", "shell job" | `skills/minion-orchestrator/SKILL.md` |
 | "present options", "ask before proceeding", "choice gate", "user decision" | `skills/ask-user/SKILL.md` |
-| "timeout", "ETIMEDOUT", "stale", "freshness" | `skills/measure-before-you-fix/SKILL.md` |
+| "keeps timing out", "ETIMEDOUT", "why is this data stale", "freshness alert" | `skills/measure-before-you-fix/SKILL.md` |
 | "draft in voice", "write this as", "make this sound like", "ghostwrite" | `skills/draft-in-voice/SKILL.md` |
 | "context audit", "context diet", "system prompt audit", "prompt compression" | `skills/context-audit/SKILL.md` |
 | "skill autobench", "autobench", "write the eval from usage history", "synthesize an eval for this skill" | `skills/skill-autobench/SKILL.md` |
@@ -131,6 +131,9 @@ When multiple skills could match:
 3. If the user mentions a person/company, check if enrich or query fits better
 4. Chaining is explicit in each skill's Phases section
 5. When in doubt, ask the user (see `skills/ask-user/SKILL.md` for the choice-gate pattern)
+6. Publication/feed URL or a whole blog archive → blog-ingest; a single article/tweet URL → idea-ingest; video/audio/PDF → media-ingest; AI-chat exports or session transcripts → conversation-archive
+7. Identity/personality content (who the agent is, voice, persona) → soul-audit; token/structure hygiene of the always-loaded context stack → context-audit
+8. "Why is X slow/stale" measurement-first ops triage → measure-before-you-fix; code debugging ("why is this function broken") → investigate (GStack)
 
 ## Conventions (cross-cutting)
 

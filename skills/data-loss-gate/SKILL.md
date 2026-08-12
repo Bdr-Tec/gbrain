@@ -9,10 +9,10 @@ description: >
   "yes" from the user before proceeding. Routing convention, not an
   operation-boundary enforcement.
 triggers:
-  - "delete"
-  - "cleanup"
+  - "bulk delete"
+  - "wipe the"
   - "rm -rf"
-  - "purge"
+  - "purge the"
   - "truncate"
   - "free up space"
   - "bulk forget"

@@ -41,7 +41,6 @@ triggers:
   - "add tests and evals for this"
   - "check skill completeness"
   - "run skillify on a skill"
-  - "improve this skill"
   - "did this skill regress"
 tools:
   - exec

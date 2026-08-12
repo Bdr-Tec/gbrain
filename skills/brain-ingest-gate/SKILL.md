@@ -13,7 +13,6 @@ triggers:
   - "move this to brain"
   - "migrate to brain"
   - "copy these files into the brain"
-  - "bulk import into the brain"
   - "is this already in the brain"
   - "check for duplicates before writing"
   - "dedup before saving"
@@ -41,8 +40,10 @@ brain_first: true
 > **Convention:** see [_brain-filing-rules.md](../_brain-filing-rules.md) —
 > when the gate's verdict is "write", the primary subject picks the directory.
 >
-> **Convention:** see [conventions/quality.md](../conventions/quality.md) —
-> Iron Law back-linking applies to every page the gate lets through.
+> **Convention:** `skills/conventions/quality.md` owns the cross-cutting page
+> rules (citations, Iron Law back-linking, notability) — every page the gate
+> lets through follows them. Gate-specific delta: the gate only decides
+> write/link/skip; the admitting skill applies the quality rules on write.
 
 ## The Rule
 

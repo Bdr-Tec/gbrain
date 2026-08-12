@@ -6,4 +6,4 @@
 {"intent":"Build a voice profile for alice-example from her posts over the last year","expected_skill":"draft-in-voice"}
 {"intent":"Turn this voice memo into a post in my voice about the launch","expected_skill":"draft-in-voice","ambiguous_with":["voice-note-ingest"]}
 {"intent":"Transcribe and file this voice note from my walk","expected_skill":"voice-note-ingest"}
-{"intent":"Write up this week's pipeline report for the team","expected_skill":"reports"}
+{"intent":"Save report: this week's pipeline numbers for the team","expected_skill":"reports"}

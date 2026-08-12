@@ -11,7 +11,6 @@ triggers:
   - "what are my tasks"
   - "task list"
   - "defer task"
-  - "what's on my plate"
 tools:
   - search
   - get_page
