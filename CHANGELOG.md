@@ -63,6 +63,14 @@ say "fresh" forever.
 - **Malformed connection URLs stop the daemon immediately** with a clear
   config verdict instead of spending the whole reconnect budget retrying a
   value only the operator can fix.
+- **Sync no longer silently drops git typechange and unmerged statuses.**
+  Replacing an indexed file's content in a way git reports as `T` or `U`
+  now imports as a modification instead of never reaching the index; a
+  copy status imports its destination path.
+- **A wedged sync can no longer read as "in progress" forever.** A sync
+  lock holder that keeps heartbeating past the staleness ceiling without
+  finishing now fails `gbrain doctor`'s freshness check, naming the holder
+  and the exact `gbrain sync --break-lock --source <id>` remedy.
 
 ### Added
 
@@ -87,9 +95,10 @@ say "fresh" forever.
   threshold-relative `staleness_hours` that drives the fresh/stale/severe
   class, so the escalation ordering and the human-facing number stop being
   the same field.
-- **Shared numeric env resolver.** `GBRAIN_*` numeric env vars now resolve
-  through one warn-once helper (`src/core/env-number.ts`), so a typo'd value
-  falls back loudly exactly once instead of NaN-ing a threshold silently.
+- **Shared numeric env resolver.** The doctor and staleness-threshold
+  `GBRAIN_*` numeric env vars now resolve through one warn-once helper
+  (`src/core/env-number.ts`), so a typo'd value falls back loudly exactly
+  once instead of NaN-ing a threshold silently.
 
 ### To take advantage of v0.46.0.0
 

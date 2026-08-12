@@ -155,7 +155,17 @@ vars — incident-time escape hatches, not everyday knobs.
    history rewrite still hard-blocks even with `--skip-failed`. Run
    `gbrain sync --skip-failed` to acknowledge a known-bad set yourself.
 
-5. **Import checkpoints name the import target, not the caller's CWD.**
+5. **Staleness can't read "fresh" forever.** A source whose content stopped
+   moving (or whose local clone vanished) used to report fresh indefinitely
+   off the stored content timestamp. Content-relative staleness now ramps
+   toward stale once wall-clock time since the last sync passes a ceiling
+   (default 72h; `GBRAIN_STALENESS_CEILING_HOURS` to tune — it tracks
+   `GBRAIN_SYNC_FRESHNESS_FAIL_HOURS` unless set). The ramp is gradual, so
+   the warn tier still fires before the fail tier. `gbrain status` source
+   rows carry `hours_since_last_sync` (raw wall-clock truth) alongside the
+   threshold-relative `staleness_hours` that drives the fresh/stale class.
+
+6. **Import checkpoints name the import target, not the caller's CWD.**
    Interrupted `gbrain import <dir>` runs may leave
    `~/.gbrain/import-checkpoint.json` so the next import can resume. The
    checkpoint `dir` is the absolute, resolved import target captured when
