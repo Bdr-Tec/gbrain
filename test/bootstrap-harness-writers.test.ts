@@ -27,6 +27,13 @@ import {
   codexConfigPath,
   mcpPermissionEntry,
 } from '../src/core/bootstrap/host-specs.ts';
+import {
+  deleteHarnessReceipt,
+  guardHarnessReceiptOverwrite,
+  harnessReceiptPath,
+  readHarnessReceiptState,
+  writeHarnessReceipt,
+} from '../src/core/bootstrap/format.ts';
 import { withEnv } from './helpers/with-env.ts';
 
 const BIN = '/opt/fake/gbrain';
@@ -281,6 +288,48 @@ describe('atomic-write hardening [C10]', () => {
     expect(first.backupPath).not.toBeNull();
     expect(second.backupPath).not.toBeNull();
     expect(first.backupPath).not.toBe(second.backupPath);
+  });
+});
+
+describe('harness receipt (format.ts, CX2-12 discipline)', () => {
+  test('write-ahead round trip: 0600 file, typed read states, guard semantics', () => {
+    const home = tmp();
+    const receipt = {
+      harness_receipt_version: 1 as const,
+      created_at: '2026-08-12T00:00:00Z',
+      created_by: 'gbrain@test',
+      url: 'http://127.0.0.1:3131/mcp',
+      engine: 'postgres',
+      serve_version: '0.45.7.0',
+      source_id: 'default',
+      token: { name: 'bootstrap-harness', id: '00000000-0000-0000-0000-000000000000', minted: true },
+      targets: [
+        { host: 'claude-code' as const, kind: 'mcp' as const, state: 'pending' as const, scope: 'user', name: 'gbrain' },
+      ],
+    };
+    expect(readHarnessReceiptState(home)).toEqual({ state: 'absent' });
+    writeHarnessReceipt(home, receipt);
+    expect(statSync(harnessReceiptPath(home)).mode & 0o777).toBe(0o600);
+    const state = readHarnessReceiptState(home);
+    expect(state.state).toBe('ok');
+    expect((state as { receipt: typeof receipt }).receipt.targets[0].state).toBe('pending');
+
+    // newer-format refusal (never silently clobber a newer gbrain's receipt)
+    writeFileSync(harnessReceiptPath(home), JSON.stringify({ harness_receipt_version: 2 }));
+    expect(readHarnessReceiptState(home).state).toBe('newer');
+    expect(() => guardHarnessReceiptOverwrite(home)).toThrow(/newer gbrain/);
+
+    // broken receipt → backed up aside, never silently discarded
+    writeFileSync(harnessReceiptPath(home), 'not json');
+    expect(readHarnessReceiptState(home).state).toBe('invalid');
+    const guard = guardHarnessReceiptOverwrite(home);
+    expect(guard.brokenBackupPath).toMatch(/\.broken-/);
+    expect(readHarnessReceiptState(home)).toEqual({ state: 'absent' });
+
+    // consume
+    writeHarnessReceipt(home, receipt);
+    deleteHarnessReceipt(home);
+    expect(readHarnessReceiptState(home)).toEqual({ state: 'absent' });
   });
 });
 
