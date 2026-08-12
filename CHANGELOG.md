@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.0.0] - 2026-08-12
+## [0.45.5.0] - 2026-08-12
 
 Brain currency, part one: a brain is only useful if it's CURRENT, and until now
 the machinery keeping it current could die without anyone noticing. This release
@@ -100,7 +100,7 @@ say "fresh" forever.
   (`src/core/env-number.ts`), so a typo'd value falls back loudly exactly
   once instead of NaN-ing a threshold silently.
 
-### To take advantage of v0.46.0.0
+### To take advantage of v0.45.5.0
 
 - `gbrain upgrade`, then wire your scheduler's health gate to
   `gbrain autopilot --status` — the exit code is now trustworthy.
