@@ -56,13 +56,26 @@ const BANK_JSON = JSON.stringify({
   version: 1,
   maxQuestions: 12,
   interviewKeys: ['AGENT_NAME'],
-  consentKeys: ['HOOKS_CONSENT'],
+  consentKeys: ['HOOKS_CONSENT', 'MCP_SCOPE'],
   questions: {
     AGENT_NAME: { maxLength: 64 },
     HOOKS_CONSENT: { consent: true, maxLength: 8 },
+    // Section (e) pins the harness-scoping prefix + interview phase on this
+    // question — every "clean" fixture must carry a compliant MCP_SCOPE entry.
+    MCP_SCOPE: {
+      consent: true,
+      phase: 'interview',
+      question: '(Claude Code only. Codex has no scope flag.) Register for this folder or the whole machine?',
+      maxLength: 8,
+    },
     UNUSED_OPTIONAL: { maxLength: 8 },
   },
 });
+
+// Minimal runbook that satisfies the section (e) counter-signal pins; fixtures
+// exercising OTHER failure modes include it so they fail only for their own
+// reason.
+const RUNBOOK_PINS = 'Claude Code only\nDo NOT offer an MCP scope choice\n';
 
 describe('check-bootstrap-tag.sh', () => {
   test('exists and is executable', () => {
@@ -261,7 +274,7 @@ describe('check-bootstrap-templates.sh', () => {
         'templates/bootstrap/questions.json': BANK_JSON,
         'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
         'BOOTSTRAP_FOR_AGENTS.md':
-          '<!-- gbrain-runbook-stamp: 1.2.3.4 -->\nPhase: preflight\nPhase: not_a_phase\n',
+          `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}Phase: preflight\nPhase: not_a_phase\n`,
         'src/core/bootstrap/status.ts': "export const PHASES = ['preflight', 'interview'] as const;\n",
       },
       (dir) => {
@@ -269,6 +282,150 @@ describe('check-bootstrap-templates.sh', () => {
         expect(r.status).toBe(1);
         expect(r.out).toContain("phase 'not_a_phase'");
         expect(r.out).not.toContain("phase 'preflight'");
+      },
+    );
+  });
+
+  test('(e) clean: runbook counter-signals + compliant MCP_SCOPE prefix pass', () => {
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': BANK_JSON,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md': `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}`,
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(0);
+        expect(r.out).toContain('check-bootstrap-templates: ok');
+      },
+    );
+  });
+
+  test('(e) fails when the runbook loses the Codex do-not-offer counter-signal', () => {
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': BANK_JSON,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md':
+          '<!-- gbrain-runbook-stamp: 1.2.3.4 -->\nClaude Code only\n(counter-signal deleted)\n',
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain('Codex counter-signal');
+      },
+    );
+  });
+
+  test("(e) fails when the runbook loses the 'Claude Code only' consent scoping", () => {
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': BANK_JSON,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md':
+          '<!-- gbrain-runbook-stamp: 1.2.3.4 -->\nDo NOT offer an MCP scope choice\n',
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("'Claude Code only'");
+      },
+    );
+  });
+
+  test('(e) fails when the questions object vanishes (valid JSON that silently passes §a)', () => {
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': '{"version":1,"maxQuestions":12,"interviewKeys":[],"consentKeys":[]}',
+        'templates/bootstrap/SOUL.md.template': '# plain\n',
+        'BOOTSTRAP_FOR_AGENTS.md': `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}`,
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("must start with '(Claude Code only'");
+      },
+    );
+  });
+
+  test('(e) fails when the MCP_SCOPE entry vanishes from the bank', () => {
+    const bankNoEntry = JSON.stringify({
+      version: 1,
+      maxQuestions: 12,
+      interviewKeys: ['AGENT_NAME'],
+      consentKeys: ['HOOKS_CONSENT'],
+      questions: {
+        AGENT_NAME: { maxLength: 64 },
+        HOOKS_CONSENT: { consent: true, maxLength: 8 },
+      },
+    });
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': bankNoEntry,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md': `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}`,
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("must start with '(Claude Code only'");
+      },
+    );
+  });
+
+  test('(e) fails when MCP_SCOPE.phase reverts to wire (schema-vs-runbook contradiction)', () => {
+    const bankWirePhase = JSON.stringify({
+      version: 1,
+      maxQuestions: 12,
+      interviewKeys: ['AGENT_NAME'],
+      consentKeys: ['HOOKS_CONSENT', 'MCP_SCOPE'],
+      questions: {
+        AGENT_NAME: { maxLength: 64 },
+        HOOKS_CONSENT: { consent: true, maxLength: 8 },
+        MCP_SCOPE: {
+          consent: true,
+          phase: 'wire',
+          question: '(Claude Code only. Codex has no scope flag.) Register for this folder or the whole machine?',
+          maxLength: 8,
+        },
+      },
+    });
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': bankWirePhase,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md': `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}`,
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("MCP_SCOPE.phase must be 'interview'");
+      },
+    );
+  });
+
+  test('(e) fails when MCP_SCOPE.question loses its harness prefix (or the entry vanishes)', () => {
+    const bankNoPrefix = JSON.stringify({
+      version: 1,
+      maxQuestions: 12,
+      interviewKeys: ['AGENT_NAME'],
+      consentKeys: ['HOOKS_CONSENT', 'MCP_SCOPE'],
+      questions: {
+        AGENT_NAME: { maxLength: 64 },
+        HOOKS_CONSENT: { consent: true, maxLength: 8 },
+        MCP_SCOPE: { consent: true, phase: 'interview', question: 'Register for this folder or the whole machine?', maxLength: 8 },
+      },
+    });
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': bankNoPrefix,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md': `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}`,
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("must start with '(Claude Code only'");
       },
     );
   });

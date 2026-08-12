@@ -5056,6 +5056,34 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 
+- [ ] **P1 — enforce op scope/localOnly on the stdio MCP dispatch when no auth
+  context is present, and consider a narrower default surface for pull-mode
+  harness registrations.** HTTP dispatch enforces `scope`/`localOnly` before
+  handlers run; the stdio surface should reach parity so a registration that is
+  user-global by host design (no per-project scoping available) does not expose
+  more authority than the session needs. Surfaced by the v0.45.x ship
+  adversarial pass (cross-model); pre-existing behavior, not introduced by the
+  Codex scope-consent fix — that fix's prose now states the read+write reality
+  honestly. Needs its own design pass (interaction with `--surface` pinning,
+  MEMORY_VERBS, and the trust-boundary invariant in CLAUDE.md).
+- [ ] **P2 — consent-key answers vs the A8 confirm gate.** Decide whether
+  `consent: true` bank keys should be exempt from `setAnswer`'s confirmation
+  invalidation (`src/core/bootstrap/interview.ts:308-309` `[A8]` deletes
+  `state.confirmed` on ANY set) so operational consents can be recorded at their
+  designed phase-contextual moment post-confirm without regressing
+  `bootstrap status` to "answers complete but not confirmed" (status.ts
+  interview detector). Deferred from the Codex MCP-scope fix (eng review option
+  3B chose prose realignment instead: the runbook now records `MCP_SCOPE` in
+  phase 3, pre-confirm, so the confirm hash covers it). An exemption touches a
+  tamper-tripwire — a post-confirm flip of `PERSIST_CRON` (background-push
+  consent) would no longer invalidate anything — so it needs its own
+  adversarial review before landing. Also cover the healing half: pre-fix
+  installs that recorded `MCP_SCOPE` at the old wire-phase moment have a
+  permanently-invalidated confirm, and `bootstrap status` can't distinguish a
+  consent-key invalidation from a tampered answer set — a status detail for
+  that case would stop resumed installs being steered into a redundant
+  re-confirm loop (ship-review data-migration finding). Context: eng review +
+  codex consult of the Codex scope fix, 2026-08-11.
 - [ ] **P2 — bootstrap first-push secret scan reads the working tree, not the
   index blobs; fail-open on binary/large files.** `secretScanOrThrow` /
   `scanFiles` (src/core/bootstrap/repo.ts + src/core/secret-scan.ts) read
@@ -5068,7 +5096,6 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   v0.45.2.0 /ship Codex adversarial pass (P0 there; scoped to P2 here as a
   shared-scanner hardening that needs its own tests, deliberately out of the
   create-repo-first change).
-
 - [x] **P2 — compiled `gbrain` binary can now `serve` a PGLite brain.** FIXED:
   `src/core/pglite-embedded-assets.ts` embeds PGLite's runtime payload
   (`pglite.wasm`, `initdb.wasm`, `pglite.data`, `vector.tar.gz`,

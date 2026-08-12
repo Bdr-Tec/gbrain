@@ -31,6 +31,23 @@ All notable changes to GBrain will be documented in this file.
 - Skill frontmatter now states its true effects: a skill that commits and pushes is marked mutating, and inert precedence markers were removed.
 
 To take advantage of v0.45.6.0: upgrade with `bun install -g github:garrytan/gbrain#latest-stable`, then run `gbrain skillpack reference --all` to sweep the new and upgraded skills into your agent repo (or `gbrain skillpack scaffold --all --workspace <your-agent-repo>` on a fresh install). Nothing to migrate — new skills route via their trigger phrases immediately, and `gbrain check-resolvable --strict --skills-dir skills/` verifies the pack end to end.
+## [0.45.3.0] - 2026-08-12
+
+**Codex installs stop asking a question Codex can't honor.** The bootstrap used to offer every install a choice of MCP scope — this folder only, or the whole machine — but Codex has no per-folder registrations, so picking "this folder" led to a confusing round-trip where the agent asked permission to keep what it had already done. Now each harness gets the honest version: Claude Code records your scope choice during the interview (where it actually sticks), and Codex simply tells you the truth — its registration reaches the whole machine, read and write — along with the exact commands to remove it (just the registration, or the whole install).
+
+### Added
+- CI tripwires pin the harness-scoping language in the runbook and question bank, so the dead question can't quietly come back in a future edit.
+- `gbrain bootstrap status` hints now carry the scope rule on both the interview and wiring phases, so an agent resuming from a stale runbook still sees it.
+
+### Changed
+- The workspace's ACCESS_POLICY.md now describes MCP reach per harness — the project/user tradeoff on Claude Code, the always-machine-wide reality on Codex — and states plainly that reach means read and write, not just queries.
+- The Claude Code scope consent is asked and recorded during the interview, before the answer read-back, so your confirmation covers it and the wiring step just consumes it.
+
+### Fixed
+- A hand-damaged answer file no longer crashes `gbrain bootstrap hooks` — and no longer silently grants anything: an unreadable consent answer is treated as declined, with a note telling you how to re-record it.
+- A leftover "this folder only" answer on a Codex machine (for example, carried over from a paired Claude Code machine) now gets a clear explanation and a safe way to clear it, instead of a silent mismatch between what you chose and what got registered.
+
+To take advantage of v0.45.3.0: upgrade with `bun install -g github:garrytan/gbrain#latest-stable`. New installs pick everything up automatically. Existing workspaces (either harness) keep their previously rendered policy files; refresh the two that changed with `gbrain bootstrap render --force --only ACCESS_POLICY.md --only CLAUDE.md` (originals are backed up first). If render refuses because the answers show as not confirmed — a pre-fix install that recorded the scope answer after the read-back — run `gbrain bootstrap interview --show`, then `--confirm <hash>`, and retry. Or leave the files as they are — the CLI's own notes and status hints carry the correction either way.
 
 ## [0.45.2.0] - 2026-08-11
 

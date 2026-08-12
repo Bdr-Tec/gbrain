@@ -242,7 +242,22 @@ function consentAnswer(ws: string, key: string): string | undefined {
   if (read.ok) {
     const a = read.state.answers[key];
     if (a?.skipped === true) return 'no';
-    if (a && a.value) return a.value;
+    // Shape-tolerant: interview.json is user-editable and readInterviewState
+    // validates only that `answers` is an object — a hand-edited unusable
+    // value (non-string, empty, or a bare {}) must never throw at a
+    // `.toLowerCase()` call site. FAIL CLOSED, loudly: falling through to a
+    // permissive bank default could flip a damaged opt-out into consent
+    // (cross-model adversarial finding); 'no' resolves every consent key to
+    // its safe reading (no hooks, no cron, project scope).
+    if (a && typeof a.value === 'string' && a.value) return a.value;
+    if (a) {
+      console.error(
+        `note: the recorded ${key} answer in state/interview.json is unusable (invalid shape) — ` +
+          'treating it as declined (fail-closed). Re-record it with `gbrain bootstrap interview` ' +
+          'if that is not what you want.',
+      );
+      return 'no';
+    }
   }
   return bank.questions[key]?.default;
 }
@@ -665,6 +680,29 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   }
 
   const mcpScope = ((consentAnswer(ws, 'MCP_SCOPE') ?? 'project').toLowerCase() === 'user' ? 'user' : 'project') as 'project' | 'user';
+  // A persisted 'project' answer is meaningless on Codex (`codex mcp add` has no
+  // scope flag) — reachable via attach from a Claude Code machine or a pre-fix
+  // install. Fires on each hooks/repair run while the stale answer persists.
+  // Raw read, NOT consentAnswer: the bank default is 'project', so the resolved
+  // value would fire this note on every Codex install where no one was asked.
+  if (harness === 'codex') {
+    const read = readInterviewState(ws);
+    const raw = read.ok ? read.state.answers['MCP_SCOPE'] : undefined;
+    // typeof guard: readInterviewState validates `answers` is an object but not
+    // per-answer shapes — a hand-edited value of 3 must not throw.
+    if (raw?.skipped !== true && typeof raw?.value === 'string' && raw.value.toLowerCase() === 'project') {
+      console.error(
+        "note: the recorded MCP_SCOPE answer 'project' has no effect on Codex — " +
+          '`codex mcp add` has no scope flag; the registration is user-global (any repo ' +
+          'opened on this machine can reach the brain, read and write, through its MCP tools). ' +
+          'To clear this note safely, drop the answer with `gbrain bootstrap interview --skip MCP_SCOPE`, ' +
+          'then re-confirm the read-back (`--show`, then `--confirm <hash>` — any answer change ' +
+          'invalidates the prior confirmation). Do NOT flip it to user: the answer syncs to paired ' +
+          'Claude Code machines and would widen their scope. Registration off-ramps: ' +
+          '`codex mcp remove gbrain`, or `gbrain bootstrap uninstall` (full teardown).',
+      );
+    }
+  }
   // HOOKS_CONSENT is a silent default (bank: 'yes') — hooks install unless the
   // human explicitly opts out with --no-hooks (or a persisted 'no' answer).
   const hooksConsent = !noHooks && (consentAnswer(ws, 'HOOKS_CONSENT') ?? 'yes').toLowerCase() === 'yes';

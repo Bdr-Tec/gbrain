@@ -63,6 +63,12 @@ describe('phase list is the single TS source of truth [D5]', () => {
       expect(typeof p.detect).toBe('function');
     }
   });
+
+  test('wire hint carries the harness scope rule (Claude Code consent vs Codex user-global)', () => {
+    const wire = PHASES.find((p) => p.id === 'wire');
+    expect(wire?.resume_hint).toContain('MCP scope consent is Claude Code only');
+    expect(wire?.resume_hint).toContain('Codex registrations are always user-global (no scope flag)');
+  });
 });
 
 describe('CLI reachability membership (#2035 shape, ENG-2)', () => {
