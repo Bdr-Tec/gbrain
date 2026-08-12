@@ -33,6 +33,7 @@
   "conventions/cross-modal.yaml": "c012c3d72614a87b1ee698173dce2a0fb0d057a54df7aab87993c4b07fff6280",
   "conventions/model-routing.md": "fb7ae8746a578500d6789b68ff40049037aa4d337b65b42f7c1745ae7080c2db",
   "conventions/quality.md": "8aa681001114689d34268ccadaf0e2ff07b8f68aa5987c093a8c4a7a744f12a6",
+  "conventions/regex-discipline.md": "d96a9baa6f27184e165889a9c655607366a739d851684d9f41cdec294f99edac",
   "conventions/salience-and-recency.md": "0ee7f0216f36a5e321673740d148cb0f1113268df19301bb2473a48a728a500b",
   "conventions/schema-evolution.md": "b5cdd5a17e43b4f2d0546ebf8c421cc0378cbcf74cb2fe97199e115ccb05f9c2",
   "conventions/search-modes.md": "2862364874115d75816ba5d0e10f9073043a5fdaa44e9c7f530afc6c492e4a24",
