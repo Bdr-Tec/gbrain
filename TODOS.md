@@ -5018,6 +5018,19 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 
+- [ ] **P2 — bootstrap first-push secret scan reads the working tree, not the
+  index blobs; fail-open on binary/large files.** `secretScanOrThrow` /
+  `scanFiles` (src/core/bootstrap/repo.ts + src/core/secret-scan.ts) read
+  working-tree bytes and silently skip unreadable, binary, and >25 MiB files, so
+  a git clean filter could commit a secret whose working-tree copy scans clean,
+  and a secret in a binary/large file is never seen. Pre-existing across ALL
+  bootstrap pushes (create + adopt), not specific to create-repo-first. Fix:
+  scan the staged index blobs (`git show :file` / `git cat-file`) fail-closed,
+  or reuse the hardened scanner path from `workspacePush`. Filed from the
+  v0.45.1.0 /ship Codex adversarial pass (P0 there; scoped to P2 here as a
+  shared-scanner hardening that needs its own tests, deliberately out of the
+  create-repo-first change).
+
 - [x] **P2 — compiled `gbrain` binary can now `serve` a PGLite brain.** FIXED:
   `src/core/pglite-embedded-assets.ts` embeds PGLite's runtime payload
   (`pglite.wasm`, `initdb.wasm`, `pglite.data`, `vector.tar.gz`,
