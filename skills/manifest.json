@@ -308,6 +308,11 @@
       "name": "two-tier-extraction",
       "path": "two-tier-extraction/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "brain-link-discipline",
+      "path": "brain-link-discipline/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {
