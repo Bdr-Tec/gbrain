@@ -57,6 +57,7 @@ import {
   registerClaudeMcp,
   registerCodexMcp,
   writeClaudeHooks,
+  writeCommittedClaudeHooks,
   removeClaudeHooks,
 } from '../core/bootstrap/hooks.ts';
 import {
@@ -101,6 +102,10 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
   verify [--json]                 The whole install contract (round-trip, graph floor,
                                   magic moment, scans, hooks smoke). Exit 0 or not done.
   attach [--harness H]            Machine two: adopt a cloned agent workspace.
+  cloud-setup-script              Print the paste-ready cloud environment setup
+                                  script (installs the gbrain binary into the
+                                  environment snapshot; npm-based — bun fetching
+                                  is proxy-incompatible in cloud sandboxes).
   uninstall [--delete-brain] [--home <dir>] [--yes]
                                   Receipt-keyed removal. The repo stays yours.
 
@@ -810,12 +815,28 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
     let hooksWritten = false;
     if (harness === 'claude-code') {
       if (hooksConsent) {
-        const r = writeClaudeHooks(ws, {
-          gbrainBin,
-          env: { GBRAIN_SOURCE: sourceId, ...(gbrainHome ? { GBRAIN_HOME: gbrainHome } : {}) },
-        });
+        // Carrier choice [D12]: cloud sandboxes clone fresh and snapshot hook
+        // config at session start — only the repo-COMMITTED settings file
+        // exists there, so cloud installs write the committed carrier
+        // (PATH-resolved, fail-open commands; no machine paths). Local
+        // installs keep the gitignored settings.local.json with the absolute
+        // binary path. The writers enforce that one event never fires from
+        // both files.
+        const hookEnv = { GBRAIN_SOURCE: sourceId, ...(gbrainHome ? { GBRAIN_HOME: gbrainHome } : {}) };
+        const cloudCarrier = detectExecutionEnvironment() === 'cloud-sandbox';
+        const r = cloudCarrier
+          ? writeCommittedClaudeHooks(ws, { env: hookEnv })
+          : writeClaudeHooks(ws, { gbrainBin, env: hookEnv });
         hooksWritten = true;
-        console.log(`hooks installed (${r.installed.length} event(s)) in ${r.settingsPath}${repair ? ' [repair]' : ''} — your brain now loads every turn. Turn off any time with GBRAIN_HOOKS=0, or re-run with --no-hooks.`);
+        console.log(
+          `hooks installed (${r.installed.length} event(s)) in ${r.settingsPath}${repair ? ' [repair]' : ''} — your brain now loads every turn. Turn off any time with GBRAIN_HOOKS=0, or re-run with --no-hooks.`,
+        );
+        if (cloudCarrier) {
+          console.log(
+            'cloud sandbox: hooks written to the COMMITTED .claude/settings.json (fail-open, PATH-resolved) — ' +
+              'commit + push it so the next session starts with hooks live; hooks written mid-session activate on the NEXT session (startup snapshot).',
+          );
+        }
         for (const note of r.notes) console.error(note);
       } else {
         console.log(
@@ -1012,7 +1033,7 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
   const logCtx: LogCtx = { home, ws, ...(harnessForLog ? { harness: harnessForLog } : {}) };
   const t0 = Date.now();
 
-  const KNOWN = new Set(['status', 'interview', 'render', 'repo', 'hooks', 'verify', 'attach', 'uninstall']);
+  const KNOWN = new Set(['status', 'interview', 'render', 'repo', 'hooks', 'verify', 'attach', 'uninstall', 'cloud-setup-script']);
   if (!KNOWN.has(sub)) {
     console.error(`unknown subcommand: ${sub}`);
     console.error(BOOTSTRAP_HELP);
@@ -1029,6 +1050,13 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
       case 'status':
         // status is the read surface — it does not log itself into install.jsonl.
         return await runStatus(ws, rest, home);
+      case 'cloud-setup-script': {
+        // Pure print [D16]: the paste-ready cloud environment setup script.
+        // Read surface like status — no install log entry.
+        const { loadCloudSetupScript } = await import('../core/bootstrap/assets.ts');
+        console.log(loadCloudSetupScript().trimEnd());
+        return 0;
+      }
       case 'interview':
         code = await runInterview(ws, rest);
         break;

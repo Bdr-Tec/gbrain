@@ -615,3 +615,20 @@ describe('uninstall --delete-brain ordering + engine-free stats', () => {
     }
   }, 30_000);
 });
+
+describe('cloud-setup-script emitter [D16]', () => {
+  test('prints the paste-ready script: npm-based (never bun fetching, never the npm squatter), launcher + attach flow', async () => {
+    const r = await capture(() => runBootstrap(['cloud-setup-script']));
+    expect(r.result).toBe(0);
+    const s = r.out;
+    // npm transport (bun fetching is proxy-incompatible in cloud sandboxes)…
+    expect(s).toContain('npm install -g bun');
+    expect(s).toContain('github.com/garrytan/gbrain');
+    // …but NEVER the unrelated npm registry package.
+    expect(s).not.toMatch(/npm install -g gbrain(\s|$)/m);
+    // PATH-resolved launcher + in-session follow-ups.
+    expect(s).toContain('/usr/local/bin/gbrain');
+    expect(s).toContain('bootstrap attach');
+    expect(s).toContain('cloud-setup-script');
+  });
+});

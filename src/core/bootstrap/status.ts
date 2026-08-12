@@ -45,7 +45,12 @@ import {
   type ManifestState,
 } from './format.ts';
 import { interviewStatePath, status as interviewStatus } from './interview.ts';
-import { CLAUDE_SETTINGS_FILE_RELPATH, GBRAIN_HOOK_MARKER_KEY, GBRAIN_HOOK_MARKER_VALUE } from './host-specs.ts';
+import {
+  CLAUDE_COMMITTED_SETTINGS_FILE_RELPATH,
+  CLAUDE_SETTINGS_FILE_RELPATH,
+  GBRAIN_HOOK_MARKER_KEY,
+  GBRAIN_HOOK_MARKER_VALUE,
+} from './host-specs.ts';
 
 // ---------------------------------------------------------------------------
 // The phase list [D5] — single TS source of truth
@@ -156,13 +161,21 @@ export function probeOriginVisibility(origin: string): OriginVisibility {
   }
 }
 
-/** True when `<ws>/.claude/settings.local.json` carries a gbrain hook marker. */
+/** True when either hook carrier — the gitignored `settings.local.json` OR
+ * the committed `.claude/settings.json` [D12] — carries a gbrain marker. */
 export function hooksInstalled(ws: string): boolean {
   try {
-    const raw = readFileSync(join(ws, CLAUDE_SETTINGS_FILE_RELPATH), 'utf8');
-    // Structural probe without a full merge: the marker key/value pair is the
-    // idempotency contract host-specs.ts pins, so a substring check is honest.
-    return raw.includes(`"${GBRAIN_HOOK_MARKER_KEY}"`) && raw.includes(`"${GBRAIN_HOOK_MARKER_VALUE}"`);
+    const probe = (relpath: string): boolean => {
+      try {
+        const raw = readFileSync(join(ws, relpath), 'utf8');
+        // Structural probe without a full merge: the marker key/value pair is
+        // the idempotency contract host-specs.ts pins — substring is honest.
+        return raw.includes(`"${GBRAIN_HOOK_MARKER_KEY}"`) && raw.includes(`"${GBRAIN_HOOK_MARKER_VALUE}"`);
+      } catch {
+        return false;
+      }
+    };
+    return probe(CLAUDE_SETTINGS_FILE_RELPATH) || probe(CLAUDE_COMMITTED_SETTINGS_FILE_RELPATH);
   } catch {
     return false;
   }
