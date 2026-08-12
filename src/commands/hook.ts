@@ -151,6 +151,8 @@ Events (wired into .claude/settings.local.json by gbrain bootstrap):
                   push status, hook health) to stdout
   user-prompt     read hook JSON on stdin, request per-turn context from a
                   running 'gbrain serve' over IPC, print additionalContext JSON
+                  (--harness <claude-code|codex> sets the feedback-loop channel;
+                  default claude-code, unknown values fall back to the default)
   stop            append to the per-session live buffer
   session-end     ingest the session transcript into the dream corpus
                   (secret-scanned), prune old corpus files, push the workspace
