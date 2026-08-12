@@ -616,10 +616,10 @@ export async function runPhaseExtractAtoms(
   try {
     const configuredModel = await engine.getConfig('models.dream.extract_atoms');
     if (configuredModel) extractModel = configuredModel;
-    // `models.dream.extract_atoms` is DB-plane/operator-selected config, not
-    // part of the ordinary file-plane `chat_model` bootstrap. Current gateway
-    // recipe resolution accepts configured model ids directly, so local/user-
-    // managed providers such as Ollama can be used without hosted API keys.
+    // `models.dream.extract_atoms` is DB-plane/operator-selected config.
+    // The gateway no longer has a model allowlist/extended-model registry:
+    // configured per-task chat models resolve like `models.default`, so local
+    // user-managed providers (e.g. Ollama tags) need no registration here.
     const configuredBudget = await engine.getConfig('cycle.extract_atoms.budget_usd');
     if (configuredBudget) {
       const n = Number(configuredBudget);
