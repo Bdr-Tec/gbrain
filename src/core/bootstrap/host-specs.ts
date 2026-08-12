@@ -153,6 +153,25 @@ export const CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS: Record<ClaudeHookEvent, number> =
 export const GBRAIN_HOOK_MARKER_KEY = '_gbrain';
 export const GBRAIN_HOOK_MARKER_VALUE = 'bootstrap-v1';
 
+/**
+ * Marker VALUE for harness-mode installs (`gbrain bootstrap harness`, #4043).
+ * Same `_gbrain` key, distinct value: a box can carry a workspace bootstrap
+ * install (bootstrap-v1 in settings.local.json) AND a harness install
+ * (bootstrap-harness-v1 in user settings.json or a project settings.local.json)
+ * — each removal path strips only its own entries.
+ */
+export const GBRAIN_HARNESS_MARKER_VALUE = 'bootstrap-harness-v1';
+
+/** User-scope Claude Code settings file (harness-mode hook + permissions target). */
+export function claudeUserSettingsPath(): string {
+  return join(homedir(), '.claude', 'settings.json');
+}
+
+/** permissions.allow entry that pre-approves an MCP server's tools for headless runs. */
+export function mcpPermissionEntry(serverName: string): string {
+  return `mcp__${serverName}`;
+}
+
 /** Where Claude Code stores session transcripts — the confinement root [S3#8]. */
 export function claudeProjectsDir(): string {
   return join(homedir(), '.claude', 'projects');
@@ -160,9 +179,17 @@ export function claudeProjectsDir(): string {
 
 // ── Codex shapes ────────────────────────────────────────────────────────────
 
-/** Codex CLI config file (user-global; written by `codex mcp add`, never by us). */
+/**
+ * Codex CLI config file (user-global). Real codex resolves CODEX_HOME as the
+ * config DIRECTORY itself (config.toml sits directly inside it) — pinned by
+ * test/e2e/bootstrap-real-codex.serial.test.ts and connect-bearer.test.ts,
+ * which set CODEX_HOME to a temp dir and assert the real binary wrote there.
+ * A homedir-only resolution here would make any CODEX_HOME-isolated test
+ * clobber the operator's real ~/.codex/config.toml.
+ */
 export function codexConfigPath(): string {
-  return join(homedir(), '.codex', 'config.toml');
+  const codexHome = process.env.CODEX_HOME?.trim();
+  return join(codexHome || join(homedir(), '.codex'), 'config.toml');
 }
 
 /** Codex has no hook system — per-turn context is pull-protocol (plan D5). */
