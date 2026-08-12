@@ -121,6 +121,9 @@ cat ~/.gbrain/preferences.json
 cat ~/.gbrain/migrations/completed.jsonl
 
 # 3. Autopilot is supervising a Minions worker child
+# (v0.46+: the exit code is the verdict — 0 fresh, 1 needs attention,
+#  2 self-disabled — so a nonzero exit here IS the finding, not a
+#  broken verify step. Under `set -e`, append `|| true` to keep going.)
 gbrain autopilot --status
 ps aux | grep 'jobs work'
 

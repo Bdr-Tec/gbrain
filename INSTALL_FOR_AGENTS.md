@@ -251,7 +251,13 @@ Set up using your platform's scheduler (OpenClaw cron, Railway cron, crontab), o
 platform glue entirely with `gbrain autopilot --install` (built-in self-maintaining daemon):
 
 - **Live sync** (every 15 min): `gbrain sync --repo ~/brain && gbrain embed --stale`
-  — or `gbrain sync --watch` for a continuous loop.
+  — or `gbrain sync --watch` for a continuous loop. Safe on keyless brains:
+  a bare `gbrain embed --stale` exits 0 with a stderr note when embeddings
+  are disabled, so the chain doesn't break.
+- **Health gate** (daily): `gbrain autopilot --status` — exit 0 fresh (or
+  nothing installed), 1 needs attention (stale heartbeat, never ran, or
+  paused), 2 the daemon took itself out of rotation. Filesystem-only, so it
+  works during DB outages.
 - **Auto-update** (daily): `gbrain check-update --json` (tell user, never auto-install).
 - **Dream cycle** (nightly): `gbrain dream` runs the 8-phase overnight maintenance cycle.
   Entity sweep, citation fixes, memory consolidation, plus (v0.23+) overnight conversation

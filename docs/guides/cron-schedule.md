@@ -65,6 +65,12 @@ For scheduling `sync` + `embed --stale` specifically, the home doc is
 # Brain health — weekly Mondays at 6 AM
 0 6 * * 1 gbrain doctor --json >> /tmp/gbrain-health.log 2>&1 && gbrain embed --stale
 
+# Autopilot health gate — daily at 7 AM. The exit code is the signal:
+# 0 fresh (or nothing installed), 1 needs attention (stale heartbeat,
+# never ran, or paused), 2 the daemon took itself out of rotation.
+# Status is filesystem-only, so it works even during a DB outage.
+0 7 * * * gbrain autopilot --status >> /tmp/gbrain-autopilot-health.log 2>&1 || your-notify "gbrain autopilot needs attention"
+
 # Dream cycle — nightly at 2 AM
 0 2 * * * /path/to/dream-cycle.sh
 ```

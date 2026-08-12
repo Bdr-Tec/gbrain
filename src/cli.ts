@@ -2251,6 +2251,18 @@ async function handleCliOnly(command: string, args: string[]) {
     }
   }
 
+  // Autopilot status + uninstall are filesystem-only verdicts and MUST stay
+  // engine-free: a running PGLite daemon holds the exclusive DB lock, so an
+  // engine-bound status would fail to connect in exactly the scenarios the
+  // exit-code contract exists to diagnose (live daemon, DB outage). Order
+  // mirrors runAutopilot's own flag precedence (uninstall before status).
+  if (command === 'autopilot' && (args.includes('--uninstall') || args.includes('--status'))) {
+    const { runAutopilotStatus, uninstallDaemon } = await import('./commands/autopilot.ts');
+    if (args.includes('--uninstall')) uninstallDaemon();
+    else runAutopilotStatus(args);
+    return;
+  }
+
   // All remaining CLI-only commands need a DB connection
   const engine = await connectEngine();
   try {

@@ -1,5 +1,65 @@
 # TODOS
 
+## Brain-currency harness-e2e follow-ups (filed with the PR-A wave)
+
+- [ ] **P1 — Extend engine-identity convergence to the other long-lived planes.**
+  The autopilot daemon now detects a post-migration engine flip
+  (`autopilotEngineIdentity` per-tick compare → clean exit for supervisor
+  relaunch), but `gbrain serve` (MCP) and a standalone `gbrain jobs work`
+  worker hold their engine handle indefinitely and keep writing into the
+  abandoned source engine after a flip — the same silent-divergence class,
+  still open on those planes (adversarial-review catch). Fix shape: the same
+  boot-identity compare in their main loops.
+- [ ] **P2 — DB-visible pause for cross-host workers.** The pause marker now
+  fences local job pickup (pre-claim check + post-claim release-back in
+  `src/core/minions/worker.ts`), but the marker is a local file: a worker on
+  ANOTHER host or container pointed at the same Postgres brain never sees it
+  and keeps claiming jobs during a migration copy (its in-flight work IS
+  visible to the drain via `minion_jobs`/lock rows; new claims are the gap).
+  Fix shape: a row in a control table (or a pause flag in `gbrain_cycle_locks`)
+  that the claim query itself honors — atomic with claiming, visible
+  cluster-wide.
+- [ ] **P2 — Route file→symlink typechanges to delete.** `buildSyncManifest`
+  maps git status `T` to modified, but import-file deliberately SKIPS symlinks
+  (the exfil guard), so replacing an indexed file with a symlink leaves the
+  old content indexed forever with no delete. Fix shape: when the post-change
+  path is a symlink, emit a delete instead of a modify.
+- [ ] **P3 — Surface daemon-internal degradation in status.** A daemon stuck
+  in the reconnect-retry loop (crash-classified errors) keeps heartbeating,
+  so `--status` reads fresh while zero work happens. Fix shape: a breadcrumb
+  file with consecutive-failure count that showStatus reads.
+
+- [ ] **P3 — Extract a shared `seedBrain` test helper.** The keyless-PGLite +
+  tmp-HOME + shimmed-PATH setup is duplicated between
+  `test/autopilot-launchd-lifecycle.serial.test.ts` and
+  `test/agent-scheduler-contract.serial.test.ts` (review-army maintainability
+  finding). A third harness-e2e file (the PR-B tier) should force the
+  extraction into `test/helpers/`; don't extract before then — two instances
+  is a coincidence, three is a pattern.
+- [ ] **P3 — Name the quiesce protocol's magic numbers.** `migrate-engine.ts`
+  and `autopilot.ts` share three constants by value, not by name: the 600s
+  heartbeat-freshness window, the 35s default grace, and the daemon's paused
+  fast-poll interval. Hoist into `src/core/autopilot-paths.ts` (the shared
+  leaf) as named exports so the two planes can't drift.
+- [ ] **P3 — Migration manifest rows don't carry content_hash.** A resume
+  trusts `(source_id, slug)` membership in `completed_slugs`; a page edited
+  BETWEEN the failed run and the resume is skipped with its stale copy left on
+  the target (review-army data-migration finding; pre-existing design, not a
+  regression). Fix shape: stamp `content_hash` per completed entry and re-copy
+  on mismatch during resume.
+
+- [ ] **P2 — Keyless `gbrain dream` contract test.** The documented nightly cron
+  (INSTALL_FOR_AGENTS.md Step 7) runs `gbrain dream` unconditionally, and the cycle's
+  embed phase hits the same `EmbeddingDisabledError` class that broke the documented
+  sync-and-embed chain on keyless brains (fixed in `runEmbed` for the `--stale`
+  spelling; `test/agent-scheduler-contract.serial.test.ts` pins it). Nobody has verified that a
+  full keyless dream exits 0 — if any phase surfaces the disabled-embeddings error as a
+  phase failure, the documented nightly cron is broken identically for every
+  `init --no-embedding` install. **Where to start:** `src/core/cycle.ts` embed phase +
+  `src/commands/dream.ts` exit-code handling; test shape mirrors
+  `test/agent-scheduler-contract.serial.test.ts` (keyless PGLite brain, real CLI spawn, exit-code
+  assertion). Surfaced by the harness-e2e outside-voice review.
+
 ## BrainBench follow-ups (filed v0.44.0.0, Cathedral 2)
 
 Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
