@@ -2,6 +2,25 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.1.0] - 2026-08-11
+
+**Make your agent's repo yourself, then let it move in.** If you'd rather own the GitHub repo up front, create a new empty private repo under your own account, clone it, open it in Claude Code or Codex, and paste the bootstrap block — bootstrap now detects your empty repo and adopts it instead of creating one, verifying it is private before anything is pushed. The default (open an empty folder and let bootstrap make the repo) is unchanged and now stated plainly in the docs. Either way, the folder you open becomes your agent's durable, private body.
+
+### Added
+- **Create-repo-first bootstrap.** `gbrain bootstrap repo` adopts an empty, private, personally-owned GitHub repo you created, instead of only ever creating one. The README (Claude Code + Codex), the bootstrap runbook, and the bootstrap guide now lead with the repo and document both paths (open an empty folder, or bring your own empty repo).
+
+### Changed
+- Bootstrap now reports how the repo was set up — created, adopted, or already pushed.
+
+### Fixed
+- Pointing bootstrap at a repo that already has content no longer reports success without pushing your workspace. It stops with a clear message: make an empty repo, or run `gbrain bootstrap attach` for an existing agent clone.
+- Adopting a repo on a fresh machine no longer fails at the first commit — a repo-local git identity is set on the adopt path, not just the create path.
+- A failed first push no longer looks "done" on the next run: the repo is recorded only after the push succeeds, so a re-run resumes instead of skipping.
+- The pre-push secret scan now also covers an already-committed tree, and a failure to enumerate files stops the push instead of passing silently.
+- Automatic per-turn and session-end pushes wait until the repo phase has verified the repo is private, so nothing is published to an unverified remote.
+
+To take advantage of v0.45.1.0: upgrade with `bun install -g github:garrytan/gbrain#latest-stable`. Nothing to migrate. To use the new path, create an empty private repo under your own account, clone it, open it in your agent, and run the bootstrap block — it adopts your repo. If anything about the repo or push looks off, `gbrain doctor` names it with the exact fix.
+
 ## [0.45.0.0] - 2026-08-10
 
 **Your coding agent can now become your personal agent.** Paste one block into Codex or Claude Code and it sets itself up as a persistent agent with a memory that survives across sessions: it interviews you, writes its own identity files from your answers, spins up a local brain, and keeps a private GitHub repo as its durable body. Close the laptop and reopen it tomorrow, and it still knows who you are, who you're talking to, and what you told it last time. This is the OpenClaw/Hermes experience — identity, memory, schedules, persistence — running on the subscription you already pay for, with nothing to deploy.
