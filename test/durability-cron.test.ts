@@ -11,6 +11,7 @@ import {
   renderCronWrapper,
   generateBrainPullPlist,
   installDurabilityCron,
+  durabilityJobStatus,
 } from '../src/core/brain-repo-durability.ts';
 
 const TOKEN = 'ghp_SHOULD_NEVER_APPEAR';
@@ -24,8 +25,9 @@ describe('renderCronWrapper (D2 DB-free)', () => {
     expect(w).not.toMatch(/sources pull '?wiki'?(\s|$)/); // never `sources pull wiki`
   });
 
-  test('self-disables when the captured checkout is gone', () => {
-    expect(w).toContain("if [ ! -d '/data/clones/wiki/.git' ]");
+  test('self-disables when the captured checkout is gone (repo DIR test — the git marker is a FILE in worktrees)', () => {
+    expect(w).toContain("if [ ! -d '/data/clones/wiki' ]");
+    expect(w).not.toContain("-d '/data/clones/wiki/.git'");
     expect(w).toContain('path gone, skipping');
   });
 
@@ -86,4 +88,56 @@ describe('installDurabilityCron — crontab probe [B2/D-cloud]', () => {
     const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, true, 'linux');
     expect(r.status).toBe('skipped');
   });
+});
+
+describe('durabilityJobStatus — presence + liveness [D7]', () => {
+  const savedPath = process.env.PATH;
+  const savedHome = process.env.HOME;
+  afterEach(() => {
+    process.env.PATH = savedPath;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  });
+
+  test('no scheduler binaries at all → kind none (never throws)', () => {
+    process.env.PATH = mkdtempSync(join(tmpdir(), 'no-bin3-'));
+    process.env.HOME = mkdtempSync(join(tmpdir(), 'jb-home-'));
+    const s = installName();
+    expect(s.kind).toBe('none');
+    expect(s.wrapperPresent).toBe(false);
+  });
+
+  test('crontab line present (shim) → kind crontab, live', () => {
+    const shim = mkdtempSync(join(tmpdir(), 'shim-jb-'));
+    writeFileSync(
+      join(shim, 'crontab'),
+      '#!/bin/sh\ncase "$1" in -l) echo "*/30 * * * * /x.sh # com.gbrain.brain-pull.wiki"; exit 0;; esac\nexit 1\n',
+      { mode: 0o755 },
+    );
+    process.env.PATH = shim;
+    process.env.HOME = mkdtempSync(join(tmpdir(), 'jb-home2-'));
+    const s = installName();
+    expect(s.kind).toBe('crontab');
+    expect(s.live).toBe(true);
+  });
+
+  test('stale pull log is reported (logFresh false)', () => {
+    process.env.PATH = mkdtempSync(join(tmpdir(), 'no-bin4-'));
+    const home = mkdtempSync(join(tmpdir(), 'jb-home3-'));
+    process.env.HOME = home;
+    const logDir = join(home, '.gbrain');
+    // A log last touched 3 hours ago against a 30-min interval.
+    const { mkdirSync: mk, writeFileSync: wf, utimesSync } = require('node:fs') as typeof import('node:fs');
+    mk(logDir, { recursive: true });
+    const log = join(logDir, 'brain-pull.log');
+    wf(log, 'old\n');
+    const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    utimesSync(log, old, old);
+    const s = installName();
+    expect(s.logFresh).toBe(false);
+  });
+
+  function installName() {
+    return durabilityJobStatus('wiki', 1800, 'linux');
+  }
 });

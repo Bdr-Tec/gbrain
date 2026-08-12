@@ -428,3 +428,19 @@ describe('byteFloors (verify support)', () => {
     );
   });
 });
+
+describe('renderWorkspace — machine-specific wiring stays out of the repo [B8]', () => {
+  test('rendered .gitignore covers .mcp.json and settings.local.json; GITHUB.md drops the state/mcp.json ghost', () => {
+    const ws = answeredWs();
+    renderWorkspace(ws);
+    const gi = readFileSync(join(ws, '.gitignore'), 'utf8');
+    expect(gi).toContain('.mcp.json');
+    expect(gi).toContain('.claude/settings.local.json');
+    const gh = readFileSync(join(ws, 'GITHUB.md'), 'utf8');
+    // The portable state/mcp.json snippet was never built — the promise is gone.
+    expect(gh).not.toContain('state/mcp.json');
+    // Honest persistence copy [D9]: 30-minute pull + event-driven pushes.
+    expect(gh).toContain('30-minute pull');
+    expect(gh).not.toContain('15-minute');
+  });
+});

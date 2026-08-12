@@ -313,6 +313,19 @@ function patchResolverFile(repoPath: string, dryRun: boolean): { status: StepSta
 // ── Local untracked post-commit hook (D9) ───────────────────────────────────
 
 /** Resolve the active hooks dir (honors a pre-existing core.hooksPath). */
+/** Worktree-safe path inside the git dir [D6]: `.git` is a FILE in worktrees
+ * and submodules, so any path under it must come from git itself (rev-parse
+ * with the git-path query), never string-joined onto `<repo>/.git/`. */
+function gitDirPath(repoPath: string, rel: string): string {
+  try {
+    const p = execFileSync('git', ['-C', repoPath, 'rev-parse', '--git-path', rel], {
+      stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, env: { ...process.env, ...GIT_ENV },
+    }).toString().trim();
+    if (p) return isAbsolute(p) ? p : join(repoPath, p);
+  } catch { /* fall through to the classic layout */ }
+  return join(repoPath, '.git', rel);
+}
+
 function resolveHooksDir(repoPath: string): { dir: string; tracked: boolean } {
   let hooksPath = '';
   try {
@@ -326,12 +339,12 @@ function resolveHooksDir(repoPath: string): { dir: string; tracked: boolean } {
     const tracked = !dir.includes(`${join('.git', '')}`) && !dir.endsWith('.git/hooks');
     return { dir, tracked };
   }
-  return { dir: join(repoPath, '.git', 'hooks'), tracked: false };
+  return { dir: gitDirPath(repoPath, 'hooks'), tracked: false };
 }
 
-/** Ensure a repo-relative path is in .git/info/exclude so our hook stays untracked. */
+/** Ensure a repo-relative path is in the git exclude file so our hook stays untracked. */
 function ensureExcluded(repoPath: string, relPath: string): void {
-  const exclude = join(repoPath, '.git', 'info', 'exclude');
+  const exclude = gitDirPath(repoPath, 'info/exclude');
   try {
     mkdirSync(dirname(exclude), { recursive: true });
     let body = existsSync(exclude) ? readFileSync(exclude, 'utf-8') : '';
@@ -526,6 +539,62 @@ function launchdPlistPath(sourceId: string): string {
   return join(process.env.HOME || '', 'Library', 'LaunchAgents', `${cronLabel(sourceId)}.plist`);
 }
 
+export interface DurabilityJobStatus {
+  kind: 'launchd' | 'crontab' | 'none';
+  wrapperPresent: boolean;
+  /** Liveness rung [D7]: darwin = launchctl reports the label loaded; linux =
+   * the crontab line exists. undefined = probe unavailable on this host. */
+  live?: boolean;
+  /** Pull log fresher than 2× the interval. undefined = no log yet (fresh
+   * install / never fired) — absence is not evidence of death. */
+  logFresh?: boolean;
+}
+
+/**
+ * Presence + LIVENESS of the scheduled-pull job [D7]. Presence-only checks
+ * (existsSync on the plist) certify dead jobs as healthy — the documented
+ * autopilot-status failure mode — so this probes whether the job is actually
+ * loaded/registered and whether its log shows recent life.
+ */
+export function durabilityJobStatus(
+  sourceId: string,
+  intervalSec = 1800,
+  platform: NodeJS.Platform = process.platform,
+): DurabilityJobStatus {
+  const wrapperPresent = existsSync(cronWrapperPath(sourceId));
+  let kind: DurabilityJobStatus['kind'] = 'none';
+  let live: boolean | undefined;
+  if (platform === 'darwin') {
+    if (existsSync(launchdPlistPath(sourceId))) {
+      kind = 'launchd';
+      try {
+        execFileSync('launchctl', ['list', cronLabel(sourceId)], {
+          stdio: 'ignore', timeout: 5_000, env: process.env,
+        });
+        live = true;
+      } catch {
+        live = false; // plist on disk but not loaded — the dead-job shape
+      }
+    }
+  } else if (binaryOnPath('crontab')) {
+    try {
+      const tab = execSync('crontab -l 2>/dev/null', { encoding: 'utf-8', env: process.env });
+      if (tab.includes(cronLabel(sourceId))) {
+        kind = 'crontab';
+        live = true; // the line exists; cron itself is the OS's liveness domain
+      }
+    } catch { /* no crontab for this user */ }
+  }
+  let logFresh: boolean | undefined;
+  try {
+    const log = join(process.env.HOME || '', '.gbrain', 'brain-pull.log');
+    if (existsSync(log)) {
+      logFresh = Date.now() - statSync(log).mtimeMs <= 2 * intervalSec * 1000;
+    }
+  } catch { /* leave undefined */ }
+  return { kind, wrapperPresent, ...(live !== undefined ? { live } : {}), ...(logFresh !== undefined ? { logFresh } : {}) };
+}
+
 /** Pure cron-wrapper renderer (DB-free pull; secret-free — sources the shell
  *  profile rather than baking keys in). Exported for tests. */
 export function renderCronWrapper(sourceId: string, repoPath: string, branch: string, cli: string, logPath: string): string {
@@ -535,8 +604,10 @@ export function renderCronWrapper(sourceId: string, repoPath: string, branch: st
 # Sources the shell profile for secrets, then runs the hardened, DB-free pull.
 [ -f ~/.zshenv ] && source ~/.zshenv 2>/dev/null
 source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null || true
-# Self-disable if the captured checkout is gone (rename/relocation).
-if [ ! -d '${q(repoPath)}/.git' ]; then
+# Self-disable if the captured checkout is gone (rename/relocation). Tests the
+# repo DIR, never its git marker: in worktrees and submodules that marker is a
+# FILE, so a dir test there would wrongly self-disable a live checkout.
+if [ ! -d '${q(repoPath)}' ]; then
   echo "$(date -u +%FT%TZ) [cron] path gone, skipping: ${q(repoPath)}" >> "${q(logPath)}" 2>/dev/null || true
   exit 0
 fi

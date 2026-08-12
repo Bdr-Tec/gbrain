@@ -418,6 +418,19 @@ export function readPushStatuses(): PushStatusEntry[] {
   return legacy ? [legacy] : [];
 }
 
+/** True when any push-status file exists on disk (parseable or not). The
+ * reader skips corrupt files silently; doctor pairs this with an empty read
+ * to say "status present but unreadable" instead of saying nothing. */
+export function pushStatusFilesExist(): boolean {
+  const dir = join(ensureGbrainHome(), 'bootstrap');
+  try {
+    if (readdirSync(dir).some((n) => PUSH_STATUS_FILE_RE.test(n))) return true;
+  } catch {
+    /* fall through */
+  }
+  return existsSync(pushStatusPath());
+}
+
 /** The per-root status for one workspace, or null. */
 export function readPushStatusForRoot(root: string): PushStatusEntry | null {
   const entries = readPushStatuses();

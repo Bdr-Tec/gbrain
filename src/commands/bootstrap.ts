@@ -934,6 +934,10 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
         'offered: export facts before deletion (`gbrain facts export`) — the brain DB is about to be removed and facts are not derived state',
       );
     }
+    // Read the source id BEFORE uninstallWorkspace removes rendered files —
+    // the durability teardown below needs it and the manifest may not survive.
+    const preState = readManifest(ws);
+    const durabilitySourceId = preState.state === 'initialized' ? preState.manifest.source_id : 'workspace';
     const result = await uninstallWorkspace(ws, {
       deleteBrain,
       ...(yes ? { confirm: async () => true } : {}),
@@ -954,6 +958,21 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
         const rm = await runner(['codex', 'mcp', 'remove', 'gbrain']);
         if (rm.code !== 0) console.error('note: `codex mcp remove gbrain` did not succeed — remove it by hand if it lingers.');
       }
+    }
+
+    // Durability teardown [B6]: uninstall previously left the launchd/cron
+    // job, the untracked post-commit hook, and the credential wiring behind.
+    // Best-effort — a teardown hiccup never fails the uninstall. The COMMITTED
+    // helper script and AGENTS.md rules stay (repo content is the user's).
+    try {
+      const { unhardenBrainRepo } = await import('../core/brain-repo-durability.ts');
+      const steps = await unhardenBrainRepo({ repoPath: ws, sourceId: durabilitySourceId });
+      const acted = steps.filter((s) => s.status === 'fixed');
+      if (acted.length > 0) {
+        console.log(`durability wiring removed: ${acted.map((s) => s.step).join(', ')} (committed helper + AGENTS rules stay — repo content is yours)`);
+      }
+    } catch (e) {
+      console.error(`note: durability teardown incomplete (${(e as Error).message}) — run \`gbrain sources unharden ${durabilitySourceId}\` by hand if a scheduled job lingers.`);
     }
 
     // The facts-export offer already printed BEFORE deletion (above); don't

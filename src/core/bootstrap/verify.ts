@@ -318,6 +318,32 @@ function checkDenyGlobs(ws: string): VerifyCheck {
   }
 }
 
+/** Self-repair channel for existing installs [B8]: a git-TRACKED .mcp.json
+ * carries an absolute machine-specific binary path into the private repo.
+ * Fresh renders gitignore it; this warn heals pre-fix installs. Never gates. */
+function checkMcpJsonHygiene(ws: string): VerifyCheck {
+  const id = 'mcp_json_hygiene';
+  try {
+    if (!existsSync(join(ws, '.mcp.json'))) return { id, ok: true, detail: 'no .mcp.json in the workspace' };
+    try {
+      execFileSync('git', ['-C', ws, 'ls-files', '--error-unmatch', '.mcp.json'], {
+        stdio: 'ignore', timeout: 5_000,
+      });
+    } catch {
+      return { id, ok: true, detail: '.mcp.json present but untracked (gitignored) — correct' };
+    }
+    return {
+      id,
+      ok: true, // warn-only: informational, never gating
+      detail:
+        'WARN: machine-specific .mcp.json is COMMITTED to the repo — run `git rm --cached .mcp.json` ' +
+        '(bootstrap now gitignores it; it regenerates via `claude mcp add` / `bootstrap hooks --repair`)',
+    };
+  } catch (e) {
+    return { id, ok: true, detail: `mcp.json hygiene probe failed (${(e as Error).message})` };
+  }
+}
+
 async function checkRepoPrivacy(ws: string): Promise<VerifyCheck> {
   const id = 'repo_privacy';
   try {
@@ -847,6 +873,7 @@ export async function verifyWorkspace(
   checks.push(checkDenyGlobs(ws));
   checks.push(await checkRepoPrivacy(ws));
   checks.push(checkExecutionEnvironment());
+  checks.push(checkMcpJsonHygiene(ws));
 
   // Round-trip family only makes sense on a reachable engine.
   if (engineHealthy) {
