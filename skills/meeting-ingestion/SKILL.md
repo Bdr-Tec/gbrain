@@ -1,6 +1,6 @@
 ---
 name: meeting-ingestion
-version: 2.1.0
+version: 2.2.0
 description: |
   Ingest meeting transcripts from ANY meeting recorder into brain pages with
   attendee enrichment, entity propagation, and timeline merge. One unified
@@ -8,8 +8,9 @@ description: |
   multi-meeting recordings, resolve speakers by evidence, create the page,
   pass every surprising claim through the consistency check (transcript +
   brain + plausibility), enrich every entity, then run the verification
-  checklist. A meeting is NOT fully ingested until the enrich skill has
-  processed every entity AND the verification checklist passes.
+  checklist — substance AND sequence. A meeting is NOT fully ingested until
+  the enrich skill has processed every entity AND the verification checklist
+  passes, including the sequence verify (PASS or explicit user waive).
 triggers:
   - "meeting transcript"
   - "process this meeting"
@@ -18,6 +19,8 @@ triggers:
   - "ingest this recording"
   - "capture meetings"
   - "audit this meeting"
+  - "check the sequence"
+  - "did I get the order right"
   - meeting transcript received
 tools:
   - search
@@ -27,6 +30,7 @@ tools:
   - add_link
   - add_timeline_entry
   - get_timeline
+  - chronicle_day
 mutating: true
 writes_pages: true
 writes_to:
@@ -36,6 +40,7 @@ writes_to:
 upstream:
   - meeting-ingestion@fc834ee
   - meeting-gold-standard@fc834ee
+  - chronology-guard@fc834ee
 ---
 
 # Meeting Ingestion Skill — Unified Pipeline
@@ -66,6 +71,8 @@ This skill guarantees:
 - The meeting is never REPORTED as ingested until the verification checklist
   (below) passes — every quote grounded, every slug backed by a page and a
   timeline backlink, every speaker resolved or flagged
+- The narrated SEQUENCE is verified independently of substance: a sequence
+  contradiction BLOCKS ingestion until fixed or explicitly waived by the user
 
 Every attendee and company mentioned MUST get a back-link from their page to
 the meeting page. An unlinked mention is a broken brain.
@@ -387,7 +394,46 @@ Recorders confidently invent names and emails for unlabeled speakers.
   resolve by evidence, correct the page + frontmatter + backlinks, then re-run
   this checklist.
 
-**The loop:** fix → re-check → fix, until every item passes. Only then report.
+**V6 — Sequence verify (order, not substance).**
+A meeting page can be right on depth and wrong on order — they are independent
+failure axes, and V1–V5 never look at order. Verify the narrated sequence:
+
+1. **Extract event atoms.** Walk the page body in document order and list each
+   narrated sub-event as `{phase, place, people}` — where `phase` is its
+   position relative to the meeting's central event (before / during / after)
+   as the PROSE claims it.
+2. **Deterministic checks** (agent-executed, mechanical — no judgment needed):
+   - **PHASE_INVERSION (hard):** an atom narrated as "before" appears after
+     the central event in the document's sequence (or vice versa). Example: the
+     page narrates the debrief of alice-example's pitch, then narrates the
+     pitch itself as if still upcoming.
+   - **TELEPORT (hard):** the same person is placed in two non-adjacent
+     locations with no transit or movement narrated between them. Example:
+     alice-example is in the car en route in one paragraph and already inside
+     the acme-example office in the next, with nothing connecting the two.
+3. **Day-timeline corroboration (soft):**
+   ```bash
+   gbrain day {date}
+   ```
+   assembles that day's events and timeline entries across the whole brain.
+   - **DAY_TIMELINE_GAP:** a narrated participant who never appears in the
+     day's assembled timeline is a SIGNAL, not a hard fail — most often it
+     means their timeline entry was never written (go fix Phase 7/8), and
+     occasionally it means the narration names someone who wasn't there.
+     Investigate; don't auto-block.
+4. **Verdict — PASS or BLOCK.**
+   - No hard contradiction → **PASS**. Proceed to report.
+   - Any PHASE_INVERSION or TELEPORT → **BLOCK**. The meeting is NOT ingested.
+     Fix the narration (re-read the transcript for the true order) and re-run
+     V6 — or, if the user explicitly says the order is fine as written, record
+     a **waive**. A waive is logged in the report as acknowledged, NOT
+     resolved: `sequence: WAIVED by user — {contradiction} stands`.
+   - Genuinely ambiguous order (flashbacks, prose that implies but doesn't
+     state a sequence) is a judgment call, not a deterministic class — flag it
+     in the report, don't block on it.
+
+**The loop:** fix → re-check → fix, until every item passes (or V6 is
+explicitly waived). Only then report.
 
 ## Sensitive meetings
 
@@ -401,9 +447,11 @@ ask the user.
 
 Meeting page created AND the verification checklist passed. Report: "Meeting
 ingested: {N} attendees enriched, {N} entities updated, {N} action items
-captured. Verification: passed." If the recording was split, report one line
-per resulting meeting page. If a claim was withheld or a contradiction flagged
-by Phase 6, list each flag — the user resolves them, not silence. If any
+captured. Verification: passed. Sequence: PASS." If the sequence check was
+waived, say so explicitly: "Sequence: WAIVED by user — {contradiction} stands
+(acknowledged, not resolved)." If the recording was split, report one line per
+resulting meeting page. If a claim was withheld or a contradiction flagged by
+Phase 6, list each flag — the user resolves them, not silence. If any
 checklist item cannot be made to pass, report the meeting as NOT ingested and
 name the failing item.
 
@@ -431,3 +479,11 @@ name the failing item.
 - Writing `- None.` under a required section to silence the checklist without
   confirming against the transcript
 - Skipping the checklist because "it's just a quick logistics meeting"
+- Declaring a page ingested while a sequence contradiction stands unresolved
+  and unwaived
+- Treating a user waive as a resolution — a waive is an acknowledgment; the
+  contradiction is still in the page
+- Passing a page that puts a person in two non-adjacent places with no
+  transit between them
+- Re-checking substance in the sequence pass (or order in V1–V5) — the axes
+  are orthogonal by design
