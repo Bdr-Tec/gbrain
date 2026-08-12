@@ -2,7 +2,8 @@
 
 This folder is the workspace of {{AGENT_NAME}}, {{PRINCIPAL_NAME}}'s persistent
 agent. This agent lives in THIS directory — sessions opened elsewhere do not load
-it (that is the project-scope registration, by design).
+its identity files (harnesses load them from the folder you open; the brain's MCP
+reach is a separate knob — see ACCESS_POLICY.md).
 
 @AGENTS.md
 @SOUL.md
