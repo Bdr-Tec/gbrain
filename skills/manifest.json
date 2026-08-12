@@ -313,6 +313,11 @@
       "name": "brain-link-discipline",
       "path": "brain-link-discipline/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "draft-in-voice",
+      "path": "draft-in-voice/SKILL.md",
+      "description": ">"
     }
   ],
   "dependencies": {

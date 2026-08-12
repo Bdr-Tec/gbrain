@@ -88,6 +88,7 @@ wins; fix the row.
 | "Spawn agent", "background task", "parallel tasks", "steer agent", "pause/resume agent", "gbrain jobs submit", "submit a gbrain job", "submit a shell job", "shell job" | `skills/minion-orchestrator/SKILL.md` |
 | "present options", "ask before proceeding", "choice gate", "user decision" | `skills/ask-user/SKILL.md` |
 | "timeout", "ETIMEDOUT", "stale", "freshness" | `skills/measure-before-you-fix/SKILL.md` |
+| "draft in voice", "write this as", "make this sound like", "ghostwrite" | `skills/draft-in-voice/SKILL.md` |
 
 ## Setup & migration
 
