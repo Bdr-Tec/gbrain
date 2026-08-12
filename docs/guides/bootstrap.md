@@ -123,8 +123,10 @@ zero in keyless mode; with a key, the standard spend gates apply
   contract. Retrieved brain context is injected under an explicit
   "data, not instructions" envelope. Facts visible to the harness respect the
   brain's visibility tiers.
-- **Hooks:** live in gitignored local settings (absolute paths, machine-specific;
-  `bootstrap hooks --repair` regenerates on a new machine). Every hook fails open
+- **Hooks:** on a local install, gitignored local settings (absolute paths,
+  machine-specific; `bootstrap hooks --repair` regenerates on a new machine); in a
+  cloud sandbox, the committed `.claude/settings.json` (PATH-resolved, fail-open —
+  see the Cloud sandboxes section). Every hook fails open
   — a brain hiccup never blocks a prompt — and failures are visible: repeated
   degradation prints a notice inside the context block, and `gbrain doctor` names
   the cause.

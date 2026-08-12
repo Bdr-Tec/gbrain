@@ -41,7 +41,7 @@ import { realpathOrResolve } from '../path-confine.ts';
 import { runMaintenanceSweep } from '../sweep.ts';
 import { detectCapabilities, renderCapabilityReport, type CapabilityReport } from '../capability.ts';
 import { loadWorkspaceAllowlist, matchesGlob, scanFiles, type SecretFinding } from '../secret-scan.ts';
-import { PUSH_DENY_GLOBS, verifyRemotePrivacy, pushStatusPath } from '../workspace-push.ts';
+import { PUSH_DENY_GLOBS, verifyRemotePrivacy, readPushStatuses, summarizePushStatuses } from '../workspace-push.ts';
 import { FACTS_DEFAULT_VISIBILITY_KEY } from '../facts/visibility.ts';
 import { byteFloors } from './render.ts';
 import { BOOTSTRAP_TEMPLATES, loadQuestionBank } from './assets.ts';
@@ -779,11 +779,19 @@ async function checkHooksSmoke(engine: BrainEngine, ws: string, sourceId: string
 function checkPushProbe(ws: string): VerifyCheck {
   const id = 'push_probe';
   try {
-    const p = pushStatusPath();
-    if (existsSync(p)) {
-      const s = JSON.parse(readFileSync(p, 'utf8')) as { ts?: string; ok?: boolean; reason?: string };
-      if (s.ok === true) return { id, ok: true, detail: `last workspace push succeeded (${s.ts ?? 'unknown time'})` };
-      return { id, ok: true, warn: true, detail: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'} — run \`gbrain sources push --path ${ws}\`` };
+    // Read through the shared per-root reader [D8/D13] — a v0.45.8+ push
+    // writes push-status-<roothash>.json, not the legacy single file, so the
+    // old direct read reported "no push recorded" on every fresh install.
+    const entries = readPushStatuses();
+    if (entries.length > 0) {
+      const { failing } = summarizePushStatuses(entries);
+      if (failing.length > 0) {
+        const s = failing[0]!;
+        const rest = failing.length > 1 ? ` [+${failing.length - 1} more]` : '';
+        return { id, ok: true, warn: true, detail: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'}${rest} — run \`gbrain sources push --path ${s.repoRoot ?? ws}\`` };
+      }
+      const ok = entries.find((e) => e.ok === true);
+      return { id, ok: true, detail: `last workspace push succeeded (${ok?.ts ?? 'unknown time'})` };
     }
     const origin = gitOriginUrl(ws);
     if (origin) return { id, ok: true, warn: true, detail: 'origin exists but no push recorded yet — run `gbrain sources push` once to prove the persistence path' };
