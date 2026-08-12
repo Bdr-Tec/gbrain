@@ -491,9 +491,15 @@ export async function findEnvKeyTypos(
   return out;
 }
 
-/** Emit the fail-loud "no embedding provider" message + paste-ready setup. */
+/** Emit the "no embedding provider" message + paste-ready setup. Keyless
+ *  continue leads (it always works); key setup follows for the upgrade. */
 function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested: string }>): void {
-  console.error('\nNo embedding provider configured. Set one of:');
+  console.error('\nNo embedding provider configured.');
+  console.error('Continue without one (keyless — keyword search + memory your agent writes):');
+  console.error('  gbrain init --pglite --no-embedding');
+  console.error('  (add a key later with `gbrain config set embedding_model <id>`)');
+  console.error('');
+  console.error('Or set a key for semantic search:');
   console.error('  export OPENAI_API_KEY=sk-…        # openai:text-embedding-3-large (1536d)');
   console.error('  export ZEROENTROPY_API_KEY=ze-…   # zeroentropyai:zembed-1 (2560d, Matryoshka)');
   console.error('  export VOYAGE_API_KEY=pa-…        # voyage:voyage-3-large (1024d)');
@@ -501,9 +507,6 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
   console.error('');
   console.error('Or pick explicitly:');
   console.error('  gbrain init --pglite --embedding-model openai:text-embedding-3-large');
-  console.error('');
-  console.error('Or defer setup: gbrain init --pglite --no-embedding');
-  console.error('  (you can configure later with `gbrain config set embedding_model <id>`)');
   // D13: surface near-miss env vars (e.g. OPENAPI_API_KEY → OPENAI_API_KEY).
   if (typos.length > 0) {
     console.error('');
@@ -511,6 +514,16 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
       console.error(`Note: detected ${t.userSet}; did you mean ${t.suggested}?`);
     }
   }
+}
+
+/** Loud keyless-continue notice for the no-keys default path. */
+function printKeylessContinueNotice(): void {
+  console.error(
+    'No embedding provider keys detected — continuing in keyless mode:\n' +
+    '  keyword search + memory your agent writes down itself. Everything works.\n' +
+    '  One optional key upgrades search to semantic (import with `gbrain import --no-embed`\n' +
+    '  meanwhile). Add later: `gbrain config set embedding_model <id>`.',
+  );
 }
 
 async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boolean): Promise<void> {
@@ -548,28 +561,56 @@ async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boo
     }
   }
 
-  // Zero or multi — pick or fail loud.
+  // Zero keys — keyless is a first-class posture (the whole paste-in
+  // bootstrap runs on it), so the DEFAULT is to continue keyless with a loud
+  // notice, not exit 1. Fail-loud survives in exactly one zero-key case: a
+  // near-miss env var (OPENAPI_API_KEY → OPENAI_API_KEY) signals the user
+  // MEANT to configure a key — completing keyless there would silently bury
+  // their typo.
   if (ready.length === 0) {
-    if (!isTTY) {
-      const typos = await findEnvKeyTypos();
+    const typos = await findEnvKeyTypos();
+    if (typos.length > 0) {
       printNoEmbeddingProviderHint(typos);
       process.exit(1);
     }
-    // TTY → picker; on null (user aborted) still fail loud.
+    if (!isTTY) {
+      printKeylessContinueNotice();
+      out.noEmbedding = true;
+      return;
+    }
+    // TTY → picker (local providers like ollama may be selectable); a null
+    // pick (nothing offered, user skipped, or EOF) continues keyless.
     const { pickProvider } = await import('./init-provider-picker.ts');
     const picked = await pickProvider({ touchpoint: 'embedding', env: process.env, isTTY: true });
     if (!picked) {
-      const typos = await findEnvKeyTypos();
-      printNoEmbeddingProviderHint(typos);
-      process.exit(1);
+      printKeylessContinueNotice();
+      out.noEmbedding = true;
+      return;
     }
     out.embedding_model = picked.fullModel;
     out.embedding_dimensions = picked.dim;
     return;
   }
 
-  // ready.length > 1 — picker (TTY) or fail-loud (non-TTY) per D2/D3.
+  // ready.length > 1 — picker (TTY); non-TTY auto-picks the canonical default
+  // when its key is present (the most common agent/dev setup is 2+ provider
+  // keys — failing there blocked scripted installs), else fail-loud per D2/D3
+  // (a genuinely ambiguous set with no canonical candidate stays explicit).
   if (!isTTY) {
+    const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } =
+      await import('../core/ai/defaults.ts');
+    const canonicalProvider = DEFAULT_EMBEDDING_MODEL.split(':')[0];
+    const canonical = ready.find((p) => p.recipeId === canonicalProvider);
+    if (canonical) {
+      out.embedding_model = DEFAULT_EMBEDDING_MODEL;
+      out.embedding_dimensions = DEFAULT_EMBEDDING_DIMENSIONS;
+      console.error(
+        `Multiple embedding providers env-ready (${ready.map(p => p.recipeId).join(', ')}). ` +
+        `Using the default ${DEFAULT_EMBEDDING_MODEL} (${DEFAULT_EMBEDDING_DIMENSIONS}d). ` +
+        `Override with --embedding-model.`,
+      );
+      return;
+    }
     console.error(`Multiple embedding providers env-ready: ${ready.map(p => p.recipeId).join(', ')}.`);
     console.error(`Disambiguate by passing --embedding-model <provider>:<model>, or unset extra env vars.`);
     process.exit(1);
@@ -1089,7 +1130,6 @@ async function initPGLite(opts: {
       } else {
         console.log('Next: gbrain import <dir>');
       }
-      printMemoryVerbsQuickstart();
       console.log('');
       console.log('When you outgrow local: gbrain migrate --to supabase');
       reportModStatus();
@@ -1101,6 +1141,11 @@ async function initPGLite(opts: {
       // Fail-open; 3s wallclock cap. Skipped silently in non-TTY contexts.
       const { runInitNudge } = await import('../core/onboard/init-nudge.ts');
       await runInitNudge(engine);
+
+      // The memory-verbs funnel prints LAST so the three copy-paste commands
+      // are the final thing on screen — the success screen's one primary
+      // action (it used to sit mid-scroll under the skills advisory).
+      printMemoryVerbsQuickstart();
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
@@ -1357,7 +1402,6 @@ async function initPostgres(opts: {
       } else {
         console.log('Next: gbrain import <dir>');
       }
-      printMemoryVerbsQuickstart();
       reportModStatus();
       const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
       const { VERSION } = await import('../version.ts');
@@ -1367,6 +1411,10 @@ async function initPostgres(opts: {
       // Fail-open; 3s wallclock cap. Skipped silently in non-TTY contexts.
       const { runInitNudge } = await import('../core/onboard/init-nudge.ts');
       await runInitNudge(engine);
+
+      // Memory-verbs funnel last-on-screen (same rationale as the PGLite
+      // epilogue): the three copy-paste commands are the one primary action.
+      printMemoryVerbsQuickstart();
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
@@ -1402,6 +1450,15 @@ function countMarkdownFiles(dir: string, maxScan = 1500): number {
 }
 
 async function supabaseWizard(): Promise<string> {
+  // Non-TTY guard: without a terminal the URL prompt below can never be
+  // answered — the legacy behavior was a silent exit-0 no-op (stdin closed →
+  // readLine never resolved data → process ended with NO config written), the
+  // worst failure shape for a scripted/agent caller. Fail loud with the fix.
+  if (!process.stdin.isTTY) {
+    console.error('gbrain init --supabase needs an interactive terminal to prompt for the connection URL.');
+    console.error('Non-interactive: pass --url <connection_string>, or set GBRAIN_DATABASE_URL and use --non-interactive.');
+    process.exit(1);
+  }
   try {
     execSync('bunx supabase --version', { stdio: 'pipe' });
     console.log('Supabase CLI detected.');
@@ -1427,12 +1484,21 @@ function readLine(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     process.stdout.write(prompt);
     let data = '';
+    let settled = false;
+    const settle = (value: string) => {
+      if (settled) return;
+      settled = true;
+      process.stdin.pause();
+      resolve(value);
+    };
     process.stdin.setEncoding('utf-8');
     process.stdin.once('data', (chunk) => {
       data = chunk.toString().trim();
-      process.stdin.pause();
-      resolve(data);
+      settle(data);
     });
+    // EOF (Ctrl-D mid-prompt) resolves empty instead of hanging — the caller's
+    // "No URL provided." guard then fails loud.
+    process.stdin.once('end', () => settle(''));
     process.stdin.resume();
   });
 }
@@ -1578,23 +1644,18 @@ export function reportModStatus(): void {
     skillCount = manifest.skills?.length || 0;
   } catch { /* manifest not found */ }
 
+  // One line per fact, one pointer per optional extra — this block sits on
+  // the init success screen, where every extra call-to-action competes with
+  // the memory-verbs funnel (the one action that matters). Krug: one screen,
+  // one primary action.
   console.log('');
   console.log('--- GBrain Mod Status ---');
-  console.log(`Skills: ${skillCount} loaded`);
-  console.log(`GStack: ${gstack.found ? `found (${gstack.host})` : 'not found'}`);
-  if (!gstack.found) {
-    console.log('  Install GStack for coding skills:');
-    console.log('  git clone https://github.com/garrytan/gstack.git ~/.claude/skills/gstack');
-    console.log('  cd ~/.claude/skills/gstack && ./setup');
-  }
-  console.log('Resolver: skills/RESOLVER.md');
-  console.log('Soul audit: ask your agent to "run a soul audit" to customize its identity (see skills/soul-audit)');
+  console.log(`Skills: ${skillCount} loaded (router: skills/RESOLVER.md)`);
+  console.log(`GStack: ${gstack.found ? `found (${gstack.host})` : 'not found (coding skills — see github.com/garrytan/gstack)'}`);
   // Retrieval Reflex (#1981): the deterministic pointer layer is ON by default
   // (no action needed). The policy skill is installed into the HOST repo on
-  // request — we PRINT the command rather than silently mutating the host repo.
-  console.log('Retrieval reflex: on by default (entity pointers injected per turn)');
-  console.log('  Install the policy skill into your agent repo:');
-  console.log('  gbrain integrations install retrieval-reflex --target <host-repo>');
+  // request — we PRINT the pointer rather than silently mutating the host repo.
+  console.log('Retrieval reflex: on by default. More: `gbrain integrations` (policy skill), skills/soul-audit (identity).');
   console.log('');
 }
 
@@ -1606,7 +1667,7 @@ USAGE
   gbrain init [flags]
 
 ENGINE SELECTION (mutually exclusive)
-  --pglite              Use embedded PGLite (zero-config, default for <1000 .md files)
+  --pglite              Use embedded PGLite (zero-config, the default)
   --supabase            Use Supabase Postgres (recommended for 1000+ files)
   --url <URL>           Use a manual Postgres connection string
   --mcp-only            Thin-client mode: connect to a remote gbrain MCP, no local engine
@@ -1639,9 +1700,10 @@ EXAMPLES
   gbrain init --mcp-only --url https://...  # Thin-client mode
 
 NOTES
-  - Bare \`gbrain init\` in a directory with 1000+ .md files defaults to Supabase
-    interactive setup. With <1000 files (or with --pglite explicitly), defaults
-    to PGLite at ~/.gbrain/brain.pglite.
+  - Bare \`gbrain init\` always defaults to PGLite at ~/.gbrain/brain.pglite.
+    In a directory with 1000+ .md files it prints a suggestion to use
+    \`gbrain init --supabase\` (faster search at scale) but still proceeds
+    with PGLite.
   - Existing config is preserved unless --force is passed.
 `.trim());
 }

@@ -6,7 +6,8 @@
  * the self-upgrade refresh path.
  */
 
-import { readUpdateCache } from '../self-upgrade.ts';
+import { readUpdateCache, isCacheFresh } from '../self-upgrade.ts';
+import { isNewerVersion } from '../semver.ts';
 import type { AdvisorCollector } from './types.ts';
 
 export const collectVersion: AdvisorCollector = {
@@ -15,7 +16,13 @@ export const collectVersion: AdvisorCollector = {
     let latest: string | undefined;
     try {
       const entry = readUpdateCache();
-      if (entry && entry.marker.kind === 'upgrade_available' && entry.marker.latest) {
+      // Fresh cache only, and compare against the RUNNING version — a stale
+      // or foreign-binary cache must not nag about an upgrade already done.
+      if (
+        entry && isCacheFresh(entry, Date.now()) &&
+        entry.marker.kind === 'upgrade_available' && entry.marker.latest &&
+        isNewerVersion(ctx.version, entry.marker.latest)
+      ) {
         latest = entry.marker.latest;
       }
     } catch {

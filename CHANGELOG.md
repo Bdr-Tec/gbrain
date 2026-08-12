@@ -87,7 +87,7 @@ answers. Ask before anything destructive. You are not done until
 `gbrain bootstrap verify` exits 0.
 ```
 
-The agent runs `gbrain bootstrap` — a new command family (`status`, `interview`, `render`, `repo`, `hooks`, `verify`, `attach`, `uninstall`) that drives the whole install. It works with **zero API keys**: your harness's model is the LLM, so the agent authors memory directly and search runs keyword-only; add one optional key (OpenAI, Anthropic, or Voyage) to unlock semantic search and automatic fact extraction. Everything is consent-gated — hooks, background push, MCP scope — and nothing runs while your harness is closed (the honest desktop contract; true 24/7 is what a hosted brain adds).
+The agent runs `gbrain bootstrap` — a new command family (`status`, `interview`, `render`, `repo`, `hooks`, `verify`, `attach`, `uninstall`) that drives the whole install. It works with **zero API keys**: your harness's model is the LLM, so the agent authors memory directly and search runs keyword-only; add one optional key to upgrade capabilities (OpenAI: semantic search + automatic fact extraction; Voyage: semantic search; Anthropic: fact extraction). Everything is consent-gated — hooks, background push, MCP scope — and nothing runs while your harness is closed (the honest desktop contract; true 24/7 is what a hosted brain adds).
 
 ### What you get
 

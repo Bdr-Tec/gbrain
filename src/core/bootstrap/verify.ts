@@ -96,11 +96,15 @@ export const VERIFY_PROBE_ENTITY_SLUG = 'wiki/bootstrap-verify-probe-entity';
 /** Deterministic magic-moment token the fence fact carries [CX-P0.5]. */
 export const VERIFY_MAGIC_TOKEN = 'verify-lighthouse-passphrase';
 
-/** The three scripted first-run prompts [D3.6] — pinned by the A4 snapshot test. */
+/** The three scripted first-run prompts [D3.6] — pinned by the A4 snapshot test.
+ *  Exactly three (the count is copy-pinned here, in BOOTSTRAP_FOR_AGENTS.md,
+ *  and the A4 plan). Prompt 3 must be TRUE on day one — the brain is empty at
+ *  install, so "everything ingested so far" would be an anticlimax; the
+ *  round-trip fact from prompt 2 is the honest day-one payoff. */
 export const FIRST_RUN_TOUR: readonly string[] = [
   '"Who am I to you?" — identity from SOUL.md/USER.md, no lookup needed.',
-  '"Remember that <one small true fact>." Then restart the session and ask me about it — that round-trip is the whole product.',
-  '"What do you know about this project?" — brain recall over everything ingested so far.',
+  '"Remember that <one small true fact>." — it lands in the brain, not this chat.',
+  '"What do you remember about me?" — asked in the NEW session: on day one that is the fact from prompt 2, recalled from the brain. Every session after this adds more. That round-trip is the whole product.',
 ];
 
 // ---------------------------------------------------------------------------
@@ -834,9 +838,11 @@ export async function verifyWorkspace(
 
   checks.push(checkPushProbe(ws));
   checks.push(checkInertSkills(ws, caps));
-  checks.push({ id: 'first_run_tour', ok: true, detail: 'three scripted prompts appended to the report [D3.6]' });
+  const tourCheck = { id: 'first_run_tour', ok: true, detail: 'three scripted prompts appended to the report [D3.6]' };
+  checks.push(tourCheck);
 
   const ok = checks.every((c) => c.ok || c.warn === true);
+  if (!ok) tourCheck.detail = 'tour withheld — prints on PASS [D3.6]';
 
   const ts = new Date().toISOString();
   persistVerifyRun(gbrainHomeDir, { ts, ok, checks });
@@ -850,8 +856,18 @@ export async function verifyWorkspace(
   lines.push('');
   lines.push(renderCapabilityReport(caps));
   lines.push('');
-  lines.push('First-run tour — hand these three prompts to your human, in order:');
-  FIRST_RUN_TOUR.forEach((p, i) => lines.push(`  ${i + 1}. ${p}`));
+  // The tour celebrates a WORKING install — under a FAIL banner it reads as
+  // a mixed signal ("broken, but go enjoy it"). Gate the report lines on ok;
+  // the returned `tour` array (and --json field) stays unconditional so
+  // machine consumers keep a stable shape.
+  if (ok) {
+    lines.push('First-run tour — have your human RESTART the session first');
+    lines.push('(a fresh session proves the files and the brain, not this chat),');
+    lines.push('then try these three prompts in order:');
+    FIRST_RUN_TOUR.forEach((p, i) => lines.push(`  ${i + 1}. ${p}`));
+  } else {
+    lines.push('Fix the FAIL checks above and re-run — the first-run tour prints on PASS.');
+  }
 
   return { ok, checks, report: lines.join('\n'), capability: caps, tour: [...FIRST_RUN_TOUR] };
 }

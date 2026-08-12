@@ -90,9 +90,10 @@ NOT inside ~/gbrain.
 ## Step 3.5: Confirm search mode with the user (DO NOT SKIP)
 
 `gbrain init` auto-applied a default search mode (`tokenmax` unless your subagent
-tier is Haiku-class or no OpenAI key is configured). The init output included the
-cost matrix below preceded by `[AGENT]` markers. You must NOT silently accept the
-default. Stop and ask the operator.
+tier is Haiku-class or no expansion-capable API key — Anthropic, OpenAI, or
+Google — is configured). The init output included the cost matrix below preceded
+by `[AGENT]` markers. You must NOT silently accept the default. Stop and ask the
+operator.
 
 **Present this matrix verbatim:**
 

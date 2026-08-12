@@ -118,6 +118,13 @@ function buildAdvisoryWithoutWorkspace(
 /**
  * Print the advisory to stderr at the end of init / post-upgrade.
  * No-op when buildAdvisory returns null.
+ *
+ * `init` prints a COMPACT 3-line pointer: the init success screen already
+ * competes for one primary action (the memory-verbs funnel), and the full
+ * 55-line agent-addressed banner buried it. The full banner remains the
+ * `upgrade` surface (its designed audience) and stays available any time
+ * via `gbrain advisor`. buildAdvisory itself is unchanged — it is the
+ * agent-readable document, pinned by tests and shared with `gbrain advisor`.
  */
 export function printAdvisoryIfRecommended(opts: {
   version: string;
@@ -127,5 +134,32 @@ export function printAdvisoryIfRecommended(opts: {
 }): void {
   const advisory = buildAdvisory(opts);
   if (!advisory) return;
+  if (opts.context === 'init') {
+    // Derive the counts for the compact form from the same detection the
+    // full banner used (cheap: re-runs the receipt parse).
+    let workspace = opts.targetWorkspace ?? null;
+    let skillsDir = opts.targetSkillsDir ?? null;
+    if (!skillsDir) {
+      const detected = autoDetectSkillsDir();
+      if (detected.dir) {
+        skillsDir = detected.dir;
+        if (!workspace) workspace = resolvePath(skillsDir, '..');
+      }
+    }
+    const all = currentRecommendedSet();
+    const missing =
+      workspace && skillsDir
+        ? all.filter((s) => !detectInstalledSlugs(skillsDir, workspace).has(s.slug))
+        : all;
+    if (missing.length === 0) return;
+    const names = missing.map((s) => s.slug);
+    const preview = names.slice(0, 4).join(', ') + (names.length > 4 ? ', …' : '');
+    process.stderr.write(
+      `\n${missing.length} recommended skill(s) not yet installed (${preview}).\n` +
+        `[AGENT] Ask the user before installing. If yes: ${scaffoldCommandFor(missing, all)}\n` +
+        `Full list + descriptions: gbrain advisor\n`,
+    );
+    return;
+  }
   process.stderr.write(advisory);
 }

@@ -5978,17 +5978,53 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
     return { applied: 0, current };
   }
 
+  // Fresh install vs upgrade: a never-migrated brain (schema blob seeds
+  // version='1'; every migration is >= 2) replays the FULL history — printing
+  // ~240 lines of internal migration names as the user's first-run experience.
+  // That wall makes a 2-second init read as complex and fragile ("1 → 125"
+  // implies the brand-new install was 124 versions stale). Fresh installs get
+  // one summary line; EXISTING brains keep the full per-migration detail
+  // (upgrades are where the names carry diagnostic value).
+  // GBRAIN_MIGRATE_VERBOSE=1 is the incident escape hatch (env-first, matching
+  // the GBRAIN_SYNC_*/GBRAIN_PACE_* pattern).
+  const freshInstall = current <= 1 && pending.length === sorted.length;
+  const quietReplay = freshInstall && process.env.GBRAIN_MIGRATE_VERBOSE !== '1';
+
   // Progress messages route to stderr so callers parsing stdout (e.g.
   // `gbrain jobs submit --json | jq`) aren't polluted by migration noise.
-  process.stderr.write(`  Schema version ${current} → ${LATEST_VERSION} (${pending.length} migration(s) pending)\n`);
+  if (quietReplay) {
+    process.stderr.write(`  Setting up brain schema (v${LATEST_VERSION})...\n`);
+  } else {
+    process.stderr.write(`  Schema version ${current} → ${LATEST_VERSION} (${pending.length} migration(s) pending)\n`);
+  }
 
   // Pre-flight: warn about connections that might block DDL
   await checkForBlockingConnections(engine);
 
   let applied = 0;
   for (const m of pending) {
-    process.stderr.write(`  [${m.version}] ${m.name}...\n`);
+    if (!quietReplay) process.stderr.write(`  [${m.version}] ${m.name}...\n`);
+    try {
+      await applyOneMigration(engine, m);
+    } catch (err) {
+      // Quiet fresh-install replay: name the failing migration — without the
+      // per-step lines, the error would otherwise be anonymous.
+      if (quietReplay) process.stderr.write(`  [${m.version}] ${m.name} failed\n`);
+      throw err;
+    }
 
+    // Update version after both SQL and handler succeed
+    await engine.setConfig('version', String(m.version));
+    if (!quietReplay) process.stderr.write(`  [${m.version}] ✓ ${m.name}\n`);
+    applied++;
+  }
+
+  return { applied, current: LATEST_VERSION };
+}
+
+/** One migration's full body (SQL + handler + verify), extracted so the
+ *  runMigrations loop can name the failing migration in quiet-replay mode. */
+async function applyOneMigration(engine: BrainEngine, m: Migration): Promise<void> {
     // Pick SQL: engine-specific `sqlFor` wins over engine-agnostic `sql`.
     const sql = m.sqlFor?.[engine.kind] ?? m.sql;
 
@@ -6059,11 +6095,4 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
       }
     }
 
-    // Update version after both SQL and handler succeed
-    await engine.setConfig('version', String(m.version));
-    process.stderr.write(`  [${m.version}] ✓ ${m.name}\n`);
-    applied++;
-  }
-
-  return { applied, current: LATEST_VERSION };
 }
