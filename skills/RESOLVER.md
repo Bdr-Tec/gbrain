@@ -39,6 +39,7 @@ wins; fix the row.
 | "move this to brain", "migrate to brain", "copy these files into the brain", "bulk import into the brain" | `skills/brain-ingest-gate/SKILL.md` |
 | "that's wrong", "that's not true", "I never said that", "where did you get that" | `skills/correction-pipeline/SKILL.md` |
 | "company brain", "team brain", "brainify", "sanitize the brain" | `skills/company-brainify/SKILL.md` |
+| "citation graph", "citation graph ingest", "typed citation graph", "build a reference graph" | `skills/citation-graph-ingest/SKILL.md` |
 
 ## Content & media ingestion
 

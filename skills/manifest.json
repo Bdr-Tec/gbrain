@@ -298,6 +298,11 @@
       "name": "company-brainify",
       "path": "company-brainify/SKILL.md",
       "description": ">"
+    },
+    {
+      "name": "citation-graph-ingest",
+      "path": "citation-graph-ingest/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {
