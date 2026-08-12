@@ -3,10 +3,20 @@
  * [G8, CX2-1, plan D6]. Library module: the CLI dispatcher wires it later.
  *
  * Invariants (G8):
- *  - Refuses ANY pre-existing `origin` remote unless the manifest says
- *    `initialized` AND this machine's receipt proves we created it (crash
- *    re-run). An initialized clone with a foreign origin is attach territory.
- *  - After create, repo privacy is verified via the GitHub API; the answer
+ *  - A pre-existing `origin` is accepted in exactly two shapes, else refused
+ *    (pointed at `attach`): (a) the receipt already recorded this exact
+ *    `repo_url` (idempotent re-run -> disposition 'reused'); or (b) the origin
+ *    is owned by the authed gh user with NO recorded `repo_url` AND is SAFE to
+ *    adopt -> disposition 'adopted'. SAFE means EMPTY (`assertAdoptableOrigin`),
+ *    or a non-empty remote that matches this workspace's `pending_repo_url`
+ *    proof (our own interrupted push, resumable). A non-empty remote with no
+ *    matching pending marker is refused (`ORIGIN_NOT_EMPTY`) — we never adopt a
+ *    user's existing project from a git-ancestry guess. Org-owned origins
+ *    (owner != login) are out of scope.
+ *  - Repo-local git identity (from the authed gh user) is set in BOTH the
+ *    create and adopt paths before any commit; `repo_url` is recorded only
+ *    AFTER a successful push (a push failure must never look "done" to status).
+ *  - Repo privacy is verified via the GitHub API; the answer
  *    must be the literal `true`. "Couldn't verify" (rate limit / 5xx) is a
  *    typed refuse-and-re-run, NEVER treated as private or public. The first
  *    push happens only AFTER the verify passes (create runs without --push).
@@ -75,6 +85,12 @@ export const defaultRunner: ExecRunner = async (argv: string[]): Promise<ExecRes
  * unknown fields, so this is a structural extension, not a format bump. */
 export interface RepoReceipt extends InstallReceipt {
   repo_url?: string;
+  /** Proof-of-intent written BEFORE the first push and cleared once `repo_url`
+   * is recorded. If a push lands but the run crashes before recording `repo_url`,
+   * a re-run sees a non-empty origin that matches `pending_repo_url` and knows
+   * the content is OURS (safe to resume) rather than a user's existing project
+   * (which would carry no pending marker). See createPrivateRepo Gate 4. */
+  pending_repo_url?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +159,96 @@ async function fetchAuthedLogin(runner: ExecRunner): Promise<string | null> {
   }
 }
 
+/** The authed gh user's login + id. Throws GH_AUTH (exit 2) on failure. */
+async function resolveGhIdentity(runner: ExecRunner): Promise<{ login: string; userId: number | string }> {
+  const userRes = await runner(['gh', 'api', 'user']);
+  if (userRes.code !== 0) {
+    throw new BootstrapError(
+      'GH_AUTH',
+      `could not read the authenticated GitHub user (gh api user failed: ${userRes.stderr.trim() || `exit ${userRes.code}`}) — check \`gh auth status\``,
+      { exitCode: 2 },
+    );
+  }
+  try {
+    const parsed = JSON.parse(userRes.stdout) as { login?: unknown; id?: unknown };
+    if (typeof parsed.login !== 'string' || parsed.login.length === 0) throw new Error('missing login');
+    const userId = typeof parsed.id === 'number' || typeof parsed.id === 'string' ? parsed.id : 0;
+    return { login: parsed.login, userId };
+  } catch (e) {
+    throw new BootstrapError('GH_AUTH', `unexpected \`gh api user\` output (${(e as Error).message})`, { exitCode: 2 });
+  }
+}
+
+/**
+ * Set the repo-local git author identity from the authed gh user (never touches
+ * global git config). Required before ANY commit — a freshly cloned repo on a
+ * machine with no global `user.name`/`user.email` would otherwise fail at commit.
+ * Runs in both the create AND adoption paths (the adoption path is why this is a
+ * shared helper — a clone-then-adopt on a fresh machine hit exactly this).
+ */
+async function setRepoLocalIdentity(
+  runner: ExecRunner,
+  workspaceDir: string,
+  ident: { login: string; userId: number | string },
+): Promise<void> {
+  // Fail loudly if the config writes fail — otherwise a later commit falls back
+  // to (possibly absent) global identity and dies with a misleading error.
+  const nameRes = await runner(['git', '-C', workspaceDir, 'config', 'user.name', ident.login]);
+  const emailRes = await runner([
+    'git', '-C', workspaceDir, 'config', 'user.email',
+    `${ident.userId}+${ident.login}@users.noreply.github.com`,
+  ]);
+  const failed = nameRes.code !== 0 ? nameRes : emailRes.code !== 0 ? emailRes : null;
+  if (failed) {
+    throw new BootstrapError(
+      'REPO_CREATE_FAILED',
+      `could not set the repo-local git identity (git config failed: ${failed.stderr.trim() || `exit ${failed.code}`}) — commits would fail; fix the git state and re-run \`gbrain bootstrap repo\``,
+    );
+  }
+}
+
+/**
+ * Guard for the create-repo-first / pre-record adoption path (an origin the human
+ * created, with no recorded `repo_url` yet). The origin must be EMPTY to adopt.
+ *
+ * Empty-only is deliberate. A non-empty remote cannot be proven to be OURS from
+ * git alone — "remote HEAD equals/precedes local HEAD" is ALSO true of a user's
+ * own existing project that `render` happened to run inside, so an ancestor/SHA
+ * heuristic would silently adopt (and later push identity/personal data into)
+ * that project. We refuse instead. The happy path stays empty because the
+ * no-daemon push is gated until the repo phase records `repo_url` (see
+ * `repoPhaseComplete` in hook.ts), so nothing lands on the remote before this
+ * runs. Genuinely-ours interrupted pushes are matched separately by
+ * `pending_repo_url` at the call site — this function is the fallback for
+ * everything else. Throws on refusal; never adopts on uncertainty.
+ */
+async function assertAdoptableOrigin(
+  runner: ExecRunner,
+  workspaceDir: string,
+  owner: string,
+  name: string,
+): Promise<void> {
+  const ls = await runner(['git', '-C', workspaceDir, 'ls-remote', 'origin']);
+  if (ls.code !== 0) {
+    throw new BootstrapError(
+      'REMOTE_CHECK_FAILED',
+      `could not list ${owner}/${name} to confirm it is safe to adopt (git ls-remote failed: ${ls.stderr.trim() || `exit ${ls.code}`}) — nothing was pushed; re-run \`gbrain bootstrap repo\``,
+      { details: { owner, name } },
+    );
+  }
+  // All refs (not just --heads): a repo with only tags is not "empty".
+  if (ls.stdout.trim().length === 0) return; // genuinely empty → safe to adopt
+
+  throw new BootstrapError(
+    'ORIGIN_NOT_EMPTY',
+    `${owner}/${name} already has content that bootstrap did not put there. ` +
+      '`gbrain bootstrap repo` adopts only an EMPTY repo you just created. ' +
+      'Create a new EMPTY private repo (no README/.gitignore/license) under your own account and point this workspace at it, ' +
+      'or run `gbrain bootstrap attach` if this is an existing agent workspace.',
+    { details: { owner, name } },
+  );
+}
+
 /**
  * Privacy verify [G8]: `gh api repos/{owner}/{name} --jq .private` must print
  * the literal `true`. Any failure to VERIFY is VERIFY_UNAVAILABLE (refuse +
@@ -200,9 +306,10 @@ function updateGithubMd(workspaceDir: string, url: string): void {
   if (next !== raw) writeFileSync(path, next, 'utf8');
 }
 
-/** Record the created repo URL on the machine-local receipt. Creates a minimal
- * receipt when render's is missing (crash between render and receipt write). */
-function recordRepoInReceipt(gbrainHomeDir: string, workspaceDir: string, manifest: AgentManifest, url: string): void {
+/** Load-or-synthesize the machine-local receipt (minimal one when render's is
+ * missing — crash between render and receipt write), with the bootstrap/ subdir
+ * ensured and the overwrite guard run. Shared by the record helpers. */
+function loadReceiptForWrite(gbrainHomeDir: string, workspaceDir: string, manifest: AgentManifest): RepoReceipt {
   const existing = readReceipt(gbrainHomeDir) as RepoReceipt | null;
   const receipt: RepoReceipt = existing ?? {
     receipt_version: 1,
@@ -215,7 +322,6 @@ function recordRepoInReceipt(gbrainHomeDir: string, workspaceDir: string, manife
     created_paths: [],
     registrations: [],
   };
-  receipt.repo_url = url;
   // writeReceipt assumes the bootstrap/ subdir exists (render creates it);
   // repo may run first after a crash, so create it defensively.
   mkdirSync(join(gbrainHomeDir, 'bootstrap'), { recursive: true });
@@ -223,6 +329,23 @@ function recordRepoInReceipt(gbrainHomeDir: string, workspaceDir: string, manife
   if (guard.brokenBackupPath) {
     console.error(`WARNING: the install receipt was unreadable; backed it up to ${guard.brokenBackupPath} and wrote a fresh one.`);
   }
+  return receipt;
+}
+
+/** Proof-of-intent: record `pending_repo_url` BEFORE the first push, so a
+ * post-push/pre-record crash is recognized as OURS on re-run (see Gate 4). */
+function recordPendingRepo(gbrainHomeDir: string, workspaceDir: string, manifest: AgentManifest, url: string): void {
+  const receipt = loadReceiptForWrite(gbrainHomeDir, workspaceDir, manifest);
+  receipt.pending_repo_url = url;
+  writeReceipt(gbrainHomeDir, receipt);
+}
+
+/** Record the created/adopted repo URL AFTER a successful push, clearing the
+ * pending marker (the durable idempotency key). */
+function recordRepoInReceipt(gbrainHomeDir: string, workspaceDir: string, manifest: AgentManifest, url: string): void {
+  const receipt = loadReceiptForWrite(gbrainHomeDir, workspaceDir, manifest);
+  receipt.repo_url = url;
+  delete receipt.pending_repo_url;
   writeReceipt(gbrainHomeDir, receipt);
 }
 
@@ -231,12 +354,32 @@ function recordRepoInReceipt(gbrainHomeDir: string, workspaceDir: string, manife
 // ---------------------------------------------------------------------------
 
 /** Files git would include in a commit right now (staged + untracked, minus
- * ignored), relative to the workspace — the input to the pre-commit scan. */
+ * ignored), relative to the workspace — the input to the pre-commit scan.
+ * Fail-closed: a `git ls-files` failure is a hard refuse, NEVER a vacuous empty
+ * set (an empty set would let the secret scan pass without seeing anything). */
 async function stagedAndUntrackedFiles(runner: ExecRunner, workspaceDir: string): Promise<string[]> {
   const res = await runner([
     'git', '-C', workspaceDir, 'ls-files', '--cached', '--others', '--exclude-standard', '-z',
   ]);
-  if (res.code !== 0) return [];
+  if (res.code !== 0) {
+    throw new BootstrapError(
+      'REPO_CREATE_FAILED',
+      `could not enumerate files for the pre-push secret scan (git ls-files failed: ${res.stderr.trim() || `exit ${res.code}`}) — nothing was committed or pushed; fix the git state and re-run \`gbrain bootstrap repo\``,
+    );
+  }
+  return res.stdout.split('\0').filter((s) => s.length > 0);
+}
+
+/** Tracked files in the current HEAD tree — the set that would be pushed when a
+ * clean commit already exists. Fail-closed like stagedAndUntrackedFiles. */
+async function trackedFiles(runner: ExecRunner, workspaceDir: string): Promise<string[]> {
+  const res = await runner(['git', '-C', workspaceDir, 'ls-files', '-z']);
+  if (res.code !== 0) {
+    throw new BootstrapError(
+      'REPO_CREATE_FAILED',
+      `could not enumerate tracked files for the pre-push secret scan (git ls-files failed: ${res.stderr.trim() || `exit ${res.code}`}) — nothing was pushed; fix the git state and re-run \`gbrain bootstrap repo\``,
+    );
+  }
   return res.stdout.split('\0').filter((s) => s.length > 0);
 }
 
@@ -274,7 +417,16 @@ async function ensureWorkspaceCommit(runner: ExecRunner, workspaceDir: string): 
   const hasCommit = head.code === 0;
   const statusRes = await runner(['git', '-C', workspaceDir, 'status', '--porcelain']);
   const dirty = statusRes.code === 0 && statusRes.stdout.trim().length > 0;
-  if (hasCommit && !dirty) return; // there is already something to push
+  if (hasCommit && !dirty) {
+    // A clean commit already exists (e.g. a re-run, or an adopted repo whose
+    // tree was committed earlier). Do NOT return before scanning: the committed
+    // tree is exactly what a `git push` will publish, so secret-scan it too —
+    // the early return used to skip the scan entirely (a pre-existing commit
+    // could push secrets unscanned).
+    const tracked = await trackedFiles(runner, workspaceDir);
+    secretScanOrThrow(workspaceDir, tracked);
+    return; // there is already something to push
+  }
 
   const add = await runner(['git', '-C', workspaceDir, 'add', '-A']);
   if (add.code !== 0) {
@@ -319,7 +471,10 @@ async function currentBranch(runner: ExecRunner, workspaceDir: string): Promise<
  * [FIX4/G8] Bind the just-verified privacy result to the ACTUAL push target.
  * A concurrent `git remote set-url origin …` between verify and push could
  * redirect content elsewhere; re-read origin and refuse unless it still parses
- * to the owner/name we verified private.
+ * to the owner/name we verified private. Checks BOTH the fetch URL and the push
+ * URL (`remote.origin.pushurl`) — `git push` uses the push URL when set, so a
+ * verified-private fetch URL paired with a foreign/public push URL would
+ * otherwise leak the workspace.
  */
 async function assertOriginMatches(
   runner: ExecRunner,
@@ -327,17 +482,36 @@ async function assertOriginMatches(
   owner: string,
   name: string,
 ): Promise<void> {
-  const res = await runner(['git', '-C', workspaceDir, 'remote', 'get-url', 'origin']);
-  const url = res.code === 0 ? res.stdout.trim() : '';
-  const parsed = url ? parseGithubRemote(url) : null;
-  if (!parsed || parsed.owner !== owner || parsed.name !== name) {
+  // Fetch URL: must resolve to the verified-private owner/name (the primary bind).
+  const fetchRes = await runner(['git', '-C', workspaceDir, 'remote', 'get-url', 'origin']);
+  const fetchUrl = fetchRes.code === 0 ? fetchRes.stdout.trim() : '';
+  const fetchParsed = fetchUrl ? parseGithubRemote(fetchUrl) : null;
+  if (!fetchParsed || fetchParsed.owner !== owner || fetchParsed.name !== name) {
     throw new BootstrapError(
       'ORIGIN_EXISTS',
-      `origin now resolves to ${url || '(unset)'}, not the verified-private ${owner}/${name} — refusing to push. ` +
+      `origin now resolves to ${fetchUrl || '(unset)'}, not the verified-private ${owner}/${name} — refusing to push. ` +
         'The remote changed after the privacy verification; restore it (git remote set-url origin <the created repo>) ' +
         'and re-run `gbrain bootstrap repo`.',
-      { details: { expected: `${owner}/${name}`, actual: url } },
+      { details: { which: 'fetch', expected: `${owner}/${name}`, actual: fetchUrl } },
     );
+  }
+  // Push URL: `git push` uses `remote.origin.pushurl` when set, so a verified
+  // fetch URL + a foreign push URL would leak. Read the config key directly (no
+  // dash-flag): unset → exit != 0 → `git push` falls back to the fetch URL
+  // (already validated). Only a DISTINCT, configured push URL is a refusal.
+  const pushRes = await runner(['git', '-C', workspaceDir, 'config', 'remote.origin.pushurl']);
+  const pushUrl = pushRes.code === 0 ? pushRes.stdout.trim() : '';
+  if (pushUrl) {
+    const pushParsed = parseGithubRemote(pushUrl);
+    if (!pushParsed || pushParsed.owner !== owner || pushParsed.name !== name) {
+      throw new BootstrapError(
+        'ORIGIN_EXISTS',
+        `origin push URL resolves to ${pushUrl}, not the verified-private ${owner}/${name} — refusing to push. ` +
+          'A separate push URL (remote.origin.pushurl) points elsewhere; clear that config key ' +
+          'and re-run `gbrain bootstrap repo`.',
+        { details: { which: 'push', expected: `${owner}/${name}`, actual: pushUrl } },
+      );
+    }
   }
 }
 
@@ -386,8 +560,20 @@ export interface CreatePrivateRepoOptions {
 export interface CreatePrivateRepoResult {
   url: string;
   name: string;
-  /** True when a pre-existing origin created by a prior run was adopted
-   * (idempotent re-run) instead of creating a new repo. */
+  /**
+   * How the repo came to be:
+   *  - `created`  — bootstrap ran `gh repo create` this run (brand-new repo).
+   *  - `adopted`  — a pre-existing origin the human created (create-repo-first),
+   *    or one bootstrap created but crashed before recording, was verified and
+   *    pushed to for the first time this run.
+   *  - `reused`   — a repo a prior run already recorded (`repo_url` match); this
+   *    run only re-verified privacy and completed any deferred push.
+   * A single enum instead of overlapping booleans so invalid combinations
+   * ('created'+'adopted') are unrepresentable.
+   */
+  disposition: 'created' | 'adopted' | 'reused';
+  /** Back-compat: true whenever an existing origin was used (adopted OR reused)
+   * rather than freshly created. Derived from `disposition`. */
   reused: boolean;
 }
 
@@ -425,35 +611,42 @@ export async function createPrivateRepo(
   // Gate 3: manifest must say initialized (render ran) [CX2-1].
   const { manifest } = requireInitializedManifest(workspaceDir);
 
-  // Gate 4: pre-existing origin [G8]. The ONLY acceptable origin is one a
-  // prior run on THIS machine created (receipt-keyed, matched by remote URL).
+  // Gate 4: pre-existing origin [G8]. Two origins are acceptable:
+  //  (a) one a prior run recorded (receipt `repo_url` matches) — idempotent
+  //      re-run, disposition 'reused';
+  //  (b) an origin owned by the authed gh user with NO recorded `repo_url` —
+  //      either the human created it (create-repo-first) or we created it but
+  //      crashed before recording. Adopting it requires it be SAFE (empty, or
+  //      already carrying our history — see assertAdoptableOrigin), disposition
+  //      'adopted'. Anything else is refused and pointed at attach.
   const originRes = await runner(['git', '-C', workspaceDir, 'remote', 'get-url', 'origin']);
   if (originRes.code === 0 && originRes.stdout.trim()) {
     const originUrl = originRes.stdout.trim();
     const receipt = readReceipt(gbrainHomeDir) as RepoReceipt | null;
     const sameWorkspace =
       receipt !== null && realpathOrResolve(receipt.workspace_dir) === realpathOrResolve(workspaceDir);
-    // Adoption requires an EXACT repo_url match. A receipt without a recorded
-    // repo_url (crash between create and record) may adopt ONLY when the
-    // authenticated gh user owns the origin — undefined is never a wildcard.
-    let adoptable = sameWorkspace && receipt.repo_url === originUrl;
-    if (!adoptable && sameWorkspace && receipt.repo_url === undefined) {
+    const viaUrlMatch = sameWorkspace && receipt.repo_url === originUrl;
+    // A receipt without a recorded repo_url (crash between create and record, OR
+    // a create-repo-first clone rendered in place) may adopt ONLY when the
+    // authenticated gh user owns the origin — undefined is never a wildcard,
+    // and org-owned repos (owner != login) are out of scope by design.
+    let viaOwnedUndefined = false;
+    if (!viaUrlMatch && sameWorkspace && receipt.repo_url === undefined) {
       const parsedOrigin = parseGithubRemote(originUrl);
       if (parsedOrigin) {
         const login = await fetchAuthedLogin(runner);
-        adoptable = login !== null && login === parsedOrigin.owner;
+        viaOwnedUndefined = login !== null && login === parsedOrigin.owner;
       }
     }
-    if (!adoptable) {
+    if (!viaUrlMatch && !viaOwnedUndefined) {
       throw new BootstrapError(
         'ORIGIN_EXISTS',
-        `this workspace already has an \`origin\` remote (${originUrl}) that bootstrap did not create. ` +
-          '`gbrain bootstrap repo` always creates a dedicated private repo. ' +
+        `this workspace already has an \`origin\` remote (${originUrl}) that bootstrap can neither adopt nor claim. ` +
+          '`gbrain bootstrap repo` creates a dedicated private repo, OR adopts an EMPTY private repo you created under your own account. ' +
           'If this is a clone of an existing agent workspace, run `gbrain bootstrap attach` instead.',
         { details: { origin: originUrl } },
       );
     }
-    // Idempotent re-run: adopt our own origin, re-verify privacy, re-record.
     const parsed = parseGithubRemote(originUrl);
     if (!parsed) {
       throw new BootstrapError(
@@ -462,14 +655,33 @@ export async function createPrivateRepo(
         { details: { origin: originUrl } },
       );
     }
+    // Adopting a not-yet-recorded origin: it must be safe. Empty is always safe.
+    // A NON-empty origin is safe only when it carries OUR interrupted push —
+    // proven by `pending_repo_url` matching (a user's existing project has no
+    // such marker). Everything else is refused (turns the old silent no-op into
+    // a clear ORIGIN_NOT_EMPTY).
+    if (viaOwnedUndefined) {
+      const ours = sameWorkspace && receipt.pending_repo_url === originUrl;
+      if (!ours) await assertAdoptableOrigin(runner, workspaceDir, parsed.owner, parsed.name);
+    }
+    // PRIVACY VERIFY [G8] — hard gate before any push.
     await verifyRepoPrivate(runner, parsed.owner, parsed.name);
+    // Repo-local git identity so the (possibly first-ever) commit on a fresh
+    // machine succeeds — this path used to skip it, breaking clone-then-adopt.
+    await setRepoLocalIdentity(runner, workspaceDir, await resolveGhIdentity(runner));
     updateGithubMd(workspaceDir, originUrl);
-    recordRepoInReceipt(gbrainHomeDir, workspaceDir, manifest, originUrl);
-    // [FIX3] Don't report reused-success on an empty remote — a prior run may
-    // have created the repo + set origin but failed to push. Verify the remote
-    // actually has our branch; complete the (scan-gated) push if it doesn't.
+    // Proof-of-intent BEFORE the push so a post-push/pre-record crash is
+    // recognized as ours on re-run (see the `pending_repo_url` bypass above).
+    recordPendingRepo(gbrainHomeDir, workspaceDir, manifest, originUrl);
+    // [FIX3] Don't report success on an empty remote — a prior run may have set
+    // origin but failed to push. Verify the remote has our branch; complete the
+    // (scan-gated) push if it doesn't.
     await ensureRemoteHasWorkspace(runner, workspaceDir, parsed.owner, parsed.name);
-    return { url: originUrl, name: parsed.name, reused: true };
+    // Record repo_url AFTER a successful push (clears pending): recording before
+    // push let a push failure look "done" to `bootstrap status` (repo_url
+    // present), so a re-run skipped the repo phase and never pushed the workspace.
+    recordRepoInReceipt(gbrainHomeDir, workspaceDir, manifest, originUrl);
+    return { url: originUrl, name: parsed.name, disposition: viaUrlMatch ? 'reused' : 'adopted', reused: true };
   }
 
   // Ensure a git repo exists (main branch on fresh init).
@@ -482,26 +694,9 @@ export async function createPrivateRepo(
   }
 
   // Repo-local identity from the authed gh user (never global git config).
-  const userRes = await runner(['gh', 'api', 'user']);
-  if (userRes.code !== 0) {
-    throw new BootstrapError(
-      'GH_AUTH',
-      `could not read the authenticated GitHub user (gh api user failed: ${userRes.stderr.trim() || `exit ${userRes.code}`}) — check \`gh auth status\``,
-      { exitCode: 2 },
-    );
-  }
-  let login: string;
-  let userId: number | string;
-  try {
-    const parsed = JSON.parse(userRes.stdout) as { login?: unknown; id?: unknown };
-    if (typeof parsed.login !== 'string' || parsed.login.length === 0) throw new Error('missing login');
-    login = parsed.login;
-    userId = typeof parsed.id === 'number' || typeof parsed.id === 'string' ? parsed.id : 0;
-  } catch (e) {
-    throw new BootstrapError('GH_AUTH', `unexpected \`gh api user\` output (${(e as Error).message})`, { exitCode: 2 });
-  }
-  await runner(['git', '-C', workspaceDir, 'config', 'user.name', login]);
-  await runner(['git', '-C', workspaceDir, 'config', 'user.email', `${userId}+${login}@users.noreply.github.com`]);
+  const ident = await resolveGhIdentity(runner);
+  const login = ident.login;
+  await setRepoLocalIdentity(runner, workspaceDir, ident);
 
   // Name: slug(agent_name)-workspace, probed for availability, suffix -2..-100.
   // The probe is best-effort convenience; `gh repo create` remains the
@@ -550,6 +745,10 @@ export async function createPrivateRepo(
   // verify → commit → push; the scan is never bypassed).
   await ensureWorkspaceCommit(runner, workspaceDir);
 
+  // Proof-of-intent before the push: if we crash after pushing but before
+  // recording repo_url, a re-run recognizes the (now non-empty) repo as ours.
+  recordPendingRepo(gbrainHomeDir, workspaceDir, manifest, url);
+
   const branch = await currentBranch(runner, workspaceDir);
   // [FIX4] Bind the verified privacy result to the actual push target.
   await assertOriginMatches(runner, workspaceDir, login, name);
@@ -564,5 +763,5 @@ export async function createPrivateRepo(
 
   updateGithubMd(workspaceDir, url);
   recordRepoInReceipt(gbrainHomeDir, workspaceDir, manifest, url);
-  return { url, name, reused: false };
+  return { url, name, disposition: 'created', reused: false };
 }

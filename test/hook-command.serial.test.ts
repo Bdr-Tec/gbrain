@@ -32,6 +32,8 @@ import {
   type TurnContextRequest,
 } from '../src/core/context/resolve-ipc.ts';
 import { CLAUDE_HOOK_OUTPUT_CAP_CHARS } from '../src/core/bootstrap/host-specs.ts';
+import { writeReceipt } from '../src/core/bootstrap/format.ts';
+import type { RepoReceipt } from '../src/core/bootstrap/repo.ts';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'conversation-formats', 'claude-code.jsonl');
 const ENV_KEYS = ['GBRAIN_HOME', 'DATABASE_URL', 'GBRAIN_DATABASE_URL', 'GBRAIN_SOURCE', 'GBRAIN_HOOKS'] as const;
@@ -206,6 +208,96 @@ describe('user-prompt', () => {
     expect(win[win.length - 1]).toEqual({ role: 'user', text: 'and now?' });
     expect(win.map((t) => t.text).join(' ')).not.toContain('SIDECHAIN-ONLY-TEXT');
     expect((await lastHeartbeat())?.turns).toBe(5);
+  });
+
+  test('cross-turn dedupe: previously-injected blocks ride priorContextText; channel defaults to claude-code', async () => {
+    const dataDir = join(tmp, 'data');
+    writePgliteConfig(dataDir);
+    let seen: TurnContextRequest | null = null;
+    await startServer({ dataDir, blockText: 'ok', onRequest: (r) => { seen = r; } });
+    // Real captured transcript (claude CLI 2.1.224, hook installed): two
+    // hook_additional_context attachments naming companies/acme-example.
+    const projRoot = join(tmp, 'projects');
+    mkdirSync(join(projRoot, 'p1'), { recursive: true });
+    const transcript = join(projRoot, 'p1', 'sess.jsonl');
+    copyFileSync(join(import.meta.dir, 'fixtures', 'hook-transcript.jsonl'), transcript);
+    const out = collectStdout();
+    await runHook(['user-prompt'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'more about Acme Example?', transcript_path: transcript, session_id: 's-3' }),
+      transcriptRoot: projRoot,
+    });
+    expect(seen).not.toBeNull();
+    // Dedupe input = ONLY the structured injections (both blocks, joined) —
+    // the serve suppresses re-volunteering companies/acme-example this turn.
+    expect(seen!.priorContextText).toContain('companies/acme-example');
+    expect(seen!.priorContextText).not.toContain('Reply with exactly'); // never raw turn text
+    // Feedback-loop attribution: default channel is claude-code (the only
+    // harness bootstrap registers hooks for today).
+    expect(seen!.channel).toBe('claude-code');
+  });
+
+  test('priorContextText is deduped and byte-capped: an injection-heavy session can never blow the IPC message cap', async () => {
+    const dataDir = join(tmp, 'data');
+    writePgliteConfig(dataDir);
+    let seen: TurnContextRequest | null = null;
+    await startServer({ dataDir, blockText: 'ok', onRequest: (r) => { seen = r; } });
+    const projRoot = join(tmp, 'projects');
+    mkdirSync(join(projRoot, 'p1'), { recursive: true });
+    const transcript = join(projRoot, 'p1', 'sess.jsonl');
+    // 60 injections: 50 identical (per-turn re-records of one block) + 10
+    // distinct 8KB blocks — raw join would be ~90KB+; the cap keeps ≤32KB
+    // of NEWEST distinct blocks.
+    const bigBlock = (i: number) =>
+      `## Brain pages mentioned this turn\n- **Page ${i}** → \`pages/p${i}\` — ${'x'.repeat(8000)}`;
+    const lines = [
+      ...Array.from({ length: 50 }, () =>
+        JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['## Brain pages mentioned this turn\n- **Dup** → `pages/dup` — same block every turn'] } })),
+      ...Array.from({ length: 10 }, (_, i) =>
+        JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [bigBlock(i)] } })),
+    ];
+    writeFileSync(transcript, lines.join('\n') + '\n');
+    const out = collectStdout();
+    await runHook(['user-prompt'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'more about Acme?', transcript_path: transcript, session_id: 's-cap' }),
+      transcriptRoot: projRoot,
+    });
+    expect(seen).not.toBeNull();
+    const prior = seen!.priorContextText!;
+    expect(Buffer.byteLength(prior, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    // Newest-first retention: the newest distinct block survives the cap...
+    expect(prior).toContain('pages/p9');
+    // ...and identical re-records collapsed to one occurrence.
+    expect(prior.split('pages/dup').length - 1).toBeLessThanOrEqual(1);
+  });
+
+  test('--harness codex flags the channel; unknown values fall back to the default', async () => {
+    const dataDir = join(tmp, 'data');
+    writePgliteConfig(dataDir);
+    const seen: TurnContextRequest[] = [];
+    await startServer({ dataDir, blockText: 'ok', onRequest: (r) => { seen.push(r); } });
+    const out = collectStdout();
+    await runHook(['user-prompt', '--harness', 'codex'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'hello Acme' }),
+    });
+    await runHook(['user-prompt', '--harness', 'vim'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'hello Acme' }),
+    });
+    expect(seen).toHaveLength(2);
+    expect(seen[0].channel).toBe('codex');
+    expect(seen[1].channel).toBe('claude-code'); // fail-open to the default
+  });
+
+  test('hook ∈ STARTUP_HOOK_SKIP_COMMANDS (source grep — maybeEmitUpdateMarker no-ops under NODE_ENV=test, so no runtime test can pin this)', () => {
+    const cliSrc = readFileSync(join(import.meta.dir, '..', 'src', 'cli.ts'), 'utf8');
+    const m = cliSrc.match(/const STARTUP_HOOK_SKIP_COMMANDS = new Set\(\[[\s\S]*?\]\);/);
+    expect(m).not.toBeNull();
+    // user-prompt fires once per user PROMPT: a stale update cache would
+    // otherwise spawn a detached check-update child per prompt.
+    expect(m![0]).toContain("'hook'");
   });
 
   test('confinement rejection aborts: heartbeat + exit 0 empty [S3#8]', async () => {
@@ -666,6 +758,34 @@ const INITIALIZED_MANIFEST = {
   source_id: 'workspace',
 };
 
+/** Simulate a COMPLETED repo phase: a receipt for this workspace carrying a
+ * recorded repo_url. Without this the no-daemon push is deferred (a
+ * create-repo-first install must not push to an unverified-privacy origin). */
+function markRepoPhaseComplete(repo: string): void {
+  const toplevel = execFileSync('git', ['-C', repo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+  const repoUrl = 'https://github.com/alice/boot-repo';
+  // The push gate binds to the recorded repo: origin must resolve to repo_url.
+  try {
+    execFileSync('git', ['-C', repo, 'remote', 'remove', 'origin'], { stdio: 'ignore' });
+  } catch {
+    /* no origin yet */
+  }
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', repoUrl]);
+  mkdirSync(join(home(), 'bootstrap'), { recursive: true });
+  writeReceipt(home(), {
+    receipt_version: 1,
+    workspace_dir: toplevel,
+    source_id: 'workspace',
+    agent_name: 'test-agent',
+    created_at: '2026-01-01T00:00:00.000Z',
+    created_by: 'test',
+    brain_created_by_bootstrap: false,
+    created_paths: [],
+    registrations: [],
+    repo_url: repoUrl,
+  } as RepoReceipt);
+}
+
 describe('bootstrap push gate [G4]', () => {
   test('git repo + dirty tree + NO agent.json: session-start and session-end never spawn a push, repo untouched', async () => {
     const repo = join(tmp, 'plain-repo');
@@ -719,6 +839,7 @@ describe('bootstrap push gate [G4]', () => {
     const repo = join(tmp, 'boot-repo');
     initGitRepoWithDirtyTree(repo);
     writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    markRepoPhaseComplete(repo); // repo phase done → push is allowed
     const spawned: string[] = [];
 
     const out = collectStdout();
@@ -744,6 +865,7 @@ describe('bootstrap push gate [G4]', () => {
     const repo = join(tmp, 'boot-repo-end');
     initGitRepoWithDirtyTree(repo);
     writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    markRepoPhaseComplete(repo); // repo phase done → push is allowed
     const spawned: string[] = [];
     await runHook(['session-end'], {
       write: () => {},
@@ -751,6 +873,36 @@ describe('bootstrap push gate [G4]', () => {
       stdin: JSON.stringify({ session_id: 'sess-boot-end', cwd: repo }),
     });
     expect(spawned).toHaveLength(1);
+  });
+
+  test('create-repo-first BEFORE the repo phase (no repo_url yet): session-start defers the push, never publishes to an unverified origin', async () => {
+    const repo = join(tmp, 'boot-repo-pending');
+    initGitRepoWithDirtyTree(repo);
+    writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    // NB: no markRepoPhaseComplete — the repo phase has not run yet.
+    const spawned: string[] = [];
+    const out = collectStdout();
+    await runHook(['session-start'], {
+      ...out.io,
+      spawnPush: (root: string) => { spawned.push(root); },
+      stdin: '',
+      cwd: repo,
+    });
+    expect(spawned).toEqual([]); // deferred, not spawned
+    expect((await lastHeartbeat())?.reason).toBe('push_deferred_repo_pending');
+  });
+
+  test('create-repo-first BEFORE the repo phase (no repo_url yet): session-end defers the backstop push', async () => {
+    const repo = join(tmp, 'boot-repo-pending-end');
+    initGitRepoWithDirtyTree(repo);
+    writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    const spawned: string[] = [];
+    await runHook(['session-end'], {
+      write: () => {},
+      spawnPush: (root: string) => { spawned.push(root); },
+      stdin: JSON.stringify({ session_id: 'sess-boot-end-pending', cwd: repo }),
+    });
+    expect(spawned).toEqual([]); // deferred until `gbrain bootstrap repo`
   });
 });
 

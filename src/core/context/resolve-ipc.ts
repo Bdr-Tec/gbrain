@@ -93,6 +93,17 @@ export interface TurnContextRequest {
   /** Optional source claim — the server REJECTS any value other than its bound source [CX2-10]. */
   sourceId?: string;
   maxBytes?: number;
+  /**
+   * Event-attribution channel for the delivery-point feedback loop (harness
+   * hook adapters): the server logs the delivered block's volunteered pages /
+   * pointers to context_volunteer_events under this channel so
+   * `volunteer-context --stats` and the volunteer_channels doctor check see
+   * per-harness firing. Validated server-side against the known channel set;
+   * absent/unknown → 'claude-code' (the only harness bootstrap registers
+   * hooks for today). Additive: old servers ignore it (no logging — the
+   * pre-feedback-loop status quo).
+   */
+  channel?: string;
 }
 
 export type IpcRequest = ResolveRequest | TurnContextRequest;
@@ -130,6 +141,16 @@ export interface IpcServerOpts {
    * count as "volunteered".
    */
   onDelivered?: (block: PointerBlock, req: ResolveRequest) => void;
+  /**
+   * turn_context sibling of onDelivered — fired ONLY after an ok
+   * turn_context response with a non-empty block was successfully written to
+   * the client. This is the #2095 feedback-loop seam for the hook lane: the
+   * callback logs the block's post-trim volunteered pages + pointers to
+   * context_volunteer_events under req.channel. Same red-team rule as
+   * onDelivered: a block the client's budget abandoned was never injected
+   * and must not be counted.
+   */
+  onTurnContextDelivered?: (result: TurnContextResult, req: TurnContextRequest) => void;
   /**
    * The server's registered source [CX2-10]. turn_context requests naming a
    * DIFFERENT sourceId are rejected with 'source_mismatch'; the handler always
@@ -258,7 +279,15 @@ export async function requestTurnContext(
     window: Array.isArray(req.window) ? [...req.window] : [],
   };
   let line = JSON.stringify(full);
-  // Trim oldest-first until the request fits the message cap [G11].
+  // Trim to the message cap [G11] in priority order: the ADVISORY dedupe
+  // payload (priorContextText) is dropped BEFORE any essential window turn —
+  // evicting the window first would silently hollow out candidate extraction
+  // (empty blocks with ok:true) to preserve a hint. Then window turns,
+  // oldest-first.
+  if (Buffer.byteLength(line, 'utf8') + 1 > MAX_MSG_BYTES && full.priorContextText) {
+    delete full.priorContextText;
+    line = JSON.stringify(full);
+  }
   while (Buffer.byteLength(line, 'utf8') + 1 > MAX_MSG_BYTES && full.window.length > 0) {
     full.window.shift();
     line = JSON.stringify(full);
@@ -364,15 +393,24 @@ export async function startResolveIpcServer(
   return new Promise((resolve) => {
     const server = net.createServer((conn) => {
       let buf = '';
+      // One request per connection: once a line is being handled, later data
+      // events are ignored. Without this, bytes arriving after the newline
+      // while the async handler is mid-await would re-find the SAME first
+      // line and process it concurrently — duplicate handler work, duplicate
+      // response writes, and duplicated delivery-point event logging.
+      let handled = false;
       conn.setEncoding('utf8');
       conn.on('data', async (chunk: string) => {
+        if (handled) return;
         buf += chunk;
         if (buf.length > MAX_MSG_BYTES) { conn.destroy(); return; }
         const nl = buf.indexOf('\n');
         if (nl < 0) return;
+        handled = true;
         const line = buf.slice(0, nl);
         let resp: string;
         let delivered: { block: PointerBlock; req: ResolveRequest } | null = null;
+        let deliveredTurnContext: { result: TurnContextResult; req: TurnContextRequest } | null = null;
         try {
           const parsed = JSON.parse(line) as IpcRequest;
           const kind = (parsed as { kind?: unknown }).kind ?? 'resolve';
@@ -391,9 +429,15 @@ export async function startResolveIpcServer(
               if (block) delivered = { block, req };
             }
           } else if (kind === 'turn_context') {
-            resp = JSON.stringify(
-              await handleTurnContext(parsed as TurnContextRequest, handlers, opts),
-            );
+            const req = parsed as TurnContextRequest;
+            const tcResp = await handleTurnContext(req, handlers, opts);
+            resp = JSON.stringify(tcResp);
+            // Feedback-loop seam: only an ok response carrying a non-empty
+            // block counts as a candidate delivery (rejections, degraded-null
+            // and empty blocks injected nothing).
+            if (tcResp.ok && tcResp.block && tcResp.block.text) {
+              deliveredTurnContext = { result: tcResp.block, req };
+            }
           } else {
             resp = JSON.stringify({ ok: false, error: `unknown_kind:${String(kind)}` });
           }
@@ -406,6 +450,9 @@ export async function startResolveIpcServer(
           // up, but this is the closest observable delivery point.
           if (delivered && opts.onDelivered) {
             try { opts.onDelivered(delivered.block, delivered.req); } catch { /* telemetry only */ }
+          }
+          if (deliveredTurnContext && opts.onTurnContextDelivered) {
+            try { opts.onTurnContextDelivered(deliveredTurnContext.result, deliveredTurnContext.req); } catch { /* telemetry only */ }
           }
         } catch { /* client gone — do NOT log undelivered pointers */ }
         conn.end();

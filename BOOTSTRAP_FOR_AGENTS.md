@@ -1,4 +1,4 @@
-<!-- gbrain-runbook-stamp: 0.45.0.0 -->
+<!-- gbrain-runbook-stamp: 0.45.2.0 -->
 <!-- This stamp must equal the VERSION file at every release; CI enforces it
      (scripts/check-bootstrap-tag.sh). `gbrain bootstrap status` compares it to
      the installed binary and warns on skew. -->
@@ -103,10 +103,17 @@ you needed; report the count at the end (it feeds the install-time measurement).
    - Codex: registers MCP (`codex mcp add`) and relies on the AGENTS.md protocol —
      say plainly that Codex gets pull-based context, not per-turn push.
 7. **Private repo.** `gbrain bootstrap repo` — creates a PRIVATE GitHub repo from
-   the workspace, verifies the privacy bit through the API, pushes. Asks the
-   background-persistence consent (15-minute scan-gated push job; declining still
-   persists at session end). If the human has no GitHub or declines: local-only
-   mode with an honest warning; `bootstrap repo` can run any time later.
+   the workspace, verifies the privacy bit through the API, pushes. If the human
+   started from a repo they created themselves (create-repo-first: an EMPTY private
+   repo under their own account, cloned and opened here), this ADOPTS that repo
+   instead of creating one — verifies it is private and pushes the workspace. A
+   non-empty repo, or one owned by an org, is refused with a clear message (make an
+   empty personal repo, or run `gbrain bootstrap attach` for an existing agent
+   clone). Asks the background-persistence consent (15-minute scan-gated push job;
+   declining still persists at session end). If the human has no GitHub or declines:
+   local-only mode with an honest warning; `bootstrap repo` can run any time later.
+   Note: the per-turn/session push stays deferred until this phase records the
+   verified repo, so nothing is ever pushed to an unverified-privacy origin.
 8. **Verify.** `gbrain bootstrap verify` — the whole contract: brain round-trip
    through the real write path, graph floor, token sweep, secret scan, repo
    privacy, hooks smoke, capability report (keyless or keyed). Exit 0 or it is not

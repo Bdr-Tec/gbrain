@@ -381,9 +381,12 @@ ChatGPT-app user). CLIs come along via shared machinery.
   persistence path anymore).
 - [G6] Verify + every push gate run `git ls-files` against a deny-glob list
   (`*.pglite`, `.env*`, keys) — a truncated or pre-existing .gitignore can't leak.
-- [G8] `bootstrap repo` refuses any pre-existing `origin` (always creates a dedicated
-  repo); "couldn't verify visibility" is refuse-and-name-the-reason, never fail-open;
-  idempotency keys off the remote URL, not the name probe.
+- [G8] `bootstrap repo` creates a dedicated repo, OR adopts a pre-existing `origin`
+  when the authed gh user owns it, no `repo_url` is recorded yet, and it is empty (or
+  already carries our history) — the create-repo-first path; a foreign-content or
+  org-owned origin is refused and pointed at attach. "couldn't verify visibility" is
+  refuse-and-name-the-reason, never fail-open; idempotency keys off the remote URL,
+  not the name probe.
 - [G9] Workspace lockfile (pid+timestamp) makes concurrent `bootstrap` runs impossible;
   second run exits "bootstrap already running (pid N)".
 - [G13] Fixed verify probe slug; sweep any prior probe before writing; excluded from
