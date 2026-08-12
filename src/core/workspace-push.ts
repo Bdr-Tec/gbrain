@@ -38,21 +38,33 @@
  *      ahead?} on success AND failure [B4] (doctor + SessionStart digest
  *      read it).
  *
- * Remote-privacy gate [G8]: refuses a remote that is not VERIFIABLY private
- * — `gh repo view --json isPrivate` must answer `true`. Unverifiable
- * visibility (gh missing/unauthed, non-GitHub host, path remote) is a
- * refusal with a named reason, never fail-open. Escape hatch for self-hosted
- * git: `allowUnverifiedRemote` (CLI `--allow-unverified-remote`), logged.
+ * Remote-privacy gate [G8]: refuses a remote that is not VERIFIABLY private.
+ * Verification routes through the repo-visibility LADDER (repo-visibility.ts):
+ * REST first (`gh api repos/...` — never GraphQL, which cloud proxies pin),
+ * then pure git protocol (authed ls-remote + attributed anonymous probe), so
+ * the gate keeps working where gh is broken/blocked. Unverifiable visibility
+ * is a refusal with the per-rung reason, never fail-open. Escape hatches for
+ * self-hosted git you trust, loudly logged, most-portable last: CLI
+ * `allowUnverifiedRemote` > env GBRAIN_ALLOW_UNVERIFIED_REMOTE=1 > file-plane
+ * config `push.allow_unverified_remote` (readable by detached hook children
+ * that can never see a shell export or the DB plane).
  */
 
 import {
-  existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'fs';
 import { dirname, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import { execFileSync } from 'child_process';
 import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, detectDefaultBranch, divergenceSafePull } from './git-remote.ts';
+import { loadConfigFileOnly } from './config.ts';
 import { ensureGbrainHome } from './gbrain-home.ts';
+import {
+  githubOwnerRepoString,
+  readCachedPrivateVerdict,
+  verifyRepoVisibility,
+  writeVisibilityCache,
+} from './repo-visibility.ts';
 import { isProcessAlive } from './pglite-lock.ts';
 import {
   loadWorkspaceAllowlist, matchesGlob, pathAllowlisted, scanText,
@@ -307,62 +319,118 @@ export type RemotePrivacyVerdict =
   | { verdict: 'not_private'; detail: string }
   | { verdict: 'unverifiable'; detail: string };
 
-/** Parse `owner/repo` out of a github.com remote URL (https or scp-like). */
+/** Parse `owner/repo` out of a github.com remote URL (https, scp-like, or
+ * ssh://). Back-compat adapter over the canonical repo-visibility parser. */
 export function parseGithubOwnerRepo(url: string): string | null {
-  let m = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url);
-  if (m) return `${m[1]}/${m[2]}`;
-  m = /^(?:ssh:\/\/)?git@github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url);
-  if (m) return `${m[1]}/${m[2]}`;
-  return null;
+  return githubOwnerRepoString(url);
 }
 
 /**
- * Verify the origin remote is a PRIVATE repo via `gh repo view --json
- * isPrivate`. Anything short of an affirmative `true` is either
- * `not_private` (affirmative public) or `unverifiable` (gh missing/unauthed,
- * non-GitHub host, path/file remote) — the caller refuses both unless the
- * escape hatch is set [G8: never fail-open].
+ * Verify the origin remote is a PRIVATE repo via the repo-visibility ladder
+ * (REST first, git-protocol fallback — see repo-visibility.ts for the full
+ * verdict matrix). Anything short of a proven `private` is either
+ * `not_private` (proven public) or `unverifiable` — the caller refuses both
+ * unless an escape hatch is set [G8: never fail-open]. Fresh `private`
+ * verdicts are cached (1h TTL, private-only) so the per-turn push cadence
+ * doesn't re-pay the network probes every turn [D11].
  */
-export function verifyRemotePrivacy(root: string): RemotePrivacyVerdict {
+export async function verifyRemotePrivacy(root: string): Promise<RemotePrivacyVerdict> {
   const url = tryGit(root, ['remote', 'get-url', 'origin'], { timeoutMs: 10_000 });
   if (!url) return { verdict: 'unverifiable', detail: 'no origin remote configured' };
-  const ownerRepo = parseGithubOwnerRepo(url);
-  if (!ownerRepo) {
-    return {
-      verdict: 'unverifiable',
-      detail: `origin is not a github.com URL — cannot verify visibility via gh`,
-    };
-  }
+  if (readCachedPrivateVerdict(url) !== null) return { verdict: 'private' };
+  const v = await verifyRepoVisibility({ originUrl: url, repoDir: root });
+  writeVisibilityCache(url, v);
+  if (v.verdict === 'private') return { verdict: 'private' };
+  if (v.verdict === 'public') return { verdict: 'not_private', detail: v.detail };
+  return { verdict: 'unverifiable', detail: v.detail };
+}
+
+/** File-plane escape hatch [D18]: `gbrain config set push.allow_unverified_remote true`.
+ * Read tolerantly from ~/.gbrain/config.json — detached hook children never see
+ * a shell export, and the DB plane is unreadable while a serve holds the
+ * single-writer lock, so the file plane is the only channel that always works. */
+export function configAllowsUnverifiedRemote(): boolean {
   try {
-    const out = execFileSync(
-      'gh',
-      ['repo', 'view', ownerRepo, '--json', 'isPrivate', '--jq', '.isPrivate'],
-      { stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000, env: process.env },
-    ).toString().trim();
-    if (out === 'true') return { verdict: 'private' };
-    if (out === 'false') return { verdict: 'not_private', detail: `${ownerRepo} is PUBLIC` };
-    return { verdict: 'unverifiable', detail: `gh returned unexpected output: ${out.slice(0, 80)}` };
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    if (err?.code === 'ENOENT') {
-      return { verdict: 'unverifiable', detail: 'gh CLI not installed — cannot verify repo visibility' };
-    }
-    return {
-      verdict: 'unverifiable',
-      detail: `gh repo view failed (${(err?.message ?? 'unknown').slice(0, 120)})`,
-    };
+    const cfg = loadConfigFileOnly() as { push?: Record<string, unknown> } | null;
+    const v = cfg?.push?.allow_unverified_remote;
+    return v === true || v === 'true' || v === '1';
+  } catch {
+    return false;
   }
 }
 
 // ── push-status.json [B4] ───────────────────────────────────────────────────
 
+/** Legacy single-file location (pre-per-root). Read-only compatibility: the
+ * reader consults it only when NO per-root files exist yet (fresh upgrade). */
 export function pushStatusPath(): string {
   return join(ensureGbrainHome(), 'bootstrap', 'push-status.json');
 }
 
-function writePushStatus(status: { ts: string; ok: boolean; reason?: string; ahead?: number }): void {
+/** Stable short key for per-root state files [D3/D13]: one gbrain home serves
+ * many bootstrap workspaces, so every push/debounce/announce state file is
+ * keyed by workspace root — a single shared file is last-writer-wins, which
+ * either masks one workspace's failure or defeats another's debounce. */
+export function workspaceRootHash(root: string): string {
+  return createHash('sha256').update(root).digest('hex').slice(0, 12);
+}
+
+export function pushStatusPathForRoot(root: string): string {
+  return join(ensureGbrainHome(), 'bootstrap', `push-status-${workspaceRootHash(root)}.json`);
+}
+
+/** One parsed push-status record [D8: one reader, three formatters]. */
+export interface PushStatusEntry {
+  ts?: string;
+  ok?: boolean;
+  reason?: string;
+  ahead?: number;
+  repoRoot?: string;
+  /** Absolute path of the status file (per-root announce-state keying). */
+  file: string;
+}
+
+const PUSH_STATUS_FILE_RE = /^push-status-[0-9a-f]{12}\.json$/;
+
+/** Tolerant reader over every push-status file (banner, SessionStart note,
+ * and doctor all consume THIS — one parse, one schema owner). Per-root files
+ * win; the legacy global file is consulted only when none exist, so a stale
+ * pre-upgrade record can't shadow live per-root state. */
+export function readPushStatuses(): PushStatusEntry[] {
+  const dir = join(ensureGbrainHome(), 'bootstrap');
+  const parse = (file: string): PushStatusEntry | null => {
+    try {
+      const s = JSON.parse(readFileSync(file, 'utf8')) as Omit<PushStatusEntry, 'file'>;
+      return { ...s, file };
+    } catch {
+      return null; // torn/corrupt/missing → skip, never throw
+    }
+  };
+  let names: string[] = [];
   try {
-    const p = pushStatusPath();
+    names = readdirSync(dir).filter((n) => PUSH_STATUS_FILE_RE.test(n));
+  } catch {
+    return [];
+  }
+  const perRoot = names.map((n) => parse(join(dir, n))).filter((e): e is PushStatusEntry => e !== null);
+  if (perRoot.length > 0) return perRoot;
+  const legacy = parse(pushStatusPath());
+  return legacy ? [legacy] : [];
+}
+
+/** The per-root status for one workspace, or null. */
+export function readPushStatusForRoot(root: string): PushStatusEntry | null {
+  const entries = readPushStatuses();
+  const keyed = entries.find((e) => e.file === pushStatusPathForRoot(root));
+  if (keyed) return keyed;
+  return entries.find((e) => e.repoRoot === root) ?? null;
+}
+
+function writePushStatus(
+  status: { ts: string; ok: boolean; reason?: string; ahead?: number; repoRoot?: string },
+): void {
+  try {
+    const p = status.repoRoot ? pushStatusPathForRoot(status.repoRoot) : pushStatusPath();
     mkdirSync(dirname(p), { recursive: true, mode: 0o700 });
     // tmp+rename (the writeReceipt pattern): a concurrent reader never sees a
     // torn half-written status file.
@@ -409,12 +477,14 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
 
   const finish = (r: WorkspacePushResult): WorkspacePushResult => {
     // B4: written on success AND failure — only by the lock WINNER (a skip
-    // must not clobber the in-flight run's eventual status).
+    // must not clobber the in-flight run's eventual status). Keyed per root
+    // [D13] so one workspace's success can never mask another's failure.
     writePushStatus({
       ts: new Date().toISOString(),
       ok: r.ok,
       ...(r.reason !== undefined ? { reason: r.reason } : {}),
       ...(r.ahead !== undefined ? { ahead: r.ahead } : {}),
+      repoRoot: root,
     });
     return r;
   };
@@ -586,16 +656,27 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
         reason: 'no origin remote configured — nothing to push to',
       });
     }
-    if (opts.allowUnverifiedRemote) {
-      log('WARN: --allow-unverified-remote set — skipping repo-visibility verification');
+    // Escape-hatch resolution [D18], most explicit first: CLI flag > env var >
+    // file-plane config. Every path warns loudly — the override trusts the
+    // remote on the operator's word and should be unset once verification works.
+    const unverifiedVia = opts.allowUnverifiedRemote
+      ? 'the allow-unverified-remote flag'
+      : process.env.GBRAIN_ALLOW_UNVERIFIED_REMOTE === '1'
+        ? 'GBRAIN_ALLOW_UNVERIFIED_REMOTE=1'
+        : configAllowsUnverifiedRemote()
+          ? 'config push.allow_unverified_remote (sticky — unset it once verification works)'
+          : null;
+    if (unverifiedVia !== null) {
+      log(`WARN: repo-visibility verification SKIPPED via ${unverifiedVia} — you are trusting this remote`);
     } else {
-      const privacy = verifyRemotePrivacy(root);
+      const privacy = await verifyRemotePrivacy(root);
       if (privacy.verdict !== 'private') {
         const reason =
           privacy.verdict === 'not_private'
             ? `origin is not private: ${privacy.detail} — refusing to push workspace contents`
             : `cannot verify origin visibility (${privacy.detail}) — refusing to push. ` +
-              `Pass --allow-unverified-remote for self-hosted git you trust.`;
+              `Pass --allow-unverified-remote (or set GBRAIN_ALLOW_UNVERIFIED_REMOTE=1, or ` +
+              '`gbrain config set push.allow_unverified_remote true`) for self-hosted git you trust.';
         log(`PUSH REFUSED: ${reason}`);
         return finish({
           ok: false, status: 'refused_visibility', repoRoot: root, branch, committed, reason,

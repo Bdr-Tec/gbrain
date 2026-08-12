@@ -8342,9 +8342,11 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
     return [];
   }
   const receipt = readReceipt(home);
-  const pushStatusFile = join(home, 'bootstrap', 'push-status.json');
+  // One reader for every push-status surface [D8]; per-root files [D13].
+  const { readPushStatuses } = await import('../core/workspace-push.ts');
+  const pushStatuses = readPushStatuses();
   const heartbeatFile = join(home, 'integrations', 'hooks', 'heartbeat.jsonl');
-  const hasBootstrapState = receipt !== null || existsSync(pushStatusFile) || existsSync(heartbeatFile);
+  const hasBootstrapState = receipt !== null || pushStatuses.length > 0 || existsSync(heartbeatFile);
   if (!hasBootstrapState) return [];
 
   const ws = receipt?.workspace_dir ?? null;
@@ -8385,41 +8387,50 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   }
 
   // 2. Push staleness [B4]: fail when the last successful push is >48h old
-  // AND the workspace tree is dirty (recent work provably unpushed).
+  // AND the workspace tree is dirty (recent work provably unpushed). Per-root
+  // status files [D13]: the WORST entry decides, so one workspace's success
+  // can never mask another's failure.
   try {
-    if (existsSync(pushStatusFile)) {
+    if (pushStatuses.length > 0) {
       const { PUSH_STALE_MS } = await import('./hook.ts'); // hook.ts owns the threshold (single source)
-      const s = JSON.parse(readFileSync(pushStatusFile, 'utf8')) as { ts?: string; ok?: boolean; reason?: string };
-      const t = s.ts ? Date.parse(s.ts) : NaN;
-      const stale = Number.isFinite(t) && Date.now() - t > PUSH_STALE_MS;
-      let dirty = false;
-      if (ws) {
-        try {
-          dirty = execFileSync('git', ['-C', ws, 'status', '--porcelain'], {
-            stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
-          }).toString().trim() !== '';
-        } catch { dirty = false; }
-      }
-      if (s.ok === false) {
+      const failing = pushStatuses.filter((s) => s.ok === false);
+      if (failing.length > 0) {
+        const s = failing[0]!;
+        const target = s.repoRoot ?? ws ?? undefined;
+        const rest = failing.length > 1 ? ` [+${failing.length - 1} more workspace(s)]` : '';
         checks.push({
           name: 'bootstrap_push_health',
           status: 'warn',
-          message: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'} — run \`gbrain sources push${ws ? ` --path ${ws}` : ''}\``,
+          message: `last workspace push FAILED${target ? ` for ${target}` : ''} (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'}${rest} — run \`gbrain sources push${target ? ` --path ${target}` : ''}\``,
         });
-      } else if (stale && dirty) {
-        checks.push({
-          name: 'bootstrap_push_health',
-          status: 'fail',
-          message: `last successful push ${s.ts} (>48h) with a DIRTY workspace tree — recent agent memory is unpushed [B4]. Run \`gbrain sources push --path ${ws}\`.`,
-        });
-      } else if (stale) {
-        checks.push({ name: 'bootstrap_push_health', status: 'warn', message: `last successful push ${s.ts} (>48h ago); tree clean — likely just idle` });
       } else {
-        checks.push({ name: 'bootstrap_push_health', status: 'ok', message: `last push ok (${s.ts ?? 'unknown'})` });
+        const stamps = pushStatuses.map((s) => Date.parse(s.ts ?? '')).filter((t) => Number.isFinite(t));
+        const stalest = stamps.length > 0 ? Math.min(...stamps) : NaN;
+        const staleIso = Number.isFinite(stalest) ? new Date(stalest).toISOString() : 'unknown';
+        const stale = Number.isFinite(stalest) && Date.now() - stalest > PUSH_STALE_MS;
+        let dirty = false;
+        if (ws) {
+          try {
+            dirty = execFileSync('git', ['-C', ws, 'status', '--porcelain'], {
+              stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+            }).toString().trim() !== '';
+          } catch { dirty = false; }
+        }
+        if (stale && dirty) {
+          checks.push({
+            name: 'bootstrap_push_health',
+            status: 'fail',
+            message: `last successful push ${staleIso} (>48h) with a DIRTY workspace tree — recent agent memory is unpushed [B4]. Run \`gbrain sources push --path ${ws}\`.`,
+          });
+        } else if (stale) {
+          checks.push({ name: 'bootstrap_push_health', status: 'warn', message: `last successful push ${staleIso} (>48h ago); tree clean — likely just idle` });
+        } else {
+          checks.push({ name: 'bootstrap_push_health', status: 'ok', message: `last push ok (${staleIso})` });
+        }
       }
     }
   } catch {
-    checks.push({ name: 'bootstrap_push_health', status: 'warn', message: 'push-status.json unreadable' });
+    checks.push({ name: 'bootstrap_push_health', status: 'warn', message: 'push status unreadable' });
   }
 
   // 3. One-live-serve / lock collision note. A live serve is the healthy

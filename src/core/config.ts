@@ -984,6 +984,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'agent.use_gateway_loop',
   // #2778: per-turn output-token cap for the subagent loop (default 8192).
   'agent.max_output_tokens',
+  // File-plane bootstrap hook-lane keys (routed to ~/.gbrain/config.json by
+  // `config set` — engine-free hook/push children read loadConfigFileOnly).
+  'push.allow_unverified_remote',
+  'hooks.stop_push_debounce_min',
   // DB-plane (v0.32.3 search modes + related)
   'search.mode',
   'search.cache.enabled',

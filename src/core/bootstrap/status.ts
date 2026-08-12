@@ -31,7 +31,12 @@ import { join } from 'node:path';
 
 import { VERSION } from '../../version.ts';
 import { loadConfigFileOnly } from '../config.ts';
+import { binaryOnPath } from '../execution-env.ts';
 import { resolveGbrainHome } from '../gbrain-home.ts';
+import { classifyGh403, githubOwnerRepoString } from '../repo-visibility.ts';
+
+// Re-export: binaryOnPath lived here through v0.45.x; execution-env.ts owns it now.
+export { binaryOnPath } from '../execution-env.ts';
 import { BOOTSTRAP_TEMPLATES } from './assets.ts';
 import {
   readManifest,
@@ -86,13 +91,6 @@ interface PhaseSpec {
   detect: (ws: string, ctx: DetectCtx) => { state: PhaseState; detail?: string };
 }
 
-function binaryOnPath(name: string): boolean {
-  try {
-    return Bun.which(name) !== null;
-  } catch {
-    return false;
-  }
-}
 
 /** The workspace's `origin` remote URL, or null (not a repo / no origin).
  * Shared with verify.ts's origin-probe sites — one 5s-timeout idiom. */
@@ -119,15 +117,20 @@ export type OriginVisibility =
   | { verdict: 'public'; detail: string }
   | { verdict: 'unknown'; detail: string };
 
-/** Probe an origin's visibility via `gh repo view --json isPrivate` (the same
- * 5s timeout idiom as gitOriginUrl). gh missing / offline / non-GitHub →
- * 'unknown', never an invented answer. */
+/** Probe an origin's visibility via REST — `gh api repos/{owner}/{repo}` —
+ * NEVER `gh repo view` (GraphQL under the hood; cloud sandbox proxies pin
+ * GraphQL to a fixed operation set and 403 it even with a user token). Sync
+ * by contract: this runs inside the sync phase-detect chain, so the full
+ * async ladder lives in verify/push; status keeps the cheap REST answer.
+ * gh missing / offline / non-GitHub / 403 → 'unknown', never an invented
+ * answer; a proxy-shaped 403 names the real fix. */
 export function probeOriginVisibility(origin: string): OriginVisibility {
+  const ownerRepo = githubOwnerRepoString(origin) ?? origin;
   try {
     // env: process.env — Bun's execFileSync otherwise resolves the binary
     // against the STARTUP env snapshot, making PATH-shimmed test fakes (and
     // any runtime PATH change) invisible (the workspace-push.ts precedent).
-    const out = execFileSync('gh', ['repo', 'view', origin, '--json', 'isPrivate', '--jq', '.isPrivate'], {
+    const out = execFileSync('gh', ['api', `repos/${ownerRepo}`, '--jq', '.private'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 5_000,
       env: process.env,
@@ -138,11 +141,18 @@ export function probeOriginVisibility(origin: string): OriginVisibility {
     if (out === 'false') return { verdict: 'public', detail: `${origin} is PUBLIC` };
     return { verdict: 'unknown', detail: `gh returned unexpected output: ${out.slice(0, 80)}` };
   } catch (e) {
-    const err = e as NodeJS.ErrnoException;
+    const err = e as NodeJS.ErrnoException & { stderr?: Buffer | string };
     if (err?.code === 'ENOENT') {
       return { verdict: 'unknown', detail: 'gh CLI not installed — cannot verify origin visibility' };
     }
-    return { verdict: 'unknown', detail: `gh repo view failed (${(err?.message ?? 'unknown').slice(0, 120)})` };
+    const stderr = (err?.stderr ?? '').toString();
+    if (/HTTP 403/i.test(stderr) && classifyGh403(stderr) === 'proxy') {
+      return {
+        verdict: 'unknown',
+        detail: 'GitHub REST blocked by this sandbox\'s egress proxy (repo not attached to the session) — push-time verification falls back to git protocol',
+      };
+    }
+    return { verdict: 'unknown', detail: `gh api failed (${(err?.message ?? 'unknown').slice(0, 120)})` };
   }
 }
 

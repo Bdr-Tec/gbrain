@@ -129,6 +129,41 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
       process.exit(1);
     }
   } else if (action === 'set' && key && value) {
+    // Bootstrap hook-lane keys are FILE-plane canonical: they are read by
+    // engine-free processes (the harness hook children and the detached
+    // `sources push` child) via loadConfigFileOnly, which never sees the DB
+    // plane — and the DB plane is unreadable anyway while a `gbrain serve`
+    // holds the single-writer lock. Route them to ~/.gbrain/config.json.
+    if (key === 'push.allow_unverified_remote' || key === 'hooks.stop_push_debounce_min') {
+      const { loadConfigFileOnly, saveConfig, isConfigTruthy } = await import('../core/config.ts');
+      const cfg = loadConfigFileOnly() ?? ({} as ReturnType<typeof loadConfigFileOnly> & object);
+      // Both keys are plan-defined but not yet in the GBrainConfig type — the
+      // tolerant-bag view mirrors how their engine-free readers consume them.
+      const bag = cfg as unknown as { push?: Record<string, unknown>; hooks?: Record<string, unknown> };
+      if (key === 'push.allow_unverified_remote') {
+        const on = isConfigTruthy(value);
+        bag.push = { ...(bag.push ?? {}), allow_unverified_remote: on };
+        saveConfig(cfg);
+        console.log(`Set ${key} = ${on} (file plane: ~/.gbrain/config.json)`);
+        if (on) {
+          console.log(
+            'WARNING: workspace pushes now SKIP repo-visibility verification. ' +
+              'This trusts the remote on your word — unset it once verification works: ' +
+              'gbrain config set push.allow_unverified_remote false',
+          );
+        }
+      } else {
+        const n = Number.parseInt(value, 10);
+        if (!Number.isFinite(n) || n < 0) {
+          console.error(`[config] ${key} must be an integer >= 0 (minutes; 0 = push every turn)`);
+          process.exit(1);
+        }
+        bag.hooks = { ...(bag.hooks ?? {}), stop_push_debounce_min: n };
+        saveConfig(cfg);
+        console.log(`Set ${key} = ${n} (file plane: ~/.gbrain/config.json)`);
+      }
+      return;
+    }
     // v0.37.11.0 fix wave (Lane C.2 + CDX2-13): refuse writes to schema-sizing
     // fields unconditionally. These fields size the `content_chunks.embedding`
     // column at init time and are file-plane canonical. `gbrain config set

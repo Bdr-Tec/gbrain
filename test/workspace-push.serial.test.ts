@@ -20,6 +20,7 @@ import {
   parseGithubOwnerRepo, resolveWorkspaceRoot, PUSH_LOCK_STALE_MS, PUSH_DENY_GLOBS,
 } from '../src/core/workspace-push.ts';
 import { SCAN_ALLOW_FILENAME } from '../src/core/secret-scan.ts';
+import { visibilityCachePath } from '../src/core/repo-visibility.ts';
 
 const T = 60_000; // explicit per-test timeout — bun ignores bunfig.toml's key
 const OPENAI = 'sk-' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4';
@@ -393,17 +394,38 @@ describe('remote-privacy gate [G8]', () => {
     expect(JSON.parse(readFileSync(pushStatusPath(), 'utf-8')).ok).toBe(false);
   }, T);
 
-  test('verifyRemotePrivacy: gh false → not_private; gh true → private (PATH-shimmed gh)', () => {
+  test('verifyRemotePrivacy: gh false → not_private; gh true → private (PATH-shimmed gh, REST rung)', async () => {
     const shim = mkdtempSync(join(root, 'shim-'));
     git(work, 'remote', 'set-url', 'origin', 'https://github.com/acme-example/widget-co.git');
     writeFileSync(join(shim, 'gh'), '#!/bin/sh\necho false\n', { mode: 0o755 });
     process.env.PATH = `${shim}:${saved.PATH}`;
-    expect(verifyRemotePrivacy(work).verdict).toBe('not_private');
+    expect((await verifyRemotePrivacy(work)).verdict).toBe('not_private');
+    // CRITICAL regression guard [D10]: rest-true must reproduce the pre-ladder
+    // verdict exactly (private → push allowed).
     writeFileSync(join(shim, 'gh'), '#!/bin/sh\necho true\n', { mode: 0o755 });
-    expect(verifyRemotePrivacy(work).verdict).toBe('private');
-    writeFileSync(join(shim, 'gh'), '#!/bin/sh\necho "not logged in" >&2\nexit 1\n', { mode: 0o755 });
-    const v = verifyRemotePrivacy(work);
-    expect(v.verdict).toBe('unverifiable'); // unauthed gh = unverifiable, not fail-open
+    expect((await verifyRemotePrivacy(work)).verdict).toBe('private');
+    // The private verdict is cached [D11]; clear it so the next case exercises
+    // the ladder, not the cache.
+    rmSync(visibilityCachePath(), { force: true });
+  }, T);
+
+  test('verifyRemotePrivacy: cached private verdict short-circuits; cache cleared → re-verifies', async () => {
+    const shim = mkdtempSync(join(root, 'shim-'));
+    git(work, 'remote', 'set-url', 'origin', 'https://github.com/acme-example/widget-co.git');
+    writeFileSync(join(shim, 'gh'), '#!/bin/sh\necho true\n', { mode: 0o755 });
+    process.env.PATH = `${shim}:${saved.PATH}`;
+    expect((await verifyRemotePrivacy(work)).verdict).toBe('private');
+    // Break gh entirely: the fresh cache must still answer private...
+    writeFileSync(join(shim, 'gh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    expect((await verifyRemotePrivacy(work)).verdict).toBe('private');
+    // ...and clearing it must force live re-verification. Point origin at a
+    // local path so the git-protocol rungs stay offline-fast: readable via
+    // ls-remote, no https probe surface → unverifiable, never fail-open.
+    rmSync(visibilityCachePath(), { force: true });
+    git(work, 'remote', 'set-url', 'origin', bare);
+    const v = await verifyRemotePrivacy(work);
+    expect(v.verdict).toBe('unverifiable');
+    git(work, 'remote', 'set-url', 'origin', 'https://github.com/acme-example/widget-co.git');
   }, T);
 
   test('parseGithubOwnerRepo handles https/.git/scp forms; non-github → null', () => {

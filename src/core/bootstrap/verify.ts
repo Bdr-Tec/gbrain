@@ -317,14 +317,14 @@ function checkDenyGlobs(ws: string): VerifyCheck {
   }
 }
 
-function checkRepoPrivacy(ws: string): VerifyCheck {
+async function checkRepoPrivacy(ws: string): Promise<VerifyCheck> {
   const id = 'repo_privacy';
   try {
     const origin = gitOriginUrl(ws);
     if (!origin) {
       return { id, ok: true, detail: 'local-only (no origin remote) — run `gbrain bootstrap repo` any time to add the private body' };
     }
-    const verdict = verifyRemotePrivacy(ws);
+    const verdict = await verifyRemotePrivacy(ws);
     if (verdict.verdict === 'private') return { id, ok: true, detail: `origin verified private (${origin})` };
     if (verdict.verdict === 'not_private') return { id, ok: false, detail: `origin is NOT private: ${verdict.detail} — make it private before pushing workspace contents` };
     return { id, ok: false, detail: `origin visibility unverifiable (${verdict.detail}) — refusing to bless an unverified remote [G8]; re-run once gh works` };
@@ -813,7 +813,7 @@ export async function verifyWorkspace(
   checks.push(checkByteFloors(ws));
   checks.push(checkSecretScan(ws));
   checks.push(checkDenyGlobs(ws));
-  checks.push(checkRepoPrivacy(ws));
+  checks.push(await checkRepoPrivacy(ws));
 
   // Round-trip family only makes sense on a reachable engine.
   if (engineHealthy) {
