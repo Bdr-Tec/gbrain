@@ -53,6 +53,32 @@ through a running serve's resolve socket rather than taking the lock. Routing
 watch through that same socket is a filed follow-up (TODOS.md). Postgres
 brains are unaffected.
 
+## Harness hooks (the prompt-time channel)
+
+`gbrain bootstrap` registers `gbrain hook user-prompt` as a Claude Code
+`UserPromptSubmit` hook: every prompt is assembled into a per-turn context
+block (reflex pointers + volunteered pages + hot facts) through a running
+serve's IPC socket and injected as `additionalContext`. Two properties make
+this channel production-grade rather than spammy-and-invisible:
+
+- **Cross-turn dedupe.** The hook reads its OWN previous injections back out
+  of the session transcript (Claude Code records them as structured
+  `hook_additional_context` attachments) and passes them as prior context —
+  so a page is volunteered once per session, not once per mention. The
+  extraction is structural, never substring matching over raw turn text, so a
+  short slug appearing in a tool payload can't over-suppress.
+- **The feedback loop.** The serve logs each DELIVERED block's volunteered
+  pages and pointers to `context_volunteer_events` under the hook's channel
+  (`claude-code` by default; a codex hook registration passes
+  `--harness codex`). `gbrain volunteer-context --stats` then shows
+  per-harness precision, and `gbrain doctor`'s `volunteer_channels` check
+  shows which channels actually fire — separating "hook installed but never
+  registered (restart the session)" from "registered but quiet". Logging
+  happens at the delivery point only: a block the hook's budget abandoned was
+  never injected and is never counted.
+
+Kill switch: `GBRAIN_HOOKS=0`. Install/uninstall: `docs/guides/bootstrap.md`.
+
 ## Config
 
 | Key | Default | What it does |

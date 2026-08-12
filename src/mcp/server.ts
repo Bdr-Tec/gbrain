@@ -14,19 +14,10 @@ import {
   startResolveIpcServer,
   cleanupStaleSocket,
   ensureIpcSecret,
-  isVolunteerResult,
-  type ResolveRequest,
-  type ResolveHandlerResult,
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
 import { assembleTurnContext } from '../core/context/turn-context.ts';
-import {
-  gateVolunteeredPointers,
-  candidatesByNorm,
-  VOLUNTEER_MAX_PAGES_CAP,
-} from '../core/context/volunteer.ts';
 import { isVolunteerChannel, logVolunteerEventsFireAndForget, volunteerEventRowsFrom } from '../core/context/volunteer-events.ts';
-import type { WindowEntityCandidate } from '../core/context/entity-salience.ts';
 
 export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpSurface } = {}) {
   const server = new Server(
@@ -108,12 +99,10 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Retrieval Reflex (#1981, D9=C) + harness hook adapters: on a PGLite brain,
-  // serve owns the single connection, so the context engine (and one-shot hook
-  // callers) resolve salient entities THROUGH us over a local unix socket
-  // rather than opening a second (impossible) connection. Postgres serves
-  // listen too (socket under ~/.gbrain/run/) so a per-prompt hook rides the
-  // already-open pool instead of paying a fresh pooler handshake every prompt.
+  // Retrieval Reflex (#1981, D9=C): on a PGLite brain, serve owns the single
+  // connection, so the context engine (and the per-prompt hook command)
+  // resolve salient entities THROUGH us over a local unix socket rather than
+  // opening a second (impossible) connection.
   // Best-effort; failure to bind never blocks the MCP server.
   let resolveServer: import('node:net').Server | null = null;
   let resolveSocket: string | null = null;
@@ -137,31 +126,9 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
           // rejects any resolve/turn_context request naming a source other
           // than boundSourceId ('source_mismatch'), so the only sourceId that
           // reaches this handler is the bound one or absent — and the handler
-          // resolves against the server's OWN registered source regardless
-          // (a volunteer request's cwd is likewise never honored here).
-          resolve: async (req: ResolveRequest): Promise<ResolveHandlerResult> => {
-            if (req.volunteer) {
-              // Volunteer-shaped resolve (harness hook adapters): resolve up
-              // to the hard cap so the gate sees the full pool (a gated-out
-              // alias hit must not shadow a passing title hit) — deliberately
-              // ignoring req.maxPointers, which exists only to bound OLD
-              // servers' pre-gate responses.
-              const candidates = (req.candidates ?? []) as WindowEntityCandidate[];
-              const block = await resolveEntitiesToPointers(engine, defaultSource, candidates, {
-                priorContextText: req.priorContextText,
-                maxPointers: VOLUNTEER_MAX_PAGES_CAP * 2,
-                suppression: req.suppression ?? 'slug-only',
-              });
-              const volunteered = block
-                ? gateVolunteeredPointers(block, candidatesByNorm(candidates), {
-                    maxPages: req.volunteer.maxPages,
-                    minConfidence: req.volunteer.minConfidence,
-                    windowSize: req.volunteer.windowSize ?? 1,
-                  })
-                : [];
-              return { block, volunteered };
-            }
-            return resolveEntitiesToPointers(
+          // resolves against the server's OWN registered source regardless.
+          resolve: (req) =>
+            resolveEntitiesToPointers(
               engine,
               defaultSource,
               req.candidates ?? [],
@@ -170,8 +137,7 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
                 maxPointers: req.maxPointers,
                 suppression: req.suppression,
               },
-            );
-          },
+            ),
           // IPC v2 [ENG-3]: per-turn context assembly for the hook command.
           // [CX2-10] Always assembles against the server's OWN registered
           // source — cross-source requests are rejected in the IPC layer via
@@ -190,18 +156,25 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
           // at DELIVERY (post-write), not inside the resolver — a block the
           // client's 250ms budget abandoned was never injected, and counting it
           // would corrupt the volunteered-vs-used precision stats (red-team).
-          // Volunteer results log the GATED set under the request's channel;
-          // plain reflex results keep the ambient 'reflex' channel.
-          onDelivered: (result, req) => {
-            if (isVolunteerResult(result)) {
-              if (!result.volunteered.length) return;
-              const channel = isVolunteerChannel(req.channel) ? req.channel : 'reflex';
+          onDelivered: (block) => logDeliveredReflexPointers(engine, block.pointers),
+          // The hook lane's feedback loop (#2095 closed over turn_context):
+          // the delivered block's post-trim volunteered pages + pointers land
+          // in context_volunteer_events under the request's channel, so
+          // `volunteer-context --stats` and the volunteer_channels doctor
+          // check see per-harness firing. Channel is validated; absent or
+          // unknown → 'claude-code' (the only harness bootstrap registers
+          // hooks for today).
+          onTurnContextDelivered: (result, req) => {
+            const channel = isVolunteerChannel(req.channel) ? req.channel : 'claude-code';
+            if (result.volunteered?.length) {
+              const sessionId = typeof req.sessionId === 'string' ? req.sessionId.slice(0, 256) : null;
               logVolunteerEventsFireAndForget(
                 engine,
-                volunteerEventRowsFrom(result.volunteered, { channel }),
+                volunteerEventRowsFrom(result.volunteered, { channel, session_id: sessionId }),
               );
-            } else if (result.block) {
-              logDeliveredReflexPointers(engine, result.block.pointers);
+            }
+            if (result.pointers.length) {
+              logDeliveredReflexPointers(engine, result.pointers, channel);
             }
           },
           boundSourceId: defaultSource,

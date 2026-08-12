@@ -448,3 +448,73 @@ describe('resolve kind honors boundSourceId [CX2-10]', () => {
     expect(seenSourceId).toBe('any-source-at-all');
   });
 });
+
+describe('onTurnContextDelivered — the hook lane feedback-loop seam (#2095)', () => {
+  const richBlock: TurnContextResult = {
+    text: 'CONTEXT BLOCK',
+    pointers: [{ display: 'Alice', slug: 'people/alice', source_id: 'default', synopsis: 'x', arm: 'alias', confidence: 0.9 }],
+    volunteered: [{ slug: 'companies/acme', source_id: 'default', display: 'Acme', confidence: 0.85, arm: 'title', rationale: 'exact title match "Acme"', synopsis: 'y' }],
+    factsCount: 0,
+  };
+
+  test('fires after an ok non-empty delivery, with the request (channel attribution)', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    const delivered: Array<{ result: TurnContextResult; req: TurnContextRequest }> = [];
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => null, turn_context: async () => richBlock },
+      {
+        secret,
+        boundSourceId: 'default',
+        onTurnContextDelivered: (result, req) => delivered.push({ result, req }),
+      },
+    );
+    servers.push(server!);
+    const resp = await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi Acme' }], channel: 'claude-code', sessionId: 's-1' });
+    expect((resp as TurnContextResponse).ok).toBe(true);
+    // Give the post-write callback a tick.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].result.volunteered).toHaveLength(1);
+    expect(delivered[0].result.pointers).toHaveLength(1);
+    expect(delivered[0].req.channel).toBe('claude-code');
+    expect(delivered[0].req.sessionId).toBe('s-1');
+  });
+
+  test('does NOT fire on rejections or empty blocks (nothing was injected)', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    let fired = 0;
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => null, turn_context: async () => stubBlock }, // text: '' → empty block
+      { secret, boundSourceId: 'default', onTurnContextDelivered: () => { fired++; } },
+    );
+    servers.push(server!);
+
+    // Empty block: ok response, but nothing injected → no callback.
+    await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi' }] });
+    // Unauthorized: rejection → no callback.
+    await requestTurnContext(sock, { secret: 'wrong-secret', window: [{ role: 'user', text: 'hi' }] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fired).toBe(0);
+  });
+
+  test('channel is additive on the wire: a server without the callback ignores it', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => null, turn_context: async () => richBlock },
+      { secret, boundSourceId: 'default' }, // no onTurnContextDelivered registered
+    );
+    servers.push(server!);
+    const resp = await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi' }], channel: 'codex' });
+    expect((resp as TurnContextResponse).ok).toBe(true);
+    expect((resp as TurnContextResponse).block?.text).toBe('CONTEXT BLOCK');
+  });
+});

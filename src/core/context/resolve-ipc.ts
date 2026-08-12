@@ -44,13 +44,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
-import { createHash } from 'node:crypto';
 import type { EntityCandidate } from './entity-salience.ts';
 import type { WindowTurn } from './entity-salience.ts';
 import type { PointerBlock } from './retrieval-reflex.ts';
 import type { TurnContextResult } from './turn-context.ts';
-import type { VolunteeredPage } from './volunteer.ts';
 
 const SOCK_NAME = '.gbrain-resolve.sock';
 const SECRET_NAME = '.gbrain-ipc-secret';
@@ -81,20 +78,6 @@ export interface ResolveRequest {
   sourceId?: string;
   /** v0.43 (#2095, codex D7): suppression mode — 'slug-only' under windowing. */
   suppression?: 'slug-and-title' | 'slug-only';
-  /**
-   * Volunteer-shaped resolve (harness hook adapters): when present, a NEW
-   * server resolves up to the hard cap internally, applies the pure
-   * confidence gate server-side, logs the GATED set at the delivery point
-   * under `channel`, and responds with `volunteered`. OLD servers ignore
-   * these fields and answer the plain reflex shape — the client re-derives
-   * pages with the same pure gate (gate-function parity is test-pinned).
-   */
-  volunteer?: { maxPages?: number; minConfidence?: number; windowSize?: number };
-  /** Event-attribution channel for the volunteer branch (e.g. 'claude-code'). */
-  channel?: string;
-  /** Hook caller's working directory (reserved for source resolution on
-   * unbound servers; a bound server serves its OWN source regardless). */
-  cwd?: string;
 }
 
 export interface TurnContextRequest {
@@ -110,6 +93,17 @@ export interface TurnContextRequest {
   /** Optional source claim — the server REJECTS any value other than its bound source [CX2-10]. */
   sourceId?: string;
   maxBytes?: number;
+  /**
+   * Event-attribution channel for the delivery-point feedback loop (harness
+   * hook adapters): the server logs the delivered block's volunteered pages /
+   * pointers to context_volunteer_events under this channel so
+   * `volunteer-context --stats` and the volunteer_channels doctor check see
+   * per-harness firing. Validated server-side against the known channel set;
+   * absent/unknown → 'claude-code' (the only harness bootstrap registers
+   * hooks for today). Additive: old servers ignore it (no logging — the
+   * pre-feedback-loop status quo).
+   */
+  channel?: string;
 }
 
 export type IpcRequest = ResolveRequest | TurnContextRequest;
@@ -117,8 +111,6 @@ export type IpcRequest = ResolveRequest | TurnContextRequest;
 export interface ResolveResponse {
   ok: boolean;
   block?: PointerBlock | null;
-  /** Present iff a NEW server handled a volunteer-shaped resolve request. */
-  volunteered?: VolunteeredPage[];
   error?: string;
 }
 
@@ -131,31 +123,8 @@ export interface TurnContextResponse {
   error?: string;
 }
 
-/** Volunteer-shaped resolve result: the reflex block plus the server-gated pages. */
-export interface ResolveVolunteerResult {
-  block: PointerBlock | null;
-  volunteered: VolunteeredPage[];
-}
-
-/**
- * Resolve-handler result: plain reflex requests return the block (or null);
- * the volunteer branch returns { block, volunteered } so the response can
- * carry the gated pages AND the delivery-point logger can log exactly the
- * gated set (never the pre-gate pool — logging an abandoned or gated-out
- * pointer corrupts the volunteered-vs-used precision stats).
- */
-export type ResolveHandlerResult = PointerBlock | null | ResolveVolunteerResult;
-
-export type ResolveHandler = (req: ResolveRequest) => Promise<ResolveHandlerResult>;
+export type ResolveHandler = (req: ResolveRequest) => Promise<PointerBlock | null>;
 export type TurnContextHandler = (req: TurnContextRequest) => Promise<TurnContextResult | null>;
-
-/** What the delivery-point logger receives: volunteer result or plain block. */
-export type DeliveredResult = ResolveVolunteerResult | { block: PointerBlock; volunteered?: undefined };
-
-/** Narrow a handler/delivered result to the volunteer shape. */
-export function isVolunteerResult(r: ResolveHandlerResult | DeliveredResult): r is ResolveVolunteerResult {
-  return !!r && typeof r === 'object' && 'volunteered' in r && Array.isArray((r as ResolveVolunteerResult).volunteered);
-}
 
 /** Handler MAP replacing the single closure [ENG-3]. */
 export interface IpcHandlers {
@@ -166,13 +135,22 @@ export interface IpcHandlers {
 export interface IpcServerOpts {
   /**
    * v0.43 (#2095, red-team): fired ONLY after the resolve response was
-   * successfully written to the client — the accept-side seam for feedback
-   * logging. A block the client never received (timeout, dead socket) was
-   * never injected into a prompt and must not count as "volunteered". For
-   * volunteer-shaped results the logger receives the GATED result plus the
-   * request, so it can attribute to req.channel.
+   * successfully written to the client — the accept-side seam for
+   * reflex-channel feedback logging. A block the client never received
+   * (timeout, dead socket) was never injected into a prompt and must not
+   * count as "volunteered".
    */
-  onDelivered?: (result: DeliveredResult, req: ResolveRequest) => void;
+  onDelivered?: (block: PointerBlock, req: ResolveRequest) => void;
+  /**
+   * turn_context sibling of onDelivered — fired ONLY after an ok
+   * turn_context response with a non-empty block was successfully written to
+   * the client. This is the #2095 feedback-loop seam for the hook lane: the
+   * callback logs the block's post-trim volunteered pages + pointers to
+   * context_volunteer_events under req.channel. Same red-team rule as
+   * onDelivered: a block the client's budget abandoned was never injected
+   * and must not be counted.
+   */
+  onTurnContextDelivered?: (result: TurnContextResult, req: TurnContextRequest) => void;
   /**
    * The server's registered source [CX2-10]. turn_context requests naming a
    * DIFFERENT sourceId are rejected with 'source_mismatch'; the handler always
@@ -190,26 +168,6 @@ export interface IpcServerOpts {
 /** Canonical socket path for a PGLite data dir. */
 export function resolveSocketPath(dataDir: string): string {
   return join(dataDir, SOCK_NAME);
-}
-
-/**
- * Canonical socket path for a brain identified by config (harness hook
- * adapters): PGLite brains keep the in-data-dir socket (existing contract);
- * Postgres brains map to a per-connection path under `~/.gbrain/run/` keyed
- * by a short hash of the connection URL. NOTE: today's serve only LISTENS on
- * PGLite brains — for Postgres configs this returns the path a future
- * engine-uniform listener would use, so hook callers probe it, miss, and
- * fall through to their direct rung. Returns null when the config
- * identifies no brain.
- */
-export function resolveSocketPathForConfig(cfg: { engine?: string; database_path?: string; database_url?: string } | null | undefined): string | null {
-  if (!cfg) return null;
-  if (cfg.engine === 'pglite' && cfg.database_path) return resolveSocketPath(cfg.database_path);
-  if (cfg.database_url) {
-    const h = createHash('sha256').update(cfg.database_url).digest('hex').slice(0, 12);
-    return join(homedir(), '.gbrain', 'run', `resolve-${h}.sock`);
-  }
-  return null;
 }
 
 // ── Shared secret [S3#6] ──────────────────────────────────────────────────
@@ -266,16 +224,6 @@ function secretMatches(candidate: unknown, expected: string): boolean {
 
 // ── Clients ───────────────────────────────────────────────────────────────
 
-/** Options for resolveViaIpc / resolveViaIpcRaw. */
-export interface ResolveViaIpcOpts {
-  /**
-   * Socket budget. Default stays 250ms for the ambient reflex (inline in a
-   * turn); one-shot hook callers pass a larger slice of their own deadline
-   * so a busy-but-alive serve isn't misread as absent.
-   */
-  timeoutMs?: number;
-}
-
 /**
  * v1 client: ship candidates to a running serve, get pointers back. Returns
  * IPC_UNAVAILABLE when no server is listening (caller falls through the ladder);
@@ -284,31 +232,10 @@ export interface ResolveViaIpcOpts {
 export async function resolveViaIpc(
   socketPath: string,
   req: ResolveRequest,
-  opts: ResolveViaIpcOpts = {},
 ): Promise<PointerBlock | null | typeof IPC_UNAVAILABLE> {
-  const resp = await roundTrip(socketPath, JSON.stringify(req), opts.timeoutMs ?? CLIENT_TIMEOUT_MS);
+  const resp = await roundTrip(socketPath, JSON.stringify(req), CLIENT_TIMEOUT_MS);
   if (resp === IPC_UNAVAILABLE) return IPC_UNAVAILABLE;
   if (resp && (resp as ResolveResponse).ok) return (resp as ResolveResponse).block ?? null;
-  return IPC_UNAVAILABLE;
-}
-
-/**
- * Raw-response resolve client for volunteer-shaped requests: exposes the full
- * wire response so a hook caller can distinguish a NEW server's `volunteered`
- * field from an OLD server's plain `{ok, block}` (client re-gates the block)
- * and surface typed errors (e.g. source_mismatch) instead of folding them
- * into "unavailable". Transport failures still collapse to IPC_UNAVAILABLE.
- */
-export async function resolveViaIpcRaw(
-  socketPath: string,
-  req: ResolveRequest,
-  opts: ResolveViaIpcOpts = {},
-): Promise<ResolveResponse | typeof IPC_UNAVAILABLE> {
-  const resp = await roundTrip(socketPath, JSON.stringify(req), opts.timeoutMs ?? CLIENT_TIMEOUT_MS);
-  if (resp === IPC_UNAVAILABLE) return IPC_UNAVAILABLE;
-  if (resp && typeof resp === 'object' && typeof (resp as ResolveResponse).ok === 'boolean') {
-    return resp as ResolveResponse;
-  }
   return IPC_UNAVAILABLE;
 }
 
@@ -425,7 +352,7 @@ function roundTrip(
 export async function startResolveIpcServer(
   socketPath: string,
   handler: ResolveHandler,
-  onDelivered?: (result: DeliveredResult, req: ResolveRequest) => void,
+  onDelivered?: (block: PointerBlock, req: ResolveRequest) => void,
 ): Promise<net.Server | null>;
 export async function startResolveIpcServer(
   socketPath: string,
@@ -435,7 +362,7 @@ export async function startResolveIpcServer(
 export async function startResolveIpcServer(
   socketPath: string,
   handlerOrHandlers: ResolveHandler | IpcHandlers,
-  onDeliveredOrOpts?: ((result: DeliveredResult, req: ResolveRequest) => void) | IpcServerOpts,
+  onDeliveredOrOpts?: ((block: PointerBlock, req: ResolveRequest) => void) | IpcServerOpts,
 ): Promise<net.Server | null> {
   const handlers: IpcHandlers =
     typeof handlerOrHandlers === 'function' ? { resolve: handlerOrHandlers } : handlerOrHandlers;
@@ -466,7 +393,8 @@ export async function startResolveIpcServer(
         if (nl < 0) return;
         const line = buf.slice(0, nl);
         let resp: string;
-        let delivered: { result: DeliveredResult; req: ResolveRequest } | null = null;
+        let delivered: { block: PointerBlock; req: ResolveRequest } | null = null;
+        let deliveredTurnContext: { result: TurnContextResult; req: TurnContextRequest } | null = null;
         try {
           const parsed = JSON.parse(line) as IpcRequest;
           const kind = (parsed as { kind?: unknown }).kind ?? 'resolve';
@@ -479,24 +407,21 @@ export async function startResolveIpcServer(
             if (req.sourceId && opts.boundSourceId && req.sourceId !== opts.boundSourceId) {
               resp = JSON.stringify({ ok: false, error: 'source_mismatch' } satisfies ResolveResponse);
             } else {
-              const result = await handlers.resolve(req);
-              if (isVolunteerResult(result)) {
-                // Volunteer-shaped resolve: response carries the server-gated
-                // pages; delivery logging receives the GATED result so the
-                // channel-attributed events never over-count (red-team class).
-                const out: ResolveResponse = { ok: true, block: result.block, volunteered: result.volunteered };
-                resp = JSON.stringify(out);
-                if (result.block || result.volunteered.length) delivered = { result, req };
-              } else {
-                const out: ResolveResponse = { ok: true, block: result };
-                resp = JSON.stringify(out);
-                if (result) delivered = { result: { block: result }, req };
-              }
+              const block = await handlers.resolve(req);
+              const out: ResolveResponse = { ok: true, block };
+              resp = JSON.stringify(out);
+              if (block) delivered = { block, req };
             }
           } else if (kind === 'turn_context') {
-            resp = JSON.stringify(
-              await handleTurnContext(parsed as TurnContextRequest, handlers, opts),
-            );
+            const req = parsed as TurnContextRequest;
+            const tcResp = await handleTurnContext(req, handlers, opts);
+            resp = JSON.stringify(tcResp);
+            // Feedback-loop seam: only an ok response carrying a non-empty
+            // block counts as a candidate delivery (rejections, degraded-null
+            // and empty blocks injected nothing).
+            if (tcResp.ok && tcResp.block && tcResp.block.text) {
+              deliveredTurnContext = { result: tcResp.block, req };
+            }
           } else {
             resp = JSON.stringify({ ok: false, error: `unknown_kind:${String(kind)}` });
           }
@@ -508,7 +433,10 @@ export async function startResolveIpcServer(
           // Write accepted — the client (250ms budget) may still have hung
           // up, but this is the closest observable delivery point.
           if (delivered && opts.onDelivered) {
-            try { opts.onDelivered(delivered.result, delivered.req); } catch { /* telemetry only */ }
+            try { opts.onDelivered(delivered.block, delivered.req); } catch { /* telemetry only */ }
+          }
+          if (deliveredTurnContext && opts.onTurnContextDelivered) {
+            try { opts.onTurnContextDelivered(deliveredTurnContext.result, deliveredTurnContext.req); } catch { /* telemetry only */ }
           }
         } catch { /* client gone — do NOT log undelivered pointers */ }
         conn.end();

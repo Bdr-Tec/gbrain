@@ -131,6 +131,12 @@ export interface HookIo {
   spawnPush?: (root: string) => void;
   /** TEST SEAM: user-prompt deadline override (wall-clock flake control). */
   userPromptDeadlineMs?: number;
+  /**
+   * Feedback-loop attribution channel (`--harness <claude-code|codex>`).
+   * Default 'claude-code' — the only harness bootstrap registers hooks for
+   * today; a codex hook registration passes the flag explicitly.
+   */
+  harness?: 'claude-code' | 'codex';
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -156,6 +162,14 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
   if (event === '--help' || event === '-h' || event === 'help') {
     write(io, USAGE + '\n');
     return 0;
+  }
+  // `--harness <claude-code|codex>` — feedback-loop channel attribution for
+  // user-prompt. Unknown values fall back to the default (fail-open: a bad
+  // registration must never break the hook contract).
+  const harnessIdx = args.indexOf('--harness');
+  if (harnessIdx >= 0 && !io.harness) {
+    const v = args[harnessIdx + 1];
+    if (v === 'claude-code' || v === 'codex') io = { ...io, harness: v };
   }
   if (!event || !['session-start', 'user-prompt', 'stop', 'session-end'].includes(event)) {
     process.stderr.write(USAGE + '\n');
@@ -690,6 +704,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     // S3#8: transcript_path is untrusted input. A present-but-unconfined
     // path aborts the event (heartbeat + empty stdout), never "best effort".
     let turns: WindowTurn[] = [];
+    let priorContextText: string | undefined;
     if (j.transcript_path !== undefined && j.transcript_path !== null) {
       const conf = confineTranscriptPath(j.transcript_path, {
         ...(io.transcriptRoot ? { root: io.transcriptRoot } : {}),
@@ -698,6 +713,15 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
       try {
         const parsed = parseTranscript(conf.path, { maxBytes: USER_PROMPT_TRANSCRIPT_MAX_BYTES });
         turns = parsed.turns.slice(-USER_PROMPT_WINDOW_TURNS);
+        // Cross-turn dedupe: feed the blocks WE previously injected this
+        // session back as priorContextText (slug-only suppression + volunteer
+        // dedupe inside assembleTurnContext) — a page is volunteered once per
+        // session, not once per mention. Structured extraction only (the
+        // hook_additional_context attachments), never raw turn text, so a
+        // short slug appearing in a tool payload can't over-suppress.
+        if (parsed.injectedContextBlocks.length) {
+          priorContextText = parsed.injectedContextBlocks.join('\n\n');
+        }
       } catch {
         turns = []; // unreadable-mid-flight — the prompt alone still works
       }
@@ -721,8 +745,14 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     const res = await requestTurnContext(socketPath, {
       secret,
       window: turns,
+      ...(priorContextText ? { priorContextText } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(sourceId ? { sourceId } : {}),
+      // Feedback-loop attribution: the serve logs the delivered block's
+      // volunteered pages/pointers under this channel. Bootstrap registers
+      // hooks for Claude Code only today; a future codex registration passes
+      // `--harness codex` on the hook command.
+      channel: io.harness ?? 'claude-code',
     });
     if (res === IPC_UNAVAILABLE) {
       return { outcome: 'degraded', reason: 'ipc_unavailable', turns: turns.length };

@@ -374,9 +374,7 @@ describe('serve IPC wiring — suppression passthrough + reflex-channel logging 
           maxPointers: req.maxPointers,
           suppression: req.suppression,
         }),
-      (result) => {
-        if (result.block) logDeliveredReflexPointers(engine, result.block.pointers);
-      },
+      (block) => logDeliveredReflexPointers(engine, block.pointers),
     );
     expect(server).not.toBeNull();
     try {

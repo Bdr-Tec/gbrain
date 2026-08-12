@@ -107,6 +107,32 @@ describe('assembleTurnContext', () => {
     expect(hits).toBe(1);
   });
 
+  test('result.volunteered carries the POST-trim survivors (feedback-loop input, never the pre-budget pool)', async () => {
+    // Two distinct entities: one resolves as a reflex pointer (subject of the
+    // newest turn), the other only via the volunteer arm.
+    await seedPage('people/alice-example', 'Alice Example', 'Alice Example founder profile.');
+    await seedPage('companies/widget-co', 'Widget Co', 'Widget Co company page.');
+    const r = await assembleTurnContext(engine, {
+      sourceId: 'default',
+      window: [
+        { role: 'user', text: 'Widget Co update?' },
+        { role: 'user', text: 'and what about Widget Co and Alice Example today?' },
+      ],
+    });
+    // Whatever the split between arms, the union of pointers + volunteered is
+    // exactly what the rendered text carries — the delivery-point logger's
+    // contract (logging a trimmed-out page would corrupt precision stats).
+    const surfaced = [...r.pointers.map((p) => p.slug), ...(r.volunteered ?? []).map((v) => v.slug)];
+    for (const slug of surfaced) {
+      expect(r.text).toContain(slug);
+    }
+    expect(surfaced.length).toBeGreaterThan(0);
+    // No overlap between the arms (volunteer dedupes against pointers).
+    expect(new Set(surfaced).size).toBe(surfaced.length);
+    // volunteered is always present on a fresh assembly (empty when none).
+    expect(Array.isArray(r.volunteered)).toBe(true);
+  });
+
   test('budget trims facts BEFORE pointers, lowest confidence first [ENG-1]', async () => {
     await seedPage('people/alice-example', 'Alice Example', 'Alice Example founder profile.');
     for (let i = 0; i < 8; i++) {
