@@ -19,6 +19,7 @@ import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/c
 import { assembleTurnContext } from '../core/context/turn-context.ts';
 import { gcSessionContextState } from '../core/context/session-state.ts';
 import { makeContextPackIpcHandler } from './context-pack-handler.ts';
+import { logTurnContextDeliveryFireAndForget } from '../core/context/volunteer-events.ts';
 
 export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpSurface } = {}) {
   const server = new Server(
@@ -101,8 +102,9 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
   await server.connect(transport);
 
   // Retrieval Reflex (#1981, D9=C): on a PGLite brain, serve owns the single
-  // connection, so the context engine resolves salient entities THROUGH us over
-  // a local unix socket rather than opening a second (impossible) connection.
+  // connection, so the context engine (and the per-prompt hook command)
+  // resolve salient entities THROUGH us over a local unix socket rather than
+  // opening a second (impossible) connection.
   // Best-effort; failure to bind never blocks the MCP server.
   let resolveServer: import('node:net').Server | null = null;
   let resolveSocket: string | null = null;
@@ -162,6 +164,13 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
           // client's 250ms budget abandoned was never injected, and counting it
           // would corrupt the volunteered-vs-used precision stats (red-team).
           onDelivered: (block) => logDeliveredReflexPointers(engine, block.pointers),
+          // The hook lane's feedback loop (#2095 closed over turn_context):
+          // the delivered block's post-trim volunteered pages + pointers land
+          // in context_volunteer_events under the request's channel. Body
+          // lives in volunteer-events.ts (logTurnContextDeliveryFireAndForget)
+          // so the shipped wiring is unit-testable.
+          onTurnContextDelivered: (result, req) =>
+            logTurnContextDeliveryFireAndForget(engine, result, req),
           boundSourceId: defaultSource,
           secret: ipcSecret,
         },

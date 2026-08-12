@@ -251,7 +251,7 @@ export const PHASES: PhaseSpec[] = [
       const repoUrl = (ctx.receipt as (InstallReceipt & { repo_url?: string }) | null)?.repo_url;
       if (repoUrl) return { state: 'done', detail: repoUrl };
       const origin = gitOriginUrl(ws);
-      if (origin) return { state: 'partial', detail: `origin exists (${origin}) but no bootstrap receipt — a clone? see \`gbrain bootstrap attach\`` };
+      if (origin) return { state: 'partial', detail: `origin exists (${origin}) but not yet pushed — run \`gbrain bootstrap repo\` (adopts an empty repo you created), or \`gbrain bootstrap attach\` for an existing agent clone` };
       return { state: 'pending' };
     },
   },

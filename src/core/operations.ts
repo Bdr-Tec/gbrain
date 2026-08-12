@@ -3024,7 +3024,12 @@ const run_doctor: Operation = {
   params: {},
   handler: async (ctx) => {
     const { doctorReportRemote } = await import('../commands/doctor.ts');
-    return doctorReportRemote(ctx.engine);
+    // Source isolation (cross-model P1): a source-bound caller's report must
+    // not aggregate other sources' activity. Scope-aware checks (currently
+    // volunteer_channels) filter on these ids; unscoped ctx = brain-wide.
+    const scope = sourceScopeOpts(ctx);
+    const sourceIds = scope.sourceIds ?? (scope.sourceId ? [scope.sourceId] : undefined);
+    return doctorReportRemote(ctx.engine, { sourceIds });
   },
   scope: 'admin',
   localOnly: false,
@@ -4003,12 +4008,12 @@ const volunteer_context: Operation = {
     // volunteer-events sink (drained at exit). Never fails the op.
     if (pages.length) {
       try {
-        const { logVolunteerEventsFireAndForget, volunteerEventRowsFrom } = await import('./context/volunteer-events.ts');
+        const { logVolunteerEventsFireAndForget, volunteerEventRowsFrom, SESSION_ID_MAX_LEN } = await import('./context/volunteer-events.ts');
         // Trust-boundary clamps (remote MCP callers): cap session_id length so
         // a read-scoped token can't bank unbounded TEXT per request, and only
         // log integer turns — a non-integer would throw inside the single
         // multi-row INSERT and silently drop the whole batch.
-        const sessionId = typeof p.session_id === 'string' ? p.session_id.slice(0, 256) : null;
+        const sessionId = typeof p.session_id === 'string' ? p.session_id.slice(0, SESSION_ID_MAX_LEN) : null;
         const turn =
           typeof p.turn === 'number' && Number.isInteger(p.turn) && Math.abs(p.turn) <= 2_147_483_647
             ? p.turn
