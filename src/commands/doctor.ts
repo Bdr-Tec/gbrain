@@ -12,6 +12,9 @@ import {
   type SkillsManifest,
 } from '../core/skills-integrity.ts';
 import { loadOrDeriveManifest } from '../core/skill-manifest.ts';
+import { computeSkillCurrency } from '../core/skillpack/skill-currency.ts';
+import { findGbrainRoot } from '../core/skillpack/bundle.ts';
+import { checkPreconditions, type PreconditionContext } from '../core/skillpack/preconditions.ts';
 import { parseSkillFrontmatter } from '../core/skill-frontmatter.ts';
 import {
   analyzeSkillBrainFirst,
@@ -48,7 +51,8 @@ import {
 import { probeSourceGitState } from '../core/git-head.ts';
 // v0.41.32.0: remote staleness reads the stored newest_content_at column via
 // this pure comparator (no git subprocess on the HTTP MCP doctor path).
-import { lagFromContentMs } from '../core/source-health.ts';
+import { lagFromContentMs, resolveStalenessCeilingSeconds } from '../core/source-health.ts';
+import { resolveEnvNumber, resolveHoursEnv, warnOnceForEnv } from '../core/env-number.ts';
 import { CHUNKER_VERSION } from '../core/chunkers/code.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from '../core/link-extraction.ts';
 import { isUndefinedColumnError } from '../core/utils.ts';
@@ -3322,10 +3326,6 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
 const checkSubagentProvider = checkSubagentCapability;
 void checkSubagentProvider;
 
-// Module-scoped set so each invalid-env-var warning fires once per process,
-// per variable name (v0.42.7 #1696: was a single bool shared across all vars).
-const _envNumberWarned = new Set<string>();
-
 /**
  * v0.42.7 (#1696): single source of truth for the extraction-lag warn
  * threshold (percent). Both the `links_extraction_lag` doctor check AND the
@@ -3339,31 +3339,19 @@ export const EXTRACTION_LAG_WARN_PCT_DEFAULT = 20;
 export const EXTRACTION_LAG_MIN_PAGES = 100;
 
 /**
- * v0.42.7 (#1696, C1): generic "read a positive number from an env var, warn
- * once + fall back on garbage." Extracted from _resolveSyncFreshnessHours so
- * the percent-threshold doctor checks don't reuse a `...Hours`-named helper.
- * `opts.unit` is purely cosmetic for the warning string ('h', '%', '').
- * Exported (D3) so the sync nudge resolves the threshold the same way.
+ * Re-exported from `src/core/env-number.ts`, which now owns the implementation
+ * AND the warn-once memo. `source-health.ts` needs the hours resolver for the
+ * staleness ceiling, and doctor already imports from source-health — so the
+ * helper had to move to core or the import graph would cycle.
+ *
+ * The `_resolveEnvNumber` name is kept because `sync.ts:5730` dynamically
+ * imports it from this module.
  */
-export function _resolveEnvNumber(varName: string, fallback: number, opts?: { unit?: string }): number {
-  const raw = process.env[varName];
-  if (raw === undefined || raw === '') return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    if (!_envNumberWarned.has(varName)) {
-      _envNumberWarned.add(varName);
-      console.warn(
-        `[gbrain doctor] Ignoring invalid ${varName}=${raw}; using default ${fallback}${opts?.unit ?? ''}.`,
-      );
-    }
-    return fallback;
-  }
-  return n;
-}
+export { resolveEnvNumber as _resolveEnvNumber };
 
-function _resolveSyncFreshnessHours(varName: string, fallback: number): number {
-  return _resolveEnvNumber(varName, fallback, { unit: 'h' });
-}
+/** Local aliases; the shared memo lives in core so it can't fork per module. */
+const _resolveEnvNumber = resolveEnvNumber;
+const _resolveSyncFreshnessHours = resolveHoursEnv;
 
 /**
  * Sync freshness check (v0.32.4) — verify that sources with local_path have
@@ -3757,9 +3745,11 @@ export async function checkLinksExtractionLag(
       const n = Number(failRaw);
       if (Number.isFinite(n) && n > 0) {
         failPct = n;
-      } else if (!_envNumberWarned.has('GBRAIN_EXTRACTION_LAG_FAIL_PCT')) {
-        _envNumberWarned.add('GBRAIN_EXTRACTION_LAG_FAIL_PCT');
-        console.warn(`[gbrain doctor] Ignoring invalid GBRAIN_EXTRACTION_LAG_FAIL_PCT=${failRaw}; hard-fail stays disabled.`);
+      } else {
+        warnOnceForEnv(
+          'GBRAIN_EXTRACTION_LAG_FAIL_PCT',
+          `[gbrain] Ignoring invalid GBRAIN_EXTRACTION_LAG_FAIL_PCT=${failRaw}; hard-fail stays disabled.`,
+        );
       }
     }
 
@@ -4349,7 +4339,7 @@ export async function checkSyncFreshness(
     // bucket). Empty when nothing is syncing — keeps the steady-state messages
     // byte-for-byte unchanged.
     const inProgress: string[] = [];
-    let liveSyncSnap: (sourceId: string) => Promise<{ holder_pid: number; holder_host: string } | null> =
+    let liveSyncSnap: (sourceId: string) => Promise<{ holder_pid: number; holder_host: string; age_ms: number } | null> =
       async () => null;
     try {
       const { inspectLock, syncLockId } = await import('../core/db-lock.ts');
@@ -4357,7 +4347,7 @@ export async function checkSyncFreshness(
         try {
           const snap = await inspectLock(engine, syncLockId(sourceId));
           return snap && !snap.ttl_expired
-            ? { holder_pid: snap.holder_pid, holder_host: snap.holder_host }
+            ? { holder_pid: snap.holder_pid, holder_host: snap.holder_host, age_ms: snap.age_ms }
             : null;
         } catch {
           return null;
@@ -4367,6 +4357,10 @@ export async function checkSyncFreshness(
       /* db-lock unavailable — skip in-progress detection, staleness stands. */
     }
 
+    // One ceiling for the whole report: hoisted out of the loop so every
+    // source is judged against the same number (and the env read + warn-once
+    // machinery runs once, not once per source).
+    const stalenessCeilingSeconds = resolveStalenessCeilingSeconds();
     for (const source of sources) {
       // Embed source.id in user-visible messages so `gbrain sync --source <id>`
       // matches what the user copy-pastes. Show display name in parens when set.
@@ -4376,10 +4370,35 @@ export async function checkSyncFreshness(
 
       // BUG 4: actively syncing (live lock) → healthy, count as synced_recently
       // and skip the staleness checks. Keeps the 3-bucket invariant intact.
+      //
+      // ...but ONLY up to the staleness ceiling. `withRefreshingLock` bumps the
+      // heartbeat on its own timer regardless of whether the import is making
+      // forward progress (`liveSyncStatus`'s docstring is explicit: callers may
+      // report "running", NOT "healthy"). So a holder blocked inside a query
+      // keeps refreshing forever, and an uncapped in-progress verdict would
+      // mask that source from every staleness check indefinitely — the same
+      // invisible-failure class this whole pass exists to close, just reached
+      // through the lock table instead of the freshness column.
       const liveSnap = await liveSyncSnap(source.id);
       if (liveSnap) {
-        inProgress.push(`${display} sync in progress (pid ${liveSnap.holder_pid} on ${liveSnap.holder_host})`);
-        synced_recently_count++;
+        const ceilingMs = stalenessCeilingSeconds * 1000;
+        if (liveSnap.age_ms <= ceilingMs) {
+          inProgress.push(`${display} sync in progress (pid ${liveSnap.holder_pid} on ${liveSnap.holder_host})`);
+          synced_recently_count++;
+          continue;
+        }
+        // Sub-hour ceilings are legal (fractional env override), and an alarm
+        // that names a zero duration ("held the lock for 0h") reads as broken.
+        const heldFor = liveSnap.age_ms >= 3600_000
+          ? `${Math.floor(liveSnap.age_ms / 3600_000)}h`
+          : `${Math.max(1, Math.floor(liveSnap.age_ms / 60_000))}m`;
+        issues.push(
+          `Source ${display} has held the sync lock for ${heldFor} ` +
+          `(pid ${liveSnap.holder_pid} on ${liveSnap.holder_host}) — heartbeating but not finishing. ` +
+          `Run \`gbrain sync --break-lock --source ${source.id}\` after confirming the holder is wedged.`,
+        );
+        hasFailures = true;
+        stale_count++;
         continue;
       }
 
@@ -4468,6 +4487,7 @@ export async function checkSyncFreshness(
           contentMs !== null && Number.isFinite(contentMs) ? contentMs : null,
           lastSync,
           now,
+          stalenessCeilingSeconds,
         );
         thresholdAgeMs = lagSec === null ? ageMs : lagSec * 1000;
       }
@@ -5351,6 +5371,15 @@ export async function buildChecks(
   // SKILL group — gated.
   if (scope === 'all' && skillsDir) {
     checks.push(skillsManifestIntegrityCheck(skillsDir));
+  }
+
+  // 2c-bis. Skill currency (new built-in skills available downstream) +
+  // live precondition verification for installed skills that declare
+  // `requires:`. Currency is filesystem-only; preconditions need the engine
+  // and skip cleanly without one.
+  if (scope === 'all' && skillsDir) {
+    checks.push(skillCurrencyCheck(skillsDir));
+    checks.push(await skillPreconditionsCheck(skillsDir, engine));
   }
 
   // 2d. Agent-bootstrap health (plan B2/B4/ENG-4). Filesystem-first; the
@@ -8742,6 +8771,155 @@ export function skillsManifestIntegrityCheck(skillsDir: string): Check {
       `skills/ drifted from ${SKILLS_MANIFEST_FILENAME} (advisory — local edits are fine): ${parts.join('; ')}. ` +
       `If intentional, regenerate: bun run scripts/generate-skills-manifest.ts`,
     details: { modified: drift.modified, missing: drift.missing, extra: drift.extra },
+  };
+}
+
+/**
+ * Skill currency check — compares the built-in skills bundle against what
+ * the downstream workspace has scaffolded and surfaces NEW skills the user
+ * doesn't have yet. Advisory: `new` skills are a WARN (you're missing
+ * shipped capability); `drifted` skills are informational only (local edits
+ * are legitimate — the ownership model). No-ops when running inside the
+ * gbrain repo itself (bundle == install, always current) or when the bundle
+ * can't be located.
+ */
+export function skillCurrencyCheck(skillsDir: string): Check {
+  const name = 'skill_currency';
+  const targetWorkspace = resolvePath(skillsDir, '..');
+  const gbrainRoot = findGbrainRoot();
+  if (!gbrainRoot) {
+    return { name, status: 'ok', message: 'skill currency not applicable (no bundled skills pack found)' };
+  }
+  if (resolvePath(targetWorkspace) === resolvePath(gbrainRoot)) {
+    return { name, status: 'ok', message: 'skill currency not applicable (running inside the gbrain repo)' };
+  }
+  let report: ReturnType<typeof computeSkillCurrency>;
+  try {
+    report = computeSkillCurrency({ gbrainRoot, targetWorkspace });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { name, status: 'ok', message: `skill currency check skipped (${msg})` };
+  }
+  const { counts, skills } = report;
+  const sample = (status: 'new' | 'drifted'): string => {
+    const s = skills.filter(k => k.status === status).map(k => k.slug);
+    return s.slice(0, 8).join(', ') + (s.length > 8 ? `, … +${s.length - 8} more` : '');
+  };
+  if (counts.new === 0) {
+    const drift = counts.drifted > 0 ? ` (${counts.drifted} drifted — local edits are fine)` : '';
+    return { name, status: 'ok', message: `${counts.current}/${counts.total} built-in skills current${drift}` };
+  }
+  return {
+    name,
+    status: 'warn',
+    message:
+      `${counts.new} new built-in skill(s) available that this workspace hasn't installed: ${sample('new')}. ` +
+      `Add them with \`gbrain skillpack sync\`.` +
+      (counts.drifted > 0 ? ` (${counts.drifted} drifted from the bundle — local edits are fine.)` : ''),
+    details: {
+      new: skills.filter(k => k.status === 'new').map(k => k.slug),
+      drifted: skills.filter(k => k.status === 'drifted').map(k => k.slug),
+    },
+  };
+}
+
+/**
+ * Skill preconditions check — the LIVE half of the `requires:` frontmatter
+ * contract. For every skill INSTALLED in this workspace that declares
+ * preconditions, verify each against the connected brain and WARN on unmet
+ * ones with a paste-ready hint. Engine-dependent: skips cleanly when there
+ * is no brain to check against (the static list lives in
+ * `gbrain skillpack setup`).
+ */
+export async function skillPreconditionsCheck(
+  skillsDir: string,
+  engine: BrainEngine | null,
+): Promise<Check> {
+  const name = 'skill_preconditions';
+  if (!engine) {
+    return { name, status: 'ok', message: 'skill preconditions not checked (no connected brain)' };
+  }
+  // Collect installed skills declaring `requires:`.
+  let installed: { slug: string; requires: string[] }[];
+  try {
+    installed = readdirSync(skillsDir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => {
+        const md = join(skillsDir, e.name, 'SKILL.md');
+        if (!existsSync(md)) return null;
+        const fm = parseSkillFrontmatter(readFileSync(md, 'utf-8'));
+        const requires = fm?.requires ?? [];
+        return requires.length > 0 ? { slug: e.name, requires } : null;
+      })
+      .filter((x): x is { slug: string; requires: string[] } => x !== null);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { name, status: 'ok', message: `skill preconditions check skipped (${msg})` };
+  }
+  if (installed.length === 0) {
+    return { name, status: 'ok', message: 'no installed skills declare preconditions' };
+  }
+
+  // Engine-backed precondition context. Read-only COUNT/getConfig queries;
+  // no source scoping (doctor is a trusted local context). Every accessor
+  // fails soft to a conservative value so a query error never throws the check.
+  const ctx: PreconditionContext = {
+    async countPages() {
+      try {
+        const rows = await engine.executeRaw<{ n: number }>('SELECT COUNT(*)::int AS n FROM pages');
+        return rows[0]?.n ?? 0;
+      } catch { return 0; }
+    },
+    async countPagesInDir(dir: string) {
+      const prefix = dir.endsWith('/') ? dir : `${dir}/`;
+      try {
+        const rows = await engine.executeRaw<{ n: number }>(
+          `SELECT COUNT(*)::int AS n FROM pages WHERE slug LIKE $1 ESCAPE '\\'`,
+          [`${prefix.replace(/[%_\\]/g, m => `\\${m}`)}%`],
+        );
+        return rows[0]?.n ?? 0;
+      } catch { return 0; }
+    },
+    async listSourceIds() {
+      try {
+        const rows = await engine.executeRaw<{ id: string }>(`SELECT id FROM sources WHERE id <> 'default'`);
+        return rows.map(r => r.id);
+      } catch { return []; }
+    },
+    async countPagesForSource(id: string) {
+      try {
+        const rows = await engine.executeRaw<{ n: number }>(
+          'SELECT COUNT(*)::int AS n FROM pages WHERE source_id = $1',
+          [id],
+        );
+        return rows[0]?.n ?? 0;
+      } catch { return 0; }
+    },
+    async getConfig(key: string) {
+      try {
+        return (await engine.getConfig(key)) ?? undefined;
+      } catch { return undefined; }
+    },
+  };
+
+  const unmet: string[] = [];
+  for (const skill of installed) {
+    const results = await checkPreconditions(skill.requires, ctx);
+    for (const r of results) {
+      if (!r.met) unmet.push(`${skill.slug}: ${r.req.raw} — ${r.hint}`);
+    }
+  }
+  if (unmet.length === 0) {
+    return { name, status: 'ok', message: `${installed.length} skill(s) with preconditions, all met` };
+  }
+  return {
+    name,
+    status: 'warn',
+    message:
+      `${unmet.length} unmet skill precondition(s):\n  ` +
+      unmet.slice(0, 8).join('\n  ') +
+      (unmet.length > 8 ? `\n  … +${unmet.length - 8} more` : ''),
+    details: { unmet },
   };
 }
 

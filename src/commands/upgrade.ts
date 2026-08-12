@@ -666,18 +666,46 @@ export async function postUpgradeReferenceSweep(
     if (path.resolve(targetWorkspace) === path.resolve(gbrainRoot)) return;
 
     const result = runReferenceAll({ gbrainRoot, targetWorkspace });
-    // Print only skills that (a) the host has actually scaffolded, AND
-    // (b) have at least one differs or missing entry. Pure-`missing`
-    // skills the host never scaffolded are noise; skip them.
+    // Drifted = skills the host has actually scaffolded that now differ from
+    // the bundle (local edits are legitimate — this is advisory).
     const drifted = result.skills.filter(
       s =>
         s.summary.identical + s.summary.differs > 0 &&
         (s.summary.differs > 0 || s.summary.missing > 0),
     );
-    if (drifted.length === 0) return;
+
+    // New = skills the host never scaffolded (own body absent). These used to
+    // be filtered out as "noise", which meant an upgrade that shipped brand-new
+    // skills said nothing about them. Surface them via the currency classifier
+    // (own-files aware) so new capability is discoverable — but ONLY for a host
+    // that has already scaffolded at least one skill (a skills user missing the
+    // new ones). A host with zero scaffolded skills has opted out; surfacing
+    // every bundled skill on every upgrade would be exactly the noise the old
+    // filter avoided, so it stays silent for them.
+    let newSkills: string[] = [];
+    try {
+      const { computeSkillCurrency } = await import('../core/skillpack/skill-currency.ts');
+      const currency = computeSkillCurrency({ gbrainRoot, targetWorkspace });
+      const hasScaffolded = currency.counts.current > 0 || currency.counts.drifted > 0;
+      if (hasScaffolded) {
+        newSkills = currency.skills.filter(s => s.status === 'new').map(s => s.slug);
+      }
+    } catch {
+      // Best-effort; drift report still prints below.
+    }
+
+    if (drifted.length === 0 && newSkills.length === 0) return;
 
     console.log('');
-    console.log('Skillpack reference sweep (post-upgrade):');
+    console.log('Skillpack sweep (post-upgrade):');
+    if (newSkills.length > 0) {
+      const shown = newSkills.slice(0, 10);
+      console.log(
+        `  ${newSkills.length} new built-in skill(s) not installed here: ${shown.join(', ')}` +
+          (newSkills.length > shown.length ? `, … +${newSkills.length - shown.length} more` : ''),
+      );
+      console.log('  Add them all: `gbrain skillpack sync`');
+    }
     for (const s of drifted) {
       console.log(
         `  ${s.slug.padEnd(40)} differs:${s.summary.differs} missing:${s.summary.missing}`,
@@ -685,7 +713,7 @@ export async function postUpgradeReferenceSweep(
     }
     console.log('');
     console.log(
-      'Run `gbrain skillpack reference <slug>` to inspect per-skill diffs.\nSee `skills/_AGENT_README.md` for what your agent should do on update.\nSkip this sweep: `GBRAIN_SKIP_REFERENCE_SWEEP=1`.',
+      'New skills → `gbrain skillpack sync`. Drifted skills → `gbrain skillpack reference <slug>` (local edits are yours; nothing is overwritten).\nSee `skills/_AGENT_README.md` for what your agent should do on update.\nSkip this sweep: `GBRAIN_SKIP_REFERENCE_SWEEP=1`.',
     );
   } catch {
     // Best-effort. Never block post-upgrade.

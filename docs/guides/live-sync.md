@@ -51,6 +51,10 @@ gbrain sync --repo /path/to/brain && gbrain embed --stale
   [spend controls](../operations/spend-controls.md).
 - `gbrain embed --stale` -- backfill embeddings for any chunks that don't have
   them. Safety net for large syncs (>100 files) or prior `--no-embed` runs.
+  On a keyless brain (installed with `--no-embedding`), a bare stale embed
+  refuses cleanly — exit 0 with a stderr note — so this chain is safe to
+  schedule on keyless installs; keyword search keeps working. Explicit embed
+  requests (a slug, `--slugs`, `--all`) still exit 1 on a keyless brain.
 - `gbrain sync --watch --repo <path>` -- foreground polling loop, every 60s
   (configurable with `--interval N`). Embeds inline for small changesets. Exits
   after 5 consecutive failures, so run under a process manager or pair with a
@@ -151,7 +155,17 @@ vars — incident-time escape hatches, not everyday knobs.
    history rewrite still hard-blocks even with `--skip-failed`. Run
    `gbrain sync --skip-failed` to acknowledge a known-bad set yourself.
 
-5. **Import checkpoints name the import target, not the caller's CWD.**
+5. **Staleness can't read "fresh" forever.** A source whose content stopped
+   moving (or whose local clone vanished) used to report fresh indefinitely
+   off the stored content timestamp. Content-relative staleness now ramps
+   toward stale once wall-clock time since the last sync passes a ceiling
+   (default 72h; `GBRAIN_STALENESS_CEILING_HOURS` to tune — it tracks
+   `GBRAIN_SYNC_FRESHNESS_FAIL_HOURS` unless set). The ramp is gradual, so
+   the warn tier still fires before the fail tier. `gbrain status` source
+   rows carry `hours_since_last_sync` (raw wall-clock truth) alongside the
+   threshold-relative `staleness_hours` that drives the fresh/stale class.
+
+6. **Import checkpoints name the import target, not the caller's CWD.**
    Interrupted `gbrain import <dir>` runs may leave
    `~/.gbrain/import-checkpoint.json` so the next import can resume. The
    checkpoint `dir` is the absolute, resolved import target captured when
@@ -177,6 +191,15 @@ vars — incident-time escape hatches, not everyday knobs.
    count should be close to the total chunk count. A large gap means
    `gbrain embed --stale` isn't running after sync, leaving chunks invisible
    to vector search.
+
+4. **Gate on the daemon's heartbeat.** If the built-in daemon runs your sync
+   (`gbrain autopilot --install`), wire your scheduler's health check to
+   `gbrain autopilot --status`. The exit code is the signal: 0 fresh (or
+   nothing installed), 1 needs attention (stale heartbeat, never ran, or
+   paused by a migration), 2 the daemon took itself out of rotation.
+   `--json` emits the full report, including `heartbeat_age_seconds`. Status
+   reads only the filesystem — no database connection — so it keeps working
+   during the exact outages it exists to diagnose.
 
 ---
 
