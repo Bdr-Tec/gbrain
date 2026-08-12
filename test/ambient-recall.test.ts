@@ -16,6 +16,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { configureGateway } from '../src/core/ai/gateway.ts';
 import { operations } from '../src/core/operations.ts';
 import { MEMORY_VERBS_VERSION, VERB_NAMES } from '../src/core/verbs.ts';
 import {
@@ -60,6 +61,17 @@ async function call(
 }
 
 beforeAll(async () => {
+  // Hermetic embedding: pin the gateway to a KEYLESS config (empty env) so
+  // `remember`'s fact-embed degrades gracefully (degraded_dedup) instead of
+  // firing a real OpenAI call. On CI the process carries a dummy
+  // OPENAI_API_KEY (sk-test-*) that a shard-neighbor can leak into the
+  // gateway singleton via a captured env (the bunfig preload configures with
+  // `env: {...process.env}`); a present-but-invalid key turns the keyless
+  // degrade into a hard 401. The delta/context_pack tests exercise
+  // cursor/budget logic, not embedding quality, so keyless is correct and
+  // makes them independent of shard bin-packing. Dimensions stay 1536 to
+  // match the preload's schema.
+  configureGateway({ embedding_model: 'openai:text-embedding-3-large', embedding_dimensions: 1536, env: {} });
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
