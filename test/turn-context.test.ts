@@ -133,6 +133,36 @@ describe('assembleTurnContext', () => {
     expect(Array.isArray(r.volunteered)).toBe(true);
   });
 
+  test('budget-trimmed volunteered pages are excluded from result.volunteered (never the pre-budget pool)', async () => {
+    // Five distinct entities: pointers arm takes its cap, the volunteer arm
+    // takes the rest; a tight maxBytes then forces the volunteered while-loop
+    // to drop at least one. The invariant under test: result.volunteered is
+    // EXACTLY the set present in the rendered text — a copy-before-trim
+    // refactor would silently log trimmed-out pages to the precision stats.
+    // Lowercase lead-in: a capitalized verb would merge into the first
+    // candidate's capitalized run and drop it from extraction.
+    const names = ['Aaa Corp', 'Bbb Corp', 'Ccc Corp', 'Ddd Corp', 'Eee Corp', 'Fff Corp', 'Ggg Corp'];
+    for (const n of names) {
+      const slug = `companies/${n.split(' ')[0].toLowerCase()}`;
+      await seedPage(slug, n, `${n} — ${'synopsis filler '.repeat(20)}.`);
+    }
+    const window = [{ role: 'user' as const, text: `we saw ${names.join(', ')} today` }];
+    const full = await assembleTurnContext(engine, { sourceId: 'default', window });
+    const fullVolunteered = full.volunteered ?? [];
+    expect(fullVolunteered.length).toBeGreaterThan(1); // needs ≥2 to trim meaningfully
+
+    // Budget sized to keep the block but force dropping ≥1 volunteered page.
+    const tight = Math.max(600, Buffer.byteLength(full.text, 'utf8') - 150);
+    const r = await assembleTurnContext(engine, { sourceId: 'default', window, maxBytes: tight });
+    expect(r.degradedReason).toBe('budget_trimmed');
+    const trimmed = r.volunteered ?? [];
+    expect(trimmed.length).toBeLessThan(fullVolunteered.length); // ≥1 dropped
+    for (const v of trimmed) expect(r.text).toContain(v.slug); // survivors ARE in the text
+    const droppedSlugs = fullVolunteered.map((v) => v.slug).filter((s) => !trimmed.some((v) => v.slug === s));
+    expect(droppedSlugs.length).toBeGreaterThan(0);
+    for (const s of droppedSlugs) expect(r.text).not.toContain(s); // dropped are NOT in the text
+  });
+
   test('budget trims facts BEFORE pointers, lowest confidence first [ENG-1]', async () => {
     await seedPage('people/alice-example', 'Alice Example', 'Alice Example founder profile.');
     for (let i = 0; i < 8; i++) {

@@ -20,14 +20,36 @@
 
 import type { BrainEngine } from './../engine.ts';
 import { registerBackgroundWorkDrainer } from '../background-work.ts';
+import { reflexPointerRationale } from './retrieval-reflex.ts';
 
 export const VOLUNTEER_EVENTS_TTL_DAYS = 90;
 
-export type VolunteerChannel = 'op' | 'reflex' | 'watch' | 'claude-code' | 'codex';
+/** Single source of truth for channel values — type + guards derive from it. */
+export const VOLUNTEER_CHANNELS = ['op', 'reflex', 'watch', 'claude-code', 'codex'] as const;
+export type VolunteerChannel = (typeof VOLUNTEER_CHANNELS)[number];
 
-/** Runtime guard for wire-supplied channels (untrusted hook stdin → IPC). */
+/** The harness subset — the ONLY channels a wire caller may claim. */
+export const HARNESS_CHANNELS = ['claude-code', 'codex'] as const;
+export type HarnessChannel = (typeof HARNESS_CHANNELS)[number];
+
+/** Wire fallback: the only harness bootstrap registers hooks for today. */
+export const DEFAULT_HOOK_CHANNEL: HarnessChannel = 'claude-code';
+
+/** session_id trust-boundary clamp — shared with the volunteer_context op. */
+export const SESSION_ID_MAX_LEN = 256;
+
 export function isVolunteerChannel(v: unknown): v is VolunteerChannel {
-  return v === 'op' || v === 'reflex' || v === 'watch' || v === 'claude-code' || v === 'codex';
+  return (VOLUNTEER_CHANNELS as readonly string[]).includes(v as string);
+}
+
+/**
+ * Wire-facing guard: a secret-holding IPC client may attribute deliveries to
+ * a HARNESS channel only — accepting internal channels ('op'/'reflex'/'watch')
+ * from the wire would let a hook client pollute the internal channels'
+ * precision stats (the same corruption class the delivery-point rule guards).
+ */
+export function isHarnessChannel(v: unknown): v is HarnessChannel {
+  return (HARNESS_CHANNELS as readonly string[]).includes(v as string);
 }
 
 /**
@@ -51,11 +73,11 @@ export function logTurnContextDeliveryFireAndForget(
   req: { channel?: string; sessionId?: string },
 ): void {
   try {
-    const channel: VolunteerChannel = isVolunteerChannel(req.channel) ? req.channel : 'claude-code';
-    const sessionId = typeof req.sessionId === 'string' ? req.sessionId.slice(0, 256) : null;
-    // Pointers map to event rows with the reflex-path rationale template
-    // (logDeliveredReflexPointers parity) — inlined rather than routed
-    // through that function's dynamic import so the pending write registers
+    // Harness channels ONLY from the wire — see isHarnessChannel.
+    const channel: VolunteerChannel = isHarnessChannel(req.channel) ? req.channel : DEFAULT_HOOK_CHANNEL;
+    const sessionId = typeof req.sessionId === 'string' ? req.sessionId.slice(0, SESSION_ID_MAX_LEN) : null;
+    // Pointer rows use the shared reflex rationale template; mapped inline
+    // (not via logDeliveredReflexPointers) so the pending write registers
     // synchronously (a late registration can be dropped at process exit).
     const rows = [
       ...(result.volunteered?.length
@@ -63,7 +85,7 @@ export function logTurnContextDeliveryFireAndForget(
         : []),
       ...(result.pointers?.length
         ? volunteerEventRowsFrom(
-            result.pointers.map((p) => ({ ...p, rationale: `${p.arm} match "${p.display}"` })),
+            result.pointers.map((p) => ({ ...p, rationale: reflexPointerRationale(p) })),
             { channel, session_id: sessionId },
           )
         : []),

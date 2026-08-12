@@ -474,8 +474,12 @@ describe('onTurnContextDelivered — the hook lane feedback-loop seam (#2095)', 
     servers.push(server!);
     const resp = await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi Acme' }], channel: 'claude-code', sessionId: 's-1' });
     expect((resp as TurnContextResponse).ok).toBe(true);
-    // Give the post-write callback a tick.
-    await new Promise((r) => setTimeout(r, 20));
+    // Poll (never a fixed sleep — the post-write callback races the client's
+    // response receipt and can land late on a loaded box).
+    const deadline = Date.now() + 2000;
+    while (delivered.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(delivered).toHaveLength(1);
     expect(delivered[0].result.volunteered).toHaveLength(1);
     expect(delivered[0].result.pointers).toHaveLength(1);
@@ -487,20 +491,53 @@ describe('onTurnContextDelivered — the hook lane feedback-loop seam (#2095)', 
     const dir = tmpDir();
     const sock = resolveSocketPath(dir);
     const secret = ensureIpcSecret(dir);
-    let fired = 0;
+    const fired: string[] = [];
+    let emptyMode = true;
     const server = await startResolveIpcServer(
       sock,
-      { resolve: async () => null, turn_context: async () => stubBlock }, // text: '' → empty block
-      { secret, boundSourceId: 'default', onTurnContextDelivered: () => { fired++; } },
+      { resolve: async () => null, turn_context: async () => (emptyMode ? stubBlock : richBlock) },
+      { secret, boundSourceId: 'default', onTurnContextDelivered: (_r, req) => { fired.push(req.sessionId ?? '?'); } },
     );
     servers.push(server!);
 
     // Empty block: ok response, but nothing injected → no callback.
-    await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi' }] });
+    await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi' }], sessionId: 'empty-1' });
     // Unauthorized: rejection → no callback.
-    await requestTurnContext(sock, { secret: 'wrong-secret', window: [{ role: 'user', text: 'hi' }] });
-    await new Promise((r) => setTimeout(r, 20));
-    expect(fired).toBe(0);
+    await requestTurnContext(sock, { secret: 'wrong-secret', window: [{ role: 'user', text: 'hi' }], sessionId: 'unauth-1' });
+    // Absence proven by ORDERING, not timing: a third request whose callback
+    // IS expected must be the FIRST and only delivery observed.
+    emptyMode = false;
+    await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi' }], sessionId: 'sentinel-1' });
+    const deadline = Date.now() + 2000;
+    while (fired.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(fired).toEqual(['sentinel-1']);
+  });
+
+  test('clamp priority: oversized priorContextText is dropped BEFORE any window turn (red-team trim inversion)', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    let seen: TurnContextRequest | null = null;
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => null, turn_context: async (req) => { seen = req; return richBlock; } },
+      { secret, boundSourceId: 'default' },
+    );
+    servers.push(server!);
+    const window: WindowTurn[] = Array.from({ length: 4 }, (_, i) => ({ role: 'user' as const, text: `turn ${i} about Acme` }));
+    const resp = await requestTurnContext(sock, {
+      secret,
+      window,
+      priorContextText: 'p'.repeat(300 * 1024), // alone exceeds the 256KB cap
+    });
+    expect((resp as TurnContextResponse).ok).toBe(true);
+    // The ADVISORY dedupe payload was sacrificed; the ESSENTIAL window
+    // arrived intact — evicting turns to preserve a hint would silently
+    // hollow out candidate extraction.
+    expect(seen!.priorContextText).toBeUndefined();
+    expect(seen!.window).toHaveLength(4);
   });
 
   test('channel is additive on the wire: a server without the callback ignores it', async () => {

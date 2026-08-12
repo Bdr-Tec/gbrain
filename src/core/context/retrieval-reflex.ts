@@ -352,19 +352,25 @@ export function renderPointerBlock(pointers: ReflexPointer[]): string {
  * precision toward zero (corrupting the exact stats users tune
  * min_confidence with).
  */
-export function logDeliveredReflexPointers(
-  engine: BrainEngine,
-  pointers: ReflexPointer[],
-  channel: import('./volunteer-events.ts').VolunteerChannel = 'reflex',
-): void {
+/**
+ * Canonical rationale template for a delivered reflex pointer — shared by the
+ * ambient-channel logger below AND the hook lane's delivery logger
+ * (volunteer-events.ts:logTurnContextDeliveryFireAndForget) so the two
+ * channels' rationale strings can never drift.
+ */
+export function reflexPointerRationale(p: ReflexPointer): string {
+  return `${p.arm} match "${p.display}"`;
+}
+
+export function logDeliveredReflexPointers(engine: BrainEngine, pointers: ReflexPointer[]): void {
   if (!pointers.length) return;
   void import('./volunteer-events.ts')
     .then(({ logVolunteerEventsFireAndForget, volunteerEventRowsFrom }) => {
       logVolunteerEventsFireAndForget(
         engine,
         volunteerEventRowsFrom(
-          pointers.map((p) => ({ ...p, rationale: `${p.arm} match "${p.display}"` })),
-          { channel },
+          pointers.map((p) => ({ ...p, rationale: reflexPointerRationale(p) })),
+          { channel: 'reflex' },
         ),
       );
     })

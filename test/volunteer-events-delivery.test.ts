@@ -105,12 +105,30 @@ describe('logTurnContextDeliveryFireAndForget — the shipped serve wiring', () 
   });
 });
 
-describe('logDeliveredReflexPointers — explicit channel argument', () => {
-  test('non-default channel reaches the event row (the turn_context pointer path)', async () => {
+describe('logDeliveredReflexPointers — ambient reflex channel', () => {
+  test('logs under the reflex channel with the shared rationale template', async () => {
     const captured: CapturedInsert[] = [];
-    logDeliveredReflexPointers(stubEngine(captured), [POINTER], 'codex');
+    logDeliveredReflexPointers(stubEngine(captured), [POINTER]);
     await awaitPendingVolunteerEventWrites(2000);
     expect(captured).toHaveLength(1);
-    expect(captured[0].params).toContain('codex');
+    expect(captured[0].params).toContain('reflex');
+    expect(captured[0].params).toContain('alias match "Alice"'); // reflexPointerRationale parity
+  });
+});
+
+describe('channel guards', () => {
+  test('isHarnessChannel accepts only harness channels — internal channels are refused from the wire', async () => {
+    const { isHarnessChannel } = await import('../src/core/context/volunteer-events.ts');
+    expect(isHarnessChannel('claude-code')).toBe(true);
+    expect(isHarnessChannel('codex')).toBe(true);
+    for (const internal of ['op', 'reflex', 'watch']) expect(isHarnessChannel(internal)).toBe(false);
+  });
+
+  test('wire delivery claiming an INTERNAL channel falls back to the harness default (stat-pollution guard)', async () => {
+    const captured: CapturedInsert[] = [];
+    logTurnContextDeliveryFireAndForget(stubEngine(captured), { volunteered: [PAGE] }, { channel: 'reflex' });
+    await awaitPendingVolunteerEventWrites(2000);
+    expect(captured[0].params).toContain('claude-code');
+    expect(captured[0].params).not.toContain('reflex');
   });
 });

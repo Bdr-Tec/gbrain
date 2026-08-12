@@ -103,6 +103,9 @@ export const HEARTBEAT_FAILURE_RATE_THRESHOLD = 0.5;
 export const PUSH_STALE_MS = 48 * 60 * 60 * 1000;
 /** user-prompt window: transcript turns fed to turn_context (plan D5: last 4). */
 const USER_PROMPT_WINDOW_TURNS = 4;
+/** Dedupe-input budget: newest injected blocks kept under this cap so the
+ * IPC request can never blow the 256KB message cap on priorContextText. */
+export const PRIOR_CONTEXT_MAX_BYTES = 32 * 1024;
 /** user-prompt transcript parse budget (tail bytes — the window only needs the newest turns). */
 const USER_PROMPT_TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -717,10 +720,27 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
         // session back as priorContextText (slug-only suppression + volunteer
         // dedupe inside assembleTurnContext) — a page is volunteered once per
         // session, not once per mention. Structured extraction only (the
-        // hook_additional_context attachments), never raw turn text, so a
-        // short slug appearing in a tool payload can't over-suppress.
+        // gbrain-marked hook_additional_context attachments), never raw turn
+        // text, so a short slug in a tool payload can't over-suppress.
+        // Bounded before send: identical blocks dedupe (the same pointer
+        // re-recorded each turn is pure redundancy) and the newest blocks are
+        // kept under a byte cap — an unbounded join would eventually exceed
+        // the 256KB IPC message cap and permanently silence the channel.
+        // Horizon note: the tail read bounds dedupe to the newest
+        // USER_PROMPT_TRANSCRIPT_MAX_BYTES of transcript — in very long
+        // sessions the oldest injections roll out and their pages become
+        // volunteerable again (documented, preferable to a state file).
         if (parsed.injectedContextBlocks.length) {
-          priorContextText = parsed.injectedContextBlocks.join('\n\n');
+          const unique = [...new Set(parsed.injectedContextBlocks)];
+          const kept: string[] = [];
+          let bytes = 0;
+          for (const block of unique.reverse()) { // newest first
+            const b = Buffer.byteLength(block, 'utf8') + 2;
+            if (bytes + b > PRIOR_CONTEXT_MAX_BYTES) break;
+            kept.unshift(block); // restore oldest → newest order
+            bytes += b;
+          }
+          if (kept.length) priorContextText = kept.join('\n\n');
         }
       } catch {
         turns = []; // unreadable-mid-flight — the prompt alone still works

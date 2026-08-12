@@ -279,7 +279,15 @@ export async function requestTurnContext(
     window: Array.isArray(req.window) ? [...req.window] : [],
   };
   let line = JSON.stringify(full);
-  // Trim oldest-first until the request fits the message cap [G11].
+  // Trim to the message cap [G11] in priority order: the ADVISORY dedupe
+  // payload (priorContextText) is dropped BEFORE any essential window turn —
+  // evicting the window first would silently hollow out candidate extraction
+  // (empty blocks with ok:true) to preserve a hint. Then window turns,
+  // oldest-first.
+  if (Buffer.byteLength(line, 'utf8') + 1 > MAX_MSG_BYTES && full.priorContextText) {
+    delete full.priorContextText;
+    line = JSON.stringify(full);
+  }
   while (Buffer.byteLength(line, 'utf8') + 1 > MAX_MSG_BYTES && full.window.length > 0) {
     full.window.shift();
     line = JSON.stringify(full);

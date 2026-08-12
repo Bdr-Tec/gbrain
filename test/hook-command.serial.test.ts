@@ -235,6 +235,41 @@ describe('user-prompt', () => {
     expect(seen!.channel).toBe('claude-code');
   });
 
+  test('priorContextText is deduped and byte-capped: an injection-heavy session can never blow the IPC message cap', async () => {
+    const dataDir = join(tmp, 'data');
+    writePgliteConfig(dataDir);
+    let seen: TurnContextRequest | null = null;
+    await startServer({ dataDir, blockText: 'ok', onRequest: (r) => { seen = r; } });
+    const projRoot = join(tmp, 'projects');
+    mkdirSync(join(projRoot, 'p1'), { recursive: true });
+    const transcript = join(projRoot, 'p1', 'sess.jsonl');
+    // 60 injections: 50 identical (per-turn re-records of one block) + 10
+    // distinct 8KB blocks — raw join would be ~90KB+; the cap keeps ≤32KB
+    // of NEWEST distinct blocks.
+    const bigBlock = (i: number) =>
+      `## Brain pages mentioned this turn\n- **Page ${i}** → \`pages/p${i}\` — ${'x'.repeat(8000)}`;
+    const lines = [
+      ...Array.from({ length: 50 }, () =>
+        JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['## Brain pages mentioned this turn\n- **Dup** → `pages/dup` — same block every turn'] } })),
+      ...Array.from({ length: 10 }, (_, i) =>
+        JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [bigBlock(i)] } })),
+    ];
+    writeFileSync(transcript, lines.join('\n') + '\n');
+    const out = collectStdout();
+    await runHook(['user-prompt'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'more about Acme?', transcript_path: transcript, session_id: 's-cap' }),
+      transcriptRoot: projRoot,
+    });
+    expect(seen).not.toBeNull();
+    const prior = seen!.priorContextText!;
+    expect(Buffer.byteLength(prior, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    // Newest-first retention: the newest distinct block survives the cap...
+    expect(prior).toContain('pages/p9');
+    // ...and identical re-records collapsed to one occurrence.
+    expect(prior.split('pages/dup').length - 1).toBeLessThanOrEqual(1);
+  });
+
   test('--harness codex flags the channel; unknown values fall back to the default', async () => {
     const dataDir = join(tmp, 'data');
     writePgliteConfig(dataDir);
