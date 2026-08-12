@@ -2,6 +2,32 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.8.0] - 2026-08-12
+
+**The first five minutes stop making you think.** We built a real-terminal harness that drives the actual install the way a new user does — every picker, prompt, silence window, and line of copy — and then fixed what it surfaced. Keyless `gbrain init` used to dead-end at an error before it created anything; now it just works, keyless, and says so. A fresh brain used to scroll ~240 lines of internal migration names; now it prints one line. The success screen used to bury the one thing to do next under eight competing calls to action; now the copy-paste memory demo is the last, obvious thing on screen. And the "here's the magic" moment in the README now points at the trick that only a brain can do — tell it something, restart, ask for it back — instead of a question your identity files answer for free.
+
+Under the hood: the upgrade nudge now compares the version you're actually running (a stale or foreign cache can't tell you to upgrade to something you already have), a broken settings file makes the installer stop and tell you rather than quietly replace it, and `gbrain init --supabase` fails loudly in a script instead of pretending it worked. Every fix landed with a test, and a two-model adversarial review pass (Claude + Codex) caught a cluster of follow-on issues in the fixes themselves — a keyless upgrade command that pointed at a rejected path, a compiled-binary detection that broke for renamed binaries — which are fixed here too.
+
+To take advantage of v0.45.8.0: nothing to do — `gbrain self-upgrade` (or your next `gbrain` invocation's upgrade nudge) brings you current, and the improvements are all in the install/first-run path a new brain hits automatically.
+
+### Added
+- **A real-PTY DX exploration harness** (`test/helpers/tty-harness.ts` + `scripts/dx-explore.ts`). It spawns any CLI — gbrain, `claude`, `codex` — under a true pseudo-terminal, timestamps every output burst, and turns silence windows into a measurable stall report, so "the user stared at a frozen screen for nine seconds" is an artifact, not a hunch. A `drive` mode lets an agent steer a live TUI across separate tool calls. Developer instrument only; transcripts are gitignored and nothing in the shipped product depends on it.
+
+### Changed
+- **Keyless is now the default when you have no embedding key**, on both the interactive and scripted paths: `gbrain init` completes with a loud, honest "keyless mode — keyword search plus memory your agent writes; everything works" notice instead of exiting with an error. A near-miss key typo still fails loudly (so a fat-fingered `OPENAPI_API_KEY` isn't silently buried). Multiple keys auto-pick the canonical default rather than refusing.
+- **Fresh-brain init prints one schema-setup line** instead of the full migration replay; upgrades keep the per-migration detail where it has diagnostic value (`GBRAIN_MIGRATE_VERBOSE=1` restores it).
+- **The init success screen leads with one action** — the three-command memory demo, last on screen — with import/scale-up/health collapsed into a single terse footer and the recommended-skills advisory reduced to a human-voiced pointer.
+- **The provider picker offers "continue keyless" explicitly** and probe-gates a local Ollama daemon (a running daemon that hasn't pulled the model is annotated, not silently selected); a bare Enter never picks a broken local provider.
+- **The upgrade nudge tells the truth about your binary**: it compares the running version to the latest and prints the running version, so a stale or foreign-written cache can't nag about an upgrade you already have. The raw machine marker stays off an interactive human's screen (override with `GBRAIN_FORCE_UPGRADE_MARKER=1` for PTY-based agent harnesses that parse it).
+- **Copy honesty pass**: provider capabilities are attributed per provider (OpenAI unlocks semantic search + fact extraction; Voyage semantic search; Anthropic fact extraction — it has no embeddings API); the install-time estimate reads ~15 minutes for the personal-agent path (~30 for the always-on setup); the first-run tour says to restart first and frames the genuine cross-session round-trip.
+
+### Fixed
+- **A parse-broken `.claude/settings.local.json` aborts the hooks write** with a fix-and-re-run message instead of being replaced — your permissions and allowlist are never silently dropped.
+- **`gbrain init --supabase` in a non-interactive shell fails loudly** (exit 1, names the `--url` escape hatch) instead of the old silent exit-0 that wrote no config.
+- **`gbrain bootstrap hooks` with a missing harness CLI** now still installs per-turn hooks and reports the phase as partial (so a resuming agent re-runs it once the CLI is on PATH) instead of leaving a false "wire complete".
+- **`gbrain bootstrap interview --set/--skip` after a confirmation** warns that it voided the read-back instead of failing silently later at render.
+- Review-pass self-fixes: the keyless upgrade hint now names the re-init command that actually works (not the schema-sizing field `config set` rejects); compiled-binary detection for the detached update refresh no longer breaks for a renamed/official-named binary; the DX harness scrubs copied credentials even on interrupt and reaps the child's whole process tree.
+
 ## [0.45.7.0] - 2026-08-12
 
 **Ambient recall: your brain shows up at the moments that matter, not just when you ask.** Long-lived agents lose the thread at session boundaries — a fresh start with no warm context, a compaction that drops verbatim detail nothing rehydrates, a heartbeat that re-derives state from scratch. This release adds two new memory verbs that assemble a budget-packed, zero-LLM bundle of exactly what a boundary needs, and wires them into the agent's lifecycle hooks so a warm pack lands automatically at session start and after compaction. It's opt-in, fail-open, and reaches every host: Claude Code gets it pushed through hooks; Codex and any MCP host pull the same two verbs at their own boundaries. Whether your brain is embedded (PGLite) or managed (Postgres), the ambient value is the same.

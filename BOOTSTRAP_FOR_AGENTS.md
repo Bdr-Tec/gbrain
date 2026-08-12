@@ -1,4 +1,4 @@
-<!-- gbrain-runbook-stamp: 0.45.7.0 -->
+<!-- gbrain-runbook-stamp: 0.45.8.0 -->
 <!-- This stamp must equal the VERSION file at every release; CI enforces it
      (scripts/check-bootstrap-tag.sh). `gbrain bootstrap status` compares it to
      the installed binary and warns on skew. -->
@@ -73,8 +73,10 @@ you needed; report the count at the end (it feeds the install-time measurement).
    Then `gbrain bootstrap status` — it is idempotent and resume-aware; after any
    partial failure, re-run it and continue where it points.
 2. **Engine.** `gbrain init --pglite` (2 seconds, no server). Search mode is
-   auto-selected silently (conservative when keyless, balanced with an
-   expansion key) — do NOT ask; the human can change it any time with
+   auto-selected silently (conservative when keyless, tokenmax with an
+   expansion key) and printed with an `[AGENT]` cost matrix — surface that
+   matrix to the human and confirm before running high-volume queries (see
+   INSTALL_FOR_AGENTS.md Step 3.5); they can change it any time with
    `gbrain search modes`. The one thing to raise here is the OPTIONAL provider
    key — with no key you run keyless: keyword search plus memory you author
    yourself through the write tools; everything works, one key upgrades search to
