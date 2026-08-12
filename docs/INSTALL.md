@@ -77,7 +77,7 @@ The agent spawns `gbrain serve` as a stdio subprocess against your local brain. 
 
 ```bash
 gbrain serve                      # stdio MCP (Claude Desktop / Code / Cursor)
-gbrain serve --surface verbs      # stdio MCP, just the 5 memory verbs (quickstart)
+gbrain serve --surface verbs      # stdio MCP, just the 7 memory verbs (quickstart)
 gbrain serve --http               # HTTP MCP with OAuth 2.1 + admin dashboard
 ```
 

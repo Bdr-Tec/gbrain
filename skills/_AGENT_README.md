@@ -127,3 +127,22 @@ The single source of truth for the model is
 `docs/guides/skillpacks-as-scaffolding.md` in the gbrain repo. The skill
 files you scaffolded are the source of truth for individual skill behavior.
 This file (`_AGENT_README.md`) is the routing contract — keep it short.
+
+## Frontmatter contract notes
+
+- **`upstream: <donor-skill>@<short-sha>`** — the provenance pin: which
+  donor skill (by slug) and which commit of it this skill was ported from.
+  Multi-source ports pin every donor, either as a YAML list or plus-joined
+  (`upstream: skill-a@abc1234 + skill-b@def5678`). To resolve a drift or
+  behavior question, diff the current SKILL.md against the pinned source
+  commit — the pin is what makes that diff possible.
+- **Optional keys are omitted, not zeroed.** Omit `writes_to` entirely when
+  the skill writes no pages (an empty list implies "writes pages, nowhere",
+  which is a contradiction). `brain_first: exempt` is allowed only with an
+  adjacent comment justifying WHY the skill is exempt from the brain-first
+  lookup chain — an unexplained exemption is a conformance failure.
+- **`priority:` is NOT part of the routing contract.** Nothing in the routing
+  path consumes it — matching is substring-over-`triggers:` (see "Routing"
+  above), with `RESOLVER.md` disambiguation for overlaps. A `priority:` key is
+  inert; don't add one expecting it to reorder matches. Encode precedence in
+  trigger specificity and the resolver's disambiguation rules instead.

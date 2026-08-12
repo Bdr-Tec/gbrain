@@ -19,7 +19,7 @@ clients over OAuth 2.1.
 
 ```bash
 gbrain serve                  # full operation catalog (default)
-gbrain serve --surface verbs  # just the 5 memory verbs (quickstart surface)
+gbrain serve --surface verbs  # just the 7 memory verbs (quickstart surface)
 ```
 
 Works with Claude Code, Cursor, Windsurf, and any MCP client that supports stdio.

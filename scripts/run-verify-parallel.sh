@@ -70,6 +70,7 @@ CHECKS=(
   "check:worker-lock-renewal-shape"
   "check:bootstrap-tag"
   "check:bootstrap-templates"
+  "check:skill-refs"
   "typecheck"
 )
 

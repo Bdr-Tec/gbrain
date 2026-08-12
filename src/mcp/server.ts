@@ -17,6 +17,8 @@ import {
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
 import { assembleTurnContext } from '../core/context/turn-context.ts';
+import { gcSessionContextState } from '../core/context/session-state.ts';
+import { makeContextPackIpcHandler } from './context-pack-handler.ts';
 import { logTurnContextDeliveryFireAndForget } from '../core/context/volunteer-events.ts';
 
 export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpSurface } = {}) {
@@ -150,6 +152,11 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
               sessionId: req.sessionId,
               maxBytes: req.maxBytes,
             }),
+          // v0.45.7 ambient recall: boundary context pack. Extracted to
+          // context-pack-handler.ts (directly testable against a real engine);
+          // the runtime owns entity merge, banking, the since-cursor, and the
+          // complete-pack-only monotonic cursor advance.
+          context_pack: makeContextPackIpcHandler(engine, defaultSource),
         },
         {
           // The IPC resolve path IS the ambient reflex channel. Logging happens
@@ -172,6 +179,10 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
   } catch {
     /* resolve IPC is best-effort; never block serve */
   }
+
+  // v0.45.7 ambient recall: age out stale session cursors once per serve boot
+  // (7-day TTL, indexed DELETE). Best-effort — GC failure never blocks serve.
+  gcSessionContextState(engine).catch(() => {});
 
   // Startup maintenance sweep [ENG-5][CX-P0.1+P0.3]: the serve process is
   // the lock owner, so it runs the bounded sweep that ingests the corpus +

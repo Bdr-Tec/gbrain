@@ -1,5 +1,75 @@
 # TODOS
 
+## Ambient recall follow-ups (filed v0.45.7.0, issue #1)
+
+Deferred from the ambient-recall wave (`context_pack` + `delta` frozen verbs +
+boundary runtime; CEO+ENG cleared, plan at
+`~/.claude/plans/system-instruction-you-are-working-vectorized-gem.md`). Each was
+explicitly scoped OUT with a one-line rationale — none is a bug, all are additive.
+
+- [ ] **Autonomous transcript watchers (D3=B).** The shipped event contract covers session boundaries (start, compaction, heartbeat) but relies on the harness emitting a lifecycle event. A per-harness transcript watcher would drive ambient recall for harnesses that can't emit — but watchers are fragile and compaction is often invisible on disk. Add per harness that proves it can't emit a boundary event. Priority: P3.
+- [ ] **Materialized `thread_state` table.** `delta`'s thread-change arm derives open-thread deltas from facts/timeline `updated_at` scans. If a perf gate ever forces it, materialize a `thread_state` table instead of deriving. Not needed until the derive-path SLO is threatened. Priority: P3.
+- [ ] **Codex native boundary hooks.** Codex has no hooks upstream (`CODEX_HAS_HOOKS=false`), so its ambient path is pull-only (AGENTS.md gate tells it to call `context_pack`/`delta` at boundaries). When Codex ships a hook mechanism, register the boundary events the way the Claude Code lane does; the IPC `context_pack` kind + `--harness codex` attribution channel are already reserved for it. Priority: P3.
+## Brain-currency harness-e2e follow-ups (filed with the PR-A wave)
+
+- [ ] **P1 — Extend engine-identity convergence to the other long-lived planes.**
+  The autopilot daemon now detects a post-migration engine flip
+  (`autopilotEngineIdentity` per-tick compare → clean exit for supervisor
+  relaunch), but `gbrain serve` (MCP) and a standalone `gbrain jobs work`
+  worker hold their engine handle indefinitely and keep writing into the
+  abandoned source engine after a flip — the same silent-divergence class,
+  still open on those planes (adversarial-review catch). Fix shape: the same
+  boot-identity compare in their main loops.
+- [ ] **P2 — DB-visible pause for cross-host workers.** The pause marker now
+  fences local job pickup (pre-claim check + post-claim release-back in
+  `src/core/minions/worker.ts`), but the marker is a local file: a worker on
+  ANOTHER host or container pointed at the same Postgres brain never sees it
+  and keeps claiming jobs during a migration copy (its in-flight work IS
+  visible to the drain via `minion_jobs`/lock rows; new claims are the gap).
+  Fix shape: a row in a control table (or a pause flag in `gbrain_cycle_locks`)
+  that the claim query itself honors — atomic with claiming, visible
+  cluster-wide.
+- [ ] **P2 — Route file→symlink typechanges to delete.** `buildSyncManifest`
+  maps git status `T` to modified, but import-file deliberately SKIPS symlinks
+  (the exfil guard), so replacing an indexed file with a symlink leaves the
+  old content indexed forever with no delete. Fix shape: when the post-change
+  path is a symlink, emit a delete instead of a modify.
+- [ ] **P3 — Surface daemon-internal degradation in status.** A daemon stuck
+  in the reconnect-retry loop (crash-classified errors) keeps heartbeating,
+  so `--status` reads fresh while zero work happens. Fix shape: a breadcrumb
+  file with consecutive-failure count that showStatus reads.
+
+- [ ] **P3 — Extract a shared `seedBrain` test helper.** The keyless-PGLite +
+  tmp-HOME + shimmed-PATH setup is duplicated between
+  `test/autopilot-launchd-lifecycle.serial.test.ts` and
+  `test/agent-scheduler-contract.serial.test.ts` (review-army maintainability
+  finding). A third harness-e2e file (the PR-B tier) should force the
+  extraction into `test/helpers/`; don't extract before then — two instances
+  is a coincidence, three is a pattern.
+- [ ] **P3 — Name the quiesce protocol's magic numbers.** `migrate-engine.ts`
+  and `autopilot.ts` share three constants by value, not by name: the 600s
+  heartbeat-freshness window, the 35s default grace, and the daemon's paused
+  fast-poll interval. Hoist into `src/core/autopilot-paths.ts` (the shared
+  leaf) as named exports so the two planes can't drift.
+- [ ] **P3 — Migration manifest rows don't carry content_hash.** A resume
+  trusts `(source_id, slug)` membership in `completed_slugs`; a page edited
+  BETWEEN the failed run and the resume is skipped with its stale copy left on
+  the target (review-army data-migration finding; pre-existing design, not a
+  regression). Fix shape: stamp `content_hash` per completed entry and re-copy
+  on mismatch during resume.
+
+- [ ] **P2 — Keyless `gbrain dream` contract test.** The documented nightly cron
+  (INSTALL_FOR_AGENTS.md Step 7) runs `gbrain dream` unconditionally, and the cycle's
+  embed phase hits the same `EmbeddingDisabledError` class that broke the documented
+  sync-and-embed chain on keyless brains (fixed in `runEmbed` for the `--stale`
+  spelling; `test/agent-scheduler-contract.serial.test.ts` pins it). Nobody has verified that a
+  full keyless dream exits 0 — if any phase surfaces the disabled-embeddings error as a
+  phase failure, the documented nightly cron is broken identically for every
+  `init --no-embedding` install. **Where to start:** `src/core/cycle.ts` embed phase +
+  `src/commands/dream.ts` exit-code handling; test shape mirrors
+  `test/agent-scheduler-contract.serial.test.ts` (keyless PGLite brain, real CLI spawn, exit-code
+  assertion). Surfaced by the harness-e2e outside-voice review.
+
 ## BrainBench follow-ups (filed v0.44.0.0, Cathedral 2)
 
 Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
@@ -5241,3 +5311,82 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   (pre-existing on master; observed during the agent-bootstrap gate runs).
   Start: run the file under `--max-concurrency=4` alongside PGLite-heavy
   neighbors to reproduce; suspect tmp-dir or timing assumptions.
+
+## Giftable-import wave follow-ups (filed at build time)
+
+- [ ] **P1 — Wire citation edge types into relational retrieval.** `relational-intent.ts`
+  recognizes a hardcoded edge-type set that excludes `overrules`/`distinguishes`/
+  `relies-on` (the types citation-graph-ingest creates). Until they're walked by
+  natural-language relational recall, the skill's value is explicit `graph-query`
+  only. Add the types + an eval fixture proving a relational question traverses a
+  citation edge. Files: `src/core/search/relational-intent.ts`,
+  `src/core/search/relational-recall.ts`.
+- [ ] **P2 — Native operation-boundary confirm for destructive ops.** data-loss-gate
+  is routing prose; destructive paths (bulk forget, `delete_page` sweeps, source
+  removal, mounts remove) can bypass it via CLI/MCP/jobs. Add a native confirm
+  (TTY prompt / `--yes` flag / MCP scope) at the operation boundary.
+- [ ] **P2 — `gbrain ingest feed`: native feed adapter.** blog-ingest ships the
+  agent-procedure layer; the durable path is a deterministic RSS/Atom adapter
+  (discovery, pagination, canonical-URL dedup, 429 backoff) behind one command.
+- [ ] **P2 — Native AI-chat export importer.** conversation-archive converts
+  ChatGPT/Claude/Perplexity exports via agent procedure; a native importer
+  (export JSON → conversations/ pages) makes it deterministic. Pairs with the
+  existing conversation-parser surface.
+- [ ] **P2 — Entity-guard as a native op.** phonetic-name-guard's own changelog
+  proves prose-only failed: ASR-variant entity collisions need a native check
+  (registry + alias table consulted at put/import time). The wave shipped the
+  registry-first discipline in brain-ingest-gate; this hardens it.
+- [ ] **P2 — Premiere-repo program ① distribution:** list gbrain on skills.sh +
+  Claude Code plugin marketplace + agentskills.io conformance; README cross-
+  harness matrix (CI-verified). First fast-follow PR after this wave.
+- [ ] **P2 — Premiere-repo program ② receipts:** public BrainBench receipts page
+  pairing accuracy with token cost per query, regenerated per release; "trust
+  layer" framing (data-loss-gate + brain-ingest-gate + correction-pipeline).
+- [ ] **P3 — Premiere-repo program ③ protocol moat:** Anthropic memory-tool
+  (`memory_20250818`) adapter backed by recall/remember; publish MEMORY_VERBS_v1
+  as an open spec with BrainBench as its conformance suite. Own cathedral.
+- [ ] **P3 — Premiere-repo program ④ badges:** per-skill conformance badges
+  (security-scan + eval-receipt + provenance hash) surfaced in manifest/README;
+  generalize the functional-area-resolver A/B harness into `evals/skills/`.
+- [ ] **P3 — RESOLVER two-layer compression as its own PR.** Deferred out of the
+  wave at eng review: requires arrow-form dispatcher entries, the A/B run at
+  >=95% (per the functional-area-resolver contract), resolver.test.ts updates,
+  and fixture backfill for fixture-less skills. RESOLVER.md is now past the 12KB
+  gate, so the skill's precondition is satisfied.
+- [ ] **P3 — extract-atoms quality-gate prompt patch.** Fold the donor pack's
+  truism filter / statistic-punchline test / entity-page routing test / named-
+  attribution rule into `src/core/cycle/extract-atoms.ts`'s EXTRACT_PROMPT,
+  eval-gated (the native prompt's only bar today is "not a generic platitude").
+- [ ] **P3 — cross-modal eval `--corpus` hub-and-spoke mode + judge-leniency
+  normalization.** Follow relative .md links from a hub page so multi-page brain
+  artifacts aren't falsely penalized; normalize per-judge leniency in
+  `src/core/cross-modal-eval/aggregate.ts` (mean+floor only today).
+- [ ] **P3 — Advisor collectors: freshness-monitor + context-audit token drift.**
+  Two new collectors: per-source staleness SLA (the donor freshness-monitor
+  kernel) and a deterministic loaded-context token-drift check feeding the
+  context-audit skill.
+- [ ] **P3 — idea-miner import (deferred at CEO review, fit 6).** Daily brain-
+  grounded "what could I build" mining feeding skill-creator; below the wave's
+  fit bar but a strong self-improvement story.
+- [ ] **P3 — public-repo-guard revisit.** Only egress leak-gate candidate; its
+  upstream scan script fails open (`SCAN_EXIT` captured after `|| true`). Fix
+  upstream first; template-ize the patterns file; mind the gstack cso boundary.
+- [ ] **P3 — `search --fm` + schema-pack fragment** from the social-json-store
+  audit disposition: frontmatter-ID/JSONB query kernel as a native search flag
+  + a schema-pack fragment, not a skill.
+- [ ] **P3 — back-catalog-check kernel.** Optional pre-publish own-corpus
+  consistency pass folding into fact-check (per-claim own-record search);
+  `find_contradictions` + idea-lineage cover the rest today.
+
+## Skill self-knowledge — semantic skill search (deferred subsystem, from the migration-harness build)
+
+- [ ] **P2 — Make built-in skills semantically searchable in the brain.** Today skills
+  are markdown the harness routes to via triggers + a host catalog (`list_skills`/
+  `get_skill`); `gbrain search "how do I verify claims"` can't surface `fact-check`.
+  Making skills first-class searchable content needs a real design pass (tenancy +
+  source-isolation: skill pages must not pollute user-source query results; embedding
+  storage + backfill; search-steering to include/exclude the skill catalog; engine
+  parity). Deliberately NOT built in the currency/preconditions wave — it is a
+  subsystem that deserves its own eng + CEO review, not a rider. The currency work
+  (`skillpack status`/`sync`, doctor `skill_currency`) already keeps the brain's skill
+  set current on upgrade; this item is purely about semantic retrieval of skills.

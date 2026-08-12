@@ -53,8 +53,11 @@ import {
   IPC_UNAVAILABLE,
   readIpcSecret,
   requestTurnContext,
+  requestContextPack,
   resolveSocketPath,
+  CONTEXT_PACK_CLIENT_TIMEOUT_MS,
   type TurnContextResponse,
+  type ContextPackResponse,
 } from '../core/context/resolve-ipc.ts';
 import type { WindowTurn } from '../core/context/entity-salience.ts';
 import {
@@ -157,6 +160,9 @@ Events (wired into .claude/settings.local.json by gbrain bootstrap):
   stop            append to the per-session live buffer
   session-end     ingest the session transcript into the dream corpus
                   (secret-scanned), prune old corpus files, push the workspace
+  compact         (PreCompact) bank the window's standing entities into the
+                  session cursor so the post-compaction session-start serves
+                  a warm context pack; emits nothing
 
 Env: GBRAIN_HOOKS=0 disables all events (immediate exit 0).
 All events fail open: errors exit 0 with empty stdout and a heartbeat entry at
@@ -177,7 +183,7 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
     const v = args[harnessIdx + 1];
     if (v === 'claude-code' || v === 'codex') io = { ...io, harness: v };
   }
-  if (!event || !['session-start', 'user-prompt', 'stop', 'session-end'].includes(event)) {
+  if (!event || !['session-start', 'user-prompt', 'stop', 'session-end', 'compact'].includes(event)) {
     process.stderr.write(USAGE + '\n');
     return 1;
   }
@@ -194,6 +200,8 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
       return hookStop(io);
     case 'session-end':
       return hookSessionEnd(io);
+    case 'compact':
+      return hookCompact(io);
     default:
       return 1; // unreachable
   }
@@ -452,6 +460,42 @@ async function hookSessionStart(io: HookIo): Promise<number> {
           reason = reasonCode(dirty.reason);
         }
       }
+
+      // 6. v0.45.7 ambient recall — boundary context pack over IPC. SessionStart
+      //    is Claude Code's cold-start AND post-compaction re-entry point
+      //    (source=compact/resume), so this one arm covers both. The server
+      //    owns the intelligence (banked entities + since-cursor + advance);
+      //    world-only always. Every failure is a silent skip — the file-only
+      //    digest above must never be hostage to the brain being down.
+      try {
+        const cfg = loadConfig();
+        if (cfg?.engine === 'pglite' && cfg.database_path) {
+          const secret = readIpcSecret(cfg.database_path);
+          if (secret) {
+            // Same sanitizer as the compact banking path — a raw vs sanitized
+            // id would split the cursor key and the warm pack would miss the
+            // banked entities (adversarial review).
+            const sessionId = sanitizeSessionId(j?.session_id);
+            const trigger = typeof j?.source === 'string' ? `session-start:${j.source as string}` : 'session-start';
+            // Clamp the IPC timeout to the REMAINING hook deadline (minus a
+            // 100ms write margin) so the pack call can never be the thing
+            // that blows SESSION_START_DEADLINE_MS.
+            const remaining = SESSION_START_DEADLINE_MS - (Date.now() - t0) - 100;
+            if (remaining > 100) {
+              const res = await requestContextPack(resolveSocketPath(cfg.database_path), {
+                secret,
+                ...(sessionId ? { sessionId } : {}),
+                ...(process.env.GBRAIN_SOURCE ? { sourceId: process.env.GBRAIN_SOURCE } : {}),
+                trigger,
+              }, { timeoutMs: Math.min(CONTEXT_PACK_CLIENT_TIMEOUT_MS, remaining) });
+              if (res !== IPC_UNAVAILABLE && !('degraded' in res)) {
+                const pack = res as ContextPackResponse;
+                if (pack.ok && pack.block?.text) out.push(pack.block.text);
+              }
+            }
+          }
+        }
+      } catch { /* fail-open: no pack, digest stands alone */ }
     })();
 
     const res = await withDeadline(SESSION_START_DEADLINE_MS, work);
@@ -890,6 +934,93 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     ...(result.reason ? { reason: result.reason } : {}),
     duration_ms: Date.now() - t0,
     ...(result.turns !== undefined ? { turns: result.turns } : {}),
+  });
+  return 0;
+}
+
+// ── compact (PreCompact banking, v0.45.7 ambient recall) ─────────────────────
+
+/** Self-deadline for the compact event (harness timeout is 5s). */
+export const COMPACT_DEADLINE_MS = 3000;
+/** Banking wants breadth, not the 4-turn prompt window. */
+const COMPACT_WINDOW_TURNS = 20;
+
+/**
+ * PreCompact fires BEFORE Claude Code compacts the transcript. Its stdout is
+ * NOT context-injected — the useful work is the WRITE: extract the window's
+ * standing entities (server-side) and bank them into the session cursor so the
+ * post-compaction SessionStart (source=compact) serves a warm rehydration
+ * pack. Engine-free: transcript parse + one IPC round trip. Fail-open always.
+ */
+async function hookCompact(io: HookIo): Promise<number> {
+  const t0 = Date.now();
+  let outcome: HookHeartbeatEntry['outcome'] = 'ok';
+  let reason: string | undefined;
+
+  const work = (async () => {
+    const j = await readStdinJson(io, 300);
+    if (!j) { outcome = 'degraded'; reason = 'no_stdin'; return; }
+
+    // S3#8 posture matches user-prompt: an unconfined transcript path aborts.
+    let turns: WindowTurn[] = [];
+    if (j.transcript_path !== undefined && j.transcript_path !== null) {
+      const conf = confineTranscriptPath(j.transcript_path, {
+        ...(io.transcriptRoot ? { root: io.transcriptRoot } : {}),
+      });
+      if (!conf.ok) { outcome = 'degraded'; reason = `transcript_${conf.reason}`; return; }
+      try {
+        const parsed = parseTranscript(conf.path, { maxBytes: USER_PROMPT_TRANSCRIPT_MAX_BYTES });
+        turns = parsed.turns.slice(-COMPACT_WINDOW_TURNS);
+      } catch {
+        turns = [];
+      }
+    }
+    // sanitizeSessionId maps a MISSING id to the 'unknown' sentinel (fine for
+    // the stop buffer's filenames, wrong for cursor banking — a shared
+    // 'unknown' bucket would cross-pollinate sessions). Treat it as absent.
+    const sid = sanitizeSessionId(j?.session_id);
+    const sessionId = sid === 'unknown' ? null : sid;
+    if (!sessionId || turns.length === 0) {
+      // Nothing to bank against — not an error, just nothing to do.
+      if (outcome === 'ok') reason = sessionId ? 'empty_window' : 'no_session';
+      return;
+    }
+
+    const cfg = loadConfig();
+    // Same engine gate as the session-start pack arm (v0.45.7 symmetry): a
+    // Postgres config carrying a leftover database_path must not probe the
+    // PGLite socket — there is no serve behind it for this brain.
+    if (cfg?.engine !== 'pglite' || !cfg.database_path) { outcome = 'degraded'; reason = 'no_pglite_path'; return; }
+    const secret = readIpcSecret(cfg.database_path);
+    if (!secret) { outcome = 'degraded'; reason = 'no_serve'; return; }
+
+    const res = await requestContextPack(resolveSocketPath(cfg.database_path), {
+      secret,
+      sessionId,
+      window: turns,
+      bankOnly: true,
+      trigger: 'compact-bank',
+      ...(process.env.GBRAIN_SOURCE ? { sourceId: process.env.GBRAIN_SOURCE } : {}),
+    });
+    if (res === IPC_UNAVAILABLE) { outcome = 'degraded'; reason = 'ipc_unavailable'; return; }
+    if ('degraded' in res && res.degraded === 'stale_serve') { outcome = 'degraded'; reason = 'stale_serve'; return; }
+    const resp = res as ContextPackResponse;
+    if (!resp.ok) { outcome = 'degraded'; reason = reasonCode(resp.error ?? 'server_error'); }
+  })();
+
+  try {
+    const raced = await withDeadline(COMPACT_DEADLINE_MS, work);
+    if (raced === DEADLINE && outcome === 'ok') { outcome = 'degraded'; reason = 'deadline'; }
+  } catch (e) {
+    outcome = 'error';
+    reason = errorCode(e); // fail-open: exit 0
+  }
+  await writeHeartbeat({
+    ts: new Date().toISOString(),
+    event: 'compact',
+    outcome,
+    ...(reason ? { reason } : {}),
+    duration_ms: Date.now() - t0,
   });
   return 0;
 }

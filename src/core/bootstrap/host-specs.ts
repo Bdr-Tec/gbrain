@@ -43,26 +43,36 @@ export const TARGETS: Record<string, HostSpecTarget> = {
   [CLAUDE_CODE_SPEC_ID]: {
     id: CLAUDE_CODE_SPEC_ID,
     status: 'verified',
-    verifiedAt: '2026-08-08',
+    verifiedAt: '2026-08-12',
     references: [
       'https://code.claude.com/docs/en/hooks',
       'https://code.claude.com/docs/en/hooks-guide',
       'https://code.claude.com/docs/en/settings',
     ],
     note:
-      'Hook events used: SessionStart / UserPromptSubmit / Stop / SessionEnd. ' +
-      'Hooks are written to <workspace>/.claude/settings.local.json (gitignored ' +
-      'by Claude Code by default) as hooks.<Event> → [{matcher?, hooks: ' +
-      '[{type:"command", command, timeout}]}] with timeout in SECONDS. Hook ' +
-      'commands are shell strings (no env map) — env vars are embedded via an ' +
-      '`env K=V …` prefix. Unknown properties on the command object are ' +
+      'Hook events used: SessionStart / UserPromptSubmit / Stop / SessionEnd / ' +
+      'PreCompact. Hooks are written to <workspace>/.claude/settings.local.json ' +
+      '(gitignored by Claude Code by default) as hooks.<Event> → [{matcher?, ' +
+      'hooks: [{type:"command", command, timeout}]}] with timeout in SECONDS. ' +
+      'Hook commands are shell strings (no env map) — env vars are embedded via ' +
+      'an `env K=V …` prefix. Unknown properties on the command object are ' +
       'tolerated by the harness, which is what makes the `_gbrain` marker key ' +
       'safe. UserPromptSubmit context injection: stdout JSON ' +
       '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", ' +
       'additionalContext}}; SessionStart plain stdout becomes context. Hook ' +
       'stdout is capped at 10000 chars — overflow is diverted to a file and ' +
       'NOT injected [ENG-1]. Transcripts live under ~/.claude/projects/ as ' +
-      '.jsonl (transcript_path in the hook stdin payload).',
+      '.jsonl (transcript_path in the hook stdin payload). PreCompact stdin ' +
+      '(verified against the published hooks reference, not live capture): the ' +
+      'common fields (session_id, transcript_path, cwd, hook_event_name) plus ' +
+      'trigger:"manual"|"auto" and custom_instructions (the /compact argument ' +
+      'for manual, empty for auto). PreCompact stdout is never context-injected ' +
+      '— only UserPromptSubmit and SessionStart stdout reach the model — and ' +
+      'exit 2 blocks compaction, so the v0.45.7 banking hook must exit 0. ' +
+      'SessionStart stdin carries source:"startup"|"resume"|"clear"|"compact" ' +
+      '(+"fork" since Claude Code v2.1.214); source:"compact" fires after auto ' +
+      'or manual compaction and is the rehydration re-entry the PreCompact ' +
+      'bank serves a warm pack through.',
   },
   [CODEX_SPEC_ID]: {
     id: CODEX_SPEC_ID,
@@ -89,12 +99,18 @@ export const TARGETS: Record<string, HostSpecTarget> = {
 /** Settings file the hook writer targets, relative to the workspace root. */
 export const CLAUDE_SETTINGS_FILE_RELPATH = join('.claude', 'settings.local.json');
 
-/** Hook events bootstrap wires (plan D5 + hook events table). */
+/** Hook events bootstrap wires (plan D5 + hook events table).
+ * v0.45.7 ambient recall adds PreCompact: it BANKS the window's standing
+ * entities into session_context_state so the post-compaction SessionStart
+ * (source=compact — Claude Code's actual rehydration re-entry point) can
+ * serve a warm context pack. PreCompact stdout is NOT context-injected by
+ * the harness; the banking write is the point. */
 export const CLAUDE_HOOK_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
   'Stop',
   'SessionEnd',
+  'PreCompact',
 ] as const;
 export type ClaudeHookEvent = (typeof CLAUDE_HOOK_EVENTS)[number];
 
@@ -104,6 +120,7 @@ export const CLAUDE_HOOK_SUBCOMMAND: Record<ClaudeHookEvent, string> = {
   UserPromptSubmit: 'user-prompt',
   Stop: 'stop',
   SessionEnd: 'session-end',
+  PreCompact: 'compact',
 };
 
 /**
@@ -124,6 +141,7 @@ export const CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS: Record<ClaudeHookEvent, number> =
   UserPromptSubmit: 3,
   Stop: 10,
   SessionEnd: 60,
+  PreCompact: 5,
 };
 
 /**

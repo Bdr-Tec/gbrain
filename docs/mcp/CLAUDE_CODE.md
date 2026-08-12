@@ -93,10 +93,28 @@ You should see results from your GBrain knowledge base.
 > older release stay OFF until you opt in. Enable it on the host with
 > `gbrain config set mcp.publish_skills true`. Skill discovery and the core tools
 > named here (search, query, get_page, put_page, think, find_experts) are
-> full-surface — on `--surface verbs` the agent sees only the five memory verbs,
+> full-surface — on `--surface verbs` the agent sees only the seven memory verbs,
 > and `list_skills` isn't on the surface at all. Note: `capture` is a
 > CLI-only command, not an MCP tool — the agent writes over MCP with `put_page`.
 > Why brains differ on the default: [tutorial A1](../tutorials/connect-coding-agent.md#a1-on-the-host-serve-over-http).
+
+## Ambient recall at session boundaries (v0.45.7)
+
+Two frozen verbs close the "no question fired" gap for long-lived sessions:
+`context_pack` (session-start warm-up + post-compaction rehydration) and
+`delta` ("what changed since my last wake" for heartbeats). Both are zero-LLM,
+sub-second, world-visibility by default, and available on `--surface verbs`.
+
+- **Automatic (PGLite brains via `gbrain bootstrap`):** the bootstrap hook
+  installer wires `SessionStart` (injects a warm pack; also fires on
+  post-compaction re-entry, `source=compact`) and `PreCompact` (banks the
+  window's standing entities so that rehydration pack is warm) into
+  `.claude/settings.local.json`. Nothing to call; `GBRAIN_HOOKS=0` disables.
+- **Manual (any brain, incl. remote/Postgres):** call the verbs yourself at
+  boundaries — `context_pack(entities, budget_tokens)` at session start /
+  after compaction, `delta(session_id, budget_tokens)` on wakes. See
+  [ambient recall](../guides/ambient-recall.md) for the placement frontier
+  and the per-verb latency table.
 
 ## Remove
 

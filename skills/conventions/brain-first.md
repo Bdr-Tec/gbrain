@@ -56,6 +56,9 @@ thousands of pages. The answer is almost always there.
   are supplementary.
 - **After any brain page write:** trigger a sync so new pages are searchable.
   In OpenClaw: `gbrain__sync_brain`. From CLI: `gbrain sync --no-pull`.
+- **Bank every notable external API pull** via `gbrain capture` into the inbox
+  before the conversation moves on — the cycle enriches it later. A lookup you
+  paid for and didn't bank is a lookup you'll pay for again.
 - **Every brain page reference in output** should use a clickable link format
   appropriate to the deployment (GitHub URL, local path, or slug).
 - **Never use `memory_search` for entity lookups.** Memory tools search

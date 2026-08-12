@@ -991,6 +991,20 @@ CREATE INDEX IF NOT EXISTS context_volunteer_events_src_time_idx
 CREATE INDEX IF NOT EXISTS context_volunteer_events_src_slug_idx
   ON context_volunteer_events (source_id, slug);
 
+-- session_context_state (v0.45.7 / migration v126 — ambient recall issue #1).
+CREATE TABLE IF NOT EXISTS session_context_state (
+  source_id         TEXT NOT NULL,
+  client_id         TEXT NOT NULL DEFAULT 'local',
+  session_id        TEXT NOT NULL,
+  standing_entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+  surfaced_slugs    JSONB NOT NULL DEFAULT '[]'::jsonb,
+  last_wake_at      TIMESTAMPTZ,
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (source_id, client_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS session_context_state_updated_idx
+  ON session_context_state (updated_at);
+
 -- ============================================================
 -- migration_impact_log (v0.41.18.0 — gbrain onboard wave)
 -- ============================================================

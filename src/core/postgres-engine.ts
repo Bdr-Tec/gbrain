@@ -1366,7 +1366,13 @@ export class PostgresEngine implements BrainEngine {
     const typeCondition = filters?.type ? sql`AND p.type = ${filters.type}` : sql``;
     const tagJoin = filters?.tag ? sql`JOIN tags t ON t.page_id = p.id` : sql``;
     const tagCondition = filters?.tag ? sql`AND t.tag = ${filters.tag}` : sql``;
-    const updatedCondition = updatedAfter ? sql`AND p.updated_at > ${updatedAfter}::timestamptz` : sql``;
+    // v0.45.7 keyset (updated_at, slug) supersedes updated_after when set.
+    const keyset = filters?.updatedAfterKeyset;
+    const updatedCondition = keyset
+      ? sql`AND (p.updated_at > ${keyset.updatedAt}::timestamptz OR (p.updated_at = ${keyset.updatedAt}::timestamptz AND p.slug > ${keyset.slug}))`
+      : updatedAfter
+        ? sql`AND p.updated_at > ${updatedAfter}::timestamptz`
+        : sql``;
     // slugPrefix uses the (source_id, slug) UNIQUE btree index for range scans.
     // Escape LIKE metacharacters so the user prefix is treated as a literal.
     const slugPrefix = filters?.slugPrefix;

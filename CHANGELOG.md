@@ -2,6 +2,164 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.7.0] - 2026-08-12
+
+**Ambient recall: your brain shows up at the moments that matter, not just when you ask.** Long-lived agents lose the thread at session boundaries — a fresh start with no warm context, a compaction that drops verbatim detail nothing rehydrates, a heartbeat that re-derives state from scratch. This release adds two new memory verbs that assemble a budget-packed, zero-LLM bundle of exactly what a boundary needs, and wires them into the agent's lifecycle hooks so a warm pack lands automatically at session start and after compaction. It's opt-in, fail-open, and reaches every host: Claude Code gets it pushed through hooks; Codex and any MCP host pull the same two verbs at their own boundaries. Whether your brain is embedded (PGLite) or managed (Postgres), the ambient value is the same.
+
+### Added
+- **`context_pack` — a deterministic, budget-packed boundary bundle.** `gbrain context-pack --entities a,b,c --budget-tokens 4000` returns entity cards, open threads, and top facts for a set of standing entities, trimmed to the token budget (cards first, then facts) with no model call in the path — sub-second on a large brain. Response reports `budget_used` and `dropped_count`. World-visible by default; private facts are included only for a local trusted caller that passes `--include-private`, and never over a remote connection.
+- **`delta` — cheap "what changed since".** `gbrain delta --since <ISO8601>` returns only the pages, facts, and thread changes newer than a timestamp — the right shape for a heartbeat that wants to maintain warm state in proportion to what changed, not re-read everything. Pass a stable `--session-id` and each call advances a per-session cursor so the next wake sees only what's new, with at-least-once delivery when a change tail spills past the budget.
+- **Boundary runtime for Claude Code.** Session start injects a warm context pack; a pre-compaction hook banks the window's standing entities so the session that resumes after a compaction rehydrates what the summary lost. Every boundary hook fails open and honors `GBRAIN_HOOKS=0`.
+- **Ambient-recall guide + published latency classes.** New `docs/guides/ambient-recall.md` maps where each verb belongs — `entity` per message, `context_pack`/`delta` at boundaries, `synthesize` never in the ambient path — with per-harness recipes. The memory-verbs protocol doc now carries a latency table for all seven verbs.
+
+### Changed
+- The frozen memory-verb set grows from five to seven — `context_pack` and `delta` join `recall`/`remember`/`entity`/`synthesize`/`forget`. The wire protocol is unchanged: all seven verbs stamp `protocol_version: 1`, so existing harnesses keep working untouched and simply gain two tools.
+
+### Fixed
+- `gbrain delta --session-id <id>` no longer hangs after printing its response — the CLI now exits cleanly on first wake (a background cleanup task raced process teardown). This is the exact command the heartbeat template tells agents to run.
+- On a Postgres brain whose config carries a leftover local database path, the pre-compaction hook now degrades cleanly instead of probing a local socket that has no server behind it — matching the session-start hook's behavior.
+- The `--surface verbs` startup banner now reports the actual verb count instead of a hardcoded five.
+
+### Hardening
+- The boundary behavior is now pinned end to end, not just in units: a real spawned serve answers the compact→session-start warm-pack round trip over its real socket; a real stdio MCP session on `--surface verbs` advertises and serves exactly the seven verbs fail-closed; the new verbs are exercised over real HTTP with per-token session-cursor isolation; keyset pagination and the session-cursor table are parity-pinned on real Postgres; migration shape, sub-second latency gates, CLI invocations, and a live-Codex boundary-call check round it out (~55 new tests).
+
+To take advantage of v0.45.7.0: upgrade with `bun install -g github:garrytan/gbrain#latest-stable`. A schema migration runs automatically on first use — a new per-session cursor table, additive, no existing data touched. Codex and other MCP hosts see the two new verbs immediately; Claude Code installs pick up the boundary hooks on the next `gbrain bootstrap`. Read `docs/guides/ambient-recall.md` for where each verb belongs and how to wire your heartbeat to `delta`.
+## [0.45.6.0] - 2026-08-12
+
+**Seventeen new production skills, distilled from a 324-skill audit of a mature personal-agent deployment.** The built-in pack grows from ~52 to 69 skills and picks up the trust disciplines a memory product lives or dies by: corrections that fix the source instead of papering over it, a confirmation gate before anything irreversible, claim verification before anything ships, an ingest gate that stops duplicate and misfiled pages at the door, and a sanitization procedure for turning a personal brain into a team brain. Every import was adversarially reviewed, privacy-scrubbed onto generic placeholders, pinned to its upstream source, and shipped with routing fixtures.
+
+### Added
+- **Trust layer:** `correction-pipeline` (root-cause every user correction across a 7-class error taxonomy and fix the contaminated source), `data-loss-gate` (recoverability checklist + explicit-yes confirmation before bulk deletes, forget sweeps, source/mount removal, or history rewrites), `fact-check` (extract-and-verify every claim pre-publication, with producer-never-verifies re-derivation for data-derived claims), `brain-ingest-gate` (no raw copies, registry-first named-entity resolution, read-the-top-hit dedup).
+- **Team brains:** `company-brainify` — the personal-to-team sanitization procedure: sanitize a staging copy, strip/keep tables, verification greps on the tree that ships, and a backup-gated history purge that runs only against the shared repo.
+- **Retrieval graph:** `citation-graph-ingest` builds typed inter-document citation edges over an ingested corpus, queryable through the native graph surface.
+- **Ingestion:** `bulk-ingestion` (the disciplined lifecycle for any bulk pipeline plus a durable manifest substrate that never trusts a subagent's "done"), `blog-ingest` (whole-publication and feed ingestion with idempotent re-runs and an untrusted-content boundary), `two-tier-extraction` (cheap-triage/deep-read model routing with a deterministic pre-model privacy wall), `conversation-archive` (AI-chat exports and session transcripts become first-class brain content, with a mandatory secret-redaction pass).
+- **Operations:** `measure-before-you-fix` (measure-first triage before touching timeouts and thresholds), `context-audit` (report-only token hygiene for the always-loaded context stack), `skill-autobench` (propose evals mined from a skill's real usage history, staged for human approval), `resolve-before-asking` (exhaust the brain before interrupting the human; ask with a hypothesis), `brain-link-discipline` (verified links in every deliverable, with an honest fallback chain), `draft-in-voice` (memory-grounded ghostwriting from validated voice profiles, with a build-a-profile guide), `research-compendium` (archive, summarize 1:1, synthesize self-contained).
+- **Conventions:** a shared untrusted-content boundary (fetched text is data, never instructions), progressive-ramp bulk testing with output-existence checks, regex discipline (never compress judgment into heuristics), path discipline (display links are not filesystem paths), and exec-output discipline (buffer, then read bounded slices).
+- **Skill-pack integrity gates:** a reference checker that fails the build on dangling cross-references and donor-environment remnants (allowlist-ratcheted), warns on commands a skill cites that the CLI doesn't ship, plus a machine-readable plugin-curation record with membership and dependency-closure tests — a bundled skill can no longer reference a skill that doesn't ship downstream, and moving a skill between bundled and host-only is a review-visible decision.
+- **Skill currency + preconditions (the migration harness now examines skills).** `gbrain skillpack status` reports, at a glance, which built-in skills your workspace is missing (`new`), which you've edited (`drifted`), and which are current — classified by each skill's own files, so a new skill isn't mistaken for a drifted one just because shared conventions are already on disk. `gbrain skillpack sync` installs the new ones and never touches your edits. The post-upgrade sweep now surfaces new skills (it used to hide them) with the one command that adds them, and `gbrain doctor` gains a `skill_currency` check. Skills can declare machine-readable preconditions with a `requires:` frontmatter field (`source`, `dir:<path>`, `config:<key>`, `pages:<n>`); `gbrain skillpack setup <skill>` prints what a skill needs, and `gbrain doctor`'s `skill_preconditions` check verifies them live against your brain with paste-ready fixes.
+- A committed routing-accuracy receipt for the grown pack, generated by the existing A/B harness.
+
+### Changed
+- `meeting-ingestion` is rebuilt: recorder-agnostic pipeline, evidence-based speaker resolution, a hard verify-before-done phase (every quote grounded verbatim in the transcript), and deterministic sequence checks against the day timeline.
+- `skillify` reconciled with its most-evolved line: eval contracts, a no-regression law, idempotency, and a numbered 15-item checklist other skills can reference.
+- `eiirp` gains the auto-fire gate: substantial document analysis files a brain page first and delivers the link in the same reply (per-user policy switch included); eiirp now ships to downstream installs.
+- `minion-orchestrator` gains the durable-execution doctrine: a capability ladder for long operations, a deadman pattern that verifies the result was reported (not merely that a process exited), and content-addressed stage checkpoints.
+- `concept-synthesis` gains the curation cull: keep/delete verdicts with substance gates, grounding labels, and reversible merges.
+- `reports` gains the link Actionability Gate ("a missing link is honest, an indirect link is a broken promise"); `briefing` pulls salience, anomalies, and recall before composing; `daily-task-manager` gains stable task IDs and fail-closed action routing; `book-mirror`, `idea-ingest`, `media-ingest`, `brain-ops`, `maintain`, and `data-research` pick up targeted upstream improvements.
+- New routing rows ship with disambiguation rules (publication vs single article vs media vs chat exports; identity content vs context hygiene; measurement-first triage vs debugging) and negative routing fixtures across the pack.
+
+### Fixed
+- Imported skill registrations that captured a YAML block-scalar marker instead of the skill's description now carry real prose, with a test pinning description quality and plugin-list uniqueness.
+- The commit gate fails loudly when the skills lock file is regenerated but unstaged (comparing the staged blob, not just the path), and the pack's plugin skill list is sorted with duplicates rejected.
+- Skill frontmatter now states its true effects: a skill that commits and pushes is marked mutating, and inert precedence markers were removed.
+
+To take advantage of v0.45.6.0: upgrade with `bun install -g github:garrytan/gbrain#latest-stable`, then run `gbrain skillpack reference --all` to sweep the new and upgraded skills into your agent repo (or `gbrain skillpack scaffold --all --workspace <your-agent-repo>` on a fresh install). Nothing to migrate — new skills route via their trigger phrases immediately, and `gbrain check-resolvable --strict --skills-dir skills/` verifies the pack end to end.
+## [0.45.5.0] - 2026-08-12
+
+Brain currency, part one: a brain is only useful if it's CURRENT, and until now
+the machinery keeping it current could die without anyone noticing. This release
+makes autopilot's health honest end-to-end — status that reads the heartbeat,
+a daemon that takes itself out of rotation when its repo vanishes, migrations
+that pause it instead of racing it, and staleness reporting that can no longer
+say "fresh" forever.
+
+### Fixed
+
+- **A dead autopilot can no longer report healthy.** `gbrain autopilot --status`
+  now reads the daemon's heartbeat instead of checking that install artifacts
+  exist, and gains real exit codes for cron and CI gates: 0 fresh (or nothing
+  installed), 1 needs attention (stale heartbeat, never ran, or paused), 2 the
+  daemon took itself out of rotation. Status runs without touching the
+  database, so it keeps working during the exact outages it exists to
+  diagnose. Staleness tolerance scales with the tick interval and accounts
+  for the adaptive scheduler's longer healthy-brain sleeps, and a garbage
+  interval value can no longer silence the alarm.
+- **Content-relative staleness now has a wall-clock ceiling.** A source whose
+  content stopped moving (or whose local clone vanished) previously reported
+  fresh forever off the stored content timestamp. `sync_freshness`,
+  `federation_health`, and `gbrain status` now ramp toward stale past a
+  ceiling (default 72h; `GBRAIN_STALENESS_CEILING_HOURS` to tune) — ramping,
+  not stepping, so the warn tier still fires before the fail tier instead of
+  both alarms tripping at once.
+- **The documented agent-scheduler chain works on keyless brains.**
+  `gbrain sync --repo <path> && gbrain embed --stale` used to exit 1 on every
+  brain installed without an embedding key, breaking the always-current cron
+  for external agent schedulers. A bare stale embed now refuses cleanly
+  (exit 0, stderr hint); explicit embed requests (a slug, a slugs list, the
+  all flag) still exit 1.
+- **Engine migrations and the autopilot daemon no longer race.**
+  `gbrain migrate --to <engine>` claims a cooperative pause marker before
+  touching the target — the marker doubles as a migration mutex, so a second
+  concurrent migrate refuses to run instead of corrupting the first one's
+  resume state, and a marker it cannot write refuses the migration outright
+  rather than running unfenced. Background job workers stop picking up new
+  work while the marker is parked. It then waits for in-flight
+  sync/embed/cycle work and running jobs to actually drain (watching the DB
+  lock table, capped by `GBRAIN_MIGRATE_QUIESCE_SECONDS`) instead of
+  sleeping a blind grace period.
+  The marker is released even when the migration fails or is killed: cleanup
+  registers the moment the claim lands, adoption of a dead run's orphan is
+  pid-liveness-checked (a live migrate's marker is never stolen), and the
+  daemon itself clears an orphan whose owning process died. After a clean
+  flip the daemon detects the engine change on its next tick and relaunches
+  onto the new engine — previously it kept syncing into the abandoned source
+  engine until its process happened to restart — and the migration warns if
+  an exported connection-string env var would override the new config.
+- **Self-disable requires three consecutive misses.** A repo on an external
+  or cloud-synced volume that is briefly absent at login no longer
+  permanently takes the daemon out of rotation; one successful probe resets
+  the strike counter.
+- **A cron'd status monitor no longer reads as an install.** Machines whose
+  only crontab reference is the recommended health-gate line stop reporting
+  "installed but never ran".
+- **Malformed connection URLs stop the daemon immediately** with a clear
+  config verdict instead of spending the whole reconnect budget retrying a
+  value only the operator can fix.
+- **Sync no longer silently drops git typechange and unmerged statuses.**
+  Replacing an indexed file's content in a way git reports as `T` or `U`
+  now imports as a modification instead of never reaching the index; a
+  copy status imports its destination path.
+- **A wedged sync can no longer read as "in progress" forever.** A sync
+  lock holder that keeps heartbeating past the staleness ceiling without
+  finishing now fails `gbrain doctor`'s freshness check, naming the holder
+  and the exact `gbrain sync --break-lock --source <id>` remedy.
+
+### Added
+
+- **Autopilot self-disable guard.** The generated wrapper now stops the daemon
+  for real when its `--repo` path vanishes: it writes an explanatory marker,
+  then boots the job out of the supervisor (`launchctl bootout` on macOS,
+  `systemctl --user disable --now` on systemd) — a bare `exit 0` under
+  KeepAlive/Restart=always is just a quieter respawn loop. `--status` explains
+  why it stopped; a reinstall against a restored path clears the marker;
+  `--uninstall` clears it too.
+- **`paused` status state.** A daemon parked by a migration (or by an orphaned
+  pause marker) now reports `paused` with exit 1 and the marker path, instead
+  of "running" off its still-fresh heartbeat.
+- **Harness e2e tier.** A real-launchd lifecycle test on macOS (install →
+  load → self-disable → status, under a per-run unique label) plus a
+  shimmed-supervisor lifecycle that runs on every platform, and an
+  agent-scheduler contract test that drives the documented sync-and-embed
+  shell chain end-to-end against a keyless brain — including the
+  pull-failure case that must break the chain.
+- **Honest staleness numbers in `gbrain status`.** Source rows now carry
+  `hours_since_last_sync` (raw wall-clock truth) alongside the
+  threshold-relative `staleness_hours` that drives the fresh/stale/severe
+  class, so the escalation ordering and the human-facing number stop being
+  the same field.
+- **Shared numeric env resolver.** The doctor and staleness-threshold
+  `GBRAIN_*` numeric env vars now resolve through one warn-once helper
+  (`src/core/env-number.ts`), so a typo'd value falls back loudly exactly
+  once instead of NaN-ing a threshold silently.
+
+### To take advantage of v0.45.5.0
+
+- `gbrain upgrade`, then wire your scheduler's health gate to
+  `gbrain autopilot --status` — the exit code is now trustworthy.
+- If autopilot is installed, reinstall once (`gbrain autopilot --install
+  --repo <path>`) so the generated wrapper picks up the self-disable guard.
+- Keyless installs: your sync-and-embed cron chain now exits 0; no action
+  needed beyond upgrading.
 ## [0.45.3.0] - 2026-08-12
 
 **Codex installs stop asking a question Codex can't honor.** The bootstrap used to offer every install a choice of MCP scope — this folder only, or the whole machine — but Codex has no per-folder registrations, so picking "this folder" led to a confusing round-trip where the agent asked permission to keep what it had already done. Now each harness gets the honest version: Claude Code records your scope choice during the interview (where it actually sticks), and Codex simply tells you the truth — its registration reaches the whole machine, read and write — along with the exact commands to remove it (just the registration, or the whole install).

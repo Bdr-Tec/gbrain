@@ -1,7 +1,7 @@
 /**
  * MEMORY_VERBS v1 — surface-mode tests (Cathedral 1).
  *
- *   - 'verbs' filters to EXACTLY the five protocol verbs
+ *   - 'verbs' filters to EXACTLY the seven protocol verbs
  *   - 'full' is the identity (existing installs unchanged)
  *   - dispatch-layer allowedOps is FAIL-CLOSED: a hidden op is uncallable
  *     (unknown_tool), not merely unlisted [c2]
@@ -44,7 +44,7 @@ afterAll(async () => {
 });
 
 describe('filterOpsForSurface', () => {
-  it("'verbs' returns exactly the five protocol verbs", () => {
+  it("'verbs' returns exactly the seven protocol verbs", () => {
     const names = filterOpsForSurface(operations, 'verbs').map(o => o.name).sort();
     expect(names).toEqual([...VERB_NAMES].sort());
   });

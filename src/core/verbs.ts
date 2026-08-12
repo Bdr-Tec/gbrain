@@ -28,7 +28,11 @@ import type { Operation } from './operations.ts';
 /** Frozen protocol version for the MEMORY_VERBS v1 verb set. Single source of truth. */
 export const MEMORY_VERBS_VERSION = 1;
 
-export const VERB_NAMES = ['recall', 'remember', 'entity', 'synthesize', 'forget'] as const;
+// v0.45.7 (issue #1): the frozen set grows from 5 to 7 with two ambient-recall
+// verbs. The wire protocol_version STAYS 1 (additive) — MEMORY_VERBS_VERSION is
+// unchanged so the five existing schemas + handlers keep stamping 1 and their
+// conformance assertions (protocol_version === 1) hold.
+export const VERB_NAMES = ['recall', 'remember', 'entity', 'synthesize', 'forget', 'context_pack', 'delta'] as const;
 export type VerbName = (typeof VERB_NAMES)[number];
 
 const FACT_KINDS = ['event', 'preference', 'commitment', 'belief', 'fact'] as const;
@@ -532,9 +536,148 @@ export const RESPONSE_SCHEMAS: Record<VerbName, Record<string, unknown>> = {
       reason: { type: ['string', 'null'] },
     },
   },
+  // v0.45.7 (issue #1) — ambient recall. World-only by default; include_private
+  // widens all arms (local trusted callers only). protocol_version stays 1.
+  context_pack: {
+    type: 'object',
+    required: ['protocol_version', 'entities', 'cards', 'open_threads', 'facts'],
+    properties: {
+      protocol_version: { type: 'integer', const: MEMORY_VERBS_VERSION },
+      entities: { type: 'array', items: { type: 'string' } },
+      cards: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['slug', 'title', 'summary', 'open_threads'],
+          properties: {
+            slug: { type: 'string' },
+            title: { type: 'string' },
+            type: { type: ['string', 'null'] },
+            summary: { type: 'string' },
+            open_threads: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['kind', 'text', 'date'],
+                properties: {
+                  kind: { type: 'string', enum: ['commitment', 'recent_event'] },
+                  text: { type: 'string' },
+                  date: { type: ['string', 'null'] },
+                },
+              },
+            },
+            edges: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['type', 'direction', 'slug'],
+                properties: {
+                  type: { type: 'string' },
+                  direction: { type: 'string', enum: ['out', 'in'] },
+                  slug: { type: 'string' },
+                  context: { type: ['string', 'null'] },
+                },
+              },
+            },
+            backlink_count: { type: 'integer' },
+          },
+        },
+      },
+      open_threads: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['kind', 'text', 'date'],
+          properties: {
+            kind: { type: 'string', enum: ['commitment', 'recent_event'] },
+            text: { type: 'string' },
+            date: { type: ['string', 'null'] },
+          },
+        },
+      },
+      facts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['fact', 'kind'],
+          properties: {
+            fact: { type: 'string' },
+            kind: { type: 'string' },
+            entity_slug: { type: ['string', 'null'] },
+            valid_from: { type: 'string' },
+            confidence: { type: 'number' },
+          },
+        },
+      },
+      text: { type: 'string', description: 'Pre-rendered injectable block (envelope-wrapped).' },
+      degraded_reason: { type: 'string', description: 'Present when a wall-clock deadline returned a partial pack.' },
+      budget_tokens: { type: 'integer', description: 'Present when budget_tokens was passed.' },
+      budget_used: { type: 'integer' },
+      dropped_count: { type: 'integer' },
+    },
+  },
+  delta: {
+    type: 'object',
+    required: ['protocol_version', 'since', 'pages', 'facts', 'threads'],
+    properties: {
+      protocol_version: { type: 'integer', const: MEMORY_VERBS_VERSION },
+      since: { type: 'string', description: 'The ISO cursor this delta was computed against.' },
+      has_more: { type: 'boolean', description: 'True when changes beyond the fetch limit or budget were NOT delivered; with session_id the cursor advanced only to the last delivered page, so the tail surfaces on the next wake.' },
+      next_cursor: {
+        type: 'object',
+        required: ['since', 'slug'],
+        description: 'Keyset to resume from (stateless callers pass back as since + since_slug).',
+        properties: { since: { type: 'string' }, slug: { type: 'string' } },
+      },
+      pages: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['slug', 'title', 'updated_at'],
+          properties: {
+            slug: { type: 'string' },
+            source_id: { type: 'string' },
+            title: { type: 'string' },
+            updated_at: { type: 'string' },
+          },
+        },
+      },
+      facts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['fact', 'kind'],
+          properties: {
+            fact: { type: 'string' },
+            kind: { type: 'string' },
+            entity_slug: { type: ['string', 'null'] },
+            valid_from: { type: 'string' },
+            confidence: { type: 'number' },
+          },
+        },
+      },
+      threads: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['kind', 'text', 'date'],
+          properties: {
+            kind: { type: 'string', enum: ['commitment', 'recent_event'] },
+            text: { type: 'string' },
+            date: { type: ['string', 'null'] },
+          },
+        },
+      },
+      text: { type: 'string' },
+      degraded_reason: { type: 'string' },
+      budget_tokens: { type: 'integer' },
+      budget_used: { type: 'integer' },
+      dropped_count: { type: 'integer' },
+    },
+  },
 };
 
-/** Error envelope schema (uniform across all five verbs). */
+/** Error envelope schema (uniform across all verbs). */
 export const ERROR_SCHEMA: Record<string, unknown> = {
   type: 'object',
   required: ['error', 'message'],

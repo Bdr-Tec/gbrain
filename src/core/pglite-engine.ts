@@ -1508,7 +1508,16 @@ export class PGLiteEngine implements BrainEngine {
       params.push(filters.tag);
       where.push(`t.tag = $${params.length}`);
     }
-    if (filters?.updated_after) {
+    if (filters?.updatedAfterKeyset) {
+      // v0.45.7 keyset: (updated_at, slug) strict-greater — supersedes updated_after.
+      params.push(filters.updatedAfterKeyset.updatedAt);
+      const tsIdx = params.length;
+      params.push(filters.updatedAfterKeyset.slug);
+      const slugIdx = params.length;
+      where.push(
+        `(p.updated_at > $${tsIdx}::timestamptz OR (p.updated_at = $${tsIdx}::timestamptz AND p.slug > $${slugIdx}))`,
+      );
+    } else if (filters?.updated_after) {
       params.push(filters.updated_after);
       where.push(`p.updated_at > $${params.length}::timestamptz`);
     }

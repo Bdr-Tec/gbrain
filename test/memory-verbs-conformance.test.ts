@@ -516,7 +516,8 @@ describe('conformance runner — negative self-test [F3]', () => {
     const honest = await runConformance(lyingClient((_v, b) => b), { marker: 'pos1' });
     const failures = honest.results.filter(r => r.status === 'fail');
     expect(failures).toEqual([]);
-  });
+  }, 20_000); // v0.45.7: two full runConformance passes now exercise 7 verbs;
+  // the default 5s budget flakes under the parallel shard runner (red-team F6).
 });
 
 describe('fixture mirror + surface invariants', () => {
@@ -525,9 +526,41 @@ describe('fixture mirror + surface invariants', () => {
     expect(onDisk).toEqual(JSON.parse(JSON.stringify(CONFORMANCE_CASES)));
   });
 
-  it('exactly five ops carry verb: true and they match VERB_NAMES', async () => {
+  it('every VERB_NAMES entry (7 as of v0.45.7) carries verb: true and nothing else does', async () => {
     const { operations } = await import('../src/core/operations.ts');
     const verbs = operations.filter(o => o.verb === true).map(o => o.name).sort();
     expect(verbs).toEqual([...VERB_NAMES].sort());
+    // An accidental verb addition/removal must be a LOUD, named failure —
+    // the frozen set is 5 core + 2 additive (context_pack, delta).
+    expect(VERB_NAMES.length).toBe(7);
+  });
+
+  it('a pre-v0.45.7 five-verb endpoint still certifies (additive verbs skip, never fail)', async () => {
+    const CORE = ['recall', 'remember', 'entity', 'synthesize', 'forget'];
+    const fiveVerbClient: ConformanceClient = {
+      listTools: async () =>
+        CORE.map((name) => ({
+          name,
+          description: name === 'synthesize' ? '[EXPENSIVE / SLOW] cost-gated' : `MEMORY VERB (v1): ${name}`,
+        })),
+      callTool: async (name, params) => {
+        const res = await dispatchToolCall(engine, name, params, {
+          remote: true,
+          takesHoldersAllowList: ['world'],
+          sourceId: 'default',
+        });
+        return { isError: res.isError, text: res.content[0].text };
+      },
+    };
+    const r = await runConformance(fiveVerbClient, { marker: `five-${Date.now()}` });
+    // The additive verbs must appear ONLY as skips — never executed, never failed.
+    const additive = r.results.filter((x) => x.verb === 'context_pack' || x.verb === 'delta');
+    expect(additive.length).toBeGreaterThan(0);
+    expect(additive.every((x) => x.status === 'skip')).toBe(true);
+    // And no list-level advertising failure for them either.
+    const advertFails = r.results.filter(
+      (x) => x.name.startsWith('tools/list advertises') && x.status === 'fail',
+    );
+    expect(advertFails).toEqual([]);
   });
 });
