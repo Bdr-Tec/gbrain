@@ -118,8 +118,52 @@ you'd apply to any journal: write what you'd be comfortable persisting.
 | API keys | everything (keyless mode) | semantic search, auto-extraction |
 | GitHub / `gh` | full local agent | off-machine durability (repo re-runnable later) |
 | Hooks (Claude Code) | pull protocol via AGENTS.md gates | automatic per-turn context + session-end persistence |
-| Codex (no hook system, no MCP scope flag) | pull protocol + MCP tools | per-turn push (stated plainly; not oversold) + the ability to confine MCP reach to one folder (`codex mcp add` is always user-global) |
+| Codex (no wired hooks, no MCP scope flag) | pull protocol + MCP tools | per-turn push (stated plainly; not oversold — codex 0.147+ ships a hook system, but gbrain does not wire it yet) + the ability to confine MCP reach to one folder (`codex mcp add` is always user-global) |
 | Second simultaneous session | first session unaffected | second session's brain tools fail politely (one live serve per brain — v1 contract) |
+| Postgres brain (incl. harness mode) | MCP tools every session + pull protocol | per-turn hook injection (`no_pglite_path`: the hook IPC socket is PGLite-only today; hooks stay pre-wired and light up when the engine-uniform listener lands) |
+
+## Local harness mode (`gbrain bootstrap harness`, #4043)
+
+The workspace install above is built for a human's laptop. A box run by an
+agent framework (your OpenClaw, or anything that shells out to `claude -p` /
+codex exec) already hosts a brain and a running `gbrain serve --http` — and
+those framework-spawned sessions get zero brain access by default. Harness
+mode wires them in one command, with no `agent.json` and no interview:
+
+    gbrain bootstrap harness --yes
+
+- Mints a **least-privilege** bearer token (scopes `read+write`, stored in the
+  `access_tokens.scopes` column; reads span the brain's federated sources).
+  Re-runs rotate mint-first: the previous token is revoked by id only after
+  the new one is wired and smoke-tested, so clients are never dead mid-swap.
+- Claude Code: user-scope HTTP MCP registration, `mcp__gbrain` pre-approved in
+  user-scope `permissions.allow` (headless `claude -p` blocks MCP tools
+  without it), and the five lifecycle hooks — user scope by default, or
+  exactly the dirs you pass with repeatable `--project` (never both; the two
+  would double-fire every event). `--no-capture` wires context injection only
+  and skips the transcript-capture events.
+- Codex: one managed `[mcp_servers.gbrain]` block with the bearer token
+  INLINE in the codex config (0600) — framework-spawned codex inherits no
+  shell profile, so the env-var lane the `connect` path uses would never
+  reach it.
+- Honesty on Postgres brains: per-turn injection is degraded (the matrix row
+  above); MCP is the active seam and the summary says so.
+- `--status [--json]` probes the live truth (serve health, token validity via
+  host-config recovery, per-target states) with cron-friendly exit codes, and
+  `gbrain doctor` carries a `bootstrap_harness_health` check.
+- `--remove` tears down exactly what the machine-level receipt
+  (`<home>/bootstrap/harness.json`) records — host removals are engine-free
+  and run even while a serve is live; the token revoke defers with exact
+  instructions if a live PGLite serve holds the brain. `gbrain bootstrap
+  uninstall` removes harness wiring first, automatically.
+- Everything is stated before it happens; non-interactive runs require
+  `--yes`. Close active Claude Code sessions for the cleanest user-scope
+  settings writes (the host also writes that file).
+
+PGLite note: minting needs the single-writer lock, so on a PGLite brain
+either pre-mint (`gbrain auth create bootstrap-harness --scopes read,write`
+while the serve is stopped) and pass `--token`, or stop/re-run/restart.
+Postgres brains mint fine while the serve runs.
 
 ## Multi-device
 

@@ -8404,7 +8404,7 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
       checks.push({
         name: 'bootstrap_harness_health',
         status: 'fail',
-        message: `a previous harness token (id ${hr.token.previous_id}) was never revoked — re-run \`gbrain bootstrap harness\` or \`gbrain auth revoke --id ${hr.token.previous_id}\`.`,
+        message: `a previous harness token (id ${hr.token.previous_id}) was never revoked — re-run \`gbrain bootstrap harness\`, or run \`gbrain auth revoke\` with the id flag (${hr.token.previous_id}).`,
       });
     } else {
       try {
@@ -8421,14 +8421,14 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
           checks.push({
             name: 'bootstrap_harness_health',
             status: 'warn',
-            message: `harness wired to ${hr.url} but the serve is not answering /health — start \`gbrain serve --http\` (a down serve is a normal transient, sessions just lose brain access until it returns).`,
+            message: `harness wired to ${hr.url} but the serve is not answering /health — start \`gbrain serve\` in http mode (a down serve is a normal transient, sessions just lose brain access until it returns).`,
           });
         }
       } catch {
         checks.push({
           name: 'bootstrap_harness_health',
           status: 'warn',
-          message: `harness wired to ${hr.url} but the serve is unreachable — start \`gbrain serve --http\`.`,
+          message: `harness wired to ${hr.url} but the serve is unreachable — start \`gbrain serve\` in http mode.`,
         });
       }
     }
