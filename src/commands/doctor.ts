@@ -12,6 +12,9 @@ import {
   type SkillsManifest,
 } from '../core/skills-integrity.ts';
 import { loadOrDeriveManifest } from '../core/skill-manifest.ts';
+import { computeSkillCurrency } from '../core/skillpack/skill-currency.ts';
+import { findGbrainRoot } from '../core/skillpack/bundle.ts';
+import { checkPreconditions, type PreconditionContext } from '../core/skillpack/preconditions.ts';
 import { parseSkillFrontmatter } from '../core/skill-frontmatter.ts';
 import {
   analyzeSkillBrainFirst,
@@ -5370,6 +5373,15 @@ export async function buildChecks(
     checks.push(skillsManifestIntegrityCheck(skillsDir));
   }
 
+  // 2c-bis. Skill currency (new built-in skills available downstream) +
+  // live precondition verification for installed skills that declare
+  // `requires:`. Currency is filesystem-only; preconditions need the engine
+  // and skip cleanly without one.
+  if (scope === 'all' && skillsDir) {
+    checks.push(skillCurrencyCheck(skillsDir));
+    checks.push(await skillPreconditionsCheck(skillsDir, engine));
+  }
+
   // 2d. Agent-bootstrap health (plan B2/B4/ENG-4). Filesystem-first; the
   // one engine-dependent pairing check degrades gracefully when engine is
   // null. Emits NOTHING on machines with no bootstrap state, so ordinary
@@ -8684,6 +8696,155 @@ export function skillsManifestIntegrityCheck(skillsDir: string): Check {
       `skills/ drifted from ${SKILLS_MANIFEST_FILENAME} (advisory — local edits are fine): ${parts.join('; ')}. ` +
       `If intentional, regenerate: bun run scripts/generate-skills-manifest.ts`,
     details: { modified: drift.modified, missing: drift.missing, extra: drift.extra },
+  };
+}
+
+/**
+ * Skill currency check — compares the built-in skills bundle against what
+ * the downstream workspace has scaffolded and surfaces NEW skills the user
+ * doesn't have yet. Advisory: `new` skills are a WARN (you're missing
+ * shipped capability); `drifted` skills are informational only (local edits
+ * are legitimate — the ownership model). No-ops when running inside the
+ * gbrain repo itself (bundle == install, always current) or when the bundle
+ * can't be located.
+ */
+export function skillCurrencyCheck(skillsDir: string): Check {
+  const name = 'skill_currency';
+  const targetWorkspace = resolvePath(skillsDir, '..');
+  const gbrainRoot = findGbrainRoot();
+  if (!gbrainRoot) {
+    return { name, status: 'ok', message: 'skill currency not applicable (no bundled skills pack found)' };
+  }
+  if (resolvePath(targetWorkspace) === resolvePath(gbrainRoot)) {
+    return { name, status: 'ok', message: 'skill currency not applicable (running inside the gbrain repo)' };
+  }
+  let report: ReturnType<typeof computeSkillCurrency>;
+  try {
+    report = computeSkillCurrency({ gbrainRoot, targetWorkspace });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { name, status: 'ok', message: `skill currency check skipped (${msg})` };
+  }
+  const { counts, skills } = report;
+  const sample = (status: 'new' | 'drifted'): string => {
+    const s = skills.filter(k => k.status === status).map(k => k.slug);
+    return s.slice(0, 8).join(', ') + (s.length > 8 ? `, … +${s.length - 8} more` : '');
+  };
+  if (counts.new === 0) {
+    const drift = counts.drifted > 0 ? ` (${counts.drifted} drifted — local edits are fine)` : '';
+    return { name, status: 'ok', message: `${counts.current}/${counts.total} built-in skills current${drift}` };
+  }
+  return {
+    name,
+    status: 'warn',
+    message:
+      `${counts.new} new built-in skill(s) available that this workspace hasn't installed: ${sample('new')}. ` +
+      `Add them with \`gbrain skillpack sync\`.` +
+      (counts.drifted > 0 ? ` (${counts.drifted} drifted from the bundle — local edits are fine.)` : ''),
+    details: {
+      new: skills.filter(k => k.status === 'new').map(k => k.slug),
+      drifted: skills.filter(k => k.status === 'drifted').map(k => k.slug),
+    },
+  };
+}
+
+/**
+ * Skill preconditions check — the LIVE half of the `requires:` frontmatter
+ * contract. For every skill INSTALLED in this workspace that declares
+ * preconditions, verify each against the connected brain and WARN on unmet
+ * ones with a paste-ready hint. Engine-dependent: skips cleanly when there
+ * is no brain to check against (the static list lives in
+ * `gbrain skillpack setup`).
+ */
+export async function skillPreconditionsCheck(
+  skillsDir: string,
+  engine: BrainEngine | null,
+): Promise<Check> {
+  const name = 'skill_preconditions';
+  if (!engine) {
+    return { name, status: 'ok', message: 'skill preconditions not checked (no connected brain)' };
+  }
+  // Collect installed skills declaring `requires:`.
+  let installed: { slug: string; requires: string[] }[];
+  try {
+    installed = readdirSync(skillsDir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => {
+        const md = join(skillsDir, e.name, 'SKILL.md');
+        if (!existsSync(md)) return null;
+        const fm = parseSkillFrontmatter(readFileSync(md, 'utf-8'));
+        const requires = fm?.requires ?? [];
+        return requires.length > 0 ? { slug: e.name, requires } : null;
+      })
+      .filter((x): x is { slug: string; requires: string[] } => x !== null);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { name, status: 'ok', message: `skill preconditions check skipped (${msg})` };
+  }
+  if (installed.length === 0) {
+    return { name, status: 'ok', message: 'no installed skills declare preconditions' };
+  }
+
+  // Engine-backed precondition context. Read-only COUNT/getConfig queries;
+  // no source scoping (doctor is a trusted local context). Every accessor
+  // fails soft to a conservative value so a query error never throws the check.
+  const ctx: PreconditionContext = {
+    async countPages() {
+      try {
+        const rows = await engine.executeRaw<{ n: number }>('SELECT COUNT(*)::int AS n FROM pages');
+        return rows[0]?.n ?? 0;
+      } catch { return 0; }
+    },
+    async countPagesInDir(dir: string) {
+      const prefix = dir.endsWith('/') ? dir : `${dir}/`;
+      try {
+        const rows = await engine.executeRaw<{ n: number }>(
+          `SELECT COUNT(*)::int AS n FROM pages WHERE slug LIKE $1 ESCAPE '\\'`,
+          [`${prefix.replace(/[%_\\]/g, m => `\\${m}`)}%`],
+        );
+        return rows[0]?.n ?? 0;
+      } catch { return 0; }
+    },
+    async listSourceIds() {
+      try {
+        const rows = await engine.executeRaw<{ id: string }>(`SELECT id FROM sources WHERE id <> 'default'`);
+        return rows.map(r => r.id);
+      } catch { return []; }
+    },
+    async countPagesForSource(id: string) {
+      try {
+        const rows = await engine.executeRaw<{ n: number }>(
+          'SELECT COUNT(*)::int AS n FROM pages WHERE source_id = $1',
+          [id],
+        );
+        return rows[0]?.n ?? 0;
+      } catch { return 0; }
+    },
+    async getConfig(key: string) {
+      try {
+        return (await engine.getConfig(key)) ?? undefined;
+      } catch { return undefined; }
+    },
+  };
+
+  const unmet: string[] = [];
+  for (const skill of installed) {
+    const results = await checkPreconditions(skill.requires, ctx);
+    for (const r of results) {
+      if (!r.met) unmet.push(`${skill.slug}: ${r.req.raw} — ${r.hint}`);
+    }
+  }
+  if (unmet.length === 0) {
+    return { name, status: 'ok', message: `${installed.length} skill(s) with preconditions, all met` };
+  }
+  return {
+    name,
+    status: 'warn',
+    message:
+      `${unmet.length} unmet skill precondition(s):\n  ` +
+      unmet.slice(0, 8).join('\n  ') +
+      (unmet.length > 8 ? `\n  … +${unmet.length - 8} more` : ''),
+    details: { unmet },
   };
 }
 

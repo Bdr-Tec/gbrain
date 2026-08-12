@@ -94,7 +94,9 @@
     "check:source-scope-onboard": "bash scripts/check-source-scope-onboard.sh",
     "postinstall": "bun run scripts/postinstall.ts",
     "prepublish:clawhub": "bun run build:all",
-    "publish:clawhub": "clawhub package publish . --family bundle-plugin"
+    "publish:clawhub": "clawhub package publish . --family bundle-plugin",
+    "check:skill-refs": "bun scripts/check-skill-refs.mjs",
+    "gate:skills": "bash scripts/skills-commit-gate.sh"
   },
   "openclaw": {
     "compat": {
