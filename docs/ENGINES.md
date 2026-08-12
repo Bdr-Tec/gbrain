@@ -177,6 +177,19 @@ live in `test/postgres-engine-rls-scope.test.ts`.
 
 **Migration:** `gbrain migrate --to supabase` exports everything (pages, chunks, embeddings, links, tags, timeline) and imports into Supabase. `gbrain migrate --to pglite` goes the other direction. Bidirectional, lossless.
 
+The migration and the autopilot daemon do not race: `migrate --to` claims a
+cooperative pause marker before touching the target. The marker doubles as a
+migration mutex — a second concurrent migrate refuses to run, and a marker
+that cannot be written refuses the migration outright. Background job workers
+stop picking up new work while it is parked, and the migration waits for
+in-flight sync/embed/cycle work and running jobs to actually drain (watching
+the DB lock table, capped by `GBRAIN_MIGRATE_QUIESCE_SECONDS` — default 300;
+`0` skips the wait). The marker is released even when the migration fails or
+is killed; `gbrain autopilot --status` reports `paused` (exit 1) while it is
+parked. After a clean flip the daemon detects the engine change on its next
+tick and relaunches onto the new engine, and the migration warns if an
+exported connection-string env var would override the new config.
+
 ### Troubleshooting: startup abort (`RuntimeError: Aborted()`)
 
 **Symptom:** every PGLite-touching command dies at startup with

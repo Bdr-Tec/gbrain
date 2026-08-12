@@ -51,6 +51,10 @@ gbrain sync --repo /path/to/brain && gbrain embed --stale
   [spend controls](../operations/spend-controls.md).
 - `gbrain embed --stale` -- backfill embeddings for any chunks that don't have
   them. Safety net for large syncs (>100 files) or prior `--no-embed` runs.
+  On a keyless brain (installed with `--no-embedding`), a bare stale embed
+  refuses cleanly — exit 0 with a stderr note — so this chain is safe to
+  schedule on keyless installs; keyword search keeps working. Explicit embed
+  requests (a slug, `--slugs`, `--all`) still exit 1 on a keyless brain.
 - `gbrain sync --watch --repo <path>` -- foreground polling loop, every 60s
   (configurable with `--interval N`). Embeds inline for small changesets. Exits
   after 5 consecutive failures, so run under a process manager or pair with a
@@ -177,6 +181,15 @@ vars — incident-time escape hatches, not everyday knobs.
    count should be close to the total chunk count. A large gap means
    `gbrain embed --stale` isn't running after sync, leaving chunks invisible
    to vector search.
+
+4. **Gate on the daemon's heartbeat.** If the built-in daemon runs your sync
+   (`gbrain autopilot --install`), wire your scheduler's health check to
+   `gbrain autopilot --status`. The exit code is the signal: 0 fresh (or
+   nothing installed), 1 needs attention (stale heartbeat, never ran, or
+   paused by a migration), 2 the daemon took itself out of rotation.
+   `--json` emits the full report, including `heartbeat_age_seconds`. Status
+   reads only the filesystem — no database connection — so it keeps working
+   during the exact outages it exists to diagnose.
 
 ---
 
