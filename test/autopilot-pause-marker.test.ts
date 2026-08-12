@@ -204,6 +204,23 @@ describe('quiesceAutopilot (migrate-side of the protocol)', () => {
   });
 });
 
+describe('release is ownership-conditional', () => {
+  test('resume does NOT delete a marker that changed hands', async () => {
+    await withEnv(quiesceEnv(), async () => {
+      // Round-4 review catch: an adoption race resolved against us means the
+      // marker at this PATH now belongs to another migrate. A path-only
+      // unlink would un-pause the daemon in the middle of the new owner's
+      // copy window; release must compare content first.
+      const resume = await quiesceAutopilot();
+      expect(resume).not.toBeNull();
+      const marker = autopilotPausedMarkerPath();
+      writeFileSync(marker, `${MIGRATE_PAUSE_MARKER_PREFIX} (pid 999999) at ${new Date(0).toISOString()}\n`);
+      resume!();
+      expect(existsSync(marker)).toBe(true); // still there — not ours anymore
+    });
+  });
+});
+
 describe('pause marker fences minion job pickup', () => {
   test('worker claim loop checks the marker BEFORE queue.claim (static wiring guard)', async () => {
     // Third review round: the marker parked the autopilot dispatch loop but a
@@ -218,5 +235,11 @@ describe('pause marker fences minion job pickup', () => {
     const claimIdx = src.indexOf('this.queue.claim(');
     expect(gateIdx).toBeGreaterThan(-1);
     expect(claimIdx).toBeGreaterThan(gateIdx);
+    // And the POST-claim re-check (round 4): a claim can commit after
+    // migrate's drain probe; a job claimed into that window is released
+    // back un-run rather than executed.
+    const postGateIdx = src.indexOf('existsSync(autopilotPausedMarkerPath())', claimIdx);
+    expect(postGateIdx).toBeGreaterThan(claimIdx);
+    expect(src.indexOf('releaseClaimForPause(', postGateIdx)).toBeGreaterThan(postGateIdx);
   });
 });

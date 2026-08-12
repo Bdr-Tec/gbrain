@@ -259,12 +259,27 @@ export interface MigratePageFailure {
  * Cooperative marker, not a supervisor stop — see `autopilotPausedMarkerPath`.
  * Returns a resume function that is safe to call twice.
  */
-/** A twice-safe unlinker for the pause marker. */
-function markerRelease(marker: string): () => void {
+/**
+ * A twice-safe, ownership-conditional unlinker for the pause marker: it
+ * deletes the marker ONLY while the content is still the exact body this
+ * process wrote. If the marker changed hands (an adoption race resolved
+ * against us), deleting by path would un-pause the daemon in the middle of
+ * the new owner's copy window — the precise failure the fence exists to
+ * stop. (The read-then-unlink pair has a microscopic window of its own;
+ * every layer here shrinks the race multiplicatively rather than claiming
+ * to erase it.)
+ */
+function markerRelease(marker: string, ownBody: string): () => void {
   let released = false;
   return () => {
     if (released) return;
     released = true;
+    try {
+      if (readFileSync(marker, 'utf8') !== ownBody) {
+        console.log('[migrate] pause marker changed hands; leaving it for its new owner.');
+        return;
+      }
+    } catch { return; /* already gone */ }
     try { unlinkSync(marker); console.log('[migrate] autopilot resumed.'); }
     catch { /* already gone */ }
   };
@@ -316,8 +331,9 @@ export async function quiesceAutopilot(engine?: BrainEngine): Promise<(() => voi
   // would race a concurrent migrate/pauser between check and write. The pid
   // in the body is the ownership handle for orphan adoption below.
   let claimed = false;
+  const ownBody = markerBody();
   try {
-    writeFileSync(marker, markerBody(), { flag: 'wx' });
+    writeFileSync(marker, ownBody, { flag: 'wx' });
     claimed = true;
   } catch (e) {
     if ((e as NodeJS.ErrnoException)?.code === 'EEXIST') {
@@ -340,10 +356,21 @@ export async function quiesceAutopilot(engine?: BrainEngine): Promise<(() => voi
           // third claimant sneaking into the gap loses cleanly too.
           const tomb = `${marker}.reclaim.${process.pid}`;
           renameSync(marker, tomb);
-          try { unlinkSync(tomb); } catch { /* best-effort */ }
-          writeFileSync(marker, markerBody(), { flag: 'wx' });
-          console.log('[migrate] adopting a pause marker left by a dead migrate run.');
-          claimed = true;
+          // Verify identity AFTER the rename: between our read above and the
+          // rename, a racing adopter may have completed the whole
+          // adopt-and-rewrite — in which case we just renamed THEIR live
+          // marker, not the orphan. Restore it no-clobber and bow out.
+          let tombBody = '';
+          try { tombBody = readFileSync(tomb, 'utf8'); } catch { /* vanished */ }
+          if (tombBody.startsWith(MIGRATE_PAUSE_MARKER_PREFIX) && markerHolderAlive(tombBody) === 'dead') {
+            try { unlinkSync(tomb); } catch { /* best-effort */ }
+            writeFileSync(marker, ownBody, { flag: 'wx' });
+            console.log('[migrate] adopting a pause marker left by a dead migrate run.');
+            claimed = true;
+          } else {
+            try { writeFileSync(marker, tombBody, { flag: 'wx' }); } catch { /* a racer claimed the gap; theirs now */ }
+            try { unlinkSync(tomb); } catch { /* best-effort */ }
+          }
         }
       } catch { /* lost an adoption race, or unreadable: treat as foreign */ }
       if (!claimed) {
@@ -365,7 +392,7 @@ export async function quiesceAutopilot(engine?: BrainEngine): Promise<(() => voi
   // drain below must not orphan the marker. (The daemon also self-clears a
   // migrate-prefixed marker whose recorded pid is dead, so even a SIGKILL
   // here heals within one daemon poll.)
-  const release = markerRelease(marker);
+  const release = markerRelease(marker, ownBody);
   const deregister = registerCleanup('migrate-autopilot-resume', async () => release());
   const resume = () => { release(); deregister(); };
 
