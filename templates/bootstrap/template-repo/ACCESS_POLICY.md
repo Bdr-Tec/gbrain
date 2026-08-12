@@ -44,8 +44,8 @@ it. Prefer project scope; choose user scope only after accepting that tradeoff.
 
 Codex: there is no choice — `codex mcp add` has no scope flag, so the
 registration is always user-global and the tradeoff above is the standing
-state. The off-ramp is removing the registration
-(`gbrain bootstrap uninstall`).
+state. Off-ramps: `codex mcp remove gbrain` removes just the registration;
+`gbrain bootstrap uninstall` is the full teardown.
 
 ## The transcript corpus
 

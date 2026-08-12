@@ -60,10 +60,11 @@ const BANK_JSON = JSON.stringify({
   questions: {
     AGENT_NAME: { maxLength: 64 },
     HOOKS_CONSENT: { consent: true, maxLength: 8 },
-    // Section (e) pins the harness-scoping prefix on this question — every
-    // "clean" fixture must carry a compliant MCP_SCOPE entry.
+    // Section (e) pins the harness-scoping prefix + interview phase on this
+    // question — every "clean" fixture must carry a compliant MCP_SCOPE entry.
     MCP_SCOPE: {
       consent: true,
+      phase: 'interview',
       question: '(Claude Code only. Codex has no scope flag.) Register for this folder or the whole machine?',
       maxLength: 8,
     },
@@ -332,6 +333,77 @@ describe('check-bootstrap-templates.sh', () => {
     );
   });
 
+  test('(e) fails when the questions object vanishes (valid JSON that silently passes §a)', () => {
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': '{"version":1,"maxQuestions":12,"interviewKeys":[],"consentKeys":[]}',
+        'templates/bootstrap/SOUL.md.template': '# plain\n',
+        'BOOTSTRAP_FOR_AGENTS.md': `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}`,
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("must start with '(Claude Code only'");
+      },
+    );
+  });
+
+  test('(e) fails when the MCP_SCOPE entry vanishes from the bank', () => {
+    const bankNoEntry = JSON.stringify({
+      version: 1,
+      maxQuestions: 12,
+      interviewKeys: ['AGENT_NAME'],
+      consentKeys: ['HOOKS_CONSENT'],
+      questions: {
+        AGENT_NAME: { maxLength: 64 },
+        HOOKS_CONSENT: { consent: true, maxLength: 8 },
+      },
+    });
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': bankNoEntry,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md': `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}`,
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("must start with '(Claude Code only'");
+      },
+    );
+  });
+
+  test('(e) fails when MCP_SCOPE.phase reverts to wire (schema-vs-runbook contradiction)', () => {
+    const bankWirePhase = JSON.stringify({
+      version: 1,
+      maxQuestions: 12,
+      interviewKeys: ['AGENT_NAME'],
+      consentKeys: ['HOOKS_CONSENT', 'MCP_SCOPE'],
+      questions: {
+        AGENT_NAME: { maxLength: 64 },
+        HOOKS_CONSENT: { consent: true, maxLength: 8 },
+        MCP_SCOPE: {
+          consent: true,
+          phase: 'wire',
+          question: '(Claude Code only. Codex has no scope flag.) Register for this folder or the whole machine?',
+          maxLength: 8,
+        },
+      },
+    });
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': bankWirePhase,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md': `<!-- gbrain-runbook-stamp: 1.2.3.4 -->\n${RUNBOOK_PINS}`,
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("MCP_SCOPE.phase must be 'interview'");
+      },
+    );
+  });
+
   test('(e) fails when MCP_SCOPE.question loses its harness prefix (or the entry vanishes)', () => {
     const bankNoPrefix = JSON.stringify({
       version: 1,
@@ -341,7 +413,7 @@ describe('check-bootstrap-templates.sh', () => {
       questions: {
         AGENT_NAME: { maxLength: 64 },
         HOOKS_CONSENT: { consent: true, maxLength: 8 },
-        MCP_SCOPE: { consent: true, question: 'Register for this folder or the whole machine?', maxLength: 8 },
+        MCP_SCOPE: { consent: true, phase: 'interview', question: 'Register for this folder or the whole machine?', maxLength: 8 },
       },
     });
     withFixture(

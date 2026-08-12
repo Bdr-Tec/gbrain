@@ -90,7 +90,7 @@ you needed; report the count at the end (it feeds the install-time measurement).
    query it, and two open sessions contend for the database). Record it with
    `gbrain bootstrap interview --set MCP_SCOPE <project|user>` BEFORE the
    read-back, so the confirmation covers it. On Codex, skip this question
-   entirely — see phase 6.
+   entirely — the wiring step states the Codex reality instead.
    After the last batch: read ALL answers back in one compact block, ask "Is this
    the thing you want in the room?", and only then run
    `gbrain bootstrap interview --confirm <hash>` with the hash `--status` printed
@@ -105,13 +105,14 @@ you needed; report the count at the end (it feeds the install-time measurement).
      brain every turn is the whole point of installing gbrain for your agent. Tell
      the human it is on and how to turn it off (`GBRAIN_HOOKS=0`, or re-run with
      `--no-hooks`, or `gbrain bootstrap uninstall`). MCP scope is NOT asked here —
-     `hooks` consumes the MCP_SCOPE answer recorded during the phase-3 interview.
+     `hooks` consumes the MCP_SCOPE answer recorded during the interview.
    - Codex: registers MCP (`codex mcp add`) and relies on the AGENTS.md protocol —
      say plainly that Codex gets pull-based context, not per-turn push.
      Do NOT offer an MCP scope choice: `codex mcp add` has no scope flag, so
      the registration is always user-global. State it as fact — any repo opened
-     on this machine can query the brain; the off-ramp is
-     `gbrain bootstrap uninstall`.
+     on this machine can query the brain; the off-ramps are
+     `codex mcp remove gbrain` (registration only) or
+     `gbrain bootstrap uninstall` (full teardown).
 7. **Private repo.** `gbrain bootstrap repo` — creates a PRIVATE GitHub repo from
    the workspace, verifies the privacy bit through the API, pushes. If the human
    started from a repo they created themselves (create-repo-first: an EMPTY private

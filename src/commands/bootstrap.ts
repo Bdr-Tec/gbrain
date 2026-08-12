@@ -245,8 +245,16 @@ function consentAnswer(ws: string, key: string): string | undefined {
     // Shape-tolerant: interview.json is user-editable and readInterviewState
     // validates only that `answers` is an object — a hand-edited non-string
     // value must fall through to the bank default, never throw at a
-    // `.toLowerCase()` call site.
+    // `.toLowerCase()` call site. Say so: a silent fall-through could flip a
+    // damaged opt-out to the permissive default without a trace.
     if (a && typeof a.value === 'string' && a.value) return a.value;
+    if (a && a.value !== undefined && typeof a.value !== 'string') {
+      console.error(
+        `note: the recorded ${key} answer in state/interview.json has an invalid shape — ` +
+          `using the bank default ('${bank.questions[key]?.default ?? ''}'). Re-record it with ` +
+          '`gbrain bootstrap interview` if that is not what you want.',
+      );
+    }
   }
   return bank.questions[key]?.default;
 }
@@ -683,7 +691,8 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
       console.error(
         "note: the recorded MCP_SCOPE answer 'project' has no effect on Codex — " +
           '`codex mcp add` has no scope flag; the registration is user-global (any repo ' +
-          'opened on this machine can query the brain). Off-ramp: `gbrain bootstrap uninstall`.',
+          'opened on this machine can query the brain). Off-ramps: `codex mcp remove gbrain` ' +
+          '(registration only) or `gbrain bootstrap uninstall` (full teardown).',
       );
     }
   }

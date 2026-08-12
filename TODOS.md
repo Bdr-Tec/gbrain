@@ -5067,8 +5067,13 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   phase 3, pre-confirm, so the confirm hash covers it). An exemption touches a
   tamper-tripwire — a post-confirm flip of `PERSIST_CRON` (background-push
   consent) would no longer invalidate anything — so it needs its own
-  adversarial review before landing. Context: eng review + codex consult of the
-  Codex scope fix, 2026-08-11.
+  adversarial review before landing. Also cover the healing half: pre-fix
+  installs that recorded `MCP_SCOPE` at the old wire-phase moment have a
+  permanently-invalidated confirm, and `bootstrap status` can't distinguish a
+  consent-key invalidation from a tampered answer set — a status detail for
+  that case would stop resumed installs being steered into a redundant
+  re-confirm loop (ship-review data-migration finding). Context: eng review +
+  codex consult of the Codex scope fix, 2026-08-11.
 - [ ] **P2 — bootstrap first-push secret scan reads the working tree, not the
   index blobs; fail-open on binary/large files.** `secretScanOrThrow` /
   `scanFiles` (src/core/bootstrap/repo.ts + src/core/secret-scan.ts) read
