@@ -3829,28 +3829,99 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 
 ## claw-test E2E (v0.22.16 follow-ups)
 
-### Hermes runner — `src/core/claw-test/runners/hermes.ts`
-**Priority:** P2
-
-**What:** Add a Hermes implementation of the `AgentRunner` interface. v1 ships only OpenClaw; v1.1 lands hermes once we have real friction reports from openclaw to validate the contract against.
-
-**Why:** Cross-agent diff (`gbrain friction diff --base openclaw --compare hermes`) is the highest-leverage next signal. Friction unique to one agent vs common-to-both separates "agent contract bug" from "gbrain bug" automatically.
-
-**Effort:** S (CC ~30m). Depends on: v1 openclaw runner producing real friction reports first.
+### ~~Hermes runner — `src/core/claw-test/runners/hermes.ts`~~ DONE (hermes-harness wave)
+Shipped: `HermesRunner` (`hermes -z <brief>`, `$HERMES_BIN` > `which hermes`,
+`HERMES_HOME` env-allowlist delta) + the full hermes install door
+(`test/e2e/install-real-hermes.serial.test.ts`, opt-in-gated) + the label-gated
+`hermes-door` CI job in heavy-tests.yml. The cross-agent
+`gbrain friction diff --base openclaw --compare hermes` payoff shipped in the
+same wave (below). Observed-CLI pins live in `docs/mcp/HERMES-CLI-PIN.md` and
+`docs/mcp/HERMES.md`.
 
 ---
 
-### Friction analytics suite — `diff` / `trend` / `migration-stub`
+### Friction analytics suite — `trend` / `migration-stub` (diff SHIPPED)
 **Priority:** P2
 
-**What:** Three new `gbrain friction` subcommands deferred from v1:
-- `gbrain friction diff --base <run-or-agent> --compare <run-or-agent>` (cross-agent comparison; ~80 LOC)
+**What:** Two remaining `gbrain friction` subcommands deferred from v1
+(`diff` shipped in the hermes-harness wave — see `src/commands/friction.ts`):
 - `gbrain friction trend [--since <version-or-date>] [--phase <name>]` (time-series across runs; ~60 LOC)
 - `gbrain friction migration-stub [--threshold N]` (clusters friction by phase + tokens, emits `skills/migrations/v[N+1].md` stub; ~150 LOC)
 
 **Why:** Turns point-in-time reports into a slope. Pairs with the v1.1 public scoreboard.
 
-**Effort:** M (CC ~2h total).
+**Effort:** M (CC ~1.5h total).
+
+---
+
+### Promote hermes-door soft probes to hard assertions + build the REAL cron test
+**Priority:** P2
+
+**What:** Two follow-ups now that the hermes CLI surface is pinned (v0.20.0,
+`docs/mcp/HERMES-CLI-PIN.md`): (1) promote the door's logged-evidence probes
+(`hermes mcp list` output shape; session-artifact tool-call traces under
+`<home>/.hermes/`) to hard assertions once a couple of CI runs confirm their
+stability across hermes releases; (2) build the real cron pairing test — the
+surface is fully non-interactive (`hermes cron create [--name N] [--no-agent]
+[--script PATH] <schedule> [prompt]` + `hermes cron tick` runs due jobs once
+and exits) — create a job that runs `gbrain sync --json`, tick, and assert the
+sync actually executed against the run's brain. (A self-skipping probe was
+deliberately CUT in review: a test that cannot fail is not coverage.)
+
+**Why:** INSTALL_FOR_AGENTS.md's recurring-jobs step has zero coverage; the
+evidence sweep is the promotion signal the door already logs.
+
+**Effort:** S-M (CC ~45m). Depends on: first labeled hermes-door CI runs.
+
+---
+
+### Wire the orphaned `voice-agent-install` ScenarioKind
+**Priority:** P2
+
+**What:** `test/fixtures/claw-test-scenarios/voice-agent-install/` carries the
+richest install-assertion template in the repo (60-line expected.json:
+filesystem manifest, `.gbrain-source.json` sha256s, resolver rows, PII
+blocklist, health probe, tiered soft-fail) but `scenario.json` declares
+`kind: "voice-agent-install"`, which `ScenarioKind` rejects — the fixture
+cannot load. Extend `ScenarioKind` + `loadScenario` + a `postInstallHook`
+implementation so the scenario runs.
+
+**Why:** Integrations-recipe install coverage (the `gbrain integrations
+install` path) has a fully-designed scenario sitting dead.
+
+**Effort:** M (CC ~1h). Integrations-lane work, deliberately kept out of the
+hermes-harness wave.
+
+---
+
+### Cold-install container test — fill the `tests/docker/bootstrap-e2e.sh` placeholder
+**Priority:** P3
+
+**What:** heavy-tests.yml carries a gated no-op step for
+`tests/docker/bootstrap-e2e.sh` (networkless cold-machine container install of
+gbrain itself: global install, PATH discovery, migrations). The file doesn't
+exist. Write it.
+
+**Why:** The agent-platform door tests (claude/codex/hermes) all deliberately
+run gbrain from the dev tree / compiled binary — none of them proves gbrain's
+own cold install. That gap was re-flagged in the hermes-harness wave's outside
+review and scoped OUT of that wave on purpose.
+
+**Effort:** M (CC ~1-2h, docker).
+
+---
+
+### BrainBench hermes adapter
+**Priority:** P3
+
+**What:** ~50-100 lines in `src/eval/brainbench/adapters/hermes.ts` + an
+`ALL_HARNESSES` entry + baseline cells in `evals/brainbench/baselines/main.json`.
+
+**Why:** Cross-harness memory-conformance coverage for the third platform.
+Eval seam (memory conformance), NOT install — kept out of the install wave on
+purpose; needs baseline-governance care per the BrainBench gate rules.
+
+**Effort:** S-M (CC ~1h + baseline runs).
 
 ---
 
@@ -3870,7 +3941,7 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 ### Real v0.18 SQL dump for upgrade scenario
 **Priority:** P2
 
-**What:** The `upgrade-from-v0.18` scenario ships scaffolded — `seed/dump.sql` is missing. The harness gracefully no-ops the seed phase when absent, so the scenario currently behaves like fresh-install. v1.1: generate a real v0.18-shape PGLite dump per the procedure documented in `test/fixtures/claw-test-scenarios/upgrade-from-v0.18/seed/README.md`.
+**What:** The `upgrade-from-v0.18` scenario ships scaffolded — `seed/dump.sql` is missing. Both scripted and live runs now FAIL LOUDLY on the missing dump (a silent skip used to init a current database and false-green the "upgrade"), so the shipped scenario is unrunnable until the dump lands. Generate a real v0.18-shape PGLite dump per the procedure documented in `test/fixtures/claw-test-scenarios/upgrade-from-v0.18/seed/README.md`.
 
 **Why:** Without a real seed, the scenario doesn't actually exercise the migration chain forward-walk. That's the whole point of the upgrade scenario — proves issue #239/#243/#266/#357 class regressions stay fixed.
 
