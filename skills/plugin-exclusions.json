@@ -3,9 +3,7 @@
   "exclusions": {
     "migrate": "host-side data-migration workflows; not useful to a downstream plugin install",
     "setup": "host install/provisioning flow; plugin installs arrive already set up",
-    "publish": "emits local HTML on the host filesystem; deliberately excluded from plugin installs",
     "frontmatter-guard": "pre-wave curation (recorded as-is; revisit individually)",
-    "capture": "pre-wave curation (recorded as-is; revisit individually)",
     "schema-author": "schema-pack authoring is a brain-owner activity, not a client activity",
     "smoke-test": "host-runtime health checks (container/daemon assumptions)",
     "gbrain-upgrade": "host binary upgrade flow",
