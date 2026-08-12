@@ -173,9 +173,20 @@ export const GBRAIN_HOOK_MARKER_VALUE = 'bootstrap-v1';
  */
 export const GBRAIN_HARNESS_MARKER_VALUE = 'bootstrap-harness-v1';
 
-/** User-scope Claude Code settings file (harness-mode hook + permissions target). */
+/**
+ * User-scope Claude Code settings file (harness-mode hook + permissions
+ * target). Resolution mirrors Claude Code itself: CLAUDE_CONFIG_DIR (its
+ * documented config-dir override, which the real-claude e2e harness sets)
+ * else $HOME/.claude — checked explicitly because Bun's homedir() reads the
+ * password database, NOT the HOME env var, so a sandboxed test that remaps
+ * HOME would otherwise write into the operator's REAL settings file (this
+ * bit us; the write-ahead receipt's remove path self-healed it).
+ */
 export function claudeUserSettingsPath(): string {
-  return join(homedir(), '.claude', 'settings.json');
+  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (configDir) return join(configDir, 'settings.json');
+  const home = process.env.HOME?.trim();
+  return join(home || homedir(), '.claude', 'settings.json');
 }
 
 /** permissions.allow entry that pre-approves an MCP server's tools for headless runs. */
