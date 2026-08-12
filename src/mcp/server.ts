@@ -17,7 +17,7 @@ import {
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
 import { assembleTurnContext } from '../core/context/turn-context.ts';
-import { isVolunteerChannel, logVolunteerEventsFireAndForget, volunteerEventRowsFrom } from '../core/context/volunteer-events.ts';
+import { logTurnContextDeliveryFireAndForget } from '../core/context/volunteer-events.ts';
 
 export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpSurface } = {}) {
   const server = new Server(
@@ -159,24 +159,11 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
           onDelivered: (block) => logDeliveredReflexPointers(engine, block.pointers),
           // The hook lane's feedback loop (#2095 closed over turn_context):
           // the delivered block's post-trim volunteered pages + pointers land
-          // in context_volunteer_events under the request's channel, so
-          // `volunteer-context --stats` and the volunteer_channels doctor
-          // check see per-harness firing. Channel is validated; absent or
-          // unknown → 'claude-code' (the only harness bootstrap registers
-          // hooks for today).
-          onTurnContextDelivered: (result, req) => {
-            const channel = isVolunteerChannel(req.channel) ? req.channel : 'claude-code';
-            if (result.volunteered?.length) {
-              const sessionId = typeof req.sessionId === 'string' ? req.sessionId.slice(0, 256) : null;
-              logVolunteerEventsFireAndForget(
-                engine,
-                volunteerEventRowsFrom(result.volunteered, { channel, session_id: sessionId }),
-              );
-            }
-            if (result.pointers.length) {
-              logDeliveredReflexPointers(engine, result.pointers, channel);
-            }
-          },
+          // in context_volunteer_events under the request's channel. Body
+          // lives in volunteer-events.ts (logTurnContextDeliveryFireAndForget)
+          // so the shipped wiring is unit-testable.
+          onTurnContextDelivered: (result, req) =>
+            logTurnContextDeliveryFireAndForget(engine, result, req),
           boundSourceId: defaultSource,
           secret: ipcSecret,
         },

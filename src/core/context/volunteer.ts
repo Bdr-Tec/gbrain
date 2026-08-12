@@ -144,11 +144,9 @@ export function candidatesByNorm(candidates: WindowEntityCandidate[]): Map<strin
 
 /**
  * The pure confidence-gate step: pointer pool in, gated VolunteeredPage[] out.
- * Shared verbatim by every volunteer consumer — volunteerContext (op / watch /
- * direct paths) AND the serve resolve-IPC volunteer branch AND the
- * volunteer-hook client's old-serve fallback — so server-gated and
- * client-gated results can never diverge (gate-function parity is test-pinned).
- * Deterministic, zero-I/O. Idempotent: gating an already-gated set is a no-op.
+ * Extracted from volunteerContext so the gate is deterministic, zero-I/O, and
+ * directly unit-testable (idempotency pinned in test/volunteer-context.test.ts:
+ * gating an already-gated set is a no-op).
  */
 export function gateVolunteeredPointers(
   block: PointerBlock,

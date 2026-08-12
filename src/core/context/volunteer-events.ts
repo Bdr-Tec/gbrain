@@ -31,6 +31,50 @@ export function isVolunteerChannel(v: unknown): v is VolunteerChannel {
 }
 
 /**
+ * The hook lane's feedback loop (#2095 closed over turn_context): log a
+ * DELIVERED turn-context block's post-trim volunteered pages + reflex
+ * pointers to context_volunteer_events under the request's channel, so
+ * `volunteer-context --stats` and the volunteer_channels doctor check see
+ * per-harness firing. Serve wires this as resolve-ipc's onTurnContextDelivered
+ * callback — which fires ONLY after the response write succeeded (an
+ * abandoned block was never injected and must not be counted). Channel is
+ * validated; absent/unknown → 'claude-code' (the only harness bootstrap
+ * registers hooks for today). sessionId is clamped like the op path's
+ * trust-boundary clamp. Fire-and-forget: never throws into the server.
+ */
+export function logTurnContextDeliveryFireAndForget(
+  engine: BrainEngine,
+  result: {
+    volunteered?: Array<Parameters<typeof volunteerEventRowsFrom>[0][number]>;
+    pointers?: import('./retrieval-reflex.ts').ReflexPointer[];
+  },
+  req: { channel?: string; sessionId?: string },
+): void {
+  try {
+    const channel: VolunteerChannel = isVolunteerChannel(req.channel) ? req.channel : 'claude-code';
+    const sessionId = typeof req.sessionId === 'string' ? req.sessionId.slice(0, 256) : null;
+    // Pointers map to event rows with the reflex-path rationale template
+    // (logDeliveredReflexPointers parity) — inlined rather than routed
+    // through that function's dynamic import so the pending write registers
+    // synchronously (a late registration can be dropped at process exit).
+    const rows = [
+      ...(result.volunteered?.length
+        ? volunteerEventRowsFrom(result.volunteered, { channel, session_id: sessionId })
+        : []),
+      ...(result.pointers?.length
+        ? volunteerEventRowsFrom(
+            result.pointers.map((p) => ({ ...p, rationale: `${p.arm} match "${p.display}"` })),
+            { channel, session_id: sessionId },
+          )
+        : []),
+    ];
+    if (rows.length) logVolunteerEventsFireAndForget(engine, rows);
+  } catch {
+    /* telemetry only — a logging bug must never surface into the IPC server */
+  }
+}
+
+/**
  * Map volunteered pages to event rows for one channel — the ONE place the
  * VolunteerEventRow shape is assembled (op / reflex / watch all call this,
  * so adding a column is a one-site change).
