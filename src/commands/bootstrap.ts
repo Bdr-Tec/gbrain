@@ -94,8 +94,9 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
                                   Register MCP (+ per-turn hooks on Claude Code,
                                   ON by default; --no-hooks opts out, GBRAIN_HOOKS=0
                                   disables at runtime).
-  repo                            Create the dedicated PRIVATE GitHub repo, verify the
-                                  privacy bit via the API, push.
+  repo                            Create the dedicated PRIVATE GitHub repo (or adopt
+                                  an EMPTY private repo you created under your own
+                                  account), verify the privacy bit via the API, push.
   verify [--json]                 The whole install contract (round-trip, graph floor,
                                   magic moment, scans, hooks smoke). Exit 0 or not done.
   attach [--harness H]            Machine two: adopt a cloned agent workspace.
@@ -573,7 +574,13 @@ async function runRepo(ws: string, rest: string[], home: string, runner: ExecRun
   void rest;
   return withLock(ws, async () => {
     const result = await createPrivateRepo(ws, { runner, gbrainHomeDir: home });
-    console.log(`${result.reused ? 'verified existing' : 'created'} private repo: ${result.url}`);
+    const line =
+      result.disposition === 'created'
+        ? `created private repo: ${result.url}`
+        : result.disposition === 'adopted'
+          ? `adopted your existing empty private repo: ${result.url}`
+          : `verified existing private repo: ${result.url}`;
+    console.log(line);
 
     // Derived-token refresh of GITHUB.md with the real URL (best-effort —
     // createPrivateRepo already replaced the placeholder in place).

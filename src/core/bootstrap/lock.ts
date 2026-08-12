@@ -37,8 +37,16 @@ export type BootstrapErrorCode =
   | 'GH_MISSING'
   /** `gh auth status` failed — human must run `gh auth login` (exit 2). */
   | 'GH_AUTH'
-  /** Workspace already has an `origin` remote bootstrap didn't create [G8]. */
+  /** Workspace already has an `origin` remote bootstrap can neither adopt nor
+   * claim (foreign owner / receipt mismatch) — pointed at attach [G8]. */
   | 'ORIGIN_EXISTS'
+  /** A create-repo-first origin the authed user owns has FOREIGN content —
+   * bootstrap adopts only an empty repo (or one carrying our own history), so
+   * it never silently no-ops onto an existing project [G8]. */
+  | 'ORIGIN_NOT_EMPTY'
+  /** Could not reach the origin to confirm it is safe to adopt (git ls-remote
+   * failed) — refuse and re-run; never adopt on uncertainty [G8]. */
+  | 'REMOTE_CHECK_FAILED'
   /** `gh repo create` (or a required git step) failed. */
   | 'REPO_CREATE_FAILED'
   /** The pre-push secret scan found an unallowlisted secret in the workspace —

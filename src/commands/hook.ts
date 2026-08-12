@@ -63,7 +63,8 @@ import {
   toCorpusText,
 } from '../core/transcripts/claude-code-jsonl.ts';
 import { CLAUDE_HOOK_OUTPUT_CAP_CHARS } from '../core/bootstrap/host-specs.ts';
-import { readManifest } from '../core/bootstrap/format.ts';
+import { readManifest, readReceipt, type InstallReceipt } from '../core/bootstrap/format.ts';
+import { realpathOrResolve } from '../core/path-confine.ts';
 
 // ── Tunables ────────────────────────────────────────────────────────────────
 
@@ -613,6 +614,48 @@ async function resolveBootstrapWorkspaceRoot(ws: string): Promise<string | null>
   return root;
 }
 
+/** owner/name from a github https/ssh remote URL, or null. Local mirror of
+ * repo.ts's parser (kept here so the engine-free hook doesn't import repo.ts). */
+function githubOwnerName(url: string): string | null {
+  const m =
+    /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url.trim()) ??
+    /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/.exec(url.trim());
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/**
+ * The no-daemon workspace push must NOT fire until the repo phase has verified
+ * the origin's privacy and recorded `repo_url`. In a create-repo-first install
+ * the origin exists (the clone) BEFORE the repo phase, and hooks are wired one
+ * phase earlier — so an ungated session-end/recovery push could publish
+ * workspace content to an as-yet-unverified (possibly public) remote. A recorded
+ * `repo_url` means the repo phase completed against a verified-private remote.
+ *
+ * Bound to the recorded repo: the current origin — BOTH the fetch URL and the
+ * push URL (`git push` uses the push URL when set) — must still resolve to the
+ * same owner/name as `repo_url`, so a later `git remote set-url` can't redirect
+ * the push to another (possibly public) repo. No receipt / no repo_url / a
+ * changed origin → defer (fail-closed).
+ */
+async function repoPhaseComplete(root: string): Promise<boolean> {
+  try {
+    const receipt = readReceipt(resolveGbrainHome()) as (InstallReceipt & { repo_url?: string }) | null;
+    if (!receipt || typeof receipt.repo_url !== 'string' || receipt.repo_url.length === 0) return false;
+    if (realpathOrResolve(receipt.workspace_dir) !== realpathOrResolve(root)) return false;
+    const want = githubOwnerName(receipt.repo_url);
+    if (!want) return false;
+    const fetchUrl = await tryExecAsync('git', ['-C', root, 'remote', 'get-url', 'origin']);
+    if (githubOwnerName(fetchUrl ?? '') !== want) return false;
+    // Push URL (remote.origin.pushurl) via the config key directly (no dash-flag):
+    // unset → `git push` uses the fetch URL (already matched). Only a configured
+    // push URL that points elsewhere blocks the push.
+    const pushUrl = await tryExecAsync('git', ['-C', root, 'config', 'remote.origin.pushurl']);
+    return !pushUrl || githubOwnerName(pushUrl) === want;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Fire-and-forget `gbrain sources push --path <root>` as a DETACHED child.
  * workspacePush must never run inline in a hook — its git chain is fully
@@ -649,7 +692,16 @@ async function dirtyTreePush(
     ]);
     const dirty = (status ?? '') !== '';
     const ahead = aheadRaw !== null ? parseInt(aheadRaw, 10) || 0 : 0;
-    if (!dirty && ahead === 0) return null;
+    if (!dirty && ahead === 0) return null; // clean + up to date → nothing to recover
+    // There IS unpushed work. Defer until the repo phase verified privacy +
+    // recorded repo_url — never recover-push to an unverified origin
+    // (create-repo-first race). Only fires when work actually exists (P2-1).
+    if (!(await repoPhaseComplete(root))) {
+      return {
+        note: 'Unpushed work detected; will push after the repo phase completes (`gbrain bootstrap repo`).',
+        reason: 'push_deferred_repo_pending',
+      };
+    }
     try {
       (io.spawnPush ?? spawnDetachedPush)(root);
       return {
@@ -954,13 +1006,17 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
   try {
     if (ws) {
       const root = await resolveBootstrapWorkspaceRoot(ws);
-      if (root) {
+      if (root && (await repoPhaseComplete(root))) {
         try {
           (io.spawnPush ?? spawnDetachedPush)(root);
           if (outcome === 'ok' && !reason) reason = 'push_spawned';
         } catch {
           degrade('push_unavailable');
         }
+      } else if (root && outcome === 'ok' && !reason) {
+        // Repo phase not finished (create-repo-first, before `bootstrap repo`):
+        // defer the push so we never publish to an unverified-privacy origin.
+        reason = 'push_deferred_repo_pending';
       }
     }
   } catch {

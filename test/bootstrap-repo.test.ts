@@ -391,6 +391,237 @@ describe('createPrivateRepo', () => {
     expect(err.exitCode).toBe(2);
     expect(err.message).toContain('gh auth login');
   });
+
+  // ── create-repo-first adoption (the human made the repo, opened it in Claude
+  //    Code / Codex, then ran bootstrap) + hardening of the adoption path ──────
+
+  /** The receipt `render` writes: this workspace, no repo_url yet. */
+  function renderReceiptNoUrl(): void {
+    writeReceipt(home, {
+      receipt_version: 1,
+      workspace_dir: ws,
+      source_id: 'workspace',
+      agent_name: 'Test Agent',
+      created_at: '2026-01-01T00:00:00.000Z',
+      created_by: '0.0.0-test',
+      brain_created_by_bootstrap: false,
+      created_paths: [],
+      registrations: [],
+    });
+  }
+
+  test("create-repo-first: adopts an EMPTY private user-owned repo (disposition 'adopted', sets identity, pushes, records after push)", async () => {
+    const url = 'https://github.com/alice/my-brain';
+    renderReceiptNoUrl();
+    const { runner, calls } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        // assertAdoptableOrigin: all-refs ls-remote → empty (freshly created repo).
+        { key: 'ls-remote origin refs/heads/main', code: 0, stdout: '' },
+        { key: 'ls-remote origin', code: 0, stdout: '' },
+        // ensureRemoteHasWorkspace: --heads empty → first push.
+        { key: 'ls-remote --heads origin', code: 0, stdout: '' },
+        // Freshly rendered, uncommitted → stage + scan + commit, then push.
+        { key: 'rev-parse --verify HEAD', code: 1, stderr: 'fatal: needed a single revision' },
+        { key: 'status --porcelain', code: 0, stdout: ' M GITHUB.md\n' },
+        { key: 'ls-files --cached --others', code: 0, stdout: 'GITHUB.md' },
+        { key: 'diff --cached --name-only', code: 0, stdout: 'GITHUB.md\n' },
+        { key: '--jq .private', code: 0, stdout: 'true\n' },
+      ]),
+    );
+    const result = await createPrivateRepo(ws, { runner, gbrainHomeDir: home });
+    expect(result.disposition).toBe('adopted');
+    expect(result.reused).toBe(true);
+    expect(result.url).toBe(url);
+    // Adopted the human's repo — never created one.
+    expect(calls.some((c) => c.join(' ').includes('repo create'))).toBe(false);
+    // Repo-local identity set on the ADOPTION path (fresh-machine commit safety).
+    expect(calls).toContainEqual(['git', '-C', ws, 'config', 'user.name', 'alice']);
+    expect(calls).toContainEqual(['git', '-C', ws, 'config', 'user.email', '123+alice@users.noreply.github.com']);
+    // Workspace pushed, and repo_url recorded AFTER the push.
+    expect(calls).toContainEqual(['git', '-C', ws, 'push', '-u', 'origin', 'main']);
+    expect((readReceipt(home) as RepoReceipt).repo_url).toBe(url);
+  });
+
+  test('[CRITICAL] create-repo-first pointed at a NON-empty repo → ORIGIN_NOT_EMPTY, never a silent no-op', async () => {
+    const url = 'https://github.com/alice/existing-project';
+    renderReceiptNoUrl();
+    const { runner, calls } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        { key: 'ls-remote origin refs/heads/main', code: 0, stdout: '' },
+        // Non-empty remote (foreign content) + no local commit → foreign, refuse.
+        { key: 'ls-remote origin', code: 0, stdout: 'cafe1234\trefs/heads/main\n' },
+        { key: 'rev-parse --verify HEAD', code: 1, stderr: 'fatal: needed a single revision' },
+      ]),
+    );
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('ORIGIN_NOT_EMPTY');
+    expect(err.message).toContain('EMPTY');
+    // No silent no-op: nothing pushed, repo_url never recorded.
+    expect(calls.some((c) => c.join(' ').includes('push -u origin'))).toBe(false);
+    expect((readReceipt(home) as RepoReceipt).repo_url).toBeUndefined();
+  });
+
+  test('[CRITICAL] non-empty repo with NO pending marker → ORIGIN_NOT_EMPTY (never adopt a user project from a git-ancestry guess)', async () => {
+    // Even if the remote HEAD looks like ours, without a pending_repo_url proof
+    // we cannot distinguish our push from a user's existing project → refuse.
+    const url = 'https://github.com/alice/existing-project';
+    renderReceiptNoUrl();
+    const { runner, calls } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        { key: 'ls-remote origin', code: 0, stdout: 'abc123\trefs/heads/main\n' },
+      ]),
+    );
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('ORIGIN_NOT_EMPTY');
+    expect(calls.some((c) => c.join(' ').includes('push -u origin'))).toBe(false);
+    expect((readReceipt(home) as RepoReceipt).repo_url).toBeUndefined();
+  });
+
+  test('interrupted push recovery: non-empty remote matching pending_repo_url → adopts (resumes)', async () => {
+    const url = 'https://github.com/alice/my-brain';
+    // A prior run pushed but crashed before recording repo_url — pending proves ours.
+    writeReceipt(home, {
+      receipt_version: 1,
+      workspace_dir: ws,
+      source_id: 'workspace',
+      agent_name: 'Test Agent',
+      created_at: '2026-01-01T00:00:00.000Z',
+      created_by: '0.0.0-test',
+      brain_created_by_bootstrap: false,
+      created_paths: [],
+      registrations: [],
+      pending_repo_url: url,
+    } as RepoReceipt);
+    const { runner, calls } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        // Remote already carries our branch (the interrupted push landed) → no re-push.
+        { key: 'ls-remote --heads origin', code: 0, stdout: 'abc123\trefs/heads/main\n' },
+        { key: '--jq .private', code: 0, stdout: 'true\n' },
+      ]),
+    );
+    const result = await createPrivateRepo(ws, { runner, gbrainHomeDir: home });
+    expect(result.disposition).toBe('adopted');
+    // pending bypassed the emptiness check — never probed all-refs ls-remote.
+    expect(calls.some((c) => c.join(' ') === `git -C ${ws} ls-remote origin`)).toBe(false);
+    const receipt = readReceipt(home) as RepoReceipt;
+    expect(receipt.repo_url).toBe(url);
+    expect(receipt.pending_repo_url).toBeUndefined(); // cleared on record
+  });
+
+  test('create-repo-first under an ORG (owner != login) → ORIGIN_EXISTS (personal-account only, D2=A)', async () => {
+    const url = 'https://github.com/acme-org/brain';
+    renderReceiptNoUrl();
+    const { runner, calls } = makeRunner(
+      happyRules([{ key: 'remote get-url origin', code: 0, stdout: `${url}\n` }]),
+    );
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('ORIGIN_EXISTS');
+    // Ownership fails first — never even probes the remote for emptiness.
+    expect(calls.some((c) => c.join(' ') === `git -C ${ws} ls-remote origin`)).toBe(false);
+  });
+
+  test('create-repo-first pointed at a PUBLIC repo → REPO_NOT_PRIVATE', async () => {
+    const url = 'https://github.com/alice/public-brain';
+    renderReceiptNoUrl();
+    const { runner } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        { key: 'ls-remote origin', code: 0, stdout: '' }, // empty → adoptable
+        { key: '--jq .private', code: 0, stdout: 'false\n' },
+      ]),
+    );
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('REPO_NOT_PRIVATE');
+  });
+
+  test("create-repo-first when the origin can't be listed → REMOTE_CHECK_FAILED, nothing pushed", async () => {
+    const url = 'https://github.com/alice/my-brain';
+    renderReceiptNoUrl();
+    const { runner, calls } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        { key: 'ls-remote origin', code: 1, stderr: 'fatal: could not read from remote repository' },
+      ]),
+    );
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('REMOTE_CHECK_FAILED');
+    expect(calls.some((c) => c.join(' ').includes('push -u origin'))).toBe(false);
+  });
+
+  test('adoption push fails → repo_url NOT recorded (status stays resumable) [finding 3]', async () => {
+    const url = 'https://github.com/alice/my-brain';
+    renderReceiptNoUrl();
+    const { runner } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        { key: 'ls-remote origin', code: 0, stdout: '' },
+        { key: 'ls-remote --heads origin', code: 0, stdout: '' },
+        { key: 'rev-parse --verify HEAD', code: 1, stderr: 'fatal: needed a single revision' },
+        { key: 'status --porcelain', code: 0, stdout: ' M GITHUB.md\n' },
+        { key: 'ls-files --cached --others', code: 0, stdout: 'GITHUB.md' },
+        { key: 'diff --cached --name-only', code: 0, stdout: 'GITHUB.md\n' },
+        { key: '--jq .private', code: 0, stdout: 'true\n' },
+        { key: 'push -u origin', code: 1, stderr: 'fatal: unable to access' },
+      ]),
+    );
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('REPO_CREATE_FAILED');
+    // repo_url must NOT be recorded on push failure (else status false-reports done).
+    expect((readReceipt(home) as RepoReceipt).repo_url).toBeUndefined();
+  });
+
+  test('adoption secret-scans the workspace before pushing (SECRET_SCAN_BLOCKED) [finding 4]', async () => {
+    const url = 'https://github.com/alice/my-brain';
+    renderReceiptNoUrl();
+    writeFileSync(join(ws, 'leak.md'), `token: sk-${'A1b2C3d4E5f6G7h8I9j0K1l2M3n4'}\n`, 'utf8');
+    const { runner, calls } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        { key: 'ls-remote origin', code: 0, stdout: '' },
+        { key: 'ls-remote --heads origin', code: 0, stdout: '' },
+        { key: 'rev-parse --verify HEAD', code: 1, stderr: 'fatal: needed a single revision' },
+        { key: 'status --porcelain', code: 0, stdout: '?? leak.md\n' },
+        { key: 'ls-files --cached --others', code: 0, stdout: 'leak.md' },
+        { key: '--jq .private', code: 0, stdout: 'true\n' },
+      ]),
+    );
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('SECRET_SCAN_BLOCKED');
+    expect(calls.some((c) => c.join(' ').includes('push -u origin'))).toBe(false);
+  });
+
+  test('[finding 4] a CLEAN committed tree is still secret-scanned before the deferred push', async () => {
+    const url = 'https://github.com/alice/test-agent-workspace-2';
+    writeReceipt(home, {
+      receipt_version: 1,
+      workspace_dir: ws,
+      source_id: 'workspace',
+      agent_name: 'Test Agent',
+      created_at: '2026-01-01T00:00:00.000Z',
+      created_by: '0.0.0-test',
+      brain_created_by_bootstrap: false,
+      created_paths: [],
+      registrations: [],
+      repo_url: url,
+    } as RepoReceipt);
+    writeFileSync(join(ws, 'secrets.md'), `token: sk-${'A1b2C3d4E5f6G7h8I9j0K1l2M3n4'}\n`, 'utf8');
+    const { runner, calls } = makeRunner(
+      happyRules([
+        { key: 'remote get-url origin', code: 0, stdout: `${url}\n` },
+        { key: 'ls-remote --heads origin', code: 0, stdout: '' }, // empty → deferred-push path
+        { key: 'rev-parse --verify HEAD', code: 0, stdout: 'abc\n' }, // has a commit
+        { key: 'status --porcelain', code: 0, stdout: '' }, // clean tree
+        { key: 'ls-files -z', code: 0, stdout: 'secrets.md' }, // committed tree to scan
+      ]),
+    );
+    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    expect(err.code).toBe('SECRET_SCAN_BLOCKED');
+    expect(calls.some((c) => c.join(' ').includes('push -u origin'))).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

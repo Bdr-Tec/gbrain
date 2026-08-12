@@ -32,6 +32,8 @@ import {
   type TurnContextRequest,
 } from '../src/core/context/resolve-ipc.ts';
 import { CLAUDE_HOOK_OUTPUT_CAP_CHARS } from '../src/core/bootstrap/host-specs.ts';
+import { writeReceipt } from '../src/core/bootstrap/format.ts';
+import type { RepoReceipt } from '../src/core/bootstrap/repo.ts';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'conversation-formats', 'claude-code.jsonl');
 const ENV_KEYS = ['GBRAIN_HOME', 'DATABASE_URL', 'GBRAIN_DATABASE_URL', 'GBRAIN_SOURCE', 'GBRAIN_HOOKS'] as const;
@@ -666,6 +668,34 @@ const INITIALIZED_MANIFEST = {
   source_id: 'workspace',
 };
 
+/** Simulate a COMPLETED repo phase: a receipt for this workspace carrying a
+ * recorded repo_url. Without this the no-daemon push is deferred (a
+ * create-repo-first install must not push to an unverified-privacy origin). */
+function markRepoPhaseComplete(repo: string): void {
+  const toplevel = execFileSync('git', ['-C', repo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+  const repoUrl = 'https://github.com/alice/boot-repo';
+  // The push gate binds to the recorded repo: origin must resolve to repo_url.
+  try {
+    execFileSync('git', ['-C', repo, 'remote', 'remove', 'origin'], { stdio: 'ignore' });
+  } catch {
+    /* no origin yet */
+  }
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', repoUrl]);
+  mkdirSync(join(home(), 'bootstrap'), { recursive: true });
+  writeReceipt(home(), {
+    receipt_version: 1,
+    workspace_dir: toplevel,
+    source_id: 'workspace',
+    agent_name: 'test-agent',
+    created_at: '2026-01-01T00:00:00.000Z',
+    created_by: 'test',
+    brain_created_by_bootstrap: false,
+    created_paths: [],
+    registrations: [],
+    repo_url: repoUrl,
+  } as RepoReceipt);
+}
+
 describe('bootstrap push gate [G4]', () => {
   test('git repo + dirty tree + NO agent.json: session-start and session-end never spawn a push, repo untouched', async () => {
     const repo = join(tmp, 'plain-repo');
@@ -719,6 +749,7 @@ describe('bootstrap push gate [G4]', () => {
     const repo = join(tmp, 'boot-repo');
     initGitRepoWithDirtyTree(repo);
     writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    markRepoPhaseComplete(repo); // repo phase done → push is allowed
     const spawned: string[] = [];
 
     const out = collectStdout();
@@ -744,6 +775,7 @@ describe('bootstrap push gate [G4]', () => {
     const repo = join(tmp, 'boot-repo-end');
     initGitRepoWithDirtyTree(repo);
     writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    markRepoPhaseComplete(repo); // repo phase done → push is allowed
     const spawned: string[] = [];
     await runHook(['session-end'], {
       write: () => {},
@@ -751,6 +783,36 @@ describe('bootstrap push gate [G4]', () => {
       stdin: JSON.stringify({ session_id: 'sess-boot-end', cwd: repo }),
     });
     expect(spawned).toHaveLength(1);
+  });
+
+  test('create-repo-first BEFORE the repo phase (no repo_url yet): session-start defers the push, never publishes to an unverified origin', async () => {
+    const repo = join(tmp, 'boot-repo-pending');
+    initGitRepoWithDirtyTree(repo);
+    writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    // NB: no markRepoPhaseComplete — the repo phase has not run yet.
+    const spawned: string[] = [];
+    const out = collectStdout();
+    await runHook(['session-start'], {
+      ...out.io,
+      spawnPush: (root: string) => { spawned.push(root); },
+      stdin: '',
+      cwd: repo,
+    });
+    expect(spawned).toEqual([]); // deferred, not spawned
+    expect((await lastHeartbeat())?.reason).toBe('push_deferred_repo_pending');
+  });
+
+  test('create-repo-first BEFORE the repo phase (no repo_url yet): session-end defers the backstop push', async () => {
+    const repo = join(tmp, 'boot-repo-pending-end');
+    initGitRepoWithDirtyTree(repo);
+    writeFileSync(join(repo, 'agent.json'), JSON.stringify(INITIALIZED_MANIFEST, null, 2) + '\n');
+    const spawned: string[] = [];
+    await runHook(['session-end'], {
+      write: () => {},
+      spawnPush: (root: string) => { spawned.push(root); },
+      stdin: JSON.stringify({ session_id: 'sess-boot-end-pending', cwd: repo }),
+    });
+    expect(spawned).toEqual([]); // deferred until `gbrain bootstrap repo`
   });
 });
 
