@@ -112,8 +112,10 @@ export async function runInitNudge(engine: BrainEngine): Promise<void> {
 
     // A brand-new EMPTY brain has no "opportunities" — telling a fresh user
     // "0 takes" at the end of their first init is jargon-noise on the
-    // activation surface. Suppress the recommendation arms on empty.
+    // activation surface. Suppress the ENTIRE nudge on empty (including the
+    // partial-checks notice below).
     const brainEmpty = totalPages === 0;
+    if (brainEmpty) return;
 
     // Aggregate: any non-zero metric triggers the nudge.
     const linkCoverage = totalEntities > 0 ? linkedCount / totalEntities : 1;
@@ -122,9 +124,7 @@ export async function runInitNudge(engine: BrainEngine): Promise<void> {
       totalStale > 0
       || (totalEntities > 0 && linkCoverage < 0.7)
       || (totalEntities > 0 && timelineCoverage < 0.9)
-      || (takesCount === 0 && !brainEmpty);
-
-    if (brainEmpty) return;
+      || takesCount === 0;
     if (!hasRecommendations && !partial) return;
 
     // Emit one-line nudge. Be terse — init is the activation surface.

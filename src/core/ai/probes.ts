@@ -26,9 +26,15 @@ export async function probeOpenAICompat(baseUrl: string, timeoutMs: number = 100
       signal: controller.signal,
       headers: { accept: 'application/json' },
     });
-    clearTimeout(timer);
-    if (!res.ok) return { reachable: true, models_endpoint_valid: false, error: `HTTP ${res.status}` };
+    if (!res.ok) {
+      clearTimeout(timer);
+      return { reachable: true, models_endpoint_valid: false, error: `HTTP ${res.status}` };
+    }
+    // Keep the abort timer live through the BODY read — a daemon that accepts,
+    // returns headers, then stalls the body would otherwise hang past the
+    // advertised timeout (the probe sits on init's interactive critical path).
     const body = await res.json().catch(() => null);
+    clearTimeout(timer);
     if (!body || typeof body !== 'object') {
       return { reachable: true, models_endpoint_valid: false, error: 'non-JSON response' };
     }

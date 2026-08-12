@@ -77,7 +77,6 @@ import { probeLivePgliteHolder, resolveBrainDataDir } from '../core/bootstrap/un
 import { readRunbookStamp, hooksInstalled, listVerifyRuns } from '../core/bootstrap/status.ts';
 import { resolveGbrainHome } from '../core/gbrain-home.ts';
 import { VERSION as GBRAIN_BINARY_VERSION } from '../version.ts';
-import { isNewerVersion } from '../core/semver.ts';
 import { execFileSync } from 'child_process';
 
 export interface Check {
@@ -1151,8 +1150,7 @@ export function checkSelfUpgradeHealth(): Check {
     const { loadConfig } = require('../core/config.ts');
     const {
       resolveSelfUpgradeMode,
-      readUpdateCache,
-      isCacheFresh,
+      pendingUpgradeVersion,
     } = require('../core/self-upgrade.ts');
     const { readRecentSelfUpgrades } = require('../core/audit/self-upgrade-audit.ts');
 
@@ -1167,14 +1165,11 @@ export function checkSelfUpgradeHealth(): Check {
     }
 
     const parts: string[] = [`mode=${mode}`];
-    const entry = readUpdateCache();
-    // Compare against the RUNNING binary (not the cache-writer's recorded
-    // version) so a stale/foreign cache can't report an already-done upgrade.
-    if (
-      entry && isCacheFresh(entry, Date.now()) && entry.marker.kind === 'upgrade_available' &&
-      entry.marker.latest && isNewerVersion(GBRAIN_BINARY_VERSION, entry.marker.latest)
-    ) {
-      parts.push(`update available: ${GBRAIN_BINARY_VERSION} -> ${entry.marker.latest} (run: gbrain self-upgrade)`);
+    // Shared stale/foreign-cache guard: only report an upgrade strictly newer
+    // than the RUNNING binary (pendingUpgradeVersion owns the rule).
+    const pendingLatest = pendingUpgradeVersion(GBRAIN_BINARY_VERSION, Date.now());
+    if (pendingLatest) {
+      parts.push(`update available: ${GBRAIN_BINARY_VERSION} -> ${pendingLatest} (run: gbrain self-upgrade)`);
     }
     const failedVersions: string[] = cfg?.self_upgrade?.failed_versions ?? [];
     if (failedVersions.length > 0) {

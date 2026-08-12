@@ -17,6 +17,9 @@ import { repairTimelineDedupIndex } from './timeline-dedup-repair.ts';
  * notices are useful diagnostics on an UPGRADE but pure noise as a new user's
  * first-run output. Module-level (not threaded through the Migration type)
  * because only a couple of handlers emit them. Guarded via `migrationNotice`.
+ * Known limitation: concurrent runMigrations calls in one process (two engines
+ * migrating simultaneously) share this flag — worst case is a suppressed or
+ * extra stderr NOTICE line; migration execution/stamping is unaffected.
  */
 let quietMigrationNotices = false;
 
@@ -6053,15 +6056,18 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
     process.stderr.write(`  Schema version ${current} → ${LATEST_VERSION} (${pending.length} migration(s) pending)\n`);
   }
 
-  // Pre-flight: warn about connections that might block DDL
-  await checkForBlockingConnections(engine);
-
   let applied = 0;
   try {
+    // Pre-flight: warn about connections that might block DDL
+    await checkForBlockingConnections(engine);
+
     for (const m of pending) {
       if (!quietReplay) process.stderr.write(`  [${m.version}] ${m.name}...\n`);
       try {
         await applyOneMigration(engine, m);
+        // Update version after both SQL and handler succeed. Inside the same
+        // catch so a stamp-write failure is also NAMED in quiet mode.
+        await engine.setConfig('version', String(m.version));
       } catch (err) {
         // Quiet fresh-install replay: name the failing migration — without the
         // per-step lines, the error would otherwise be anonymous.
@@ -6069,13 +6075,12 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
         throw err;
       }
 
-      // Update version after both SQL and handler succeed
-      await engine.setConfig('version', String(m.version));
       if (!quietReplay) process.stderr.write(`  [${m.version}] ✓ ${m.name}\n`);
       applied++;
     }
   } finally {
-    // Never leak the fresh-install quiet flag into a later in-process run.
+    // Never leak the fresh-install quiet flag into a later in-process run —
+    // covers every exit path from here on (incl. the pre-flight probe).
     quietMigrationNotices = false;
   }
 

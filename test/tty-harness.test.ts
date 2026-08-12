@@ -207,9 +207,11 @@ describe.skipIf(!ptySupported())('launchTty (live PTY smoke)', () => {
     const frames = session.frames();
     expect(frames.length).toBeGreaterThanOrEqual(2);
     // The 600ms sleep shows up as a measurable gap (loose bound: >= 300ms).
+    // Match the specific stall rather than index 0 — a slow spawn on a loaded
+    // CI box can prepend a startup stall ('(no output yet)') before it.
     const stalls = computeStalls(frames, { thresholdMs: 300 });
     expect(stalls.length).toBeGreaterThanOrEqual(1);
-    expect(stalls[0]!.context).toContain('one');
+    expect(stalls.some((s) => s.context.includes('one'))).toBe(true);
   }, 20_000);
 
   test('send + waitFor drive an interactive child; child sees a real TTY', async () => {

@@ -107,8 +107,11 @@ describe('v0.45 DX wave — non-TTY no-key defaults to keyless (typo still fail-
     // Keyless is a first-class posture: the naive first command completes.
     expect(r.exitCode).toBe(0);
     expect(r.stderr).toContain('keyless mode');
-    // The notice names the upgrade affordance.
-    expect(r.stderr).toContain('gbrain config set embedding_model');
+    // The notice names the upgrade affordance — the re-init recipe that
+    // actually works, NOT `config set embedding_model` (which config.ts
+    // hard-refuses as a schema-sizing no-op).
+    expect(r.stderr).toContain('gbrain init --force --pglite --embedding-model');
+    expect(r.stderr).not.toContain('config set embedding_model');
     // Config persisted with the deferred-embedding sentinel.
     const cfg = JSON.parse(readFileSync(join(tmpHome, '.gbrain', 'config.json'), 'utf-8'));
     expect(cfg.embedding_disabled).toBe(true);
@@ -149,6 +152,48 @@ describe('v0.45 DX wave — non-TTY no-key defaults to keyless (typo still fail-
       rmSync(multiHome, { recursive: true, force: true });
     }
   }, 240000);
+});
+
+// ============================================================================
+
+describe('v0.45 DX wave — --supabase non-TTY guard + multi-key no-canonical fail-loud', () => {
+  test('init --supabase without a TTY fails loud and names the --url escape hatch', async () => {
+    // Legacy behavior was a silent exit-0 no-op (stdin closed → readLine
+    // never resolved → process ended with NO config written) — the worst
+    // failure shape for a scripted/agent caller.
+    const home = makeTempHome();
+    try {
+      const r = await runCli(['init', '--supabase'], { gbrainHome: home, env: {} });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain('needs an interactive terminal');
+      expect(r.stderr).toContain('--url');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 120000);
+
+  test('multiple provider keys with NO canonical candidate stays fail-loud with disambiguation hint', async () => {
+    // The canonical default provider (zeroentropyai) has no key here, so the
+    // non-TTY auto-pick cannot resolve the ambiguity — it must fail loud
+    // (D2/D3), not guess between openai and voyage.
+    const home = makeTempHome();
+    try {
+      const r = await runCli(['init', '--pglite', '--non-interactive'], {
+        gbrainHome: home,
+        env: {
+          OPENAI_API_KEY: 'sk-test-only-for-init-resolution-NOT-CALLED',
+          VOYAGE_API_KEY: 'pa-test-only-for-init-resolution-NOT-CALLED',
+        },
+      });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toMatch(/Multiple embedding providers env-ready/);
+      expect(r.stderr).toMatch(/Disambiguate by passing --embedding-model/);
+      // Fail-loud path exits BEFORE any config write.
+      expect(existsSync(join(home, '.gbrain', 'config.json'))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 120000);
 });
 
 // ============================================================================

@@ -150,7 +150,7 @@ export function renderStallsReport(stalls: readonly Stall[], totalMs: number): s
 //    a live TUI across separate tool calls)
 // ────────────────────────────────────────────────────────────────────────────
 
-export const KEY_MAP: Record<string, string> = {
+export const KEY_MAP = {
   Enter: '\r',
   Up: '\x1b[A',
   Down: '\x1b[B',
@@ -163,8 +163,11 @@ export const KEY_MAP: Record<string, string> = {
   Backspace: '\x7f',
   CtrlC: '\x03',
   CtrlD: '\x04',
-};
+} as const satisfies Record<string, string>;
 
+/** Literal union of key names (not plain string) so sendKey('Entr') is a
+ *  compile error in test code; drive mode's runtime-string path keeps the
+ *  `| string` overload with its runtime throw. */
 export type KeyName = keyof typeof KEY_MAP;
 
 export type DriveCommand =
@@ -282,7 +285,8 @@ export interface TtyLaunchOpts {
   dropEnv?: string[];
   /** Wall-clock kill switch. Default 15 min. */
   timeoutMs?: number;
-  /** Observer for every output burst (drive mode streams frames to disk). */
+  /** Observer for every output burst (for callers that want to stream frames
+   *  somewhere as they arrive; saveTranscript already persists them at end). */
   onFrame?: (frame: PtyFrame) => void;
 }
 
@@ -398,13 +402,32 @@ export function launchTty(argv: string[], opts: TtyLaunchOpts = {}): TtySession 
       });
   }
 
-  const wallTimer = setTimeout(() => {
-    try {
-      proc.kill?.('SIGKILL');
-    } catch {
-      /* ignore */
+  /**
+   * Best-effort kill of the child's whole process TREE, not just the parent.
+   * A PTY child (claude/codex/a shell) is normally the session/group leader of
+   * its pty, so `process.kill(-pid, sig)` reaches its descendants (MCP servers,
+   * sub-shells) — otherwise SIGKILL to the parent orphans them, leaking API
+   * spend and PGLite locks. If the child isn't a group leader the negative-pid
+   * kill throws (EPERM/ESRCH) and we fall back to killing the parent alone.
+   */
+  function killTree(sig: NodeJS.Signals): void {
+    const pid = proc.pid as number | undefined;
+    if (typeof pid === 'number') {
+      try {
+        process.kill(-pid, sig);
+        return;
+      } catch {
+        /* not a group leader — fall through to parent-only */
+      }
     }
-  }, timeoutMs);
+    try {
+      proc.kill?.(sig);
+    } catch {
+      /* already dead */
+    }
+  }
+
+  const wallTimer = setTimeout(() => killTree('SIGKILL'), timeoutMs);
 
   function send(data: string): void {
     if (exited) return;
@@ -416,7 +439,7 @@ export function launchTty(argv: string[], opts: TtyLaunchOpts = {}): TtySession 
   }
 
   function sendKey(key: KeyName | string): void {
-    const seq = KEY_MAP[key as string];
+    const seq = (KEY_MAP as Record<string, string>)[key];
     if (seq === undefined) throw new Error(`sendKey: unknown key ${JSON.stringify(key)}`);
     send(seq);
   }
@@ -494,18 +517,10 @@ export function launchTty(argv: string[], opts: TtyLaunchOpts = {}): TtySession 
   async function close(): Promise<void> {
     clearTimeout(wallTimer);
     if (exited) return;
-    try {
-      proc.kill?.('SIGINT');
-    } catch {
-      /* ignore */
-    }
+    killTree('SIGINT');
     await Promise.race([exitedPromise, Bun.sleep(2000)]);
     if (!exited) {
-      try {
-        proc.kill?.('SIGKILL');
-      } catch {
-        /* ignore */
-      }
+      killTree('SIGKILL');
       await Promise.race([exitedPromise, Bun.sleep(1000)]);
     }
   }

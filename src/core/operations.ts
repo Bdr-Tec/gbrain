@@ -2773,17 +2773,12 @@ const get_brain_identity: Operation = {
     let latest_version: string | null = null;
     try {
       const su = await import('./self-upgrade.ts');
-      const { isNewerVersion } = await import('./semver.ts');
-      const entry = su.readUpdateCache();
-      // Compare against the RUNNING version, not the cache-writer's — a
-      // stale/foreign cache must not report an upgrade this binary already has.
-      if (
-        entry && su.isCacheFresh(entry, Date.now()) &&
-        entry.marker.kind === 'upgrade_available' &&
-        entry.marker.latest && isNewerVersion(VERSION, entry.marker.latest)
-      ) {
+      // Shared stale/foreign-cache guard (pendingUpgradeVersion): only an
+      // upgrade strictly newer than the RUNNING version counts.
+      const latest = su.pendingUpgradeVersion(VERSION, Date.now());
+      if (latest) {
         update_available = true;
-        latest_version = entry.marker.latest ?? null;
+        latest_version = latest;
       }
     } catch {
       /* never let the banner break the op */

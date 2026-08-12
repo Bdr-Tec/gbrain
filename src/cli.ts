@@ -14,6 +14,7 @@ import { spawn } from 'child_process';
 import {
   readUpdateCache,
   isCacheFresh,
+  pendingUpgradeVersion,
   readSnooze,
   isSnoozeActive,
   resolveSelfUpgradeMode,
@@ -36,7 +37,6 @@ import { callRemoteTool, RemoteMcpError, unpackToolResult } from './core/mcp-cli
 import { maybePromptForUpgrade } from './core/thin-client-upgrade-prompt.ts';
 import { CLI_FLAG_REGISTRY } from './core/cli-flag-registry.generated.ts';
 import { VERSION } from './version.ts';
-import { isNewerVersion } from './core/semver.ts';
 
 // Build CLI name -> operation lookup
 const cliOps = new Map<string, Operation>();
@@ -260,29 +260,26 @@ function maybeEmitUpdateMarker(command: string): void {
     const now = Date.now();
     const entry = readUpdateCache();
     if (entry && isCacheFresh(entry, now)) {
-      // Guard against a stale/foreign cache: the cache records the version of
-      // whatever binary WROTE it (an older gbrain on PATH can write it via the
-      // detached refresh). Compare the RUNNING binary to latest, and print the
-      // running version — otherwise a freshly-upgraded binary nags its user
-      // with "old -> latest available" that self-upgrade cannot satisfy.
-      if (
-        entry.marker.kind === 'upgrade_available' &&
-        entry.marker.latest &&
-        isNewerVersion(VERSION, entry.marker.latest)
-      ) {
+      // Shared stale/foreign-cache guard (pendingUpgradeVersion): only nag when
+      // the cached latest is strictly newer than the RUNNING binary, and print
+      // the running version — the cache records whatever binary WROTE it.
+      const latest = pendingUpgradeVersion(VERSION, now);
+      if (latest) {
         // notify mode honors a per-version snooze; auto mode ignores it.
-        if (mode === 'notify' && isSnoozeActive(readSnooze(), entry.marker.latest, now)) return;
+        if (mode === 'notify' && isSnoozeActive(readSnooze(), latest, now)) return;
         // The raw `UPGRADE_AVAILABLE <cur> <latest>` line is a MACHINE marker
         // (parsed by the self-upgrade skill / MCP via parseMarker). A human at
         // an interactive terminal should never see the token as the literal
         // first line of output — so emit it only when stderr is NOT a TTY
         // (agent harnesses capture stderr non-interactively and still get it).
-        // The human sentence prints on both.
-        if (!process.stderr.isTTY) {
-          process.stderr.write(`UPGRADE_AVAILABLE ${VERSION} ${entry.marker.latest}\n`);
+        // GBRAIN_FORCE_UPGRADE_MARKER=1 forces it for the rarer agent harness
+        // that allocates a PTY yet still parses the token. The human sentence
+        // prints on both.
+        if (!process.stderr.isTTY || process.env.GBRAIN_FORCE_UPGRADE_MARKER === '1') {
+          process.stderr.write(`UPGRADE_AVAILABLE ${VERSION} ${latest}\n`);
         }
         process.stderr.write(
-          `gbrain ${VERSION} -> ${entry.marker.latest} available. Run: gbrain self-upgrade\n`,
+          `gbrain ${VERSION} -> ${latest} available. Run: gbrain self-upgrade\n`,
         );
       }
       return;
@@ -297,9 +294,15 @@ function maybeEmitUpdateMarker(command: string): void {
     try {
       const exec = process.execPath ?? '';
       const refreshArgs = ['check-update', '--refresh-cache'];
-      // Compiled binary: execPath IS gbrain. Dev (bun src/cli.ts): re-exec the
-      // entrypoint.
-      const argv = /[/\\]gbrain(\.exe)?$/.test(exec) ? refreshArgs : [process.argv[1], ...refreshArgs];
+      // Detect compiled-vs-dev by the RUNTIME's basename, not our own — a
+      // published binary keeps its official name (`gbrain-darwin-arm64`, a
+      // `gb` shim), so matching `/gbrain$/` on execPath would misfire and
+      // prepend the `/$bunfs/root/...` virtual entrypoint (process.argv[1] in
+      // a compiled Bun binary), producing an unknown-command child that never
+      // refreshes. Dev mode runs under `bun`/`node`; anything else IS the
+      // compiled binary and re-execs itself directly.
+      const isDevRuntime = /[/\\](bun|node)(\.exe)?$/.test(exec);
+      const argv = isDevRuntime ? [process.argv[1], ...refreshArgs] : refreshArgs;
       const child = spawn(exec, argv, {
         detached: true,
         stdio: 'ignore',

@@ -497,7 +497,8 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
   console.error('\nNo embedding provider configured.');
   console.error('Continue without one (keyless — keyword search + memory your agent writes):');
   console.error('  gbrain init --pglite --no-embedding');
-  console.error('  (add a key later with `gbrain config set embedding_model <id>`)');
+  console.error('  (enable semantic search later by re-running with a key:');
+  console.error('   gbrain init --force --pglite --embedding-model <id>)');
   console.error('');
   console.error('Or set a key for semantic search:');
   console.error('  export OPENAI_API_KEY=sk-…        # openai:text-embedding-3-large (1536d)');
@@ -516,13 +517,16 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
   }
 }
 
-/** Loud keyless-continue notice for the no-keys default path. */
+/** Loud keyless-continue notice for the no-keys default path. The upgrade
+ *  command is `init --force` re-init, NOT `config set embedding_model` — that
+ *  key is a schema-sizing file-plane field that `gbrain config set` refuses
+ *  (it would be a silent no-op), so pointing users there is a dead end. */
 function printKeylessContinueNotice(): void {
   console.error(
     'No embedding provider keys detected — continuing in keyless mode:\n' +
     '  keyword search + memory your agent writes down itself. Everything works.\n' +
-    '  One optional key upgrades search to semantic (import with `gbrain import --no-embed`\n' +
-    '  meanwhile). Add later: `gbrain config set embedding_model <id>`.',
+    '  One optional key upgrades search to semantic — set the key, then re-run\n' +
+    '  `gbrain init --force --pglite --embedding-model <id>` (re-imports via `gbrain sync`).',
   );
 }
 
@@ -618,8 +622,13 @@ async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boo
   const { pickProvider } = await import('./init-provider-picker.ts');
   const picked = await pickProvider({ touchpoint: 'embedding', env: process.env, isTTY: true });
   if (!picked) {
-    console.error('Init aborted: no embedding provider picked.');
-    process.exit(1);
+    // The embedding picker offers an explicit "0) none — continue keyless"
+    // option (and returns null on it). Honor that instead of aborting: a user
+    // with multiple keys who deliberately chose keyless gets keyless, matching
+    // the zero-key path. (Ctrl-D / EOF / invalid also land here → keyless.)
+    printKeylessContinueNotice();
+    out.noEmbedding = true;
+    return;
   }
   out.embedding_model = picked.fullModel;
   out.embedding_dimensions = picked.dim;

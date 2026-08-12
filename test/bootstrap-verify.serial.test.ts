@@ -247,6 +247,15 @@ describe('verifyWorkspace — keyless pass', () => {
       expect(scan.detail).not.toContain('sk-AAAAAAAAAAAAAAAAAAAAAAAA');
 
       expect(res.ok).toBe(false);
+
+      // Tour gating on FAIL: the report says fix-first and withholds the
+      // celebration prompts ("broken, but go enjoy it" is a mixed signal) …
+      expect(res.report).toContain('Fix the FAIL checks above');
+      expect(res.report).not.toContain('Who am I to you?');
+      // … while the returned tour array stays unconditional so machine
+      // consumers (--json) keep a stable shape, and the check names the gate.
+      expect(res.tour).toEqual([...FIRST_RUN_TOUR]);
+      expect(check(res.checks, 'first_run_tour')[0].detail).toContain('withheld');
     } finally {
       rmSync(githubPath, { force: true });
       writeFileSync(userPath, userOriginal);

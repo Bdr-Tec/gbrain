@@ -117,7 +117,8 @@ async function resolveInputs(engine: BrainEngine): Promise<ModePickerInputs> {
     hasExpansionKey: Boolean(
       process.env.ANTHROPIC_API_KEY ||
       process.env.OPENAI_API_KEY ||
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+      process.env.GEMINI_API_KEY, // gateway accepts GEMINI_API_KEY as a first-class alias
     ),
     pageCount,
   };

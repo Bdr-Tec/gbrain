@@ -383,6 +383,15 @@ async function runStatus(ws: string, rest: string[], home: string): Promise<numb
   return 0;
 }
 
+/** One copy of the A8 invalidation warning — shared by --set and --skip so
+ *  the operator-facing instructions cannot drift between the two branches. */
+function warnInvalidatedConfirmation(): void {
+  console.error(
+    'note: this change voided the prior confirmation — read the full answer set back ' +
+    'to the human, then `gbrain bootstrap interview --confirm <hash>` again before render.',
+  );
+}
+
 async function runInterview(ws: string, rest: string[]): Promise<number> {
   if (rest.includes('--init')) {
     const r = initState(ws);
@@ -424,12 +433,7 @@ async function runInterview(ws: string, rest: string[]): Promise<number> {
       console.log(`${key}: routed to the 0600 config file (${routed.configKey}). Not recorded in interview state.`);
       return 0;
     }
-    if (r.invalidatedConfirmation) {
-      console.error(
-        'note: this change voided the prior confirmation — read the full answer set back ' +
-        'to the human, then `gbrain bootstrap interview --confirm <hash>` again before render.',
-      );
-    }
+    if (r.invalidatedConfirmation) warnInvalidatedConfirmation();
     console.log(`${key} recorded.`);
     return 0;
   }
@@ -445,12 +449,7 @@ async function runInterview(ws: string, rest: string[]): Promise<number> {
       console.error(r.message);
       return 1;
     }
-    if (r.invalidatedConfirmation) {
-      console.error(
-        'note: this change voided the prior confirmation — read the full answer set back ' +
-        'to the human, then `gbrain bootstrap interview --confirm <hash>` again before render.',
-      );
-    }
+    if (r.invalidatedConfirmation) warnInvalidatedConfirmation();
     console.log(`${key} skipped.`);
     return 0;
   }
@@ -782,6 +781,21 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
           const re = await runner(argv);
           if (re.code !== 0 && !/already exists|already registered/i.test(re.stderr + re.stdout)) {
             console.error(`MCP re-registration failed (${argv.join(' ')}): ${re.stderr.trim() || `exit ${re.code}`}`);
+            return 1;
+          }
+          // Re-add can itself return "already exists" if a racing writer
+          // re-claimed the name between our remove and add — that registration
+          // is NOT ours. Re-verify and abort rather than bless a foreign
+          // endpoint that would intercept memory ops. (Only the recorded
+          // warn-then-continue step-2 smoke did this before; here it's fatal.)
+          const post = await verifyMcpTargetsWorkspace(runner, harness, mcpName, gbrainBin, sourceId);
+          if (post === 'mismatch') {
+            console.error(
+              `after replacing '${mcpName}', it STILL targets a different workspace/binary — ` +
+                `refusing to continue (a racing registration may have re-claimed the name). ` +
+                `Inspect \`${argv[0]} mcp get ${mcpName}\`, remove it by hand, then re-run ` +
+                `\`gbrain bootstrap hooks --harness ${harness} --repair\`.`,
+            );
             return 1;
           }
         } else {

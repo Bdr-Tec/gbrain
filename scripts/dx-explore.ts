@@ -9,7 +9,11 @@
  * transcripts land in .context/dx-runs/ (gitignored) and nothing asserts.
  *
  * Scenarios (all hermetic — temp HOME/GBRAIN_HOME/CLAUDE_CONFIG_DIR/CODEX_HOME;
- * the operator's real config is never read or written):
+ * the operator's real config is never WRITTEN. Two narrow reads exist for
+ * auth: codex-install copies ~/.codex/auth.json into the temp CODEX_HOME, and
+ * the claude seed records the API key's last 20 chars — both copies are
+ * scrubbed at cleanup even under --keep, so no credential material outlives
+ * the run):
  *
  *   help            First-touch comprehension surfaces: bare `gbrain`,
  *                   `gbrain --help`, `gbrain init --help`, `gbrain bootstrap
@@ -65,12 +69,19 @@ import {
   saveTranscript,
   seedClaudeTuiConfig,
   parseDriveCommand,
-  stripAnsi,
   type TtySession,
-  type PtyFrame,
 } from '../test/helpers/tty-harness.ts';
 
 const REPO_ROOT = path.resolve(import.meta.dir, '..');
+
+/** Screen patterns that mean the paste-in install reached a passing verify —
+ *  ONE list shared by the claude-install and codex-install scenarios so the
+ *  two can't drift when the bootstrap's success copy changes. */
+const VERIFY_SUCCESS_PATTERNS: Array<RegExp | string> = [
+  /bootstrap verify.*exit(?:ed|s)? 0/i,
+  /verify\b.*\b(passed|0\b)/i,
+  /All checks passed/i,
+];
 
 // Same synthetic persona the door tests use — the interview can complete
 // unattended and nothing real about the operator ever enters a transcript.
@@ -187,6 +198,10 @@ interface ScenarioCtx {
   keep: boolean;
   /** temp dirs to remove on completion unless --keep */
   cleanups: string[];
+  /** Files carrying credential material (copied auth.json, seeded key
+   *  suffixes). ALWAYS deleted at cleanup — --keep keeps transcripts and
+   *  hermetic dirs for forensics, never credentials. */
+  secretPaths: string[];
   events: Array<{ tMs: number; kind: 'input' | 'note' | 'screen'; data: string }>;
   t0: number;
 }
@@ -196,14 +211,17 @@ function newCtx(args: CliArgs, needsGbrain: boolean): ScenarioCtx {
     args.dir ?? path.join(REPO_ROOT, '.context', 'dx-runs', `${args.scenario}-${nowStamp()}`),
   );
   fs.mkdirSync(outDir, { recursive: true });
-  return {
+  const ctx: ScenarioCtx = {
     outDir,
     gbrainBin: needsGbrain ? ensureGbrainBinary(args.gbrainBin, args.rebuild) : '',
     keep: args.keep,
     cleanups: [],
+    secretPaths: [],
     events: [],
     t0: Date.now(),
   };
+  installSignalScrub(ctx);
+  return ctx;
 }
 
 function tmp(ctx: ScenarioCtx, prefix: string): string {
@@ -216,11 +234,43 @@ function event(ctx: ScenarioCtx, kind: 'input' | 'note' | 'screen', data: string
   ctx.events.push({ tMs: Date.now() - ctx.t0, kind, data });
 }
 
+/** Delete every credential copy. Idempotent; safe to call from a signal
+ *  handler AND from finishCtx (a second call is a no-op). This is the
+ *  "no credential outlives the run" guarantee — it must run even when a
+ *  10-25min install is Ctrl-C'd (finally does NOT run on SIGINT default). */
+function scrubSecrets(ctx: ScenarioCtx): void {
+  for (const p of ctx.secretPaths) {
+    try {
+      fs.rmSync(p, { force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+/** Wire SIGINT/SIGTERM so an interrupted run still scrubs credentials before
+ *  the process dies. Registered once per scenario ctx. */
+function installSignalScrub(ctx: ScenarioCtx): void {
+  const handler = (sig: NodeJS.Signals) => {
+    scrubSecrets(ctx);
+    process.stderr.write(`\n[dx-explore] ${sig}: scrubbed credential copies, exiting.\n`);
+    process.exit(130);
+  };
+  process.once('SIGINT', handler);
+  process.once('SIGTERM', handler);
+}
+
 function finishCtx(ctx: ScenarioCtx): void {
+  // Scrub credentials FIRST — before any other I/O that could throw (an
+  // events.jsonl write failure must not strand auth files).
+  scrubSecrets(ctx);
   fs.writeFileSync(
     path.join(ctx.outDir, 'events.jsonl'),
     ctx.events.map((e) => JSON.stringify(e)).join('\n') + (ctx.events.length ? '\n' : ''),
   );
+  if (ctx.keep && ctx.secretPaths.length > 0) {
+    log(`--keep: retained hermetic dirs, but scrubbed ${ctx.secretPaths.length} credential file(s)`);
+  }
   if (!ctx.keep) {
     for (const d of ctx.cleanups) {
       try {
@@ -244,8 +294,6 @@ function finishCtx(ctx: ScenarioCtx): void {
 function mirrorSession(dir: string, session: TtySession): () => void {
   const sessDir = path.join(dir, 'session');
   fs.mkdirSync(sessDir, { recursive: true });
-  const framesPath = path.join(sessDir, 'frames.jsonl');
-  fs.writeFileSync(framesPath, '');
   const timer = setInterval(() => {
     try {
       fs.writeFileSync(path.join(sessDir, 'screen.txt'), session.visible().slice(-8000));
@@ -448,6 +496,9 @@ async function scenarioClaudeInstall(ctx: ScenarioCtx): Promise<void> {
     // against the resolved path, so an unresolved seed misses.
     trustedDirs: [ws, fs.realpathSync(ws)],
   });
+  // The seed records the key's last 20 chars — credential-adjacent, so it is
+  // scrubbed at cleanup even with --keep.
+  ctx.secretPaths.push(path.join(cfg, '.claude.json'));
 
   log('REAL interactive claude running the paste-in bootstrap (10-25 min, real API cost)');
   log(`watch live: cat ${path.join(ctx.outDir, 'session', 'screen.txt')}`);
@@ -478,7 +529,7 @@ async function scenarioClaudeInstall(ctx: ScenarioCtx): Promise<void> {
     // Run until verify-success copy or exit or wall clock.
     const done = await Promise.race([
       session
-        .waitForAny([/bootstrap verify.*exit(?:ed|s)? 0/i, /verify\b.*\b(passed|0\b)/i, /All checks passed/i], {
+        .waitForAny(VERIFY_SUCCESS_PATTERNS, {
           timeoutMs: 1_500_000,
         })
         .then(() => 'verify-signal')
@@ -511,7 +562,12 @@ async function scenarioCodexInstall(ctx: ScenarioCtx): Promise<void> {
   const codexHome = path.join(home, '.codex');
   fs.mkdirSync(codexHome, { recursive: true });
   const realAuth = path.join(os.homedir(), '.codex', 'auth.json');
-  if (fs.existsSync(realAuth)) fs.copyFileSync(realAuth, path.join(codexHome, 'auth.json'));
+  if (fs.existsSync(realAuth)) {
+    const authCopy = path.join(codexHome, 'auth.json');
+    fs.copyFileSync(realAuth, authCopy);
+    fs.chmodSync(authCopy, 0o600); // copyFileSync doesn't preserve source mode
+    ctx.secretPaths.push(authCopy); // scrubbed at cleanup, even with --keep
+  }
   spawnSync('git', ['init', '-q', ws]);
   spawnSync('git', ['-C', ws, 'config', 'user.email', 'dx@example.com']);
   spawnSync('git', ['-C', ws, 'config', 'user.name', 'DX Explore']);
@@ -541,7 +597,7 @@ async function scenarioCodexInstall(ctx: ScenarioCtx): Promise<void> {
     session.sendKey('Enter');
     const done = await Promise.race([
       session
-        .waitForAny([/bootstrap verify.*exit(?:ed|s)? 0/i, /verify\b.*\b(passed|0\b)/i, /All checks passed/i], {
+        .waitForAny(VERIFY_SUCCESS_PATTERNS, {
           timeoutMs: 1_500_000,
         })
         .then(() => 'verify-signal')

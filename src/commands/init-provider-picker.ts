@@ -15,13 +15,15 @@
  *    probe-gates LOCAL daemons (ollama): daemon-up ≠ model-pulled, so an
  *    unreachable daemon is dropped and a missing model is annotated with
  *    its `ollama pull` fix inline.
- *  - Embedding pickers always offer `0) none — continue keyless`; when no
- *    KEYED provider is ready, keyless is the default, so a bare Enter (or
- *    the 60s timeout) can never select a local daemon the user didn't ask
- *    for.
- *  - On Ctrl-D / EOF / timeout / explicit skip: returns null; the
- *    embedding caller continues keyless with a loud notice (other
- *    touchpoints treat null as no-pick).
+ *  - Embedding pickers always offer `0) none — continue keyless`. When no
+ *    KEYED provider is ready, keyless is the DEFAULT (bare Enter / 60s
+ *    timeout / EOF all resolve to 0 → null), so a local daemon is never
+ *    auto-selected. When a keyed provider IS ready the default is `1`, so an
+ *    unattended timeout picks that first keyed provider — NOT null; explicit
+ *    `0` is still keyless.
+ *  - Returns null on the keyless choice (and on invalid input); the embedding
+ *    caller continues keyless with a loud notice on BOTH the zero-key and the
+ *    multi-key paths (other touchpoints treat null as no-pick).
  *  - When the user picks a non-Anthropic chat-capable recipe AND
  *    `ANTHROPIC_API_KEY` is missing, prints the subagent caveat from D7
  *    BEFORE returning the choice so the user sees the implication.
@@ -163,7 +165,10 @@ export async function pickProvider(opts: PickProviderOpts): Promise<PickedProvid
     return null;
   }
 
-  writeStderr(`\nPick an ${opts.touchpoint} provider (env-ready providers shown):\n\n`);
+  // Article-aware: touchpoint is 'embedding' | 'expansion' | 'chat' — a
+  // hardcoded article renders "an chat provider".
+  const article = /^[aeiou]/i.test(opts.touchpoint) ? 'an' : 'a';
+  writeStderr(`\nPick ${article} ${opts.touchpoint} provider (env-ready providers shown):\n\n`);
   if (ready.length > 0) writeStderr(formatRecipeTable(ready, env) + '\n\n');
 
   // Build numbered options (0 = keyless skip for embedding).
