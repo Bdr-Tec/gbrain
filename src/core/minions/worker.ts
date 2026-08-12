@@ -11,6 +11,8 @@
  *   await worker.start(); // polls until SIGTERM
  */
 
+import { existsSync } from 'fs';
+import { autopilotPausedMarkerPath } from '../autopilot-paths.ts';
 import type { BrainEngine } from '../engine.ts';
 import type {
   MinionJob, MinionJobContext, MinionHandler, MinionWorkerOpts,
@@ -152,6 +154,8 @@ export class MinionWorker extends EventEmitter {
   private queue: MinionQueue;
   private handlers = new Map<string, MinionHandler>();
   private running = false;
+  /** Log the pause/resume transition once each, not every poll. */
+  private pausedByMarkerAnnounced = false;
   private inFlight = new Map<number, InFlightJob>();
   private workerId = randomUUID();
 
@@ -535,7 +539,24 @@ export class MinionWorker extends EventEmitter {
           }
         }
 
-        // Claim jobs up to concurrency limit
+        // Claim jobs up to concurrency limit — unless the system-wide pause
+        // marker is parked. `gbrain migrate` quiesces writers for the copy
+        // window; the marker stops the autopilot dispatch loop, and gating
+        // the CLAIM here extends that fence to queued jobs (an already
+        // in-flight job finishes and is waited on by the migrate drain).
+        // Checked at claim time only: one existsSync per poll tick.
+        if (existsSync(autopilotPausedMarkerPath())) {
+          if (!this.pausedByMarkerAnnounced) {
+            console.log('[worker] pause marker present — not claiming new jobs until it clears.');
+            this.pausedByMarkerAnnounced = true;
+          }
+          await new Promise(resolve => setTimeout(resolve, this.opts.pollInterval));
+          continue;
+        }
+        if (this.pausedByMarkerAnnounced) {
+          console.log('[worker] pause marker cleared — resuming job claims.');
+          this.pausedByMarkerAnnounced = false;
+        }
         if (this.inFlight.size < this.opts.concurrency) {
           const lockToken = `${this.workerId}:${Date.now()}`;
           let job: MinionJob | null;
