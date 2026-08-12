@@ -102,6 +102,7 @@
   "minion-orchestrator/SKILL.md": "669e23f485561cf6fef16d445dfb8a6d05f76127d0ebf9feb17534af8843df5f",
   "perplexity-research/SKILL.md": "c25f5c471cbe3c6e0f975d8397e8382b00a85f8aa75302231d53c52855369e97",
   "perplexity-research/routing-eval.jsonl": "f1a40d87e710d5d2acd602a372d83f46c95da022b6e635228fffeaacb3bb2b27",
+  "plugin-exclusions.json": "13528f751aeb107d9b46031aec82a3d258a958bec55f6c36b4f81c246ab886b3",
   "publish/SKILL.md": "e06b609db780a3cc93a1755a87b30ff08ffdc0fdbc834c1422b2ad2489b57497",
   "query/SKILL.md": "8672fb9c9315f01274b1a7d3ad35f903df9705b2e806e2fa4c6add027ecef96f",
   "query/routing-eval.jsonl": "74f5a91e52fabc54e0e9403fa17db87ee26bb7ebb8ae8005148c51142abc62fe",
