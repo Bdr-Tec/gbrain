@@ -16,13 +16,21 @@
  * leaks into sibling tests.
  */
 import { describe, test, expect } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseClaudeStream,
   parseCodexJsonl,
   hermeticChildEnv,
+  hermesChildEnv,
   promotedEnv,
   resolveClaudeBinary,
   resolveCodexBinary,
+  resolveHermesBinary,
+  hasHermesAuth,
+  parseDotenvFile,
+  seedHermesHome,
 } from './agent-harness.ts';
 import { withEnv } from './with-env.ts';
 
@@ -172,5 +180,157 @@ describe('binary resolution SMOKE', () => {
     const bin = resolveCodexBinary();
     expect(bin === null || typeof bin === 'string').toBe(true);
     if (bin) console.log(`[smoke] codex resolved at: ${bin}`);
+  });
+
+  test('resolveHermesBinary returns a string or null', () => {
+    const bin = resolveHermesBinary();
+    expect(bin === null || typeof bin === 'string').toBe(true);
+    if (bin) console.log(`[smoke] hermes resolved at: ${bin}`);
+  });
+
+  test('hasHermesAuth returns a boolean', () => {
+    expect(typeof hasHermesAuth()).toBe('boolean');
+  });
+});
+
+describe('hasHermesAuth truth table (env leg — pins the anthropic-only, non-empty-value gate)', () => {
+  // The .env-file leg reads the operator's real ~/.hermes/.env, so only the
+  // env-var leg is exercised hermetically here; the file PARSING contract is
+  // pinned by the parseDotenvFile + seedHermesHome describes below.
+  const CLEAR = {
+    ANTHROPIC_API_KEY: undefined,
+    GSTACK_ANTHROPIC_API_KEY: undefined,
+    OPENAI_API_KEY: undefined,
+    GSTACK_OPENAI_API_KEY: undefined,
+    OPENROUTER_API_KEY: undefined,
+  } as const;
+
+  /** True only when the operator's real ~/.hermes/.env carries an anthropic key. */
+  const fileLegHasAnthropicKey = () =>
+    Boolean(parseDotenvFile(join(process.env.HOME ?? '', '.hermes', '.env')).ANTHROPIC_API_KEY?.trim());
+
+  test('non-empty anthropic env key → true', async () => {
+    await withEnv({ ...CLEAR, ANTHROPIC_API_KEY: 'sk-test-nonempty' }, () => {
+      expect(hasHermesAuth()).toBe(true);
+    });
+  });
+
+  test('GSTACK_-prefixed anthropic key promotes → true', async () => {
+    await withEnv({ ...CLEAR, GSTACK_ANTHROPIC_API_KEY: 'sk-test-promoted' }, () => {
+      expect(hasHermesAuth()).toBe(true);
+    });
+  });
+
+  test('BLANK env value → does NOT count as auth (a blank CI secret must skip, not fail paid)', async () => {
+    await withEnv({ ...CLEAR, ANTHROPIC_API_KEY: '   ' }, () => {
+      expect(hasHermesAuth()).toBe(fileLegHasAnthropicKey());
+    });
+  });
+
+  test('a NON-anthropic provider key alone → false (door is anthropic-pinned; a second provider mis-routes provider-auto)', async () => {
+    await withEnv({ ...CLEAR, OPENAI_API_KEY: 'sk-openai-only' }, () => {
+      expect(hasHermesAuth()).toBe(fileLegHasAnthropicKey());
+    });
+  });
+});
+
+describe('hermesChildEnv — the single-auth-source enforcement point', () => {
+  test('scrubs EVERY provider key (incl. allowlisted anthropic vars) and pins HOME/HERMES_HOME', async () => {
+    // A regression here (dropping the delete loop) re-leaks the operator's
+    // real key into every hermes child and reintroduces the provider-auto
+    // 401 mis-route — detectable only in the triple-gated paid lane, so the
+    // contract is pinned hermetically here.
+    await withEnv({
+      ANTHROPIC_API_KEY: 'sk-operator',
+      ANTHROPIC_BASE_URL: 'https://operator.example',
+      ANTHROPIC_AUTH_TOKEN: 'tok-operator',
+      OPENAI_API_KEY: 'sk-openai',
+      OPENROUTER_API_KEY: 'sk-openrouter',
+      GSTACK_ANTHROPIC_API_KEY: undefined,
+      GSTACK_OPENAI_API_KEY: undefined,
+      HERMES_HOME: '/operator/.hermes',
+    }, () => {
+      const env = hermesChildEnv('/tmp/hermes-child-test');
+      for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY']) {
+        expect(env[k]).toBeUndefined();
+      }
+      expect(env.HOME).toBe('/tmp/hermes-child-test');
+      expect(env.HERMES_HOME).toBe('/tmp/hermes-child-test/.hermes');
+    });
+  });
+});
+
+describe('parseDotenvFile', () => {
+  test('parses KEY=VALUE, skips comments/blanks, strips quotes and export prefixes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-dotenv-'));
+    try {
+      const f = join(dir, '.env');
+      writeFileSync(f, [
+        '# comment',
+        '',
+        'ANTHROPIC_API_KEY=sk-plain',
+        'export OPENAI_API_KEY="sk-quoted"',
+        "OPENROUTER_API_KEY='sk-single'",
+        'BLANK_KEY=',
+        'not a kv line',
+      ].join('\n'), 'utf-8');
+      const parsed = parseDotenvFile(f);
+      expect(parsed.ANTHROPIC_API_KEY).toBe('sk-plain');
+      expect(parsed.OPENAI_API_KEY).toBe('sk-quoted');
+      expect(parsed.OPENROUTER_API_KEY).toBe('sk-single');
+      expect(parsed.BLANK_KEY).toBe('');
+      expect(Object.keys(parsed)).not.toContain('not a kv line');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('unreadable file → empty object, never throws', () => {
+    expect(parseDotenvFile('/nonexistent/path/.env')).toEqual({});
+  });
+});
+
+describe('seedHermesHome single-key copy (injectable source — never the operator home)', () => {
+  test('copies EXACTLY the anthropic key; other providers and behavior knobs stay behind', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-seedhh-'));
+    try {
+      const src = join(dir, 'source.env');
+      writeFileSync(src, [
+        'ANTHROPIC_API_KEY=sk-copy-me',
+        'OPENAI_API_KEY=sk-openai-stays-home',  // second provider → dropped (mis-routes provider-auto)
+        'OPENROUTER_API_KEY=sk-or-stays-home',  // second provider → dropped
+        'TELEGRAM_BOT_TOKEN=secret-stays-home', // unlisted → dropped
+        'HERMES_BASE_URL=https://internal',     // unlisted → dropped
+      ].join('\n'), 'utf-8');
+
+      const home = join(dir, 'home');
+      const hermesHome = await withEnv({
+        ANTHROPIC_API_KEY: undefined, GSTACK_ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: undefined, GSTACK_OPENAI_API_KEY: undefined, OPENROUTER_API_KEY: undefined,
+      }, () => seedHermesHome(home, { sourceEnvPath: src }));
+
+      expect(hermesHome).toBe(join(home, '.hermes'));
+      const written = readFileSync(join(hermesHome, '.env'), 'utf-8');
+      expect(written).toBe('ANTHROPIC_API_KEY=sk-copy-me\n');
+      // seedHermesHome never writes config.yaml (hermes owns that schema —
+      // the model pin goes through the hermes CLI instead).
+      expect(existsSync(join(hermesHome, 'config.yaml'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('no source file + no env keys → no .env written (gate stays closed)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-seedhh2-'));
+    try {
+      const home = join(dir, 'home');
+      await withEnv({
+        ANTHROPIC_API_KEY: undefined, GSTACK_ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: undefined, GSTACK_OPENAI_API_KEY: undefined, OPENROUTER_API_KEY: undefined,
+      }, () => seedHermesHome(home, { sourceEnvPath: join(dir, 'missing.env') }));
+      expect(existsSync(join(home, '.hermes', '.env'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
