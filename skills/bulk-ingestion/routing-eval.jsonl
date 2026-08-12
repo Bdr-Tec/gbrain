@@ -13,3 +13,5 @@
 // is archive-crawler's job; turning the keep-list into pages at scale is
 // bulk-ingestion's. This phrasing legitimately trips both.
 {"intent":"Crawl my archive and bulk ingest everything worth keeping","expected_skill":"bulk-ingestion","ambiguous_with":["archive-crawler"]}
+// Negative: adjacent (bulk file operation) but out of scope — a filesystem chore, nothing enters the brain.
+{"intent":"Bulk-rename the screenshots in this folder to kebab-case filenames","expected_skill":null}

@@ -262,10 +262,14 @@ Only when a shared repo ALREADY exists with sensitive history in it do you
 need the purge below.
 
 **Step 1 — mirror-clone backup.** This is the recoverability line on the
-confirmation card; verify it exists before presenting the card.
+confirmation card; verify it exists before presenting the card. It goes in
+`~/.gbrain/backups/` — never `/tmp`, which is volatile (wiped on reboot and
+by tmp cleaners; a backup that can vanish mid-operation is not a
+recoverability line).
 
 ```bash
-git clone --mirror . "/tmp/brain-history-backup-$(date +%Y%m%d).git"
+mkdir -p ~/.gbrain/backups && chmod 700 ~/.gbrain/backups
+git clone --mirror . "$HOME/.gbrain/backups/brain-history-backup-$(date +%Y%m%d).git"
 ```
 
 **Step 2 — STOP. Present the [data-loss-gate](../data-loss-gate/SKILL.md)
@@ -287,7 +291,7 @@ Why: prior commits contain pre-sanitization versions of pages that were
      just cleaned — team access to the repo means team access to history
 
 Recoverable?
-- [x] Mirror-clone backup at /tmp/brain-history-backup-<date>.git
+- [x] Mirror-clone backup at ~/.gbrain/backups/brain-history-backup-<date>.git
       (verified: exists, `git -C <backup> log` works)
 - [ ] NOT recoverable from the rewritten remote — old SHAs become unreachable
 
@@ -330,6 +334,12 @@ git remote add origin <REPO_URL>   # filter-repo removes remotes
 git add people/ meetings/
 git commit -m "Re-add sanitized directories"
 
+# RE-VERIFY the backup immediately before the irreversible step — card-time
+# verification is not enough; time has passed and the rewrite itself could
+# have gone sideways. Abort if the backup is missing or unreadable.
+BACKUP="$HOME/.gbrain/backups/brain-history-backup-$(date +%Y%m%d).git"
+git -C "$BACKUP" log -1 >/dev/null || { echo "backup missing/unreadable — ABORT, do not force-push"; exit 1; }
+
 git push --force origin main
 ```
 
@@ -347,6 +357,12 @@ paths, commit counts, and the mirror-clone backup path as the recovery line.
 - The sync cursor may reference a rewritten-away SHA; if the next
   `gbrain sync` errors or falls back to a full rescan, that is the cursor
   recovering — run `gbrain doctor` if it doesn't settle
+- **Backup retention:** once the rewrite is verified good (team has
+  re-cloned, sync settled, no missing content reported), keep the
+  mirror-clone backup in `~/.gbrain/backups/` for a retention window
+  (~30 days is a sane default), then delete it — it contains the
+  pre-sanitization history and should not accumulate indefinitely:
+  `rm -rf ~/.gbrain/backups/brain-history-backup-<date>.git`
 - If the repo carries push hooks or auto-hardening wiring, re-verify remotes
   and hooks survived the rewrite before handing the repo to the team
 

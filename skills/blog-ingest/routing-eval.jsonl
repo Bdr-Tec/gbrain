@@ -12,3 +12,5 @@
 // correct route is single-item ingestion, not the publication layer.
 {"intent":"Save this article for me — just the one post, it's a great essay","expected_skill":"idea-ingest","ambiguous_with":["blog-ingest"]}
 {"intent":"Ingest this PDF whitepaper I found on a blog","expected_skill":"media-ingest","ambiguous_with":["blog-ingest"]}
+// Negative: adjacent (newsletters) but out of scope — inbox management, not ingestion.
+{"intent":"Unsubscribe me from this newsletter and mute future issues","expected_skill":null}

@@ -247,8 +247,9 @@ Don't re-derive that checklist here.
 
 ## Phase 9: BULK
 
-Climb the ladder from [conventions/test-before-bulk.md](../conventions/test-before-bulk.md)
-— 1 → 5 → 10 → 50 → 100 → ALL, with a quality check between rungs. The
+Climb the ladder: trial rungs 1 → 5 first, then the progressive ramp from
+[conventions/test-before-bulk.md](../conventions/test-before-bulk.md) —
+10 → 100 → 500 → full — with a quality check between rungs. The
 manifest makes each rung legible: "done so far" is just the count of items
 at the target status.
 

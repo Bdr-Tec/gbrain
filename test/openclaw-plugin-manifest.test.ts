@@ -43,6 +43,19 @@ describe('plugin membership curation (skills = plugin ∪ exclusions, disjoint)'
       expect((reason as string).length).toBeGreaterThan(10);
     }
   });
+
+  it('every manifest skill description is real prose (not a captured block-scalar marker)', () => {
+    for (const s of manifest.skills as { name: string; description: string }[]) {
+      expect(typeof s.description, `skill ${s.name}`).toBe('string');
+      expect(s.description.length, `skill ${s.name} description too short`).toBeGreaterThan(10);
+      expect(s.description, `skill ${s.name} captured a YAML block-scalar marker`).not.toBe('|');
+      expect(s.description, `skill ${s.name} captured a YAML block-scalar marker`).not.toBe('>');
+    }
+  });
+
+  it('plugin skills has no duplicates', () => {
+    expect(new Set(plugin.skills).size).toBe(plugin.skills.length);
+  });
 });
 
 describe('root OpenClaw plugin manifest', () => {

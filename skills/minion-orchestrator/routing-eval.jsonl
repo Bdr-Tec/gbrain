@@ -7,3 +7,5 @@
 {"intent":"The job went silent an hour ago and I never saw a completion message — recover it","expected_skill":"minion-orchestrator","ambiguous_with":[]}
 {"intent":"The scoring stage is expensive — make this pipeline resumable so a crash doesn't re-spend the LLM calls","expected_skill":"minion-orchestrator"}
 {"intent":"Schedule the nightly sync for 2am and keep it out of quiet hours","expected_skill":"cron-scheduler"}
+// Negative: adjacent (a misbehaving process) but out of scope — local OS process management, not gbrain jobs or subagents.
+{"intent":"Kill the runaway local process that is pegging my laptop CPU","expected_skill":null}

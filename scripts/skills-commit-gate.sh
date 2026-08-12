@@ -27,22 +27,37 @@ step() {
 step "conformance + resolver tests" bun test test/skills-conformance.test.ts test/resolver.test.ts
 step "check-resolvable --strict" bun src/cli.ts check-resolvable --strict --skills-dir skills/
 step "skills.lock regen" bun run scripts/generate-skills-manifest.ts
+# The regen may have rewritten the lock on disk. A regenerated-but-unstaged
+# lock means the commit being gated would ship a stale lock — fail loudly.
+if [ -n "$(git diff --name-only -- skills/skills.lock.json)" ] && \
+   ! git diff --cached --name-only -- skills/skills.lock.json | grep -q '^skills/skills.lock.json$'; then
+  echo "❌ skills.lock.json regenerated — stage it (git add skills/skills.lock.json)" >&2
+  FAIL=1
+fi
 step "skills.lock freshness" bash scripts/check-skills-manifest-fresh.sh
 step "skill refs" bun scripts/check-skill-refs.mjs
 
 if [ "$#" -gt 0 ]; then
-  step "privacy lint (merge lane)" bun -e "
-    import { runPrivacyLint } from './src/core/skillpack/harvest-lint.ts';
+  # Single-quoted on purpose: nothing here is for bash to interpolate.
+  step "privacy lint (merge lane)" bun -e '
+    import { existsSync } from "node:fs";
+    import { runPrivacyLint } from "./src/core/skillpack/harvest-lint.ts";
     const files = process.argv.slice(1);
-    try {
-      runPrivacyLint(files);
-      console.log('privacy lint: OK (' + files.length + ' files)');
-    } catch (e) {
-      console.error(String(e?.message ?? e));
-      for (const h of e?.hits ?? []) console.error('LINT ' + h);
+    const missing = files.filter((f) => !existsSync(f));
+    if (missing.length) {
+      console.error("privacy lint: " + missing.length + " argv path(s) do not exist:");
+      for (const f of missing) console.error("MISSING " + f);
       process.exit(1);
     }
-  " "$@"
+    try {
+      runPrivacyLint(files);
+      console.log("privacy lint: OK (" + files.length + " files)");
+    } catch (e) {
+      console.error(String(e?.message ?? e));
+      for (const h of e?.hits ?? []) console.error("LINT " + h);
+      process.exit(1);
+    }
+  ' "$@"
 fi
 
 if [ "$FAIL" -ne 0 ]; then

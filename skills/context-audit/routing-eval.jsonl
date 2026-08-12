@@ -14,3 +14,5 @@
 {"intent":"Re-run the identity interview, I want to change my agent's personality","expected_skill":"soul-audit","ambiguous_with":["context-audit"]}
 // Negative: install/runtime health, not context size.
 {"intent":"Check the brain and jobs — is everything still running fine?","expected_skill":"skillpack-check"}
+// Negative: adjacent (tokens) but out of scope — a one-off cost estimate, not an audit of the always-loaded stack.
+{"intent":"Estimate the token count of this single prompt before I send it","expected_skill":null}

@@ -174,9 +174,11 @@ per [conventions/cron-via-minions.md](../conventions/cron-via-minions.md) —
 a recurring shell job shaped like:
 
 ```bash
-GBRAIN_ALLOW_SHELL_JOBS=1 gbrain jobs submit shell --params '{"cmd": "cd <brain-repo> && git add projects/<pipeline-name> <output-dirs> && git commit --no-verify -m \"<pipeline-name> ingest checkpoint\" && git push"}'
+GBRAIN_ALLOW_SHELL_JOBS=1 gbrain jobs submit shell --params '{"cmd": "cd <brain-repo> && git add projects/<pipeline-name> <output-dirs> && git commit -m \"<pipeline-name> ingest checkpoint\" && git push"}'
 ```
 
+Pre-commit hooks (privacy/durability) intentionally run on checkpoint
+commits — a checkpoint that bypasses them can bank unlintable content.
 Stage explicit paths, never `git add -A` (sweeps unrelated churn). Remove
 the schedule when the job completes.
 

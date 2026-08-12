@@ -2,10 +2,13 @@
 // check-skill-refs — three integrity gates over the skills/ markdown tree.
 //
 // 1. DANGLING REFS (fail): every backtick `skills/<x>/...` path, every
-//    frontmatter `composes:` slug, and every `(dispatcher for: a, b)` slug in
-//    RESOLVER.md must resolve to an existing file/dir. Placeholder templates
-//    (`skills/X/`, `skills/<slug>/`) and skills/migrations/** are exempt —
-//    migrations are historical record, placeholders are documentation idiom.
+//    relative markdown link (`](./x.md)` / `](../x/y.md)`), every frontmatter
+//    `composes:` slug, and every `(dispatcher for: a, b)` slug in RESOLVER.md
+//    must resolve to an existing file/dir. Placeholder templates
+//    (`skills/X/`, `skills/<slug>/`, `{...}` / `<...>` targets, example-slug
+//    brain-page paths like `../people/alice-example.md`) and
+//    skills/migrations/** are exempt — migrations are historical record,
+//    placeholders are documentation idiom.
 // 2. DONOR REMNANTS (fail, allowlist-ratcheted): donor-workspace path prefixes
 //    must not appear outside files listed in scripts/skill-refs-allowlist.txt.
 //    The allowlist is a ratchet: it may shrink, never silently grow — add a
@@ -18,7 +21,7 @@
 // Usage: bun scripts/check-skill-refs.mjs [--skills-dir skills/] [--allowlist scripts/skill-refs-allowlist.txt] [--no-cli-refs]
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
@@ -32,6 +35,26 @@ const RUN_CLI_REFS = !args.includes('--no-cli-refs');
 
 const DONOR_PREFIXES = ['/data/brain', '/data/.openclaw', '/data/gbrain', '/data/tmp'];
 const PLACEHOLDER_RE = /skills\/(X|<[^>]+>|\{[^}]+\}|\$\{[^}]+\}|\.\.\.)\/?/;
+
+// Relative-markdown-link exemptions: skill bodies illustrate BRAIN-repo page
+// links (`[Alice Example](../people/alice-example.md)`). Those targets live in
+// a brain repo, not the skills tree — any relative target whose first real
+// path segment is a brain-content top-level dir is a documentation example,
+// not a skills cross-link. Example-slug segments (`*-example`) are likewise
+// placeholders per the privacy rule.
+const BRAIN_CONTENT_DIRS = new Set([
+  'people', 'companies', 'meetings', 'daily', 'concepts', 'sources',
+  'research', 'projects', 'media', 'conversations', 'analysis', 'notes',
+  'ideas', 'takes', 'funds', 'deals',
+]);
+function isPlaceholderLinkTarget(target) {
+  if (/[<{$]/.test(target)) return true; // <slug>, {slug}, ${var} templates
+  const segs = target.split('/').filter((s) => s && s !== '.' && s !== '..');
+  if (segs.length === 0) return true;
+  if (BRAIN_CONTENT_DIRS.has(segs[0])) return true; // brain-page path example
+  if (segs.some((s) => /-example(\.|\/|$)/.test(s))) return true; // alice-example, acme-example, ...
+  return false;
+}
 
 function walk(dir) {
   const out = [];
@@ -89,9 +112,26 @@ for (const file of files) {
     // strip trailing anchors / line refs like skills/foo/SKILL.md:12
     ref = ref.replace(/:\d+(-\d+)?$/, '').replace(/#.*$/, '');
     if (ref.endsWith('/')) ref = ref.slice(0, -1);
-    if (!existsSync(ref)) {
+    // Resolve against the PARENT of the skills dir (refs are written as
+    // "skills/<x>/..."), never bare cwd — the check must be cwd-independent.
+    if (!existsSync(join(SKILLS_DIR, '..', ref))) {
       const line = text.split('\n').findIndex((l) => l.includes(m[1])) + 1;
       failures.push(`[dangling-ref] ${rel}:${line} — \`${m[1]}\` does not exist`);
+    }
+  }
+
+  // --- 1d. relative markdown links ---
+  // `](./x.md)` / `](../x/y.md)` targets must resolve against the linking
+  // file's own directory. http(s) and anchor-only targets never match the
+  // leading ./ or ../ pattern; placeholder/example targets are exempt.
+  for (const m of text.matchAll(/\]\((\.{1,2}\/[^)\s]+)\)/g)) {
+    const raw = m[1];
+    const target = raw.split('#')[0];
+    if (!target) continue; // anchor-only after a ./ prefix — nothing to resolve
+    if (isPlaceholderLinkTarget(target)) continue;
+    if (!existsSync(join(dirname(file), target))) {
+      const line = text.split('\n').findIndex((l) => l.includes(raw)) + 1;
+      failures.push(`[dangling-md-link] ${rel}:${line} — \`](${raw})\` does not resolve from ${rel}'s directory`);
     }
   }
 
@@ -153,6 +193,9 @@ if (RUN_CLI_REFS) {
     }
   } catch {
     warnings.push('[cli-refs] could not load --tools-json; skipping CLI-ref check');
+  }
+  if (known && known.size === 0) {
+    warnings.push('[cli-refs] --tools-json parsed to an EMPTY command set; skipping CLI-ref check (the warn-only lane is not running)');
   }
   if (known && known.size > 0) {
     // top-level commands defined directly in src/cli.ts (not ops): derive from source
