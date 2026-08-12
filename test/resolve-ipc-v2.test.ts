@@ -540,6 +540,48 @@ describe('onTurnContextDelivered — the hook lane feedback-loop seam (#2095)', 
     expect(seen!.window).toHaveLength(4);
   });
 
+  test('re-entrancy guard: trailing bytes after the request line never double-process it (duplicate delivery logging)', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    let handlerCalls = 0;
+    let fired = 0;
+    const server = await startResolveIpcServer(
+      sock,
+      {
+        resolve: async () => null,
+        turn_context: async () => {
+          handlerCalls++;
+          await new Promise((r) => setTimeout(r, 50)); // hold the handler mid-await
+          return richBlock;
+        },
+      },
+      { secret, boundSourceId: 'default', onTurnContextDelivered: () => { fired++; } },
+    );
+    servers.push(server!);
+
+    // Raw client: request line + trailing garbage bytes while the handler is
+    // still awaiting — pre-guard, the second data event re-found the SAME
+    // line and processed it concurrently (duplicate rows in the stats table).
+    const req = JSON.stringify({ kind: 'turn_context', protocol: 2, secret, window: [{ role: 'user', text: 'hi' }] });
+    const responses: string[] = [];
+    await new Promise<void>((done) => {
+      const c = net.createConnection(sock);
+      c.setEncoding('utf8');
+      c.on('connect', () => {
+        c.write(req + '\n');
+        setTimeout(() => { try { c.write('trailing garbage\n'); } catch { /* closed */ } }, 10);
+      });
+      c.on('data', (d: string) => { responses.push(d); });
+      c.on('close', () => done());
+      c.on('error', () => done());
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(handlerCalls).toBe(1);
+    expect(fired).toBe(1);
+    expect(responses.join('').split('\n').filter(Boolean)).toHaveLength(1);
+  });
+
   test('channel is additive on the wire: a server without the callback ignores it', async () => {
     const dir = tmpDir();
     const sock = resolveSocketPath(dir);

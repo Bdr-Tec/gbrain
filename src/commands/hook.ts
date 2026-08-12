@@ -736,7 +736,9 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
           let bytes = 0;
           for (const block of unique.reverse()) { // newest first
             const b = Buffer.byteLength(block, 'utf8') + 2;
-            if (bytes + b > PRIOR_CONTEXT_MAX_BYTES) break;
+            // Skip (not break): one oversized block must not evict every
+            // older, smaller block — that would disable ALL dedupe at once.
+            if (bytes + b > PRIOR_CONTEXT_MAX_BYTES) continue;
             kept.unshift(block); // restore oldest → newest order
             bytes += b;
           }
@@ -803,6 +805,14 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     }
     if (blockText.length === 0) return { outcome: 'degraded', reason: 'over_cap', turns: turns.length };
     guardedWrite(payload + '\n');
+    // Partial trim is delivery-count drift: the serve already logged the FULL
+    // post-budget set at the response write, but pages cut from the tail here
+    // were never injected. Record it so the doctor's heartbeat reconciliation
+    // (and a future reconciler) can see the divergence — outcome stays ok
+    // (context WAS injected), the reason carries the signal.
+    if (blockText.length < text.length) {
+      return { outcome: 'ok', reason: 'trimmed', turns: turns.length };
+    }
     return { outcome: 'ok', turns: turns.length };
   })();
 

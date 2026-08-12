@@ -447,19 +447,34 @@ export async function jsonbIntegrityCheck(
  * table) return ok with a note instead of throwing. A serve started before
  * this build logs hook traffic as 'reflex' — restart serve after upgrade.
  */
-export async function checkVolunteerChannels(engine: BrainEngine): Promise<Check> {
+export async function checkVolunteerChannels(
+  engine: BrainEngine,
+  opts: { sourceIds?: string[] } = {},
+): Promise<Check> {
   const name = 'volunteer_channels';
   try {
-    // No source_id predicate → the composite (source_id, volunteered_at DESC)
-    // index can't range-scan and this seq-scans the table. Accepted
-    // DELIBERATELY: the table is TTL-pruned at 90 days and this is an
-    // offline info check — do NOT reuse this query shape on a hot path.
+    // Source scoping (cross-model P1): remote source-bound callers pass their
+    // authorized ids — an unqualified aggregate would leak other sources'
+    // activity counts/timestamps. Local trusted doctor passes none (brain-wide).
+    // Unscoped shape: no source_id predicate → the composite
+    // (source_id, volunteered_at DESC) index can't range-scan and this
+    // seq-scans the table. Accepted DELIBERATELY for the local info check
+    // (table is TTL-pruned at 90 days) — do NOT reuse on a hot path.
+    const scoped = Array.isArray(opts.sourceIds) && opts.sourceIds.length > 0;
     const rows = await engine.executeRaw<{ channel: string; n: string | number; last_fired: string | Date | null }>(
-      `SELECT channel, count(*)::int AS n, max(volunteered_at) AS last_fired
-         FROM context_volunteer_events
-        WHERE volunteered_at > now() - interval '7 days'
-        GROUP BY channel
-        ORDER BY channel`,
+      scoped
+        ? `SELECT channel, count(*)::int AS n, max(volunteered_at) AS last_fired
+             FROM context_volunteer_events
+            WHERE source_id = ANY($1::text[])
+              AND volunteered_at > now() - interval '7 days'
+            GROUP BY channel
+            ORDER BY channel`
+        : `SELECT channel, count(*)::int AS n, max(volunteered_at) AS last_fired
+             FROM context_volunteer_events
+            WHERE volunteered_at > now() - interval '7 days'
+            GROUP BY channel
+            ORDER BY channel`,
+      scoped ? [opts.sourceIds] : [],
     );
     const channels: Record<string, { count: number; last_fired: string | null }> = {};
     for (const r of rows) {
@@ -480,12 +495,18 @@ export async function checkVolunteerChannels(engine: BrainEngine): Promise<Check
     try {
       const { readHeartbeatTail } = await import('./hook.ts');
       const tail = await readHeartbeatTail(200);
-      const up = tail.filter((e) => e.event === 'user-prompt');
-      if (up.length) {
+      // Same 7-day window as the event counts (a month-old degraded streak
+      // must not indict a healthy current week), and a minimum sample floor
+      // so one bad entry can't trigger the caution.
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const up = tail.filter(
+        (e) => e.event === 'user-prompt' && Date.parse(e.ts ?? '') >= cutoff,
+      );
+      if (up.length >= 5) {
         const degraded = up.filter((e) => e.outcome !== 'ok').length;
         heartbeat = { user_prompt_ok: up.length - degraded, user_prompt_degraded: degraded };
         if (degraded > up.length / 2) {
-          heartbeatNote = ` — CAUTION: the hook heartbeat shows ${degraded}/${up.length} recent user-prompt events degraded, so server-side counts may overstate what was actually injected`;
+          heartbeatNote = ` — CAUTION: the hook heartbeat shows ${degraded}/${up.length} user-prompt events degraded this week, so server-side counts may overstate what was actually injected`;
         }
       }
     } catch { /* heartbeat surface is best-effort */ }
@@ -496,7 +517,7 @@ export async function checkVolunteerChannels(engine: BrainEngine): Promise<Check
     const cfg = (() => { try { return loadConfig(); } catch { return null; } })();
     const quietGuidance =
       cfg?.engine === 'pglite'
-        ? 'if a hook adapter is installed, confirm its registration landed and the harness session was RESTARTED (hooks snapshot at session start); a serve older than this build attributes hook traffic to the reflex channel until restarted'
+        ? 'if a hook adapter is installed, confirm its registration landed and the harness session was RESTARTED (hooks snapshot at session start); a serve older than this build logs NOTHING for the hook lane — restart serve on the new build to activate the feedback loop'
         : 'note: the harness-hook channels require a PGLite serve socket — on this engine the hook lane stays quiet by design (pull-mode retrieval covers it)';
     const message = active.length
       ? `push-context channels active (7d): ${active.map((c) => `${c}=${channels[c].count}`).join(', ')}${heartbeatNote}`
@@ -518,7 +539,7 @@ export async function checkVolunteerChannels(engine: BrainEngine): Promise<Check
       status: 'ok',
       message: tableAbsent
         ? 'volunteer-events table not available (pre-v117 brain) — per-channel push visibility inactive'
-        : `volunteer_channels query failed (transient): ${msg}`,
+        : `volunteer_channels query failed (info-only check; may or may not be transient): ${msg}`,
       details: { window_days: 7, channels: {} },
     };
   }
@@ -757,7 +778,10 @@ export async function checkSourceConfigShape(engine: BrainEngine): Promise<Check
   }
 }
 
-export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorReport> {
+export async function doctorReportRemote(
+  engine: BrainEngine,
+  opts: { sourceIds?: string[] } = {},
+): Promise<DoctorReport> {
   const checks: Check[] = [];
 
   // 1. Connection
@@ -1017,8 +1041,10 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
   checks.push(await checkSubagentCapability(engine));
 
   // Harness hook adapters — per-channel push-context visibility (sibling of
-  // the engine-free retrieval_reflex_health heartbeat check).
-  checks.push(await checkVolunteerChannels(engine));
+  // the engine-free retrieval_reflex_health heartbeat check). Source-scoped
+  // for remote callers (cross-model P1): a source-bound token must not see
+  // other sources' activity counts/timestamps.
+  checks.push(await checkVolunteerChannels(engine, { sourceIds: opts.sourceIds }));
 
   // 6. Sync freshness check
   checks.push(await checkSyncFreshness(engine));

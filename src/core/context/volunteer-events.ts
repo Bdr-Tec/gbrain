@@ -73,7 +73,11 @@ export function logTurnContextDeliveryFireAndForget(
   req: { channel?: string; sessionId?: string },
 ): void {
   try {
-    // Harness channels ONLY from the wire — see isHarnessChannel.
+    // Harness channels ONLY from the wire — see isHarnessChannel. A present-
+    // but-unknown value ALSO maps to the default: ACCEPTED misattribution
+    // (a typo'd local registration is the operator's own config; a dedicated
+    // 'unknown' bucket was considered and declined to keep the channel value
+    // set closed while bootstrap registers exactly one harness).
     const channel: VolunteerChannel = isHarnessChannel(req.channel) ? req.channel : DEFAULT_HOOK_CHANNEL;
     const sessionId = typeof req.sessionId === 'string' ? req.sessionId.slice(0, SESSION_ID_MAX_LEN) : null;
     // Pointer rows use the shared reflex rationale template; mapped inline

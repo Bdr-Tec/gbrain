@@ -393,12 +393,20 @@ export async function startResolveIpcServer(
   return new Promise((resolve) => {
     const server = net.createServer((conn) => {
       let buf = '';
+      // One request per connection: once a line is being handled, later data
+      // events are ignored. Without this, bytes arriving after the newline
+      // while the async handler is mid-await would re-find the SAME first
+      // line and process it concurrently — duplicate handler work, duplicate
+      // response writes, and duplicated delivery-point event logging.
+      let handled = false;
       conn.setEncoding('utf8');
       conn.on('data', async (chunk: string) => {
+        if (handled) return;
         buf += chunk;
         if (buf.length > MAX_MSG_BYTES) { conn.destroy(); return; }
         const nl = buf.indexOf('\n');
         if (nl < 0) return;
+        handled = true;
         const line = buf.slice(0, nl);
         let resp: string;
         let delivered: { block: PointerBlock; req: ResolveRequest } | null = null;

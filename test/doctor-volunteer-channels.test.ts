@@ -19,9 +19,13 @@ import { checkVolunteerChannels } from '../src/commands/doctor.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { withEnv } from './helpers/with-env.ts';
 
-function stubEngine(rows: Array<{ channel: string; n: number | string; last_fired: string | Date | null }> | Error): BrainEngine {
+function stubEngine(
+  rows: Array<{ channel: string; n: number | string; last_fired: string | Date | null }> | Error,
+  captured?: Array<{ sql: string; params: unknown[] }>,
+): BrainEngine {
   return {
-    executeRaw: async () => {
+    executeRaw: async (sql: string, params: unknown[]) => {
+      captured?.push({ sql, params });
       if (rows instanceof Error) throw rows;
       return rows;
     },
@@ -147,11 +151,26 @@ describe('checkVolunteerChannels', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
+  test('source isolation (cross-model P1): a scoped caller\'s query filters on its authorized sources', async () => {
+    const home = tmpHome('pglite');
+    await withEnv({ GBRAIN_HOME: home }, async () => {
+      const captured: Array<{ sql: string; params: unknown[] }> = [];
+      await checkVolunteerChannels(stubEngine([], captured), { sourceIds: ['team-a'] });
+      expect(captured[0].sql).toContain('source_id = ANY');
+      expect(captured[0].params[0]).toEqual(['team-a']);
+      // Unscoped (trusted local) stays brain-wide.
+      captured.length = 0;
+      await checkVolunteerChannels(stubEngine([], captured));
+      expect(captured[0].sql).not.toContain('source_id = ANY');
+    });
+    rmSync(home, { recursive: true, force: true });
+  });
+
   test('wiring pins: the check runs on BOTH doctor paths and serve registers the delivery callback (source greps)', () => {
     const doctorSrc = readFileSync(join(import.meta.dir, '..', 'src', 'commands', 'doctor.ts'), 'utf8');
     // Local path (buildChecks) AND remote path both push the check — the docs
     // point local operators at `gbrain doctor`, so remote-only is a doc lie.
-    const pushes = doctorSrc.match(/checks\.push\(await checkVolunteerChannels\(engine\)\)/g) ?? [];
+    const pushes = doctorSrc.match(/checks\.push\(await checkVolunteerChannels\(engine/g) ?? [];
     expect(pushes.length).toBeGreaterThanOrEqual(2);
     // Serve wires the feedback-loop callback — deleting the registration
     // would silently disconnect the hook-lane feedback loop while every unit
