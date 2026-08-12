@@ -89,7 +89,7 @@ takes/facts, and history.
 | **Management strategy** | How-to-manage-someone sections, "the hard conversation" notes, scope/title management plans |
 | **Internal political dynamics** | Who doesn't like whom, who's nervous about whom, adversarial relationships, power dynamics |
 | **Personal PII** | Phone numbers, personal email addresses, home addresses, family or medical details, personal legal matters, personal-life details |
-| **Takes/facts** | Any take or fact referencing the above categories — performance, comp, retention, weakness, management risk |
+| **Takes/facts** | Any take or fact referencing the above categories — performance, comp, retention, weakness, management risk. Fact rows are DELETED from the page's Facts fence, never merely expired with `gbrain forget` |
 
 ### Always keep
 
@@ -171,7 +171,61 @@ High-hit files need full judgment passes. Zero-hit files may only need
 frontmatter field removal — but they still get read (regex triages, the model
 judges).
 
-### Phase 3: Sanitize (test first, then parallel)
+### Phase 3: Sanitize (STAGING COPY preferred; test first, then parallel)
+
+Phase 3 is destructive: it strips content across many files, removes takes,
+and deletes fact rows. Two rules govern it.
+
+**Choose the target FIRST — copy, don't mutate the personal brain.**
+
+- **Standing up a NEW team brain (default, preferred):** sanitize a STAGING
+  COPY of the scanned directories, never the personal brain in place. The
+  founder's personal brain is SUPPOSED to keep comp, performance, and candid
+  notes — stripping them from the personal working tree destroys valuable
+  private data. Copy the Phase-1 scope into a durable staging dir and edit
+  THAT; Phase 5 Step 0 exports from the staging copy. Blast radius: none on the
+  personal brain.
+
+  ```bash
+  # Durable staging dir (NOT /tmp — same reasoning as the mirror backup).
+  STAGING="$HOME/.gbrain/backups/brainify-staging-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$STAGING" && chmod 700 "$STAGING"
+  for d in people meetings daily companies projects analysis; do
+    [ -d "$d" ] && rsync -a "$d/" "$STAGING/$d/"
+  done
+  cd "$STAGING"   # all edits below happen here, not in sync.repo_path
+  ```
+
+- **Re-auditing an EXISTING shared brain:** the shared brain IS the target, so
+  edits are in place on the SHARED repo (cd into the shared repo, never the
+  personal `sync.repo_path`). Fact-row removal + re-sync applies to the shared
+  source's DB.
+
+**Fire the [data-loss-gate](../data-loss-gate/SKILL.md) confirmation card
+BEFORE the bulk destructive edits begin.** Both targets are destructive (the
+copy path removes content from the tree destined for the team; the in-place
+path removes content from a live brain). Pre-filled for Phase 3:
+
+```
+⚠️ DATA DELETION — Confirmation Required
+
+What: strip sensitive content, remove takes, and delete fact rows across
+      [N files] in [STAGING COPY at <path>  |  the SHARED brain in place]
+Count: [N files edited; T takes removed; F fact rows removed]
+Location: [staging path OR shared repo path] — NOT the personal sync.repo_path
+          on the staging path
+
+Why: preparing a sanitized tree for team access
+
+Recoverable?
+- [x] Personal brain untouched (staging-copy path) — re-copy to redo
+- [ ] In-place shared-brain path: edits overwrite the live tree; git history is
+      the recovery line until Phase 5 purges it
+
+Proceed? (yes/no)
+```
+
+Require a typed "yes"/"do it" per data-loss-gate; "ok"/"sure" are not consent.
 
 Per test-before-bulk: do 3-5 files first, read the results, then ramp. For
 large sets (50+ files), batch into groups of 10-12 and spawn parallel
@@ -182,10 +236,10 @@ subagents. Per file:
 3. Frontmatter: delete rating/comp field lines entirely
 4. Sections: remove entire sections (assessment weaknesses, team dynamics,
    management strategy)
-5. Takes fences: remove entire rows that reference sensitive categories —
-   a take like "alice-example believes charlie-example is underperforming"
-   reveals both the opinion and who holds it; remove the whole take, never
-   just the attribution
+5. Takes and Facts fences: remove entire rows that reference sensitive
+   categories — a take like "alice-example believes charlie-example is
+   underperforming" reveals both the opinion and who holds it; remove the
+   whole row, never just the attribution
 6. Inline mentions: surgically edit sentences/paragraphs
 7. Write the cleaned file back
 
@@ -193,17 +247,23 @@ subagents. Per file:
 need it. Use `Write` to rewrite the entire file only when sensitive content is
 deeply interwoven throughout.
 
-**Facts:** expire sensitive facts with `gbrain forget <fact-id>` (find them via
-`gbrain recall --grep`). Note `forget` is an audit-preserving expiry, not a
-hard delete — expired facts stay reachable via `--include-expired`. This is
-moot when the team brain is built fresh from the sanitized repo (the personal
-DB never transfers); when auditing an existing shared brain in place, treat
-lingering expired facts as a residual and prefer rebuilding the shared brain
-from the sanitized repo.
+**Facts: `forget` is NOT removal.** `gbrain forget <fact-id>` expires a fact
+— the row stays on the page's Facts fence struck through, and the DB still
+serves it via `--include-expired`. An expired fact is retained, not gone.
+For sanitization, sensitive fact rows must be ACTUALLY REMOVED: find them
+(`gbrain recall --grep`), then delete the row from the page's Facts fence
+(step 5), exactly like a sensitive take. On an in-place shared brain, the
+page edit must then be re-synced (`gbrain sync` re-imports the edited page)
+so the shared database no longer serves the row — an edited page over an
+un-synced DB still leaks through retrieval. `forget` alone can never certify
+a brain clean.
 
-After edits, `gbrain sync` re-imports the changed pages so the DB matches the
-markdown, and `gbrain check-backlinks check` catches pages still pointing at
-removed content.
+After edits: on the **staging-copy** path the fact rows are removed by editing
+the copied markdown directly (there is no live DB to re-sync yet — the team DB
+is built fresh when Phase 5 Step 0 turns the export into a source). On the
+**in-place shared-brain** path, `gbrain sync` re-imports the changed pages so
+the DB matches the markdown. Either way, run `gbrain check-backlinks check` to
+catch pages still pointing at removed content.
 
 ### Phase 4: Verify
 
@@ -227,6 +287,12 @@ grep -rin -E 'considering leaving|departure rumor|underperform|picking up slack|
 False positives (e.g. "carry the torch") are fine — manually confirm each
 remaining hit rather than tightening the pattern (regex-discipline).
 
+**Verify the tree that ships.** On the staging-copy path, these greps run
+against the sanitized `$STAGING` tree (which Phase 5 Step 0 turns into the
+export) — the personal working tree is not what ships, so certifying it proves
+nothing. For an in-place shared-brain re-audit, the shared repo's tree is the
+shipped tree and this pass stands as-is.
+
 Then the strongest check — the retrieval the team will actually use. Against
 the sanitized brain/source (scope with `--source <team-source-id>` when the
 shared source is mounted alongside personal content):
@@ -245,13 +311,27 @@ Clean files aren't enough if the repo has history: old commits still contain
 the sensitive versions.
 
 **Step 0 — preferred alternative (non-destructive).** When standing up a NEW
-team repo, skip history rewriting entirely: export the sanitized tree into a
-fresh repo with fresh history. The personal repo keeps its full history,
-untouched.
+team repo, skip history rewriting entirely: the sanitized STAGING tree from
+Phase 3 becomes a fresh repo with fresh history. The personal repo keeps its
+full history AND its full working tree, untouched.
+
+**Export rule: nothing unscanned ships.** Because Phase 3 copied ONLY the
+scanned directories into `$STAGING`, the staging tree contains nothing the
+sanitization pass didn't read — the include-only rule holds by construction.
+Never copy extra directories in: everything outside the scan scope
+(`conversations/`, `originals/`, `sources/`, `inbox/`) stays out. A whole-repo
+copy is the classic leak — it ships raw transcripts, originals, and inbox
+captures no pass ever read. To ship a new directory, add it to the scan scope
+first (Phases 1-4) so it lands in `$STAGING` sanitized.
 
 ```bash
-rsync -a --exclude '.git' ./ /tmp/team-brain-export/
-cd /tmp/team-brain-export
+# The sanitized staging tree IS the export.
+cd "$STAGING"
+
+# Re-run the Phase 4 verification greps + retrieval checks INSIDE $STAGING —
+# the staging tree is what ships, and it is the tree that must certify clean.
+# ... Phase 4 greps against $STAGING ...
+
 git init -b main
 git add -A && git commit -m "Initial import — sanitized team brain"
 git remote add origin <TEAM_REPO_URL>
@@ -261,16 +341,40 @@ git push -u origin main
 Only when a shared repo ALREADY exists with sensitive history in it do you
 need the purge below.
 
-**Step 1 — mirror-clone backup.** This is the recoverability line on the
-confirmation card; verify it exists before presenting the card. It goes in
-`~/.gbrain/backups/` — never `/tmp`, which is volatile (wiped on reboot and
-by tmp cleaners; a backup that can vanish mid-operation is not a
-recoverability line).
+**Step 1 — target the SHARED repo, commit the clean tree, then mirror-clone.**
+The purge operates on the SHARED repo, NEVER on `sync.repo_path` (the personal
+brain) — Step 0's guarantee that the personal repo keeps full history depends
+on it. Clone the shared repo to a durable work dir, stay there for every step
+below, and assert the target is not the personal repo before touching anything.
 
 ```bash
-mkdir -p ~/.gbrain/backups && chmod 700 ~/.gbrain/backups
-git clone --mirror . "$HOME/.gbrain/backups/brain-history-backup-$(date +%Y%m%d).git"
+PERSONAL="$(gbrain config get sync.repo_path)"
+mkdir -p "$HOME/.gbrain/backups" && chmod 700 "$HOME/.gbrain/backups"
+WORK="$HOME/.gbrain/backups/brainify-purge-$(date +%Y%m%d-%H%M%S)"
+git clone <SHARED_REPO_URL> "$WORK/shared"
+cd "$WORK/shared"
+[ "$(git rev-parse --show-toplevel)" != "$PERSONAL" ] \
+  || { echo "target IS sync.repo_path (personal brain) — ABORT"; exit 1; }
+
+# Apply the sanitized tree, then COMMIT it BEFORE the mirror clone. A mirror
+# captures COMMITTED state only; if the clean tree lives only in volatile
+# staging during the rewrite window, a crash loses the sanitization work.
+# Committing makes the clean state durable and recoverable.
+for d in people meetings daily companies projects analysis; do
+  [ -d "$STAGING/$d" ] && rsync -a "$STAGING/$d/" "./$d/"   # or sanitize in place here
+done
+git add -A && git commit -m "Sanitize: strip sensitive content before history purge"
+
+# Mirror-clone backup = the recoverability line on the card. Capture the path
+# in a variable NOW and reuse it verbatim at purge time — a run crossing
+# midnight must NOT recompute $(date) and false-abort on a mismatched name.
+BACKUP_PATH="$HOME/.gbrain/backups/shared-brain-history-backup-$(date +%Y%m%d-%H%M%S).git"
+git clone --mirror "$WORK/shared" "$BACKUP_PATH"
+git -C "$BACKUP_PATH" log -1 >/dev/null || { echo "backup unreadable — ABORT"; exit 1; }
 ```
+
+Verify the mirror exists and reads before presenting the card — it is the
+card's recoverability line.
 
 **Step 2 — STOP. Present the [data-loss-gate](../data-loss-gate/SKILL.md)
 confirmation card and wait.** History rewrite + force-push is the most
@@ -282,17 +386,19 @@ answered. Pre-filled for this operation:
 ⚠️ DATA DELETION — Confirmation Required
 
 What: rewrite git history to remove all prior versions of [purged paths]
-      from [brain repo], then force-push to [remote/branch]
+      from the SHARED repo, then force-push to [remote/branch]
 Count: [N commits rewritten; M files with history purged]
 Size: [repo size before → expected after]
-Location: [repo path; remote URL; branch]
+Location: [SHARED repo work dir; remote URL; branch]
+Target check: this is the SHARED repo, verified ≠ personal sync.repo_path
+      ($PERSONAL) — the personal brain's history is never rewritten
 
 Why: prior commits contain pre-sanitization versions of pages that were
      just cleaned — team access to the repo means team access to history
 
 Recoverable?
-- [x] Mirror-clone backup at ~/.gbrain/backups/brain-history-backup-<date>.git
-      (verified: exists, `git -C <backup> log` works)
+- [x] Mirror-clone backup at $BACKUP_PATH
+      (verified: exists, `git -C "$BACKUP_PATH" log` works)
 - [ ] NOT recoverable from the rewritten remote — old SHAs become unreachable
 
 What we'd lose:
@@ -313,39 +419,73 @@ nothing in gbrain mechanically blocks `git filter-repo` — which is exactly why
 the agent following this skill must not skip it.
 
 **Step 3 — purge (only after the explicit typed yes).** Requires
-`git filter-repo` (not bundled with git; install separately).
+`git filter-repo` (not bundled with git; install separately). **Run this ONLY
+in the shared-repo work dir from Step 1 (`cd "$WORK/shared"`). NEVER run
+`git filter-repo` or `git push --force` in `sync.repo_path` — the personal
+brain's history must stay intact.** The commands below reuse `$WORK` and
+`$BACKUP_PATH` from Step 1; they never recompute a date-stamped path.
 
 ```bash
-# Back up the clean working tree of every purged path
-mkdir -p /tmp/brainify-clean
-for d in people meetings; do   # one entry per purged directory
-  mkdir -p "/tmp/brainify-clean/$d" && cp -r "$d/." "/tmp/brainify-clean/$d/"
+cd "$WORK/shared"
+[ "$(git rev-parse --show-toplevel)" != "$PERSONAL" ] \
+  || { echo "target IS sync.repo_path — ABORT, do not filter-repo"; exit 1; }
+
+# The purge list derives from the COMPLETE set of sanitized paths — the same
+# directories Phases 1-4 scanned. A filter list narrower than the scan
+# (people/ + meetings/ only) leaves pre-sanitization history alive for every
+# other scanned directory. The restore carrier below MUST match this same
+# list — backed-up set, filtered set, and re-added set are identical.
+PURGE_DIRS="people meetings daily companies projects analysis"
+
+# Back up the clean working tree of every purged path to a DURABLE carrier
+# (under $WORK in ~/.gbrain/backups — never /tmp, which can vanish mid-rewrite).
+CLEAN="$WORK/clean"
+mkdir -p "$CLEAN"
+for d in $PURGE_DIRS; do
+  [ -d "$d" ] || continue
+  mkdir -p "$CLEAN/$d" && cp -r "$d/." "$CLEAN/$d/"
 done
 
-# Rewrite history: one --path per purged directory
+# Rewrite history: one --path per purged directory, derived from $PURGE_DIRS
 rm -rf .git/filter-repo
-git filter-repo --invert-paths --path people/ --path meetings/ --force
+git filter-repo --invert-paths $(for d in $PURGE_DIRS; do printf -- '--path %s/ ' "$d"; done) --force
 
-# Restore clean files and re-commit as a single new commit
-for d in people meetings; do
-  mkdir -p "$d" && cp -r "/tmp/brainify-clean/$d/." "$d/"
+# Restore clean files and re-commit as a single new commit — same $PURGE_DIRS
+for d in $PURGE_DIRS; do
+  [ -d "$CLEAN/$d" ] || continue
+  mkdir -p "$d" && cp -r "$CLEAN/$d/." "$d/"
 done
-git remote add origin <REPO_URL>   # filter-repo removes remotes
-git add people/ meetings/
+git remote add origin <SHARED_REPO_URL>   # filter-repo removes remotes
+for d in $PURGE_DIRS; do [ -d "$d" ] && git add "$d/"; done
 git commit -m "Re-add sanitized directories"
 
+# VERIFY RESTORE COMPLETENESS before the irreversible push — a partial restore
+# would ship a smaller tree than was sanitized. Compare file counts (and, for
+# extra safety, checksums) between the carrier and the restored tree.
+before=$(find "$CLEAN" -type f | wc -l | tr -d ' ')
+after=$(for d in $PURGE_DIRS; do [ -d "$d" ] && find "$d" -type f; done | wc -l | tr -d ' ')
+[ "$before" = "$after" ] \
+  || { echo "restore incomplete ($before → $after files) — ABORT, do not force-push"; exit 1; }
+# Optional stronger check: diff -r "$CLEAN/<d>" "<d>" for each purged dir.
+
 # RE-VERIFY the backup immediately before the irreversible step — card-time
-# verification is not enough; time has passed and the rewrite itself could
-# have gone sideways. Abort if the backup is missing or unreadable.
-BACKUP="$HOME/.gbrain/backups/brain-history-backup-$(date +%Y%m%d).git"
-git -C "$BACKUP" log -1 >/dev/null || { echo "backup missing/unreadable — ABORT, do not force-push"; exit 1; }
+# verification is not enough; time has passed and the rewrite could have gone
+# sideways. Reuse $BACKUP_PATH (do NOT recompute $(date)); abort if unreadable.
+git -C "$BACKUP_PATH" log -1 >/dev/null \
+  || { echo "backup missing/unreadable — ABORT, do not force-push"; exit 1; }
 
 git push --force origin main
 ```
 
-**Step 4 — log it.** Per data-loss-gate, append the deletion to
-`daily/notes/YYYY-MM-DD.md` under `## Data Deletions`: timestamp, purged
-paths, commit counts, and the mirror-clone backup path as the recovery line.
+**Step 4 — log it (to the PERSONAL brain, NEVER the shared repo).** Per
+data-loss-gate, append the deletion under `## Data Deletions` — but write it to
+the PERSONAL brain's `$PERSONAL/daily/notes/YYYY-MM-DD.md` (or a local ops
+log), never into the shared repo. The log names the purged paths AND the
+backup location; in the shared repo those two facts would tell every team
+member exactly which paths held sensitive content and where the
+pre-sanitization backup lives — the audit trail becomes a treasure map.
+Record: timestamp, purged paths, commit counts, and `$BACKUP_PATH` as the
+recovery line.
 
 **After the force push:**
 
@@ -410,10 +550,11 @@ findings summary; a human (or a gated follow-up run) does the removal.
 ## Dedup (sharp boundaries)
 
 - **[data-loss-gate](../data-loss-gate/SKILL.md)** — supplies the
-  confirmation-card mechanics and the explicit-yes discipline; company-brainify's
-  Phase 5 is a specialized caller of it (pre-filled card, mirror-clone backup
-  as the recoverability line). A standalone "delete/purge/clean up X" intent
-  routes to data-loss-gate; the personal→team sanitization WORKFLOW routes here.
+  confirmation-card mechanics and the explicit-yes discipline; company-brainify
+  is a specialized caller of it at BOTH destructive steps: Phase 3 (bulk strip
+  + take/fact removal) and Phase 5 (history purge + force-push), each with a
+  pre-filled card. A standalone "delete/purge/clean up X" intent routes to
+  data-loss-gate; the personal→team sanitization WORKFLOW routes here.
 - **[publish](../publish/SKILL.md)** — outbound sharing of ONE page as
   encrypted self-contained HTML. company-brainify is whole-brain inbound team
   access. "Share this page" → publish; "share my brain with the team" → here.
@@ -421,23 +562,41 @@ findings summary; a human (or a gated follow-up run) does the removal.
   backlinks, stale pages). maintain checks whether the brain is HEALTHY;
   company-brainify checks whether it is SAFE TO SHARE. "Check brain health"
   routes to maintain.
-- **[frontmatter-guard](../frontmatter-guard/SKILL.md)** — validates
-  frontmatter SHAPE. company-brainify strips sensitive frontmatter FIELDS;
-  run frontmatter-guard after a large pass to confirm what remains still
+- **frontmatter-guard (host-side)** — validates frontmatter SHAPE.
+  company-brainify strips sensitive frontmatter FIELDS; run
+  frontmatter-guard after a large pass to confirm what remains still
   parses.
 
 ## Contract
 
 This skill guarantees:
 
-- The history purge (Phase 5 Steps 3+) never executes before (a) a
-  mirror-clone backup exists and is verified, (b) the data-loss-gate
-  confirmation card is presented, and (c) the user answers with an explicit
-  typed "yes"/"do it". This is a routing convention the agent must follow —
-  nothing in the runtime mechanically blocks a skipped gate, which is why
-  skipping it is the cardinal violation of this skill.
+- Both destructive steps fire the data-loss-gate confirmation card and wait for
+  an explicit typed "yes"/"do it" BEFORE running: Phase 3 (bulk strip + take/
+  fact removal) and Phase 5 (history purge + force-push). This is a routing
+  convention the agent must follow — nothing in the runtime mechanically blocks
+  a skipped gate, which is why skipping it is the cardinal violation of this
+  skill.
+- Phase 3 defaults to sanitizing a STAGING COPY of the scanned scope, leaving
+  the personal brain's working tree untouched; in-place edits are reserved for
+  re-auditing an existing shared brain.
+- The Phase 5 history purge (Steps 3+) runs only on the SHARED repo cloned to a
+  work dir — never `sync.repo_path` — after (a) a mirror-clone backup exists and
+  is verified, and (b) a restore-completeness check passes before the
+  force-push. The personal brain's history is never rewritten.
+- The deletion log is written to the PERSONAL brain (`daily/`) or a local ops
+  log, never into the shared repo.
 - The scan covers the full scope (people, meetings, dailies, companies,
   projects, analysis, takes, facts, back-links), never `people/` alone.
+- Nothing unscanned ships: the fresh-export path includes ONLY directories
+  covered by the sanitization scan; everything else is excluded by default,
+  and the Phase 4 verification greps run against the exported tree before
+  the first push.
+- Sensitive fact rows are deleted from the page's Facts fence and re-synced,
+  never merely expired — `gbrain forget` retains the row (struck through,
+  served via `--include-expired`) and can never certify clean.
+- The history-purge filter list and its restore manifest both derive from
+  the COMPLETE set of sanitized paths, never a subset.
 - Every strip decision is a per-file model judgment grounded in a full read;
   grep output is triage and verification only.
 - A verification pass (Phase 4 greps + retrieval checks) runs before any
@@ -464,16 +623,18 @@ Three artifacts:
 
 - Scope: [N files scanned across people/, meetings/, daily/, ...]
 - Flagged: [M files with hits] (triage list attached)
-- Edited: [K files sanitized; T takes removed; F facts expired]
+- Edited: [K files sanitized; T takes removed; F fact rows removed + re-synced]
 - Verification: [grep residuals: 0 confirmed-sensitive; retrieval checks: clean]
 - History: [not purged | fresh-export | purged after confirmed gate — backup at <path>]
 - Next re-audit: [date / cron slot]
 ```
 
-2. **The confirmation card** (Phase 5 only) — the exact fenced card above,
-   presented before any history rewrite; the turn stops until the user answers.
-3. **The deletion log entry** (Phase 5, post-purge only) — appended to
-   `daily/notes/YYYY-MM-DD.md` per data-loss-gate Step 4.
+2. **The confirmation card** (Phases 3 and 5) — the pre-filled fenced card,
+   presented before the bulk destructive edits (Phase 3) and before any history
+   rewrite (Phase 5); the turn stops until the user answers.
+3. **The deletion log entry** (post-purge only) — appended to the PERSONAL
+   brain's `daily/notes/YYYY-MM-DD.md` (never the shared repo) per
+   data-loss-gate Step 4.
 
 ## Anti-Patterns
 
@@ -481,8 +642,24 @@ Three artifacts:
   the same content
 - ❌ Sanitizing working-tree files and calling it done — history still carries
   every sensitive version
+- ❌ Exporting the whole repo into the team brain — the export ships ONLY
+  scanned directories; nothing unscanned ships
+- ❌ Using `gbrain forget` as sanitization — forget expires (struck-through
+  row retained, served via `--include-expired`); delete the fence row and
+  re-sync instead
+- ❌ Purging history for a subset of the sanitized paths — the filter list
+  derives from the complete scan scope, not just `people/` + `meetings/`
 - ❌ Running `git filter-repo` / force-push without the mirror-clone backup
   and the typed confirmation — the card comes BEFORE the rewrite, always
+- ❌ Running `git filter-repo` / force-push in `sync.repo_path` — the purge
+  targets the SHARED repo cloned to a work dir; the personal brain's history is
+  never rewritten
+- ❌ Stripping the personal brain in place when standing up a NEW team brain —
+  sanitize a staging copy; the founder's private comp/performance notes stay
+- ❌ Bulk-editing files and removing takes/facts without the Phase 3
+  data-loss-gate card — destructive edits are gated too, not just the purge
+- ❌ Writing the deletion log into the shared repo — it names the sensitive
+  paths and the backup location; log it to the PERSONAL brain
 - ❌ Treating grep as the sensitivity judge — patterns triage, the model
   reads and decides (regex-discipline)
 - ❌ Removing the attribution but keeping the take — the claim itself is the

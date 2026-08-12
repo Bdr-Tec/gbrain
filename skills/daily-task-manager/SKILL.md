@@ -75,6 +75,7 @@ Map user intent deterministically before touching state:
 - **Retry/duplicate add:** if an identical description already exists in active tasks, do not add a duplicate — report the existing task ID instead.
 - **Dates:** ISO 8601 (`YYYY-MM-DD`) everywhere. Compute "today"/"next week" with code/clock, never guess.
 - **Page identifier:** always `ops/tasks.md` (with extension) in tool calls; this is the single canonical location.
+- **Single-writer assumption (concurrency limitation).** The task cycle is read-modify-write: `get_page("ops/tasks.md")` → edit → `put_page("ops/tasks.md")`. `put_page` replaces the WHOLE page and has no compare-and-swap, so two mutations that interleave are last-writer-wins: the second `put_page` overwrites the first's change (a completed task reappears, an added task vanishes), and the `t-YYYYMMDD-NN` minting can hand the same ordinal to two concurrent adds (duplicate IDs). Serialize task edits — never run parallel task mutations (multiple subagents, concurrent chat turns) against `ops/tasks.md`. If a mutation might race, re-`get_page` immediately before `put_page` and re-derive the next free ordinal from the freshly-read page.
 
 ## Output Format
 
@@ -121,6 +122,7 @@ Each with its corrective action:
 - Fabricating due dates, priorities, or reasons → never invent required fields; ask.
 - Unbounded list growth → when Backlog exceeds ~20 items, prompt a weekly review.
 - Storing tasks outside the brain page → everything lives in `ops/tasks.md` (searchable).
+- Running parallel task mutations against `ops/tasks.md` → last-writer-wins whole-page `put_page` silently loses updates and mints duplicate IDs; serialize edits, re-read immediately before writing.
 
 ## Design Rationale (failure modes this version closes)
 

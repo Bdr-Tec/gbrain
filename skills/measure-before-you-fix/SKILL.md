@@ -190,7 +190,7 @@ measured number:
   (doctor, extraction, dream cycle). Boundary: maintain *emits and acts on*
   health output; this skill governs how to respond when one of those checks
   pages, before budgets or wrappers change.
-- **`skills/smoke-test/SKILL.md`** — binary post-restart health checks with
+- **smoke-test (host-side)** — binary post-restart health checks with
   auto-fix. Boundary: smoke-test answers "is it up after a restart"; this
   skill answers "is this slow/stale claim even true".
 - **`skills/cron-scheduler/SKILL.md`** — schedules monitors and jobs.

@@ -305,11 +305,22 @@ the tree does NOT ship it — bundling is an explicit decision, and an
 unbundled skill never reaches a downstream install. When you write a new
 skill, decide (and record) which side of that line it lives on.
 
+`bun run gate:skills` (`scripts/skills-commit-gate.sh`) is the per-commit gate
+for any change under `skills/`. It runs the conformance + resolver +
+plugin-manifest tests, `check-resolvable --strict`, the `skills.lock.json`
+regen + freshness check, and `check-skill-refs` in seconds — run it before
+committing a skills change so the membership/closure and `plugin.version`
+assertions fail locally instead of in CI.
+
 ## When a skill misroutes
 
 Treat a misroute like a failing test, because it becomes one. First
 reproduce it as a fixture in the skill's `routing-eval.jsonl` — the utterance
-that misrouted, with the expected skill (or `null`). Only then fix the cause:
+that misrouted, with the expected skill (or `null`). Rewrite the misrouted
+utterance onto placeholder entities (`alice-example`, `acme-example`) before
+committing the fixture — same rule as skill-autobench; a routing fixture is a
+public artifact and must not carry a real contact or company name. Only then
+fix the cause:
 usually a trigger in the skill's frontmatter or its row in
 `skills/RESOLVER.md`. Regenerate the lock (`bun run
 scripts/generate-skills-manifest.ts`) and the llms bundles (`bun run

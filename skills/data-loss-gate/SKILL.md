@@ -18,7 +18,6 @@ triggers:
   - "bulk forget"
   - "remove the source"
   - "drop the table"
-priority: 100
 mutating: true
 writes_pages: true
 writes_to:

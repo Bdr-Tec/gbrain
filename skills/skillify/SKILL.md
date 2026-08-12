@@ -17,12 +17,12 @@ description: |
 eval_contract:
   goal: |
     Turn a raw feature or an edited skill into a properly-skilled, regression-proof
-    unit: all 14 checklist items pass, the output clears its own eval contract, and
+    unit: all 15 checklist items pass, the output clears its own eval contract, and
     the new eval scores >= the prior iteration. Excellent = another operator on any
     agent platform can run skillify and know exactly what passed, what the quality
     bar was, and that nothing silently regressed.
   dimensions:
-    - "CHECKLIST_COVERAGE — are all 14 items actually checked, not just claimed?"
+    - "CHECKLIST_COVERAGE — are all 15 items actually checked, not just claimed?"
     - "CONTRACT_QUALITY — is the eval_contract goal concrete and the dimensions skill-specific (not generic)?"
     - "REGRESSION_RIGOR — is the new output compared to the prior baseline with a real delta?"
     - "IDEMPOTENCY — does an improve-run preserve what worked and fix only the delta?"
@@ -62,9 +62,9 @@ upstream: skillify@fc834ee
 
 ## Contract
 
-A feature is "properly skilled" when all 14 checklist items (0 + 1–13; 3b
+A feature is "properly skilled" when all 15 checklist items (0 + 1–14; 3b
 rides with item 3) pass. `gbrain skillify check` audits the mechanical items
-(1–11); items 0, 3b, 12, and 13 are procedural gates the agent verifies
+(1–11); items 0, 3b, 12, 13, and 14 are procedural gates the agent verifies
 directly. Item 3 (cross-modal eval) is informational in the audit — it does
 not gate `gbrain skillify check`, but a missing or stale receipt is surfaced
 so the user knows where the gate stands.
@@ -104,6 +104,7 @@ The numbering is stable; additive changes only.
 □ 11. Brain filing       — if it writes pages, entry in brain/RESOLVER.md
 □ 12. Scheduled-run observability — if the skill backs a cron/recurring job, runs route through minions so they are logged and inspectable (Phase 6)
 □ 13. Scheduled-task re-run — if the skill backs a cron, an edit re-runs a representative task + evals it (Phase 3.5)
+□ 14. Plugin membership   — record the skill in openclaw.plugin.json OR skills/plugin-exclusions.json (the membership test requires exactly one)
 ```
 
 ## Phase 0: Determine Mode (New vs Improve)
@@ -176,7 +177,7 @@ new input, or when a quality pass is requested.
 ```
 Feature: [name]
 Code: [path]
-Missing items: [check each of the 14]
+Missing items: [check each of the 15]
 ```
 
 ## Phase 2: Write SKILL.md + Code (items 1-2)
@@ -520,7 +521,7 @@ gbrain check-resolvable --json | jq .ok          # resolver clean
 
 ```
 Phase 0: Mode A — invoked weekly, 50+ lines, clear trigger "summarize this PR"
-Phase 1: Audit → SKILL.md missing, no tests, no resolver entry. Score: 1/14
+Phase 1: Audit → SKILL.md missing, no tests, no resolver entry. Score: 1/15
 Phase 2: Write SKILL.md + extract script to scripts/summarize-pr.ts
 Phase 2.5: Declare eval_contract — goal: reviewer-ready PR summary;
   dimensions: file_coverage, test_plan, specificity;

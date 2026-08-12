@@ -88,6 +88,40 @@ describe('check-skill-refs', () => {
     expect(pass.code).toBe(0);
   });
 
+  test('scans .jsonl (routing-eval) files for donor remnants; allowlist ratchets them too', () => {
+    // Assemble the banned prefix at runtime (repo-wide privacy check bans the literal).
+    const bannedPath = ['/data', 'brain', 'fixture.md'].join('/');
+    const setup = (skills: string) => {
+      mkdirSync(join(skills, 'alpha'));
+      writeFileSync(join(skills, 'alpha', 'SKILL.md'), '---\nname: alpha\n---\nclean body\n');
+      writeFileSync(
+        join(skills, 'alpha', 'routing-eval.jsonl'),
+        `{"utterance":"do a thing","expected":"alpha","note":"${bannedPath}"}\n`,
+      );
+    };
+    const fail = runOn(setup);
+    expect(fail.code).toBe(1);
+    expect(fail.out).toContain('donor-remnant');
+    expect(fail.out).toContain('routing-eval.jsonl');
+    const pass = runOn(setup, 'skills/alpha/routing-eval.jsonl\n');
+    expect(pass.code).toBe(0);
+  });
+
+  test('a .jsonl file is not subject to the markdown-only lanes (backtick/composes)', () => {
+    // A dangling `skills/ghost/...` inside a .jsonl string must NOT fail — the
+    // dangling-ref lane is markdown-only; only donor remnants scan .jsonl.
+    const { code, out } = runOn((skills) => {
+      mkdirSync(join(skills, 'alpha'));
+      writeFileSync(join(skills, 'alpha', 'SKILL.md'), '---\nname: alpha\n---\nclean body\n');
+      writeFileSync(
+        join(skills, 'alpha', 'routing-eval.jsonl'),
+        '{"utterance":"read `skills/ghost/SKILL.md`","expected":"alpha"}\n',
+      );
+    });
+    expect(code).toBe(0);
+    expect(out).toContain('OK');
+  });
+
   test('exempts skills/migrations wholesale', () => {
     const { code } = runOn((skills) => {
       mkdirSync(join(skills, 'migrations'));

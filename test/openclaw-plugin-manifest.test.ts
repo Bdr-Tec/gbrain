@@ -58,6 +58,63 @@ describe('plugin membership curation (skills = plugin ∪ exclusions, disjoint)'
   });
 });
 
+describe('bundled-skill reference closure (nothing bundled points at a non-bundled skill)', () => {
+  // A bundled skill's SKILL.md ships downstream, where only bundled skills,
+  // conventions/, and the shared top-level skills/_*.md files exist. A path
+  // reference (backtick `skills/<x>/...` or relative link `](../<x>/...)`)
+  // to a host-only skill dangles on every downstream install. Intentional
+  // host-only mentions must be plain prose — the skill name with a
+  // "(host-side)" qualifier — never a path reference.
+  //
+  // Entries are "<bundled-slug> -> <target>". Prefer zero: rephrase the
+  // reference to prose instead of adding a line here.
+  const HOST_ONLY_REFERENCE_ALLOWLIST: string[] = [];
+
+  const root = join(import.meta.dir, '..');
+  const plugin = JSON.parse(readFileSync(join(root, 'openclaw.plugin.json'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(root, 'skills', 'manifest.json'), 'utf8'));
+  const bundled = new Set<string>(plugin.skills.map((s: string) => s.replace(/^skills\//, '')));
+  const manifestNames = new Set<string>(manifest.skills.map((s: { name: string }) => s.name));
+
+  // Documentation placeholders (`skills/X/`, `skills/<slug>/`, `skills/{name}/`)
+  // are idiom, not references.
+  const PLACEHOLDER_RE = /[<{$]|^X$|^\.\.\.$/;
+
+  it('every skills/ path reference in a bundled SKILL.md resolves inside the bundle', () => {
+    const offenders: string[] = [];
+    for (const slug of [...bundled].sort()) {
+      const text = readFileSync(join(root, 'skills', slug, 'SKILL.md'), 'utf8');
+
+      const refs: { target: string; raw: string }[] = [];
+      // backtick path refs: `skills/<x>/...`
+      for (const m of text.matchAll(/`skills\/([^`\s]+)`/g)) {
+        refs.push({ target: m[1].split('/')[0], raw: m[0] });
+      }
+      // relative markdown links to sibling skill dirs: ](../<x>/...)
+      for (const m of text.matchAll(/\]\(\.\.\/([^)\s]+)\)/g)) {
+        const first = m[1].split('/')[0];
+        if (first === '..') continue; // escapes skills/ entirely — not skill closure
+        refs.push({ target: first, raw: `](../${m[1]})` });
+      }
+
+      for (const { target, raw } of refs) {
+        if (PLACEHOLDER_RE.test(target)) continue;
+        if (target === 'conventions') continue; // ships via shared_deps
+        if (target.startsWith('_')) continue; // shared top-level skills/_*.md, ships via shared_deps
+        // Non-skill targets (RESOLVER.md, manifest.json, migrations/, brain-page
+        // examples) are check-skill-refs.mjs's dangling-ref lane, not closure.
+        if (!manifestNames.has(target)) continue;
+        if (bundled.has(target)) continue;
+        if (HOST_ONLY_REFERENCE_ALLOWLIST.includes(`${slug} -> ${target}`)) continue;
+        offenders.push(
+          `${slug}: ${raw} -> "${target}" is not bundled — bundle it or rephrase as a plain "(host-side)" prose mention`,
+        );
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('root OpenClaw plugin manifest', () => {
   it('declares the id required by OpenClaw plugin installs', () => {
     const manifest = JSON.parse(readFileSync(join(import.meta.dir, '..', 'openclaw.plugin.json'), 'utf8'));
@@ -69,5 +126,12 @@ describe('root OpenClaw plugin manifest', () => {
     expect(typeof manifest.configSchema).toBe('object');
     expect(manifest.contracts?.contextEngines).toContain('gbrain-context');
     expect(entrySource).toContain('export function register');
+  });
+
+  it('plugin.version tracks package.json version (bundle ships at the repo version)', () => {
+    const root = join(import.meta.dir, '..');
+    const manifest = JSON.parse(readFileSync(join(root, 'openclaw.plugin.json'), 'utf8'));
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    expect(manifest.version).toBe(pkg.version);
   });
 });

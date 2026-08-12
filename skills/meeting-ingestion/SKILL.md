@@ -123,6 +123,14 @@ page (e.g. `meetings/YYYY-MM-DD-{slug}-transcript`) or keep the source file
 reachable, and link it from the meeting page. The transcript is the canonical
 evidence for every quote and claim check downstream.
 
+**Redact before you retain.** A raw transcript routinely captures pasted
+secrets and PII (a read-aloud API key, a screen-shared token, a private phone
+number). Before writing the sidecar, scan for secret-shaped strings (`sk-…`,
+`ghp_…`, `AKIA…`, bearer tokens, long hex/base64 blobs) and PII, and redact
+matches to labeled placeholders — same deterministic deny-list /
+`runPrivacyLint` model as `conversation-archive`. "Untruncated" means the
+transcript's substance, never a live credential.
+
 ## Phases
 
 ### Phase 1: Normalize the input

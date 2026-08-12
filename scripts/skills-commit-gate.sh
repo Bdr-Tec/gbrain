@@ -2,7 +2,8 @@
 # skills-commit-gate — the per-commit gate for any commit touching skills/.
 #
 # Runs the four checks that actually fail skills-pack changes, in seconds:
-#   1. conformance + resolver round-trip tests
+#   1. conformance + resolver round-trip + plugin-manifest tests (the
+#      membership/closure + plugin.version assertions run in the gate, not just CI)
 #   2. check-resolvable --strict (MECE overlap, DRY delegation, filing audit,
 #      routing-eval fixtures)
 #   3. skills.lock.json regen + freshness
@@ -24,13 +25,21 @@ step() {
   fi
 }
 
-step "conformance + resolver tests" bun test test/skills-conformance.test.ts test/resolver.test.ts
+step "conformance + resolver + plugin-manifest tests" bun test test/skills-conformance.test.ts test/resolver.test.ts test/openclaw-plugin-manifest.test.ts
 step "check-resolvable --strict" bun src/cli.ts check-resolvable --strict --skills-dir skills/
 step "skills.lock regen" bun run scripts/generate-skills-manifest.ts
-# The regen may have rewritten the lock on disk. A regenerated-but-unstaged
-# lock means the commit being gated would ship a stale lock — fail loudly.
-if [ -n "$(git diff --name-only -- skills/skills.lock.json)" ] && \
-   ! git diff --cached --name-only -- skills/skills.lock.json | grep -q '^skills/skills.lock.json$'; then
+# The regen may have rewritten the lock on disk. Two stale shapes, both fail:
+#   staged-but-stale  — the path is staged but the staged BLOB differs from the
+#                       regenerated file (a staged name alone proves nothing —
+#                       the commit would still ship the old content)
+#   unstaged-and-dirty — the regenerated file differs from HEAD and nothing is
+#                       staged, so the commit would ship a stale lock
+if git diff --cached --name-only -- skills/skills.lock.json | grep -q '^skills/skills.lock.json$'; then
+  if ! git show :skills/skills.lock.json 2>/dev/null | cmp -s - skills/skills.lock.json; then
+    echo "❌ staged lock is stale — re-stage skills/skills.lock.json (git add skills/skills.lock.json)" >&2
+    FAIL=1
+  fi
+elif [ -n "$(git diff --name-only -- skills/skills.lock.json)" ]; then
   echo "❌ skills.lock.json regenerated — stage it (git add skills/skills.lock.json)" >&2
   FAIL=1
 fi

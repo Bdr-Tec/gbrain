@@ -8,8 +8,6 @@
     "smoke-test": "host-runtime health checks (container/daemon assumptions)",
     "gbrain-upgrade": "host binary upgrade flow",
     "cold-start": "host onboarding flow",
-    "ask-user": "pre-wave curation (recorded as-is; revisit individually)",
-    "brain-taxonomist": "pre-wave curation (recorded as-is; revisit individually)",
     "schema-unify": "schema unification is a brain-owner migration activity",
     "skill-optimizer": "requires host-side skillopt engine access and benchmark files"
   }

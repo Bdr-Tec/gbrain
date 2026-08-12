@@ -242,12 +242,13 @@ failure_mode_to_catch: ...
 
 ## Dedup (sharp boundaries)
 
-- **`skills/skill-optimizer/SKILL.md` (SkillOpt)** — optimizes a skill's body
+- **skill-optimizer (SkillOpt, host-side)** — optimizes a skill's body
   against an EXISTING benchmark; its `--bootstrap-from-skill` derives tasks
   from the spec. THIS skill authors the benchmark from lived usage and feeds
   it into `skills/<name>/skillopt-benchmark.jsonl` — it extends SkillOpt's
-  surface, never duplicates it. Read the skill-optimizer SKILL.md before the
-  handoff. No history at all → use `--bootstrap-from-skill`, not this.
+  surface, never duplicates it. Read the skill-optimizer SKILL.md (on the
+  host, where its engine lives) before the handoff. No history at all → use
+  `--bootstrap-from-skill`, not this.
 - **BrainBench (`gbrain eval` suites)** — evals the ENGINE (retrieval,
   memory conformance, calibration). This evals SKILLS over their history.
 - **`skills/skillify/SKILL.md` / `skills/skill-creator/SKILL.md`** — create

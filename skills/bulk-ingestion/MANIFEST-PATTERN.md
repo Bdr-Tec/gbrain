@@ -132,12 +132,28 @@ stage = 📝, first stage = ⬜.
 
 ## Worker / subagent contract (idempotency + verification)
 
+**No atomic claim — partition the work-list UP FRONT.** The manifest is a JSON
+file, not a database: there is no compare-and-swap, no row lock, no atomic
+"claim this item." Workers that race a shared `status` field to decide what to
+process WILL collide — two workers read `pending`, both process the same item,
+and you pay twice for the same expensive extraction; worse, two workers writing
+the same `manifest.json` concurrently can interleave and corrupt the JSON,
+losing the whole run's state. `git pull --rebase` is NOT synchronization — it
+resolves text conflicts, it does not prevent two workers from having already
+done the same paid work. So the claim is made by PARTITIONING before fan-out:
+split the item list into DISJOINT shards (by `group`, or by an offset/limit
+range) and hand each worker its own shard. No two workers ever look at the same
+`id`. Idempotent restart (below) then covers only the crash-and-rerun case
+within a shard, not cross-worker contention.
+
 When fanning out processing across chunks/workers/subagents:
 
-1. **Workers claim by `id`, write by `id`.** Each worker takes a slice (a
-   group, or an offset/limit) and processes items, updating status +
-   outputs in the JSON (or writing a per-worker progress file that's merged
-   — see below).
+1. **Workers own a disjoint shard, write by `id`.** Each worker takes its
+   pre-assigned slice (a group, or an offset/limit range) and processes only
+   those items, updating status + outputs in the JSON (or writing a per-worker
+   progress file that's merged — see below). It never scans the whole manifest
+   for "any pending item" — that is the racing pattern the partition exists to
+   prevent.
 2. **Idempotent restart.** Before processing an item, check its current
    status. If already at/past the target stage, skip. A killed worker
    re-run does no double work.
@@ -174,8 +190,14 @@ per [conventions/cron-via-minions.md](../conventions/cron-via-minions.md) —
 a recurring shell job shaped like:
 
 ```bash
-GBRAIN_ALLOW_SHELL_JOBS=1 gbrain jobs submit shell --params '{"cmd": "cd <brain-repo> && git add projects/<pipeline-name> <output-dirs> && git commit -m \"<pipeline-name> ingest checkpoint\" && git push"}'
+gbrain jobs submit shell --params '{"cmd": "cd <brain-repo> && git add projects/<pipeline-name> <output-dirs> && git commit -m \"<pipeline-name> ingest checkpoint\" && git push"}'
 ```
+
+Shell jobs require `GBRAIN_ALLOW_SHELL_JOBS=1` on the WORKER environment — see
+minion-orchestrator Preconditions. Do not set it yourself: it is an RCE-class
+authorization that belongs to the operator running the daemon, and a submit-side
+env prefix (`GBRAIN_ALLOW_SHELL_JOBS=1 gbrain jobs submit ...`) is a no-op in
+the daemon lane anyway (the worker's environment decides, not the submitter's).
 
 Pre-commit hooks (privacy/durability) intentionally run on checkpoint
 commits — a checkpoint that bypasses them can bank unlintable content.
@@ -195,6 +217,9 @@ the schedule when the job completes.
 6. **Match outputs to source by stored backlink** (`source_path`-style
    frontmatter), never by re-deriving slugs.
 7. **Idempotent workers**: check status before processing; safe to restart.
+   No atomic claim exists — partition the work-list into disjoint shards up
+   front; never race a shared `status` field (double-processes paid work,
+   corrupts the JSON).
 8. **Checkpoint + commit frequently**; a crash loses at most one batch.
 9. **Never declare a corpus "done" by looking at the output folder** —
    re-scan the source and diff. (The 8%-called-100% bug.)

@@ -27,7 +27,10 @@ import { execSync } from 'node:child_process';
 const args = process.argv.slice(2);
 function argVal(flag, dflt) {
   const i = args.indexOf(flag);
-  return i >= 0 && args[i + 1] ? args[i + 1] : dflt;
+  const v = i >= 0 ? args[i + 1] : undefined;
+  // A value that looks like a flag (starts with --) means this option's value
+  // was omitted; treat it as missing rather than swallowing the next flag.
+  return v && !v.startsWith('--') ? v : dflt;
 }
 const SKILLS_DIR = argVal('--skills-dir', 'skills');
 const ALLOWLIST_PATH = argVal('--allowlist', 'scripts/skill-refs-allowlist.txt');
@@ -61,7 +64,9 @@ function walk(dir) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) out.push(...walk(p));
-    else if (e.name.endsWith('.md')) out.push(p);
+    // .md feeds every lane; .jsonl feeds the donor-remnant scan only —
+    // routing-eval fixtures can carry a donor-workspace path too.
+    else if (e.name.endsWith('.md') || e.name.endsWith('.jsonl')) out.push(p);
   }
   return out;
 }
@@ -105,6 +110,10 @@ for (const file of files) {
 
   if (inMigrations) continue;
 
+  // The lanes below are markdown-only (backtick refs, relative md-links,
+  // frontmatter). .jsonl files are scanned for donor remnants above only.
+  if (!file.endsWith('.md')) continue;
+
   // --- 1a. backtick skills/ path refs ---
   for (const m of text.matchAll(/`(skills\/[^`\s]+)`/g)) {
     let ref = m[1].replace(/[.,;:]+$/, '');
@@ -136,7 +145,7 @@ for (const file of files) {
   }
 
   // --- 1b. frontmatter composes: slugs ---
-  const fmMatch = text.match(/^---\n([\s\S]*?)\n---/);
+  const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (fmMatch) {
     const fm = fmMatch[1];
     const composesMatch = fm.match(/^composes:\s*(.*)$/m);
@@ -148,7 +157,7 @@ for (const file of files) {
       } else {
         // block-list form: lines "  - slug" following the key
         const after = fm.slice(fm.indexOf(composesMatch[0]) + composesMatch[0].length);
-        for (const line of after.split('\n')) {
+        for (const line of after.split(/\r?\n/)) {
           const lm = line.match(/^\s+-\s+(\S+)/);
           if (lm) slugs.push(lm[1]);
           else if (line.trim() && !line.startsWith(' ')) break;
@@ -213,6 +222,7 @@ if (RUN_CLI_REFS) {
     } catch {}
     for (const file of files) {
       if (file.includes('/migrations/')) continue;
+      if (!file.endsWith('.md')) continue; // fenced gbrain-cmd scan is markdown-only
       const rel = relative('.', file);
       const text = readFileSync(file, 'utf8');
       for (const block of text.matchAll(/```[a-z]*\n([\s\S]*?)```/g)) {

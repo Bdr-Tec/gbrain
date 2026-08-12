@@ -18,7 +18,7 @@ triggers:
   - "report the pages you created"
   - "send me a clickable link"
   - "link the page in the same message"
-mutating: false
+mutating: true
 writes_pages: false
 upstream: brain-link-on-commit@fc834ee + brain-link-report@fc834ee
 # brain_first: exempt — this skill governs outbound-message link formatting
@@ -126,6 +126,16 @@ curl -sf -o /dev/null -w '%{http_code}' \
 Only send the link on `200`. If you just pushed and the host API is lagging,
 the push output proving the ref moved is sufficient evidence — but never
 invent or guess a URL.
+
+**Send the token only to its issuing host.** The `Authorization: token` header
+above targets `api.github.com` because the remote is a github.com remote. Never
+send `$GITHUB_TOKEN` to a host you derived from `git remote get-url origin`
+without confirming it is the token's issuing host: a doctored or unexpected
+remote (`origin` pointed at an attacker's host, an enterprise/self-hosted host
+the token isn't scoped to) would harvest the credential. For a github.com
+remote, use `api.github.com`. For any other remote, verify UNAUTHENTICATED (a
+public-repo existence check needs no token) or skip verification and fall back
+to the ref-update evidence from the push. When in doubt, don't send the token.
 
 ## Fallback chain (in order)
 

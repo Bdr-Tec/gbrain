@@ -255,8 +255,8 @@ answer bank).
 - `skills/citation-fixer/SKILL.md` — citation FORMAT compliance. Correcting a
   claim's truth is this skill; fixing how a true claim is cited is
   citation-fixer.
-- `skills/frontmatter-guard/SKILL.md` — structural page validation (YAML
-  shape), not claim truth.
+- frontmatter-guard (host-side) — structural page validation (YAML shape),
+  not claim truth.
 
 ## Anti-Patterns
 

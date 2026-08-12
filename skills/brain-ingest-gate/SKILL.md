@@ -298,9 +298,16 @@ recoverable from the conversation.
   at-scale dedup of concept stubs that already slipped in. This gate is
   prevention at write time; concept-synthesis is the cleanup pass. "dedupe my
   existing concepts" → concept-synthesis.
-- **[frontmatter-guard](../frontmatter-guard/SKILL.md)** — the same
-  standalone-gate pattern on an orthogonal axis: structural validity of what's
-  written vs (here) semantic novelty of whether to write.
+- **frontmatter-guard (host-side)** — the same standalone-gate pattern on an
+  orthogonal axis: structural validity of what's written vs (here) semantic
+  novelty of whether to write.
+- **[bulk-ingestion](../bulk-ingestion/SKILL.md)** — the bulk sibling. Its
+  pipeline dedup key (`source + source_id`) only makes RE-RUNS idempotent; it
+  does not catch cross-source duplicates or resolve named entities. This gate
+  is the semantic + named-entity layer bulk-ingestion runs on its Phase 3 trial
+  items and bakes into the codified pipeline (its Phase 1d/6). "Build a
+  large-corpus pipeline" → bulk-ingestion; "does this page already exist before
+  I write it" → this gate.
 - **[data-loss-gate](../data-loss-gate/SKILL.md)** — the inverse gate: it
   stops data LEAVING the brain without confirmation; this gate stops data
   ENTERING without resolution + dedup.

@@ -141,3 +141,8 @@ This file (`_AGENT_README.md`) is the routing contract — keep it short.
   which is a contradiction). `brain_first: exempt` is allowed only with an
   adjacent comment justifying WHY the skill is exempt from the brain-first
   lookup chain — an unexplained exemption is a conformance failure.
+- **`priority:` is NOT part of the routing contract.** Nothing in the routing
+  path consumes it — matching is substring-over-`triggers:` (see "Routing"
+  above), with `RESOLVER.md` disambiguation for overlaps. A `priority:` key is
+  inert; don't add one expecting it to reorder matches. Encode precedence in
+  trigger specificity and the resolver's disambiguation rules instead.
