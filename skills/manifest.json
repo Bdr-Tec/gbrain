@@ -318,6 +318,11 @@
       "name": "draft-in-voice",
       "path": "draft-in-voice/SKILL.md",
       "description": ">"
+    },
+    {
+      "name": "bulk-ingestion",
+      "path": "bulk-ingestion/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {

@@ -52,6 +52,7 @@ wins; fix the row.
 | Meeting transcript received | `skills/meeting-ingestion/SKILL.md` |
 | Generic "ingest this" (auto-routes to above) | `skills/ingest/SKILL.md` |
 | "two-tier extraction", "triage then deep read", "smart model routing", "cheap triage expensive analysis" | `skills/two-tier-extraction/SKILL.md` |
+| "bulk ingest", "bulk import", "ingest all", "ingestion pipeline" | `skills/bulk-ingestion/SKILL.md` |
 
 ## Thinking skills (from GStack)
 
