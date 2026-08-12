@@ -5018,6 +5018,19 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 
+- [ ] **P2 — consent-key answers vs the A8 confirm gate.** Decide whether
+  `consent: true` bank keys should be exempt from `setAnswer`'s confirmation
+  invalidation (`src/core/bootstrap/interview.ts:308-309` `[A8]` deletes
+  `state.confirmed` on ANY set) so operational consents can be recorded at their
+  designed phase-contextual moment post-confirm without regressing
+  `bootstrap status` to "answers complete but not confirmed" (status.ts
+  interview detector). Deferred from the Codex MCP-scope fix (eng review option
+  3B chose prose realignment instead: the runbook now records `MCP_SCOPE` in
+  phase 3, pre-confirm, so the confirm hash covers it). An exemption touches a
+  tamper-tripwire — a post-confirm flip of `PERSIST_CRON` (background-push
+  consent) would no longer invalidate anything — so it needs its own
+  adversarial review before landing. Context: eng review + codex consult of the
+  Codex scope fix, 2026-08-11.
 - [x] **P2 — compiled `gbrain` binary can now `serve` a PGLite brain.** FIXED:
   `src/core/pglite-embedded-assets.ts` embeds PGLite's runtime payload
   (`pglite.wasm`, `initdb.wasm`, `pglite.data`, `vector.tar.gz`,

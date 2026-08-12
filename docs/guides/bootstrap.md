@@ -19,7 +19,7 @@ follows is `BOOTSTRAP_FOR_AGENTS.md` at the repo root, fetched at the
 | Identity files (SOUL/USER/MEMORY/AGENTS/CLAUDE/HEARTBEAT/ACCESS_POLICY/GITHUB) | your workspace folder | loaded at session start |
 | `agent.json` manifest + `brain/`, `memory/`, `skills/`, `state/` | workspace | — |
 | Local brain (PGLite) | `~/.gbrain/` (never in the repo) | while a session's MCP serve is open |
-| MCP registration (`gbrain serve`) | project scope by default | spawned by your harness per session |
+| MCP registration (`gbrain serve`) | Claude Code: project scope by default; Codex: user-global (no scope flag) | spawned by your harness per session |
 | Hooks (Claude Code, ON by default) | `.claude/settings.local.json` (gitignored) | each prompt; fail-open; `--no-hooks` opts out at install, `GBRAIN_HOOKS=0` disables at runtime |
 | Session persistence | SessionEnd hook → scan-gated commit+push | at session end |
 | Optional 15-min push job | launchd/cron (consent-gated) | while logged in |
