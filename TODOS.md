@@ -5133,20 +5133,20 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   `push_deferred_repo_pending`. Fails CLOSED (defers, never mis-pushes) and
   matches the v1 single-workspace contract, but the per-turn push made it more
   visible. Fix = per-root repo binding (a receipt map or a per-root marker).
-  Surfaced by both v0.45.8.0 adversarial reviewers.
+  Surfaced by both v0.45.9.0 adversarial reviewers.
 - [ ] **P2 — visibility ladder subprocess/body bounds.** `runWithTimeout`
   (`src/core/repo-visibility.ts`) races the `gh`/`git` probe against a timer but
   doesn't kill the raced child, and the anon-probe `res.text()` buffers the whole
   (operator-configured-origin) body before slicing. Bounded in practice by the
   detached push child's lifetime, but a proper fix kills the raced process and
-  caps the body read. Filed from the v0.45.8.0 Codex adversarial pass.
+  caps the body read. Filed from the v0.45.9.0 Codex adversarial pass.
 - [ ] **P3 — `config set` for the file-plane hook-lane keys is engine-bound.**
   `runConfig` dispatches through the engine path, so `gbrain config set
   push.allow_unverified_remote true` can fail while a live PGLite serve holds the
   writer lock — the documented recovery command, unavailable exactly when needed.
   The env-var form (`GBRAIN_ALLOW_UNVERIFIED_REMOTE=1`) is the cloud path and needs
   no engine, so this is convenience-only; fix = route these two keys through the
-  no-engine CLI dispatch. Filed from the v0.45.8.0 Codex adversarial pass.
+  no-engine CLI dispatch. Filed from the v0.45.9.0 Codex adversarial pass.
 
 
 - [ ] **P3 — plugin-based hook distribution for Claude Code.** Ship gbrain's

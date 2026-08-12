@@ -2,11 +2,11 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.45.8.0] - 2026-08-12
+## [0.45.9.0] - 2026-08-12
 
 **Your agent's memory keeps saving itself — even in a cloud sandbox, even on `/exit`, and it tells you the moment it can't.** The paste-in personal-agent install now works first-class in Claude Code's cloud environment, not just on a laptop. The persistence lane got three fixes that matter whether you're local or in the cloud: the workspace push now verifies repo privacy through a portable ladder that keeps working when the sandbox blocks the GitHub API, it runs after every turn (not only at session end, which the harness never fires on `/exit`), and a failed push surfaces on your next turn instead of failing in silence. Setup adapts to where it runs — no more scheduled-job errors on hosts without a scheduler, and no half-created repos in an environment that can't push them.
 
-To take advantage of v0.45.8.0: upgrade and re-run `gbrain bootstrap verify` on each machine — it re-attests the install and now reports the execution environment and any push-health or hygiene issue with the exact one-line fix. Existing installs pick up the per-turn push and the new verification automatically on the binary update; no re-render needed. If you run in a cloud sandbox, `gbrain bootstrap cloud-setup-script` prints the environment setup recipe, and `gbrain bootstrap status --json` now tells you which environment you're in.
+To take advantage of v0.45.9.0: upgrade and re-run `gbrain bootstrap verify` on each machine — it re-attests the install and now reports the execution environment and any push-health or hygiene issue with the exact one-line fix. Existing installs pick up the per-turn push and the new verification automatically on the binary update; no re-render needed. If you run in a cloud sandbox, `gbrain bootstrap cloud-setup-script` prints the environment setup recipe, and `gbrain bootstrap status --json` now tells you which environment you're in.
 
 ### Added
 - **Execution-environment detection** — `local`, `cloud-sandbox`, or `ephemeral-container`. Bootstrap, the doctor, and the runbook branch on it so each environment gets honest behavior and honest messages. `gbrain bootstrap status --json` and `gbrain bootstrap verify` both report it.
@@ -27,6 +27,76 @@ To take advantage of v0.45.8.0: upgrade and re-run `gbrain bootstrap verify` on 
 - Repo creation is refused inside a cloud sandbox with the flow that actually works (create the repo elsewhere, open the session on it, `gbrain bootstrap attach`) instead of leaving a half-created, unpushable repo.
 - Push-status is tracked per workspace, so with more than one brain workspace on a machine, one workspace's success can no longer mask another's failed pushes.
 - Hardening pass (both an in-house and a cross-model adversarial review): the privacy ladder never treats an ambiguous authentication challenge as proof a repo is private, the per-turn retry can't turn into an every-turn network storm, remote-supplied text is sanitized before it reaches any agent- or user-visible surface, and stale state from a deleted workspace no longer re-fires notices forever.
+
+## [0.45.8.0] - 2026-08-12
+
+**25 community bug fixes in one wave. Your MCP server, sync, and doctor all get more careful.**
+
+This release is all fixes, no new surface. 24 community contributors sent small, tested
+bug fixes over the past weeks. Each one was reviewed, tested in isolation against a real
+checkout, checked by an adversarial second reviewer, security reviewed, and then tested
+again as one combined branch. The themes: the MCP server now handles edge-case inputs
+the way an agent expects, sync and import stop losing or misplacing data in rare
+situations, and doctor stops crying wolf on healthy setups.
+
+If you connect an agent to gbrain over MCP, or you sync a brain repo with unusual file
+names, non-English content, or multiple sources, this release removes a set of paper
+cuts you may have already hit.
+
+## To take advantage of v0.45.8.0
+
+`gbrain upgrade` is enough. These are behavior fixes with no schema migration.
+
+1. **Upgrade and verify:**
+   ```bash
+   gbrain upgrade
+   gbrain doctor
+   ```
+2. **If doctor output changed for you,** that is likely the point: several checks
+   (supervisor, PGLite store health, base-URL hints) now report accurately where they
+   previously false-alarmed.
+3. **If anything looks wrong,** file an issue at https://github.com/garrytan/gbrain/issues
+   with `gbrain doctor` output.
+
+### Itemized changes
+
+**MCP server correctness**
+- `sources_add` over a remote transport now rejects a caller-supplied path outright instead of silently ignoring it. Contributed by @gregario.
+- Stdio serve advertises the tools the caller can actually use. Contributed by @gregario.
+- All stdout logging routes to stderr under stdio MCP, keeping the protocol stream clean. Contributed by @BenSheridanEdwards.
+- Null and empty-string optional params are treated as absent at dispatch. Contributed by @SeanGearin.
+- File ops (`file_list`, `file_upload`) use the connected engine instead of the global DB singleton, so they work on every configured engine. Contributed by @dpaluy.
+- Stdio serve honors the `.gbrain-source` dotfile. Contributed by @javieraldape.
+
+**Sync and import data safety**
+- Global sync anchors only move for the brain repo they describe, so a second repo can no longer skip another repo's pending imports. Contributed by @smdesai27.
+- Sync never writes a baseline commit over an already-populated repo. Contributed by @NidTamil.
+- Git C-style-quoted paths (quotes, backslashes, unicode escapes) unquote correctly in the sync manifest. Contributed by @SergeyShol.
+- Malformed YAML frontmatter is rejected with a clear error instead of importing garbage. Contributed by @javieraldape.
+- Paths that fail once but succeed on a later run clear their failure record. Contributed by @bo-developing.
+- Autopilot resolves the gbrain CLI on Windows via PATH enumeration instead of assuming a POSIX shell. Contributed by @veltri-23.
+- Ctrl-C cleanly terminates bulk commands using the shared progress reporter. Contributed by @javieraldape.
+
+**Engines and search**
+- PGLite batches code-edge inserts below the bind-parameter limit, fixing silent data loss on large code graphs. Contributed by @kyle944.
+- The configured FTS language survives schema replay, so non-English brains no longer revert to English tokenization on re-init. Contributed by @paul-0320.
+- Hyphenated Qwen3-Embedding model ids resolve their dimensions correctly. Contributed by @mikez93.
+
+**Doctor and diagnostics**
+- Doctor surfaces abandoned PGLite stores left behind after an engine migration. Contributed by @Masashi-Ono0611.
+- The base-URL hint uses a real models-probe classifier instead of guessing /v1. Contributed by @brettdavies.
+
+**Models and cycle**
+- Sonnet 5, Fable 5, and Opus 4.8 are in the synthesize context map and brainstorm output caps. Contributed by @p3ob7o.
+- Truncated or degenerate significance verdicts are no longer cached permanently. Contributed by @Masashi-Ono0611.
+- The `models.subagent` config path goes through the same capability checks as every other model path. Contributed by @Masashi-Ono0611.
+- `takes add` resolves the target page before writing markdown. Contributed by @ghizi.
+- A shipped filing rule that bound a personal folder name to a sensitive category is gone. Contributed by @Masashi-Ono0611.
+- BrainBench eval defaults resolve from the package root, so evals run from any working directory. Contributed by @philip-rossoneri.
+- The OpenClaw plugin-loader E2E inspects the real runtime. Contributed by @arisgysel-design.
+
+**For contributors**
+- The committed CLI flag registry, the cycle-sync test mocks, and two test fixtures were updated to match the combined branch.
 
 ## [0.45.7.0] - 2026-08-12
 
@@ -16829,8 +16899,6 @@ If anything looks off, file at https://github.com/garrytan/gbrain/issues
 with `gbrain doctor` output.
 
 
-
-
 ## [0.28.11] - 2026-05-07
 
 **Mix providers: OpenAI for text, Voyage for images. One brain, two embedding pipelines.**
@@ -18796,9 +18864,6 @@ React admin dashboard baked into the binary. Seven screens designed through Stev
 - `test/oauth.test.ts` ... 34 test cases covering provider: register, getClient, client_credentials exchange, auth_code flow with PKCE, refresh rotation, verifyAccessToken (OAuth + legacy fallback), revokeToken, sweepExpiredTokens, scope annotations on all 30 operations. Plus the post-/cso security-fix regressions: 10-concurrent auth code exchange (only 1 wins), 10-concurrent refresh rotation (only 1 wins), redirect_uri HTTPS-or-loopback gate, and pgArray comma-element round-trip (1 element in → 1 element out).
 
 
-
-
-
 ## [0.25.1] - 2026-05-01
 
 ## **Your brain can now read books with you. Nine new skills land at once.**
@@ -20046,7 +20111,6 @@ Then point Claude Desktop, claude.ai/code, or any MCP client at `http://your-tun
 6. **If `gbrain serve --http` exits with "Postgres engine required":** PGLite is local-only by design. Either keep using stdio (`gbrain serve`) for local agents, or migrate to Postgres (`gbrain migrate --to supabase`).
 
 If anything breaks: `gbrain doctor`, `~/.gbrain/upgrade-errors.jsonl` (if present), and please file an issue at https://github.com/garrytan/gbrain/issues with both.
-
 
 
 ## [0.22.6.1] - 2026-04-26
