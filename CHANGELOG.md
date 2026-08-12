@@ -2,6 +2,36 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.1.0] - 2026-08-11
+
+**Your per-prompt brain hooks are now measurable and non-repetitive.** v0.45.0.0's paste-in agent install gave every prompt a context injection; this release makes that channel behave like a product instead of a firehose. The hook remembers what it already told you — a page it injected earlier in the session isn't re-injected every time the name comes up — and every delivery now lands in the same precision feedback loop the other push channels use, so `gbrain volunteer-context --stats` and a new doctor check show exactly which harnesses are firing and how useful their pushes are.
+
+### Added
+- **Cross-turn dedupe for the per-prompt hook.** `gbrain hook user-prompt` reads its own previous injections back out of the session transcript (recorded as structured attachments — verified against a live Claude Code session) and suppresses re-volunteering, so a page is pushed once per session, not once per mention. The dedupe input is deduplicated and byte-capped, only gbrain-marked blocks count (another tool's hook output can't silence your brain), and the extraction is structural — a slug appearing in some tool payload can't over-suppress.
+- **Per-harness feedback loop.** Delivered hook context now logs to the volunteered-pages feedback table under its harness channel (`claude-code` today; `--harness codex` reserved for a codex hook registration), counted at the delivery point only — a block the hook abandoned mid-deadline is never counted, and the hook records partial trims so drift is visible.
+- **`volunteer_channels` doctor check** on both the local and remote doctor: per-channel activity over the last 7 days, with guidance that distinguishes "hook installed but never registered (restart the session)" from "registered but quiet", engine-aware messaging, and a caution when the hook's own heartbeat shows deliveries mostly degrading.
+
+### Changed
+- The turn-context IPC response now carries the post-budget volunteered pages, and the request carries an attribution channel — both additive; older serves and clients interoperate unchanged (an older serve simply doesn't log hook deliveries until restarted).
+- When a turn-context request exceeds the IPC message cap, the advisory dedupe payload is dropped before any conversation turn — context quality is never sacrificed to preserve a hint.
+
+### Fixed
+- A remote doctor report requested with a source-scoped token no longer aggregates push-activity metadata across sources it isn't authorized for.
+- The IPC connection handler processes exactly one request per connection — trailing bytes can no longer double-process a request (which would have double-counted deliveries).
+- A transient database error during the doctor's channel check is no longer misreported as an old-schema brain.
+
+## To take advantage of v0.45.1.0
+
+No migration and no re-registration needed. **Restart your `gbrain serve`** (or
+just restart the harness session — it respawns the MCP serve) so the new
+delivery logging activates; hooks registered by `gbrain bootstrap` pick up the
+dedupe automatically on the next prompt. Then check the loop is live:
+
+```bash
+gbrain volunteer-context --stats   # per-channel precision, incl. claude-code
+gbrain doctor                      # look for the volunteer_channels check
+```
+
 ## [0.45.0.0] - 2026-08-10
 
 **Your coding agent can now become your personal agent.** Paste one block into Codex or Claude Code and it sets itself up as a persistent agent with a memory that survives across sessions: it interviews you, writes its own identity files from your answers, spins up a local brain, and keeps a private GitHub repo as its durable body. Close the laptop and reopen it tomorrow, and it still knows who you are, who you're talking to, and what you told it last time. This is the OpenClaw/Hermes experience — identity, memory, schedules, persistence — running on the subscription you already pay for, with nothing to deploy.
