@@ -47,6 +47,11 @@ export interface ParsedFrontmatter {
   /** Routing triggers list. */
   triggers?: string[];
   /**
+   * Machine-checkable preconditions this skill needs before it can run;
+   * each is a `kind:arg` token — see skillpack/preconditions.ts.
+   */
+  requires?: string[];
+  /**
    * v0.36.x brain-first declarative opt-out. Only the literal canonical
    * value `'exempt'` (no quotes, lowercase, snake_case key) populates this.
    * Anything else is a typo and goes into `brain_first_typo`.
@@ -102,6 +107,7 @@ export function parseSkillFrontmatter(content: string): ParsedFrontmatter | null
   out.writes_to = parseArrayField(raw, 'writes_to');
   out.tools = parseArrayField(raw, 'tools');
   out.triggers = parseArrayField(raw, 'triggers');
+  out.requires = parseArrayField(raw, 'requires');
 
   // --- brain_first (strict canonical) ---
   parseBrainFirst(raw, out);

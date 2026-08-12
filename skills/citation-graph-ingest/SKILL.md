@@ -19,6 +19,8 @@ triggers:
   - "overrules / distinguishes graph"
   - "reason over a domain corpus"
   - "trace the argument through these documents"
+requires:
+  - source
 mutating: true
 writes_pages: false
 upstream: citation-graph-ingest@fc834ee

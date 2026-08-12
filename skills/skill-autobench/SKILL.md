@@ -21,6 +21,8 @@ triggers:
   - "build a benchmark from my corrections"
   - "verify the eval panel"
   - "did all providers return"
+requires:
+  - dir:conversations/
 mutating: true
 writes_pages: false
 writes_to:

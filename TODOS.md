@@ -5307,3 +5307,16 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 - [ ] **P3 — back-catalog-check kernel.** Optional pre-publish own-corpus
   consistency pass folding into fact-check (per-claim own-record search);
   `find_contradictions` + idea-lineage cover the rest today.
+
+## Skill self-knowledge — semantic skill search (deferred subsystem, from the migration-harness build)
+
+- [ ] **P2 — Make built-in skills semantically searchable in the brain.** Today skills
+  are markdown the harness routes to via triggers + a host catalog (`list_skills`/
+  `get_skill`); `gbrain search "how do I verify claims"` can't surface `fact-check`.
+  Making skills first-class searchable content needs a real design pass (tenancy +
+  source-isolation: skill pages must not pollute user-source query results; embedding
+  storage + backfill; search-steering to include/exclude the skill catalog; engine
+  parity). Deliberately NOT built in the currency/preconditions wave — it is a
+  subsystem that deserves its own eng + CEO review, not a rider. The currency work
+  (`skillpack status`/`sync`, doctor `skill_currency`) already keeps the brain's skill
+  set current on upgrade; this item is purely about semantic retrieval of skills.
