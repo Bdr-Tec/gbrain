@@ -682,14 +682,22 @@ async function repoPhaseComplete(root: string): Promise<boolean> {
     if (!receipt || typeof receipt.repo_url !== 'string' || receipt.repo_url.length === 0) return false;
     if (realpathOrResolve(receipt.workspace_dir) !== realpathOrResolve(root)) return false;
     const want = githubOwnerName(receipt.repo_url);
-    if (!want) return false;
     const fetchUrl = await tryExecAsync('git', ['-C', root, 'remote', 'get-url', 'origin']);
-    if (githubOwnerName(fetchUrl ?? '') !== want) return false;
     // Push URL (remote.origin.pushurl) via the config key directly (no dash-flag):
     // unset → `git push` uses the fetch URL (already matched). Only a configured
     // push URL that points elsewhere blocks the push.
     const pushUrl = await tryExecAsync('git', ['-C', root, 'config', 'remote.origin.pushurl']);
-    return !pushUrl || githubOwnerName(pushUrl) === want;
+    if (want) {
+      if (githubOwnerName(fetchUrl ?? '') !== want) return false;
+      return !pushUrl || githubOwnerName(pushUrl) === want;
+    }
+    // Non-github repo_url (self-hosted / explicitly-trusted transports): bind
+    // by EXACT URL equality — the recorded url is what the repo phase (or the
+    // operator) verified, and a later remote redirect must still block the
+    // push. Without this branch, every non-github install's no-daemon push
+    // deferred forever (post-#4024 regression).
+    if ((fetchUrl ?? '').trim() !== receipt.repo_url) return false;
+    return !pushUrl || pushUrl.trim() === receipt.repo_url;
   } catch {
     return false;
   }

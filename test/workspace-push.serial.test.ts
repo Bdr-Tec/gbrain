@@ -16,7 +16,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFileSync, spawnSync } from 'child_process';
 import {
-  workspacePush, acquirePushLock, pushLockDir, pushStatusPath, verifyRemotePrivacy,
+  workspacePush, acquirePushLock, pushLockDir, pushStatusPath, readPushStatuses, verifyRemotePrivacy,
   parseGithubOwnerRepo, resolveWorkspaceRoot, PUSH_LOCK_STALE_MS, PUSH_DENY_GLOBS,
 } from '../src/core/workspace-push.ts';
 import { SCAN_ALLOW_FILENAME } from '../src/core/secret-scan.ts';
@@ -98,14 +98,14 @@ describe('happy path', () => {
     expect(r.ahead).toBe(0);
     expect(originHead(bare)).toBe(git(work, 'rev-parse', 'HEAD'));
     // B4: push-status.json written on success
-    const status = JSON.parse(readFileSync(pushStatusPath(), 'utf-8'));
+    const status = readPushStatuses()[0]!; // [D13] per-root file, via the shared reader
     expect(status.ok).toBe(true);
     expect(status.ahead).toBe(0);
     expect(typeof status.ts).toBe('string');
     // no leftover lock
     expect(existsSync(pushLockDir(work))).toBe(false);
     // status file is not world-readable
-    expect(statSync(pushStatusPath()).mode & 0o077).toBe(0);
+    expect(statSync(readPushStatuses()[0]!.file).mode & 0o077).toBe(0);
   }, T);
 
   test('CX2-3 — a subdirectory target resolves and pushes the repo ROOT', async () => {
@@ -158,7 +158,7 @@ describe('deny-glob backstop [G6]', () => {
     expect(r.reason).toContain('.env');
     expect(originHead(bare)).toBe(before); // nothing pushed
     // B4: status written on failure too
-    const status = JSON.parse(readFileSync(pushStatusPath(), 'utf-8'));
+    const status = readPushStatuses()[0]!;
     expect(status.ok).toBe(false);
   }, T);
 
@@ -215,7 +215,7 @@ describe('secret-scan gate', () => {
     expect(JSON.stringify(r).includes(OPENAI)).toBe(false); // value never surfaces
     expect(lines.join('\n')).toContain('notes.md');
     // B4: failure status written
-    expect(JSON.parse(readFileSync(pushStatusPath(), 'utf-8')).ok).toBe(false);
+    expect(readPushStatuses()[0]!.ok).toBe(false);
 
     // per-finding allowlist override [CX2-15]
     writeFileSync(join(work, SCAN_ALLOW_FILENAME), `${r.findings![0]!.fingerprint}\n`);
@@ -277,7 +277,7 @@ describe('secret-scan gate — fails CLOSED on unscannable staged blobs', () => 
     expect(originHead(bare)).toBe(before);
     expect(git(work, 'diff', '--cached', '--name-only')).toBe('');
     // B4: failure status recorded
-    expect(JSON.parse(readFileSync(pushStatusPath(), 'utf-8')).ok).toBe(false);
+    expect(readPushStatuses()[0]!.ok).toBe(false);
   }, T);
 
   test('an oversized staged blob (> scan cap) BLOCKS the push', async () => {
@@ -375,7 +375,7 @@ describe('commit-first-then-pull [CX2-7]', () => {
     // origin still holds the other clone's commit — nothing force-pushed
     expect(git(bare, 'log', '--format=%s', '-1', 'main')).toBe('remote change');
     // B4: failure status written
-    expect(JSON.parse(readFileSync(pushStatusPath(), 'utf-8')).ok).toBe(false);
+    expect(readPushStatuses()[0]!.ok).toBe(false);
   }, T);
 });
 
@@ -391,7 +391,7 @@ describe('remote-privacy gate [G8]', () => {
     // the commit was made (local durability) but NOTHING left the machine
     expect(r.committed).toBe(true);
     expect(originHead(bare)).toBe(before);
-    expect(JSON.parse(readFileSync(pushStatusPath(), 'utf-8')).ok).toBe(false);
+    expect(readPushStatuses()[0]!.ok).toBe(false);
   }, T);
 
   test('verifyRemotePrivacy: gh false → not_private; gh true → private (PATH-shimmed gh, REST rung)', async () => {
@@ -521,7 +521,7 @@ describe('error paths', () => {
     expect(r.status).toBe('push_failed');
     expect(r.ok).toBe(false);
     expect(r.committed).toBe(true); // commit survives locally
-    const status = JSON.parse(readFileSync(pushStatusPath(), 'utf-8'));
+    const status = readPushStatuses()[0]!;
     expect(status.ok).toBe(false);
     expect(existsSync(pushLockDir(work))).toBe(false);
   }, T);
