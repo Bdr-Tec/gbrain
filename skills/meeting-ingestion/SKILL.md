@@ -1,14 +1,15 @@
 ---
 name: meeting-ingestion
-version: 2.0.0
+version: 2.1.0
 description: |
   Ingest meeting transcripts from ANY meeting recorder into brain pages with
   attendee enrichment, entity propagation, and timeline merge. One unified
   pipeline: normalize the source into a standard transcript record, split
   multi-meeting recordings, resolve speakers by evidence, create the page,
   pass every surprising claim through the consistency check (transcript +
-  brain + plausibility), then enrich every entity. A meeting is NOT fully
-  ingested until the enrich skill has processed every entity.
+  brain + plausibility), enrich every entity, then run the verification
+  checklist. A meeting is NOT fully ingested until the enrich skill has
+  processed every entity AND the verification checklist passes.
 triggers:
   - "meeting transcript"
   - "process this meeting"
@@ -16,6 +17,7 @@ triggers:
   - "meeting recorder"
   - "ingest this recording"
   - "capture meetings"
+  - "audit this meeting"
   - meeting transcript received
 tools:
   - search
@@ -24,13 +26,16 @@ tools:
   - put_page
   - add_link
   - add_timeline_entry
+  - get_timeline
 mutating: true
 writes_pages: true
 writes_to:
   - meetings/
   - people/
   - companies/
-upstream: meeting-ingestion@fc834ee
+upstream:
+  - meeting-ingestion@fc834ee
+  - meeting-gold-standard@fc834ee
 ---
 
 # Meeting Ingestion Skill — Unified Pipeline
@@ -58,6 +63,9 @@ This skill guarantees:
 - Timeline entries on ALL mentioned entities (timeline merge)
 - Back-links created bidirectionally
 - Meeting is NOT fully ingested until enrich runs for every entity
+- The meeting is never REPORTED as ingested until the verification checklist
+  (below) passes — every quote grounded, every slug backed by a page and a
+  timeline backlink, every speaker resolved or flagged
 
 Every attendee and company mentioned MUST get a back-link from their page to
 the meeting page. An unlinked mention is a broken brain.
@@ -320,6 +328,67 @@ itself, chain into `skills/signal-detector/SKILL.md` after ingestion.
 
 `gbrain sync` to update the index.
 
+## Verify before declaring done (HARD GATE)
+
+The write phases do the work; this phase verifies the work was actually done.
+Run the checklist on the finished page — every item, every meeting, including
+"quick" logistics meetings. **Never report a meeting as ingested until every
+item passes.** Saying "ingested" first and fixing later is a contract
+violation; a false completion report is worse than an honest partial one.
+
+**V1 — Required sections have substance.**
+- `## Summary` carries real outcomes (2+ bullets or a few substantive
+  sentences), not one vague line.
+- `## Key Decisions`, `## Action Items`, and `## Notable Quotes` each have
+  real content OR an explicit reason (`_None — exploratory conversation._`).
+- A bare `- None.` or `_n/a_` written to silence the checklist is a violation.
+  Before writing "none", confirm against the transcript that there truly were
+  no decisions/commitments/quotes worth keeping.
+
+**V2 — Every people/companies slug has a page AND a timeline backlink.**
+For each person/company slug referenced by the meeting page:
+```bash
+gbrain get people/{slug}          # page exists?
+gbrain timeline people/{slug}     # has an entry pointing back at this meeting?
+```
+A slug with no page means Phase 7/8 was skipped — go do it. A page with no
+timeline entry for this meeting means the merge was incomplete — add it.
+
+**V3 — Speaker map resolved.**
+No `Participant N` / `UNKNOWN_N` / raw recorder labels remain in the page
+without either a resolution or an explicit uncertainty flag (`[Room]`,
+`⚠️ attribution uncertain`). Every named speaker carries a confidence from
+Phase 4. An unflagged anonymous label means speaker resolution was skipped.
+
+**V4 — Every quote grounded VERBATIM in the transcript.**
+- **Deterministic check (transcript retained):** for each `>` blockquote,
+  verify its contiguous span appears in the transcript sidecar. Filler words
+  (`like`, `you know`, `I mean`) may be stripped from both sides; a genuine
+  quote still shares a long contiguous run of content words, a fabricated one
+  does not.
+  ```bash
+  gbrain get meetings/{date}-{slug}-transcript   # then locate each quote span
+  ```
+- **Prompt checklist (no transcript retained):** re-read the source notes and
+  attest that each quote traces to them word-for-word.
+- When a quote fails grounding, the fix is almost always to restore the spoken
+  phrasing (or pick a cleaner contiguous span) — NOT to delete the quote, and
+  never to keep the paraphrase inside the blockquote.
+
+**V5 — Fabricated-attendee sanity checks.**
+Recorders confidently invent names and emails for unlabeled speakers.
+- An attendee name that appears NOWHERE in the transcript or roster evidence
+  did not survive the evidence — treat it as a guess. Identify the real person
+  from in-call tells (companies, shared history) or remove the name.
+- An attendee email whose domain doesn't match the person's claimed org is a
+  fabrication suspect (recorders commonly grab the host's domain). Verify the
+  real address or clear the field.
+- When either fires: do NOT auto-rename or auto-fill. Read the transcript,
+  resolve by evidence, correct the page + frontmatter + backlinks, then re-run
+  this checklist.
+
+**The loop:** fix → re-check → fix, until every item passes. Only then report.
+
 ## Sensitive meetings
 
 If the title or transcript signals legal or deeply personal content
@@ -330,11 +399,13 @@ ask the user.
 
 ## Output Format
 
-Meeting page created. Report: "Meeting ingested: {N} attendees enriched, {N}
-entities updated, {N} action items captured." If the recording was split,
-report one line per resulting meeting page. If a claim was withheld or a
-contradiction flagged by Phase 6, list each flag — the user resolves them, not
-silence.
+Meeting page created AND the verification checklist passed. Report: "Meeting
+ingested: {N} attendees enriched, {N} entities updated, {N} action items
+captured. Verification: passed." If the recording was split, report one line
+per resulting meeting page. If a claim was withheld or a contradiction flagged
+by Phase 6, list each flag — the user resolves them, not silence. If any
+checklist item cannot be made to pass, report the meeting as NOT ingested and
+name the failing item.
 
 ## Anti-Patterns
 
@@ -356,3 +427,7 @@ silence.
 - Guessing a speaker identity instead of writing `[Room]`/`UNKNOWN` and flagging
 - Truncating a transcript, or paraphrasing inside a quote blockquote
 - Ingesting one page for a recording that contains two meetings
+- Reporting "ingested" before the verification checklist passes
+- Writing `- None.` under a required section to silence the checklist without
+  confirming against the transcript
+- Skipping the checklist because "it's just a quick logistics meeting"
