@@ -268,6 +268,11 @@
       "name": "measure-before-you-fix",
       "path": "measure-before-you-fix/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "data-loss-gate",
+      "path": "data-loss-gate/SKILL.md",
+      "description": ">"
     }
   ],
   "dependencies": {
