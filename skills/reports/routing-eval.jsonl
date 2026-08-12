@@ -1,0 +1,8 @@
+// Routing eval additions for skills/reports (Actionability Gate merge,
+// upstream report-quality-gate@fc834ee). Each intent includes at least one
+// trigger string as substring.
+{"intent":"Run a link quality check on this morning briefing before it goes out","expected_skill":"reports","ambiguous_with":["briefing"]}
+{"intent":"Validate report links in the meeting digest — no profile links standing in for posts","expected_skill":"reports"}
+{"intent":"Do a report quality pass: flag broken, dead, or indirect links in the research report","expected_skill":"reports"}
+{"intent":"Validate report links — make sure every brain-page link is committed and pushed so nothing 404s","expected_skill":"reports","ambiguous_with":["citation-fixer"]}
+{"intent":"Fix the broken citations on this brain page","expected_skill":"citation-fixer"}
