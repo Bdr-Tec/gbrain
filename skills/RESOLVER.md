@@ -94,6 +94,7 @@ wins; fix the row.
 | "timeout", "ETIMEDOUT", "stale", "freshness" | `skills/measure-before-you-fix/SKILL.md` |
 | "draft in voice", "write this as", "make this sound like", "ghostwrite" | `skills/draft-in-voice/SKILL.md` |
 | "context audit", "context diet", "system prompt audit", "prompt compression" | `skills/context-audit/SKILL.md` |
+| "skill autobench", "autobench", "write the eval from usage history", "synthesize an eval for this skill" | `skills/skill-autobench/SKILL.md` |
 
 ## Setup & migration
 

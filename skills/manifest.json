@@ -343,6 +343,11 @@
       "name": "conversation-archive",
       "path": "conversation-archive/SKILL.md",
       "description": ">"
+    },
+    {
+      "name": "skill-autobench",
+      "path": "skill-autobench/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {

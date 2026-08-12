@@ -1,0 +1,7 @@
+{"intent":"autobench the media-ingest skill","expected_skill":"skill-autobench"}
+{"intent":"write an eval for this skill from its real usage history","expected_skill":"skill-autobench"}
+{"intent":"synthesize an eval for the capture skill from how I've actually used it","expected_skill":"skill-autobench"}
+{"intent":"I keep correcting this skill's output — turn those corrections into a benchmark","expected_skill":"skill-autobench","ambiguous_with":["skill-optimizer"]}
+{"intent":"was that judging really 3 models or did the panel collapse to one provider","expected_skill":"skill-autobench"}
+{"intent":"make the enrich skill better against its existing benchmark","expected_skill":"skill-optimizer","ambiguous_with":["skill-autobench"]}
+{"intent":"run the unit tests before we ship","expected_skill":null}
