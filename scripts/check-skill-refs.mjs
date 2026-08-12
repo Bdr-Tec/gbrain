@@ -160,6 +160,14 @@ if (RUN_CLI_REFS) {
       const cliSrc = readFileSync('src/cli.ts', 'utf8');
       for (const m of cliSrc.matchAll(/(?:command === |case )'([a-z][a-z0-9-]*)'/g)) known.add(m[1]);
     } catch {}
+    // ops cliHints that --tools-json does not serialize: read them from source
+    try {
+      const opsSrc = readFileSync('src/core/operations.ts', 'utf8');
+      for (const m of opsSrc.matchAll(/cliHints:\s*\{\s*name:\s*'([a-z][a-z0-9-]*)'/g)) known.add(m[1]);
+      for (const m of opsSrc.matchAll(/aliases:\s*\[([^\]]*)\]/g)) {
+        for (const a of m[1].matchAll(/'([a-z][a-z0-9-]*)'/g)) known.add(a[1]);
+      }
+    } catch {}
     for (const file of files) {
       if (file.includes('/migrations/')) continue;
       const rel = relative('.', file);
