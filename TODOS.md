@@ -5214,3 +5214,69 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   (pre-existing on master; observed during the agent-bootstrap gate runs).
   Start: run the file under `--max-concurrency=4` alongside PGLite-heavy
   neighbors to reproduce; suspect tmp-dir or timing assumptions.
+
+## Giftable-import wave follow-ups (filed at build time)
+
+- [ ] **P1 — Wire citation edge types into relational retrieval.** `relational-intent.ts`
+  recognizes a hardcoded edge-type set that excludes `overrules`/`distinguishes`/
+  `relies-on` (the types citation-graph-ingest creates). Until they're walked by
+  natural-language relational recall, the skill's value is explicit `graph-query`
+  only. Add the types + an eval fixture proving a relational question traverses a
+  citation edge. Files: `src/core/search/relational-intent.ts`,
+  `src/core/search/relational-recall.ts`.
+- [ ] **P2 — Native operation-boundary confirm for destructive ops.** data-loss-gate
+  is routing prose; destructive paths (bulk forget, `delete_page` sweeps, source
+  removal, mounts remove) can bypass it via CLI/MCP/jobs. Add a native confirm
+  (TTY prompt / `--yes` flag / MCP scope) at the operation boundary.
+- [ ] **P2 — `gbrain ingest feed`: native feed adapter.** blog-ingest ships the
+  agent-procedure layer; the durable path is a deterministic RSS/Atom adapter
+  (discovery, pagination, canonical-URL dedup, 429 backoff) behind one command.
+- [ ] **P2 — Native AI-chat export importer.** conversation-archive converts
+  ChatGPT/Claude/Perplexity exports via agent procedure; a native importer
+  (export JSON → conversations/ pages) makes it deterministic. Pairs with the
+  existing conversation-parser surface.
+- [ ] **P2 — Entity-guard as a native op.** phonetic-name-guard's own changelog
+  proves prose-only failed: ASR-variant entity collisions need a native check
+  (registry + alias table consulted at put/import time). The wave shipped the
+  registry-first discipline in brain-ingest-gate; this hardens it.
+- [ ] **P2 — Premiere-repo program ① distribution:** list gbrain on skills.sh +
+  Claude Code plugin marketplace + agentskills.io conformance; README cross-
+  harness matrix (CI-verified). First fast-follow PR after this wave.
+- [ ] **P2 — Premiere-repo program ② receipts:** public BrainBench receipts page
+  pairing accuracy with token cost per query, regenerated per release; "trust
+  layer" framing (data-loss-gate + brain-ingest-gate + correction-pipeline).
+- [ ] **P3 — Premiere-repo program ③ protocol moat:** Anthropic memory-tool
+  (`memory_20250818`) adapter backed by recall/remember; publish MEMORY_VERBS_v1
+  as an open spec with BrainBench as its conformance suite. Own cathedral.
+- [ ] **P3 — Premiere-repo program ④ badges:** per-skill conformance badges
+  (security-scan + eval-receipt + provenance hash) surfaced in manifest/README;
+  generalize the functional-area-resolver A/B harness into `evals/skills/`.
+- [ ] **P3 — RESOLVER two-layer compression as its own PR.** Deferred out of the
+  wave at eng review: requires arrow-form dispatcher entries, the A/B run at
+  >=95% (per the functional-area-resolver contract), resolver.test.ts updates,
+  and fixture backfill for fixture-less skills. RESOLVER.md is now past the 12KB
+  gate, so the skill's precondition is satisfied.
+- [ ] **P3 — extract-atoms quality-gate prompt patch.** Fold the donor pack's
+  truism filter / statistic-punchline test / entity-page routing test / named-
+  attribution rule into `src/core/cycle/extract-atoms.ts`'s EXTRACT_PROMPT,
+  eval-gated (the native prompt's only bar today is "not a generic platitude").
+- [ ] **P3 — cross-modal eval `--corpus` hub-and-spoke mode + judge-leniency
+  normalization.** Follow relative .md links from a hub page so multi-page brain
+  artifacts aren't falsely penalized; normalize per-judge leniency in
+  `src/core/cross-modal-eval/aggregate.ts` (mean+floor only today).
+- [ ] **P3 — Advisor collectors: freshness-monitor + context-audit token drift.**
+  Two new collectors: per-source staleness SLA (the donor freshness-monitor
+  kernel) and a deterministic loaded-context token-drift check feeding the
+  context-audit skill.
+- [ ] **P3 — idea-miner import (deferred at CEO review, fit 6).** Daily brain-
+  grounded "what could I build" mining feeding skill-creator; below the wave's
+  fit bar but a strong self-improvement story.
+- [ ] **P3 — public-repo-guard revisit.** Only egress leak-gate candidate; its
+  upstream scan script fails open (`SCAN_EXIT` captured after `|| true`). Fix
+  upstream first; template-ize the patterns file; mind the gstack cso boundary.
+- [ ] **P3 — `search --fm` + schema-pack fragment** from the social-json-store
+  audit disposition: frontmatter-ID/JSONB query kernel as a native search flag
+  + a schema-pack fragment, not a skill.
+- [ ] **P3 — back-catalog-check kernel.** Optional pre-publish own-corpus
+  consistency pass folding into fact-check (per-claim own-record search);
+  `find_contradictions` + idea-lineage cover the rest today.
