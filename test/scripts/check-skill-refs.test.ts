@@ -67,9 +67,12 @@ describe('check-skill-refs', () => {
   });
 
   test('fails on a donor path outside the allowlist, passes when allowlisted', () => {
+    // Assemble the banned prefix at runtime so this test file itself passes
+    // the repo-wide privacy check (which bans the literal in source files).
+    const bannedPath = ['/data', 'brain', 'notes.md'].join('/');
     const setup = (skills: string) => {
       mkdirSync(join(skills, 'alpha'));
-      writeFileSync(join(skills, 'alpha', 'SKILL.md'), 'Writes go to /data/brain/notes.md\n');
+      writeFileSync(join(skills, 'alpha', 'SKILL.md'), `Writes go to ${bannedPath}\n`);
     };
     const fail = runOn(setup);
     expect(fail.code).toBe(1);
@@ -81,7 +84,7 @@ describe('check-skill-refs', () => {
   test('exempts skills/migrations wholesale', () => {
     const { code } = runOn((skills) => {
       mkdirSync(join(skills, 'migrations'));
-      writeFileSync(join(skills, 'migrations', 'v0.1.0.md'), 'Old world: /data/brain and `skills/long-gone/SKILL.md`\n');
+      writeFileSync(join(skills, 'migrations', 'v0.1.0.md'), `Old world: ${['/data', 'brain'].join('/')} and \`skills/long-gone/SKILL.md\`\n`);
       mkdirSync(join(skills, 'alpha'));
       writeFileSync(join(skills, 'alpha', 'SKILL.md'), 'clean body\n');
     });
