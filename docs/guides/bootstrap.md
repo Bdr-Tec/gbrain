@@ -118,7 +118,7 @@ you'd apply to any journal: write what you'd be comfortable persisting.
 | API keys | everything (keyless mode) | semantic search, auto-extraction |
 | GitHub / `gh` | full local agent | off-machine durability (repo re-runnable later) |
 | Hooks (Claude Code) | pull protocol via AGENTS.md gates | automatic per-turn context + session-end persistence |
-| Codex (no hook system) | pull protocol + MCP tools | per-turn push (stated plainly; not oversold) |
+| Codex (no hook system, no MCP scope flag) | pull protocol + MCP tools | per-turn push (stated plainly; not oversold) + project-confined MCP reach (`codex mcp add` registrations are always user-global) |
 | Second simultaneous session | first session unaffected | second session's brain tools fail politely (one live serve per brain — v1 contract) |
 
 ## Multi-device
