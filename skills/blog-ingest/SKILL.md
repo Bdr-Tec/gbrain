@@ -52,8 +52,8 @@ backlinks, concept linking) is handed to the `brain-ingest-gate` skill, which
 is the conventional entry point for every article this skill writes. A raw
 dump of article text — even with clean frontmatter — is not "ingested."
 
-A native `gbrain ingest feed` durable adapter (feed state, scheduled re-walks)
-is the filed follow-up in TODOS; until it ships, this skill is the procedure.
+A native feed-ingestion adapter (feed state, scheduled re-walks) is the filed
+follow-up in TODOS; until it ships, this skill is the procedure.
 
 ## Dedup
 
