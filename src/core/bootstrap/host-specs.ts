@@ -89,12 +89,18 @@ export const TARGETS: Record<string, HostSpecTarget> = {
 /** Settings file the hook writer targets, relative to the workspace root. */
 export const CLAUDE_SETTINGS_FILE_RELPATH = join('.claude', 'settings.local.json');
 
-/** Hook events bootstrap wires (plan D5 + hook events table). */
+/** Hook events bootstrap wires (plan D5 + hook events table).
+ * v0.46 ambient recall adds PreCompact: it BANKS the window's standing
+ * entities into session_context_state so the post-compaction SessionStart
+ * (source=compact — Claude Code's actual rehydration re-entry point) can
+ * serve a warm context pack. PreCompact stdout is NOT context-injected by
+ * the harness; the banking write is the point. */
 export const CLAUDE_HOOK_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
   'Stop',
   'SessionEnd',
+  'PreCompact',
 ] as const;
 export type ClaudeHookEvent = (typeof CLAUDE_HOOK_EVENTS)[number];
 
@@ -104,6 +110,7 @@ export const CLAUDE_HOOK_SUBCOMMAND: Record<ClaudeHookEvent, string> = {
   UserPromptSubmit: 'user-prompt',
   Stop: 'stop',
   SessionEnd: 'session-end',
+  PreCompact: 'compact',
 };
 
 /**
@@ -124,6 +131,7 @@ export const CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS: Record<ClaudeHookEvent, number> =
   UserPromptSubmit: 3,
   Stop: 10,
   SessionEnd: 60,
+  PreCompact: 5,
 };
 
 /**

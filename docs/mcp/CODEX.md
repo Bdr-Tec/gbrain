@@ -72,6 +72,13 @@ codex mcp remove gbrain
 - The token is a long-lived, full-access secret. Keep `GBRAIN_REMOTE_TOKEN` out of
   version control and prefer a scoped token if your host supports one.
 - Local stdio also works if you run the brain on the same machine:
-  `codex mcp add gbrain -- gbrain serve --surface verbs` — the five-verb memory
+  `codex mcp add gbrain -- gbrain serve --surface verbs` — the memory-verb
   protocol ([MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)); drop the flag
   for the full operation catalog.
+- **Ambient recall (Codex has no lifecycle hooks — use the pull path).** At the
+  start of a topical thread and after a compaction, call
+  `context_pack(entities, budget_tokens)` to warm the standing entities; on a
+  periodic wake call `delta(session_id, budget_tokens)` for "what changed since
+  my last wake" (deduped per session). Both are zero-LLM, sub-second, world-only
+  by default, and on `--surface verbs`. See
+  [ambient recall](../guides/ambient-recall.md) for the placement frontier.

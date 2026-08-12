@@ -106,6 +106,14 @@ export interface ParsedTranscript {
   parsedLines: number;
   /** Non-blank lines that failed JSON.parse (includes a tail-truncated partial first line). */
   skippedLines: number;
+  /**
+   * v0.46 ambient recall — {type:'system', subtype:'compact_boundary'} entries
+   * seen in the read range. Still excluded from `turns` (they carry no
+   * conversation text); SURFACED here so boundary consumers (post-compaction
+   * rehydration, telemetry, future transcript watchers) can detect that a
+   * compaction happened without re-scanning the file.
+   */
+  compactBoundaries: number;
 }
 
 /**
@@ -144,6 +152,7 @@ export function parseTranscript(
   const turns: WindowTurn[] = [];
   let parsedLines = 0;
   let skippedLines = 0;
+  let compactBoundaries = 0;
   for (const line of lines) {
     const t = line.trim();
     if (!t) continue;
@@ -157,10 +166,18 @@ export function parseTranscript(
       continue;
     }
     parsedLines++;
+    if (isCompactBoundary(entry)) compactBoundaries++;
     const turn = entryToTurn(entry);
     if (turn) turns.push(turn);
   }
-  return { turns, bytesRead, parsedLines, skippedLines };
+  return { turns, bytesRead, parsedLines, skippedLines, compactBoundaries };
+}
+
+/** {type:'system', subtype:'compact_boundary'} — Claude Code's on-disk compaction marker. */
+function isCompactBoundary(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null) return false;
+  const e = entry as Record<string, unknown>;
+  return e.type === 'system' && e.subtype === 'compact_boundary';
 }
 
 /** One transcript line → a WindowTurn, or null for non-turn/skipped shapes. */
