@@ -78,6 +78,7 @@ wins; fix the row.
 | Webhook setup, external event processing | `skills/webhook-transforms/SKILL.md` |
 | "Spawn agent", "background task", "parallel tasks", "steer agent", "pause/resume agent", "gbrain jobs submit", "submit a gbrain job", "submit a shell job", "shell job" | `skills/minion-orchestrator/SKILL.md` |
 | "present options", "ask before proceeding", "choice gate", "user decision" | `skills/ask-user/SKILL.md` |
+| "timeout", "ETIMEDOUT", "stale", "freshness" | `skills/measure-before-you-fix/SKILL.md` |
 
 ## Setup & migration
 
