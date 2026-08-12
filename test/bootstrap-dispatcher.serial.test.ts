@@ -14,6 +14,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -687,11 +688,15 @@ describe('uninstall --delete-brain ordering + engine-free stats', () => {
     }
   });
 
-  test('facts-export offer prints BEFORE deletion output; brain deleted via isolated --home', async () => {
+  test('facts-export offer prints BEFORE deletion output; brain deleted via isolated --home; durability wiring torn down [B6]', async () => {
     // Isolated-style home INSIDE the workspace (the S3#5 shape --home requires
     // while GBRAIN_HOME is set): config.json + brain.pglite signature + receipt.
     const ws2 = mkdtempSync(join(tmpdir(), 'gb-dispatch-ws2-'));
     const isoHome = join(ws2, '.gbrain');
+    // HOME redirected for the plist/crontab teardown probes — the real
+    // machine's LaunchAgents must never be touched by a test.
+    const savedHome = process.env.HOME;
+    process.env.HOME = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
     try {
       mkdirSync(join(isoHome, 'brain.pglite'), { recursive: true });
       mkdirSync(join(isoHome, 'bootstrap'), { recursive: true });
@@ -711,6 +716,16 @@ describe('uninstall --delete-brain ordering + engine-free stats', () => {
       writeFileSync(receiptPath(isoHome), JSON.stringify(receipt), 'utf8');
       mkdirSync(join(ws2, 'brain'), { recursive: true });
       writeFileSync(join(ws2, 'brain', 'page.md'), '# page', 'utf8');
+      // Durability wiring fixture [B6]: a gbrain post-commit hook that
+      // uninstall previously left behind.
+      execFileSync('git', ['init', '-q'], { cwd: ws2 });
+      const hookPath = join(ws2, '.git', 'hooks', 'post-commit');
+      mkdirSync(join(ws2, '.git', 'hooks'), { recursive: true });
+      writeFileSync(
+        hookPath,
+        '#!/bin/bash\n# gbrain brain-durability post-commit hook (v0.42.44+)\nexit 0\n',
+        { mode: 0o755 },
+      );
 
       const r = await capture(() =>
         runBootstrap(['uninstall', '--workspace', ws2, '--delete-brain', '--yes', '--home', isoHome]),
@@ -723,8 +738,30 @@ describe('uninstall --delete-brain ordering + engine-free stats', () => {
       // The offer is printed exactly once (not repeated from the module steps).
       expect(r.out.indexOf('offered: export facts', offerIdx + 1)).toBe(-1);
       expect(existsSync(join(isoHome, 'brain.pglite'))).toBe(false);
+      // [B6] the untracked post-commit hook is gone and the teardown said so.
+      expect(existsSync(hookPath)).toBe(false);
+      expect(r.out).toContain('durability wiring removed');
     } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
       rmSync(ws2, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe('cloud-setup-script emitter [D16]', () => {
+  test('prints the paste-ready script: npm-based (never bun fetching, never the npm squatter), launcher + attach flow', async () => {
+    const r = await capture(() => runBootstrap(['cloud-setup-script']));
+    expect(r.result).toBe(0);
+    const s = r.out;
+    // npm transport (bun fetching is proxy-incompatible in cloud sandboxes)…
+    expect(s).toContain('npm install -g bun');
+    expect(s).toContain('github.com/garrytan/gbrain');
+    // …but NEVER the unrelated npm registry package.
+    expect(s).not.toMatch(/npm install -g gbrain(\s|$)/m);
+    // PATH-resolved launcher + in-session follow-ups.
+    expect(s).toContain('/usr/local/bin/gbrain');
+    expect(s).toContain('bootstrap attach');
+    expect(s).toContain('cloud-setup-script');
+  });
 });

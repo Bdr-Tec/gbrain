@@ -18,13 +18,13 @@ To take advantage of v0.45.10.0: existing installs can run `gbrain skillpack sca
 ### Changed
 - README's Codex and Claude Code paths spell out the same two follow-ups after the click moment: ownership (markdown in a repo you own) and cold-start as the first skill, with ClawVisor named as the credential path and offline archives as the no-gateway alternative.
 
-## [0.45.9.0] - 2026-08-12
+**Also in this release — the first-five-minutes DX wave** (re-versioned from an unpublished 0.45.9.0 after the release queue moved):
 
 **The first five minutes stop making you think.** We built a real-terminal harness that drives the actual install the way a new user does — every picker, prompt, silence window, and line of copy — and then fixed what it surfaced. Keyless `gbrain init` used to dead-end at an error before it created anything; now it just works, keyless, and says so. A fresh brain used to scroll ~240 lines of internal migration names; now it prints one line. The success screen used to bury the one thing to do next under eight competing calls to action; now the copy-paste memory demo is the last, obvious thing on screen. And the "here's the magic" moment in the README now points at the trick that only a brain can do — tell it something, restart, ask for it back — instead of a question your identity files answer for free.
 
 Under the hood: the upgrade nudge now compares the version you're actually running (a stale or foreign cache can't tell you to upgrade to something you already have), a broken settings file makes the installer stop and tell you rather than quietly replace it, and `gbrain init --supabase` fails loudly in a script instead of pretending it worked. Every fix landed with a test, and a two-model adversarial review pass (Claude + Codex) caught a cluster of follow-on issues in the fixes themselves — a keyless upgrade command that pointed at a rejected path, a compiled-binary detection that broke for renamed binaries — which are fixed here too.
 
-To take advantage of v0.45.9.0: nothing to do — `gbrain self-upgrade` (or your next `gbrain` invocation's upgrade nudge) brings you current, and the improvements are all in the install/first-run path a new brain hits automatically.
+To take advantage of v0.45.10.0: nothing to do — `gbrain self-upgrade` (or your next `gbrain` invocation's upgrade nudge) brings you current, and the improvements are all in the install/first-run path a new brain hits automatically.
 
 ### Added
 - **A real-PTY DX exploration harness** (`test/helpers/tty-harness.ts` + `scripts/dx-explore.ts`). It spawns any CLI — gbrain, `claude`, `codex` — under a true pseudo-terminal, timestamps every output burst, and turns silence windows into a measurable stall report, so "the user stared at a frozen screen for nine seconds" is an artifact, not a hunch. A `drive` mode lets an agent steer a live TUI across separate tool calls. Developer instrument only; transcripts are gitignored and nothing in the shipped product depends on it.
@@ -43,6 +43,32 @@ To take advantage of v0.45.9.0: nothing to do — `gbrain self-upgrade` (or your
 - **`gbrain bootstrap hooks` with a missing harness CLI** now still installs per-turn hooks and reports the phase as partial (so a resuming agent re-runs it once the CLI is on PATH) instead of leaving a false "wire complete".
 - **`gbrain bootstrap interview --set/--skip` after a confirmation** warns that it voided the read-back instead of failing silently later at render.
 - Review-pass self-fixes: the keyless upgrade hint now names the re-init command that actually works (not the schema-sizing field `config set` rejects); compiled-binary detection for the detached update refresh no longer breaks for a renamed/official-named binary; the DX harness scrubs copied credentials even on interrupt and reaps the child's whole process tree.
+
+## [0.45.9.0] - 2026-08-12
+
+**Your agent's memory keeps saving itself — even in a cloud sandbox, even on `/exit`, and it tells you the moment it can't.** The paste-in personal-agent install now works first-class in Claude Code's cloud environment, not just on a laptop. The persistence lane got three fixes that matter whether you're local or in the cloud: the workspace push now verifies repo privacy through a portable ladder that keeps working when the sandbox blocks the GitHub API, it runs after every turn (not only at session end, which the harness never fires on `/exit`), and a failed push surfaces on your next turn instead of failing in silence. Setup adapts to where it runs — no more scheduled-job errors on hosts without a scheduler, and no half-created repos in an environment that can't push them.
+
+To take advantage of v0.45.9.0: upgrade and re-run `gbrain bootstrap verify` on each machine — it re-attests the install and now reports the execution environment and any push-health or hygiene issue with the exact one-line fix. Existing installs pick up the per-turn push and the new verification automatically on the binary update; no re-render needed. If you run in a cloud sandbox, `gbrain bootstrap cloud-setup-script` prints the environment setup recipe, and `gbrain bootstrap status --json` now tells you which environment you're in.
+
+### Added
+- **Execution-environment detection** — `local`, `cloud-sandbox`, or `ephemeral-container`. Bootstrap, the doctor, and the runbook branch on it so each environment gets honest behavior and honest messages. `gbrain bootstrap status --json` and `gbrain bootstrap verify` both report it.
+- **Per-turn workspace persistence.** A debounced, detached push runs after each assistant turn (default every 5 minutes locally, every turn in a reclaimed-VM cloud sandbox), closing the gap where a session that ends on `/exit` — which never fires the session-end hook — could strand committed work. Off-ramp: `GBRAIN_STOP_PUSH=0`; cadence: `GBRAIN_STOP_PUSH_DEBOUNCE_MIN` or `gbrain config set hooks.stop_push_debounce_min <n>`.
+- **Same-session push-failure notice.** When a background push is refused or fails, the next turn surfaces it both to the agent and to you directly (not buried where only the model sees it), re-announced at most every 30 minutes until it clears. `gbrain doctor` and `gbrain bootstrap status` name the failing workspace and the fix.
+- **`gbrain bootstrap cloud-setup-script`** — prints the ready-to-paste cloud environment setup script that installs the gbrain binary into the environment's cached filesystem so it survives across sessions.
+- **`bootstrap_durability_job` doctor check** — presence *and* liveness of the optional background-persistence job, so a job that exists on disk but no longer runs is reported instead of certified healthy.
+
+### Changed
+- **Repo-privacy verification is now a portable ladder** (`src/core/repo-visibility.ts`), replacing three separate probes with one: it checks via the GitHub REST API first, then falls back to pure git protocol so verification keeps working where a sandbox proxy blocks the API. It fails closed in both directions — an origin that can't be proven private is refused, and a proven-public origin is always refused. Fresh private verdicts are cached briefly to keep the per-turn push cheap. Escape hatch for self-hosted git you trust (each use warns): `--allow-unverified-remote`, `GBRAIN_ALLOW_UNVERIFIED_REMOTE=1`, or `gbrain config set push.allow_unverified_remote true`; the escape hatch only relaxes an *unverifiable* verdict, never a proven-public one.
+- **Cloud sandboxes get a committed hook carrier.** Because a cloud session starts from a fresh clone and never sees the machine-local settings file, cloud installs write hooks into the repo-committed `.claude/settings.json` with a PATH-resolved, fail-open command; local installs keep the gitignored settings file, and the writers guarantee one event never fires from both.
+- **Background-persistence copy tells the truth.** The optional job is a git post-commit auto-push plus a 30-minute freshness pull; the interview, docs, and templates now describe exactly that. On a host without a scheduler the pull is skipped with an honest note rather than a failed-install warning.
+- The installing-agent runbook gains a hard rule against fabricating tooling (no hand-rolled `gh` shims), a cloud-sandbox section, and the honest degradation matrix for a proxied environment.
+
+### Fixed
+- `gbrain bootstrap uninstall` now tears down the background-persistence wiring it installed (scheduled job, the untracked auto-push hook, credential wiring) instead of leaving it behind; the committed helper and agent-rules stay, since those are your repo's content.
+- Machine-specific harness wiring (`.mcp.json`, hook-settings backups) is gitignored so it can't be committed into the private brain repo; `gbrain bootstrap verify` warns and gives the one-line fix for installs that already committed it.
+- Repo creation is refused inside a cloud sandbox with the flow that actually works (create the repo elsewhere, open the session on it, `gbrain bootstrap attach`) instead of leaving a half-created, unpushable repo.
+- Push-status is tracked per workspace, so with more than one brain workspace on a machine, one workspace's success can no longer mask another's failed pushes.
+- Hardening pass (both an in-house and a cross-model adversarial review): the privacy ladder never treats an ambiguous authentication challenge as proof a repo is private, the per-turn retry can't turn into an every-turn network storm, remote-supplied text is sanitized before it reaches any agent- or user-visible surface, and stale state from a deleted workspace no longer re-fires notices forever.
 
 ## [0.45.8.0] - 2026-08-12
 
@@ -16915,8 +16941,6 @@ If anything looks off, file at https://github.com/garrytan/gbrain/issues
 with `gbrain doctor` output.
 
 
-
-
 ## [0.28.11] - 2026-05-07
 
 **Mix providers: OpenAI for text, Voyage for images. One brain, two embedding pipelines.**
@@ -18882,9 +18906,6 @@ React admin dashboard baked into the binary. Seven screens designed through Stev
 - `test/oauth.test.ts` ... 34 test cases covering provider: register, getClient, client_credentials exchange, auth_code flow with PKCE, refresh rotation, verifyAccessToken (OAuth + legacy fallback), revokeToken, sweepExpiredTokens, scope annotations on all 30 operations. Plus the post-/cso security-fix regressions: 10-concurrent auth code exchange (only 1 wins), 10-concurrent refresh rotation (only 1 wins), redirect_uri HTTPS-or-loopback gate, and pgArray comma-element round-trip (1 element in → 1 element out).
 
 
-
-
-
 ## [0.25.1] - 2026-05-01
 
 ## **Your brain can now read books with you. Nine new skills land at once.**
@@ -20132,7 +20153,6 @@ Then point Claude Desktop, claude.ai/code, or any MCP client at `http://your-tun
 6. **If `gbrain serve --http` exits with "Postgres engine required":** PGLite is local-only by design. Either keep using stdio (`gbrain serve`) for local agents, or migrate to Postgres (`gbrain migrate --to supabase`).
 
 If anything breaks: `gbrain doctor`, `~/.gbrain/upgrade-errors.jsonl` (if present), and please file an issue at https://github.com/garrytan/gbrain/issues with both.
-
 
 
 ## [0.22.6.1] - 2026-04-26

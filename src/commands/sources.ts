@@ -1556,10 +1556,18 @@ Subcommands:
                                     per finding via .gbrain-scan-allow) and on
                                     tracked deny-list files (*.pglite, .env*,
                                     *.pem, *.key, .gbrain/**). Refuses remotes not
-                                    verifiably private via gh; single-flight (a
-                                    concurrent push exits 0 as "skipped"); pushes
-                                    even on a clean tree. Writes
-                                    ~/.gbrain/bootstrap/push-status.json.
+                                    verifiably private — verified via REST, falling
+                                    back to pure git protocol where gh is blocked
+                                    (cloud proxies); private verdicts cached 1h.
+                                    Unverified-remote overrides (self-hosted git
+                                    you trust; every use warns loudly): the flag
+                                    above, GBRAIN_ALLOW_UNVERIFIED_REMOTE=1, or
+                                    "gbrain config set push.allow_unverified_remote
+                                    true" (file-plane — reaches detached hook
+                                    children). Single-flight (a concurrent push
+                                    exits 0 as "skipped"); pushes even on a clean
+                                    tree. Writes per-root status under
+                                    ~/.gbrain/bootstrap/.
   unharden <id>                     Remove durability cron/hook/credential wiring.
 
 Source id: [a-z0-9-]{1,32}. Immutable citation key.

@@ -35,12 +35,13 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { operations, type Operation, type OperationContext } from '../operations.ts';
 import { loadConfigFileOnly, type GBrainConfig } from '../config.ts';
+import { detectExecutionEnvironment } from '../execution-env.ts';
 import { resolveGbrainHome } from '../gbrain-home.ts';
 import { realpathOrResolve } from '../path-confine.ts';
 import { runMaintenanceSweep } from '../sweep.ts';
 import { detectCapabilities, renderCapabilityReport, type CapabilityReport } from '../capability.ts';
 import { loadWorkspaceAllowlist, matchesGlob, scanFiles, type SecretFinding } from '../secret-scan.ts';
-import { PUSH_DENY_GLOBS, verifyRemotePrivacy, pushStatusPath } from '../workspace-push.ts';
+import { PUSH_DENY_GLOBS, verifyRemotePrivacy, readPushStatuses, summarizePushStatuses } from '../workspace-push.ts';
 import { FACTS_DEFAULT_VISIBILITY_KEY } from '../facts/visibility.ts';
 import { byteFloors } from './render.ts';
 import { BOOTSTRAP_TEMPLATES, loadQuestionBank } from './assets.ts';
@@ -324,19 +325,105 @@ function checkDenyGlobs(ws: string): VerifyCheck {
   }
 }
 
-function checkRepoPrivacy(ws: string): VerifyCheck {
+/** Self-repair channel for existing installs [B8]: a git-TRACKED .mcp.json
+ * carries an absolute machine-specific binary path into the private repo.
+ * Fresh renders gitignore it; this warn heals pre-fix installs. Never gates. */
+function checkMcpJsonHygiene(ws: string): VerifyCheck {
+  const id = 'mcp_json_hygiene';
+  try {
+    if (!existsSync(join(ws, '.mcp.json'))) return { id, ok: true, detail: 'no .mcp.json in the workspace' };
+    try {
+      execFileSync('git', ['-C', ws, 'ls-files', '--error-unmatch', '.mcp.json'], {
+        stdio: 'ignore', timeout: 5_000,
+      });
+    } catch {
+      return { id, ok: true, detail: '.mcp.json present but untracked (gitignored) — correct' };
+    }
+    return {
+      id,
+      ok: true, // warn-only: informational, never gating
+      detail:
+        'WARN: machine-specific .mcp.json is COMMITTED to the repo — run `git rm --cached .mcp.json` ' +
+        '(bootstrap now gitignores it; it regenerates via `claude mcp add` / `bootstrap hooks --repair`)',
+    };
+  } catch (e) {
+    return { id, ok: true, detail: `mcp.json hygiene probe failed (${(e as Error).message})` };
+  }
+}
+
+/** [D12 upgrade-path guard]: an event carried by BOTH hook files double-fires
+ * every turn (possible when the committed carrier arrives via git pull onto a
+ * machine whose local file predates the dedupe-aware writers). Warn-only. */
+function checkHookCarrierOverlap(ws: string): VerifyCheck {
+  const id = 'hook_carrier_overlap';
+  try {
+    const events = (['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'] as const).filter((event) => {
+      const has = (rel: string): boolean => {
+        try {
+          const parsed = JSON.parse(readFileSync(join(ws, rel), 'utf8')) as { hooks?: Record<string, unknown> };
+          const groups = parsed?.hooks?.[event];
+          return Array.isArray(groups) && JSON.stringify(groups).includes('"_gbrain"');
+        } catch {
+          return false;
+        }
+      };
+      return has(join('.claude', 'settings.json')) && has(join('.claude', 'settings.local.json'));
+    });
+    if (events.length === 0) return { id, ok: true, detail: 'no event fires from both hook carriers' };
+    return {
+      id,
+      ok: true, // warn-only self-repair channel
+      detail: `WARN: ${events.join(', ')} fire from BOTH .claude/settings.json and settings.local.json (double-fire) — run \`gbrain bootstrap hooks --repair\` to dedupe`,
+    };
+  } catch (e) {
+    return { id, ok: true, detail: `carrier overlap probe failed (${(e as Error).message})` };
+  }
+}
+
+async function checkRepoPrivacy(ws: string): Promise<VerifyCheck> {
   const id = 'repo_privacy';
   try {
     const origin = gitOriginUrl(ws);
     if (!origin) {
       return { id, ok: true, detail: 'local-only (no origin remote) — run `gbrain bootstrap repo` any time to add the private body' };
     }
-    const verdict = verifyRemotePrivacy(ws);
+    const verdict = await verifyRemotePrivacy(ws);
     if (verdict.verdict === 'private') return { id, ok: true, detail: `origin verified private (${origin})` };
     if (verdict.verdict === 'not_private') return { id, ok: false, detail: `origin is NOT private: ${verdict.detail} — make it private before pushing workspace contents` };
     return { id, ok: false, detail: `origin visibility unverifiable (${verdict.detail}) — refusing to bless an unverified remote [G8]; re-run once gh works` };
   } catch (e) {
     return { id, ok: false, detail: `repo privacy check failed: ${(e as Error).message}` };
+  }
+}
+
+/** Informational, NEVER gating [D-cloud]: name the detected execution
+ * environment and its expected degradations so an installing agent (and the
+ * pasted verify report) states them as facts instead of rediscovering them
+ * as mystery failures. */
+function checkExecutionEnvironment(): VerifyCheck {
+  const id = 'execution_env';
+  try {
+    const env = detectExecutionEnvironment();
+    if (env === 'cloud-sandbox') {
+      return {
+        id,
+        ok: true,
+        detail:
+          'cloud sandbox detected — expected degradations: no crontab (scheduled pull skipped; per-turn/session-end pushes cover it); ' +
+          'GitHub GraphQL always blocked and REST scoped to session-attached repos (privacy verification falls back to git protocol); ' +
+          'pushes restricted to the session\'s working branch; only repo-committed files carry into the next session',
+      };
+    }
+    if (env === 'ephemeral-container') {
+      return {
+        id,
+        ok: true,
+        detail: 'container detected — no reliable scheduler (scheduled pull skipped); event-driven pushes cover persistence',
+      };
+    }
+    return { id, ok: true, detail: 'local machine — full persistence surface available' };
+  } catch (e) {
+    return { id, ok: true, detail: `environment detection failed (${(e as Error).message}) — treated as local` };
   }
 }
 
@@ -699,11 +786,19 @@ async function checkHooksSmoke(engine: BrainEngine, ws: string, sourceId: string
 function checkPushProbe(ws: string): VerifyCheck {
   const id = 'push_probe';
   try {
-    const p = pushStatusPath();
-    if (existsSync(p)) {
-      const s = JSON.parse(readFileSync(p, 'utf8')) as { ts?: string; ok?: boolean; reason?: string };
-      if (s.ok === true) return { id, ok: true, detail: `last workspace push succeeded (${s.ts ?? 'unknown time'})` };
-      return { id, ok: true, warn: true, detail: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'} — run \`gbrain sources push --path ${ws}\`` };
+    // Read through the shared per-root reader [D8/D13] — a v0.45.8+ push
+    // writes push-status-<roothash>.json, not the legacy single file, so the
+    // old direct read reported "no push recorded" on every fresh install.
+    const entries = readPushStatuses();
+    if (entries.length > 0) {
+      const { failing } = summarizePushStatuses(entries);
+      if (failing.length > 0) {
+        const s = failing[0]!;
+        const rest = failing.length > 1 ? ` [+${failing.length - 1} more]` : '';
+        return { id, ok: true, warn: true, detail: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'}${rest} — run \`gbrain sources push --path ${s.repoRoot ?? ws}\`` };
+      }
+      const ok = entries.find((e) => e.ok === true);
+      return { id, ok: true, detail: `last workspace push succeeded (${ok?.ts ?? 'unknown time'})` };
     }
     const origin = gitOriginUrl(ws);
     if (origin) return { id, ok: true, warn: true, detail: 'origin exists but no push recorded yet — run `gbrain sources push` once to prove the persistence path' };
@@ -820,7 +915,10 @@ export async function verifyWorkspace(
   checks.push(checkByteFloors(ws));
   checks.push(checkSecretScan(ws));
   checks.push(checkDenyGlobs(ws));
-  checks.push(checkRepoPrivacy(ws));
+  checks.push(await checkRepoPrivacy(ws));
+  checks.push(checkExecutionEnvironment());
+  checks.push(checkMcpJsonHygiene(ws));
+  checks.push(checkHookCarrierOverlap(ws));
 
   // Round-trip family only makes sense on a reachable engine.
   if (engineHealthy) {

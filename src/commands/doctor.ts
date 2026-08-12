@@ -8410,9 +8410,12 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
     return [];
   }
   const receipt = readReceipt(home);
-  const pushStatusFile = join(home, 'bootstrap', 'push-status.json');
+  // One reader for every push-status surface [D8]; per-root files [D13].
+  const { readPushStatuses, pushStatusFilesExist } = await import('../core/workspace-push.ts');
+  const pushStatuses = readPushStatuses();
+  const statusFilesOnDisk = pushStatusFilesExist();
   const heartbeatFile = join(home, 'integrations', 'hooks', 'heartbeat.jsonl');
-  const hasBootstrapState = receipt !== null || existsSync(pushStatusFile) || existsSync(heartbeatFile);
+  const hasBootstrapState = receipt !== null || statusFilesOnDisk || existsSync(heartbeatFile);
   if (!hasBootstrapState) return [];
 
   const ws = receipt?.workspace_dir ?? null;
@@ -8453,42 +8456,123 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   }
 
   // 2. Push staleness [B4]: fail when the last successful push is >48h old
-  // AND the workspace tree is dirty (recent work provably unpushed).
+  // AND the workspace tree is dirty (recent work provably unpushed). Per-root
+  // status files [D13]: the WORST entry decides, so one workspace's success
+  // can never mask another's failure.
   try {
-    if (existsSync(pushStatusFile)) {
+    if (pushStatuses.length > 0) {
       const { PUSH_STALE_MS } = await import('./hook.ts'); // hook.ts owns the threshold (single source)
-      const s = JSON.parse(readFileSync(pushStatusFile, 'utf8')) as { ts?: string; ok?: boolean; reason?: string };
-      const t = s.ts ? Date.parse(s.ts) : NaN;
-      const stale = Number.isFinite(t) && Date.now() - t > PUSH_STALE_MS;
-      let dirty = false;
-      if (ws) {
-        try {
-          dirty = execFileSync('git', ['-C', ws, 'status', '--porcelain'], {
-            stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
-          }).toString().trim() !== '';
-        } catch { dirty = false; }
-      }
-      if (s.ok === false) {
+      const failing = pushStatuses.filter((s) => s.ok === false);
+      if (failing.length > 0) {
+        const s = failing[0]!;
+        const target = s.repoRoot ?? ws ?? undefined;
+        const rest = failing.length > 1 ? ` [+${failing.length - 1} more workspace(s)]` : '';
         checks.push({
           name: 'bootstrap_push_health',
           status: 'warn',
-          message: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'} — run \`gbrain sources push${ws ? ` --path ${ws}` : ''}\``,
+          message: `last workspace push FAILED${target ? ` for ${target}` : ''} (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'}${rest} — run \`gbrain sources push${target ? ` --path ${target}` : ''}\``,
         });
-      } else if (stale && dirty) {
-        checks.push({
-          name: 'bootstrap_push_health',
-          status: 'fail',
-          message: `last successful push ${s.ts} (>48h) with a DIRTY workspace tree — recent agent memory is unpushed [B4]. Run \`gbrain sources push --path ${ws}\`.`,
-        });
-      } else if (stale) {
-        checks.push({ name: 'bootstrap_push_health', status: 'warn', message: `last successful push ${s.ts} (>48h ago); tree clean — likely just idle` });
       } else {
-        checks.push({ name: 'bootstrap_push_health', status: 'ok', message: `last push ok (${s.ts ?? 'unknown'})` });
+        const stamps = pushStatuses.map((s) => Date.parse(s.ts ?? '')).filter((t) => Number.isFinite(t));
+        const stalest = stamps.length > 0 ? Math.min(...stamps) : NaN;
+        const staleIso = Number.isFinite(stalest) ? new Date(stalest).toISOString() : 'unknown';
+        const stale = Number.isFinite(stalest) && Date.now() - stalest > PUSH_STALE_MS;
+        let dirty = false;
+        if (ws) {
+          try {
+            dirty = execFileSync('git', ['-C', ws, 'status', '--porcelain'], {
+              stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+            }).toString().trim() !== '';
+          } catch { dirty = false; }
+        }
+        if (stale && dirty) {
+          checks.push({
+            name: 'bootstrap_push_health',
+            status: 'fail',
+            message: `last successful push ${staleIso} (>48h) with a DIRTY workspace tree — recent agent memory is unpushed [B4]. Run \`gbrain sources push --path ${ws}\`.`,
+          });
+        } else if (stale) {
+          checks.push({ name: 'bootstrap_push_health', status: 'warn', message: `last successful push ${staleIso} (>48h ago); tree clean — likely just idle` });
+        } else {
+          checks.push({ name: 'bootstrap_push_health', status: 'ok', message: `last push ok (${staleIso})` });
+        }
       }
+    } else if (statusFilesOnDisk) {
+      // Files exist but none parsed — the tolerant reader skips corrupt
+      // records; doctor must not let that read as "no news is good news".
+      checks.push({ name: 'bootstrap_push_health', status: 'warn', message: 'push status unreadable' });
     }
   } catch {
-    checks.push({ name: 'bootstrap_push_health', status: 'warn', message: 'push-status.json unreadable' });
+    checks.push({ name: 'bootstrap_push_health', status: 'warn', message: 'push status unreadable' });
   }
+
+  // 2b. Durability job [B7/D7]: presence + LIVENESS. A presence-only check
+  // certifies dead jobs as healthy (the autopilot-status failure mode), so
+  // this warns on plist-present-but-unloaded and stale pull logs. Only warns
+  // when the user actually consented to the job; containers/cloud sandboxes
+  // are expected to have none.
+  try {
+    if (ws !== null && receipt !== null) {
+      const { detectExecutionEnvironment } = await import('../core/execution-env.ts');
+      const envKind = detectExecutionEnvironment();
+      if (envKind !== 'local') {
+        // Answered BEFORE the subprocess probes — cloud/container doctor
+        // runs must not pay launchctl/crontab spawns for an answer that is
+        // discarded (no scheduler exists there by design).
+        checks.push({
+          name: 'bootstrap_durability_job',
+          status: 'ok',
+          message: `no scheduler in this environment (${envKind}) — expected; per-turn and session-end pushes cover persistence`,
+        });
+      } else {
+      const { durabilityJobStatus } = await import('../core/brain-repo-durability.ts');
+      const { readInterviewState } = await import('../core/bootstrap/interview.ts');
+      const sourceId = receipt.source_id ?? 'workspace';
+      const js = durabilityJobStatus(sourceId);
+      let consented = false;
+      try {
+        const iv = readInterviewState(ws);
+        consented = iv.ok && (iv.state.answers['PERSIST_CRON']?.value ?? '').toLowerCase() === 'yes';
+      } catch { consented = false; }
+      if (!consented) {
+        if (js.kind !== 'none') {
+          checks.push({ name: 'bootstrap_durability_job', status: 'ok', message: `${js.kind} pull job present (not required by consent — fine)` });
+        }
+        // no consent + no job → nothing to check; stay silent
+      } else if (js.kind === 'none') {
+        checks.push({
+          name: 'bootstrap_durability_job',
+          status: 'warn',
+          message: `background persistence was consented (PERSIST_CRON=yes) but no scheduled job exists — run \`gbrain sources harden ${sourceId}\``,
+        });
+      } else if (js.live === false) {
+        checks.push({
+          name: 'bootstrap_durability_job',
+          status: 'warn',
+          message: `${js.kind} job is on disk but NOT loaded — a dead job looks healthy to presence checks. Re-run \`gbrain sources harden ${sourceId}\` to reload it.`,
+        });
+      } else if (!js.wrapperPresent) {
+        checks.push({
+          name: 'bootstrap_durability_job',
+          status: 'warn',
+          message: `${js.kind} job exists but its wrapper script is missing — re-run \`gbrain sources harden ${sourceId}\``,
+        });
+      } else if (js.logFresh === false) {
+        checks.push({
+          name: 'bootstrap_durability_job',
+          status: 'warn',
+          message: `${js.kind} job present but the pull log is stale (no run within 2× the interval) — the job may be dead; re-run \`gbrain sources harden ${sourceId}\``,
+        });
+      } else if (js.kind === 'crontab' && js.logFresh === undefined) {
+        // The crontab LINE existing proves installation, not that the cron
+        // daemon runs it — with no pull log yet we can't claim liveness.
+        checks.push({ name: 'bootstrap_durability_job', status: 'ok', message: 'crontab pull job installed (no run logged yet — liveness confirmed once it first fires)' });
+      } else {
+        checks.push({ name: 'bootstrap_durability_job', status: 'ok', message: `${js.kind} pull job present and live` });
+      }
+      }
+    }
+  } catch { /* best-effort — durability probing never fails doctor */ }
 
   // 3. One-live-serve / lock collision note. A live serve is the healthy
   // shape (it provides hook IPC); the note names the v1 contract.

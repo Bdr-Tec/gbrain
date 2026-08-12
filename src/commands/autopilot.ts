@@ -19,6 +19,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, utimesSync, unlinkSync, chmodSync, statSync } from 'fs';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
+import { detectExecutionEnvironment } from '../core/execution-env.ts';
 import { join, dirname, isAbsolute } from 'path';
 import { execSync } from 'child_process';
 import type { BrainEngine } from '../core/engine.ts';
@@ -1444,13 +1445,10 @@ export type InstallTarget = 'macos' | 'linux-systemd' | 'ephemeral-container' | 
 export function detectInstallTarget(): InstallTarget {
   if (process.platform === 'darwin') return 'macos';
 
-  const ephemeral = !!(
-    process.env.RENDER
-    || process.env.RAILWAY_ENVIRONMENT
-    || process.env.FLY_APP_NAME
-    || existsSync('/.dockerenv')
-  );
-  if (ephemeral) return 'ephemeral-container';
+  // Shared detector (execution-env.ts): covers the original Render/Railway/
+  // Fly//.dockerenv signals AND the cloud-sandbox signature — both get the
+  // start-script treatment here (no reliable scheduler in either).
+  if (detectExecutionEnvironment() !== 'local') return 'ephemeral-container';
 
   if (existsSync('/run/systemd/system')) {
     try {

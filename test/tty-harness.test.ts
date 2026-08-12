@@ -215,15 +215,19 @@ describe.skipIf(!ptySupported())('launchTty (live PTY smoke)', () => {
   }, 20_000);
 
   test('send + waitFor drive an interactive child; child sees a real TTY', async () => {
-    const session = launchTty(['sh', '-c', 'tty; read line; echo "got:$line"'], {
+    // Assert TTY-ness via `[ -t 0 ]` + a sentinel, NOT by matching the tty(1)
+    // device path — macOS PTYs are /dev/ttysNNN but Linux CI PTYs are
+    // /dev/pts/N, so a /dev\/tty pattern is a portability trap (bit us on CI).
+    const session = launchTty(['sh', '-c', '[ -t 0 ] && echo IS_TTY || echo NOT_TTY; read line; echo "got:$line"'], {
       timeoutMs: 15_000,
     });
-    await session.waitFor(/\/dev\/tty/, { timeoutMs: 8000 });
+    await session.waitFor('IS_TTY', { timeoutMs: 8000 });
     session.send('ping\r');
     await session.waitFor('got:ping', { timeoutMs: 8000 });
     await session.waitForExit(5000);
     await session.close();
     expect(session.exited()).toBe(true);
+    expect(session.visible()).not.toContain('NOT_TTY');
   }, 20_000);
 
   test('waitForQuiet settles after output stops and reports exit as quiet', async () => {

@@ -39,6 +39,7 @@ import {
 import { findResolverFile, RESOLVER_FILENAMES } from './resolver-filenames.ts';
 import { redactSecretsInText } from './minions/handlers/shell-redact.ts';
 import { ensureGbrainHome, resolveGbrainHome } from './gbrain-home.ts';
+import { binaryOnPath } from './execution-env.ts';
 // Static import → bundled into the --compile binary so the taxonomy never drifts
 // and needs no runtime skills/ directory.
 import filingRulesDoc from '../../skills/_brain-filing-rules.json';
@@ -312,6 +313,19 @@ function patchResolverFile(repoPath: string, dryRun: boolean): { status: StepSta
 // ── Local untracked post-commit hook (D9) ───────────────────────────────────
 
 /** Resolve the active hooks dir (honors a pre-existing core.hooksPath). */
+/** Worktree-safe path inside the git dir [D6]: `.git` is a FILE in worktrees
+ * and submodules, so any path under it must come from git itself (rev-parse
+ * with the git-path query), never string-joined onto `<repo>/.git/`. */
+function gitDirPath(repoPath: string, rel: string): string {
+  try {
+    const p = execFileSync('git', ['-C', repoPath, 'rev-parse', '--git-path', rel], {
+      stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, env: { ...process.env, ...GIT_ENV },
+    }).toString().trim();
+    if (p) return isAbsolute(p) ? p : join(repoPath, p);
+  } catch { /* fall through to the classic layout */ }
+  return join(repoPath, '.git', rel);
+}
+
 function resolveHooksDir(repoPath: string): { dir: string; tracked: boolean } {
   let hooksPath = '';
   try {
@@ -325,12 +339,12 @@ function resolveHooksDir(repoPath: string): { dir: string; tracked: boolean } {
     const tracked = !dir.includes(`${join('.git', '')}`) && !dir.endsWith('.git/hooks');
     return { dir, tracked };
   }
-  return { dir: join(repoPath, '.git', 'hooks'), tracked: false };
+  return { dir: gitDirPath(repoPath, 'hooks'), tracked: false };
 }
 
-/** Ensure a repo-relative path is in .git/info/exclude so our hook stays untracked. */
+/** Ensure a repo-relative path is in the git exclude file so our hook stays untracked. */
 function ensureExcluded(repoPath: string, relPath: string): void {
-  const exclude = join(repoPath, '.git', 'info', 'exclude');
+  const exclude = gitDirPath(repoPath, 'info/exclude');
   try {
     mkdirSync(dirname(exclude), { recursive: true });
     let body = existsSync(exclude) ? readFileSync(exclude, 'utf-8') : '';
@@ -525,6 +539,65 @@ function launchdPlistPath(sourceId: string): string {
   return join(process.env.HOME || '', 'Library', 'LaunchAgents', `${cronLabel(sourceId)}.plist`);
 }
 
+/** Default scheduled-pull interval — ONE definition (harden + doctor probe). */
+export const DEFAULT_PULL_INTERVAL_SEC = 1800;
+
+export interface DurabilityJobStatus {
+  kind: 'launchd' | 'crontab' | 'none';
+  wrapperPresent: boolean;
+  /** Liveness rung [D7]: darwin = launchctl reports the label loaded; linux =
+   * the crontab line exists. undefined = probe unavailable on this host. */
+  live?: boolean;
+  /** Pull log fresher than 2× the interval. undefined = no log yet (fresh
+   * install / never fired) — absence is not evidence of death. */
+  logFresh?: boolean;
+}
+
+/**
+ * Presence + LIVENESS of the scheduled-pull job [D7]. Presence-only checks
+ * (existsSync on the plist) certify dead jobs as healthy — the documented
+ * autopilot-status failure mode — so this probes whether the job is actually
+ * loaded/registered and whether its log shows recent life.
+ */
+export function durabilityJobStatus(
+  sourceId: string,
+  intervalSec = DEFAULT_PULL_INTERVAL_SEC,
+  platform: NodeJS.Platform = process.platform,
+): DurabilityJobStatus {
+  const wrapperPresent = existsSync(cronWrapperPath(sourceId));
+  let kind: DurabilityJobStatus['kind'] = 'none';
+  let live: boolean | undefined;
+  if (platform === 'darwin') {
+    if (existsSync(launchdPlistPath(sourceId))) {
+      kind = 'launchd';
+      try {
+        execFileSync('launchctl', ['list', cronLabel(sourceId)], {
+          stdio: 'ignore', timeout: 5_000, env: process.env,
+        });
+        live = true;
+      } catch {
+        live = false; // plist on disk but not loaded — the dead-job shape
+      }
+    }
+  } else if (binaryOnPath('crontab')) {
+    try {
+      const tab = execSync('crontab -l 2>/dev/null', { encoding: 'utf-8', env: process.env });
+      if (tab.includes(cronLabel(sourceId))) {
+        kind = 'crontab';
+        live = true; // the line exists; cron itself is the OS's liveness domain
+      }
+    } catch { /* no crontab for this user */ }
+  }
+  let logFresh: boolean | undefined;
+  try {
+    const log = join(process.env.HOME || '', '.gbrain', 'brain-pull.log');
+    if (existsSync(log)) {
+      logFresh = Date.now() - statSync(log).mtimeMs <= 2 * intervalSec * 1000;
+    }
+  } catch { /* leave undefined */ }
+  return { kind, wrapperPresent, ...(live !== undefined ? { live } : {}), ...(logFresh !== undefined ? { logFresh } : {}) };
+}
+
 /** Pure cron-wrapper renderer (DB-free pull; secret-free — sources the shell
  *  profile rather than baking keys in). Exported for tests. */
 export function renderCronWrapper(sourceId: string, repoPath: string, branch: string, cli: string, logPath: string): string {
@@ -534,9 +607,12 @@ export function renderCronWrapper(sourceId: string, repoPath: string, branch: st
 # Sources the shell profile for secrets, then runs the hardened, DB-free pull.
 [ -f ~/.zshenv ] && source ~/.zshenv 2>/dev/null
 source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null || true
-# Self-disable if the captured checkout is gone (rename/relocation).
-if [ ! -d '${q(repoPath)}/.git' ]; then
-  echo "$(date -u +%FT%TZ) [cron] path gone, skipping: ${q(repoPath)}" >> "${q(logPath)}" 2>/dev/null || true
+# Self-disable when the captured checkout is no longer a git working tree:
+# gone, OR its path reused by a non-git directory. git rev-parse recognizes
+# both the classic .git-dir layout AND worktrees/submodules (where the git
+# marker is a FILE), so a bare dir test would wrongly disable a live worktree.
+if ! git -C '${q(repoPath)}' rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "$(date -u +%FT%TZ) [cron] not a git work tree, skipping: ${q(repoPath)}" >> "${q(logPath)}" 2>/dev/null || true
   exit 0
 fi
 exec '${q(cli)}' sources pull --path '${q(repoPath)}' --branch '${q(branch)}'
@@ -566,10 +642,30 @@ export function generateBrainPullPlist(label: string, wrapperPath: string, home:
 </plist>`;
 }
 
-function installDurabilityCron(sourceId: string, repoPath: string, branch: string, intervalSec: number, dryRun: boolean): { status: StepStatus; detail: string } {
+export function installDurabilityCron(
+  sourceId: string,
+  repoPath: string,
+  branch: string,
+  intervalSec: number,
+  dryRun: boolean,
+  platform: NodeJS.Platform = process.platform,
+): { status: StepStatus; detail: string } {
+  // Probe FIRST [D-cloud/B2]: containers and cloud sandboxes ship without
+  // crontab, and that is EXPECTED there — the honest answer is a skip that
+  // names what still covers persistence, not a needs_attention that reads
+  // like a bug (and no wrapper file is written for a job that can't exist).
+  if (platform !== 'darwin' && !binaryOnPath('crontab')) {
+    return {
+      status: 'skipped',
+      detail:
+        'no crontab on this host (container/cloud sandbox) — scheduled pull skipped; ' +
+        'the post-commit auto-push and per-turn/session-end pushes cover persistence here. ' +
+        'Run `gbrain sources harden <id>` on a persistent machine to add the scheduled pull.',
+    };
+  }
   const wrapper = dryRun ? cronWrapperPath(sourceId) : writeCronWrapper(sourceId, repoPath, branch);
   const home = process.env.HOME || '';
-  if (process.platform === 'darwin') {
+  if (platform === 'darwin') {
     const plistPath = launchdPlistPath(sourceId);
     if (dryRun) return { status: 'fixed', detail: `would install launchd ${cronLabel(sourceId)} every ${intervalSec}s (dry-run)` };
     mkdirSync(dirname(plistPath), { recursive: true });
@@ -583,12 +679,15 @@ function installDurabilityCron(sourceId: string, repoPath: string, branch: strin
   const marker = `# ${cronLabel(sourceId)}`;
   const cronLine = `*/${minutes} * * * * ${wrapper} ${marker}`;
   if (dryRun) return { status: 'fixed', detail: `would install crontab (every ${minutes}m) (dry-run)` };
+  // env: process.env on both calls — Bun otherwise resolves `crontab` against
+  // the STARTUP env snapshot, making runtime PATH changes (and PATH-shimmed
+  // test fakes) invisible (the workspace-push.ts / status.ts precedent).
   let existingCron = '';
-  try { existingCron = execSync('crontab -l 2>/dev/null', { encoding: 'utf-8' }); } catch { /* none */ }
+  try { existingCron = execSync('crontab -l 2>/dev/null', { encoding: 'utf-8', env: process.env }); } catch { /* none */ }
   const kept = existingCron.split('\n').filter(l => l && !l.includes(marker));
   const next = [...kept, cronLine, ''].join('\n');
   try {
-    execSync('crontab -', { input: next, stdio: ['pipe', 'ignore', 'ignore'] });
+    execSync('crontab -', { input: next, stdio: ['pipe', 'ignore', 'ignore'], env: process.env });
     return { status: 'fixed', detail: `crontab every ${minutes}m` };
   } catch (e) {
     return { status: 'needs_attention', detail: `crontab install failed: ${(e as Error).message.slice(0, 120)}` };
@@ -701,7 +800,7 @@ export async function hardenBrainRepo(opts: HardenOpts): Promise<DurabilityRepor
   const dryRun = !!opts.dryRun;
   const installCron = opts.installCron !== false;
   const verify = opts.verify !== false;
-  const intervalSec = opts.intervalSec ?? 1800;
+  const intervalSec = opts.intervalSec ?? DEFAULT_PULL_INTERVAL_SEC;
   const redact = opts.pat ? (s: string) => redactSecretsInText(s, new Map([['github_pat', opts.pat!]])) : (s: string) => s;
   const log = (l: string) => opts.logger?.(redact(l));
 
