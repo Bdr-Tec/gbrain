@@ -48,7 +48,8 @@ import {
 import { probeSourceGitState } from '../core/git-head.ts';
 // v0.41.32.0: remote staleness reads the stored newest_content_at column via
 // this pure comparator (no git subprocess on the HTTP MCP doctor path).
-import { lagFromContentMs } from '../core/source-health.ts';
+import { lagFromContentMs, resolveStalenessCeilingSeconds } from '../core/source-health.ts';
+import { resolveEnvNumber, resolveHoursEnv, warnOnceForEnv } from '../core/env-number.ts';
 import { CHUNKER_VERSION } from '../core/chunkers/code.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from '../core/link-extraction.ts';
 import { isUndefinedColumnError } from '../core/utils.ts';
@@ -3322,10 +3323,6 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
 const checkSubagentProvider = checkSubagentCapability;
 void checkSubagentProvider;
 
-// Module-scoped set so each invalid-env-var warning fires once per process,
-// per variable name (v0.42.7 #1696: was a single bool shared across all vars).
-const _envNumberWarned = new Set<string>();
-
 /**
  * v0.42.7 (#1696): single source of truth for the extraction-lag warn
  * threshold (percent). Both the `links_extraction_lag` doctor check AND the
@@ -3339,31 +3336,19 @@ export const EXTRACTION_LAG_WARN_PCT_DEFAULT = 20;
 export const EXTRACTION_LAG_MIN_PAGES = 100;
 
 /**
- * v0.42.7 (#1696, C1): generic "read a positive number from an env var, warn
- * once + fall back on garbage." Extracted from _resolveSyncFreshnessHours so
- * the percent-threshold doctor checks don't reuse a `...Hours`-named helper.
- * `opts.unit` is purely cosmetic for the warning string ('h', '%', '').
- * Exported (D3) so the sync nudge resolves the threshold the same way.
+ * Re-exported from `src/core/env-number.ts`, which now owns the implementation
+ * AND the warn-once memo. `source-health.ts` needs the hours resolver for the
+ * staleness ceiling, and doctor already imports from source-health — so the
+ * helper had to move to core or the import graph would cycle.
+ *
+ * The `_resolveEnvNumber` name is kept because `sync.ts:5730` dynamically
+ * imports it from this module.
  */
-export function _resolveEnvNumber(varName: string, fallback: number, opts?: { unit?: string }): number {
-  const raw = process.env[varName];
-  if (raw === undefined || raw === '') return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    if (!_envNumberWarned.has(varName)) {
-      _envNumberWarned.add(varName);
-      console.warn(
-        `[gbrain doctor] Ignoring invalid ${varName}=${raw}; using default ${fallback}${opts?.unit ?? ''}.`,
-      );
-    }
-    return fallback;
-  }
-  return n;
-}
+export { resolveEnvNumber as _resolveEnvNumber };
 
-function _resolveSyncFreshnessHours(varName: string, fallback: number): number {
-  return _resolveEnvNumber(varName, fallback, { unit: 'h' });
-}
+/** Local aliases; the shared memo lives in core so it can't fork per module. */
+const _resolveEnvNumber = resolveEnvNumber;
+const _resolveSyncFreshnessHours = resolveHoursEnv;
 
 /**
  * Sync freshness check (v0.32.4) — verify that sources with local_path have
@@ -3757,9 +3742,11 @@ export async function checkLinksExtractionLag(
       const n = Number(failRaw);
       if (Number.isFinite(n) && n > 0) {
         failPct = n;
-      } else if (!_envNumberWarned.has('GBRAIN_EXTRACTION_LAG_FAIL_PCT')) {
-        _envNumberWarned.add('GBRAIN_EXTRACTION_LAG_FAIL_PCT');
-        console.warn(`[gbrain doctor] Ignoring invalid GBRAIN_EXTRACTION_LAG_FAIL_PCT=${failRaw}; hard-fail stays disabled.`);
+      } else {
+        warnOnceForEnv(
+          'GBRAIN_EXTRACTION_LAG_FAIL_PCT',
+          `[gbrain] Ignoring invalid GBRAIN_EXTRACTION_LAG_FAIL_PCT=${failRaw}; hard-fail stays disabled.`,
+        );
       }
     }
 
@@ -4349,7 +4336,7 @@ export async function checkSyncFreshness(
     // bucket). Empty when nothing is syncing — keeps the steady-state messages
     // byte-for-byte unchanged.
     const inProgress: string[] = [];
-    let liveSyncSnap: (sourceId: string) => Promise<{ holder_pid: number; holder_host: string } | null> =
+    let liveSyncSnap: (sourceId: string) => Promise<{ holder_pid: number; holder_host: string; age_ms: number } | null> =
       async () => null;
     try {
       const { inspectLock, syncLockId } = await import('../core/db-lock.ts');
@@ -4357,7 +4344,7 @@ export async function checkSyncFreshness(
         try {
           const snap = await inspectLock(engine, syncLockId(sourceId));
           return snap && !snap.ttl_expired
-            ? { holder_pid: snap.holder_pid, holder_host: snap.holder_host }
+            ? { holder_pid: snap.holder_pid, holder_host: snap.holder_host, age_ms: snap.age_ms }
             : null;
         } catch {
           return null;
@@ -4367,6 +4354,10 @@ export async function checkSyncFreshness(
       /* db-lock unavailable — skip in-progress detection, staleness stands. */
     }
 
+    // One ceiling for the whole report: hoisted out of the loop so every
+    // source is judged against the same number (and the env read + warn-once
+    // machinery runs once, not once per source).
+    const stalenessCeilingSeconds = resolveStalenessCeilingSeconds();
     for (const source of sources) {
       // Embed source.id in user-visible messages so `gbrain sync --source <id>`
       // matches what the user copy-pastes. Show display name in parens when set.
@@ -4376,10 +4367,35 @@ export async function checkSyncFreshness(
 
       // BUG 4: actively syncing (live lock) → healthy, count as synced_recently
       // and skip the staleness checks. Keeps the 3-bucket invariant intact.
+      //
+      // ...but ONLY up to the staleness ceiling. `withRefreshingLock` bumps the
+      // heartbeat on its own timer regardless of whether the import is making
+      // forward progress (`liveSyncStatus`'s docstring is explicit: callers may
+      // report "running", NOT "healthy"). So a holder blocked inside a query
+      // keeps refreshing forever, and an uncapped in-progress verdict would
+      // mask that source from every staleness check indefinitely — the same
+      // invisible-failure class this whole pass exists to close, just reached
+      // through the lock table instead of the freshness column.
       const liveSnap = await liveSyncSnap(source.id);
       if (liveSnap) {
-        inProgress.push(`${display} sync in progress (pid ${liveSnap.holder_pid} on ${liveSnap.holder_host})`);
-        synced_recently_count++;
+        const ceilingMs = stalenessCeilingSeconds * 1000;
+        if (liveSnap.age_ms <= ceilingMs) {
+          inProgress.push(`${display} sync in progress (pid ${liveSnap.holder_pid} on ${liveSnap.holder_host})`);
+          synced_recently_count++;
+          continue;
+        }
+        // Sub-hour ceilings are legal (fractional env override), and an alarm
+        // that names a zero duration ("held the lock for 0h") reads as broken.
+        const heldFor = liveSnap.age_ms >= 3600_000
+          ? `${Math.floor(liveSnap.age_ms / 3600_000)}h`
+          : `${Math.max(1, Math.floor(liveSnap.age_ms / 60_000))}m`;
+        issues.push(
+          `Source ${display} has held the sync lock for ${heldFor} ` +
+          `(pid ${liveSnap.holder_pid} on ${liveSnap.holder_host}) — heartbeating but not finishing. ` +
+          `Run \`gbrain sync --break-lock --source ${source.id}\` after confirming the holder is wedged.`,
+        );
+        hasFailures = true;
+        stale_count++;
         continue;
       }
 
@@ -4468,6 +4484,7 @@ export async function checkSyncFreshness(
           contentMs !== null && Number.isFinite(contentMs) ? contentMs : null,
           lastSync,
           now,
+          stalenessCeilingSeconds,
         );
         thresholdAgeMs = lagSec === null ? ageMs : lagSec * 1000;
       }

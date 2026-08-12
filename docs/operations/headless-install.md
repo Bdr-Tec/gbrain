@@ -61,7 +61,7 @@ The runtime `gbrain init --force` re-runs the init flow against the now-populate
 
 ## Pattern 3: No key, ever (keyless mode)
 
-`--no-embedding` isn't only a deferral — it's also the install shape for **keyless mode**, a first-class supported end state (not a broken one). With zero provider keys, gbrain runs keyword-only (BM25) search and takes memory from agent-authored `## Facts` fences and write ops; embedding and extraction paths refuse cleanly instead of failing silently.
+`--no-embedding` isn't only a deferral — it's also the install shape for **keyless mode**, a first-class supported end state (not a broken one). With zero provider keys, gbrain runs keyword-only (BM25) search and takes memory from agent-authored `## Facts` fences and write ops; embedding and extraction paths refuse cleanly instead of failing silently. Concretely: the documented always-current chain (`gbrain sync --repo <path> && gbrain embed --stale`) is safe to schedule on a keyless brain — a bare stale embed exits 0 with a stderr note instead of breaking the chain, while explicit embed requests (a slug, `--slugs`, `--all`) still exit 1.
 
 ```dockerfile
 FROM oven/bun:1
