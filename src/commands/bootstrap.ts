@@ -243,17 +243,20 @@ function consentAnswer(ws: string, key: string): string | undefined {
     const a = read.state.answers[key];
     if (a?.skipped === true) return 'no';
     // Shape-tolerant: interview.json is user-editable and readInterviewState
-    // validates only that `answers` is an object — a hand-edited non-string
-    // value must fall through to the bank default, never throw at a
-    // `.toLowerCase()` call site. Say so: a silent fall-through could flip a
-    // damaged opt-out to the permissive default without a trace.
+    // validates only that `answers` is an object — a hand-edited unusable
+    // value (non-string, empty, or a bare {}) must never throw at a
+    // `.toLowerCase()` call site. FAIL CLOSED, loudly: falling through to a
+    // permissive bank default could flip a damaged opt-out into consent
+    // (cross-model adversarial finding); 'no' resolves every consent key to
+    // its safe reading (no hooks, no cron, project scope).
     if (a && typeof a.value === 'string' && a.value) return a.value;
-    if (a && a.value !== undefined && typeof a.value !== 'string') {
+    if (a) {
       console.error(
-        `note: the recorded ${key} answer in state/interview.json has an invalid shape — ` +
-          `using the bank default ('${bank.questions[key]?.default ?? ''}'). Re-record it with ` +
-          '`gbrain bootstrap interview` if that is not what you want.',
+        `note: the recorded ${key} answer in state/interview.json is unusable (invalid shape) — ` +
+          'treating it as declined (fail-closed). Re-record it with `gbrain bootstrap interview` ' +
+          'if that is not what you want.',
       );
+      return 'no';
     }
   }
   return bank.questions[key]?.default;
@@ -691,8 +694,12 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
       console.error(
         "note: the recorded MCP_SCOPE answer 'project' has no effect on Codex — " +
           '`codex mcp add` has no scope flag; the registration is user-global (any repo ' +
-          'opened on this machine can query the brain). Off-ramps: `codex mcp remove gbrain` ' +
-          '(registration only) or `gbrain bootstrap uninstall` (full teardown).',
+          'opened on this machine can reach the brain, read and write, through its MCP tools). ' +
+          'To clear this note safely, drop the answer with `gbrain bootstrap interview --skip MCP_SCOPE`, ' +
+          'then re-confirm the read-back (`--show`, then `--confirm <hash>` — any answer change ' +
+          'invalidates the prior confirmation). Do NOT flip it to user: the answer syncs to paired ' +
+          'Claude Code machines and would widen their scope. Registration off-ramps: ' +
+          '`codex mcp remove gbrain`, or `gbrain bootstrap uninstall` (full teardown).',
       );
     }
   }

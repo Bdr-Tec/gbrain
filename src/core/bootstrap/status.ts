@@ -181,7 +181,9 @@ export const PHASES: PhaseSpec[] = [
   {
     id: 'interview',
     title: 'Identity interview (confirmed read-back)',
-    resume_hint: 'gbrain bootstrap interview --init, then --set each answer, then --confirm <hash>',
+    resume_hint:
+      'gbrain bootstrap interview --init, then --set each answer, then --confirm <hash>. ' +
+      'Claude Code only: also record the MCP scope consent (--set MCP_SCOPE <project|user>) BEFORE --confirm',
     detect: (ws) => {
       const exists = existsSync(interviewStatePath(ws));
       const st = interviewStatus(ws);

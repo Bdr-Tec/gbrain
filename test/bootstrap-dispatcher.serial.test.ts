@@ -340,11 +340,28 @@ describe('codex scope-note guard — Codex has no scope flag; stale MCP_SCOPE an
       writeFileSync(p, JSON.stringify(state), 'utf8');
     });
     expect(r.result).toBe(0);
-    // Pre-fix this crashed at mcpScope's .toLowerCase(); now the non-string
-    // value falls through to the bank default and registration proceeds —
-    // LOUDLY (a silent fall-through could flip a damaged opt-out to consent).
+    // Pre-fix this crashed at mcpScope's .toLowerCase(); now the unusable
+    // value fails CLOSED ('no' → project scope) — LOUDLY (a silent fall-through
+    // could flip a damaged opt-out to consent).
     expect(r.err).toContain('invalid shape');
     expect(readReceipt(fhome)?.registrations).toEqual([{ host: 'claude-code', scope: 'project', detail: 'mcp+hooks' }]);
+  }, 30_000);
+
+  test('claude-code + malformed HOOKS_CONSENT → fail-closed: hooks DECLINED, note printed', async () => {
+    const { fws, fhome, fparent } = scopeWorkspace('unset');
+    const r = await renderThenHooks(fws, fparent, 'claude-code', () => {
+      const p = join(fws, 'state', 'interview.json');
+      const state = JSON.parse(readFileSync(p, 'utf8')) as { answers: Record<string, unknown> };
+      // A merge-damaged boolean: previously crashed; a bank-default fall-through
+      // would silently flip a possible opt-out to consent-granted. Fail closed.
+      state.answers['HOOKS_CONSENT'] = { value: true };
+      writeFileSync(p, JSON.stringify(state), 'utf8');
+    });
+    expect(r.result).toBe(0);
+    expect(r.err).toContain('invalid shape');
+    expect(r.out).toContain('hooks declined');
+    expect(existsSync(join(fws, '.claude', 'settings.local.json'))).toBe(false);
+    expect(readReceipt(fhome)?.registrations).toEqual([{ host: 'claude-code', scope: 'project', detail: 'mcp' }]);
   }, 30_000);
 });
 

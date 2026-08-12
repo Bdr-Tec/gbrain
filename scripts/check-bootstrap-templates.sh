@@ -216,14 +216,14 @@ else
 fi
 if [ -f "$QUESTIONS" ] && command -v bun >/dev/null 2>&1; then
   if ! GBRAIN_QJSON="$QUESTIONS" bun -e \
-    'const fs=require("fs");let b;try{b=JSON.parse(fs.readFileSync(process.env.GBRAIN_QJSON,"utf8"));}catch(e){process.exit(0);}if(!b.questions){process.exit(1);}const e=b.questions.MCP_SCOPE;const q=(e&&e.question)||"";process.exit(q.startsWith("(Claude Code only")&&e.phase==="interview"?0:1);'; then
+    'const fs=require("fs");let b;try{b=JSON.parse(fs.readFileSync(process.env.GBRAIN_QJSON,"utf8"));}catch(e){process.exit(1);}if(!b.questions){process.exit(1);}const e=b.questions.MCP_SCOPE;const q=(e&&e.question)||"";process.exit(q.startsWith("(Claude Code only")&&e.phase==="interview"?0:1);'; then
     fail=1
     echo "FAIL: questions.json MCP_SCOPE.question must start with '(Claude Code only'" >&2
     echo "      AND MCP_SCOPE.phase must be 'interview' (the consent is recorded" >&2
     echo "      pre-confirm during the interview; a 'wire' phase re-creates the" >&2
     echo "      bank-vs-runbook contradiction). Also fails when the questions" >&2
-    echo "      object or the MCP_SCOPE entry is missing — a bank without them" >&2
-    echo "      silently passes section (a) too." >&2
+    echo "      object or the MCP_SCOPE entry is missing, or questions.json fails" >&2
+    echo "      to parse — a bank without them silently passes section (a) too." >&2
     echo "      Rewording intentionally? Update this pin in the same commit." >&2
   fi
 else

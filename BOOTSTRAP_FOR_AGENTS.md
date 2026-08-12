@@ -110,8 +110,8 @@ you needed; report the count at the end (it feeds the install-time measurement).
      say plainly that Codex gets pull-based context, not per-turn push.
      Do NOT offer an MCP scope choice: `codex mcp add` has no scope flag, so
      the registration is always user-global. State it as fact — any repo opened
-     on this machine can query the brain; the off-ramps are
-     `codex mcp remove gbrain` (registration only) or
+     on this machine can reach the brain (read and write) through its MCP
+     tools; the off-ramps are `codex mcp remove gbrain` (registration only) or
      `gbrain bootstrap uninstall` (full teardown).
 7. **Private repo.** `gbrain bootstrap repo` — creates a PRIVATE GitHub repo from
    the workspace, verifies the privacy bit through the API, pushes. If the human
