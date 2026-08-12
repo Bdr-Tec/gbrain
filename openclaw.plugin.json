@@ -34,6 +34,7 @@
     "skills/academic-verify",
     "skills/archive-crawler",
     "skills/article-enrichment",
+    "skills/blog-ingest",
     "skills/book-mirror",
     "skills/brain-ingest-gate",
     "skills/brain-link-discipline",

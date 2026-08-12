@@ -333,6 +333,11 @@
       "name": "context-audit",
       "path": "context-audit/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "blog-ingest",
+      "path": "blog-ingest/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {
