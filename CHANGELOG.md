@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.45.1.0] - 2026-08-11
+## [0.45.2.0] - 2026-08-11
 
 **Make your agent's repo yourself, then let it move in.** If you'd rather own the GitHub repo up front, create a new empty private repo under your own account, clone it, open it in Claude Code or Codex, and paste the bootstrap block — bootstrap now detects your empty repo and adopts it instead of creating one, verifying it is private before anything is pushed. The default (open an empty folder and let bootstrap make the repo) is unchanged and now stated plainly in the docs. Either way, the folder you open becomes your agent's durable, private body.
 
@@ -19,7 +19,7 @@ All notable changes to GBrain will be documented in this file.
 - The pre-push secret scan now also covers an already-committed tree, and a failure to enumerate files stops the push instead of passing silently.
 - Automatic per-turn and session-end pushes wait until the repo phase has verified the repo is private, so nothing is published to an unverified remote.
 
-To take advantage of v0.45.1.0: upgrade with `bun install -g github:garrytan/gbrain#latest-stable`. Nothing to migrate. To use the new path, create an empty private repo under your own account, clone it, open it in your agent, and run the bootstrap block — it adopts your repo. If anything about the repo or push looks off, `gbrain doctor` names it with the exact fix.
+To take advantage of v0.45.2.0: upgrade with `bun install -g github:garrytan/gbrain#latest-stable`. Nothing to migrate. To use the new path, create an empty private repo under your own account, clone it, open it in your agent, and run the bootstrap block — it adopts your repo. If anything about the repo or push looks off, `gbrain doctor` names it with the exact fix.
 
 ## [0.45.0.0] - 2026-08-10
 

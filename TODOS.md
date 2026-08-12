@@ -5027,7 +5027,7 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   bootstrap pushes (create + adopt), not specific to create-repo-first. Fix:
   scan the staged index blobs (`git show :file` / `git cat-file`) fail-closed,
   or reuse the hardened scanner path from `workspacePush`. Filed from the
-  v0.45.1.0 /ship Codex adversarial pass (P0 there; scoped to P2 here as a
+  v0.45.2.0 /ship Codex adversarial pass (P0 there; scoped to P2 here as a
   shared-scanner hardening that needs its own tests, deliberately out of the
   create-repo-first change).
 
