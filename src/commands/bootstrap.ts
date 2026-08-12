@@ -903,7 +903,7 @@ async function runVerify(ws: string, rest: string[], home: string): Promise<numb
     const sourceId = state.state === 'initialized' ? state.manifest.source_id : 'workspace';
     const result = await verifyWorkspace(engine, ws, { sourceId, gbrainHomeDir: home });
     if (jsonMode) {
-      console.log(JSON.stringify({ ok: result.ok, checks: result.checks, capability: result.capability, tour: result.tour }, null, 2));
+      console.log(JSON.stringify({ ok: result.ok, checks: result.checks, capability: result.capability, tour: result.tour, handoff: result.handoff }, null, 2));
     } else {
       console.log(result.report);
     }

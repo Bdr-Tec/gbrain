@@ -1,4 +1,4 @@
-<!-- gbrain-runbook-stamp: 0.45.9.0 -->
+<!-- gbrain-runbook-stamp: 0.45.10.0 -->
 <!-- This stamp must equal the VERSION file at every release; CI enforces it
      (scripts/check-bootstrap-tag.sh). `gbrain bootstrap status` compares it to
      the installed binary and warns on skew. -->
@@ -133,7 +133,9 @@ you needed; report the count at the end (it feeds the install-time measurement).
    through the real write path, graph floor, token sweep, secret scan, repo
    privacy, hooks smoke, capability report (keyless or keyed). Exit 0 or it is not
    done. Paste the report. Then relay the first-run tour it prints (three prompts
-   the human should try, starting with restarting the session).
+   the human should try, starting with restarting the session) AND the hand-off
+   block below it — the ownership line and the cold-start offer are the two
+   things the human must actually understand, not fine print.
 
 ## Machine two
 
@@ -156,7 +158,25 @@ says it is an uninitialized template, proceed with the normal flow from phase 1.
 
 ## Hand off
 
-Finish by telling the human: the private repo URL (or the local-only status), the
-capability mode (keyless vs keyed), the three commands they will actually reuse
-(`gbrain doctor`, `gbrain bootstrap verify`, `gbrain sources push`), and the
-first-run tour. Then delete nothing — this runbook was fetched, not installed.
+Two things the human must UNDERSTAND before you finish — say them plainly, in
+this order, and confirm they landed:
+
+1. **They own the brain.** Every memory you keep is a markdown file in THEIR
+   private GitHub repo — name the URL. Owning it means: they can read it any
+   time, take it to a second machine (`gbrain bootstrap attach`), or delete the
+   repo and the brain is gone. If they went local-only, say that instead, with
+   `gbrain bootstrap repo` as the any-time upgrade.
+2. **The first skill to run is cold-start.** An empty brain is a database; a
+   filled one is a memory — and every flagship skill (book-mirror, briefings,
+   meeting prep) only becomes magical once the brain holds their real life.
+   OFFER to run the cold-start skill now: it imports Gmail, calendar, and
+   contacts through ClawVisor (clawvisor.com — an OAuth vault; you never hold
+   raw tokens), or offline archives (Google Takeout, a notes folder) if they
+   prefer no third-party gateway. Every phase is consent-gated and
+   independently valuable — they can stop after any one. If they say "later",
+   that is a complete install; they can say "fill my brain" any time.
+
+Then the routine facts: the capability mode (keyless vs keyed), and the three
+commands they will actually reuse (`gbrain doctor`, `gbrain bootstrap verify`,
+`gbrain sources push`). Then delete nothing — this runbook was fetched, not
+installed.

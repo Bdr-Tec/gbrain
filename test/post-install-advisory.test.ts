@@ -92,10 +92,20 @@ describe('detectInstalledSlugs', () => {
   });
 });
 
+describe('recommended set — OOBE invariants', () => {
+  it('cold-start is the FIRST recommendation (the day-one "now what?" answer)', () => {
+    // The compact init advisory previews the first slugs and `gbrain advisor`
+    // ranks by list order — cold-start leads because every other recommended
+    // skill only becomes magical once the brain holds the user's real life.
+    expect(currentRecommendedSet()[0]!.slug).toBe('cold-start');
+  });
+});
+
 describe('buildAdvisory — partial-install path', () => {
   it('lists ONLY missing skills when most are already installed', () => {
     const { workspace, skillsDir } = scratchWorkspace([
       'brain-ops',
+      'cold-start',
       'article-enrichment',
       'strategic-reading',
       'concept-synthesis',
@@ -137,6 +147,7 @@ describe('buildAdvisory — partial-install path', () => {
 describe('buildAdvisory — all-installed → null (no nag)', () => {
   it('returns null when every recommended skill is already installed', () => {
     const allRecommended = [
+      'cold-start',
       'book-mirror',
       'article-enrichment',
       'strategic-reading',
