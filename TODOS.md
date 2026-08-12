@@ -540,12 +540,13 @@ are the bar). Plan + GSTACK REVIEW REPORT at
   deployments get push too. **Cons:** async plumbing + auth scoping; no consumer
   wired today. **Where:** `src/commands/serve-http.ts` + `src/core/context/volunteer.ts`.
   **Blocked by:** a real consumer (revisit when one exists).
-- [ ] **P3 — policy skill + doctor check for push-context.** The ambient reflex
-  needed doctor visibility because silent failure was invisible; volunteer is
-  invoked-on-demand so v1 skipped it. If `volunteer-context --stats` adoption shows
-  agents not discovering the surface, ship a `push-context` recipe (mirror
-  `recipes/retrieval-reflex/`) + a doctor check reading the events table.
-  **Where:** `recipes/`, `src/commands/doctor.ts`.
+- [ ] **P3 — policy skill (recipe) for push-context.** The doctor-check half of
+  this item shipped with the harness hook lane: `volunteer_channels`
+  (`src/commands/doctor.ts:checkVolunteerChannels`) reads the events table
+  per-channel on both the local and remote doctor. Remaining scope: if
+  `volunteer-context --stats` adoption shows agents not discovering the
+  surface, ship a `push-context` recipe (mirror `recipes/retrieval-reflex/`).
+  **Where:** `recipes/`.
 - [ ] **P3 — structured `messages[]` param for volunteer_context.** v1 takes a
   string window (`user:`/`assistant:` prefixes) to avoid a dual-shape contract.
   If MCP callers accumulate parsing bugs, add a structured array param beside it.

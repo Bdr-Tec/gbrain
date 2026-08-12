@@ -21,7 +21,7 @@ Every scoreboard row carries a `seam` column:
 | Harness | Seam | What the row actually measures |
 |---|---|---|
 | `openclaw` | **production** | The shipped OpenClaw context-engine pipeline, byte-for-byte (`extractCandidates` → `resolveEntitiesToPointers`, 3-pointer budget, prior-context suppression, markdown pointer block). |
-| `claude-code` | **contract** | gbrain's memory primitives driven through the UserPromptSubmit hook wire contract (`{prompt, session_id, cwd}` in → `{hookSpecificOutput.additionalContext}` out, exported from `src/eval/brainbench/adapters/claude-code.ts`). 2-pointer budget; NO conversation memory — a hook sees only the current prompt, so suppression is off and the re-injection cost is visible as `false_fire_rate`. |
+| `claude-code` | **contract** | gbrain's memory primitives driven through the UserPromptSubmit hook wire contract (`{prompt, session_id, cwd}` in → `{hookSpecificOutput.additionalContext}` out, exported from `src/eval/brainbench/adapters/claude-code.ts`). 2-pointer budget; NO conversation memory — this row deliberately models the memoryless wire contract (suppression off), so the re-injection cost is visible as `false_fire_rate`; the shipped `gbrain hook user-prompt` layers transcript-based cross-turn dedupe on top of this same contract. |
 | `codex` | **contract** | The fragments model: a static entity-index preamble (computed once, slugs not counted as injections) + at most ONE per-turn fragment. Measures how much push quality degrades when injection is mostly static. |
 
 **Contract rows do NOT measure third-party harness behavior.** They measure
