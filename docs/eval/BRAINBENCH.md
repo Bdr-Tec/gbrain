@@ -27,9 +27,11 @@ Every scoreboard row carries a `seam` column:
 **Contract rows do NOT measure third-party harness behavior.** They measure
 gbrain's primitives under each harness's injection-shape constraints. The rows
 are comparable because fixtures, brain, and gold are identical — only the seam
-contract varies. When a real integration lands (the hooks/fragments PR), its
-adapter swaps transport (exec the real hook) and flips to `production` with
-continuous numbers. Also not graded, by design: the production orchestrator's
+contract varies. The real Claude Code integration has landed (`gbrain hook
+user-prompt`, registered by `gbrain bootstrap`); flipping this adapter to exec
+the real hook and report `production` numbers is a filed follow-up (TODOS.md —
+"Flip contract adapters to production"). Same for codex fragments when that
+integration lands. Also not graded, by design: the production orchestrator's
 config gate, integration heartbeat, and 1500 ms timeout wrapper.
 
 All three adapters drive ONE shared pipeline (`adapters/shared.ts`) with
