@@ -50,6 +50,7 @@ wins; fix the row.
 | "watch this video", "process this YouTube link", "ingest this PDF", "save this podcast", "process this book", "summarize this book", "PDF book", "ingest it into my brain", "what's in this screenshot", "check out this repo" | `skills/media-ingest/SKILL.md` |
 | Meeting transcript received | `skills/meeting-ingestion/SKILL.md` |
 | Generic "ingest this" (auto-routes to above) | `skills/ingest/SKILL.md` |
+| "two-tier extraction", "triage then deep read", "smart model routing", "cheap triage expensive analysis" | `skills/two-tier-extraction/SKILL.md` |
 
 ## Thinking skills (from GStack)
 

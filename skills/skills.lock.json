@@ -1,5 +1,5 @@
 {
-  "RESOLVER.md": "63fdc740df8d22e9aee737d0d93e23c499300b6313faadc3592cf96eb30c2bfa",
+  "RESOLVER.md": "b1718c4304c3f54104738fb868f584ab17f242c98aa6b1b1799d9e661ce747a0",
   "_AGENT_README.md": "d9b3bca4e427b707bd3b6058b74e09feeb869b732ac363b5580fc3012a87ec67",
   "_brain-filing-rules.json": "cf850df6a7425464c6d63b3ace71991cc93497fa0cc8cd21acd31883e17939c6",
   "_brain-filing-rules.md": "2d2d75b7c76081c56f41b2c0a5a978c355ce957300f9b0a5575dc4079ef1f877",
@@ -73,7 +73,7 @@
   "ingest/SKILL.md": "dc40ecc0072806fb8c7bb6ab9cf1f103842e05653eb55d67632d7e3ffc4dd7d2",
   "install/SKILL.md": "881bd0a422f34c6df4642aae66c51e2a4cc18ad5ca6d0b52d44b4de93512a3c4",
   "maintain/SKILL.md": "e80cf5bb170c979b773a67a18e0d880c086e0b983db9a576a207074b0112c4f8",
-  "manifest.json": "1c5517b97aab331c436919f91a4b8c69dde05e01f1923a9b090fde459d7697df",
+  "manifest.json": "d81d664a01a2691a5db0837db80497aee88bd1e535285afa68444df435b9310c",
   "measure-before-you-fix/SKILL.md": "283d79a5281b8e68f22391e5b396b6cd309a037cec6be5d92a84d6f31fd9d15a",
   "measure-before-you-fix/routing-eval.jsonl": "38b328659d1ea154ee8cc489dede6f9951b1bce9230e91dd57404286f01a2a3f",
   "media-ingest/SKILL.md": "33db12830ed31a4ff4a6a58c4f126bf2596ee28d54cee0027680c83fee648a20",
@@ -144,6 +144,8 @@
   "strategic-reading/SKILL.md": "5be656c39c830153ec7c2f328dc8bdeac05c1412b01b3415de6b5b008926e7a2",
   "strategic-reading/routing-eval.jsonl": "eb0fc239c93aac53cf7d856190967bb65eaf970b4fe8bd0aad1c87495fbb8ccd",
   "testing/SKILL.md": "f1846ba7c35076d910744a6b867c9ee850c1895f75a104a319c9b7d18b1d5e90",
+  "two-tier-extraction/SKILL.md": "851c20f610155e976cfb5ccd9b4011f0daa91f9320d7726d942f8bfd54abb051",
+  "two-tier-extraction/routing-eval.jsonl": "b6af30ccd4ad20b60c229d3d63b50445f659d98f67b680e6d473a1e1ca020d90",
   "voice-note-ingest/SKILL.md": "145c02e636430abba5648e026aef77606d6ba2594285fbfee4f4dd4253cf833a",
   "voice-note-ingest/routing-eval.jsonl": "374aaec16fbde336d1e376edce89e51adc4ecaa93c13fb4a69b967ba299b8742",
   "webhook-transforms/SKILL.md": "b774293297af4d513c7efa92a79cf65b8438a714adafc16802b492613e679d17"

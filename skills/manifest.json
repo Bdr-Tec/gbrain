@@ -303,6 +303,11 @@
       "name": "citation-graph-ingest",
       "path": "citation-graph-ingest/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "two-tier-extraction",
+      "path": "two-tier-extraction/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {
