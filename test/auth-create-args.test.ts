@@ -35,4 +35,24 @@ describe('parseAuthCreateArgs', () => {
   test('takes-holders trims + drops empties', () => {
     expect(parseAuthCreateArgs(['n', '--takes-holders', ' world , , garry ']).takesHolders).toEqual(['world', 'garry']);
   });
+
+  test('--scopes: comma and/or whitespace separated, value excluded from positional search (#4043)', () => {
+    expect(parseAuthCreateArgs(['harness', '--scopes', 'read,write']).scopes).toEqual(['read', 'write']);
+    expect(parseAuthCreateArgs(['--scopes', 'read write', 'harness'])).toMatchObject({
+      name: 'harness',
+      scopes: ['read', 'write'],
+    });
+    expect(parseAuthCreateArgs(['harness', '--scopes', ' read ,  write ']).scopes).toEqual(['read', 'write']);
+  });
+
+  test('--scopes with both flags present still resolves the name', () => {
+    expect(
+      parseAuthCreateArgs(['--takes-holders', 'world', '--scopes', 'read,write', 'harness']).name,
+    ).toBe('harness');
+  });
+
+  test('--scopes absent → no scopes key (grandfather lane); empty value → empty array for create() to refuse', () => {
+    expect('scopes' in parseAuthCreateArgs(['n'])).toBe(false);
+    expect(parseAuthCreateArgs(['n', '--scopes', ',']).scopes).toEqual([]);
+  });
 });
