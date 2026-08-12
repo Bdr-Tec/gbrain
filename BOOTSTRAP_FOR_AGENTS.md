@@ -83,6 +83,14 @@ you needed; report the count at the end (it feeds the install-time measurement).
 3. **Interview.** `gbrain bootstrap interview --init`, then ask the questions from
    the bank (the CLI prints them) in three batches, recording each answer verbatim
    with `--set KEY "value"`. Push once on vague answers to the required questions.
+   Claude Code only: with the final batch, also ask the ONE operational consent —
+   MCP scope. It is not one of the 12 interview questions; consents ride alongside
+   the bank. The choice: project (recommended — any other repo you open cannot
+   read your brain) vs user (your agent everywhere, but any repo you open can
+   query it, and two open sessions contend for the database). Record it with
+   `gbrain bootstrap interview --set MCP_SCOPE <project|user>` BEFORE the
+   read-back, so the confirmation covers it. On Codex, skip this question
+   entirely — see phase 6.
    After the last batch: read ALL answers back in one compact block, ask "Is this
    the thing you want in the room?", and only then run
    `gbrain bootstrap interview --confirm <hash>` with the hash `--status` printed
@@ -96,12 +104,14 @@ you needed; report the count at the end (it feeds the install-time measurement).
    - Claude Code: installs per-turn hooks ON by default — do NOT ask; loading the
      brain every turn is the whole point of installing gbrain for your agent. Tell
      the human it is on and how to turn it off (`GBRAIN_HOOKS=0`, or re-run with
-     `--no-hooks`, or `gbrain bootstrap uninstall`). The ONE consent to actually
-     ask in this phase is MCP scope: project (recommended — any other repo you open
-     cannot read your brain) vs user (your agent everywhere, but any repo you open
-     can query it, and two open sessions contend for the database).
+     `--no-hooks`, or `gbrain bootstrap uninstall`). MCP scope is NOT asked here —
+     `hooks` consumes the MCP_SCOPE answer recorded during the phase-3 interview.
    - Codex: registers MCP (`codex mcp add`) and relies on the AGENTS.md protocol —
      say plainly that Codex gets pull-based context, not per-turn push.
+     Do NOT offer an MCP scope choice: `codex mcp add` has no scope flag, so
+     the registration is always user-global. State it as fact — any repo opened
+     on this machine can query the brain; the off-ramp is
+     `gbrain bootstrap uninstall`.
 7. **Private repo.** `gbrain bootstrap repo` — creates a PRIVATE GitHub repo from
    the workspace, verifies the privacy bit through the API, pushes. Asks the
    background-persistence consent (15-minute scan-gated push job; declining still
