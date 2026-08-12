@@ -677,14 +677,19 @@ export async function postUpgradeReferenceSweep(
     // New = skills the host never scaffolded (own body absent). These used to
     // be filtered out as "noise", which meant an upgrade that shipped brand-new
     // skills said nothing about them. Surface them via the currency classifier
-    // (own-files aware) so new capability is discoverable, and point at the
-    // one command that installs them without touching anything else.
+    // (own-files aware) so new capability is discoverable — but ONLY for a host
+    // that has already scaffolded at least one skill (a skills user missing the
+    // new ones). A host with zero scaffolded skills has opted out; surfacing
+    // every bundled skill on every upgrade would be exactly the noise the old
+    // filter avoided, so it stays silent for them.
     let newSkills: string[] = [];
     try {
       const { computeSkillCurrency } = await import('../core/skillpack/skill-currency.ts');
-      newSkills = computeSkillCurrency({ gbrainRoot, targetWorkspace })
-        .skills.filter(s => s.status === 'new')
-        .map(s => s.slug);
+      const currency = computeSkillCurrency({ gbrainRoot, targetWorkspace });
+      const hasScaffolded = currency.counts.current > 0 || currency.counts.drifted > 0;
+      if (hasScaffolded) {
+        newSkills = currency.skills.filter(s => s.status === 'new').map(s => s.slug);
+      }
     } catch {
       // Best-effort; drift report still prints below.
     }
