@@ -1097,7 +1097,7 @@ describe('v0.41.32.0 — commit-relative staleness', () => {
     expect(result.details).toEqual({ unchanged_count: 1, synced_recently_count: 0, stale_count: 0 });
   });
 
-  test('T2: REMOTE (no localOnly) reads column, quiet repo → ok, NO git subprocess', async () => {
+  test('T2: REMOTE (no localOnly) reads column, quiet + recently synced → ok, NO git subprocess', async () => {
     const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
     const { _setGitHeadProbeForTests, _setGitCleanProbeForTests } =
       await import('../src/core/git-head.ts');
@@ -1107,7 +1107,9 @@ describe('v0.41.32.0 — commit-relative staleness', () => {
 
     const result = await checkSyncFreshness(makeStubEngine([
       { id: 'remote', name: '', local_path: '/tmp/remote',
-        last_sync_at: agoMs(100 * 60 * 60 * 1000),
+        // Synced 1h ago: caught up AND being checked. Must stay ok — this is the
+        // quiet-source contract the content comparison exists to protect.
+        last_sync_at: agoMs(1 * 60 * 60 * 1000),
         last_commit: 'x', chunker_version: currentChunkerVersion,
         // Content committed BEFORE the last sync → caught up.
         newest_content_at: agoMs(200 * 60 * 60 * 1000) },
@@ -1117,6 +1119,30 @@ describe('v0.41.32.0 — commit-relative staleness', () => {
     expect(cleanCalls).toBe(0);
     expect(result.status).toBe('ok');
     expect(result.details).toEqual({ unchanged_count: 0, synced_recently_count: 1, stale_count: 0 });
+  });
+
+  test('T2-ceiling: REMOTE, caught up but unsynced past the ceiling → NOT ok', async () => {
+    // The 71-day bug at the doctor layer. This shape (caught up, synced 100h ago)
+    // previously reported ok forever, so a dead daemon was invisible. The ceiling
+    // ramps it to ~28h, which crosses the 24h warn line but NOT the 72h fail line —
+    // proving the escalation is ordered rather than a single jump to fail.
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    const { _setGitHeadProbeForTests, _setGitCleanProbeForTests } =
+      await import('../src/core/git-head.ts');
+    let headCalls = 0;
+    _setGitHeadProbeForTests(() => { headCalls++; return 'x'; });
+    _setGitCleanProbeForTests(() => true);
+
+    const result = await checkSyncFreshness(makeStubEngine([
+      { id: 'abandoned', name: '', local_path: '/tmp/abandoned',
+        last_sync_at: agoMs(100 * 60 * 60 * 1000),
+        last_commit: 'x', chunker_version: currentChunkerVersion,
+        newest_content_at: agoMs(200 * 60 * 60 * 1000) },
+    ]));
+
+    expect(headCalls).toBe(0);           // still no subprocess on the remote path
+    expect(result.status).toBe('warn');  // 28h: past warn, short of fail
+    expect(result.details).toEqual({ unchanged_count: 0, synced_recently_count: 0, stale_count: 1 });
   });
 
   test('T2b: REMOTE + NULL column → wall-clock fallback → stale (no git subprocess)', async () => {
@@ -1619,6 +1645,35 @@ describe('BUG 4 — in-progress sync via live lock, not stale freshness', () => 
     await holdLock('wiki', -5); // ttl_expires_at 5 min in the past
     const result = await checkSyncFreshness(engine);
     expect(result.status).toBe('fail');
+  });
+
+  test('a lock held PAST the staleness ceiling is wedged, not in-progress → fail', async () => {
+    // `withRefreshingLock` bumps the heartbeat on its own timer regardless of
+    // whether the import is making forward progress, so a holder blocked inside
+    // a query refreshes forever. An uncapped in-progress verdict would mask that
+    // source from every staleness check indefinitely — the same invisible-failure
+    // class as the freshness bug, reached through the lock table instead.
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    await addSource('wiki', staleDate());
+    // Live, actively-refreshing lock (TTL 30 min in the future) — but acquired
+    // 100h ago, well past the 72h default ceiling.
+    await engine.executeRaw(
+      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at)
+       VALUES ($1, 4242, 'testhost', now() - interval '100 hours', now() + interval '30 minutes', now())`,
+      [syncLockId('wiki')],
+    );
+    const result = await checkSyncFreshness(engine);
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('held the sync lock');
+    expect(result.message).toContain('break-lock');
+  });
+
+  test('a freshly-acquired live lock is still in-progress → ok (cap does not over-fire)', async () => {
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    await addSource('wiki', staleDate());
+    await holdLock('wiki', 30); // acquired_at = now(), well under the ceiling
+    const result = await checkSyncFreshness(engine);
+    expect(result.status).toBe('ok');
   });
 
   test('blocked source with banked checkpoint rows but NO live lock → still fail', async () => {
