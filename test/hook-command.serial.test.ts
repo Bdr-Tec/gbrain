@@ -210,6 +210,96 @@ describe('user-prompt', () => {
     expect((await lastHeartbeat())?.turns).toBe(5);
   });
 
+  test('cross-turn dedupe: previously-injected blocks ride priorContextText; channel defaults to claude-code', async () => {
+    const dataDir = join(tmp, 'data');
+    writePgliteConfig(dataDir);
+    let seen: TurnContextRequest | null = null;
+    await startServer({ dataDir, blockText: 'ok', onRequest: (r) => { seen = r; } });
+    // Real captured transcript (claude CLI 2.1.224, hook installed): two
+    // hook_additional_context attachments naming companies/acme-example.
+    const projRoot = join(tmp, 'projects');
+    mkdirSync(join(projRoot, 'p1'), { recursive: true });
+    const transcript = join(projRoot, 'p1', 'sess.jsonl');
+    copyFileSync(join(import.meta.dir, 'fixtures', 'hook-transcript.jsonl'), transcript);
+    const out = collectStdout();
+    await runHook(['user-prompt'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'more about Acme Example?', transcript_path: transcript, session_id: 's-3' }),
+      transcriptRoot: projRoot,
+    });
+    expect(seen).not.toBeNull();
+    // Dedupe input = ONLY the structured injections (both blocks, joined) —
+    // the serve suppresses re-volunteering companies/acme-example this turn.
+    expect(seen!.priorContextText).toContain('companies/acme-example');
+    expect(seen!.priorContextText).not.toContain('Reply with exactly'); // never raw turn text
+    // Feedback-loop attribution: default channel is claude-code (the only
+    // harness bootstrap registers hooks for today).
+    expect(seen!.channel).toBe('claude-code');
+  });
+
+  test('priorContextText is deduped and byte-capped: an injection-heavy session can never blow the IPC message cap', async () => {
+    const dataDir = join(tmp, 'data');
+    writePgliteConfig(dataDir);
+    let seen: TurnContextRequest | null = null;
+    await startServer({ dataDir, blockText: 'ok', onRequest: (r) => { seen = r; } });
+    const projRoot = join(tmp, 'projects');
+    mkdirSync(join(projRoot, 'p1'), { recursive: true });
+    const transcript = join(projRoot, 'p1', 'sess.jsonl');
+    // 60 injections: 50 identical (per-turn re-records of one block) + 10
+    // distinct 8KB blocks — raw join would be ~90KB+; the cap keeps ≤32KB
+    // of NEWEST distinct blocks.
+    const bigBlock = (i: number) =>
+      `## Brain pages mentioned this turn\n- **Page ${i}** → \`pages/p${i}\` — ${'x'.repeat(8000)}`;
+    const lines = [
+      ...Array.from({ length: 50 }, () =>
+        JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['## Brain pages mentioned this turn\n- **Dup** → `pages/dup` — same block every turn'] } })),
+      ...Array.from({ length: 10 }, (_, i) =>
+        JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [bigBlock(i)] } })),
+    ];
+    writeFileSync(transcript, lines.join('\n') + '\n');
+    const out = collectStdout();
+    await runHook(['user-prompt'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'more about Acme?', transcript_path: transcript, session_id: 's-cap' }),
+      transcriptRoot: projRoot,
+    });
+    expect(seen).not.toBeNull();
+    const prior = seen!.priorContextText!;
+    expect(Buffer.byteLength(prior, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    // Newest-first retention: the newest distinct block survives the cap...
+    expect(prior).toContain('pages/p9');
+    // ...and identical re-records collapsed to one occurrence.
+    expect(prior.split('pages/dup').length - 1).toBeLessThanOrEqual(1);
+  });
+
+  test('--harness codex flags the channel; unknown values fall back to the default', async () => {
+    const dataDir = join(tmp, 'data');
+    writePgliteConfig(dataDir);
+    const seen: TurnContextRequest[] = [];
+    await startServer({ dataDir, blockText: 'ok', onRequest: (r) => { seen.push(r); } });
+    const out = collectStdout();
+    await runHook(['user-prompt', '--harness', 'codex'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'hello Acme' }),
+    });
+    await runHook(['user-prompt', '--harness', 'vim'], {
+      ...out.io,
+      stdin: JSON.stringify({ prompt: 'hello Acme' }),
+    });
+    expect(seen).toHaveLength(2);
+    expect(seen[0].channel).toBe('codex');
+    expect(seen[1].channel).toBe('claude-code'); // fail-open to the default
+  });
+
+  test('hook ∈ STARTUP_HOOK_SKIP_COMMANDS (source grep — maybeEmitUpdateMarker no-ops under NODE_ENV=test, so no runtime test can pin this)', () => {
+    const cliSrc = readFileSync(join(import.meta.dir, '..', 'src', 'cli.ts'), 'utf8');
+    const m = cliSrc.match(/const STARTUP_HOOK_SKIP_COMMANDS = new Set\(\[[\s\S]*?\]\);/);
+    expect(m).not.toBeNull();
+    // user-prompt fires once per user PROMPT: a stale update cache would
+    // otherwise spawn a detached check-update child per prompt.
+    expect(m![0]).toContain("'hook'");
+  });
+
   test('confinement rejection aborts: heartbeat + exit 0 empty [S3#8]', async () => {
     const dataDir = join(tmp, 'data');
     writePgliteConfig(dataDir);

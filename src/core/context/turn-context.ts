@@ -61,6 +61,14 @@ export interface TurnContextResult {
   text: string;
   /** Reflex pointers that survived suppression + budget. */
   pointers: ReflexPointer[];
+  /**
+   * Volunteered pages that survived dedupe + budget — exactly what the
+   * rendered text carries. Exposed so the IPC delivery point can log them to
+   * context_volunteer_events with channel attribution (the #2095 feedback
+   * loop); without this the hook lane fires invisibly to `--stats`/doctor.
+   * Optional for wire back-compat (an older serve's block omits it).
+   */
+  volunteered?: VolunteeredPage[];
   /** Hot facts included after budget trimming. */
   factsCount: number;
   degradedReason?: string;
@@ -192,6 +200,10 @@ export async function assembleTurnContext(
   return {
     text,
     pointers,
+    // Post-trim survivors: budget trimming mutates these arrays in place, so
+    // this is exactly the set present in `text` — never the pre-budget pool
+    // (logging a trimmed-out page would corrupt the precision stats).
+    volunteered,
     factsCount: facts.length,
     ...(degradedReason ? { degradedReason } : {}),
   };

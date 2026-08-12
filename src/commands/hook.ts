@@ -104,6 +104,9 @@ export const HEARTBEAT_FAILURE_RATE_THRESHOLD = 0.5;
 export const PUSH_STALE_MS = 48 * 60 * 60 * 1000;
 /** user-prompt window: transcript turns fed to turn_context (plan D5: last 4). */
 const USER_PROMPT_WINDOW_TURNS = 4;
+/** Dedupe-input budget: newest injected blocks kept under this cap so the
+ * IPC request can never blow the 256KB message cap on priorContextText. */
+export const PRIOR_CONTEXT_MAX_BYTES = 32 * 1024;
 /** user-prompt transcript parse budget (tail bytes — the window only needs the newest turns). */
 const USER_PROMPT_TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -132,6 +135,12 @@ export interface HookIo {
   spawnPush?: (root: string) => void;
   /** TEST SEAM: user-prompt deadline override (wall-clock flake control). */
   userPromptDeadlineMs?: number;
+  /**
+   * Feedback-loop attribution channel (`--harness <claude-code|codex>`).
+   * Default 'claude-code' — the only harness bootstrap registers hooks for
+   * today; a codex hook registration passes the flag explicitly.
+   */
+  harness?: 'claude-code' | 'codex';
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -143,6 +152,8 @@ Events (wired into .claude/settings.local.json by gbrain bootstrap):
                   push status, hook health) to stdout
   user-prompt     read hook JSON on stdin, request per-turn context from a
                   running 'gbrain serve' over IPC, print additionalContext JSON
+                  (--harness <claude-code|codex> sets the feedback-loop channel;
+                  default claude-code, unknown values fall back to the default)
   stop            append to the per-session live buffer
   session-end     ingest the session transcript into the dream corpus
                   (secret-scanned), prune old corpus files, push the workspace
@@ -157,6 +168,14 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
   if (event === '--help' || event === '-h' || event === 'help') {
     write(io, USAGE + '\n');
     return 0;
+  }
+  // `--harness <claude-code|codex>` — feedback-loop channel attribution for
+  // user-prompt. Unknown values fall back to the default (fail-open: a bad
+  // registration must never break the hook contract).
+  const harnessIdx = args.indexOf('--harness');
+  if (harnessIdx >= 0 && !io.harness) {
+    const v = args[harnessIdx + 1];
+    if (v === 'claude-code' || v === 'codex') io = { ...io, harness: v };
   }
   if (!event || !['session-start', 'user-prompt', 'stop', 'session-end'].includes(event)) {
     process.stderr.write(USAGE + '\n');
@@ -742,6 +761,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     // S3#8: transcript_path is untrusted input. A present-but-unconfined
     // path aborts the event (heartbeat + empty stdout), never "best effort".
     let turns: WindowTurn[] = [];
+    let priorContextText: string | undefined;
     if (j.transcript_path !== undefined && j.transcript_path !== null) {
       const conf = confineTranscriptPath(j.transcript_path, {
         ...(io.transcriptRoot ? { root: io.transcriptRoot } : {}),
@@ -750,6 +770,34 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
       try {
         const parsed = parseTranscript(conf.path, { maxBytes: USER_PROMPT_TRANSCRIPT_MAX_BYTES });
         turns = parsed.turns.slice(-USER_PROMPT_WINDOW_TURNS);
+        // Cross-turn dedupe: feed the blocks WE previously injected this
+        // session back as priorContextText (slug-only suppression + volunteer
+        // dedupe inside assembleTurnContext) — a page is volunteered once per
+        // session, not once per mention. Structured extraction only (the
+        // gbrain-marked hook_additional_context attachments), never raw turn
+        // text, so a short slug in a tool payload can't over-suppress.
+        // Bounded before send: identical blocks dedupe (the same pointer
+        // re-recorded each turn is pure redundancy) and the newest blocks are
+        // kept under a byte cap — an unbounded join would eventually exceed
+        // the 256KB IPC message cap and permanently silence the channel.
+        // Horizon note: the tail read bounds dedupe to the newest
+        // USER_PROMPT_TRANSCRIPT_MAX_BYTES of transcript — in very long
+        // sessions the oldest injections roll out and their pages become
+        // volunteerable again (documented, preferable to a state file).
+        if (parsed.injectedContextBlocks.length) {
+          const unique = [...new Set(parsed.injectedContextBlocks)];
+          const kept: string[] = [];
+          let bytes = 0;
+          for (const block of unique.reverse()) { // newest first
+            const b = Buffer.byteLength(block, 'utf8') + 2;
+            // Skip (not break): one oversized block must not evict every
+            // older, smaller block — that would disable ALL dedupe at once.
+            if (bytes + b > PRIOR_CONTEXT_MAX_BYTES) continue;
+            kept.unshift(block); // restore oldest → newest order
+            bytes += b;
+          }
+          if (kept.length) priorContextText = kept.join('\n\n');
+        }
       } catch {
         turns = []; // unreadable-mid-flight — the prompt alone still works
       }
@@ -773,8 +821,14 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     const res = await requestTurnContext(socketPath, {
       secret,
       window: turns,
+      ...(priorContextText ? { priorContextText } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(sourceId ? { sourceId } : {}),
+      // Feedback-loop attribution: the serve logs the delivered block's
+      // volunteered pages/pointers under this channel. Bootstrap registers
+      // hooks for Claude Code only today; a future codex registration passes
+      // `--harness codex` on the hook command.
+      channel: io.harness ?? 'claude-code',
     });
     if (res === IPC_UNAVAILABLE) {
       return { outcome: 'degraded', reason: 'ipc_unavailable', turns: turns.length };
@@ -805,6 +859,14 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     }
     if (blockText.length === 0) return { outcome: 'degraded', reason: 'over_cap', turns: turns.length };
     guardedWrite(payload + '\n');
+    // Partial trim is delivery-count drift: the serve already logged the FULL
+    // post-budget set at the response write, but pages cut from the tail here
+    // were never injected. Record it so the doctor's heartbeat reconciliation
+    // (and a future reconciler) can see the divergence — outcome stays ok
+    // (context WAS injected), the reason carries the signal.
+    if (blockText.length < text.length) {
+      return { outcome: 'ok', reason: 'trimmed', turns: turns.length };
+    }
     return { outcome: 'ok', turns: turns.length };
   })();
 

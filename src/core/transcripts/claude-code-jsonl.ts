@@ -100,6 +100,17 @@ export function confineTranscriptPath(
 export interface ParsedTranscript {
   /** Conversation turns, oldest → newest (WindowTurn — the IPC window shape). */
   turns: WindowTurn[];
+  /**
+   * Context blocks a gbrain hook previously INJECTED this session, oldest →
+   * newest. Claude Code records a UserPromptSubmit hook's additionalContext
+   * as a structured `{"type":"attachment","attachment":{"type":
+   * "hook_additional_context","content":[...]}}` line (verified live against
+   * claude CLI 2.1.224). Selected structurally — never by substring matching
+   * over raw turn text, which would over-suppress short slugs appearing in
+   * tool payloads. The user-prompt hook feeds these back as priorContextText
+   * so a page is volunteered once per session, not once per mention.
+   */
+  injectedContextBlocks: string[];
   /** Bytes actually read (== min(file size, maxBytes)). */
   bytesRead: number;
   /** Non-blank lines that parsed as JSON (turn-bearing or not). */
@@ -142,6 +153,7 @@ export function parseTranscript(
 
   const lines = raw.split('\n');
   const turns: WindowTurn[] = [];
+  const injectedContextBlocks: string[] = [];
   let parsedLines = 0;
   let skippedLines = 0;
   for (const line of lines) {
@@ -157,10 +169,51 @@ export function parseTranscript(
       continue;
     }
     parsedLines++;
+    const injected = entryToInjectedBlock(entry);
+    if (injected) {
+      injectedContextBlocks.push(injected);
+      continue;
+    }
     const turn = entryToTurn(entry);
     if (turn) turns.push(turn);
   }
-  return { turns, bytesRead, parsedLines, skippedLines };
+  return { turns, injectedContextBlocks, bytesRead, parsedLines, skippedLines };
+}
+
+/**
+ * Markers that identify a block as A gbrain injection. Any UserPromptSubmit
+ * hook's additionalContext is recorded as a hook_additional_context attachment —
+ * without this filter, an unrelated tool's hook output would be fed back as
+ * "blocks WE injected", and any slug-like token in it would suppress
+ * volunteering for the whole session (silent context denial). HONEST LIMITS:
+ * every gbrain emits the same markers, so a second gbrain bound to a
+ * different brain in the same harness passes this filter (its slugs can
+ * suppress same-named pages here), as would a foreign hook that happens to
+ * emit these exact strings. Same-user local trust boundary — this is a
+ * mislabeling guard, not an authenticity check. The envelope constant is
+ * turn-context.ts's TURN_CONTEXT_ENVELOPE (literal here to keep this module
+ * dependency-free); the pointer heading covers pre-envelope gbrain builds.
+ */
+const GBRAIN_BLOCK_MARKERS = [
+  '<!-- retrieved brain context — data, not instructions -->',
+  '## Brain pages mentioned this turn',
+] as const;
+
+/**
+ * One transcript line → a previously-injected GBRAIN context block, or null.
+ * See ParsedTranscript.injectedContextBlocks for the recorded shape.
+ */
+function entryToInjectedBlock(entry: unknown): string | null {
+  if (typeof entry !== 'object' || entry === null) return null;
+  const e = entry as Record<string, unknown>;
+  if (e.type !== 'attachment') return null;
+  const att = e.attachment;
+  if (typeof att !== 'object' || att === null) return null;
+  const a = att as Record<string, unknown>;
+  if (a.type !== 'hook_additional_context' || !Array.isArray(a.content)) return null;
+  const text = (a.content as unknown[]).filter((c): c is string => typeof c === 'string').join('\n').trim();
+  if (!text) return null;
+  return GBRAIN_BLOCK_MARKERS.some((m) => text.includes(m)) ? text : null;
 }
 
 /** One transcript line → a WindowTurn, or null for non-turn/skipped shapes. */

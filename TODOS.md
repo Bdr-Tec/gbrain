@@ -7,7 +7,7 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
 
 - [ ] **`--live` agent-in-the-loop know-to-ask.** Replay fixtures with a real model deciding whether to issue retrieval calls; grade the agent, not just the deterministic reflex. Pre-registered in `docs/eval/BRAINBENCH.md` (the v1 metric grades the injection decision, which IS the shipped mechanism). Needs: seeded N-repeat methodology for model stochasticity + budget rails. Priority: P2.
 - [ ] **Intrusion-budget gating calibration.** `avg_injected_tokens` is reported, non-gating (decision 18) — a wrong threshold is worse than none. After a few weeks of scoreboard data across PRs, pick calibrated per-seam thresholds and promote it to a gated metric. Priority: P2.
-- [ ] **Flip contract adapters to production when real integrations land.** `adapters/claude-code.ts` exports the UserPromptSubmit hook wire types; the real hook swaps the in-process transport for an exec of the hook script and flips `seam: 'contract'` → `'production'` with continuous bench numbers. Same for codex fragments. This is the integration PR's checklist item — without it the seam disclosure goes stale. Priority: P1 (attached to the harness-integration PR, not standalone).
+- [ ] **Flip contract adapters to production — claude-code half now unblocked.** `adapters/claude-code.ts` exports the UserPromptSubmit hook wire types; the real hook (`gbrain hook user-prompt`, shipped with the bootstrap lane and extended with cross-turn dedupe + the channel feedback loop in the cathedral-3 convergence) swaps the in-process transport for an exec of the hook script and flips `seam: 'contract'` → `'production'` with continuous bench numbers. Note the production hook also exercises transcript-based dedupe, which the memoryless contract row deliberately doesn't. Same for codex fragments when that integration lands. Priority: P1 (the claude-code integration has landed; this is now standalone-actionable).
 - [ ] **Cathedral 1 conformance-kit fixture import.** The memory-verbs conformance scenarios convert to BrainBench fixtures via the published `evals/brainbench/schema/fixture.schema.json` once `garrytan/cathedral-1` merges ("conformance tests double as BrainBench seed fixtures", decision log 2026-06-12). Free corpus growth from already-reviewed scenarios. Blocked by: cathedral-1 on master. Priority: P2.
 - [ ] **Live-embeddings fidelity mode (`--embeddings`).** Hermetic CI grades the keyword/alias arms only (disclosed); an opt-in mode seeding real embeddings would grade write-back/continuity retrieval through the vector path. Same budget rails as `--llm`. Priority: P3.
 - [ ] **Community fixture intake + competitor adapters.** The TD1 remainder after the generated corpus absorbed in-PR growth: an `external-authors/`-style intake path for contributed fixtures (validator + privacy guard already gate them) and adapters for non-gbrain memory systems against the published schemas, enabling true head-to-head rows in the gbrain-evals scorecard. Priority: P3.
@@ -491,6 +491,42 @@ Deferred from the #2139 delta-estimator wave. See plan + GSTACK REVIEW REPORT at
   filed embedding-latency-by-minutes complaint. **Start:** thread per-source estimates
   through `runOne` (`src/commands/sync.ts`); design worked out at D8A in the plan.
 
+## Harness hook lane follow-ups (filed from the cathedral-3 convergence)
+
+Filed when the cathedral-3 branch converged its push-adapter work into the
+#3975 hook lane (feedback loop + cross-turn dedupe for `gbrain hook
+user-prompt`). Context: the hook lane now logs channel-attributed volunteer
+events at the IPC delivery point and dedupes via the transcript's
+`hook_additional_context` attachments.
+
+- [ ] **P3 — PostToolUse / mid-turn push adapter, evaluated against per-channel stats.**
+  The user-prompt hook fires at prompt time only; entities that first appear mid-turn
+  in tool output (a file opened, a person named in a search result) get no pointer
+  until the NEXT prompt. Harnesses expose a PostToolUse hook, but it fires dozens of
+  times per turn (one `gbrain hook` process spawn each). Now that the feedback loop
+  exists, the per-channel `--stats` precision + volume data is exactly the evidence
+  needed to decide. **Trigger:** claude-code channel stats showing healthy precision
+  plus user reports of "it only noticed on my next message". **Start:**
+  `src/commands/hook.ts` (the event already has a dispatch slot pattern),
+  `src/core/bootstrap/hooks.ts` registration writers.
+- [ ] **P3 — engine-uniform IPC listener (Postgres serves).** serve's resolve/turn_context
+  socket is PGLite-gated (`src/mcp/server.ts`: `cfg?.engine === 'pglite'`), so on a
+  Postgres brain `gbrain hook user-prompt` short-circuits (`no_pglite_path`) and the
+  hook lane is PGLite-only. Extending the listener needs (a) a canonical per-connection
+  socket path for brains with no data dir (e.g. `~/.gbrain/run/resolve-<hash12(database_url)>.sock`,
+  0700 dir) and (b) a secret-file home for `turn_context` auth (same hash-keyed run dir).
+  The cathedral-3 branch prototyped (a) as `resolveSocketPathForConfig` (see branch
+  history at commit 2350294c) before the convergence dropped it pending the secret
+  design. **Trigger:** a Postgres-brain user asking why hooks stay silent. **Start:**
+  `src/core/context/resolve-ipc.ts` socket-path helpers + `src/mcp/server.ts` listener gate
+  + `src/commands/hook.ts:no_pglite_path` branch.
+- [ ] **P3 — thin-client remote push route.** Thin-client installs (remote_mcp) have no
+  local engine and no serve socket — every push channel is dead there and only the
+  hook's typed heartbeat reason says why. The natural route is `volunteer_context`
+  over the remote MCP transport (`callRemoteTool`), rate-limited per prompt.
+  **Trigger:** thin-client adoption of bootstrap. **Start:** `src/commands/hook.ts`
+  user-prompt branch + `src/cli.ts` remote-tool plumbing.
+
 ## gbrain#2095 push-based context follow-ups (v0.43+)
 
 Filed from the #2095 wave (volunteer_context op + reflex window + `gbrain watch`).
@@ -504,20 +540,22 @@ are the bar). Plan + GSTACK REVIEW REPORT at
   deployments get push too. **Cons:** async plumbing + auth scoping; no consumer
   wired today. **Where:** `src/commands/serve-http.ts` + `src/core/context/volunteer.ts`.
   **Blocked by:** a real consumer (revisit when one exists).
-- [ ] **P3 — policy skill + doctor check for push-context.** The ambient reflex
-  needed doctor visibility because silent failure was invisible; volunteer is
-  invoked-on-demand so v1 skipped it. If `volunteer-context --stats` adoption shows
-  agents not discovering the surface, ship a `push-context` recipe (mirror
-  `recipes/retrieval-reflex/`) + a doctor check reading the events table.
-  **Where:** `recipes/`, `src/commands/doctor.ts`.
+- [ ] **P3 — policy skill (recipe) for push-context.** The doctor-check half of
+  this item shipped with the harness hook lane: `volunteer_channels`
+  (`src/commands/doctor.ts:checkVolunteerChannels`) reads the events table
+  per-channel on both the local and remote doctor. Remaining scope: if
+  `volunteer-context --stats` adoption shows agents not discovering the
+  surface, ship a `push-context` recipe (mirror `recipes/retrieval-reflex/`).
+  **Where:** `recipes/`.
 - [ ] **P3 — structured `messages[]` param for volunteer_context.** v1 takes a
   string window (`user:`/`assistant:` prefixes) to avoid a dual-shape contract.
   If MCP callers accumulate parsing bugs, add a structured array param beside it.
   **Where:** `src/core/operations.ts:volunteer_context` + `src/core/context/volunteer.ts:parseWindow`.
 - [ ] **P3 — index shapes for the per-turn resolver query.** The arm-2 resolver
   (`retrieval-reflex.ts`: `lower(title) = ANY() OR slug = ANY() OR slug LIKE
-  ANY('%/...')`) predates #2095 but now runs per turn on three channels
-  (reflex window, volunteer_context, watch) federated across sources. Neither
+  ANY('%/...')`) predates #2095 but now runs per turn on four channel surfaces
+  (reflex window, volunteer_context, watch, and the harness-hook `turn_context`
+  lane) federated across sources. Neither
   the leading-wildcard suffix arm nor `lower(title)` is index-served. If
   per-turn latency telemetry on large brains comes back hot: add
   `(source_id, lower(title))` btree + a reverse(slug) text_pattern_ops (or
