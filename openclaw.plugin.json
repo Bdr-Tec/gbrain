@@ -45,6 +45,7 @@
     "skills/citation-graph-ingest",
     "skills/company-brainify",
     "skills/concept-synthesis",
+    "skills/context-audit",
     "skills/correction-pipeline",
     "skills/cron-scheduler",
     "skills/cross-modal-review",

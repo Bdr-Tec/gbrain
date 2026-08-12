@@ -91,6 +91,7 @@ wins; fix the row.
 | "present options", "ask before proceeding", "choice gate", "user decision" | `skills/ask-user/SKILL.md` |
 | "timeout", "ETIMEDOUT", "stale", "freshness" | `skills/measure-before-you-fix/SKILL.md` |
 | "draft in voice", "write this as", "make this sound like", "ghostwrite" | `skills/draft-in-voice/SKILL.md` |
+| "context audit", "context diet", "system prompt audit", "prompt compression" | `skills/context-audit/SKILL.md` |
 
 ## Setup & migration
 

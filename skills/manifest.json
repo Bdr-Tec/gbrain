@@ -328,6 +328,11 @@
       "name": "research-compendium",
       "path": "research-compendium/SKILL.md",
       "description": ">"
+    },
+    {
+      "name": "context-audit",
+      "path": "context-audit/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {
