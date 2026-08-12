@@ -23,12 +23,35 @@ follows is `BOOTSTRAP_FOR_AGENTS.md` at the repo root, fetched at the
 | Hooks (Claude Code, ON by default) | `.claude/settings.local.json` (gitignored) | each prompt; fail-open; `--no-hooks` opts out at install, `GBRAIN_HOOKS=0` disables at runtime |
 | Session persistence | SessionEnd hook → scan-gated commit+push | at session end |
 | Optional 15-min push job | launchd/cron (consent-gated) | while logged in |
-| Private GitHub repo | your account, created by `bootstrap repo` | privacy verified via API |
+| Private GitHub repo | your account, created by `bootstrap repo` (or an empty repo you made yourself, adopted) | privacy verified via API |
 | Machine receipt | `~/.gbrain/bootstrap/receipt.json` | uninstall is keyed to it |
 
 **What does NOT run:** anything while the harness is closed. Session-triggered
 schedules fire at turn/session boundaries only. True 24/7 operation is what a
 hosted brain provides — this is the honest desktop contract.
+
+## Bring your own repo (create-repo-first)
+
+By default bootstrap creates the private GitHub repo for you. If you prefer to own
+that step — pick the name/org-under-your-account, or just work the familiar way —
+create a new **empty** private repo **under your own GitHub account** (no
+README/.gitignore/license), clone it, open the clone in your harness, and run the
+bootstrap block. `gbrain bootstrap repo` detects the empty repo you created and
+**adopts** it: it verifies the repo is private, sets a repo-local git identity, and
+pushes your workspace. Two constraints, both enforced with a clear message rather
+than a silent failure:
+
+- **Empty.** A repo that already has commits (a README, a license, an existing
+  project) is refused — create it empty, or run `gbrain bootstrap attach` if it is
+  an existing agent workspace. (A repo already carrying *this* workspace's history,
+  e.g. from an interrupted run, is recognized as yours and resumed.)
+- **Personal account.** The repo must be owned by your authenticated GitHub user.
+  Org-owned repos are refused today; create one under your own account, or let
+  bootstrap make it.
+
+Until the repo phase verifies the repo, the per-turn/session-end push stays
+deferred — bootstrap never publishes your workspace to an origin whose privacy it
+hasn't confirmed.
 
 ## The awake-when-you-are contract
 

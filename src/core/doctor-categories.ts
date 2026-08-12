@@ -130,6 +130,9 @@ export const SKILL_CHECK_NAMES: ReadonlySet<string> = new Set([
   'memory_verbs_usage',
   'resolver_health',
   'retrieval_reflex_health',
+  // Harness hook adapters: per-channel push-context visibility (sibling of
+  // retrieval_reflex_health — same "is my agent's context wiring live?" question).
+  'volunteer_channels',
   'skill_brain_first',
   'skill_conformance',
   'skills_manifest_integrity',

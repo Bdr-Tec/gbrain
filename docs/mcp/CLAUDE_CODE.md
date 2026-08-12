@@ -8,6 +8,8 @@
 > Want the **full agent** — identity, per-turn context, schedules, and a private
 > repo as its durable body — not just a memory? That's `gbrain bootstrap`:
 > see the paste block in the README and [docs/guides/bootstrap.md](../guides/bootstrap.md).
+> Open a new empty folder (bootstrap creates the private repo for you), or make an
+> empty private repo under your own account and open the clone — bootstrap adopts it.
 
 ## Option 1: Local (recommended, zero server needed)
 

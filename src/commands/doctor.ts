@@ -432,6 +432,119 @@ export async function jsonbIntegrityCheck(
   }
 }
 
+/**
+ * Per-channel push-context visibility (harness hook adapters). Groups
+ * context_volunteer_events by channel over the last 7 days so the operator
+ * can see which adapters (ambient reflex / op / watch / claude-code / codex)
+ * are actually firing. Engine-aware SIBLING of buildRetrievalReflexCheck
+ * (which is engine-free and heartbeat-file based) — deliberately a separate
+ * check so the existing builder keeps its signature.
+ *
+ * Info-only (never warn/fail on quiet channels — most installs use a subset).
+ * The message distinguishes the two "installed but nothing happens" classes:
+ * a hook script that never registered (restart the harness session) vs a
+ * registered adapter whose channel went quiet. Pre-v117 brains (no events
+ * table) return ok with a note instead of throwing. A serve started before
+ * this build logs hook traffic as 'reflex' — restart serve after upgrade.
+ */
+export async function checkVolunteerChannels(
+  engine: BrainEngine,
+  opts: { sourceIds?: string[] } = {},
+): Promise<Check> {
+  const name = 'volunteer_channels';
+  try {
+    // Source scoping (cross-model P1): remote source-bound callers pass their
+    // authorized ids — an unqualified aggregate would leak other sources'
+    // activity counts/timestamps. Local trusted doctor passes none (brain-wide).
+    // Unscoped shape: no source_id predicate → the composite
+    // (source_id, volunteered_at DESC) index can't range-scan and this
+    // seq-scans the table. Accepted DELIBERATELY for the local info check
+    // (table is TTL-pruned at 90 days) — do NOT reuse on a hot path.
+    const scoped = Array.isArray(opts.sourceIds) && opts.sourceIds.length > 0;
+    const rows = await engine.executeRaw<{ channel: string; n: string | number; last_fired: string | Date | null }>(
+      scoped
+        ? `SELECT channel, count(*)::int AS n, max(volunteered_at) AS last_fired
+             FROM context_volunteer_events
+            WHERE source_id = ANY($1::text[])
+              AND volunteered_at > now() - interval '7 days'
+            GROUP BY channel
+            ORDER BY channel`
+        : `SELECT channel, count(*)::int AS n, max(volunteered_at) AS last_fired
+             FROM context_volunteer_events
+            WHERE volunteered_at > now() - interval '7 days'
+            GROUP BY channel
+            ORDER BY channel`,
+      scoped ? [opts.sourceIds] : [],
+    );
+    const channels: Record<string, { count: number; last_fired: string | null }> = {};
+    for (const r of rows) {
+      channels[r.channel] = {
+        count: Number(r.n),
+        last_fired: r.last_fired ? new Date(r.last_fired).toISOString() : null,
+      };
+    }
+    const active = Object.keys(channels);
+
+    // RT reconciliation: server-side delivery counts fire at the response
+    // write — a hook client that timed out / hit its deadline / trimmed to
+    // nothing still gets counted. The hook's own heartbeat records those
+    // degradations, so surface the degraded rate next to the counts: a
+    // "healthy" channel with a mostly-degraded heartbeat is delivery failure.
+    let heartbeatNote = '';
+    let heartbeat: { user_prompt_ok: number; user_prompt_degraded: number } | undefined;
+    try {
+      const { readHeartbeatTail } = await import('./hook.ts');
+      const tail = await readHeartbeatTail(200);
+      // Same 7-day window as the event counts (a month-old degraded streak
+      // must not indict a healthy current week), and a minimum sample floor
+      // so one bad entry can't trigger the caution.
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const up = tail.filter(
+        (e) => e.event === 'user-prompt' && Date.parse(e.ts ?? '') >= cutoff,
+      );
+      if (up.length >= 5) {
+        const degraded = up.filter((e) => e.outcome !== 'ok').length;
+        heartbeat = { user_prompt_ok: up.length - degraded, user_prompt_degraded: degraded };
+        if (degraded > up.length / 2) {
+          heartbeatNote = ` — CAUTION: the hook heartbeat shows ${degraded}/${up.length} user-prompt events degraded this week, so server-side counts may overstate what was actually injected`;
+        }
+      }
+    } catch { /* heartbeat surface is best-effort */ }
+
+    // Engine-aware quiet-channel guidance: the harness-hook lane rides the
+    // PGLite serve socket — on a Postgres brain, "check your registration and
+    // restart" can never make the channel fire (pull-mode covers Postgres).
+    const cfg = (() => { try { return loadConfig(); } catch { return null; } })();
+    const quietGuidance =
+      cfg?.engine === 'pglite'
+        ? 'if a hook adapter is installed, confirm its registration landed and the harness session was RESTARTED (hooks snapshot at session start); a serve older than this build logs NOTHING for the hook lane — restart serve on the new build to activate the feedback loop'
+        : 'note: the harness-hook channels require a PGLite serve socket — on this engine the hook lane stays quiet by design (pull-mode retrieval covers it)';
+    const message = active.length
+      ? `push-context channels active (7d): ${active.map((c) => `${c}=${channels[c].count}`).join(', ')}${heartbeatNote}`
+      : `no push-context activity in 7 days — ${quietGuidance}`;
+    return {
+      name,
+      status: 'ok',
+      message,
+      details: { window_days: 7, channels, ...(heartbeat ? { hook_heartbeat: heartbeat } : {}) },
+    };
+  } catch (e) {
+    // Discriminate table-absent (pre-v117 brain) from transient failures —
+    // a connection blip on a fully-migrated brain must not be misreported
+    // as an old schema. Info-only either way; never block doctor.
+    const msg = e instanceof Error ? e.message : String(e);
+    const tableAbsent = /does not exist|undefined table|no such table|42P01/i.test(msg);
+    return {
+      name,
+      status: 'ok',
+      message: tableAbsent
+        ? 'volunteer-events table not available (pre-v117 brain) — per-channel push visibility inactive'
+        : `volunteer_channels query failed (info-only check; may or may not be transient): ${msg}`,
+      details: { window_days: 7, channels: {} },
+    };
+  }
+}
+
 export async function takesWeightGridCheck(engine: BrainEngine): Promise<Check> {
   try {
     const rows = await engine.executeRaw<{ off_grid: string | number; total: string | number }>(
@@ -665,7 +778,10 @@ export async function checkSourceConfigShape(engine: BrainEngine): Promise<Check
   }
 }
 
-export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorReport> {
+export async function doctorReportRemote(
+  engine: BrainEngine,
+  opts: { sourceIds?: string[] } = {},
+): Promise<DoctorReport> {
   const checks: Check[] = [];
 
   // 1. Connection
@@ -923,6 +1039,12 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
   // next subagent job submission. (Layers 1+2 also enforce — this is the
   // surfacing layer.)
   checks.push(await checkSubagentCapability(engine));
+
+  // Harness hook adapters — per-channel push-context visibility (sibling of
+  // the engine-free retrieval_reflex_health heartbeat check). Source-scoped
+  // for remote callers (cross-model P1): a source-bound token must not see
+  // other sources' activity counts/timestamps.
+  checks.push(await checkVolunteerChannels(engine, { sourceIds: opts.sourceIds }));
 
   // 6. Sync freshness check
   checks.push(await checkSyncFreshness(engine));
@@ -5182,6 +5304,14 @@ export async function buildChecks(
   // so it never claims "enabled via host"; it reports observed activity instead.
   if (scope === 'all') {
     checks.push(buildRetrievalReflexCheck(skillsDir));
+  }
+
+  // 1b-2. Per-channel push-context visibility (the hook lane's feedback
+  // loop). Engine-aware sibling of the reflex heartbeat check above — the
+  // LOCAL `gbrain doctor` is the primary operator surface for this, so it
+  // runs here as well as on the remote report path. Skipped in fs-only mode.
+  if (scope === 'all' && engine && !fastMode) {
+    checks.push(await checkVolunteerChannels(engine));
   }
 
   // 1c. MEMORY_VERBS v1 usage sidecar health (Cathedral 1, E4). Read-only,

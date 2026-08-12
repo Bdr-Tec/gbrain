@@ -209,6 +209,12 @@ for (const op of operations) {
 // GBRAIN_SKIP_STARTUP_HOOKS for any children they spawn.
 const STARTUP_HOOK_SKIP_COMMANDS = new Set([
   'upgrade', 'post-upgrade', 'check-update', 'self-upgrade',
+  // hook runs once per harness EVENT (user-prompt fires per prompt): a stale
+  // update cache would spawn a detached network-touching check-update child
+  // per prompt and emit UPGRADE_AVAILABLE stderr per turn. NOTE: this path
+  // no-ops under NODE_ENV=test, so membership is pinned by a source grep
+  // (test/hook-command.serial.test.ts), not a runtime test.
+  'hook',
 ]);
 
 /**

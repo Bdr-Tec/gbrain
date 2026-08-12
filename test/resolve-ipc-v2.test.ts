@@ -448,3 +448,152 @@ describe('resolve kind honors boundSourceId [CX2-10]', () => {
     expect(seenSourceId).toBe('any-source-at-all');
   });
 });
+
+describe('onTurnContextDelivered — the hook lane feedback-loop seam (#2095)', () => {
+  const richBlock: TurnContextResult = {
+    text: 'CONTEXT BLOCK',
+    pointers: [{ display: 'Alice', slug: 'people/alice', source_id: 'default', synopsis: 'x', arm: 'alias', confidence: 0.9 }],
+    volunteered: [{ slug: 'companies/acme', source_id: 'default', display: 'Acme', confidence: 0.85, arm: 'title', rationale: 'exact title match "Acme"', synopsis: 'y' }],
+    factsCount: 0,
+  };
+
+  test('fires after an ok non-empty delivery, with the request (channel attribution)', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    const delivered: Array<{ result: TurnContextResult; req: TurnContextRequest }> = [];
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => null, turn_context: async () => richBlock },
+      {
+        secret,
+        boundSourceId: 'default',
+        onTurnContextDelivered: (result, req) => delivered.push({ result, req }),
+      },
+    );
+    servers.push(server!);
+    const resp = await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi Acme' }], channel: 'claude-code', sessionId: 's-1' });
+    expect((resp as TurnContextResponse).ok).toBe(true);
+    // Poll (never a fixed sleep — the post-write callback races the client's
+    // response receipt and can land late on a loaded box).
+    const deadline = Date.now() + 2000;
+    while (delivered.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].result.volunteered).toHaveLength(1);
+    expect(delivered[0].result.pointers).toHaveLength(1);
+    expect(delivered[0].req.channel).toBe('claude-code');
+    expect(delivered[0].req.sessionId).toBe('s-1');
+  });
+
+  test('does NOT fire on rejections or empty blocks (nothing was injected)', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    const fired: string[] = [];
+    let emptyMode = true;
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => null, turn_context: async () => (emptyMode ? stubBlock : richBlock) },
+      { secret, boundSourceId: 'default', onTurnContextDelivered: (_r, req) => { fired.push(req.sessionId ?? '?'); } },
+    );
+    servers.push(server!);
+
+    // Empty block: ok response, but nothing injected → no callback.
+    await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi' }], sessionId: 'empty-1' });
+    // Unauthorized: rejection → no callback.
+    await requestTurnContext(sock, { secret: 'wrong-secret', window: [{ role: 'user', text: 'hi' }], sessionId: 'unauth-1' });
+    // Absence proven by ORDERING, not timing: a third request whose callback
+    // IS expected must be the FIRST and only delivery observed.
+    emptyMode = false;
+    await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi' }], sessionId: 'sentinel-1' });
+    const deadline = Date.now() + 2000;
+    while (fired.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(fired).toEqual(['sentinel-1']);
+  });
+
+  test('clamp priority: oversized priorContextText is dropped BEFORE any window turn (red-team trim inversion)', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    let seen: TurnContextRequest | null = null;
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => null, turn_context: async (req) => { seen = req; return richBlock; } },
+      { secret, boundSourceId: 'default' },
+    );
+    servers.push(server!);
+    const window: WindowTurn[] = Array.from({ length: 4 }, (_, i) => ({ role: 'user' as const, text: `turn ${i} about Acme` }));
+    const resp = await requestTurnContext(sock, {
+      secret,
+      window,
+      priorContextText: 'p'.repeat(300 * 1024), // alone exceeds the 256KB cap
+    });
+    expect((resp as TurnContextResponse).ok).toBe(true);
+    // The ADVISORY dedupe payload was sacrificed; the ESSENTIAL window
+    // arrived intact — evicting turns to preserve a hint would silently
+    // hollow out candidate extraction.
+    expect(seen!.priorContextText).toBeUndefined();
+    expect(seen!.window).toHaveLength(4);
+  });
+
+  test('re-entrancy guard: trailing bytes after the request line never double-process it (duplicate delivery logging)', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    let handlerCalls = 0;
+    let fired = 0;
+    const server = await startResolveIpcServer(
+      sock,
+      {
+        resolve: async () => null,
+        turn_context: async () => {
+          handlerCalls++;
+          await new Promise((r) => setTimeout(r, 50)); // hold the handler mid-await
+          return richBlock;
+        },
+      },
+      { secret, boundSourceId: 'default', onTurnContextDelivered: () => { fired++; } },
+    );
+    servers.push(server!);
+
+    // Raw client: request line + trailing garbage bytes while the handler is
+    // still awaiting — pre-guard, the second data event re-found the SAME
+    // line and processed it concurrently (duplicate rows in the stats table).
+    const req = JSON.stringify({ kind: 'turn_context', protocol: 2, secret, window: [{ role: 'user', text: 'hi' }] });
+    const responses: string[] = [];
+    await new Promise<void>((done) => {
+      const c = net.createConnection(sock);
+      c.setEncoding('utf8');
+      c.on('connect', () => {
+        c.write(req + '\n');
+        setTimeout(() => { try { c.write('trailing garbage\n'); } catch { /* closed */ } }, 10);
+      });
+      c.on('data', (d: string) => { responses.push(d); });
+      c.on('close', () => done());
+      c.on('error', () => done());
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(handlerCalls).toBe(1);
+    expect(fired).toBe(1);
+    expect(responses.join('').split('\n').filter(Boolean)).toHaveLength(1);
+  });
+
+  test('channel is additive on the wire: a server without the callback ignores it', async () => {
+    const dir = tmpDir();
+    const sock = resolveSocketPath(dir);
+    const secret = ensureIpcSecret(dir);
+    const server = await startResolveIpcServer(
+      sock,
+      { resolve: async () => null, turn_context: async () => richBlock },
+      { secret, boundSourceId: 'default' }, // no onTurnContextDelivered registered
+    );
+    servers.push(server!);
+    const resp = await requestTurnContext(sock, { secret, window: [{ role: 'user', text: 'hi' }], channel: 'codex' });
+    expect((resp as TurnContextResponse).ok).toBe(true);
+    expect((resp as TurnContextResponse).block?.text).toBe('CONTEXT BLOCK');
+  });
+});
