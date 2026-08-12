@@ -241,7 +241,11 @@ function consentAnswer(ws: string, key: string): string | undefined {
   if (read.ok) {
     const a = read.state.answers[key];
     if (a?.skipped === true) return 'no';
-    if (a && a.value) return a.value;
+    // Shape-tolerant: interview.json is user-editable and readInterviewState
+    // validates only that `answers` is an object — a hand-edited non-string
+    // value must fall through to the bank default, never throw at a
+    // `.toLowerCase()` call site.
+    if (a && typeof a.value === 'string' && a.value) return a.value;
   }
   return bank.questions[key]?.default;
 }
@@ -658,6 +662,24 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   }
 
   const mcpScope = ((consentAnswer(ws, 'MCP_SCOPE') ?? 'project').toLowerCase() === 'user' ? 'user' : 'project') as 'project' | 'user';
+  // A persisted 'project' answer is meaningless on Codex (`codex mcp add` has no
+  // scope flag) — reachable via attach from a Claude Code machine or a pre-fix
+  // install. Fires on each hooks/repair run while the stale answer persists.
+  // Raw read, NOT consentAnswer: the bank default is 'project', so the resolved
+  // value would fire this note on every Codex install where no one was asked.
+  if (harness === 'codex') {
+    const read = readInterviewState(ws);
+    const raw = read.ok ? read.state.answers['MCP_SCOPE'] : undefined;
+    // typeof guard: readInterviewState validates `answers` is an object but not
+    // per-answer shapes — a hand-edited value of 3 must not throw.
+    if (raw?.skipped !== true && typeof raw?.value === 'string' && raw.value.toLowerCase() === 'project') {
+      console.error(
+        "note: the recorded MCP_SCOPE answer 'project' has no effect on Codex — " +
+          '`codex mcp add` has no scope flag; the registration is user-global (any repo ' +
+          'opened on this machine can query the brain). Off-ramp: `gbrain bootstrap uninstall`.',
+      );
+    }
+  }
   // HOOKS_CONSENT is a silent default (bank: 'yes') — hooks install unless the
   // human explicitly opts out with --no-hooks (or a persisted 'no' answer).
   const hooksConsent = !noHooks && (consentAnswer(ws, 'HOOKS_CONSENT') ?? 'yes').toLowerCase() === 'yes';

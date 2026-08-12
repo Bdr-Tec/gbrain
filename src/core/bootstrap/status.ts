@@ -233,7 +233,12 @@ export const PHASES: PhaseSpec[] = [
   {
     id: 'wire',
     title: 'Harness wiring (MCP + hooks)',
-    resume_hint: 'gbrain bootstrap hooks --harness <claude-code|codex>',
+    // Static, both-harness hint (no detectHarness branching — status may run
+    // outside the harness being wired). Advisory prose; the grep pins in
+    // scripts/check-bootstrap-templates.sh §(e) are the enforcement.
+    resume_hint:
+      'gbrain bootstrap hooks --harness <claude-code|codex> — MCP scope consent is ' +
+      'Claude Code only (recorded in phase 3); Codex registrations are always user-global (no scope flag)',
     detect: (ws, ctx) => {
       const regs = ctx.receipt?.registrations ?? [];
       if (regs.length > 0) {
