@@ -43,7 +43,12 @@ gbrain sync --repo /path/to/brain && gbrain embed --stale
 
 - `gbrain sync --repo <path>` -- one-shot incremental sync. Detects changes via
   `git diff`, imports only what changed. For small changesets (<= 100 files),
-  embeddings are generated inline during import.
+  embeddings are generated inline during import — unless the inline cost gate
+  intervenes: when the estimated embedding spend crosses the configured floor
+  in a non-interactive session (cron, `--json`), sync auto-defers embeds to a
+  capped `embed-backfill` job instead of spending silently. Either way the
+  chunks get embedded; a deferred run just finishes asynchronously. See
+  [spend controls](../operations/spend-controls.md).
 - `gbrain embed --stale` -- backfill embeddings for any chunks that don't have
   them. Safety net for large syncs (>100 files) or prior `--no-embed` runs.
 - `gbrain sync --watch --repo <path>` -- foreground polling loop, every 60s
@@ -97,14 +102,26 @@ Triggers sync on push events for instant sync (<5s).
 ### What Gets Synced
 
 Sync only indexes "syncable" markdown files. These are excluded by design:
-- Hidden paths (`.git/`, `.raw/`, etc.)
-- The `ops/` directory
-- Meta files: `README.md`, `index.md`, `schema.md`, `log.md`
+- Hidden paths (`.git/`, `.raw/`, etc.) and vendored/generated trees
+  (`node_modules/`, `dist/`, `build/`, `venv/`)
+- Meta files: `README.md`, `index.md`, `schema.md`, `log.md`, `RESOLVER.md`
 
-### Sync is Idempotent
+Everything else is ordinary synced content — including `ops/` (the bundled
+daily-task-manager skill files its canonical page under `ops/tasks`).
+
+### Sync is Idempotent — and Resumable
 
 Concurrent runs are safe. Two syncs on the same commit no-op because content
 hashes match. If both a cron and `--watch` fire simultaneously, no conflict.
+
+Long syncs also survive being killed: progress checkpoints into the database
+as files drain, so a killed or aborted run resumes from where it stopped, and
+the sync bookmark only advances on true completion. A progress-aware stall
+watchdog (`GBRAIN_SYNC_STALL_ABORT_SECONDS`, default 900, `0` disables) aborts
+a run that stops making forward progress and releases the per-source lock so
+the next `gbrain sync` picks up from the checkpoint. The checkpoint cadence
+and lock-steal grace are tunable via `GBRAIN_SYNC_*` / `GBRAIN_LOCK_*` env
+vars — incident-time escape hatches, not everyday knobs.
 
 ## Tricky Spots
 

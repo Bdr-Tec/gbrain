@@ -6,18 +6,20 @@ import { operations } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
 import { buildToolDefs } from './tool-defs.ts';
 import { dispatchToolCall, validateParams, buildOperationContext } from './dispatch.ts';
+import { filterOpsForSurface, allowedOpNames, type McpSurface } from './surface.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import {
-  resolveSocketPathForConfig,
-  ensureSocketDir,
+  resolveSocketPath,
   startResolveIpcServer,
   cleanupStaleSocket,
+  ensureIpcSecret,
   isVolunteerResult,
   type ResolveRequest,
   type ResolveHandlerResult,
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
+import { assembleTurnContext } from '../core/context/turn-context.ts';
 import {
   gateVolunteeredPointers,
   candidatesByNorm,
@@ -26,17 +28,24 @@ import {
 import { isVolunteerChannel, logVolunteerEventsFireAndForget, volunteerEventRowsFrom } from '../core/context/volunteer-events.ts';
 import type { WindowEntityCandidate } from '../core/context/entity-salience.ts';
 
-export async function startMcpServer(engine: BrainEngine) {
+export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpSurface } = {}) {
   const server = new Server(
     { name: 'gbrain', version: VERSION },
     { capabilities: { tools: {} } },
   );
 
+  // MEMORY_VERBS v1 surface mode: 'full' (default — every op, byte-identical
+  // to pre-surface behavior) or 'verbs' (exactly the 5 protocol verbs).
+  // Enforced BOTH on the advertised list and in dispatch (fail-closed [c2]).
+  const surface: McpSurface = opts.surface ?? 'full';
+  const surfacedOps = filterOpsForSurface(operations, surface);
+  const allowedOps = surface === 'full' ? undefined : allowedOpNames(operations, surface);
+
   // Generate tool definitions from operations. Extracted to buildToolDefs so
   // the subagent tool registry (v0.15+) can call the same mapper against a
   // filtered OPERATIONS subset instead of duplicating this shape.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: buildToolDefs(operations),
+    tools: buildToolDefs(surfacedOps),
   }));
 
   // Dispatch tool calls via shared dispatch.ts (parity with HTTP transport).
@@ -65,6 +74,14 @@ export async function startMcpServer(engine: BrainEngine) {
     // see private hunches via takes_list / takes_search / query. Operators
     // who want stdio to see everything should call ops directly via
     // `gbrain call <op>` (sets remote=false in src/cli.ts).
+    // CX2-11: MCP carries `_meta.session_id` as a sibling of `arguments` in
+    // request.params. Thread it (clamped in dispatch) into the typed
+    // OperationContext.sessionId so the hot-memory metaHook's cache keys per
+    // session instead of collapsing every caller onto the null-session key.
+    const rawMetaSession = (request.params as { _meta?: { session_id?: unknown } })?._meta?.session_id;
+    const sessionId = typeof rawMetaSession === 'string' && rawMetaSession.length > 0
+      ? rawMetaSession
+      : undefined;
     return dispatchToolCall(engine, name, params, {
       remote: true,
       // #1061: mark the transport so whoami can report {transport: 'stdio'}
@@ -72,6 +89,7 @@ export async function startMcpServer(engine: BrainEngine) {
       // stdio stays remote/untrusted.
       transport: 'stdio',
       takesHoldersAllowList: ['world'],
+      ...(sessionId ? { sessionId } : {}),
       // v0.31: source defaults to 'default' for stdio (no per-token scope).
       // Operators who want a different source on stdio MCP should set
       // GBRAIN_SOURCE in the env or use --source via `gbrain call`.
@@ -81,6 +99,9 @@ export async function startMcpServer(engine: BrainEngine) {
       // Code see the brain's relevant hot memory automatically alongside
       // every tool-call response. Best-effort; absorbs errors.
       metaHook: getBrainHotMemoryMeta,
+      // MEMORY_VERBS v1: fail-closed surface enforcement + usage attribution.
+      ...(allowedOps ? { allowedOps } : {}),
+      surface,
     });
   });
 
@@ -98,80 +119,115 @@ export async function startMcpServer(engine: BrainEngine) {
   let resolveSocket: string | null = null;
   try {
     const cfg = loadConfig();
-    resolveSocket = resolveSocketPathForConfig(cfg);
-    if (resolveSocket) {
-      ensureSocketDir(resolveSocket);
+    if (cfg?.engine === 'pglite' && cfg.database_path) {
+      resolveSocket = resolveSocketPath(cfg.database_path);
       const defaultSource = process.env.GBRAIN_SOURCE || 'default';
-      const handler = async (req: ResolveRequest): Promise<ResolveHandlerResult> => {
-        if (req.volunteer) {
-          // Volunteer-shaped request (hook adapters). Untrusted local caller:
-          // validate the requested source instead of trusting it blindly —
-          // an unknown id must be a TYPED error the client can print, or the
-          // adapter's most likely misconfiguration is undiagnosable silence.
-          const { resolveSourceId } = await import('../core/source-resolver.ts');
-          let sourceId: string;
-          try {
-            // Full 6-tier resolution using the hook's cwd: the engine-free
-            // tiers (flag/env/dotfile) miss repos registered by path
-            // containment; we hold the engine, so resolve properly here.
-            sourceId = await resolveSourceId(engine, req.sourceId ?? null, req.cwd || process.cwd());
-          } catch (e) {
-            throw new Error(`unknown_source: ${(e as Error).message}`);
-          }
-          const candidates = (req.candidates ?? []) as WindowEntityCandidate[];
-          // Resolve up to the hard cap so the gate sees the full pool (a
-          // gated-out alias hit must not shadow a passing title hit) —
-          // deliberately ignoring req.maxPointers, which exists only to bound
-          // OLD servers' pre-gate responses.
-          const block = await resolveEntitiesToPointers(engine, sourceId, candidates, {
-            priorContextText: req.priorContextText,
-            maxPointers: VOLUNTEER_MAX_PAGES_CAP * 2,
-            suppression: req.suppression ?? 'slug-only',
-          });
-          const volunteered = block
-            ? gateVolunteeredPointers(block, candidatesByNorm(candidates), {
-                maxPages: req.volunteer.maxPages,
-                minConfidence: req.volunteer.minConfidence,
-                windowSize: req.volunteer.windowSize ?? 1,
-              })
-            : [];
-          return { block, volunteered };
-        }
-        return resolveEntitiesToPointers(
-          engine,
-          req.sourceId || defaultSource,
-          req.candidates ?? [],
-          {
-            priorContextText: req.priorContextText,
-            maxPointers: req.maxPointers,
-            suppression: req.suppression,
-          },
-        );
-      };
+      // [S3#6] turn_context requires the shared secret from the data dir
+      // (created 0600 here if absent). If the secret can't be provisioned,
+      // turn_context stays fail-closed ('unauthorized') while the secret-free
+      // resolve kind keeps working.
+      let ipcSecret: string | undefined;
+      try {
+        ipcSecret = ensureIpcSecret(cfg.database_path);
+      } catch { /* turn_context disabled; resolve unaffected */ }
       resolveServer = await startResolveIpcServer(
         resolveSocket,
-        handler,
-        // Logging happens at DELIVERY (post-write), not inside the resolver —
-        // a block the client's budget abandoned was never injected, and
-        // counting it would corrupt the volunteered-vs-used precision stats
-        // (red-team). Volunteer results log the GATED set under the request's
-        // channel; plain reflex results keep the ambient 'reflex' channel.
-        (result, req) => {
-          if (isVolunteerResult(result)) {
-            if (!result.volunteered.length) return;
-            const channel = isVolunteerChannel(req.channel) ? req.channel : 'reflex';
-            logVolunteerEventsFireAndForget(
+        {
+          // [CX2-10] Bound-source posture for BOTH kinds: the IPC layer
+          // rejects any resolve/turn_context request naming a source other
+          // than boundSourceId ('source_mismatch'), so the only sourceId that
+          // reaches this handler is the bound one or absent — and the handler
+          // resolves against the server's OWN registered source regardless
+          // (a volunteer request's cwd is likewise never honored here).
+          resolve: async (req: ResolveRequest): Promise<ResolveHandlerResult> => {
+            if (req.volunteer) {
+              // Volunteer-shaped resolve (harness hook adapters): resolve up
+              // to the hard cap so the gate sees the full pool (a gated-out
+              // alias hit must not shadow a passing title hit) — deliberately
+              // ignoring req.maxPointers, which exists only to bound OLD
+              // servers' pre-gate responses.
+              const candidates = (req.candidates ?? []) as WindowEntityCandidate[];
+              const block = await resolveEntitiesToPointers(engine, defaultSource, candidates, {
+                priorContextText: req.priorContextText,
+                maxPointers: VOLUNTEER_MAX_PAGES_CAP * 2,
+                suppression: req.suppression ?? 'slug-only',
+              });
+              const volunteered = block
+                ? gateVolunteeredPointers(block, candidatesByNorm(candidates), {
+                    maxPages: req.volunteer.maxPages,
+                    minConfidence: req.volunteer.minConfidence,
+                    windowSize: req.volunteer.windowSize ?? 1,
+                  })
+                : [];
+              return { block, volunteered };
+            }
+            return resolveEntitiesToPointers(
               engine,
-              volunteerEventRowsFrom(result.volunteered, { channel }),
+              defaultSource,
+              req.candidates ?? [],
+              {
+                priorContextText: req.priorContextText,
+                maxPointers: req.maxPointers,
+                suppression: req.suppression,
+              },
             );
-          } else if (result.block) {
-            logDeliveredReflexPointers(engine, result.block.pointers);
-          }
+          },
+          // IPC v2 [ENG-3]: per-turn context assembly for the hook command.
+          // [CX2-10] Always assembles against the server's OWN registered
+          // source — cross-source requests are rejected in the IPC layer via
+          // boundSourceId below, and the handler never honors a caller source.
+          turn_context: (req) =>
+            assembleTurnContext(engine, {
+              sourceId: defaultSource,
+              window: req.window ?? [],
+              priorContextText: req.priorContextText,
+              sessionId: req.sessionId,
+              maxBytes: req.maxBytes,
+            }),
+        },
+        {
+          // The IPC resolve path IS the ambient reflex channel. Logging happens
+          // at DELIVERY (post-write), not inside the resolver — a block the
+          // client's 250ms budget abandoned was never injected, and counting it
+          // would corrupt the volunteered-vs-used precision stats (red-team).
+          // Volunteer results log the GATED set under the request's channel;
+          // plain reflex results keep the ambient 'reflex' channel.
+          onDelivered: (result, req) => {
+            if (isVolunteerResult(result)) {
+              if (!result.volunteered.length) return;
+              const channel = isVolunteerChannel(req.channel) ? req.channel : 'reflex';
+              logVolunteerEventsFireAndForget(
+                engine,
+                volunteerEventRowsFrom(result.volunteered, { channel }),
+              );
+            } else if (result.block) {
+              logDeliveredReflexPointers(engine, result.block.pointers);
+            }
+          },
+          boundSourceId: defaultSource,
+          secret: ipcSecret,
         },
       );
     }
   } catch {
     /* resolve IPC is best-effort; never block serve */
+  }
+
+  // Startup maintenance sweep [ENG-5][CX-P0.1+P0.3]: the serve process is
+  // the lock owner, so it runs the bounded sweep that ingests the corpus +
+  // reconciles fences/links/timeline for recent workspace writes. Same
+  // best-effort shape as the resolve-IPC block above: fires once ~3s after
+  // connect, unref'd (can never hold the process open), all errors
+  // swallowed inside armStartupSweep. Kill switch: GBRAIN_SWEEP=0 (checked
+  // inside the helper). Lazy import keeps sweep code off the boot path.
+  let startupSweep: { cancel: () => void } | null = null;
+  try {
+    const { armStartupSweep } = await import('../core/sweep.ts');
+    startupSweep = armStartupSweep(engine, {
+      sourceId: process.env.GBRAIN_SOURCE || 'default',
+    });
+  } catch {
+    /* startup sweep is best-effort; never block serve */
   }
 
   // Exit cleanly when MCP client disconnects (stdin EOF) or on signals.
@@ -182,6 +238,7 @@ export async function startMcpServer(engine: BrainEngine) {
     if (shuttingDown) return;
     shuttingDown = true;
     process.stderr.write(`[gbrain-serve] shutdown: ${reason}\n`);
+    try { startupSweep?.cancel(); } catch { /* noop */ }
     try { resolveServer?.close(); } catch { /* noop */ }
     if (resolveSocket) cleanupStaleSocket(resolveSocket);
     Promise.resolve(engine.disconnect?.())

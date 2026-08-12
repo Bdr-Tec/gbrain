@@ -67,6 +67,13 @@ import { resolveHardExcludes, DEFAULT_HARD_EXCLUDES } from '../core/search/sourc
 import { escapeLikePattern, buildVisibilityClause } from '../core/search/sql-ranking.ts';
 import { unverifiedExtractionFragment } from '../core/extraction-review.ts';
 import { hnswIndexExpected, hnswMaxDimsForType } from '../core/vector-index.ts';
+// Agent-bootstrap doctor group (plan B2/B4/ENG-4 + one-live-serve note).
+import { readReceipt } from '../core/bootstrap/format.ts';
+import { probeLivePgliteHolder, resolveBrainDataDir } from '../core/bootstrap/uninstall.ts';
+import { readRunbookStamp, hooksInstalled, listVerifyRuns } from '../core/bootstrap/status.ts';
+import { resolveGbrainHome } from '../core/gbrain-home.ts';
+import { VERSION as GBRAIN_BINARY_VERSION } from '../version.ts';
+import { execFileSync } from 'child_process';
 
 export interface Check {
   name: string;
@@ -376,19 +383,38 @@ export async function jsonbIntegrityCheck(
   progress?: Pick<ProgressReporter, 'heartbeat'>,
 ): Promise<Check> {
   try {
-    const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
-      { table: 'pages',         col: 'frontmatter',    expected: 'object' },
-      { table: 'raw_data',      col: 'data',           expected: 'object' },
-      { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
-      { table: 'files',         col: 'metadata',       expected: 'object' },
-      { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
+    const targets: Array<{ table: string; col: string; expected: 'object' | 'array'; jsonPayloadOnly?: boolean }> = [
+      { table: 'pages',                    col: 'frontmatter',    expected: 'object' },
+      { table: 'raw_data',                 col: 'data',           expected: 'object' },
+      { table: 'ingest_log',               col: 'pages_updated',  expected: 'array'  },
+      { table: 'files',                    col: 'metadata',       expected: 'object' },
+      { table: 'page_versions',            col: 'frontmatter',    expected: 'object' },
+      // Subagent persistence — second double-encode site (historical damage
+      // rows from the pre-v0.42.53.0 positional bind; write paths fixed in
+      // #2375). Mirrors repair-jsonb's targets incl. jsonPayloadOnly: these
+      // columns can legitimately hold jsonb STRING scalars (persistToolExec
+      // binds pre-serialized string payloads as-is), so only JSON-container
+      // content counts as damage.
+      { table: 'subagent_messages',        col: 'content_blocks', expected: 'array',  jsonPayloadOnly: true },
+      { table: 'subagent_tool_executions', col: 'input',          expected: 'object', jsonPayloadOnly: true },
+      { table: 'subagent_tool_executions', col: 'output',         expected: 'object', jsonPayloadOnly: true },
     ];
     let totalBad = 0;
     const breakdown: string[] = [];
-    for (const { table, col } of targets) {
+    for (const { table, col, jsonPayloadOnly } of targets) {
       progress?.heartbeat(`jsonb_integrity.${table}.${col}`);
+      // Skip targets whose table doesn't exist on this brain (subagent_*
+      // tables are v0.15+; pre-v0.15 brains naturally lack them).
+      const existsRows = await engine.executeRaw<{ exists: boolean }>(
+        `SELECT to_regclass($1) IS NOT NULL AS exists`,
+        [table],
+      );
+      if (!existsRows[0]?.exists) continue;
+      const damage = jsonPayloadOnly
+        ? `jsonb_typeof(${col}) = 'string' AND (${col} #>> '{}') ~ '^[[:space:]]*[\\[{]' AND pg_input_is_valid(${col} #>> '{}', 'jsonb')`
+        : `jsonb_typeof(${col}) = 'string'`;
       const rows = await engine.executeRaw<{ n: number }>(
-        `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
+        `SELECT count(*)::int AS n FROM ${table} WHERE ${damage}`,
       );
       const n = Number(rows[0]?.n ?? 0);
       if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
@@ -3795,7 +3821,9 @@ function collectMarkdownSlugs(root: string): Set<string> {
       continue;
     }
     for (const e of entries) {
-      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      // Hidden directories can contain canonical, tracked knowledge (for
+      // example `.archive/`). Only implementation metadata is never a page.
+      if (e.name === '.git' || e.name === 'node_modules') continue;
       const childRel = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) stack.push(childRel);
       else if (/\.mdx?$/i.test(e.name)) out.add(slugifyPath(childRel).toLowerCase());
@@ -4702,6 +4730,96 @@ export async function checkCycleFreshness(
  *   - `progress` reporter writes to stderr (heartbeats per check)
  *   - `engine.executeRaw` / handler-leaf calls (the actual probe work)
  */
+// ≥2 failed repair attempts inside 7 days = the corruption keeps regenerating.
+const REPAIR_RECURRENCE_WINDOW_MS = 7 * 24 * 3600 * 1000;
+const REPAIR_RECURRENCE_THRESHOLD = 2;
+
+/**
+ * WAL-repair wave (#223/#1670/#2575): when the DB failed to connect on a
+ * PGLite brain, diagnose the data dir from the FILESYSTEM (the connect error
+ * itself was swallowed by doctor's fs-only fallback — this check re-derives
+ * the state from disk). Pure: interprets an `inspectPgliteDataDir` diagnosis
+ * into a Check; exported so `test/doctor-pglite-datadir.test.ts` drives it
+ * directly (same convention as computeWorkerOomLoopCheck). Returns a Check
+ * always — the call site only runs it when connect already failed, so even a
+ * healthy-looking dir warrants a pointer at the repair tooling.
+ *
+ * Recurrence escalation (eng-review 2A): repeated failed repair attempts on
+ * record mean the corruption keeps regenerating (unclean-shutdown genesis) —
+ * escalate to the engine-switch ladder instead of letting the brain silently
+ * lose a WAL tail per cycle. Backup-dir inventory rides along (same
+ * disk-visibility class as orphan_clones).
+ */
+export function computePgliteDataDirCheck(
+  dataDir: string,
+  diagnosis: import('../core/pglite-repair.ts').PgliteDirDiagnosis,
+): Check {
+  const backupNote = diagnosis.backupDirs.length > 0
+    ? ` ${diagnosis.backupDirs.length} repair backup dir(s) on disk (newest: ${diagnosis.backupDirs[0]}) — delete old ones to reclaim space once the brain is healthy.`
+    : '';
+  // Count BOTH outcomes (adversarial review F12): a >1h-period crash loop where
+  // each repair "succeeds" discards a WAL tail per cycle with zero FAILED
+  // attempts on record — escalation must still fire.
+  const recentAttempts = diagnosis.recentAttempts.filter(
+    (a) => Date.now() - a.ts < REPAIR_RECURRENCE_WINDOW_MS,
+  ).length;
+  const recurrence = recentAttempts >= REPAIR_RECURRENCE_THRESHOLD
+    ? ` Auto-repair has run ${recentAttempts}x this week — the corruption keeps regenerating (likely an unclean-shutdown loop). Consider switching engines (docs/ENGINES.md: \`gbrain init --supabase\` or native Postgres).`
+    : '';
+
+  switch (diagnosis.verdict) {
+    case 'locked':
+      return {
+        name: 'pglite_data_dir',
+        status: 'warn',
+        message:
+          `Could not connect, and the PGLite data-dir lock is held by live PID ${diagnosis.lockHolderPid} — ` +
+          `another gbrain process (often \`gbrain serve\`) has the brain open. Stop it and re-run.${backupNote}`,
+        remediation_status: 'human_only',
+      };
+    case 'missing':
+      return {
+        name: 'pglite_data_dir',
+        status: 'warn',
+        message: `No PGLite data dir at ${dataDir}. Run \`gbrain init --pglite\` to create one.`,
+        remediation_status: 'human_only',
+      };
+    case 'unsupported-layout':
+      return {
+        name: 'pglite_data_dir',
+        status: 'fail',
+        message:
+          `PGLite data dir at ${dataDir} is not repairable in place (${diagnosis.detail}). ` +
+          `Rebuild from your brain repo: \`gbrain reinit-pglite\` (or back up ~/.gbrain, move the dir aside, ` +
+          `\`gbrain init --pglite\`, re-add sources + sync + embed).${backupNote}${recurrence}`,
+        remediation_status: 'human_only',
+      };
+    case 'wal-corruption-likely':
+      return {
+        name: 'pglite_data_dir',
+        status: 'fail',
+        message:
+          `PGLite failed to open and the data dir shows unclean-shutdown state (${diagnosis.detail}). ` +
+          `This is the torn-WAL class behind issue #223 — repairable in place, data preserved: ` +
+          `\`gbrain pglite-repair --dry-run\` to diagnose, \`gbrain pglite-repair --yes\` to repair.${backupNote}${recurrence}`,
+        remediation_status: 'human_only',
+      };
+    case 'looks-healthy':
+    default:
+      return {
+        name: 'pglite_data_dir',
+        status: 'fail',
+        message:
+          `PGLite failed to open but the data dir layout validates (${diagnosis.detail}). ` +
+          `IF the connect error mentions \`Aborted()\` this is likely torn WAL state — ` +
+          `\`gbrain pglite-repair --dry-run\` to diagnose, \`gbrain pglite-repair --yes\` to repair in place ` +
+          `(repair discards the un-checkpointed WAL tail — don't run it for lock-contention or ` +
+          `catalog-corruption errors; 58P01/pgvector load failures need \`gbrain reinit-pglite\` instead).${backupNote}${recurrence}`,
+        remediation_status: 'human_only',
+      };
+  }
+}
+
 /**
  * issue #1685 (GAP A) — the single authoritative "worker is OOM-looping" signal.
  *
@@ -4886,6 +5004,46 @@ export async function computePoolReapHealthCheck(
  * Policy-skill install state is reported in details (it ships into the HOST
  * repo, so absence in gbrain's own skills dir is expected, not a failure).
  */
+/**
+ * MEMORY_VERBS v1 (Cathedral 1, E4) — usage-sidecar health. Read-only,
+ * fail-open. Stats only (local JSONL, never uploaded; never source of truth):
+ *   - no sidecar file        → ok, "no verb calls recorded yet" (fresh install)
+ *   - recent events parse    → ok, names the last verb + timestamp
+ *   - file exists, unreadable→ warn (observability degraded, verbs unaffected)
+ */
+export async function buildMemoryVerbsCheck(): Promise<Check> {
+  const name = 'memory_verbs_usage';
+  try {
+    const { readVerbUsage, usageLogPath } = await import('../core/verbs/usage-log.ts');
+    if (!existsSync(usageLogPath())) {
+      return {
+        name,
+        status: 'ok',
+        message: 'no verb calls recorded yet (sidecar appears on first remember/recall/entity/synthesize/forget)',
+      };
+    }
+    const events = await readVerbUsage({ days: 30 });
+    if (events.length === 0) {
+      return { name, status: 'ok', message: 'sidecar present; no verb calls in the last 30 days' };
+    }
+    const last = events[events.length - 1];
+    const byVerb = new Map<string, number>();
+    for (const e of events) byVerb.set(e.verb, (byVerb.get(e.verb) ?? 0) + 1);
+    const mix = [...byVerb.entries()].map(([v, n]) => `${v}:${n}`).join(' ');
+    return {
+      name,
+      status: 'ok',
+      message: `${events.length} verb calls in 30d (${mix}); last ${last.verb} at ${last.ts} — local JSONL only, never uploaded`,
+    };
+  } catch (e) {
+    return {
+      name,
+      status: 'warn',
+      message: `verb usage sidecar unreadable (${e instanceof Error ? e.message : String(e)}) — observability degraded; verbs unaffected`,
+    };
+  }
+}
+
 export function buildRetrievalReflexCheck(skillsDir: string | null): Check {
   const name = 'retrieval_reflex_health';
   try {
@@ -5079,6 +5237,13 @@ export async function buildChecks(
     checks.push(buildRetrievalReflexCheck(skillsDir));
   }
 
+  // 1c. MEMORY_VERBS v1 usage sidecar health (Cathedral 1, E4). Read-only,
+  // fail-open: reports whether the local JSONL sidecar is present + parseable
+  // and when a verb last fired. Local file only — never uploaded.
+  if (scope === 'all') {
+    checks.push(await buildMemoryVerbsCheck());
+  }
+
   // 2. Skill conformance (SKILL group — gated)
   if (scope === 'all' && skillsDir) {
     const conformanceResult = skillConformanceCheck(skillsDir);
@@ -5110,6 +5275,12 @@ export async function buildChecks(
   if (scope === 'all' && skillsDir) {
     checks.push(skillsManifestIntegrityCheck(skillsDir));
   }
+
+  // 2d. Agent-bootstrap health (plan B2/B4/ENG-4). Filesystem-first; the
+  // one engine-dependent pairing check degrades gracefully when engine is
+  // null. Emits NOTHING on machines with no bootstrap state, so ordinary
+  // brains keep a clean doctor.
+  checks.push(...(await bootstrapDoctorChecks(engine)));
 
   // 3. Half-migrated Minions detection (filesystem-only).
   // If completed.jsonl has any status:"partial" entry with no later
@@ -5998,6 +6169,27 @@ export async function buildChecks(
     // Filesystem read failure is non-fatal.
   }
 
+  // 3d. PGLite data-dir diagnosis (WAL-repair wave). Only meaningful when the
+  // connect already FAILED on a PGLite brain (engine === null): the connect
+  // error was swallowed by the fs-only fallback, so this check re-derives the
+  // dir state from disk and names the repair ladder. Skipped under --fast
+  // (connect wasn't attempted, so "engine === null" proves nothing there).
+  if (!fastMode && !engine) {
+    try {
+      const cfg = loadConfig();
+      if (cfg?.engine === 'pglite') {
+        const { inspectPgliteDataDir } = await import('../core/pglite-repair.ts');
+        const { resolve } = await import('node:path');
+        // Absolutize: a RELATIVE database_path would make the sidecar/backup
+        // lookups resolve against doctor's cwd instead of the engine's.
+        const pgliteDataDir = resolve(cfg.database_path || gbrainPath('brain.pglite'));
+        checks.push(computePgliteDataDirCheck(pgliteDataDir, inspectPgliteDataDir(pgliteDataDir)));
+      }
+    } catch {
+      // Best-effort: an unreadable config or fs failure must not stop doctor.
+    }
+  }
+
   // --- DB checks (skip if --fast or no engine) ---
 
   if (fastMode || !engine) {
@@ -6241,7 +6433,7 @@ export async function buildChecks(
           status: 'warn',
           message:
             'Auto-RLS event trigger missing. New tables created outside gbrain may not get RLS. ' +
-            'Fix: gbrain apply-migrations --force-retry 35',
+            'Fix: recreate it with the SQL in docs/guides/rls-and-you.md ("What if the trigger gets dropped?").',
         });
       } else if (rows[0].evtenabled !== 'O' && rows[0].evtenabled !== 'A') {
         checks.push({
@@ -8056,6 +8248,172 @@ export async function buildChecks(
  * test/doctor-behavioral.test.ts for the in-process seam coverage and
  * test/doctor-cli-smoke.test.ts for the subprocess wrapper coverage.
  */
+/**
+ * Agent-bootstrap check group (plan B2, B4, ENG-4, one-live-serve, C1 skew).
+ *
+ * Gated on bootstrap state actually existing on this machine (install
+ * receipt, hook heartbeat, or push-status) — machines that never ran
+ * `gbrain bootstrap` get ZERO checks from this group. Every probe is
+ * fail-soft: a broken telemetry file degrades to a warn, never a throw.
+ */
+export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise<Check[]> {
+  const checks: Check[] = [];
+  let home: string;
+  try {
+    home = resolveGbrainHome();
+  } catch {
+    return [];
+  }
+  const receipt = readReceipt(home);
+  const pushStatusFile = join(home, 'bootstrap', 'push-status.json');
+  const heartbeatFile = join(home, 'integrations', 'hooks', 'heartbeat.jsonl');
+  const hasBootstrapState = receipt !== null || existsSync(pushStatusFile) || existsSync(heartbeatFile);
+  if (!hasBootstrapState) return [];
+
+  const ws = receipt?.workspace_dir ?? null;
+
+  // 1. Hook heartbeat failure rate [B3 read side]. Hard errors only —
+  // degraded entries are DESIGNED fallbacks (pull-mode, no serve).
+  let hooksSeen = false;
+  try {
+    const { readHeartbeatTail, HEARTBEAT_FAILURE_WINDOW, HEARTBEAT_FAILURE_RATE_THRESHOLD } =
+      await import('./hook.ts');
+    const tail = await readHeartbeatTail(HEARTBEAT_FAILURE_WINDOW);
+    if (tail.length > 0) {
+      hooksSeen = true;
+      const failures = tail.filter((e) => e.outcome === 'error').length;
+      const rate = failures / tail.length;
+      if (rate > HEARTBEAT_FAILURE_RATE_THRESHOLD) {
+        checks.push({
+          name: 'bootstrap_hooks_heartbeat',
+          status: 'fail',
+          message: `${failures}/${tail.length} recent hook invocations hard-failed — brain context is not reaching the session. Check \`gbrain bootstrap verify\` and the serve process.`,
+        });
+      } else if (rate > 0.2) {
+        checks.push({
+          name: 'bootstrap_hooks_heartbeat',
+          status: 'warn',
+          message: `${failures}/${tail.length} recent hook invocations hard-failed. Watch it; hooks fail open so sessions still work.`,
+        });
+      } else {
+        checks.push({
+          name: 'bootstrap_hooks_heartbeat',
+          status: 'ok',
+          message: `hook heartbeat healthy (${failures}/${tail.length} hard failures in the trailing window)`,
+        });
+      }
+    }
+  } catch {
+    checks.push({ name: 'bootstrap_hooks_heartbeat', status: 'warn', message: 'hook heartbeat unreadable' });
+  }
+
+  // 2. Push staleness [B4]: fail when the last successful push is >48h old
+  // AND the workspace tree is dirty (recent work provably unpushed).
+  try {
+    if (existsSync(pushStatusFile)) {
+      const { PUSH_STALE_MS } = await import('./hook.ts'); // hook.ts owns the threshold (single source)
+      const s = JSON.parse(readFileSync(pushStatusFile, 'utf8')) as { ts?: string; ok?: boolean; reason?: string };
+      const t = s.ts ? Date.parse(s.ts) : NaN;
+      const stale = Number.isFinite(t) && Date.now() - t > PUSH_STALE_MS;
+      let dirty = false;
+      if (ws) {
+        try {
+          dirty = execFileSync('git', ['-C', ws, 'status', '--porcelain'], {
+            stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+          }).toString().trim() !== '';
+        } catch { dirty = false; }
+      }
+      if (s.ok === false) {
+        checks.push({
+          name: 'bootstrap_push_health',
+          status: 'warn',
+          message: `last workspace push FAILED (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'} — run \`gbrain sources push${ws ? ` --path ${ws}` : ''}\``,
+        });
+      } else if (stale && dirty) {
+        checks.push({
+          name: 'bootstrap_push_health',
+          status: 'fail',
+          message: `last successful push ${s.ts} (>48h) with a DIRTY workspace tree — recent agent memory is unpushed [B4]. Run \`gbrain sources push --path ${ws}\`.`,
+        });
+      } else if (stale) {
+        checks.push({ name: 'bootstrap_push_health', status: 'warn', message: `last successful push ${s.ts} (>48h ago); tree clean — likely just idle` });
+      } else {
+        checks.push({ name: 'bootstrap_push_health', status: 'ok', message: `last push ok (${s.ts ?? 'unknown'})` });
+      }
+    }
+  } catch {
+    checks.push({ name: 'bootstrap_push_health', status: 'warn', message: 'push-status.json unreadable' });
+  }
+
+  // 3. One-live-serve / lock collision note. A live serve is the healthy
+  // shape (it provides hook IPC); the note names the v1 contract.
+  try {
+    const dataDir = resolveBrainDataDir(home);
+    const holder = probeLivePgliteHolder(dataDir);
+    if (holder) {
+      checks.push({
+        name: 'bootstrap_serve_lock',
+        status: holder.serve ? 'ok' : 'warn',
+        message: holder.serve
+          ? `live serve (pid ${holder.pid}) owns the brain — hook IPC available. One live serve per brain is the v1 contract; a second simultaneous session collides politely.`
+          : `a non-serve gbrain process (pid ${holder.pid}) holds the PGLite lock — hook IPC and new sessions will fail until it exits.`,
+      });
+    }
+  } catch { /* probe is best-effort */ }
+
+  // 4. [ENG-4] Hooks-in-use + unmigrated brain: the direct-engine hook paths
+  // swallow missing-table errors on pre-v110/v117 schemas, so context
+  // degrades SILENTLY. Pair the two signals into a named warning.
+  const hooksActive = hooksSeen || (ws !== null && hooksInstalled(ws));
+  if (hooksActive && engine) {
+    try {
+      const versionStr = await engine.getConfig('version');
+      const version = parseInt(versionStr || '0', 10);
+      if (version < LATEST_VERSION) {
+        checks.push({
+          name: 'bootstrap_hook_schema_pairing',
+          status: 'warn',
+          message: `hooks are in use but the brain schema is v${version} (< v${LATEST_VERSION}) — hook context can degrade silently on missing tables [ENG-4]. Run \`gbrain apply-migrations --yes\`.`,
+        });
+      }
+    } catch { /* schema_version check above already covers unreadable version */ }
+  }
+
+  // 5. Runbook skew [C1]: the fetched runbook's stamp vs this binary.
+  if (ws) {
+    try {
+      const stamp = readRunbookStamp(ws);
+      if (stamp !== null && stamp !== GBRAIN_BINARY_VERSION) {
+        checks.push({
+          name: 'bootstrap_runbook_skew',
+          status: 'warn',
+          message: `BOOTSTRAP_FOR_AGENTS.md stamp ${stamp} != installed binary ${GBRAIN_BINARY_VERSION} — prefer the binary's instructions; re-fetch the runbook.`,
+        });
+      }
+    } catch { /* best effort */ }
+  }
+
+  // 6. Last verify freshness [B2 read side] — surfaced so "verify weekly"
+  // has a nag with teeth.
+  try {
+    const runs = listVerifyRuns(home);
+    if (runs.length > 0) {
+      const last = runs[0];
+      const t = Date.parse(last.ts);
+      const ageDays = Number.isFinite(t) ? (Date.now() - t) / 86_400_000 : NaN;
+      if (!last.ok) {
+        checks.push({ name: 'bootstrap_last_verify', status: 'warn', message: `last bootstrap verify FAILED (${last.ts}): ${last.checks_failed.join(', ') || 'see snapshot'} — re-run \`gbrain bootstrap verify\`` });
+      } else if (Number.isFinite(ageDays) && ageDays > 14) {
+        checks.push({ name: 'bootstrap_last_verify', status: 'warn', message: `last bootstrap verify passed ${Math.floor(ageDays)}d ago — re-run it as the workspace rot self-check` });
+      } else {
+        checks.push({ name: 'bootstrap_last_verify', status: 'ok', message: `last verify passed (${last.ts})` });
+      }
+    }
+  } catch { /* best effort */ }
+
+  return checks;
+}
+
 export async function runDoctor(
   engine: BrainEngine | null,
   args: string[],

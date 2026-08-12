@@ -285,7 +285,10 @@ describe('structural pins (source greps — runtime paths are test-blind)', () =
   });
 
   test('volunteer-hook ∈ CLI_ONLY and CLI_ONLY_SELF_HELP (the #2035 undispatchable/help-eaten class)', () => {
-    const cliOnly = cliSrc.match(/export const CLI_ONLY = new Set\(\[[^\]]*\]\)/);
+    // Lazy match to end-of-statement: the set body carries comments that may
+    // themselves contain brackets (e.g. plan tags like [CX2-5]).
+    const cliOnly = cliSrc.match(/export const CLI_ONLY = new Set\(\[[\s\S]*?\]\);/);
+    expect(cliOnly).not.toBeNull();
     expect(cliOnly![0]).toContain("'volunteer-hook'");
     const selfHelp = cliSrc.match(/const CLI_ONLY_SELF_HELP = new Set\(\[[\s\S]*?\]\);/);
     expect(selfHelp![0]).toContain("'volunteer-hook'");
