@@ -406,6 +406,55 @@ export async function jsonbIntegrityCheck(
   }
 }
 
+/**
+ * Per-channel push-context visibility (harness hook adapters). Groups
+ * context_volunteer_events by channel over the last 7 days so the operator
+ * can see which adapters (ambient reflex / op / watch / claude-code / codex)
+ * are actually firing. Engine-aware SIBLING of buildRetrievalReflexCheck
+ * (which is engine-free and heartbeat-file based) — deliberately a separate
+ * check so the existing builder keeps its signature.
+ *
+ * Info-only (never warn/fail on quiet channels — most installs use a subset).
+ * The message distinguishes the two "installed but nothing happens" classes:
+ * a hook script that never registered (restart the harness session) vs a
+ * registered adapter whose channel went quiet. Pre-v117 brains (no events
+ * table) return ok with a note instead of throwing. A serve started before
+ * this build logs hook traffic as 'reflex' — restart serve after upgrade.
+ */
+export async function checkVolunteerChannels(engine: BrainEngine): Promise<Check> {
+  const name = 'volunteer_channels';
+  try {
+    const rows = await engine.executeRaw<{ channel: string; n: string | number; last_fired: string | Date | null }>(
+      `SELECT channel, count(*)::int AS n, max(volunteered_at) AS last_fired
+         FROM context_volunteer_events
+        WHERE volunteered_at > now() - interval '7 days'
+        GROUP BY channel
+        ORDER BY channel`,
+    );
+    const channels: Record<string, { count: number; last_fired: string | null }> = {};
+    for (const r of rows) {
+      channels[r.channel] = {
+        count: Number(r.n),
+        last_fired: r.last_fired ? new Date(r.last_fired).toISOString() : null,
+      };
+    }
+    const active = Object.keys(channels);
+    const message = active.length
+      ? `push-context channels active (7d): ${active.map((c) => `${c}=${channels[c].count}`).join(', ')}`
+      : 'no push-context activity in 7 days — if a hook adapter is installed, confirm its registration landed and the harness session was RESTARTED (hooks snapshot at session start); a serve older than this build attributes hook traffic to the reflex channel until restarted';
+    return { name, status: 'ok', message, details: { window_days: 7, channels } };
+  } catch {
+    // Pre-v117 brain (table absent) or transient query failure — info-only
+    // check, never block doctor on it.
+    return {
+      name,
+      status: 'ok',
+      message: 'volunteer-events table not available (pre-v117 brain) — per-channel push visibility inactive',
+      details: { window_days: 7, channels: {} },
+    };
+  }
+}
+
 export async function takesWeightGridCheck(engine: BrainEngine): Promise<Check> {
   try {
     const rows = await engine.executeRaw<{ off_grid: string | number; total: string | number }>(
@@ -897,6 +946,10 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
   // next subagent job submission. (Layers 1+2 also enforce — this is the
   // surfacing layer.)
   checks.push(await checkSubagentCapability(engine));
+
+  // Harness hook adapters — per-channel push-context visibility (sibling of
+  // the engine-free retrieval_reflex_health heartbeat check).
+  checks.push(await checkVolunteerChannels(engine));
 
   // 6. Sync freshness check
   checks.push(await checkSyncFreshness(engine));
