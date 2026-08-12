@@ -278,6 +278,11 @@
       "name": "fact-check",
       "path": "fact-check/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "resolve-before-asking",
+      "path": "resolve-before-asking/SKILL.md",
+      "description": "|"
     }
   ],
   "dependencies": {
