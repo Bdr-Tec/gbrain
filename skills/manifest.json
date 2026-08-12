@@ -283,6 +283,11 @@
       "name": "resolve-before-asking",
       "path": "resolve-before-asking/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "brain-ingest-gate",
+      "path": "brain-ingest-gate/SKILL.md",
+      "description": ">"
     }
   ],
   "dependencies": {

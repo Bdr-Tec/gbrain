@@ -36,6 +36,7 @@ wins; fix the row.
 | "delete", "cleanup", "rm -rf", "purge" | `skills/data-loss-gate/SKILL.md` |
 | "fact check", "fact-check", "verify the facts", "check the claims" | `skills/fact-check/SKILL.md` |
 | "resolve before asking", "before asking the user", "unidentified contact", "unknown relationship" | `skills/resolve-before-asking/SKILL.md` |
+| "move this to brain", "migrate to brain", "copy these files into the brain", "bulk import into the brain" | `skills/brain-ingest-gate/SKILL.md` |
 
 ## Content & media ingestion
 
