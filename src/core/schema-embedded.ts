@@ -765,7 +765,7 @@ CREATE INDEX IF NOT EXISTS context_volunteer_events_src_time_idx
 CREATE INDEX IF NOT EXISTS context_volunteer_events_src_slug_idx
   ON context_volunteer_events (source_id, slug);
 
--- session_context_state (v0.46 / migration v126 — ambient recall issue #1):
+-- session_context_state (v0.45.7 / migration v126 — ambient recall issue #1):
 -- per-session cursor + surfaced-slug dedup for the \`delta\` verb + heartbeat
 -- runtime. Key (source_id, client_id, session_id); client_id 'local' sentinel
 -- for CLI/hook, remote auth client id otherwise. jsonb DDL-literal defaults.

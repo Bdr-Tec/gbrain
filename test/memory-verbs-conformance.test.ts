@@ -516,7 +516,7 @@ describe('conformance runner — negative self-test [F3]', () => {
     const honest = await runConformance(lyingClient((_v, b) => b), { marker: 'pos1' });
     const failures = honest.results.filter(r => r.status === 'fail');
     expect(failures).toEqual([]);
-  }, 20_000); // v0.46: two full runConformance passes now exercise 7 verbs;
+  }, 20_000); // v0.45.7: two full runConformance passes now exercise 7 verbs;
   // the default 5s budget flakes under the parallel shard runner (red-team F6).
 });
 
@@ -526,7 +526,7 @@ describe('fixture mirror + surface invariants', () => {
     expect(onDisk).toEqual(JSON.parse(JSON.stringify(CONFORMANCE_CASES)));
   });
 
-  it('every VERB_NAMES entry (7 as of v0.46) carries verb: true and nothing else does', async () => {
+  it('every VERB_NAMES entry (7 as of v0.45.7) carries verb: true and nothing else does', async () => {
     const { operations } = await import('../src/core/operations.ts');
     const verbs = operations.filter(o => o.verb === true).map(o => o.name).sort();
     expect(verbs).toEqual([...VERB_NAMES].sort());
@@ -535,7 +535,7 @@ describe('fixture mirror + surface invariants', () => {
     expect(VERB_NAMES.length).toBe(7);
   });
 
-  it('a pre-v0.46 five-verb endpoint still certifies (additive verbs skip, never fail)', async () => {
+  it('a pre-v0.45.7 five-verb endpoint still certifies (additive verbs skip, never fail)', async () => {
     const CORE = ['recall', 'remember', 'entity', 'synthesize', 'forget'];
     const fiveVerbClient: ConformanceClient = {
       listTools: async () =>

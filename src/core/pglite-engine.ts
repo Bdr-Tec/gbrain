@@ -1509,7 +1509,7 @@ export class PGLiteEngine implements BrainEngine {
       where.push(`t.tag = $${params.length}`);
     }
     if (filters?.updatedAfterKeyset) {
-      // v0.46 keyset: (updated_at, slug) strict-greater — supersedes updated_after.
+      // v0.45.7 keyset: (updated_at, slug) strict-greater — supersedes updated_after.
       params.push(filters.updatedAfterKeyset.updatedAt);
       const tsIdx = params.length;
       params.push(filters.updatedAfterKeyset.slug);

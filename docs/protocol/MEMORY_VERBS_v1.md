@@ -1,7 +1,8 @@
 # MEMORY_VERBS v1 — the memory wire protocol
 
-GBrain's frozen five-verb memory interface over MCP: `recall`, `remember`,
-`entity`, `synthesize`, `forget`. The contract every harness can rely on the
+GBrain's frozen memory-verb interface over MCP: `recall`, `remember`,
+`entity`, `synthesize`, `forget`, plus (v0.45.7, additive) `context_pack` and
+`delta` — seven verbs, all at `protocol_version: 1`. The contract every harness can rely on the
 way every Postgres client relies on the wire protocol — and the contract any
 OTHER memory server can implement and certify against
 (`gbrain protocol conformance --target <endpoint>`).
@@ -10,7 +11,7 @@ OTHER memory server can implement and certify against
 agent (any MCP harness)
    │  remember("picked Stripe over Adyen", provenance: "chat 2026-06-11")
    ▼
-five verbs ── recall ── remember ── entity ── synthesize ── forget
+seven verbs  recall ─ remember ─ entity ─ synthesize ─ forget ─ context_pack ─ delta
    │   self-describing envelopes: protocol_version, evidence, provenance,
    │   budget meta, cost block, enumerated error codes + a populated fix
    ▼
@@ -38,7 +39,7 @@ the same registry.
 - Enum values are part of the contract. Where an enum's DERIVATION is
   implementation-defined (noted per field), implementations may improve the
   derivation without a version bump; the values and their meanings stay fixed.
-- **Adding a VERB is additive, not a version bump.** v0.46 grew the frozen set
+- **Adding a VERB is additive, not a version bump.** v0.45.7 grew the frozen set
   from 5 to 7 (`context_pack`, `delta`) at `protocol_version: 1`. New verbs are
   new optional surface a v1 client discovers via tool-listing; the existing five
   keep stamping `1`. Bumping `protocol_version` would rewrite the frozen five's
@@ -48,7 +49,7 @@ the same registry.
 
 ```bash
 gbrain init --pglite                                      # 2-second local brain
-claude mcp add gbrain -- gbrain serve --surface verbs     # the five-verb surface
+claude mcp add gbrain -- gbrain serve --surface verbs     # the memory-verb surface
 gbrain remember "I prefer dark mode in every editor" --provenance demo --entity people/me
 gbrain recall --entity people/me                          # …now ask your agent in a NEW session
 ```
@@ -68,7 +69,7 @@ codex mcp add gbrain -- gbrain serve --surface verbs
 host, then `gbrain connect https://host/mcp --token gbrain_xxx --install` on
 each client.
 
-**Surface modes:** `--surface verbs` exposes EXACTLY the five verbs —
+**Surface modes:** `--surface verbs` exposes EXACTLY the seven verbs —
 advertised list AND dispatch are filtered fail-closed (a hidden op returns
 `unknown_tool` even when called by name). `--surface full` (the default)
 exposes every operation, verbs included. Why default full: verbs is for
@@ -193,7 +194,7 @@ Response: `{ id, expired, reason, protocol_version }`.
 
 ### context_pack(entities, budget_tokens?, since?, session_id?, include_private?) — read, zero LLM
 
-v0.46 (issue #1). One deterministic, budget-packed bundle for a set of standing
+v0.45.7 (issue #1). One deterministic, budget-packed bundle for a set of standing
 entities — entity cards + open threads + hot facts. Built for **session
 boundaries**: call it at session start to warm cold context, and immediately
 after compaction to rehydrate what the summary dropped. Composes existing arms
@@ -214,7 +215,7 @@ pre-rendered, envelope-wrapped injectable block.
 
 ### delta(since?, entities?, budget_tokens?, session_id?, include_private?) — read, zero LLM
 
-v0.46 (issue #1). "What changed since T" for heartbeats — pages updated after
+v0.45.7 (issue #1). "What changed since T" for heartbeats — pages updated after
 the cursor (oldest first) + facts recorded after the cursor + open-thread
 events after the cursor. Lets a periodic wake maintain warm state in
 O(changes) instead of re-deriving. Provide `since` (ISO 8601) OR a

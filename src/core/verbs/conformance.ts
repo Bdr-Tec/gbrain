@@ -168,7 +168,7 @@ export async function runConformance(
 
   // List-level checks first: the CORE five verbs are advertised, synthesize is
   // marked expensive (description prefix is the load-bearing channel).
-  // v0.46: context_pack/delta are ADDITIVE — a v1 endpoint that predates them
+  // v0.45.7: context_pack/delta are ADDITIVE — a v1 endpoint that predates them
   // must still certify (the versioning policy this runner enforces), so their
   // absence is a 'skip', never a 'fail'. When advertised, they are exercised
   // like any other verb.
@@ -185,7 +185,7 @@ export async function runConformance(
           ? { name: `tools/list advertises ${verb}`, verb, status: 'pass', detail: '' }
           : required
             ? { name: `tools/list advertises ${verb}`, verb, status: 'fail', detail: 'not advertised' }
-            : { name: `tools/list advertises ${verb}`, verb, status: 'skip', detail: 'optional additive verb (v0.46) not advertised by this endpoint' },
+            : { name: `tools/list advertises ${verb}`, verb, status: 'skip', detail: 'optional additive verb (v0.45.7) not advertised by this endpoint' },
       );
     }
     const synth = byName.get('synthesize');
@@ -210,7 +210,7 @@ export async function runConformance(
       results.push({ name: c.name, verb: c.verb, status: 'skip', detail: 'costs money — pass --synthesize' });
       continue;
     }
-    // v0.46: cases for additive verbs run only where the verb is advertised.
+    // v0.45.7: cases for additive verbs run only where the verb is advertised.
     if (!CORE_VERBS.includes(c.verb as VerbName) && advertised.size > 0 && !advertised.has(c.verb)) {
       results.push({ name: c.name, verb: c.verb, status: 'skip', detail: 'optional additive verb not advertised by this endpoint' });
       continue;

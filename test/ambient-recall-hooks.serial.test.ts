@@ -19,6 +19,7 @@ import {
   type ContextPackRequest,
   type ContextPackResponse,
 } from '../src/core/context/resolve-ipc.ts';
+import type { WindowTurn } from '../src/core/context/entity-salience.ts';
 import { parseTranscript } from '../src/core/transcripts/claude-code-jsonl.ts';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'conversation-formats', 'claude-code.jsonl');
@@ -55,6 +56,12 @@ const home = () => join(tmp, '.gbrain');
 function writePgliteConfig(dataDir: string): void {
   mkdirSync(home(), { recursive: true });
   writeFileSync(join(home(), 'config.json'), JSON.stringify({ engine: 'pglite', database_path: dataDir }));
+}
+
+/** A Postgres brain carrying a LEFTOVER database_path (e.g. a pglite→postgres migration). */
+function writePostgresConfigWithLeftoverPath(dataDir: string): void {
+  mkdirSync(home(), { recursive: true });
+  writeFileSync(join(home(), 'config.json'), JSON.stringify({ engine: 'postgres', database_path: dataDir }));
 }
 
 function collectStdout(): { io: { write: (s: string) => void }; get: () => string } {
@@ -195,6 +202,84 @@ describe('context_pack over IPC', () => {
     expect(resp.ok).toBe(false);
     expect(resp.error).toContain('boom-pack');
   });
+
+  test('oversized window is trimmed oldest-first below the 256KB cap [G11]', async () => {
+    const dataDir = join(tmp, 'data');
+    let received: WindowTurn[] | undefined;
+    await startPackServer({ dataDir, blockText: 'OK', onRequest: (r) => { received = r.window; } });
+    const secret = ensureIpcSecret(dataDir);
+    const turns: WindowTurn[] = [];
+    for (let i = 0; i < 600; i++) {
+      turns.push({ role: 'user', text: `turn-${i} ${'x'.repeat(1000)}` });
+    }
+    const res = await requestContextPack(
+      resolveSocketPath(dataDir),
+      { secret, window: turns },
+      { timeoutMs: 5000 },
+    );
+    const resp = res as ContextPackResponse;
+    expect(resp.ok).toBe(true);
+    expect(received!.length).toBeGreaterThan(0);
+    expect(received!.length).toBeLessThan(600);
+    // Oldest-first trim: the NEWEST turn always survives.
+    expect(received![received!.length - 1].text.startsWith('turn-599 ')).toBe(true);
+    expect(received![0].text.startsWith('turn-0 ')).toBe(false);
+  });
+
+  test('request that cannot fit even after trimming → IPC_UNAVAILABLE, never a throw [G11]', async () => {
+    const dataDir = join(tmp, 'data');
+    let handlerHit = false;
+    await startPackServer({ dataDir, blockText: 'OK', onRequest: () => { handlerHit = true; } });
+    const secret = ensureIpcSecret(dataDir);
+    // The clamp loop only evicts window turns; a giant non-window field
+    // (entities) can never fit under the message cap, so the client bails
+    // to IPC_UNAVAILABLE without ever touching the socket.
+    const entities = Array.from({ length: 300 }, (_, i) => `e${i}-${'y'.repeat(1000)}`);
+    const res = await requestContextPack(resolveSocketPath(dataDir), {
+      secret,
+      entities,
+      window: [{ role: 'user', text: 'small' }],
+    });
+    expect(res).toBe(IPC_UNAVAILABLE);
+    expect(handlerHit).toBe(false);
+  });
+
+  test('server with a context_pack handler but NO configured secret → unauthorized (fail closed)', async () => {
+    const dataDir = join(tmp, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const server = await startResolveIpcServer(
+      resolveSocketPath(dataDir),
+      { resolve: async () => null, context_pack: async () => ({ text: 'X', pointers: [], factsCount: 0 }) },
+      {}, // no opts.secret — no configured secret means NO service, not open service
+    );
+    servers.push(server!);
+    const res = await requestContextPack(resolveSocketPath(dataDir), { secret: 'anything' });
+    const resp = res as ContextPackResponse;
+    expect(resp.ok).toBe(false);
+    expect(resp.error).toBe('unauthorized');
+  });
+
+  test('partial pack propagates: block text AND top-level degradedReason survive the wire', async () => {
+    // eng 4A: an assembler deadline overrun returns a PARTIAL pack, never an
+    // empty hard failure — the server spreads block.degradedReason to the top.
+    const dataDir = join(tmp, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const secret = ensureIpcSecret(dataDir);
+    const server = await startResolveIpcServer(
+      resolveSocketPath(dataDir),
+      {
+        resolve: async () => null,
+        context_pack: async () => ({ text: 'PARTIAL', pointers: [], factsCount: 0, degradedReason: 'deadline' }),
+      },
+      { secret },
+    );
+    servers.push(server!);
+    const res = await requestContextPack(resolveSocketPath(dataDir), { secret });
+    const resp = res as ContextPackResponse;
+    expect(resp.ok).toBe(true);
+    expect(resp.block?.text).toBe('PARTIAL');
+    expect(resp.degradedReason).toBe('deadline');
+  });
 });
 
 // ── compact (PreCompact banking) ────────────────────────────────────────────
@@ -291,6 +376,31 @@ describe('hook compact', () => {
     expect(hb?.reason).toBe('no_session');
   });
 
+  test('Postgres engine with a leftover database_path never probes the socket (v0.45.7 symmetry)', async () => {
+    // Same engine gate as the session-start pack arm: a live serve behind the
+    // leftover path must NOT be reached — there is no PGLite brain here.
+    const dataDir = join(tmp, 'data');
+    let handlerHit = false;
+    await startPackServer({ dataDir, blockText: '', onRequest: () => { handlerHit = true; } });
+    writePostgresConfigWithLeftoverPath(dataDir);
+    const tr = join(tmp, 'tr');
+    mkdirSync(tr, { recursive: true });
+    const transcript = join(tr, 'sess.jsonl');
+    copyFileSync(FIXTURE, transcript);
+    const out = collectStdout();
+    const code = await runHook(['compact'], {
+      ...out.io,
+      stdin: JSON.stringify({ transcript_path: transcript, session_id: 's' }),
+      transcriptRoot: tr,
+    });
+    expect(code).toBe(0);
+    expect(out.get()).toBe('');
+    expect(handlerHit).toBe(false);
+    const hb = (await readHeartbeatTail(1))[0];
+    expect(hb?.outcome).toBe('degraded');
+    expect(hb?.reason).toBe('no_pglite_path');
+  });
+
   test('unconfined transcript path aborts (S3#8), never best-effort', async () => {
     const dataDir = join(tmp, 'data');
     await startPackServer({ dataDir, blockText: '' });
@@ -340,6 +450,24 @@ describe('hook session-start pack arm', () => {
     expect(out.get()).not.toContain('BRAIN-PACK-BLOCK');
   });
 
+  test('Postgres engine with a leftover database_path: digest-only stdout, no pack attempt (v0.45.7 symmetry)', async () => {
+    const dataDir = join(tmp, 'data');
+    let handlerHit = false;
+    await startPackServer({ dataDir, blockText: 'BRAIN-PACK-BLOCK', onRequest: () => { handlerHit = true; } });
+    writePostgresConfigWithLeftoverPath(dataDir);
+    writeFileSync(join(tmp, 'MEMORY.md'), '## Standing rules\n- always ship tests\n');
+    const out = collectStdout();
+    const code = await runHook(['session-start'], {
+      ...out.io,
+      cwd: tmp,
+      stdin: JSON.stringify({ session_id: 'sess-pg', source: 'startup' }),
+    });
+    expect(code).toBe(0);
+    expect(out.get()).toContain('From MEMORY.md');
+    expect(out.get()).not.toContain('BRAIN-PACK-BLOCK');
+    expect(handlerHit).toBe(false);
+  });
+
   test('trigger carries the SessionStart source discriminator', async () => {
     const dataDir = join(tmp, 'data');
     let seen: ContextPackRequest | undefined;
@@ -353,6 +481,65 @@ describe('hook session-start pack arm', () => {
     });
     expect(seen?.trigger).toBe('session-start:compact');
     expect(seen?.sessionId).toBe('sess-s3');
+  });
+});
+
+// ── documented harness payload shapes ───────────────────────────────────────
+
+describe('documented hook payload shapes (extra fields tolerated)', () => {
+  test('full PreCompact payload banks identically to the minimal shape', async () => {
+    const dataDir = join(tmp, 'data');
+    let seen: ContextPackRequest | undefined;
+    await startPackServer({ dataDir, blockText: '', onRequest: (r) => { seen = r; } });
+    writePgliteConfig(dataDir);
+    const tr = join(tmp, 'tr');
+    mkdirSync(tr, { recursive: true });
+    const transcript = join(tr, 'sess.jsonl');
+    copyFileSync(FIXTURE, transcript);
+    const out = collectStdout();
+    const code = await runHook(['compact'], {
+      ...out.io,
+      stdin: JSON.stringify({
+        session_id: 'sess-full',
+        transcript_path: transcript,
+        cwd: tmp,
+        hook_event_name: 'PreCompact',
+        trigger: 'auto',
+        custom_instructions: '',
+      }),
+      transcriptRoot: tr,
+    });
+    expect(code).toBe(0);
+    expect(out.get()).toBe(''); // PreCompact emits nothing
+    expect(seen?.bankOnly).toBe(true);
+    expect(seen?.sessionId).toBe('sess-full');
+    expect((seen?.window?.length ?? 0)).toBeGreaterThan(0);
+    const hb = (await readHeartbeatTail(1))[0];
+    expect(hb?.event).toBe('compact');
+    expect(hb?.outcome).toBe('ok');
+  });
+
+  test('full SessionStart payload packs identically to the minimal shape', async () => {
+    const dataDir = join(tmp, 'data');
+    let seen: ContextPackRequest | undefined;
+    await startPackServer({ dataDir, blockText: 'BRAIN-PACK-BLOCK', onRequest: (r) => { seen = r; } });
+    writePgliteConfig(dataDir);
+    const out = collectStdout();
+    // No io.cwd — the documented payload's cwd field carries the workspace.
+    const code = await runHook(['session-start'], {
+      ...out.io,
+      stdin: JSON.stringify({
+        session_id: 'sess-full-ss',
+        transcript_path: join(tmp, 'unused.jsonl'),
+        cwd: tmp,
+        hook_event_name: 'SessionStart',
+        source: 'compact',
+      }),
+    });
+    expect(code).toBe(0);
+    expect(out.get()).toContain('BRAIN-PACK-BLOCK');
+    expect(seen?.trigger).toBe('session-start:compact');
+    expect(seen?.sessionId).toBe('sess-full-ss');
   });
 });
 

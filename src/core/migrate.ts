@@ -5621,7 +5621,7 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 126,
     name: 'session_context_state',
-    // v0.46 (issue #1) ambient recall — per-session cursor + boundary-tie
+    // v0.45.7 (issue #1) ambient recall — per-session cursor + boundary-tie
     // dedup for the `delta` verb and the heartbeat runtime. Key is
     // (source_id, client_id, session_id): client_id defaults to the 'local'
     // sentinel for the CLI/hook path; REMOTE callers pass their auth client id

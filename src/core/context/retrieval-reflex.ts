@@ -298,7 +298,7 @@ export function safeSynopsis(
   row: PageRow,
   opts: { keepVisibility?: ('private' | 'world')[] } = {},
 ): string {
-  // v0.46 ambient recall: world-only by default (the injected-context posture).
+  // v0.45.7 ambient recall: world-only by default (the injected-context posture).
   // The ONLY widening caller is the entity-card builder for a trusted-local
   // include_private pack (entity-card.ts) — the pointer/volunteer arms always
   // run world-only (turn mode never widens).

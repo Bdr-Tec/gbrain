@@ -991,7 +991,7 @@ CREATE INDEX IF NOT EXISTS context_volunteer_events_src_time_idx
 CREATE INDEX IF NOT EXISTS context_volunteer_events_src_slug_idx
   ON context_volunteer_events (source_id, slug);
 
--- session_context_state (v0.46 / migration v126 — ambient recall issue #1).
+-- session_context_state (v0.45.7 / migration v126 — ambient recall issue #1).
 CREATE TABLE IF NOT EXISTS session_context_state (
   source_id         TEXT NOT NULL,
   client_id         TEXT NOT NULL DEFAULT 'local',

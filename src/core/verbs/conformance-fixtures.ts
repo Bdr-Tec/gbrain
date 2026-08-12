@@ -224,9 +224,9 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
     // error (no key). The runner accepts both; anything else fails.
   },
 
-  // ── v0.46 additive verbs: context_pack + delta ──────────────────────────
+  // ── v0.45.7 additive verbs: context_pack + delta ──────────────────────────
   // The runner SKIPS these against endpoints that don't advertise the verbs
-  // (they are additive — a pre-v0.46 v1 endpoint must still certify).
+  // (they are additive — a pre-v0.45.7 v1 endpoint must still certify).
   {
     name: 'context_pack returns a schema-valid bundle for unknown entities (empty, not an error)',
     verb: 'context_pack',
@@ -243,7 +243,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
     validateSchema: true,
     expect: [
       { path: 'protocol_version', equals: 1 },
-      // `since` is normalized to ISO (v0.46 F4 — never echoed raw).
+      // `since` is normalized to ISO (v0.45.7 F4 — never echoed raw).
       { path: 'since', equals: '1970-01-01T00:00:00.000Z' },
     ],
   },

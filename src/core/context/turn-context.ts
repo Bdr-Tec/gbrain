@@ -37,7 +37,7 @@ import { getBrainHotMemoryMeta } from '../facts/meta-hook.ts';
 import { buildEntityCard, type EntityCard, type EntityOpenThread } from '../verbs/entity-card.ts';
 
 /**
- * v0.46 ambient recall (issue #1). The per-turn assembler is extended into the
+ * v0.45.7 ambient recall (issue #1). The per-turn assembler is extended into the
  * shared core for the two new frozen verbs (`context_pack`, `delta`) AND the
  * boundary hook runtime, via `mode`:
  *   - 'turn'  — the existing per-turn push path (UNCHANGED; window-driven,
@@ -72,7 +72,7 @@ export interface TurnContextFact {
   notability?: string | null;
   entity_slug: string | null;
   valid_from?: string;
-  /** Recording time (v0.46) — delta's "new since" filter prefers this over valid_from. */
+  /** Recording time (v0.45.7) — delta's "new since" filter prefers this over valid_from. */
   created_at?: string;
   confidence: number;
 }
@@ -128,7 +128,7 @@ export interface AssembleTurnContextOpts {
   /** Opaque session identity — keys the hot-memory cache (CX2-11). */
   sessionId?: string;
   maxBytes?: number;
-  // ── v0.46 ambient recall ──────────────────────────────────────────────
+  // ── v0.45.7 ambient recall ──────────────────────────────────────────────
   /** Assembly mode. Default 'turn' (existing behavior). */
   mode?: ContextMode;
   /** pack/delta — standing entity names to bundle (resolved to cards). */
@@ -136,7 +136,7 @@ export interface AssembleTurnContextOpts {
   /** delta — ISO cursor; only pages/facts/threads newer than this are returned. */
   since?: string;
   /**
-   * delta — keyset slug paired with `since` (v0.46): pages are fetched with
+   * delta — keyset slug paired with `since` (v0.45.7): pages are fetched with
    * `(updated_at, slug) > (since, sinceSlug)` so a >limit cluster at one
    * timestamp pages deterministically. Facts/threads still use `since` (time).
    */
@@ -171,7 +171,7 @@ export async function assembleTurnContext(
   engine: BrainEngine,
   opts: AssembleTurnContextOpts,
 ): Promise<TurnContextResult> {
-  // v0.46 — mode dispatch. pack/delta run through the ambient-recall arms;
+  // v0.45.7 — mode dispatch. pack/delta run through the ambient-recall arms;
   // 'turn' (default) keeps the original per-turn path below, byte-identical.
   const mode = opts.mode ?? 'turn';
   if (mode === 'pack') return assemblePack(engine, opts);
@@ -336,7 +336,7 @@ function render(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// v0.46 ambient recall — pack / delta modes (issue #1)
+// v0.45.7 ambient recall — pack / delta modes (issue #1)
 // ─────────────────────────────────────────────────────────────────────────
 
 function clampPositive(n: number | undefined, dflt: number): number {
@@ -601,7 +601,7 @@ export function assembleDeltaContext(
   return assembleTurnContext(engine, { ...opts, mode: 'delta' });
 }
 
-/** Exported (v0.46 adversarial review): the verb handlers re-render `text`
+/** Exported (v0.45.7 adversarial review): the verb handlers re-render `text`
  * from the FINAL (budget-packed) sets — the injectable field must honor the
  * same budget + dedup contract as the structured arrays. */
 export function renderPack(
@@ -635,7 +635,7 @@ export function renderPack(
   return lines.join('\n');
 }
 
-/** Exported (v0.46 adversarial review) — see renderPack. */
+/** Exported (v0.45.7 adversarial review) — see renderPack. */
 export function renderDelta(
   pages: DeltaPage[],
   facts: TurnContextFact[],

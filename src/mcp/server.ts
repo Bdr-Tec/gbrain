@@ -152,7 +152,7 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
               sessionId: req.sessionId,
               maxBytes: req.maxBytes,
             }),
-          // v0.46 ambient recall: boundary context pack. Extracted to
+          // v0.45.7 ambient recall: boundary context pack. Extracted to
           // context-pack-handler.ts (directly testable against a real engine);
           // the runtime owns entity merge, banking, the since-cursor, and the
           // complete-pack-only monotonic cursor advance.
@@ -180,7 +180,7 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
     /* resolve IPC is best-effort; never block serve */
   }
 
-  // v0.46 ambient recall: age out stale session cursors once per serve boot
+  // v0.45.7 ambient recall: age out stale session cursors once per serve boot
   // (7-day TTL, indexed DELETE). Best-effort — GC failure never blocks serve.
   gcSessionContextState(engine).catch(() => {});
 

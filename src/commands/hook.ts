@@ -461,7 +461,7 @@ async function hookSessionStart(io: HookIo): Promise<number> {
         }
       }
 
-      // 6. v0.46 ambient recall — boundary context pack over IPC. SessionStart
+      // 6. v0.45.7 ambient recall — boundary context pack over IPC. SessionStart
       //    is Claude Code's cold-start AND post-compaction re-entry point
       //    (source=compact/resume), so this one arm covers both. The server
       //    owns the intelligence (banked entities + since-cursor + advance);
@@ -938,7 +938,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
   return 0;
 }
 
-// ── compact (PreCompact banking, v0.46 ambient recall) ─────────────────────
+// ── compact (PreCompact banking, v0.45.7 ambient recall) ─────────────────────
 
 /** Self-deadline for the compact event (harness timeout is 5s). */
 export const COMPACT_DEADLINE_MS = 3000;
@@ -987,7 +987,10 @@ async function hookCompact(io: HookIo): Promise<number> {
     }
 
     const cfg = loadConfig();
-    if (!cfg?.database_path) { outcome = 'degraded'; reason = 'no_pglite_path'; return; }
+    // Same engine gate as the session-start pack arm (v0.45.7 symmetry): a
+    // Postgres config carrying a leftover database_path must not probe the
+    // PGLite socket — there is no serve behind it for this brain.
+    if (cfg?.engine !== 'pglite' || !cfg.database_path) { outcome = 'degraded'; reason = 'no_pglite_path'; return; }
     const secret = readIpcSecret(cfg.database_path);
     if (!secret) { outcome = 'degraded'; reason = 'no_serve'; return; }
 

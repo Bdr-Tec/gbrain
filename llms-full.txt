@@ -193,7 +193,7 @@ mount, CEO-class with multiple team brains) and
 
 ## Architecture
 
-Contract-first: `src/core/operations.ts` defines 100+ shared operations (including `volunteer_context` — push-based context, see `docs/guides/push-context.md` — and the five frozen MEMORY_VERBS `recall`/`remember`/`entity`/`synthesize`/`forget`, servable alone via `gbrain serve --surface verbs`, see `docs/protocol/MEMORY_VERBS_v1.md`). CLI and MCP
+Contract-first: `src/core/operations.ts` defines 100+ shared operations (including `volunteer_context` — push-based context, see `docs/guides/push-context.md` — and the seven frozen MEMORY_VERBS `recall`/`remember`/`entity`/`synthesize`/`forget`/`context_pack`/`delta` — the last two are v0.45.7 ambient-recall boundary verbs (budget-packed pack + "what changed since"), all seven stamp `protocol_version: 1`, servable alone via `gbrain serve --surface verbs`, see `docs/protocol/MEMORY_VERBS_v1.md` + `docs/guides/ambient-recall.md`). CLI and MCP
 server are both generated from this single source. Engine factory (`src/core/engine-factory.ts`)
 dynamically imports the configured engine (`'pglite'` or `'postgres'`). Skills are fat
 markdown files (tool-agnostic, work with both CLI and plugin contexts).
@@ -1716,7 +1716,7 @@ Postgres-at-scale, Supabase, and thin-client setup paths live in [`docs/INSTALL.
 
 ### Connect GBrain to your AI client (MCP)
 
-GBrain exposes nearly all of its 100+ operations as MCP tools (stdio and HTTP; a handful of local-only ops stay CLI-side) — or exactly the five memory verbs with `--surface verbs`. The specific snippet depends on which client you use:
+GBrain exposes nearly all of its 100+ operations as MCP tools (stdio and HTTP; a handful of local-only ops stay CLI-side) — or exactly the seven memory verbs with `--surface verbs`. The specific snippet depends on which client you use:
 
 - **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — local: one command, `claude mcp add gbrain -- gbrain serve` (zero server, zero tunnel). Remote with just a bearer token: `gbrain connect https://your-host/mcp --token gbrain_xxx` prints a paste-ready block (or `--install` wires it up and smoke-tests the token).
 - **[Codex](docs/mcp/CODEX.md)** — `gbrain connect https://your-host/mcp --token gbrain_xxx --agent codex` (or `--install`). Codex reads the bearer from `$GBRAIN_REMOTE_TOKEN` at runtime, so the token never lands in Codex config.
@@ -3869,7 +3869,7 @@ clients over OAuth 2.1.
 
 ```bash
 gbrain serve                  # full operation catalog (default)
-gbrain serve --surface verbs  # just the 5 memory verbs (quickstart surface)
+gbrain serve --surface verbs  # just the 7 memory verbs (quickstart surface)
 ```
 
 Works with Claude Code, Cursor, Windsurf, and any MCP client that supports stdio.
@@ -4200,8 +4200,9 @@ Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/protocol/M
 
 # MEMORY_VERBS v1 — the memory wire protocol
 
-GBrain's frozen five-verb memory interface over MCP: `recall`, `remember`,
-`entity`, `synthesize`, `forget`. The contract every harness can rely on the
+GBrain's frozen memory-verb interface over MCP: `recall`, `remember`,
+`entity`, `synthesize`, `forget`, plus (v0.45.7, additive) `context_pack` and
+`delta` — seven verbs, all at `protocol_version: 1`. The contract every harness can rely on the
 way every Postgres client relies on the wire protocol — and the contract any
 OTHER memory server can implement and certify against
 (`gbrain protocol conformance --target <endpoint>`).
@@ -4210,7 +4211,7 @@ OTHER memory server can implement and certify against
 agent (any MCP harness)
    │  remember("picked Stripe over Adyen", provenance: "chat 2026-06-11")
    ▼
-five verbs ── recall ── remember ── entity ── synthesize ── forget
+seven verbs  recall ─ remember ─ entity ─ synthesize ─ forget ─ context_pack ─ delta
    │   self-describing envelopes: protocol_version, evidence, provenance,
    │   budget meta, cost block, enumerated error codes + a populated fix
    ▼
@@ -4238,7 +4239,7 @@ the same registry.
 - Enum values are part of the contract. Where an enum's DERIVATION is
   implementation-defined (noted per field), implementations may improve the
   derivation without a version bump; the values and their meanings stay fixed.
-- **Adding a VERB is additive, not a version bump.** v0.46 grew the frozen set
+- **Adding a VERB is additive, not a version bump.** v0.45.7 grew the frozen set
   from 5 to 7 (`context_pack`, `delta`) at `protocol_version: 1`. New verbs are
   new optional surface a v1 client discovers via tool-listing; the existing five
   keep stamping `1`. Bumping `protocol_version` would rewrite the frozen five's
@@ -4248,7 +4249,7 @@ the same registry.
 
 ```bash
 gbrain init --pglite                                      # 2-second local brain
-claude mcp add gbrain -- gbrain serve --surface verbs     # the five-verb surface
+claude mcp add gbrain -- gbrain serve --surface verbs     # the memory-verb surface
 gbrain remember "I prefer dark mode in every editor" --provenance demo --entity people/me
 gbrain recall --entity people/me                          # …now ask your agent in a NEW session
 ```
@@ -4268,7 +4269,7 @@ codex mcp add gbrain -- gbrain serve --surface verbs
 host, then `gbrain connect https://host/mcp --token gbrain_xxx --install` on
 each client.
 
-**Surface modes:** `--surface verbs` exposes EXACTLY the five verbs —
+**Surface modes:** `--surface verbs` exposes EXACTLY the seven verbs —
 advertised list AND dispatch are filtered fail-closed (a hidden op returns
 `unknown_tool` even when called by name). `--surface full` (the default)
 exposes every operation, verbs included. Why default full: verbs is for
@@ -4393,7 +4394,7 @@ Response: `{ id, expired, reason, protocol_version }`.
 
 ### context_pack(entities, budget_tokens?, since?, session_id?, include_private?) — read, zero LLM
 
-v0.46 (issue #1). One deterministic, budget-packed bundle for a set of standing
+v0.45.7 (issue #1). One deterministic, budget-packed bundle for a set of standing
 entities — entity cards + open threads + hot facts. Built for **session
 boundaries**: call it at session start to warm cold context, and immediately
 after compaction to rehydrate what the summary dropped. Composes existing arms
@@ -4414,7 +4415,7 @@ pre-rendered, envelope-wrapped injectable block.
 
 ### delta(since?, entities?, budget_tokens?, session_id?, include_private?) — read, zero LLM
 
-v0.46 (issue #1). "What changed since T" for heartbeats — pages updated after
+v0.45.7 (issue #1). "What changed since T" for heartbeats — pages updated after
 the cursor (oldest first) + facts recorded after the cursor + open-thread
 events after the cursor. Lets a periodic wake maintain warm state in
 O(changes) instead of re-deriving. Provide `since` (ISO 8601) OR a

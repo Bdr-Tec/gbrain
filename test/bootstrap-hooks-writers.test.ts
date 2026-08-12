@@ -72,7 +72,7 @@ describe('host-specs [ENG-7]', () => {
 });
 
 describe('writeClaudeHooks [G5, CX2-17]', () => {
-  test('fresh workspace: all four events wired with marker + env + timeout', () => {
+  test('fresh workspace: all five events wired with marker + env + timeout', () => {
     const dir = ws();
     const res = writeClaudeHooks(dir, { gbrainBin: BIN, env: ENV });
     expect(res.settingsPath).toBe(claudeSettingsPath(dir));
@@ -94,6 +94,8 @@ describe('writeClaudeHooks [G5, CX2-17]', () => {
     expect(markerEntries(settings, 'SessionStart')[0].command).toContain('hook session-start');
     expect(markerEntries(settings, 'Stop')[0].command).toContain('hook stop');
     expect(markerEntries(settings, 'SessionEnd')[0].command).toContain('hook session-end');
+    // v0.45.7 ambient recall: PreCompact banks standing entities pre-compaction.
+    expect(markerEntries(settings, 'PreCompact')[0].command).toContain('hook compact');
   });
 
   test('timeoutSecs override + GBRAIN_HOME env embedding', () => {

@@ -4946,10 +4946,17 @@ const delta: Operation = {
       // empty delta (there is no prior point to diff against yet). Opportunistic
       // GC on row creation bounds session-row accumulation on serve-less CLI
       // lanes and remote read callers minting session ids (pre-landing review).
+      // AWAITED (v0.45.7): a floating engine promise here races the CLI lane's
+      // engine teardown and wedges the process — `gbrain delta --session-id`
+      // printed its response but never exited (the exact command the shipped
+      // HEARTBEAT.md ambient-delta row tells agents to run). GC is two fast
+      // DELETEs on a capped table and internally fail-open, so awaiting costs
+      // one first-wake round-trip, never an error. The serve-boot call site
+      // (src/mcp/server.ts) stays fire-and-forget — that process is long-lived.
       const now = new Date().toISOString();
       const { gcSessionContextState } = await import('./context/session-state.ts');
       await upsertSessionContextState(ctx.engine, sourceId, clientId, sessionId, { lastWakeAt: now });
-      gcSessionContextState(ctx.engine).catch(() => {});
+      await gcSessionContextState(ctx.engine);
       return {
         protocol_version: MEMORY_VERBS_VERSION,
         since: now, pages: [], facts: [], threads: [], text: '', has_more: false,

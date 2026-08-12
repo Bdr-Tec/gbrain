@@ -1,5 +1,5 @@
 /**
- * v0.46 ambient recall — the serve-side context_pack IPC handler, extracted
+ * v0.45.7 ambient recall — the serve-side context_pack IPC handler, extracted
  * from startMcpServer's closure so it is directly testable against a real
  * engine (ship coverage audit: the closure form was only ever exercised via
  * canned mock handlers).

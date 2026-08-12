@@ -294,7 +294,7 @@ export interface PageFilters {
   /** ISO date string (YYYY-MM-DD or full ISO timestamp). Filter to pages updated_at > value. */
   updated_after?: string;
   /**
-   * v0.46 — keyset cursor for deterministic pagination through pages sharing
+   * v0.45.7 — keyset cursor for deterministic pagination through pages sharing
    * one `updated_at`. `WHERE p.updated_at > ts OR (p.updated_at = ts AND
    * p.slug > slug)`. Supersedes `updated_after` when set; pair with
    * `sort: 'updated_asc'` (total order). Used by the `delta` verb's session
@@ -358,7 +358,7 @@ export interface GetPageOpts {
 /** v0.29: literal ORDER BY fragments for the PageFilters.sort enum. Whitelisted. */
 export const PAGE_SORT_SQL: Record<NonNullable<PageFilters['sort']>, string> = {
   updated_desc: 'p.updated_at DESC',
-  // v0.46: slug tiebreaker makes updated_asc a TOTAL order, so keyset
+  // v0.45.7: slug tiebreaker makes updated_asc a TOTAL order, so keyset
   // pagination (updatedAfterKeyset) can page deterministically through a
   // cluster of pages sharing one updated_at (bulk syncs stamp identical
   // now() across a transaction). Without the tiebreaker, rows at the same

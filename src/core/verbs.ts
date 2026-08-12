@@ -28,7 +28,7 @@ import type { Operation } from './operations.ts';
 /** Frozen protocol version for the MEMORY_VERBS v1 verb set. Single source of truth. */
 export const MEMORY_VERBS_VERSION = 1;
 
-// v0.46 (issue #1): the frozen set grows from 5 to 7 with two ambient-recall
+// v0.45.7 (issue #1): the frozen set grows from 5 to 7 with two ambient-recall
 // verbs. The wire protocol_version STAYS 1 (additive) — MEMORY_VERBS_VERSION is
 // unchanged so the five existing schemas + handlers keep stamping 1 and their
 // conformance assertions (protocol_version === 1) hold.
@@ -536,7 +536,7 @@ export const RESPONSE_SCHEMAS: Record<VerbName, Record<string, unknown>> = {
       reason: { type: ['string', 'null'] },
     },
   },
-  // v0.46 (issue #1) — ambient recall. World-only by default; include_private
+  // v0.45.7 (issue #1) — ambient recall. World-only by default; include_private
   // widens all arms (local trusted callers only). protocol_version stays 1.
   context_pack: {
     type: 'object',

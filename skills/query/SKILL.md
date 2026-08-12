@@ -34,7 +34,7 @@ mutating: false
 Answer questions using the brain's knowledge with 3-layer search and synthesis.
 
 > **Memory verbs (MEMORY_VERBS v1, gbrain ≥ 0.43).** When connected to a brain
-> over MCP, prefer the five frozen memory verbs for memory work — they carry
+> over MCP, prefer the seven frozen memory verbs for memory work — they carry
 > provenance, evidence, and a server-enforced token budget:
 > - **`recall(query | entity, budget_tokens)`** — the budget-packed memory read.
 >   Use it instead of bare `search` for "what do we know that we SAVED about X".

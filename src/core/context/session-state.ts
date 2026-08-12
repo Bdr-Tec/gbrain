@@ -1,5 +1,5 @@
 /**
- * v0.46 ambient recall (issue #1) — per-session cursor + boundary-tie dedup
+ * v0.45.7 ambient recall (issue #1) — per-session cursor + boundary-tie dedup
  * for the `delta` verb and the heartbeat runtime.
  *
  * Parity-free by construction: both engines run the SAME `engine.executeRaw`
@@ -170,20 +170,26 @@ export async function upsertSessionContextState(
 /** Max session rows retained per (source_id, client_id) — bounds a remote
  * caller minting session ids (red-team F3: authed ≠ trusted; a read token
  * could otherwise create unbounded rows inside the 7-day age window). */
-const MAX_ROWS_PER_CLIENT = 1000;
+export const MAX_ROWS_PER_CLIENT = 1000;
 
 /**
  * Age out stale session rows (default 7 days) AND evict the oldest rows past
- * MAX_ROWS_PER_CLIENT per (source_id, client_id). Best-effort — runs at serve
- * boot and opportunistically on first-wake row creation.
+ * `maxRowsPerClient` (default MAX_ROWS_PER_CLIENT) per (source_id, client_id).
+ * The cap is injectable (v0.45.7) so tests drive the REAL windowed DELETE with
+ * a small cap instead of mirroring the SQL. Best-effort — runs at serve boot
+ * and opportunistically on first-wake row creation.
  */
-export async function gcSessionContextState(engine: BrainEngine, olderThanDays = 7): Promise<void> {
+export async function gcSessionContextState(
+  engine: BrainEngine,
+  olderThanDays = 7,
+  maxRowsPerClient = MAX_ROWS_PER_CLIENT,
+): Promise<void> {
   try {
     await engine.executeRaw(
       `DELETE FROM session_context_state WHERE updated_at < now() - ($1 || ' days')::interval`,
       [String(Math.max(1, Math.floor(olderThanDays)))],
     );
-    // Per-client LRU cap: keep the newest MAX_ROWS_PER_CLIENT rows per lane.
+    // Per-client LRU cap: keep the newest `maxRowsPerClient` rows per lane.
     await engine.executeRaw(
       `DELETE FROM session_context_state s
        USING (
@@ -197,7 +203,7 @@ export async function gcSessionContextState(engine: BrainEngine, olderThanDays =
          AND s.client_id = ranked.client_id
          AND s.session_id = ranked.session_id
          AND ranked.rn > $1`,
-      [String(MAX_ROWS_PER_CLIENT)],
+      [String(Math.max(1, Math.floor(maxRowsPerClient)))],
     );
   } catch {
     /* best-effort */

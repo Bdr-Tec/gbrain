@@ -58,7 +58,7 @@ export const TURN_CONTEXT_CLIENT_TIMEOUT_MS = 600;
 /** Server-side self-budget for turn_context assembly (< client timeout). */
 export const TURN_CONTEXT_SERVER_BUDGET_MS = 400;
 /**
- * v0.46 ambient recall — context_pack budgets. Packs build entity CARDS
+ * v0.45.7 ambient recall — context_pack budgets. Packs build entity CARDS
  * (heavier than turn_context's three arms), and their consumer is the
  * session-start hook (1.5s self-deadline, 5s harness timeout), so they get a
  * wider budget. The server passes its budget into the assembler as a
@@ -119,7 +119,7 @@ export interface TurnContextRequest {
 }
 
 /**
- * v0.46 ambient recall — boundary context pack over IPC. Two modes:
+ * v0.45.7 ambient recall — boundary context pack over IPC. Two modes:
  *   - assembly (default): the server resolves standing entities (request
  *     `entities` + window extraction + the session row's banked set), assembles
  *     a pack (cards + open threads + hot facts + since-delta vs the session
@@ -367,7 +367,7 @@ export type ContextPackIpcResult =
   | typeof IPC_UNAVAILABLE;
 
 /**
- * v0.46 client: request a boundary context pack (or a PreCompact entity bank)
+ * v0.45.7 client: request a boundary context pack (or a PreCompact entity bank)
  * from a running serve. Same fail-soft ladder as requestTurnContext: transport
  * trouble → IPC_UNAVAILABLE; missing protocol echo → stale_serve; otherwise
  * the server's typed response. Never throws. Window trims oldest-first under

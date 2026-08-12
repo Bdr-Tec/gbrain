@@ -118,7 +118,7 @@ export interface ParsedTranscript {
   /** Non-blank lines that failed JSON.parse (includes a tail-truncated partial first line). */
   skippedLines: number;
   /**
-   * v0.46 ambient recall — {type:'system', subtype:'compact_boundary'} entries
+   * v0.45.7 ambient recall — {type:'system', subtype:'compact_boundary'} entries
    * seen in the read range. Still excluded from `turns` (they carry no
    * conversation text); SURFACED here so boundary consumers (post-compaction
    * rehydration, telemetry, future transcript watchers) can detect that a
@@ -178,7 +178,7 @@ export function parseTranscript(
       continue;
     }
     parsedLines++;
-    // v0.46: count compaction boundaries (system entries — disjoint from
+    // v0.45.7: count compaction boundaries (system entries — disjoint from
     // attachments and turns) so post-compaction rehydration can detect them.
     if (isCompactBoundary(entry)) compactBoundaries++;
     const injected = entryToInjectedBlock(entry);
@@ -192,7 +192,7 @@ export function parseTranscript(
   return { turns, injectedContextBlocks, bytesRead, parsedLines, skippedLines, compactBoundaries };
 }
 
-/** {type:'system', subtype:'compact_boundary'} — Claude Code's on-disk compaction marker (v0.46). */
+/** {type:'system', subtype:'compact_boundary'} — Claude Code's on-disk compaction marker (v0.45.7). */
 function isCompactBoundary(entry: unknown): boolean {
   if (typeof entry !== 'object' || entry === null) return false;
   const e = entry as Record<string, unknown>;

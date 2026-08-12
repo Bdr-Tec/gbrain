@@ -10,6 +10,9 @@
  *    trusted-local (ctx.remote === false); remote NEVER widens (fail-closed)
  *  - delta cursor lifecycle (establish → advance), page dedup, since|session gate
  *  - MEMORY_VERBS_VERSION stays 1 (additive; the P1 fix)
+ *  - v0.45.7 gap-closure wave: delta visibility fail-closed mirror, stateless
+ *    keyset resume + explicit since_slug precedence, forced budget overflow,
+ *    session-state outage fail-open, banked-entity warm-pack visibility
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -365,6 +368,102 @@ describe('delta cursor lifecycle', () => {
     const found = (r.facts as Array<{ fact: string }>).some((f) => f.fact.includes('old recorded fact'));
     expect(found).toBe(true);
   });
+
+  test('stateless keyset resume: next_cursor.since/.slug drains a tie cluster, no re-delivery (v0.45.7)', async () => {
+    const putPage = operations.find((o) => o.name === 'put_page')!;
+    const local = ctxFor({ remote: false });
+    for (const s of ['sr-a', 'sr-b', 'sr-c', 'sr-d']) {
+      await call(putPage, local, { slug: `notes/${s}`, content: `# ${s}\n\nbody` });
+    }
+    // One identical timestamp, earlier than every other fixture cluster.
+    await engine.executeRaw(`UPDATE pages SET updated_at = '2026-08-09T10:00:00Z' WHERE slug LIKE 'notes/sr-%'`);
+    // NO session_id anywhere: resume rides next_cursor.since/.slug alone.
+    // budget 8 ≈ 2 pages per call, so the 4-page cluster needs ≥2 wakes.
+    const seen: string[] = [];
+    let since = '2026-08-09T09:59:00Z';
+    let sinceSlug: string | undefined;
+    let guard = 0;
+    while (seen.length < 4 && guard < 10) {
+      const r = await call(del, ctxFor({ remote: false }), {
+        since,
+        ...(sinceSlug !== undefined ? { since_slug: sinceSlug } : {}),
+        budget_tokens: 8,
+      });
+      for (const pg of r.pages as Array<{ slug: string }>) {
+        if (pg.slug.startsWith('notes/sr-')) seen.push(pg.slug);
+      }
+      since = (r.next_cursor as { since: string }).since;
+      sinceSlug = (r.next_cursor as { slug: string }).slug;
+      guard++;
+    }
+    // Full drain, exactly once each — a re-delivery would duplicate in `seen`.
+    expect(seen.sort()).toEqual(['notes/sr-a', 'notes/sr-b', 'notes/sr-c', 'notes/sr-d']);
+    // One more resumed call: the drained cluster must NOT re-deliver.
+    const r = await call(del, ctxFor({ remote: false }), { since, since_slug: sinceSlug, budget_tokens: 100000 });
+    const redelivered = (r.pages as Array<{ slug: string }>).filter((p) => p.slug.startsWith('notes/sr-'));
+    expect(redelivered).toEqual([]);
+  });
+
+  test('explicit since_slug wins over the session cursor slug when both are present (v0.45.7)', async () => {
+    const putPage = operations.find((o) => o.name === 'put_page')!;
+    const local = ctxFor({ remote: false });
+    for (const s of ['ow-a', 'ow-b', 'ow-c', 'ow-d']) {
+      await call(putPage, local, { slug: `notes/${s}`, content: `# ${s}\n\nbody` });
+    }
+    await engine.executeRaw(`UPDATE pages SET updated_at = '2026-08-08T10:00:00Z' WHERE slug LIKE 'notes/ow-%'`);
+    // Session cursor at the START of the tie bucket — on its own it would
+    // deliver the whole cluster from ow-a.
+    await upsertSessionContextState(engine, 'default', null, 'ow', {
+      lastWakeAt: '2026-08-08T10:00:00Z', cursorSlug: '',
+    });
+    const r = await call(del, local, { session_id: 'ow', since_slug: 'notes/ow-b', budget_tokens: 100000 });
+    const cluster = (r.pages as Array<{ slug: string }>)
+      .map((p) => p.slug)
+      .filter((s) => s.startsWith('notes/ow-'));
+    // Strictly after the EXPLICIT slug — the session's '' slug would have
+    // re-delivered ow-a/ow-b.
+    expect(cluster).toEqual(['notes/ow-c', 'notes/ow-d']);
+  });
+
+  test('fail-open: a session_context_state outage never blocks the delta read path (v0.45.7)', async () => {
+    // Proxy engine: executeRaw throws ONLY for statements touching
+    // session_context_state; everything else hits the real engine (the delta
+    // page/fact reads must keep working through the outage).
+    const failing = new Proxy(engine, {
+      get(t, k) {
+        if (k === 'executeRaw') {
+          return (sql: unknown, params?: unknown[]) => {
+            if (typeof sql === 'string' && sql.includes('session_context_state')) {
+              throw new Error('injected session-state outage');
+            }
+            return t.executeRaw(sql as never, params as never);
+          };
+        }
+        const v = (t as unknown as Record<string | symbol, unknown>)[k];
+        return typeof v === 'function' && k !== 'constructor'
+          ? (v as (...a: unknown[]) => unknown).bind(t)
+          : v;
+      },
+    });
+    // The state READ degrades to null, never a throw.
+    await expect(getSessionContextState(failing as never, 'default', null, 'outage')).resolves.toBeNull();
+    const ctx = { ...ctxFor({ remote: false }), engine: failing } as OperationContext;
+    // First-wake path: cursor read + establish-write + GC all fail — the verb
+    // still answers with a complete payload.
+    const r1 = await call(del, ctx, { session_id: 'outage' });
+    expect(r1.protocol_version).toBe(1);
+    expect(r1.pages).toEqual([]);
+    expect(r1.since).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+    // Full delta path: assembly reads run fine; the cursor-advance write fails
+    // silently and the payload is still complete.
+    const r2 = await call(del, ctx, { session_id: 'outage', since: '1970-01-01T00:00:00Z' });
+    expect(r2.protocol_version).toBe(1);
+    expect(Array.isArray(r2.pages)).toBe(true);
+    expect(r2.since).toBe('1970-01-01T00:00:00.000Z');
+    expect(r2.next_cursor).toBeTruthy();
+    // The writes really did fail: nothing persisted for this session.
+    expect(await getSessionContextState(engine, 'default', null, 'outage')).toBeNull();
+  });
 });
 
 describe('push-path IPC handler (extracted, real engine)', () => {
@@ -432,6 +531,34 @@ describe('push-path IPC handler (extracted, real engine)', () => {
     const st = await getSessionContextState(engine, 'default', null, 'push-2');
     expect(new Date(st!.last_wake_at!).toISOString()).toBe('2026-08-01T00:00:00.000Z');
   }, 20_000);
+
+  test('banked entities surface as VISIBLE warm-pack content on the next wake (v0.45.7)', async () => {
+    const { makeContextPackIpcHandler } = await import('../src/mcp/context-pack-handler.ts');
+    const putPage = operations.find((o) => o.name === 'put_page')!;
+    // A REAL page the banked window entity resolves to (title + slug-suffix arms).
+    await call(putPage, ctxFor({ remote: false }), {
+      slug: 'people/dana-example',
+      content: '# Dana Example\n\nFounder of widget-co; met at the retreat.',
+    });
+    const handler = makeContextPackIpcHandler(engine, 'default');
+    // PreCompact banking: the window NAMES the seeded page.
+    const bank = await handler({
+      kind: 'context_pack', protocol: 2, secret: 's',
+      sessionId: 'push-vis',
+      window: [{ role: 'user', text: 'we should sync with Dana Example before the board meeting' }],
+      bankOnly: true,
+    });
+    expect(bank?.text).toBe('');
+    const st = await getSessionContextState(engine, 'default', null, 'push-vis');
+    expect(st?.standing_entities ?? []).toContain('Dana Example');
+    // Post-compaction wake: the banked entity resolves to its page and lands in
+    // the rendered pack — traceable CONTENT, not merely a cursor advance.
+    const res = await handler({ kind: 'context_pack', protocol: 2, secret: 's', sessionId: 'push-vis' });
+    expect(res).not.toBeNull();
+    expect((res!.cards ?? []).some((c) => c.entity.slug === 'people/dana-example')).toBe(true);
+    expect(res!.text).toContain('## Standing entities');
+    expect(res!.text).toContain('people/dana-example');
+  });
 });
 
 describe('hot-memory cache: cross-tier isolation (adversarial P1 regression)', () => {
@@ -475,6 +602,33 @@ describe('visibility (eng 1A / D2=A): world-only default, fail-closed widen', ()
     const facts = (r.facts as Array<{ fact: string }>).map((f) => f.fact).join(' | ');
     expect(facts).not.toContain('secret burn rate');
   });
+
+  // v0.45.7 gap closure: `delta` mirrors the same fail-closed ladder — the
+  // facts arm routes through listFactsSince's visibility filter, not the
+  // hot-memory tier, so it needs its own pins.
+  test('delta local default (no include_private) is world-only in facts[] AND text', async () => {
+    const since = new Date(Date.now() - 5 * 60_000).toISOString();
+    const r = await call(del, ctxFor({ remote: false }), { since });
+    const facts = (r.facts as Array<{ fact: string }>).map((f) => f.fact).join(' | ');
+    expect(facts).toContain('raised a seed round');
+    expect(facts).not.toContain('secret burn rate');
+    expect(r.text as string).not.toContain('secret burn rate');
+  });
+
+  test('delta local include_private=true widens facts to include private', async () => {
+    const since = new Date(Date.now() - 5 * 60_000).toISOString();
+    const r = await call(del, ctxFor({ remote: false }), { since, include_private: true });
+    const facts = (r.facts as Array<{ fact: string }>).map((f) => f.fact).join(' | ');
+    expect(facts).toContain('secret burn rate');
+  });
+
+  test('delta remote caller NEVER widens even with include_private=true (fail-closed)', async () => {
+    const since = new Date(Date.now() - 5 * 60_000).toISOString();
+    const r = await call(del, ctxFor({ remote: true, clientId: 'c1' }), { since, include_private: true });
+    const facts = (r.facts as Array<{ fact: string }>).map((f) => f.fact).join(' | ');
+    expect(facts).not.toContain('secret burn rate');
+    expect(r.text as string).not.toContain('secret burn rate');
+  });
 });
 
 describe('budget packing + drop footer', () => {
@@ -497,5 +651,27 @@ describe('budget packing + drop footer', () => {
     const r = await call(contextPack, ctxFor({ remote: false }), { entities: 'acme-example' });
     expect(r.budget_tokens).toBeUndefined();
     expect(r.dropped_count).toBeUndefined();
+  });
+
+  test('forced overflow: dropped_count > 0 and budget_used stays within budget_tokens (v0.45.7)', async () => {
+    const local = ctxFor({ remote: false });
+    // Long facts (~55 tokens each): even ONE cannot fit the 20-token budget,
+    // so overflow is GUARANTEED, not merely allowed (the >= 0 escape hatch).
+    for (let i = 0; i < 5; i++) {
+      await call(remember, local, {
+        fact: `overflow filler fact ${i} ${'x'.repeat(200)}`,
+        provenance: 'test',
+        visibility: 'world',
+      });
+    }
+    __resetHotMemoryCacheForTests();
+    // Precondition: the unbudgeted pack actually carries facts to drop.
+    const full = await call(contextPack, local, { entities: 'acme-example' });
+    expect((full.facts as unknown[]).length).toBeGreaterThan(0);
+    const r = await call(contextPack, local, { entities: 'acme-example', budget_tokens: 20 });
+    expect(r.budget_tokens).toBe(20);
+    expect(r.dropped_count).toBeGreaterThan(0);
+    expect(r.budget_used).toBeLessThanOrEqual(20);
+    expect((r.facts as unknown[]).length).toBeLessThan((full.facts as unknown[]).length);
   });
 });

@@ -81,7 +81,7 @@ export async function getBrainHotMemoryMeta(
     ?? (ctx as { source_session?: string }).source_session
     ?? null;
   const allowListHash = hashAllowList(ctx.takesHoldersAllowList);
-  // v0.46 (ambient-recall adversarial review, P1): the visibility TIER is part
+  // v0.45.7 (ambient-recall adversarial review, P1): the visibility TIER is part
   // of the key. Without it, a trusted-local call (remote:false → all rows,
   // private included) warms the cache and a later remote/world-only call with
   // the same source+session+allowList is SERVED the private payload — a
@@ -144,7 +144,7 @@ export async function getBrainHotMemoryMeta(
         notability: r.notability,
         entity_slug: r.entity_slug,
         valid_from: r.valid_from.toISOString(),
-        // v0.46 ambient recall: recording time, so delta's "new facts since my
+        // v0.45.7 ambient recall: recording time, so delta's "new facts since my
         // last wake" filters on WHEN the fact was learned, not its semantic
         // validity date (a fact recorded today about last month is NEW).
         created_at: r.created_at.toISOString(),
@@ -160,7 +160,7 @@ export async function getBrainHotMemoryMeta(
 export function bumpHotMemoryCache(sourceId: string, sessionId: string | null): void {
   // Walk the cache and prune any entry matching this source+session
   // (regardless of visibility tier or allow-list hash — key layout is
-  // encField(source)::tier::encField(session)::allowHash since v0.46).
+  // encField(source)::tier::encField(session)::allowHash since v0.45.7).
   // Components are ':'-encoded, so split('::') slices cleanly even when the
   // source/session id itself contains '::' (F5).
   const encSource = encodeCacheField(sourceId);
