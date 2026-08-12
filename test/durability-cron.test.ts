@@ -3,10 +3,11 @@
  * Asserts the cron is DB-free (gbrain sources pull --path, NOT `pull <id>`),
  * secret-free, self-disabling, and that the launchd plist is periodic.
  */
-import { describe, test, expect, afterEach } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { describe, test, expect } from 'bun:test';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { withEnv } from './helpers/with-env.ts';
 import {
   renderCronWrapper,
   generateBrainPullPlist,
@@ -53,126 +54,102 @@ describe('generateBrainPullPlist (D12 launchd)', () => {
   });
 });
 
+
 describe('installDurabilityCron — crontab probe [B2/D-cloud]', () => {
-  const savedPath = process.env.PATH;
-  const savedHome = process.env.GBRAIN_HOME;
-  afterEach(() => {
-    process.env.PATH = savedPath;
-    if (savedHome === undefined) delete process.env.GBRAIN_HOME;
-    else process.env.GBRAIN_HOME = savedHome;
-  });
-
-  test('crontab absent on a non-darwin host → skipped (expected in containers), never needs_attention', () => {
+  test('crontab absent on a non-darwin host → skipped (expected in containers), never needs_attention', async () => {
     const empty = mkdtempSync(join(tmpdir(), 'no-bin-'));
-    process.env.PATH = empty; // no crontab resolvable
-    process.env.GBRAIN_HOME = mkdtempSync(join(tmpdir(), 'gb-cron-'));
-    const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, false, 'linux');
-    expect(r.status).toBe('skipped');
-    expect(r.detail).toContain('no crontab on this host');
-    expect(r.detail).toContain('post-commit auto-push');
+    const home = mkdtempSync(join(tmpdir(), 'gb-cron-'));
+    await withEnv({ PATH: empty, GBRAIN_HOME: home }, async () => {
+      const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, false, 'linux');
+      expect(r.status).toBe('skipped');
+      expect(r.detail).toContain('no crontab on this host');
+      expect(r.detail).toContain('post-commit auto-push');
+    });
   });
 
-  test('crontab present but failing → needs_attention (a real breakage stays loud)', () => {
+  test('crontab present but failing → needs_attention (a real breakage stays loud)', async () => {
     const shim = mkdtempSync(join(tmpdir(), 'shim-cron-'));
     // -l lists empty; writing the new tab (crontab -) fails.
     writeFileSync(join(shim, 'crontab'), '#!/bin/sh\ncase "$1" in -l) exit 0;; esac\nexit 1\n', { mode: 0o755 });
-    process.env.PATH = `${shim}:${savedPath}`;
-    process.env.GBRAIN_HOME = mkdtempSync(join(tmpdir(), 'gb-cron2-'));
-    const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, false, 'linux');
-    expect(r.status).toBe('needs_attention');
-    expect(r.detail).toContain('crontab install failed');
+    const home = mkdtempSync(join(tmpdir(), 'gb-cron2-'));
+    await withEnv({ PATH: `${shim}:${process.env.PATH ?? ''}`, GBRAIN_HOME: home }, async () => {
+      const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, false, 'linux');
+      expect(r.status).toBe('needs_attention');
+      expect(r.detail).toContain('crontab install failed');
+    });
   });
 
-  test('dry-run on a crontab-less host still reports the honest skip', () => {
+  test('dry-run on a crontab-less host still reports the honest skip', async () => {
     const empty = mkdtempSync(join(tmpdir(), 'no-bin2-'));
-    process.env.PATH = empty;
-    const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, true, 'linux');
-    expect(r.status).toBe('skipped');
+    await withEnv({ PATH: empty }, async () => {
+      const r = installDurabilityCron('wiki', '/data/clones/wiki', 'main', 1800, true, 'linux');
+      expect(r.status).toBe('skipped');
+    });
   });
 });
 
 describe('durabilityJobStatus — presence + liveness [D7]', () => {
-  const savedPath = process.env.PATH;
-  const savedHome = process.env.HOME;
-  afterEach(() => {
-    process.env.PATH = savedPath;
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
+  test('no scheduler binaries at all → kind none (never throws)', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'no-bin3-'));
+    const home = mkdtempSync(join(tmpdir(), 'jb-home-'));
+    await withEnv({ PATH: empty, HOME: home }, async () => {
+      const s = durabilityJobStatus('wiki', 1800, 'linux');
+      expect(s.kind).toBe('none');
+      expect(s.wrapperPresent).toBe(false);
+    });
   });
 
-  test('no scheduler binaries at all → kind none (never throws)', () => {
-    process.env.PATH = mkdtempSync(join(tmpdir(), 'no-bin3-'));
-    process.env.HOME = mkdtempSync(join(tmpdir(), 'jb-home-'));
-    const s = installName();
-    expect(s.kind).toBe('none');
-    expect(s.wrapperPresent).toBe(false);
-  });
-
-  test('crontab line present (shim) → kind crontab, live', () => {
+  test('crontab line present (shim) → kind crontab, live', async () => {
     const shim = mkdtempSync(join(tmpdir(), 'shim-jb-'));
     writeFileSync(
       join(shim, 'crontab'),
       '#!/bin/sh\ncase "$1" in -l) echo "*/30 * * * * /x.sh # com.gbrain.brain-pull.wiki"; exit 0;; esac\nexit 1\n',
       { mode: 0o755 },
     );
-    process.env.PATH = shim;
-    process.env.HOME = mkdtempSync(join(tmpdir(), 'jb-home2-'));
-    const s = installName();
-    expect(s.kind).toBe('crontab');
-    expect(s.live).toBe(true);
+    const home = mkdtempSync(join(tmpdir(), 'jb-home2-'));
+    await withEnv({ PATH: shim, HOME: home }, async () => {
+      const s = durabilityJobStatus('wiki', 1800, 'linux');
+      expect(s.kind).toBe('crontab');
+      expect(s.live).toBe(true);
+    });
   });
 
-  test('stale pull log is reported (logFresh false)', () => {
-    process.env.PATH = mkdtempSync(join(tmpdir(), 'no-bin4-'));
+  test('stale pull log is reported (logFresh false)', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'no-bin4-'));
     const home = mkdtempSync(join(tmpdir(), 'jb-home3-'));
-    process.env.HOME = home;
     const logDir = join(home, '.gbrain');
     // A log last touched 3 hours ago against a 30-min interval.
-    const { mkdirSync: mk, writeFileSync: wf, utimesSync } = require('node:fs') as typeof import('node:fs');
-    mk(logDir, { recursive: true });
+    mkdirSync(logDir, { recursive: true });
     const log = join(logDir, 'brain-pull.log');
-    wf(log, 'old\n');
+    writeFileSync(log, 'old\n');
     const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
     utimesSync(log, old, old);
-    const s = installName();
-    expect(s.logFresh).toBe(false);
+    await withEnv({ PATH: empty, HOME: home }, async () => {
+      const s = durabilityJobStatus('wiki', 1800, 'linux');
+      expect(s.logFresh).toBe(false);
+    });
   });
-
-  function installName() {
-    return durabilityJobStatus('wiki', 1800, 'linux');
-  }
 });
 
 describe('durabilityJobStatus — darwin launchd liveness [D7]', () => {
-  const savedPath = process.env.PATH;
-  const savedHome = process.env.HOME;
-  afterEach(() => {
-    process.env.PATH = savedPath;
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-  });
-
-  function darwinFixture(launchctlExit: number): ReturnType<typeof durabilityJobStatus> {
+  async function darwinFixture(launchctlExit: number): Promise<ReturnType<typeof durabilityJobStatus>> {
     const home = mkdtempSync(join(tmpdir(), 'jb-mac-'));
-    process.env.HOME = home;
     const plistDir = join(home, 'Library', 'LaunchAgents');
-    const { mkdirSync: mk } = require('node:fs') as typeof import('node:fs');
-    mk(plistDir, { recursive: true });
+    mkdirSync(plistDir, { recursive: true });
     writeFileSync(join(plistDir, 'com.gbrain.brain-pull.wiki.plist'), '<plist/>');
     const shim = mkdtempSync(join(tmpdir(), 'shim-lc-'));
     writeFileSync(join(shim, 'launchctl'), `#!/bin/sh\nexit ${launchctlExit}\n`, { mode: 0o755 });
-    process.env.PATH = shim;
-    return durabilityJobStatus('wiki', 1800, 'darwin');
+    return withEnv({ PATH: shim, HOME: home }, async () => durabilityJobStatus('wiki', 1800, 'darwin'));
   }
 
-  test('plist present + launchctl reports loaded → live', () => {
-    const s = darwinFixture(0);
+  test('plist present + launchctl reports loaded → live', async () => {
+    const s = await darwinFixture(0);
     expect(s.kind).toBe('launchd');
     expect(s.live).toBe(true);
   });
 
-  test('plist present but NOT loaded (the dead-job shape [D7]) → live=false', () => {
-    const s = darwinFixture(1);
+  test('plist present but NOT loaded (the dead-job shape [D7]) → live=false', async () => {
+    const s = await darwinFixture(1);
     expect(s.kind).toBe('launchd');
     expect(s.live).toBe(false);
   });

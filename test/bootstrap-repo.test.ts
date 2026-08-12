@@ -13,6 +13,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { withEnv } from './helpers/with-env.ts';
 import {
   createPrivateRepo,
   GITHUB_URL_PLACEHOLDER,
@@ -723,20 +724,11 @@ describe('repo helpers', () => {
 // a half-created, unpushable repo behind.
 
 describe('createPrivateRepo cloud-sandbox guard [CLOUD_SANDBOX_REPO]', () => {
-  const K = 'CLAUDE_CODE_REMOTE';
-  let savedRemote: string | undefined;
-  beforeEach(() => {
-    savedRemote = process.env[K];
-  });
-  afterEach(() => {
-    if (savedRemote === undefined) delete process.env[K];
-    else process.env[K] = savedRemote;
-  });
-
   test('cloud sandbox + no existing origin → CLOUD_SANDBOX_REPO before any create call', async () => {
-    process.env[K] = 'true';
     const { runner, calls } = makeRunner(happyRules());
-    const err = await expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home }));
+    const err = await withEnv({ CLAUDE_CODE_REMOTE: 'true' }, () =>
+      expectBootstrapError(createPrivateRepo(ws, { runner, gbrainHomeDir: home })),
+    );
     expect(err.code).toBe('CLOUD_SANDBOX_REPO');
     expect(err.message).toContain('gbrain bootstrap attach');
     // No repo was created and nothing was pushed.
@@ -745,9 +737,10 @@ describe('createPrivateRepo cloud-sandbox guard [CLOUD_SANDBOX_REPO]', () => {
   });
 
   test('local env: the same rules create normally (guard is cloud-only)', async () => {
-    delete process.env[K];
     const { runner, calls } = makeRunner(happyRules());
-    const result = await createPrivateRepo(ws, { runner, gbrainHomeDir: home });
+    const result = await withEnv({ CLAUDE_CODE_REMOTE: undefined }, () =>
+      createPrivateRepo(ws, { runner, gbrainHomeDir: home }),
+    );
     expect(result.disposition).toBe('created');
     expect(calls.some((c) => c.join(' ').includes('repo create'))).toBe(true);
   });
