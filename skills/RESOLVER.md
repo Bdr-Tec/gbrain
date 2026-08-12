@@ -55,6 +55,7 @@ wins; fix the row.
 | "two-tier extraction", "triage then deep read", "smart model routing", "cheap triage expensive analysis" | `skills/two-tier-extraction/SKILL.md` |
 | "bulk ingest", "bulk import", "ingest all", "ingestion pipeline" | `skills/bulk-ingestion/SKILL.md` |
 | "ingest this publication", "ingest this whole blog", "ingest this feed", "ingest this newsletter archive" | `skills/blog-ingest/SKILL.md` |
+| "chatgpt export", "claude export", "perplexity export", "conversation history" | `skills/conversation-archive/SKILL.md` |
 
 ## Thinking skills (from GStack)
 

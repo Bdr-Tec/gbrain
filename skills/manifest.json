@@ -338,6 +338,11 @@
       "name": "blog-ingest",
       "path": "blog-ingest/SKILL.md",
       "description": "|"
+    },
+    {
+      "name": "conversation-archive",
+      "path": "conversation-archive/SKILL.md",
+      "description": ">"
     }
   ],
   "dependencies": {
