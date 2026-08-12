@@ -1121,17 +1121,16 @@ async function initPGLite(opts: {
     } else {
       console.log(`\nBrain ready at ${dbPath}`);
       console.log(`${stats.page_count} pages. Engine: PGLite (local Postgres).`);
+      // Reference/status blocks print FIRST and terse; the ONE primary action
+      // (the memory demo) prints LAST so it is the final, unmistakable thing on
+      // screen. Krug: one obvious next action, everything else subordinate.
       if (stats.page_count > 0) {
         console.log('');
-        console.log('Existing brain detected. To wire up the v0.10.3 knowledge graph:');
+        console.log('Existing brain detected. Wire up the knowledge graph:');
         console.log('  gbrain extract links --source db        (typed link backfill)');
         console.log('  gbrain extract timeline --source db     (structured timeline backfill)');
         console.log('  gbrain stats                            (verify links > 0)');
-      } else {
-        console.log('Next: gbrain import <dir>');
       }
-      console.log('');
-      console.log('When you outgrow local: gbrain migrate --to supabase');
       reportModStatus();
       const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
       const { VERSION } = await import('../version.ts');
@@ -1142,10 +1141,8 @@ async function initPGLite(opts: {
       const { runInitNudge } = await import('../core/onboard/init-nudge.ts');
       await runInitNudge(engine);
 
-      // The memory-verbs funnel prints LAST so the three copy-paste commands
-      // are the final thing on screen — the success screen's one primary
-      // action (it used to sit mid-scroll under the skills advisory).
-      printMemoryVerbsQuickstart();
+      // The single primary action, last-on-screen.
+      printMemoryVerbsQuickstart({ emptyBrain: stats.page_count === 0, onPglite: true });
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
@@ -1153,23 +1150,33 @@ async function initPGLite(opts: {
 }
 
 /**
- * MEMORY_VERBS v1 quickstart funnel (E3 + D4B + T1 consent). Printed at the
- * end of both init epilogues. The copy-next block is EXACTLY three commands
- * (codex DX 9): wire the harness, write a memory, prove the resurrection.
- * The demo uses the facts arm only, so it works with NO embedding key [F-B].
+ * MEMORY_VERBS v1 quickstart funnel (E3 + D4B + T1 consent). Printed LAST in
+ * both init epilogues as the ONE primary action. The copy-next block is
+ * EXACTLY three commands (codex DX 9): wire the harness, write a memory, prove
+ * the resurrection. The demo uses the facts arm only, so it works with NO
+ * embedding key [F-B]. Secondary paths (import, migrate) ride a single terse
+ * "More:" footer so they never compete with the primary action.
  */
-function printMemoryVerbsQuickstart(): void {
+function printMemoryVerbsQuickstart(opts: { emptyBrain?: boolean; onPglite?: boolean } = {}): void {
   console.log('');
-  console.log('Give your agent memory (copy these three commands):');
+  console.log('→ Do this next — give your agent memory (copy these three commands):');
   console.log('  claude mcp add gbrain -- gbrain serve --surface verbs');
   console.log('  gbrain remember "I prefer dark mode in every editor" --provenance demo --entity people/me');
   console.log('  gbrain recall --entity people/me');
-  console.log('Now ask your agent in a NEW session — it remembers.');
+  console.log('Then ask your agent in a NEW session — it remembers.');
   console.log('');
   console.log('Note: memories agents save are readable by every agent connected to');
   console.log('this brain; use visibility:"private" for local-only facts.');
   console.log('Other harnesses (Codex, OpenClaw): docs/protocol/MEMORY_VERBS_v1.md');
   console.log('If `claude` is not found: install Claude Code first, or use the per-harness blocks in that doc.');
+  // Secondary paths, one line, clearly subordinate to the action above.
+  console.log('');
+  console.log(
+    'More: ' +
+      (opts.emptyBrain ? 'bulk-load notes `gbrain import <dir>` · ' : '') +
+      (opts.onPglite ? 'scale up `gbrain migrate --to supabase` · ' : '') +
+      'health `gbrain doctor`',
+  );
 }
 
 async function initPostgres(opts: {
@@ -1395,12 +1402,10 @@ async function initPostgres(opts: {
       console.log(`\nBrain ready. ${stats.page_count} pages. Engine: Postgres (Supabase).`);
       if (stats.page_count > 0) {
         console.log('');
-        console.log('Existing brain detected. To wire up the v0.10.3 knowledge graph:');
+        console.log('Existing brain detected. Wire up the knowledge graph:');
         console.log('  gbrain extract links --source db        (typed link backfill)');
         console.log('  gbrain extract timeline --source db     (structured timeline backfill)');
         console.log('  gbrain stats                            (verify links > 0)');
-      } else {
-        console.log('Next: gbrain import <dir>');
       }
       reportModStatus();
       const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
@@ -1412,9 +1417,8 @@ async function initPostgres(opts: {
       const { runInitNudge } = await import('../core/onboard/init-nudge.ts');
       await runInitNudge(engine);
 
-      // Memory-verbs funnel last-on-screen (same rationale as the PGLite
-      // epilogue): the three copy-paste commands are the one primary action.
-      printMemoryVerbsQuickstart();
+      // The single primary action, last-on-screen.
+      printMemoryVerbsQuickstart({ emptyBrain: stats.page_count === 0 });
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }

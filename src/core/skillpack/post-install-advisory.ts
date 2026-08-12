@@ -154,10 +154,12 @@ export function printAdvisoryIfRecommended(opts: {
     if (missing.length === 0) return;
     const names = missing.map((s) => s.slug);
     const preview = names.slice(0, 4).join(', ') + (names.length > 4 ? ', …' : '');
+    // Human-voiced (prints on the init success screen where a person may read
+    // it) — no `[AGENT]` stage-direction leaking to the human. An agent reading
+    // the same line still knows the command to offer.
     process.stderr.write(
-      `\n${missing.length} recommended skill(s) not yet installed (${preview}).\n` +
-        `[AGENT] Ask the user before installing. If yes: ${scaffoldCommandFor(missing, all)}\n` +
-        `Full list + descriptions: gbrain advisor\n`,
+      `\n${missing.length} recommended skill(s) not installed yet (${preview}).\n` +
+        `Ask me to run \`${scaffoldCommandFor(missing, all)}\`, or see the full list: gbrain advisor\n`,
     );
     return;
   }

@@ -838,11 +838,11 @@ export async function verifyWorkspace(
 
   checks.push(checkPushProbe(ws));
   checks.push(checkInertSkills(ws, caps));
-  const tourCheck = { id: 'first_run_tour', ok: true, detail: 'three scripted prompts appended to the report [D3.6]' };
+  const tourCheck = { id: 'first_run_tour', ok: true, detail: 'three scripted prompts appended to the report' };
   checks.push(tourCheck);
 
   const ok = checks.every((c) => c.ok || c.warn === true);
-  if (!ok) tourCheck.detail = 'tour withheld — prints on PASS [D3.6]';
+  if (!ok) tourCheck.detail = 'tour withheld — prints on PASS';
 
   const ts = new Date().toISOString();
   persistVerifyRun(gbrainHomeDir, { ts, ok, checks });

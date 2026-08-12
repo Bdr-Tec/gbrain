@@ -11,6 +11,23 @@ import {
 import { repairTimelineDedupIndex } from './timeline-dedup-repair.ts';
 
 /**
+ * When true, per-migration explanatory notices (e.g. the v123/v124 "here is
+ * what this migration changed" lines that specific handlers write to stderr)
+ * are suppressed. Set by runMigrations for a FRESH-install full replay — those
+ * notices are useful diagnostics on an UPGRADE but pure noise as a new user's
+ * first-run output. Module-level (not threaded through the Migration type)
+ * because only a couple of handlers emit them. Guarded via `migrationNotice`.
+ */
+let quietMigrationNotices = false;
+
+/** Write a per-migration explanatory notice unless fresh-install quiet mode is
+ *  on. Handlers should route their "what changed" lines through this. */
+function migrationNotice(line: string): void {
+  if (quietMigrationNotices) return;
+  process.stderr.write(line);
+}
+
+/**
  * Schema migrations — run automatically on initSchema().
  *
  * Each migration is a version number + idempotent SQL. Migrations are embedded
@@ -5511,7 +5528,7 @@ export const MIGRATIONS: Migration[] = [
         // stderr, NOT stdout: migrations run lazily inside any command's
         // first DB connect — a console.log here polluted `doctor --json`
         // stdout and broke jq consumers (heavy-tests fm_wallclock).
-        process.stderr.write(`  v123: trigger functions recreated with language='english' (default — no backfill needed)\n`);
+        migrationNotice(`  v123: trigger functions recreated with language='english' (default — no backfill needed)\n`);
         return;
       }
 
@@ -5532,7 +5549,7 @@ export const MIGRATIONS: Migration[] = [
         WHERE search_vector IS NOT NULL;
       `);
 
-      process.stderr.write(`  v123: trigger functions recreated with language='${lang}' + backfilled existing rows\n`);
+      migrationNotice(`  v123: trigger functions recreated with language='${lang}' + backfilled existing rows\n`);
     },
   },
   {
@@ -5600,7 +5617,7 @@ export const MIGRATIONS: Migration[] = [
         END;
         $fn$ LANGUAGE plpgsql;
       `);
-      process.stderr.write(`  v124: update_page_search_vector() no longer indexes compiled_truth (was overflowing tsvector on large pages, #2704)
+      migrationNotice(`  v124: update_page_search_vector() no longer indexes compiled_truth (was overflowing tsvector on large pages, #2704)
 `);
     },
   },
@@ -5989,6 +6006,10 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
   // the GBRAIN_SYNC_*/GBRAIN_PACE_* pattern).
   const freshInstall = current <= 1 && pending.length === sorted.length;
   const quietReplay = freshInstall && process.env.GBRAIN_MIGRATE_VERBOSE !== '1';
+  // Suppress per-migration explanatory notices during a fresh-install replay
+  // (they are upgrade diagnostics, noise on a new user's first run). Restored
+  // in the finally so an in-process upgrade after a fresh init still narrates.
+  quietMigrationNotices = quietReplay;
 
   // Progress messages route to stderr so callers parsing stdout (e.g.
   // `gbrain jobs submit --json | jq`) aren't polluted by migration noise.
@@ -6002,21 +6023,26 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
   await checkForBlockingConnections(engine);
 
   let applied = 0;
-  for (const m of pending) {
-    if (!quietReplay) process.stderr.write(`  [${m.version}] ${m.name}...\n`);
-    try {
-      await applyOneMigration(engine, m);
-    } catch (err) {
-      // Quiet fresh-install replay: name the failing migration — without the
-      // per-step lines, the error would otherwise be anonymous.
-      if (quietReplay) process.stderr.write(`  [${m.version}] ${m.name} failed\n`);
-      throw err;
-    }
+  try {
+    for (const m of pending) {
+      if (!quietReplay) process.stderr.write(`  [${m.version}] ${m.name}...\n`);
+      try {
+        await applyOneMigration(engine, m);
+      } catch (err) {
+        // Quiet fresh-install replay: name the failing migration — without the
+        // per-step lines, the error would otherwise be anonymous.
+        if (quietReplay) process.stderr.write(`  [${m.version}] ${m.name} failed\n`);
+        throw err;
+      }
 
-    // Update version after both SQL and handler succeed
-    await engine.setConfig('version', String(m.version));
-    if (!quietReplay) process.stderr.write(`  [${m.version}] ✓ ${m.name}\n`);
-    applied++;
+      // Update version after both SQL and handler succeed
+      await engine.setConfig('version', String(m.version));
+      if (!quietReplay) process.stderr.write(`  [${m.version}] ✓ ${m.name}\n`);
+      applied++;
+    }
+  } finally {
+    // Never leak the fresh-install quiet flag into a later in-process run.
+    quietMigrationNotices = false;
   }
 
   return { applied, current: LATEST_VERSION };

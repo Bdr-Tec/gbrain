@@ -272,7 +272,15 @@ function maybeEmitUpdateMarker(command: string): void {
       ) {
         // notify mode honors a per-version snooze; auto mode ignores it.
         if (mode === 'notify' && isSnoozeActive(readSnooze(), entry.marker.latest, now)) return;
-        process.stderr.write(`UPGRADE_AVAILABLE ${VERSION} ${entry.marker.latest}\n`);
+        // The raw `UPGRADE_AVAILABLE <cur> <latest>` line is a MACHINE marker
+        // (parsed by the self-upgrade skill / MCP via parseMarker). A human at
+        // an interactive terminal should never see the token as the literal
+        // first line of output — so emit it only when stderr is NOT a TTY
+        // (agent harnesses capture stderr non-interactively and still get it).
+        // The human sentence prints on both.
+        if (!process.stderr.isTTY) {
+          process.stderr.write(`UPGRADE_AVAILABLE ${VERSION} ${entry.marker.latest}\n`);
+        }
         process.stderr.write(
           `gbrain ${VERSION} -> ${entry.marker.latest} available. Run: gbrain self-upgrade\n`,
         );

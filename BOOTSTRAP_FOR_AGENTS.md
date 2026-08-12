@@ -72,8 +72,9 @@ you needed; report the count at the end (it feeds the install-time measurement).
    `gh auth login -h github.com -p https -w` (you run it; they click Authorize).
    Then `gbrain bootstrap status` — it is idempotent and resume-aware; after any
    partial failure, re-run it and continue where it points.
-2. **Engine.** `gbrain init --pglite` (2 seconds, no server). Search mode defaults
-   to balanced silently — do NOT ask; the human can change it any time with
+2. **Engine.** `gbrain init --pglite` (2 seconds, no server). Search mode is
+   auto-selected silently (conservative when keyless, balanced with an
+   expansion key) — do NOT ask; the human can change it any time with
    `gbrain search modes`. The one thing to raise here is the OPTIONAL provider
    key — with no key you run keyless: keyword search plus memory you author
    yourself through the write tools; everything works, one key upgrades search to
