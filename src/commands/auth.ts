@@ -646,6 +646,136 @@ async function rescopeClient(clientId: string, args: string[]) {
 }
 
 /**
+ * E4 (WP4 expansion): `gbrain auth clients [--usage] [--days N] [--json]`.
+ *
+ * Lists OAuth clients with their scopes + per-client MCP tool surface
+ * (`surface` / `surface_set_by`, WP4), and with `--usage` joins the
+ * per-client op-call usage from `mcp_request_log` via the shared reader
+ * (src/core/mcp-usage.ts — same hygiene rules as the E3 advisor collector
+ * and scripts/derive-starter-ops.ts). Legacy bearer tokens that called in
+ * the window appear too (they log under their token name) but carry no
+ * per-client surface row. stdio clients never appear — that transport does
+ * not write mcp_request_log.
+ */
+export function parseAuthClientsArgs(args: string[]): { usage: boolean; days: number; json: boolean } {
+  const out = { usage: false, days: 30, json: false };
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (flag === '--usage') out.usage = true;
+    else if (flag === '--json') out.json = true;
+    else if (flag === '--days') {
+      const v = Number(args[i + 1]);
+      if (!Number.isInteger(v) || v < 1 || v > 3650) {
+        throw new Error('--days must be an integer between 1 and 3650');
+      }
+      out.days = v;
+      i++;
+    } else {
+      throw new Error(`Unknown flag: ${flag}`);
+    }
+  }
+  return out;
+}
+
+interface ClientRow {
+  client_id: string;
+  client_name: string | null;
+  scope: string | null;
+  surface: string | null;
+  surface_set_by: string | null;
+}
+
+async function clientsCmd(args: string[]) {
+  const usageLine = 'Usage: auth clients [--usage] [--days N] [--json]';
+  let parsed: { usage: boolean; days: number; json: boolean };
+  try {
+    parsed = parseAuthClientsArgs(args);
+  } catch (e: any) {
+    console.error(`Error: ${e.message}`);
+    console.error(usageLine);
+    process.exit(1);
+  }
+  try {
+    await withConfiguredSql(async (_sql, engine) => {
+      // Surface columns land in migration v127; a pre-migration brain still
+      // gets the listing (surface renders as unknown) instead of an error.
+      let clients: ClientRow[];
+      try {
+        clients = await engine.executeRaw<ClientRow>(
+          `SELECT client_id, client_name, scope, surface, surface_set_by
+             FROM oauth_clients ORDER BY client_name, client_id`,
+        );
+      } catch {
+        const bare = await engine.executeRaw<Omit<ClientRow, 'surface' | 'surface_set_by'>>(
+          `SELECT client_id, client_name, scope FROM oauth_clients ORDER BY client_name, client_id`,
+        );
+        clients = bare.map(r => ({ ...r, surface: null, surface_set_by: null }));
+      }
+
+      const { readClientOpUsage } = await import('../core/mcp-usage.ts');
+      const usage = parsed.usage ? await readClientOpUsage(engine, { days: parsed.days }) : [];
+      const usageByToken = new Map(usage.map(u => [u.token_name, u]));
+      const clientIds = new Set(clients.map(c => c.client_id));
+      const legacyUsage = usage.filter(u => !clientIds.has(u.token_name));
+
+      if (parsed.json) {
+        console.log(JSON.stringify({
+          window_days: parsed.days,
+          usage_included: parsed.usage,
+          clients: clients.map(c => ({
+            client_id: c.client_id,
+            client_name: c.client_name,
+            scopes: c.scope,
+            surface: c.surface,
+            surface_set_by: c.surface_set_by,
+            usage: usageByToken.get(c.client_id) ?? null,
+          })),
+          // Legacy bearer tokens seen in the window (no oauth_clients row).
+          legacy_tokens: legacyUsage,
+        }, null, 2));
+        return;
+      }
+
+      if (clients.length === 0 && legacyUsage.length === 0) {
+        console.log('No OAuth clients registered. Register one: gbrain auth register-client "my-client"');
+        return;
+      }
+      const fmtTop = (u: (typeof usage)[number]) =>
+        Object.entries(u.ops).slice(0, 5).map(([op, n]) => `${op}(${n})`).join(', ');
+      for (const c of clients) {
+        const u = usageByToken.get(c.client_id);
+        console.log(`${c.client_name ?? '<unnamed>'} (${c.client_id})`);
+        const surfaceStr = c.surface
+          ? `${c.surface}${c.surface_set_by ? ` (set by ${c.surface_set_by})` : ''}`
+          : '<server/config resolution>';
+        console.log(`  scopes: ${c.scope ?? '<none>'}    surface: ${surfaceStr}`);
+        if (parsed.usage) {
+          if (u) {
+            const auto = u.likely_automation ? '    [automation-shaped: >90% context_pack/delta]' : '';
+            console.log(`  calls (${parsed.days}d): ${u.total_calls} across ${u.distinct_ops.length} ops    last seen: ${u.last_seen}${auto}`);
+            console.log(`  top ops: ${fmtTop(u)}`);
+          } else {
+            console.log(`  calls (${parsed.days}d): 0 (no HTTP MCP calls in window; stdio use is not logged)`);
+          }
+        }
+        console.log('');
+      }
+      if (parsed.usage && legacyUsage.length > 0) {
+        console.log(`Legacy bearer tokens seen in the last ${parsed.days}d (no per-client surface row):`);
+        for (const u of legacyUsage) {
+          const auto = u.likely_automation ? '    [automation-shaped]' : '';
+          console.log(`  ${u.token_name}: ${u.total_calls} calls across ${u.distinct_ops.length} ops    last seen: ${u.last_seen}${auto}`);
+          console.log(`    top ops: ${fmtTop(u)}`);
+        }
+      }
+    });
+  } catch (e: any) {
+    console.error('Error:', e.message);
+    process.exit(1);
+  }
+}
+
+/**
  * Entry point for the `gbrain auth` CLI subcommand. Also reused by the
  * direct-script path (see bottom of file) so `bun run src/commands/auth.ts`
  * still works.
@@ -688,6 +818,7 @@ export async function runAuth(args: string[]): Promise<void> {
     case 'register-client': await registerClient(rest[0], rest.slice(1)); return;
     case 'rescope-client': await rescopeClient(rest[0], rest.slice(1)); return;
     case 'revoke-client': await revokeClient(rest[0]); return;
+    case 'clients': await clientsCmd(rest); return;
     case 'test': {
       const tokenIdx = rest.indexOf('--token');
       const url = rest.find(a => !a.startsWith('--') && a !== rest[tokenIdx + 1]);
@@ -741,6 +872,11 @@ Usage:
                                                           request_tools cannot override; 'clear' removes the pin
                                                           so server/config resolution applies again). Always
                                                           bounded by the server's --surface ceiling.
+  gbrain auth clients [--usage] [--days N] [--json]       List OAuth clients with scopes + tool surface. --usage
+                                                          joins per-client op-call counts, top ops, and last-seen
+                                                          from mcp_request_log (default 30d window; HTTP clients
+                                                          only — stdio use is not logged). Automation-shaped
+                                                          clients (>90% context_pack/delta) are flagged.
   gbrain auth revoke-client <client_id>                   Hard-delete an OAuth 2.1 client (cascades to tokens + codes)
   gbrain auth test <url> --token <token>                  Smoke-test a remote MCP server
 `);
