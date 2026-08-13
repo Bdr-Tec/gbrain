@@ -109,9 +109,15 @@ you needed; report the count at the end (it feeds the install-time measurement).
 4. **Render.** `gbrain bootstrap render` — identity files appear. Show the human
    SOUL.md. Existing files are never overwritten (re-runs are safe; `--force`
    backs up first).
-5. **Skills + brain wiring.** The CLI scaffolds the skill set and registers
-   `brain/` as the workspace source. Nothing to judge here; relay the output.
-6. **Wire the harness.** `gbrain bootstrap hooks --harness <detected>`:
+5. **Skills.** `gbrain skillpack scaffold --all` — the CLI scaffolds the skill
+   set. Nothing to judge here; relay the output.
+6. **Wire the harness + register the brain source.** `gbrain bootstrap hooks
+   --harness <detected>` creates `<workspace>/brain` and prints the exact
+   `gbrain sources add <source_id> --path <brain> --force` command for THIS
+   workspace — run it verbatim (don't guess a different id; a guessed id
+   only surfaces as an FK error at `verify` time, by which point a wrong
+   guess also blocks the correct id with an `overlapping_path` error). It
+   also:
    - Claude Code: installs per-turn hooks ON by default — do NOT ask; loading the
      brain every turn is the whole point of installing gbrain for your agent. Tell
      the human it is on and how to turn it off (`GBRAIN_HOOKS=0`, or re-run with

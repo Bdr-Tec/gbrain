@@ -420,7 +420,9 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // GBRAIN_FTS_LANGUAGE retokenizes both the trigger-built search_vector and
     // the query-side tsquery, so rows written under the previous language must
     // not survive a `reindex-search-vector` switch.
-    expect(KNOBS_HASH_VERSION).toBe(15);
+    // WP2/T3: bumped 15→16 for the degradation-stamp epoch — cache rows now
+    // carry degraded[]/retrieved_count; pre-stamp rows must not claim clean.
+    expect(KNOBS_HASH_VERSION).toBe(16);
   });
 
   test('T1 (codex): floor_ratio set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -585,8 +587,8 @@ describe('v0.40.4 — graph_signals knob', () => {
 });
 
 describe('v0.42.3.0 — autocut knobs', () => {
-  test('KNOBS_HASH_VERSION is 15 (14→15 FTS language fold)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(15);
+  test('KNOBS_HASH_VERSION is 16 (15→16 degradation-stamp epoch)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(16);
   });
 
   test('bundle defaults: conservative off, balanced/tokenmax on @0.20', () => {

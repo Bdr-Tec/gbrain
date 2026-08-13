@@ -74,7 +74,7 @@ import {
   statusReport,
   type StatusReport,
 } from '../core/bootstrap/status.ts';
-import { verifyWorkspace } from '../core/bootstrap/verify.ts';
+import { verifyWorkspace, deriveWorkspaceSourceId } from '../core/bootstrap/verify.ts';
 
 export const BOOTSTRAP_HELP = `gbrain bootstrap — paste-in agent install (Claude Code / Codex)
 
@@ -116,6 +116,60 @@ Env: GBRAIN_BOOTSTRAP_ABORT_AFTER=<phase> (test seam — abort after that phase'
 const SUPPORT_HINT =
   'If you are stuck: run `gbrain bootstrap status --json` and relay the "support" block verbatim.';
 
+/**
+ * Per-subcommand `--help`/`-h`/`help` usage text for the subcommands that
+ * MUTATE state (create a repo, register MCP/hooks, run the verify contract,
+ * adopt a workspace, remove receipt-tracked paths, record an interview
+ * answer). `runBootstrap`'s dispatch checks `args[0]` for top-level help
+ * (`--help`/`-h`/`help`/no args), but a help token AFTER the subcommand name
+ * (e.g. `gbrain bootstrap repo --help`, `gbrain bootstrap uninstall help`)
+ * previously fell straight into the subcommand's own arg parsing, which had
+ * no help handling of its own — so it ran the real mutation instead of
+ * printing help. `status`/`cloud-setup-script` are pure reads, so they don't
+ * need a guard.
+ */
+const SUBCOMMAND_HELP: Record<string, string> = {
+  render:
+    'gbrain bootstrap render [--force] [--only F] [--minimal]\n' +
+    '  Render identity files from the confirmed interview answers. Never clobbers; --force backs up first.',
+  repo:
+    'gbrain bootstrap repo\n' +
+    '  Create the dedicated PRIVATE GitHub repo (or adopt an EMPTY private repo you created\n' +
+    '  under your own account), verify the privacy bit via the API, push.',
+  hooks:
+    'gbrain bootstrap hooks [--harness claude-code|codex] [--repair] [--no-hooks] [--gbrain-bin <path>]\n' +
+    '  Register MCP (+ per-turn hooks on Claude Code, ON by default; --no-hooks opts out).',
+  verify:
+    'gbrain bootstrap verify [--json]\n' +
+    '  The whole install contract (round-trip, graph floor, magic moment, scans, hooks smoke). Exit 0 or not done.',
+  attach:
+    'gbrain bootstrap attach [--harness H]\n' +
+    '  Machine two: adopt a cloned agent workspace.',
+  uninstall:
+    'gbrain bootstrap uninstall [--delete-brain] [--home <dir>] [--yes]\n' +
+    '  Receipt-keyed removal. The repo stays yours.',
+  interview:
+    'gbrain bootstrap interview --init | --set KEY "value" | --skip KEY | --status | --show | --confirm <hash>\n' +
+    '  Create/record/read interview state. See `gbrain bootstrap --help` for the per-flag description.',
+};
+
+/**
+ * `--help`/`-h` are always recognized. The bare word `help` (no dashes) is
+ * ALSO recognized for every subcommand above EXCEPT `interview` — mirroring
+ * the top-level `sub === 'help'` handling for a user who tries the same
+ * spelling after a subcommand name. `interview` is excluded from the
+ * bare-word form because its `--set KEY "value"` free-text answers could
+ * legitimately BE the literal word "help" (e.g. a one-word answer); none of
+ * the other subcommands' flags take arbitrary prose, only booleans, enums,
+ * or paths, so the bare-word collision risk there is negligible (matches the
+ * already-accepted low-impact risk of `-h` colliding with a literal path
+ * value like `--home -h`).
+ */
+function hasHelpToken(args: string[], allowBareWord: boolean): boolean {
+  if (args.includes('--help') || args.includes('-h')) return true;
+  return allowBareWord && args.includes('help');
+}
+
 /** Thrown by the A7 abort seam; mapped to exit 130 (simulated kill). */
 export class BootstrapAbortInjected extends Error {
   constructor(phase: string) {
@@ -152,6 +206,19 @@ function flagValues(args: string[], flag: string): string[] {
 function resolveWorkspace(args: string[]): string {
   const ws = flagValue(args, '--workspace');
   return ws ? resolve(ws) : process.cwd();
+}
+
+/**
+ * POSIX single-quote anything not already shell-safe, for commands printed
+ * as copy/paste guidance (mirror of the private `shellQuote` in
+ * core/bootstrap/hooks.ts, core/sources-ops.ts, and commands/connect.ts —
+ * same contract: `$()`/backticks in a value are inert literals once quoted).
+ * A workspace path containing a space or shell metacharacter must not turn
+ * "the exact command to run" into a broken (or, pasted blind, dangerous) one.
+ */
+function shellQuoteForDisplay(arg: string): string {
+  if (/^[A-Za-z0-9_.:/@=-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 // ── Shared plumbing ─────────────────────────────────────────────────────────
@@ -735,6 +802,41 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   const gbrainHome = process.env.GBRAIN_HOME?.trim() || undefined;
 
   return withLock(ws, async () => {
+    // 0. source_id visibility seam: `hooks` is the last ENGINE-FREE phase
+    // before `verify` (which alone can detect a source_id collision — the
+    // sources registry lives only in the DB). Without this, a human who
+    // hand-registers a source before verify has no way to know the exact id
+    // the workspace expects, guesses an "intuitive" name instead, and only
+    // discovers the mismatch via a `verify` roundtrip FK error — then, after
+    // switching to the manifest's id, an `overlapping_path` error from the
+    // earlier guess still claiming the same brain/ dir. Printing the current
+    // id (and the collision-fallback id verify would derive, a pure path
+    // hash that needs no engine) up front — plus creating brain/ so
+    // registration can happen immediately — collapses that multi-round-trip
+    // loop to one command.
+    const brainDir = join(ws, 'brain');
+    mkdirSync(brainDir, { recursive: true });
+    // --force: brain/ was just created empty — `sources add` fail-fasts on a
+    // --path that exists but isn't a git repo with committed, tracked
+    // content (#2707), and gbrain deliberately never auto-git-inits a --path
+    // source itself (a --path source is the user's own directory — the
+    // consent boundary #2967 established for sync-time self-heal applies
+    // here too). --force is the sanctioned opt-in for exactly this "register
+    // before git-init exists" case (see sources-ops.ts's own not_a_git_repo
+    // message), and it is safe here because brainDir is not an arbitrary
+    // user path — it is the fixed `<workspace>/brain` subdir this phase just
+    // created. Without --force, the printed command below would itself throw
+    // not_a_git_repo the instant it's pasted.
+    const quoted = shellQuoteForDisplay(brainDir);
+    console.log(
+      `brain source: register this workspace's brain/ now if you haven't — ` +
+        `\`gbrain sources add ${sourceId} --path ${quoted} --force\` (brain/ is freshly created and empty; ` +
+        `--force is the documented opt-in for registering before git-init exists). If '${sourceId}' is ` +
+        `already claimed by a different checkout on this brain, \`gbrain bootstrap verify\` will detect the ` +
+        `collision and switch this workspace to '${deriveWorkspaceSourceId(ws)}' — re-run the same command ` +
+        `with that id instead.`,
+    );
+
     // 1. MCP registration — argv built by the host-format module, executed
     // through the runner seam, recorded on the receipt.
     const argvs =
@@ -1058,6 +1160,16 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
     console.error(`unknown subcommand: ${sub}`);
     console.error(BOOTSTRAP_HELP);
     return 2;
+  }
+
+  // Subcommand-level help: BEFORE any subcommand body runs, so a help token
+  // after a mutating subcommand (repo/hooks/verify/attach/uninstall/render/
+  // interview) never falls through into the real operation, regardless of
+  // what other flags/values precede it in `rest`. No install-log entry
+  // either — this isn't a phase run.
+  if (SUBCOMMAND_HELP[sub] && hasHelpToken(rest, sub !== 'interview')) {
+    console.log(SUBCOMMAND_HELP[sub]);
+    return 0;
   }
 
   // The install log records the PHASE name, and the hooks subcommand is the

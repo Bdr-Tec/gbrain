@@ -478,15 +478,32 @@ function checkMcpSurface(): VerifyCheck {
 }
 
 /**
+ * Pure, engine-free derivation of the collision-fallback source_id for a
+ * workspace — a deterministic hash of the workspace's real path, no DB
+ * lookup involved. `resolveSourceIdCollision` (below) is the only thing that
+ * decides WHETHER this id is actually needed (that half requires the engine,
+ * since the sources registry lives only in the DB) — but the id itself is
+ * safe to preview from an engine-free phase. `bootstrap hooks` does exactly
+ * that, so a human has the fallback id in hand before they ever hand-register
+ * a source, instead of discovering it only after an FK error + a corrective
+ * `verify` run.
+ */
+export function deriveWorkspaceSourceId(ws: string): string {
+  const hash = createHash('sha256').update(realpathOrResolve(ws)).digest('hex').slice(0, 8);
+  return `workspace-${hash}`;
+}
+
+/**
  * source_id collision resolution [engine seam]. Render is ENGINE-FREE and the
  * sources registry lives ONLY in the DB (no registry file exists), so verify —
  * the one bootstrap subcommand holding an engine — is where a manifest
  * source_id already registered to a DIFFERENT checkout is detected. On
- * collision it derives a stable `workspace-<8char-path-hash>` id, persists it
- * to agent.json (render preserves it on re-render), and names the re-register
- * steps; every consumer (hooks GBRAIN_SOURCE env, verify, status hints,
- * attach, repo persistence) reads manifest.source_id, so the derived id
- * propagates. Returns a sourceId ONLY when it derived one.
+ * collision it derives a stable `workspace-<8char-path-hash>` id (via
+ * `deriveWorkspaceSourceId`), persists it to agent.json (render preserves it
+ * on re-render), and names the re-register steps; every consumer (hooks
+ * GBRAIN_SOURCE env, verify, status hints, attach, repo persistence) reads
+ * manifest.source_id, so the derived id propagates. Returns a sourceId ONLY
+ * when it derived one.
  */
 async function resolveSourceIdCollision(
   engine: BrainEngine,
@@ -506,8 +523,7 @@ async function resolveSourceIdCollision(
     if (realpathOrResolve(registered) === realpathOrResolve(brainDir)) {
       return { sourceId: null, check: null }; // same checkout — no collision
     }
-    const hash = createHash('sha256').update(realpathOrResolve(ws)).digest('hex').slice(0, 8);
-    const derived = `workspace-${hash}`;
+    const derived = deriveWorkspaceSourceId(ws);
     writeManifest(ws, { ...state.manifest, source_id: derived });
     return {
       sourceId: derived,

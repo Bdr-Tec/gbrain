@@ -133,6 +133,28 @@ function isRateLimitOr5xx(stderr: string): boolean {
   return /HTTP 5\d\d|HTTP 429|rate limit/i.test(stderr);
 }
 
+/** `gh auth status`'s `--active` flag (added in cli/cli v2.57.0, 2024-09-11)
+ * scopes the check to only the active account instead of aggregating every
+ * registered account. On an older `gh`, passing an unrecognized flag makes
+ * the WHOLE command fail — so Gate 2 must detect support before using it. */
+const GH_ACTIVE_FLAG_MIN_VERSION = [2, 57, 0] as const;
+
+/** Parses the `X.Y.Z` out of `gh --version`'s first line (`gh version X.Y.Z (DATE)`).
+ * Returns null on any unrecognized format — callers treat that as "unknown,
+ * don't assume support". */
+function parseGhVersion(versionOutput: string): readonly [number, number, number] | null {
+  const m = /\bgh version (\d+)\.(\d+)\.(\d+)/.exec(versionOutput);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function ghVersionAtLeast(v: readonly [number, number, number], min: readonly [number, number, number]): boolean {
+  for (let i = 0; i < 3; i++) {
+    if (v[i] !== min[i]) return v[i]! > min[i]!;
+  }
+  return true;
+}
+
 /** The authenticated gh login, or null when it cannot be read/parsed. */
 async function fetchAuthedLogin(runner: ExecRunner): Promise<string | null> {
   const res = await runner(['gh', 'api', 'user']);
@@ -594,7 +616,22 @@ export async function createPrivateRepo(
   }
 
   // Gate 2: authenticated. Exit-code-2 — the human runs `gh auth login`.
-  const ghAuth = await runner(['gh', 'auth', 'status']);
+  // `--hostname github.com` scopes the check to the host this flow actually
+  // targets (every downstream call — parseGithubOwnerRepo, the repo-create
+  // URL fallback, etc. — is github.com-only), so an unrelated broken account
+  // on some other configured host (e.g. a GitHub Enterprise instance) can't
+  // false-block it either. `--active` (only when the installed `gh` supports
+  // it) further restricts that host's check to the active account. Bare
+  // `gh auth status` aggregates EVERY registered account on EVERY host and
+  // exits 1 if any one of them is invalid — even an unused, long-expired
+  // account — which false-blocks this gate while the active account (what
+  // `gh`/`git` actually use) is perfectly healthy.
+  const ghVersionTuple = parseGhVersion(ghVersion.stdout);
+  const ghSupportsActiveFlag = ghVersionTuple !== null && ghVersionAtLeast(ghVersionTuple, GH_ACTIVE_FLAG_MIN_VERSION);
+  const ghAuthArgv = ghSupportsActiveFlag
+    ? ['gh', 'auth', 'status', '--active', '--hostname', 'github.com']
+    : ['gh', 'auth', 'status', '--hostname', 'github.com'];
+  const ghAuth = await runner(ghAuthArgv);
   if (ghAuth.code !== 0) {
     throw new BootstrapError(
       'GH_AUTH',
