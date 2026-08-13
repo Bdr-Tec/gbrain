@@ -20,6 +20,7 @@ import type { HybridSearchMeta } from './types.ts';
 import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from './link-extraction.ts';
 import { isFactsBackstopEligible } from './facts/eligibility.ts';
 import { stripTakesFence } from './takes-fence.ts';
+import type { WriterLintPayload } from './output/post-write.ts';
 import { stripFactsFence } from './facts-fence.ts';
 import { getContentFlag } from './quarantine.ts';
 import { unverifiedExtractionFragment, isUnverifiedExtraction, EXTRACTION_STATUS_KEY, STATUS_VERIFIED } from './extraction-review.ts';
@@ -1553,22 +1554,19 @@ const put_page: Operation = {
     // validators on the freshly-written page and logs findings to
     // ingest_log + ~/.gbrain/validator-lint.jsonl. Does NOT reject the
     // write — that's the deferred strict-mode flip after the 7-day soak.
-    let writerLint: { error_count: number; warning_count: number } | { skipped: string } | undefined;
+    // Response contract (T11): lint ran → full summary (counts, errors-first
+    // top_findings with hints, by_validator histogram) even at zero findings;
+    // lint crashed → {status: 'lint_error'}; lint off (flag / validate:false)
+    // → key absent.
+    let writerLint: WriterLintPayload | undefined;
     try {
-      const { runPostWriteLint } = await import('./output/post-write.ts');
-      const lint = await runPostWriteLint(ctx.engine, result.slug, {
+      const { writerLintForPutPage } = await import('./output/post-write.ts');
+      writerLint = await writerLintForPutPage(ctx.engine, result.slug, {
         sourceId: ctx.sourceId ?? 'default',
       });
-      if (lint.ran) {
-        writerLint = {
-          error_count: lint.findings.filter(f => f.severity === 'error').length,
-          warning_count: lint.findings.filter(f => f.severity === 'warning').length,
-        };
-      } else if (lint.skippedReason) {
-        writerLint = { skipped: lint.skippedReason };
-      }
     } catch {
-      // Non-fatal; never blocks put_page.
+      // Module-load failure gets the same crash marker; never blocks put_page.
+      writerLint = { status: 'lint_error' };
     }
 
     return {
