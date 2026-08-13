@@ -779,7 +779,15 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // to cache.ttl_seconds, with no warning and no way for an operator to tell.
 // Same one-time global cold-miss pattern as the bumps above; refills within
 // cache.ttl_seconds (3600s default).
-export const KNOBS_HASH_VERSION = 15;
+//
+// bump 15→16 (WP2/T3): degradation-stamp epoch. HybridSearchMeta gains
+// `degraded[]` + `retrieved_count` and every cache write now stamps them
+// (degraded rows additionally get a short TTL). A pre-stamp row served as a
+// hit would claim a clean run it can't prove; bumping makes pre-upgrade rows
+// unreachable (one-time cold-miss, refills within cache.ttl_seconds), and
+// any row that still lacks the stamp surfaces as
+// degraded:[{stage:'cache_prestamp'}] at hit time (belt-and-braces).
+export const KNOBS_HASH_VERSION = 16;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The

@@ -60,6 +60,36 @@ interface Bucket {
 const RANK1_SOLID_FLOOR = 0.6;
 const RANK1_HIGH_FLOOR = 0.85;
 
+/**
+ * WP2/T3 — reserved `mode` value for the empty-result cause rollup. Rides
+ * the existing (date, mode, intent) PK with ZERO new DDL: rows keyed
+ * (date, 'empty_result', <cause>) count empty responses by cause, and
+ * readSearchStats diverts them out of the call/intent/mode aggregates.
+ * Never collides with real modes ('conservative'|'balanced'|'tokenmax'|
+ * 'unset'). Bounded growth: 3 causes × 365 days ≈ 1.1k rows/year.
+ */
+export const EMPTY_RESULT_MODE = 'empty_result';
+
+export type EmptyResultCause = 'vector_disabled' | 'budget_dropped_all' | 'keyword_zero';
+
+/**
+ * WP2/T3 — why did this search return zero results? Precedence: a budget
+ * that dropped everything (only reachable with GBRAIN_SEARCH_SALVAGE=off;
+ * the minKeep failsafe otherwise returns 1) beats vector-unavailability
+ * beats "healthy pipeline, keyword found nothing".
+ */
+export function classifyEmptyResultCause(meta: HybridSearchMeta): EmptyResultCause {
+  const tb = meta.token_budget;
+  if (
+    (tb && tb.kept === 0 && tb.dropped > 0) ||
+    meta.degraded?.some((d) => d.stage === 'budget_dropped_all')
+  ) {
+    return 'budget_dropped_all';
+  }
+  if (!meta.vector_enabled) return 'vector_disabled';
+  return 'keyword_zero';
+}
+
 const FLUSH_INTERVAL_MS = 60_000;
 const FLUSH_THRESHOLD_CALLS = 100;
 
@@ -136,10 +166,46 @@ class TelemetryWriter {
       else b.rank1_high += 1;
     }
 
+    // WP2/T3 — empty-result cause rollup. Cache HITS are excluded: an empty
+    // hit slice is an offset-past-end artifact, not a retrieval failure.
+    if (opts.results_count === 0 && meta.cache?.status !== 'hit') {
+      this.recordEmptyResult(date, classifyEmptyResultCause(meta));
+    }
+
     this.pendingCount += 1;
     if (this.pendingCount >= FLUSH_THRESHOLD_CALLS) {
       void this.flush().catch(() => { /* swallow */ });
     }
+  }
+
+  /**
+   * Bump the reserved (date, EMPTY_RESULT_MODE, cause) bucket. Only `count`
+   * carries signal on these rows — every other column stays 0 and the flush
+   * SQL is unchanged (zero new DDL).
+   */
+  private recordEmptyResult(date: string, cause: EmptyResultCause): void {
+    const key = `${date}::${EMPTY_RESULT_MODE}::${cause}`;
+    let b = this.buckets.get(key);
+    if (!b) {
+      b = {
+        date,
+        mode: EMPTY_RESULT_MODE,
+        intent: cause,
+        count: 0,
+        sum_results: 0,
+        sum_tokens: 0,
+        sum_budget_dropped: 0,
+        cache_hit: 0,
+        cache_miss: 0,
+        sum_rank1_score: 0,
+        count_rank1: 0,
+        rank1_lt_solid: 0,
+        rank1_solid: 0,
+        rank1_high: 0,
+      };
+      this.buckets.set(key, b);
+    }
+    b.count += 1;
   }
 
   /**
@@ -315,6 +381,11 @@ export interface StatsWindow {
   avg_rank1_score: number | null; // null when no rank-1 samples
   rank1_count: number;
   rank1_distribution: { lt_solid: number; solid: number; high: number };
+  // WP2/T3 — empty-result responses by cause (vector_disabled /
+  // budget_dropped_all / keyword_zero). Diverted from the reserved
+  // EMPTY_RESULT_MODE rows; never counted in total_calls or the
+  // intent/mode distributions.
+  empty_results: { total: number; by_cause: Record<string, number> };
 }
 
 export async function readSearchStats(
@@ -377,8 +448,17 @@ export async function readSearchStats(
     let r1_lt = 0;
     let r1_solid = 0;
     let r1_high = 0;
+    let empty_total = 0;
+    const empty_by_cause: Record<string, number> = {};
 
     for (const r of rows) {
+      // WP2/T3 — reserved empty-result rows carry cause in the intent slot;
+      // divert them so they never skew calls/averages/distributions.
+      if (r.mode === EMPTY_RESULT_MODE) {
+        empty_total += r.count;
+        empty_by_cause[r.intent] = (empty_by_cause[r.intent] ?? 0) + r.count;
+        continue;
+      }
       total_calls += r.count;
       cache_hits += r.cache_hit;
       cache_misses += r.cache_miss;
@@ -413,6 +493,7 @@ export async function readSearchStats(
       avg_rank1_score: count_rank1 > 0 ? sum_rank1 / count_rank1 : null,
       rank1_count: count_rank1,
       rank1_distribution: { lt_solid: r1_lt, solid: r1_solid, high: r1_high },
+      empty_results: { total: empty_total, by_cause: empty_by_cause },
     };
   } catch {
     // Table missing or query failed — return empty stats rather than throw.
@@ -430,6 +511,7 @@ export async function readSearchStats(
       avg_rank1_score: null,
       rank1_count: 0,
       rank1_distribution: { lt_solid: 0, solid: 0, high: 0 },
+      empty_results: { total: 0, by_cause: {} },
     };
   }
 }
