@@ -31,10 +31,8 @@ describe('check-wasm-embedded.sh (#3927)', () => {
   });
 
   it('does not pipe $OUTPUT through grep -q', () => {
-    // Matches the vulnerable invocation shape (grep -q with a quoted
-    // pattern argument), not this file's own explanatory comment above,
-    // which mentions the pattern without a trailing pattern argument.
-    expect(source).not.toMatch(/echo "\$OUTPUT"\s*\|\s*grep -q '/);
+    // Match the vulnerable pipeline shape in live code (ignore commented examples).
+    expect(source).not.toMatch(/^[^\n#]*echo "\$OUTPUT"\s*\|\s*grep\s+-q\b/m);
   });
 
   it('uses a plain bash substring test for each of the three checks', () => {
