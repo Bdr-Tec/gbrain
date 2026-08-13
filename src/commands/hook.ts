@@ -195,11 +195,13 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
   // project-scope hook settings, so a machine wired by `bootstrap harness`
   // (user scope) plus a real workspace bootstrap install (settings.local.json,
   // bootstrap-v1 marker) would fire the same event twice. The workspace
-  // install wins; the harness lane yields silently. Fail-open: any read
-  // hiccup means run normally.
+  // install wins; the harness lane yields silently (exit 0, no output, no
+  // heartbeat). Same cwd resolution as the handlers (io.cwd is the test
+  // seam; the harness runs hooks in the session's working dir). Fail-open:
+  // any read hiccup means run normally.
   if (process.env.GBRAIN_HOOK_LANE === 'harness') {
     try {
-      const local = join(process.cwd(), '.claude', 'settings.local.json');
+      const local = join(io.cwd ?? process.cwd(), '.claude', 'settings.local.json');
       if (existsSync(local)) {
         const raw = readFileSync(local, 'utf8');
         if (raw.includes('"_gbrain"') && raw.includes('"bootstrap-v1"')) return 0;
