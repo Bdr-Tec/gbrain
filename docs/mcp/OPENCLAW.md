@@ -41,7 +41,7 @@ The same shape gbrain's own CI uses (see the "Configure OpenClaw MCP" step in
 
 The `env` block is optional: a PGLite brain needs no `DATABASE_URL`, and
 `GBRAIN_HOME` only matters when the brain home isn't `~/.gbrain`. Append
-`"--surface", "verbs"` to `args` for the five-verb memory protocol
+`"--surface", "verbs"` to `args` for the seven-verb memory protocol
 ([MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)) instead of the full
 operation catalog.
 

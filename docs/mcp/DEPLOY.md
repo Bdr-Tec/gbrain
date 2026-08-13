@@ -24,8 +24,8 @@ gbrain serve --surface verbs  # just the 7 memory verbs (quickstart surface)
 
 Works with Claude Code, Cursor, Windsurf, and any MCP client that supports stdio.
 No server, no tunnel, no token needed. Works on both PGLite and Postgres engines.
-`--surface verbs` exposes exactly the five-verb memory protocol (`recall`,
-`remember`, `entity`, `synthesize`, `forget` —
+`--surface verbs` exposes exactly the seven-verb memory protocol (`recall`,
+`remember`, `entity`, `synthesize`, `forget`, `context_pack`, `delta` —
 [MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)) instead of the full catalog;
 omit the flag (default `full`) for every operation.
 

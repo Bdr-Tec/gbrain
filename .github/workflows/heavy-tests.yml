@@ -1,7 +1,7 @@
 name: Heavy Tests
 
 # Heavy ops-shape tests under tests/heavy/. Cost minutes per run; NOT part
-# of default PR CI. Two triggers:
+# of default PR CI. Three triggers:
 #   - Nightly schedule (catches regressions within 24h of merge to master).
 #   - On-demand opt-in via PR label `heavy-tests` (slow loop kept off by default).
 #   - Manual workflow_dispatch for triage.
@@ -165,7 +165,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'real-agent-e2e') ||
       contains(github.event.pull_request.labels.*.name, 'heavy-tests')
     runs-on: ubuntu-latest
-    # Three serial door tests at 600s each plus the installer budget cannot
+    # Four serial door tests at 600s each plus the installer budget cannot
     # fit the sibling job's 20 minutes.
     timeout-minutes: 40
     env:
