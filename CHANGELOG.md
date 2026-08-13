@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.45.11.0] - 2026-08-13
+## [0.45.12.0] - 2026-08-13
 
 **Hermes joins the tested-install club: a real-binary harness now proves gbrain works inside Hermes, and `gbrain friction diff` tells you whether an install problem is the agent's or ours.**
 
@@ -22,7 +22,7 @@ the registry, the new `gbrain friction diff --base openclaw --compare hermes` tu
 friction reports into a comparison instrument: pain unique to one agent is that agent's
 contract problem; pain common to both is ours.
 
-## To take advantage of v0.45.11.0
+## To take advantage of v0.45.12.0
 
 `gbrain upgrade` is enough — no schema migration.
 
