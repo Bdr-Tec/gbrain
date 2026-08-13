@@ -166,7 +166,7 @@ describe('admin embed E2E — /admin served from embedded manifest (v0.36.1.x #1
       });
       // Pre-fix this 404'd: the embedded-manifest branch only registered
       // '/admin/{*path}', which requires the literal '/' before the
-      // optional group and never matches a bare '/admin' request.
+      // wildcard segment and never matches a bare '/admin' request.
       expect([301, 302, 303, 307, 308]).toContain(res.status);
       expect(res.headers.get('location')).toBe('/admin/');
 
