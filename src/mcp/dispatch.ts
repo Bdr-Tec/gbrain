@@ -8,10 +8,22 @@
 
 import type { BrainEngine } from '../core/engine.ts';
 import { operations, OperationError, enforceBoundClientOpAllowList } from '../core/operations.ts';
-import type { Operation, OperationContext, AuthInfo } from '../core/operations.ts';
+import type { OperationContext, AuthInfo } from '../core/operations.ts';
 import { loadConfig } from '../core/config.ts';
 import { VERB_NAMES, MEMORY_VERBS_VERSION } from '../core/verbs.ts';
 import { logVerbUsage } from '../core/verbs/usage-log.ts';
+import { suggestNearest } from '../core/levenshtein.ts';
+import {
+  normalizeOptionalParams,
+  validateParams,
+  findUnknownParams,
+  buildUnknownParamWarnBlock,
+  resolveStrictParamsMode,
+} from './validate-params.ts';
+
+// WP3: normalization + validation moved to validate-params.ts (direct unit
+// surface). Re-exported here so existing imports/tests keep working.
+export { normalizeOptionalParams, validateParams } from './validate-params.ts';
 
 const VERB_NAME_SET: ReadonlySet<string> = new Set(VERB_NAMES);
 
@@ -209,62 +221,6 @@ export function summarizeMcpParams(opName: string, params: unknown): ParamSummar
   };
 }
 
-/** Validate required params exist and have the expected type. Returns null on success, error message on failure. */
-export function validateParams(op: Operation, params: Record<string, unknown>): string | null {
-  for (const [key, def] of Object.entries(op.params)) {
-    if (def.required && (params[key] === undefined || params[key] === null)) {
-      return `Missing required parameter: ${key}`;
-    }
-    if (params[key] !== undefined && params[key] !== null) {
-      const val = params[key];
-      const expected = def.type;
-      if (expected === 'string' && typeof val !== 'string') return `Parameter "${key}" must be a string`;
-      if (expected === 'number' && typeof val !== 'number') return `Parameter "${key}" must be a number`;
-      if (expected === 'boolean' && typeof val !== 'boolean') return `Parameter "${key}" must be a boolean`;
-      if (expected === 'object' && (typeof val !== 'object' || Array.isArray(val))) return `Parameter "${key}" must be an object`;
-      if (expected === 'array' && !Array.isArray(val)) return `Parameter "${key}" must be an array`;
-    }
-  }
-  return null;
-}
-
-/**
- * Normalize the absent-idioms real MCP clients send for OPTIONAL params
- * before validation and dispatch: `null` (any type) and `''` (string-typed
- * params) become "not provided".
- *
- * Why: non-Claude models routinely fill optional params with `""` or `null`
- * instead of omitting them. `validateParams` already reads null as absent
- * for the required-param check (see above); handlers do not — some guard
- * with `typeof p.x === 'string' && p.x.length > 0` (entity / session_id in
- * `recall`), others with `p.x !== undefined` (since in `recall`), so
- * `recall {since: ""}` silently returned zero facts where the same call
- * with `since` omitted returns rows. Normalizing once at the shared
- * dispatch layer gives every handler one canonical absence instead of
- * per-handler guards.
- *
- * Deliberately narrow:
- *   - Required params are untouched — null on a required param still fails
- *     validation loudly, and `''` on a required string still reaches the
- *     handler exactly as before.
- *   - Type-mismatched junk is untouched — `limit: ""` keeps its loud
- *     "must be a number" error rather than silently succeeding.
- *   - Undeclared keys are untouched (they were already ignored).
- * Copy-on-write: callers' param objects are never mutated.
- */
-export function normalizeOptionalParams(op: Operation, params: Record<string, unknown>): Record<string, unknown> {
-  let out: Record<string, unknown> | null = null;
-  for (const [key, def] of Object.entries(op.params)) {
-    if (def.required) continue;
-    const val = params[key];
-    const isAbsentIdiom = val === null || (val === '' && def.type === 'string');
-    if (!isAbsentIdiom) continue;
-    if (out === null) out = { ...params };
-    delete out[key];
-  }
-  return out ?? params;
-}
-
 /**
  * D8: render the second (model-visible) content block for an empty retrieval
  * result from the handler-emitted `retrieval` meta. Returns null when the
@@ -289,6 +245,34 @@ export function buildEmptyRetrievalBlock(retrieval: unknown): string | null {
     : 'no retrieval degradation — this is a clean miss.');
   if (typeof r.hint === 'string' && r.hint.length > 0) parts.push(`hint: ${r.hint}`);
   return parts.join(' ');
+}
+
+/**
+ * WP3: the ONE unknown_tool envelope builder, shared by all three deny paths
+ * (surface-hidden via allowedOps, nonexistent op, localOnly over a network
+ * transport) so they stay byte-identical for the same input name — a hidden
+ * op must remain indistinguishable from a nonexistent one.
+ *
+ * The did-you-mean candidates are the caller's VISIBLE surface only
+ * (amendment 11): (allowedOps if set, else the full catalog) MINUS localOnly
+ * ops MINUS publish-gated ops. Gated names are excluded unconditionally —
+ * gate state is unknown here, and a suggestion naming a hidden/gated op
+ * would be the exact existence oracle this envelope exists to prevent.
+ */
+function unknownToolEnvelope(name: string, allowedOps?: ReadonlySet<string>): ToolResult {
+  const candidates = operations
+    .filter(op => !op.localOnly && !op.publishGateKey && (allowedOps ? allowedOps.has(op.name) : true))
+    .map(op => op.name);
+  const nearest = suggestNearest(name, candidates);
+  const envelope = {
+    error: 'unknown_tool',
+    message: `Unknown tool: ${name}`,
+    ...(nearest ? { suggestion: `Did you mean "${nearest}"?` } : {}),
+  };
+  return {
+    content: [{ type: 'text', text: JSON.stringify(envelope, null, 2) }],
+    isError: true,
+  };
 }
 
 const stderrLogger: OperationContext['logger'] = {
@@ -378,10 +362,7 @@ export async function dispatchToolCall(
   // on every transport, not just unlisted. Same envelope as unknown ops so
   // the surface doesn't leak which names exist.
   if (opts.allowedOps && !opts.allowedOps.has(name)) {
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'unknown_tool', message: `Unknown tool: ${name}` }, null, 2) }],
-      isError: true,
-    };
+    return unknownToolEnvelope(name, opts.allowedOps);
   }
 
   const op = operations.find(o => o.name === name);
@@ -391,10 +372,7 @@ export async function dispatchToolCall(
     // plain `Error: ...` string here breaks the contract on every
     // unknown-op path and the resulting test failure looked like a
     // transport bug.
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'unknown_tool', message: `Unknown tool: ${name}` }, null, 2) }],
-      isError: true,
-    };
+    return unknownToolEnvelope(name, opts.allowedOps);
   }
 
   // localOnly backstop at the SHARED layer (WP1/D7): localOnly ops reach the
@@ -405,10 +383,7 @@ export async function dispatchToolCall(
   // serve-http path also filters these at list time; the legacy bearer
   // transport at surface 'full' had no gate at all before this line.
   if (op.localOnly && opts.transport !== 'stdio') {
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'unknown_tool', message: `Unknown tool: ${name}` }, null, 2) }],
-      isError: true,
-    };
+    return unknownToolEnvelope(name, opts.allowedOps);
   }
 
   const safeParams = normalizeOptionalParams(op, params || {});
@@ -429,6 +404,40 @@ export async function dispatchToolCall(
       content: [{ type: 'text', text: JSON.stringify(envelope, null, 2) }],
       isError: true,
     };
+  }
+
+  // WP3 strict/warn unknown-argument validation. Runs on the NORMALIZED
+  // object (a null/'' optional idiom is never an unknown key). `_meta` and
+  // `dry_run` are allowlisted inside findUnknownParams. The mode resolves
+  // dual-plane (DB > file > 'warn') once per dispatch, and only when an
+  // unknown key actually exists — the all-declared common case pays no
+  // config read.
+  const unknownParamWarnings = findUnknownParams(op, safeParams);
+  if (unknownParamWarnings.length > 0) {
+    const strictMode = await resolveStrictParamsMode(engine, loadConfig());
+    if (strictMode === 'reject') {
+      logVerb(false);
+      // Privacy (amendment 11): the raw unknown key rides `suggestion` ONLY.
+      // serve-http persists the envelope's `message` into
+      // mcp_request_log.error_message — the message therefore counts, never
+      // names (same posture as the redacted params summarizer).
+      const n = unknownParamWarnings.length;
+      const suggestion = unknownParamWarnings
+        .map(w => w.suggestion
+          ? `Unknown parameter "${w.param}" — did you mean "${w.suggestion}"?`
+          : `Unknown parameter "${w.param}".`)
+        .join(' ');
+      const envelope = {
+        error: 'invalid_params',
+        message: `${n} unknown parameter${n === 1 ? '' : 's'} not declared in the ${name} tool schema (mcp.strict_params=reject). See suggestion for the submitted name${n === 1 ? '' : 's'}.`,
+        suggestion,
+        ...(isVerb ? { protocol_version: MEMORY_VERBS_VERSION } : {}),
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(envelope, null, 2) }],
+        isError: true,
+      };
+    }
   }
 
   // Remote callers must arrive with a resolved source scope. Every shipped
@@ -457,6 +466,13 @@ export async function dispatchToolCall(
     if (value !== undefined) responseMeta[key] = value;
   };
 
+  // WP3 warn mode: unknown keys were accepted above — surface them on the
+  // structured channel (`_meta.warnings`, amendment 13 shape) so operators
+  // and capable clients see the grace-period signal per call.
+  if (unknownParamWarnings.length > 0) {
+    ctx.emitResponseMeta('warnings', unknownParamWarnings);
+  }
+
   try {
     // Fail-closed gate for slug-bound OAuth clients, applied here because
     // this is the one path both MCP transports share. Per-op fences still
@@ -480,6 +496,12 @@ export async function dispatchToolCall(
     if (Array.isArray(result) && result.length === 0 && responseMeta.retrieval) {
       const block = buildEmptyRetrievalBlock(responseMeta.retrieval);
       if (block) out.content.push({ type: 'text', text: block });
+    }
+    // WP3/D8: warn-mode unknown-param notices ride the same model-visible
+    // extra-block mechanism, so the grace period actually corrects clients
+    // (old thin-clients read content[0] only — skew-safe).
+    if (unknownParamWarnings.length > 0) {
+      out.content.push({ type: 'text', text: buildUnknownParamWarnBlock(unknownParamWarnings) });
     }
     // _meta assembly (WP2 amendment 9): one producer per top-level key,
     // each isolated — handler-emitted keys (retrieval, warnings) attach

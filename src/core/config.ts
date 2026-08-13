@@ -427,6 +427,18 @@ export interface GBrainConfig {
      * tier so a hosted gbrain never serves its own bundled dev skills).
      */
     skills_dir?: string;
+    /**
+     * WP3 — unknown tool-call argument posture for MCP dispatch.
+     *   'warn' (default / absent): unknown params are accepted; each call
+     *     collects `_meta.warnings` + a model-visible notice block, and the
+     *     request logs as 'success_with_warnings'.
+     *   'reject': unknown params return `invalid_params` (with a
+     *     did-you-mean suggestion), and tool schemas are emitted with
+     *     `additionalProperties: false`.
+     * Dual-plane: DB plane (`gbrain config set mcp.strict_params ...`) wins
+     * over this file slot. See src/mcp/validate-params.ts.
+     */
+    strict_params?: 'warn' | 'reject';
   };
 }
 
@@ -1079,6 +1091,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // the advisor exposes operational diagnostics (version/jobs/key presence),
   // not prose skills. Default OFF; read-only over MCP.
   'mcp.publish_advisor',
+  // WP3 — unknown tool-call argument posture ('warn' default | 'reject').
+  // Read dual-plane by src/mcp/validate-params.ts (DB > file > 'warn').
+  'mcp.strict_params',
   // Skill-nag suppression (#2180): brain-resident pack install nag off-switch.
   'skillpack.nag_disabled',
   // Self-upgrade (v0.42; file plane, read on the hot path)

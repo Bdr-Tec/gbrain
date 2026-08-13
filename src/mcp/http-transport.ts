@@ -32,7 +32,9 @@ import { operations } from '../core/operations.ts';
 import type { AuthInfo } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
 import { dispatchToolCall } from './dispatch.ts';
+import { parseStrictParamsMode } from './validate-params.ts';
 import { filterOpsForSurface } from './surface.ts';
+import { loadConfig } from '../core/config.ts';
 import { buildDefaultLimiters, type RateLimiter } from './rate-limit.ts';
 import { sqlQueryForEngine } from '../core/sql-query.ts';
 import { parseLegacyTokenScope, parseTakesHoldersAllowList, coerceLegacyPermissions } from '../core/legacy-token-scope.ts';
@@ -172,7 +174,13 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
   const surfacedOps = filterOpsForSurface(operations.filter(op => !op.localOnly), surface);
   const surfaceAllowedOps: ReadonlySet<string> | undefined =
     surface === 'full' ? undefined : new Set(surfacedOps.map(o => o.name));
-  const tools = buildToolDefs(surfacedOps);
+  // WP3: strict-params schema emission resolved ONCE at startup from the FILE
+  // config plane — this transport builds its tool list once, so a
+  // `mcp.strict_params` flip needs a restart here (deliberate; the OAuth
+  // serve-http path re-reads dual-plane per request). Dispatch-side
+  // enforcement still resolves per call.
+  const strictParams = parseStrictParamsMode(loadConfig()?.mcp?.strict_params) === 'reject';
+  const tools = buildToolDefs(surfacedOps, { strictParams });
 
   /**
    * v0.41.3 (T6): single consolidated CORS header builder. Pre-fix there were

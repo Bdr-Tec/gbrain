@@ -33,7 +33,8 @@ import type { SqlQuery } from '../core/oauth-provider.ts';
 import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
 import { normalizeSourceInput, normalizeFederatedReadInput } from '../core/source-id.ts';
 import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
-import { paramDefToSchema } from '../mcp/tool-defs.ts';
+import { resolveStrictParamsMode } from '../mcp/validate-params.ts';
+import { buildToolDefs } from '../mcp/tool-defs.ts';
 import { filterOpsForSurface } from '../mcp/surface.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
@@ -1942,21 +1943,15 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         && opAllowedForBoundClient(authInfo, op)
         && !gateDisabled.has(op.name),
       );
+      // WP3 (amendment 14): ONE schema mapper — the inline map this handler
+      // carried is unified onto buildToolDefs so the byte-pin test covers the
+      // transport consumers actually use. strict_params is read dual-plane
+      // PER REQUEST (same restart-free property as the publish gates above):
+      // 'reject' closes each schema with additionalProperties:false and
+      // declares the _meta/dry_run passthrough keys (D14.1).
+      const strictParams = (await resolveStrictParamsMode(engine, config)) === 'reject';
       return {
-        tools: visibleOps.map(op => ({
-          name: op.name,
-          description: op.description,
-          inputSchema: {
-            type: 'object' as const,
-            properties: Object.fromEntries(
-              Object.entries(op.params).map(([k, v]) => [k, paramDefToSchema(v)]),
-            ),
-            required: Object.entries(op.params).filter(([, v]) => v.required).map(([k]) => k),
-          },
-          // MEMORY_VERBS v1: ToolAnnotations emitted only when the op defines
-          // them — existing tools stay byte-identical (mirrors buildToolDefs).
-          ...(op.annotations ? { annotations: op.annotations } : {}),
-        })),
+        tools: buildToolDefs(visibleOps, { strictParams }),
       };
     });
 
@@ -2161,12 +2156,21 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         return toolResult;
       }
 
+      // WP3 (amendment 13): warn-mode observability. A success whose _meta
+      // carries a non-empty warnings array logs as 'success_with_warnings' so
+      // the reject-flip decision is evidence-based (count per client via the
+      // status column). Warn CONTENTS (the raw unknown keys) are never logged.
+      const meta = toolResult._meta as Record<string, unknown> | undefined;
+      const successStatus =
+        Array.isArray(meta?.warnings) && (meta?.warnings as unknown[]).length > 0
+          ? 'success_with_warnings'
+          : 'success';
       try {
         await executeRawJsonb(
           engine,
           `INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, params)
            VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-          [authInfo.clientId, agentName, name, latency, 'success'],
+          [authInfo.clientId, agentName, name, latency, successStatus],
           [logParamsObj],
         );
       } catch { /* best effort */ }
@@ -2176,7 +2180,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         params: broadcastParams,
         scopes: authInfo.scopes.join(','),
         latency_ms: latency,
-        status: 'success',
+        status: successStatus,
         timestamp: new Date().toISOString(),
       });
       return toolResult;

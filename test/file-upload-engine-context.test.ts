@@ -34,10 +34,14 @@ describe('file_upload engine ownership', () => {
     const fixture = join(fixtureDir, 'capture.json');
     writeFileSync(fixture, '{"source":"camofox"}\n');
 
+    // WP1/D7: file_upload is localOnly — the dispatch backstop only admits
+    // the stdio local pipe. This test is about ENGINE ownership, so dispatch
+    // as the local surface (transport policy is pinned in
+    // test/dispatch-localonly.test.ts).
     const result = await dispatchToolCall(engine, 'file_upload', {
       path: fixture,
       page_slug: 'concepts/example-board',
-    }, { remote: true, sourceId: 'default' });
+    }, { remote: true, transport: 'stdio', sourceId: 'default' });
 
     expect(result.isError).toBeFalsy();
     expect(JSON.parse(result.content[0].text)).toEqual({
@@ -48,7 +52,7 @@ describe('file_upload engine ownership', () => {
 
     const listed = await dispatchToolCall(engine, 'file_list', {
       slug: 'concepts/example-board',
-    }, { remote: true, sourceId: 'default' });
+    }, { remote: true, transport: 'stdio', sourceId: 'default' });
     expect(listed.isError).toBeFalsy();
     expect(JSON.parse(listed.content[0].text)).toEqual([
       expect.objectContaining({
@@ -59,7 +63,7 @@ describe('file_upload engine ownership', () => {
 
     const url = await dispatchToolCall(engine, 'file_url', {
       storage_path: 'concepts/example-board/capture.json',
-    }, { remote: true, sourceId: 'default' });
+    }, { remote: true, transport: 'stdio', sourceId: 'default' });
     expect(url.isError).toBeFalsy();
     expect(JSON.parse(url.content[0].text)).toEqual({
       storage_path: 'concepts/example-board/capture.json',

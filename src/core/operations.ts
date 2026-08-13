@@ -1771,7 +1771,7 @@ const delete_page: Operation = {
   name: 'delete_page',
   description: 'Soft-delete a page. The row is hidden from search and from get_page/list_pages, but is recoverable via restore_page within 72h. The autopilot purge phase hard-deletes after the recovery window. Pass include_deleted: true to get_page to verify the soft-delete landed.',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: "Slug of the page to soft-delete, e.g. 'people/alice-example'." },
   },
   mutating: true,
   scope: 'write',
@@ -1805,7 +1805,7 @@ const restore_page: Operation = {
   name: 'restore_page',
   description: 'v0.26.5 — restore a soft-deleted page (clear deleted_at). Returns success only if the page was actually soft-deleted. After this op, the page reappears in search and in get_page/list_pages without the include_deleted flag.',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: "Slug of the soft-deleted page to restore, e.g. 'people/alice-example'." },
   },
   mutating: true,
   scope: 'write',
@@ -1999,7 +1999,7 @@ const search: Operation = {
   name: 'search',
   description: SEARCH_DESCRIPTION,
   params: {
-    query: { type: 'string', required: true },
+    query: { type: 'string', required: true, description: "Search text. Exact tokens, names, and structured-field values work best here (e.g. 'acme-example series A'), since this op does no LLM expansion. This is the search text param — there is no `text` or `q` param." },
     limit: { type: 'number', description: 'Max results (default 20)' },
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
     mode: { type: 'string', description: 'Search mode (conservative|balanced|tokenmax). Local callers only.' },
@@ -2070,7 +2070,7 @@ const query: Operation = {
     // validator at src/cli.ts honors `cliHints.altRequired` and admits the
     // image-only invocation. MCP / programmatic callers must still pass
     // `query` OR `image` (handler refuses if both are absent).
-    query: { type: 'string', required: false },
+    query: { type: 'string', required: false, description: "Question or topic text for hybrid retrieval with expansion (e.g. 'agents that do web research'). This is the search text param — there is no `text` or `q` param. Optional ONLY because `image` is the alternative entry point; a call with neither fails with invalid_params." },
     /** v0.27.1: image-similarity search. Path resolved on the CLI side
      *  before the op fires (the op receives raw bytes neither side; the
      *  CLI loads the file, base64-encodes, and passes through `image`). */
@@ -2204,7 +2204,13 @@ const query: Operation = {
     }
 
     if (!queryText) {
-      throw new Error('query requires either `query` (text) or `image` (base64 bytes).');
+      // WP3: typed envelope — a caller mistake must classify as invalid_params
+      // over MCP, not the internal_error a plain throw produced.
+      throw new OperationError(
+        'invalid_params',
+        'query requires either `query` (text) or `image` (base64 bytes).',
+        'Pass `query` with your search text (e.g. {"query": "acme-example roadmap"}), or `image` with base64 image bytes.',
+      );
     }
 
     // v0.25.0 — capture meta side-channel. hybridSearch's return contract
@@ -2341,7 +2347,7 @@ const takes_search: Operation = {
   description: 'Keyword search across takes (pg_trgm similarity over claim text)',
   scope: 'read',
   params: {
-    query: { type: 'string', required: true },
+    query: { type: 'string', required: true, description: "Search text matched against take claim text via trigram similarity, e.g. 'valuation cap'. This is the search text param — there is no `text` param." },
     limit: { type: 'number', description: 'Max results (default 30, cap 100)' },
   },
   handler: async (ctx, p) => {
@@ -2488,8 +2494,8 @@ const add_tag: Operation = {
   name: 'add_tag',
   description: 'Add tag to page',
   params: {
-    slug: { type: 'string', required: true },
-    tag: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: "Slug of the page to tag, e.g. 'people/alice-example'." },
+    tag: { type: 'string', required: true, description: "Tag to add — a plain string like 'founder' or 'follow-up', not a slug." },
   },
   mutating: true,
   scope: 'write',
@@ -2508,8 +2514,8 @@ const remove_tag: Operation = {
   name: 'remove_tag',
   description: 'Remove tag from page',
   params: {
-    slug: { type: 'string', required: true },
-    tag: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page to untag.' },
+    tag: { type: 'string', required: true, description: 'Tag to remove (exact match against the tags get_tags returns).' },
   },
   mutating: true,
   scope: 'write',
@@ -2527,7 +2533,7 @@ const get_tags: Operation = {
   name: 'get_tags',
   description: 'List tags for a page',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page whose tags to list.' },
   },
   handler: async (ctx, p) => {
     // #2200: route through sourceScopeOpts so a federated read grant
@@ -2559,8 +2565,8 @@ const add_link: Operation = {
   name: 'add_link',
   description: 'Create link between pages',
   params: {
-    from: { type: 'string', required: true },
-    to: { type: 'string', required: true },
+    from: { type: 'string', required: true, description: "Slug of the page the link originates from (the edge renders on this page), e.g. 'people/alice-example'. These are page slugs — there is no `source`/`target` pair." },
+    to: { type: 'string', required: true, description: "Slug of the page the link points to, e.g. 'companies/acme-example'." },
     link_type: { type: 'string', description: 'Link type (e.g., invested_in, works_at)' },
     context: { type: 'string', description: 'Context for the link' },
     link_source: { type: 'string', description: "Provenance tag (kebab-case, e.g. 'citation-graph'). Defaults to 'manual'. Reconciliation-managed built-ins (markdown/frontmatter/mentions/wikilink-resolved) are rejected." },
@@ -2604,8 +2610,8 @@ const remove_link: Operation = {
   name: 'remove_link',
   description: 'Remove link between pages',
   params: {
-    from: { type: 'string', required: true },
-    to: { type: 'string', required: true },
+    from: { type: 'string', required: true, description: 'Slug of the page the link originates from (same endpoint order as add_link).' },
+    to: { type: 'string', required: true, description: 'Slug of the page the link points to.' },
     link_type: { type: 'string', description: 'Only remove edges of this link type (omit = all types)' },
     link_source: { type: 'string', description: 'Only remove edges of this provenance (e.g. citation-graph); omit = any provenance' },
   },
@@ -2632,7 +2638,7 @@ const get_links: Operation = {
   name: 'get_links',
   description: 'List outgoing links from a page',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page whose outgoing links to list.' },
   },
   handler: async (ctx, p) => {
     // #2200: linkReadScopeOpts so a federated grant — and an untrusted remote
@@ -2648,7 +2654,7 @@ const get_backlinks: Operation = {
   name: 'get_backlinks',
   description: 'List incoming links to a page',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page whose incoming links to list.' },
   },
   handler: async (ctx, p) => {
     // #2200: linkReadScopeOpts — federated grant + untrusted remote scalar
@@ -2690,7 +2696,7 @@ const traverse_graph: Operation = {
   name: 'traverse_graph',
   description: 'Traverse link graph from a page. With link_type/direction, returns edges (GraphPath[]) instead of nodes.',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: "Slug of the page to start the traversal from, e.g. 'people/alice-example'. This is the start-node param — there is no `start` or `root` param." },
     depth: { type: 'number', description: `Max traversal depth (default 5, capped at ${TRAVERSE_DEPTH_CAP})` },
     link_type: { type: 'string', description: 'Filter to one link type (per-edge filter, traversal only follows matching edges)' },
     direction: { type: 'string', enum: ['in', 'out', 'both'], description: 'Traversal direction (default out)' },
@@ -2726,11 +2732,11 @@ const add_timeline_entry: Operation = {
   name: 'add_timeline_entry',
   description: 'Add timeline entry to a page',
   params: {
-    slug: { type: 'string', required: true },
-    date: { type: 'string', required: true },
-    summary: { type: 'string', required: true },
-    detail: { type: 'string' },
-    source: { type: 'string' },
+    slug: { type: 'string', required: true, description: 'Slug of the page whose timeline to append to.' },
+    date: { type: 'string', required: true, description: "Entry date, strict YYYY-MM-DD (e.g. '2026-04-03'). Timestamps and non-calendar dates are rejected." },
+    summary: { type: 'string', required: true, description: 'One-line summary of what happened on that date.' },
+    detail: { type: 'string', description: 'Longer free-text detail behind the summary.' },
+    source: { type: 'string', description: "Provenance ref for the entry, e.g. a meeting slug like 'meetings/2026-04-03' or a URL." },
   },
   mutating: true,
   scope: 'write',
@@ -2775,7 +2781,7 @@ const get_timeline: Operation = {
   name: 'get_timeline',
   description: 'Get timeline entries for a page, optionally filtered by date window',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page whose timeline entries to return.' },
     after: { type: 'string', description: 'Return entries on or after this date (YYYY-MM-DD)' },
     before: { type: 'string', description: 'Return entries on or before this date (YYYY-MM-DD)' },
     since: { type: 'string', description: 'Alias for after; accepted for agent callers' },
@@ -3124,7 +3130,7 @@ const get_versions: Operation = {
   name: 'get_versions',
   description: 'Page version history',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page whose version history to list.' },
   },
   handler: async (ctx, p) => {
     const versions = await ctx.engine.getVersions(p.slug as string, sourceScopeOpts(ctx));
@@ -3143,8 +3149,8 @@ const revert_version: Operation = {
   name: 'revert_version',
   description: 'Revert page to a previous version',
   params: {
-    slug: { type: 'string', required: true },
-    version_id: { type: 'number', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page to revert.' },
+    version_id: { type: 'number', required: true, description: 'Numeric version id to revert to, as returned by get_versions. Not a version NUMBER offset — pass the id field.' },
   },
   mutating: true,
   scope: 'write',
@@ -3202,7 +3208,7 @@ const put_raw_data: Operation = {
   name: 'put_raw_data',
   description: 'Store raw API response data for a page',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page to attach the raw data to.' },
     source: { type: 'string', required: true, description: 'Data source (e.g., crustdata, happenstance)' },
     data: { type: 'object', required: true, description: 'Raw data object' },
   },
@@ -3222,7 +3228,7 @@ const get_raw_data: Operation = {
   name: 'get_raw_data',
   description: 'Retrieve raw data for a page',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page whose raw data to fetch.' },
     source: { type: 'string', description: 'Filter by source' },
   },
   handler: async (ctx, p) => {
@@ -3237,7 +3243,7 @@ const resolve_slugs: Operation = {
   name: 'resolve_slugs',
   description: 'Fuzzy-resolve a partial slug to matching page slugs',
   params: {
-    partial: { type: 'string', required: true },
+    partial: { type: 'string', required: true, description: "Partial slug or title text to match, e.g. 'alice-ex' or 'meeting notes'. This is the search text param — there is no `text` param." },
   },
   handler: async (ctx, p) => {
     // #3242: was fully UNSCOPED — the one read that leaked every source's
@@ -3253,7 +3259,7 @@ const get_chunks: Operation = {
   name: 'get_chunks',
   description: 'Get content chunks for a page',
   params: {
-    slug: { type: 'string', required: true },
+    slug: { type: 'string', required: true, description: 'Slug of the page whose content chunks to return.' },
   },
   handler: async (ctx, p) => {
     // #2555: route through the canonical scope ladder (federated array >
@@ -3270,10 +3276,10 @@ const log_ingest: Operation = {
   name: 'log_ingest',
   description: 'Log an ingestion event',
   params: {
-    source_type: { type: 'string', required: true },
-    source_ref: { type: 'string', required: true },
-    pages_updated: { type: 'array', required: true, items: { type: 'string' } },
-    summary: { type: 'string', required: true },
+    source_type: { type: 'string', required: true, description: "Kind of ingest source, e.g. 'email', 'meeting', 'rss', 'api'." },
+    source_ref: { type: 'string', required: true, description: 'Identifier of the ingested item — a URL, message id, or file path.' },
+    pages_updated: { type: 'array', required: true, items: { type: 'string' }, description: 'Slugs of the pages this ingest created or updated.' },
+    summary: { type: 'string', required: true, description: 'One-line human-readable summary of what was ingested.' },
   },
   mutating: true,
   scope: 'write',
@@ -4562,7 +4568,7 @@ const sources_remove: Operation = {
     'under $GBRAIN_HOME/clones/ (realpath+lstat — symlink-safe). For most ' +
     'workflows prefer sources_archive for the soft-delete path.',
   params: {
-    id: { type: 'string', required: true },
+    id: { type: 'string', required: true, description: "Source id to remove, as listed by sources_list (e.g. 'wiki'). A source id, not a page slug." },
     confirm_destructive: {
       type: 'boolean',
       description:
@@ -4596,7 +4602,7 @@ const sources_status: Operation = {
     'so a remote MCP caller can diagnose whether the on-disk clone is ' +
     'syncable without SSH access to the brain host.',
   params: {
-    id: { type: 'string', required: true },
+    id: { type: 'string', required: true, description: "Source id to diagnose, as listed by sources_list (e.g. 'wiki'). A source id, not a page slug." },
   },
   scope: 'read',
   handler: async (ctx, p) => {

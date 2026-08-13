@@ -5,7 +5,8 @@ import type { BrainEngine } from '../core/engine.ts';
 import { operations } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
 import { buildToolDefs } from './tool-defs.ts';
-import { dispatchToolCall, validateParams, buildOperationContext } from './dispatch.ts';
+import { dispatchToolCall, buildOperationContext } from './dispatch.ts';
+import { validateParams, parseStrictParamsMode } from './validate-params.ts';
 import { filterOpsForSurface, allowedOpNames, type McpSurface } from './surface.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
@@ -51,11 +52,17 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
   const surfacedOps = filterOpsForSurface(operations, surface);
   const allowedOps = surface === 'full' ? undefined : allowedOpNames(operations, surface);
 
+  // WP3: strict-params schema emission, resolved ONCE at startup from the
+  // FILE config plane only — stdio has no per-request list cycle, so a
+  // `mcp.strict_params` flip needs a serve restart here (deliberate; the
+  // OAuth HTTP path re-reads dual-plane per request).
+  const strictParams = parseStrictParamsMode(loadConfig()?.mcp?.strict_params) === 'reject';
+
   // Generate tool definitions from operations. Extracted to buildToolDefs so
   // the subagent tool registry (v0.15+) can call the same mapper against a
   // filtered OPERATIONS subset instead of duplicating this shape.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: buildToolDefs(surfacedOps),
+    tools: buildToolDefs(surfacedOps, { strictParams }),
   }));
 
   // Dispatch tool calls via shared dispatch.ts (parity with HTTP transport).
