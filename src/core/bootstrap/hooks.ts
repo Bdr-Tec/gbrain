@@ -33,6 +33,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+  CLAUDE_COMMITTED_SETTINGS_FILE_RELPATH,
   CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS,
   CLAUDE_HOOK_EVENTS,
   CLAUDE_HOOK_SUBCOMMAND,
@@ -123,6 +124,74 @@ export function buildClaudeHookCommand(
   if (env.GBRAIN_HOME) assignments.push(`GBRAIN_HOME=${env.GBRAIN_HOME}`);
   const parts = ['env', ...assignments, gbrainBin, 'hook', CLAUDE_HOOK_SUBCOMMAND[event]];
   return parts.map(shellQuote).join(' ');
+}
+
+export function claudeCommittedSettingsPath(workspaceDir: string): string {
+  return join(workspaceDir, CLAUDE_COMMITTED_SETTINGS_FILE_RELPATH);
+}
+
+/**
+ * The COMMITTED carrier's command [D12]: PATH-resolved and fail-open. No
+ * absolute binary path — the committed file travels between machines and
+ * cloud sessions; wherever gbrain is not installed the hook exits 0 silently
+ * instead of erroring every turn.
+ */
+export function buildPortableClaudeHookCommand(event: ClaudeHookEvent, env: ClaudeHookEnv): string {
+  const assignments: string[] = [`GBRAIN_SOURCE=${env.GBRAIN_SOURCE}`];
+  if (env.GBRAIN_HOME) assignments.push(`GBRAIN_HOME=${env.GBRAIN_HOME}`);
+  const invoke = ['env', ...assignments, 'gbrain', 'hook', CLAUDE_HOOK_SUBCOMMAND[event]]
+    .map(shellQuote)
+    .join(' ');
+  return `command -v gbrain >/dev/null 2>&1 && ${invoke} || exit 0`;
+}
+
+/** Events the COMMITTED settings file already carries with our marker [D12]
+ * — the local writer skips these so one event never fires from both files. */
+/** Pull the GBRAIN_SOURCE value out of a rendered portable hook command so the
+ * exact-match check is agnostic to the (operator-chosen) source id. Returns
+ * null when the command isn't shaped like ours. */
+function extractHookSource(command: string): string | null {
+  const m = /command -v gbrain >\/dev\/null 2>&1 && env GBRAIN_SOURCE=('[^']*'|[^ ]+) gbrain hook /.exec(command);
+  if (!m) return null;
+  const raw = m[1]!;
+  return raw.startsWith("'") ? raw.slice(1, -1).replace(/'\\''/g, "'") : raw;
+}
+
+export function committedHookEvents(workspaceDir: string): Set<ClaudeHookEvent> {
+  const carried = new Set<ClaudeHookEvent>();
+  try {
+    const raw = readFileSync(claudeCommittedSettingsPath(workspaceDir), 'utf8');
+    const parsed = JSON.parse(raw) as { hooks?: Record<string, unknown> };
+    const hooks = parsed?.hooks;
+    if (typeof hooks !== 'object' || hooks === null) return carried;
+    for (const event of CLAUDE_HOOK_EVENTS) {
+      const groups = (hooks as Record<string, unknown>)[event];
+      if (!Array.isArray(groups)) continue;
+      const ours = groups.some(
+        (g) =>
+          typeof g === 'object' && g !== null &&
+          Array.isArray((g as HookMatcherGroup).hooks) &&
+          ((g as HookMatcherGroup).hooks as unknown[]).some(
+            (h) =>
+              isOurs(h) &&
+              // A committed file is repo-contributor-writable: a marker + a
+              // bare `includes('gbrain hook')` substring is spoofable
+              // (`evil; # gbrain hook` suppresses the real local install AND
+              // runs attacker code). Require the EXACT portable-command shape
+              // this event would render — the anchored `command -v gbrain …`
+              // guard + `|| exit 0` structure a foreign command can't fake.
+              typeof (h as HookCommandEntry).command === 'string' &&
+              (h as HookCommandEntry).command === buildPortableClaudeHookCommand(event, {
+                GBRAIN_SOURCE: extractHookSource((h as HookCommandEntry).command as string) ?? '',
+              }),
+          ),
+      );
+      if (ours) carried.add(event);
+    }
+  } catch {
+    /* absent/corrupt committed file → nothing carried */
+  }
+  return carried;
 }
 
 function isOurs(entry: unknown): boolean {
@@ -253,6 +322,11 @@ export function writeClaudeHooks(
   }
 
   const events = opts.events ?? [...CLAUDE_HOOK_EVENTS];
+  // [D12] Dedupe invariant: an event carried by the COMMITTED settings file
+  // never also fires from the local file. The local writer still strips its
+  // own prior entries for carried events (removing stale local copies), but
+  // re-adds nothing for them.
+  const carried = committedHookEvents(workspaceDir);
   let removedPrior = 0;
   const installed: Array<{ event: ClaudeHookEvent; command: string }> = [];
 
@@ -268,6 +342,13 @@ export function writeClaudeHooks(
     }
     const { kept, removed } = stripOurEntries(groups as unknown[]);
     removedPrior += removed;
+
+    if (carried.has(event)) {
+      notes.push(`${event}: carried by the committed .claude/settings.json — local entry skipped [D12]`);
+      if (kept.length === 0) delete hooks[event];
+      else hooks[event] = kept;
+      continue;
+    }
 
     const command = buildClaudeHookCommand(opts.gbrainBin, event, opts.env);
     const timeout = opts.timeoutSecs?.[event] ?? CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS[event];
@@ -295,13 +376,111 @@ export function writeClaudeHooks(
 }
 
 /**
+ * Write hooks into the COMMITTED `.claude/settings.json` [D12] — the only
+ * carrier that survives into fresh cloud clones (hooks are snapshotted at
+ * session start; the gitignored local file never exists there). Commands are
+ * PATH-resolved and fail-open (buildPortableClaudeHookCommand). After the
+ * committed write, the same events are stripped from the LOCAL file so an
+ * event never fires from both carriers.
+ */
+export function writeCommittedClaudeHooks(
+  workspaceDir: string,
+  opts: { env: ClaudeHookEnv; events?: ClaudeHookEvent[]; timeoutSecs?: Partial<Record<ClaudeHookEvent, number>> },
+): WriteClaudeHooksResult {
+  if (opts.env.GBRAIN_HOME) {
+    throw new Error(
+      'GBRAIN_HOME is machine-specific and must not be embedded in the COMMITTED hook carrier ' +
+        '(the file travels between machines) — isolated installs stay on the local carrier',
+    );
+  }
+  for (const [k, v] of Object.entries(opts.env)) {
+    if (typeof v === 'string' && /[\n\r\0]/.test(v)) {
+      throw new Error(`env ${k} contains control characters — refusing to embed in a hook command`);
+    }
+  }
+  const settingsPath = claudeCommittedSettingsPath(workspaceDir);
+  const { settings, existed, brokenBackupPath, notes } = loadSettings(settingsPath);
+  let hooks = settings.hooks as Record<string, unknown> | undefined;
+  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) {
+    if (hooks !== undefined) {
+      notes.push(
+        `WARNING: existing "hooks" key was not an object (${JSON.stringify(hooks).slice(0, 80)}); ` +
+          `replaced — the original file is in the .bak backup.`,
+      );
+    }
+    hooks = {};
+  }
+  const events = opts.events ?? [...CLAUDE_HOOK_EVENTS];
+  let removedPrior = 0;
+  const installed: Array<{ event: ClaudeHookEvent; command: string }> = [];
+  for (const event of events) {
+    let groups = hooks[event];
+    if (!Array.isArray(groups)) {
+      if (groups !== undefined) {
+        notes.push(`WARNING: existing hooks.${event} was not an array; replaced — original in the .bak backup.`);
+      }
+      groups = [];
+    }
+    const { kept, removed } = stripOurEntries(groups as unknown[]);
+    removedPrior += removed;
+    const command = buildPortableClaudeHookCommand(event, opts.env);
+    const timeout = opts.timeoutSecs?.[event] ?? CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS[event];
+    const entry: HookCommandEntry = {
+      type: 'command',
+      command,
+      timeout,
+      [GBRAIN_HOOK_MARKER_KEY]: GBRAIN_HOOK_MARKER_VALUE,
+    };
+    kept.push({ hooks: [entry] });
+    hooks[event] = kept;
+    installed.push({ event, command });
+  }
+  settings.hooks = hooks;
+  let backupPath: string | null = null;
+  if (existed && brokenBackupPath === null) {
+    backupPath = `${settingsPath}.bak`;
+    copyFileSync(settingsPath, backupPath);
+  }
+  atomicWriteJson(settingsPath, settings);
+
+  // [D12] dedupe: the committed carrier now owns these events — remove any
+  // local copies so nothing double-fires on this machine.
+  const localCleanup = removeHooksFromFile(claudeSettingsPath(workspaceDir));
+  if (localCleanup.removed > 0) {
+    notes.push(
+      `removed ${localCleanup.removed} local settings.local.json entr${localCleanup.removed === 1 ? 'y' : 'ies'} — the committed carrier owns the events now [D12]`,
+    );
+  }
+
+  return { settingsPath, installed, removedPrior, backupPath, brokenBackupPath, notes };
+}
+
+/**
  * Remove ONLY marker-carrying entries [G5]. A parse-broken file is left
  * untouched (removal must never destroy what it cannot read) — the note says
  * so. Event arrays we emptied lose their key; an emptied hooks object loses
- * its key; foreign structure survives.
+ * its key; foreign structure survives. Cleans BOTH carriers (local +
+ * committed [D12]); the returned settingsPath/backup describe the local one,
+ * with committed-file actions reported via notes.
  */
 export function removeClaudeHooks(workspaceDir: string): RemoveClaudeHooksResult {
-  const settingsPath = claudeSettingsPath(workspaceDir);
+  const local = removeHooksFromFile(claudeSettingsPath(workspaceDir));
+  const committed = removeHooksFromFile(claudeCommittedSettingsPath(workspaceDir));
+  const notes = [...local.notes];
+  if (committed.removed > 0) {
+    notes.push(`also removed ${committed.removed} entr${committed.removed === 1 ? 'y' : 'ies'} from the committed ${committed.settingsPath} [D12]`);
+  } else {
+    notes.push(...committed.notes.map((n) => `(committed carrier) ${n}`));
+  }
+  return {
+    settingsPath: local.settingsPath,
+    removed: local.removed + committed.removed,
+    backupPath: local.backupPath,
+    notes,
+  };
+}
+
+function removeHooksFromFile(settingsPath: string): RemoveClaudeHooksResult {
   const notes: string[] = [];
   if (!existsSync(settingsPath)) {
     return { settingsPath, removed: 0, backupPath: null, notes: ['no settings file — nothing to remove'] };

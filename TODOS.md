@@ -5197,6 +5197,48 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 
+- [ ] **P2 — repoPhaseComplete is single-workspace (one global receipt).** The
+  no-daemon push gate binds to the one `receipt.repo_url`, so with two bootstrap
+  workspaces sharing a gbrain home, workspace B's `bootstrap repo` overwrites the
+  receipt and permanently leaves A's per-turn/session-end pushes at
+  `push_deferred_repo_pending`. Fails CLOSED (defers, never mis-pushes) and
+  matches the v1 single-workspace contract, but the per-turn push made it more
+  visible. Fix = per-root repo binding (a receipt map or a per-root marker).
+  Surfaced by both v0.45.9.0 adversarial reviewers.
+- [ ] **P2 — visibility ladder subprocess/body bounds.** `runWithTimeout`
+  (`src/core/repo-visibility.ts`) races the `gh`/`git` probe against a timer but
+  doesn't kill the raced child, and the anon-probe `res.text()` buffers the whole
+  (operator-configured-origin) body before slicing. Bounded in practice by the
+  detached push child's lifetime, but a proper fix kills the raced process and
+  caps the body read. Filed from the v0.45.9.0 Codex adversarial pass.
+- [ ] **P3 — `config set` for the file-plane hook-lane keys is engine-bound.**
+  `runConfig` dispatches through the engine path, so `gbrain config set
+  push.allow_unverified_remote true` can fail while a live PGLite serve holds the
+  writer lock — the documented recovery command, unavailable exactly when needed.
+  The env-var form (`GBRAIN_ALLOW_UNVERIFIED_REMOTE=1`) is the cloud path and needs
+  no engine, so this is convenience-only; fix = route these two keys through the
+  no-engine CLI dispatch. Filed from the v0.45.9.0 Codex adversarial pass.
+
+
+- [ ] **P3 — plugin-based hook distribution for Claude Code.** Ship gbrain's
+  hooks as a Claude Code plugin (`hooks/hooks.json` + `.claude-plugin/plugin.json`
+  manifest, installed via the plugin marketplace flow) instead of two settings
+  files. Plugins merge hooks first-class across scopes and update centrally —
+  it would REPLACE both current carriers (repo-committed `.claude/settings.json`
+  for cloud installs + gitignored `settings.local.json` for local), so it must
+  migrate, not join; a third simultaneous carrier would double-fire events.
+  Cons: needs marketplace repo hosting; enterprise `allowManagedHooksOnly`
+  policies can block plugin hooks entirely. Start at
+  `src/core/bootstrap/hooks.ts` (both writers + the dedupe rule live there).
+  Filed from the cloud-DX eng review (v0.46.x wave).
+- [ ] **P3 — watch Claude Code Channels as the push path for
+  volunteer_context/signals.** Channels (research preview) push external events
+  into a LIVE session — the native version of gbrain's push-context lane
+  (`docs/guides/push-context.md`). Not actionable today: delivery requires an
+  always-on session plus an Anthropic-allowlisted channel plugin. Revisit when
+  channel-plugin distribution opens; the win is replacing per-turn pull with
+  event push for signals/reflex windows. Filed from the cloud-DX eng review.
+
 - [ ] **P1 — enforce op scope/localOnly on the stdio MCP dispatch when no auth
   context is present, and consider a narrower default surface for pull-mode
   harness registrations.** HTTP dispatch enforces `scope`/`localOnly` before

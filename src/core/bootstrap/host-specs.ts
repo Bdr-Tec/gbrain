@@ -99,6 +99,16 @@ export const TARGETS: Record<string, HostSpecTarget> = {
 /** Settings file the hook writer targets, relative to the workspace root. */
 export const CLAUDE_SETTINGS_FILE_RELPATH = join('.claude', 'settings.local.json');
 
+/** The COMMITTED hook carrier [D12]. Cloud sessions clone the repo fresh and
+ * snapshot hook config at session start — the gitignored settings.local.json
+ * never exists there, and hooks written mid-session never activate. Cloud and
+ * attach installs therefore write hooks into the repo-committed
+ * `.claude/settings.json` with a PATH-resolved fail-open command (no absolute
+ * paths — the file travels between machines). Local installs keep
+ * settings.local.json; the writers enforce that one event never fires from
+ * both files. */
+export const CLAUDE_COMMITTED_SETTINGS_FILE_RELPATH = join('.claude', 'settings.json');
+
 /** Hook events bootstrap wires (plan D5 + hook events table).
  * v0.45.7 ambient recall adds PreCompact: it BANKS the window's standing
  * entities into session_context_state so the post-compaction SessionStart

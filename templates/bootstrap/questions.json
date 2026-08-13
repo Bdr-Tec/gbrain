@@ -126,7 +126,7 @@
     "PERSIST_CRON": {
       "consent": true,
       "phase": "repo",
-      "question": "Enable background persistence? This installs a 15-minute job that commits and pushes this workspace to your private repo (secret-scan-gated). Declining still persists at session end.",
+      "question": "Enable background persistence? This installs a git post-commit hook that auto-pushes each commit in the background, plus a 30-minute pull job that keeps multi-machine checkouts fresh (on machines with a scheduler). Declining still persists via the per-turn and session-end pushes.",
       "default": "no",
       "allowed": ["yes", "no"],
       "maxLength": 4

@@ -67,6 +67,15 @@ import {
 } from '../core/transcripts/claude-code-jsonl.ts';
 import { CLAUDE_HOOK_OUTPUT_CAP_CHARS } from '../core/bootstrap/host-specs.ts';
 import { readManifest, readReceipt, type InstallReceipt } from '../core/bootstrap/format.ts';
+import { githubOwnerRepoString } from '../core/repo-visibility.ts';
+import { detectExecutionEnvironment } from '../core/execution-env.ts';
+import {
+  readPushStatuses,
+  readPushStatusForRoot,
+  sanitizePushReason,
+  summarizePushStatuses,
+  workspaceRootHash,
+} from '../core/workspace-push.ts';
 import { realpathOrResolve } from '../core/path-confine.ts';
 
 // ── Tunables ────────────────────────────────────────────────────────────────
@@ -112,6 +121,17 @@ const USER_PROMPT_WINDOW_TURNS = 4;
 export const PRIOR_CONTEXT_MAX_BYTES = 32 * 1024;
 /** user-prompt transcript parse budget (tail bytes — the window only needs the newest turns). */
 const USER_PROMPT_TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024;
+/** stop-hook push [D3]: hard budget for the debounce decision + detached spawn
+ * (the spawn itself is instant; the budget bounds the two 1s git probes). */
+const STOP_PUSH_DEADLINE_MS = 3000;
+/** stop-hook push debounce default (minutes) for local + ephemeral-container
+ * environments; cloud-sandbox defaults to 0 (every turn) — a reclaimed VM's
+ * tail loss is permanent, everywhere else SessionStart recovery covers it [D17]. */
+export const STOP_PUSH_DEBOUNCE_MIN_DEFAULT = 5;
+/** failure banner [D19]: re-announce floor while the same failure persists. */
+export const PUSH_ANNOUNCE_REFIRE_MS = 30 * 60 * 1000;
+/** failure banner budget (well under ENG-1's whole-payload cap). */
+const PUSH_BANNER_MAX_CHARS = 300;
 
 // ── Test seam ───────────────────────────────────────────────────────────────
 
@@ -591,16 +611,19 @@ async function lastSessionLine(): Promise<string | null> {
 
 async function pushStatusNote(): Promise<string | null> {
   try {
-    const home = await resolveHome();
-    const p = join(home, 'bootstrap', 'push-status.json');
-    if (!existsSync(p)) return null;
-    const s = JSON.parse(readFileSync(p, 'utf8')) as { ts?: string; ok?: boolean; reason?: string };
-    if (s.ok === false) {
-      return `Workspace push is FAILING (since ${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown reason'} — run gbrain doctor`;
+    // One reader + one aggregation for every status surface [D8]; per-root
+    // files [D13] so one workspace's success can't mask another's failure.
+    const entries = readPushStatuses();
+    if (entries.length === 0) return null;
+    const { failing, stalestTs } = summarizePushStatuses(entries);
+    if (failing.length > 0) {
+      const e = failing[0]!;
+      const which = e.repoRoot ? ` for ${e.repoRoot}` : '';
+      const rest = failing.length > 1 ? ` [+${failing.length - 1} more workspace(s)]` : '';
+      return `Workspace push${which} is FAILING (since ${e.ts ?? 'unknown'}): ${sanitizePushReason(e.reason)}${rest} — run gbrain doctor`;
     }
-    const t = s.ts ? Date.parse(s.ts) : NaN;
-    if (Number.isFinite(t) && Date.now() - t > PUSH_STALE_MS) {
-      return `Workspace push: last success ${s.ts} (>48h ago) — recent work may be unpushed [B4]`;
+    if (stalestTs !== null && Date.now() - stalestTs > PUSH_STALE_MS) {
+      return `Workspace push: last success ${new Date(stalestTs).toISOString()} (>48h ago) — recent work may be unpushed [B4]`;
     }
     return null;
   } catch {
@@ -677,13 +700,10 @@ async function resolveBootstrapWorkspaceRoot(ws: string): Promise<string | null>
   return root;
 }
 
-/** owner/name from a github https/ssh remote URL, or null. Local mirror of
- * repo.ts's parser (kept here so the engine-free hook doesn't import repo.ts). */
+/** owner/name from a github https/ssh remote URL, or null. Canonical parser
+ * (repo-visibility.ts is engine-free, so the hook contract holds). */
 function githubOwnerName(url: string): string | null {
-  const m =
-    /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url.trim()) ??
-    /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/.exec(url.trim());
-  return m ? `${m[1]}/${m[2]}` : null;
+  return githubOwnerRepoString(url);
 }
 
 /**
@@ -706,14 +726,22 @@ async function repoPhaseComplete(root: string): Promise<boolean> {
     if (!receipt || typeof receipt.repo_url !== 'string' || receipt.repo_url.length === 0) return false;
     if (realpathOrResolve(receipt.workspace_dir) !== realpathOrResolve(root)) return false;
     const want = githubOwnerName(receipt.repo_url);
-    if (!want) return false;
     const fetchUrl = await tryExecAsync('git', ['-C', root, 'remote', 'get-url', 'origin']);
-    if (githubOwnerName(fetchUrl ?? '') !== want) return false;
     // Push URL (remote.origin.pushurl) via the config key directly (no dash-flag):
     // unset → `git push` uses the fetch URL (already matched). Only a configured
     // push URL that points elsewhere blocks the push.
     const pushUrl = await tryExecAsync('git', ['-C', root, 'config', 'remote.origin.pushurl']);
-    return !pushUrl || githubOwnerName(pushUrl) === want;
+    if (want) {
+      if (githubOwnerName(fetchUrl ?? '') !== want) return false;
+      return !pushUrl || githubOwnerName(pushUrl) === want;
+    }
+    // Non-github repo_url (self-hosted / explicitly-trusted transports): bind
+    // by EXACT URL equality — the recorded url is what the repo phase (or the
+    // operator) verified, and a later remote redirect must still block the
+    // push. Without this branch, every non-github install's no-daemon push
+    // deferred forever (post-#4024 regression).
+    if ((fetchUrl ?? '').trim() !== receipt.repo_url) return false;
+    return !pushUrl || pushUrl.trim() === receipt.repo_url;
   } catch {
     return false;
   }
@@ -749,13 +777,7 @@ async function dirtyTreePush(
   try {
     const root = await resolveBootstrapWorkspaceRoot(ws);
     if (!root) return null;
-    const [status, aheadRaw] = await Promise.all([
-      tryExecAsync('git', ['-C', root, 'status', '--porcelain']),
-      tryExecAsync('git', ['-C', root, 'rev-list', '--count', '@{u}..HEAD']),
-    ]);
-    const dirty = (status ?? '') !== '';
-    const ahead = aheadRaw !== null ? parseInt(aheadRaw, 10) || 0 : 0;
-    if (!dirty && ahead === 0) return null; // clean + up to date → nothing to recover
+    if (!(await treeNeedsPush(root))) return null; // clean + up to date → nothing to recover
     // There IS unpushed work. Defer until the repo phase verified privacy +
     // recorded repo_url — never recover-push to an unverified origin
     // (create-repo-first race). Only fires when work actually exists (P2-1).
@@ -783,6 +805,181 @@ async function dirtyTreePush(
   }
 }
 
+/** True when the workspace has uncommitted changes or commits ahead of
+ * upstream — shared by the SessionStart recovery push and the stop-hook
+ * per-turn push. Two 1s-capped git probes; never throws. */
+async function treeNeedsPush(root: string): Promise<boolean> {
+  // Dirty tree → always needs a push. For "ahead", measure against the SAME
+  // ref workspacePush targets (origin/<default-branch>), NOT @{u}: a branch
+  // with no upstream makes `@{u}..HEAD` error → 0, which would report a clean
+  // + committed-but-unpushed tree as push_clean and silently strand it (the
+  // exact tail-loss the per-turn push exists to prevent). When the origin ref
+  // doesn't resolve yet (never pushed), any commit past the empty tree counts
+  // as needs-push.
+  const status = await tryExecAsync('git', ['-C', root, 'status', '--porcelain']);
+  if ((status ?? '') !== '') return true;
+  const branch = await tryExecAsync('git', ['-C', root, 'branch', '--show-current']);
+  const b = (branch ?? '').trim();
+  if (b) {
+    const ahead = await tryExecAsync('git', ['-C', root, 'rev-list', '--count', `origin/${b}..HEAD`]);
+    if (ahead !== null) return (parseInt(ahead, 10) || 0) > 0;
+    // origin/<b> doesn't exist (never pushed) → any local commit needs pushing.
+    const have = await tryExecAsync('git', ['-C', root, 'rev-list', '--count', 'HEAD']);
+    return (parseInt(have ?? '0', 10) || 0) > 0;
+  }
+  // Detached HEAD / no branch name — fall back to the upstream measure.
+  const ahead = await tryExecAsync('git', ['-C', root, 'rev-list', '--count', '@{u}..HEAD']);
+  return ahead !== null && (parseInt(ahead, 10) || 0) > 0;
+}
+
+// ── stop-hook per-turn push [D3/D17/D20] ────────────────────────────────────
+//
+// SessionEnd never fires on /exit (upstream: closed not-planned), can't fire
+// on crash, and a cloud sandbox VM may simply be reclaimed between turns —
+// so the Stop boundary (fires after EVERY assistant turn) is the only cadence
+// that always runs while work exists. Debounced per workspace root, detached
+// spawn (instant), fail-open everywhere.
+
+function stopPushStatePath(root: string): string {
+  return join(resolveGbrainHome(), 'bootstrap', `stop-push-${workspaceRootHash(root)}.json`);
+}
+
+/** Debounce resolution: env GBRAIN_STOP_PUSH_DEBOUNCE_MIN (minutes; 0 = every
+ * turn) → file-plane config hooks.stop_push_debounce_min → environment-kind
+ * default (cloud-sandbox: 0, everything else: 5). */
+function stopPushDebounceMs(): number {
+  const env = process.env.GBRAIN_STOP_PUSH_DEBOUNCE_MIN;
+  if (env !== undefined) {
+    const n = Number.parseInt(env, 10);
+    if (Number.isFinite(n) && n >= 0) return n * 60_000;
+  }
+  try {
+    const cfg = loadConfig();
+    const v = cfg?.hooks?.stop_push_debounce_min;
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number.parseInt(v, 10) : NaN;
+    if (Number.isFinite(n) && n >= 0) return n * 60_000;
+  } catch {
+    /* tolerant read — fall through to the default */
+  }
+  return detectExecutionEnvironment() === 'cloud-sandbox' ? 0 : STOP_PUSH_DEBOUNCE_MIN_DEFAULT * 60_000;
+}
+
+/** Floor for the [D20] failing-status retry cadence: a stuck push (e.g. gh
+ * unauthenticated for a day) must not re-run the full network ladder on every
+ * single turn — one retry a minute keeps recovery fast without the storm. */
+export const STOP_PUSH_FAILING_RETRY_FLOOR_MS = 60_000;
+
+/** Decide + (maybe) spawn the per-turn push. Returns the heartbeat reason.
+ * Ordered cheapest-first: the debounce (two file reads) answers the common
+ * case before any git subprocess runs — repoPhaseComplete's git probes only
+ * execute on turns that might actually spawn a push. */
+async function stopPushIfDue(ws: string, io: HookIo): Promise<string> {
+  if (process.env.GBRAIN_STOP_PUSH === '0') return 'push_disabled';
+  const root = await resolveBootstrapWorkspaceRoot(ws);
+  if (!root) return 'push_skipped_not_bootstrap';
+
+  const stateP = stopPushStatePath(root);
+  let lastTs: number | null = null;
+  try {
+    const s = JSON.parse(readFileSync(stateP, 'utf8')) as { ts?: string };
+    const t = Date.parse(s.ts ?? '');
+    if (Number.isFinite(t)) lastTs = t;
+  } catch {
+    /* missing/corrupt state → due (fail-open) */
+  }
+  // [D20] a failing push bypasses the normal debounce so recovery is fast —
+  // but with a 60s floor so a persistently failing push can't re-run the
+  // network verification ladder on every turn (the push lock bounds
+  // concurrency, not cadence; the banner is already showing the failure).
+  const failing = readPushStatusForRoot(root)?.ok === false;
+  const now = Date.now();
+  // Healthy: the normal debounce (0 = every turn in cloud). Failing: a fixed
+  // 60s retry floor — faster than a long local debounce so a transient failure
+  // recovers within a turn or two, but NEVER every-turn (a Math.min against the
+  // cloud debounce of 0 was a re-run-the-ladder-every-turn storm; adversarial
+  // review caught it).
+  const windowMs = failing ? STOP_PUSH_FAILING_RETRY_FLOOR_MS : stopPushDebounceMs();
+  if (lastTs !== null && now - lastTs < windowMs) return 'push_debounced';
+  // Same privacy gate as SessionEnd: never push before the repo phase has
+  // verified the origin and recorded repo_url (create-repo-first race).
+  if (!(await repoPhaseComplete(root))) return 'push_deferred_repo_pending';
+  if (!(await treeNeedsPush(root))) return 'push_clean';
+  try {
+    // Written BEFORE the spawn so repeated fail-fast children stay debounced
+    // on the healthy path; the [D20] failing-status bypass handles retries.
+    mkdirSync(join(resolveGbrainHome(), 'bootstrap'), { recursive: true, mode: 0o700 });
+    const tmp = `${stateP}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify({ ts: new Date(now).toISOString(), root }) + '\n', { mode: 0o600 });
+    renameSync(tmp, stateP);
+  } catch {
+    /* state-write failure must not block the push itself */
+  }
+  try {
+    (io.spawnPush ?? spawnDetachedPush)(root);
+    return 'push_spawned';
+  } catch {
+    return 'push_unavailable';
+  }
+}
+
+// ── push-failure banner [D5/D13/D19] ────────────────────────────────────────
+
+interface PushAnnounceState {
+  announced_ts?: string;
+  last_announce_at?: string;
+}
+
+/**
+ * The pending ≤300-char failure banner, or null. `record()` marks the due
+ * failures announced and is called ONLY after the banner actually reached
+ * stdout — a deadline-suppressed banner must re-fire next turn. Announce
+ * state is a sidecar next to each per-root status file (`<file>.announced`):
+ * each new failure `ts` announces once, then re-announces at most every
+ * PUSH_ANNOUNCE_REFIRE_MS while the failure persists [D19].
+ */
+function pendingPushFailureBanner(): { text: string; record: () => void } | null {
+  try {
+    const failing = readPushStatuses().filter((e) => e.ok === false);
+    if (failing.length === 0) return null;
+    const now = Date.now();
+    const due = failing.filter((e) => {
+      try {
+        const s = JSON.parse(readFileSync(`${e.file}.announced`, 'utf8')) as PushAnnounceState;
+        if (s.announced_ts !== e.ts) return true;
+        const last = Date.parse(s.last_announce_at ?? '');
+        return !Number.isFinite(last) || now - last > PUSH_ANNOUNCE_REFIRE_MS;
+      } catch {
+        return true; // never announced (or unreadable state) → due
+      }
+    });
+    if (due.length === 0) return null;
+    const first = due[0]!;
+    const which = first.repoRoot ?? 'the workspace';
+    const more = due.length > 1 ? ` (+${due.length - 1} more workspace(s))` : '';
+    const text = (
+      `NOTICE: the background workspace push for ${which} is FAILING ` +
+      `(${sanitizePushReason(first.reason)})${more} — work is committed locally ` +
+      'but NOT on GitHub. Run gbrain doctor.'
+    ).slice(0, PUSH_BANNER_MAX_CHARS);
+    const record = () => {
+      for (const e of due) {
+        try {
+          writeFileSync(
+            `${e.file}.announced`,
+            JSON.stringify({ announced_ts: e.ts, last_announce_at: new Date(now).toISOString() }) + '\n',
+            { mode: 0o600 },
+          );
+        } catch {
+          /* fail-open — worst case the banner re-fires */
+        }
+      }
+    };
+    return { text, record };
+  } catch {
+    return null;
+  }
+}
+
 // ── user-prompt [ENG-1, S3#8, A9] ───────────────────────────────────────────
 
 interface UserPromptOutcome {
@@ -798,7 +995,18 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     if (!expired) write(io, s);
   };
 
+  // [D5/D19] Same-session failure surfacing: a refused/failed background push
+  // becomes visible on the NEXT turn — to the model via additionalContext AND
+  // to the human via systemMessage ("never silent" must not depend on the
+  // model choosing to relay its own tooling's failure). Embedded in the main
+  // payload when one is written; emitted alone on every degraded path.
+  // Computed INSIDE the deadline-raced closure: its sync file reads must be
+  // budgeted by the 800ms deadline, not free-ride before the race starts.
+  let banner: ReturnType<typeof pendingPushFailureBanner> = null;
+  let wrotePayload = false;
+
   const work = (async (): Promise<UserPromptOutcome> => {
+    banner = pendingPushFailureBanner();
     const j = await readStdinJson(io, 300);
     if (!j) return { outcome: 'degraded', reason: 'no_stdin' };
 
@@ -890,19 +1098,27 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
 
     // [ENG-1] The 10000-char harness cap applies to the WHOLE stdout payload;
     // the block is budgeted ≤8KB server-side, but JSON escaping inflates, so
-    // trim defensively rather than letting the harness divert-and-drop.
+    // trim defensively rather than letting the harness divert-and-drop. The
+    // banner (≤300 chars, fixed) rides inside the same payload [D5] — only
+    // blockText is trimmed, so the failure notice survives the cap loop.
+    const bannerPrefix = banner ? `${banner.text}\n\n` : '';
+    const buildPayload = (block: string) =>
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: bannerPrefix + block },
+        ...(banner ? { systemMessage: banner.text } : {}),
+      });
     let blockText = text;
-    let payload = JSON.stringify({
-      hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: blockText },
-    });
+    let payload = buildPayload(blockText);
     while (payload.length > CLAUDE_HOOK_OUTPUT_CAP_CHARS && blockText.length > 0) {
       blockText = blockText.slice(0, Math.max(0, blockText.length - (payload.length - CLAUDE_HOOK_OUTPUT_CAP_CHARS) - 16));
-      payload = JSON.stringify({
-        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: blockText },
-      });
+      payload = buildPayload(blockText);
     }
     if (blockText.length === 0) return { outcome: 'degraded', reason: 'over_cap', turns: turns.length };
     guardedWrite(payload + '\n');
+    if (!expired) {
+      wrotePayload = true;
+      banner?.record();
+    }
     // Partial trim is delivery-count drift: the serve already logged the FULL
     // post-budget set at the response write, but pages cut from the tail here
     // were never injected. Record it so the doctor's heartbeat reconciliation
@@ -926,6 +1142,21 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
   } catch (e) {
     expired = true;
     result = { outcome: 'error', reason: errorCode(e) };
+  }
+  // Banner-only emission [D5]: every path that did NOT write the main payload
+  // (no_serve, ipc_unavailable, no_pglite_path, empty windows, transcript
+  // aborts, …) still surfaces the push failure — unless the deadline expired,
+  // in which case record() was never called and the banner re-fires next turn.
+  // (Local copy: TS cannot track the closure-side assignment of `banner`.)
+  const pendingBanner = banner as { text: string; record: () => void } | null;
+  if (pendingBanner && !wrotePayload && !expired) {
+    guardedWrite(
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: pendingBanner.text },
+        systemMessage: pendingBanner.text,
+      }) + '\n',
+    );
+    pendingBanner.record();
   }
   await writeHeartbeat({
     ts: new Date().toISOString(),
@@ -1031,8 +1262,9 @@ async function hookStop(io: HookIo): Promise<number> {
   const t0 = Date.now();
   let outcome: HookHeartbeatEntry['outcome'] = 'ok';
   let reason: string | undefined;
+  let j: Record<string, unknown> | null = null;
   try {
-    const j = await readStdinJson(io, 300);
+    j = await readStdinJson(io, 300);
     const sessionId = sanitizeSessionId(j?.session_id);
     const dir = await liveBufferDir();
     const exchange = firstString(j, ['last_assistant_message', 'lastAssistantMessage', 'prompt']);
@@ -1047,11 +1279,21 @@ async function hookStop(io: HookIo): Promise<number> {
     outcome = 'error';
     reason = errorCode(e);
   }
+  // Per-turn durability push [D3/D17/D20] — its own try/deadline so the
+  // buffer append above and the heartbeat below are never at risk.
+  let pushReason: string | undefined;
+  try {
+    const ws = io.cwd ?? (typeof j?.cwd === 'string' ? (j.cwd as string) : process.cwd());
+    const raced = await withDeadline(STOP_PUSH_DEADLINE_MS, stopPushIfDue(ws, io));
+    pushReason = raced === DEADLINE ? 'push_unavailable' : raced;
+  } catch {
+    pushReason = 'push_unavailable';
+  }
   await writeHeartbeat({
     ts: new Date().toISOString(),
     event: 'stop',
     outcome,
-    ...(reason ? { reason } : {}),
+    ...((reason ?? pushReason) ? { reason: reason ?? pushReason } : {}),
     duration_ms: Date.now() - t0,
   });
   return 0;

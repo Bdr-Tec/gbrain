@@ -14,6 +14,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,6 +22,7 @@ import { runBootstrap, workspaceBrainStats } from '../src/commands/bootstrap.ts'
 import type { ExecRunner } from '../src/core/bootstrap/repo.ts';
 import { attachWorkspace } from '../src/core/bootstrap/attach.ts';
 import { readReceipt, receiptPath, writeManifest, type InstallReceipt } from '../src/core/bootstrap/format.ts';
+import { deriveWorkspaceSourceId } from '../src/core/bootstrap/verify.ts';
 import { initState, setAnswer, skipAnswer, confirm, readBackHash } from '../src/core/bootstrap/interview.ts';
 
 let tmpParent: string; // GBRAIN_HOME parent (configDir appends .gbrain)
@@ -117,6 +119,147 @@ describe('consent-skip is a decline (HOOKS_CONSENT)', () => {
     // Receipt records mcp-only wiring, not mcp+hooks.
     const receipt = readReceipt(home);
     expect(receipt?.registrations).toEqual([{ host: 'claude-code', scope: 'project', detail: 'mcp' }]);
+  }, 30_000);
+});
+
+describe('hooks previews the source_id + creates brain/ eagerly [defect: multi-round-trip source registration]', () => {
+  // Self-contained fixtures (same pattern as the flip block below): the
+  // file-level `ws` is shared by other describes, so this needs its own.
+  const scratch: string[] = [];
+  function freshWorkspace(): { fws: string; fhome: string; fparent: string } {
+    const fparent = mkdtempSync(join(tmpdir(), 'gb-srcid-'));
+    const fhome = join(fparent, '.gbrain');
+    mkdirSync(fhome, { recursive: true });
+    const fws = mkdtempSync(join(tmpdir(), 'gb-srcid-ws-'));
+    scratch.push(fparent, fws);
+    const prev = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = fparent;
+    try {
+      expect(initState(fws).ok).toBe(true);
+      for (const [key, value] of Object.entries(REQUIRED_ANSWERS)) {
+        const r = setAnswer(fws, key, value);
+        if (!r.ok) throw new Error(r.message);
+      }
+      expect(setAnswer(fws, 'MCP_SCOPE', 'project').ok).toBe(true);
+      const h = readBackHash(fws);
+      if (!h.ok) throw new Error(h.message);
+      expect(confirm(fws, h.hash).ok).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = prev;
+    }
+    return { fws, fhome, fparent };
+  }
+  afterAll(() => {
+    for (const d of scratch) rmSync(d, { recursive: true, force: true });
+  });
+
+  async function withHome<T>(parent: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = parent;
+    try {
+      return await fn();
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = prev;
+    }
+  }
+
+  test('hooks prints the exact `sources add` command up front and creates brain/ before verify ever runs', async () => {
+    const { fws, fparent } = freshWorkspace();
+    const brainDir = join(fws, 'brain');
+    const out = await withHome(fparent, async () => {
+      expect((await capture(() => runBootstrap(['render', '--workspace', fws]))).result).toBe(0);
+      // render is engine-free and never touches brain/ — the gap this fix closes.
+      expect(existsSync(brainDir)).toBe(false);
+      const { runner } = makeRunner();
+      return capture(() =>
+        runBootstrap(['hooks', '--workspace', fws, '--harness', 'claude-code', '--gbrain-bin', process.execPath], {
+          runner,
+        }),
+      );
+    });
+    expect(out.result).toBe(0);
+    // brain/ now exists — ready for `sources add` without a manual mkdir
+    // round trip.
+    expect(existsSync(brainDir)).toBe(true);
+    // The manifest's actual source_id (default: 'workspace' for a first
+    // render) is spelled out verbatim — no guessing an "intuitive" name that
+    // would only surface as an FK error three steps later at verify time.
+    // --force is required and printed: brain/ is freshly created and has no
+    // git history yet, so `sources add` without --force would fail-fast on
+    // `not_a_git_repo` (#2707) the instant the printed command is pasted —
+    // the exact same `{ force: true }` the engine-backed verify fixtures use
+    // to register a brand new brain/ (test/bootstrap-verify.serial.test.ts).
+    expect(out.out).toContain(`gbrain sources add workspace --path ${brainDir} --force`);
+    // The collision-fallback id is previewed too, pinned to the SAME formula
+    // verify.ts would derive (not just the id's shape) — so preview/verify
+    // drift, or a change to the derivation formula, fails this test.
+    expect(out.out).toContain(`'${deriveWorkspaceSourceId(fws)}'`);
+    expect(deriveWorkspaceSourceId(fws)).toMatch(/^workspace-[0-9a-f]{8}$/);
+  }, 30_000);
+
+  test('a --repair re-run is idempotent: brain/ survives, the same preview reprints', async () => {
+    const { fws, fparent } = freshWorkspace();
+    const brainDir = join(fws, 'brain');
+    await withHome(fparent, async () => {
+      expect((await capture(() => runBootstrap(['render', '--workspace', fws]))).result).toBe(0);
+      expect((await capture(() => runBootstrap(['hooks', '--workspace', fws, '--harness', 'claude-code', '--gbrain-bin', process.execPath], { runner: makeRunner().runner }))).result).toBe(0);
+      // Simulate the human having already registered + committed into brain/.
+      writeFileSync(join(brainDir, 'probe.md'), '# probe\n');
+      const repaired = await capture(() =>
+        runBootstrap(
+          ['hooks', '--workspace', fws, '--harness', 'claude-code', '--repair', '--gbrain-bin', process.execPath],
+          { runner: makeRunner().runner },
+        ),
+      );
+      expect(repaired.result).toBe(0);
+      expect(repaired.out).toContain(`gbrain sources add workspace --path ${brainDir} --force`);
+      // Idempotent mkdir never clobbers what the human already committed.
+      expect(existsSync(join(brainDir, 'probe.md'))).toBe(true);
+    });
+  }, 30_000);
+
+  test('a workspace path containing a space is shell-quoted in the printed command', async () => {
+    const fparent = mkdtempSync(join(tmpdir(), 'gb-srcid-space-'));
+    scratch.push(fparent);
+    const fhome = join(fparent, '.gbrain');
+    mkdirSync(fhome, { recursive: true });
+    const fwsRoot = mkdtempSync(join(tmpdir(), 'gb-srcid-space-root-'));
+    scratch.push(fwsRoot);
+    const fws = join(fwsRoot, 'has space');
+    mkdirSync(fws, { recursive: true });
+    const prev = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = fparent;
+    try {
+      expect(initState(fws).ok).toBe(true);
+      for (const [key, value] of Object.entries(REQUIRED_ANSWERS)) {
+        const r = setAnswer(fws, key, value);
+        if (!r.ok) throw new Error(r.message);
+      }
+      expect(setAnswer(fws, 'MCP_SCOPE', 'project').ok).toBe(true);
+      const h = readBackHash(fws);
+      if (!h.ok) throw new Error(h.message);
+      expect(confirm(fws, h.hash).ok).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = prev;
+    }
+    const brainDir = join(fws, 'brain');
+    const out = await withHome(fparent, async () => {
+      expect((await capture(() => runBootstrap(['render', '--workspace', fws]))).result).toBe(0);
+      const { runner } = makeRunner();
+      return capture(() =>
+        runBootstrap(['hooks', '--workspace', fws, '--harness', 'claude-code', '--gbrain-bin', process.execPath], {
+          runner,
+        }),
+      );
+    });
+    expect(out.result).toBe(0);
+    // A bare, unquoted path with a space would split into two shell words —
+    // the printed command must single-quote it so copy/paste actually works.
+    expect(out.out).toContain(`--path '${brainDir}' --force`);
+    expect(out.out).not.toContain(`--path ${brainDir} --force`);
   }, 30_000);
 });
 
@@ -554,11 +697,15 @@ describe('uninstall --delete-brain ordering + engine-free stats', () => {
     }
   });
 
-  test('facts-export offer prints BEFORE deletion output; brain deleted via isolated --home', async () => {
+  test('facts-export offer prints BEFORE deletion output; brain deleted via isolated --home; durability wiring torn down [B6]', async () => {
     // Isolated-style home INSIDE the workspace (the S3#5 shape --home requires
     // while GBRAIN_HOME is set): config.json + brain.pglite signature + receipt.
     const ws2 = mkdtempSync(join(tmpdir(), 'gb-dispatch-ws2-'));
     const isoHome = join(ws2, '.gbrain');
+    // HOME redirected for the plist/crontab teardown probes — the real
+    // machine's LaunchAgents must never be touched by a test.
+    const savedHome = process.env.HOME;
+    process.env.HOME = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
     try {
       mkdirSync(join(isoHome, 'brain.pglite'), { recursive: true });
       mkdirSync(join(isoHome, 'bootstrap'), { recursive: true });
@@ -578,6 +725,16 @@ describe('uninstall --delete-brain ordering + engine-free stats', () => {
       writeFileSync(receiptPath(isoHome), JSON.stringify(receipt), 'utf8');
       mkdirSync(join(ws2, 'brain'), { recursive: true });
       writeFileSync(join(ws2, 'brain', 'page.md'), '# page', 'utf8');
+      // Durability wiring fixture [B6]: a gbrain post-commit hook that
+      // uninstall previously left behind.
+      execFileSync('git', ['init', '-q'], { cwd: ws2 });
+      const hookPath = join(ws2, '.git', 'hooks', 'post-commit');
+      mkdirSync(join(ws2, '.git', 'hooks'), { recursive: true });
+      writeFileSync(
+        hookPath,
+        '#!/bin/bash\n# gbrain brain-durability post-commit hook (v0.42.44+)\nexit 0\n',
+        { mode: 0o755 },
+      );
 
       const r = await capture(() =>
         runBootstrap(['uninstall', '--workspace', ws2, '--delete-brain', '--yes', '--home', isoHome]),
@@ -590,8 +747,30 @@ describe('uninstall --delete-brain ordering + engine-free stats', () => {
       // The offer is printed exactly once (not repeated from the module steps).
       expect(r.out.indexOf('offered: export facts', offerIdx + 1)).toBe(-1);
       expect(existsSync(join(isoHome, 'brain.pglite'))).toBe(false);
+      // [B6] the untracked post-commit hook is gone and the teardown said so.
+      expect(existsSync(hookPath)).toBe(false);
+      expect(r.out).toContain('durability wiring removed');
     } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
       rmSync(ws2, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe('cloud-setup-script emitter [D16]', () => {
+  test('prints the paste-ready script: npm-based (never bun fetching, never the npm squatter), launcher + attach flow', async () => {
+    const r = await capture(() => runBootstrap(['cloud-setup-script']));
+    expect(r.result).toBe(0);
+    const s = r.out;
+    // npm transport (bun fetching is proxy-incompatible in cloud sandboxes)…
+    expect(s).toContain('npm install -g bun');
+    expect(s).toContain('github.com/garrytan/gbrain');
+    // …but NEVER the unrelated npm registry package.
+    expect(s).not.toMatch(/npm install -g gbrain(\s|$)/m);
+    // PATH-resolved launcher + in-session follow-ups.
+    expect(s).toContain('/usr/local/bin/gbrain');
+    expect(s).toContain('bootstrap attach');
+    expect(s).toContain('cloud-setup-script');
+  });
 });
