@@ -4542,7 +4542,9 @@ pre-v0.45.x servers; a server that omits them still certifies):
   fallback or a typed error and never emits them itself.
 - `pages_gathered` / `takes_gathered` — retrieval counts behind the answer.
 - `warnings` — machine-stable pipeline warning codes (e.g.
-  `LLM_OUTPUT_NOT_JSON`, `SYNTHESIS_EMPTY_ANSWER`, `LLM_CALL_FAILED: <detail>`,
+  `LLM_OUTPUT_NOT_JSON`, `SYNTHESIS_EMPTY_ANSWER`, `LLM_CALL_FAILED: <class>`
+  where `<class>` is one of the closed set `timeout` | `rate_limited` |
+  `network` | `provider_error` — raw provider detail never rides the wire,
   `MODEL_NOT_USABLE:<reason>`).
 
 Precedence (frozen): compose failure + NON-EMPTY gather ⇒

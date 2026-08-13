@@ -67,7 +67,10 @@ export const AUTOMATION_FRACTION_THRESHOLD = 0.9;
 export function normalizeLoggedOperation(operation: string): string | null {
   if (operation.startsWith(LEGACY_CALL_PREFIX)) {
     const name = operation.slice(LEGACY_CALL_PREFIX.length);
-    return name.length > 0 ? name : null;
+    if (name.length === 0) return null;
+    // The stripped name re-runs the hygiene check: 'tools/call:tools/list'
+    // or a prefixed 'surface_change' audit row is still not an op call.
+    return NON_OP_LOG_ROWS.has(name) ? null : name;
   }
   if (NON_OP_LOG_ROWS.has(operation)) return null;
   return operation;

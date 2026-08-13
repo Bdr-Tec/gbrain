@@ -592,7 +592,7 @@ export const RESPONSE_SCHEMAS: Record<VerbName, Record<string, unknown>> = {
       },
       pages_gathered: { type: 'integer', description: 'Pages retrieved by the gather phase behind this answer.' },
       takes_gathered: { type: 'integer', description: 'Takes retrieved by the gather phase behind this answer.' },
-      warnings: { type: 'array', items: { type: 'string' }, description: 'Machine-stable pipeline warning codes (e.g. LLM_OUTPUT_NOT_JSON, LLM_CALL_FAILED: <detail>).' },
+      warnings: { type: 'array', items: { type: 'string' }, description: 'Machine-stable pipeline warning codes (e.g. LLM_OUTPUT_NOT_JSON, LLM_CALL_FAILED: <class> where <class> is timeout | rate_limited | network | provider_error).' },
     },
   },
   forget: {

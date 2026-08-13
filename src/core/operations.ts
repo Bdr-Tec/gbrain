@@ -1103,9 +1103,11 @@ export interface Operation {
    */
   publishGateKey?: 'mcp.publish_skills' | 'mcp.publish_advisor';
   /**
-   * MEMORY_VERBS v1: marks the five frozen protocol verbs (recall, remember,
-   * entity, synthesize, forget). `gbrain serve --surface verbs` exposes
-   * EXACTLY the ops with `verb: true`; `full` (default) exposes everything.
+   * MEMORY_VERBS v1: marks the seven frozen protocol verbs (recall, remember,
+   * entity, synthesize, forget, context_pack, delta). `gbrain serve --surface
+   * verbs` exposes EXACTLY the ops with `verb: true`; 'starter' (the ~20-op
+   * daily-driver tier) sits between verbs and `full` (default), which exposes
+   * everything.
    */
   verb?: boolean;
   /**
@@ -7038,22 +7040,26 @@ function firstSentenceOf(description: string): string {
  * The set of ops VISIBLE to this caller (never leak hidden names — C8/
  * amendment 11 class): bounded by the server ceiling (ops above it can
  * never be served, so naming them would recreate listed-but-denied at the
- * persist level), minus localOnly on network transports (stdio keeps them —
- * D7), minus ops outside the caller's scopes (agent-callable carve-out per
- * FOV-4), minus bound-client-fenced ops (same predicate as tools/list,
- * ENG-3), minus publish-gated ops whose gate is off (stdio bypasses gates —
- * the D7 local-surface posture; a failed gate read hides the gated ops,
- * fail-closed).
+ * persist level), minus localOnly on network transports (stdio and the
+ * trusted local CLI keep them — D7), minus ops outside the caller's scopes
+ * (agent-callable carve-out per FOV-4), minus bound-client-fenced ops (same
+ * predicate as tools/list, ENG-3), minus publish-gated ops whose gate is off
+ * (stdio and the trusted local CLI bypass gates — the D7 local-surface
+ * posture, matching assertPublishEnabled's remote===false exemption; a
+ * failed gate read hides the gated ops, fail-closed).
  */
 async function visibleOpsForCaller(
   ctx: OperationContext,
   ceiling: 'verbs' | 'starter' | 'full',
 ): Promise<Operation[]> {
   const { filterOpsForSurface } = await import('../mcp/surface.ts');
-  const isStdio = ctx.transport === 'stdio';
+  // Trusted local callers: the stdio pipe, or the local CLI (remote is
+  // strictly false — the fail-closed trust marker). Both CAN call localOnly
+  // and gated ops, so hiding them would make the catalog dishonest.
+  const isLocal = ctx.transport === 'stdio' || ctx.remote === false;
 
   let gateDisabled: ReadonlySet<string> = new Set();
-  if (!isStdio) {
+  if (!isLocal) {
     try {
       const { disabledOpsForPublishGates } = await import('../mcp/publish-gates.ts');
       gateDisabled = await disabledOpsForPublishGates(ctx.engine, ctx.config);
@@ -7070,7 +7076,7 @@ async function visibleOpsForCaller(
   const scopes = ctx.auth?.scopes && ctx.auth.scopes.length > 0 ? ctx.auth.scopes : null;
 
   return filterOpsForSurface(operations, ceiling).filter(op =>
-    (isStdio || !op.localOnly)
+    (isLocal || !op.localOnly)
     && (scopes === null
       || hasScope(scopes, op.scope ?? 'read')
       || (op.agentCallable === true && hasScope(scopes, 'agent')))
@@ -7135,14 +7141,6 @@ const request_tools: Operation = {
         e.detail = `ceiling=${ceiling}`; // amendment 4 key=value denial grammar; ENG-11 assign-after
         throw e;
       }
-      const rl = requestToolsPersistLimiter.check(clientId);
-      if (!rl.allowed) {
-        throw new OperationError(
-          'rate_limited',
-          'surface persistence is rate-limited to ~5 changes per hour per client (D14.5).',
-          `Retry after ~${rl.retryAfter ?? 60}s.`,
-        );
-      }
       let rows: Record<string, unknown>[];
       try {
         rows = await ctx.engine.executeRaw(
@@ -7172,8 +7170,18 @@ const request_tools: Operation = {
         return e;
       };
       if (current.surface_set_by === 'operator') throw operatorLocked();
+      // A dry-run preview exercises every denial above but must not consume
+      // the persist budget — the limiter meters actual writes only.
       if (ctx.dryRun) {
         return { persisted: false, dry_run: true, surface: requested, reason: 'dry_run' };
+      }
+      const rl = requestToolsPersistLimiter.check(clientId);
+      if (!rl.allowed) {
+        throw new OperationError(
+          'rate_limited',
+          'surface persistence is rate-limited to ~5 changes per hour per client (D14.5).',
+          `Retry after ~${rl.retryAfter ?? 60}s.`,
+        );
       }
       // Atomic re-check: a concurrent operator pin between the SELECT and
       // this UPDATE must still win.
@@ -7236,8 +7244,9 @@ const request_tools: Operation = {
 
 export const operations: Operation[] = [
   // MEMORY_VERBS v1 (Cathedral 1) — remember/entity/synthesize/forget live in
-  // verbs.ts; the fifth verb is the extended `recall` op below. Spread first
-  // so `--surface verbs` agents see them at the top of the tool list.
+  // verbs.ts; the remaining three of the seven verbs (the extended `recall`,
+  // plus the v0.45.x boundary verbs `context_pack`/`delta`) are defined below.
+  // Spread first so `--surface verbs` agents see them at the top of the list.
   ...verbOperations,
   // Page CRUD
   get_page, put_page, delete_page, list_pages,

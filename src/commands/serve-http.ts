@@ -37,7 +37,7 @@ import {
 import type { SqlQuery } from '../core/oauth-provider.ts';
 import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
 import { normalizeSourceInput, normalizeFederatedReadInput } from '../core/source-id.ts';
-import { summarizeMcpParams, dispatchToolCall, isListLevelDenialEnvelope } from '../mcp/dispatch.ts';
+import { summarizeMcpParams, dispatchToolCall, requestLogStatusForResult } from '../mcp/dispatch.ts';
 import { resolveStrictParamsMode } from '../mcp/validate-params.ts';
 import { buildToolDefs } from '../mcp/tool-defs.ts';
 import {
@@ -1428,7 +1428,10 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     try {
       const now = Math.floor(Date.now() / 1000);
       const [expiring] = await sql`SELECT count(*)::int as count FROM oauth_tokens WHERE token_type = 'access' AND expires_at BETWEEN ${now} AND ${now + 86400}`;
-      const [errors] = await sql`SELECT count(*)::int as count FROM mcp_request_log WHERE status != 'success' AND created_at > now() - interval '24 hours'`;
+      // Excluded from the error numerator: success, success_with_warnings (a
+      // warn-mode success), and surface_change audit rows; denied_after_list
+      // stays counted — a denied call IS a failure signal.
+      const [errors] = await sql`SELECT count(*)::int as count FROM mcp_request_log WHERE status NOT IN ('success', 'success_with_warnings', 'surface_change') AND created_at > now() - interval '24 hours'`;
       const [total] = await sql`SELECT count(*)::int as count FROM mcp_request_log WHERE created_at > now() - interval '24 hours'`;
       const errorRate = (total as any).count > 0 ? ((errors as any).count / (total as any).count * 100).toFixed(1) : '0';
       res.json({
@@ -1970,6 +1973,9 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
    */
   async function resolveEffectiveSurface(authInfo: AuthInfo): Promise<{ ceiling: McpSurface; effective: McpSurface }> {
     const ceiling = clampSurface(serverSurfaceCeiling);
+    // min() can never go below the narrowest surface: a 'verbs' ceiling makes
+    // the row/default resolution a no-op, so skip the awaited config read.
+    if (ceiling === 'verbs') return { ceiling, effective: ceiling };
     try {
       const rowSurface = resolveClientRowSurface(authInfo.surface, authInfo.clientId);
       if (rowSurface !== null) return { ceiling, effective: minSurface(ceiling, rowSurface) };
@@ -2027,7 +2033,12 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       //      hiccup costs at most the 4 gated tools, never the whole list.
       // Call-time enforcement (hasScope / fence / assertPublishEnabled)
       // stays as the fail-closed backstop for all three layers.
-      const gateDisabled = await disabledOpsForPublishGates(engine, config);
+      // Both per-request config reads are independent — issue them
+      // concurrently (one RTT of latency on network Postgres, not two).
+      const [gateDisabled, strictParamsMode] = await Promise.all([
+        disabledOpsForPublishGates(engine, config),
+        resolveStrictParamsMode(engine, config),
+      ]);
       // FOV-4: `agent` deliberately implies only itself, which would strand
       // agent-only tokens with ZERO discovery — ops flagged `agentCallable`
       // (request_tools) are visible to (and callable by, below) agent scope
@@ -2044,7 +2055,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // PER REQUEST (same restart-free property as the publish gates above):
       // 'reject' closes each schema with additionalProperties:false and
       // declares the _meta/dry_run passthrough keys (D14.1).
-      const strictParams = (await resolveStrictParamsMode(engine, config)) === 'reject';
+      const strictParams = strictParamsMode === 'reject';
       const tools = buildToolDefs(visibleOps, { strictParams });
       // v0.28.10: log every JSON-RPC method, not just successful tools/call.
       // Pre-fix, /admin/api/requests showed nothing for clients that only
@@ -2266,12 +2277,11 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         // metric. Argument-level fence denials carry no marker and stay
         // 'error' (legitimate for a listed op).
         let errMsg = 'unknown_error';
-        let errStatus = 'error';
         try {
           const parsed = JSON.parse(toolResult.content[0]?.text ?? '{}');
           errMsg = parsed.error?.message ?? parsed.message ?? errMsg;
-          if (isListLevelDenialEnvelope(parsed)) errStatus = 'denied_after_list';
         } catch { /* ignore */ }
+        const errStatus = requestLogStatusForResult(toolResult);
         try {
           await executeRawJsonb(
             engine,
@@ -2298,11 +2308,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // carries a non-empty warnings array logs as 'success_with_warnings' so
       // the reject-flip decision is evidence-based (count per client via the
       // status column). Warn CONTENTS (the raw unknown keys) are never logged.
-      const meta = toolResult._meta as Record<string, unknown> | undefined;
-      const successStatus =
-        Array.isArray(meta?.warnings) && (meta?.warnings as unknown[]).length > 0
-          ? 'success_with_warnings'
-          : 'success';
+      const successStatus = requestLogStatusForResult(toolResult);
       try {
         await executeRawJsonb(
           engine,

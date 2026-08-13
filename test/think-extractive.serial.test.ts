@@ -32,6 +32,7 @@ import {
   runThink,
   persistSynthesis,
   composeExtractiveFallback,
+  classifyLlmCallFailure,
   type ThinkLLMClient,
 } from '../src/core/think/index.ts';
 import type { SearchResult } from '../src/core/types.ts';
@@ -147,6 +148,17 @@ describe('composeExtractiveFallback — ENG-19 never-fabricate pins', () => {
   });
 });
 
+describe('classifyLlmCallFailure — D6 closed vocabulary', () => {
+  it('maps error shapes onto the closed set (raw detail never rides the wire)', () => {
+    expect(classifyLlmCallFailure(new Error('Request timed out after 60000ms'))).toBe('timeout');
+    expect(classifyLlmCallFailure(new Error('429 rate limited'))).toBe('rate_limited');
+    expect(classifyLlmCallFailure(new Error('rate_limit_error: overloaded'))).toBe('rate_limited');
+    expect(classifyLlmCallFailure(new Error('fetch failed: ECONNREFUSED 10.0.0.1'))).toBe('network');
+    expect(classifyLlmCallFailure(new Error('internal server error'))).toBe('provider_error');
+    expect(classifyLlmCallFailure('not even an Error')).toBe('provider_error');
+  });
+});
+
 describe('runThink — llm_error reachability (ENG-10: create() throws)', () => {
   it('a thrown 429/network error becomes synthesis_status llm_error + LLM_CALL_FAILED warning', async () => {
     await seedZephyrinePage();
@@ -160,7 +172,10 @@ describe('runThink — llm_error reachability (ENG-10: create() throws)', () => 
     });
     expect(result.synthesis_status).toBe('llm_error');
     expect(result.synthesisOk).toBe(false);
-    expect(result.warnings.some(w => w.startsWith('LLM_CALL_FAILED: simulated 429'))).toBe(true);
+    // D6 closed vocabulary: the wire carries the coarse class, never the raw
+    // provider message.
+    expect(result.warnings).toContain('LLM_CALL_FAILED: rate_limited');
+    expect(result.warnings.some(w => w.includes('simulated'))).toBe(false);
     expect(result.usage).toBeNull();
     // Gather found the seeded page → extractive material rides the result.
     expect(result.pagesGathered).toBeGreaterThanOrEqual(1);
@@ -240,7 +255,9 @@ describe('synthesize verb — compose-failure precedence (via dispatch)', () => 
     );
     expect(isError).toBe(false);
     expect(body.synthesis_status).toBe('extractive_fallback');
-    expect(body.warnings.some((w: string) => w.startsWith('LLM_CALL_FAILED: simulated 503'))).toBe(true);
+    // '503 upstream' carries no timeout/rate-limit/network shape → provider_error.
+    expect(body.warnings).toContain('LLM_CALL_FAILED: provider_error');
+    expect(body.warnings.some((w: string) => w.includes('simulated'))).toBe(false);
     expect(body.sources).toContain(SEED_SLUG);
     expect(validateAgainstSchema(body, RESPONSE_SCHEMAS.synthesize)).toEqual([]);
   });

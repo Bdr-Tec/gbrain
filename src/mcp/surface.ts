@@ -91,6 +91,22 @@ export const STARTER_OPS: ReadonlySet<string> = new Set([
   'request_tools',
 ]);
 
+/**
+ * The never-remove STARTER_OPS core: the seven frozen verbs, identity
+ * (`whoami`), discovery (`request_tools`), and the agent lane
+ * (`submit_agent`/`get_agent_job` — FOV-4: agent-scope clients must not be
+ * stranded). Usage-driven re-derivation (`scripts/derive-starter-ops.ts`)
+ * and the advisor drift check (collect-mcp-client-fit) both consume THIS
+ * set so "always included" has exactly one definition.
+ */
+export const ALWAYS_INCLUDED_STARTER_OPS: ReadonlySet<string> = new Set([
+  ...VERB_NAMES,
+  'whoami',
+  'request_tools',
+  'submit_agent',
+  'get_agent_job',
+]);
+
 /** Strict flag parser — unknown values reject loudly (parseStdioIdleTimeout pattern). */
 export function parseSurfaceFlag(args: string[]): McpSurface | null {
   const idx = args.indexOf('--surface');

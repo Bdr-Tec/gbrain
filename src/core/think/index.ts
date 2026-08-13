@@ -36,6 +36,23 @@ export interface ThinkLLMClient {
   create(params: Anthropic.MessageCreateParamsNonStreaming, opts?: { signal?: AbortSignal }): Promise<Anthropic.Message>;
 }
 
+/** Closed set of LLM-call failure classes carried on the wire (D6 discipline). */
+export type LlmCallFailureClass = 'timeout' | 'rate_limited' | 'network' | 'provider_error';
+
+/**
+ * Coarse, closed-vocabulary failure class for a thrown LLM call. The wire
+ * (verb `warnings`) carries ONLY this class — raw provider/transport messages
+ * (which can name hosts, keys, request ids) stay off remote responses and go
+ * to stderr instead. Exported so tests pin the vocabulary.
+ */
+export function classifyLlmCallFailure(e: unknown): LlmCallFailureClass {
+  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  if (/\b429\b|rate.?limit|overloaded/.test(msg)) return 'rate_limited';
+  if (/timeout|timed.?out|etimedout/.test(msg)) return 'timeout';
+  if (/econnrefused|econnreset|enotfound|eai_again|network|socket|fetch failed|dns/.test(msg)) return 'network';
+  return 'provider_error';
+}
+
 export interface RunThinkOpts {
   question: string;
   /** Anchor entity slug. Activates the graph stream + entity-focused prompt. */
@@ -630,7 +647,10 @@ export async function runThink(
       if ((opts.modelExplicit && e instanceof AIConfigError) || name === 'BudgetExhausted' || name === 'AbortError') {
         throw e;
       }
-      warnings.push(`LLM_CALL_FAILED: ${e instanceof Error ? e.message : String(e)}`);
+      // D6 closed vocabulary: the wire carries the coarse class only; the raw
+      // provider/transport message goes to stderr for the operator.
+      warnings.push(`LLM_CALL_FAILED: ${classifyLlmCallFailure(e)}`);
+      process.stderr.write(`[think] LLM call failed (${classifyLlmCallFailure(e)}): ${e instanceof Error ? e.message : String(e)}\n`);
       synthesisStatus = 'llm_error';
       synthesisOk = false;
       // response keeps its empty llm_error initialization.

@@ -29,7 +29,7 @@ import {
   MIN_CALLS_FOR_FIT,
 } from '../src/core/advisor/collect-mcp-client-fit.ts';
 import { COLLECTORS } from '../src/core/advisor/run.ts';
-import { STARTER_OPS } from '../src/mcp/surface.ts';
+import { STARTER_OPS, ALWAYS_INCLUDED_STARTER_OPS } from '../src/mcp/surface.ts';
 import { operations } from '../src/core/operations.ts';
 import type { AdvisorContext } from '../src/core/advisor/types.ts';
 
@@ -175,9 +175,26 @@ describe('set-level drift', () => {
     // busy-client made nonStarterOp a top-used op that starter lacks.
     expect(drift!.detail).toContain(nonStarterOp);
     // The fixture uses only two starter ops, so some starter member
-    // (excluding the always-included verbs/whoami/request_tools) is unused.
+    // (excluding ALWAYS_INCLUDED_STARTER_OPS) is unused.
     expect(drift!.detail).toContain('unused for 90d');
     expect(drift!.detail).toContain('derive-starter-ops');
+  });
+
+  test('agent-lane ops are always-included — never flagged as unused starter members', async () => {
+    const findings = await collectMcpClientFit.collect(ctx());
+    const drift = findings.find((f) => f.id === 'mcp_starter_ops_drift');
+    expect(drift).toBeDefined();
+    // No fixture client ever calls the agent lane, yet it must not read as
+    // drift: it is in ALWAYS_INCLUDED_STARTER_OPS by construction (pre-fix,
+    // the collector's local always-set omitted it → a perpetual finding).
+    expect(drift!.detail).not.toContain('submit_agent');
+    expect(drift!.detail).not.toContain('get_agent_job');
+  });
+
+  test('ALWAYS_INCLUDED_STARTER_OPS ⊆ STARTER_OPS (an always-member outside starter would be unfixable drift)', () => {
+    for (const op of ALWAYS_INCLUDED_STARTER_OPS) {
+      expect(STARTER_OPS.has(op)).toBe(true);
+    }
   });
 });
 
@@ -202,9 +219,17 @@ describe('nag snooze (escalate-then-suppress)', () => {
     for (let run = 1; run <= 3; run++) await collectMcpClientFit.collect(ctx());
     let findings = await collectMcpClientFit.collect(ctx());
     expect(findings.map((f) => f.id)).not.toContain('mcp_starter_fit:fit-client');
-    // New starter-surface op joins fit-client's usage → new fingerprint.
-    await seedCalls('fit-client', 'request_tools', 1);
-    findings = await collectMcpClientFit.collect(ctx());
-    expect(findings.map((f) => f.id)).toContain('mcp_starter_fit:fit-client');
+    try {
+      // New starter-surface op joins fit-client's usage → new fingerprint.
+      await seedCalls('fit-client', 'request_tools', 1);
+      findings = await collectMcpClientFit.collect(ctx());
+      expect(findings.map((f) => f.id)).toContain('mcp_starter_fit:fit-client');
+    } finally {
+      // The shared engine outlives this test — remove the extra usage row so
+      // fit-client's fingerprint is unchanged for any later assertion.
+      await engine.executeRaw(
+        `DELETE FROM mcp_request_log WHERE token_name = 'fit-client' AND operation = 'request_tools'`,
+      );
+    }
   });
 });

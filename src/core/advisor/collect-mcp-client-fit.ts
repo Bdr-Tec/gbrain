@@ -12,8 +12,9 @@
  *      `gbrain auth rescope-client <id> --surface starter`.
  *  (b) Set-level drift (the standing STARTER_OPS curator): top-10 most-used
  *      ops (ranked by CLIENT COUNT, not raw calls — D12) missing from
- *      STARTER_OPS, and starter members (excluding the always-included
- *      verbs + whoami + request_tools) unused for 90d.
+ *      STARTER_OPS, and starter members (excluding
+ *      ALWAYS_INCLUDED_STARTER_OPS — verbs + whoami + request_tools + the
+ *      agent lane) unused for 90d.
  *
  * Privacy (amendment 29): when the advisor runs REMOTE (ctx.remote), client
  * identifiers are REDACTED to aggregate counts ("2 clients fit the starter
@@ -41,8 +42,12 @@
 
 import { gbrainPath } from '../config.ts';
 import { readClientOpUsage, type ClientOpUsage } from '../mcp-usage.ts';
-import { STARTER_OPS, isMcpSurface, resolveDefaultClientSurface } from '../../mcp/surface.ts';
-import { VERB_NAMES } from '../verbs.ts';
+import {
+  STARTER_OPS,
+  ALWAYS_INCLUDED_STARTER_OPS,
+  isMcpSurface,
+  resolveDefaultClientSurface,
+} from '../../mcp/surface.ts';
 import {
   loadNagState,
   saveNagState,
@@ -73,11 +78,6 @@ let _nagPathOverride: string | null = null;
 /** Test seam: point the nag state at a tmp file (null restores the default). */
 export function __setUsageNagStatePathForTests(path: string | null): void {
   _nagPathOverride = path;
-}
-
-/** Starter members that are always included by construction — never "drift". */
-function alwaysIncludedStarterOps(): Set<string> {
-  return new Set<string>([...VERB_NAMES, 'whoami', 'request_tools']);
 }
 
 /**
@@ -209,9 +209,11 @@ export const collectMcpClientFit: AdvisorCollector = {
         if (u.likely_automation) continue;
         for (const op of u.distinct_ops) seen90.add(op);
       }
-      const always = alwaysIncludedStarterOps();
+      // Always-included-by-construction members (shared with surface.ts +
+      // derive-starter-ops) never count as drift — including the agent lane,
+      // whose usage would otherwise flag it "unused" forever.
       const unusedStarter = [...STARTER_OPS]
-        .filter((op) => !always.has(op) && !seen90.has(op))
+        .filter((op) => !ALWAYS_INCLUDED_STARTER_OPS.has(op) && !seen90.has(op))
         .sort();
 
       // Only meaningful once there is real traffic to curate against.

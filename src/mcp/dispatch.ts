@@ -283,6 +283,33 @@ export function isListLevelDenialEnvelope(parsed: unknown): boolean {
   return p.detail.startsWith('config_key=') || p.detail === 'fence=op';
 }
 
+/** The mcp_request_log status classes a dispatched tool result maps onto. */
+export type RequestLogStatus = 'success' | 'success_with_warnings' | 'denied_after_list' | 'error';
+
+/**
+ * The ONE `mcp_request_log.status` decision for a dispatched tool result
+ * (serve-http's tools/call persistence + SSE broadcast both consume this):
+ *   - errors whose envelope is a list-level denial (isListLevelDenialEnvelope
+ *     above) → 'denied_after_list' (amendment 33 / D10 trend-to-zero metric);
+ *     other errors (including unparseable content) → 'error';
+ *   - successes whose `_meta.warnings` is a non-empty array →
+ *     'success_with_warnings' (WP3 amendment 13 warn-mode observability;
+ *     warn CONTENTS are never logged); otherwise → 'success'.
+ * The scope-deny and unknown-op paths in serve-http log their statuses
+ * directly — they never produce a ToolResult through the dispatcher.
+ */
+export function requestLogStatusForResult(result: ToolResult): RequestLogStatus {
+  if (result.isError) {
+    try {
+      const parsed: unknown = JSON.parse(result.content[0]?.text ?? '{}');
+      if (isListLevelDenialEnvelope(parsed)) return 'denied_after_list';
+    } catch { /* unparseable error content stays plain 'error' */ }
+    return 'error';
+  }
+  const warnings = result._meta?.warnings;
+  return Array.isArray(warnings) && warnings.length > 0 ? 'success_with_warnings' : 'success';
+}
+
 /**
  * WP3: the ONE unknown_tool envelope builder, shared by all three deny paths
  * (surface-hidden via allowedOps, nonexistent op, localOnly over a network

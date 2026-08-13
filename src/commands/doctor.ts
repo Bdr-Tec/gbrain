@@ -2099,6 +2099,11 @@ export async function computeQueueHealthCheck(
     // the oldest waiting job (null when the queue is empty); worker_alive =
     // every queue holding waiting work has a live registered worker
     // (vacuously true with zero waiting jobs). Messages stay unchanged.
+    // Perf note (twin of buildQueueDepths in status.ts): WHERE constrains
+    // only `status` — the second column of the (queue, status, updated_at)
+    // wedge index — so this GROUP BY full-scans minion_jobs today. Acceptable
+    // at doctor frequency over pruned waiting sets; a partial
+    // (queue, created_at) WHERE status='waiting' index is the fix if hot.
     const waitingByQueue: Array<{
       queue: string;
       depth: number | string;

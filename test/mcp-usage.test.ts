@@ -48,6 +48,9 @@ beforeAll(async () => {
   // client-b: legacy bearer transport rows.
   await seed('client-b', 'tools/call:query', 2);
   await seed('client-b', 'tools/call:', 1); // empty op name → dropped
+  // Prefixed method/audit rows must drop too (the stripped name re-runs hygiene).
+  await seed('client-b', 'tools/call:tools/list', 2);
+  await seed('client-b', 'tools/call:surface_change', 1);
 
   // client-c: automation-shaped (19 boundary calls of 20 total = 0.95).
   await seed('client-c', 'context_pack', 15);
@@ -83,6 +86,13 @@ describe('normalizeLoggedOperation (hygiene rules, single source)', () => {
     expect(normalizeLoggedOperation('tools/call:query')).toBe('query');
     expect(normalizeLoggedOperation('tools/call:')).toBeNull();
   });
+  test('stripped names re-run the hygiene check — prefixed method/audit rows drop', () => {
+    expect(normalizeLoggedOperation('tools/call:tools/list')).toBeNull();
+    expect(normalizeLoggedOperation('tools/call:surface_change')).toBeNull();
+    expect(normalizeLoggedOperation('tools/call:initialize')).toBeNull();
+    expect(normalizeLoggedOperation('tools/call:notifications/initialized')).toBeNull();
+    expect(normalizeLoggedOperation('tools/call:ping')).toBeNull();
+  });
 });
 
 describe('readClientOpUsage', () => {
@@ -101,7 +111,9 @@ describe('readClientOpUsage', () => {
     const usage = await readClientOpUsage(engine);
     const b = usage.find((u) => u.token_name === 'client-b');
     expect(b).toBeDefined();
-    expect(b!.ops).toEqual({ query: 2 }); // 'tools/call:' with empty name dropped
+    // 'tools/call:' (empty name) and the prefixed method/audit rows
+    // ('tools/call:tools/list', 'tools/call:surface_change') all dropped.
+    expect(b!.ops).toEqual({ query: 2 });
     expect(b!.total_calls).toBe(2);
   });
 

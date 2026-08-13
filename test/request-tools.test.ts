@@ -104,6 +104,19 @@ describe('request_tools catalog (no args)', () => {
     expect(names).toContain('list_skills');
   });
 
+  test('trusted local CLI (remote === false, no transport): localOnly + gated ops visible', async () => {
+    const res = await dispatchToolCall(engine, 'request_tools', {}, {
+      remote: false, sourceId: 'default',
+    });
+    const names = flatNames(parsed(res).catalog);
+    // The local operator CAN call all of these (assertPublishEnabled exempts
+    // remote === false), so hiding them would make the catalog dishonest.
+    expect(names).toContain('file_list');   // localOnly
+    expect(names).toContain('sync_brain');  // localOnly
+    expect(names).toContain('list_skills'); // publish-gated (gates pinned off above)
+    expect(names).toContain('advisor');     // publish-gated
+  });
+
   test('read-scope token: write/admin ops hidden, reads visible', async () => {
     const res = await dispatchToolCall(engine, 'request_tools', {}, {
       ...HTTP, auth: authFor('ro-client', ['read']),
@@ -292,16 +305,36 @@ describe('request_tools {surface} persist branch', () => {
     expect(rows[0].surface).toBe(null);
   });
 
-  // LAST: mutates the schema (drops the v127 columns).
+  test('dry-run previews never consume the persist budget (D14.5)', async () => {
+    await seedClient('cl-dry-budget');
+    const opts = { ...HTTP, surfaceCeiling: 'full' as const, auth: authFor('cl-dry-budget', ['read']) };
+    for (let i = 0; i < 5; i++) {
+      const res = await dispatchToolCall(engine, 'request_tools', { surface: 'starter', dry_run: true }, opts);
+      expect(parsed(res).dry_run).toBe(true);
+    }
+    // The limiter meters actual writes only: a real persist still succeeds
+    // after 5 previews (pre-fix, the previews exhausted the budget).
+    const real = await dispatchToolCall(engine, 'request_tools', { surface: 'starter' }, opts);
+    expect(real.isError ?? false).toBe(false);
+    expect(parsed(real).persisted).toBe(true);
+  });
+
+  // LAST: mutates the schema (drops the v127 columns); the finally block
+  // restores them so the shared engine stays whole for any later suite.
   test('pre-migration brain: persist reports {persisted:false, reason:"migration pending"} (D5)', async () => {
-    await engine.executeRaw(`ALTER TABLE oauth_clients DROP COLUMN IF EXISTS surface`, []);
-    await engine.executeRaw(`ALTER TABLE oauth_clients DROP COLUMN IF EXISTS surface_set_by`, []);
-    const res = await dispatchToolCall(engine, 'request_tools', { surface: 'starter' }, {
-      ...HTTP, surfaceCeiling: 'full', auth: authFor('cl-persist', ['read']),
-    });
-    expect(res.isError ?? false).toBe(false);
-    const body = parsed(res);
-    expect(body.persisted).toBe(false);
-    expect(body.reason).toBe('migration pending');
+    try {
+      await engine.executeRaw(`ALTER TABLE oauth_clients DROP COLUMN IF EXISTS surface`, []);
+      await engine.executeRaw(`ALTER TABLE oauth_clients DROP COLUMN IF EXISTS surface_set_by`, []);
+      const res = await dispatchToolCall(engine, 'request_tools', { surface: 'starter' }, {
+        ...HTTP, surfaceCeiling: 'full', auth: authFor('cl-persist', ['read']),
+      });
+      expect(res.isError ?? false).toBe(false);
+      const body = parsed(res);
+      expect(body.persisted).toBe(false);
+      expect(body.reason).toBe('migration pending');
+    } finally {
+      await engine.executeRaw(`ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS surface TEXT`, []);
+      await engine.executeRaw(`ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS surface_set_by TEXT`, []);
+    }
   });
 });

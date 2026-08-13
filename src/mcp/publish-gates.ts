@@ -44,8 +44,9 @@ export async function readPublishGate(
 /**
  * The set of op NAMES whose publish gate currently resolves off. tools/list
  * subtracts this set. One getConfig read per DISTINCT gate key per call
- * (two today), deliberately not memoized — the per-request read is what
- * makes `gbrain config set mcp.publish_skills true` take effect without a
+ * (two today, issued concurrently — one RTT of latency, not one per key),
+ * deliberately not memoized — the per-request read is what makes
+ * `gbrain config set mcp.publish_skills true` take effect without a
  * server restart.
  */
 export async function disabledOpsForPublishGates(
@@ -56,9 +57,9 @@ export async function disabledOpsForPublishGates(
   if (gated.length === 0) return new Set();
   const keys = [...new Set(gated.map(op => op.publishGateKey as PublishGateKey))];
   const resolved = new Map<PublishGateKey, boolean>();
-  for (const key of keys) {
+  await Promise.all(keys.map(async (key) => {
     resolved.set(key, await readPublishGate(engine, config, key));
-  }
+  }));
   const disabled = new Set<string>();
   for (const op of gated) {
     if (!resolved.get(op.publishGateKey as PublishGateKey)) disabled.add(op.name);

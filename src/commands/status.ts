@@ -325,10 +325,12 @@ export async function buildQueueCounts(engine: BrainEngine): Promise<QueueCounts
 /**
  * Per-queue waiting depth + oldest-waiting age. Generalizes the doctor's
  * queue_health oldest-age SQL past its embed-backfill-only filter: EVERY
- * queue with waiting work reports here, name-agnostic. Perf note: the wave's
- * migration (another lane) adds the (queue, status, updated_at) wedge index
- * whose (queue, status) prefix serves this GROUP BY; minion_jobs stays small
- * enough that the pre-index scan is fine for a snapshot.
+ * queue with waiting work reports here, name-agnostic. Perf note: WHERE
+ * constrains only `status` — the SECOND column of the (queue, status,
+ * updated_at) wedge index — so no prefix access exists and this GROUP BY
+ * full-scans minion_jobs today. Acceptable at snapshot frequency over pruned
+ * waiting sets; a partial (queue, created_at) WHERE status='waiting' index
+ * is the fix if it becomes hot.
  */
 export async function buildQueueDepths(engine: BrainEngine): Promise<QueueDepthRow[]> {
   const rows = await engine.executeRaw<{

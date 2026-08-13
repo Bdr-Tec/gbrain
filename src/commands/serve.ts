@@ -173,8 +173,9 @@ export async function runServe(
   const isHttp = args.includes('--http');
 
   // MEMORY_VERBS v1: tool-surface mode. Flag > config `mcp_surface` > 'full'.
-  // 'verbs' exposes exactly the five protocol verbs (the quickstart surface);
-  // 'full' (default) keeps every operation — existing installs see no change.
+  // 'verbs' exposes exactly the seven protocol verbs (the quickstart surface);
+  // 'starter' the ~20-op daily-driver set; 'full' (default) keeps every
+  // operation — existing installs see no change.
   const { parseSurfaceFlag, resolveSurface } = await import('../mcp/surface.ts');
   const { loadConfig } = await import('../core/config.ts');
   const surface = resolveSurface(parseSurfaceFlag(args), loadConfig());

@@ -31,12 +31,11 @@ import { loadConfig, toEngineConfig } from '../src/core/config.ts';
 import { createEngine } from '../src/core/engine-factory.ts';
 import { readClientOpUsage, MCP_USAGE_DEFAULT_WINDOW_DAYS } from '../src/core/mcp-usage.ts';
 import { operations } from '../src/core/operations.ts';
-import { VERB_NAMES } from '../src/core/verbs.ts';
+import { ALWAYS_INCLUDED_STARTER_OPS } from '../src/mcp/surface.ts';
 import { BRAIN_TOOL_ALLOWLIST } from '../src/core/minions/tools/brain-allowlist.ts';
 
-/** Ops surface.ts always includes regardless of derivation. */
-const AGENT_LANE_OPS = ['submit_agent', 'get_agent_job'] as const;
-const ALWAYS_INCLUDED = new Set<string>([...VERB_NAMES, 'whoami', 'request_tools', ...AGENT_LANE_OPS]);
+/** Ops surface.ts always includes regardless of derivation (shared constant). */
+const ALWAYS_INCLUDED = ALWAYS_INCLUDED_STARTER_OPS;
 
 /** Target total STARTER_OPS size (the "~20-op daily-driver set"). */
 const DEFAULT_TARGET_SIZE = 20;
