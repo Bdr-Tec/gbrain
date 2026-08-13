@@ -121,6 +121,11 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // them before SCHEMA_SQL replay creates the FK + index.
   { kind: 'column', table: 'oauth_clients', column: 'source_id' },
   { kind: 'column', table: 'oauth_clients', column: 'federated_read' },
+  // WP4 (v127) — per-client MCP tool surface + operator-lock marker. Not
+  // indexed, but migration-added AND present in the blob's CREATE TABLE (the
+  // v121 mask class), so the bootstrap adds them on pre-v127 brains.
+  { kind: 'column', table: 'oauth_clients', column: 'surface' },
+  { kind: 'column', table: 'oauth_clients', column: 'surface_set_by' },
   // v0.26.5 (v34) — promotes archive lifecycle from JSONB config to real
   // columns on sources. CREATE TABLE IF NOT EXISTS is a no-op on existing
   // sources tables, so the visibility filters in search/list_pages that
@@ -250,6 +255,10 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
       DROP INDEX IF EXISTS idx_oauth_clients_federated_read;
       ALTER TABLE oauth_clients DROP COLUMN IF EXISTS source_id;
       ALTER TABLE oauth_clients DROP COLUMN IF EXISTS federated_read;
+      -- WP4 (v127) strip: surface columns are migration-added; bootstrap
+      -- must re-add them.
+      ALTER TABLE oauth_clients DROP COLUMN IF EXISTS surface;
+      ALTER TABLE oauth_clients DROP COLUMN IF EXISTS surface_set_by;
 
       -- v0.40.3.0 v90 + v91 column strips so applyForwardReferenceBootstrap
       -- has work to do. Only strip pages columns + the trigger; sources
@@ -368,6 +377,12 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       DROP INDEX IF EXISTS uniq_minion_jobs_idempotency;
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS timeout_at;
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS idempotency_key;
+
+      -- WP4 (v127) strip: surface columns + the wedge-signal index; replay
+      -- must succeed from the pre-v127 shape.
+      DROP INDEX IF EXISTS idx_minion_jobs_queue_status_updated;
+      ALTER TABLE oauth_clients DROP COLUMN IF EXISTS surface;
+      ALTER TABLE oauth_clients DROP COLUMN IF EXISTS surface_set_by;
     `);
 
     // Bootstrap, then schema replay. Either step crashing fails the test.

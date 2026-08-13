@@ -33,7 +33,7 @@ import type { AuthInfo } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
 import { dispatchToolCall } from './dispatch.ts';
 import { parseStrictParamsMode } from './validate-params.ts';
-import { filterOpsForSurface } from './surface.ts';
+import { filterOpsForSurface, clampSurface, type McpSurface } from './surface.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildDefaultLimiters, type RateLimiter } from './rate-limit.ts';
 import { sqlQueryForEngine } from '../core/sql-query.ts';
@@ -67,9 +67,13 @@ interface HttpTransportOptions {
   /**
    * MEMORY_VERBS v1 [c1]: tool-surface mode for this transport (the SECOND
    * HTTP path — the OAuth path in serve-http.ts carries its own). 'verbs' =
-   * exactly the five protocol verbs; 'full' (default) = everything.
+   * exactly the seven protocol verbs; 'starter' (WP4) = the STARTER_OPS
+   * daily-driver set; 'full' (default) = everything. Legacy bearer tokens
+   * have no oauth_clients row, so there is no per-client surface here — the
+   * transport surface (clamped by GBRAIN_MCP_FORCE_SURFACE, narrow-only)
+   * applies to every caller.
    */
-  surface?: 'verbs' | 'full';
+  surface?: McpSurface;
 }
 
 interface AuthResult {
@@ -166,8 +170,10 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
   const bodyCap = envInt('GBRAIN_HTTP_MAX_BODY_BYTES', DEFAULT_BODY_CAP);
   const corsAllowlist = parseCorsAllowlist();
   // MEMORY_VERBS v1 [c1]: surface filter applies to THIS transport too —
-  // the advertised list AND dispatch (allowedOps), fail-closed.
-  const surface = opts.surface ?? 'full';
+  // the advertised list AND dispatch (allowedOps), fail-closed. WP4: the
+  // GBRAIN_MCP_FORCE_SURFACE kill switch min()s in (narrow-only, FOV-6a);
+  // resolved once at startup — this transport builds its tool list once.
+  const surface = clampSurface(opts.surface ?? 'full');
   // WP1/D7: this is a network transport — localOnly ops (operator-filesystem
   // reach) never appear in its catalog, matching serve-http's filter. The
   // dispatch-layer backstop denies them even if a caller guesses the name.
@@ -441,6 +447,9 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
           // MEMORY_VERBS v1 [c1/c2]: fail-closed surface enforcement here too.
           ...(surfaceAllowedOps ? { allowedOps: surfaceAllowedOps } : {}),
           surface,
+          // WP4 (D2): this transport has no per-client rows, so its surface
+          // IS the ceiling request_tools bounds catalog + persist by.
+          surfaceCeiling: surface,
         });
         const status = result.isError ? 'error' : 'success';
         logRequest(auth.tokenName!, `tools/call:${toolName}`, status, Date.now() - startedMs);

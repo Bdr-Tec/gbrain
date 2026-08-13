@@ -121,9 +121,19 @@ export interface DispatchOpts {
   /**
    * Which surface this transport is serving — recorded on the verb usage
    * sidecar so adoption stats can split quickstart installs from full
-   * surfaces. Defaults to 'full'.
+   * surfaces. Defaults to 'full'. On the OAuth HTTP transport this is the
+   * per-request EFFECTIVE surface (D2 ceiling resolution, recomputed per
+   * request — amendment 20).
    */
-  surface?: 'verbs' | 'full';
+  surface?: 'verbs' | 'starter' | 'full';
+  /**
+   * WP4 (D2): the SERVER surface ceiling for this transport (force-clamped),
+   * threaded into `OperationContext.surfaceCeiling` for the request_tools
+   * meta-op — its catalog never names ops above the ceiling and its persist
+   * branch rejects widening past it. Unset (local CLI / direct dispatch) is
+   * treated as 'full'.
+   */
+  surfaceCeiling?: 'verbs' | 'starter' | 'full';
 }
 
 /**
@@ -325,6 +335,7 @@ export function buildOperationContext(
     sourceId: opts.sourceId ?? 'default',
     ...(sessionId ? { sessionId } : {}),
     ...(opts.localFederatedSourceIds ? { localFederatedSourceIds: opts.localFederatedSourceIds } : {}),
+    ...(opts.surfaceCeiling ? { surfaceCeiling: opts.surfaceCeiling } : {}),
     auth: opts.auth,
   };
 }

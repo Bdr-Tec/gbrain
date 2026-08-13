@@ -3168,8 +3168,9 @@ ADMIN
   storage status [--repo <path>]     Storage tier status and health
         [--json]                     (git-tracked vs supabase-only)
   serve                              MCP server (stdio)
-    --surface verbs|full             Tool surface: the 5 memory verbs only, or
-                                     every op (default full; verbs = quickstart)
+    --surface verbs|starter|full     Tool surface: the 7 memory verbs, the ~20-op
+                                     starter set, or every op (default full).
+                                     On --http this is the per-client CEILING.
   serve --http [--port N]            HTTP MCP server with OAuth 2.1
     --token-ttl N                    Access token TTL in seconds (default: 3600)
     --enable-dcr                     Enable Dynamic Client Registration (DCR clients default to authorization_code)

@@ -11,8 +11,8 @@
  *
  * The crash path is pinned at the writerLintForPutPage seam (a stub engine
  * whose getPage rejects): put_page spreads whatever the seam returns, and
- * crashing the real handler mid-flow would need mock.module (serial-file
- * quarantine) for no extra coverage.
+ * crashing the real handler mid-flow would need a module-level mock
+ * (serial-file quarantine) for no extra coverage.
  *
  * PGLite hermetic; resetGateway() keeps embedding auto-detect keyless.
  */

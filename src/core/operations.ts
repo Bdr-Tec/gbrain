@@ -54,6 +54,15 @@ import {
   LIST_SKILLS_DESCRIPTION,
   GET_SKILL_DESCRIPTION,
 } from './operations-descriptions.ts';
+// WP4 (request_tools): all three are runtime leaves relative to this module
+// (no import cycles back into operations.ts). The cyclic dependencies —
+// src/mcp/surface.ts (→ brain-allowlist → operations) and
+// src/mcp/publish-gates.ts (→ operations) — are loaded via dynamic import
+// inside the handler instead (the verbs.ts house pattern).
+import { isUndefinedColumnError } from './utils.ts';
+import { hasScope } from './scope.ts';
+import { RateLimiter } from '../mcp/rate-limit.ts';
+import { writeSurfaceChangeAudit } from './surface-audit.ts';
 
 // --- Types ---
 
@@ -409,6 +418,19 @@ export const CLIENT_FENCED_WRITE_OPS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * WP4 (D9) — discovery meta-ops exempt from the bound-client fence's
+ * LISTING/dispatch denial. `request_tools` is `mutating: true` (its persist
+ * branch writes oauth_clients.surface), which would otherwise hide discovery
+ * from every slug-bound client. The exemption is safe because the persist
+ * branch SELF-ENFORCES its own guards — server ceiling (D2), operator lock
+ * (amendment 19), OAuth scopes, and a per-client rate limit (D14.5) — and it
+ * never touches a slug. Lives here (not inline in the predicate) so the
+ * tools/list filter and the dispatch fence consume the identical carve-out
+ * (ENG-3 drift-proofing).
+ */
+const BOUND_CLIENT_META_OPS: ReadonlySet<string> = new Set(['request_tools']);
+
+/**
  * Single source of truth for "may a slug-bound client use this op" (ENG-3).
  * Consumed by BOTH the dispatch-time fence below AND the tools/list filter
  * in serve-http, so the advertised catalog and the deny behavior cannot
@@ -420,7 +442,11 @@ export const CLIENT_FENCED_WRITE_OPS: ReadonlySet<string> = new Set([
  * in it, far outside any prefix. Anything that isn't a plain read must be
  * explicitly allow-listed. A degraded projection (binding unreadable) denies
  * every non-read op — the unfenceable ops must not stay reachable precisely
- * when the fence is unreadable.
+ * when the fence is unreadable. Exception: BOUND_CLIENT_META_OPS (D9) stay
+ * allowed even degraded — they are slug-free discovery ops whose only write
+ * self-enforces ceiling+lock+scopes+rate-limit (and a degraded projection
+ * also dropped the surface columns, so that write fails 'migration pending'
+ * rather than running unguarded).
  */
 export function opAllowedForBoundClient(
   auth: Pick<AuthInfo, 'boundSlugPrefixes' | 'fenceProjectionDegraded'> | undefined,
@@ -430,6 +456,7 @@ export function opAllowedForBoundClient(
   if (!degraded && !auth?.boundSlugPrefixes) return true;
   const isRead = op.scope === 'read' && op.mutating !== true;
   if (isRead) return true;
+  if (BOUND_CLIENT_META_OPS.has(op.name)) return true;
   if (degraded) return false;
   return CLIENT_FENCED_WRITE_OPS.has(op.name);
 }
@@ -581,6 +608,24 @@ export interface AuthInfo {
    * unaffected — this axis alone fails closed.
    */
   fenceProjectionDegraded?: boolean;
+  /**
+   * WP4 (D2): per-client tool surface from `oauth_clients.surface`, threaded
+   * at token-verification time (same JOIN as sourceId/allowedSources). The
+   * serve-http transport resolves the request's effective surface as
+   * `min(server ceiling, this ?? config default)` — the row can narrow, never
+   * widen. Value space is OPEN (amendment 18: future client tiers write tier
+   * names into the same column); unrecognized values are ignored at
+   * resolution with a warn-log once per client. Undefined = column NULL,
+   * projection degraded, or the brain predates migration v127.
+   */
+  surface?: string;
+  /**
+   * WP4 (amendment 19) — who set `surface`: 'operator' (rescope CLI/admin
+   * endpoint; request_tools persist may NOT override it), 'self'
+   * (request_tools persist), or 'dcr_default'. Undefined when surface is
+   * unset or the projection degraded.
+   */
+  surfaceSetBy?: string;
 }
 
 export interface OperationContext {
@@ -629,6 +674,15 @@ export interface OperationContext {
    * which render the same meta directly; emissions are always optional-chained.
    */
   emitResponseMeta?: (key: string, value: unknown) => void;
+  /**
+   * WP4 (D2): the SERVER surface ceiling for this transport (force-clamped),
+   * threaded by the MCP dispatch layer. Consumed by `request_tools`: the
+   * catalog never names ops above the ceiling, and the persist branch
+   * rejects widening past it with a machine-readable denial
+   * (`detail: "ceiling=<surface>"`). Unset (local CLI / direct dispatch) is
+   * treated as 'full'.
+   */
+  surfaceCeiling?: 'verbs' | 'starter' | 'full';
   /**
    * Subagent runtime context (v0.16+). Set by the subagent tool dispatcher when
    * dispatching an op as a tool call from an LLM loop. Used to enforce per-op
@@ -1042,6 +1096,25 @@ export interface Operation {
    * EXACTLY the ops with `verb: true`; `full` (default) exposes everything.
    */
   verb?: boolean;
+  /**
+   * WP4 (amendment 22) — coarse grouping label consumed by the
+   * `request_tools` catalog and the generated tool-catalog doc. Area NAMES
+   * ARE NON-CONTRACTUAL: they exist so an agent can scan ~20 groups instead
+   * of ~100 flat names; renaming/regrouping is never a breaking change.
+   * Required (by the CI walker in test/mcp-tool-defs.test.ts) on every
+   * non-localOnly op; populated centrally via OP_AREAS at the bottom of
+   * this file.
+   */
+  area?: string;
+  /**
+   * WP4 (FOV-4) — marks a discovery meta-op callable by the `agent` scope
+   * IN ADDITION to its declared scope. `agent` deliberately implies only
+   * itself (v0.38 D13), which would strand agent-only tokens with zero
+   * discovery; the MCP scope checks (serve-http tools/list + tools/call)
+   * add a one-line carve-out for ops with this flag. Currently only
+   * `request_tools`.
+   */
+  agentCallable?: true;
   /**
    * MCP ToolAnnotations passthrough (SDK 1.29+). Emitted by buildToolDefs
    * ONLY when set — existing tools keep byte-identical definitions.
@@ -6919,6 +6992,233 @@ const extraction_review: Operation = {
   cliHints: { name: 'extraction-review', positional: ['action'] },
 };
 
+// --- WP4 (T9): request_tools — discovery + pull-based per-client unlock ---
+
+/**
+ * D14.5: per-client rate limit on the persist branch (~5 surface persists /
+ * hour / client). Module-level token bucket (bounded LRU — attacker-chosen
+ * client ids can't grow memory); `let` + reset seam so tests don't leak
+ * bucket state across files.
+ */
+let requestToolsPersistLimiter = new RateLimiter({ limit: 5, windowMs: 3_600_000, lruCap: 5_000 });
+
+/** Test seam: fresh persist-rate-limit buckets. */
+export function __resetRequestToolsPersistLimiterForTests(): void {
+  requestToolsPersistLimiter = new RateLimiter({ limit: 5, windowMs: 3_600_000, lruCap: 5_000 });
+}
+
+/**
+ * One-line catalog summary: the first sentence of an op description,
+ * capped. Non-contractual rendering — full schemas come from the
+ * `{tools: [...]}` branch.
+ */
+function firstSentenceOf(description: string): string {
+  const t = description.trim();
+  const m = t.match(/^.*?[.!?](?=\s|$)/);
+  const s = (m ? m[0] : t).trim();
+  return s.length > 160 ? `${s.slice(0, 157)}...` : s;
+}
+
+/**
+ * The set of ops VISIBLE to this caller (never leak hidden names — C8/
+ * amendment 11 class): bounded by the server ceiling (ops above it can
+ * never be served, so naming them would recreate listed-but-denied at the
+ * persist level), minus localOnly on network transports (stdio keeps them —
+ * D7), minus ops outside the caller's scopes (agent-callable carve-out per
+ * FOV-4), minus bound-client-fenced ops (same predicate as tools/list,
+ * ENG-3), minus publish-gated ops whose gate is off (stdio bypasses gates —
+ * the D7 local-surface posture; a failed gate read hides the gated ops,
+ * fail-closed).
+ */
+async function visibleOpsForCaller(
+  ctx: OperationContext,
+  ceiling: 'verbs' | 'starter' | 'full',
+): Promise<Operation[]> {
+  const { filterOpsForSurface } = await import('../mcp/surface.ts');
+  const isStdio = ctx.transport === 'stdio';
+
+  let gateDisabled: ReadonlySet<string> = new Set();
+  if (!isStdio) {
+    try {
+      const { disabledOpsForPublishGates } = await import('../mcp/publish-gates.ts');
+      gateDisabled = await disabledOpsForPublishGates(ctx.engine, ctx.config);
+    } catch {
+      // Fail-closed: if the resolver can't even load, hide every gated op.
+      gateDisabled = new Set(operations.filter(o => o.publishGateKey).map(o => o.name));
+    }
+  }
+
+  // Auth-less transports (stdio) and grandfathered legacy bearer tokens
+  // (empty scopes array — that transport does no call-time scope checks
+  // either) skip scope filtering: for them the whole surface IS callable,
+  // so hiding by scope would make the catalog LESS honest, not more.
+  const scopes = ctx.auth?.scopes && ctx.auth.scopes.length > 0 ? ctx.auth.scopes : null;
+
+  return filterOpsForSurface(operations, ceiling).filter(op =>
+    (isStdio || !op.localOnly)
+    && (scopes === null
+      || hasScope(scopes, op.scope ?? 'read')
+      || (op.agentCallable === true && hasScope(scopes, 'agent')))
+    && opAllowedForBoundClient(ctx.auth, op)
+    && !gateDisabled.has(op.name),
+  );
+}
+
+const request_tools: Operation = {
+  name: 'request_tools',
+  description:
+    'Discover this brain\'s tool catalog and optionally unlock a wider tool surface for your client. ' +
+    'No arguments → the catalog visible to YOUR credentials, grouped by area (tool names + one-line summaries). ' +
+    '{tools: ["name", ...]} → full read-only schemas for the visible subset of those names (unknown/hidden names are silently omitted). ' +
+    '{surface: "verbs"|"starter"|"full"} → persist that tool surface for this client (bounded by the server ceiling; denied when an operator pinned the surface; ~5 changes/hour), then re-issue tools/list to see the new catalog.',
+  area: 'discovery',
+  // FOV-4: callable by read OR agent scope — discovery for every token class.
+  agentCallable: true,
+  params: {
+    tools: {
+      type: 'array',
+      items: { type: 'string', description: 'A tool name from the catalog.' },
+      description: 'Fetch full read-only tool schemas for these names. Names outside your visible surface are silently omitted (D5).',
+    },
+    surface: {
+      type: 'string',
+      enum: ['verbs', 'starter', 'full'],
+      description: 'Persist this tool surface for your client. Must not exceed the server ceiling; ignored surfaces stay available via no-arg discovery. Takes effect on your next tools/list.',
+    },
+  },
+  scope: 'read',
+  // D9: mutating because the persist branch writes oauth_clients.surface.
+  // The bound-client fence exempts it via BOUND_CLIENT_META_OPS (see the
+  // carve-out comment at opAllowedForBoundClient); the persist branch
+  // self-enforces ceiling + operator lock + scopes + rate limit.
+  mutating: true,
+  handler: async (ctx, p) => {
+    const { surfaceWiderThan, isMcpSurface } = await import('../mcp/surface.ts');
+    // Unset ceiling (local CLI / direct dispatch) = 'full' — trusted-local
+    // callers were never surface-bounded.
+    const ceiling = ctx.surfaceCeiling ?? 'full';
+
+    // ── persist branch (D5: accepts ONLY {surface}) ─────────────────────
+    if (p.surface !== undefined) {
+      const requested = p.surface as string;
+      if (!isMcpSurface(requested)) {
+        // Backstop for direct handler calls — MCP dispatch already rejects
+        // via the enum in validateParams (invalid_params naming the valid set).
+        throw new OperationError('invalid_params', `surface must be one of: verbs, starter, full (got an unrecognized value)`);
+      }
+      const clientId = ctx.auth?.clientId;
+      if (!clientId) {
+        // stdio has no per-token identity; a surface persist has nowhere to land.
+        return { persisted: false, reason: 'no per-client surface on this transport; use --surface' };
+      }
+      if (surfaceWiderThan(requested, ceiling)) {
+        const e = new OperationError(
+          'permission_denied',
+          `surface '${requested}' is above this server's ceiling '${ceiling}' (D2: per-client surfaces narrow, never widen).`,
+          `The operator caps this transport at --surface ${ceiling}; widening requires a server restart with a wider --surface.`,
+        );
+        e.detail = `ceiling=${ceiling}`; // amendment 4 key=value denial grammar; ENG-11 assign-after
+        throw e;
+      }
+      const rl = requestToolsPersistLimiter.check(clientId);
+      if (!rl.allowed) {
+        throw new OperationError(
+          'rate_limited',
+          'surface persistence is rate-limited to ~5 changes per hour per client (D14.5).',
+          `Retry after ~${rl.retryAfter ?? 60}s.`,
+        );
+      }
+      let rows: Record<string, unknown>[];
+      try {
+        rows = await ctx.engine.executeRaw(
+          `SELECT surface, surface_set_by FROM oauth_clients WHERE client_id = $1`,
+          [clientId],
+        );
+      } catch (err) {
+        if (isUndefinedColumnError(err, 'surface') || isUndefinedColumnError(err, 'surface_set_by')) {
+          // D5: a capability-negotiation op never returns internal_error for
+          // a pre-migration brain — report the gap and keep serving.
+          return { persisted: false, reason: 'migration pending' };
+        }
+        throw err;
+      }
+      if (rows.length === 0) {
+        // Legacy bearer tokens carry a clientId that is not an oauth_clients row.
+        return { persisted: false, reason: 'no per-client surface on this transport; use --surface' };
+      }
+      const current = rows[0] as { surface?: string | null; surface_set_by?: string | null };
+      const operatorLocked = () => {
+        const e = new OperationError(
+          'permission_denied',
+          "this client's surface is operator-pinned and cannot be self-changed (amendment 19).",
+          `Ask the brain operator to change it: gbrain auth rescope-client ${clientId} --surface ${requested}`,
+        );
+        e.detail = 'locked_by=operator';
+        return e;
+      };
+      if (current.surface_set_by === 'operator') throw operatorLocked();
+      if (ctx.dryRun) {
+        return { persisted: false, dry_run: true, surface: requested, reason: 'dry_run' };
+      }
+      // Atomic re-check: a concurrent operator pin between the SELECT and
+      // this UPDATE must still win.
+      const updated = await ctx.engine.executeRaw(
+        `UPDATE oauth_clients SET surface = $1, surface_set_by = 'self'
+         WHERE client_id = $2 AND (surface_set_by IS DISTINCT FROM 'operator')
+         RETURNING client_id`,
+        [requested, clientId],
+      );
+      if (updated.length === 0) throw operatorLocked();
+      await writeSurfaceChangeAudit(ctx.engine, {
+        actor: clientId,
+        client_id: clientId,
+        old: (current.surface as string | null) ?? null,
+        new: requested,
+        via: 'request_tools',
+      });
+      return { persisted: true, surface: requested, note: 're-issue tools/list to see the new catalog' };
+    }
+
+    const visible = await visibleOpsForCaller(ctx, ceiling);
+
+    // ── descriptor branch (D5: read-only) ───────────────────────────────
+    if (p.tools !== undefined) {
+      const requested = (p.tools as unknown[]).filter((t): t is string => typeof t === 'string');
+      const byName = new Map(visible.map(o => [o.name, o]));
+      const picked: Operation[] = [];
+      const seen = new Set<string>();
+      for (const name of requested) {
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const op = byName.get(name);
+        if (op) picked.push(op); // invisible names silently omitted (D5)
+      }
+      const { buildToolDefs } = await import('../mcp/tool-defs.ts');
+      const { resolveStrictParamsMode } = await import('../mcp/validate-params.ts');
+      const strictParams = (await resolveStrictParamsMode(ctx.engine, ctx.config)) === 'reject';
+      return { tools: buildToolDefs(picked, { strictParams }) };
+    }
+
+    // ── catalog branch (no args) ────────────────────────────────────────
+    const groups = new Map<string, Array<{ name: string; one_line: string }>>();
+    for (const op of visible) {
+      // Area names are non-contractual grouping labels (amendment 22).
+      const area = op.area ?? 'other';
+      const bucket = groups.get(area) ?? [];
+      bucket.push({ name: op.name, one_line: firstSentenceOf(op.description) });
+      groups.set(area, bucket);
+    }
+    const catalog = [...groups.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([area, tools]) => ({ area, tools }));
+    return {
+      catalog,
+      total_tools: visible.length,
+      note: 'Call request_tools {tools: ["name", ...]} for full schemas, or {surface: "starter"|"full"} to persist a wider tool surface (within the server ceiling), then re-issue tools/list.',
+    };
+  },
+};
+
 export const operations: Operation[] = [
   // MEMORY_VERBS v1 (Cathedral 1) — remember/entity/synthesize/forget live in
   // verbs.ts; the fifth verb is the extended `recall` op below. Spread first
@@ -6972,6 +7272,8 @@ export const operations: Operation[] = [
   takes_scorecard, takes_calibration,
   // v0.28: whoami + scoped sources management
   whoami, sources_add, sources_list, sources_remove, sources_status,
+  // WP4 (T9): discovery + pull-based per-client surface unlock (D4/D5/D9)
+  request_tools,
   // v0.29: Salience + anomalies + recent transcripts
   get_recent_salience, find_anomalies, get_recent_transcripts,
   // v0.42.x (#2390): Life Chronicle timeline reads
@@ -7014,6 +7316,100 @@ export const operations: Operation[] = [
   // can submit; CLI bypass via ctx.remote === false.
   run_skillopt,
 ];
+
+// ---------------------------------------------------------------------------
+// WP4 (amendment 22) — area taxonomy.
+//
+// One central map (single reviewable block) rather than 100+ scattered inline
+// fields. Area NAMES ARE NON-CONTRACTUAL: they group the request_tools
+// catalog and the generated tool-catalog doc; renaming or regrouping is never
+// a breaking change. Every non-localOnly op MUST have an area — enforced by
+// the CI walker in test/mcp-tool-defs.test.ts, so a future op missing from
+// this map fails at PR time. localOnly ops are covered too (harmless; the
+// walker only requires non-localOnly). Ops that declare `area` inline
+// (request_tools) win over this map.
+// ---------------------------------------------------------------------------
+const OP_AREAS: Record<string, string> = {
+  // memory verbs (the frozen protocol facade)
+  recall: 'memory-verbs', remember: 'memory-verbs', entity: 'memory-verbs',
+  synthesize: 'memory-verbs', forget: 'memory-verbs',
+  context_pack: 'memory-verbs', delta: 'memory-verbs',
+  // pages (CRUD, versions, raw payloads, resolution)
+  get_page: 'pages', put_page: 'pages', delete_page: 'pages', list_pages: 'pages',
+  restore_page: 'pages', purge_deleted_pages: 'pages',
+  get_versions: 'pages', revert_version: 'pages',
+  resolve_slugs: 'pages', get_chunks: 'pages',
+  put_raw_data: 'pages', get_raw_data: 'pages',
+  // search
+  search: 'search', query: 'search', search_by_image: 'search',
+  // tags
+  add_tag: 'tags', remove_tag: 'tags', get_tags: 'tags',
+  // links + graph
+  add_link: 'links', remove_link: 'links', get_links: 'links',
+  get_backlinks: 'links', list_link_sources: 'links', traverse_graph: 'links',
+  find_orphans: 'links',
+  // timeline
+  add_timeline_entry: 'timeline', get_timeline: 'timeline',
+  // life chronicle
+  chronicle_day: 'chronicle', chronicle_on_this_day: 'chronicle',
+  chronicle_since: 'chronicle', chronicle_last_seen: 'chronicle',
+  volunteer_chronicle: 'chronicle', chronicle_backfill: 'chronicle',
+  // ontology
+  ontology_get: 'ontology', ontology_propose: 'ontology',
+  ontology_dimensions: 'ontology', ontology_conflicts: 'ontology',
+  // admin + operations
+  get_stats: 'admin', get_health: 'admin', run_doctor: 'admin',
+  get_status_snapshot: 'admin', run_onboard: 'admin', run_skillopt: 'admin',
+  migrate_embeddings: 'admin', code_traversal_cache_clear: 'admin',
+  // identity
+  whoami: 'identity', get_brain_identity: 'identity',
+  // skills
+  list_skills: 'skills', get_skill: 'skills', list_brain_skillpack: 'skills',
+  // advisor
+  advisor: 'advisor',
+  // sources
+  sources_add: 'sources', sources_list: 'sources', sources_remove: 'sources',
+  sources_status: 'sources',
+  // sync (localOnly)
+  sync_brain: 'sync',
+  // ingest log
+  log_ingest: 'ingest', get_ingest_log: 'ingest',
+  // files (localOnly)
+  file_list: 'files', file_upload: 'files', file_url: 'files',
+  // jobs (Minions + agent lane)
+  submit_job: 'jobs', get_job: 'jobs', list_jobs: 'jobs', cancel_job: 'jobs',
+  retry_job: 'jobs', get_job_progress: 'jobs', pause_job: 'jobs',
+  resume_job: 'jobs', replay_job: 'jobs', send_job_message: 'jobs',
+  submit_agent: 'jobs', get_agent_job: 'jobs',
+  // takes + think
+  takes_list: 'takes', takes_search: 'takes', think: 'takes',
+  takes_scorecard: 'takes', takes_calibration: 'takes',
+  // hot memory (facts)
+  extract_facts: 'memory', forget_fact: 'memory',
+  // entity extraction lane
+  extract_entities: 'entities', extraction_pending: 'entities',
+  extraction_review: 'entities',
+  // insight / signal reads
+  get_recent_salience: 'insights', find_anomalies: 'insights',
+  find_contradictions: 'insights', find_experts: 'insights',
+  find_trajectory: 'insights', get_calibration_profile: 'insights',
+  volunteer_context: 'insights', get_recent_transcripts: 'insights',
+  // code intelligence
+  code_callers: 'code', code_callees: 'code', code_def: 'code',
+  code_refs: 'code', code_blast: 'code', code_flow: 'code',
+  // schema packs
+  get_active_schema_pack: 'schema', list_schema_packs: 'schema',
+  schema_stats: 'schema', schema_lint: 'schema', schema_graph: 'schema',
+  schema_explain_type: 'schema', schema_review_orphans: 'schema',
+  schema_apply_mutations: 'schema', reload_schema_pack: 'schema',
+  // discovery
+  request_tools: 'discovery',
+};
+for (const op of operations) {
+  if (op.area === undefined && OP_AREAS[op.name] !== undefined) {
+    op.area = OP_AREAS[op.name];
+  }
+}
 
 export const operationsByName = Object.fromEntries(
   operations.map(op => [op.name, op]),

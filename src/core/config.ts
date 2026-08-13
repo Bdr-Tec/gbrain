@@ -120,10 +120,14 @@ export interface GBrainConfig {
   provider_chat_options?: Record<string, Record<string, unknown>>;
   /**
    * MEMORY_VERBS v1 (Cathedral 1): default MCP tool surface for `gbrain serve`.
-   * 'verbs' = exactly the 5 protocol verbs (the quickstart surface);
-   * 'full' (default) = every operation. The `--surface` flag overrides per-run.
+   * 'verbs' = exactly the 7 protocol verbs (the quickstart surface);
+   * 'starter' (WP4) = the ~20-op daily-driver set (STARTER_OPS in
+   * src/mcp/surface.ts); 'full' (default) = every operation. The `--surface`
+   * flag overrides per-run. On the OAuth HTTP transport this resolves the
+   * server CEILING (D2): per-client row surfaces can narrow below it but
+   * never widen past it.
    */
-  mcp_surface?: 'verbs' | 'full';
+  mcp_surface?: 'verbs' | 'starter' | 'full';
   /**
    * MEMORY_VERBS v1 [D6C]: ISO timestamp stamped by `gbrain init` so
    * `gbrain protocol stats` can derive real TTHW (install → first verb call).
@@ -439,6 +443,18 @@ export interface GBrainConfig {
      * over this file slot. See src/mcp/validate-params.ts.
      */
     strict_params?: 'warn' | 'reject';
+    /**
+     * WP4 (D2 / plan OQ1) — default surface for OAuth clients whose
+     * `oauth_clients.surface` row value is NULL. oauth_clients carries no
+     * DCR-origin marker, so this applies to ALL null-surface clients (not
+     * just dynamically-registered ones); operators pre-seed important
+     * clients with `gbrain auth rescope-client <id> --surface full`.
+     * Unset (default) = null-surface clients get the server ceiling —
+     * pre-WP4 behavior, existing clients untouched. Dual-plane: the DB
+     * plane (`gbrain config set mcp.default_surface_dcr starter`) wins
+     * over this file slot. Always bounded by the server ceiling (D2).
+     */
+    default_surface_dcr?: 'verbs' | 'starter' | 'full';
   };
 }
 

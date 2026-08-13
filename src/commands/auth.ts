@@ -552,8 +552,19 @@ async function registerClient(name: string, args: string[]) {
  * so widening happens here (trusted local CLI) or via the requireAdmin
  * /admin/api/rescope-client endpoint.
  */
+/**
+ * WP4: parse the `--surface` rescope value. 'clear' → null (clears both
+ * surface AND surface_set_by); one of the three known surfaces → itself;
+ * anything else → undefined (caller errors out). Exported for unit tests.
+ */
+export function parseRescopeSurfaceValue(value: string): 'verbs' | 'starter' | 'full' | null | undefined {
+  if (value === 'clear') return null;
+  if (value === 'verbs' || value === 'starter' || value === 'full') return value;
+  return undefined;
+}
+
 async function rescopeClient(clientId: string, args: string[]) {
-  const usage = 'Usage: auth rescope-client <client_id> [--source SOURCE] [--federated-read SRC1,SRC2,...] [--bound-slug-prefixes P1,P2|none]';
+  const usage = 'Usage: auth rescope-client <client_id> [--source SOURCE] [--federated-read SRC1,SRC2,...] [--bound-slug-prefixes P1,P2|none] [--surface verbs|starter|full|clear]';
   if (!clientId) {
     console.error(usage);
     process.exit(1);
@@ -564,6 +575,9 @@ async function rescopeClient(clientId: string, args: string[]) {
   // array = replace. Lets roster churn (channel joins/leaves) update the
   // write fence in place instead of register+rotate.
   let boundSlugPrefixes: string[] | null | undefined;
+  // WP4: tri-state — undefined = untouched, null = clear ('clear'), value =
+  // set + surface_set_by='operator' (the lock request_tools cannot override).
+  let surface: 'verbs' | 'starter' | 'full' | null | undefined;
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i];
     const value = args[i + 1];
@@ -579,27 +593,49 @@ async function rescopeClient(clientId: string, args: string[]) {
       boundSlugPrefixes = value === 'none'
         ? null
         : value.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (flag === '--surface') {
+      surface = parseRescopeSurfaceValue(value);
+      if (surface === undefined) {
+        console.error(`Error: --surface must be verbs | starter | full | clear (got "${value}")`);
+        console.error(usage);
+        process.exit(1);
+      }
     } else {
       console.error(`Error: Unknown flag: ${flag}`);
       console.error(usage);
       process.exit(1);
     }
   }
-  if (sourceId === undefined && federatedRead === undefined && boundSlugPrefixes === undefined) {
-    console.error('Error: pass --source, --federated-read, and/or --bound-slug-prefixes');
+  if (sourceId === undefined && federatedRead === undefined && boundSlugPrefixes === undefined && surface === undefined) {
+    console.error('Error: pass --source, --federated-read, --bound-slug-prefixes, and/or --surface');
     console.error(usage);
     process.exit(1);
   }
   try {
-    await withConfiguredSql(async (sql) => {
+    await withConfiguredSql(async (sql, engine) => {
       const { GBrainOAuthProvider } = await import('../core/oauth-provider.ts');
       const provider = new GBrainOAuthProvider({ sql });
-      const result = await provider.rescopeClient(clientId, { sourceId, federatedRead, boundSlugPrefixes });
+      const result = await provider.rescopeClient(clientId, { sourceId, federatedRead, boundSlugPrefixes, surface });
+      // WP4 (amendment 32 / ENG-8): every surface mutation writes an audit
+      // row (this CLI, the admin endpoint, the request_tools persist).
+      if (surface !== undefined) {
+        const { writeSurfaceChangeAudit } = await import('../core/surface-audit.ts');
+        await writeSurfaceChangeAudit(engine, {
+          actor: 'operator',
+          client_id: clientId,
+          old: result.surfaceOld ?? null,
+          new: result.surface ?? null,
+          via: 'rescope_cli',
+        });
+      }
       console.log(`OAuth client rescoped: "${result.clientName}" (${result.clientId})\n`);
       console.log(`  Write source:        ${result.sourceId}`);
       console.log(`  Federated reads:     ${result.federatedRead.join(', ') || '<none>'}`);
       if (result.boundSlugPrefixes !== undefined) {
         console.log(`  Bound slug prefixes: ${result.boundSlugPrefixes?.join(', ') ?? '<none — full-source write authority>'}`);
+      }
+      if (result.surface !== undefined) {
+        console.log(`  Tool surface:        ${result.surface ?? '<cleared — server/config surface applies>'}${result.surface != null ? ' (operator-pinned; request_tools cannot override)' : ''}`);
       }
       console.log('\nTakes effect on the client\'s next request (existing tokens included).');
     });
@@ -701,6 +737,10 @@ Usage:
      --source <id>                                        New write source
      --federated-read <id1,id2,...>                       New read-scope source list
      --bound-slug-prefixes <p1,p2|none>                   Replace the slug-prefix write fence ('none' clears it)
+     --surface <verbs|starter|full|clear>                 Pin the client's MCP tool surface (operator lock —
+                                                          request_tools cannot override; 'clear' removes the pin
+                                                          so server/config resolution applies again). Always
+                                                          bounded by the server's --surface ceiling.
   gbrain auth revoke-client <client_id>                   Hard-delete an OAuth 2.1 client (cascades to tokens + codes)
   gbrain auth test <url> --token <token>                  Smoke-test a remote MCP server
 `);

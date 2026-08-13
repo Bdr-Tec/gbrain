@@ -35,7 +35,15 @@ import { normalizeSourceInput, normalizeFederatedReadInput } from '../core/sourc
 import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
 import { resolveStrictParamsMode } from '../mcp/validate-params.ts';
 import { buildToolDefs } from '../mcp/tool-defs.ts';
-import { filterOpsForSurface } from '../mcp/surface.ts';
+import {
+  filterOpsForSurface,
+  clampSurface,
+  minSurface,
+  resolveClientRowSurface,
+  resolveDefaultClientSurface,
+  type McpSurface,
+} from '../mcp/surface.ts';
+import { writeSurfaceChangeAudit } from '../core/surface-audit.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildError, serializeError } from '../core/errors.ts';
@@ -479,11 +487,14 @@ interface ServeHttpOptions {
    */
   suppressBootstrapToken?: boolean;
   /**
-   * MEMORY_VERBS v1: tool-surface mode. 'verbs' = exactly the five protocol
-   * verbs; 'full' (default) = every non-localOnly operation. Enforced on the
-   * tool list AND in dispatch (fail-closed).
+   * MEMORY_VERBS v1 + WP4: tool-surface mode. 'verbs' = exactly the seven
+   * protocol verbs; 'starter' = the STARTER_OPS daily-driver set; 'full'
+   * (default) = every non-localOnly operation. Enforced on the tool list AND
+   * in dispatch (fail-closed). WP4/D2: this is the server CEILING — each
+   * request resolves min(ceiling, client row surface ?? config default),
+   * so per-client rows can narrow below it but never widen past it.
    */
-  surface?: 'verbs' | 'full';
+  surface?: McpSurface;
   /**
    * #2624: force-print the generated admin bootstrap token even on a
    * non-TTY (containerized) start. By default the raw token is only printed
@@ -1746,7 +1757,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // validator inside rescopeClient.
   app.post('/admin/api/rescope-client', requireAdmin, express.json(), async (req: Request, res: Response) => {
     try {
-      const { clientId, sourceId, federatedRead, boundSlugPrefixes } = req.body ?? {};
+      const { clientId, sourceId, federatedRead, boundSlugPrefixes, surface } = req.body ?? {};
       if (!clientId || typeof clientId !== 'string') {
         res.status(400).json({ error: 'clientId required' });
         return;
@@ -1768,12 +1779,31 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         res.status(400).json({ error: 'boundSlugPrefixes must be null or an array of slug-prefix strings' });
         return;
       }
-      const result = await oauthProvider.rescopeClient(clientId, { sourceId, federatedRead, boundSlugPrefixes });
+      // WP4: tri-state surface rescope — omitted = untouched, null = clear
+      // (surface + surface_set_by both NULL), value = set + operator lock
+      // (mirrors the CLI's --surface verbs|starter|full|clear).
+      if (surface !== undefined && surface !== null &&
+          surface !== 'verbs' && surface !== 'starter' && surface !== 'full') {
+        res.status(400).json({ error: 'surface must be null or one of: verbs, starter, full' });
+        return;
+      }
+      const result = await oauthProvider.rescopeClient(clientId, { sourceId, federatedRead, boundSlugPrefixes, surface });
+      // WP4 (amendment 32 / ENG-8): every surface mutation writes an audit
+      // row — this endpoint, the rescope CLI, and the request_tools persist.
+      if (surface !== undefined) {
+        await writeSurfaceChangeAudit(engine, {
+          actor: 'admin-api',
+          client_id: clientId,
+          old: result.surfaceOld ?? null,
+          new: result.surface ?? null,
+          via: 'admin_api',
+        });
+      }
       res.json(result);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Rescope failed';
       const status = /No OAuth client found/.test(message) ? 404
-        : /Invalid source_id|requires --source|cannot be empty|does not exist|cannot be an empty list|bound_slug_prefixes entr/.test(message) ? 400
+        : /Invalid source_id|requires --source|cannot be empty|does not exist|cannot be an empty list|bound_slug_prefixes entr|--surface must be/.test(message) ? 400
         : 500;
       res.status(status).json({ error: message });
     }
@@ -1868,13 +1898,38 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // ---------------------------------------------------------------------------
   // MCP tool calls (bearer auth + scope enforcement)
   // ---------------------------------------------------------------------------
-  // MEMORY_VERBS v1: surface filter applies AFTER the localOnly filter; the
-  // same set feeds dispatch as allowedOps so hidden ops are uncallable, not
-  // just unlisted [c2].
-  const surface = options.surface ?? 'full';
-  const mcpOperations = filterOpsForSurface(operations.filter(op => !op.localOnly), surface);
-  const surfaceAllowedOps: ReadonlySet<string> | undefined =
-    surface === 'full' ? undefined : new Set(mcpOperations.map(o => o.name));
+  // MEMORY_VERBS v1 + WP4 (D2): the server-resolved surface is the CEILING.
+  // The per-REQUEST effective surface — min(ceiling, client row surface ??
+  // config default), clamped by the GBRAIN_MCP_FORCE_SURFACE kill switch
+  // (narrow-only, FOV-6a) — is resolved inside the /mcp handler so a rescope
+  // or config flip takes effect on the client's next request without a
+  // restart, and the dispatch allow-set is recomputed per request
+  // (amendment 20). The surface filter applies AFTER the localOnly filter;
+  // the same set feeds dispatch as allowedOps so hidden ops are uncallable,
+  // not just unlisted [c2].
+  const serverSurfaceCeiling: McpSurface = options.surface ?? 'full';
+  const mcpOperationsBase = operations.filter(op => !op.localOnly);
+
+  /**
+   * WP4 (D2): resolve this request's effective surface from the caller's
+   * verified auth. The config default (`mcp.default_surface_dcr`) is read
+   * dual-plane ONLY when the client row carries no usable surface — the
+   * common full-surface path pays no extra config read. Unknown row values
+   * are ignored with a warn-once per client (amendment 18). Never throws:
+   * surface resolution must not take a request down — any resolver failure
+   * falls back to the ceiling (which is exactly the pre-WP4 behavior).
+   */
+  async function resolveEffectiveSurface(authInfo: AuthInfo): Promise<{ ceiling: McpSurface; effective: McpSurface }> {
+    const ceiling = clampSurface(serverSurfaceCeiling);
+    try {
+      const rowSurface = resolveClientRowSurface(authInfo.surface, authInfo.clientId);
+      if (rowSurface !== null) return { ceiling, effective: minSurface(ceiling, rowSurface) };
+      const dflt = await resolveDefaultClientSurface(engine, config);
+      return { ceiling, effective: minSurface(ceiling, dflt ?? ceiling) };
+    } catch {
+      return { ceiling, effective: ceiling };
+    }
+  }
 
   // v0.36.x #1076: MCP Streamable HTTP spec — GET /mcp opens an optional SSE
   // backchannel for server-initiated messages. gbrain's transport is stateless
@@ -1896,6 +1951,14 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     // SELECT). No per-request DB roundtrip needed. Falls back to clientId
     // for legacy tokens or when the JOIN row's client_name is NULL.
     const agentName = authInfo.clientName ?? authInfo.clientId;
+
+    // WP4 (D2): per-request effective surface + fail-closed allow-set,
+    // recomputed per request (amendment 20) so rescopes/request_tools
+    // persists take effect on the next request with zero restart.
+    const { ceiling: surfaceCeiling, effective: surface } = await resolveEffectiveSurface(authInfo);
+    const mcpOperations = filterOpsForSurface(mcpOperationsBase, surface);
+    const surfaceAllowedOps: ReadonlySet<string> | undefined =
+      surface === 'full' ? undefined : new Set(mcpOperations.map(o => o.name));
 
     // Create a fresh MCP server per request (stateless)
     const server = new Server(
@@ -1938,8 +2001,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // Call-time enforcement (hasScope / fence / assertPublishEnabled)
       // stays as the fail-closed backstop for all three layers.
       const gateDisabled = await disabledOpsForPublishGates(engine, config);
+      // FOV-4: `agent` deliberately implies only itself, which would strand
+      // agent-only tokens with ZERO discovery — ops flagged `agentCallable`
+      // (request_tools) are visible to (and callable by, below) agent scope
+      // in addition to their declared scope.
       const visibleOps = mcpOperations.filter(op =>
-        hasScope(authInfo.scopes, op.scope ?? 'read')
+        (hasScope(authInfo.scopes, op.scope ?? 'read')
+          || (op.agentCallable === true && hasScope(authInfo.scopes, 'agent')))
         && opAllowedForBoundClient(authInfo, op)
         && !gateDisabled.has(op.name),
       );
@@ -1990,7 +2058,11 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // hierarchy. Plain string includes() at this site would have made
       // sources_admin tokens look like they couldn't even read.)
       const requiredScope = op.scope || 'read';
-      if (!hasScope(authInfo.scopes, requiredScope)) {
+      // FOV-4: agentCallable carve-out mirrors the tools/list filter above —
+      // an op listed for an agent-only token must not scope-deny at call time.
+      const scopeSatisfied = hasScope(authInfo.scopes, requiredScope)
+        || (op.agentCallable === true && hasScope(authInfo.scopes, 'agent'));
+      if (!scopeSatisfied) {
         // v0.28.10: persist scope-rejected attempts. Same operator-visibility
         // motivation as the unknown-op path — and it makes the v0.26.3
         // persistence regression test reliable across both rejection paths.
@@ -2082,6 +2154,8 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           // MEMORY_VERBS v1: fail-closed surface enforcement + usage attribution.
           ...(surfaceAllowedOps ? { allowedOps: surfaceAllowedOps } : {}),
           surface,
+          // WP4 (D2): request_tools bounds its catalog + persist by this.
+          surfaceCeiling,
           // v0.31 follow-up fix: thread auth so the whoami op (and any
           // future scope-aware handlers) can introspect the caller. The
           // original D12/eE1 refactor moved dispatch into dispatchToolCall

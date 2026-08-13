@@ -14,7 +14,7 @@
  * Lives in test/token-budget.test.ts to mirror existing search/* test naming.
  */
 
-import { describe, test, expect, afterEach } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import {
   enforceTokenBudget,
   estimateTokens,
@@ -23,6 +23,7 @@ import {
   searchSalvageEnabled,
 } from '../src/core/search/token-budget.ts';
 import type { SearchResult } from '../src/core/types.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 function makeResult(overrides: Partial<SearchResult> = {}): SearchResult {
   return {
@@ -171,26 +172,25 @@ describe('enforceTokenBudget', () => {
 });
 
 describe('GBRAIN_SEARCH_SALVAGE=off \u2014 strict budget wrapper restored (ENG-7)', () => {
-  afterEach(() => {
-    delete process.env.GBRAIN_SEARCH_SALVAGE;
+  test('searchSalvageEnabled reads the env kill switch', async () => {
+    await withEnv({ GBRAIN_SEARCH_SALVAGE: undefined }, () => {
+      expect(searchSalvageEnabled()).toBe(true);
+    });
+    await withEnv({ GBRAIN_SEARCH_SALVAGE: 'off' }, () => {
+      expect(searchSalvageEnabled()).toBe(false);
+    });
   });
 
-  test('searchSalvageEnabled reads the env kill switch', () => {
-    delete process.env.GBRAIN_SEARCH_SALVAGE;
-    expect(searchSalvageEnabled()).toBe(true);
-    process.env.GBRAIN_SEARCH_SALVAGE = 'off';
-    expect(searchSalvageEnabled()).toBe(false);
-  });
-
-  test('first-result-exceeds returns [] again under the kill switch', () => {
-    process.env.GBRAIN_SEARCH_SALVAGE = 'off';
-    const big = makeResult({ slug: 'big', title: 'a', chunk_text: 'x'.repeat(1000) });
-    const small = makeResult({ slug: 'small', title: 'a', chunk_text: 'xxxx' });
-    const { results: kept, meta } = enforceTokenBudget([big, small], 5);
-    expect(kept).toHaveLength(0);
-    expect(meta.dropped).toBe(2);
-    expect(meta.kept).toBe(0);
-    expect(meta.truncated).toBeUndefined();
+  test('first-result-exceeds returns [] again under the kill switch', async () => {
+    await withEnv({ GBRAIN_SEARCH_SALVAGE: 'off' }, () => {
+      const big = makeResult({ slug: 'big', title: 'a', chunk_text: 'x'.repeat(1000) });
+      const small = makeResult({ slug: 'small', title: 'a', chunk_text: 'xxxx' });
+      const { results: kept, meta } = enforceTokenBudget([big, small], 5);
+      expect(kept).toHaveLength(0);
+      expect(meta.dropped).toBe(2);
+      expect(meta.kept).toBe(0);
+      expect(meta.truncated).toBeUndefined();
+    });
   });
 });
 
@@ -199,14 +199,16 @@ describe('GBRAIN_SEARCH_SALVAGE=off \u2014 strict budget wrapper restored (ENG-7
 // strict first-item-exceeds [] edge must NOT inherit the search wrapper's
 // minKeep salvage. No direct test existed at HEAD.
 describe('packToBudget \u2014 frozen strict edge (memory-verb consumers)', () => {
-  test('first item alone exceeds budget \u2192 [] (strict, regardless of salvage env)', () => {
-    delete process.env.GBRAIN_SEARCH_SALVAGE; // salvage ON \u2014 must not leak in
-    const big = makeResult({ slug: 'big', title: 'a', chunk_text: 'x'.repeat(1000) });
-    const { items, meta } = packToBudget([big], resultTokens, 5);
-    expect(items).toHaveLength(0);
-    expect(meta.kept).toBe(0);
-    expect(meta.dropped).toBe(1);
-    expect(meta.truncated).toBeUndefined();
+  test('first item alone exceeds budget \u2192 [] (strict, regardless of salvage env)', async () => {
+    // salvage ON \u2014 must not leak into the frozen packer edge.
+    await withEnv({ GBRAIN_SEARCH_SALVAGE: undefined }, () => {
+      const big = makeResult({ slug: 'big', title: 'a', chunk_text: 'x'.repeat(1000) });
+      const { items, meta } = packToBudget([big], resultTokens, 5);
+      expect(items).toHaveLength(0);
+      expect(meta.kept).toBe(0);
+      expect(meta.dropped).toBe(1);
+      expect(meta.truncated).toBeUndefined();
+    });
   });
 
   test('budget undefined / <= 0 passes items through unchanged', () => {

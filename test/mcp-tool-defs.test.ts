@@ -192,6 +192,21 @@ describe('param description completeness (WP3)', () => {
     }
     expect(violations).toEqual([]);
   });
+
+  // WP4 (amendment 22): every non-localOnly op must carry an `area` — the
+  // request_tools catalog groups by it, and an op missing from the central
+  // OP_AREAS map in operations.ts would silently land in the 'other' bucket.
+  // Area NAMES are non-contractual; presence is not.
+  test('every non-localOnly op carries a non-empty area (WP4)', () => {
+    const violations: string[] = [];
+    for (const op of operations) {
+      if (op.localOnly) continue;
+      if (typeof op.area !== 'string' || op.area.trim() === '') {
+        violations.push(op.name);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

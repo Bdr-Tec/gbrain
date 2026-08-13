@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test';
-import { parseAuthCreateArgs } from '../src/commands/auth.ts';
+import { parseAuthCreateArgs, parseRescopeSurfaceValue } from '../src/commands/auth.ts';
 
 describe('parseAuthCreateArgs', () => {
   test('bare name (no flag) resolves the name — regression for the dropped-name bug', () => {
@@ -34,5 +34,26 @@ describe('parseAuthCreateArgs', () => {
 
   test('takes-holders trims + drops empties', () => {
     expect(parseAuthCreateArgs(['n', '--takes-holders', ' world , , garry ']).takesHolders).toEqual(['world', 'garry']);
+  });
+});
+
+// WP4: `auth rescope-client --surface` value parsing. 'clear' → null (clears
+// the pin), the three known surfaces pass through, anything else → undefined
+// (caller errors with usage).
+describe('parseRescopeSurfaceValue (WP4)', () => {
+  test('known surfaces pass through', () => {
+    expect(parseRescopeSurfaceValue('verbs')).toBe('verbs');
+    expect(parseRescopeSurfaceValue('starter')).toBe('starter');
+    expect(parseRescopeSurfaceValue('full')).toBe('full');
+  });
+
+  test("'clear' → null (removes the operator pin)", () => {
+    expect(parseRescopeSurfaceValue('clear')).toBe(null);
+  });
+
+  test('anything else → undefined (loud CLI error)', () => {
+    expect(parseRescopeSurfaceValue('everything')).toBeUndefined();
+    expect(parseRescopeSurfaceValue('')).toBeUndefined();
+    expect(parseRescopeSurfaceValue('none')).toBeUndefined();
   });
 });
