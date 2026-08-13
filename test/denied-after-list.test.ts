@@ -10,11 +10,23 @@
  *
  * The fence + gate cases run through the real dispatchToolCall so the
  * envelopes are the ones serve-http actually parses.
+ *
+ * `requestLogStatusForResult` is the ONE status decision serve-http persists
+ * per tools/call row (success / success_with_warnings / denied_after_list /
+ * error) — pinned pure here. ROW-LEVEL assertions (actual mcp_request_log
+ * inserts, plus the tools/list `params.tool_count` contract) live in the
+ * Postgres-host e2e (test/e2e/serve-http-oauth.test.ts — extension filed in
+ * TODOS.md).
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { dispatchToolCall, isListLevelDenialEnvelope } from '../src/mcp/dispatch.ts';
+import {
+  dispatchToolCall,
+  isListLevelDenialEnvelope,
+  requestLogStatusForResult,
+  type ToolResult,
+} from '../src/mcp/dispatch.ts';
 import type { AuthInfo } from '../src/core/operations.ts';
 
 let engine: PGLiteEngine;
@@ -54,6 +66,56 @@ describe('isListLevelDenialEnvelope (pure)', () => {
     expect(isListLevelDenialEnvelope({ error: 'unknown_tool' })).toBe(false);
     expect(isListLevelDenialEnvelope(null)).toBe(false);
     expect(isListLevelDenialEnvelope('permission_denied')).toBe(false);
+  });
+});
+
+describe('requestLogStatusForResult (pure — the persisted status decision)', () => {
+  const ok = (extra: Partial<ToolResult> = {}): ToolResult => ({
+    content: [{ type: 'text', text: '{}' }],
+    ...extra,
+  });
+
+  test('plain success → success', () => {
+    expect(requestLogStatusForResult(ok())).toBe('success');
+    // Empty warnings array is NOT a warn state.
+    expect(requestLogStatusForResult(ok({ _meta: { warnings: [] } }))).toBe('success');
+    // Unrelated _meta payloads do not flip the status.
+    expect(requestLogStatusForResult(ok({ _meta: { brain_hot_memory: { x: 1 } } }))).toBe('success');
+  });
+
+  test('success with non-empty _meta.warnings → success_with_warnings', () => {
+    const res = ok({ _meta: { warnings: [{ code: 'unknown_param', param: 'zz' }] } });
+    expect(requestLogStatusForResult(res)).toBe('success_with_warnings');
+  });
+
+  test('list-level denial envelopes → denied_after_list', () => {
+    const gate: ToolResult = {
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify({ error: 'permission_denied', detail: 'config_key=mcp.publish_skills' }) }],
+    };
+    const fence: ToolResult = {
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify({ error: 'permission_denied', detail: 'fence=op' }) }],
+    };
+    expect(requestLogStatusForResult(gate)).toBe('denied_after_list');
+    expect(requestLogStatusForResult(fence)).toBe('denied_after_list');
+  });
+
+  test('other errors (argument-level denials, op errors, unparseable content) → error', () => {
+    const argLevel: ToolResult = {
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify({ error: 'permission_denied' }) }],
+    };
+    const opError: ToolResult = {
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify({ error: 'invalid_params', message: 'x' }) }],
+    };
+    const garbage: ToolResult = { isError: true, content: [{ type: 'text', text: 'not json' }] };
+    const empty: ToolResult = { isError: true, content: [] };
+    expect(requestLogStatusForResult(argLevel)).toBe('error');
+    expect(requestLogStatusForResult(opError)).toBe('error');
+    expect(requestLogStatusForResult(garbage)).toBe('error');
+    expect(requestLogStatusForResult(empty)).toBe('error');
   });
 });
 

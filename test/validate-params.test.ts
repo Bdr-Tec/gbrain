@@ -340,3 +340,22 @@ describe('resolveStrictParamsMode (DB > file > warn)', () => {
     expect(parseStrictParamsMode(undefined)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// query op guard — neither `query` nor `image` → typed invalid_params
+// ---------------------------------------------------------------------------
+
+describe('query op with neither `query` nor `image` (WP3 typed envelope)', () => {
+  test('dispatch classifies the caller mistake as invalid_params, never internal_error', async () => {
+    // Both params are optional in the schema (image is the alternative entry
+    // point), so validation passes and the HANDLER must throw the typed
+    // OperationError — before any search runs (the stub engine has no search
+    // methods; reaching one would blow up as internal_error).
+    const out = await dispatchToolCall(stubEngine('reject'), 'query', {}, DISPATCH_OPTS);
+    expect(out.isError).toBe(true);
+    const envelope = body(out);
+    expect(envelope.error).toBe('invalid_params');
+    expect(envelope.message).toContain('either `query`');
+    expect(envelope.message).toContain('`image`');
+  });
+});

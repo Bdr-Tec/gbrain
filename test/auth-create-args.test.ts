@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test';
-import { parseAuthCreateArgs, parseRescopeSurfaceValue } from '../src/commands/auth.ts';
+import { parseAuthCreateArgs, parseAuthClientsArgs, parseRescopeSurfaceValue } from '../src/commands/auth.ts';
 
 describe('parseAuthCreateArgs', () => {
   test('bare name (no flag) resolves the name — regression for the dropped-name bug', () => {
@@ -55,5 +55,35 @@ describe('parseRescopeSurfaceValue (WP4)', () => {
     expect(parseRescopeSurfaceValue('everything')).toBeUndefined();
     expect(parseRescopeSurfaceValue('')).toBeUndefined();
     expect(parseRescopeSurfaceValue('none')).toBeUndefined();
+  });
+});
+
+// E4 (WP4): `auth clients [--usage] [--days N] [--json]` flag parsing.
+describe('parseAuthClientsArgs (E4)', () => {
+  test('defaults: no usage join, 30d window, human output', () => {
+    expect(parseAuthClientsArgs([])).toEqual({ usage: false, days: 30, json: false });
+  });
+
+  test('--usage and --json flags, in any order', () => {
+    expect(parseAuthClientsArgs(['--usage', '--json'])).toEqual({ usage: true, days: 30, json: true });
+    expect(parseAuthClientsArgs(['--json', '--usage'])).toEqual({ usage: true, days: 30, json: true });
+  });
+
+  test('--days accepts integers in [1, 3650]', () => {
+    expect(parseAuthClientsArgs(['--days', '1']).days).toBe(1);
+    expect(parseAuthClientsArgs(['--days', '90']).days).toBe(90);
+    expect(parseAuthClientsArgs(['--days', '3650']).days).toBe(3650);
+  });
+
+  test('--days rejects out-of-bounds and non-integer values loudly', () => {
+    expect(() => parseAuthClientsArgs(['--days', '0'])).toThrow(/--days/);
+    expect(() => parseAuthClientsArgs(['--days', '3651'])).toThrow(/--days/);
+    expect(() => parseAuthClientsArgs(['--days', '1.5'])).toThrow(/--days/);
+    expect(() => parseAuthClientsArgs(['--days', 'soon'])).toThrow(/--days/);
+    expect(() => parseAuthClientsArgs(['--days'])).toThrow(/--days/);
+  });
+
+  test('unknown flags reject loudly', () => {
+    expect(() => parseAuthClientsArgs(['--nope'])).toThrow(/Unknown flag/);
   });
 });
