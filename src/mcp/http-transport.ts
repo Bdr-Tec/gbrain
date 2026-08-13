@@ -34,6 +34,7 @@ import { VERSION } from '../version.ts';
 import { dispatchToolCall } from './dispatch.ts';
 import { parseStrictParamsMode } from './validate-params.ts';
 import { filterOpsForSurface, clampSurface, type McpSurface } from './surface.ts';
+import { disabledOpsForPublishGates } from './publish-gates.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildDefaultLimiters, type RateLimiter } from './rate-limit.ts';
 import { sqlQueryForEngine } from '../core/sql-query.ts';
@@ -185,7 +186,8 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
   // `mcp.strict_params` flip needs a restart here (deliberate; the OAuth
   // serve-http path re-reads dual-plane per request). Dispatch-side
   // enforcement still resolves per call.
-  const strictParams = parseStrictParamsMode(loadConfig()?.mcp?.strict_params) === 'reject';
+  const fileConfig = loadConfig();
+  const strictParams = parseStrictParamsMode(fileConfig?.mcp?.strict_params) === 'reject';
   const tools = buildToolDefs(surfacedOps, { strictParams });
 
   /**
@@ -408,9 +410,23 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
 
       // tools/list
       if (method === 'tools/list') {
+        // WP1/E5 truthful catalog on THIS transport too: publish-gated ops
+        // (`Operation.publishGateKey`) are hidden while their gate resolves
+        // off. Read per request (dual-plane, DB > file > false) so a
+        // `gbrain config set mcp.publish_skills true` takes effect on the
+        // next list with no restart — matching the OAuth transport. The
+        // resolver never throws (read failure = hidden, the fail-closed
+        // consent posture); the in-handler gates stay as the call-time
+        // backstop. Pre-fix this transport listed the gated ops
+        // unconditionally, so gates-off served the exact listed-but-denied
+        // catalog lie E5 (test/truthful-catalog.e2e-lite.test.ts) pins out.
+        const gateDisabled = await disabledOpsForPublishGates(engine, fileConfig);
+        const visibleTools = gateDisabled.size === 0
+          ? tools
+          : tools.filter(t => !gateDisabled.has(t.name));
         logRequest(auth.tokenName!, 'tools/list', 'success', Date.now() - startedMs);
         return Response.json(
-          { result: { tools }, jsonrpc: '2.0', id },
+          { result: { tools: visibleTools }, jsonrpc: '2.0', id },
           { headers: corsHeaders(origin) },
         );
       }
