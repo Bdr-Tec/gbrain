@@ -25,8 +25,9 @@ import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { OAuthTokenRevocationRequestSchema } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { BrainEngine } from '../core/engine.ts';
-import { operations, OperationError } from '../core/operations.ts';
+import { operations, OperationError, opAllowedForBoundClient } from '../core/operations.ts';
 import type { OperationContext, AuthInfo } from '../core/operations.ts';
+import { disabledOpsForPublishGates } from '../mcp/publish-gates.ts';
 import { GBrainOAuthProvider, validateTokenEndpointAuthMethod } from '../core/oauth-provider.ts';
 import type { SqlQuery } from '../core/oauth-provider.ts';
 import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
@@ -1924,8 +1925,25 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         status: 'success',
         timestamp: new Date().toISOString(),
       });
+      // WP1 honest catalog: the advertised list is exactly what THIS token
+      // can call. Three per-request filters, cheapest first:
+      //   1. token scope — a read-only token never sees admin/write tools;
+      //   2. bound-client fence — a slug-bound client never sees ops the
+      //      dispatch fence would deny (same predicate, cannot drift);
+      //   3. publish gates — gated ops (skills/advisor) are hidden while
+      //      their gate is off; the resolver never throws (read failure =
+      //      hidden, matching the default-off consent posture) so a config
+      //      hiccup costs at most the 4 gated tools, never the whole list.
+      // Call-time enforcement (hasScope / fence / assertPublishEnabled)
+      // stays as the fail-closed backstop for all three layers.
+      const gateDisabled = await disabledOpsForPublishGates(engine, config);
+      const visibleOps = mcpOperations.filter(op =>
+        hasScope(authInfo.scopes, op.scope ?? 'read')
+        && opAllowedForBoundClient(authInfo, op)
+        && !gateDisabled.has(op.name),
+      );
       return {
-        tools: mcpOperations.map(op => ({
+        tools: visibleOps.map(op => ({
           name: op.name,
           description: op.description,
           inputSchema: {
@@ -2060,6 +2078,9 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       try {
         toolResult = await dispatchToolCall(engine, name, params as Record<string, unknown> | undefined, {
           remote: true,
+          // WP1/D7: network transport — the dispatch-layer localOnly
+          // backstop keys off this marker.
+          transport: 'http',
           takesHoldersAllowList: tokenAllowList,
           sourceId: tokenSourceId,
           metaHook: getBrainHotMemoryMeta,

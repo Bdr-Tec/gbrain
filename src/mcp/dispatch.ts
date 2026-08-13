@@ -39,7 +39,10 @@ export interface DispatchOpts {
   /**
    * #1061: transport marker for auth-less remote surfaces. The stdio MCP
    * server passes 'stdio' so identity ops (whoami) can report the transport
-   * instead of throwing unknown_transport. Never used for trust decisions.
+   * instead of throwing unknown_transport. Never used for TRUST decisions
+   * (that is `remote`), but it IS the transport-LOCALITY axis: localOnly
+   * ops dispatch only when this is 'stdio' (WP1/D7) — HTTP transports pass
+   * 'http', and an unset marker is treated as non-local, fail-closed.
    */
   transport?: OperationContext['transport'];
   /**
@@ -262,6 +265,32 @@ export function normalizeOptionalParams(op: Operation, params: Record<string, un
   return out ?? params;
 }
 
+/**
+ * D8: render the second (model-visible) content block for an empty retrieval
+ * result from the handler-emitted `retrieval` meta. Returns null when the
+ * meta doesn't carry the expected shape — the block is best-effort loudness,
+ * never a failure source. Reason codes come from the closed degradation
+ * vocabulary (D6); raw exception text never reaches this string.
+ */
+export function buildEmptyRetrievalBlock(retrieval: unknown): string | null {
+  if (retrieval === null || typeof retrieval !== 'object') return null;
+  const r = retrieval as {
+    retrieved_count?: number;
+    degraded?: Array<{ stage?: string; reason?: string }>;
+    hint?: string;
+  };
+  const parts: string[] = ['0 results.'];
+  if (typeof r.retrieved_count === 'number') parts.push(`retrieved ${r.retrieved_count} before trimming.`);
+  const stages = (r.degraded ?? [])
+    .map(d => d?.stage)
+    .filter((s): s is string => typeof s === 'string' && s.length > 0);
+  parts.push(stages.length > 0
+    ? `degraded: ${[...new Set(stages)].join(', ')}.`
+    : 'no retrieval degradation — this is a clean miss.');
+  if (typeof r.hint === 'string' && r.hint.length > 0) parts.push(`hint: ${r.hint}`);
+  return parts.join(' ');
+}
+
 const stderrLogger: OperationContext['logger'] = {
   info: (msg: string) => process.stderr.write(`[info] ${msg}\n`),
   warn: (msg: string) => process.stderr.write(`[warn] ${msg}\n`),
@@ -368,6 +397,20 @@ export async function dispatchToolCall(
     };
   }
 
+  // localOnly backstop at the SHARED layer (WP1/D7): localOnly ops reach the
+  // operator's filesystem, so they dispatch only on the local stdio pipe.
+  // Any non-stdio transport — both HTTP servers, and any future caller that
+  // forgets to mark its transport — is denied fail-closed. Same envelope as
+  // a nonexistent op so the catalog doesn't leak which names exist. The
+  // serve-http path also filters these at list time; the legacy bearer
+  // transport at surface 'full' had no gate at all before this line.
+  if (op.localOnly && opts.transport !== 'stdio') {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: 'unknown_tool', message: `Unknown tool: ${name}` }, null, 2) }],
+      isError: true,
+    };
+  }
+
   const safeParams = normalizeOptionalParams(op, params || {});
   const validationError = validateParams(op, safeParams);
   if (validationError) {
@@ -405,6 +448,15 @@ export async function dispatchToolCall(
 
   const ctx = buildOperationContext(engine, safeParams, opts);
 
+  // WP2/D3: response-meta side channel. Handlers publish namespaced
+  // out-of-band metadata (retrieval degradation, strict-mode warnings) here;
+  // the success path below merges the collected keys into ToolResult._meta.
+  // Last write per key wins within one call; the collector never throws.
+  const responseMeta: Record<string, unknown> = {};
+  ctx.emitResponseMeta = (key, value) => {
+    if (value !== undefined) responseMeta[key] = value;
+  };
+
   try {
     // Fail-closed gate for slug-bound OAuth clients, applied here because
     // this is the one path both MCP transports share. Per-op fences still
@@ -421,17 +473,33 @@ export async function dispatchToolCall(
       });
     }
     const out: ToolResult = { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    // D8: model-visible loudness for empty retrievals. The body stays a bare
+    // array (D3 — deployed thin-clients parse content[0] only), and a SECOND
+    // text block carries the diagnosis the model actually sees. Structured
+    // consumers read the same facts from _meta.retrieval below.
+    if (Array.isArray(result) && result.length === 0 && responseMeta.retrieval) {
+      const block = buildEmptyRetrievalBlock(responseMeta.retrieval);
+      if (block) out.content.push({ type: 'text', text: block });
+    }
+    // _meta assembly (WP2 amendment 9): one producer per top-level key,
+    // each isolated — handler-emitted keys (retrieval, warnings) attach
+    // BEFORE and independently of the metaHook, so a hot-memory hook
+    // failure can never drop the retrieval channel. Per-key merge, never
+    // wholesale assignment. See docs/protocol/MCP_META_CHANNELS.md.
+    if (Object.keys(responseMeta).length > 0) {
+      out._meta = { ...responseMeta };
+    }
     // v0.31 (eD3 + eE4): best-effort _meta.brain_hot_memory injection.
     // The hook is wrapped in its own try/catch — any DB blip / cache miss /
-    // helper crash degrades to no `_meta` rather than flipping the whole
+    // helper crash degrades to no hook keys rather than flipping the whole
     // tool call to error.
     if (opts.metaHook) {
       try {
         const meta = await opts.metaHook(name, ctx);
-        if (meta && Object.keys(meta).length > 0) out._meta = meta;
+        if (meta && Object.keys(meta).length > 0) out._meta = { ...(out._meta ?? {}), ...meta };
       } catch (metaErr) {
         const msg = metaErr instanceof Error ? metaErr.message : String(metaErr);
-        ctx.logger.warn(`[mcp] _meta hook failed for ${name}: ${msg}; degrading to no-_meta`);
+        ctx.logger.warn(`[mcp] _meta hook failed for ${name}: ${msg}; degrading to no hook keys`);
       }
     }
     return out;

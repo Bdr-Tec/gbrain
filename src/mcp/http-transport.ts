@@ -166,7 +166,10 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
   // MEMORY_VERBS v1 [c1]: surface filter applies to THIS transport too —
   // the advertised list AND dispatch (allowedOps), fail-closed.
   const surface = opts.surface ?? 'full';
-  const surfacedOps = filterOpsForSurface(operations, surface);
+  // WP1/D7: this is a network transport — localOnly ops (operator-filesystem
+  // reach) never appear in its catalog, matching serve-http's filter. The
+  // dispatch-layer backstop denies them even if a caller guesses the name.
+  const surfacedOps = filterOpsForSurface(operations.filter(op => !op.localOnly), surface);
   const surfaceAllowedOps: ReadonlySet<string> | undefined =
     surface === 'full' ? undefined : new Set(surfacedOps.map(o => o.name));
   const tools = buildToolDefs(surfacedOps);
@@ -418,6 +421,9 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
         }
         const result = await dispatchToolCall(engine, toolName, args, {
           remote: true,
+          // WP1/D7: network transport — the dispatch-layer localOnly
+          // backstop keys off this marker.
+          transport: 'http',
           takesHoldersAllowList: auth.takesHoldersAllowList,
           sourceId: auth.sourceId,
           ...(localFederated ? { localFederatedSourceIds: localFederated } : {}),

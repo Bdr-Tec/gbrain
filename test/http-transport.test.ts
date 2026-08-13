@@ -343,6 +343,54 @@ describe('http-transport: tools/call dispatch', () => {
 });
 
 // --------------------------------------------------------------------------
+// localOnly confinement (WP1/D7): localOnly ops reach the operator's
+// filesystem, so the network transport neither lists nor dispatches them.
+// stdio (the local pipe) keeps them — the dispatch backstop keys on the
+// transport marker, and the denial envelope is byte-identical to a
+// nonexistent op so the catalog doesn't leak which names exist.
+// --------------------------------------------------------------------------
+
+describe('http-transport: localOnly confinement (WP1/D7)', () => {
+  let srv: TestServer;
+  const TOK = 'tok-localonly';
+
+  beforeAll(async () => {
+    srv = await startTest({ validTokens: new Map([[hash(TOK), { id: 'tok-lo-id', name: 'localonly' }]]) });
+  });
+  afterAll(() => srv.stop());
+
+  test('tools/list never includes localOnly ops', async () => {
+    const r = await fetch(`${srv.url}/mcp`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${TOK}`, 'Content-Type': 'application/json' },
+      body: rpc('tools/list'),
+    });
+    const body = await r.json();
+    const names = new Set(body.result.tools.map((t: { name: string }) => t.name));
+    for (const localOnlyName of ['file_list', 'file_upload', 'file_url', 'sync_brain']) {
+      expect(names.has(localOnlyName)).toBe(false);
+    }
+    // Non-localOnly ops are still present (the filter is targeted).
+    expect(names.has('get_page')).toBe(true);
+  });
+
+  test('tools/call on a localOnly op is denied with the no-leak unknown_tool envelope', async () => {
+    const r = await fetch(`${srv.url}/mcp`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${TOK}`, 'Content-Type': 'application/json' },
+      body: rpc('tools/call', { name: 'file_list', arguments: {} }),
+    });
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(body.result.isError).toBe(true);
+    const parsed = JSON.parse(body.result.content[0].text);
+    expect(parsed.error).toBe('unknown_tool');
+    // Byte-identical message to a nonexistent op: no existence oracle.
+    expect(parsed.message).toBe('Unknown tool: file_list');
+  });
+});
+
+// --------------------------------------------------------------------------
 // CORS
 // --------------------------------------------------------------------------
 

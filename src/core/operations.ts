@@ -12,6 +12,7 @@ import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
 import { writePageThrough } from './write-through.ts';
 import { hybridSearch, hybridSearchCached, stampContentFlags, stampUnverifiedExtractions } from './search/hybrid.ts';
+import { looksConceptShaped } from './search/query-intent.ts';
 import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from './eval-capture.ts';
@@ -405,27 +406,44 @@ export const CLIENT_FENCED_WRITE_OPS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Single source of truth for "may a slug-bound client use this op" (ENG-3).
+ * Consumed by BOTH the dispatch-time fence below AND the tools/list filter
+ * in serve-http, so the advertised catalog and the deny behavior cannot
+ * drift — a bound client is never shown an op that will fence-deny at call
+ * time. Gate on "mutates, or carries any non-read scope" rather than on the
+ * two literal scope strings 'write'/'admin': `sources_add`/`sources_remove`
+ * carry the bespoke `sources_admin` scope and are `mutating: true`, so a
+ * scope-string check let a bound client DROP AN ENTIRE SOURCE — every page
+ * in it, far outside any prefix. Anything that isn't a plain read must be
+ * explicitly allow-listed. A degraded projection (binding unreadable) denies
+ * every non-read op — the unfenceable ops must not stay reachable precisely
+ * when the fence is unreadable.
+ */
+export function opAllowedForBoundClient(
+  auth: Pick<AuthInfo, 'boundSlugPrefixes' | 'fenceProjectionDegraded'> | undefined,
+  op: Pick<Operation, 'name' | 'scope' | 'mutating'>,
+): boolean {
+  const degraded = auth?.fenceProjectionDegraded === true;
+  if (!degraded && !auth?.boundSlugPrefixes) return true;
+  const isRead = op.scope === 'read' && op.mutating !== true;
+  if (isRead) return true;
+  if (degraded) return false;
+  return CLIENT_FENCED_WRITE_OPS.has(op.name);
+}
+
+/**
  * Fail-closed gate for slug-bound clients, applied at dispatch (the single
  * choke point both MCP transports share) so it cannot be forgotten per op.
  * Read ops are untouched — read scope is enforced by source federation.
+ * Allow/deny derives from `opAllowedForBoundClient`; this wrapper only owns
+ * the error envelopes.
  */
 export function enforceBoundClientOpAllowList(
   auth: AuthInfo | undefined,
   op: Pick<Operation, 'name' | 'scope' | 'mutating'>,
 ): void {
-  // A degraded projection means we could not read the binding, not that
-  // there isn't one. Deny every non-read op outright — otherwise the
-  // unfenceable ops stay reachable precisely when the fence is unreadable.
+  if (opAllowedForBoundClient(auth, op)) return;
   const degraded = auth?.fenceProjectionDegraded === true;
-  if (!degraded && !auth?.boundSlugPrefixes) return;
-  // Gate on "mutates, or carries any non-read scope" rather than on the two
-  // literal scope strings 'write'/'admin': `sources_add` / `sources_remove`
-  // carry the bespoke `sources_admin` scope and are `mutating: true`, so a
-  // scope-string check let a bound client DROP AN ENTIRE SOURCE — every page
-  // in it, far outside any prefix. Anything that isn't a plain read must be
-  // explicitly allow-listed.
-  const isRead = op.scope === 'read' && op.mutating !== true;
-  if (isRead) return;
   if (degraded) {
     throw new OperationError(
       'permission_denied',
@@ -433,7 +451,6 @@ export function enforceBoundClientOpAllowList(
       'Run `gbrain apply-migrations --yes` on the brain host.',
     );
   }
-  if (CLIENT_FENCED_WRITE_OPS.has(op.name)) return;
   throw new OperationError(
     'permission_denied',
     `${op.name} is not available to slug-bound clients: it can write outside client ${auth?.clientId ?? '(unknown)'}'s bound_slug_prefixes (${(auth?.boundSlugPrefixes ?? []).join(', ')}).`,
@@ -594,9 +611,21 @@ export interface OperationContext {
    * untrusted) but has no per-token auth (local pipe), so identity ops like
    * whoami need a way to distinguish "known auth-less transport" from "a
    * transport bug forgot to thread ctx.auth". Trust decisions MUST NOT key
-   * off this field — only `ctx.remote === false` grants trust.
+   * off this field — only `ctx.remote === false` grants trust. It IS the
+   * transport-LOCALITY axis: localOnly ops dispatch on 'stdio' (a local
+   * pipe with the operator's own filesystem) and are denied on 'http'
+   * (network transports), independent of the remote trust flag.
    */
-  transport?: 'stdio';
+  transport?: 'stdio' | 'http';
+  /**
+   * WP2/D3: response-meta side channel. Handlers that compute out-of-band
+   * result metadata (retrieval degradation, strict-mode warnings) publish it
+   * here under a namespaced top-level key; the MCP dispatch layer merges the
+   * collected keys into `ToolResult._meta` (one producer per key — see
+   * docs/protocol/MCP_META_CHANNELS.md). Unset on CLI/local dispatch paths,
+   * which render the same meta directly; emissions are always optional-chained.
+   */
+  emitResponseMeta?: (key: string, value: unknown) => void;
   /**
    * Subagent runtime context (v0.16+). Set by the subagent tool dispatcher when
    * dispatching an op as a tool call from an LLM loop. Used to enforce per-op
@@ -992,6 +1021,16 @@ export interface Operation {
    */
   scope?: 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin';
   localOnly?: boolean;
+  /**
+   * WP1 honest catalog: the op is callable by remote callers only when this
+   * config gate resolves true (dual-plane, DB > file > absent=false). Network
+   * transports hide the op from tools/list while the gate is off — a listed
+   * tool that always denies reads as broken, not private. The in-handler
+   * gate (assertPublishEnabled / the advisor inline check) stays as the
+   * fail-closed call-time backstop; stdio (local pipe) bypasses publish
+   * gates entirely. Resolution lives in src/mcp/publish-gates.ts.
+   */
+  publishGateKey?: 'mcp.publish_skills' | 'mcp.publish_advisor';
   /**
    * MEMORY_VERBS v1: marks the five frozen protocol verbs (recall, remember,
    * entity, synthesize, forget). `gbrain serve --surface verbs` exposes
@@ -1923,6 +1962,39 @@ const list_pages: Operation = {
 
 // --- Search ---
 
+/**
+ * WP2/D3 + E1: the `retrieval` response-meta payload for the search/query
+ * ops. Carries the already-computed HybridSearchMeta signal (vector arm,
+ * cache, budget, degradation stages — populated by the search pipeline) plus
+ * the concept-shaped hint, so an MCP caller can distinguish "clean miss"
+ * from "the pipeline degraded" without a second call. The `hint` is
+ * non-contractual prose (agents read it; nothing should parse it).
+ */
+function buildRetrievalResponseMeta(
+  queryText: string,
+  results: unknown[],
+  meta: HybridSearchMeta | null,
+  opts: { conceptHint?: boolean } = {},
+): Record<string, unknown> {
+  const m = meta as (HybridSearchMeta & { degraded?: unknown; retrieved_count?: number }) | null;
+  const hint = opts.conceptHint && looksConceptShaped(queryText)
+    ? "concept-shaped question — the 'query' tool adds multi-query expansion and recovers " +
+      'synonym-phrased matches this keyword-leaning search can miss.'
+    : undefined;
+  return {
+    returned_count: results.length,
+    retrieved_count: m?.retrieved_count ?? results.length,
+    ...(m ? {
+      vector_enabled: m.vector_enabled,
+      expansion_applied: m.expansion_applied,
+      ...(m.cache ? { cache: m.cache.status } : {}),
+      ...(m.token_budget ? { token_budget: m.token_budget } : {}),
+      ...(m.degraded !== undefined ? { degraded: m.degraded } : {}),
+    } : {}),
+    ...(hint ? { hint } : {}),
+  };
+}
+
 const search: Operation = {
   name: 'search',
   description: SEARCH_DESCRIPTION,
@@ -1964,6 +2036,7 @@ const search: Operation = {
       await stampUnverifiedExtractions(ctx.engine, results);
       bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
       maybeCaptureSearch(ctx, queryText, results, Date.now() - startedAt, false);
+      ctx.emitResponseMeta?.('retrieval', buildRetrievalResponseMeta(queryText, results, null, { conceptHint: true }));
       return results;
     }
 
@@ -1981,6 +2054,7 @@ const search: Operation = {
     const latency_ms = Date.now() - startedAt;
     bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
     maybeCaptureSearch(ctx, queryText, results, latency_ms, true, capturedMeta);
+    ctx.emitResponseMeta?.('retrieval', buildRetrievalResponseMeta(queryText, results, capturedMeta, { conceptHint: true }));
     return results;
   },
   scope: 'read',
@@ -2218,6 +2292,8 @@ const query: Operation = {
       );
     }
 
+    // WP2/D3: query never nudges toward itself — no concept hint here.
+    ctx.emitResponseMeta?.('retrieval', buildRetrievalResponseMeta(queryText, results, capturedMeta));
     return results;
   },
   scope: 'read',
@@ -2805,6 +2881,7 @@ const get_brain_identity: Operation = {
 const list_skills: Operation = {
   name: 'list_skills',
   description: LIST_SKILLS_DESCRIPTION,
+  publishGateKey: 'mcp.publish_skills',
   params: {
     section: {
       type: 'string',
@@ -2827,6 +2904,7 @@ const list_skills: Operation = {
 const get_skill: Operation = {
   name: 'get_skill',
   description: GET_SKILL_DESCRIPTION,
+  publishGateKey: 'mcp.publish_skills',
   params: {
     name: {
       type: 'string',
@@ -2867,6 +2945,7 @@ const list_brain_skillpack: Operation = {
     'one-line descriptions, the schema pack it targets + whether that matches this brain, and a ' +
     'git scaffold spec. Read-only; gated by mcp.publish_skills. After orienting, call this and ' +
     'ask the user whether to install any pack the brain offers (gbrain skillpack scaffold <spec>).',
+  publishGateKey: 'mcp.publish_skills',
   params: {},
   handler: async (ctx) => {
     const sc = await import('./skill-catalog.ts');
@@ -2887,6 +2966,7 @@ const advisor: Operation = {
     'severity, why-it-matters, and the exact fix command. Never mutates. Tell the user; ask ' +
     'before running any fix. Gated by mcp.publish_advisor (separate from mcp.publish_skills ' +
     'because diagnostics are not prose skills).',
+  publishGateKey: 'mcp.publish_advisor',
   params: {},
   handler: async (ctx) => {
     // Publish gate: a remote caller needs mcp.publish_advisor=true. Local
@@ -2900,11 +2980,16 @@ const advisor: Operation = {
         enabled = ctx.config?.mcp?.publish_advisor === true;
       }
       if (!enabled) {
-        throw new OperationError(
+        // Same k=v detail grammar as assertPublishEnabled (WP1): honest
+        // catalogs hide this op at list time; the throw is the backstop.
+        const err = new OperationError(
           'permission_denied',
-          'The advisor is not published over MCP by the brain owner.',
+          'The advisor is not published over MCP by the brain owner, so it is hidden from your ' +
+            'tool catalog. Ask the owner to enable it if you need it.',
           'The owner can enable it with `gbrain config set mcp.publish_advisor true`.',
         );
+        err.detail = 'config_key=mcp.publish_advisor';
+        throw err;
       }
     }
     const { runAdvisor } = await import('./advisor/run.ts');
