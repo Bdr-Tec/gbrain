@@ -2,13 +2,13 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.45.10.0] - 2026-08-12
+## [0.45.11.0] - 2026-08-12
 
 **The install now ends by telling you the two things that matter: you own the brain, and here's the first skill to run.** A working install used to finish on a health report and three tour prompts — technically complete, but a new user walked away without the two facts that make gbrain worth trusting and worth using. Now `gbrain bootstrap verify` ends with a hand-off: **what you own** (every memory is a markdown file in YOUR private GitHub repo — read it, take it to a second machine, delete it and the brain is gone; or the local-only variant with the one command that gives it a durable home) and **what to do next** (run the `cold-start` skill — say "fill my brain" and your agent imports your Gmail, calendar, and contacts through ClawVisor, an OAuth vault so the agent never holds raw tokens, or offline archives like Google Takeout, one consented phase at a time).
 
 The structural fix underneath: `cold-start` — the skill designed exactly for "I just installed this, now what?" — was excluded from the downstream skill bundle, so the paste-in install audience it was written for could never scaffold it. It's now bundled, it's the #1 recommended skill (ahead of the book-mirror flagship, because every flagship skill only becomes magical once the brain holds your real life), and a new drift guard fails CI if any recommended skill ever becomes unscaffoldable again.
 
-To take advantage of v0.45.10.0: existing installs can run `gbrain skillpack scaffold cold-start` and say "fill my brain"; fresh installs get the full hand-off automatically.
+To take advantage of v0.45.11.0: existing installs can run `gbrain skillpack scaffold cold-start` and say "fill my brain"; fresh installs get the full hand-off automatically.
 
 ### Added
 - **The verify hand-off block.** On PASS, `gbrain bootstrap verify` prints (and returns in `--json` as `handoff`) the ownership statement — with the actual repo URL, or the local-only variant pointing at `gbrain bootstrap repo` — followed by the cold-start next action. The runbook's Hand off section now instructs the installing agent to make both land ("say them plainly, confirm they landed") and to OFFER running cold-start on the spot.
@@ -24,7 +24,7 @@ To take advantage of v0.45.10.0: existing installs can run `gbrain skillpack sca
 
 Under the hood: the upgrade nudge now compares the version you're actually running (a stale or foreign cache can't tell you to upgrade to something you already have), a broken settings file makes the installer stop and tell you rather than quietly replace it, and `gbrain init --supabase` fails loudly in a script instead of pretending it worked. Every fix landed with a test, and a two-model adversarial review pass (Claude + Codex) caught a cluster of follow-on issues in the fixes themselves — a keyless upgrade command that pointed at a rejected path, a compiled-binary detection that broke for renamed binaries — which are fixed here too.
 
-To take advantage of v0.45.10.0: nothing to do — `gbrain self-upgrade` (or your next `gbrain` invocation's upgrade nudge) brings you current, and the improvements are all in the install/first-run path a new brain hits automatically.
+To take advantage of v0.45.11.0: nothing to do — `gbrain self-upgrade` (or your next `gbrain` invocation's upgrade nudge) brings you current, and the improvements are all in the install/first-run path a new brain hits automatically.
 
 ### Added
 - **A real-PTY DX exploration harness** (`test/helpers/tty-harness.ts` + `scripts/dx-explore.ts`). It spawns any CLI — gbrain, `claude`, `codex` — under a true pseudo-terminal, timestamps every output burst, and turns silence windows into a measurable stall report, so "the user stared at a frozen screen for nine seconds" is an artifact, not a hunch. A `drive` mode lets an agent steer a live TUI across separate tool calls. Developer instrument only; transcripts are gitignored and nothing in the shipped product depends on it.

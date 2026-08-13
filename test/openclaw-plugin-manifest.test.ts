@@ -63,7 +63,7 @@ describe('plugin membership curation (skills = plugin ∪ exclusions, disjoint)'
     // by slug; `gbrain skillpack scaffold <slug>` resolves against the plugin
     // bundle. A recommendation the scaffold can't fulfill is a dead-end CTA —
     // the exact drift that kept cold-start (the day-one "now what?" skill)
-    // unreachable for paste-in bootstrap users until v0.45.10.0.
+    // unreachable for paste-in bootstrap users until v0.45.11.0.
     const unscaffoldable = currentRecommendedSet()
       .map((s) => s.slug)
       .filter((slug) => !bundled.includes(slug));

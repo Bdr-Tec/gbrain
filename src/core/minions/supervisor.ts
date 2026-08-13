@@ -42,7 +42,7 @@ import {
   unlinkSync,
   writeSync,
 } from 'fs';
-import { dirname } from 'path';
+import { dirname, resolve } from 'path';
 import type { BrainEngine } from '../engine.ts';
 import { tryAcquireDbLock, type DbLockHandle } from '../db-lock.ts';
 import { currentBrainId } from './worker-registry.ts';
@@ -574,7 +574,13 @@ export class MinionSupervisor {
     // 5. Announce start.
     this.emit('started', {
       supervisor_pid: process.pid,
-      pid_file: this.opts.pidFile,
+      // Resolved to absolute at emit time (relative to THIS process's cwd,
+      // the only context in which a relative --pid-file was meaningful) so a
+      // later reader (e.g. `gbrain doctor`, possibly running from a
+      // different cwd) doesn't misresolve it. `this.opts.pidFile` itself
+      // stays as-given for this process's own reads/writes below, which are
+      // already correctly relative to this same cwd.
+      pid_file: resolve(this.opts.pidFile),
       concurrency: this.opts.concurrency,
       queue: this.opts.queue,
       max_crashes: this.opts.maxCrashes,
