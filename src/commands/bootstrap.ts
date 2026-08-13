@@ -28,7 +28,7 @@
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { VERSION } from '../version.ts';
@@ -146,7 +146,8 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
   uninstall [--delete-brain] [--home <dir>] [--yes]
                                   Receipt-keyed removal. The repo stays yours.
 
-Global flags: --workspace <dir> (default: cwd), --help.
+Global flags: --workspace <dir> (default: cwd; refuses if the resolved
+             path is your home directory), --help.
 Env: GBRAIN_BOOTSTRAP_ABORT_AFTER=<phase> (test seam — abort after that phase's work).
 `;
 
@@ -240,9 +241,50 @@ function flagValues(args: string[], flag: string): string[] {
   return out;
 }
 
-function resolveWorkspace(args: string[]): string {
+/**
+ * SSH sessions frequently land in `$HOME` before the operator `cd`s into a
+ * project, and `--workspace` defaults to `process.cwd()` — so an unqualified
+ * `gbrain bootstrap` run can silently target the home directory. Bootstrap's
+ * later phases stage `git add -A` over the resolved workspace, which is both
+ * slow (a home-directory-scale scan has run 50+ minutes in practice) and
+ * unsafe (the generated `.gitignore` is not a guaranteed superset of every
+ * sensitive dotfile `$HOME` may hold, e.g. `~/.ssh/`). Refuse outright rather
+ * than attempt to enumerate every risky path — the fix is a real project
+ * directory, not a bigger ignore list [HOME_WORKSPACE].
+ *
+ * `skipHomeGuard` is for callers (currently only the `harness` subcommand)
+ * that still want the resolved cwd/`--workspace` value for `LogCtx.ws`
+ * bookkeeping but never actually operate on a workspace — `runHarness` takes
+ * no `ws` argument at all and mutates only `home` — so the workspace-scale
+ * `git add -A` risk this guard exists for does not apply to them.
+ */
+function resolveWorkspace(args: string[], opts: { skipHomeGuard?: boolean } = {}): string {
   const ws = flagValue(args, '--workspace');
-  return ws ? resolve(ws) : process.cwd();
+  const resolved = ws ? resolve(ws) : process.cwd();
+  if (opts.skipHomeGuard) return resolved;
+  const resolvedReal = realpathOrResolve(resolved);
+  // `os.homedir()` in Bun mirrors `process.env.HOME` as of process start
+  // (and ignores LATER `process.env.HOME` mutations — same pattern as
+  // `src/core/preferences.ts:home()` / `src/commands/upgrade.ts`) rather
+  // than doing an independent OS/uid lookup; a process already launched
+  // with HOME pointed away from the real account home is NOT caught by
+  // this guard, since both would read back the same overridden value. What
+  // this guard DOES cover is the documented real-world trigger — an SSH
+  // session whose shell sets HOME normally and whose cwd defaults there
+  // before the operator `cd`s into a project — with `homedir()` only as
+  // the fallback when HOME is unset. Compared via realpath (not the raw
+  // strings) so a symlinked $HOME or a symlinked cwd (e.g. macOS's
+  // /var -> /private/var tmp roots) still matches.
+  const home = process.env.HOME || homedir();
+  if (home && realpathOrResolve(home) === resolvedReal) {
+    throw new BootstrapError(
+      'HOME_WORKSPACE',
+      `refusing to bootstrap directly into your home directory (${resolved}) — SSH sessions often land here by default. ` +
+        're-run with `--workspace <dir>` pointing at the project directory you want to bootstrap, not your home directory itself.',
+      { details: { candidate: resolved } },
+    );
+  }
+  return resolved;
 }
 
 /**
@@ -1820,12 +1862,6 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
     return 0;
   }
   const rest = args.slice(1);
-  const ws = resolveWorkspace(rest);
-  const home = resolveGbrainHome();
-  const runner = opts.runner ?? defaultRunner;
-  const harnessForLog = flagValue(rest, '--harness') ?? detectHarness() ?? undefined;
-  const logCtx: LogCtx = { home, ws, ...(harnessForLog ? { harness: harnessForLog } : {}) };
-  const t0 = Date.now();
 
   const KNOWN = new Set(['status', 'interview', 'render', 'repo', 'hooks', 'verify', 'attach', 'uninstall', 'harness', 'cloud-setup-script']);
   if (!KNOWN.has(sub)) {
@@ -1846,11 +1882,58 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
     return 0;
   }
 
+  if (sub === 'cloud-setup-script') {
+    // Pure print [D16]: the paste-ready cloud environment setup script.
+    // Resolved BEFORE workspace resolution (below) — it reads/writes no
+    // workspace, so it must keep working from any cwd, including $HOME; the
+    // HOME_WORKSPACE guard only applies to subcommands that actually touch
+    // one. Read surface like status — no install log entry. Own try/catch
+    // (this used to run inside the main dispatcher try/catch below) so an
+    // asset-load failure still returns exit 1 with the usual message +
+    // support hint instead of throwing out of runBootstrap() and breaking
+    // its "always returns an exit code" contract.
+    try {
+      const { loadCloudSetupScript } = await import('../core/bootstrap/assets.ts');
+      console.log(loadCloudSetupScript().trimEnd());
+      return 0;
+    } catch (e) {
+      console.error(`bootstrap ${sub} failed: ${e instanceof Error ? e.message : String(e)}`);
+      console.error(SUPPORT_HINT);
+      return 1;
+    }
+  }
+
+  const home = resolveGbrainHome();
+  const t0 = Date.now();
   // The install log records the PHASE name, and the hooks subcommand is the
   // 'wire' phase (status.ts phase list) — one mapping, used at every log site.
   // 'harness' is its own log phase (NOT a status.ts phase — that list is
   // CI-pinned; install.jsonl phase names are free-form telemetry).
   const logPhaseName = sub === 'hooks' ? 'wire' : sub;
+
+  let ws: string;
+  try {
+    // `harness` is a machine-level command (operates only on `home`; see
+    // `resolveWorkspace`'s doc comment) — it never triggers the HOME_WORKSPACE
+    // refusal, matching the pre-guard behavior it already had.
+    ws = resolveWorkspace(rest, { skipHomeGuard: sub === 'harness' });
+  } catch (e) {
+    if (e instanceof BootstrapError) {
+      console.error(e.message);
+      console.error(SUPPORT_HINT);
+      // Still attribute the refusal to this machine's install log, keyed by
+      // the CANDIDATE path the guard rejected (there is no confirmed
+      // workspace to log against otherwise) — same audit trail every other
+      // BootstrapError gets from the catch below.
+      const candidate = typeof e.details.candidate === 'string' ? e.details.candidate : rest.join(' ');
+      logPhase({ home, ws: candidate }, logPhaseName, 'error', t0);
+      return e.exitCode;
+    }
+    throw e;
+  }
+  const runner = opts.runner ?? defaultRunner;
+  const harnessForLog = flagValue(rest, '--harness') ?? detectHarness() ?? undefined;
+  const logCtx: LogCtx = { home, ws, ...(harnessForLog ? { harness: harnessForLog } : {}) };
 
   try {
     let code: number;
@@ -1858,13 +1941,6 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
       case 'status':
         // status is the read surface — it does not log itself into install.jsonl.
         return await runStatus(ws, rest, home);
-      case 'cloud-setup-script': {
-        // Pure print [D16]: the paste-ready cloud environment setup script.
-        // Read surface like status — no install log entry.
-        const { loadCloudSetupScript } = await import('../core/bootstrap/assets.ts');
-        console.log(loadCloudSetupScript().trimEnd());
-        return 0;
-      }
       case 'interview':
         code = await runInterview(ws, rest);
         break;

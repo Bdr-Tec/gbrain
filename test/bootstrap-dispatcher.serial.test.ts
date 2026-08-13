@@ -13,7 +13,7 @@
  * Serial: mutates GBRAIN_HOME.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +33,7 @@ import {
 import { GBRAIN_HOOK_MARKER_KEY, GBRAIN_HOOK_MARKER_VALUE } from '../src/core/bootstrap/host-specs.ts';
 import { deriveWorkspaceSourceId } from '../src/core/bootstrap/verify.ts';
 import { initState, setAnswer, skipAnswer, confirm, readBackHash } from '../src/core/bootstrap/interview.ts';
+import { installLogPath, readInstallLog } from '../src/core/bootstrap/status.ts';
 
 let tmpParent: string; // GBRAIN_HOME parent (configDir appends .gbrain)
 let home: string;
@@ -1006,5 +1007,195 @@ describe('cloud-setup-script emitter [D16]', () => {
     expect(s).toContain('/usr/local/bin/gbrain');
     expect(s).toContain('bootstrap attach');
     expect(s).toContain('cloud-setup-script');
+  });
+});
+
+describe('HOME_WORKSPACE guard — refuses to bootstrap directly into the home directory', () => {
+  // `--workspace` defaults to process.cwd(); an SSH session that lands in
+  // $HOME before the operator cd's into a project is the real-world trigger.
+  // `resolveWorkspace()` reads `process.env.HOME` directly (not `os.homedir()`,
+  // which Bun caches from process start and would ignore this mutation), so
+  // pointing HOME at a tmpdir lets the test simulate "cwd/--workspace
+  // resolved to home" without touching the real host home directory.
+
+  test('unqualified run (no --workspace) whose cwd IS $HOME is refused, not silently bootstrapped', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    process.env.HOME = fakeHome;
+    process.chdir(fakeHome);
+    try {
+      const r = await capture(() => runBootstrap(['status']));
+      expect(r.result).toBe(1);
+      expect(r.err).toContain('refusing to bootstrap directly into your home directory');
+      expect(r.err).toContain(fakeHome);
+      expect(r.err).toContain('If you are stuck');
+    } finally {
+      process.chdir(savedCwd);
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test('an explicit --workspace pointing AT $HOME is refused too (not just the cwd default)', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      const r = await capture(() => runBootstrap(['status', '--workspace', fakeHome]));
+      expect(r.result).toBe(1);
+      expect(r.err).toContain('refusing to bootstrap directly into your home directory');
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test('no regression: a normal (non-home) --workspace still dispatches as before', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'gb-dispatch-project-'));
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome; // home is set but the workspace isn't it
+    try {
+      const r = await capture(() => runBootstrap(['status', '--workspace', projectDir]));
+      expect(r.result).toBe(0);
+      expect(r.err).not.toContain('refusing to bootstrap directly into your home directory');
+      expect(r.out).toContain(`gbrain bootstrap status — ${projectDir}`);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  // [P2 finding] cloud-setup-script is a pure printer that reads/writes no
+  // workspace — it must keep working from $HOME instead of being caught by
+  // the guard meant for subcommands that actually touch a workspace.
+  test('cloud-setup-script still prints from $HOME — the guard does not apply to workspace-free subcommands', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    process.env.HOME = fakeHome;
+    process.chdir(fakeHome);
+    try {
+      const r = await capture(() => runBootstrap(['cloud-setup-script']));
+      expect(r.result).toBe(0);
+      expect(r.out).toContain('cloud-setup-script');
+      expect(r.err).not.toContain('refusing to bootstrap directly into your home directory');
+    } finally {
+      process.chdir(savedCwd);
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  // [P2 finding] an unknown subcommand from $HOME must still get the normal
+  // "unknown subcommand" exit 2 — not get masked as a HOME_WORKSPACE exit 1
+  // (subcommand validation now runs BEFORE workspace resolution).
+  test('an unknown subcommand from $HOME is still "unknown subcommand" (exit 2), not masked as HOME_WORKSPACE', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    process.env.HOME = fakeHome;
+    process.chdir(fakeHome);
+    try {
+      const r = await capture(() => runBootstrap(['not-a-real-subcommand']));
+      expect(r.result).toBe(2);
+      expect(r.err).toContain('unknown subcommand: not-a-real-subcommand');
+      expect(r.err).not.toContain('refusing to bootstrap directly into your home directory');
+    } finally {
+      process.chdir(savedCwd);
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  // The guard falls back to `homedir()` only when `process.env.HOME` is
+  // unset — this proves that fallback path doesn't crash and still
+  // dispatches normally against an unrelated workspace. It does NOT prove
+  // protection against an overridden HOME (see the "known gap" note on
+  // `resolveWorkspace()`): Bun's `homedir()` mirrors the HOME value present
+  // at process start, so a process launched with HOME already pointed away
+  // from the real account home is not caught by this guard.
+  test('HOME unset: resolution falls back to the OS-level home without crashing', async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'gb-dispatch-project-'));
+    const savedHome = process.env.HOME;
+    delete process.env.HOME;
+    try {
+      const r = await capture(() => runBootstrap(['status', '--workspace', projectDir]));
+      expect(r.result).toBe(0);
+      expect(r.err).not.toContain('refusing to bootstrap directly into your home directory');
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  // Realpath equivalence, both directions: env HOME as the real dir with
+  // --workspace as a symlink to it, and env HOME as the symlink with
+  // --workspace as the real dir.
+  test('a symlinked $HOME is refused in either direction (realpath, not raw-string, comparison)', async () => {
+    const realHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-realhome-'));
+    const linkParent = mkdtempSync(join(tmpdir(), 'gb-dispatch-linkparent-'));
+    const homeLink = join(linkParent, 'home-link');
+    symlinkSync(realHome, homeLink);
+    const savedHome = process.env.HOME;
+    try {
+      // Direction 1: HOME is the real dir, --workspace is the symlink to it.
+      process.env.HOME = realHome;
+      const r1 = await capture(() => runBootstrap(['status', '--workspace', homeLink]));
+      expect(r1.result).toBe(1);
+      expect(r1.err).toContain('refusing to bootstrap directly into your home directory');
+
+      // Direction 2: HOME is the symlink, --workspace is the real target dir.
+      process.env.HOME = homeLink;
+      const r2 = await capture(() => runBootstrap(['status', '--workspace', realHome]));
+      expect(r2.result).toBe(1);
+      expect(r2.err).toContain('refusing to bootstrap directly into your home directory');
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(linkParent, { recursive: true, force: true });
+      rmSync(realHome, { recursive: true, force: true });
+    }
+  });
+
+  // [P3 finding follow-up] the refusal must still land in the install log
+  // (keyed by the rejected candidate path) even though it never reaches
+  // logCtx, AND a mutating subcommand must make zero exec-runner calls and
+  // write nothing to the rejected workspace.
+  test('a mutating subcommand refused at $HOME makes no runner calls, writes nothing, and IS logged', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    const { runner, calls } = makeRunner();
+    try {
+      const r = await capture(() => runBootstrap(['interview', '--init', '--workspace', fakeHome], { runner }));
+      expect(r.result).toBe(1);
+      expect(r.err).toContain('refusing to bootstrap directly into your home directory');
+      // No subprocess (gh/claude/codex) calls — the refusal happens before
+      // any mutation.
+      expect(calls.length).toBe(0);
+      // No interview state written under the rejected workspace.
+      expect(existsSync(join(fakeHome, 'state', 'interview.json'))).toBe(false);
+      // The refusal IS logged — keyed by the rejected candidate path, phase
+      // 'interview' — same audit trail as every other BootstrapError.
+      const entries = readInstallLog(home, 5);
+      const last = entries[entries.length - 1];
+      expect(last?.phase).toBe('interview');
+      expect(last?.outcome).toBe('error');
+      expect(last?.workspace).toBe(fakeHome);
+      expect(existsSync(installLogPath(home))).toBe(true);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 });
