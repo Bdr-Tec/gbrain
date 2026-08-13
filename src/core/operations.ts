@@ -79,7 +79,9 @@ export type ErrorCode =
   // MEMORY_VERBS v1 protocol codes (frozen — docs/protocol/MEMORY_VERBS_v1.md).
   // Coarse on purpose: codes are for branching (configure/retry vs caller bug
   // vs server bug); the freeform `detail` field carries specifics.
-  | 'not_found'            // verb-level: unknown fact id (forget)
+  | 'not_found'            // unknown resource. Verb-level (forget: unknown fact id) AND
+                           // get_agent_job's uniform foreign-or-missing envelope (anti-enumeration:
+                           // a caller cannot distinguish another client's job from a nonexistent id)
   | 'scope_denied'         // verb-level: OAuth scope / trust-boundary refusal
   | 'provenance_required'  // remember: provenance missing or empty
   | 'unavailable'          // a required dependency cannot serve (no API key, gateway down, model refusal)
@@ -985,12 +987,14 @@ export interface Operation {
    * transport. v0.28 added `sources_admin` (manage federated sources) and
    * `users_admin` (reserved). The hierarchy lives in src/core/scope.ts —
    * `admin` implies all, `write` implies `read`, the two `*_admin` scopes
-   * are siblings (different axes; neither implies the other).
+   * are siblings (different axes; neither implies the other). `agent` is
+   * also a sibling NOT implied by admin (v0.38 D13): admin tokens must be
+   * explicitly re-registered with bindings to touch the agent lane.
    *
    * Local CLI callers (ctx.remote === false) bypass scope enforcement
    * because the trust boundary there is the OS, not OAuth scopes.
    */
-  scope?: 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin';
+  scope?: 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin' | 'agent';
   localOnly?: boolean;
   /**
    * MEMORY_VERBS v1: marks the five frozen protocol verbs (recall, remember,
@@ -2939,21 +2943,26 @@ const advisor: Operation = {
  *   - Scope: admin (NOT localOnly). The op exposes operational state
  *     including sync timestamps and cycle metadata. Locking it to admin
  *     matches the `run_doctor` posture and prevents future feature creep
- *     (adding locks/workers/queue counters) from quietly leaking ops state
- *     to read-scoped clients.
+ *     from quietly leaking ops state to read-scoped clients.
  *
- *   - Payload: `{schema_version: 1, sync, cycle}` ONLY. Locks, Workers,
- *     Queue, and Autopilot sections are deliberately omitted from the
- *     remote payload — they are local-host concerns that thin-client
- *     callers shouldn't see at all (and the local `gbrain status` renders
- *     them as "N/A on remote brain" instead of pretending they exist).
+ *   - Payload (schema_version 2, Minions-visibility wave): `{schema_version,
+ *     version, sync, cycle, queue, workers}`. `queue` (status counts +
+ *     per-queue waiting depth + oldest-waiting age) and `workers`
+ *     (supervisor liveness via pidfile/DB-lock + last completed job) were
+ *     added so a remote submitter can see whether the lane its job ids point
+ *     at is actually alive. Locks and Autopilot stay deliberately omitted —
+ *     host-local concerns the thin client renders as "N/A on remote brain".
+ *
+ *   - Fail-soft (amendment 26): each v2 section computes in its own
+ *     try/catch and degrades to `{error: 'unavailable'}` without failing
+ *     the whole snapshot.
  *
  *   - The local CLI composes the same data plus the local-only sections
  *     directly (no MCP round-trip when running against ~/.gbrain).
  */
 const get_status_snapshot: Operation = {
   name: 'get_status_snapshot',
-  description: 'Snapshot for `gbrain status` thin-client mode: sync freshness + last cycle. Admin-scope.',
+  description: 'Snapshot for `gbrain status` thin-client mode: sync freshness + last cycle + queue depths + worker liveness. Admin-scope.',
   params: {},
   handler: async (ctx) => {
     const { buildSyncStatusReport } = await import('../commands/sync.ts');
@@ -2992,10 +3001,27 @@ const get_status_snapshot: Operation = {
     }
     const sync = await buildSyncStatusReport(ctx.engine, sources);
     const cycle = await buildCycleSnapshot(ctx.engine);
+    // v2 sections, each fail-soft (amendment 26): a broken/pre-migration
+    // queue table must not take down the sync/cycle payload that v1 clients
+    // already depend on.
+    let queue: unknown;
+    try {
+      const { buildQueueCounts, buildQueueDepths } = await import('../commands/status.ts');
+      queue = { counts: await buildQueueCounts(ctx.engine), by_queue: await buildQueueDepths(ctx.engine) };
+    } catch {
+      queue = { error: 'unavailable' as const };
+    }
+    let workers: unknown;
+    try {
+      const { buildWorkersSnapshot } = await import('../commands/status.ts');
+      workers = await buildWorkersSnapshot(ctx.engine);
+    } catch {
+      workers = { error: 'unavailable' as const };
+    }
     // #1984: report the brain server's version so a thin-client `gbrain status`
     // can surface remote_version alongside its own local CLI version.
     const { VERSION } = await import('../version.ts');
-    return { schema_version: 1 as const, version: VERSION, sync, cycle };
+    return { schema_version: 2 as const, version: VERSION, sync, cycle, queue, workers };
   },
   scope: 'admin',
   localOnly: false,
@@ -3457,9 +3483,31 @@ const submit_job: Operation = {
       } catch { /* audit failures never block submission */ }
     }
 
-    return job;
+    // Amendments 24/25: post-enqueue queue-state probe (time-bounded,
+    // fail-open). The job is already persisted; a probe failure degrades to
+    // {probe_failed: true}, never an error on a successful submission.
+    return { ...job, queue_state: await probeQueueStateSafe(ctx, job.queue, [name]) };
   },
 };
+
+/**
+ * Wrapper around `probeQueueState` that also swallows module-load failures,
+ * so BOTH submit surfaces (submit_job, submit_agent) satisfy amendment 24's
+ * "probe failure NEVER errors a successful submission" — even when the
+ * supervisor module itself cannot load.
+ */
+async function probeQueueStateSafe(
+  ctx: OperationContext,
+  queue: string,
+  handlerNames: string[],
+): Promise<Record<string, unknown>> {
+  try {
+    const { probeQueueState } = await import('./minions/supervisor.ts');
+    return (await probeQueueState(ctx.engine, queue, handlerNames)) as unknown as Record<string, unknown>;
+  } catch {
+    return { probe_failed: true };
+  }
+}
 
 // v0.38 Slice 3 — D13 — remote-callable submit_agent with registration-time
 // binding enforcement. Distinct from `submit_job` because:
@@ -3481,7 +3529,7 @@ const submit_agent: Operation = {
     queue: { type: 'string', description: 'Queue name (default "default")' },
   },
   mutating: true,
-  scope: 'agent' as any,
+  scope: 'agent',
   handler: async (ctx, p) => {
     // Remote-callable but only when the OAuth client has scope=agent AND
     // a binding row. Local CLI callers (ctx.remote === false) skip the
@@ -3684,7 +3732,115 @@ const submit_agent: Operation = {
       });
     } catch { /* never block submission */ }
 
-    return { id: job.id, name: 'subagent', client_id: clientId };
+    // Amendments 24/25: the returned job id means nothing if the lane is
+    // dead — attach a time-bounded, fail-open queue-state probe.
+    return {
+      id: job.id,
+      name: 'subagent',
+      client_id: clientId,
+      queue_state: await probeQueueStateSafe(ctx, job.queue, ['subagent']),
+    };
+  },
+};
+
+/**
+ * Minions-visibility wave — ownership-fenced agent-job status (amendment 27).
+ *
+ * The companion read for `submit_agent`: an agent-scoped client can poll ONLY
+ * its own delegated jobs. Deliberate posture:
+ *   - `ctx.auth.clientId` is REQUIRED on EVERY transport — stdio and legacy
+ *     bearer callers carry no client identity and are refused
+ *     (permission_denied) rather than silently unfenced. This is stricter
+ *     than scope enforcement alone (which local/stdio callers bypass).
+ *   - The ownership filter is a fail-closed SQL WHERE on
+ *     `data->>'__owner_client_id'` (the JSONB predicate submit_agent already
+ *     uses for its concurrency cap — identical semantics on both engines),
+ *     never a post-fetch JS check.
+ *   - Foreign and missing ids return one uniform `not_found` envelope so the
+ *     op is not a job-id enumeration oracle (ENG-13; the ErrorCode comment
+ *     was widened accordingly). Shell/admin jobs stay on admin-scope
+ *     `get_job` — this op reads the agent lane (`name = 'subagent'`) only.
+ *   - `queue_position` = count of waiting jobs ahead in claim order
+ *     (priority ASC, created_at ASC — the exact ORDER BY of
+ *     `MinionQueue.claim`), computed only while status = 'waiting'.
+ */
+const get_agent_job: Operation = {
+  name: 'get_agent_job',
+  description: 'Poll an agent job submitted via submit_agent. Returns a trimmed status view (id, status, timestamps, error_text, result) plus queue_position (waiting jobs ahead in claim order; 0 = next) while the job is still waiting. Requires the `agent` OAuth scope; only jobs owned by the calling client are visible.',
+  params: {
+    id: { type: 'number', required: true, description: 'Job id returned by submit_agent' },
+  },
+  scope: 'agent',
+  handler: async (ctx, p) => {
+    const clientId = ctx.auth?.clientId;
+    if (!clientId || typeof clientId !== 'string') {
+      throw new OperationError(
+        'permission_denied',
+        'get_agent_job requires an authenticated OAuth client identity.',
+        'Call over HTTP MCP with an `agent`-scoped token. Transports without a per-client identity (stdio, legacy bearer) cannot read agent jobs; use admin-scope get_job from a trusted context instead.',
+      );
+    }
+    const id = p.id;
+    if (typeof id !== 'number' || !Number.isInteger(id)) {
+      throw new OperationError('invalid_params', 'id must be an integer job id');
+    }
+
+    // One round-trip: the ownership fence rides the WHERE, and the
+    // queue_position subselect mirrors MinionQueue.claim's candidate set
+    // (same queue, status='waiting') and ORDER BY (priority, created_at),
+    // with the row id as the deterministic tie-break. Perf: the outer lookup
+    // is a primary-key read; the subselect's (queue, status) filter is
+    // covered by the wave's wedge-index prefix once that migration (another
+    // lane) lands, and stays a small scan until then.
+    const rows = await ctx.engine.executeRaw<{
+      id: number;
+      status: string;
+      created_at: string | Date | null;
+      started_at: string | Date | null;
+      finished_at: string | Date | null;
+      error_text: string | null;
+      result: unknown;
+      queue_position: number | string | null;
+    }>(
+      `SELECT j.id, j.status, j.created_at, j.started_at, j.finished_at, j.error_text, j.result,
+              CASE WHEN j.status = 'waiting' THEN (
+                SELECT count(*)::int FROM minion_jobs q
+                 WHERE q.queue = j.queue AND q.status = 'waiting'
+                   AND (q.priority < j.priority
+                        OR (q.priority = j.priority AND q.created_at < j.created_at)
+                        OR (q.priority = j.priority AND q.created_at = j.created_at AND q.id < j.id))
+              ) ELSE NULL END AS queue_position
+         FROM minion_jobs j
+        WHERE j.id = $1
+          AND j.name = 'subagent'
+          AND j.data->>'__owner_client_id' = $2`,
+      [id, clientId],
+    );
+    if (rows.length === 0) {
+      // Uniform envelope: foreign-owned and nonexistent ids are
+      // indistinguishable by design (anti-enumeration).
+      throw new OperationError('not_found', `Job not found: ${id}`);
+    }
+    const row = rows[0];
+    const iso = (v: string | Date | null): string | null =>
+      v ? (v instanceof Date ? v.toISOString() : new Date(v).toISOString()) : null;
+    // PGLite may hand jsonb back as text; postgres.js parses it.
+    let result: unknown = row.result ?? null;
+    if (typeof result === 'string') {
+      try { result = JSON.parse(result); } catch { /* keep raw text */ }
+    }
+    return {
+      id: row.id,
+      status: row.status,
+      created_at: iso(row.created_at),
+      started_at: iso(row.started_at),
+      finished_at: iso(row.finished_at),
+      error_text: row.error_text ?? null,
+      result,
+      ...(row.status === 'waiting' && row.queue_position !== null
+        ? { queue_position: Number(row.queue_position) }
+        : {}),
+    };
   },
 };
 
@@ -6715,7 +6871,8 @@ export const operations: Operation[] = [
   submit_job, get_job, list_jobs, cancel_job, retry_job, get_job_progress,
   pause_job, resume_job, replay_job, send_job_message,
   // v0.38 Slice 3: remote-callable agent dispatch with OAuth-bound trust boundary
-  submit_agent,
+  // + Minions-visibility wave: ownership-fenced agent-job polling
+  submit_agent, get_agent_job,
   // Orphans
   find_orphans,
   // v0.36.1.0 (T7) — Hindsight calibration wave: read profile via MCP
