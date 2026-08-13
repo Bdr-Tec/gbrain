@@ -258,6 +258,32 @@ export function buildEmptyRetrievalBlock(retrieval: unknown): string | null {
 }
 
 /**
+ * Amendment 33 / D10 — honest-catalog metric classifier. True when a parsed
+ * error envelope is an OP-LEVEL denial the tools/list filter SHOULD have
+ * prevented (the same predicates gate list and call time, so in a correct
+ * world these trend to zero):
+ *   - publish-gate call-time backstop (`detail: 'config_key=...'` — WP1's
+ *     machine-readable denial grammar)
+ *   - bound-client fence OP-level deny (`detail: 'fence=op'` —
+ *     enforceBoundClientOpAllowList; the tools/list filter consumes the
+ *     identical predicate, ENG-3)
+ *
+ * Argument-level fence denials (slug-prefix rejections inside handlers) are
+ * legitimate for a LISTED op and deliberately excluded (D10) — they carry no
+ * marker. serve-http logs matching rows with status='denied_after_list' so
+ * `SELECT count(*) FROM mcp_request_log WHERE status='denied_after_list'`
+ * is the wave's trend-to-zero working metric (the scope-deny path in
+ * serve-http is the third list-level class; it logs the status directly).
+ */
+export function isListLevelDenialEnvelope(parsed: unknown): boolean {
+  if (parsed === null || typeof parsed !== 'object') return false;
+  const p = parsed as { error?: unknown; detail?: unknown };
+  if (p.error !== 'permission_denied') return false;
+  if (typeof p.detail !== 'string') return false;
+  return p.detail.startsWith('config_key=') || p.detail === 'fence=op';
+}
+
+/**
  * WP3: the ONE unknown_tool envelope builder, shared by all three deny paths
  * (surface-hidden via allowedOps, nonexistent op, localOnly over a network
  * transport) so they stay byte-identical for the same input name — a hidden

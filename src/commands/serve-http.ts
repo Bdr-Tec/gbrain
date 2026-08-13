@@ -32,7 +32,7 @@ import { GBrainOAuthProvider, validateTokenEndpointAuthMethod } from '../core/oa
 import type { SqlQuery } from '../core/oauth-provider.ts';
 import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
 import { normalizeSourceInput, normalizeFederatedReadInput } from '../core/source-id.ts';
-import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
+import { summarizeMcpParams, dispatchToolCall, isListLevelDenialEnvelope } from '../mcp/dispatch.ts';
 import { resolveStrictParamsMode } from '../mcp/validate-params.ts';
 import { buildToolDefs } from '../mcp/tool-defs.ts';
 import {
@@ -1967,28 +1967,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     );
 
     server.setRequestHandler(ListToolsRequestSchema, async () => {
-      // v0.28.10: log every JSON-RPC method, not just successful tools/call.
-      // Pre-fix, /admin/api/requests showed nothing for clients that only
-      // ever called tools/list, and the v0.26.3 persistence regression test
-      // asserting >= 2 rows after tools/list + tools/call was unreachable.
-      const latency = Date.now() - startTime;
-      try {
-        await executeRawJsonb(
-          engine,
-          `INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, params)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-          [authInfo.clientId, agentName, 'tools/list', latency, 'success'],
-          [null],
-        );
-      } catch { /* best effort */ }
-      broadcastEvent({
-        agent: agentName,
-        operation: 'tools/list',
-        scopes: authInfo.scopes.join(','),
-        latency_ms: latency,
-        status: 'success',
-        timestamp: new Date().toISOString(),
-      });
       // WP1 honest catalog: the advertised list is exactly what THIS token
       // can call. Three per-request filters, cheapest first:
       //   1. token scope — a read-only token never sees admin/write tools;
@@ -2018,9 +1996,33 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // 'reject' closes each schema with additionalProperties:false and
       // declares the _meta/dry_run passthrough keys (D14.1).
       const strictParams = (await resolveStrictParamsMode(engine, config)) === 'reject';
-      return {
-        tools: buildToolDefs(visibleOps, { strictParams }),
-      };
+      const tools = buildToolDefs(visibleOps, { strictParams });
+      // v0.28.10: log every JSON-RPC method, not just successful tools/call.
+      // Pre-fix, /admin/api/requests showed nothing for clients that only
+      // ever called tools/list, and the v0.26.3 persistence regression test
+      // asserting >= 2 rows after tools/list + tools/call was unreachable.
+      // Amendment 23 stopgap (full list-size telemetry deferred): the row's
+      // params carry the listed-tool count so per-token-class list sizes are
+      // queryable (`params->>'tool_count'`) without new telemetry plumbing.
+      const latency = Date.now() - startTime;
+      try {
+        await executeRawJsonb(
+          engine,
+          `INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, params)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+          [authInfo.clientId, agentName, 'tools/list', latency, 'success'],
+          [{ tool_count: tools.length }],
+        );
+      } catch { /* best effort */ }
+      broadcastEvent({
+        agent: agentName,
+        operation: 'tools/list',
+        scopes: authInfo.scopes.join(','),
+        latency_ms: latency,
+        status: 'success',
+        timestamp: new Date().toISOString(),
+      });
+      return { tools };
     });
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -2066,13 +2068,18 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         // v0.28.10: persist scope-rejected attempts. Same operator-visibility
         // motivation as the unknown-op path — and it makes the v0.26.3
         // persistence regression test reliable across both rejection paths.
+        // Amendment 33: a call-time scope deny is a LIST-LEVEL denial (the
+        // tools/list filter uses this same hasScope predicate, so the op was
+        // never advertised to this token — the client ignored or staled its
+        // list, or list/call drifted). status='denied_after_list' makes the
+        // honest-catalog metric a one-line count that trends to zero.
         const latency = Date.now() - startTime;
         try {
           await executeRawJsonb(
             engine,
             `INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, error_message, params)
              VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-            [authInfo.clientId, agentName, name, latency, 'error', `insufficient_scope: requires '${requiredScope}'`],
+            [authInfo.clientId, agentName, name, latency, 'denied_after_list', `insufficient_scope: requires '${requiredScope}'`],
             [null],
           );
         } catch { /* best effort */ }
@@ -2081,7 +2088,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           operation: name,
           scopes: authInfo.scopes.join(','),
           latency_ms: latency,
-          status: 'error',
+          status: 'denied_after_list',
           error: { code: 'insufficient_scope', message: `requires '${requiredScope}'` },
           timestamp: new Date().toISOString(),
         });
@@ -2203,17 +2210,25 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         // dispatchToolCall serializes the error into the content text;
         // for the audit log we re-extract a message string for the
         // mcp_request_log error_message column. Best-effort parse.
+        // Amendment 33 / D10: op-level denials the list should have
+        // prevented (publish-gate backstop `config_key=...`, bound-client
+        // fence op-level deny `fence=op`) log status='denied_after_list'
+        // instead of plain 'error' — the honest-catalog trend-to-zero
+        // metric. Argument-level fence denials carry no marker and stay
+        // 'error' (legitimate for a listed op).
         let errMsg = 'unknown_error';
+        let errStatus = 'error';
         try {
           const parsed = JSON.parse(toolResult.content[0]?.text ?? '{}');
           errMsg = parsed.error?.message ?? parsed.message ?? errMsg;
+          if (isListLevelDenialEnvelope(parsed)) errStatus = 'denied_after_list';
         } catch { /* ignore */ }
         try {
           await executeRawJsonb(
             engine,
             `INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, error_message, params)
              VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-            [authInfo.clientId, agentName, name, latency, 'error', errMsg],
+            [authInfo.clientId, agentName, name, latency, errStatus, errMsg],
             [logParamsObj],
           );
         } catch { /* best effort */ }
@@ -2223,7 +2238,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           params: broadcastParams,
           scopes: authInfo.scopes.join(','),
           latency_ms: latency,
-          status: 'error',
+          status: errStatus,
           error: { code: 'op_error', message: errMsg },
           timestamp: new Date().toISOString(),
         });

@@ -1,5 +1,75 @@
 # TODOS
 
+## Truthful-surface wave follow-ups (filed with T14, amendment 35 + D14.5)
+
+Deferred from the MCP consumer-feedback wave (plan at
+`~/.claude/plans/system-instruction-you-are-working-snuggly-parrot.md`; scoped
+OUT deliberately — see the plan's "NOT in scope" list).
+
+- [ ] **P1 — strict_params reject-flip.** **What:** flip the `mcp.strict_params`
+  default from `warn` to `reject`. **Why:** the warn grace period exists so
+  clients adapt before unknown args become hard errors; leaving it warn forever
+  re-opens the silent-arg-typo class WP3 closed. **Context:** named flip
+  criterion — ZERO `success_with_warnings` rows over 30 days of production
+  traffic (`SELECT count(*) FROM mcp_request_log WHERE
+  status='success_with_warnings' AND created_at > now() - interval '30 days'`;
+  see docs/operations/mcp-surface-runbook.md Move 3). The flip is a config
+  DEFAULT change in `resolveStrictParamsMode` + the `additionalProperties:
+  false` emission becoming the default tools/list shape; the pinned
+  default=warn test to update is `test/validate-params.test.ts` ("unresolved
+  (absent) config defaults to warn") and `test/mcp-tool-defs.test.ts` pins
+  both emission states. **Effort:** small (1-line default + test updates).
+  **Priority:** P1.
+- [ ] **P2 — mcp_request_log retention/pruning.** **What:** a retention policy
+  (age- or row-capped prune, `gbrain maintain` hook or cron). **Why:** the
+  table now carries MORE than request telemetry — `surface_change` audit rows
+  (ENG-8) and `denied_after_list` metric rows ride it — and it grows unbounded
+  on busy brains. **Context:** pruning must NOT silently discard the audit
+  trail — either exempt `operation='surface_change'` or archive before delete;
+  the usage reader (src/core/mcp-usage.ts) windows at ≤3650d. **Effort:**
+  medium. **Priority:** P2.
+- [ ] **P3 — describe_tools op.** **What:** a dedicated per-op schema
+  introspection op (design OQ4). **Why:** deferred — `request_tools`' no-arg
+  catalog + complete tools/list schemas + did-you-mean on unknown tools/params
+  cover the need. **Context:** revisit if a consumer asks for schema detail
+  beyond what tools/list carries. **Effort:** small. **Priority:** P3.
+- [ ] **P3 — page_lint pull op.** **What:** an op returning the FULL lint
+  report for a slug (design OQ5). **Why:** deferred — `put_page`'s inline
+  `writer_lint.top_findings` (top 5, errors first) suffices until someone
+  needs more than five findings or lint-without-write. **Context:** the
+  validator registry + FIX_HINTS (src/core/validators/index.ts) already
+  expose everything a pull op would need. **Effort:** small. **Priority:** P3.
+- [ ] **P3 — named client tiers.** **What:** Phase 2 of the per-client surface:
+  named tiers (e.g. 'analyst', 'writer') stored in the SAME
+  `oauth_clients.surface` column. **Why:** teams want role-shaped catalogs,
+  not just the 3-step ladder. **Context:** the column's value space is
+  documented OPEN (amendment 18) — unknown values fall back to server/config
+  resolution with a warn-once, so tier names can land without a migration;
+  resolution/UI is the work. **Effort:** medium. **Priority:** P3.
+- [ ] **P3 — per-client token budgets.** **What:** Phase 2: per-client
+  response token budgets (same column pattern as surface). **Why:** a
+  starter-surface client with a 4K-context harness still gets full-size
+  payloads; budget belongs to the CLIENT, not the query. **Context:** builds
+  on `oauth_clients` per-client columns + the search-mode `tokenBudget` knob;
+  interacts with `packToBudget`/`enforceTokenBudget` (keep the frozen-verb
+  strictness — ENG-2). **Effort:** medium. **Priority:** P3.
+- [ ] **P3 — full list-size telemetry.** **What:** first-class telemetry for
+  tools/list responses (per token class: count, approx bytes, trend).
+  **Why:** catalog size is the consumer complaint the wave started from;
+  today's stopgap only records the count. **Context:** the stopgap
+  (amendment 23) rides the existing tools/list `mcp_request_log` row as
+  `params.tool_count` — see the runbook's first-5-minutes SQL. A full
+  version would bucket bytes and surface in `gbrain search stats`-style
+  output. **Effort:** medium. **Priority:** P3.
+- [ ] **P3 — get_job invalid_params→not_found alignment (ENG-13).** **What:**
+  align admin `get_job`'s unknown-id envelope with `get_agent_job`'s uniform
+  `not_found`. **Why:** the two job-read ops answer "no such job" with
+  different error codes; `get_agent_job` chose `not_found` deliberately
+  (anti-enumeration) and the divergence is recorded, not designed. **Context:**
+  ENG-13 kept `get_agent_job` at `not_found` and filed this sibling; check
+  callers that branch on `invalid_params` before changing. **Effort:** small.
+  **Priority:** P3.
+
 ## Ambient recall follow-ups (filed v0.45.7.0, issue #1)
 
 Deferred from the ambient-recall wave (`context_pack` + `delta` frozen verbs +

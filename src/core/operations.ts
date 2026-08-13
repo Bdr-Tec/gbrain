@@ -475,17 +475,29 @@ export function enforceBoundClientOpAllowList(
   if (opAllowedForBoundClient(auth, op)) return;
   const degraded = auth?.fenceProjectionDegraded === true;
   if (degraded) {
-    throw new OperationError(
+    const err = new OperationError(
       'permission_denied',
       `${op.name}: this brain's oauth_clients projection is missing bound_slug_prefixes, so client write bindings cannot be evaluated. Refusing every non-read operation rather than running unfenced.`,
       'Run `gbrain apply-migrations --yes` on the brain host.',
     );
+    // Amendment 33 / D10: OP-level fence denial — the tools/list filter
+    // (opAllowedForBoundClient, the same predicate) should have hidden this
+    // op, so serve-http counts it toward the honest-catalog metric
+    // (status='denied_after_list'). key=value detail grammar (WP1).
+    err.detail = 'fence=op';
+    throw err;
   }
-  throw new OperationError(
+  const err = new OperationError(
     'permission_denied',
     `${op.name} is not available to slug-bound clients: it can write outside client ${auth?.clientId ?? '(unknown)'}'s bound_slug_prefixes (${(auth?.boundSlugPrefixes ?? []).join(', ')}).`,
     'Use put_page / add_timeline_entry / add_link under your own prefixes, or ask an operator to clear the binding with `gbrain auth rescope-client <id> --bound-slug-prefixes none`.',
   );
+  // Amendment 33 / D10: op-level, not argument-level — see above. The
+  // slug-prefix ARGUMENT denials (enforceClientSlugFence) deliberately do
+  // NOT carry this marker: a listed write op denying an out-of-fence slug
+  // is legitimate and excluded from the metric.
+  err.detail = 'fence=op';
+  throw err;
 }
 
 /**
