@@ -314,7 +314,7 @@ jobs:
           find "$GBRAIN_E2E_EVIDENCE_DIR" -type l -delete 2>/dev/null || true
           if [ -n "$ANTHROPIC_API_KEY" ]; then
             grep -rlF "$ANTHROPIC_API_KEY" "$GBRAIN_E2E_EVIDENCE_DIR" 2>/dev/null | while IFS= read -r f; do
-              echo "::warning::removing evidence file containing the API key: ${f#$GBRAIN_E2E_EVIDENCE_DIR/}" >&2
+              echo "::warning::removing evidence file containing the API key: ${f#"$GBRAIN_E2E_EVIDENCE_DIR"/}" >&2
               rm -f "$f"
             done
           fi
