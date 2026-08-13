@@ -58,7 +58,7 @@ describe('thin-client envelope handling (ENG-17 skew guard)', () => {
   };
 
   test('unpackToolResult parses content[0] only — the D8 second block never trips it', () => {
-    expect(unpackToolResult(twoBlockEnvelope)).toEqual([]);
+    expect(unpackToolResult<unknown[]>(twoBlockEnvelope)).toEqual([]);
   });
 
   test('extractResponseMeta lifts _meta; absent on old servers → undefined', () => {
