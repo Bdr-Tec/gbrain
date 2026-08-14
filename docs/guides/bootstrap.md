@@ -172,6 +172,12 @@ mode wires them in one command, with no `agent.json` and no interview:
   `access_tokens.scopes` column; reads span the brain's federated sources).
   Re-runs rotate mint-first: the previous token is revoked by id only after
   the new one is wired and smoke-tested, so clients are never dead mid-swap.
+  The smoke sends a deliberately invalid credential first — an endpoint that
+  accepts anything is not this brain's serve — and a failed smoke rolls the
+  wiring back (fresh registrations removed, replaced ones restored, the
+  headless pre-approval stripped) and retires the fresh mint immediately, so
+  nothing live is ever left pointed at an unverified endpoint. Prior wiring
+  is only cleaned up after the replacement verifies.
 - Claude Code: user-scope HTTP MCP registration, `mcp__gbrain` pre-approved in
   user-scope `permissions.allow` (headless `claude -p` blocks MCP tools
   without it), and the five lifecycle hooks — user scope by default, or
@@ -185,8 +191,15 @@ mode wires them in one command, with no `agent.json` and no interview:
 - Honesty on Postgres brains: per-turn injection is degraded (the matrix row
   above); MCP is the active seam and the summary says so.
 - `--status [--json]` probes the live truth (serve health, token validity via
-  host-config recovery, per-target states) with cron-friendly exit codes, and
-  `gbrain doctor` carries a `bootstrap_harness_health` check.
+  host-config recovery — a bearer is only recovered from a registration that
+  matches the receipt's URL — and per-target states) with a cron-honest exit
+  contract: 0 only when the serve, token, and every target verify and the
+  rotation has converged (honest degrades count as OK); 1 on failed or
+  pending targets, an unconverged rotation, or a half-removed install whose
+  token still awaits revocation; 2 under `--json` when nothing is installed.
+  `gbrain doctor` carries a matching `bootstrap_harness_health` check.
+  `--json` on the install itself emits a single machine-readable document on
+  stdout (prose goes to stderr).
 - `--remove` tears down exactly what the machine-level receipt
   (`<home>/bootstrap/harness.json`) records — host removals are engine-free
   and run even while a serve is live; the token revoke defers with exact
