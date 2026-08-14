@@ -41,6 +41,7 @@
  */
 
 import { gbrainPath } from '../config.ts';
+import { operations } from '../operations.ts';
 import { readClientOpUsage, type ClientOpUsage } from '../mcp-usage.ts';
 import {
   STARTER_OPS,
@@ -201,7 +202,11 @@ export const collectMcpClientFit: AdvisorCollector = {
         .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
         .slice(0, DRIFT_TOP_N)
         .map(([op]) => op);
-      const missingFromStarter = topOps.filter((op) => !STARTER_OPS.has(op));
+      // localOnly ops are never proposable for a network surface (mirrors
+      // derive-starter-ops); a logged localOnly name (old rows, CLI-actor
+      // audit exception) must not produce an unactionable recommendation.
+      const localOnlyOps = new Set(operations.filter((o) => o.localOnly).map((o) => o.name));
+      const missingFromStarter = topOps.filter((op) => !STARTER_OPS.has(op) && !localOnlyOps.has(op));
 
       const usage90 = await readClientOpUsage(ctx.engine, { days: DRIFT_UNUSED_WINDOW_DAYS });
       const seen90 = new Set<string>();

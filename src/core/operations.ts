@@ -4014,7 +4014,9 @@ const get_agent_job: Operation = {
       created_at: iso(row.created_at),
       started_at: iso(row.started_at),
       finished_at: iso(row.finished_at),
-      error_text: row.error_text ?? null,
+      // Cap: error_text is an unbounded worker-written field (stack traces,
+      // provider dumps); a remote polling view shouldn't ship megabytes.
+      error_text: row.error_text ? row.error_text.slice(0, 2000) : null,
       result,
       ...(row.status === 'waiting' && row.queue_position !== null
         ? { queue_position: Number(row.queue_position) }
@@ -7119,6 +7121,16 @@ const request_tools: Operation = {
     // callers were never surface-bounded.
     const ceiling = ctx.surfaceCeiling ?? 'full';
 
+    // D5: the three branches are mutually exclusive. {surface, tools}
+    // together is ambiguous (persist vs descriptor fetch) — reject loudly
+    // rather than silently persisting and ignoring the tools list.
+    if (p.surface !== undefined && p.tools !== undefined) {
+      throw new OperationError(
+        'invalid_params',
+        'pass either {surface} (persist) or {tools} (descriptor fetch), not both.',
+      );
+    }
+
     // ── persist branch (D5: accepts ONLY {surface}) ─────────────────────
     if (p.surface !== undefined) {
       const requested = p.surface as string;
@@ -7191,7 +7203,12 @@ const request_tools: Operation = {
          RETURNING client_id`,
         [requested, clientId],
       );
-      if (updated.length === 0) throw operatorLocked();
+      if (updated.length === 0) {
+        // Concurrent operator pin won the race: the denial must not consume
+        // the client's persist budget (the limiter meters actual writes).
+        requestToolsPersistLimiter.refund(clientId);
+        throw operatorLocked();
+      }
       await writeSurfaceChangeAudit(ctx.engine, {
         actor: clientId,
         client_id: clientId,

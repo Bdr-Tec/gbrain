@@ -658,6 +658,26 @@ describe('http-transport: mcp_request_log audit', () => {
     } finally { srv.stop(); }
   });
 
+  test('21b. gated-op call → denied_after_list status (amendment 33 metric parity with OAuth transport)', async () => {
+    const TOK = 'audit-tok-denied';
+    const srv = await startTest({ validTokens: new Map([[hash(TOK), { id: 'a-2', name: 'audit-denied' }]]) });
+    try {
+      // Pin the gate OFF on the DB plane (which wins over the file plane) so
+      // the developer's real ~/.gbrain/config.json can't flip this test —
+      // the call-time backstop then denies with detail config_key=…
+      (srv.engine as { getConfig?: (k: string) => Promise<string | null> }).getConfig =
+        async (key: string) => (key === 'mcp.publish_skills' ? 'false' : null);
+      const r = await fetch(`${srv.url}/mcp`, { method: 'POST', headers: { 'Authorization': `Bearer ${TOK}`, 'Content-Type': 'application/json' }, body: rpc('tools/call', { name: 'list_skills', arguments: {} }) });
+      const body = await r.json();
+      expect(body.result.isError).toBe(true);
+      expect(body.result.content[0].text).toContain('permission_denied');
+      await new Promise(res => setTimeout(res, 10));
+      const row = srv.engine.audit[srv.engine.audit.length - 1];
+      expect(row.operation).toBe('tools/call:list_skills');
+      expect(row.status).toBe('denied_after_list');
+    } finally { srv.stop(); }
+  });
+
   test('22. failed auth → audit row with null token_name + auth_failed status', async () => {
     const srv = await startTest({});
     try {

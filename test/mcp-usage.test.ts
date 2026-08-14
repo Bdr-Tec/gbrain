@@ -23,12 +23,12 @@ import {
 
 let engine: PGLiteEngine;
 
-async function seed(token: string | null, operation: string, count: number, daysAgo = 0): Promise<void> {
+async function seed(token: string | null, operation: string, count: number, daysAgo = 0, status = 'success'): Promise<void> {
   for (let i = 0; i < count; i++) {
     await engine.executeRaw(
       `INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, created_at)
-       VALUES ($1, $2, $3, 5, 'success', now() - ($4::int * interval '1 day'))`,
-      [token, token ?? 'anon', operation, daysAgo],
+       VALUES ($1, $2, $3, 5, $5, now() - ($4::int * interval '1 day'))`,
+      [token, token ?? 'anon', operation, daysAgo, status],
     );
   }
 }
@@ -62,6 +62,13 @@ beforeAll(async () => {
 
   // NULL token_name rows never attribute to a client.
   await seed(null, 'query', 1);
+
+  // client-denied: denial/error traffic must not count as usage — a client
+  // bouncing off a gated op can't "use" its way into starter derivation.
+  await seed('client-denied', 'advisor', 20, 0, 'denied_after_list');
+  await seed('client-denied', 'query', 3, 0, 'error');
+  // warn-mode successes DO count.
+  await seed('client-a', 'query', 1, 0, 'success_with_warnings');
 }, 120_000);
 
 afterAll(async () => {
@@ -100,8 +107,9 @@ describe('readClientOpUsage', () => {
     const usage = await readClientOpUsage(engine);
     const a = usage.find((u) => u.token_name === 'client-a');
     expect(a).toBeDefined();
-    expect(a!.ops).toEqual({ query: 3, search: 2 });
-    expect(a!.total_calls).toBe(5);
+    // 3 plain successes + 1 success_with_warnings (warn-mode successes count).
+    expect(a!.ops).toEqual({ query: 4, search: 2 });
+    expect(a!.total_calls).toBe(6);
     expect(a!.distinct_ops).toEqual(['query', 'search']);
     expect(a!.likely_automation).toBe(false);
     expect(new Date(a!.last_seen).getTime()).toBeGreaterThan(0);
@@ -123,6 +131,12 @@ describe('readClientOpUsage', () => {
     expect(c.automation_fraction).toBeCloseTo(0.95, 5);
     expect(c.automation_fraction).toBeGreaterThan(AUTOMATION_FRACTION_THRESHOLD);
     expect(c.likely_automation).toBe(true);
+  });
+
+  test('denied and errored rows are not usage — only success statuses count', async () => {
+    const usage = await readClientOpUsage(engine);
+    // client-denied has ONLY denied_after_list + error rows → no usage entry.
+    expect(usage.find((u) => u.token_name === 'client-denied')).toBeUndefined();
   });
 
   test('window excludes old rows by default; wider window includes them', async () => {

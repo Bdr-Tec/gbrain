@@ -953,13 +953,14 @@ function pushDegraded(
 }
 
 /**
- * WP2/T3 — budget-stage stamp shared by the enforceTokenBudget call sites:
- * budget_dropped_all fires exactly when the strict packer would have
- * returned [] — either it DID (kept 0 with drops, under
- * GBRAIN_SEARCH_SALVAGE=off) or the minKeep failsafe kept one truncated copy.
+ * WP2/T3 — budget-stage stamp shared by the enforceTokenBudget call sites.
+ * Two distinct stages so consumers can tell "empty" from "clipped":
+ * budget_truncated when the minKeep failsafe kept one truncated copy
+ * (results non-empty); budget_dropped_all when the strict packer returned
+ * [] (kept 0 with drops, under GBRAIN_SEARCH_SALVAGE=off).
  */
 function stampBudgetStage(list: DegradedStageEntry[], meta: TokenBudgetMeta): void {
-  if (meta.truncated) pushDegraded(list, 'budget_dropped_all', 'first_result_truncated');
+  if (meta.truncated) pushDegraded(list, 'budget_truncated', 'first_result_truncated');
   else if (meta.kept === 0 && meta.dropped > 0) pushDegraded(list, 'budget_dropped_all');
 }
 
@@ -1382,10 +1383,10 @@ export async function hybridSearch(
       if (queries.length === 0) queries = [query];
       // "Applied" = produced variants beyond the original, not just called.
       expansionApplied = queries.length > 1;
-    } catch {
+    } catch (err) {
       // Expansion failure is non-fatal — original query proceeds alone,
       // stamped so the consumer knows the multi-query recall arm was lost.
-      pushDegraded(degraded, 'expansion_failed', 'provider_error');
+      pushDegraded(degraded, 'expansion_failed', isTimeoutError(err) ? 'timeout' : 'provider_error');
     }
   }
 

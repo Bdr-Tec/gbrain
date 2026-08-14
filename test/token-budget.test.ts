@@ -149,16 +149,18 @@ describe('enforceTokenBudget', () => {
     expect(kept[0].chunk_text.length).toBeLessThan(big.chunk_text.length);
   });
 
-  test('budget below title-only cost \u2192 keeps a title-only copy', () => {
+  test('budget below title-only cost \u2192 slices the title so used <= budget', () => {
     // Title alone costs 25 tokens (100 chars); budget 5 can't even fit it.
+    // A hard cap that can be exceeded is not a cap: the title is sliced to
+    // budget*4 chars (costs exactly `budget` under ceil(len/4)).
     const big = makeResult({ slug: 'big', title: 'T'.repeat(100), chunk_text: 'x'.repeat(1000) });
     const { results: kept, meta } = enforceTokenBudget([big], 5);
     expect(kept).toHaveLength(1);
     expect(kept[0].chunk_text).toBe('');
-    expect(kept[0].title).toBe('T'.repeat(100));
+    expect(kept[0].title).toBe('T'.repeat(20));
     expect(meta.truncated).toBe(true);
-    // `used` reports the honest title-only cost even though it exceeds budget.
-    expect(meta.used).toBe(25);
+    expect(meta.used).toBe(5);
+    expect(meta.used).toBeLessThanOrEqual(meta.budget);
   });
 
   test('truncated flag absent on ordinary cuts and no-op passes', () => {

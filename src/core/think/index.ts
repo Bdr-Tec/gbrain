@@ -388,7 +388,9 @@ export async function runThink(
       const e = await opts.embedQuestion(opts.question);
       if (e) questionEmbedding = e;
     } catch (e) {
-      warnings.push(`QUESTION_EMBED_FAILED: ${(e as Error).message}`);
+      // D6: code-only on the wire; raw exception text goes to server logs.
+      warnings.push('QUESTION_EMBED_FAILED');
+      process.stderr.write(`[think] question embed failed: ${e instanceof Error ? e.message : String(e)}\n`);
     }
   }
 
@@ -439,9 +441,9 @@ export async function runThink(
         warnings.push('NO_CALIBRATION_PROFILE');
       }
     } catch (err) {
-      warnings.push(
-        `CALIBRATION_FETCH_FAILED: ${err instanceof Error ? err.message : 'unknown'}`,
-      );
+      // D6: code-only on the wire; raw exception text goes to server logs.
+      warnings.push('CALIBRATION_FETCH_FAILED');
+      process.stderr.write(`[think] calibration fetch failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
@@ -521,9 +523,9 @@ export async function runThink(
       // Defensive: trajectory injection is best-effort. Any unexpected
       // error degrades to "no trajectory block" + a warning. The think
       // call itself never fails because of trajectory wiring.
-      warnings.push(
-        `TRAJECTORY_INJECTION_FAILED: ${err instanceof Error ? err.message : 'unknown'}`,
-      );
+      // D6: code-only on the wire; raw exception text goes to server logs.
+      warnings.push('TRAJECTORY_INJECTION_FAILED');
+      process.stderr.write(`[think] trajectory injection failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
   if (trajectoryPointsCount > 0) {

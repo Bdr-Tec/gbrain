@@ -1428,11 +1428,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     try {
       const now = Math.floor(Date.now() / 1000);
       const [expiring] = await sql`SELECT count(*)::int as count FROM oauth_tokens WHERE token_type = 'access' AND expires_at BETWEEN ${now} AND ${now + 86400}`;
-      // Excluded from the error numerator: success, success_with_warnings (a
-      // warn-mode success), and surface_change audit rows; denied_after_list
-      // stays counted — a denied call IS a failure signal.
-      const [errors] = await sql`SELECT count(*)::int as count FROM mcp_request_log WHERE status NOT IN ('success', 'success_with_warnings', 'surface_change') AND created_at > now() - interval '24 hours'`;
-      const [total] = await sql`SELECT count(*)::int as count FROM mcp_request_log WHERE created_at > now() - interval '24 hours'`;
+      // Excluded from the error numerator: success and success_with_warnings
+      // (a warn-mode success); denied_after_list stays counted — a denied
+      // call IS a failure signal. surface_change is an OPERATION value (audit
+      // rows carry status='success'), so audit rows are excluded from BOTH
+      // counts — they are records of operator/self actions, not traffic.
+      const [errors] = await sql`SELECT count(*)::int as count FROM mcp_request_log WHERE status NOT IN ('success', 'success_with_warnings') AND operation != 'surface_change' AND created_at > now() - interval '24 hours'`;
+      const [total] = await sql`SELECT count(*)::int as count FROM mcp_request_log WHERE operation != 'surface_change' AND created_at > now() - interval '24 hours'`;
       const errorRate = (total as any).count > 0 ? ((errors as any).count / (total as any).count * 100).toFixed(1) : '0';
       res.json({
         expiring_soon: (expiring as any).count,
@@ -1968,21 +1970,26 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
    * dual-plane ONLY when the client row carries no usable surface — the
    * common full-surface path pays no extra config read. Unknown row values
    * are ignored with a warn-once per client (amendment 18). Never throws:
-   * surface resolution must not take a request down — any resolver failure
-   * falls back to the ceiling (which is exactly the pre-WP4 behavior).
+   * surface resolution must not take a request down. On a default-surface
+   * read failure the LAST successfully read default (per process) still
+   * applies, so a transient config outage cannot silently widen a client
+   * that normally resolves narrower than the ceiling; with no prior read,
+   * the ceiling is the only floor available (pre-WP4 behavior).
    */
+  let lastKnownDefaultSurface: McpSurface | null = null;
   async function resolveEffectiveSurface(authInfo: AuthInfo): Promise<{ ceiling: McpSurface; effective: McpSurface }> {
     const ceiling = clampSurface(serverSurfaceCeiling);
     // min() can never go below the narrowest surface: a 'verbs' ceiling makes
     // the row/default resolution a no-op, so skip the awaited config read.
     if (ceiling === 'verbs') return { ceiling, effective: ceiling };
+    const rowSurface = resolveClientRowSurface(authInfo.surface, authInfo.clientId);
+    if (rowSurface !== null) return { ceiling, effective: minSurface(ceiling, rowSurface) };
     try {
-      const rowSurface = resolveClientRowSurface(authInfo.surface, authInfo.clientId);
-      if (rowSurface !== null) return { ceiling, effective: minSurface(ceiling, rowSurface) };
       const dflt = await resolveDefaultClientSurface(engine, config);
+      lastKnownDefaultSurface = dflt ?? null;
       return { ceiling, effective: minSurface(ceiling, dflt ?? ceiling) };
     } catch {
-      return { ceiling, effective: ceiling };
+      return { ceiling, effective: minSurface(ceiling, lastKnownDefaultSurface ?? ceiling) };
     }
   }
 

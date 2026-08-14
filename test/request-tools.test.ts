@@ -276,6 +276,43 @@ describe('request_tools {surface} persist branch', () => {
     expect(parsed(other).persisted).toBe(true);
   });
 
+  test('{surface, tools} together → invalid_params, never a persist (D5 branch exclusivity)', async () => {
+    await seedClient('cl-both');
+    const res = await dispatchToolCall(engine, 'request_tools', { surface: 'starter', tools: ['query'] }, {
+      ...HTTP, surfaceCeiling: 'full', auth: authFor('cl-both', ['read']),
+    });
+    expect(res.isError).toBe(true);
+    const body = parsed(res);
+    expect(body.error).toBe('invalid_params');
+    expect(body.message).toContain('not both');
+    const rows = await engine.executeRaw(
+      `SELECT surface FROM oauth_clients WHERE client_id = $1`, ['cl-both'],
+    );
+    expect(rows[0].surface).toBe(null);
+  });
+
+  test('RateLimiter.refund returns a token so a race-lost persist never burns budget (adversarial fix)', async () => {
+    // The handler refunds when the atomic UPDATE affects 0 rows (a concurrent
+    // operator pin between SELECT and UPDATE); pin the primitive it leans on.
+    const { RateLimiter } = await import('../src/mcp/rate-limit.ts');
+    const now = 0;
+    const lim = new RateLimiter({ limit: 2, windowMs: 60_000, lruCap: 10 }, () => now);
+    expect(lim.check('k').allowed).toBe(true);
+    expect(lim.check('k').allowed).toBe(true);
+    expect(lim.check('k').allowed).toBe(false); // exhausted
+    lim.refund('k');
+    expect(lim.check('k').allowed).toBe(true); // refund restored exactly one token
+    expect(lim.check('k').allowed).toBe(false);
+    lim.refund('unknown-key'); // no-op, never throws
+    // Refund never overfills past the limit.
+    const lim2 = new RateLimiter({ limit: 1, windowMs: 60_000, lruCap: 10 }, () => now);
+    expect(lim2.check('k').allowed).toBe(true);
+    lim2.refund('k');
+    lim2.refund('k');
+    expect(lim2.check('k').allowed).toBe(true);
+    expect(lim2.check('k').allowed).toBe(false);
+  });
+
   test('invalid surface value → invalid_params naming the valid set (D10: never a persist)', async () => {
     await seedClient('cl-garbage');
     const res = await dispatchToolCall(engine, 'request_tools', { surface: 'garbage' }, {

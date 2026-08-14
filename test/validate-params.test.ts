@@ -16,7 +16,7 @@
  *      candidate set).
  */
 
-import { describe, expect, test } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
 import {
   normalizeOptionalParams,
@@ -24,6 +24,7 @@ import {
   findUnknownParams,
   buildUnknownParamWarnBlock,
   resolveStrictParamsMode,
+  resetStrictParamsModeCache,
   parseStrictParamsMode,
   UNKNOWN_PARAM_ALLOWLIST,
 } from '../src/mcp/validate-params.ts';
@@ -318,6 +319,20 @@ describe('resolveStrictParamsMode (DB > file > warn)', () => {
   const throwingEngine = {
     getConfig: async () => { throw new Error('no config table'); },
   } as unknown as BrainEngine;
+
+  // The resolver holds the last successfully read DB mode per process
+  // (adversarial fix: a transient outage must not re-open warn mode) —
+  // isolate each case from its neighbors.
+  beforeEach(() => resetStrictParamsModeCache());
+
+  test('a failed DB read holds the last-known-good DB mode (reject survives an outage)', async () => {
+    expect(await resolveStrictParamsMode(engineWith('reject'), null)).toBe('reject');
+    // DB now unreadable + file plane says warn → cached reject still wins.
+    expect(await resolveStrictParamsMode(throwingEngine, { engine: 'pglite', mcp: { strict_params: 'warn' } } as never)).toBe('reject');
+    // A later successful read of "unset" clears the cache → file plane decides.
+    expect(await resolveStrictParamsMode(engineWith(null), { engine: 'pglite', mcp: { strict_params: 'warn' } } as never)).toBe('warn');
+    expect(await resolveStrictParamsMode(throwingEngine, null)).toBe('warn');
+  });
 
   test('DB plane wins over the file plane', async () => {
     expect(await resolveStrictParamsMode(engineWith('reject'), { engine: 'pglite', mcp: { strict_params: 'warn' } } as never)).toBe('reject');

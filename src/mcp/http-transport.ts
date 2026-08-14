@@ -31,7 +31,7 @@ import { buildToolDefs } from './tool-defs.ts';
 import { operations } from '../core/operations.ts';
 import type { AuthInfo } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
-import { dispatchToolCall } from './dispatch.ts';
+import { dispatchToolCall, requestLogStatusForResult } from './dispatch.ts';
 import { parseStrictParamsMode } from './validate-params.ts';
 import { filterOpsForSurface, clampSurface, type McpSurface } from './surface.ts';
 import { disabledOpsForPublishGates } from './publish-gates.ts';
@@ -467,7 +467,9 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
           // IS the ceiling request_tools bounds catalog + persist by.
           surfaceCeiling: surface,
         });
-        const status = result.isError ? 'error' : 'success';
+        // Same status taxonomy as the OAuth transport (denied_after_list /
+        // success_with_warnings feed the amendment-33 metric + E4 usage).
+        const status = requestLogStatusForResult(result);
         logRequest(auth.tokenName!, `tools/call:${toolName}`, status, Date.now() - startedMs);
         return Response.json(
           { result, jsonrpc: '2.0', id },

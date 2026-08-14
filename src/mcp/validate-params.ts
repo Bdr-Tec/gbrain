@@ -154,22 +154,34 @@ export function parseStrictParamsMode(v: unknown): StrictParamsMode | null {
  * Dual-plane resolution for `mcp.strict_params`: DB plane (`engine.getConfig`)
  * wins, file plane (`config.mcp.strict_params`) is the fallback, absent or
  * unparseable on both = 'warn' (the grace-period default). A failed DB read
- * also falls to the file plane — validation posture must never take a tool
- * call down. Resolved once per dispatch (amendment 12); serve-http's
- * tools/list also reads it per request so `gbrain config set
+ * holds the LAST successfully resolved DB mode (per process) before falling
+ * to the file plane — a transient config outage on a reject-mode server must
+ * not silently re-open the warn-mode grace period. Validation posture never
+ * takes a tool call down. Resolved once per dispatch (amendment 12);
+ * serve-http's tools/list also reads it per request so `gbrain config set
  * mcp.strict_params reject` flips the advertised schema without a restart
  * (stdio + the legacy bearer transport resolve once at startup — restart to
  * flip there, deliberate).
  */
+let lastKnownDbStrictMode: StrictParamsMode | null = null;
+
+/** Test seam: clear the last-known-good DB mode between cases. */
+export function resetStrictParamsModeCache(): void {
+  lastKnownDbStrictMode = null;
+}
+
 export async function resolveStrictParamsMode(
   engine: BrainEngine,
   config: GBrainConfig | null | undefined,
 ): Promise<StrictParamsMode> {
   try {
     const dbMode = parseStrictParamsMode(await engine.getConfig('mcp.strict_params'));
+    lastKnownDbStrictMode = dbMode;
     if (dbMode) return dbMode;
   } catch {
-    // Engine without a config table / transient error → file plane decides.
+    // Engine without a config table / transient error: last-known-good DB
+    // mode wins; with no prior successful read, the file plane decides.
+    if (lastKnownDbStrictMode) return lastKnownDbStrictMode;
   }
   return parseStrictParamsMode(config?.mcp?.strict_params) ?? 'warn';
 }

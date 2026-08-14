@@ -144,8 +144,9 @@ export function packToBudget<T>(
  * exceeds the budget (packToBudget's strict [] edge), keep one result with
  * chunk_text truncated to fit — on a COPY, never mutating the shared
  * SearchResult (it flows on to cache write + eval capture). A budget below
- * even the title-only cost keeps a title-only copy (chunk_text: ''). The
- * failsafe lives HERE, not in packToBudget, because packToBudget also
+ * even the title-only cost truncates the TITLE too (chunk_text: ''), so
+ * `used <= budget` holds unconditionally — a hard cap that can be exceeded
+ * is not a cap. The failsafe lives HERE, not in packToBudget, because it also
  * feeds the frozen memory-verb paths (recall/entity/context_pack) whose
  * strict-cap contract must not drift. `GBRAIN_SEARCH_SALVAGE=off`
  * restores the strict [] behavior (ENG-7).
@@ -158,10 +159,12 @@ export function enforceTokenBudget(
   if (items.length === 0 && results.length > 0 && meta.budget > 0 && searchSalvageEnabled()) {
     const first = results[0];
     // Chars that keep resultTokens(copy) <= budget under the char/4 model:
-    // ceil(4*(budget - titleCost)/4) = budget - titleCost. Clamped at 0 so a
-    // sub-title-cost budget degrades to the title-only copy.
-    const chunkChars = Math.max(0, (meta.budget - estimateTokens(first.title)) * 4);
-    const copy: SearchResult = { ...first, chunk_text: first.chunk_text.slice(0, chunkChars) };
+    // ceil(4*(budget - titleCost)/4) = budget - titleCost. A sub-title-cost
+    // budget slices the title itself (budget*4 chars costs exactly budget
+    // tokens under ceil(len/4)), so used <= budget holds unconditionally.
+    const title = (first.title ?? '').slice(0, meta.budget * 4);
+    const chunkChars = Math.max(0, (meta.budget - estimateTokens(title)) * 4);
+    const copy: SearchResult = { ...first, title, chunk_text: first.chunk_text.slice(0, chunkChars) };
     return {
       results: [copy],
       meta: {

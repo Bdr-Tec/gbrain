@@ -1662,7 +1662,11 @@ export interface EvalCaptureFailure {
  *   vector_arm_failed  — an engine.searchVector arm threw; surviving arms
  *                        (or keyword) carried the result
  *   budget_dropped_all — the first result alone exceeded the token budget
- *                        (pre-minKeep this returned []; now 1 truncated copy)
+ *                        and NOTHING was returned (GBRAIN_SEARCH_SALVAGE=off
+ *                        strict path — the result set is empty)
+ *   budget_truncated   — the minKeep failsafe kept ONE result truncated to
+ *                        fit the budget (results non-empty but cut; distinct
+ *                        stage so consumers can tell "empty" from "clipped")
  *   keyword_zero       — the keyword arm returned zero rows on a path where
  *                        it was the primary recall arm (vector unavailable)
  *   cache_prestamp     — served from a cache row written before the
@@ -1676,6 +1680,7 @@ export const DEGRADED_STAGES = [
   'rescore_skipped',
   'vector_arm_failed',
   'budget_dropped_all',
+  'budget_truncated',
   'keyword_zero',
   'cache_prestamp',
 ] as const;

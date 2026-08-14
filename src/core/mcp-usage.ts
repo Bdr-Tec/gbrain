@@ -14,6 +14,10 @@
  *     'tools/call:<name>' — the prefix is stripped and the row counts as <name>.
  *   - 'surface_change' audit rows (ENG-8, src/core/surface-audit.ts) are
  *     bookkeeping, not usage — dropped.
+ *   - Only successful calls count ('success' / 'success_with_warnings').
+ *     Denied and errored rows are not usage: a client repeatedly bouncing off
+ *     a gated op must not "use" its way into starter-set derivation or an
+ *     advisor fit finding (that would let denial traffic curate the catalog).
  *
  * Windowed on `created_at` so the query rides `idx_mcp_log_time_agent`
  * (created_at, token_name). Plain SQL through `engine.executeRaw` — works on
@@ -125,6 +129,7 @@ export async function readClientOpUsage(
        FROM mcp_request_log
       WHERE created_at > now() - ($1::int * interval '1 day')
         AND token_name IS NOT NULL
+        AND status IN ('success', 'success_with_warnings')
       GROUP BY token_name, operation`,
     [days],
   );
