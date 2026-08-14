@@ -17,11 +17,21 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
-# Match the interpolated form: ${JSON.stringify(...)}::jsonb
-# Using grep -P for Perl-compatible regex (lookahead-free pattern is enough here).
-PATTERN='\$\{JSON\.stringify\([^)]*\)\}::jsonb'
+# W0 fix-wave (Tier-1 #11): self-test seam — the guard harness points this at
+# a known-bad fixture tree and asserts exit 1.
+SCAN_ROOT="${GBRAIN_GUARD_ROOT:-src/}"
 
-if grep -rEn "$PATTERN" src/ 2>/dev/null; then
+# Match the interpolated form: ${JSON.stringify(...)}::jsonb
+#
+# W0 fix-wave (Tier-1 #11): the previous `\([^)]*\)` argument matcher could
+# not cross a nested `)` — `${JSON.stringify(obj.get())}::jsonb` was
+# invisible (the same regex-hole class that made check-no-double-retry a
+# permanently-green no-op). `.*\)` spans nested calls; the trailing literal
+# `)}::jsonb` adjacency keeps the SAFE `${JSON.stringify(x)}::text::jsonb`
+# spelling unflagged (no `)}::jsonb` adjacency there).
+PATTERN='\$\{JSON\.stringify\(.*\)\}::jsonb'
+
+if grep -rEn "$PATTERN" "$SCAN_ROOT" 2>/dev/null; then
   echo
   echo "ERROR: Found JSON.stringify(...)::jsonb pattern in src/."
   echo "       postgres.js v3 stringifies again, producing JSONB string literals."
@@ -36,7 +46,13 @@ echo "OK: no JSON.stringify(x)::jsonb interpolation pattern in src/"
 # the "10/10 rescued" claim false for out-of-the-box users. Default is 5 now.
 MAX_STALLED_PATTERN='max_stalled\s+INTEGER\s+NOT\s+NULL\s+DEFAULT\s+1\b'
 
-if grep -rEn "$MAX_STALLED_PATTERN" src/schema.sql src/core/migrate.ts src/core/pglite-schema.ts src/core/schema-embedded.ts 2>/dev/null; then
+# Schema files are fixed paths; under a fixture root (self-test) they don't
+# exist — skip rather than fail on the missing-file grep.
+SCHEMA_FILES=()
+for f in src/schema.sql src/core/migrate.ts src/core/pglite-schema.ts src/core/schema-embedded.ts; do
+  [ -f "$f" ] && SCHEMA_FILES+=("$f")
+done
+if [ "${#SCHEMA_FILES[@]}" -gt 0 ] && grep -rEn "$MAX_STALLED_PATTERN" "${SCHEMA_FILES[@]}" 2>/dev/null; then
   echo
   echo "ERROR: max_stalled DEFAULT 1 reintroduced in schema."
   echo "       Must be DEFAULT 5 to preserve SIGKILL-rescue guarantee. See #219."
@@ -51,10 +67,11 @@ echo "OK: max_stalled defaults are 5 in all schema sources"
 # [JSON.stringify(x)]) — which is the exact shape that double-encoded the
 # op_checkpoints pin and aborted every sync in #2339. The AST-lite scanner below
 # catches it. `set -e` propagates its non-zero exit.
+# Under a fixture root, scan that root; the AST-lite scanner takes roots as argv.
 if command -v node >/dev/null 2>&1; then
-  node scripts/check-jsonb-params.mjs
+  node scripts/check-jsonb-params.mjs ${GBRAIN_GUARD_ROOT:+"$GBRAIN_GUARD_ROOT"}
 elif command -v bun >/dev/null 2>&1; then
-  bun scripts/check-jsonb-params.mjs
+  bun scripts/check-jsonb-params.mjs ${GBRAIN_GUARD_ROOT:+"$GBRAIN_GUARD_ROOT"}
 else
   echo "WARN: neither node nor bun on PATH; skipping check-jsonb-params.mjs" >&2
 fi

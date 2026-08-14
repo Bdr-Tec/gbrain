@@ -19,16 +19,23 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
+# W0 fix-wave (Tier-1 #11): self-test seam. The guard harness points this at
+# a known-bad fixture tree and asserts exit 1 — the guard can no longer rot
+# into a permanently-green no-op unnoticed.
+SCAN_ROOT="${GBRAIN_GUARD_ROOT:-src/}"
+
 # Match: withRetry(...) wrapping any of the 3 engine batch methods.
-# The greedy `.*` between `withRetry(` and `engine.` covers both the
-# arrow-fn form and any direct invocation. (gbrain-allow-direct-insert: doc comment)
-# Multi-line wraps are caught by `grep -E` per file (line-wise) for the
-# common single-line case; multi-line wraps still get caught by a separate
-# multi-line pass below.
-PATTERN='withRetry\([^)]*engine\.(addLinksBatch|addTimelineEntriesBatch|upsertChunks)'
+#
+# W0 fix-wave (Tier-1 #11): the previous pattern used `[^)]*` between
+# `withRetry(` and `engine.`, which can never cross the `)` in `() =>` — so
+# the CANONICAL banned shape `withRetry(() => engine.addLinksBatch(...))`
+# was invisible and the guard had been permanently green since it shipped.
+# `.*` (line-bounded by grep) covers the arrow form, async arrows, and any
+# argument shape.
+PATTERN='withRetry\(.*engine\.(addLinksBatch|addTimelineEntriesBatch|upsertChunks)'
 
 # Single-line scan (covers ~95% of real cases).
-if grep -rEn "$PATTERN" src/ --include='*.ts' 2>/dev/null; then
+if grep -rEn "$PATTERN" "$SCAN_ROOT" --include='*.ts' 2>/dev/null; then
   echo
   echo "ERROR: Found withRetry(...engine.{addLinksBatch|addTimelineEntriesBatch|upsertChunks})"
   echo "       pattern in src/."
@@ -47,17 +54,19 @@ if grep -rEn "$PATTERN" src/ --include='*.ts' 2>/dev/null; then
   exit 1
 fi
 
-# Multi-line scan: a withRetry( on one line and the engine call on the next
-# few. Bounded to 3-line window so we don't flag distant unrelated calls.
-# Uses pcregrep if available, else falls back to a simple awk window.
-if command -v pcregrep >/dev/null 2>&1; then
-  if pcregrep -r -M -n --include='\.ts$' \
-    'withRetry\([^)]*\n\s*\(?[^)]*=>\s*engine\.(addLinksBatch|addTimelineEntriesBatch|upsertChunks)' \
-    src/ 2>/dev/null; then
-    echo
-    echo "ERROR: Multi-line withRetry(...engine.batch...) wrap found in src/. See above."
-    exit 1
-  fi
+# Multi-line scan: a withRetry( on one line and the engine call within the
+# next 3 lines. W0 fix-wave (Tier-1 #11): the previous pass was gated on
+# pcregrep, which is not installed on dev machines OR CI — it never ran.
+# perl is always available; same 3-line window, always on.
+if find "$SCAN_ROOT" -name '*.ts' -type f -print0 2>/dev/null | xargs -0 perl -0777 -ne '
+  if (/withRetry\([^\n]*\n(?:[^\n]*\n){0,2}?[^\n]*engine\.(?:addLinksBatch|addTimelineEntriesBatch|upsertChunks)/) {
+    print "$ARGV: multi-line withRetry(...engine.batch...) wrap\n"; $found = 1;
+  }
+  END { exit($found ? 0 : 1) }
+' 2>/dev/null | grep -q .; then
+  echo
+  echo "ERROR: Multi-line withRetry(...engine.batch...) wrap found in $SCAN_ROOT. See above."
+  exit 1
 fi
 
-echo "OK: no withRetry(...engine.batch...) double-retry patterns in src/"
+echo "OK: no withRetry(...engine.batch...) double-retry patterns in $SCAN_ROOT"
