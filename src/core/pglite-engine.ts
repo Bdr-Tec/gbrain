@@ -162,7 +162,7 @@ function tryLoadSnapshot(snapshotPath: string): Blob | null {
 }
 
 export function computeSnapshotSchemaHash(
-  migrations: Array<{ version: number; name: string; sql?: string; sqlFor?: { pglite?: string } }>,
+  migrations: Array<{ version: number; name: string; sql?: string; sqlFor?: { pglite?: string }; handler?: unknown }>,
   schemaSQL: string,
   crypto: typeof import('node:crypto'),
 ): string {
@@ -178,6 +178,13 @@ export function computeSnapshotSchemaHash(
     hash.update(m.sql ?? '');
     hash.update('\t');
     hash.update(m.sqlFor?.pglite ?? '');
+    hash.update('\t');
+    // W0 fix-wave (D5.13, Codex #4): 19+ migrations carry executable
+    // `handler` code with empty/absent sql — invisible to the sql-only hash,
+    // so editing a handler reused a stale snapshot. Function.prototype
+    // .toString folds the handler SOURCE into the hash (deterministic within
+    // a checkout; this is a dev/test fixture, not a shipped artifact).
+    hash.update(typeof m.handler === 'function' ? String(m.handler) : '');
     hash.update('\n');
   }
   return hash.digest('hex');

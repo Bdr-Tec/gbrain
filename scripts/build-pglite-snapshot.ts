@@ -18,7 +18,7 @@
 //
 // Re-run whenever you touch src/core/migrate.ts or src/schema.sql.
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, rmdirSync } from "node:fs";
 import { dirname } from "node:path";
 import * as crypto from "node:crypto";
 
@@ -33,9 +33,45 @@ function computeSchemaHash(): string {
 async function main() {
   const fixturePath = "test/fixtures/pglite-snapshot.tar";
   const versionPath = "test/fixtures/pglite-snapshot.version";
+  const lockPath = "test/fixtures/.pglite-snapshot.lock";
   mkdirSync(dirname(fixturePath), { recursive: true });
 
   const schemaHash = computeSchemaHash();
+
+  // W0 fix-wave (Tier-1 #16): idempotent short-circuit. Runners now call this
+  // script UNCONDITIONALLY (build-if-missing left stale-but-present snapshots
+  // permanently on the warn+slow path); a fresh snapshot exits in ~ms.
+  const isFresh = () =>
+    existsSync(fixturePath)
+    && existsSync(versionPath)
+    && readFileSync(versionPath, "utf-8").trim() === schemaHash;
+  if (isFresh()) {
+    console.log(`[build-pglite-snapshot] up to date (hash ${schemaHash.slice(0, 16)}...) — nothing to do`);
+    return;
+  }
+
+  // W0 fix-wave (D5.8): concurrency lock. Parallel shard runners / concurrent
+  // Conductor workspaces invoking this simultaneously must not tear the tar.
+  // mkdir is atomic; the loser polls until the winner finishes, then
+  // re-checks freshness and exits.
+  let ownLock = false;
+  try {
+    mkdirSync(lockPath);
+    ownLock = true;
+  } catch {
+    console.log(`[build-pglite-snapshot] another builder holds ${lockPath}; waiting...`);
+    const deadline = Date.now() + 120_000;
+    while (existsSync(lockPath) && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 250));
+    }
+    if (isFresh()) {
+      console.log(`[build-pglite-snapshot] concurrent builder finished; snapshot fresh`);
+      return;
+    }
+    // Stale lock (crashed builder) or still-stale snapshot: take over.
+    try { mkdirSync(lockPath); ownLock = true; } catch { /* proceed unlocked as last resort */ }
+  }
+  try {
   console.log(`[build-pglite-snapshot] schema hash: ${schemaHash.slice(0, 16)}...`);
   console.log(`[build-pglite-snapshot] booting PGLite (in-memory)...`);
   const engine = new PGLiteEngine();
@@ -53,12 +89,18 @@ async function main() {
   const dump = await engine.db.dumpDataDir("none");
   const buffer = Buffer.from(await dump.arrayBuffer());
 
+  // Write tar first, version LAST — the version file is the commit point, so
+  // a crash between the writes leaves a stale-hash (ignored) snapshot, never
+  // a fresh-looking torn one.
   writeFileSync(fixturePath, buffer);
   writeFileSync(versionPath, schemaHash + "\n");
   await engine.disconnect();
 
   console.log(`[build-pglite-snapshot] wrote ${fixturePath} (${buffer.length} bytes)`);
   console.log(`[build-pglite-snapshot] wrote ${versionPath}`);
+  } finally {
+    if (ownLock) { try { rmdirSync(lockPath); } catch { /* best effort */ } }
+  }
 }
 
 await main();
