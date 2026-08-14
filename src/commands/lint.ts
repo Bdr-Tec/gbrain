@@ -441,6 +441,17 @@ export interface LintOpts {
    * single-file targets.
    */
   exclude?: string[];
+  /**
+   * W0 fix-wave (Tier-1 #14): per-page hook fired for every page WITH
+   * issues, before any fix is applied. The CLI passes a printer so human
+   * detail and the aggregate counts come from ONE scan — pre-fix, runLint
+   * ran its own full read+lint+fix loop and THEN called runLintCore for the
+   * summary, linting every page twice and reporting "0 auto-fixed" because
+   * the second pass saw already-fixed files.
+   */
+  onPageIssues?: (relPath: string, issues: LintIssue[], fixedCount: number) => void;
+  /** Companion to onPageIssues: per-page progress tick (CLI progress bar). */
+  onPageScanned?: () => void;
 }
 
 export interface LintResult {
@@ -490,21 +501,25 @@ export async function runLintCore(opts: LintOpts): Promise<LintResult> {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     const content = readFileSync(page, 'utf-8');
-    const issues = lintContent(content, isSingleFile ? page : relative(opts.target, page), lintOpts);
+    const relPath = isSingleFile ? page : relative(opts.target, page);
+    const issues = lintContent(content, relPath, lintOpts);
+    opts.onPageScanned?.();
     if (issues.length === 0) continue;
     pagesWithIssues++;
     totalIssues += issues.length;
 
+    let fixCount = 0;
     if (opts.fix && issues.some(i => i.fixable)) {
       const fixed = fixContent(content);
       if (fixed !== content) {
-        const fixCount = issues.filter(i => i.fixable).length;
+        fixCount = issues.filter(i => i.fixable).length;
         totalFixed += fixCount;
         if (!opts.dryRun) {
           writeFileSync(page, fixed);
         }
       }
     }
+    opts.onPageIssues?.(relPath, issues, fixCount);
   }
 
   return {
@@ -547,57 +562,40 @@ export async function runLint(args: string[]) {
     process.exit(1);
   }
 
-  // Single file or directory — print human detail as we go, then rely on
-  // Core for the aggregate numbers at the end.
+  // W0 fix-wave (Tier-1 #14): ONE scan. Pre-fix this function ran its own
+  // full read+lint+fix loop for human output and THEN called runLintCore for
+  // the summary — every page linted twice, and with --fix the second pass
+  // saw already-fixed files so the summary reported "0 auto-fixed" after
+  // fixing N. Human detail now streams from runLintCore's per-page hooks
+  // and the counts come from the same single pass.
   const isSingleFile = statSync(target).isFile();
-  const pages = isSingleFile ? [target] : collectPages(target, extraExcludes);
+  const pageCount = isSingleFile ? 1 : collectPages(target, extraExcludes).length;
 
   // Progress on stderr. Stdout keeps the per-issue human output it always had.
   const { createProgress } = await import('../core/progress.ts');
   const { getCliOptions, cliOptsToProgressOptions } = await import('../core/cli-options.ts');
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
-  progress.start('lint.pages', pages.length);
+  progress.start('lint.pages', pageCount);
 
-  // v0.41 (D1): resolve content-sanity config once for this lint run.
-  // Mirrors runLintCore. The two paths must agree because runLint
-  // prints human details inline; runLintCore at end computes the
-  // aggregate. Sharing the resolved opts keeps both surfaces seeing
-  // the same rule firings.
-  const contentSanity = await resolveLintContentSanity();
-  const lintContentOpts: LintContentOpts = { contentSanity };
-
-  for (const page of pages) {
-    const content = readFileSync(page, 'utf-8');
-    const relPath = isSingleFile ? page : relative(target, page);
-    const issues = lintContent(content, relPath, lintContentOpts);
-    progress.tick(1);
-    if (issues.length === 0) continue;
-
-    console.log(`\n${relPath}:`);
-    for (const issue of issues) {
-      const fixLabel = issue.fixable ? ' [fixable]' : '';
-      console.log(`  L${issue.line} ${issue.rule}: ${issue.message}${fixLabel}`);
-    }
-
-    if (doFix && issues.some(i => i.fixable)) {
-      const fixed = fixContent(content);
-      if (fixed !== content) {
-        const fixCount = issues.filter(i => i.fixable).length;
-        if (!dryRun) {
-          writeFileSync(page, fixed);
-        }
-        console.log(`  ${dryRun ? '(dry run) ' : ''}Fixed ${fixCount} issue(s)`);
+  const result = await runLintCore({
+    target,
+    fix: doFix,
+    dryRun,
+    exclude: extraExcludes,
+    onPageScanned: () => progress.tick(1),
+    onPageIssues: (relPath, issues, fixedCount) => {
+      console.log(`\n${relPath}:`);
+      for (const issue of issues) {
+        const fixLabel = issue.fixable ? ' [fixable]' : '';
+        console.log(`  L${issue.line} ${issue.rule}: ${issue.message}${fixLabel}`);
       }
-    }
-  }
+      if (fixedCount > 0) {
+        console.log(`  ${dryRun ? '(dry run) ' : ''}Fixed ${fixedCount} issue(s)`);
+      }
+    },
+  });
 
   progress.finish();
-
-  // Re-run core for the aggregate counts (cheap; re-parses contents but
-  // produces canonical numbers for the summary line).
-  // Pass contentSanity through so runLintCore skips its own resolve
-  // (we already resolved once for the human-detail loop above).
-  const result = await runLintCore({ target, fix: doFix, dryRun, contentSanity, exclude: extraExcludes });
   console.log(`\n${result.pages_scanned} pages scanned. ${result.total_issues} issue(s) in ${result.pages_with_issues} page(s).`);
   if (doFix) {
     console.log(`${dryRun ? '(dry run) ' : ''}${result.total_fixed} auto-fixed.`);
