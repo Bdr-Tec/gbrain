@@ -2935,26 +2935,29 @@ export class PGLiteEngine implements BrainEngine {
     );
   }
 
-  async getChunks(slug: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<Chunk[]> {
+  async getChunks(slug: string, opts?: { sourceId?: string; sourceIds?: string[]; includeEmbedding?: boolean }): Promise<Chunk[]> {
     const sourceIds = opts?.sourceIds && opts.sourceIds.length > 0 ? opts.sourceIds : undefined;
     const source = sourceIds ?? opts?.sourceId ?? 'default';
-    // #2544: explicit non-vector column list — rowToChunk discards embeddings
-    // at this call site, so `cc.*` shipped every vector only to be thrown away.
+    // #2544: explicit non-vector column list — most callers discard embeddings,
+    // so `cc.*` shipped every vector only to be thrown away. `includeEmbedding`
+    // adds the vector back for the callers that consume it (embed-reuse.ts).
     // embedding_is_null: boolean truth of the stored vector (a schema rebuild
     // NULLs vectors without touching embedded_at).
+    const includeEmbedding = opts?.includeEmbedding === true;
     const { rows } = await this.db.query(
       `SELECT cc.id, cc.page_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
               cc.model, cc.token_count, cc.embedded_at, cc.language,
               cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line,
               cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified, cc.modality,
               (cc.embedding IS NULL) AS embedding_is_null
+              ${includeEmbedding ? ', cc.embedding' : ''}
        FROM content_chunks cc
        JOIN pages p ON p.id = cc.page_id
        WHERE p.slug = $1 AND ${sourceIds ? 'p.source_id = ANY($2::text[])' : 'p.source_id = $2'}
        ORDER BY cc.chunk_index`,
       [slug, source]
     );
-    return (rows as Record<string, unknown>[]).map(r => rowToChunk(r));
+    return (rows as Record<string, unknown>[]).map(r => rowToChunk(r, includeEmbedding));
   }
 
   /**

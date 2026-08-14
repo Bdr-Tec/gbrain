@@ -426,12 +426,18 @@ describe('#2555 get_chunks federated scope', () => {
     expect(def.map(c => c.chunk_text)).toEqual(['default decoy chunk']);
   });
 
-  test('#2544 structural pin: neither engine SELECTs cc.* in getChunks (the trim survives merges)', async () => {
+  test('#2544 structural pin: getChunks never SELECTs cc.* and fetches cc.embedding only behind includeEmbedding', async () => {
     // The behavioral assertion above is vacuous for the trim itself —
     // rowToChunk hard-nulls embedding regardless of the SELECT. This pin
     // exists because a master merge once silently restored `SELECT cc.*`
     // while the doc comment kept claiming the trim: assert the SELECT shape
     // at the source level for BOTH engines.
+    //
+    // The vector column is not forbidden outright anymore: importCodeFile's
+    // embedding-reuse cache CONSUMES it (embed-reuse.ts), opted in via
+    // `includeEmbedding`. The invariant is unchanged in spirit and stricter
+    // in letter: no unconditional vector fetch, and the opt-in path must
+    // exist — a half-revert that strands the flag fails too.
     const { readFileSync } = await import('fs');
     for (const enginePath of ['src/core/postgres-engine.ts', 'src/core/pglite-engine.ts']) {
       const src = readFileSync(new URL(`../${enginePath}`, import.meta.url), 'utf-8');
@@ -453,14 +459,23 @@ describe('#2555 get_chunks federated scope', () => {
         'parent_symbol_path', 'doc_comment', 'symbol_name_qualified', 'modality']) {
         expect(body, `${enginePath} getChunks must select cc.${col}`).toContain(`cc.${col}`);
       }
-      // The vector columns stay unselected. The ONE allowed reference is the
-      // cheap `(cc.embedding IS NULL) AS embedding_is_null` boolean (no vector
-      // egress — a schema rebuild NULLs vectors without touching embedded_at,
-      // and the per-slug embed filter needs the stored-vector truth). Strip
-      // that exact shape, then keep forbidding any other cc.embedding use.
+      // Two references to the vector column are legitimate; everything else is
+      // the #2544 egress regression coming back.
+      //   1. `(cc.embedding IS NULL) AS embedding_is_null` — a cheap boolean, no
+      //      vector egress (a schema rebuild NULLs vectors without touching
+      //      embedded_at, and the per-slug embed filter needs that truth).
+      //   2. the `includeEmbedding` opt-in — importCodeFile's reuse cache
+      //      CONSUMES the vectors (see embed-reuse.ts), and #2544 silently made
+      //      that cache a no-op by dropping the column unconditionally.
+      // Strip (1), then require every survivor to be gated by (2), and require
+      // the gate to still exist so a half-revert stranding the flag also fails.
       const withoutNullBoolean = body.replace(/\(cc\.embedding IS NULL\) AS embedding_is_null/g, '');
-      expect(withoutNullBoolean).not.toMatch(/cc\.embedding\b/);
       expect(body).toContain('(cc.embedding IS NULL) AS embedding_is_null');
+      const vectorLines = withoutNullBoolean.split('\n').filter((l) => /cc\.embedding\b/.test(l));
+      expect(vectorLines.length, `${enginePath} getChunks must keep the includeEmbedding opt-in`).toBeGreaterThan(0);
+      for (const line of vectorLines) {
+        expect(line, `${enginePath} getChunks must gate cc.embedding behind includeEmbedding`).toMatch(/includeEmbedding \?/);
+      }
     }
   });
 });

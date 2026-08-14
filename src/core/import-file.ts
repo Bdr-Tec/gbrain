@@ -8,6 +8,7 @@ import { classifyStoredType } from './schema-pack/type-usage.ts';
 import { chunkText } from './chunkers/recursive.ts';
 import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION } from './chunkers/code.ts';
 import { findChunkForOffset } from './chunkers/edge-extractor.ts';
+import { planEmbeddingReuse } from './embed-reuse.ts';
 import { extractCodeRefs, imageOfCandidates } from './link-extraction.ts';
 import { embedBatch, embedMultimodal, currentEmbeddingSignature } from './embedding.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath, hasMalformedPathSegment } from './sync.ts';
@@ -1378,27 +1379,23 @@ export async function importCodeFile(
   // v0.19.0 E2 — incremental chunking. Embedding calls dominate the cost
   // of a sync; re-embedding unchanged chunks wastes money without
   // improving retrieval. Look up existing chunks by slug and, for any
-  // whose chunk_text exactly matches the new chunk at the same index,
-  // reuse the existing embedding. Only truly new/changed chunks hit the
-  // OpenAI API. Order matters: our chunk_index is semantic (tree-sitter
-  // order), so a matching (chunk_index, text_hash) means a verbatim
-  // preserved symbol.
-  const existingChunks = existing ? await engine.getChunks(slug, { sourceId: sourceId ?? 'default' }) : [];
-  const existingByKey = new Map<string, typeof existingChunks[number]>();
-  for (const ec of existingChunks) {
-    existingByKey.set(`${ec.chunk_index}:${ec.chunk_text}`, ec);
-  }
-  const needsEmbedIndexes: number[] = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const key = `${chunks[i]!.chunk_index}:${chunks[i]!.chunk_text}`;
-    const matched = existingByKey.get(key);
-    if (matched && matched.embedding) {
-      // Reuse the existing embedding verbatim. No API call, no cost.
-      chunks[i]!.embedding = matched.embedding as Float32Array;
-      chunks[i]!.token_count = matched.token_count ?? undefined;
-    } else {
-      needsEmbedIndexes.push(i);
-    }
+  // whose body matches a new chunk's, reuse the existing embedding. Only truly
+  // new/changed chunks hit the embedding API. The match runs on the
+  // header-stripped body: the header carries line numbers and the index shifts
+  // when a symbol is added above, so keying on either re-embedded
+  // byte-identical bodies.
+  // `includeEmbedding` is load-bearing: #2544 dropped the vector from the
+  // default column list, which silently made this whole cache a no-op.
+  const existingChunks = existing
+    ? await engine.getChunks(slug, { sourceId: sourceId ?? 'default', includeEmbedding: true })
+    : [];
+  const { reuse, needsEmbedIndexes } = planEmbeddingReuse(existingChunks, chunks);
+  for (const [i, matched] of reuse) {
+    // Reuse the existing embedding verbatim. No API call, no cost. Carry the
+    // stored model stamp with the vector so provenance survives a model swap.
+    chunks[i]!.embedding = matched.embedding as Float32Array;
+    chunks[i]!.token_count = matched.token_count ?? undefined;
+    if (matched.model) chunks[i]!.model = matched.model;
   }
 
   // Embed only the new/changed chunks.
