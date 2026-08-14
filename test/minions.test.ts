@@ -381,6 +381,55 @@ describe('MinionQueue: #1737 per-handler default timeout', () => {
   });
 });
 
+// --- Claim-time budget fallback (jobs fix wave, upstream issue #3) ---
+//
+// Rows inserted before submit-time stamping existed (or by writers that
+// bypass add()) carry timeout_ms = NULL and used to fall to the minutes-scale
+// null-default wall-clock sweep. claim() now COALESCEs the budget from
+// HANDLER_DEFAULT_TIMEOUT_MS and derives timeout_at from the coalesced value.
+// Seeding NULL requires a direct UPDATE because add() stamps at submit.
+
+describe('MinionQueue: claim-time timeout fallback', () => {
+  test('legacy NULL-timeout long-handler row gets the map budget stamped at claim', async () => {
+    const job = await queue.add('subagent', {}, undefined, { allowProtectedSubmit: true });
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET timeout_ms = NULL, timeout_at = NULL WHERE id = $1`,
+      [job.id],
+    );
+    const before = Date.now();
+    const claimed = await queue.claim('tok-fallback', 30_000, 'default', ['subagent']);
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(job.id);
+    expect(claimed!.timeout_ms).toBe(30 * 60 * 1000);
+    expect(claimed!.timeout_at).toBeInstanceOf(Date);
+    const deadline = claimed!.timeout_at!.getTime();
+    // timeout_at ≈ claim time + 30min (generous 60s slop for slow CI).
+    expect(deadline).toBeGreaterThan(before + 30 * 60 * 1000 - 60_000);
+    expect(deadline).toBeLessThan(before + 30 * 60 * 1000 + 60_000);
+    // Persisted, not just returned — a restarted worker sees the same budget.
+    const rows = await engine.executeRaw<{ timeout_ms: number | null }>(
+      `SELECT timeout_ms FROM minion_jobs WHERE id = $1`, [job.id],
+    );
+    expect(Number(rows[0].timeout_ms)).toBe(30 * 60 * 1000);
+  });
+
+  test('name outside the map keeps NULL budget at claim (fail-open, todays behavior)', async () => {
+    const job = await queue.add('noop', {});
+    expect(job.timeout_ms).toBeNull();
+    const claimed = await queue.claim('tok-nomap', 30_000, 'default', ['noop']);
+    expect(claimed).not.toBeNull();
+    expect(claimed!.timeout_ms).toBeNull();
+    expect(claimed!.timeout_at).toBeNull();
+  });
+
+  test('explicit timeout_ms is never overridden at claim', async () => {
+    await queue.add('embed-backfill', { sourceId: 'x' }, { timeout_ms: 5000 });
+    const claimed = await queue.claim('tok-explicit', 30_000, 'default', ['embed-backfill']);
+    expect(claimed).not.toBeNull();
+    expect(claimed!.timeout_ms).toBe(5000);
+  });
+});
+
 // --- v0.13.1 #219 — max_stalled default + input surface ---
 
 describe('MinionQueue: v0.13.1 max_stalled schema default (#219)', () => {

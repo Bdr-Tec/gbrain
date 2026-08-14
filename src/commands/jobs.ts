@@ -12,6 +12,7 @@ import type { PaceKeyOverrides } from '../core/pace-mode.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { parseNiceValue, applyNiceness, getEffectiveNiceness, formatNice } from '../core/minions/niceness.ts';
+import { defaultTimeoutMsFor } from '../core/minions/handler-timeouts.ts';
 
 function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -163,6 +164,7 @@ export function resolveWorkerConcurrency(args: string[], env: NodeJS.ProcessEnv 
  */
 const JOB_DATE_FIELDS = [
   'created_at', 'updated_at', 'started_at', 'finished_at', 'lock_until', 'delay_until',
+  'timeout_at',
 ] as const;
 
 export function rehydrateJobDates<T>(job: T): T {
@@ -187,12 +189,41 @@ function formatJob(job: MinionJob): string {
   return `  ${String(job.id).padEnd(6)} ${job.name.padEnd(14)} ${(job.status + stalled).padEnd(20)} ${job.queue.padEnd(10)} ${dur.padEnd(8)} ${job.created_at.toISOString().slice(0, 19)}`;
 }
 
-function formatJobDetail(job: MinionJob): string {
+/** Render a timestamp that is a Date locally but may arrive as an ISO string
+ *  on the thin-client path against an OLDER server (rehydrateJobDates only
+ *  converts fields it knows about; a field the peer predates stays a string).
+ *  Never call .toISOString() unguarded on wire-shaped job fields. */
+function formatWhen(v: Date | string | null | undefined): string {
+  if (v instanceof Date) return v.toISOString();
+  return String(v ?? '');
+}
+
+/** The effective wall-clock budget line for `jobs get`. Wording matters: the
+ *  1x deadline (handleTimeouts, stamped at claim) is the NORMAL kill; the 2x
+ *  wall-clock sweep is the lock-state-agnostic backstop. */
+function formatTimeoutLines(job: MinionJob): string[] {
+  const lines: string[] = [];
+  if (job.timeout_ms != null) {
+    lines.push(`  Timeout: ${job.timeout_ms}ms (deadline kill at 1x when claimed; wall-clock backstop at 2x)`);
+    if (job.timeout_at) lines.push(`  Deadline: ${formatWhen(job.timeout_at)}`);
+  } else {
+    const d = defaultTimeoutMsFor(job.name);
+    if (d != null) {
+      lines.push(`  Timeout: (unset) — handler default ${d}ms stamps at claim`);
+    } else {
+      lines.push(`  Timeout: (unset) — null-default wall-clock sweep applies (2 x lock-duration x max_stalled, ~5m at defaults)`);
+    }
+  }
+  return lines;
+}
+
+export function formatJobDetail(job: MinionJob): string {
   const lines = [
     `Job #${job.id}: ${job.name} (${job.status.toUpperCase()}${job.status === 'dead' ? ` after ${job.attempts_made} attempts` : ''})`,
     `  Queue: ${job.queue} | Priority: ${job.priority}`,
     `  Attempts: ${job.attempts_made}/${job.max_attempts} (started: ${job.attempts_started}, stalled: ${job.stalled_counter}/${job.max_stalled})`,
     `  Backoff: ${job.backoff_type} ${job.backoff_delay}ms (jitter: ${job.backoff_jitter})`,
+    ...formatTimeoutLines(job),
   ];
   if (job.started_at) lines.push(`  Started: ${job.started_at.toISOString()}`);
   if (job.finished_at) lines.push(`  Finished: ${job.finished_at.toISOString()}`);

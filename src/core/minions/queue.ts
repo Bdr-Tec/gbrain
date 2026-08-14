@@ -16,7 +16,7 @@ import type {
 import { rowToMinionJob, rowToInboxMessage, rowToAttachment } from './types.ts';
 import { validateAttachment } from './attachments.ts';
 import { isProtectedJobName } from './protected-names.ts';
-import { defaultTimeoutMsFor } from './handler-timeouts.ts';
+import { defaultTimeoutMsFor, HANDLER_DEFAULT_TIMEOUT_MS } from './handler-timeouts.ts';
 import {
   withRetry, BULK_RETRY_OPTS, resolveBulkRetryOpts, computeNextDelay,
   isRetryableConnError,
@@ -661,6 +661,18 @@ export class MinionQueue {
    *
    * Sets timeout_at = now() + timeout_ms when the job has a per-job deadline,
    * so handleTimeouts() can dead-letter expired jobs without rereading timeout_ms.
+   *
+   * Claim-time budget fallback: rows inserted before the submit-time stamping
+   * (or by any writer that bypasses add()) carry timeout_ms = NULL and used to
+   * fall through to the minutes-scale null-default wall-clock sweep — a 30-min
+   * handler died at ~5 min purely because of WHEN its row was inserted. The
+   * COALESCE below resolves HANDLER_DEFAULT_TIMEOUT_MS at claim as the durable
+   * invariant (the v128 migration is the one-shot repair for rows already in
+   * flight). Names outside the map stay NULL — exactly today's behavior.
+   * Postgres evaluates SET expressions against the OLD row, so the timeout_at
+   * CASE must repeat the COALESCE rather than reference the assigned column.
+   * The map binds as a RAW object (never JSON.stringify into ::jsonb — the
+   * postgres.js double-encode trap; PGLite hides it, real PG does not).
    */
   async claim(lockToken: string, lockDurationMs: number, queue: string, registeredNames: string[]): Promise<MinionJob | null> {
     if (registeredNames.length === 0) return null;
@@ -673,8 +685,9 @@ export class MinionQueue {
         status = 'active',
         lock_token = $1,
         lock_until = now() + ($2::double precision * interval '1 millisecond'),
-        timeout_at = CASE WHEN timeout_ms IS NOT NULL
-                          THEN now() + (timeout_ms::double precision * interval '1 millisecond')
+        timeout_ms = COALESCE(timeout_ms, ($5::jsonb ->> name)::int),
+        timeout_at = CASE WHEN COALESCE(timeout_ms, ($5::jsonb ->> name)::int) IS NOT NULL
+                          THEN now() + (COALESCE(timeout_ms, ($5::jsonb ->> name)::int)::double precision * interval '1 millisecond')
                           ELSE NULL END,
         attempts_started = attempts_started + 1,
         started_at = COALESCE(started_at, now()),
@@ -687,7 +700,7 @@ export class MinionQueue {
          LIMIT 1
        )
        RETURNING *`,
-      [lockToken, lockDurationMs, queue, registeredNames]
+      [lockToken, lockDurationMs, queue, registeredNames, HANDLER_DEFAULT_TIMEOUT_MS]
     );
     return rows.length > 0 ? rowToMinionJob(rows[0]) : null;
   }
