@@ -7,7 +7,6 @@
     "schema-author": "schema-pack authoring is a brain-owner activity, not a client activity",
     "smoke-test": "host-runtime health checks (container/daemon assumptions)",
     "gbrain-upgrade": "host binary upgrade flow",
-    "cold-start": "host onboarding flow",
     "schema-unify": "schema unification is a brain-owner migration activity",
     "skill-optimizer": "requires host-side skillopt engine access and benchmark files"
   }

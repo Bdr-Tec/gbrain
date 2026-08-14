@@ -1,5 +1,16 @@
 # TODOS
 
+## Onboarding DX follow-ups (filed v0.45.9.0)
+
+- [ ] **Retire the `config set embedding_model` dead-end across ALL surfaces.** v0.45.9.0 fixed the keyless-init notice to point at `gbrain init --force --pglite --embedding-model <id>`, but `src/core/embed-preflight.ts` (lines ~73/83/90/115) and `src/core/embedding-dim-check.ts:78` still advertise `gbrain config set embedding_model <...>`, which `src/commands/config.ts:142` hard-refuses as a schema-sizing no-op. Same dead-end class, different surfaces. Sweep them to the re-init recipe. Priority: P2.
+- [ ] **`gbrain init --supabase` migrate-model dead-end doc.** The Postgres branch of config.ts points at `docs/embedding-migrations.md`; confirm that doc exists and describes a working switch, or write it. Priority: P3.
+- [ ] **DX harness binary cache keyed on nothing.** `scripts/dx-explore.ts` reuses `.context/dx-runs/bin/gbrain` unless `--rebuild` is passed, so a second run after code changes can produce transcripts from a stale binary. Key the cache by a source hash (or rebuild when any `src/` file is newer). Dev instrument only. Priority: P3.
+- [ ] **`verify` has no MCP-registration check.** v0.45.9.0 made `bootstrap status` report the wire phase `partial` when only hooks landed (host CLI missing), but `bootstrap verify` still exits 0 in that state. Add an MCP-registration probe to verify so the "done when verify exits 0" contract also covers MCP. Priority: P2.
+- [ ] **`hasExpansionKey` misses config-plane keys + init-before-key sequencing.** The mode picker reads `process.env` only; a key routed to the 0600 config by the interview (which runs AFTER init) never influences the auto-selected search mode, and the picker never re-fires. Resolve keys through the capability/gateway fold and consider re-running the recommendation when a key is first configured. Priority: P3.
+- [ ] **`findEnvKeyTypos` KEY_SHAPE misses no-underscore typos.** `OPENAI_APIKEY` (no `_` before `KEY`) escapes the near-miss net, so that typo class now completes keyless silently instead of failing loud. Widen the regex. Priority: P3.
+- [ ] **`init-nudge` stale "4 checks" comment + 6-probe accounting.** The header still says "4 onboard checks" but six probes now run; the partial-checks message counts the page-count probe. Cosmetic. Priority: P3.
+- [ ] **FIRST LIGHT (the real first-magical-moment feature).** The v0.45.9.0 tour rewrite is the ship-now slice; the full seed-phase → compendium → scout design is PR-A (seed phase + Mirror + baton) / PR-B (compendium + scout) with one-way-door decisions (new bootstrap phase, consent key, `skills/first-light/`, a one-time Gate-3 narration exemption). Priority: P2.
+
 ## Ambient recall follow-ups (filed v0.45.7.0, issue #1)
 
 Deferred from the ambient-recall wave (`context_pack` + `delta` frozen verbs +

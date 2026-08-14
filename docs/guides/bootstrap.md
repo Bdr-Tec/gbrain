@@ -100,9 +100,11 @@ With zero API keys, everything works: the agent authors memory explicitly throug
 the brain's write tools (`put_page`, timeline entries, `## Facts` fences — your
 harness's model is the LLM, already paid for), and search runs keyword-only
 (BM25). `bootstrap verify` prints the capability report honestly. One optional key
-(OpenAI, Anthropic, or Voyage) unlocks semantic search and automatic fact
-extraction; the key goes to the 0600 config file, never into the repo or the
-interview answers. API spend is metered separately from your subscription and is
+upgrades capabilities per provider — OpenAI unlocks semantic search and
+automatic fact extraction; Voyage unlocks semantic search; Anthropic unlocks
+fact extraction (Anthropic has no embeddings API, so it does not enable
+semantic search). The key goes to the 0600 config file, never into the repo or
+the interview answers. API spend is metered separately from your subscription and is
 zero in keyless mode; with a key, the standard spend gates apply
 ([spend-controls](../operations/spend-controls.md)).
 
@@ -214,3 +216,32 @@ Run locally (where both are installed + authed):
 ```bash
 bun test test/e2e/bootstrap-real-codex.serial.test.ts
 ```
+
+## DX exploration harness (developer instrument, not a test)
+
+The door tests prove the install WORKS; they say nothing about how it FEELS.
+`test/helpers/tty-harness.ts` spawns any CLI (gbrain, `claude`, `codex`) under a
+real pseudo-terminal (Bun's `terminal:` spawn option) and records every output
+burst with a millisecond timestamp, so unnecessary pauses become a measurable
+artifact (`computeStalls` → `stalls.md`) instead of a vibe. Same hermetic env as
+`agent-harness.ts`; pure helpers are unit-tested in `test/tty-harness.test.ts`
+(zero subprocesses, PTY smokes self-skip where `terminal:` is unavailable).
+
+`scripts/dx-explore.ts` drives it to capture the fresh-user funnel as timestamped
+transcripts under `.context/dx-runs/` (gitignored — nothing asserts, no CI):
+
+```bash
+bun run scripts/dx-explore.ts help              # comprehension surfaces (no keys)
+bun run scripts/dx-explore.ts init [--keyless]  # interactive init, naive-user autopilot
+bun run scripts/dx-explore.ts claude-install    # REAL claude running the paste-in bootstrap
+bun run scripts/dx-explore.ts codex-install     # REAL codex, same
+bun run scripts/dx-explore.ts drive -- gbrain init   # manual: steer a live TUI via a file channel
+```
+
+`drive` mode is how an agent in a Conductor workspace explores a live TUI across
+separate tool calls: `cat <dir>/session/screen.txt` to watch, append
+`{"line":"..."}` / `{"key":"Down"}` / `{"stop":true}` to `<dir>/session/input.jsonl`
+to steer. Each run writes `meta.json`, `visible.txt`, `frames.jsonl`, and
+`stalls.md`. `--keyless` strips provider keys so the true no-key first-touch path
+is exercised (a Conductor session's ambient `ANTHROPIC_API_KEY` would otherwise
+leak in). Install scenarios pay real API cost — launch them as background tasks.

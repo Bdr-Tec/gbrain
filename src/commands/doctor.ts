@@ -1285,8 +1285,7 @@ export function checkSelfUpgradeHealth(): Check {
     const { loadConfig } = require('../core/config.ts');
     const {
       resolveSelfUpgradeMode,
-      readUpdateCache,
-      isCacheFresh,
+      pendingUpgradeVersion,
     } = require('../core/self-upgrade.ts');
     const { readRecentSelfUpgrades } = require('../core/audit/self-upgrade-audit.ts');
 
@@ -1301,9 +1300,11 @@ export function checkSelfUpgradeHealth(): Check {
     }
 
     const parts: string[] = [`mode=${mode}`];
-    const entry = readUpdateCache();
-    if (entry && isCacheFresh(entry, Date.now()) && entry.marker.kind === 'upgrade_available') {
-      parts.push(`update available: ${entry.marker.current} -> ${entry.marker.latest} (run: gbrain self-upgrade)`);
+    // Shared stale/foreign-cache guard: only report an upgrade strictly newer
+    // than the RUNNING binary (pendingUpgradeVersion owns the rule).
+    const pendingLatest = pendingUpgradeVersion(GBRAIN_BINARY_VERSION, Date.now());
+    if (pendingLatest) {
+      parts.push(`update available: ${GBRAIN_BINARY_VERSION} -> ${pendingLatest} (run: gbrain self-upgrade)`);
     }
     const failedVersions: string[] = cfg?.self_upgrade?.failed_versions ?? [];
     if (failedVersions.length > 0) {

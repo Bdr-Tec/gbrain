@@ -75,6 +75,9 @@ export interface VerifyReport {
   capability: CapabilityReport;
   /** The three scripted first-run prompts [D3.6/A4]. */
   tour: string[];
+  /** The OOBE hand-off lines (ownership + the cold-start next action) —
+   *  unconditional in the shape like `tour`; printed in the report on PASS. */
+  handoff: string[];
 }
 
 export interface VerifyOpts {
@@ -97,11 +100,15 @@ export const VERIFY_PROBE_ENTITY_SLUG = 'wiki/bootstrap-verify-probe-entity';
 /** Deterministic magic-moment token the fence fact carries [CX-P0.5]. */
 export const VERIFY_MAGIC_TOKEN = 'verify-lighthouse-passphrase';
 
-/** The three scripted first-run prompts [D3.6] — pinned by the A4 snapshot test. */
+/** The three scripted first-run prompts [D3.6] — pinned by the A4 snapshot test.
+ *  Exactly three (the count is copy-pinned here, in BOOTSTRAP_FOR_AGENTS.md,
+ *  and the A4 plan). Prompt 3 must be TRUE on day one — the brain is empty at
+ *  install, so "everything ingested so far" would be an anticlimax; the
+ *  round-trip fact from prompt 2 is the honest day-one payoff. */
 export const FIRST_RUN_TOUR: readonly string[] = [
   '"Who am I to you?" — identity from SOUL.md/USER.md, no lookup needed.',
-  '"Remember that <one small true fact>." Then restart the session and ask me about it — that round-trip is the whole product.',
-  '"What do you know about this project?" — brain recall over everything ingested so far.',
+  '"Remember that <one small true fact>." — it lands in the brain, not this chat.',
+  '"What do you remember about me?" — asked in the NEW session: on day one that is the fact from prompt 2, recalled from the brain. Every session after this adds more. That round-trip is the whole product.',
 ];
 
 // ---------------------------------------------------------------------------
@@ -948,9 +955,11 @@ export async function verifyWorkspace(
 
   checks.push(checkPushProbe(ws));
   checks.push(checkInertSkills(ws, caps));
-  checks.push({ id: 'first_run_tour', ok: true, detail: 'three scripted prompts appended to the report [D3.6]' });
+  const tourCheck = { id: 'first_run_tour', ok: true, detail: 'three scripted prompts appended to the report' };
+  checks.push(tourCheck);
 
   const ok = checks.every((c) => c.ok || c.warn === true);
+  if (!ok) tourCheck.detail = 'tour withheld — prints on PASS';
 
   const ts = new Date().toISOString();
   persistVerifyRun(gbrainHomeDir, { ts, ok, checks });
@@ -964,8 +973,57 @@ export async function verifyWorkspace(
   lines.push('');
   lines.push(renderCapabilityReport(caps));
   lines.push('');
-  lines.push('First-run tour — hand these three prompts to your human, in order:');
-  FIRST_RUN_TOUR.forEach((p, i) => lines.push(`  ${i + 1}. ${p}`));
+  // The tour celebrates a WORKING install — under a FAIL banner it reads as
+  // a mixed signal ("broken, but go enjoy it"). Gate the report lines on ok;
+  // the returned `tour` array (and --json field) stays unconditional so
+  // machine consumers keep a stable shape.
+  const handoff = buildHandoff(ws);
+  if (ok) {
+    lines.push('First-run tour — have your human RESTART the session first');
+    lines.push('(a fresh session proves the files and the brain, not this chat),');
+    lines.push('then try these three prompts in order:');
+    FIRST_RUN_TOUR.forEach((p, i) => lines.push(`  ${i + 1}. ${p}`));
+    lines.push('');
+    for (const h of handoff) lines.push(h);
+  } else {
+    lines.push('Fix the FAIL checks above and re-run — the first-run tour prints on PASS.');
+  }
 
-  return { ok, checks, report: lines.join('\n'), capability: caps, tour: [...FIRST_RUN_TOUR] };
+  return { ok, checks, report: lines.join('\n'), capability: caps, tour: [...FIRST_RUN_TOUR], handoff };
+}
+
+/**
+ * The post-tour hand-off block [OOBE]: the two things a fresh user must walk
+ * away UNDERSTANDING, in priority order —
+ *   1. OWNERSHIP: the brain is markdown in a repo THEY own (or local-only,
+ *      with the one command that gives it a durable home). Ownership is the
+ *      trust story; say the URL, say what owning it means.
+ *   2. THE ONE NEXT ACTION: run the cold-start skill. An empty brain is a
+ *      database; every flagship skill (book-mirror, briefings, meeting prep)
+ *      only becomes magical once the brain holds the user's real life —
+ *      cold-start is the designed filler (Gmail/calendar/contacts via
+ *      ClawVisor, or offline archives), one consented phase at a time.
+ * Returned unconditionally in the machine shape (like `tour`); printed in
+ * the report only on PASS. Relay it to the human verbatim.
+ */
+export function buildHandoff(ws: string): string[] {
+  const origin = gitOriginUrl(ws);
+  const ownership = origin
+    ? [
+        `What you own: every memory your agent keeps is a markdown file in YOUR private repo — ${origin}.`,
+        'Read it any time, take it to a second machine (`gbrain bootstrap attach`), or delete it and the brain is gone. It is yours.',
+      ]
+    : [
+        'What you own: your agent\'s memory is markdown on this machine only (no remote yet).',
+        'Run `gbrain bootstrap repo` any time to give it a private GitHub home you own — readable, portable, deletable.',
+      ];
+  return [
+    ...ownership,
+    '',
+    'Fill it next: an empty brain is a database; a filled one is a memory.',
+    'Ask your agent to run the cold-start skill — it imports your real life',
+    '(Gmail, calendar, contacts via ClawVisor, an OAuth vault so the agent never',
+    'holds raw tokens; or offline archives like Google Takeout), one consented',
+    'phase at a time. Each phase is independently valuable — stop whenever.',
+  ];
 }

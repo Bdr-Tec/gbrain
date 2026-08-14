@@ -144,7 +144,7 @@
       "consent": true,
       "phase": "engine",
       "persist": false,
-      "question": "Optional: one API key (OpenAI, Anthropic, or Voyage) unlocks semantic search and automatic fact extraction. With no key, I run keyless: keyword search plus memory I write down myself — everything still works. Paste a key or say skip.",
+      "question": "Optional: one API key upgrades me — OpenAI (semantic search + automatic fact extraction), Voyage (semantic search), or Anthropic (fact extraction). With no key, I run keyless: keyword search plus memory I write down myself — everything still works. Paste a key or say skip.",
       "default": "",
       "sink": "config",
       "maxLength": 256

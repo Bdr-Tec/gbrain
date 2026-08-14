@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { currentRecommendedSet } from '../src/core/advisor/recommended-set.ts';
 
 describe('plugin membership curation (skills = plugin ∪ exclusions, disjoint)', () => {
   const root = join(import.meta.dir, '..');
@@ -55,6 +56,18 @@ describe('plugin membership curation (skills = plugin ∪ exclusions, disjoint)'
 
   it('plugin skills has no duplicates', () => {
     expect(new Set(plugin.skills).size).toBe(plugin.skills.length);
+  });
+
+  it('every RECOMMENDED skill is bundled (recommended-but-unscaffoldable is a broken funnel)', () => {
+    // The post-install advisory + verify hand-off tell users to install these
+    // by slug; `gbrain skillpack scaffold <slug>` resolves against the plugin
+    // bundle. A recommendation the scaffold can't fulfill is a dead-end CTA —
+    // the exact drift that kept cold-start (the day-one "now what?" skill)
+    // unreachable for paste-in bootstrap users until v0.45.11.0.
+    const unscaffoldable = currentRecommendedSet()
+      .map((s) => s.slug)
+      .filter((slug) => !bundled.includes(slug));
+    expect(unscaffoldable).toEqual([]);
   });
 });
 

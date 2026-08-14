@@ -429,7 +429,7 @@ async function runStatus(ws: string, rest: string[], home: string): Promise<numb
   if (report.next) {
     console.log(`\nNext: ${report.next}`);
   } else {
-    console.log('\nAll phases done. Weekly self-check: `gbrain bootstrap verify`.');
+    console.log('\nAll phases done. Weekly self-check: `gbrain bootstrap verify` (close agent sessions first — PGLite is single-writer).');
   }
   if (report.runbookSkew) {
     console.log(
@@ -454,6 +454,15 @@ async function runStatus(ws: string, rest: string[], home: string): Promise<numb
     );
   }
   return 0;
+}
+
+/** One copy of the A8 invalidation warning — shared by --set and --skip so
+ *  the operator-facing instructions cannot drift between the two branches. */
+function warnInvalidatedConfirmation(): void {
+  console.error(
+    'note: this change voided the prior confirmation — read the full answer set back ' +
+    'to the human, then `gbrain bootstrap interview --confirm <hash>` again before render.',
+  );
 }
 
 async function runInterview(ws: string, rest: string[]): Promise<number> {
@@ -497,6 +506,7 @@ async function runInterview(ws: string, rest: string[]): Promise<number> {
       console.log(`${key}: routed to the 0600 config file (${routed.configKey}). Not recorded in interview state.`);
       return 0;
     }
+    if (r.invalidatedConfirmation) warnInvalidatedConfirmation();
     console.log(`${key} recorded.`);
     return 0;
   }
@@ -512,6 +522,7 @@ async function runInterview(ws: string, rest: string[]): Promise<number> {
       console.error(r.message);
       return 1;
     }
+    if (r.invalidatedConfirmation) warnInvalidatedConfirmation();
     console.log(`${key} skipped.`);
     return 0;
   }
@@ -839,6 +850,11 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
 
     // 1. MCP registration — argv built by the host-format module, executed
     // through the runner seam, recorded on the receipt.
+    // A missing host binary (exit 127) skips MCP registration but NOT the
+    // hooks below — hooks only write .claude/settings.local.json and need no
+    // binary. The old early-return silently dropped hooks while the copy said
+    // only "MCP registration skipped".
+    let mcpSkipped = false;
     const argvs =
       harness === 'claude-code'
         ? registerClaudeMcp({ gbrainBin, scope: mcpScope, sourceId, ...(gbrainHome ? { gbrainHome } : {}) })
@@ -848,10 +864,12 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
       const res = await runner(argv);
       if (res.code === 127) {
         console.error(
-          `\`${argv[0]}\` is not on PATH — is ${harness} installed? MCP registration skipped; ` +
-            `re-run \`gbrain bootstrap hooks --harness ${harness}\` once it is.`,
+          `\`${argv[0]}\` is not on PATH — is ${harness} installed? MCP registration skipped ` +
+            `(per-turn hooks still install below); re-run ` +
+            `\`gbrain bootstrap hooks --harness ${harness}\` once it is.`,
         );
-        return 2;
+        mcpSkipped = true;
+        break;
       }
       if (res.code !== 0) {
         const already = /already exists|already registered/i.test(res.stderr + res.stdout);
@@ -869,10 +887,43 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
           console.error(
             `existing '${mcpName}' MCP registration targets a DIFFERENT workspace/binary — replacing it.`,
           );
-          await runner([argv[0], 'mcp', 'remove', mcpName]);
+          // The add above failed "already exists" in the CURRENT scope, so the
+          // blocker lives there — target the remove at that scope on Claude
+          // Code (a scope-less remove can resolve to a different scope's
+          // registration and leave the blocker in place). Codex has no scope
+          // flag. Fail loud if the remove doesn't land: the silent no-op loop
+          // used to re-fail the add and report nothing actionable.
+          const rmArgv =
+            harness === 'claude-code'
+              ? [argv[0], 'mcp', 'remove', mcpName, '--scope', mcpScope]
+              : [argv[0], 'mcp', 'remove', mcpName];
+          const rm = await runner(rmArgv);
+          if (rm.code !== 0) {
+            console.error(
+              `\`${rmArgv.join(' ')}\` failed (${rm.stderr.trim() || `exit ${rm.code}`}) — remove the stale ` +
+                `registration by hand (\`${argv[0]} mcp get ${mcpName}\` shows where it lives), then re-run ` +
+                `\`gbrain bootstrap hooks --harness ${harness} --repair\`.`,
+            );
+            return 1;
+          }
           const re = await runner(argv);
           if (re.code !== 0 && !/already exists|already registered/i.test(re.stderr + re.stdout)) {
             console.error(`MCP re-registration failed (${argv.join(' ')}): ${re.stderr.trim() || `exit ${re.code}`}`);
+            return 1;
+          }
+          // Re-add can itself return "already exists" if a racing writer
+          // re-claimed the name between our remove and add — that registration
+          // is NOT ours. Re-verify and abort rather than bless a foreign
+          // endpoint that would intercept memory ops. (Only the recorded
+          // warn-then-continue step-2 smoke did this before; here it's fatal.)
+          const post = await verifyMcpTargetsWorkspace(runner, harness, mcpName, gbrainBin, sourceId);
+          if (post === 'mismatch') {
+            console.error(
+              `after replacing '${mcpName}', it STILL targets a different workspace/binary — ` +
+                `refusing to continue (a racing registration may have re-claimed the name). ` +
+                `Inspect \`${argv[0]} mcp get ${mcpName}\`, remove it by hand, then re-run ` +
+                `\`gbrain bootstrap hooks --harness ${harness} --repair\`.`,
+            );
             return 1;
           }
         } else {
@@ -887,7 +938,7 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
     // 2. Registration smoke [FIX7]: confirm the EXPECTED server (binary path +
     // GBRAIN_SOURCE), not merely a 'gbrain' substring in `mcp list`. Falls back
     // to the list probe only when the host has no `mcp get`.
-    try {
+    if (!mcpSkipped) try {
       const listBin = harness === 'claude-code' ? 'claude' : 'codex';
       const scopeLabel = harness === 'claude-code' ? mcpScope : 'user-global';
       const verdict = await verifyMcpTargetsWorkspace(runner, harness, 'gbrain', gbrainBin, sourceId);
@@ -926,9 +977,21 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
         // both files.
         const hookEnv = { GBRAIN_SOURCE: sourceId, ...(gbrainHome ? { GBRAIN_HOME: gbrainHome } : {}) };
         const cloudCarrier = detectExecutionEnvironment() === 'cloud-sandbox';
-        const r = cloudCarrier
-          ? writeCommittedClaudeHooks(ws, { env: hookEnv })
-          : writeClaudeHooks(ws, { gbrainBin, env: hookEnv });
+        let r: ReturnType<typeof writeClaudeHooks> | ReturnType<typeof writeCommittedClaudeHooks>;
+        try {
+          r = cloudCarrier
+            ? writeCommittedClaudeHooks(ws, { env: hookEnv })
+            : writeClaudeHooks(ws, { gbrainBin, env: hookEnv });
+        } catch (e) {
+          // Fail-closed on an unparseable settings file (either carrier): MCP
+          // (step 1) still landed; record that, surface the fix, and exit
+          // nonzero so the paste-in flow knows hooks are NOT installed.
+          console.error((e as Error).message);
+          if (!mcpSkipped) {
+            appendReceiptRegistration(home, ws, { host: harness, scope: mcpScope, detail: 'mcp' });
+          }
+          return 1;
+        }
         hooksWritten = true;
         console.log(
           `hooks installed (${r.installed.length} event(s)) in ${r.settingsPath}${repair ? ' [repair]' : ''} — your brain now loads every turn. Turn off any time with GBRAIN_HOOKS=0, or re-run with --no-hooks.`,
@@ -951,15 +1014,18 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
       console.log('Codex has no hook system — per-turn context is the AGENTS.md pull protocol (stated plainly, not a bug).');
     }
 
-    // 4. Receipt registration record [CX2-12].
-    appendReceiptRegistration(home, ws, {
-      host: harness,
-      scope: harness === 'claude-code' ? mcpScope : 'user',
-      detail: hooksWritten ? 'mcp+hooks' : 'mcp',
-    });
+    // 4. Receipt registration record [CX2-12]. Detail records what actually
+    // landed; nothing landed at all (127 + no hooks) → no receipt entry.
+    if (!mcpSkipped || hooksWritten) {
+      appendReceiptRegistration(home, ws, {
+        host: harness,
+        scope: harness === 'claude-code' ? mcpScope : 'user',
+        detail: hooksWritten ? (mcpSkipped ? 'hooks' : 'mcp+hooks') : 'mcp',
+      });
+    }
 
     abortIfInjected('wire');
-    return 0;
+    return mcpSkipped ? 2 : 0;
   });
 }
 
@@ -981,7 +1047,7 @@ async function runVerify(ws: string, rest: string[], home: string): Promise<numb
     const sourceId = state.state === 'initialized' ? state.manifest.source_id : 'workspace';
     const result = await verifyWorkspace(engine, ws, { sourceId, gbrainHomeDir: home });
     if (jsonMode) {
-      console.log(JSON.stringify({ ok: result.ok, checks: result.checks, capability: result.capability, tour: result.tour }, null, 2));
+      console.log(JSON.stringify({ ok: result.ok, checks: result.checks, capability: result.capability, tour: result.tour, handoff: result.handoff }, null, 2));
     } else {
       console.log(result.report);
     }

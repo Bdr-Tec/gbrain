@@ -10,8 +10,9 @@
  * and dedupe match on the marker (surviving reordering and command-string
  * drift), and foreign hooks / permissions / every other settings key are
  * never touched. Writes are atomic (tmp + rename) with a `.bak` of the
- * previous file; a parse-broken existing file is backed up aside and the
- * write starts clean with a loud note in the result [G5].
+ * previous file; a parse-broken existing file ABORTS the write with
+ * fix-and-re-run instructions (fail-closed, matching removal's stance — a
+ * rewrite could drop permissions/allowlist entries gbrain cannot parse) [G5].
  *
  * MCP registration helpers BUILD ARGV ONLY — the bootstrap dispatcher execs
  * them (and records the registration in the install receipt). Precedent:
@@ -70,7 +71,9 @@ export interface WriteClaudeHooksResult {
   removedPrior: number;
   /** `.bak` of the pre-write file (null when no file existed). */
   backupPath: string | null;
-  /** Where a parse-broken original was moved (null when parse succeeded). */
+  /** Always null since the fail-closed change (a parse-broken file now
+   *  aborts the write instead of being moved aside). Kept for result-shape
+   *  stability. */
   brokenBackupPath: string | null;
   notes: string[];
 }
@@ -247,10 +250,13 @@ interface LoadedSettings {
 }
 
 /**
- * Parse the existing settings file. Absent/empty → `{}`. Parse error → the
- * broken file is MOVED to a timestamped `.broken-*` backup and the caller
- * starts clean, with a loud note (the user's broken-by-hand file is never
- * silently destroyed, and never silently half-merged) [G5].
+ * Parse the existing settings file. Absent/empty → `{}`. Parse error →
+ * THROW, fail-closed [G5]: the file may carry permissions/allowlist entries
+ * gbrain cannot see, so replacing it with a fresh file (the old behavior —
+ * backup + start clean) silently dropped the user's live settings. Removal
+ * (`removeClaudeHooks`) already refuses to touch what it cannot parse; the
+ * write path now matches that stance. The user fixes the JSON, re-runs, and
+ * the structural merge preserves everything.
  */
 function loadSettings(path: string): LoadedSettings {
   const notes: string[] = [];
@@ -273,14 +279,12 @@ function loadSettings(path: string): LoadedSettings {
     }
     return { settings: parsed as SettingsObject, existed: true, brokenBackupPath: null, notes };
   } catch (e) {
-    const broken = `${path}.broken-${Date.now()}`;
-    copyFileSync(path, broken);
-    notes.push(
-      `WARNING: ${path} was not valid JSON (${(e as Error).message}); ` +
-        `the original was backed up to ${broken} and hooks were written to a fresh file. ` +
-        `Restore any hand-made settings from the backup.`,
+    throw new Error(
+      `${path} is not valid JSON (${(e as Error).message}) — refusing to rewrite a settings file ` +
+        `gbrain cannot parse (it may carry your permissions/allowlist entries). Fix the JSON by ` +
+        `hand, then re-run \`gbrain bootstrap hooks --harness claude-code --repair\` ` +
+        `(the structural merge preserves your settings).`,
     );
-    return { settings: {}, existed: true, brokenBackupPath: broken, notes };
   }
 }
 
@@ -366,7 +370,7 @@ export function writeClaudeHooks(
   settings.hooks = hooks;
 
   let backupPath: string | null = null;
-  if (existed && brokenBackupPath === null) {
+  if (existed) {
     backupPath = `${settingsPath}.bak`;
     copyFileSync(settingsPath, backupPath);
   }

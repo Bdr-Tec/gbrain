@@ -47,6 +47,7 @@
     "skills/capture",
     "skills/citation-fixer",
     "skills/citation-graph-ingest",
+    "skills/cold-start",
     "skills/company-brainify",
     "skills/concept-synthesis",
     "skills/context-audit",

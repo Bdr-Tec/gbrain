@@ -270,7 +270,20 @@ export const PHASES: PhaseSpec[] = [
     detect: (ws, ctx) => {
       const regs = ctx.receipt?.registrations ?? [];
       if (regs.length > 0) {
-        return { state: 'done', detail: regs.map((r) => `${r.host} (${r.scope})`).join(', ') };
+        // A registration whose detail carries 'mcp' ('mcp' or 'mcp+hooks')
+        // means MCP actually registered. A 'hooks'-only detail means the host
+        // binary was missing at wire time (hooks landed, MCP did not) — the
+        // phase is PARTIAL, not done, so a resuming agent re-runs it once the
+        // CLI is on PATH instead of trusting a false "done".
+        const mcpRegistered = regs.some((r) => (r.detail ?? '').includes('mcp'));
+        if (mcpRegistered) {
+          return { state: 'done', detail: regs.map((r) => `${r.host} (${r.scope})`).join(', ') };
+        }
+        return {
+          state: 'partial',
+          detail: 'hooks installed but MCP not registered (the harness CLI was not on PATH) — ' +
+            're-run `gbrain bootstrap hooks --harness <claude-code|codex>` once it is',
+        };
       }
       if (hooksInstalled(ws)) return { state: 'done', detail: 'hooks present in .claude/settings.local.json' };
       return { state: 'pending' };
