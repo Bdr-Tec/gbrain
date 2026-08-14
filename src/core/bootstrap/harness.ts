@@ -1364,8 +1364,11 @@ export function parseClaudeMcpGetBearer(out: string): string | null {
   return m ? m[1] : null;
 }
 
-/** Parse the bearer token out of OUR managed codex block. */
-export function parseCodexBlockBearer(configText: string): string | null {
+/** Parse the bearer token out of OUR managed codex block. When
+ * `expectedUrl` is given, the block's `url` must match it ([C8] parity with
+ * the claude-lane recovery): a hand-edited block pointing at another brain's
+ * serve carries a credential that must never be transmitted to receipt.url. */
+export function parseCodexBlockBearer(configText: string, expectedUrl?: string): string | null {
   const norm = configText.replace(/\r\n/g, '\n');
   // The shared writer constants — inline copies here would silently stop
   // matching if host-specs.ts ever rewords the markers.
@@ -1373,6 +1376,10 @@ export function parseCodexBlockBearer(configText: string): string | null {
   const end = norm.indexOf(CODEX_TOML_BLOCK_END);
   if (begin < 0 || end < 0 || end < begin) return null;
   const block = norm.slice(begin, end);
+  if (expectedUrl !== undefined) {
+    const u = block.match(/^url\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/m);
+    if (!u || u[1].replace(/\\(.)/g, '$1') !== expectedUrl) return null;
+  }
   const m = block.match(/^bearer_token\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/m);
   if (!m) return null;
   return m[1].replace(/\\(.)/g, '$1');
@@ -1429,7 +1436,7 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
     const codexMcp = receipt.targets.find((t) => t.host === 'codex' && t.kind === 'mcp');
     if (codexMcp?.path && existsSync(codexMcp.path)) {
       try {
-        token = parseCodexBlockBearer(readFileSync(codexMcp.path, 'utf8'));
+        token = parseCodexBlockBearer(readFileSync(codexMcp.path, 'utf8'), receipt.url);
         if (token) tokenSource = 'codex config block';
       } catch {
         /* degrade */

@@ -809,6 +809,10 @@ describe('parse helpers', () => {
     ].join('\n');
     expect(parseCodexBlockBearer(ours)).toBe(TOKEN_A);
     expect(parseCodexBlockBearer('[mcp_servers.x]\nbearer_token = "y"\n')).toBeNull();
+    // [C8] parity with the claude lane: with an expected url, a block pointing
+    // at another brain's serve must NOT hand its bearer over.
+    expect(parseCodexBlockBearer(ours, URL)).toBe(TOKEN_A);
+    expect(parseCodexBlockBearer(ours, 'http://127.0.0.1:9999/mcp')).toBeNull();
   });
 
   test('codexBlockOwnsName: only a table INSIDE the managed block counts as ours', () => {
