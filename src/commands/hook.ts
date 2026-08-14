@@ -224,13 +224,32 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
       // BOTH workspace carriers count: settings.local.json (local installs)
       // and the committed .claude/settings.json ([D12] — an event owned by
       // the committed carrier is stripped from local, so checking only local
-      // would double-fire it against the user-scope harness wiring).
+      // would double-fire it against the user-scope harness wiring). The
+      // check PARSES the settings and requires a live bootstrap-v1 hook entry
+      // wiring THIS event — a raw substring match would let any repo disable
+      // the machine-wide capture lane by committing the two marker strings in
+      // an unrelated field (ship-review P1), and would over-yield events the
+      // workspace does not actually wire.
+      const eventKey = {
+        'session-start': 'SessionStart',
+        'user-prompt': 'UserPromptSubmit',
+        stop: 'Stop',
+        'session-end': 'SessionEnd',
+        compact: 'PreCompact',
+      }[event];
       const dotClaude = join(io.cwd ?? process.cwd(), '.claude');
       for (const file of ['settings.local.json', 'settings.json']) {
         const p = join(dotClaude, file);
         if (!existsSync(p)) continue;
-        const raw = readFileSync(p, 'utf8');
-        if (raw.includes('"_gbrain"') && raw.includes('"bootstrap-v1"')) return 0;
+        const settings = JSON.parse(readFileSync(p, 'utf8')) as {
+          hooks?: Record<string, Array<{ hooks?: Array<Record<string, unknown>> }>>;
+        };
+        const groups = settings.hooks?.[eventKey ?? ''];
+        if (!Array.isArray(groups)) continue;
+        for (const g of groups) {
+          if (!Array.isArray(g?.hooks)) continue;
+          if (g.hooks.some((e) => e?._gbrain === 'bootstrap-v1')) return 0;
+        }
       }
     } catch {
       /* fail-open */

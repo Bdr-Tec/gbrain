@@ -875,14 +875,25 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       `;
     } catch (err) {
       if (isUndefinedColumnError(err, 'permissions')) {
-        // Pre-v38 brain: no permissions column. scopes (original schema, v4)
-        // still exists on every migrated brain, but keep the degradation
-        // ladder maximally forgiving — select the minimum that identifies
-        // the row; both grants then fall back to their defaults.
-        legacyRows = await this.sql`
-          SELECT name FROM access_tokens
-          WHERE token_hash = ${tokenHash} AND revoked_at IS NULL
-        `;
+        // Pre-v38 brain: no permissions column. scopes is ORIGINAL schema, so
+        // it must stay in the degraded SELECT — dropping it here would route
+        // normalizeTokenScopes(undefined) into the grandfather branch and
+        // silently promote a scoped token to full admin on any brain whose
+        // permissions projection fails (ship-review P1). Only if scopes
+        // ITSELF is missing (out-of-tree schema) does the ladder fall to
+        // name-only — and that brain predates scoped minting entirely.
+        try {
+          legacyRows = await this.sql`
+            SELECT name, scopes FROM access_tokens
+            WHERE token_hash = ${tokenHash} AND revoked_at IS NULL
+          `;
+        } catch (err2) {
+          if (!isUndefinedColumnError(err2, 'scopes')) throw err2;
+          legacyRows = await this.sql`
+            SELECT name FROM access_tokens
+            WHERE token_hash = ${tokenHash} AND revoked_at IS NULL
+          `;
+        }
       } else {
         throw err;
       }

@@ -5264,17 +5264,22 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   config and suggest a re-run — needs either an engine open (breaks status's
   engine-free posture under a live PGLite serve) or a sources probe over MCP with the
   recovered token. **Start:** `src/core/bootstrap/harness.ts:statusHarness`.
-- [ ] **P2 — harness smoke should verify BRAIN IDENTITY, not just auth (ship-review
-  security finding).** The apply-time smoke (`probeBrainIdentity`) proves the token
-  authenticates against WHATEVER answers on the loopback port — it never compares the
-  returned identity to the local brain, so a co-tenant process squatting the port with
-  a faked `/health` + identity response would pass the smoke and trigger previous-token
-  revocation. The default mint path already opens the engine and could capture the
-  expected identity for comparison; registrar mode (`--token` + remote url) has no
-  engine and would state the weaker guarantee honestly. Also consider revoking the
-  just-minted token when the smoke fails AND both registrations rolled back cleanly
-  (today it stays live but receipt-tracked so `--remove`/re-run converge it).
-  **Start:** `src/core/bootstrap/harness.ts` steps 5+8 (mint capture + smoke compare).
+- [ ] **P3 — harness smoke: add BRAIN-IDENTITY comparison on top of the canary
+  (ship-review residual).** The ship-review batch landed the two cheap layers: an
+  apply-time CANARY (a random same-format bearer must fail auth before the real smoke —
+  an impostor cannot tell the canary from the real token, so it is caught whichever way
+  it answers) and immediate revocation of the fresh mint on any failed smoke. The
+  remaining hardening is comparing the smoke's returned identity against the local
+  brain's (the default mint path already opens the engine and could capture it);
+  registrar mode (`--token` + remote url) has no engine and would state the weaker
+  guarantee honestly. **Start:** `src/core/bootstrap/harness.ts` steps 5+8.
+- [ ] **P3 — harness orphan-mint reconciliation (red-team finding).** A hard crash in
+  the window between the mint INSERT committing and the `receipt.token.id` save leaves
+  an ACTIVE token no receipt records — `--remove` cannot revoke it and doctor never
+  flags it. On apply, when the prior receipt has `minted: true` but no id, list active
+  `access_tokens` rows matching `token.name` created after `receipt.created_at` and
+  fold them into `previous_ids` (or surface them loudly). **Start:**
+  `src/core/bootstrap/harness.ts` step 5 + `src/core/token-mint.ts`.
 - [ ] **P3 — bootstrap lock.ts error-path polish (plan micro-item, deferred at ship).**
   Non-EEXIST mkdir errors (EACCES/EROFS) misreport as BOOTSTRAP_IN_PROGRESS, and the
   missing-dir message says "workspace directory" even when the lock target is the

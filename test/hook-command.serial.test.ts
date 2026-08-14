@@ -145,11 +145,21 @@ describe('dispatch', () => {
     try {
       const ws = mkdtempSync(join(tmpdir(), 'gb-lane-ws-'));
       mkdirSync(join(ws, '.claude'), { recursive: true });
+      // A real workspace install wires all five events — the guard is now
+      // PER-EVENT (an event the workspace does not wire must run normally),
+      // so the fixture mirrors the full install.
+      const entry = (sub: string) => [
+        { hooks: [{ type: 'command', command: `env GBRAIN_SOURCE=ws /opt/g hook ${sub}`, _gbrain: 'bootstrap-v1' }] },
+      ];
       writeFileSync(
         join(ws, '.claude', 'settings.local.json'),
         JSON.stringify({
           hooks: {
-            SessionStart: [{ hooks: [{ type: 'command', command: 'env GBRAIN_SOURCE=ws /opt/g hook session-start', _gbrain: 'bootstrap-v1' }] }],
+            SessionStart: entry('session-start'),
+            UserPromptSubmit: entry('user-prompt'),
+            Stop: entry('stop'),
+            SessionEnd: entry('session-end'),
+            PreCompact: entry('compact'),
           },
         }),
       );

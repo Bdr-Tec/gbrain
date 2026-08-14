@@ -32,6 +32,7 @@ import {
   buildConsentBlock,
   codexBlockOwnsName,
   isServeOlderThanScopes,
+  SCOPES_MIN_SERVE_VERSION,
   parseClaudeMcpGetBearer,
   parseClaudeMcpGetUrl,
   parseCodexBlockBearer,
@@ -113,10 +114,16 @@ function makeFake(opts: {
         status: 200,
       });
     }) as unknown as typeof fetch,
-    probeIdentity: async (): Promise<ConnectProbeResult> =>
-      (opts.probeOk ?? true)
+    probeIdentity: async (_url: string, probeToken: string): Promise<ConnectProbeResult> => {
+      // Token-aware like a REAL serve: only tokens this fixture knows about
+      // authenticate — the apply-time canary (a random same-format token)
+      // must fail with reason 'auth' or every apply trips the impostor guard.
+      const known = new Set([TOKEN_A, TOKEN_B, ...mintQueue.map((m) => m.token)]);
+      if (!known.has(probeToken)) return { ok: false, reason: 'auth', message: 'HTTP 401' };
+      return (opts.probeOk ?? true)
         ? { ok: true, identity: 'brain "test" (source default)' }
-        : { ok: false, reason: 'auth', message: 'HTTP 401' },
+        : { ok: false, reason: 'auth', message: 'HTTP 401' };
+    },
     userSettingsPath: userSettings,
     codexConfig,
     mint: async (o) => {
@@ -415,6 +422,13 @@ describe('--remove', () => {
     const state = readHarnessReceiptState(f.home);
     expect(state.state).toBe('ok');
     expect((state as { receipt: { targets: unknown[] } }).receipt.targets).toEqual([]);
+
+    // Red-team CRITICAL: the half-removed remainder (zero targets, minted
+    // token still live) must NOT read green — cron sees exit 1 until the
+    // deferred revoke lands.
+    const statusCode = await statusHarness(parseHarnessArgs(['--status']), removeDeps);
+    expect(statusCode).toBe(1);
+    expect(f.err.join('\n')).toMatch(/removal pending/);
   });
 
   test('absent receipt is a calm exit 0', async () => {
@@ -568,7 +582,72 @@ describe('outside-voice hardening (X-batch)', () => {
     };
     expect(await applyHarness(flags(['--harness', 'codex']), f2deps)).toBe(1); // mints B, smoke fails
     expect(readFileSync(f.codexConfig, 'utf8')).toBe(preRun); // TOKEN_A block restored
-    expect(f.revoked).toEqual([]); // nothing revoked — old token still live AND still wired
+    // The OLD token (ID_A) stays live and wired; the FRESH mint (ID_B) — which
+    // was sent to the unverified endpoint — is retired immediately.
+    expect(f.revoked).toEqual([ID_B]);
+  });
+
+  test('permission pre-approval never lands when the MCP registration itself failed (red-team CRITICAL)', async () => {
+    const f = makeFake({ mcpAddCode: 1 }); // `claude mcp add` fails
+    const code = await applyHarness(flags(['--harness', 'claude-code', '--no-hooks']), f.deps);
+    expect(code).toBe(1);
+    // The pre-approval string must not bless whatever server owns the name.
+    expect(existsSync(f.userSettings) ? JSON.stringify(readJson(f.userSettings)) : '{}').not.toContain('mcp__gbrain');
+    const state = readHarnessReceiptState(f.home);
+    const perm = (state as { receipt: { targets: Array<{ kind: string; state: string; error?: string }> } }).receipt.targets.find(
+      (t) => t.kind === 'permission',
+    );
+    expect(perm?.state).toBe('failed');
+    expect(perm?.error).toMatch(/foreign server/);
+  });
+
+  test('a freshly-added pre-approval is removed by the smoke-failure rollback (red-team CRITICAL)', async () => {
+    const f = makeFake({ probeOk: false });
+    const code = await applyHarness(flags(['--harness', 'claude-code', '--no-hooks']), f.deps);
+    expect(code).toBe(1);
+    const allow = ((readJson(f.userSettings).permissions as { allow?: string[] })?.allow) ?? [];
+    expect(allow).not.toContain('mcp__gbrain');
+  });
+
+  test('status never recovers a bearer from a registration owned by ANOTHER install (red-team CRITICAL)', async () => {
+    const f = makeFake();
+    expect(await applyHarness(flags(['--harness', 'claude-code', '--no-hooks']), f.deps)).toBe(0);
+    const statusDeps: HarnessDeps = {
+      ...f.deps,
+      runner: async (argv: string[]) => {
+        if (argv[0] === 'claude' && argv[2] === 'get') {
+          // The name now points at a DIFFERENT install's serve — its bearer
+          // is a foreign credential and must not be transmitted anywhere.
+          return {
+            code: 0,
+            stdout: `gbrain:\n  Scope: User config\n  Type: http\n  URL: http://127.0.0.1:9999/mcp\n  Headers:\n    Authorization: Bearer ${TOKEN_B}\n`,
+            stderr: '',
+          };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      probeIdentity: async () => {
+        throw new Error('status must NOT probe with a foreign bearer');
+      },
+    };
+    const code = await statusHarness(parseHarnessArgs(['--status']), statusDeps);
+    expect(f.out.join('\n')).toMatch(/verify unavailable/);
+    expect(code).toBe(0); // honest degrade, all targets confirmed
+  });
+
+  test('canary impostor guard: an endpoint that accepts an INVALID credential fails the apply and the fresh mint is revoked', async () => {
+    const f = makeFake();
+    // Impostor behavior: accept EVERY bearer (it cannot validate any).
+    const deps: HarnessDeps = {
+      ...f.deps,
+      probeIdentity: async () => ({ ok: true, identity: 'brain "faked" (source default)' }),
+    };
+    const code = await applyHarness(flags(['--harness', 'codex']), deps);
+    expect(code).toBe(1);
+    expect(f.err.join('\n')).toMatch(/accepted an INVALID credential/);
+    expect(f.revoked).toEqual([ID_A]); // the fresh mint never stays live
+    // Nothing left wired: the fresh codex block was rolled back.
+    expect(existsSync(f.codexConfig) ? readFileSync(f.codexConfig, 'utf8') : '').not.toContain('bearer_token');
   });
 
   test('[X5] smoke failure on a FRESH claude add removes the registration (pre-run state) and fails the target', async () => {
@@ -671,7 +750,13 @@ describe('outside-voice hardening (X-batch)', () => {
     const f = makeFake();
     const deps: HarnessDeps = {
       ...f.deps,
-      probeIdentity: async () => ({ ok: false, reason: 'tool_error', message: 'Unknown tool: get_brain_identity' }),
+      // Token-aware like a real narrowed serve: bearer auth still happens
+      // BEFORE tool dispatch, so the canary (unknown token) gets 401 and only
+      // a VALID token reaches the unknown-tool tool_error.
+      probeIdentity: async (_url: string, probeToken: string) =>
+        probeToken === TOKEN_A || probeToken === TOKEN_B
+          ? { ok: false, reason: 'tool_error' as const, message: 'Unknown tool: get_brain_identity' }
+          : { ok: false, reason: 'auth' as const, message: 'HTTP 401' },
     };
     expect(await applyHarness(flags(['--harness', 'codex']), deps)).toBe(0);
     expect(f.out.join('\n')).toMatch(/narrowed --surface.*Counted as verified/s);
@@ -750,13 +835,16 @@ describe('parse helpers', () => {
     expect(codexBlockOwnsName(cfg, 'gbrain')).toBe(false);
   });
 
-  test('isServeOlderThanScopes boundary matrix', () => {
-    expect(isServeOlderThanScopes(VERSION)).toBe(false); // equal — not older
+  test('isServeOlderThanScopes boundary matrix — pinned to the first scope-aware release, NOT the moving CLI version', () => {
+    expect(isServeOlderThanScopes(SCOPES_MIN_SERVE_VERSION)).toBe(false); // equal — not older
+    expect(isServeOlderThanScopes(VERSION)).toBe(false); // the current CLI's own serve is always scope-aware
     expect(isServeOlderThanScopes('999.0.0')).toBe(false); // newer serve
     expect(isServeOlderThanScopes('0.1.0')).toBe(true); // clearly pre-scopes
-    // 3-segment historical form vs the 4-segment current form: padding with 0
-    // means `X.Y.Z` equals `X.Y.Z.0`, so it is older only when MICRO > 0.
-    const three = VERSION.split('.').slice(0, 3).join('.');
-    expect(isServeOlderThanScopes(three)).toBe(VERSION.split('.')[3] !== '0' && VERSION.split('.').length > 3);
+    // The pin is what keeps the NEXT release honest: a 0.45.14.0 serve must
+    // never be flagged pre-scopes once the CLI moves past it.
+    expect(isServeOlderThanScopes('0.45.14.0')).toBe(false);
+    expect(isServeOlderThanScopes('0.45.13.0')).toBe(true);
+    // 3-segment historical form pads with 0: X.Y.Z === X.Y.Z.0.
+    expect(isServeOlderThanScopes('0.45.14')).toBe(false);
   });
 });

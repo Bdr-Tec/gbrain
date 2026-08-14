@@ -52,6 +52,7 @@ import {
   validateToken,
 } from '../mcp-registration.ts';
 import { mintLegacyToken, revokeLegacyTokenById, type MintedLegacyToken } from '../token-mint.ts';
+import { generateToken } from '../utils.ts';
 import { sqlQueryForEngine } from '../sql-query.ts';
 import { BootstrapError, acquireBootstrapLock } from './lock.ts';
 import { probeLivePgliteHolder } from './uninstall.ts';
@@ -72,6 +73,7 @@ import {
 import {
   addPermissionsAllowEntry,
   claudeSettingsPath,
+  committedHookEvents,
   removeClaudeHooksAt,
   removePermissionsAllowEntry,
   writeClaudeHooksAt,
@@ -198,6 +200,13 @@ export function parseHarnessArgs(rest: string[]): HarnessFlags {
     out.error = out.error ?? 'pass --status OR --remove, not both';
   }
   // --user-hooks and --local are accepted, documented no-ops (script clarity).
+  // Unknown/typo'd flags never reach this parser through the CLI: cli.ts
+  // validates argv against CLI_FLAG_REGISTRY pre-dispatch and rejects them
+  // (verified live with a misspelled no-capture flag — it errors before
+  // runHarness runs; do NOT spell the typo literally here, the registry
+  // generator harvests bare flag tokens from comments and would make it
+  // valid). This parser's [X14] errors are the second layer, for the known
+  // flags' VALUE shapes.
   return out;
 }
 
@@ -473,7 +482,12 @@ async function cleanupStalePriorTargets(
         const get = await d.runner(['claude', 'mcp', 'get', pt.name ?? 'gbrain']);
         const info = parseClaudeMcpGetUrl(`${get.stdout}\n${get.stderr}`);
         if (get.code === 0 && info.found && info.url === prior.url) {
-          await d.runner(['claude', 'mcp', 'remove', pt.name ?? 'gbrain', '--scope', pt.scope]);
+          const rm = await d.runner(['claude', 'mcp', 'remove', pt.name ?? 'gbrain', '--scope', pt.scope]);
+          if (rm.code !== 0 && !/not found|No MCP server/i.test(rm.stdout + rm.stderr)) {
+            // A failed remove must NOT be forgotten as success — re-append so
+            // --remove / the next converge retries it (ship-review P2).
+            throw new Error(rm.stderr.trim() || `claude mcp remove exited ${rm.code}`);
+          }
           d.log(`stale MCP registration '${pt.name}' removed (no longer planned).`);
         } else if (get.code === 0 && info.found && !info.url) {
           // Refuse-rather-than-guess: an unparseable URL means we cannot prove
@@ -498,6 +512,11 @@ async function cleanupStalePriorTargets(
 
 export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): Promise<number> {
   const d = resolveDeps(rawDeps);
+  // stdout-for-data discipline: under --json, stdout carries ONLY the final
+  // JSON document; every prose/progress line flows to stderr (matching the
+  // statusHarness --json contract, so machine callers never scrape).
+  const emitJson = d.log;
+  if (flags.json) (d as { log: (line: string) => void }).log = d.logError;
 
   // 1. Validate inputs + detect harnesses.
   for (const dir of flags.projects) {
@@ -625,6 +644,27 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
       return 2;
     }
   }
+  // Cross-HOME exclusivity (the receipt check above only sees THIS home's
+  // install): when wiring --project, another install's USER-scope harness
+  // hooks would double-fire in that project — the user settings file is
+  // knowable, so scan it. (The reverse — user-scope wiring vs some other
+  // home's --project dirs — is not enumerable; the receipt check plus the
+  // same-file writer refusal are the guards there.)
+  if (flags.projects.length > 0 && !flags.noHooks && existsSync(d.userSettingsPath)) {
+    try {
+      const raw = readFileSync(d.userSettingsPath, 'utf8');
+      if (raw.includes(`"${GBRAIN_HARNESS_MARKER_VALUE}"`)) {
+        d.logError(
+          `user-scope harness hooks already exist in ${d.userSettingsPath} (possibly from another GBRAIN_HOME's ` +
+            'install); --project wiring would double-fire every event. Remove that install first ' +
+            '(`gbrain bootstrap harness --remove` under its home).',
+        );
+        return 2;
+      }
+    } catch {
+      /* unreadable → the writers' own fail-closed paths handle it */
+    }
+  }
 
   // 4. Plan targets + WRITE-AHEAD receipt [F1/X6] — BEFORE the mint, so a
   // crash (or a newer-format receipt refusal) can never leave a live token
@@ -703,13 +743,10 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   writeHarnessReceipt(d.gbrainHome, receipt);
   const save = () => writeHarnessReceipt(d.gbrainHome, receipt);
 
-  // [X3] Convergence: prior wiring not re-planned this run (a changed
-  // --project set, --no-hooks, a dropped host) is unwired NOW — never
-  // stranded live behind a receipt that no longer records it. Cleanup
-  // failures append as failed targets so --remove retries them.
-  if (prior) {
-    await cleanupStalePriorTargets(prior, receipt, d, save);
-  }
+  // ([X3] convergence cleanup of dropped prior targets is DEFERRED to after
+  // the smoke passes — see step 9. Unwiring the old working state before the
+  // mint even succeeds would leave the box disconnected when a PGLite lock or
+  // mint failure aborts the run: mint-first applies to removals too.)
 
   // 5. Token — mint-first [C7]; the receipt already exists [X6].
   let token: string;
@@ -795,7 +832,13 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
           }
           if (info.found) {
             const oldBearer = parseClaudeMcpGetBearer(out);
-            if (info.url && oldBearer) oldClaudeReg = { url: info.url, token: oldBearer };
+            // A rollback with a garbage bearer would silently BREAK the
+            // registration it exists to preserve — if the CLI ever redacts
+            // header values ('***', '<redacted>'), treat the old bearer as
+            // unrecoverable and take the honest-degrade branch instead.
+            if (info.url && oldBearer && validateToken(oldBearer).ok && !/^[*<]/.test(oldBearer)) {
+              oldClaudeReg = { url: info.url, token: oldBearer };
+            }
             await d.runner(['claude', 'mcp', 'remove', flags.name, '--scope', 'user']);
             claudeReplaced = true;
           }
@@ -824,6 +867,15 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
         confirm(t);
         d.log(`MCP registered with Claude Code (user scope) -> ${url}`);
       } else if (t.kind === 'permission') {
+        // The pre-approval string only makes sense for OUR registration —
+        // when the mcp target failed (ownership refusal, add failure), wiring
+        // `mcp__<name>` would pre-approve whatever server owns that name,
+        // possibly another brain's (red-team CRITICAL).
+        const mcpTarget = targets.find((x) => x.host === 'claude-code' && x.kind === 'mcp');
+        if (mcpTarget && mcpTarget.state !== 'confirmed') {
+          failTarget(t, 'skipped: the MCP registration itself did not land — pre-approving the name would bless a foreign server');
+          continue;
+        }
         const r = addPermissionsAllowEntry(t.path!, t.entry!);
         for (const note of r.notes) d.logError(note);
         if (r.added === false) {
@@ -854,7 +906,12 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
           marker: GBRAIN_HARNESS_MARKER_VALUE,
           backupStrategy: 'timestamped',
           refuseOnForeignGbrainMarker: true,
-          ...(t.scope === 'user' ? { freshMode: 0o600 } : {}),
+          ...(t.scope === 'user'
+            ? { freshMode: 0o600 }
+            : // [D12] a --project dir whose COMMITTED settings carry workspace
+              // events must not get inert harness duplicates for them (the
+              // runtime lane guard would make those entries yield forever).
+              { carriedEvents: committedHookEvents(dirname(dirname(t.path!))) }),
         });
         for (const note of r.notes) d.logError(note);
         confirm(t);
@@ -903,7 +960,29 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   // 8. Smoke [C3-enriched message; X10 verbs-surface honesty]. An
   // unknown-tool tool_error means initialize + auth ALREADY succeeded — a
   // serve running a narrowed --surface (e.g. verbs) is verified, not broken.
-  const smoke = await d.probeIdentity(url, token);
+  //
+  // CANARY first (ship-review P0, three reviewers convergent): the smoke
+  // sends the real bearer to whatever answers on the port, and an impostor
+  // squatting 127.0.0.1 could accept it, fake an identity, and trigger
+  // previous-token revocation. A real gbrain serve validates bearers against
+  // the brain DB, so it MUST reject a random same-format token with an auth
+  // failure — an impostor cannot tell the canary from the real token (same
+  // format, both unknown to it), so it either rejects both (smoke fails,
+  // nothing revoked, rollback fires) or accepts the canary and is caught
+  // here. Either way the fresh mint is revoked below, never left live.
+  const canary = await d.probeIdentity(url, generateToken('gbrain_'));
+  let smoke: ConnectProbeResult;
+  if (canary.ok || canary.reason === 'tool_error') {
+    smoke = {
+      ok: false,
+      reason: 'auth',
+      message:
+        'the endpoint accepted an INVALID credential — whatever answers on this port is not a gbrain serve ' +
+        'backed by this brain (loopback impostor guard). Wiring rolled back; nothing revoked.',
+    };
+  } else {
+    smoke = await d.probeIdentity(url, token);
+  }
   const smokeOk = smoke.ok || (!smoke.ok && smoke.reason === 'tool_error');
   if (smoke.ok) {
     d.log(`smoke test: ${smoke.identity}`);
@@ -928,10 +1007,15 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     // real, not rhetorically.
     if (codexRollback) {
       try {
-        if (codexRollback.backupPath && existsSync(codexRollback.backupPath)) {
-          copyFileSync(codexRollback.backupPath, codexRollback.path);
-        } else if (!codexRollback.replacedPrior) {
-          removeCodexHttpServerBlock(codexRollback.path, flags.name);
+        const rbLock = await acquireBootstrapLock(dirname(codexRollback.path)); // [X11] parity
+        try {
+          if (codexRollback.backupPath && existsSync(codexRollback.backupPath)) {
+            copyFileSync(codexRollback.backupPath, codexRollback.path);
+          } else if (!codexRollback.replacedPrior) {
+            removeCodexHttpServerBlock(codexRollback.path, flags.name);
+          }
+        } finally {
+          rbLock.release();
         }
         const ct = targets.find((t) => t.host === 'codex' && t.kind === 'mcp');
         if (ct) failTarget(ct, 'rolled back to the previous codex config after the failed smoke');
@@ -967,9 +1051,52 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
         'smoke failed and the previous registration could not be recovered — the new registration is left in place; re-run to converge',
       );
     }
+    // A freshly-added pre-approval must not outlive its rolled-back
+    // registration (red-team CRITICAL): remove the entry we added this run.
+    // Pre-existing entries [X8] are never touched.
+    const pt = targets.find((t) => t.host === 'claude-code' && t.kind === 'permission');
+    if (pt?.state === 'confirmed' && pt.mechanism !== 'pre-existing') {
+      try {
+        removePermissionsAllowEntry(pt.path!, pt.entry!);
+        failTarget(pt, 'pre-approval removed after the failed smoke (its registration was rolled back)');
+      } catch (e) {
+        d.logError(`could not remove the pre-approval after rollback: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    // The fresh mint was sent to an endpoint that failed verification — a
+    // possible impostor now holds a live credential. Retire it immediately
+    // (we minted it, so the engine is reachable); the receipt keeps the id,
+    // and a later revoke of an already-revoked id is a no-op.
+    if (flags.token === undefined && receipt.token.id) {
+      try {
+        await d.revokeById(receipt.token.id);
+        d.log(`fresh-minted token revoked (id ${receipt.token.id}) — nothing live leaked to the unverified endpoint.`);
+      } catch (e) {
+        d.logError(
+          `could not revoke the fresh-minted token (${e instanceof Error ? e.message : String(e)}) — ` +
+            `revoke it manually: gbrain auth revoke with the id flag (${receipt.token.id}).`,
+        );
+      }
+    }
   }
 
-  // 9. Rotation completion [C7/X4]: only after all targets confirmed + the
+  // 9. [X3] Convergence cleanup — AFTER the smoke, so prior working wiring is
+  // never unwired on a run that failed to establish its replacement. Cleanup
+  // failures append as failed targets (blocking the rotation gate below) so
+  // --remove or a re-run retries them. Runs under the config-dir lock: it
+  // mutates the same user-scope files the apply loop serializes on [X11].
+  if (prior && smokeOk) {
+    const cfgDir = dirname(d.userSettingsPath);
+    mkdirSync(cfgDir, { recursive: true });
+    const cleanupLock = await acquireBootstrapLock(cfgDir);
+    try {
+      await cleanupStalePriorTargets(prior, receipt, d, save);
+    } finally {
+      cleanupLock.release();
+    }
+  }
+
+  // 10. Rotation completion [C7/X4]: only after all targets confirmed + the
   // token verified. EVERY carried prior id is revoked; failures stay on the
   // receipt for the next converge.
   const allConfirmed = targets.every((t) => t.state === 'confirmed');
@@ -997,7 +1124,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     );
   }
 
-  // 10. Degradation + skew honesty.
+  // 11. Degradation + skew honesty.
   if (health.engine === 'postgres') {
     d.log(
       '\nNote: this brain runs on Postgres — per-turn hook injection is degraded (no_pglite_path: the hook IPC ' +
@@ -1013,7 +1140,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   }
 
   if (flags.json) {
-    d.log(
+    emitJson(
       JSON.stringify(
         {
           schema_version: 1,
@@ -1036,12 +1163,15 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
 }
 
 /** The scopes-honoring release: any serve older verifies scoped tokens as full access. */
+/** The first release whose verify path honors the scopes column. PINNED — a
+ * comparison against the moving CLI VERSION would false-flag every scope-aware
+ * serve as soon as the next release ships (ship-review P3). */
+export const SCOPES_MIN_SERVE_VERSION = '0.45.14.0';
+
 export function isServeOlderThanScopes(serveVersion: string): boolean {
-  // The feature ships in the SAME release as this code — compare against the
-  // CLI's own version: an older serve is by definition pre-scopes.
   const parse = (v: string): number[] => v.split('.').map((n) => Number.parseInt(n, 10) || 0);
   const a = parse(serveVersion);
-  const b = parse(VERSION);
+  const b = parse(SCOPES_MIN_SERVE_VERSION);
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     const x = a[i] ?? 0;
     const y = b[i] ?? 0;
@@ -1074,8 +1204,15 @@ export async function removeHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
   const save = () => writeHarnessReceipt(d.gbrainHome, receipt);
   let anyFailed = false;
 
-  // Phase 1 — host removals (engine-free).
+  // Phase 1 — host removals (engine-free). Under the SAME config-dir lock the
+  // apply loop takes [X11]: a remove racing an apply from another GBRAIN_HOME
+  // must not lose the apply's just-written entry via read-modify-write
+  // interleave. (Lock order everywhere is config-dir → codex-dir.)
+  const rmCfgDir = dirname(d.userSettingsPath);
+  mkdirSync(rmCfgDir, { recursive: true });
+  const rmCfgLock = await acquireBootstrapLock(rmCfgDir);
   const remaining: HarnessTarget[] = [];
+  try {
   for (const t of receipt.targets) {
     try {
       if (t.host === 'claude-code' && t.kind === 'mcp') {
@@ -1135,12 +1272,14 @@ export async function removeHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
         const codexPath = t.path ?? d.codexConfig;
         const codexDir = dirname(codexPath);
         mkdirSync(codexDir, { recursive: true });
-        const codexLock = await acquireBootstrapLock(codexDir); // [X11] parity
+        // [X11] parity — but the phase-1 config-dir lock may already cover
+        // this dir (same-parent layouts): the lock is non-reentrant.
+        const codexLock = resolve(codexDir) === resolve(rmCfgDir) ? null : await acquireBootstrapLock(codexDir);
         let r: ReturnType<typeof removeCodexHttpServerBlock>;
         try {
           r = removeCodexHttpServerBlock(codexPath, t.name ?? 'gbrain');
         } finally {
-          codexLock.release();
+          codexLock?.release();
         }
         d.log(
           r.removed
@@ -1155,6 +1294,9 @@ export async function removeHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
       remaining.push(t);
       d.logError(`could not remove ${t.host}/${t.kind}: ${t.error}`);
     }
+  }
+  } finally {
+    rmCfgLock.release();
   }
   receipt.targets = remaining;
   save();
@@ -1268,8 +1410,16 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
     try {
       const get = await d.runner(['claude', 'mcp', 'get', claudeMcp.name ?? 'gbrain']);
       if (get.code === 0) {
-        token = parseClaudeMcpGetBearer(`${get.stdout}\n${get.stderr}`);
-        if (token) tokenSource = 'claude registration';
+        const out = `${get.stdout}\n${get.stderr}`;
+        // [C8] Ownership before recovery (red-team CRITICAL): if another
+        // install has taken the name over, the parsed bearer is a FOREIGN
+        // credential — recovering it here would transmit it to receipt.url,
+        // a host it was never issued for. Only a URL match makes it ours.
+        const info = parseClaudeMcpGetUrl(out);
+        if (info.found && info.url === receipt.url) {
+          token = parseClaudeMcpGetBearer(out);
+          if (token) tokenSource = 'claude registration';
+        }
       }
     } catch {
       /* degrade */
@@ -1350,7 +1500,24 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
     }
     if (skew) d.log(`note: ${skew}`);
   }
-  return health.ok && tokenVerified !== false ? 0 : 1;
+  // Cron contract: 0 means ALL-VERIFIED (or honest degrades only) — a
+  // crashed apply's pending/failed targets and an unconverged rotation are
+  // NOT success just because /health answers (ship-review P2). The
+  // token-unrecoverable honest degrade stays 0 per the documented contract.
+  const allTargetsConfirmed = receipt.targets.every((t) => t.state === 'confirmed');
+  const rotationConverged = (receipt.token.previous_ids?.length ?? 0) === 0;
+  // Half-removed state (red-team CRITICAL): --remove under a live PGLite
+  // serve strips every host target but defers the revoke, leaving a
+  // zero-target receipt whose minted token is STILL ACTIVE. Vacuous
+  // every() would read that as green forever.
+  const removalPending = receipt.targets.length === 0 && receipt.token.minted && receipt.token.id !== undefined;
+  if (removalPending) {
+    d.logError(
+      `removal pending: host wiring is gone but the minted token (id ${receipt.token.id}) is not yet revoked — ` +
+        'stop the serve and re-run `gbrain bootstrap harness --remove`, or revoke it with `gbrain auth revoke` and the id flag.',
+    );
+  }
+  return health.ok && tokenVerified !== false && allTargetsConfirmed && rotationConverged && !removalPending ? 0 : 1;
 }
 
 // ── Home preflight ──────────────────────────────────────────────────────────

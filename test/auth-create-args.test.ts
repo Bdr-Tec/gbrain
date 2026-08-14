@@ -72,4 +72,12 @@ describe('renderTokenScopes', () => {
     expect(renderTokenScopes(['read', 'write'])).toBe('read,write');
     expect(renderTokenScopes(['read', 7, 'write'])).toBe('read,write');
   });
+
+  test('rendering matches the ENFORCEMENT path (normalizeTokenScopes), never claims admin on scoped/denied rows', () => {
+    // Undecoded TEXT[] string form: the serve scopes this — list must not say admin.
+    expect(renderTokenScopes('{read,write}')).toBe('read,write');
+    // Representation drift on a written row: the serve DENIES this — list must not say admin.
+    expect(renderTokenScopes('weird')).toBe('(deny-all)');
+    expect(renderTokenScopes(42)).toBe('(deny-all)');
+  });
 });

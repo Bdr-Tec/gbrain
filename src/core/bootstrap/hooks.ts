@@ -713,9 +713,13 @@ export function addPermissionsAllowEntry(
   let permissions = settings.permissions as Record<string, unknown> | undefined;
   if (typeof permissions !== 'object' || permissions === null || Array.isArray(permissions)) {
     if (permissions !== undefined) {
-      notes.push(
-        `WARNING: existing "permissions" key was not an object (${JSON.stringify(permissions).slice(0, 80)}); ` +
-          `replaced — the original file is in the backup.`,
+      // Fail CLOSED (same stance as broken JSON): "permissions" is the host's
+      // security policy — replacing a shape we don't understand could erase
+      // deny/ask rules or a future settings schema (ship-review P2).
+      throw new Error(
+        `${settingsPath}: existing "permissions" key is not an object ` +
+          `(${JSON.stringify(permissions).slice(0, 80)}) — refusing to rewrite security policy this writer ` +
+          `does not understand. Fix the file by hand, then re-run.`,
       );
     }
     permissions = {};
@@ -723,7 +727,10 @@ export function addPermissionsAllowEntry(
   let allow = permissions.allow as unknown[] | undefined;
   if (!Array.isArray(allow)) {
     if (allow !== undefined) {
-      notes.push(`WARNING: existing permissions.allow was not an array; replaced — original in the backup.`);
+      throw new Error(
+        `${settingsPath}: existing permissions.allow is not an array — refusing to rewrite security policy ` +
+          `this writer does not understand. Fix the file by hand, then re-run.`,
+      );
     }
     allow = [];
   }

@@ -917,6 +917,10 @@ describe('uninstall × harness receipt (#4043 harness-first composition)', () =>
     const ws3 = mkdtempSync(join(tmpdir(), 'gb-harness-only-ws-'));
     const isoHome = join(ws3, '.gbrain');
     mkdirSync(join(isoHome, 'bootstrap'), { recursive: true });
+    // removeHarness locks the user-settings dir [X11] — sandbox it so the
+    // test never touches (or contends on) the operator's real ~/.claude.
+    const savedCfgDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(ws3, 'claude-cfg');
     try {
       writeHarnessReceipt(isoHome, harnessReceiptFor());
       const { runner } = makeRunner();
@@ -933,6 +937,8 @@ describe('uninstall × harness receipt (#4043 harness-first composition)', () =>
       expect(r.out.indexOf('harness wiring detected')).toBeLessThan(r.out.indexOf('no workspace install'));
       expect(existsSync(harnessReceiptPath(isoHome))).toBe(false); // receipt consumed
     } finally {
+      if (savedCfgDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedCfgDir;
       rmSync(ws3, { recursive: true, force: true });
     }
   }, 30_000);
@@ -941,6 +947,8 @@ describe('uninstall × harness receipt (#4043 harness-first composition)', () =>
     const ws4 = mkdtempSync(join(tmpdir(), 'gb-harness-abort-ws-'));
     const isoHome = join(ws4, '.gbrain');
     mkdirSync(join(isoHome, 'bootstrap'), { recursive: true });
+    const savedCfgDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(ws4, 'claude-cfg');
     try {
       // A hooks target whose settings file is parse-broken: the remove path
       // refuses to touch what it cannot read → target stays failed → exit 1.
@@ -977,6 +985,8 @@ describe('uninstall × harness receipt (#4043 harness-first composition)', () =>
       expect(existsSync(harnessReceiptPath(isoHome))).toBe(true);
       expect(existsSync(receiptPath(isoHome))).toBe(true);
     } finally {
+      if (savedCfgDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedCfgDir;
       rmSync(ws4, { recursive: true, force: true });
     }
   }, 30_000);

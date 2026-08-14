@@ -1184,25 +1184,25 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
   const deleteBrain = rest.includes('--delete-brain');
   const yes = rest.includes('--yes');
   const homeFlag = flagValue(rest, '--home');
+  const effectiveHome = homeFlag ? resolve(homeFlag) : home;
   return withLock(ws, async () => {
+    // The HOME lock (runHarness's mutex) is held across the ENTIRE uninstall
+    // body — not just the harness-removal step — so a concurrent
+    // `bootstrap harness` apply can never mint+wire in the window between
+    // harness removal and the workspace teardown's rm of <home>/bootstrap
+    // (which would strand a fresh receipt + live wiring). Consistent order
+    // (ws → home), distinct dirs, so no deadlock; same-dir configs skip the
+    // nested acquire (the lock is non-reentrant).
+    const body = async (): Promise<number> => {
     // Harness wiring is removed FIRST (#4043 ordering, load-bearing twice
     // over: the token revoke needs the DB alive, and --delete-brain rmSyncs
     // <home>/bootstrap — which would destroy harness.json unconsumed).
-    const effectiveHome = homeFlag ? resolve(homeFlag) : home;
     const harnessState = readHarnessReceiptState(effectiveHome);
     let harnessRemoved = false;
     if (harnessState.state !== 'absent') {
       console.log('harness wiring detected — removing it first (token revoke needs the brain alive).');
       const flags = parseHarnessArgs(['--remove', ...(yes ? ['--yes'] : [])]);
-      // runHarness serializes harness receipt writes on the HOME lock — take
-      // the same lock here (ws lock alone would let a concurrent
-      // `bootstrap harness` apply interleave with this removal). Consistent
-      // order (ws → home) and distinct dirs, so no deadlock; same-dir configs
-      // skip the nested acquire (the lock is non-reentrant).
-      const code =
-        resolve(effectiveHome) === resolve(ws)
-          ? await removeHarness(flags, { runner, gbrainHome: effectiveHome })
-          : await withLock(effectiveHome, () => removeHarness(flags, { runner, gbrainHome: effectiveHome }));
+      const code = await removeHarness(flags, { runner, gbrainHome: effectiveHome });
       if (code !== 0) {
         console.error(
           'harness removal did not fully converge — stopping BEFORE workspace teardown so the harness ' +
@@ -1311,6 +1311,8 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
     console.log('The workspace repo and its files remain yours — the body is portable by design.');
     abortIfInjected('uninstall');
     return 0;
+    };
+    return resolve(effectiveHome) === resolve(ws) ? body() : withLock(effectiveHome, body);
   });
 }
 

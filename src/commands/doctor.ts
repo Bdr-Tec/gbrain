@@ -8770,6 +8770,17 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
         status: 'fail',
         message: `${hr.token.previous_ids.length} previous harness token(s) were never revoked (ids ${hr.token.previous_ids.join(', ')}) — re-run \`gbrain bootstrap harness\`, or run \`gbrain auth revoke\` with the id flag per id.`,
       });
+    } else if (hr.targets.length === 0 && hr.token.minted && hr.token.id !== undefined) {
+      // Half-removed state: a remove under a live PGLite serve strips every
+      // host target but defers the revoke — the wiring is gone yet the minted
+      // token stays ACTIVE. A vacuous all-confirmed must not read green.
+      // (Flag names spelled without dashes here: the flag-registry generator
+      // harvests bare flag tokens from comments one import level deep.)
+      checks.push({
+        name: 'bootstrap_harness_health',
+        status: 'fail',
+        message: `harness removal pending: host wiring removed but the minted token (id ${hr.token.id}) is not yet revoked — stop the serve and re-run \`gbrain bootstrap harness\` with the remove flag, or run \`gbrain auth revoke\` with the id flag.`,
+      });
     } else {
       try {
         const base = hr.url.replace(/\/mcp$/, '');

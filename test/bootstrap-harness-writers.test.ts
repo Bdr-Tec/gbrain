@@ -233,14 +233,18 @@ describe('permissions.allow writers', () => {
     expect(readFileSync(path, 'utf8')).toBe(broken);
   });
 
-  test('non-object permissions replaced loudly with backup', () => {
+  test('non-object permissions / non-array allow FAIL CLOSED — security policy is never rewritten', () => {
     const dir = tmp();
     const path = join(dir, 'settings.json');
-    writeFileSync(path, JSON.stringify({ permissions: 'weird' }));
-    const res = addPermissionsAllowEntry(path, 'mcp__gbrain');
-    expect(res.notes.join(' ')).toMatch(/was not an object/);
-    expect(res.backupPath).not.toBeNull();
-    expect((readJson(path).permissions as { allow: string[] }).allow).toEqual(['mcp__gbrain']);
+    const weird = JSON.stringify({ permissions: 'weird' });
+    writeFileSync(path, weird);
+    expect(() => addPermissionsAllowEntry(path, 'mcp__gbrain')).toThrow(/refusing to rewrite security policy/);
+    expect(readFileSync(path, 'utf8')).toBe(weird); // untouched
+
+    const badAllow = JSON.stringify({ permissions: { allow: 'not-an-array', deny: ['WebFetch'] } });
+    writeFileSync(path, badAllow);
+    expect(() => addPermissionsAllowEntry(path, 'mcp__gbrain')).toThrow(/refusing to rewrite security policy/);
+    expect(readFileSync(path, 'utf8')).toBe(badAllow);
   });
 });
 

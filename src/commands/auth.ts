@@ -25,6 +25,7 @@ import { createEngine } from '../core/engine-factory.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import { assertAllowedScopes } from '../core/scope.ts';
 import { TOKEN_ID_RE } from '../core/token-mint.ts';
+import { normalizeTokenScopes } from '../core/legacy-token-scope.ts';
 import { sqlQueryForEngine, executeRawJsonb, type SqlQuery } from '../core/sql-query.ts';
 
 function hashToken(token: string): string {
@@ -183,11 +184,14 @@ async function permissions(name: string, action: string, value: string | undefin
   }
 }
 
-/** Render a token row's scope grant honestly (#4043: NULL = grandfathered). */
+/** Render a token row's scope grant honestly (#4043: NULL = grandfathered).
+ * Routes through the SAME normalizer the verify path uses — the ops surface
+ * must never claim admin on a row the serve actually scopes or denies. */
 export function renderTokenScopes(scopes: unknown): string {
-  if (!Array.isArray(scopes)) return 'admin (grandfathered)';
-  if (scopes.length === 0) return '(deny-all)';
-  return (scopes as unknown[]).filter((s) => typeof s === 'string').join(',');
+  const normalized = normalizeTokenScopes(scopes);
+  if (normalized === undefined) return 'admin (grandfathered)';
+  if (normalized.length === 0) return '(deny-all)';
+  return normalized.join(',');
 }
 
 async function list() {

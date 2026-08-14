@@ -195,6 +195,16 @@ describe('bootstrap_harness_health (#4043)', () => {
     expect(c?.message).toMatch(/serve is unreachable|not answering/);
   }, T);
 
+  test('half-removed receipt (zero targets, minted token still live) → FAIL, never a vacuous green (red-team)', async () => {
+    const { parent, home } = makeHome();
+    writeHarnessReceipt(home, harnessReceiptFixture([]));
+    const checks = await run(parent);
+    const c = byName(checks, 'bootstrap_harness_health');
+    expect(c?.status).toBe('fail');
+    expect(c?.message).toMatch(/removal pending/);
+    expect(c?.message).toContain('33333333-3333-3333-3333-333333333333');
+  }, T);
+
   test('unreadable harness receipt → warn, never a throw (fail-soft umbrella)', async () => {
     const { parent, home } = makeHome();
     mkdirSync(join(home, 'bootstrap'), { recursive: true });

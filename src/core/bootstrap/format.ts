@@ -285,7 +285,18 @@ export function readHarnessReceiptState(gbrainHomeDir: string): HarnessReceiptRe
   if (!existsSync(path)) return { state: 'absent' };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as HarnessReceipt;
-    if (parsed.harness_receipt_version === 1) return { state: 'ok', receipt: parsed };
+    if (parsed.harness_receipt_version === 1) {
+      // Version alone is not enough: every consumer dereferences targets[]
+      // and token.name unchecked, so a hand-damaged version-1 receipt must
+      // take the designed 'invalid' → backup-aside path, not a TypeError.
+      const shapeOk =
+        Array.isArray(parsed.targets) &&
+        typeof parsed.token === 'object' &&
+        parsed.token !== null &&
+        typeof parsed.token.name === 'string' &&
+        typeof parsed.url === 'string';
+      return shapeOk ? { state: 'ok', receipt: parsed } : { state: 'invalid' };
+    }
     if (typeof parsed.harness_receipt_version === 'number' && parsed.harness_receipt_version > 1) {
       return { state: 'newer', receiptVersion: parsed.harness_receipt_version };
     }
