@@ -42,6 +42,23 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MiB
 
 const TERMINAL_STATUSES = ['completed', 'failed', 'dead', 'cancelled'] as const;
 
+/** Shared cap-hit coalesce return for the backpressure guards: hydrate the
+ *  existing row, stamp the non-persisted `coalesced` marker, best-effort
+ *  audit, return. Both maxWaiting and maxPending route through here so the
+ *  coalesce contract cannot drift between them. */
+async function coalesceReturn(
+  row: Record<string, unknown>,
+  audit: { queue: string; name: string; waiting_count?: number; max_waiting?: number; pending_count?: number; max_pending?: number },
+): Promise<MinionJob> {
+  const coalesced = rowToMinionJob(row);
+  coalesced.coalesced = true;
+  try {
+    const { logBackpressureCoalesce } = await import('./backpressure-audit.ts');
+    logBackpressureCoalesce({ ...audit, returned_job_id: coalesced.id });
+  } catch { /* audit failures never block submission */ }
+  return coalesced;
+}
+
 export class MinionQueue {
   readonly maxSpawnDepth: number;
   readonly maxAttachmentBytes: number;
@@ -151,77 +168,120 @@ export class MinionQueue {
               [existingJob.id]
             );
           } else {
+            existingJob.coalesced = true;
             return existingJob;
           }
         }
       }
 
       // 1b. Submission-time backpressure for high-frequency named jobs.
-      // If waiting jobs for this (name, queue) already hit maxWaiting, return
-      // the most-recent waiting row instead of inserting another slot.
+      // Two guards share the advisory-lock machinery but differ in what they
+      // count and how they scope:
+      //   - maxWaiting (rate cap): counts status='waiting' only. Source scope
+      //     is NULL-as-wildcard — a submission with no source key counts ALL
+      //     rows for (name, queue). Intentional; existing callers rely on it.
+      //   - maxPending (single-flight): counts waiting rows PLUS live-lock
+      //     active rows (lock_until > now()). An expired-lock active belongs
+      //     to a dead/blocked worker and must NOT suppress dispatch — the
+      //     fresh waiting row keeps feeding the waitingClaimable>0 wedge
+      //     detectors (supervisor watchdog, jobs stats) that a suppressed
+      //     queue would otherwise starve. Source scope is EXACT (NULL matches
+      //     only NULL-source rows), so a legacy no-source dispatch can never
+      //     coalesce into an arbitrary per-source row.
       //
-      // Correctness: two concurrent submitters could both see waitingCount <
-      // maxWaiting and both insert, violating the cap. `pg_advisory_xact_lock`
-      // keyed on (name, queue) serializes concurrent count+insert decisions
-      // for the SAME key while leaving different keys fully parallel. The
-      // lock releases on txn commit/rollback automatically — no cleanup path
-      // to leak. Cost: one no-op SELECT on the hot path per coalesce-guarded
-      // submission; trivial compared to the protection.
+      // Correctness: two concurrent submitters could both see count < cap and
+      // both insert, violating the cap. `pg_advisory_xact_lock` keyed on
+      // (name, queue, source) serializes concurrent count+insert decisions
+      // for the SAME scope while leaving other scopes fully parallel; both
+      // guards share the key namespace so maxWaiting and maxPending
+      // submitters for one scope serialize against each other. The lock
+      // releases on txn commit/rollback automatically — no cleanup path to
+      // leak.
       //
-      // Queue scope: the filter includes `queue=$2` so a waiting
+      // Queue scope: the filters include `queue=$2` so a waiting
       // 'autopilot-cycle' in queue 'default' does NOT suppress submissions
-      // to queue 'shell' with the same name. Pre-D2 code filtered on `name`
-      // alone — a real cross-queue bleed that sequential tests missed.
+      // to queue 'shell' with the same name (pre-D2 cross-queue bleed).
       //
       // Engine compatibility: PGLite (WASM Postgres 17) supports
       // pg_advisory_xact_lock, so this works on both engines without branching.
-      if (opts?.maxWaiting !== undefined) {
-        const maxWaiting = Math.max(1, Math.floor(opts.maxWaiting));
+      if (opts?.maxWaiting !== undefined || opts?.maxPending !== undefined) {
         const backpressureQueue = opts?.queue ?? 'default';
         // Multi-source scope: jobs of the same (name, queue) but different
-        // data.sourceId are independent workstreams (per-source sync/cycle).
-        // Counting them together made a waiting default-source sync swallow
-        // every other source's freshness sync — a secondary source sat 29h stale
-        // while dispatch logs showed its syncs "dispatched" (coalesced into
-        // the default row). Key the lock and the count on sourceId when the
-        // submission carries one; NULL keeps legacy single-scope behavior.
-        const bpSourceId = typeof (data as Record<string, unknown> | undefined)?.sourceId === 'string'
-          ? (data as Record<string, unknown>).sourceId as string
+        // source are independent workstreams (per-source sync/cycle). Counting
+        // them together made a waiting default-source sync swallow every other
+        // source's freshness sync. Both payload spellings are read: sync/
+        // webhook payloads carry camelCase sourceId; per-source autopilot
+        // payloads carry snake_case source_id.
+        const d = data as Record<string, unknown> | undefined;
+        const bpSourceId = typeof d?.sourceId === 'string' ? d.sourceId as string
+          : typeof d?.source_id === 'string' ? d.source_id as string
           : null;
         await tx.executeRaw(
           `SELECT pg_advisory_xact_lock(hashtext('minion_maxwaiting:' || $1 || ':' || $2 || ':' || coalesce($3, '')))`,
           [jobName, backpressureQueue, bpSourceId]
         );
-        const waitingCountRows = await tx.executeRaw<{ count: string }>(
-          `SELECT count(*)::text AS count
-           FROM minion_jobs
-           WHERE name = $1 AND queue = $2 AND status = 'waiting'
-             AND ($3::text IS NULL OR data->>'sourceId' IS NOT DISTINCT FROM $3)`,
-          [jobName, backpressureQueue, bpSourceId]
-        );
-        const waitingCount = parseInt(waitingCountRows[0]?.count ?? '0', 10);
-        if (waitingCount >= maxWaiting) {
-          const existingWaiting = await tx.executeRaw<Record<string, unknown>>(
-            `SELECT * FROM minion_jobs
-             WHERE name = $1 AND queue = $2 AND status = 'waiting'
-               AND ($3::text IS NULL OR data->>'sourceId' IS NOT DISTINCT FROM $3)
-             ORDER BY created_at DESC, id DESC
-             LIMIT 1`,
+        const scopeExact = `COALESCE(data->>'sourceId', data->>'source_id') IS NOT DISTINCT FROM $3`;
+        const scopeWildcard = `($3::text IS NULL OR ${scopeExact})`;
+
+        // maxPending first: the stricter, in-flight-aware guard.
+        if (opts?.maxPending !== undefined) {
+          const maxPending = Math.max(1, Math.floor(opts.maxPending));
+          const pendingCond = `(status = 'waiting' OR (status = 'active' AND lock_until > now()))`;
+          const pendingCountRows = await tx.executeRaw<{ count: string }>(
+            `SELECT count(*)::text AS count
+             FROM minion_jobs
+             WHERE name = $1 AND queue = $2 AND ${pendingCond}
+               AND ${scopeExact}`,
             [jobName, backpressureQueue, bpSourceId]
           );
-          if (existingWaiting.length > 0) {
-            const coalesced = rowToMinionJob(existingWaiting[0]);
-            try {
-              const { logBackpressureCoalesce } = await import('./backpressure-audit.ts');
-              logBackpressureCoalesce({
+          const pendingCount = parseInt(pendingCountRows[0]?.count ?? '0', 10);
+          if (pendingCount >= maxPending) {
+            const existingPending = await tx.executeRaw<Record<string, unknown>>(
+              `SELECT * FROM minion_jobs
+               WHERE name = $1 AND queue = $2 AND ${pendingCond}
+                 AND ${scopeExact}
+               ORDER BY CASE WHEN status = 'waiting' THEN 0 ELSE 1 END, created_at DESC, id DESC
+               LIMIT 1`,
+              [jobName, backpressureQueue, bpSourceId]
+            );
+            if (existingPending.length > 0) {
+              return await coalesceReturn(existingPending[0], {
+                queue: backpressureQueue,
+                name: jobName,
+                pending_count: pendingCount,
+                max_pending: maxPending,
+              });
+            }
+          }
+        }
+
+        if (opts?.maxWaiting !== undefined) {
+          const maxWaiting = Math.max(1, Math.floor(opts.maxWaiting));
+          const waitingCountRows = await tx.executeRaw<{ count: string }>(
+            `SELECT count(*)::text AS count
+             FROM minion_jobs
+             WHERE name = $1 AND queue = $2 AND status = 'waiting'
+               AND ${scopeWildcard}`,
+            [jobName, backpressureQueue, bpSourceId]
+          );
+          const waitingCount = parseInt(waitingCountRows[0]?.count ?? '0', 10);
+          if (waitingCount >= maxWaiting) {
+            const existingWaiting = await tx.executeRaw<Record<string, unknown>>(
+              `SELECT * FROM minion_jobs
+               WHERE name = $1 AND queue = $2 AND status = 'waiting'
+                 AND ${scopeWildcard}
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1`,
+              [jobName, backpressureQueue, bpSourceId]
+            );
+            if (existingWaiting.length > 0) {
+              return await coalesceReturn(existingWaiting[0], {
                 queue: backpressureQueue,
                 name: jobName,
                 waiting_count: waitingCount,
                 max_waiting: maxWaiting,
-                returned_job_id: coalesced.id,
               });
-            } catch { /* audit failures never block submission */ }
-            return coalesced;
+            }
           }
         }
       }
@@ -330,7 +390,9 @@ export class MinionQueue {
         if (existing.length === 0) {
           throw new Error(`idempotency_key ${opts.idempotency_key} insert returned no row and no existing row found`);
         }
-        return rowToMinionJob(existing[0]);
+        const raced = rowToMinionJob(existing[0]);
+        raced.coalesced = true; // third coalesce path: lost the insert race
+        return raced;
       }
 
       const child = rowToMinionJob(inserted[0]);

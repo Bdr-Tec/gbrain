@@ -890,6 +890,54 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
             `       gbrain jobs retry <id>                                        # for dead-lettered jobs`,
           );
         }
+
+        // Backpressure visibility: maxPending suppression keeps `waiting` at 0
+        // while a job is in flight, which silences the waiting>0 wedge line
+        // above — the exact operator-confusion cost of the duplicate-cycle
+        // incident. Surface the last 24h of coalesce events (per name, this
+        // queue) from the backpressure audit JSONL, plus a hint naming the
+        // in-flight job when a name shows suppression with zero waiting rows
+        // and a stale live-lock active. Best-effort: unreadable audit files
+        // simply omit the line.
+        try {
+          const { readRecentCoalesceCounts } = await import('../core/minions/backpressure-audit.ts');
+          const coalesceCounts = readRecentCoalesceCounts({ queue: statsQueue, windowMs: 24 * 3600_000 });
+          if (coalesceCounts.size > 0) {
+            const parts = [...coalesceCounts.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, n]) => `${name}: ${n}`);
+            console.log(`\n  Backpressure (24h): submissions coalesced onto in-flight jobs — ${parts.join(', ')}`);
+            // Hint loop is bounded: names come from the 24h audit window
+            // (normally a handful), capped defensively — this is an
+            // operator-invoked diagnostic, not a hot path.
+            const hintNames = [...coalesceCounts.keys()].slice(0, 10);
+            for (const name of hintNames) {
+              // One CTE computes the oldest live-lock active row so the
+              // live-lock predicate exists in exactly one place.
+              const rows = await engine.executeRaw<{ waiting: string; live_id: string | null; age_min: string | null }>(
+                `WITH live AS (
+                   SELECT id, started_at FROM minion_jobs
+                    WHERE name = $1 AND queue = $2 AND status = 'active' AND lock_until > now()
+                    ORDER BY started_at ASC NULLS LAST LIMIT 1
+                 )
+                 SELECT (SELECT count(*)::text FROM minion_jobs
+                          WHERE name = $1 AND queue = $2 AND status = 'waiting') AS waiting,
+                        (SELECT id::text FROM live) AS live_id,
+                        (SELECT floor(EXTRACT(EPOCH FROM (now() - started_at)) / 60)::text FROM live) AS age_min`,
+                [name, statsQueue],
+              );
+              const r = rows[0];
+              const ageMin = r?.age_min != null ? parseInt(r.age_min, 10) : null;
+              if (r && parseInt(r.waiting ?? '0', 10) === 0 && r.live_id != null && ageMin != null && ageMin > wedgeMins) {
+                console.log(
+                  `     ${name}: dispatch suppressed by in-flight job #${r.live_id} (age ${ageMin}m) — check \`gbrain jobs get ${r.live_id}\``,
+                );
+              }
+            }
+          }
+        } catch {
+          // Audit read is advisory; never break stats.
+        }
       }
 
       // v0.41 Bug 2 / Eng D8 — surface lease pressure to the operator.
