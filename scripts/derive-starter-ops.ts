@@ -158,7 +158,7 @@ async function run(): Promise<number> {
   }
 
   console.log('\nProposed block — paste into src/mcp/surface.ts (replacing FALLBACK_DAILY_OPS),');
-  console.log('then run: bun test test/mcp-surface.test.ts && bun run scripts/generate-tool-catalog.ts\n');
+  console.log('then run: bun test --timeout=60000 test/mcp-surface.test.ts && bun run scripts/generate-tool-catalog.ts\n');
   console.log(lines.join('\n'));
   return 0;
 }
