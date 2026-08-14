@@ -59,6 +59,7 @@ interface Fake {
   deps: HarnessDeps;
   calls: string[][];
   revoked: string[];
+  mintCalls: Array<{ name: string; scopes: string[]; sourceGrant?: string[] }>;
   out: string[];
   err: string[];
   home: string;
@@ -81,6 +82,7 @@ function makeFake(opts: {
   const codexConfig = join(dir, 'codex-config.toml');
   const calls: string[][] = [];
   const revoked: string[] = [];
+  const mintCalls: Array<{ name: string; scopes: string[]; sourceGrant?: string[] }> = [];
   const out: string[] = [];
   const err: string[] = [];
   const mintQueue = opts.mintQueue ?? [{ token: TOKEN_A, id: ID_A }, { token: TOKEN_B, id: ID_B }];
@@ -114,7 +116,8 @@ function makeFake(opts: {
         : { ok: false, reason: 'auth', message: 'HTTP 401' },
     userSettingsPath: userSettings,
     codexConfig,
-    mint: async () => {
+    mint: async (o) => {
+      mintCalls.push(o as { name: string; scopes: string[]; sourceGrant?: string[] });
       const m = mintQueue[Math.min(mintIdx++, mintQueue.length - 1)];
       return { token: m.token, id: m.id, name: 'bootstrap-harness', scopes: ['read', 'write'] };
     },
@@ -129,7 +132,7 @@ function makeFake(opts: {
     log: (l) => out.push(l),
     logError: (l) => err.push(l),
   };
-  return { deps, calls, revoked, out, err, home, userSettings, codexConfig };
+  return { deps, calls, revoked, mintCalls, out, err, home, userSettings, codexConfig };
 }
 
 function flags(extra: string[] = []): HarnessFlags {
@@ -269,8 +272,8 @@ describe('full apply', () => {
     expect(code).toBe(1);
     expect(f2.revoked).toEqual([]); // old token still live
     const state = readHarnessReceiptState(f.home);
-    const receipt = (state as { receipt: { targets: Array<{ state: string; kind: string }>; token: { previous_id?: string } } }).receipt;
-    expect(receipt.token.previous_id).toBe(ID_A); // kept for the next converge
+    const receipt = (state as { receipt: { targets: Array<{ state: string; kind: string }>; token: { previous_ids?: string[] } } }).receipt;
+    expect(receipt.token.previous_ids).toEqual([ID_A]); // kept for the next converge [X4]
     expect(receipt.targets.some((t) => t.state === 'failed' && t.kind === 'mcp')).toBe(true);
   });
 
@@ -405,7 +408,7 @@ describe('--remove', () => {
     const code = await removeHarness(parseHarnessArgs(['--remove', '--yes']), removeDeps);
     expect(code).toBe(1);
     expect(f.revoked).toEqual([]);
-    expect(f.err.join('\n')).toMatch(/token NOT revoked/);
+    expect(f.err.join('\n')).toMatch(/token\(s\) NOT revoked/);
     const state = readHarnessReceiptState(f.home);
     expect(state.state).toBe('ok');
     expect((state as { receipt: { targets: unknown[] } }).receipt.targets).toEqual([]);
@@ -459,6 +462,202 @@ describe('--status', () => {
     expect(code).toBe(1);
     expect(f.out.join('\n')).toMatch(/serve: UNREACHABLE/);
     expect(f.out.join('\n')).toMatch(/not verified \(serve unreachable\)/);
+  });
+});
+
+describe('outside-voice hardening (X-batch)', () => {
+  const ID_C = '33333333-3333-3333-3333-333333333333';
+  const TOKEN_C = `gbrain_${'c'.repeat(64)}`;
+
+  test('[X1] explicit --harness codex FORCES wiring with zero detection signals', async () => {
+    const f = makeFake();
+    const deps: HarnessDeps = { ...f.deps, detectCodex: () => false, detectClaude: () => false };
+    const code = await applyHarness(flags(['--harness', 'codex']), deps);
+    expect(code).toBe(0);
+    expect(readFileSync(f.codexConfig, 'utf8')).toContain(CODEX_TOML_BLOCK_BEGIN);
+  });
+
+  test('[X2] --source reaches the mint as a scalar write-floor grant; absent → federation default', async () => {
+    const f = makeFake();
+    expect(await applyHarness(flags(['--harness', 'codex', '--source', 'wiki']), f.deps)).toBe(0);
+    expect(f.mintCalls[0].sourceGrant).toEqual(['wiki']);
+    const f2 = makeFake();
+    expect(await applyHarness(flags(['--harness', 'codex']), f2.deps)).toBe(0);
+    expect(f2.mintCalls[0].sourceGrant).toBeUndefined();
+  });
+
+  test('[X3] --no-capture RE-RUN unwires the capture events it previously wired', async () => {
+    const f = makeFake();
+    expect(await applyHarness(flags(['--harness', 'claude-code']), f.deps)).toBe(0);
+    expect(Object.keys(readJson(f.userSettings).hooks as object).length).toBe(5);
+    expect(await applyHarness(flags(['--harness', 'claude-code', '--no-capture']), f.deps)).toBe(0);
+    const hooks = readJson(f.userSettings).hooks as Record<string, unknown>;
+    expect(Object.keys(hooks).sort()).toEqual(['PreCompact', 'SessionStart', 'UserPromptSubmit']);
+  });
+
+  test('[X3] a changed --project set unwires the dropped dir and the receipt stays honest', async () => {
+    const projA = mkdtempSync(join(tmpdir(), 'gb-proj-a-'));
+    const projB = mkdtempSync(join(tmpdir(), 'gb-proj-b-'));
+    const f = makeFake();
+    expect(await applyHarness(flags(['--harness', 'claude-code', '--project', projA]), f.deps)).toBe(0);
+    const settingsA = join(projA, '.claude', 'settings.local.json');
+    expect(readFileSync(settingsA, 'utf8')).toContain(GBRAIN_HARNESS_MARKER_VALUE);
+    expect(await applyHarness(flags(['--harness', 'claude-code', '--project', projB]), f.deps)).toBe(0);
+    // A unwired; B wired; receipt records only B
+    expect(readFileSync(settingsA, 'utf8')).not.toContain(GBRAIN_HARNESS_MARKER_VALUE);
+    expect(readFileSync(join(projB, '.claude', 'settings.local.json'), 'utf8')).toContain(GBRAIN_HARNESS_MARKER_VALUE);
+    const state = readHarnessReceiptState(f.home);
+    const targets = (state as { receipt: { targets: Array<{ kind: string; scope: string }> } }).receipt.targets;
+    expect(targets.filter((t) => t.kind === 'hooks').map((t) => t.scope)).toEqual([projB]);
+  });
+
+  test('[X4] a failed rotation accumulates unrevoked ids; the next converge revokes them ALL', async () => {
+    const f = makeFake({ mintQueue: [{ token: TOKEN_A, id: ID_A }, { token: TOKEN_B, id: ID_B }, { token: TOKEN_C, id: ID_C }] });
+    expect(await applyHarness(flags(['--harness', 'codex']), f.deps)).toBe(0); // mints A
+    // run 2 fails post-mint (codex config made unwritable via foreign damage)
+    writeFileSync(f.codexConfig, `${CODEX_TOML_BLOCK_BEGIN}\ndamaged`); // one marker only → writer refuses
+    expect(await applyHarness(flags(['--harness', 'codex']), f.deps)).toBe(1); // mints B, wiring fails
+    expect(f.revoked).toEqual([]);
+    // repair the config, run 3 converges: A AND B both revoked
+    writeFileSync(f.codexConfig, '');
+    expect(await applyHarness(flags(['--harness', 'codex']), f.deps)).toBe(0); // mints C
+    expect([...f.revoked].sort()).toEqual([ID_A, ID_B].sort());
+    const state = readHarnessReceiptState(f.home);
+    expect((state as { receipt: { token: { previous_ids?: string[] } } }).receipt.token.previous_ids).toBeUndefined();
+  });
+
+  test('[X5] claude add-failure restores the previous registration (old clients stay connected)', async () => {
+    // the OLD registration carries TOKEN_B; the fresh mint is TOKEN_A —
+    // fail the new-token add, succeed the restore of the old one.
+    const oursGet = {
+      code: 0,
+      stdout: `Scope: User\nType: http\nURL: ${URL}\nHeaders:\n  Authorization: Bearer ${TOKEN_B}`,
+      stderr: '',
+    };
+    const f = makeFake({ mcpGet: () => oursGet });
+    const deps: HarnessDeps = {
+      ...f.deps,
+      runner: async (argv: string[]) => {
+        f.calls.push(argv);
+        if (argv[0] === 'claude' && argv[2] === 'get') return oursGet;
+        if (argv[0] === 'claude' && argv[2] === 'add' && argv.join(' ').includes(`Bearer ${TOKEN_A}`)) {
+          return { code: 1, stdout: '', stderr: 'add failed' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    };
+    const code = await applyHarness(flags(['--harness', 'claude-code', '--no-hooks']), deps);
+    expect(code).toBe(1);
+    const adds = f.calls.filter((c) => c[0] === 'claude' && c[2] === 'add');
+    expect(adds.length).toBe(2); // failed new add + restore of the old registration
+    expect(adds[1].join(' ')).toContain(`Bearer ${TOKEN_B}`);
+    expect(f.out.join('\n')).toMatch(/previous MCP registration restored/);
+  });
+
+  test('[X5] smoke failure rolls the codex block back to the pre-run config', async () => {
+    const f = makeFake();
+    writeFileSync(f.codexConfig, 'model = "o5"\n');
+    expect(await applyHarness(flags(['--harness', 'codex']), f.deps)).toBe(0); // block with TOKEN_A
+    const preRun = readFileSync(f.codexConfig, 'utf8');
+    const f2deps: HarnessDeps = {
+      ...f.deps,
+      probeIdentity: async () => ({ ok: false, reason: 'unreachable', message: 'boom' }),
+    };
+    expect(await applyHarness(flags(['--harness', 'codex']), f2deps)).toBe(1); // mints B, smoke fails
+    expect(readFileSync(f.codexConfig, 'utf8')).toBe(preRun); // TOKEN_A block restored
+    expect(f.revoked).toEqual([]); // nothing revoked — old token still live AND still wired
+  });
+
+  test('[X6] a mint crash leaves a write-ahead receipt (pending targets, no token id)', async () => {
+    const f = makeFake();
+    const deps: HarnessDeps = {
+      ...f.deps,
+      mint: async () => {
+        throw new Error('simulated crash mid-mint');
+      },
+    };
+    await expect(applyHarness(flags(['--harness', 'codex']), deps)).rejects.toThrow(/simulated crash/);
+    const state = readHarnessReceiptState(f.home);
+    expect(state.state).toBe('ok');
+    const receipt = (state as { receipt: { targets: Array<{ state: string }>; token: { id?: string } } }).receipt;
+    expect(receipt.token.id).toBeUndefined();
+    expect(receipt.targets.every((t) => t.state === 'pending')).toBe(true);
+  });
+
+  test('[X7] consent reach matches the actual wiring (codex-only, no-hooks)', () => {
+    const block = buildConsentBlock({
+      tokenName: 'bootstrap-harness',
+      tokenSupplied: true,
+      scopes: ['read', 'write'],
+      url: URL,
+      wireClaude: false,
+      wireCodex: true,
+      hooks: false,
+      capture: true,
+      hookScope: 'user scope',
+      name: 'gbrain',
+      userSettingsPath: '/u/settings.json',
+      codexConfig: '/u/config.toml',
+    });
+    expect(block).toMatch(/EVERY Codex session/);
+    expect(block).not.toMatch(/EVERY Claude Code and Codex session/);
+    expect(block).toMatch(/No hooks are wired by this invocation/);
+    expect(block).toMatch(/written ONLY into the host registrations/);
+    expect(block).not.toMatch(/never stored/);
+  });
+
+  test('[X8] a pre-existing permissions.allow entry is recorded as such and SURVIVES --remove', async () => {
+    const f = makeFake();
+    mkdirSync(join(f.userSettings, '..'), { recursive: true });
+    writeFileSync(f.userSettings, JSON.stringify({ permissions: { allow: ['mcp__gbrain'] } }));
+    expect(await applyHarness(flags(['--harness', 'claude-code', '--no-hooks']), f.deps)).toBe(0);
+    const state = readHarnessReceiptState(f.home);
+    const perm = (state as { receipt: { targets: Array<{ kind: string; mechanism?: string }> } }).receipt.targets.find(
+      (t) => t.kind === 'permission',
+    );
+    expect(perm?.mechanism).toBe('pre-existing');
+    const removeDeps: HarnessDeps = {
+      ...f.deps,
+      runner: async (argv: string[]) => {
+        if (argv[0] === 'claude' && argv[2] === 'get') return { code: 0, stdout: `URL: ${URL}`, stderr: '' };
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    };
+    expect(await removeHarness(parseHarnessArgs(['--remove', '--yes']), removeDeps)).toBe(0);
+    expect((readJson(f.userSettings).permissions as { allow: string[] }).allow).toEqual(['mcp__gbrain']);
+    expect(f.out.join('\n')).toMatch(/predates the harness install — left in place/);
+  });
+
+  test('[X10] a narrowed --surface serve (unknown-tool tool_error) is verified, not broken', async () => {
+    const f = makeFake();
+    const deps: HarnessDeps = {
+      ...f.deps,
+      probeIdentity: async () => ({ ok: false, reason: 'tool_error', message: 'Unknown tool: get_brain_identity' }),
+    };
+    expect(await applyHarness(flags(['--harness', 'codex']), deps)).toBe(0);
+    expect(f.out.join('\n')).toMatch(/narrowed --surface.*Counted as verified/s);
+    expect(await statusHarness(parseHarnessArgs(['--status']), deps)).toBe(0);
+    expect(f.out.join('\n')).toMatch(/token: OK .*narrowed --surface/);
+  });
+
+  test('[X13] registrar mode (non-loopback url + token) wires MCP only — no hooks', async () => {
+    const f = makeFake();
+    const code = await applyHarness(
+      flags(['--url', 'http://192.168.1.50:3131/mcp', '--token', TOKEN_A]),
+      f.deps,
+    );
+    expect(code).toBe(0);
+    expect(f.out.join('\n')).toMatch(/registrar mode.*hooks are NOT wired/s);
+    expect(readJson(f.userSettings).hooks).toBeUndefined();
+    // the discarded-warning fix: http-bearer warning surfaces
+    expect(f.err.join('\n')).toMatch(/unencrypted/);
+  });
+
+  test('[X14] conflicting or value-less invocations fail closed', () => {
+    expect(parseHarnessArgs(['--url', 'http://h/mcp', '--port', '3131']).error).toMatch(/not both/);
+    expect(parseHarnessArgs(['--status', '--remove']).error).toMatch(/not both/);
+    expect(parseHarnessArgs(['--token']).error).toMatch(/requires a value/);
+    expect(parseHarnessArgs(['--url', '--yes']).error).toMatch(/requires a value/);
   });
 });
 

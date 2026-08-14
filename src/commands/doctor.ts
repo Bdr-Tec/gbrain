@@ -8400,11 +8400,11 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
           `harness wiring incomplete: ${failed.length} failed / ${pending.length} pending target(s)` +
           ` — re-run \`gbrain bootstrap harness\` to converge (details: gbrain bootstrap harness --status).`,
       });
-    } else if (hr.token.previous_id) {
+    } else if (hr.token.previous_ids && hr.token.previous_ids.length > 0) {
       checks.push({
         name: 'bootstrap_harness_health',
         status: 'fail',
-        message: `a previous harness token (id ${hr.token.previous_id}) was never revoked — re-run \`gbrain bootstrap harness\`, or run \`gbrain auth revoke\` with the id flag (${hr.token.previous_id}).`,
+        message: `${hr.token.previous_ids.length} previous harness token(s) were never revoked (ids ${hr.token.previous_ids.join(', ')}) — re-run \`gbrain bootstrap harness\`, or run \`gbrain auth revoke\` with the id flag per id.`,
       });
     } else {
       try {

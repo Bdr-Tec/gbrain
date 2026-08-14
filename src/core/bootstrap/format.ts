@@ -215,7 +215,7 @@ export function writeReceipt(gbrainHomeDir: string, receipt: InstallReceipt): vo
 // WRITE-AHEAD contract [F1/C7]: the apply path persists this receipt right
 // after minting — every planned target starts `pending` and flips to
 // `confirmed` (or records its failure) as the wiring lands, and
-// `token.previous_id` carries the not-yet-revoked prior token until rotation
+// `token.previous_ids` carries every not-yet-revoked prior token until rotation
 // completes. A crash at any step leaves a receipt --remove can consume.
 // ---------------------------------------------------------------------------
 
@@ -259,8 +259,13 @@ export interface HarnessReceipt {
     id?: string;
     /** False when --token supplied a pre-minted token (never revoke those). */
     minted: boolean;
-    /** Prior minted token id awaiting revocation (mint-first rotation [C7]). */
-    previous_id?: string;
+    /**
+     * EVERY prior minted-token id still awaiting revocation (mint-first
+     * rotation [C7]). An array, not a slot [X4]: a failed rotation must not
+     * forget the token before last, and a --token re-run must keep carrying
+     * ids minted by earlier runs until they are revoked.
+     */
+    previous_ids?: string[];
   };
   targets: HarnessTarget[];
 }

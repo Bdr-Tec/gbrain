@@ -96,6 +96,12 @@ export interface WriteClaudeHooksOpts {
    * same hook twice per event) [C6].
    */
   refuseOnForeignGbrainMarker?: boolean;
+  /**
+   * Mode for a FRESHLY-CREATED settings file (existing files keep their mode
+   * via the atomic writer). Harness user-scope writes pass 0o600 to match
+   * Claude Code's own convention for that file [X11].
+   */
+  freshMode?: number;
 }
 
 export interface WriteClaudeHooksResult {
@@ -218,14 +224,14 @@ function stripOurEntries(groups: unknown[], marker: string): { kept: unknown[]; 
  * the pid-suffixed umask-default tmp was fine for gitignored workspace files
  * but not for user-global config).
  */
-function atomicWriteJson(path: string, value: unknown): void {
+function atomicWriteJson(path: string, value: unknown, freshMode?: number): void {
   const target = existsSync(path) ? realpathSync(path) : path;
   mkdirSync(dirname(target), { recursive: true });
   let mode: number | undefined;
   try {
     mode = statSync(target).mode & 0o777;
   } catch {
-    mode = undefined;
+    mode = freshMode; // fresh file: caller's convention (user-scope → 0600) [X11]
   }
   const tmp = `${target}.tmp-${randomBytes(6).toString('hex')}`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', ...(mode !== undefined ? { mode } : {}) });
@@ -363,6 +369,23 @@ export function writeClaudeHooksAt(
   let removedPrior = 0;
   const installed: Array<{ event: ClaudeHookEvent; command: string }> = [];
 
+  // [X3] Convergence: strip OUR marker from EVERY event in the file first —
+  // not just the requested subset — so a re-run with fewer events (e.g.
+  // --no-capture dropping Stop/SessionEnd) removes the ones no longer wanted
+  // instead of leaving them live. Foreign and other-marker entries survive.
+  for (const event of Object.keys(hooks)) {
+    const groups = hooks[event];
+    if (!Array.isArray(groups)) continue; // structurally foreign — never touch
+    const { kept, removed } = stripOurEntries(groups, marker);
+    removedPrior += removed;
+    if (removed === 0) continue;
+    if (kept.length === 0) {
+      delete hooks[event]; // emptied by OUR removal — drop the key
+    } else {
+      hooks[event] = kept;
+    }
+  }
+
   for (const event of events) {
     let groups = hooks[event];
     if (!Array.isArray(groups)) {
@@ -373,8 +396,7 @@ export function writeClaudeHooksAt(
       }
       groups = [];
     }
-    const { kept, removed } = stripOurEntries(groups as unknown[], marker);
-    removedPrior += removed;
+    const kept = [...(groups as unknown[])];
 
     const command = buildClaudeHookCommand(opts.gbrainBin, event, opts.env);
     const timeout = opts.timeoutSecs?.[event] ?? CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS[event];
@@ -396,7 +418,7 @@ export function writeClaudeHooksAt(
     backupPath = backupPathFor(settingsPath, backupStrategy);
     copyFileSync(settingsPath, backupPath);
   }
-  atomicWriteJson(settingsPath, settings);
+  atomicWriteJson(settingsPath, settings, opts.freshMode);
 
   return { settingsPath, installed, removedPrior, backupPath, brokenBackupPath, notes };
 }
@@ -544,7 +566,7 @@ export function addPermissionsAllowEntry(
     backupPath = backupPathFor(settingsPath, 'timestamped');
     copyFileSync(settingsPath, backupPath);
   }
-  atomicWriteJson(settingsPath, settings);
+  atomicWriteJson(settingsPath, settings, 0o600); // user-scope-only writer [X11]
   return { settingsPath, added: true, backupPath, notes };
 }
 
@@ -604,7 +626,7 @@ export function removePermissionsAllowEntry(
 
   const backupPath = backupPathFor(settingsPath, 'timestamped');
   copyFileSync(settingsPath, backupPath);
-  atomicWriteJson(settingsPath, settings);
+  atomicWriteJson(settingsPath, settings, 0o600); // user-scope-only writer [X11]
   return { settingsPath, removed, backupPath, notes };
 }
 

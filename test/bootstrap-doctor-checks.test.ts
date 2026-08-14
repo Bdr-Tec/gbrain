@@ -178,7 +178,7 @@ describe('bootstrap_harness_health (#4043)', () => {
   test('unconverged rotation (previous_id) → fail naming the revoke command', async () => {
     const { parent, home } = makeHome();
     const receipt = harnessReceiptFixture([{ state: 'confirmed' }]) as Record<string, unknown>;
-    (receipt.token as Record<string, unknown>).previous_id = '44444444-4444-4444-4444-444444444444';
+    (receipt.token as Record<string, unknown>).previous_ids = ['44444444-4444-4444-4444-444444444444'];
     writeHarnessReceipt(home, receipt as never);
     const checks = await run(parent);
     const c = byName(checks, 'bootstrap_harness_health');

@@ -943,7 +943,6 @@ async function runHarness(rest: string[], home: string, runner: ExecRunner): Pro
     console.error(flags.error);
     return 2;
   }
-  ensureHarnessHome(home);
   const deps: HarnessDeps = {
     runner,
     gbrainHome: home,
@@ -951,12 +950,13 @@ async function runHarness(rest: string[], home: string, runner: ExecRunner): Pro
     isTTY: process.stdout.isTTY === true,
     prompt: promptLine,
   };
+  // [X12] --status is READ-ONLY: no home mkdir, no lock — it must work (and
+  // stay side-effect-free) even while an apply/remove holds the mutex.
+  if (flags.status) {
+    return statusHarness(flags, deps);
+  }
+  ensureHarnessHome(home);
   return withLock(home, async () => {
-    if (flags.status) {
-      const code = await statusHarness(flags, deps);
-      abortIfInjected('harness');
-      return code;
-    }
     if (flags.remove) {
       const code = await removeHarness(flags, deps);
       abortIfInjected('harness');
