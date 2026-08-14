@@ -24,6 +24,7 @@ import { loadConfig, toEngineConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import { assertAllowedScopes } from '../core/scope.ts';
+import { TOKEN_ID_RE } from '../core/token-mint.ts';
 import { sqlQueryForEngine, executeRawJsonb, type SqlQuery } from '../core/sql-query.ts';
 
 function hashToken(token: string): string {
@@ -156,10 +157,15 @@ async function permissions(name: string, action: string, value: string | undefin
       // would silently DELETE every other grant key (source_id federation,
       // and any future key) on a routine takes-holders edit — the grant-wipe
       // class the #4043 review caught.
+      // The jsonb_typeof guard repairs rows carrying historical double-encode
+      // damage (a jsonb string/array scalar): `scalar || object` would produce
+      // a jsonb ARRAY and silently strand every grant, so a damaged left
+      // operand is reset to '{}' on edit — the old whole-replace semantics for
+      // damaged rows, merge semantics for healthy object rows.
       const result = await executeRawJsonb(
         engine,
         `UPDATE access_tokens
-            SET permissions = COALESCE(permissions, '{}'::jsonb) || $2::jsonb
+            SET permissions = (CASE WHEN jsonb_typeof(permissions) = 'object' THEN permissions ELSE '{}'::jsonb END) || $2::jsonb
             WHERE name = $1
             RETURNING id`,
         [name],
@@ -228,9 +234,12 @@ async function revoke(name: string) {
   });
 }
 
-/** #4043: names are not unique — revoke-by-id is the precise path. */
+/** #4043: names are not unique — revoke-by-id is the precise path. The
+ * revocation semantics are canonical in src/core/token-mint.ts
+ * (revokeLegacyTokenById); this CLI wrapper keeps its own UPDATE only to
+ * RETURN the name for the confirmation line — keep the two in lockstep. */
 async function revokeById(id: string) {
-  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  if (!id || !TOKEN_ID_RE.test(id)) {
     console.error('Usage: auth revoke --id <uuid>   (ids are shown by `gbrain auth list`)');
     process.exit(1);
   }
@@ -694,14 +703,23 @@ async function rescopeClient(clientId: string, args: string[]) {
  * register-client #3990 normalization precedent). Validation against the
  * allowed scope set happens in create() so the error path exits cleanly.
  */
-export function parseAuthCreateArgs(rest: string[]): { name: string; takesHolders?: string[]; scopes?: string[] } {
+export function parseAuthCreateArgs(rest: string[]): { name: string; takesHolders?: string[]; scopes?: string[]; error?: string } {
   const takesIdx = rest.indexOf('--takes-holders');
-  const takesHolders = takesIdx >= 0 && rest[takesIdx + 1]
-    ? rest[takesIdx + 1].split(',').map(s => s.trim()).filter(Boolean)
-    : undefined;
   const takesValue = takesIdx >= 0 ? rest[takesIdx + 1] : undefined;
+  // Fail closed on a missing/flag-like value: `--scopes` as the last arg
+  // silently minting a grandfathered FULL-ACCESS token is the exact
+  // fail-open-by-silent-precedence class the harness parser rejects [X14].
+  if (takesIdx >= 0 && (takesValue === undefined || takesValue.startsWith('--'))) {
+    return { name: '', error: 'the takes-holders flag requires a value (e.g. world,garry)' };
+  }
+  const takesHolders = takesValue !== undefined
+    ? takesValue.split(',').map(s => s.trim()).filter(Boolean)
+    : undefined;
   const scopesIdx = rest.indexOf('--scopes');
   const scopesValue = scopesIdx >= 0 ? rest[scopesIdx + 1] : undefined;
+  if (scopesIdx >= 0 && (scopesValue === undefined || scopesValue.startsWith('--'))) {
+    return { name: '', error: 'the scopes flag requires a value (e.g. read,write) — omitting it would mint a full-access token' };
+  }
   const scopes = scopesValue !== undefined
     ? scopesValue.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
     : undefined;
@@ -716,6 +734,10 @@ export async function runAuth(args: string[]): Promise<void> {
       // v0.28: optional --takes-holders world,garry,brain (default: world only)
       // #4043: optional --scopes read,write (default: full access, grandfathered)
       const parsed = parseAuthCreateArgs(rest);
+      if (parsed.error) {
+        console.error(`Error: ${parsed.error}`);
+        process.exit(1);
+      }
       await create(parsed.name, { takesHolders: parsed.takesHolders, scopes: parsed.scopes });
       return;
     }

@@ -18,9 +18,10 @@ All notable changes to GBrain will be documented in this file.
 
 ### Fixed
 
-- A routine `gbrain auth permissions set-takes-holders` edit silently deleted a token's other stored grants (whole-object replace); it now merges.
-- Registration ownership on multi-brain machines: harness wiring refuses to replace an MCP registration that points at a different brain's serve without `--force`, and removal skips registrations it no longer owns instead of deleting another install's wiring.
+- A routine `gbrain auth permissions set-takes-holders` edit silently deleted a token's other stored grants (whole-object replace); it now merges — and repairs rows whose stored grants were damaged by a historical encoding bug instead of compounding them.
+- Registration ownership on multi-brain machines: harness wiring refuses to replace an MCP registration that points at a different brain's serve without `--force`, and removal skips registrations it no longer owns — or whose ownership it cannot verify — instead of deleting another install's wiring.
 - User-scope settings writers resolve Claude Code's config location the way Claude Code does (`CLAUDE_CONFIG_DIR`, then `$HOME`) — sandboxed environments previously risked writing to the operator's real settings file.
+- Ship-review hardening: a failed post-wiring verification now rolls a fresh Claude Code registration back to the pre-run state (previously only replacements were restored); a value-less `--project` or `--scopes` flag errors loudly instead of silently widening scope or minting a full-access token; token-scope reads fail closed on damaged rows (only a never-written row keeps its historical full access); the Codex config write serializes under the same cross-install lock as the Claude lane; and per-turn hooks defer correctly to workspaces that carry their hook wiring in committed settings.
 
 To take advantage of v0.45.14.0: upgrade, then on any agent-framework box run `gbrain bootstrap harness --yes` against your running `gbrain serve --http`. On PGLite brains, pre-mint with `gbrain auth create bootstrap-harness --scopes read,write` while the serve is stopped and pass `--token`. Restart your serve after upgrading so token scoping is enforced by the new verify path — the install says this too, exactly when it applies. See the "Local harness mode" section of docs/guides/bootstrap.md.
 ## [0.45.12.0] - 2026-08-13

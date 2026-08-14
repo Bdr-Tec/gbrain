@@ -48,7 +48,7 @@ export function parseTakesHoldersAllowList(raw: unknown): string[] | undefined {
  * store — a dedicated column is structurally immune to the whole
  * permissions-object-replacement bug class).
  *
- * NULL / non-array → undefined: the caller grandfathers to the historical
+ * NULL / undefined → undefined: the caller grandfathers to the historical
  * full-access grant, so every existing token (scopes was never written
  * before this feature) behaves byte-identically. An ARRAY input is filtered
  * to known scope names and returned AS IS — including `[]`: an explicit
@@ -56,14 +56,28 @@ export function parseTakesHoldersAllowList(raw: unknown): string[] | undefined {
  * time; mint-time validation refuses unknown scopes loudly, so `[]` here
  * means the row was set deliberately or is damaged — either way, deny).
  *
+ * A STRING in the Postgres array-literal shape (`{read,write}` — some
+ * driver/pooler paths hand TEXT[] back undecoded) is parsed and filtered
+ * like an array. Any OTHER non-null value is representation drift on a row
+ * that WAS written — that must fail CLOSED (deny), never silently widen to
+ * the grandfather grant: only the never-written NULL earns full access.
+ *
  * Named away from the one-char-apart `parseLegacyTokenScope` (SINGULAR —
  * the source-isolation grant above) on purpose.
  */
 export function normalizeTokenScopes(raw: unknown): string[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  return (raw as unknown[]).filter(
-    (s): s is string => typeof s === 'string' && (ALLOWED_SCOPES as ReadonlySet<string>).has(s as never),
-  );
+  if (raw === null || raw === undefined) return undefined;
+  const filterKnown = (items: unknown[]): string[] =>
+    items.filter(
+      (s): s is string => typeof s === 'string' && (ALLOWED_SCOPES as ReadonlySet<string>).has(s as never),
+    );
+  if (Array.isArray(raw)) return filterKnown(raw as unknown[]);
+  if (typeof raw === 'string' && /^\{.*\}$/.test(raw.trim())) {
+    const inner = raw.trim().slice(1, -1);
+    if (inner === '') return [];
+    return filterKnown(inner.split(',').map((s) => s.trim().replace(/^"|"$/g, '')));
+  }
+  return []; // damaged/drifted representation on a written row → deny
 }
 
 /**

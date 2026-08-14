@@ -221,9 +221,15 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
   // any read hiccup means run normally.
   if (process.env.GBRAIN_HOOK_LANE === 'harness') {
     try {
-      const local = join(io.cwd ?? process.cwd(), '.claude', 'settings.local.json');
-      if (existsSync(local)) {
-        const raw = readFileSync(local, 'utf8');
+      // BOTH workspace carriers count: settings.local.json (local installs)
+      // and the committed .claude/settings.json ([D12] — an event owned by
+      // the committed carrier is stripped from local, so checking only local
+      // would double-fire it against the user-scope harness wiring).
+      const dotClaude = join(io.cwd ?? process.cwd(), '.claude');
+      for (const file of ['settings.local.json', 'settings.json']) {
+        const p = join(dotClaude, file);
+        if (!existsSync(p)) continue;
+        const raw = readFileSync(p, 'utf8');
         if (raw.includes('"_gbrain"') && raw.includes('"bootstrap-v1"')) return 0;
       }
     } catch {

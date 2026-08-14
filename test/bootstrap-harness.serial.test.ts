@@ -30,6 +30,8 @@ import { join } from 'node:path';
 import {
   applyHarness,
   buildConsentBlock,
+  codexBlockOwnsName,
+  isServeOlderThanScopes,
   parseClaudeMcpGetBearer,
   parseClaudeMcpGetUrl,
   parseCodexBlockBearer,
@@ -43,6 +45,7 @@ import { readHarnessReceiptState, harnessReceiptPath } from '../src/core/bootstr
 import {
   CLAUDE_HOOK_EVENTS,
   CODEX_TOML_BLOCK_BEGIN,
+  CODEX_TOML_BLOCK_END,
   GBRAIN_HARNESS_MARKER_VALUE,
 } from '../src/core/bootstrap/host-specs.ts';
 import type { ExecRunner } from '../src/core/bootstrap/repo.ts';
@@ -568,6 +571,42 @@ describe('outside-voice hardening (X-batch)', () => {
     expect(f.revoked).toEqual([]); // nothing revoked — old token still live AND still wired
   });
 
+  test('[X5] smoke failure on a FRESH claude add removes the registration (pre-run state) and fails the target', async () => {
+    const f = makeFake({ probeOk: false }); // fresh box: mcp get → not found
+    const code = await applyHarness(flags(['--harness', 'claude-code', '--no-hooks']), f.deps);
+    expect(code).toBe(1);
+    const removes = f.calls.filter((c) => c[0] === 'claude' && c[2] === 'remove');
+    expect(removes.length).toBe(1); // the fresh add is rolled back
+    const state = readHarnessReceiptState(f.home);
+    expect(state.state).toBe('ok');
+    const mcp = (state as { receipt: { targets: Array<{ kind: string; state: string; error?: string }> } }).receipt.targets.find(
+      (t) => t.kind === 'mcp',
+    );
+    expect(mcp?.state).toBe('failed');
+    expect(mcp?.error).toMatch(/fresh registration removed/);
+  });
+
+  test('[X5] smoke failure after replacing an UNRECOVERABLE registration keeps the new wiring but fails the target honestly', async () => {
+    // `claude mcp get` shows our URL but no Authorization header — the old
+    // bearer cannot be recovered, so there is nothing to restore.
+    const f = makeFake({
+      probeOk: false,
+      mcpGet: () => ({
+        code: 0,
+        stdout: `gbrain:\n  Scope: User config\n  Type: http\n  URL: ${URL}\n`,
+        stderr: '',
+      }),
+    });
+    const code = await applyHarness(flags(['--harness', 'claude-code', '--no-hooks']), f.deps);
+    expect(code).toBe(1);
+    const state = readHarnessReceiptState(f.home);
+    const mcp = (state as { receipt: { targets: Array<{ kind: string; state: string; error?: string }> } }).receipt.targets.find(
+      (t) => t.kind === 'mcp',
+    );
+    expect(mcp?.state).toBe('failed');
+    expect(mcp?.error).toMatch(/could not be recovered/);
+  });
+
   test('[X6] a mint crash leaves a write-ahead receipt (pending targets, no token id)', async () => {
     const f = makeFake();
     const deps: HarnessDeps = {
@@ -658,6 +697,9 @@ describe('outside-voice hardening (X-batch)', () => {
     expect(parseHarnessArgs(['--status', '--remove']).error).toMatch(/not both/);
     expect(parseHarnessArgs(['--token']).error).toMatch(/requires a value/);
     expect(parseHarnessArgs(['--url', '--yes']).error).toMatch(/requires a value/);
+    // A dropped --project would silently WIDEN hook wiring to user scope.
+    expect(parseHarnessArgs(['--project']).error).toMatch(/requires a directory value/);
+    expect(parseHarnessArgs(['--project', '--no-capture', '--yes']).error).toMatch(/requires a directory value/);
   });
 });
 
@@ -682,5 +724,39 @@ describe('parse helpers', () => {
     ].join('\n');
     expect(parseCodexBlockBearer(ours)).toBe(TOKEN_A);
     expect(parseCodexBlockBearer('[mcp_servers.x]\nbearer_token = "y"\n')).toBeNull();
+  });
+
+  test('codexBlockOwnsName: only a table INSIDE the managed block counts as ours', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-owns-'));
+    const cfg = join(dir, 'config.toml');
+    // Foreign stdio-lane table OUTSIDE the block + our block owning a
+    // different name: the foreign name must NOT read as harness-owned.
+    writeFileSync(
+      cfg,
+      [
+        '[mcp_servers.gbrain]',
+        'command = "gbrain"',
+        CODEX_TOML_BLOCK_BEGIN,
+        '[mcp_servers.other]',
+        'url = "http://127.0.0.1:3131/mcp"',
+        CODEX_TOML_BLOCK_END,
+        '',
+      ].join('\n'),
+    );
+    expect(codexBlockOwnsName(cfg, 'other')).toBe(true);
+    expect(codexBlockOwnsName(cfg, 'gbrain')).toBe(false);
+    expect(codexBlockOwnsName(join(dir, 'absent.toml'), 'gbrain')).toBe(false);
+    writeFileSync(cfg, '[mcp_servers.gbrain]\nurl = "http://x/mcp"\n'); // no block at all
+    expect(codexBlockOwnsName(cfg, 'gbrain')).toBe(false);
+  });
+
+  test('isServeOlderThanScopes boundary matrix', () => {
+    expect(isServeOlderThanScopes(VERSION)).toBe(false); // equal — not older
+    expect(isServeOlderThanScopes('999.0.0')).toBe(false); // newer serve
+    expect(isServeOlderThanScopes('0.1.0')).toBe(true); // clearly pre-scopes
+    // 3-segment historical form vs the 4-segment current form: padding with 0
+    // means `X.Y.Z` equals `X.Y.Z.0`, so it is older only when MICRO > 0.
+    const three = VERSION.split('.').slice(0, 3).join('.');
+    expect(isServeOlderThanScopes(three)).toBe(VERSION.split('.')[3] !== '0' && VERSION.split('.').length > 3);
   });
 });

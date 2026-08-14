@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test';
-import { parseAuthCreateArgs } from '../src/commands/auth.ts';
+import { parseAuthCreateArgs, renderTokenScopes } from '../src/commands/auth.ts';
 
 describe('parseAuthCreateArgs', () => {
   test('bare name (no flag) resolves the name — regression for the dropped-name bug', () => {
@@ -54,5 +54,22 @@ describe('parseAuthCreateArgs', () => {
   test('--scopes absent → no scopes key (grandfather lane); empty value → empty array for create() to refuse', () => {
     expect('scopes' in parseAuthCreateArgs(['n'])).toBe(false);
     expect(parseAuthCreateArgs(['n', '--scopes', ',']).scopes).toEqual([]);
+  });
+
+  test('missing/flag-like values fail closed — a dropped --scopes would mint a FULL-ACCESS token', () => {
+    expect(parseAuthCreateArgs(['n', '--scopes']).error).toMatch(/scopes flag requires a value/);
+    expect(parseAuthCreateArgs(['n', '--scopes', '--takes-holders', 'world']).error).toMatch(/scopes flag requires a value/);
+    expect(parseAuthCreateArgs(['n', '--takes-holders']).error).toMatch(/takes-holders flag requires a value/);
+    expect(parseAuthCreateArgs(['n', '--takes-holders', '--scopes', 'read']).error).toMatch(/takes-holders flag requires a value/);
+  });
+});
+
+describe('renderTokenScopes', () => {
+  test('NULL grandfathers, [] denies, arrays filter to strings', () => {
+    expect(renderTokenScopes(null)).toBe('admin (grandfathered)');
+    expect(renderTokenScopes(undefined)).toBe('admin (grandfathered)');
+    expect(renderTokenScopes([])).toBe('(deny-all)');
+    expect(renderTokenScopes(['read', 'write'])).toBe('read,write');
+    expect(renderTokenScopes(['read', 7, 'write'])).toBe('read,write');
   });
 });

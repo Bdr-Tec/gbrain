@@ -79,6 +79,8 @@ import {
 } from './hooks.ts';
 import {
   CLAUDE_HOOK_EVENTS,
+  CODEX_TOML_BLOCK_BEGIN,
+  CODEX_TOML_BLOCK_END,
   GBRAIN_HARNESS_MARKER_VALUE,
   claudeUserSettingsPath,
   codexConfigPath,
@@ -170,9 +172,14 @@ export function parseHarnessArgs(rest: string[]): HarnessFlags {
     out.name = name;
   }
   for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === '--project' && rest[i + 1] !== undefined && !rest[i + 1].startsWith('--')) {
-      out.projects.push(resolve(rest[i + 1]));
+    if (rest[i] !== '--project') continue;
+    // [X14] A --project with a missing or flag-like value must fail loudly —
+    // silently dropping it would widen hook wiring to USER scope.
+    if (rest[i + 1] === undefined || rest[i + 1].startsWith('--')) {
+      out.error = out.error ?? 'the project flag requires a directory value';
+      return out;
     }
+    out.projects.push(resolve(rest[i + 1]));
   }
   out.noHooks = rest.includes('--no-hooks');
   out.noCapture = rest.includes('--no-capture');
@@ -465,9 +472,16 @@ async function cleanupStalePriorTargets(
       } else if (pt.host === 'claude-code' && pt.kind === 'mcp') {
         const get = await d.runner(['claude', 'mcp', 'get', pt.name ?? 'gbrain']);
         const info = parseClaudeMcpGetUrl(`${get.stdout}\n${get.stderr}`);
-        if (get.code === 0 && info.found && (!info.url || info.url === prior.url)) {
+        if (get.code === 0 && info.found && info.url === prior.url) {
           await d.runner(['claude', 'mcp', 'remove', pt.name ?? 'gbrain', '--scope', pt.scope]);
           d.log(`stale MCP registration '${pt.name}' removed (no longer planned).`);
+        } else if (get.code === 0 && info.found && !info.url) {
+          // Refuse-rather-than-guess: an unparseable URL means we cannot prove
+          // ownership — never remove a registration we can't verify is ours.
+          d.log(
+            `stale MCP registration '${pt.name}' left in place — could not verify its URL against the receipt; ` +
+              `remove it manually if it is this brain's: claude mcp remove ${pt.name ?? 'gbrain'} --scope ${pt.scope}`,
+          );
         }
       } else if (pt.host === 'codex' && pt.kind === 'mcp') {
         const r = removeCodexHttpServerBlock(pt.path ?? d.codexConfig, pt.name ?? 'gbrain');
@@ -741,7 +755,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     d.logError(`FAILED (${t.host}/${t.kind}${t.scope !== 'user' ? ` ${t.scope}` : ''}): ${err}`);
   };
 
-  // 5. Claude Code wiring — under a config-dir lock [X11]: serializes gbrain
+  // 6. Claude Code wiring — under a config-dir lock [X11]: serializes gbrain
   // writers (even with different GBRAIN_HOMEs) against the same user-scope
   // files. The race with Claude Code ITSELF is irreducible by any lock we
   // hold; the docs say so.
@@ -856,11 +870,21 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     cfgLock?.release();
   }
 
-  // 6. Codex wiring — the managed TOML block is the single write mechanism.
+  // 7. Codex wiring — the managed TOML block is the single write mechanism.
+  // Same [X11] discipline as the claude lane: config.toml is user-global, so
+  // gbrain writers with different GBRAIN_HOMEs serialize on ITS directory.
   for (const t of targets) {
     if (t.host !== 'codex') continue;
     try {
-      const r = writeCodexHttpServerBlock(t.path!, { name: flags.name, url, bearerToken: token });
+      const codexDir = dirname(t.path!);
+      mkdirSync(codexDir, { recursive: true });
+      const codexLock = await acquireBootstrapLock(codexDir);
+      let r: ReturnType<typeof writeCodexHttpServerBlock>;
+      try {
+        r = writeCodexHttpServerBlock(t.path!, { name: flags.name, url, bearerToken: token });
+      } finally {
+        codexLock.release();
+      }
       for (const note of r.notes) d.logError(note);
       codexRollback = { path: t.path!, backupPath: r.backupPath, replacedPrior: r.replacedPrior };
       confirm(t);
@@ -876,7 +900,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     }
   }
 
-  // 7. Smoke [C3-enriched message; X10 verbs-surface honesty]. An
+  // 8. Smoke [C3-enriched message; X10 verbs-surface honesty]. An
   // unknown-tool tool_error means initialize + auth ALREADY succeeded — a
   // serve running a narrowed --surface (e.g. verbs) is verified, not broken.
   const smoke = await d.probeIdentity(url, token);
@@ -915,23 +939,37 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
         d.logError(`codex rollback failed: ${e instanceof Error ? e.message : String(e)} — re-run to converge.`);
       }
     }
+    const mt = targets.find((t) => t.host === 'claude-code' && t.kind === 'mcp');
     if (claudeReplaced && oldClaudeReg) {
       await d.runner(['claude', 'mcp', 'remove', flags.name, '--scope', 'user']);
       const restore = await d.runner([
         'claude',
         ...buildClaudeMcpAddArgv({ name: flags.name, url: oldClaudeReg.url, headerToken: oldClaudeReg.token, scope: 'user' }),
       ]);
-      const mt = targets.find((t) => t.host === 'claude-code' && t.kind === 'mcp');
       if (mt) failTarget(mt, 'rolled back to the previous registration after the failed smoke');
       d.log(
         restore.code === 0
           ? 'previous Claude Code registration restored — existing clients stay connected.'
           : 'could not restore the previous Claude Code registration — re-run to converge.',
       );
+    } else if (mt?.state === 'confirmed' && !claudeReplaced) {
+      // Fresh add (nothing existed before this run): roll back to the pre-run
+      // state so a failed smoke never leaves a green-looking registration
+      // wired to an unverified token — mirrors the codex fresh-add branch.
+      await d.runner(['claude', 'mcp', 'remove', flags.name, '--scope', 'user']);
+      failTarget(mt, 'fresh registration removed after the failed smoke');
+    } else if (mt?.state === 'confirmed' && claudeReplaced) {
+      // Replaced a prior registration whose bearer we could not recover — the
+      // old state is unrestorable, so keep the new wiring but record the
+      // failed smoke honestly instead of leaving the target green.
+      failTarget(
+        mt,
+        'smoke failed and the previous registration could not be recovered — the new registration is left in place; re-run to converge',
+      );
     }
   }
 
-  // 8. Rotation completion [C7/X4]: only after all targets confirmed + the
+  // 9. Rotation completion [C7/X4]: only after all targets confirmed + the
   // token verified. EVERY carried prior id is revoked; failures stay on the
   // receipt for the next converge.
   const allConfirmed = targets.every((t) => t.state === 'confirmed');
@@ -959,7 +997,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     );
   }
 
-  // 9. Degradation + skew honesty.
+  // 10. Degradation + skew honesty.
   if (health.engine === 'postgres') {
     d.log(
       '\nNote: this brain runs on Postgres — per-turn hook injection is degraded (no_pglite_path: the hook IPC ' +
@@ -1055,6 +1093,16 @@ export async function removeHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
           );
           continue;
         }
+        if (!info.url) {
+          // Refuse-rather-than-guess [C8]: no URL parsed means ownership is
+          // unprovable (a claude CLI output-format change would otherwise turn
+          // every remove into deleting other brains' registrations).
+          d.log(
+            `MCP '${t.name}' exists but its URL could not be verified against the receipt — left in place; ` +
+              `remove it manually if it is this brain's: claude mcp remove ${t.name ?? 'gbrain'} --scope ${t.scope}`,
+          );
+          continue;
+        }
         const rm = await d.runner(['claude', 'mcp', 'remove', t.name ?? 'gbrain', '--scope', t.scope]);
         if (rm.code !== 0 && !/not found|No MCP server/i.test(rm.stdout + rm.stderr)) {
           throw new Error(rm.stderr.trim() || `exit ${rm.code}`);
@@ -1084,11 +1132,20 @@ export async function removeHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
             : `no harness hook entries in ${settingsPath} — counted as removed.`,
         );
       } else if (t.host === 'codex') {
-        const r = removeCodexHttpServerBlock(t.path ?? d.codexConfig, t.name ?? 'gbrain');
+        const codexPath = t.path ?? d.codexConfig;
+        const codexDir = dirname(codexPath);
+        mkdirSync(codexDir, { recursive: true });
+        const codexLock = await acquireBootstrapLock(codexDir); // [X11] parity
+        let r: ReturnType<typeof removeCodexHttpServerBlock>;
+        try {
+          r = removeCodexHttpServerBlock(codexPath, t.name ?? 'gbrain');
+        } finally {
+          codexLock.release();
+        }
         d.log(
           r.removed
-            ? `Codex managed block removed from ${t.path ?? d.codexConfig}.`
-            : `no managed block in ${t.path ?? d.codexConfig} — counted as removed.`,
+            ? `Codex managed block removed from ${codexPath}.`
+            : `no managed block in ${codexPath} — counted as removed.`,
         );
       }
     } catch (e) {
@@ -1168,8 +1225,10 @@ export function parseClaudeMcpGetBearer(out: string): string | null {
 /** Parse the bearer token out of OUR managed codex block. */
 export function parseCodexBlockBearer(configText: string): string | null {
   const norm = configText.replace(/\r\n/g, '\n');
-  const begin = norm.indexOf(`# gbrain:${GBRAIN_HARNESS_MARKER_VALUE} begin`);
-  const end = norm.indexOf(`# gbrain:${GBRAIN_HARNESS_MARKER_VALUE} end`);
+  // The shared writer constants — inline copies here would silently stop
+  // matching if host-specs.ts ever rewords the markers.
+  const begin = norm.indexOf(CODEX_TOML_BLOCK_BEGIN);
+  const end = norm.indexOf(CODEX_TOML_BLOCK_END);
   if (begin < 0 || end < 0 || end < begin) return null;
   const block = norm.slice(begin, end);
   const m = block.match(/^bearer_token\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/m);
@@ -1309,8 +1368,13 @@ export function codexBlockOwnsName(configPath: string, name: string): boolean {
   if (!existsSync(configPath)) return false;
   try {
     const text = readFileSync(configPath, 'utf8').replace(/\r\n/g, '\n');
-    if (!text.includes(`# gbrain:${GBRAIN_HARNESS_MARKER_VALUE} begin`)) return false;
-    return text.includes(`[mcp_servers.${name}]`);
+    const begin = text.indexOf(CODEX_TOML_BLOCK_BEGIN);
+    const end = text.indexOf(CODEX_TOML_BLOCK_END);
+    if (begin < 0 || end < 0 || end < begin) return false;
+    // Ownership means the table header sits INSIDE our managed block — a
+    // foreign `[mcp_servers.<name>]` elsewhere in the file must not make the
+    // stdio lane defer to us.
+    return text.slice(begin, end).includes(`[mcp_servers.${name}]`);
   } catch {
     return false;
   }

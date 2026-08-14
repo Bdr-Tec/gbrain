@@ -18,7 +18,10 @@
 import type { BrainEngine } from './engine.ts';
 import { ALLOWED_SCOPES_LIST, assertAllowedScopes } from './scope.ts';
 import { executeRawJsonb, type SqlQuery } from './sql-query.ts';
-import { generateToken, hashToken } from './utils.ts';
+import { generateToken, hashToken, isUndefinedColumnError } from './utils.ts';
+
+/** Canonical token-id shape — shared with the `auth revoke --id` CLI gate. */
+export const TOKEN_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface MintLegacyTokenOpts {
   name: string;
@@ -84,7 +87,9 @@ export async function mintLegacyToken(
       [permissions],
     );
   } catch (e) {
-    if ((e as { code?: string }).code === '42703') {
+    // isUndefinedColumnError also matches message-shaped variants — some
+    // driver-wrapped errors drop the SQLSTATE code.
+    if (isUndefinedColumnError(e, 'scopes') || isUndefinedColumnError(e, 'permissions')) {
       throw new Error(
         'this brain is missing token columns (undefined column on access_tokens) — ' +
           'run `gbrain apply-migrations` and retry.',
@@ -103,7 +108,7 @@ export async function mintLegacyToken(
  * already-done, not failure.
  */
 export async function revokeLegacyTokenById(sql: SqlQuery, id: string): Promise<boolean> {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  if (!TOKEN_ID_RE.test(id)) {
     throw new Error(`not a token id (expected a UUID): ${id}`);
   }
   const rows = await sql`

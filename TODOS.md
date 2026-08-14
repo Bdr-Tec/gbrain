@@ -5264,6 +5264,30 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   config and suggest a re-run — needs either an engine open (breaks status's
   engine-free posture under a live PGLite serve) or a sources probe over MCP with the
   recovered token. **Start:** `src/core/bootstrap/harness.ts:statusHarness`.
+- [ ] **P2 — harness smoke should verify BRAIN IDENTITY, not just auth (ship-review
+  security finding).** The apply-time smoke (`probeBrainIdentity`) proves the token
+  authenticates against WHATEVER answers on the loopback port — it never compares the
+  returned identity to the local brain, so a co-tenant process squatting the port with
+  a faked `/health` + identity response would pass the smoke and trigger previous-token
+  revocation. The default mint path already opens the engine and could capture the
+  expected identity for comparison; registrar mode (`--token` + remote url) has no
+  engine and would state the weaker guarantee honestly. Also consider revoking the
+  just-minted token when the smoke fails AND both registrations rolled back cleanly
+  (today it stays live but receipt-tracked so `--remove`/re-run converge it).
+  **Start:** `src/core/bootstrap/harness.ts` steps 5+8 (mint capture + smoke compare).
+- [ ] **P3 — bootstrap lock.ts error-path polish (plan micro-item, deferred at ship).**
+  Non-EEXIST mkdir errors (EACCES/EROFS) misreport as BOOTSTRAP_IN_PROGRESS, and the
+  missing-dir message says "workspace directory" even when the lock target is the
+  gbrain HOME (harness lane) or a host config dir. Add an accurate message path.
+  **Start:** `src/core/bootstrap/lock.ts:acquireBootstrapLock`.
+- [ ] **P3 — dedupe `auth create` against `mintLegacyToken`.** `src/commands/auth.ts`
+  create() re-implements the INSERT + `{a,b}` text[]-literal trick that token-mint.ts
+  owns (the extraction note says so); routing create() through `mintLegacyToken` (the
+  engine is in scope inside `withConfiguredSql`) would leave one canonical mint. Same
+  for the doctor's inline `/health` probe vs `probeServeHealth`, which also wants an
+  injectable fetch seam so `bootstrap_harness_health` tests stop making real TEST-NET
+  calls (3s each). **Start:** `src/commands/auth.ts:create`, `src/commands/doctor.ts`
+  bootstrap_harness_health.
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 

@@ -196,6 +196,32 @@ describe('dispatch', () => {
       delete process.env.GBRAIN_HOOK_LANE;
     }
   });
+
+  test('harness lane yields to the COMMITTED settings.json carrier too ([D12] — local strips carried events)', async () => {
+    // A D12 workspace can carry its bootstrap-v1 hooks ONLY in the committed
+    // .claude/settings.json (the local writer skips carried events). Checking
+    // settings.local.json alone would double-fire those events against the
+    // user-scope harness wiring.
+    process.env.GBRAIN_HOOK_LANE = 'harness';
+    try {
+      const ws = mkdtempSync(join(tmpdir(), 'gb-lane-committed-'));
+      mkdirSync(join(ws, '.claude'), { recursive: true });
+      writeFileSync(
+        join(ws, '.claude', 'settings.json'),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [{ hooks: [{ type: 'command', command: 'gbrain hook session-start', _gbrain: 'bootstrap-v1' }] }],
+          },
+        }),
+      );
+      const out = collectStdout();
+      expect(await runHook(['session-start'], { ...out.io, stdin: '{}', cwd: ws })).toBe(0);
+      expect(out.get()).toBe('');
+      expect(existsSync(join(home(), 'integrations', 'hooks', 'heartbeat.jsonl'))).toBe(false);
+    } finally {
+      delete process.env.GBRAIN_HOOK_LANE;
+    }
+  });
 });
 
 // ── user-prompt [ENG-1, S3#8, A9] ───────────────────────────────────────────

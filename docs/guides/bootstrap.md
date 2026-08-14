@@ -201,6 +201,12 @@ either pre-mint (`gbrain auth create bootstrap-harness --scopes read,write`
 while the serve is stopped) and pass `--token`, or stop/re-run/restart.
 Postgres brains mint fine while the serve runs.
 
+Binary-downgrade note: token scoping is data-only (no migration), so a gbrain
+binary OLDER than the release that shipped it verifies every scoped token as
+FULL-ACCESS — the old verify path never reads the scopes column. If you
+downgrade after a harness install, revoke the scoped tokens first
+(`gbrain auth revoke` with the id flag) and re-mint once you upgrade again.
+
 ## Multi-device
 
 Clone your agent repo on machine two and run `gbrain bootstrap attach` — it
@@ -239,7 +245,7 @@ that changed shape, a harness that stopped calling our MCP server):
   keyless-`init` → interview → render → `gbrain bootstrap hooks --harness codex`
   path (executing the real `codex mcp add` into a hermetic `~/.codex/config.toml`),
   asserts the rendered `AGENTS.md` carries the Gate-3 brain-first pull protocol
-  (Codex has no hook system, so the pull protocol is its per-turn seam), then
+  (gbrain does not wire Codex hooks yet, so the pull protocol is its per-turn seam), then
   spends one live `codex exec` turn to prove real codex → gbrain MCP → brain →
   a seeded, brain-only fact (falling back to a shell `gbrain query` if headless
   stdio-MCP is unavailable).

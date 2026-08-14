@@ -1156,7 +1156,9 @@ async function runHarness(rest: string[], home: string, runner: ExecRunner): Pro
   const deps: HarnessDeps = {
     runner,
     gbrainHome: home,
-    gbrainBin: flagValue(rest, '--gbrain-bin') ?? resolveGbrainBin(),
+    // Fallback only — the flag itself is parsed (and error-checked) once, by
+    // parseHarnessArgs; flags.gbrainBin wins inside applyHarness.
+    gbrainBin: resolveGbrainBin(),
     isTTY: process.stdout.isTTY === true,
     prompt: promptLine,
   };
@@ -1192,7 +1194,15 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
     if (harnessState.state !== 'absent') {
       console.log('harness wiring detected — removing it first (token revoke needs the brain alive).');
       const flags = parseHarnessArgs(['--remove', ...(yes ? ['--yes'] : [])]);
-      const code = await removeHarness(flags, { runner, gbrainHome: effectiveHome });
+      // runHarness serializes harness receipt writes on the HOME lock — take
+      // the same lock here (ws lock alone would let a concurrent
+      // `bootstrap harness` apply interleave with this removal). Consistent
+      // order (ws → home) and distinct dirs, so no deadlock; same-dir configs
+      // skip the nested acquire (the lock is non-reentrant).
+      const code =
+        resolve(effectiveHome) === resolve(ws)
+          ? await removeHarness(flags, { runner, gbrainHome: effectiveHome })
+          : await withLock(effectiveHome, () => removeHarness(flags, { runner, gbrainHome: effectiveHome }));
       if (code !== 0) {
         console.error(
           'harness removal did not fully converge — stopping BEFORE workspace teardown so the harness ' +

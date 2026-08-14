@@ -43,8 +43,21 @@ describe('normalizeTokenScopes', () => {
   test('NULL / non-array → undefined (caller grandfathers)', () => {
     expect(normalizeTokenScopes(null)).toBeUndefined();
     expect(normalizeTokenScopes(undefined)).toBeUndefined();
-    expect(normalizeTokenScopes('read')).toBeUndefined();
-    expect(normalizeTokenScopes(42)).toBeUndefined();
+  });
+
+  test('non-NULL representation drift fails CLOSED (deny), never grandfathers', () => {
+    // Only the never-written NULL earns the historical full-access grant — a
+    // WRITTEN row whose value reads back in an unexpected shape must deny.
+    expect(normalizeTokenScopes('read')).toEqual([]);
+    expect(normalizeTokenScopes(42)).toEqual([]);
+    expect(normalizeTokenScopes({ read: true })).toEqual([]);
+  });
+
+  test('undecoded Postgres array-literal strings parse like arrays', () => {
+    expect(normalizeTokenScopes('{read,write}')).toEqual(['read', 'write']);
+    expect(normalizeTokenScopes('{"read","write"}')).toEqual(['read', 'write']);
+    expect(normalizeTokenScopes('{}')).toEqual([]);
+    expect(normalizeTokenScopes('{read,bogus}')).toEqual(['read']);
   });
 
   test('array filtered to known scopes; [] and all-unknown preserved as deny', () => {
