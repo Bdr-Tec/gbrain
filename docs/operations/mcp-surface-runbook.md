@@ -62,6 +62,18 @@ SELECT created_at, params FROM mcp_request_log
 - The advisor's `mcp-client-fit` collector proposes exactly this command
   for full-surface clients whose 30d usage fits STARTER_OPS.
 
+**Default for NULL-surface clients** (including future DCR
+self-registrations):
+
+```bash
+gbrain config set mcp.default_surface_dcr starter   # verbs | starter | full
+```
+
+Dual-plane read (DB > file), applied on each client's next request,
+ceiling-bounded like everything else; unset means NULL-surface clients
+resolve to the server ceiling (pre-wave behavior). Pre-seed important
+clients with an explicit `rescope-client --surface full` before flipping it.
+
 ## Move 3 — flip strict params from warn to reject
 
 `mcp.strict_params` governs unknown-argument handling at dispatch:

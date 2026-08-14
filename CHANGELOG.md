@@ -4,7 +4,7 @@ All notable changes to GBrain will be documented in this file.
 
 ## [0.45.12.0] - 2026-08-13
 
-**The Truthful Surface wave: your agent's MCP catalog now tells the truth. What's listed is callable, empty answers explain themselves, and new clients start with a focused ~20-tool surface they can widen on demand.**
+**The Truthful Surface wave: your agent's MCP catalog now tells the truth. What's listed is callable, empty answers explain themselves, and new clients start with a focused ~26-tool surface they can widen on demand.**
 
 This wave answers a production consumer's six-point review of the remote MCP
 experience ("A- tools, B- packaging"). Every fix rewires signals gbrain already
@@ -14,8 +14,9 @@ the tool catalog is an API promise.
 ### Added
 
 - **Starter tool surface + pull-based unlock.** A new `starter` surface
-  (~20 daily-driver tools, derived from real production usage) sits between
-  `verbs` and `full`. Each connected client can carry its own surface, bounded
+  (~26 daily-driver tools: the seven verbs plus the reviewed brain-tool
+  slice and the agent lane, re-derivable from your own production usage via
+  `scripts/derive-starter-ops.ts`) sits between `verbs` and `full`. Each connected client can carry its own surface, bounded
   by the server ceiling — it can narrow itself or widen up to the ceiling with
   the new `request_tools` tool, and operators can pin a client's surface with
   `gbrain auth rescope-client` (pins beat self-service, always). Every surface
@@ -96,7 +97,8 @@ the tool catalog is an API promise.
    Existing clients keep their current (full) surface — nothing narrows on
    upgrade. New clients can be defaulted with `mcp.default_surface_dcr`.
 3. **Watch retrieval health:** `gbrain search stats` now breaks down empty
-   results by cause, and every MCP response carries `_meta.retrieval`.
+   results by cause, and every `query`/`search` response carries
+   `_meta.retrieval`.
 4. **Agents discover the rest themselves:** any client can call
    `request_tools` to browse the full catalog and (within your ceiling)
    widen its own surface.

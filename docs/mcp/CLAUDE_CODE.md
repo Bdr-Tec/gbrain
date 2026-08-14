@@ -24,7 +24,7 @@ tunnel, no token needed. Works with both PGLite and Supabase engines.
 `entity`, `synthesize`, `forget`, `context_pack`, `delta` —
 [MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)),
 the surface built for agents and quickstarts. `--surface starter` adds the
-~20-op daily-driver set on top. Drop the flag for the full
+daily-driver set on top (~26 ops total). Drop the flag for the full
 operation catalog (`get_page`, `put_page`, `search`, graph ops, …) — `full` is
 the default and what existing installs already run.
 

@@ -161,7 +161,7 @@ That's the whole wire-up. No token, no URL, no tunnel. The agent spawns
 [MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md), frozen + additive-forever)
 instead of the full operation catalog, so the agent sees a tight, stable surface
 instead of a 110-tool wall. `--surface starter` sits between: the verbs plus the
-~20-op daily-driver set. Drop the flag (or pass `--surface full`) for every
+daily-driver set (~26 ops total). Drop the flag (or pass `--surface full`) for every
 operation. The default when the flag is omitted is `full`, so existing wire-ups
 are unchanged.
 
