@@ -1,4 +1,4 @@
-<!-- gbrain-runbook-stamp: 0.45.9.0 -->
+<!-- gbrain-runbook-stamp: 0.45.14.0 -->
 <!-- This stamp must equal the VERSION file at every release; CI enforces it
      (scripts/check-bootstrap-tag.sh). `gbrain bootstrap status` compares it to
      the installed binary and warns on skew. -->
@@ -50,7 +50,17 @@ platform package manager first (`brew install gh`, `apt install gh`, `dnf instal
 `winget install GitHub.cli` per the official instructions); never a piped
 curl-to-shell one-liner. Install gbrain ONLY as
 `bun install -g github:garrytan/gbrain#latest-stable` — the npm package named
-"gbrain" is an unrelated project.
+"gbrain" is an unrelated project. (Cloud-sandbox exception: bun's package fetching
+is proxy-incompatible there — use the `gbrain bootstrap cloud-setup-script` recipe,
+which installs from the same pinned GitHub source through npm.)
+
+⛔ **NEVER FABRICATE TOOLING.** If gh or any preflight binary is missing, blocked
+by a sandbox egress proxy, or answering 403s, report that through
+`status`/`doctor` output and follow the cloud-sandbox guidance below. Never
+hand-roll a gh shim, stub a fake binary into /usr/local/bin, or fake a passing
+check — a fabricated tool poisons every later verification, and the one time it
+was tried it masked a real silent-persistence failure. The CLI degrades honestly
+on its own; your job is to relay, not to bridge.
 
 ## Codex preflight (ChatGPT desktop / Codex CLI only)
 
@@ -72,8 +82,11 @@ you needed; report the count at the end (it feeds the install-time measurement).
    `gh auth login -h github.com -p https -w` (you run it; they click Authorize).
    Then `gbrain bootstrap status` — it is idempotent and resume-aware; after any
    partial failure, re-run it and continue where it points.
-2. **Engine.** `gbrain init --pglite` (2 seconds, no server). Search mode defaults
-   to balanced silently — do NOT ask; the human can change it any time with
+2. **Engine.** `gbrain init --pglite` (2 seconds, no server). Search mode is
+   auto-selected silently (conservative when keyless, tokenmax with an
+   expansion key) and printed with an `[AGENT]` cost matrix — surface that
+   matrix to the human and confirm before running high-volume queries (see
+   INSTALL_FOR_AGENTS.md Step 3.5); they can change it any time with
    `gbrain search modes`. The one thing to raise here is the OPTIONAL provider
    key — with no key you run keyless: keyword search plus memory you author
    yourself through the write tools; everything works, one key upgrades search to
@@ -99,9 +112,15 @@ you needed; report the count at the end (it feeds the install-time measurement).
 4. **Render.** `gbrain bootstrap render` — identity files appear. Show the human
    SOUL.md. Existing files are never overwritten (re-runs are safe; `--force`
    backs up first).
-5. **Skills + brain wiring.** The CLI scaffolds the skill set and registers
-   `brain/` as the workspace source. Nothing to judge here; relay the output.
-6. **Wire the harness.** `gbrain bootstrap hooks --harness <detected>`:
+5. **Skills.** `gbrain skillpack scaffold --all` — the CLI scaffolds the skill
+   set. Nothing to judge here; relay the output.
+6. **Wire the harness + register the brain source.** `gbrain bootstrap hooks
+   --harness <detected>` creates `<workspace>/brain` and prints the exact
+   `gbrain sources add <source_id> --path <brain> --force` command for THIS
+   workspace — run it verbatim (don't guess a different id; a guessed id
+   only surfaces as an FK error at `verify` time, by which point a wrong
+   guess also blocks the correct id with an `overlapping_path` error). It
+   also:
    - Claude Code: installs per-turn hooks ON by default — do NOT ask; loading the
      brain every turn is the whole point of installing gbrain for your agent. Tell
      the human it is on and how to turn it off (`GBRAIN_HOOKS=0`, or re-run with
@@ -121,8 +140,9 @@ you needed; report the count at the end (it feeds the install-time measurement).
    instead of creating one — verifies it is private and pushes the workspace. A
    non-empty repo, or one owned by an org, is refused with a clear message (make an
    empty personal repo, or run `gbrain bootstrap attach` for an existing agent
-   clone). Asks the background-persistence consent (15-minute scan-gated push job;
-   declining still persists at session end). If the human has no GitHub or declines:
+   clone). Asks the background-persistence consent (a git post-commit auto-push
+   plus a 30-minute pull job for multi-machine freshness; declining still persists
+   via the per-turn and session-end pushes). If the human has no GitHub or declines:
    local-only mode with an honest warning; `bootstrap repo` can run any time later.
    Note: the per-turn/session push stays deferred until this phase records the
    verified repo, so nothing is ever pushed to an unverified-privacy origin.
@@ -130,7 +150,9 @@ you needed; report the count at the end (it feeds the install-time measurement).
    through the real write path, graph floor, token sweep, secret scan, repo
    privacy, hooks smoke, capability report (keyless or keyed). Exit 0 or it is not
    done. Paste the report. Then relay the first-run tour it prints (three prompts
-   the human should try, starting with restarting the session).
+   the human should try, starting with restarting the session) AND the hand-off
+   block below it — the ownership line and the cold-start offer are the two
+   things the human must actually understand, not fine print.
 
 ## Machine two
 
@@ -138,6 +160,42 @@ If this workspace was cloned from an existing agent repo (agent.json says
 initialized), run `gbrain bootstrap attach` instead of the interview/render/repo
 phases — it wires this machine (source, hooks, MCP) and verifies. If agent.json
 says it is an uninitialized template, proceed with the normal flow from phase 1.
+
+## Cloud sandboxes (claude.ai/code and similar proxied environments)
+
+**How you know:** `gbrain bootstrap status --json` reports
+`execution_environment: "cloud-sandbox"` (the CLI detects the documented
+signals — the CLAUDE_CODE_REMOTE env var, the proxy-injected token
+placeholder). Trust the CLI's detection over your own guesses.
+
+**Expected degradations — these are facts to relay, not bugs to bridge:**
+
+- **No crontab, no surviving background processes.** The VM is reclaimed after
+  inactivity. The scheduled pull is skipped honestly; the per-turn (Stop hook)
+  and session-end pushes carry persistence. Decline nothing, fabricate nothing.
+- **GitHub GraphQL is always blocked** by the egress proxy, and **REST reaches
+  only repos attached to the session** — a repo created mid-session is NOT
+  attached, so `gbrain bootstrap repo` refuses fast in cloud with the flow
+  that works. Privacy verification falls back to pure git protocol on its own.
+- **`git push` works only against the session's working branch.** A user PAT
+  does not bypass any of this.
+- **Only repo-committed files carry into the next session.** `~/.gbrain`,
+  `~/.claude`, and the gitignored `.claude/settings.local.json` evaporate.
+  Hooks therefore live in the COMMITTED `.claude/settings.json` (the CLI
+  writes PATH-resolved, fail-open commands there in cloud); hook config is
+  snapshotted at session start, so hooks written mid-session activate on the
+  NEXT session — say so instead of debugging it.
+
+**The correct cloud flow:**
+
+1. The human creates the private repo from a normal machine (or github.com)
+   and opens the cloud session ON that repo.
+2. The environment's setup script installs the gbrain binary — print it with
+   `gbrain bootstrap cloud-setup-script` and have the human paste it into the
+   environment config (npm-based; bun's fetching is proxy-incompatible there).
+3. Inside the session: `gbrain bootstrap attach`, then
+   `gbrain bootstrap hooks --harness claude-code` (writes the committed
+   carrier), commit + push, and tell the human the hooks go live next session.
 
 ## Failure modes, and what they actually mean
 
@@ -150,10 +208,31 @@ says it is an uninitialized template, proceed with the normal flow from phase 1.
 | "bootstrap already running (pid N)" | A concurrent bootstrap holds the lock | Wait or investigate that pid; the lock self-clears when stale. |
 | Brain tools fail with a lock error | Another live session's serve owns the database | Close the other session; sequential use is the v1 contract. |
 | Hook reports "brain context unavailable" | serve not running or degraded | `gbrain doctor` names it; hooks fail open by design. |
+| gh answers 403 "not enabled for this session" | Cloud proxy scoping — the repo is not attached to the session | Expected in cloud; the visibility ladder falls back to git protocol. NEVER shim gh. |
+| "crontab: command not found" / cron skipped | Containers and cloud sandboxes ship without a scheduler | Expected; event-driven pushes cover it — the skip message says exactly this. |
+| A turn shows "workspace push is FAILING" | The background push is refusing (visibility, secret-scan, or network reasons) | Run `gbrain doctor`; the banner repeats every 30 min until fixed. |
 
 ## Hand off
 
-Finish by telling the human: the private repo URL (or the local-only status), the
-capability mode (keyless vs keyed), the three commands they will actually reuse
-(`gbrain doctor`, `gbrain bootstrap verify`, `gbrain sources push`), and the
-first-run tour. Then delete nothing — this runbook was fetched, not installed.
+Two things the human must UNDERSTAND before you finish — say them plainly, in
+this order, and confirm they landed:
+
+1. **They own the brain.** Every memory you keep is a markdown file in THEIR
+   private GitHub repo — name the URL. Owning it means: they can read it any
+   time, take it to a second machine (`gbrain bootstrap attach`), or delete the
+   repo and the brain is gone. If they went local-only, say that instead, with
+   `gbrain bootstrap repo` as the any-time upgrade.
+2. **The first skill to run is cold-start.** An empty brain is a database; a
+   filled one is a memory — and every flagship skill (book-mirror, briefings,
+   meeting prep) only becomes magical once the brain holds their real life.
+   OFFER to run the cold-start skill now: it imports Gmail, calendar, and
+   contacts through ClawVisor (clawvisor.com — an OAuth vault; you never hold
+   raw tokens), or offline archives (Google Takeout, a notes folder) if they
+   prefer no third-party gateway. Every phase is consent-gated and
+   independently valuable — they can stop after any one. If they say "later",
+   that is a complete install; they can say "fill my brain" any time.
+
+Then the routine facts: the capability mode (keyless vs keyed), and the three
+commands they will actually reuse (`gbrain doctor`, `gbrain bootstrap verify`,
+`gbrain sources push`). Then delete nothing — this runbook was fetched, not
+installed.

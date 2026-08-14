@@ -434,6 +434,50 @@ export async function readSearchStats(
   }
 }
 
+/**
+ * Coverage disclosure for `readSearchStats()` consumers (`gbrain search
+ * stats` / `gbrain search tune`). This documents the buffering behavior
+ * from the module header above — it changes NO behavior, it only gives
+ * display layers a single source of truth for the caveat text instead of
+ * each caller re-describing (and risking drift on) the flush mechanics.
+ *
+ * Short-lived CLI invocations (a single `gbrain query "..."` call) usually
+ * exit before the 60s timer or the 100-call threshold fires, so their
+ * search is buffered in-memory and then lost with the process — never
+ * written to `search_telemetry`. Long-lived processes (`gbrain serve`,
+ * stdio/HTTP MCP, `gbrain jobs work`) survive long enough for the periodic
+ * flush and are captured reliably. A CLI run that itself issues 100+
+ * search calls before exiting (e.g. a bulk eval) CAN cross the threshold
+ * and flush — hence "typically", not "never".
+ */
+export const TELEMETRY_COVERAGE_NOTE =
+  'Counts are most complete for long-lived processes (gbrain serve, MCP stdio/HTTP, ' +
+  'gbrain jobs work). A single short-lived CLI invocation typically exits before the ' +
+  'telemetry buffer flushes (60s timer or 100-call threshold), so its search is ' +
+  'usually not recorded here — see search/telemetry.ts for the buffering design.';
+
+/**
+ * Short, single-line form of {@link TELEMETRY_COVERAGE_NOTE} for human CLI
+ * output (the long form is better suited to `--json`'s `reason` field).
+ * Every human-facing caveat in `gbrain search stats`/`gbrain search tune`
+ * reuses this literal string instead of paraphrasing it, so the wording
+ * cannot drift between call sites.
+ */
+export const TELEMETRY_COVERAGE_CAVEAT =
+  'Coverage favors long-lived processes (gbrain serve, MCP, jobs work) — a lone ' +
+  'short-lived CLI search call is typically not recorded.';
+
+export interface TelemetryCoverage {
+  /** Whether a lone short-lived CLI search call is reliably counted. */
+  cli_invocations: 'typically_not_recorded';
+  reason: string;
+}
+
+/** Machine-readable form of {@link TELEMETRY_COVERAGE_NOTE} for `--json` output. */
+export function telemetryCoverage(): TelemetryCoverage {
+  return { cli_invocations: 'typically_not_recorded', reason: TELEMETRY_COVERAGE_NOTE };
+}
+
 function nowDate(): string {
   return new Date().toISOString().slice(0, 10);
 }

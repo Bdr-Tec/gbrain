@@ -10,8 +10,9 @@
  * and dedupe match on the marker (surviving reordering and command-string
  * drift), and foreign hooks / permissions / every other settings key are
  * never touched. Writes are atomic (tmp + rename) with a `.bak` of the
- * previous file; a parse-broken existing file is backed up aside and the
- * write starts clean with a loud note in the result [G5].
+ * previous file; a parse-broken existing file ABORTS the write with
+ * fix-and-re-run instructions (fail-closed, matching removal's stance — a
+ * rewrite could drop permissions/allowlist entries gbrain cannot parse) [G5].
  *
  * MCP registration helpers BUILD ARGV ONLY — the bootstrap dispatcher execs
  * them (and records the registration in the install receipt). Precedent:
@@ -37,6 +38,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+  CLAUDE_COMMITTED_SETTINGS_FILE_RELPATH,
   CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS,
   CLAUDE_HOOK_EVENTS,
   CLAUDE_HOOK_SUBCOMMAND,
@@ -77,12 +79,12 @@ export interface WriteClaudeHooksOpts {
    */
   marker?: string;
   /**
-   * Broken-JSON policy. 'relocate' (default — the workspace lane's historical
-   * behavior): back the unparseable file up aside and write fresh. 'abort'
-   * (harness user-scope lane): throw instead — one stray comment in a user's
-   * global ~/.claude/settings.json must never relocate their whole config.
+   * [D12] Events already owned by the COMMITTED settings carrier — the writer
+   * strips stale local copies of these but re-adds nothing for them, so one
+   * event never fires from both files. The workspace wrapper derives it from
+   * committedHookEvents(ws); path-parameterized callers pass their own.
    */
-  onBrokenJson?: 'relocate' | 'abort';
+  carriedEvents?: Set<ClaudeHookEvent>;
   /**
    * Backup strategy for the pre-write copy. 'fixed' (default) keeps the
    * historical `.bak` sibling; 'timestamped' avoids the shared-slot problem
@@ -111,7 +113,9 @@ export interface WriteClaudeHooksResult {
   removedPrior: number;
   /** `.bak` of the pre-write file (null when no file existed). */
   backupPath: string | null;
-  /** Where a parse-broken original was moved (null when parse succeeded). */
+  /** Always null since the fail-closed change (a parse-broken file now
+   *  aborts the write instead of being moved aside). Kept for result-shape
+   *  stability. */
   brokenBackupPath: string | null;
   notes: string[];
 }
@@ -168,7 +172,75 @@ export function buildClaudeHookCommand(
   return parts.map(shellQuote).join(' ');
 }
 
-function isOurs(entry: unknown, marker: string): boolean {
+export function claudeCommittedSettingsPath(workspaceDir: string): string {
+  return join(workspaceDir, CLAUDE_COMMITTED_SETTINGS_FILE_RELPATH);
+}
+
+/**
+ * The COMMITTED carrier's command [D12]: PATH-resolved and fail-open. No
+ * absolute binary path — the committed file travels between machines and
+ * cloud sessions; wherever gbrain is not installed the hook exits 0 silently
+ * instead of erroring every turn.
+ */
+export function buildPortableClaudeHookCommand(event: ClaudeHookEvent, env: ClaudeHookEnv): string {
+  const assignments: string[] = [`GBRAIN_SOURCE=${env.GBRAIN_SOURCE}`];
+  if (env.GBRAIN_HOME) assignments.push(`GBRAIN_HOME=${env.GBRAIN_HOME}`);
+  const invoke = ['env', ...assignments, 'gbrain', 'hook', CLAUDE_HOOK_SUBCOMMAND[event]]
+    .map(shellQuote)
+    .join(' ');
+  return `command -v gbrain >/dev/null 2>&1 && ${invoke} || exit 0`;
+}
+
+/** Events the COMMITTED settings file already carries with our marker [D12]
+ * — the local writer skips these so one event never fires from both files. */
+/** Pull the GBRAIN_SOURCE value out of a rendered portable hook command so the
+ * exact-match check is agnostic to the (operator-chosen) source id. Returns
+ * null when the command isn't shaped like ours. */
+function extractHookSource(command: string): string | null {
+  const m = /command -v gbrain >\/dev\/null 2>&1 && env GBRAIN_SOURCE=('[^']*'|[^ ]+) gbrain hook /.exec(command);
+  if (!m) return null;
+  const raw = m[1]!;
+  return raw.startsWith("'") ? raw.slice(1, -1).replace(/'\\''/g, "'") : raw;
+}
+
+export function committedHookEvents(workspaceDir: string): Set<ClaudeHookEvent> {
+  const carried = new Set<ClaudeHookEvent>();
+  try {
+    const raw = readFileSync(claudeCommittedSettingsPath(workspaceDir), 'utf8');
+    const parsed = JSON.parse(raw) as { hooks?: Record<string, unknown> };
+    const hooks = parsed?.hooks;
+    if (typeof hooks !== 'object' || hooks === null) return carried;
+    for (const event of CLAUDE_HOOK_EVENTS) {
+      const groups = (hooks as Record<string, unknown>)[event];
+      if (!Array.isArray(groups)) continue;
+      const ours = groups.some(
+        (g) =>
+          typeof g === 'object' && g !== null &&
+          Array.isArray((g as HookMatcherGroup).hooks) &&
+          ((g as HookMatcherGroup).hooks as unknown[]).some(
+            (h) =>
+              isOurs(h) &&
+              // A committed file is repo-contributor-writable: a marker + a
+              // bare `includes('gbrain hook')` substring is spoofable
+              // (`evil; # gbrain hook` suppresses the real local install AND
+              // runs attacker code). Require the EXACT portable-command shape
+              // this event would render — the anchored `command -v gbrain …`
+              // guard + `|| exit 0` structure a foreign command can't fake.
+              typeof (h as HookCommandEntry).command === 'string' &&
+              (h as HookCommandEntry).command === buildPortableClaudeHookCommand(event, {
+                GBRAIN_SOURCE: extractHookSource((h as HookCommandEntry).command as string) ?? '',
+              }),
+          ),
+      );
+      if (ours) carried.add(event);
+    }
+  } catch {
+    /* absent/corrupt committed file → nothing carried */
+  }
+  return carried;
+}
+
+function isOurs(entry: unknown, marker: string = GBRAIN_HOOK_MARKER_VALUE): boolean {
   return (
     typeof entry === 'object' &&
     entry !== null &&
@@ -191,7 +263,7 @@ function isForeignGbrainMarked(entry: unknown, marker: string): boolean {
  * filter emptied a previously non-empty group, so it can never drop a group a
  * different marker still owns.
  */
-function stripOurEntries(groups: unknown[], marker: string): { kept: unknown[]; removed: number } {
+function stripOurEntries(groups: unknown[], marker: string = GBRAIN_HOOK_MARKER_VALUE): { kept: unknown[]; removed: number } {
   const kept: unknown[] = [];
   let removed = 0;
   for (const group of groups) {
@@ -252,14 +324,15 @@ interface LoadedSettings {
 }
 
 /**
- * Parse the existing settings file. Absent/empty → `{}`. Parse error → policy:
- * 'relocate' (workspace lane) MOVES the broken file to a timestamped
- * `.broken-*` backup and the caller starts clean, with a loud note (the
- * user's broken-by-hand file is never silently destroyed, and never silently
- * half-merged) [G5]; 'abort' (harness user-scope lane) THROWS — a stray
- * comment in a user's global settings must never relocate their whole config.
+ * Parse the existing settings file. Absent/empty → `{}`. Parse error →
+ * THROW, fail-closed [G5]: the file may carry permissions/allowlist entries
+ * gbrain cannot see, so replacing it with a fresh file (the old behavior —
+ * backup + start clean) silently dropped the user's live settings. Removal
+ * (`removeClaudeHooks`) already refuses to touch what it cannot parse; the
+ * write path now matches that stance. The user fixes the JSON, re-runs, and
+ * the structural merge preserves everything.
  */
-function loadSettings(path: string, onBrokenJson: 'relocate' | 'abort' = 'relocate'): LoadedSettings {
+function loadSettings(path: string): LoadedSettings {
   const notes: string[] = [];
   if (!existsSync(path)) {
     return { settings: {}, existed: false, brokenBackupPath: null, notes };
@@ -280,20 +353,12 @@ function loadSettings(path: string, onBrokenJson: 'relocate' | 'abort' = 'reloca
     }
     return { settings: parsed as SettingsObject, existed: true, brokenBackupPath: null, notes };
   } catch (e) {
-    if (onBrokenJson === 'abort') {
-      throw new Error(
-        `${path} is not valid JSON (${(e as Error).message}) — refusing to modify a file ` +
-          `that cannot be read back faithfully. Fix the JSON and re-run.`,
-      );
-    }
-    const broken = `${path}.broken-${Date.now()}`;
-    copyFileSync(path, broken);
-    notes.push(
-      `WARNING: ${path} was not valid JSON (${(e as Error).message}); ` +
-        `the original was backed up to ${broken} and hooks were written to a fresh file. ` +
-        `Restore any hand-made settings from the backup.`,
+    throw new Error(
+      `${path} is not valid JSON (${(e as Error).message}) — refusing to rewrite a settings file ` +
+        `gbrain cannot parse (it may carry your permissions/allowlist entries). Fix the JSON by ` +
+        `hand, then re-run \`gbrain bootstrap hooks --harness claude-code --repair\` ` +
+        `(the structural merge preserves your settings).`,
     );
-    return { settings: {}, existed: true, brokenBackupPath: broken, notes };
   }
 }
 
@@ -322,10 +387,7 @@ export function writeClaudeHooksAt(
   const marker = opts.marker ?? GBRAIN_HOOK_MARKER_VALUE;
   const backupStrategy = opts.backupStrategy ?? 'fixed';
 
-  const { settings, existed, brokenBackupPath, notes } = loadSettings(
-    settingsPath,
-    opts.onBrokenJson ?? 'relocate',
-  );
+  const { settings, existed, brokenBackupPath, notes } = loadSettings(settingsPath);
 
   // hooks key: merge into an object; a structurally-foreign value is backed
   // up via the .bak below and replaced (we cannot merge into a non-object).
@@ -366,6 +428,12 @@ export function writeClaudeHooksAt(
     }
   }
 
+  // [D12] Dedupe invariant: an event carried by the COMMITTED settings file
+  // never also fires from the local file. The caller supplies the carried set
+  // (the workspace wrapper reads it from committedHookEvents(ws); the harness
+  // --project lane does the same for its dirs) — this path-parameterized
+  // writer has no workspace to derive it from.
+  const carried = opts.carriedEvents ?? new Set<ClaudeHookEvent>();
   let removedPrior = 0;
   const installed: Array<{ event: ClaudeHookEvent; command: string }> = [];
 
@@ -398,6 +466,13 @@ export function writeClaudeHooksAt(
     }
     const kept = [...(groups as unknown[])];
 
+    if (carried.has(event)) {
+      notes.push(`${event}: carried by the committed .claude/settings.json — local entry skipped [D12]`);
+      if (kept.length === 0) delete hooks[event];
+      else hooks[event] = kept;
+      continue;
+    }
+
     const command = buildClaudeHookCommand(opts.gbrainBin, event, opts.env);
     const timeout = opts.timeoutSecs?.[event] ?? CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS[event];
     const entry: HookCommandEntry = {
@@ -424,15 +499,98 @@ export function writeClaudeHooksAt(
 }
 
 /**
- * Workspace-lane wrapper (historical signature; behavior byte-identical:
- * `<ws>/.claude/settings.local.json`, bootstrap-v1 marker, relocate policy,
- * fixed `.bak`).
+ * Workspace-lane wrapper (historical signature: `<ws>/.claude/settings.local.json`,
+ * bootstrap-v1 marker, fixed `.bak`). Supplies the [D12] carried-events set so
+ * an event owned by the committed carrier never also fires locally.
  */
 export function writeClaudeHooks(
   workspaceDir: string,
   opts: WriteClaudeHooksOpts,
 ): WriteClaudeHooksResult {
-  return writeClaudeHooksAt(claudeSettingsPath(workspaceDir), opts);
+  return writeClaudeHooksAt(claudeSettingsPath(workspaceDir), {
+    carriedEvents: committedHookEvents(workspaceDir),
+    ...opts,
+  });
+}
+
+/**
+ * Write hooks into the COMMITTED `.claude/settings.json` [D12] — the only
+ * carrier that survives into fresh cloud clones (hooks are snapshotted at
+ * session start; the gitignored local file never exists there). Commands are
+ * PATH-resolved and fail-open (buildPortableClaudeHookCommand). After the
+ * committed write, the same events are stripped from the LOCAL file so an
+ * event never fires from both carriers.
+ */
+export function writeCommittedClaudeHooks(
+  workspaceDir: string,
+  opts: { env: ClaudeHookEnv; events?: ClaudeHookEvent[]; timeoutSecs?: Partial<Record<ClaudeHookEvent, number>> },
+): WriteClaudeHooksResult {
+  if (opts.env.GBRAIN_HOME) {
+    throw new Error(
+      'GBRAIN_HOME is machine-specific and must not be embedded in the COMMITTED hook carrier ' +
+        '(the file travels between machines) — isolated installs stay on the local carrier',
+    );
+  }
+  for (const [k, v] of Object.entries(opts.env)) {
+    if (typeof v === 'string' && /[\n\r\0]/.test(v)) {
+      throw new Error(`env ${k} contains control characters — refusing to embed in a hook command`);
+    }
+  }
+  const settingsPath = claudeCommittedSettingsPath(workspaceDir);
+  const { settings, existed, brokenBackupPath, notes } = loadSettings(settingsPath);
+  let hooks = settings.hooks as Record<string, unknown> | undefined;
+  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) {
+    if (hooks !== undefined) {
+      notes.push(
+        `WARNING: existing "hooks" key was not an object (${JSON.stringify(hooks).slice(0, 80)}); ` +
+          `replaced — the original file is in the .bak backup.`,
+      );
+    }
+    hooks = {};
+  }
+  const events = opts.events ?? [...CLAUDE_HOOK_EVENTS];
+  let removedPrior = 0;
+  const installed: Array<{ event: ClaudeHookEvent; command: string }> = [];
+  for (const event of events) {
+    let groups = hooks[event];
+    if (!Array.isArray(groups)) {
+      if (groups !== undefined) {
+        notes.push(`WARNING: existing hooks.${event} was not an array; replaced — original in the .bak backup.`);
+      }
+      groups = [];
+    }
+    const { kept, removed } = stripOurEntries(groups as unknown[]);
+    removedPrior += removed;
+    const command = buildPortableClaudeHookCommand(event, opts.env);
+    const timeout = opts.timeoutSecs?.[event] ?? CLAUDE_HOOK_DEFAULT_TIMEOUT_SECS[event];
+    const entry: HookCommandEntry = {
+      type: 'command',
+      command,
+      timeout,
+      [GBRAIN_HOOK_MARKER_KEY]: GBRAIN_HOOK_MARKER_VALUE,
+    };
+    kept.push({ hooks: [entry] });
+    hooks[event] = kept;
+    installed.push({ event, command });
+  }
+  settings.hooks = hooks;
+  let backupPath: string | null = null;
+  if (existed && brokenBackupPath === null) {
+    backupPath = `${settingsPath}.bak`;
+    copyFileSync(settingsPath, backupPath);
+  }
+  atomicWriteJson(settingsPath, settings);
+
+  // [D12] dedupe: the committed carrier now owns these events — remove any
+  // local copies so nothing double-fires on this machine.
+  const localCleanup = removeClaudeHooksAt(claudeSettingsPath(workspaceDir));
+  if (localCleanup.removed > 0) {
+    notes.push(
+      `removed ${localCleanup.removed} local settings.local.json entr${localCleanup.removed === 1 ? 'y' : 'ies'} — the committed carrier owns the events now [D12]`,
+    );
+  }
+
+  return { settingsPath, installed, removedPrior, backupPath, brokenBackupPath, notes };
 }
 
 /**
@@ -504,9 +662,26 @@ export function removeClaudeHooksAt(
   return { settingsPath, removed, backupPath, notes };
 }
 
-/** Workspace-lane wrapper (historical signature; bootstrap-v1 marker). */
+/**
+ * Workspace-lane removal — cleans BOTH carriers (local + committed [D12]);
+ * the returned settingsPath/backup describe the local one, with
+ * committed-file actions reported via notes.
+ */
 export function removeClaudeHooks(workspaceDir: string): RemoveClaudeHooksResult {
-  return removeClaudeHooksAt(claudeSettingsPath(workspaceDir));
+  const local = removeClaudeHooksAt(claudeSettingsPath(workspaceDir));
+  const committed = removeClaudeHooksAt(claudeCommittedSettingsPath(workspaceDir));
+  const notes = [...local.notes];
+  if (committed.removed > 0) {
+    notes.push(`also removed ${committed.removed} entr${committed.removed === 1 ? 'y' : 'ies'} from the committed ${committed.settingsPath} [D12]`);
+  } else {
+    notes.push(...committed.notes.map((n) => `(committed carrier) ${n}`));
+  }
+  return {
+    settingsPath: local.settingsPath,
+    removed: local.removed + committed.removed,
+    backupPath: local.backupPath,
+    notes,
+  };
 }
 
 // ── permissions.allow writers (harness lane, #4043) ────────────────────────
@@ -533,7 +708,7 @@ export function addPermissionsAllowEntry(
   settingsPath: string,
   entry: string,
 ): PermissionsAllowResult {
-  const { settings, existed, notes } = loadSettings(settingsPath, 'abort');
+  const { settings, existed, notes } = loadSettings(settingsPath);
 
   let permissions = settings.permissions as Record<string, unknown> | undefined;
   if (typeof permissions !== 'object' || permissions === null || Array.isArray(permissions)) {
@@ -586,7 +761,7 @@ export function removePermissionsAllowEntry(
   }
   let loaded: LoadedSettings;
   try {
-    loaded = loadSettings(settingsPath, 'abort');
+    loaded = loadSettings(settingsPath);
   } catch (e) {
     return {
       settingsPath,

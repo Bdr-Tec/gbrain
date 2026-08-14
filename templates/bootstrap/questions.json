@@ -126,7 +126,7 @@
     "PERSIST_CRON": {
       "consent": true,
       "phase": "repo",
-      "question": "Enable background persistence? This installs a 15-minute job that commits and pushes this workspace to your private repo (secret-scan-gated). Declining still persists at session end.",
+      "question": "Enable background persistence? This installs a git post-commit hook that auto-pushes each commit in the background, plus a 30-minute pull job that keeps multi-machine checkouts fresh (on machines with a scheduler). Declining still persists via the per-turn and session-end pushes.",
       "default": "no",
       "allowed": ["yes", "no"],
       "maxLength": 4
@@ -144,7 +144,7 @@
       "consent": true,
       "phase": "engine",
       "persist": false,
-      "question": "Optional: one API key (OpenAI, Anthropic, or Voyage) unlocks semantic search and automatic fact extraction. With no key, I run keyless: keyword search plus memory I write down myself — everything still works. Paste a key or say skip.",
+      "question": "Optional: one API key upgrades me — OpenAI (semantic search + automatic fact extraction), Voyage (semantic search), or Anthropic (fact extraction). With no key, I run keyless: keyword search plus memory I write down myself — everything still works. Paste a key or say skip.",
       "default": "",
       "sink": "config",
       "maxLength": 256

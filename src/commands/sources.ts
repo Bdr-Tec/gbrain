@@ -57,6 +57,7 @@ import {
   parseSourceConfig,
   normalizeSourceConfig,
   isSourceFederated,
+  sourceFederationState,
   type SourceRow as LoadedSourceRow,
 } from '../core/sources-load.ts';
 
@@ -470,8 +471,14 @@ async function runList(engine: BrainEngine, args: string[]): Promise<void> {
   // Human-readable table.
   console.log('SOURCES');
   console.log('───────');
-  for (const e of entries) {
-    const fedMark = e.federated ? 'federated' : (e as any).archived ? '⚠ archived' : 'isolated';
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    // Explicit `federated: false` (`sources unfederate`) fully isolates a
+    // source's reads in both directions; an absent key ('unset') only keeps
+    // it out of OTHER anchors' reads — its own unqualified reads still widen
+    // outward (see sourceFederationState). Collapsing both to "isolated"
+    // overstates what an unset flag does.
+    const fedMark = (e as any).archived ? '⚠ archived' : sourceFederationState(rows[i].config);
     const pathStr = e.local_path ?? '(no local path)';
     const sync = e.last_sync_at ? `last sync ${e.last_sync_at}` : 'never synced';
     console.log(`  ${e.id.padEnd(20)}  ${fedMark.padEnd(12)}  ${String(e.page_count).padStart(6)} pages  ${sync}`);
@@ -1556,10 +1563,18 @@ Subcommands:
                                     per finding via .gbrain-scan-allow) and on
                                     tracked deny-list files (*.pglite, .env*,
                                     *.pem, *.key, .gbrain/**). Refuses remotes not
-                                    verifiably private via gh; single-flight (a
-                                    concurrent push exits 0 as "skipped"); pushes
-                                    even on a clean tree. Writes
-                                    ~/.gbrain/bootstrap/push-status.json.
+                                    verifiably private — verified via REST, falling
+                                    back to pure git protocol where gh is blocked
+                                    (cloud proxies); private verdicts cached 1h.
+                                    Unverified-remote overrides (self-hosted git
+                                    you trust; every use warns loudly): the flag
+                                    above, GBRAIN_ALLOW_UNVERIFIED_REMOTE=1, or
+                                    "gbrain config set push.allow_unverified_remote
+                                    true" (file-plane — reaches detached hook
+                                    children). Single-flight (a concurrent push
+                                    exits 0 as "skipped"); pushes even on a clean
+                                    tree. Writes per-root status under
+                                    ~/.gbrain/bootstrap/.
   unharden <id>                     Remove durability cron/hook/credential wiring.
 
 Source id: [a-z0-9-]{1,32}. Immutable citation key.

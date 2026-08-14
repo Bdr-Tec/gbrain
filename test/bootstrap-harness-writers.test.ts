@@ -1,7 +1,7 @@
 /**
  * bootstrap-harness-writers.test.ts — harness-lane additions to the
  * settings writers (#4043: writeClaudeHooksAt/removeClaudeHooksAt marker
- * parameterization [C6], onBrokenJson policy, permissions.allow writers,
+ * parameterization [C6], permissions.allow writers,
  * atomic-write hardening [C10], CODEX_HOME-aware codexConfigPath).
  *
  * Behavior-preservation for the workspace lane is pinned by the untouched
@@ -138,8 +138,8 @@ describe('two-marker coexistence [C6]', () => {
   });
 });
 
-describe('onBrokenJson policy', () => {
-  test("'abort' throws and leaves the file untouched (user-scope discipline)", () => {
+describe('broken JSON is fail-closed', () => {
+  test('write throws and leaves the file untouched (never relocate a config we cannot read)', () => {
     const dir = tmp();
     const path = join(dir, 'settings.json');
     const broken = '{ "hooks": { // JSONC comment\n } }';
@@ -149,19 +149,20 @@ describe('onBrokenJson policy', () => {
         gbrainBin: BIN,
         env: { GBRAIN_SOURCE: 'default' },
         marker: GBRAIN_HARNESS_MARKER_VALUE,
-        onBrokenJson: 'abort',
       }),
-    ).toThrow(/refusing to modify/);
+    ).toThrow(/refusing to rewrite/);
     expect(readFileSync(path, 'utf8')).toBe(broken);
   });
 
-  test("default 'relocate' keeps the workspace-lane behavior (backed up aside, fresh write)", () => {
+  test('workspace-lane writes are fail-closed too', () => {
     const dir = tmp();
     const path = join(dir, 'settings.json');
-    writeFileSync(path, 'not json at all');
-    const res = writeClaudeHooksAt(path, { gbrainBin: BIN, env: { GBRAIN_SOURCE: 'ws' } });
-    expect(res.brokenBackupPath).not.toBeNull();
-    expect(markerEntries(readJson(path), GBRAIN_HOOK_MARKER_VALUE)).toBe(CLAUDE_HOOK_EVENTS.length);
+    const broken = 'not json at all';
+    writeFileSync(path, broken);
+    expect(() => writeClaudeHooksAt(path, { gbrainBin: BIN, env: { GBRAIN_SOURCE: 'ws' } })).toThrow(
+      /refusing to rewrite/,
+    );
+    expect(readFileSync(path, 'utf8')).toBe(broken);
   });
 });
 
@@ -225,7 +226,7 @@ describe('permissions.allow writers', () => {
     const path = join(dir, 'settings.json');
     const broken = '{ broken';
     writeFileSync(path, broken);
-    expect(() => addPermissionsAllowEntry(path, 'mcp__gbrain')).toThrow(/refusing to modify/);
+    expect(() => addPermissionsAllowEntry(path, 'mcp__gbrain')).toThrow(/refusing to rewrite/);
     const res = removePermissionsAllowEntry(path, 'mcp__gbrain');
     expect(res.removed).toBe(0);
     expect(res.notes.join(' ')).toMatch(/left untouched/);

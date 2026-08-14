@@ -838,7 +838,6 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
           env,
           events: hookEvents,
           marker: GBRAIN_HARNESS_MARKER_VALUE,
-          onBrokenJson: t.scope === 'user' ? 'abort' : 'relocate',
           backupStrategy: 'timestamped',
           refuseOnForeignGbrainMarker: true,
           ...(t.scope === 'user' ? { freshMode: 0o600 } : {}),

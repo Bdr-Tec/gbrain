@@ -90,9 +90,10 @@ NOT inside ~/gbrain.
 ## Step 3.5: Confirm search mode with the user (DO NOT SKIP)
 
 `gbrain init` auto-applied a default search mode (`tokenmax` unless your subagent
-tier is Haiku-class or no OpenAI key is configured). The init output included the
-cost matrix below preceded by `[AGENT]` markers. You must NOT silently accept the
-default. Stop and ask the operator.
+tier is Haiku-class or no expansion-capable API key — Anthropic, OpenAI, or
+Google — is configured). The init output included the cost matrix below preceded
+by `[AGENT]` markers. You must NOT silently accept the default. Stop and ask the
+operator.
 
 **Present this matrix verbatim:**
 
@@ -215,6 +216,16 @@ refuses to overwrite anything that exists. Use `gbrain skillpack reference <name
 diff against gbrain's bundle when you want upstream improvements. (The legacy
 `gbrain skillpack install` managed-block model was removed in v0.33 — run
 `gbrain skillpack migrate-fence` once if upgrading from an older release.)
+
+**If you are Hermes:** register gbrain as your MCP server:
+
+```bash
+printf 'Y\n' | hermes mcp add gbrain --env GBRAIN_HOME=$HOME --connect-timeout 60 --command $(which gbrain) --args serve
+```
+
+Keep `--args` last (everything after it becomes server argv) and verify with
+`hermes mcp test gbrain` — the add exits 0 even on failure. Full reference:
+[docs/mcp/HERMES.md](docs/mcp/HERMES.md).
 
 Whether you scaffolded or not, read `skills/RESOLVER.md` (in your workspace, or the
 bundled copy at `~/gbrain/skills/RESOLVER.md` when running from the cloned repo). It's

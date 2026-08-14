@@ -25,7 +25,9 @@
  *
  * The drop-list is the security contract: CONDUCTOR_* / CLAUDE_* / GSTACK_* /
  * MCP_* / GBRAIN_* never reach a child except via the explicit overrides the
- * caller passes (which spread LAST and always win).
+ * caller passes (which spread LAST and always win). HERMES_HOME is handled the
+ * same way — not in any allowlist, so it only reaches a child via an explicit
+ * override (the hermes door test always sets it to a temp home).
  */
 
 import { spawnSync } from 'node:child_process';
@@ -162,6 +164,24 @@ export function resolveClaudeBinary(): string | null {
   ]);
 }
 
+/** Locate the real `hermes` binary (NousResearch hermes-agent). Bun.which
+ *  first, then the installer's known landing spots. */
+export function resolveHermesBinary(): string | null {
+  const which = whichBin('hermes');
+  if (which) return which;
+  const home = process.env.HOME ?? os.homedir();
+  const candidates = [
+    '/opt/homebrew/bin/hermes',
+    '/usr/local/bin/hermes',
+    `${home}/.local/bin/hermes`, // where the official installer symlinks (observed v0.20.0)
+    `${home}/.hermes/bin/hermes`,
+  ];
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (dir) candidates.push(path.join(dir, 'hermes'));
+  }
+  return firstExecutable(candidates);
+}
+
 /** Locate the real `codex` binary. Bun.which first, then known install dirs
  *  (adds ~/.nvm + common node bin dirs where the npm global lands). */
 export function resolveCodexBinary(): string | null {
@@ -213,6 +233,56 @@ export function hasCodexAuth(): boolean {
   } catch {
     return false;
   }
+}
+
+/** Every provider key hermes recognizes — scrubbed from child env so the
+ *  seeded .env is the SINGLE auth source. Observed (v0.20.0): with model
+ *  pinned to anthropic/* but MULTIPLE provider keys visible, hermes's
+ *  provider-auto mis-routes the request and the turn returns
+ *  "HTTP 401: Missing Authentication header" as final text (exit 0). */
+const HERMES_ALL_PROVIDER_KEYS = [
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN',
+  'OPENAI_API_KEY', 'OPENROUTER_API_KEY',
+] as const;
+
+/** Parse KEY=VALUE lines from a dotenv-style file. Ignores comments, blanks,
+ *  and export prefixes; strips single/double quotes. Never throws. */
+export function parseDotenvFile(file: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    for (const rawLine of fs.readFileSync(file, 'utf-8').split('\n')) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+      if (!m) continue;
+      let v = m[2].trim();
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+        v = v.slice(1, -1);
+      }
+      out[m[1]] = v;
+    }
+  } catch {
+    /* unreadable → empty */
+  }
+  return out;
+}
+
+/**
+ * Hermes is usable BY THE DOOR SUITE if an ANTHROPIC key with a NON-EMPTY
+ * value is available — either exported (GSTACK_ promotion applies) or present
+ * in the operator's real ~/.hermes/.env.
+ *
+ * Anthropic-only on purpose: the door pins model.default to anthropic/*, and
+ * seeding any second provider key makes hermes's provider-auto mis-route the
+ * pinned model ("HTTP 401: Missing Authentication header", observed). Bare
+ * file existence is deliberately NOT auth: a blank CI secret writes an empty
+ * .env, and that must produce a SKIP, not a paid failing test.
+ */
+export function hasHermesAuth(): boolean {
+  const env = promotedEnv(process.env);
+  if (env.ANTHROPIC_API_KEY?.trim()) return true;
+  const parsed = parseDotenvFile(path.join(os.homedir(), '.hermes', '.env'));
+  return Boolean(parsed.ANTHROPIC_API_KEY?.trim());
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -468,6 +538,135 @@ export async function codexExecTurn(opts: CodexTurnOpts): Promise<CodexTurnResul
     rawLines,
     exitCode: timedOut ? 124 : exitCode,
     timedOut,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 5a-bis. Hermes home seeding + one-shot turn (mirror of the codex trio)
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface SeedHermesHomeOpts {
+  /** Test-only injection point: read provider keys from this dotenv file
+   *  instead of the operator's real ~/.hermes/.env (lets the unit test assert
+   *  the allowlist-only copy against a fixture without touching real homes). */
+  sourceEnvPath?: string;
+}
+
+/**
+ * Seed a hermetic <home>/.hermes for a spawned hermes. Copies EXACTLY ONE
+ * key — a non-empty ANTHROPIC_API_KEY, from the operator's real ~/.hermes/.env
+ * when present, falling back to the (promoted) process env. One key on
+ * purpose: the door pins an anthropic/* model, and a second provider key
+ * flips hermes's provider-auto into a mis-routed request (observed 401).
+ * Never the whole .env file (other creds / endpoints / behavior knobs stay
+ * behind), NEVER config.yaml (the operator's private MCP servers). The model
+ * pin is a separate step (`pinHermesModel`) because hermes owns config.yaml's
+ * schema — hand-writing it risks drift; `hermes config set` round-trips
+ * safely.
+ */
+export function seedHermesHome(home: string, opts?: SeedHermesHomeOpts): string {
+  const hermesHome = path.join(home, '.hermes');
+  fs.mkdirSync(hermesHome, { recursive: true });
+
+  const fromFile = parseDotenvFile(opts?.sourceEnvPath ?? path.join(os.homedir(), '.hermes', '.env'));
+  const env = promotedEnv(process.env);
+  const key = fromFile.ANTHROPIC_API_KEY?.trim() || env.ANTHROPIC_API_KEY?.trim();
+  if (key) {
+    fs.writeFileSync(path.join(hermesHome, '.env'), `ANTHROPIC_API_KEY=${key}\n`, { mode: 0o600 });
+  }
+  return hermesHome;
+}
+
+/**
+ * Hermetic env for spawning hermes itself: standard scrub + HOME/HERMES_HOME
+ * overrides, then ALL provider keys deleted so the seeded .env is the single
+ * auth source (provider-auto determinism — see HERMES_ALL_PROVIDER_KEYS).
+ */
+export function hermesChildEnv(home: string): NodeJS.ProcessEnv {
+  const env = hermeticChildEnv({ HOME: home, HERMES_HOME: path.join(home, '.hermes') });
+  for (const k of HERMES_ALL_PROVIDER_KEYS) delete env[k];
+  return env;
+}
+
+/**
+ * Non-interactive model/provider pin for a hermetic hermes home. A virgin
+ * install refuses `-z` with "No inference provider configured" (exit 1,
+ * observed), and `hermes model` is interactive-only — `config set` is the
+ * scriptable path (observed working against v0.20.0).
+ */
+export function pinHermesModel(hermesBin: string, home: string, model = 'anthropic/claude-haiku-4.5'): { code: number | null; stderr: string } {
+  const res = spawnSync(hermesBin, ['config', 'set', 'model.default', model], {
+    env: hermesChildEnv(home),
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  return { code: res.status, stderr: res.stderr ?? '' };
+}
+
+export interface HermesTurnOpts {
+  prompt: string;
+  cwd: string;
+  home: string;
+  timeoutMs?: number;
+  /** When set, the turn passes hermes's usage-report flag targeting this path. */
+  usageFile?: string;
+}
+
+export interface HermesTurnResult {
+  /** hermes's one-shot mode prints ONLY the final response text on stdout. */
+  finalText: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  stderrText: string;
+  /** Parsed usage-report JSON when usageFile was requested and parseable. */
+  usage?: unknown;
+}
+
+/**
+ * Drive one `hermes -z` turn against a hermetic HOME + HERMES_HOME. The
+ * RESOLVED binary path is used (never the bare literal), so resolution and
+ * execution can't disagree. stdout is plain final text — NOT NDJSON; there is
+ * no per-event tool-call stream to parse (door tests use a negative-control
+ * prompt instead).
+ */
+export async function hermesOneShotTurn(opts: HermesTurnOpts): Promise<HermesTurnResult> {
+  const bin = resolveHermesBinary();
+  if (!bin) throw new Error('hermesOneShotTurn: hermes binary not found');
+  const timeoutMs = opts.timeoutMs ?? 240_000;
+
+  const argv = [bin, '-z', opts.prompt, ...(opts.usageFile ? ['--usage-file', opts.usageFile] : [])];
+  const proc = Bun.spawn(argv, {
+    cwd: opts.cwd,
+    env: hermesChildEnv(opts.home),
+    stdout: 'pipe',
+    stderr: 'pipe',
+    stdin: 'ignore',
+  });
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try { proc.kill(); } catch { /* already dead */ }
+  }, timeoutMs);
+
+  const [stdout, stderrText] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text().catch(() => ''),
+  ]);
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+
+  let usage: unknown;
+  if (opts.usageFile) {
+    try { usage = JSON.parse(fs.readFileSync(opts.usageFile, 'utf-8')); } catch { /* best-effort */ }
+  }
+
+  return {
+    finalText: stdout.trim(),
+    exitCode: timedOut ? 124 : exitCode,
+    timedOut,
+    stderrText,
+    usage,
   };
 }
 

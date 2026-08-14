@@ -34,6 +34,7 @@ import { VERSION } from '../version.ts';
 import { loadConfig, loadConfigFileOnly, toEngineConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
 import { resolveGbrainHome } from '../core/gbrain-home.ts';
+import { detectExecutionEnvironment } from '../core/execution-env.ts';
 import { realpathOrResolve } from '../core/path-confine.ts';
 import { loadQuestionBank } from '../core/bootstrap/assets.ts';
 import {
@@ -56,6 +57,7 @@ import {
   registerClaudeMcp,
   registerCodexMcp,
   writeClaudeHooks,
+  writeCommittedClaudeHooks,
   removeClaudeHooks,
 } from '../core/bootstrap/hooks.ts';
 import {
@@ -84,7 +86,7 @@ import {
   statusReport,
   type StatusReport,
 } from '../core/bootstrap/status.ts';
-import { verifyWorkspace } from '../core/bootstrap/verify.ts';
+import { verifyWorkspace, deriveWorkspaceSourceId } from '../core/bootstrap/verify.ts';
 
 export const BOOTSTRAP_HELP = `gbrain bootstrap — paste-in agent install (Claude Code / Codex)
 
@@ -121,6 +123,10 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
                                   lifecycle hooks (user scope, or per --project dir), codex
                                   config block. No agent.json needed. Idempotent; --remove
                                   tears it down. (--local is an accepted no-op alias.)
+  cloud-setup-script              Print the paste-ready cloud environment setup
+                                  script (installs the gbrain binary into the
+                                  environment snapshot; npm-based — bun fetching
+                                  is proxy-incompatible in cloud sandboxes).
   uninstall [--delete-brain] [--home <dir>] [--yes]
                                   Receipt-keyed removal. The repo stays yours.
 
@@ -130,6 +136,60 @@ Env: GBRAIN_BOOTSTRAP_ABORT_AFTER=<phase> (test seam — abort after that phase'
 
 const SUPPORT_HINT =
   'If you are stuck: run `gbrain bootstrap status --json` and relay the "support" block verbatim.';
+
+/**
+ * Per-subcommand `--help`/`-h`/`help` usage text for the subcommands that
+ * MUTATE state (create a repo, register MCP/hooks, run the verify contract,
+ * adopt a workspace, remove receipt-tracked paths, record an interview
+ * answer). `runBootstrap`'s dispatch checks `args[0]` for top-level help
+ * (`--help`/`-h`/`help`/no args), but a help token AFTER the subcommand name
+ * (e.g. `gbrain bootstrap repo --help`, `gbrain bootstrap uninstall help`)
+ * previously fell straight into the subcommand's own arg parsing, which had
+ * no help handling of its own — so it ran the real mutation instead of
+ * printing help. `status`/`cloud-setup-script` are pure reads, so they don't
+ * need a guard.
+ */
+const SUBCOMMAND_HELP: Record<string, string> = {
+  render:
+    'gbrain bootstrap render [--force] [--only F] [--minimal]\n' +
+    '  Render identity files from the confirmed interview answers. Never clobbers; --force backs up first.',
+  repo:
+    'gbrain bootstrap repo\n' +
+    '  Create the dedicated PRIVATE GitHub repo (or adopt an EMPTY private repo you created\n' +
+    '  under your own account), verify the privacy bit via the API, push.',
+  hooks:
+    'gbrain bootstrap hooks [--harness claude-code|codex] [--repair] [--no-hooks] [--gbrain-bin <path>]\n' +
+    '  Register MCP (+ per-turn hooks on Claude Code, ON by default; --no-hooks opts out).',
+  verify:
+    'gbrain bootstrap verify [--json]\n' +
+    '  The whole install contract (round-trip, graph floor, magic moment, scans, hooks smoke). Exit 0 or not done.',
+  attach:
+    'gbrain bootstrap attach [--harness H]\n' +
+    '  Machine two: adopt a cloned agent workspace.',
+  uninstall:
+    'gbrain bootstrap uninstall [--delete-brain] [--home <dir>] [--yes]\n' +
+    '  Receipt-keyed removal. The repo stays yours.',
+  interview:
+    'gbrain bootstrap interview --init | --set KEY "value" | --skip KEY | --status | --show | --confirm <hash>\n' +
+    '  Create/record/read interview state. See `gbrain bootstrap --help` for the per-flag description.',
+};
+
+/**
+ * `--help`/`-h` are always recognized. The bare word `help` (no dashes) is
+ * ALSO recognized for every subcommand above EXCEPT `interview` — mirroring
+ * the top-level `sub === 'help'` handling for a user who tries the same
+ * spelling after a subcommand name. `interview` is excluded from the
+ * bare-word form because its `--set KEY "value"` free-text answers could
+ * legitimately BE the literal word "help" (e.g. a one-word answer); none of
+ * the other subcommands' flags take arbitrary prose, only booleans, enums,
+ * or paths, so the bare-word collision risk there is negligible (matches the
+ * already-accepted low-impact risk of `-h` colliding with a literal path
+ * value like `--home -h`).
+ */
+function hasHelpToken(args: string[], allowBareWord: boolean): boolean {
+  if (args.includes('--help') || args.includes('-h')) return true;
+  return allowBareWord && args.includes('help');
+}
 
 /** Thrown by the A7 abort seam; mapped to exit 130 (simulated kill). */
 export class BootstrapAbortInjected extends Error {
@@ -167,6 +227,19 @@ function flagValues(args: string[], flag: string): string[] {
 function resolveWorkspace(args: string[]): string {
   const ws = flagValue(args, '--workspace');
   return ws ? resolve(ws) : process.cwd();
+}
+
+/**
+ * POSIX single-quote anything not already shell-safe, for commands printed
+ * as copy/paste guidance (mirror of the private `shellQuote` in
+ * core/bootstrap/hooks.ts, core/sources-ops.ts, and commands/connect.ts —
+ * same contract: `$()`/backticks in a value are inert literals once quoted).
+ * A workspace path containing a space or shell metacharacter must not turn
+ * "the exact command to run" into a broken (or, pasted blind, dangerous) one.
+ */
+function shellQuoteForDisplay(arg: string): string {
+  if (/^[A-Za-z0-9_.:/@=-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 // ── Shared plumbing ─────────────────────────────────────────────────────────
@@ -377,7 +450,7 @@ async function runStatus(ws: string, rest: string[], home: string): Promise<numb
   if (report.next) {
     console.log(`\nNext: ${report.next}`);
   } else {
-    console.log('\nAll phases done. Weekly self-check: `gbrain bootstrap verify`.');
+    console.log('\nAll phases done. Weekly self-check: `gbrain bootstrap verify` (close agent sessions first — PGLite is single-writer).');
   }
   if (report.runbookSkew) {
     console.log(
@@ -402,6 +475,15 @@ async function runStatus(ws: string, rest: string[], home: string): Promise<numb
     );
   }
   return 0;
+}
+
+/** One copy of the A8 invalidation warning — shared by --set and --skip so
+ *  the operator-facing instructions cannot drift between the two branches. */
+function warnInvalidatedConfirmation(): void {
+  console.error(
+    'note: this change voided the prior confirmation — read the full answer set back ' +
+    'to the human, then `gbrain bootstrap interview --confirm <hash>` again before render.',
+  );
 }
 
 async function runInterview(ws: string, rest: string[]): Promise<number> {
@@ -445,6 +527,7 @@ async function runInterview(ws: string, rest: string[]): Promise<number> {
       console.log(`${key}: routed to the 0600 config file (${routed.configKey}). Not recorded in interview state.`);
       return 0;
     }
+    if (r.invalidatedConfirmation) warnInvalidatedConfirmation();
     console.log(`${key} recorded.`);
     return 0;
   }
@@ -460,6 +543,7 @@ async function runInterview(ws: string, rest: string[]): Promise<number> {
       console.error(r.message);
       return 1;
     }
+    if (r.invalidatedConfirmation) warnInvalidatedConfirmation();
     console.log(`${key} skipped.`);
     return 0;
   }
@@ -628,37 +712,57 @@ async function runRepo(ws: string, rest: string[], home: string, runner: ExecRun
 
     abortIfInjected('repo');
 
-    // PERSIST_CRON consent [D3 resolved]: opt-in 15-min scan-gated push job
-    // via the existing sources-harden machinery. Best-effort: a harden
-    // failure never fails the repo phase — the SessionEnd push backstop is
-    // always on.
+    // PERSIST_CRON consent [D3 resolved]: opt-in background persistence via
+    // the existing sources-harden machinery — a git post-commit auto-push plus
+    // a 30-minute scheduled pull that keeps multi-machine checkouts fresh
+    // (honest copy [D9]: the event-driven pushes do the durability work; the
+    // timer is the freshener). Best-effort: a harden failure never fails the
+    // repo phase — the per-turn and session-end pushes are always on.
     const persist = (consentAnswer(ws, 'PERSIST_CRON') ?? 'no').toLowerCase();
+    const envKind = detectExecutionEnvironment();
     if (persist === 'yes') {
       try {
         const { hardenBrainRepo } = await import('../core/brain-repo-durability.ts');
         const state = readManifest(ws);
         const sourceId = state.state === 'initialized' ? state.manifest.source_id : 'workspace';
+        // Containers/cloud sandboxes have no reliable scheduler — install the
+        // container-friendly half (post-commit hook + helper) and say so,
+        // instead of failing a crontab write that could never survive anyway.
+        const installCron = envKind === 'local';
         const report = await hardenBrainRepo({
           repoPath: ws,
           sourceId,
-          installCron: true,
+          installCron,
           verify: false,
           logger: (l: string) => process.stderr.write(`[harden] ${l}\n`),
         });
         const attention = report.steps.filter((s) => s.status === 'needs_attention');
-        console.log(
-          attention.length === 0
-            ? 'background persistence enabled (15-min scan-gated push job installed).'
-            : `background persistence partially enabled — needs attention: ${attention.map((s) => `${s.step}: ${s.detail}`).join('; ')}`,
-        );
+        if (attention.length > 0) {
+          console.log(
+            `background persistence partially enabled — needs attention: ${attention.map((s) => `${s.step}: ${s.detail}`).join('; ')}`,
+          );
+        } else if (installCron) {
+          console.log(
+            'background persistence enabled (post-commit auto-push + 30-min scheduled pull installed).',
+          );
+        } else {
+          console.log(
+            `background persistence enabled for this ${envKind === 'cloud-sandbox' ? 'cloud sandbox' : 'container'}: ` +
+              'post-commit auto-push installed; per-turn and session-end pushes are already on. ' +
+              'No scheduler exists in this environment, so the 30-min pull is skipped — run ' +
+              '`gbrain sources harden` on a persistent machine to add it.',
+          );
+        }
       } catch (e) {
         console.error(
           `note: background-persistence install failed (${(e as Error).message}). ` +
-            'Session-end pushes still persist your work; re-try later with `gbrain sources harden`.',
+            'Per-turn and session-end pushes still persist your work; re-try later with `gbrain sources harden`.',
         );
       }
     } else {
-      console.log('background persistence declined — the session-end push remains the persistence backstop.');
+      console.log(
+        'background persistence declined — the per-turn and session-end pushes remain the persistence backstop.',
+      );
     }
     return 0;
   });
@@ -743,8 +847,48 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   }
 
   return withLock(ws, async () => {
+    // 0. source_id visibility seam: `hooks` is the last ENGINE-FREE phase
+    // before `verify` (which alone can detect a source_id collision — the
+    // sources registry lives only in the DB). Without this, a human who
+    // hand-registers a source before verify has no way to know the exact id
+    // the workspace expects, guesses an "intuitive" name instead, and only
+    // discovers the mismatch via a `verify` roundtrip FK error — then, after
+    // switching to the manifest's id, an `overlapping_path` error from the
+    // earlier guess still claiming the same brain/ dir. Printing the current
+    // id (and the collision-fallback id verify would derive, a pure path
+    // hash that needs no engine) up front — plus creating brain/ so
+    // registration can happen immediately — collapses that multi-round-trip
+    // loop to one command.
+    const brainDir = join(ws, 'brain');
+    mkdirSync(brainDir, { recursive: true });
+    // --force: brain/ was just created empty — `sources add` fail-fasts on a
+    // --path that exists but isn't a git repo with committed, tracked
+    // content (#2707), and gbrain deliberately never auto-git-inits a --path
+    // source itself (a --path source is the user's own directory — the
+    // consent boundary #2967 established for sync-time self-heal applies
+    // here too). --force is the sanctioned opt-in for exactly this "register
+    // before git-init exists" case (see sources-ops.ts's own not_a_git_repo
+    // message), and it is safe here because brainDir is not an arbitrary
+    // user path — it is the fixed `<workspace>/brain` subdir this phase just
+    // created. Without --force, the printed command below would itself throw
+    // not_a_git_repo the instant it's pasted.
+    const quoted = shellQuoteForDisplay(brainDir);
+    console.log(
+      `brain source: register this workspace's brain/ now if you haven't — ` +
+        `\`gbrain sources add ${sourceId} --path ${quoted} --force\` (brain/ is freshly created and empty; ` +
+        `--force is the documented opt-in for registering before git-init exists). If '${sourceId}' is ` +
+        `already claimed by a different checkout on this brain, \`gbrain bootstrap verify\` will detect the ` +
+        `collision and switch this workspace to '${deriveWorkspaceSourceId(ws)}' — re-run the same command ` +
+        `with that id instead.`,
+    );
+
     // 1. MCP registration — argv built by the host-format module, executed
     // through the runner seam, recorded on the receipt.
+    // A missing host binary (exit 127) skips MCP registration but NOT the
+    // hooks below — hooks only write .claude/settings.local.json and need no
+    // binary. The old early-return silently dropped hooks while the copy said
+    // only "MCP registration skipped".
+    let mcpSkipped = false;
     const argvs =
       harness === 'claude-code'
         ? registerClaudeMcp({ gbrainBin, scope: mcpScope, sourceId, ...(gbrainHome ? { gbrainHome } : {}) })
@@ -754,10 +898,12 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
       const res = await runner(argv);
       if (res.code === 127) {
         console.error(
-          `\`${argv[0]}\` is not on PATH — is ${harness} installed? MCP registration skipped; ` +
-            `re-run \`gbrain bootstrap hooks --harness ${harness}\` once it is.`,
+          `\`${argv[0]}\` is not on PATH — is ${harness} installed? MCP registration skipped ` +
+            `(per-turn hooks still install below); re-run ` +
+            `\`gbrain bootstrap hooks --harness ${harness}\` once it is.`,
         );
-        return 2;
+        mcpSkipped = true;
+        break;
       }
       if (res.code !== 0) {
         const already = /already exists|already registered/i.test(res.stderr + res.stdout);
@@ -775,10 +921,43 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
           console.error(
             `existing '${mcpName}' MCP registration targets a DIFFERENT workspace/binary — replacing it.`,
           );
-          await runner([argv[0], 'mcp', 'remove', mcpName]);
+          // The add above failed "already exists" in the CURRENT scope, so the
+          // blocker lives there — target the remove at that scope on Claude
+          // Code (a scope-less remove can resolve to a different scope's
+          // registration and leave the blocker in place). Codex has no scope
+          // flag. Fail loud if the remove doesn't land: the silent no-op loop
+          // used to re-fail the add and report nothing actionable.
+          const rmArgv =
+            harness === 'claude-code'
+              ? [argv[0], 'mcp', 'remove', mcpName, '--scope', mcpScope]
+              : [argv[0], 'mcp', 'remove', mcpName];
+          const rm = await runner(rmArgv);
+          if (rm.code !== 0) {
+            console.error(
+              `\`${rmArgv.join(' ')}\` failed (${rm.stderr.trim() || `exit ${rm.code}`}) — remove the stale ` +
+                `registration by hand (\`${argv[0]} mcp get ${mcpName}\` shows where it lives), then re-run ` +
+                `\`gbrain bootstrap hooks --harness ${harness} --repair\`.`,
+            );
+            return 1;
+          }
           const re = await runner(argv);
           if (re.code !== 0 && !/already exists|already registered/i.test(re.stderr + re.stdout)) {
             console.error(`MCP re-registration failed (${argv.join(' ')}): ${re.stderr.trim() || `exit ${re.code}`}`);
+            return 1;
+          }
+          // Re-add can itself return "already exists" if a racing writer
+          // re-claimed the name between our remove and add — that registration
+          // is NOT ours. Re-verify and abort rather than bless a foreign
+          // endpoint that would intercept memory ops. (Only the recorded
+          // warn-then-continue step-2 smoke did this before; here it's fatal.)
+          const post = await verifyMcpTargetsWorkspace(runner, harness, mcpName, gbrainBin, sourceId);
+          if (post === 'mismatch') {
+            console.error(
+              `after replacing '${mcpName}', it STILL targets a different workspace/binary — ` +
+                `refusing to continue (a racing registration may have re-claimed the name). ` +
+                `Inspect \`${argv[0]} mcp get ${mcpName}\`, remove it by hand, then re-run ` +
+                `\`gbrain bootstrap hooks --harness ${harness} --repair\`.`,
+            );
             return 1;
           }
         } else {
@@ -793,7 +972,7 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
     // 2. Registration smoke [FIX7]: confirm the EXPECTED server (binary path +
     // GBRAIN_SOURCE), not merely a 'gbrain' substring in `mcp list`. Falls back
     // to the list probe only when the host has no `mcp get`.
-    try {
+    if (!mcpSkipped) try {
       const listBin = harness === 'claude-code' ? 'claude' : 'codex';
       const scopeLabel = harness === 'claude-code' ? mcpScope : 'user-global';
       const verdict = await verifyMcpTargetsWorkspace(runner, harness, 'gbrain', gbrainBin, sourceId);
@@ -823,12 +1002,40 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
     let hooksWritten = false;
     if (harness === 'claude-code') {
       if (hooksConsent) {
-        const r = writeClaudeHooks(ws, {
-          gbrainBin,
-          env: { GBRAIN_SOURCE: sourceId, ...(gbrainHome ? { GBRAIN_HOME: gbrainHome } : {}) },
-        });
+        // Carrier choice [D12]: cloud sandboxes clone fresh and snapshot hook
+        // config at session start — only the repo-COMMITTED settings file
+        // exists there, so cloud installs write the committed carrier
+        // (PATH-resolved, fail-open commands; no machine paths). Local
+        // installs keep the gitignored settings.local.json with the absolute
+        // binary path. The writers enforce that one event never fires from
+        // both files.
+        const hookEnv = { GBRAIN_SOURCE: sourceId, ...(gbrainHome ? { GBRAIN_HOME: gbrainHome } : {}) };
+        const cloudCarrier = detectExecutionEnvironment() === 'cloud-sandbox';
+        let r: ReturnType<typeof writeClaudeHooks> | ReturnType<typeof writeCommittedClaudeHooks>;
+        try {
+          r = cloudCarrier
+            ? writeCommittedClaudeHooks(ws, { env: hookEnv })
+            : writeClaudeHooks(ws, { gbrainBin, env: hookEnv });
+        } catch (e) {
+          // Fail-closed on an unparseable settings file (either carrier): MCP
+          // (step 1) still landed; record that, surface the fix, and exit
+          // nonzero so the paste-in flow knows hooks are NOT installed.
+          console.error((e as Error).message);
+          if (!mcpSkipped) {
+            appendReceiptRegistration(home, ws, { host: harness, scope: mcpScope, detail: 'mcp' });
+          }
+          return 1;
+        }
         hooksWritten = true;
-        console.log(`hooks installed (${r.installed.length} event(s)) in ${r.settingsPath}${repair ? ' [repair]' : ''} — your brain now loads every turn. Turn off any time with GBRAIN_HOOKS=0, or re-run with --no-hooks.`);
+        console.log(
+          `hooks installed (${r.installed.length} event(s)) in ${r.settingsPath}${repair ? ' [repair]' : ''} — your brain now loads every turn. Turn off any time with GBRAIN_HOOKS=0, or re-run with --no-hooks.`,
+        );
+        if (cloudCarrier) {
+          console.log(
+            'cloud sandbox: hooks written to the COMMITTED .claude/settings.json (fail-open, PATH-resolved) — ' +
+              'commit + push it so the next session starts with hooks live; hooks written mid-session activate on the NEXT session (startup snapshot).',
+          );
+        }
         for (const note of r.notes) console.error(note);
       } else {
         console.log(
@@ -841,15 +1048,18 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
       console.log('gbrain does not wire Codex hooks yet — per-turn context is the AGENTS.md pull protocol (stated plainly; the codex hook lane is a filed follow-up).');
     }
 
-    // 4. Receipt registration record [CX2-12].
-    appendReceiptRegistration(home, ws, {
-      host: harness,
-      scope: harness === 'claude-code' ? mcpScope : 'user',
-      detail: hooksWritten ? 'mcp+hooks' : 'mcp',
-    });
+    // 4. Receipt registration record [CX2-12]. Detail records what actually
+    // landed; nothing landed at all (127 + no hooks) → no receipt entry.
+    if (!mcpSkipped || hooksWritten) {
+      appendReceiptRegistration(home, ws, {
+        host: harness,
+        scope: harness === 'claude-code' ? mcpScope : 'user',
+        detail: hooksWritten ? (mcpSkipped ? 'hooks' : 'mcp+hooks') : 'mcp',
+      });
+    }
 
     abortIfInjected('wire');
-    return 0;
+    return mcpSkipped ? 2 : 0;
   });
 }
 
@@ -871,7 +1081,7 @@ async function runVerify(ws: string, rest: string[], home: string): Promise<numb
     const sourceId = state.state === 'initialized' ? state.manifest.source_id : 'workspace';
     const result = await verifyWorkspace(engine, ws, { sourceId, gbrainHomeDir: home });
     if (jsonMode) {
-      console.log(JSON.stringify({ ok: result.ok, checks: result.checks, capability: result.capability, tour: result.tour }, null, 2));
+      console.log(JSON.stringify({ ok: result.ok, checks: result.checks, capability: result.capability, tour: result.tour, handoff: result.handoff }, null, 2));
     } else {
       console.log(result.report);
     }
@@ -1000,6 +1210,10 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
         'offered: export facts before deletion (`gbrain facts export`) — the brain DB is about to be removed and facts are not derived state',
       );
     }
+    // Read the source id BEFORE uninstallWorkspace removes rendered files —
+    // the durability teardown below needs it and the manifest may not survive.
+    const preState = readManifest(ws);
+    const durabilitySourceId = preState.state === 'initialized' ? preState.manifest.source_id : 'workspace';
     let result;
     try {
       result = await uninstallWorkspace(ws, {
@@ -1040,6 +1254,41 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
       }
     }
 
+    // Per-root hook-lane state [D13]: remove this workspace's push-status,
+    // debounce, and announce files — a dead root's failing record would
+    // otherwise re-fire the failure banner forever (it can never be cleared
+    // by a re-push once the workspace is gone).
+    try {
+      const { pushStatusPathForRoot, workspaceRootHash } = await import('../core/workspace-push.ts');
+      const { execFileSync } = await import('node:child_process');
+      let root = ws;
+      try {
+        root = execFileSync('git', ['-C', ws, 'rev-parse', '--show-toplevel'], {
+          stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000, env: process.env,
+        }).toString().trim() || ws;
+      } catch { /* not a repo — use ws as-is */ }
+      const { rmSync } = await import('node:fs');
+      const statusFile = pushStatusPathForRoot(root);
+      for (const f of [statusFile, `${statusFile}.announced`, join(resolveGbrainHome(), 'bootstrap', `stop-push-${workspaceRootHash(root)}.json`)]) {
+        rmSync(f, { force: true });
+      }
+    } catch { /* best-effort */ }
+
+    // Durability teardown [B6]: uninstall previously left the launchd/cron
+    // job, the untracked post-commit hook, and the credential wiring behind.
+    // Best-effort — a teardown hiccup never fails the uninstall. The COMMITTED
+    // helper script and AGENTS.md rules stay (repo content is the user's).
+    try {
+      const { unhardenBrainRepo } = await import('../core/brain-repo-durability.ts');
+      const steps = await unhardenBrainRepo({ repoPath: ws, sourceId: durabilitySourceId });
+      const acted = steps.filter((s) => s.status === 'fixed');
+      if (acted.length > 0) {
+        console.log(`durability wiring removed: ${acted.map((s) => s.step).join(', ')} (committed helper + AGENTS rules stay — repo content is yours)`);
+      }
+    } catch (e) {
+      console.error(`note: durability teardown incomplete (${(e as Error).message}) — run \`gbrain sources unharden ${durabilitySourceId}\` by hand if a scheduled job lingers.`);
+    }
+
     // The facts-export offer already printed BEFORE deletion (above); don't
     // repeat it after the brain is gone.
     for (const step of result.steps) {
@@ -1077,11 +1326,21 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
   const logCtx: LogCtx = { home, ws, ...(harnessForLog ? { harness: harnessForLog } : {}) };
   const t0 = Date.now();
 
-  const KNOWN = new Set(['status', 'interview', 'render', 'repo', 'hooks', 'verify', 'attach', 'uninstall', 'harness']);
+  const KNOWN = new Set(['status', 'interview', 'render', 'repo', 'hooks', 'verify', 'attach', 'uninstall', 'harness', 'cloud-setup-script']);
   if (!KNOWN.has(sub)) {
     console.error(`unknown subcommand: ${sub}`);
     console.error(BOOTSTRAP_HELP);
     return 2;
+  }
+
+  // Subcommand-level help: BEFORE any subcommand body runs, so a help token
+  // after a mutating subcommand (repo/hooks/verify/attach/uninstall/render/
+  // interview) never falls through into the real operation, regardless of
+  // what other flags/values precede it in `rest`. No install-log entry
+  // either — this isn't a phase run.
+  if (SUBCOMMAND_HELP[sub] && hasHelpToken(rest, sub !== 'interview')) {
+    console.log(SUBCOMMAND_HELP[sub]);
+    return 0;
   }
 
   // The install log records the PHASE name, and the hooks subcommand is the
@@ -1096,6 +1355,13 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
       case 'status':
         // status is the read surface — it does not log itself into install.jsonl.
         return await runStatus(ws, rest, home);
+      case 'cloud-setup-script': {
+        // Pure print [D16]: the paste-ready cloud environment setup script.
+        // Read surface like status — no install log entry.
+        const { loadCloudSetupScript } = await import('../core/bootstrap/assets.ts');
+        console.log(loadCloudSetupScript().trimEnd());
+        return 0;
+      }
       case 'interview':
         code = await runInterview(ws, rest);
         break;

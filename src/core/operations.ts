@@ -10,7 +10,7 @@ import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
-import { writePageThrough } from './write-through.ts';
+import { writePageThrough, type WriteThroughResult } from './write-through.ts';
 import { hybridSearch, hybridSearchCached, stampContentFlags, stampUnverifiedExtractions } from './search/hybrid.ts';
 import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
@@ -1323,7 +1323,10 @@ const put_page: Operation = {
     // Trust gating:
     //   - Subagent sandbox (viaSubagent without allowedSlugPrefixes) → DB-only.
     //   - All other writes → write-through.
-    let writeThrough: { written: boolean; path?: string; skipped?: string; error?: string } | undefined;
+    // put_page's own trust-gating produces two skip reasons ('subagent_sandbox',
+    // 'dry_run') that never come out of writePageThrough itself — widen the
+    // field rather than losing the commit/pushed/lastPushStatus typing.
+    let writeThrough: (Omit<WriteThroughResult, 'skipped'> & { skipped?: WriteThroughResult['skipped'] | 'subagent_sandbox' | 'dry_run' }) | undefined;
     const isSandboxSubagent = ctx.viaSubagent === true
       && !(Array.isArray(ctx.allowedSlugPrefixes) && ctx.allowedSlugPrefixes.length > 0);
     if (!ctx.dryRun && result.status !== 'error' && !isSandboxSubagent) {
@@ -2773,10 +2776,12 @@ const get_brain_identity: Operation = {
     let latest_version: string | null = null;
     try {
       const su = await import('./self-upgrade.ts');
-      const entry = su.readUpdateCache();
-      if (entry && su.isCacheFresh(entry, Date.now()) && entry.marker.kind === 'upgrade_available') {
+      // Shared stale/foreign-cache guard (pendingUpgradeVersion): only an
+      // upgrade strictly newer than the RUNNING version counts.
+      const latest = su.pendingUpgradeVersion(VERSION, Date.now());
+      if (latest) {
         update_available = true;
-        latest_version = entry.marker.latest ?? null;
+        latest_version = latest;
       }
     } catch {
       /* never let the banner break the op */
@@ -3246,8 +3251,9 @@ const file_list: Operation = {
   },
   scope: 'admin',
   localOnly: true,
-  handler: async (_ctx, p) => {
-    const sql = db.getConnection();
+  handler: async (ctx, p) => {
+    const { sqlQueryForEngine } = await import('./sql-query.ts');
+    const sql = sqlQueryForEngine(ctx.engine);
     const slug = p.slug as string | undefined;
     const rows = slug
       ? await sql`SELECT id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files WHERE page_slug = ${slug} ORDER BY filename LIMIT ${FILE_LIST_LIMIT}`
@@ -3304,7 +3310,8 @@ const file_upload: Operation = {
     };
     const mimeType = MIME_TYPES[extname(filePath).toLowerCase()] || null;
 
-    const sql = db.getConnection();
+    const { sqlQueryForEngine } = await import('./sql-query.ts');
+    const sql = sqlQueryForEngine(ctx.engine);
     const existing = await sql`SELECT id FROM files WHERE content_hash = ${hash} AND storage_path = ${storagePath}`;
     if (existing.length > 0) {
       return { status: 'already_exists', storage_path: storagePath };
@@ -3354,8 +3361,9 @@ const file_url: Operation = {
   },
   scope: 'admin',
   localOnly: true,
-  handler: async (_ctx, p) => {
-    const sql = db.getConnection();
+  handler: async (ctx, p) => {
+    const { sqlQueryForEngine } = await import('./sql-query.ts');
+    const sql = sqlQueryForEngine(ctx.engine);
     const rows = await sql`SELECT storage_path, mime_type, size_bytes FROM files WHERE storage_path = ${p.storage_path as string}`;
     if (rows.length === 0) {
       throw new OperationError('storage_error', `File not found: ${p.storage_path}`);
@@ -4422,11 +4430,12 @@ const sources_add: Operation = {
     const isLocal = ctx.remote === false;
     const remotePath = isLocal ? (p.path as string | undefined) ?? null : null;
     const remoteCloneDir = isLocal ? (p.clone_dir as string | undefined) : undefined;
-    if (!isLocal && (p.path !== undefined || p.clone_dir !== undefined)) {
-      ctx.logger.warn(
-        '[sources_add] ignoring path/clone_dir overrides on HTTP MCP transport ' +
-          '(remote callers can only register a remote --url; the clone path is ' +
-          'fixed under $GBRAIN_HOME/clones/).',
+    if (!isLocal && p.path !== undefined) {
+      throw new OperationError(
+        'invalid_params',
+        'sources_add: path is not honored over MCP (security confinement). ' +
+          'Register with --url instead, or run `gbrain sources add --path ...` on the host CLI.',
+        'Use --url to register a remote source, or run the command locally with --path.',
       );
     }
 

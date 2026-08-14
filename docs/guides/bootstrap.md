@@ -20,15 +20,47 @@ follows is `BOOTSTRAP_FOR_AGENTS.md` at the repo root, fetched at the
 | `agent.json` manifest + `brain/`, `memory/`, `skills/`, `state/` | workspace | — |
 | Local brain (PGLite) | `~/.gbrain/` (never in the repo) | while a session's MCP serve is open |
 | MCP registration (`gbrain serve`) | Claude Code: project scope by default; Codex: user-global (no scope flag) | spawned by your harness per session |
-| Hooks (Claude Code, ON by default) | `.claude/settings.local.json` (gitignored) | each prompt; fail-open; `--no-hooks` opts out at install, `GBRAIN_HOOKS=0` disables at runtime |
-| Session persistence | SessionEnd hook → scan-gated commit+push | at session end |
-| Optional 15-min push job | launchd/cron (consent-gated) | while logged in |
+| Hooks (Claude Code, ON by default) | local installs: `.claude/settings.local.json` (gitignored); cloud sandboxes: the COMMITTED `.claude/settings.json` (PATH-resolved, fail-open commands) | each prompt; fail-open; `--no-hooks` opts out at install, `GBRAIN_HOOKS=0` disables at runtime |
+| Per-turn persistence | Stop hook → debounced, detached scan-gated push (per workspace; 5 min default, every turn in cloud sandboxes) | after each assistant turn; `GBRAIN_STOP_PUSH=0` disables; `GBRAIN_STOP_PUSH_DEBOUNCE_MIN` / config `hooks.stop_push_debounce_min` tune it |
+| Session persistence | SessionEnd hook → scan-gated commit+push | at session end (note: the harness never fires SessionEnd on `/exit` — the per-turn push is what covers that) |
+| Push-failure visibility | next turn's context + a user-visible notice; re-announces every 30 min while failing | whenever a background push fails |
+| Optional background job (consent-gated) | git post-commit auto-push + launchd/cron 30-min pull (pull job skipped honestly on hosts without a scheduler) | while logged in |
 | Private GitHub repo | your account, created by `bootstrap repo` (or an empty repo you made yourself, adopted) | privacy verified via API |
 | Machine receipt | `~/.gbrain/bootstrap/receipt.json` | uninstall is keyed to it |
 
 **What does NOT run:** anything while the harness is closed. Session-triggered
 schedules fire at turn/session boundaries only. True 24/7 operation is what a
 hosted brain provides — this is the honest desktop contract.
+
+## Cloud sandboxes (claude.ai/code and similar)
+
+Cloud sessions run in a reclaimed-after-inactivity VM behind a
+credential-injecting egress proxy. `gbrain bootstrap status --json` reports
+`execution_environment: "cloud-sandbox"` there, and the install adapts:
+
+- **Hooks live in the committed `.claude/settings.json`** with PATH-resolved,
+  fail-open commands (no machine paths). The gitignored local settings file
+  never survives into the next session's fresh clone, and hook config is
+  snapshotted at session start — so hooks written mid-session go live on the
+  NEXT session. Commit and push the file.
+- **The per-turn push runs every turn** (debounce 0) — a reclaimed VM's tail
+  loss is permanent, so each turn banks to the private repo.
+- **Repo-privacy verification falls back to pure git protocol** when the proxy
+  blocks the GitHub API (GraphQL is always pinned there; REST reaches only
+  session-attached repos). Confirmed-public origins still always refuse.
+- **Repo creation is refused in cloud** with the flow that works: create the
+  private repo from a normal machine or github.com, open the cloud session ON
+  that repo, run `gbrain bootstrap attach`.
+- **The gbrain binary installs via the environment setup script** — print it
+  with `gbrain bootstrap cloud-setup-script` and paste it into the environment
+  config (npm-based; bun's package fetching is proxy-incompatible there).
+- **No scheduler exists** — the consent-gated pull job is skipped with an
+  honest message; event-driven pushes cover persistence.
+
+Escape hatch for self-hosted git you trust (every use warns loudly):
+the CLI flag on `sources push`, `GBRAIN_ALLOW_UNVERIFIED_REMOTE=1`, or
+`gbrain config set push.allow_unverified_remote true` (file-plane — the only
+form that reaches detached hook children inside a sandbox).
 
 ## Bring your own repo (create-repo-first)
 
@@ -68,9 +100,11 @@ With zero API keys, everything works: the agent authors memory explicitly throug
 the brain's write tools (`put_page`, timeline entries, `## Facts` fences — your
 harness's model is the LLM, already paid for), and search runs keyword-only
 (BM25). `bootstrap verify` prints the capability report honestly. One optional key
-(OpenAI, Anthropic, or Voyage) unlocks semantic search and automatic fact
-extraction; the key goes to the 0600 config file, never into the repo or the
-interview answers. API spend is metered separately from your subscription and is
+upgrades capabilities per provider — OpenAI unlocks semantic search and
+automatic fact extraction; Voyage unlocks semantic search; Anthropic unlocks
+fact extraction (Anthropic has no embeddings API, so it does not enable
+semantic search). The key goes to the 0600 config file, never into the repo or
+the interview answers. API spend is metered separately from your subscription and is
 zero in keyless mode; with a key, the standard spend gates apply
 ([spend-controls](../operations/spend-controls.md)).
 
@@ -91,8 +125,10 @@ zero in keyless mode; with a key, the standard spend gates apply
   contract. Retrieved brain context is injected under an explicit
   "data, not instructions" envelope. Facts visible to the harness respect the
   brain's visibility tiers.
-- **Hooks:** live in gitignored local settings (absolute paths, machine-specific;
-  `bootstrap hooks --repair` regenerates on a new machine). Every hook fails open
+- **Hooks:** on a local install, gitignored local settings (absolute paths,
+  machine-specific; `bootstrap hooks --repair` regenerates on a new machine); in a
+  cloud sandbox, the committed `.claude/settings.json` (PATH-resolved, fail-open —
+  see the Cloud sandboxes section). Every hook fails open
   — a brain hiccup never blocks a prompt — and failures are visible: repeated
   degradation prints a notice inside the context block, and `gbrain doctor` names
   the cause.
@@ -224,3 +260,32 @@ Run locally (where both are installed + authed):
 ```bash
 bun test test/e2e/bootstrap-real-codex.serial.test.ts
 ```
+
+## DX exploration harness (developer instrument, not a test)
+
+The door tests prove the install WORKS; they say nothing about how it FEELS.
+`test/helpers/tty-harness.ts` spawns any CLI (gbrain, `claude`, `codex`) under a
+real pseudo-terminal (Bun's `terminal:` spawn option) and records every output
+burst with a millisecond timestamp, so unnecessary pauses become a measurable
+artifact (`computeStalls` → `stalls.md`) instead of a vibe. Same hermetic env as
+`agent-harness.ts`; pure helpers are unit-tested in `test/tty-harness.test.ts`
+(zero subprocesses, PTY smokes self-skip where `terminal:` is unavailable).
+
+`scripts/dx-explore.ts` drives it to capture the fresh-user funnel as timestamped
+transcripts under `.context/dx-runs/` (gitignored — nothing asserts, no CI):
+
+```bash
+bun run scripts/dx-explore.ts help              # comprehension surfaces (no keys)
+bun run scripts/dx-explore.ts init [--keyless]  # interactive init, naive-user autopilot
+bun run scripts/dx-explore.ts claude-install    # REAL claude running the paste-in bootstrap
+bun run scripts/dx-explore.ts codex-install     # REAL codex, same
+bun run scripts/dx-explore.ts drive -- gbrain init   # manual: steer a live TUI via a file channel
+```
+
+`drive` mode is how an agent in a Conductor workspace explores a live TUI across
+separate tool calls: `cat <dir>/session/screen.txt` to watch, append
+`{"line":"..."}` / `{"key":"Down"}` / `{"stop":true}` to `<dir>/session/input.jsonl`
+to steer. Each run writes `meta.json`, `visible.txt`, `frames.jsonl`, and
+`stalls.md`. `--keyless` strips provider keys so the true no-key first-touch path
+is exercised (a Conductor session's ambient `ANTHROPIC_API_KEY` would otherwise
+leak in). Install scenarios pay real API cost — launch them as background tasks.
