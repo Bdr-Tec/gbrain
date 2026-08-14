@@ -37,6 +37,10 @@ gbrain auth clients --usage            # who needs it? (op counts, surface, last
 gbrain auth rescope-client <client_id> --surface starter   # verbs | starter | full | clear
 ```
 
+Usage counts only successful calls (`success` / `success_with_warnings`) —
+a client flooding denials or errors shows zero usage, so denied traffic can
+never argue its way into a wider surface or the starter derivation.
+
 **Expected outcomes:**
 - The client's NEXT request resolves the new surface (per-request
   ceiling-bounded resolution: `min(server --surface ceiling, client row)`)
@@ -52,7 +56,9 @@ SELECT created_at, params FROM mcp_request_log
 ```
 
 - A CLI rescope sets `surface_set_by='operator'` — the operator lock:
-  `request_tools` persist cannot override it.
+  `request_tools` persist cannot override it. (The persist itself is
+  rate-limited per client and meters actual writes only — `dry_run`
+  previews are free.)
 - The advisor's `mcp-client-fit` collector proposes exactly this command
   for full-surface clients whose 30d usage fits STARTER_OPS.
 
@@ -84,7 +90,10 @@ args, tools/list schemas change shape — each `inputSchema` closes with
 `additionalProperties: false` and declares the `_meta`/`dry_run`
 passthrough keys (D14.1), keeping schema-validating clients aligned with
 the server's reject posture. Read per request; flipping back to `warn`
-reopens the schemas on the next list. `test/mcp-tool-defs.test.ts` pins
+reopens the schemas on the next list. A transient config-read failure
+cannot re-open the grace period: dispatch holds the last successfully
+read mode per process, so a reject-mode server stays reject through a
+config outage. `test/mcp-tool-defs.test.ts` pins
 both emission states; the default stays `warn` until the project-level
 flip (see TODOS.md, strict_params reject-flip).
 
