@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.45.12.0] - 2026-08-13
+## [0.45.13.0] - 2026-08-13
 
 **The Truthful Surface wave: your agent's MCP catalog now tells the truth. What's listed is callable, empty answers explain themselves, and new clients start with a focused ~26-tool surface they can widen on demand.**
 
@@ -80,7 +80,7 @@ the tool catalog is an API promise.
 - Raw exception text no longer rides MCP responses — degradation reasons and
   warnings use closed code vocabularies; details go to server logs.
 
-## To take advantage of v0.45.12.0
+## To take advantage of v0.45.13.0
 
 `gbrain upgrade` runs the schema migration automatically.
 
@@ -102,6 +102,110 @@ the tool catalog is an API promise.
 4. **Agents discover the rest themselves:** any client can call
    `request_tools` to browse the full catalog and (within your ceiling)
    widen its own surface.
+
+## [0.45.12.0] - 2026-08-13
+
+**Hermes joins the tested-install club: a real-binary harness now proves gbrain works inside Hermes, and `gbrain friction diff` tells you whether an install problem is the agent's or ours.**
+
+GBrain has long said "works with OpenClaw and Hermes." For OpenClaw that claim was
+backed by tests; for Hermes it was backed by hope. This release closes that gap with a
+full end-to-end harness: a Hermes runner for the claw-test friction lab, a real-binary
+"door" test that registers gbrain into an actual Hermes install over MCP and asks it to
+recall a seeded fact, and a CI job that installs a pinned Hermes release and runs the
+door on demand. Every Hermes CLI behavior the harness relies on was pinned by observing
+a real install — the flag-order traps, the interactive prompts, the exit-code quirks —
+and those observations ship as documentation so your own Hermes setup benefits too.
+
+The live claw-test lane also got honest: it now stages the scenario workspace before the
+agent starts and verifies real outcomes after it finishes, so an agent that does nothing
+and exits cleanly finally FAILS the run instead of passing it. And with two runners in
+the registry, the new `gbrain friction diff --base openclaw --compare hermes` turns
+friction reports into a comparison instrument: pain unique to one agent is that agent's
+contract problem; pain common to both is ours.
+
+## To take advantage of v0.45.12.0
+
+`gbrain upgrade` is enough — no schema migration.
+
+1. **Running Hermes?** Wire gbrain in with one command (full guide at
+   `docs/mcp/HERMES.md`, including the non-obvious flag-order and prompt gotchas):
+   ```bash
+   printf 'Y\n' | hermes mcp add gbrain --env GBRAIN_HOME=$HOME --connect-timeout 60 --command $(which gbrain) --args serve
+   hermes mcp test gbrain
+   ```
+2. **Want the friction lab on your own agent?**
+   ```bash
+   gbrain claw-test --live --agent hermes     # or --agent openclaw
+   gbrain friction diff --base openclaw --compare hermes
+   ```
+3. **If anything looks wrong,** file an issue at https://github.com/garrytan/gbrain/issues
+   with `gbrain doctor` output.
+
+### Itemized changes
+
+**Added**
+- Hermes runner for the claw-test harness: `gbrain claw-test --live --agent hermes` drives a real Hermes install headlessly (`$HERMES_BIN` override supported; `--list-agents` shows availability for both runners).
+- `gbrain friction diff --base <run-or-agent> --compare <run-or-agent>`: cross-agent friction comparison with unique-to-each and changed sections, count deltas, and a compatibility banner that warns when runs cover different scenarios or versions. `--json` for machines.
+- Real-binary Hermes install door e2e (`test/e2e/install-real-hermes.serial.test.ts`): registers this checkout's gbrain into a hermetic Hermes home via a live MCP handshake (110 tools discovered), verifies both the CLI and direct-config registration surfaces, and proves recall of a seeded fact in a paid one-shot turn. Triple-gated so it can never burn tokens by accident.
+- Label-gated `hermes-door` CI job: installs a digest-and-tag-pinned Hermes release, refuses to go green if nothing actually ran, and uploads scrubbed evidence on failure.
+- Per-client MCP docs for Hermes (`docs/mcp/HERMES.md`) and OpenClaw (`docs/mcp/OPENCLAW.md`), plus a dev-facing pin of every observed Hermes CLI behavior (`docs/mcp/HERMES-CLI-PIN.md`) and an install snippet in `INSTALL_FOR_AGENTS.md`.
+- Generic agent-workspace compatibility test pinning the documented "any repo with a workspace" install flow (detection, scaffold additivity, resolver health).
+
+**Changed**
+- claw-test live mode now stages the scenario before the agent runs (fresh-install: brain pages + routing file + init; upgrade: seed replay) and verifies outcomes after it exits — doctor health, a scenario-declared query returning results, expected files existing, and for upgrades a non-mutating schema-version probe that a do-nothing agent cannot satisfy.
+- The brief handed to live agents now matches the current CLI exactly (extract argument shape, doctor status vocabulary), and bare `gbrain` inside a live run resolves to the harness's own binary via a per-run PATH shim.
+- Every claw-test run opens and closes with a machine-readable marker carrying the agent name and scenario, so friction analytics can resolve runs by agent; scripted runs are now labeled `scripted` instead of borrowing an agent's name.
+- Scenario oracle configuration is validated on load — misdeclared oracles fail loudly instead of silently not being enforced.
+
+**Fixed**
+- claw-test now works out of the box when gbrain runs from source (`bun run src/cli.ts`): child invocations resolve to a real gbrain launcher instead of the bun runtime itself, which previously made the default harness unusable outside compiled builds.
+- Upgrade-scenario runs in BOTH modes fail loudly when the scenario ships no seed dump, instead of quietly initializing a current database and reporting an "upgrade" that never exercised a migration.
+- Every harness child process now runs under a wall-clock timeout, and live-agent timeouts kill the agent's whole process tree — a hung child no longer wedges a run (or a CI job) forever.
+- Agent-side friction entries now survive the run's tempdir cleanup: they merge into your friction log before the workspace is deleted, so `friction render` and `friction diff` finally see both halves of a live run.
+- `claw-test --list-agents` no longer races CLI teardown; output is complete and ordered.
+- Live runs keep the agent's gbrain children pointed at the run's own hermetic brain even when the surrounding shell exports a database-pointing environment variable — the harness's verification and the agent's work can no longer land in two different places.
+- The test real-name guard now correctly distinguishes the public Hermes platform (documented and tested) from private deployment names (still banned).
+## [0.45.11.0] - 2026-08-12
+
+**The install now ends by telling you the two things that matter: you own the brain, and here's the first skill to run.** A working install used to finish on a health report and three tour prompts — technically complete, but a new user walked away without the two facts that make gbrain worth trusting and worth using. Now `gbrain bootstrap verify` ends with a hand-off: **what you own** (every memory is a markdown file in YOUR private GitHub repo — read it, take it to a second machine, delete it and the brain is gone; or the local-only variant with the one command that gives it a durable home) and **what to do next** (run the `cold-start` skill — say "fill my brain" and your agent imports your Gmail, calendar, and contacts through ClawVisor, an OAuth vault so the agent never holds raw tokens, or offline archives like Google Takeout, one consented phase at a time).
+
+The structural fix underneath: `cold-start` — the skill designed exactly for "I just installed this, now what?" — was excluded from the downstream skill bundle, so the paste-in install audience it was written for could never scaffold it. It's now bundled, it's the #1 recommended skill (ahead of the book-mirror flagship, because every flagship skill only becomes magical once the brain holds your real life), and a new drift guard fails CI if any recommended skill ever becomes unscaffoldable again.
+
+To take advantage of v0.45.11.0: existing installs can run `gbrain skillpack scaffold cold-start` and say "fill my brain"; fresh installs get the full hand-off automatically.
+
+### Added
+- **The verify hand-off block.** On PASS, `gbrain bootstrap verify` prints (and returns in `--json` as `handoff`) the ownership statement — with the actual repo URL, or the local-only variant pointing at `gbrain bootstrap repo` — followed by the cold-start next action. The runbook's Hand off section now instructs the installing agent to make both land ("say them plainly, confirm they landed") and to OFFER running cold-start on the spot.
+- **`cold-start` ships in the downstream bundle** (61 skills) and leads the recommended set, so the post-install advisory, `gbrain advisor`, and `gbrain skillpack scaffold --all` all surface it. Its prior bundle exclusion ("host onboarding flow") predated the personal-agent bootstrap and was reversed deliberately.
+- **Recommended-set drift guard**: every recommended slug must be scaffoldable from the plugin bundle — recommended-but-unscaffoldable is a dead-end call-to-action and now fails the suite.
+
+### Changed
+- README's Codex and Claude Code paths spell out the same two follow-ups after the click moment: ownership (markdown in a repo you own) and cold-start as the first skill, with ClawVisor named as the credential path and offline archives as the no-gateway alternative.
+
+**Also in this release — the first-five-minutes DX wave** (re-versioned from an unpublished 0.45.9.0 after the release queue moved):
+
+**The first five minutes stop making you think.** We built a real-terminal harness that drives the actual install the way a new user does — every picker, prompt, silence window, and line of copy — and then fixed what it surfaced. Keyless `gbrain init` used to dead-end at an error before it created anything; now it just works, keyless, and says so. A fresh brain used to scroll ~240 lines of internal migration names; now it prints one line. The success screen used to bury the one thing to do next under eight competing calls to action; now the copy-paste memory demo is the last, obvious thing on screen. And the "here's the magic" moment in the README now points at the trick that only a brain can do — tell it something, restart, ask for it back — instead of a question your identity files answer for free.
+
+Under the hood: the upgrade nudge now compares the version you're actually running (a stale or foreign cache can't tell you to upgrade to something you already have), a broken settings file makes the installer stop and tell you rather than quietly replace it, and `gbrain init --supabase` fails loudly in a script instead of pretending it worked. Every fix landed with a test, and a two-model adversarial review pass (Claude + Codex) caught a cluster of follow-on issues in the fixes themselves — a keyless upgrade command that pointed at a rejected path, a compiled-binary detection that broke for renamed binaries — which are fixed here too.
+
+To take advantage of v0.45.11.0: nothing to do — `gbrain self-upgrade` (or your next `gbrain` invocation's upgrade nudge) brings you current, and the improvements are all in the install/first-run path a new brain hits automatically.
+
+### Added
+- **A real-PTY DX exploration harness** (`test/helpers/tty-harness.ts` + `scripts/dx-explore.ts`). It spawns any CLI — gbrain, `claude`, `codex` — under a true pseudo-terminal, timestamps every output burst, and turns silence windows into a measurable stall report, so "the user stared at a frozen screen for nine seconds" is an artifact, not a hunch. A `drive` mode lets an agent steer a live TUI across separate tool calls. Developer instrument only; transcripts are gitignored and nothing in the shipped product depends on it.
+
+### Changed
+- **Keyless is now the default when you have no embedding key**, on both the interactive and scripted paths: `gbrain init` completes with a loud, honest "keyless mode — keyword search plus memory your agent writes; everything works" notice instead of exiting with an error. A near-miss key typo still fails loudly (so a fat-fingered `OPENAPI_API_KEY` isn't silently buried). Multiple keys auto-pick the canonical default rather than refusing.
+- **Fresh-brain init prints one schema-setup line** instead of the full migration replay; upgrades keep the per-migration detail where it has diagnostic value (`GBRAIN_MIGRATE_VERBOSE=1` restores it).
+- **The init success screen leads with one action** — the three-command memory demo, last on screen — with import/scale-up/health collapsed into a single terse footer and the recommended-skills advisory reduced to a human-voiced pointer.
+- **The provider picker offers "continue keyless" explicitly** and probe-gates a local Ollama daemon (a running daemon that hasn't pulled the model is annotated, not silently selected); a bare Enter never picks a broken local provider.
+- **The upgrade nudge tells the truth about your binary**: it compares the running version to the latest and prints the running version, so a stale or foreign-written cache can't nag about an upgrade you already have. The raw machine marker stays off an interactive human's screen (override with `GBRAIN_FORCE_UPGRADE_MARKER=1` for PTY-based agent harnesses that parse it).
+- **Copy honesty pass**: provider capabilities are attributed per provider (OpenAI unlocks semantic search + fact extraction; Voyage semantic search; Anthropic fact extraction — it has no embeddings API); the install-time estimate reads ~15 minutes for the personal-agent path (~30 for the always-on setup); the first-run tour says to restart first and frames the genuine cross-session round-trip.
+
+### Fixed
+- **A parse-broken `.claude/settings.local.json` aborts the hooks write** with a fix-and-re-run message instead of being replaced — your permissions and allowlist are never silently dropped.
+- **`gbrain init --supabase` in a non-interactive shell fails loudly** (exit 1, names the `--url` escape hatch) instead of the old silent exit-0 that wrote no config.
+- **`gbrain bootstrap hooks` with a missing harness CLI** now still installs per-turn hooks and reports the phase as partial (so a resuming agent re-runs it once the CLI is on PATH) instead of leaving a false "wire complete".
+- **`gbrain bootstrap interview --set/--skip` after a confirmation** warns that it voided the read-back instead of failing silently later at render.
+- Review-pass self-fixes: the keyless upgrade hint now names the re-init command that actually works (not the schema-sizing field `config set` rejects); compiled-binary detection for the detached update refresh no longer breaks for a renamed/official-named binary; the DX harness scrubs copied credentials even on interrupt and reaps the child's whole process tree.
 
 ## [0.45.10.0] - 2026-08-13
 
@@ -514,7 +618,7 @@ answers. Ask before anything destructive. You are not done until
 `gbrain bootstrap verify` exits 0.
 ```
 
-The agent runs `gbrain bootstrap` — a new command family (`status`, `interview`, `render`, `repo`, `hooks`, `verify`, `attach`, `uninstall`) that drives the whole install. It works with **zero API keys**: your harness's model is the LLM, so the agent authors memory directly and search runs keyword-only; add one optional key (OpenAI, Anthropic, or Voyage) to unlock semantic search and automatic fact extraction. Everything is consent-gated — hooks, background push, MCP scope — and nothing runs while your harness is closed (the honest desktop contract; true 24/7 is what a hosted brain adds).
+The agent runs `gbrain bootstrap` — a new command family (`status`, `interview`, `render`, `repo`, `hooks`, `verify`, `attach`, `uninstall`) that drives the whole install. It works with **zero API keys**: your harness's model is the LLM, so the agent authors memory directly and search runs keyword-only; add one optional key to upgrade capabilities (OpenAI: semantic search + automatic fact extraction; Voyage: semantic search; Anthropic: fact extraction). Everything is consent-gated — hooks, background push, MCP scope — and nothing runs while your harness is closed (the honest desktop contract; true 24/7 is what a hosted brain adds).
 
 ### What you get
 

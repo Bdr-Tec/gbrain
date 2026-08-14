@@ -14,6 +14,7 @@ import { spawn } from 'child_process';
 import {
   readUpdateCache,
   isCacheFresh,
+  pendingUpgradeVersion,
   readSnooze,
   isSnoozeActive,
   resolveSelfUpgradeMode,
@@ -259,12 +260,26 @@ function maybeEmitUpdateMarker(command: string): void {
     const now = Date.now();
     const entry = readUpdateCache();
     if (entry && isCacheFresh(entry, now)) {
-      if (entry.marker.kind === 'upgrade_available' && entry.marker.latest) {
+      // Shared stale/foreign-cache guard (pendingUpgradeVersion): only nag when
+      // the cached latest is strictly newer than the RUNNING binary, and print
+      // the running version — the cache records whatever binary WROTE it.
+      const latest = pendingUpgradeVersion(VERSION, now);
+      if (latest) {
         // notify mode honors a per-version snooze; auto mode ignores it.
-        if (mode === 'notify' && isSnoozeActive(readSnooze(), entry.marker.latest, now)) return;
-        process.stderr.write(`UPGRADE_AVAILABLE ${entry.marker.current} ${entry.marker.latest}\n`);
+        if (mode === 'notify' && isSnoozeActive(readSnooze(), latest, now)) return;
+        // The raw `UPGRADE_AVAILABLE <cur> <latest>` line is a MACHINE marker
+        // (parsed by the self-upgrade skill / MCP via parseMarker). A human at
+        // an interactive terminal should never see the token as the literal
+        // first line of output — so emit it only when stderr is NOT a TTY
+        // (agent harnesses capture stderr non-interactively and still get it).
+        // GBRAIN_FORCE_UPGRADE_MARKER=1 forces it for the rarer agent harness
+        // that allocates a PTY yet still parses the token. The human sentence
+        // prints on both.
+        if (!process.stderr.isTTY || process.env.GBRAIN_FORCE_UPGRADE_MARKER === '1') {
+          process.stderr.write(`UPGRADE_AVAILABLE ${VERSION} ${latest}\n`);
+        }
         process.stderr.write(
-          `gbrain ${entry.marker.current} -> ${entry.marker.latest} available. Run: gbrain self-upgrade\n`,
+          `gbrain ${VERSION} -> ${latest} available. Run: gbrain self-upgrade\n`,
         );
       }
       return;
@@ -273,19 +288,32 @@ function maybeEmitUpdateMarker(command: string): void {
     // Stale/missing cache → kick a detached, single-flighted refresh. The child
     // (`check-update --refresh-cache`) single-flights via the refresh lock and
     // writes the cache for the NEXT invocation. We never wait on it.
+    // Spawn OURSELVES (hook.ts spawnDetachedPush pattern), not `gbrain` from
+    // PATH — a different (older) binary on PATH would write ITS version into
+    // the cache and make the marker lie about what is installed here.
     try {
-      const child = spawn('gbrain', ['check-update', '--refresh-cache'], {
+      const exec = process.execPath ?? '';
+      const refreshArgs = ['check-update', '--refresh-cache'];
+      // Detect compiled-vs-dev by the RUNTIME's basename, not our own — a
+      // published binary keeps its official name (`gbrain-darwin-arm64`, a
+      // `gb` shim), so matching `/gbrain$/` on execPath would misfire and
+      // prepend the `/$bunfs/root/...` virtual entrypoint (process.argv[1] in
+      // a compiled Bun binary), producing an unknown-command child that never
+      // refreshes. Dev mode runs under `bun`/`node`; anything else IS the
+      // compiled binary and re-execs itself directly.
+      const isDevRuntime = /[/\\](bun|node)(\.exe)?$/.test(exec);
+      const argv = isDevRuntime ? [process.argv[1], ...refreshArgs] : refreshArgs;
+      const child = spawn(exec, argv, {
         detached: true,
         stdio: 'ignore',
         env: { ...process.env, GBRAIN_SKIP_STARTUP_HOOKS: '1' },
       });
-      // ChildProcess is an EventEmitter — an unhandled 'error' (e.g. ENOENT when
-      // gbrain isn't on PATH) would throw uncaught. Swallow it; the refresh is
-      // best-effort.
+      // ChildProcess is an EventEmitter — an unhandled 'error' would throw
+      // uncaught. Swallow it; the refresh is best-effort.
       child.on('error', () => {});
       child.unref();
     } catch {
-      /* gbrain not on PATH / spawn failed — fail-open, no refresh this run */
+      /* spawn failed — fail-open, no refresh this run */
     }
   } catch {
     /* the update marker must never break a command */

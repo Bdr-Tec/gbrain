@@ -22,6 +22,7 @@ import { runBootstrap, workspaceBrainStats } from '../src/commands/bootstrap.ts'
 import type { ExecRunner } from '../src/core/bootstrap/repo.ts';
 import { attachWorkspace } from '../src/core/bootstrap/attach.ts';
 import { readReceipt, receiptPath, writeManifest, type InstallReceipt } from '../src/core/bootstrap/format.ts';
+import { GBRAIN_HOOK_MARKER_KEY, GBRAIN_HOOK_MARKER_VALUE } from '../src/core/bootstrap/host-specs.ts';
 import { deriveWorkspaceSourceId } from '../src/core/bootstrap/verify.ts';
 import { initState, setAnswer, skipAnswer, confirm, readBackHash } from '../src/core/bootstrap/interview.ts';
 
@@ -578,11 +579,41 @@ describe('MCP registration verification [FIX7]', () => {
     const r = await runHooks(runner);
     expect(r.result).toBe(0);
     expect(r.err).toContain('targets a DIFFERENT workspace');
-    expect(calls.some((c) => c[1] === 'mcp' && c[2] === 'remove' && c[3] === 'gbrain')).toBe(true);
+    // The remove must be SCOPED on claude-code: a scope-less remove can resolve
+    // to a different scope's registration and leave the blocker in place.
+    const removes = calls.filter((c) => c[1] === 'mcp' && c[2] === 'remove' && c[3] === 'gbrain');
+    expect(removes.length).toBeGreaterThan(0);
+    for (const c of removes) {
+      const scopeIdx = c.indexOf('--scope');
+      expect(scopeIdx).toBeGreaterThan(3);
+      expect(c[scopeIdx + 1]).toBe('project');
+    }
     const adds = calls.filter((c) => c[1] === 'mcp' && c[2] === 'add').length;
     expect(adds).toBe(2); // initial (foreign) + re-add after remove
     // After the fix, the smoke confirms the corrected registration.
     expect(r.out).toContain('verified targeting this workspace');
+  }, 30_000);
+
+  test('mismatch + failed remove → exit 1 with the by-hand fix instruction; add never retried', async () => {
+    // Stateful failure host: add refuses ("already exists"), get shows a
+    // FOREIGN registration (mismatch), and the scoped remove itself fails.
+    const calls: string[][] = [];
+    const runner: ExecRunner = async (argv: string[]) => {
+      calls.push(argv);
+      if (argv[1] !== 'mcp') return { code: 0, stdout: '', stderr: '' };
+      if (argv[2] === 'add') return { code: 1, stdout: '', stderr: 'MCP server gbrain already exists' };
+      if (argv[2] === 'get') return { code: 0, stdout: FOREIGN, stderr: '' };
+      if (argv[2] === 'remove') return { code: 1, stdout: '', stderr: 'nope' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const r = await runHooks(runner);
+    expect(r.result).toBe(1);
+    expect(r.err).toContain('targets a DIFFERENT workspace');
+    // Fail LOUD, not the old silent no-op loop: the message hands the human
+    // the manual off-ramp instead of re-failing the add.
+    expect(r.err).toContain('remove the stale registration by hand');
+    const adds = calls.filter((c) => c[1] === 'mcp' && c[2] === 'add').length;
+    expect(adds).toBe(1); // the failed remove halts the flow before any re-add
   }, 30_000);
 
   test('host without `mcp get` → inconclusive, kept with a note (never a false bless)', async () => {
@@ -592,6 +623,108 @@ describe('MCP registration verification [FIX7]', () => {
     expect(r.out).toContain('could not confirm it targets this workspace');
     // Falls back to the list-substring probe for the smoke line.
     expect(r.out).toContain('full target unverified');
+  }, 30_000);
+});
+
+describe('MCP host failure × hooks at the dispatcher (exit-127 skip / broken settings fail-closed)', () => {
+  // Self-contained fixtures (the flip pattern): HOOKS_CONSENT left at its bank
+  // default ('yes') so the hooks half of the phase is live in both tests.
+  const scratch: string[] = [];
+  afterAll(() => {
+    for (const d of scratch) rmSync(d, { recursive: true, force: true });
+  });
+
+  function failWorkspace(): { fws: string; fhome: string; fparent: string } {
+    const fparent = mkdtempSync(join(tmpdir(), 'gb-fail-'));
+    const fhome = join(fparent, '.gbrain');
+    mkdirSync(fhome, { recursive: true });
+    const fws = mkdtempSync(join(tmpdir(), 'gb-fail-ws-'));
+    scratch.push(fparent, fws);
+    const prev = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = fparent;
+    try {
+      expect(initState(fws).ok).toBe(true);
+      for (const [key, value] of Object.entries(REQUIRED_ANSWERS)) {
+        const r = setAnswer(fws, key, value);
+        if (!r.ok) throw new Error(r.message);
+      }
+      expect(setAnswer(fws, 'MCP_SCOPE', 'project').ok).toBe(true);
+      const h = readBackHash(fws);
+      if (!h.ok) throw new Error(h.message);
+      expect(confirm(fws, h.hash).ok).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = prev;
+    }
+    return { fws, fhome, fparent };
+  }
+
+  async function withFailHome<T>(parent: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = parent;
+    try {
+      return await fn();
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = prev;
+    }
+  }
+
+  test('`claude` missing (exit 127 on mcp add) → MCP skipped, hooks STILL install, exit 2, receipt detail hooks', async () => {
+    const { fws, fhome, fparent } = failWorkspace();
+    const r = await withFailHome(fparent, async () => {
+      expect((await capture(() => runBootstrap(['render', '--workspace', fws]))).result).toBe(0);
+      const runner: ExecRunner = async (argv: string[]) => {
+        if (argv[0] === 'claude' && argv[1] === 'mcp' && argv[2] === 'add') {
+          return { code: 127, stdout: '', stderr: 'claude: command not found' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      };
+      return capture(() =>
+        runBootstrap(['hooks', '--workspace', fws, '--harness', 'claude-code', '--gbrain-bin', process.execPath], {
+          runner,
+        }),
+      );
+    });
+    expect(r.result).toBe(2);
+    expect(r.err).toContain('is not on PATH');
+    // The old early-return silently dropped hooks; now they install anyway
+    // (hooks only write settings.local.json and need no host binary).
+    expect(r.out).toContain('hooks installed');
+    const settingsPath = join(fws, '.claude', 'settings.local.json');
+    expect(existsSync(settingsPath)).toBe(true);
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as {
+      hooks?: Record<string, Array<{ hooks?: Array<Record<string, unknown>> }>>;
+    };
+    const entries = Object.values(settings.hooks ?? {}).flatMap((groups) => groups.flatMap((g) => g.hooks ?? []));
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.some((e) => e[GBRAIN_HOOK_MARKER_KEY] === GBRAIN_HOOK_MARKER_VALUE)).toBe(true);
+    // Receipt records what actually landed: hooks only, no MCP.
+    expect(readReceipt(fhome)?.registrations).toEqual([{ host: 'claude-code', scope: 'project', detail: 'hooks' }]);
+  }, 30_000);
+
+  test('unparseable settings.local.json → hooks fail CLOSED (exit 1), file byte-identical, receipt detail mcp', async () => {
+    const { fws, fhome, fparent } = failWorkspace();
+    const broken = '{ definitely broken';
+    const settingsPath = join(fws, '.claude', 'settings.local.json');
+    const r = await withFailHome(fparent, async () => {
+      expect((await capture(() => runBootstrap(['render', '--workspace', fws]))).result).toBe(0);
+      mkdirSync(join(fws, '.claude'), { recursive: true });
+      writeFileSync(settingsPath, broken, 'utf8');
+      const { runner } = makeRunner();
+      return capture(() =>
+        runBootstrap(['hooks', '--workspace', fws, '--harness', 'claude-code', '--gbrain-bin', process.execPath], {
+          runner,
+        }),
+      );
+    });
+    expect(r.result).toBe(1);
+    // The refusal explains WHY (the file may carry permissions/allowlist
+    // entries gbrain must not clobber) and names the repair path.
+    expect(r.err).toContain('not valid JSON');
+    expect(readFileSync(settingsPath, 'utf8')).toBe(broken);
+    // MCP (step 1) landed before the hook failure — the receipt says exactly that.
+    expect(readReceipt(fhome)?.registrations).toEqual([{ host: 'claude-code', scope: 'project', detail: 'mcp' }]);
   }, 30_000);
 });
 

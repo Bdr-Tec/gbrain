@@ -40,6 +40,7 @@ import { CONFORMANCE_CASES } from '../src/core/verbs/conformance-fixtures.ts';
 import { writeSingleFact } from '../src/core/facts/write-single.ts';
 import {
   configureGateway,
+  resetGateway,
   __setChatTransportForTests,
   __setEmbedTransportForTests,
 } from '../src/core/ai/gateway.ts';
@@ -61,6 +62,15 @@ beforeAll(async () => {
 afterAll(async () => {
   await engine.disconnect();
   __setUsageLogPathForTests(null);
+  // The deterministic-embedder tests configureGateway() with a FAKE OpenAI
+  // key on the MODULE-GLOBAL gateway. Without a reset, every later file in
+  // this shard process inherits "embeddings configured" and (with the test
+  // transport also cleared) fires a REAL API call with the fake key — the
+  // shard-8 turn-context 401 flake. Reset config AND both transports so the
+  // file leaves the process exactly as it found it.
+  resetGateway();
+  __setChatTransportForTests(null);
+  __setEmbedTransportForTests(null);
   try { rmSync(home, { recursive: true, force: true }); } catch { /* best-effort */ }
 });
 
