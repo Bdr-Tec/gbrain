@@ -153,6 +153,51 @@ review-deferred, not fix-now). Grouped by component.
   **Context:** all two-way doors, no behavior change intended — land with
   the existing pins green. **Effort:** medium (as a batch). **Priority:** P3.
 
+### Adversarial-review deferrals (cross-model, ship-stage)
+
+Filed from the /ship adversarial review (Codex + Claude synthesis). The twelve
+fix-now findings landed on the branch; these four are the review-deferred tail.
+
+- [ ] **P2 — request_tools persist: fold the old-surface read into the atomic
+  UPDATE.** **What:** replace the SELECT → UPDATE → audit-write triple with
+  one `UPDATE ... RETURNING (SELECT surface FROM oauth_clients WHERE ...)`
+  (or capture old via `RETURNING` on a CTE) so the audit row's `old` value
+  can never be a stale read from before a concurrent change. **Why:** today
+  a rescope racing the persist can make the audit trail record a wrong
+  `old→new` transition — the trail answers "why did the surface change" and
+  must not lie under concurrency. **Context:**
+  `src/core/operations.ts` request_tools persist branch +
+  `src/core/surface-audit.ts`; both engines (CTE-in-UPDATE parity check).
+  **Effort:** small. **Priority:** P2.
+- [ ] **P3 — persist rate-limit durability across restarts/processes.**
+  **What:** decide whether the request_tools persist limiter (in-memory
+  token bucket, ~5/hr/client) needs DB-backed durability. A server restart
+  refills every bucket; a multi-process fleet multiplies the budget by
+  process count. **Why:** today the cap is advisory under restart churn —
+  fine for the abuse class it targets (runaway clients), wrong if it ever
+  guards something stronger. **Context:** `src/mcp/rate-limit.ts` +
+  `requestToolsPersistLimiter`; the surface_change audit rows already give
+  a DB-side count to enforce against if needed. **Effort:** medium.
+  **Priority:** P3.
+- [ ] **P3 — cancel (not just abandon) timed-out submit-time queue probes.**
+  **What:** the WP5 wedge/pause probes time-bound via Promise.race, but the
+  losing query keeps running on the pool after the race resolves. Wire
+  AbortSignal / statement_timeout so a slow probe releases its slot. **Why:**
+  under pool exhaustion (the exact regime the probes exist to detect) an
+  abandoned probe query holds a pooler slot and makes the exhaustion worse.
+  **Context:** `src/core/minion/supervisor.ts` queryWedgeSignals callers in
+  `src/core/operations.ts` submit paths. **Effort:** small. **Priority:** P3.
+- [ ] **P3 — document the status --json snapshot union under schema_version.**
+  **What:** a short protocol note (docs/progress-events.md sibling) pinning
+  the `get_status_snapshot` v2 shape as a discriminated union on
+  `schema_version` (v1: no queue/workers keys; v2: sections present but
+  per-section fail-soft `{error: 'unavailable'}`), plus a compat table for
+  thin-client consumers. **Why:** external `--json` consumers can't rely on
+  reading the TypeScript; the fail-soft section shapes are non-obvious.
+  **Context:** `src/core/operations.ts` get_status_snapshot,
+  `src/commands/status.ts` thin-client sections. **Effort:** small.
+  **Priority:** P3.
+
 ## Ambient recall follow-ups (filed v0.45.7.0, issue #1)
 
 Deferred from the ambient-recall wave (`context_pack` + `delta` frozen verbs +
