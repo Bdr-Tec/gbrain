@@ -216,6 +216,7 @@ describe('#1849 refresh-failure fails safe (F1A)', () => {
     let refreshCalls = 0;
     const failingLock: DbLockHandle = {
       id: 'x',
+      acquiredAt: 'test-fence',
       refresh: async () => { refreshCalls++; throw new Error('pooler down'); },
       release: async () => {},
     };
@@ -244,7 +245,8 @@ describe('#1849 refresh-failure fails safe (F1A)', () => {
     let mode: 'fail' | 'ok' = 'fail';
     const flakyLock: DbLockHandle = {
       id: 'x',
-      refresh: async () => { if (mode === 'fail') throw new Error('blip'); },
+      acquiredAt: 'test-fence',
+      refresh: async () => { if (mode === 'fail') throw new Error('blip'); return true; },
       release: async () => {},
     };
     sup._setDbLockForTests(flakyLock);
