@@ -5293,6 +5293,21 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   injectable fetch seam so `bootstrap_harness_health` tests stop making real TEST-NET
   calls (3s each). **Start:** `src/commands/auth.ts:create`, `src/commands/doctor.ts`
   bootstrap_harness_health.
+- [ ] **P3 — statusHarness codex-lane bearer recovery lacks the [C8] URL match
+  (doc-review finding).** The Claude Code recovery path refuses a bearer whose
+  registration URL differs from the receipt; the codex fallback reads `bearer_token`
+  out of the managed block at the receipt-recorded path without comparing the block's
+  `url` key. Two GBRAIN_HOMEs sharing the one user-global codex config could hand
+  install A's `--status` install B's credential and transmit it to A's serve. Compare
+  the block's `url` against `receipt.url` before recovery. **Start:**
+  `src/core/bootstrap/harness.ts:statusHarness` codex branch + `parseCodexBlockBearer`.
+- [ ] **P3 — admin dashboard legacy-token scope display bypasses the normalizer
+  (doc-review finding).** The dashboard token list renders
+  `COALESCE(array_to_string(a.scopes, ' '), 'read write admin')` raw — an out-of-band
+  scope value displays as granted while the serve denies it, and a deny-all `{}`
+  renders as an empty string. Render through the same `normalizeTokenScopes` path
+  `auth list` uses so display can never disagree with enforcement. **Start:**
+  `src/commands/serve-http.ts` legacyKeys query + `src/core/legacy-token-scope.ts`.
 
 ## Agent-bootstrap wave follow-ups (filed at build time)
 

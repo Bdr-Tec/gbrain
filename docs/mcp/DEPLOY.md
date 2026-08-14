@@ -252,8 +252,11 @@ gbrain auth list
 gbrain auth revoke "claude-desktop"
 ```
 
-Tokens are per-client. Create one for each device/app. Revoke individually
-if compromised. Tokens are stored SHA-256 hashed in your database.
+Tokens are per-client. Create one for each device/app. Names are not
+unique: `gbrain auth revoke "<name>"` revokes EVERY active token carrying
+that name — use `gbrain auth list` (shows each token's id and scopes) and
+`gbrain auth revoke --id <uuid>` to revoke exactly one. Tokens are stored
+SHA-256 hashed in your database.
 
 ### 3. Connect your AI client
 

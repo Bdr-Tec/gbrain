@@ -191,15 +191,24 @@ mode wires them in one command, with no `agent.json` and no interview:
 - Honesty on Postgres brains: per-turn injection is degraded (the matrix row
   above); MCP is the active seam and the summary says so.
 - `--status [--json]` probes the live truth (serve health, token validity via
-  host-config recovery — a bearer is only recovered from a registration that
-  matches the receipt's URL — and per-target states) with a cron-honest exit
-  contract: 0 only when the serve, token, and every target verify and the
-  rotation has converged (honest degrades count as OK); 1 on failed or
-  pending targets, an unconverged rotation, or a half-removed install whose
-  token still awaits revocation; 2 under `--json` when nothing is installed.
-  `gbrain doctor` carries a matching `bootstrap_harness_health` check.
-  `--json` on the install itself emits a single machine-readable document on
-  stdout (prose goes to stderr).
+  host-config recovery — the Claude Code lane only recovers a bearer from a
+  registration whose URL matches the receipt; the codex managed block is read
+  from the exact path the receipt records — and per-target states) with a
+  cron-honest exit contract: 0 only when the serve, token, and every target
+  verify and the rotation has converged (honest degrades count as OK); 1 on
+  an unreachable serve, a failed token verify, failed or pending targets, an
+  unconverged rotation, or a half-removed install whose token still awaits
+  revocation. With no install at all it says so and exits 0 (2 under
+  `--json`, so machine callers can tell absence apart). `gbrain doctor`
+  carries a matching `bootstrap_harness_health` check. `--json` on the
+  install itself emits a single machine-readable document on stdout (prose
+  goes to stderr).
+- The full flag surface lives in `gbrain bootstrap --help`: `--url`/`--port`
+  point at a non-default serve (a non-loopback `--url` is refused unless you
+  also pass `--token`, which flips into registrar mode — MCP wiring only, no
+  hooks, nothing minted), `--force` replaces a foreign same-name MCP
+  registration, `--name` renames the server, `--harness` picks the hosts,
+  and `--no-hooks` skips hook wiring entirely.
 - `--remove` tears down exactly what the machine-level receipt
   (`<home>/bootstrap/harness.json`) records — host removals are engine-free
   and run even while a serve is live; the token revoke defers with exact
@@ -212,7 +221,9 @@ mode wires them in one command, with no `agent.json` and no interview:
 PGLite note: minting needs the single-writer lock, so on a PGLite brain
 either pre-mint (`gbrain auth create bootstrap-harness --scopes read,write`
 while the serve is stopped) and pass `--token`, or stop/re-run/restart.
-Postgres brains mint fine while the serve runs.
+Postgres brains mint fine while the serve runs. A token you supply is never
+revoked by `--remove` or rotation (it is not the harness's to revoke) —
+retire it yourself with `gbrain auth revoke` when you're done with it.
 
 Binary-downgrade note: token scoping is data-only (no migration), so a gbrain
 binary OLDER than the release that shipped it verifies every scoped token as

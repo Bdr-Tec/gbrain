@@ -102,7 +102,7 @@ wins; fix the row.
 |---------|-------|
 | "Set up GBrain", first boot | `skills/setup/SKILL.md` |
 | "Now what?", "fill my brain", "cold start", "bootstrap my data", "import my data", "what should I import first" | `skills/cold-start/SKILL.md` |
-| "agent workspace bootstrap", "gbrain bootstrap", "paste-in install", "set up the maintenance sweep" | Run `gbrain bootstrap` (paste-in workspace install: interview + identity files + hooks + sweep). See `docs/guides/bootstrap.md` |
+| "agent workspace bootstrap", "install gbrain into this agent workspace", "gbrain bootstrap", "paste-in install", "set up the maintenance sweep" | Run `gbrain bootstrap` (paste-in workspace install: interview + identity files + hooks + sweep). See `docs/guides/bootstrap.md` |
 | "wire this box's coding agents to the brain", "framework-spawned sessions need brain access", "wire gbrain hooks without a workspace", "hook Claude Code/Codex to the running serve" | Run `gbrain bootstrap harness --yes` (machine-level wiring to a running `serve --http`: scoped token + user-scope MCP + headless pre-approval + hooks; no agent.json). See the "Local harness mode" section of `docs/guides/bootstrap.md` |
 | "Migrate from Obsidian/Notion/Logseq" | `skills/migrate/SKILL.md` |
 | Brain health check, maintenance run | `skills/maintain/SKILL.md` |
