@@ -329,6 +329,12 @@ describe('synthesize — marked expensive + unavailable conversion [c10]', () =>
     expect(body.cost.input_tokens).toBe(1200);
     expect(body.cost.output_tokens).toBe(80);
     expect(Array.isArray(body.sources)).toBe(true);
+    // v0.45.x additive compose-status fields ride EVERY success response
+    // (schema-optional for pre-v0.45.x servers, always emitted by this one).
+    expect(body.synthesis_status).toBe('ok');
+    expect(typeof body.pages_gathered).toBe('number');
+    expect(typeof body.takes_gathered).toBe('number');
+    expect(Array.isArray(body.warnings)).toBe(true);
     const violations = validateAgainstSchema(body, RESPONSE_SCHEMAS.synthesize);
     expect(violations).toEqual([]);
   });

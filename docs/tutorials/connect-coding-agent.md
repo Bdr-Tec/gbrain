@@ -160,7 +160,8 @@ That's the whole wire-up. No token, no URL, no tunnel. The agent spawns
 (`recall`, `remember`, `entity`, `synthesize`, `forget`, `context_pack`, `delta` —
 [MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md), frozen + additive-forever)
 instead of the full operation catalog, so the agent sees a tight, stable surface
-instead of a 110-tool wall. Drop the flag (or pass `--surface full`) for every
+instead of a 110-tool wall. `--surface starter` sits between: the verbs plus the
+daily-driver set (~26 ops total). Drop the flag (or pass `--surface full`) for every
 operation. The default when the flag is omitted is `full`, so existing wire-ups
 are unchanged.
 
@@ -192,12 +193,12 @@ about people, companies, decisions, projects, or past context:
    tokens → `search` (cheap hybrid, no expansion). Concept, landscape, or
    "all the X that do Y" questions → `query` FIRST — it recovers synonym
    phrasings `search` misses, and a populated `search` result set is not proof
-   of coverage. On the seven-verb surface the same split is `recall` (retrieve)
+   of coverage. On the verbs surface the same split is `recall` (retrieve)
    vs `synthesize` (reasoned answer). Check the brain BEFORE answering from
    memory or asking me. Never ask "who is X?" or "what did we decide about Y?"
    before checking — the brain probably already knows.
 2. **Write back.** When I make a decision, mention a new person/company, or land
-   on an idea worth keeping, write it to the brain: `remember` on the seven-verb
+   on an idea worth keeping, write it to the brain: `remember` on the verbs
    surface (one fact, with provenance), or `put_page` on the full surface
    (entity pages under people/, companies/; decisions under decisions/ or
    notes/). One insight, one page, linked.
@@ -222,7 +223,7 @@ hundreds of linked pages and patterns you didn't know were there.
 **3. Briefing from your brain (not from the internet).** *"What do I need to know
 before my 2pm with the Acme team?"* pulls your meeting history, the people,
 what's still open, what the brain doesn't know yet. The agent does your prep
-because it read your context. (`query` — `synthesize` on the seven-verb surface —
+because it read your context. (`query` — `synthesize` on the verbs surface —
 gives you the synthesized answer with citations; this is the example on the
 [README](../../README.md).)
 

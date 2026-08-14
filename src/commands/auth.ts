@@ -632,8 +632,19 @@ async function registerClient(name: string, args: string[]) {
  * so widening happens here (trusted local CLI) or via the requireAdmin
  * /admin/api/rescope-client endpoint.
  */
+/**
+ * WP4: parse the `--surface` rescope value. 'clear' → null (clears both
+ * surface AND surface_set_by); one of the three known surfaces → itself;
+ * anything else → undefined (caller errors out). Exported for unit tests.
+ */
+export function parseRescopeSurfaceValue(value: string): 'verbs' | 'starter' | 'full' | null | undefined {
+  if (value === 'clear') return null;
+  if (value === 'verbs' || value === 'starter' || value === 'full') return value;
+  return undefined;
+}
+
 async function rescopeClient(clientId: string, args: string[]) {
-  const usage = 'Usage: auth rescope-client <client_id> [--source SOURCE] [--federated-read SRC1,SRC2,...] [--bound-slug-prefixes P1,P2|none]';
+  const usage = 'Usage: auth rescope-client <client_id> [--source SOURCE] [--federated-read SRC1,SRC2,...] [--bound-slug-prefixes P1,P2|none] [--surface verbs|starter|full|clear]';
   if (!clientId) {
     console.error(usage);
     process.exit(1);
@@ -644,6 +655,9 @@ async function rescopeClient(clientId: string, args: string[]) {
   // array = replace. Lets roster churn (channel joins/leaves) update the
   // write fence in place instead of register+rotate.
   let boundSlugPrefixes: string[] | null | undefined;
+  // WP4: tri-state — undefined = untouched, null = clear ('clear'), value =
+  // set + surface_set_by='operator' (the lock request_tools cannot override).
+  let surface: 'verbs' | 'starter' | 'full' | null | undefined;
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i];
     const value = args[i + 1];
@@ -659,29 +673,181 @@ async function rescopeClient(clientId: string, args: string[]) {
       boundSlugPrefixes = value === 'none'
         ? null
         : value.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (flag === '--surface') {
+      surface = parseRescopeSurfaceValue(value);
+      if (surface === undefined) {
+        console.error(`Error: --surface must be verbs | starter | full | clear (got "${value}")`);
+        console.error(usage);
+        process.exit(1);
+      }
     } else {
       console.error(`Error: Unknown flag: ${flag}`);
       console.error(usage);
       process.exit(1);
     }
   }
-  if (sourceId === undefined && federatedRead === undefined && boundSlugPrefixes === undefined) {
-    console.error('Error: pass --source, --federated-read, and/or --bound-slug-prefixes');
+  if (sourceId === undefined && federatedRead === undefined && boundSlugPrefixes === undefined && surface === undefined) {
+    console.error('Error: pass --source, --federated-read, --bound-slug-prefixes, and/or --surface');
     console.error(usage);
     process.exit(1);
   }
   try {
-    await withConfiguredSql(async (sql) => {
+    await withConfiguredSql(async (sql, engine) => {
       const { GBrainOAuthProvider } = await import('../core/oauth-provider.ts');
       const provider = new GBrainOAuthProvider({ sql });
-      const result = await provider.rescopeClient(clientId, { sourceId, federatedRead, boundSlugPrefixes });
+      const result = await provider.rescopeClient(clientId, { sourceId, federatedRead, boundSlugPrefixes, surface });
+      // WP4 (amendment 32 / ENG-8): every surface mutation writes an audit
+      // row (this CLI, the admin endpoint, the request_tools persist).
+      if (surface !== undefined) {
+        const { writeSurfaceChangeAudit } = await import('../core/surface-audit.ts');
+        await writeSurfaceChangeAudit(engine, {
+          actor: 'operator',
+          client_id: clientId,
+          old: result.surfaceOld ?? null,
+          new: result.surface ?? null,
+          via: 'rescope_cli',
+        });
+      }
       console.log(`OAuth client rescoped: "${result.clientName}" (${result.clientId})\n`);
       console.log(`  Write source:        ${result.sourceId}`);
       console.log(`  Federated reads:     ${result.federatedRead.join(', ') || '<none>'}`);
       if (result.boundSlugPrefixes !== undefined) {
         console.log(`  Bound slug prefixes: ${result.boundSlugPrefixes?.join(', ') ?? '<none — full-source write authority>'}`);
       }
+      if (result.surface !== undefined) {
+        console.log(`  Tool surface:        ${result.surface ?? '<cleared — server/config surface applies>'}${result.surface != null ? ' (operator-pinned; request_tools cannot override)' : ''}`);
+      }
       console.log('\nTakes effect on the client\'s next request (existing tokens included).');
+    });
+  } catch (e: any) {
+    console.error('Error:', e.message);
+    process.exit(1);
+  }
+}
+
+/**
+ * E4 (WP4 expansion): `gbrain auth clients [--usage] [--days N] [--json]`.
+ *
+ * Lists OAuth clients with their scopes + per-client MCP tool surface
+ * (`surface` / `surface_set_by`, WP4), and with `--usage` joins the
+ * per-client op-call usage from `mcp_request_log` via the shared reader
+ * (src/core/mcp-usage.ts — same hygiene rules as the E3 advisor collector
+ * and scripts/derive-starter-ops.ts). Legacy bearer tokens that called in
+ * the window appear too (they log under their token name) but carry no
+ * per-client surface row. stdio clients never appear — that transport does
+ * not write mcp_request_log.
+ */
+export function parseAuthClientsArgs(args: string[]): { usage: boolean; days: number; json: boolean } {
+  const out = { usage: false, days: 30, json: false };
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (flag === '--usage') out.usage = true;
+    else if (flag === '--json') out.json = true;
+    else if (flag === '--days') {
+      const v = Number(args[i + 1]);
+      if (!Number.isInteger(v) || v < 1 || v > 3650) {
+        throw new Error('--days must be an integer between 1 and 3650');
+      }
+      out.days = v;
+      i++;
+    } else {
+      throw new Error(`Unknown flag: ${flag}`);
+    }
+  }
+  return out;
+}
+
+interface ClientRow {
+  client_id: string;
+  client_name: string | null;
+  scope: string | null;
+  surface: string | null;
+  surface_set_by: string | null;
+}
+
+async function clientsCmd(args: string[]) {
+  const usageLine = 'Usage: auth clients [--usage] [--days N] [--json]';
+  let parsed: { usage: boolean; days: number; json: boolean };
+  try {
+    parsed = parseAuthClientsArgs(args);
+  } catch (e: any) {
+    console.error(`Error: ${e.message}`);
+    console.error(usageLine);
+    process.exit(1);
+  }
+  try {
+    await withConfiguredSql(async (_sql, engine) => {
+      // Surface columns land in migration v127; a pre-migration brain still
+      // gets the listing (surface renders as unknown) instead of an error.
+      let clients: ClientRow[];
+      try {
+        clients = await engine.executeRaw<ClientRow>(
+          `SELECT client_id, client_name, scope, surface, surface_set_by
+             FROM oauth_clients ORDER BY client_name, client_id`,
+        );
+      } catch {
+        const bare = await engine.executeRaw<Omit<ClientRow, 'surface' | 'surface_set_by'>>(
+          `SELECT client_id, client_name, scope FROM oauth_clients ORDER BY client_name, client_id`,
+        );
+        clients = bare.map(r => ({ ...r, surface: null, surface_set_by: null }));
+      }
+
+      const { readClientOpUsage } = await import('../core/mcp-usage.ts');
+      const usage = parsed.usage ? await readClientOpUsage(engine, { days: parsed.days }) : [];
+      const usageByToken = new Map(usage.map(u => [u.token_name, u]));
+      const clientIds = new Set(clients.map(c => c.client_id));
+      const legacyUsage = usage.filter(u => !clientIds.has(u.token_name));
+
+      if (parsed.json) {
+        console.log(JSON.stringify({
+          window_days: parsed.days,
+          usage_included: parsed.usage,
+          clients: clients.map(c => ({
+            client_id: c.client_id,
+            client_name: c.client_name,
+            scopes: c.scope,
+            surface: c.surface,
+            surface_set_by: c.surface_set_by,
+            usage: usageByToken.get(c.client_id) ?? null,
+          })),
+          // Legacy bearer tokens seen in the window (no oauth_clients row).
+          legacy_tokens: legacyUsage,
+        }, null, 2));
+        return;
+      }
+
+      if (clients.length === 0 && legacyUsage.length === 0) {
+        console.log('No OAuth clients registered. Register one: gbrain auth register-client "my-client"');
+        return;
+      }
+      const fmtTop = (u: (typeof usage)[number]) =>
+        Object.entries(u.ops).slice(0, 5).map(([op, n]) => `${op}(${n})`).join(', ');
+      for (const c of clients) {
+        const u = usageByToken.get(c.client_id);
+        console.log(`${c.client_name ?? '<unnamed>'} (${c.client_id})`);
+        const surfaceStr = c.surface
+          ? `${c.surface}${c.surface_set_by ? ` (set by ${c.surface_set_by})` : ''}`
+          : '<server/config resolution>';
+        console.log(`  scopes: ${c.scope ?? '<none>'}    surface: ${surfaceStr}`);
+        if (parsed.usage) {
+          if (u) {
+            const auto = u.likely_automation ? '    [automation-shaped: >90% context_pack/delta]' : '';
+            console.log(`  calls (${parsed.days}d): ${u.total_calls} across ${u.distinct_ops.length} ops    last seen: ${u.last_seen}${auto}`);
+            console.log(`  top ops: ${fmtTop(u)}`);
+          } else {
+            console.log(`  calls (${parsed.days}d): 0 (no HTTP MCP calls in window; stdio use is not logged)`);
+          }
+        }
+        console.log('');
+      }
+      if (parsed.usage && legacyUsage.length > 0) {
+        console.log(`Legacy bearer tokens seen in the last ${parsed.days}d (no per-client surface row):`);
+        for (const u of legacyUsage) {
+          const auto = u.likely_automation ? '    [automation-shaped]' : '';
+          console.log(`  ${u.token_name}: ${u.total_calls} calls across ${u.distinct_ops.length} ops    last seen: ${u.last_seen}${auto}`);
+          console.log(`    top ops: ${fmtTop(u)}`);
+        }
+      }
     });
   } catch (e: any) {
     console.error('Error:', e.message);
@@ -759,6 +925,7 @@ export async function runAuth(args: string[]): Promise<void> {
     case 'register-client': await registerClient(rest[0], rest.slice(1)); return;
     case 'rescope-client': await rescopeClient(rest[0], rest.slice(1)); return;
     case 'revoke-client': await revokeClient(rest[0]); return;
+    case 'clients': await clientsCmd(rest); return;
     case 'test': {
       const tokenIdx = rest.indexOf('--token');
       const url = rest.find(a => !a.startsWith('--') && a !== rest[tokenIdx + 1]);
@@ -812,6 +979,15 @@ Usage:
      --source <id>                                        New write source
      --federated-read <id1,id2,...>                       New read-scope source list
      --bound-slug-prefixes <p1,p2|none>                   Replace the slug-prefix write fence ('none' clears it)
+     --surface <verbs|starter|full|clear>                 Pin the client's MCP tool surface (operator lock —
+                                                          request_tools cannot override; 'clear' removes the pin
+                                                          so server/config resolution applies again). Always
+                                                          bounded by the server's --surface ceiling.
+  gbrain auth clients [--usage] [--days N] [--json]       List OAuth clients with scopes + tool surface. --usage
+                                                          joins per-client op-call counts, top ops, and last-seen
+                                                          from mcp_request_log (default 30d window; HTTP clients
+                                                          only — stdio use is not logged). Automation-shaped
+                                                          clients (>90% context_pack/delta) are flagged.
   gbrain auth revoke-client <client_id>                   Hard-delete an OAuth 2.1 client (cascades to tokens + codes)
   gbrain auth test <url> --token <token>                  Smoke-test a remote MCP server
 `);

@@ -21,8 +21,10 @@ That's it. Claude Code spawns `gbrain serve` as a stdio subprocess. No server, n
 tunnel, no token needed. Works with both PGLite and Supabase engines.
 
 `--surface verbs` exposes the seven-verb memory protocol (`recall`, `remember`,
-`entity`, `synthesize`, `forget`, `context_pack`, `delta` — [MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)),
-the surface built for agents and quickstarts. Drop the flag for the full
+`entity`, `synthesize`, `forget`, `context_pack`, `delta` —
+[MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)),
+the surface built for agents and quickstarts. `--surface starter` adds the
+daily-driver set on top (~26 ops total). Drop the flag for the full
 operation catalog (`get_page`, `put_page`, `search`, graph ops, …) — `full` is
 the default and what existing installs already run.
 

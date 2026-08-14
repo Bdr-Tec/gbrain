@@ -790,7 +790,17 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // `fts=` fold (#3677), so this lands as v=16 per the D8 sequencing
 // convention (see the v=4/v=5 note above). Same one-time global cold-miss
 // pattern as the bumps above.
-export const KNOBS_HASH_VERSION = 16;
+//
+// bump 16→17 (WP2/T3): degradation-stamp epoch. HybridSearchMeta gains
+// `degraded[]` + `retrieved_count` and every cache write now stamps them
+// (degraded rows additionally get a short TTL). A pre-stamp row served as a
+// hit would claim a clean run it can't prove; bumping makes pre-upgrade rows
+// unreachable (one-time cold-miss, refills within cache.ttl_seconds), and
+// any row that still lacks the stamp surfaces as
+// degraded:[{stage:'cache_prestamp'}] at hit time (belt-and-braces).
+// (Merge note: both this wave and master's #3515 wave claimed v=16 in
+// flight; the merge sequences them as 16 then 17.)
+export const KNOBS_HASH_VERSION = 17;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The

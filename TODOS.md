@@ -1,5 +1,203 @@
 # TODOS
 
+## Truthful-surface wave follow-ups (filed with T14, amendment 35 + D14.5)
+
+Deferred from the MCP consumer-feedback wave (plan at
+`~/.claude/plans/system-instruction-you-are-working-snuggly-parrot.md`; scoped
+OUT deliberately — see the plan's "NOT in scope" list).
+
+- [ ] **P1 — strict_params reject-flip.** **What:** flip the `mcp.strict_params`
+  default from `warn` to `reject`. **Why:** the warn grace period exists so
+  clients adapt before unknown args become hard errors; leaving it warn forever
+  re-opens the silent-arg-typo class WP3 closed. **Context:** named flip
+  criterion — ZERO `success_with_warnings` rows over 30 days of production
+  traffic (`SELECT count(*) FROM mcp_request_log WHERE
+  status='success_with_warnings' AND created_at > now() - interval '30 days'`;
+  see docs/operations/mcp-surface-runbook.md Move 3). The flip is a config
+  DEFAULT change in `resolveStrictParamsMode` + the `additionalProperties:
+  false` emission becoming the default tools/list shape; the pinned
+  default=warn test to update is `test/validate-params.test.ts` ("unresolved
+  (absent) config defaults to warn") and `test/mcp-tool-defs.test.ts` pins
+  both emission states. **Effort:** small (1-line default + test updates).
+  **Priority:** P1.
+- [ ] **P2 — mcp_request_log retention/pruning.** **What:** a retention policy
+  (age- or row-capped prune, `gbrain maintain` hook or cron). **Why:** the
+  table now carries MORE than request telemetry — `surface_change` audit rows
+  (ENG-8) and `denied_after_list` metric rows ride it — and it grows unbounded
+  on busy brains. **Context:** pruning must NOT silently discard the audit
+  trail — either exempt `operation='surface_change'` or archive before delete;
+  the usage reader (src/core/mcp-usage.ts) windows at ≤3650d. **Effort:**
+  medium. **Priority:** P2.
+- [ ] **P3 — describe_tools op.** **What:** a dedicated per-op schema
+  introspection op (design OQ4). **Why:** deferred — `request_tools`' no-arg
+  catalog + complete tools/list schemas + did-you-mean on unknown tools/params
+  cover the need. **Context:** revisit if a consumer asks for schema detail
+  beyond what tools/list carries. **Effort:** small. **Priority:** P3.
+- [ ] **P3 — page_lint pull op.** **What:** an op returning the FULL lint
+  report for a slug (design OQ5). **Why:** deferred — `put_page`'s inline
+  `writer_lint.top_findings` (top 5, errors first) suffices until someone
+  needs more than five findings or lint-without-write. **Context:** the
+  validator registry + FIX_HINTS (src/core/validators/index.ts) already
+  expose everything a pull op would need. **Effort:** small. **Priority:** P3.
+- [ ] **P3 — named client tiers.** **What:** Phase 2 of the per-client surface:
+  named tiers (e.g. 'analyst', 'writer') stored in the SAME
+  `oauth_clients.surface` column. **Why:** teams want role-shaped catalogs,
+  not just the 3-step ladder. **Context:** the column's value space is
+  documented OPEN (amendment 18) — unknown values fall back to server/config
+  resolution with a warn-once, so tier names can land without a migration;
+  resolution/UI is the work. **Effort:** medium. **Priority:** P3.
+- [ ] **P3 — per-client token budgets.** **What:** Phase 2: per-client
+  response token budgets (same column pattern as surface). **Why:** a
+  starter-surface client with a 4K-context harness still gets full-size
+  payloads; budget belongs to the CLIENT, not the query. **Context:** builds
+  on `oauth_clients` per-client columns + the search-mode `tokenBudget` knob;
+  interacts with `packToBudget`/`enforceTokenBudget` (keep the frozen-verb
+  strictness — ENG-2). **Effort:** medium. **Priority:** P3.
+- [ ] **P3 — full list-size telemetry.** **What:** first-class telemetry for
+  tools/list responses (per token class: count, approx bytes, trend).
+  **Why:** catalog size is the consumer complaint the wave started from;
+  today's stopgap only records the count. **Context:** the stopgap
+  (amendment 23) rides the existing tools/list `mcp_request_log` row as
+  `params.tool_count` — see the runbook's first-5-minutes SQL. A full
+  version would bucket bytes and surface in `gbrain search stats`-style
+  output. **Effort:** medium. **Priority:** P3.
+- [ ] **P3 — get_job invalid_params→not_found alignment (ENG-13).** **What:**
+  align admin `get_job`'s unknown-id envelope with `get_agent_job`'s uniform
+  `not_found`. **Why:** the two job-read ops answer "no such job" with
+  different error codes; `get_agent_job` chose `not_found` deliberately
+  (anti-enumeration) and the divergence is recorded, not designed. **Context:**
+  ENG-13 kept `get_agent_job` at `not_found` and filed this sibling; check
+  callers that branch on `invalid_params` before changing. **Effort:** small.
+  **Priority:** P3.
+
+## Truthful-surface wave — pre-landing review deferrals
+
+Filed from the /ship pre-landing review of the wave branch (all classified
+review-deferred, not fix-now). Grouped by component.
+
+### MCP transport / serve-http
+
+- [ ] **P2 — memoize the `mcp.default_surface_dcr` read on the tools/call hot
+  path.** **What:** a short-TTL (15–30s) memo of the dual-plane
+  `resolveDefaultClientSurface` read for NULL-surface clients. **Why:** every
+  request from a NULL-surface client pays one serial config RTT today (on
+  network Postgres that is real latency); a 15–30s memo makes the hot path
+  free while config flips still land within the TTL. **Context:** rescope
+  freshness is unaffected — the client ROW surface rides the auth JOIN in
+  `verifyAccessToken`, so only the config DEFAULT would be memoized
+  (`src/commands/serve-http.ts` resolveEffectiveSurface →
+  `src/mcp/surface.ts` resolveDefaultClientSurface). **Effort:** small.
+  **Priority:** P2.
+- [ ] **P2 — extend the Postgres-host e2e with request-log row assertions.**
+  **What:** extend `test/e2e/serve-http-oauth.test.ts` with the honest-list
+  cell plus row-level twins of the new pure-function pins: a
+  `denied_after_list` row, a `success_with_warnings` row, and the tools/list
+  `params->>'tool_count'` param. **Why:** `requestLogStatusForResult` is
+  unit-pinned pure (test/denied-after-list.test.ts) but the INSERT wiring in
+  serve-http (real HTTP, real OAuth tokens, real mcp_request_log rows) only
+  runs on a Postgres-equipped host. **Context:** the e2e already stands up
+  the real OAuth server; add cells, not scaffolding. **Effort:** small.
+  **Priority:** P2.
+- [ ] **P3 — surfaceProjectionDegraded marker for drift-shaped brains.**
+  **What:** a visible marker (whoami/_meta/log line) when the surface
+  projection is degraded because the schema is drift-shaped: v127 columns
+  (`oauth_clients.surface`) present but v85-era prerequisites missing.
+  **Why:** on the degrade ladder today an operator surface LOCK silently
+  widens to the server ceiling — the operator believes a pin holds when it
+  does not. **Context:** only reachable via restored dumps, since migrations
+  are ordered; cheap to detect at the existing isUndefinedColumnError seams.
+  **Effort:** small. **Priority:** P3.
+
+### Minions / status
+
+- [ ] **P3 — partial index for completed-job recency probes.** **What:**
+  `CREATE INDEX ... ON minion_jobs (updated_at) WHERE status='completed'` (or
+  fold into the wedge-index family) if `get_status_snapshot` polling becomes
+  frequent. **Why:** `buildWorkersSnapshot`'s `max(updated_at)` over completed
+  rows seq-scans today; fine at human frequency, wrong under dashboard
+  polling. **Context:** same family as the buildQueueDepths perf note in
+  `src/commands/status.ts` (partial (queue, created_at) WHERE
+  status='waiting' is the sibling fix there). **Effort:** small.
+  **Priority:** P3.
+
+### Test infra (master-owned)
+
+- [ ] **P1 — test/extract-atoms-chunk-embed.test.ts flakes under parallel
+  shards.** **What:** deflake the extract-atoms chunk-embed suite when run in
+  parallel shards. **Why:** it fails under shard parallelism but passes alone
+  — a shard-ordering trap for every future branch. **Context:** failure
+  signature: extraction returns status 'warn' with ALL transcripts skipped
+  (0 processed) → count assertions fail; env-coupling suspected — the same
+  withEnv class fixed in token-budget.test.ts this wave. Pre-existing on
+  master; owned there, not by any feature branch. **Effort:** small.
+  **Priority:** P1.
+
+### Hygiene dedupe batch (single entry — take together)
+
+- [ ] **P3 — hygiene dedupe batch from the pre-landing review.** **What:**
+  eight small same-shape dedupes, cheapest done as one sweep: (1) shared
+  `firstSentence` helper (`src/core/operations.ts` firstSentenceOf vs
+  `src/mcp/tool-catalog.ts` firstSentence); (2) shared empty-retrieval renderer
+  (`src/cli.ts` describeEmptyRetrieval vs `src/mcp/dispatch.ts`
+  buildEmptyRetrievalBlock); (3) generic resolveDualPlaneConfig helper for
+  the three hand-rolled DB>file>default reads (publish gates,
+  strict_params, default_surface_dcr); (4) use `isMcpSurface` at the three
+  literal `'verbs'|'starter'|'full'` validation sites; (5) shared `toIso`
+  (mcp-usage.ts vs siblings); (6) export the MCP_USAGE window bounds
+  ([1, 3650]) from mcp-usage.ts and consume in parseAuthClientsArgs +
+  derive-starter-ops instead of re-typing; (7) reuse buildQueueDepths
+  (status.ts) in doctor's waitingByQueue + the supervisor probe instead of
+  three copies of the same GROUP BY; (8) compose rescopeClient's
+  optional-column branch matrix instead of enumerating it. **Why:** each is
+  a copy that can drift independently; none is worth its own entry.
+  **Context:** all two-way doors, no behavior change intended — land with
+  the existing pins green. **Effort:** medium (as a batch). **Priority:** P3.
+
+### Adversarial-review deferrals (cross-model, ship-stage)
+
+Filed from the /ship adversarial review (Codex + Claude synthesis). The twelve
+fix-now findings landed on the branch; these four are the review-deferred tail.
+
+- [ ] **P2 — request_tools persist: fold the old-surface read into the atomic
+  UPDATE.** **What:** replace the SELECT → UPDATE → audit-write triple with
+  one `UPDATE ... RETURNING (SELECT surface FROM oauth_clients WHERE ...)`
+  (or capture old via `RETURNING` on a CTE) so the audit row's `old` value
+  can never be a stale read from before a concurrent change. **Why:** today
+  a rescope racing the persist can make the audit trail record a wrong
+  `old→new` transition — the trail answers "why did the surface change" and
+  must not lie under concurrency. **Context:**
+  `src/core/operations.ts` request_tools persist branch +
+  `src/core/surface-audit.ts`; both engines (CTE-in-UPDATE parity check).
+  **Effort:** small. **Priority:** P2.
+- [ ] **P3 — persist rate-limit durability across restarts/processes.**
+  **What:** decide whether the request_tools persist limiter (in-memory
+  token bucket, ~5/hr/client) needs DB-backed durability. A server restart
+  refills every bucket; a multi-process fleet multiplies the budget by
+  process count. **Why:** today the cap is advisory under restart churn —
+  fine for the abuse class it targets (runaway clients), wrong if it ever
+  guards something stronger. **Context:** `src/mcp/rate-limit.ts` +
+  `requestToolsPersistLimiter`; the surface_change audit rows already give
+  a DB-side count to enforce against if needed. **Effort:** medium.
+  **Priority:** P3.
+- [ ] **P3 — cancel (not just abandon) timed-out submit-time queue probes.**
+  **What:** the WP5 wedge/pause probes time-bound via Promise.race, but the
+  losing query keeps running on the pool after the race resolves. Wire
+  AbortSignal / statement_timeout so a slow probe releases its slot. **Why:**
+  under pool exhaustion (the exact regime the probes exist to detect) an
+  abandoned probe query holds a pooler slot and makes the exhaustion worse.
+  **Context:** `src/core/minion/supervisor.ts` queryWedgeSignals callers in
+  `src/core/operations.ts` submit paths. **Effort:** small. **Priority:** P3.
+- [ ] **P3 — document the status --json snapshot union under schema_version.**
+  **What:** a short protocol note (docs/progress-events.md sibling) pinning
+  the `get_status_snapshot` v2 shape as a discriminated union on
+  `schema_version` (v1: no queue/workers keys; v2: sections present but
+  per-section fail-soft `{error: 'unavailable'}`), plus a compat table for
+  thin-client consumers. **Why:** external `--json` consumers can't rely on
+  reading the TypeScript; the fail-soft section shapes are non-obvious.
+  **Context:** `src/core/operations.ts` get_status_snapshot,
+  `src/commands/status.ts` thin-client sections. **Effort:** small.
+  **Priority:** P3.
+
 ## Onboarding DX follow-ups (filed v0.45.9.0)
 
 - [ ] **Retire the `config set embedding_model` dead-end across ALL surfaces.** v0.45.9.0 fixed the keyless-init notice to point at `gbrain init --force --pglite --embedding-model <id>`, but `src/core/embed-preflight.ts` (lines ~73/83/90/115) and `src/core/embedding-dim-check.ts:78` still advertise `gbrain config set embedding_model <...>`, which `src/commands/config.ts:142` hard-refuses as a schema-sizing no-op. Same dead-end class, different surfaces. Sweep them to the re-init recipe. Priority: P2.
@@ -99,7 +297,11 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
 - [ ] **Hermetic-ize the 7 env-sensitive LLM-availability tests.** `test/think-gateway-adapter.test.ts`, `test/conversation-parser/llm-base.test.ts`/`llm-fallback.test.ts`, `test/doctor-ze-checks.test.ts` assert behavior "when ANTHROPIC_API_KEY is unset" by reading the live process env — they fail on any dev shell that exports provider keys (verified failing on clean master in such a shell; green in keyless CI). Stub/save-restore the env per test so local runs match CI. Priority: P2.
 ## #2416 follow-ups (query-steering wave)
 
-- [ ] **P2 — MCP-envelope `hint` field for concept-shaped `search` calls.**
+- [x] **P2 — MCP-envelope `hint` field for concept-shaped `search` calls.**
+  DONE (Truthful Surface Wave, E1): the hint rides `_meta.retrieval.hint` on the
+  `search` op (the sibling-metadata-channel option this entry proposed) plus the
+  model-visible second content block on empty results. See
+  `docs/protocol/MCP_META_CHANNELS.md`.
   **What:** surface the concept→query nudge to remote/MCP agent callers, not
   just the CLI. **Why:** MCP agents are the primary misrouting class the
   #2416 issue describes; the shipped CLI stderr nudge covers the caller class

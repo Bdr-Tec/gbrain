@@ -2087,13 +2087,48 @@ export async function computeQueueHealthCheck(
       [`${oldWaitingHours} hours`],
     );
 
-    let liveWorkerQueues = new Set<string>();
-    if (oldWaitingRows.length > 0) {
-      const workers = opts.readWorkers
-        ? opts.readWorkers()
-        : (await import('../core/minions/worker-registry.ts')).readWorkers();
-      liveWorkerQueues = new Set(workers.map((w) => w.queue));
-    }
+    // Read the live-worker registry unconditionally (was: only when old
+    // embed-backfill rows existed) — the structured `details.worker_alive`
+    // below needs it on every run. Cheap: one directory enumeration.
+    const workers = opts.readWorkers
+      ? opts.readWorkers()
+      : (await import('../core/minions/worker-registry.ts')).readWorkers();
+    const liveWorkerQueues = new Set(workers.map((w) => w.queue));
+
+    // Minions-visibility wave: structured details so machine callers stop
+    // parsing prose. depth = total waiting jobs; oldest_age_seconds = age of
+    // the oldest waiting job (null when the queue is empty); worker_alive =
+    // every queue holding waiting work has a live registered worker
+    // (vacuously true with zero waiting jobs). Messages stay unchanged.
+    // Perf note (twin of buildQueueDepths in status.ts): WHERE constrains
+    // only `status` — the second column of the (queue, status, updated_at)
+    // wedge index — so this GROUP BY full-scans minion_jobs today. Acceptable
+    // at doctor frequency over pruned waiting sets; a partial
+    // (queue, created_at) WHERE status='waiting' index is the fix if hot.
+    const waitingByQueue: Array<{
+      queue: string;
+      depth: number | string;
+      oldest_age_seconds: number | string | null;
+    }> = await engine.executeRaw(
+      `SELECT queue,
+              count(*)::int AS depth,
+              EXTRACT(EPOCH FROM (now() - min(created_at)))::int AS oldest_age_seconds
+         FROM minion_jobs
+        WHERE status = 'waiting'
+        GROUP BY queue`,
+    );
+    const details: Record<string, unknown> = {
+      depth: waitingByQueue.reduce((n, r) => n + Number(r.depth), 0),
+      oldest_age_seconds: waitingByQueue.reduce<number | null>(
+        (max, r) => {
+          const age = r.oldest_age_seconds === null ? null : Number(r.oldest_age_seconds);
+          if (age === null) return max;
+          return max === null ? age : Math.max(max, age);
+        },
+        null,
+      ),
+      worker_alive: waitingByQueue.every((r) => liveWorkerQueues.has(r.queue)),
+    };
 
     const problems: string[] = [];
     if (stalledRows.length > 0) {
@@ -2146,12 +2181,14 @@ export async function computeQueueHealthCheck(
         name: 'queue_health',
         status: 'ok',
         message: `No stalled-forever jobs; no queue over depth ${threshold}; no old embed-backfill jobs without a worker.`,
+        details,
       };
     }
     return {
       name: 'queue_health',
       status: 'warn',
       message: problems.join(' '),
+      details,
     };
   } catch (e) {
     return {

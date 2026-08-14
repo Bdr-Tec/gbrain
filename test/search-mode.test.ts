@@ -422,7 +422,7 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // not survive a `reindex-search-vector` switch.
     // #3515: bumped 15→16 to fold the effective detail level (det=) — a
     // detail=low write must not be served to a detail=medium lookup.
-    expect(KNOBS_HASH_VERSION).toBe(16);
+    expect(KNOBS_HASH_VERSION).toBe(17);
   });
 
   test('#3515: detail set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -437,6 +437,9 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // Undefined falls back to 'medium' — the documented default — so legacy
     // callers that don't thread detail share the default-detail rows.
     expect(unset).toBe(medium);
+    // WP2/T3: bumped 16→17 for the degradation-stamp epoch — cache rows now
+    // carry degraded[]/retrieved_count; pre-stamp rows must not claim clean.
+    expect(KNOBS_HASH_VERSION).toBe(17);
   });
 
   test('T1 (codex): floor_ratio set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -601,8 +604,8 @@ describe('v0.40.4 — graph_signals knob', () => {
 });
 
 describe('v0.42.3.0 — autocut knobs', () => {
-  test('KNOBS_HASH_VERSION is 16 (15→16 detail fold #3515)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(16);
+  test('KNOBS_HASH_VERSION is 17 (15→16 detail fold #3515; 16→17 degradation-stamp epoch)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(17);
   });
 
   test('bundle defaults: conservative off, balanced/tokenmax on @0.20', () => {

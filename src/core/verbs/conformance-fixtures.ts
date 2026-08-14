@@ -222,6 +222,10 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
     requiresSynthesizeFlag: true,
     // Either a schema-valid answer (key configured) or a clean unavailable
     // error (no key). The runner accepts both; anything else fails.
+    // v0.45.x: the answer path also validates the additive compose-status
+    // fields (synthesis_status enum incl. extractive_fallback, pages_gathered,
+    // takes_gathered, warnings) via RESPONSE_SCHEMAS.synthesize — present on
+    // post-v0.45.x servers, never required (additive-forever).
   },
 
   // ── v0.45.7 additive verbs: context_pack + delta ──────────────────────────

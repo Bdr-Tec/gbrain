@@ -1647,6 +1647,67 @@ export interface EvalCaptureFailure {
 }
 
 /**
+ * WP2/T3 — CLOSED degradation vocabulary for `HybridSearchMeta.degraded`
+ * (D6). Every stage a search can degrade through has an enumerated name;
+ * consumers (MCP `_meta.retrieval`, telemetry, `--explain`) match on these
+ * codes. Additive-forever: new stages append, existing names never change.
+ *
+ *   embed_unavailable  — no embedding ran (no provider, or provider errored)
+ *   embed_timeout      — every query embed hit the wall-clock deadline
+ *   expansion_failed   — the LLM multi-query expander threw; original only
+ *   expansion_partial  — some (not all) variant embeds survived; results
+ *                        salvaged from the surviving lists (ENG-15)
+ *   rescore_skipped    — original-query embed failed, so the cosine
+ *                        re-score stage was skipped (variant-list salvage)
+ *   vector_arm_failed  — an engine.searchVector arm threw; surviving arms
+ *                        (or keyword) carried the result
+ *   budget_dropped_all — the first result alone exceeded the token budget
+ *                        and NOTHING was returned (GBRAIN_SEARCH_SALVAGE=off
+ *                        strict path — the result set is empty)
+ *   budget_truncated   — the minKeep failsafe kept ONE result truncated to
+ *                        fit the budget (results non-empty but cut; distinct
+ *                        stage so consumers can tell "empty" from "clipped")
+ *   keyword_zero       — the keyword arm returned zero rows on a path where
+ *                        it was the primary recall arm (vector unavailable)
+ *   cache_prestamp     — served from a cache row written before the
+ *                        degradation stamp existed; cleanliness unprovable
+ */
+export const DEGRADED_STAGES = [
+  'embed_unavailable',
+  'embed_timeout',
+  'expansion_failed',
+  'expansion_partial',
+  'rescore_skipped',
+  'vector_arm_failed',
+  'budget_dropped_all',
+  'budget_truncated',
+  'keyword_zero',
+  'cache_prestamp',
+] as const;
+export type DegradedStage = (typeof DEGRADED_STAGES)[number];
+
+/**
+ * WP2/T3 — enumerated reason codes for degraded stages (D6). NEVER raw
+ * exception text: raw errors go to stderr/telemetry only, so a provider's
+ * error string (which can embed URLs, keys, internal hostnames) never
+ * rides the wire to a remote MCP consumer.
+ */
+export const DEGRADED_REASONS = [
+  'no_provider',
+  'provider_error',
+  'timeout',
+  'variant_embed_failed',
+  'original_embed_failed',
+  'first_result_truncated',
+] as const;
+export type DegradedReason = (typeof DEGRADED_REASONS)[number];
+
+export interface DegradedStageEntry {
+  stage: DegradedStage;
+  reason?: DegradedReason;
+}
+
+/**
  * Side-channel metadata that hybridSearch reports about what actually ran.
  * Surfaced via the optional `onMeta` callback in HybridSearchOpts so
  * existing SearchResult[] consumers (Cathedral II, gbrain-evals, etc.)
@@ -1688,7 +1749,27 @@ export interface HybridSearchMeta {
     used: number;
     kept: number;
     dropped: number;
+    /**
+     * WP2/T3 (ENG-2/FOV-2) — set when the minKeep failsafe kept ONE result
+     * whose chunk_text was truncated (on a copy) to fit the budget, where
+     * the strict packer would have returned [].
+     */
+    truncated?: boolean;
   };
+  /**
+   * WP2/T3 (D6) — degradation stamp. Empty array = clean run (every stage
+   * ran as configured); entries name what fell over, with enumerated reason
+   * codes only. Always present on hybridSearch-emitted meta so cache rows
+   * carry the stamp; absent only on meta shapes written before this field
+   * existed (surfaced as `cache_prestamp` at hit time).
+   */
+  degraded?: DegradedStageEntry[];
+  /**
+   * WP2/T3 — pre-budget hit count: how many results retrieval produced for
+   * this page BEFORE token-budget enforcement. Lets a consumer distinguish
+   * "0 retrieved" (clean miss) from "N retrieved, budget dropped them".
+   */
+  retrieved_count?: number;
   /**
    * v0.32.x (search-lite): cache hit/miss tracking. Omitted when the
    * semantic query cache wasn't consulted (cache disabled, vector search

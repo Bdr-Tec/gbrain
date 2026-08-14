@@ -5,8 +5,9 @@ import type { BrainEngine } from '../core/engine.ts';
 import { operations } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
 import { buildToolDefs } from './tool-defs.ts';
-import { dispatchToolCall, validateParams, buildOperationContext } from './dispatch.ts';
-import { filterOpsForSurface, allowedOpNames, type McpSurface } from './surface.ts';
+import { dispatchToolCall, buildOperationContext } from './dispatch.ts';
+import { validateParams, parseStrictParamsMode } from './validate-params.ts';
+import { filterOpsForSurface, allowedOpNames, clampSurface, type McpSurface } from './surface.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import {
@@ -45,17 +46,26 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
   );
 
   // MEMORY_VERBS v1 surface mode: 'full' (default — every op, byte-identical
-  // to pre-surface behavior) or 'verbs' (exactly the 5 protocol verbs).
-  // Enforced BOTH on the advertised list and in dispatch (fail-closed [c2]).
-  const surface: McpSurface = opts.surface ?? 'full';
+  // to pre-surface behavior), 'starter' (WP4 daily-driver set), or 'verbs'
+  // (exactly the 7 protocol verbs). Enforced BOTH on the advertised list and
+  // in dispatch (fail-closed [c2]). WP4: the GBRAIN_MCP_FORCE_SURFACE kill
+  // switch min()s in (narrow-only, FOV-6a). Note stdio keeps localOnly ops
+  // on every surface tier that includes them — it IS the local surface (D7).
+  const surface: McpSurface = clampSurface(opts.surface ?? 'full');
   const surfacedOps = filterOpsForSurface(operations, surface);
   const allowedOps = surface === 'full' ? undefined : allowedOpNames(operations, surface);
+
+  // WP3: strict-params schema emission, resolved ONCE at startup from the
+  // FILE config plane only — stdio has no per-request list cycle, so a
+  // `mcp.strict_params` flip needs a serve restart here (deliberate; the
+  // OAuth HTTP path re-reads dual-plane per request).
+  const strictParams = parseStrictParamsMode(loadConfig()?.mcp?.strict_params) === 'reject';
 
   // Generate tool definitions from operations. Extracted to buildToolDefs so
   // the subagent tool registry (v0.15+) can call the same mapper against a
   // filtered OPERATIONS subset instead of duplicating this shape.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: buildToolDefs(surfacedOps),
+    tools: buildToolDefs(surfacedOps, { strictParams }),
   }));
 
   // Dispatch tool calls via shared dispatch.ts (parity with HTTP transport).
@@ -102,6 +112,9 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
       // MEMORY_VERBS v1: fail-closed surface enforcement + usage attribution.
       ...(allowedOps ? { allowedOps } : {}),
       surface,
+      // WP4 (D2): stdio has no per-client rows; its surface is the ceiling
+      // request_tools bounds its catalog by (persist no-ops without auth).
+      surfaceCeiling: surface,
     });
   });
 

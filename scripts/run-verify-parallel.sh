@@ -51,6 +51,7 @@ CHECKS=(
   "check:cli-exec"
   "check:system-of-record"
   "check:eval-glossary"
+  "check:tool-catalog"
   "check:skills-manifest"
   "check:no-pii-agent-voice"
   "check:synthetic-corpus-privacy"

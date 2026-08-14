@@ -825,6 +825,10 @@ export class PGLiteEngine implements BrainEngine {
                 WHERE table_schema='public' AND table_name='oauth_clients' AND column_name='source_id') AS oauth_clients_source_id_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema='public' AND table_name='oauth_clients' AND column_name='federated_read') AS oauth_clients_federated_read_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='oauth_clients' AND column_name='surface') AS oauth_clients_surface_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='oauth_clients' AND column_name='surface_set_by') AS oauth_clients_surface_set_by_exists,
         EXISTS (SELECT 1 FROM information_schema.tables
                 WHERE table_schema='public' AND table_name='sources') AS sources_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
@@ -893,6 +897,8 @@ export class PGLiteEngine implements BrainEngine {
       oauth_clients_exists: boolean;
       oauth_clients_source_id_exists: boolean;
       oauth_clients_federated_read_exists: boolean;
+      oauth_clients_surface_exists: boolean;
+      oauth_clients_surface_set_by_exists: boolean;
       sources_exists: boolean;
       sources_archived_exists: boolean;
       sources_archived_at_exists: boolean;
@@ -946,6 +952,13 @@ export class PGLiteEngine implements BrainEngine {
     // PGLITE_SCHEMA_SQL crash without them.
     const needsOauthClientsBootstrap = probe.oauth_clients_exists
       && (!probe.oauth_clients_source_id_exists || !probe.oauth_clients_federated_read_exists);
+    // WP4 (v127): oauth_clients.surface + surface_set_by. No PGLITE_SCHEMA_SQL
+    // index references them, but the columns are migration-added AND in the
+    // blob's CREATE TABLE — the exact v121 mask class — so the bootstrap adds
+    // them defense-in-depth (and satisfies the MIGRATIONS ADD COLUMN
+    // coverage gate). They ship in one migration and go missing together.
+    const needsOauthClientsSurface = probe.oauth_clients_exists
+      && (!probe.oauth_clients_surface_exists || !probe.oauth_clients_surface_set_by_exists);
     // v0.26.5 (v34): sources.archived + archived_at + archive_expires_at added
     // for soft-delete lifecycle. Not directly referenced by indexes BUT
     // PGLITE_SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS sources` is a no-op on
@@ -1005,6 +1018,7 @@ export class PGLiteEngine implements BrainEngine {
         && !needsMcpLogBootstrap && !needsSubagentProviderId
         && !needsPagesRecency && !needsIngestLogSourceId
         && !needsFilesBootstrap && !needsOauthClientsBootstrap
+        && !needsOauthClientsSurface
         && !needsSourcesArchive && !needsPagesLastRetrievedAt
         && !needsPagesProvenance
         && !needsContextualRetrievalColumns && !needsPagesGeneration
@@ -1172,6 +1186,18 @@ export class PGLiteEngine implements BrainEngine {
           DEFAULT 'default' REFERENCES sources(id) ON DELETE SET NULL;
         ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS federated_read TEXT[]
           NOT NULL DEFAULT '{}';
+      `);
+    }
+
+    if (needsOauthClientsSurface) {
+      // WP4 (v127): per-client MCP tool surface + operator-lock marker.
+      // Nullable TEXT, no index — bootstrap mirrors the v127 column shape so
+      // the blob's CREATE TABLE presence can't mask the forward reference on
+      // pre-v127 brains (the v121 wedge class). v127 runs later via
+      // runMigrations and is idempotent.
+      await this.db.exec(`
+        ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS surface TEXT;
+        ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS surface_set_by TEXT;
       `);
     }
 

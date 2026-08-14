@@ -8,10 +8,22 @@
 
 import type { BrainEngine } from '../core/engine.ts';
 import { operations, OperationError, enforceBoundClientOpAllowList } from '../core/operations.ts';
-import type { Operation, OperationContext, AuthInfo } from '../core/operations.ts';
+import type { OperationContext, AuthInfo } from '../core/operations.ts';
 import { loadConfig } from '../core/config.ts';
 import { VERB_NAMES, MEMORY_VERBS_VERSION } from '../core/verbs.ts';
 import { logVerbUsage } from '../core/verbs/usage-log.ts';
+import { suggestNearest } from '../core/levenshtein.ts';
+import {
+  normalizeOptionalParams,
+  validateParams,
+  findUnknownParams,
+  buildUnknownParamWarnBlock,
+  resolveStrictParamsMode,
+} from './validate-params.ts';
+
+// WP3: normalization + validation moved to validate-params.ts (direct unit
+// surface). Re-exported here so existing imports/tests keep working.
+export { normalizeOptionalParams, validateParams } from './validate-params.ts';
 
 const VERB_NAME_SET: ReadonlySet<string> = new Set(VERB_NAMES);
 
@@ -39,7 +51,10 @@ export interface DispatchOpts {
   /**
    * #1061: transport marker for auth-less remote surfaces. The stdio MCP
    * server passes 'stdio' so identity ops (whoami) can report the transport
-   * instead of throwing unknown_transport. Never used for trust decisions.
+   * instead of throwing unknown_transport. Never used for TRUST decisions
+   * (that is `remote`), but it IS the transport-LOCALITY axis: localOnly
+   * ops dispatch only when this is 'stdio' (WP1/D7) — HTTP transports pass
+   * 'http', and an unset marker is treated as non-local, fail-closed.
    */
   transport?: OperationContext['transport'];
   /**
@@ -106,9 +121,19 @@ export interface DispatchOpts {
   /**
    * Which surface this transport is serving — recorded on the verb usage
    * sidecar so adoption stats can split quickstart installs from full
-   * surfaces. Defaults to 'full'.
+   * surfaces. Defaults to 'full'. On the OAuth HTTP transport this is the
+   * per-request EFFECTIVE surface (D2 ceiling resolution, recomputed per
+   * request — amendment 20).
    */
-  surface?: 'verbs' | 'full';
+  surface?: 'verbs' | 'starter' | 'full';
+  /**
+   * WP4 (D2): the SERVER surface ceiling for this transport (force-clamped),
+   * threaded into `OperationContext.surfaceCeiling` for the request_tools
+   * meta-op — its catalog never names ops above the ceiling and its persist
+   * branch rejects widening past it. Unset (local CLI / direct dispatch) is
+   * treated as 'full'.
+   */
+  surfaceCeiling?: 'verbs' | 'starter' | 'full';
 }
 
 /**
@@ -206,60 +231,111 @@ export function summarizeMcpParams(opName: string, params: unknown): ParamSummar
   };
 }
 
-/** Validate required params exist and have the expected type. Returns null on success, error message on failure. */
-export function validateParams(op: Operation, params: Record<string, unknown>): string | null {
-  for (const [key, def] of Object.entries(op.params)) {
-    if (def.required && (params[key] === undefined || params[key] === null)) {
-      return `Missing required parameter: ${key}`;
-    }
-    if (params[key] !== undefined && params[key] !== null) {
-      const val = params[key];
-      const expected = def.type;
-      if (expected === 'string' && typeof val !== 'string') return `Parameter "${key}" must be a string`;
-      if (expected === 'number' && typeof val !== 'number') return `Parameter "${key}" must be a number`;
-      if (expected === 'boolean' && typeof val !== 'boolean') return `Parameter "${key}" must be a boolean`;
-      if (expected === 'object' && (typeof val !== 'object' || Array.isArray(val))) return `Parameter "${key}" must be an object`;
-      if (expected === 'array' && !Array.isArray(val)) return `Parameter "${key}" must be an array`;
-    }
-  }
-  return null;
+/**
+ * D8: render the second (model-visible) content block for an empty retrieval
+ * result from the handler-emitted `retrieval` meta. Returns null when the
+ * meta doesn't carry the expected shape — the block is best-effort loudness,
+ * never a failure source. Reason codes come from the closed degradation
+ * vocabulary (D6); raw exception text never reaches this string.
+ */
+export function buildEmptyRetrievalBlock(retrieval: unknown): string | null {
+  if (retrieval === null || typeof retrieval !== 'object') return null;
+  const r = retrieval as {
+    retrieved_count?: number;
+    degraded?: Array<{ stage?: string; reason?: string }>;
+    hint?: string;
+  };
+  const parts: string[] = ['0 results.'];
+  if (typeof r.retrieved_count === 'number') parts.push(`retrieved ${r.retrieved_count} before trimming.`);
+  const stages = (r.degraded ?? [])
+    .map(d => d?.stage)
+    .filter((s): s is string => typeof s === 'string' && s.length > 0);
+  parts.push(stages.length > 0
+    ? `degraded: ${[...new Set(stages)].join(', ')}.`
+    : 'no retrieval degradation — this is a clean miss.');
+  if (typeof r.hint === 'string' && r.hint.length > 0) parts.push(`hint: ${r.hint}`);
+  return parts.join(' ');
 }
 
 /**
- * Normalize the absent-idioms real MCP clients send for OPTIONAL params
- * before validation and dispatch: `null` (any type) and `''` (string-typed
- * params) become "not provided".
+ * Amendment 33 / D10 — honest-catalog metric classifier. True when a parsed
+ * error envelope is an OP-LEVEL denial the tools/list filter SHOULD have
+ * prevented (the same predicates gate list and call time, so in a correct
+ * world these trend to zero):
+ *   - publish-gate call-time backstop (`detail: 'config_key=...'` — WP1's
+ *     machine-readable denial grammar)
+ *   - bound-client fence OP-level deny (`detail: 'fence=op'` —
+ *     enforceBoundClientOpAllowList; the tools/list filter consumes the
+ *     identical predicate, ENG-3)
  *
- * Why: non-Claude models routinely fill optional params with `""` or `null`
- * instead of omitting them. `validateParams` already reads null as absent
- * for the required-param check (see above); handlers do not — some guard
- * with `typeof p.x === 'string' && p.x.length > 0` (entity / session_id in
- * `recall`), others with `p.x !== undefined` (since in `recall`), so
- * `recall {since: ""}` silently returned zero facts where the same call
- * with `since` omitted returns rows. Normalizing once at the shared
- * dispatch layer gives every handler one canonical absence instead of
- * per-handler guards.
- *
- * Deliberately narrow:
- *   - Required params are untouched — null on a required param still fails
- *     validation loudly, and `''` on a required string still reaches the
- *     handler exactly as before.
- *   - Type-mismatched junk is untouched — `limit: ""` keeps its loud
- *     "must be a number" error rather than silently succeeding.
- *   - Undeclared keys are untouched (they were already ignored).
- * Copy-on-write: callers' param objects are never mutated.
+ * Argument-level fence denials (slug-prefix rejections inside handlers) are
+ * legitimate for a LISTED op and deliberately excluded (D10) — they carry no
+ * marker. serve-http logs matching rows with status='denied_after_list' so
+ * `SELECT count(*) FROM mcp_request_log WHERE status='denied_after_list'`
+ * is the wave's trend-to-zero working metric (the scope-deny path in
+ * serve-http is the third list-level class; it logs the status directly).
  */
-export function normalizeOptionalParams(op: Operation, params: Record<string, unknown>): Record<string, unknown> {
-  let out: Record<string, unknown> | null = null;
-  for (const [key, def] of Object.entries(op.params)) {
-    if (def.required) continue;
-    const val = params[key];
-    const isAbsentIdiom = val === null || (val === '' && def.type === 'string');
-    if (!isAbsentIdiom) continue;
-    if (out === null) out = { ...params };
-    delete out[key];
+export function isListLevelDenialEnvelope(parsed: unknown): boolean {
+  if (parsed === null || typeof parsed !== 'object') return false;
+  const p = parsed as { error?: unknown; detail?: unknown };
+  if (p.error !== 'permission_denied') return false;
+  if (typeof p.detail !== 'string') return false;
+  return p.detail.startsWith('config_key=') || p.detail === 'fence=op';
+}
+
+/** The mcp_request_log status classes a dispatched tool result maps onto. */
+export type RequestLogStatus = 'success' | 'success_with_warnings' | 'denied_after_list' | 'error';
+
+/**
+ * The ONE `mcp_request_log.status` decision for a dispatched tool result
+ * (serve-http's tools/call persistence + SSE broadcast both consume this):
+ *   - errors whose envelope is a list-level denial (isListLevelDenialEnvelope
+ *     above) → 'denied_after_list' (amendment 33 / D10 trend-to-zero metric);
+ *     other errors (including unparseable content) → 'error';
+ *   - successes whose `_meta.warnings` is a non-empty array →
+ *     'success_with_warnings' (WP3 amendment 13 warn-mode observability;
+ *     warn CONTENTS are never logged); otherwise → 'success'.
+ * The scope-deny and unknown-op paths in serve-http log their statuses
+ * directly — they never produce a ToolResult through the dispatcher.
+ */
+export function requestLogStatusForResult(result: ToolResult): RequestLogStatus {
+  if (result.isError) {
+    try {
+      const parsed: unknown = JSON.parse(result.content[0]?.text ?? '{}');
+      if (isListLevelDenialEnvelope(parsed)) return 'denied_after_list';
+    } catch { /* unparseable error content stays plain 'error' */ }
+    return 'error';
   }
-  return out ?? params;
+  const warnings = result._meta?.warnings;
+  return Array.isArray(warnings) && warnings.length > 0 ? 'success_with_warnings' : 'success';
+}
+
+/**
+ * WP3: the ONE unknown_tool envelope builder, shared by all three deny paths
+ * (surface-hidden via allowedOps, nonexistent op, localOnly over a network
+ * transport) so they stay byte-identical for the same input name — a hidden
+ * op must remain indistinguishable from a nonexistent one.
+ *
+ * The did-you-mean candidates are the caller's VISIBLE surface only
+ * (amendment 11): (allowedOps if set, else the full catalog) MINUS localOnly
+ * ops MINUS publish-gated ops. Gated names are excluded unconditionally —
+ * gate state is unknown here, and a suggestion naming a hidden/gated op
+ * would be the exact existence oracle this envelope exists to prevent.
+ */
+function unknownToolEnvelope(name: string, allowedOps?: ReadonlySet<string>): ToolResult {
+  const candidates = operations
+    .filter(op => !op.localOnly && !op.publishGateKey && (allowedOps ? allowedOps.has(op.name) : true))
+    .map(op => op.name);
+  const nearest = suggestNearest(name, candidates);
+  const envelope = {
+    error: 'unknown_tool',
+    message: `Unknown tool: ${name}`,
+    ...(nearest ? { suggestion: `Did you mean "${nearest}"?` } : {}),
+  };
+  return {
+    content: [{ type: 'text', text: JSON.stringify(envelope, null, 2) }],
+    isError: true,
+  };
 }
 
 const stderrLogger: OperationContext['logger'] = {
@@ -312,6 +388,7 @@ export function buildOperationContext(
     sourceId: opts.sourceId ?? 'default',
     ...(sessionId ? { sessionId } : {}),
     ...(opts.localFederatedSourceIds ? { localFederatedSourceIds: opts.localFederatedSourceIds } : {}),
+    ...(opts.surfaceCeiling ? { surfaceCeiling: opts.surfaceCeiling } : {}),
     auth: opts.auth,
   };
 }
@@ -349,10 +426,7 @@ export async function dispatchToolCall(
   // on every transport, not just unlisted. Same envelope as unknown ops so
   // the surface doesn't leak which names exist.
   if (opts.allowedOps && !opts.allowedOps.has(name)) {
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'unknown_tool', message: `Unknown tool: ${name}` }, null, 2) }],
-      isError: true,
-    };
+    return unknownToolEnvelope(name, opts.allowedOps);
   }
 
   const op = operations.find(o => o.name === name);
@@ -362,10 +436,18 @@ export async function dispatchToolCall(
     // plain `Error: ...` string here breaks the contract on every
     // unknown-op path and the resulting test failure looked like a
     // transport bug.
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'unknown_tool', message: `Unknown tool: ${name}` }, null, 2) }],
-      isError: true,
-    };
+    return unknownToolEnvelope(name, opts.allowedOps);
+  }
+
+  // localOnly backstop at the SHARED layer (WP1/D7): localOnly ops reach the
+  // operator's filesystem, so they dispatch only on the local stdio pipe.
+  // Any non-stdio transport — both HTTP servers, and any future caller that
+  // forgets to mark its transport — is denied fail-closed. Same envelope as
+  // a nonexistent op so the catalog doesn't leak which names exist. The
+  // serve-http path also filters these at list time; the legacy bearer
+  // transport at surface 'full' had no gate at all before this line.
+  if (op.localOnly && opts.transport !== 'stdio') {
+    return unknownToolEnvelope(name, opts.allowedOps);
   }
 
   const safeParams = normalizeOptionalParams(op, params || {});
@@ -388,6 +470,40 @@ export async function dispatchToolCall(
     };
   }
 
+  // WP3 strict/warn unknown-argument validation. Runs on the NORMALIZED
+  // object (a null/'' optional idiom is never an unknown key). `_meta` and
+  // `dry_run` are allowlisted inside findUnknownParams. The mode resolves
+  // dual-plane (DB > file > 'warn') once per dispatch, and only when an
+  // unknown key actually exists — the all-declared common case pays no
+  // config read.
+  const unknownParamWarnings = findUnknownParams(op, safeParams);
+  if (unknownParamWarnings.length > 0) {
+    const strictMode = await resolveStrictParamsMode(engine, loadConfig());
+    if (strictMode === 'reject') {
+      logVerb(false);
+      // Privacy (amendment 11): the raw unknown key rides `suggestion` ONLY.
+      // serve-http persists the envelope's `message` into
+      // mcp_request_log.error_message — the message therefore counts, never
+      // names (same posture as the redacted params summarizer).
+      const n = unknownParamWarnings.length;
+      const suggestion = unknownParamWarnings
+        .map(w => w.suggestion
+          ? `Unknown parameter "${w.param}" — did you mean "${w.suggestion}"?`
+          : `Unknown parameter "${w.param}".`)
+        .join(' ');
+      const envelope = {
+        error: 'invalid_params',
+        message: `${n} unknown parameter${n === 1 ? '' : 's'} not declared in the ${name} tool schema (mcp.strict_params=reject). See suggestion for the submitted name${n === 1 ? '' : 's'}.`,
+        suggestion,
+        ...(isVerb ? { protocol_version: MEMORY_VERBS_VERSION } : {}),
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(envelope, null, 2) }],
+        isError: true,
+      };
+    }
+  }
+
   // Remote callers must arrive with a resolved source scope. Every shipped
   // transport passes sourceId explicitly (serve-http from the OAuth client
   // row, http-transport from the legacy token grant, stdio from
@@ -405,6 +521,22 @@ export async function dispatchToolCall(
 
   const ctx = buildOperationContext(engine, safeParams, opts);
 
+  // WP2/D3: response-meta side channel. Handlers publish namespaced
+  // out-of-band metadata (retrieval degradation, strict-mode warnings) here;
+  // the success path below merges the collected keys into ToolResult._meta.
+  // Last write per key wins within one call; the collector never throws.
+  const responseMeta: Record<string, unknown> = {};
+  ctx.emitResponseMeta = (key, value) => {
+    if (value !== undefined) responseMeta[key] = value;
+  };
+
+  // WP3 warn mode: unknown keys were accepted above — surface them on the
+  // structured channel (`_meta.warnings`, amendment 13 shape) so operators
+  // and capable clients see the grace-period signal per call.
+  if (unknownParamWarnings.length > 0) {
+    ctx.emitResponseMeta('warnings', unknownParamWarnings);
+  }
+
   try {
     // Fail-closed gate for slug-bound OAuth clients, applied here because
     // this is the one path both MCP transports share. Per-op fences still
@@ -421,17 +553,39 @@ export async function dispatchToolCall(
       });
     }
     const out: ToolResult = { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    // D8: model-visible loudness for empty retrievals. The body stays a bare
+    // array (D3 — deployed thin-clients parse content[0] only), and a SECOND
+    // text block carries the diagnosis the model actually sees. Structured
+    // consumers read the same facts from _meta.retrieval below.
+    if (Array.isArray(result) && result.length === 0 && responseMeta.retrieval) {
+      const block = buildEmptyRetrievalBlock(responseMeta.retrieval);
+      if (block) out.content.push({ type: 'text', text: block });
+    }
+    // WP3/D8: warn-mode unknown-param notices ride the same model-visible
+    // extra-block mechanism, so the grace period actually corrects clients
+    // (old thin-clients read content[0] only — skew-safe).
+    if (unknownParamWarnings.length > 0) {
+      out.content.push({ type: 'text', text: buildUnknownParamWarnBlock(unknownParamWarnings) });
+    }
+    // _meta assembly (WP2 amendment 9): one producer per top-level key,
+    // each isolated — handler-emitted keys (retrieval, warnings) attach
+    // BEFORE and independently of the metaHook, so a hot-memory hook
+    // failure can never drop the retrieval channel. Per-key merge, never
+    // wholesale assignment. See docs/protocol/MCP_META_CHANNELS.md.
+    if (Object.keys(responseMeta).length > 0) {
+      out._meta = { ...responseMeta };
+    }
     // v0.31 (eD3 + eE4): best-effort _meta.brain_hot_memory injection.
     // The hook is wrapped in its own try/catch — any DB blip / cache miss /
-    // helper crash degrades to no `_meta` rather than flipping the whole
+    // helper crash degrades to no hook keys rather than flipping the whole
     // tool call to error.
     if (opts.metaHook) {
       try {
         const meta = await opts.metaHook(name, ctx);
-        if (meta && Object.keys(meta).length > 0) out._meta = meta;
+        if (meta && Object.keys(meta).length > 0) out._meta = { ...(out._meta ?? {}), ...meta };
       } catch (metaErr) {
         const msg = metaErr instanceof Error ? metaErr.message : String(metaErr);
-        ctx.logger.warn(`[mcp] _meta hook failed for ${name}: ${msg}; degrading to no-_meta`);
+        ctx.logger.warn(`[mcp] _meta hook failed for ${name}: ${msg}; degrading to no hook keys`);
       }
     }
     return out;

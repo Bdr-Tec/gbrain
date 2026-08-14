@@ -58,7 +58,7 @@ export interface ServeOptions {
   // (which unconditionally attaches a 'data' listener to real
   // process.stdin and would pollute the test runner's stdin handle).
   // Defaults to the real implementation when omitted.
-  startMcpServer?: (engine: BrainEngine, opts?: { surface?: 'verbs' | 'full' }) => Promise<void>;
+  startMcpServer?: (engine: BrainEngine, opts?: { surface?: 'verbs' | 'starter' | 'full' }) => Promise<void>;
   // Test seam for the parent-process watchdog. The default
   // (`readLiveParentPid`) reads the live kernel PPID via `ps` on POSIX
   // because `process.ppid` is captured at process creation and does not
@@ -173,8 +173,9 @@ export async function runServe(
   const isHttp = args.includes('--http');
 
   // MEMORY_VERBS v1: tool-surface mode. Flag > config `mcp_surface` > 'full'.
-  // 'verbs' exposes exactly the five protocol verbs (the quickstart surface);
-  // 'full' (default) keeps every operation — existing installs see no change.
+  // 'verbs' exposes exactly the seven protocol verbs (the quickstart surface);
+  // 'starter' the ~20-op daily-driver set; 'full' (default) keeps every
+  // operation — existing installs see no change.
   const { parseSurfaceFlag, resolveSurface } = await import('../mcp/surface.ts');
   const { loadConfig } = await import('../core/config.ts');
   const surface = resolveSurface(parseSurfaceFlag(args), loadConfig());

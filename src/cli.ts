@@ -33,7 +33,7 @@ import { serializeMarkdown } from './core/markdown.ts';
 import { parseGlobalFlags, setCliOptions, getCliOptions } from './core/cli-options.ts';
 import { conceptNudge } from './core/search/query-intent.ts';
 import type { CliOptions } from './core/cli-options.ts';
-import { callRemoteTool, RemoteMcpError, unpackToolResult } from './core/mcp-client.ts';
+import { callRemoteTool, RemoteMcpError, unpackToolResult, extractResponseMeta } from './core/mcp-client.ts';
 import { maybePromptForUpgrade } from './core/thin-client-upgrade-prompt.ts';
 import { CLI_FLAG_REGISTRY } from './core/cli-flag-registry.generated.ts';
 import { VERSION } from './version.ts';
@@ -720,6 +720,10 @@ async function runThinClientRouted(
       timeoutMs,
       signal: sigintController.signal,
     });
+    // T15/FOV-1: lift the server's retrieval meta off the envelope before
+    // unpacking (old servers lack _meta — capture is simply skipped).
+    const envelopeMeta = extractResponseMeta(raw);
+    if (envelopeMeta?.retrieval) captureRetrievalMeta('retrieval', envelopeMeta.retrieval);
     const result = unpackToolResult(raw);
     const output = formatResult(op.name, result, params);
     if (output) process.stdout.write(output);
@@ -1307,7 +1311,48 @@ export async function makeContext(engine: BrainEngine, params: Record<string, un
     // brain (that would be an untrusted-caller cross-brain hole over MCP).
     brainId: activeBrainId,
     ...(localFederated ? { localFederatedSourceIds: localFederated } : {}),
+    // T15/FOV-1: capture the retrieval meta for formatResult's empty-result
+    // render (the local-engine twin of the MCP _meta.retrieval channel).
+    emitResponseMeta: captureRetrievalMeta,
   };
+}
+
+/**
+ * T15/FOV-1: the retrieval meta for the CURRENT CLI invocation, captured
+ * from either result path — the local engine path via ctx.emitResponseMeta,
+ * the thin-client routed path via the envelope's `_meta.retrieval`. Read by
+ * formatResult's empty-result branch so `gbrain search`/`query` stop
+ * printing a bare "No results." when the pipeline actually degraded.
+ * Module state is safe here: one op per CLI process.
+ */
+let lastRetrievalMeta: Record<string, unknown> | null = null;
+
+export function captureRetrievalMeta(key: string, value: unknown): void {
+  if (key === 'retrieval' && value !== null && typeof value === 'object') {
+    lastRetrievalMeta = value as Record<string, unknown>;
+  }
+}
+
+// Exported for tests.
+export function resetRetrievalMetaForTests(): void {
+  lastRetrievalMeta = null;
+}
+
+/** One-line parenthetical for the empty-result render. '' when no meta. */
+function describeEmptyRetrieval(): string {
+  const m = lastRetrievalMeta;
+  if (!m) return '';
+  const parts: string[] = [];
+  if (typeof m.retrieved_count === 'number' && m.retrieved_count > 0) {
+    parts.push(`retrieved ${m.retrieved_count} before trimming`);
+  }
+  const stages = Array.isArray(m.degraded)
+    ? [...new Set((m.degraded as Array<{ stage?: string }>).map(d => d?.stage).filter(Boolean))]
+    : [];
+  parts.push(stages.length > 0
+    ? `degraded: ${stages.join(', ')}`
+    : 'clean miss — no retrieval degradation');
+  return ` (${parts.join('; ')})`;
 }
 
 // Exported for tests (same import-safety contract as cliAliases/printOpHelp).
@@ -1369,7 +1414,10 @@ export function formatResult(
     case 'query': {
       const results = result as any[];
       if (params.json === true) return JSON.stringify(results, null, 2) + '\n';
-      if (results.length === 0) return 'No results.\n';
+      // T15/FOV-1: an empty result names its cause when the pipeline told us
+      // (degradation stages from _meta.retrieval / the local meta capture) —
+      // a bare "No results." was indistinguishable from a degraded pipeline.
+      if (results.length === 0) return `No results.${describeEmptyRetrieval()}\n`;
       // v0.40.4 — --explain switches to per-stage attribution formatter.
       // Reads CliOptions.explain via the module-level singleton.
       const cliOpts = getCliOptions();
@@ -3196,8 +3244,9 @@ ADMIN
   storage status [--repo <path>]     Storage tier status and health
         [--json]                     (git-tracked vs supabase-only)
   serve                              MCP server (stdio)
-    --surface verbs|full             Tool surface: the 5 memory verbs only, or
-                                     every op (default full; verbs = quickstart)
+    --surface verbs|starter|full     Tool surface: the 7 memory verbs, the ~20-op
+                                     starter set, or every op (default full).
+                                     On --http this is the per-client CEILING.
   serve --http [--port N]            HTTP MCP server with OAuth 2.1
     --token-ttl N                    Access token TTL in seconds (default: 3600)
     --enable-dcr                     Enable Dynamic Client Registration (DCR clients default to authorization_code)
