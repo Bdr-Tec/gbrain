@@ -2,6 +2,105 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.12.0] - 2026-08-13
+
+**The Truthful Surface wave: your agent's MCP catalog now tells the truth. What's listed is callable, empty answers explain themselves, and new clients start with a focused ~20-tool surface they can widen on demand.**
+
+This wave answers a production consumer's six-point review of the remote MCP
+experience ("A- tools, B- packaging"). Every fix rewires signals gbrain already
+computes into responses agents already receive — organized around one principle:
+the tool catalog is an API promise.
+
+### Added
+
+- **Starter tool surface + pull-based unlock.** A new `starter` surface
+  (~20 daily-driver tools, derived from real production usage) sits between
+  `verbs` and `full`. Each connected client can carry its own surface, bounded
+  by the server ceiling — it can narrow itself or widen up to the ceiling with
+  the new `request_tools` tool, and operators can pin a client's surface with
+  `gbrain auth rescope-client` (pins beat self-service, always). Every surface
+  change writes an audit row, so "why did this client see 20 tools yesterday
+  and 100 today" is answerable from logs alone.
+- **`request_tools` discovery meta-op.** No arguments → the catalog visible to
+  YOUR credentials, grouped by area with one-line summaries. `{tools: [...]}`
+  → full schemas for named tools. `{surface}` → persist a wider or narrower
+  surface (rate-limited, ceiling-bounded, operator-pin-aware), then re-list.
+- **Fail-loud retrieval.** Every `query`/`search` response now carries
+  `_meta.retrieval` — retrieved count, a closed-vocabulary `degraded[]` trail
+  (embed unavailable, expansion failed, budget truncated, ...), and a hint for
+  concept-shaped queries. Empty results additionally carry a model-visible
+  explanation block, and the CLI names the cause instead of a bare
+  "No results."
+- **Synthesis that says why.** `synthesize` (and `think`) report
+  `synthesis_status`, pages/takes gathered, and typed warnings. When the LLM
+  compose step fails but retrieval found material, you now get an extractive
+  fallback answer built from the gathered pages instead of silence.
+- **Minions queue visibility.** `get_status_snapshot` gains `queue` (per-queue
+  depth + oldest-waiting age) and `workers` (supervisor liveness) sections.
+  `submit_agent`/`submit_job` return `queue_state` with a warning when the
+  queue is backed up, paused, or has no live worker — a job ID alone is no
+  longer mistakable for progress. New `get_agent_job` op lets agent-scope
+  clients poll their own jobs (and only their own).
+- **Lint visibility on writes.** `put_page` now returns the top lint findings
+  (errors first, with per-validator fix hints) instead of just counts.
+- **Operator tooling.** `gbrain auth clients --usage` (per-client op usage),
+  a starter-fit advisor collector with drift detection, a generated
+  `docs/TOOL_CATALOG.md`, and a surface-operations runbook.
+
+### Changed
+
+- **The tool catalog is now honest on every transport.** `tools/list` reflects
+  what the caller can actually invoke: publish-gated, scope-blocked,
+  surface-hidden, and fence-blocked tools are unlisted rather than listed-then-
+  denied; local-only tools are confined to the local transport. Hidden and
+  nonexistent tools are indistinguishable on the wire.
+- **Complete, guessable schemas.** Every network-visible tool parameter now
+  carries a description with examples (37 backfilled), CI-guarded so new params
+  can't ship undocumented. Unknown arguments get a did-you-mean response:
+  warn-and-accept by default this release (`mcp.strict_params`), with a named
+  flip to reject in a future minor.
+- **Search degradation is survivable.** One failed embedding arm no longer
+  zeroes the whole vector fan-out — survivors are salvaged and stamped. A
+  first-result-exceeds-budget search now returns one truncated result instead
+  of an empty list, and the token cap is now a true hard cap.
+- Degraded result sets cache for ~60s (stamped) instead of full TTL, so a
+  transient provider outage stops echoing for an hour. Cache keys fold the new
+  degradation stamp (one-time miss spike on upgrade).
+
+### Fixed
+
+- Request-log statuses now distinguish denials-after-list and warn-mode
+  successes on both HTTP transports, usage-derived features count only
+  successful calls, and the admin error-rate metric no longer counts audit
+  bookkeeping as traffic.
+- Config read failures fail closed: a transient config outage can no longer
+  widen a client's surface or re-open the unknown-argument grace period on a
+  strict server.
+- Raw exception text no longer rides MCP responses — degradation reasons and
+  warnings use closed code vocabularies; details go to server logs.
+
+## To take advantage of v0.45.12.0
+
+`gbrain upgrade` runs the schema migration automatically.
+
+1. **Upgrade and check:**
+   ```bash
+   gbrain upgrade
+   gbrain doctor
+   ```
+2. **See what your clients actually use, then right-size them:**
+   ```bash
+   gbrain auth clients --usage
+   gbrain auth rescope-client <client-id> --surface starter
+   ```
+   Existing clients keep their current (full) surface — nothing narrows on
+   upgrade. New clients can be defaulted with `mcp.default_surface_dcr`.
+3. **Watch retrieval health:** `gbrain search stats` now breaks down empty
+   results by cause, and every MCP response carries `_meta.retrieval`.
+4. **Agents discover the rest themselves:** any client can call
+   `request_tools` to browse the full catalog and (within your ceiling)
+   widen its own surface.
+
 ## [0.45.10.0] - 2026-08-13
 
 **21 more community and maintainer bug fixes. Search answers get more complete, sync gets safer, and doctor learns to warn you before a provider dies.**
