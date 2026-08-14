@@ -1000,6 +1000,7 @@ export class MinionQueue {
           stacktrace = COALESCE(stacktrace, '[]'::jsonb) || to_jsonb($3::text),
           delay_until = CASE WHEN $1 = 'delayed' THEN now() + ($4::double precision * interval '1 millisecond') ELSE NULL END,
           finished_at = CASE WHEN $1 IN ('failed', 'dead') THEN now() ELSE NULL END,
+          started_at = CASE WHEN $1 = 'delayed' THEN NULL ELSE started_at END,
           lock_token = NULL, lock_until = NULL, updated_at = now()
          WHERE id = $5 AND status = 'active' AND lock_token = $6
          RETURNING *`,
@@ -1128,6 +1129,7 @@ export class MinionQueue {
         error_text = $1,
         stacktrace = COALESCE(stacktrace, '[]'::jsonb) || to_jsonb($1::text),
         delay_until = now() + ($2::double precision * interval '1 millisecond'),
+        started_at = NULL,
         lock_token = NULL, lock_until = NULL, updated_at = now()
        WHERE id = $3 AND status = 'active' AND lock_token = $4
        RETURNING *`,
@@ -1203,6 +1205,7 @@ export class MinionQueue {
   async promoteDelayed(): Promise<MinionJob[]> {
     const rows = await this.lockRetry(() => this.engine.executeRaw<Record<string, unknown>>(
       `UPDATE minion_jobs SET status = 'waiting', delay_until = NULL,
+        started_at = NULL,
         lock_token = NULL, lock_until = NULL, updated_at = now()
        WHERE status = 'delayed' AND delay_until <= now()
        RETURNING *`
@@ -1222,6 +1225,7 @@ export class MinionQueue {
       requeued AS (
         UPDATE minion_jobs SET
           status = 'waiting', stalled_counter = stalled_counter + 1,
+          started_at = NULL,
           lock_token = NULL, lock_until = NULL, updated_at = now()
         WHERE id IN (SELECT id FROM stalled WHERE stalled_counter + 1 < max_stalled)
         RETURNING *, 'requeued' as action
