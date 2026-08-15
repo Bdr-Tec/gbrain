@@ -31,8 +31,9 @@ transcript.
   actually re-submits them; `--audit-rejects <n>` gets a frontier-model
   second opinion on a sample of rejects (the threshold-calibration loop).
   Every sweep prints an upfront cost estimate and asks before spending more
-  than a few dollars (`--yes` to skip, `--max-usd` for a hard budget that
-  counts every paid call, including unreliable ones). Guardrails: queues
+  than a few dollars (`--yes` to skip, `--max-usd` for an estimate-based
+  budget stop that counts every paid call, including unreliable ones — it
+  can overshoot by up to the configured triage concurrency). Guardrails: queues
   younger than an hour are treated as possibly-live and never touched;
   `--cancel-unmatched` refuses to run off a truncated or empty corpus scan.
 - **Triage map in the synthesis prompt.** Passing files hand the synthesis
