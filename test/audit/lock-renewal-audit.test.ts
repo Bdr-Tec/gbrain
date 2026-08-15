@@ -117,7 +117,7 @@ describe('lockRenewalAudit: v0.46 (#4145) additive telemetry fields', () => {
       lockRenewalAudit.logGaveUp(8, 'sync', 3, new Error('y'));
       const result = readRecentLockRenewalEvents(24);
       expect(result.events).toHaveLength(1);
-      const raw = result.events[0] as Record<string, unknown>;
+      const raw = result.events[0] as unknown as Record<string, unknown>;
       for (const key of ['cause', 'lateness_ms', 'overlap_skips', 'load1', 'cores', 'via', 'deadline_deferred']) {
         expect(key in raw).toBe(false);
       }

@@ -1333,8 +1333,18 @@ export class MinionQueue {
     return rows.length > 0;
   }
 
-  /** Renew lock (token-fenced). Returns false if token mismatch (job was reclaimed). */
-  async renewLock(id: number, lockToken: string, lockDurationMs: number): Promise<boolean> {
+  /**
+   * Renew lock (token-fenced). Returns false if token mismatch (job was reclaimed).
+   *
+   * #4145 (CDX-2/R2-2): the optional `signal` lets the renewal tick abort an
+   * in-flight call when its own timeout race fires. BEST-EFFORT only — pool
+   * acquisition and PG protocol cancel are asynchronous, and PGLite ignores
+   * the signal entirely — so correctness never rests on it: a late-landing
+   * renewal UPDATE is fenced on OUR token, meaning it can only extend a lock
+   * nobody else has claimed; worst case is a stall-requeue delayed by ≤ one
+   * lease.
+   */
+  async renewLock(id: number, lockToken: string, lockDurationMs: number, signal?: AbortSignal): Promise<boolean> {
     // Direct (session-mode) pool — see claim(). The heartbeat that keeps a job
     // alive for minutes cannot run on the transaction pooler without periodic
     // CONNECTION_ENDED drops that look like lock-expiry and orphan the job.
@@ -1342,7 +1352,8 @@ export class MinionQueue {
       `UPDATE minion_jobs SET lock_until = now() + ($1::double precision * interval '1 millisecond'), updated_at = now()
        WHERE id = $2 AND lock_token = $3 AND status = 'active'
        RETURNING id`,
-      [lockDurationMs, id, lockToken]
+      [lockDurationMs, id, lockToken],
+      signal ? { signal } : undefined
     );
     return rows.length > 0;
   }

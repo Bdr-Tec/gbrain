@@ -1046,10 +1046,12 @@ export class MinionWorker extends EventEmitter {
           if (this.inFlight.get(job.id)?.lockToken === lockToken) {
             this.inFlight.delete(job.id);
           }
-          // D8a: don't failJob if the abort was infrastructure. The
-          // stall detector will reclaim the row cleanly because the
-          // lock has expired (lock-renewal aborts only fire after
-          // lockDuration - safetyMargin elapsed without renewal).
+          // D8a: don't failJob if the abort was infrastructure. The stall
+          // detector will reclaim the row cleanly: a lock-renewal abort
+          // now fires only after the at-deadline VERIFY either returned
+          // fenced-false (row already reclaimed) or stayed unreachable
+          // past hardEvictMs (lease long expired) — see #4145
+          // verify-before-evict in lock-renewal-tick.ts.
           if (!INFRASTRUCTURE_ABORT_REASONS.has(reason)) {
             this.queue.failJob(
               job.id,

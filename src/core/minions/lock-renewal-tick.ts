@@ -18,14 +18,25 @@
  *     `Promise.race(call, timeoutPromise)` with `callTimeoutMs` so the
  *     call cannot pend longer than the configured budget.
  *
- *   - **Threshold math**: with `lockDuration=30s` and `interval=15s`,
- *     a 3-strike count-based abort fires at t=45s but the lock has
- *     been reclaimable since t=30s — a 15s window where another
- *     worker can claim the same job. `runLockRenewalTick` aborts based
- *     on `Date.now() - lastSuccessfulRenewalAt >= lockDuration -
- *     safetyMargin` (time-based), so the worker voluntarily releases
- *     BEFORE the stall detector can reclaim. The failure counter is
- *     kept for audit-event labeling only.
+ *   - **Verify-before-evict (#4145, replaces the v0.41.22.2 abort-at-
+ *     deadline doctrine)**: a thrown/timed-out renewal is NOT evidence of
+ *     loss — under event-loop starvation the UPDATE may even have landed
+ *     server-side while the local race timeout won. When the NEXT tick
+ *     would land past the soft deadline (`lockDuration - safetyMargin`,
+ *     cadence-aware per CDX-4), the tick runs ONE bounded VERIFY renewal:
+ *     fenced-true → starved-but-ours, lease re-extended, keep working;
+ *     fenced-false → CERTAIN loss, abort (stall detector requeues, no
+ *     attempt burned); verify unreachable → defer and retry next tick,
+ *     aborting only past the `hardEvictMs` backstop (a LOCAL decision
+ *     under uncertainty that bounds blind external side effects during a
+ *     total outage). The local clock only schedules WHEN to verify —
+ *     the DB fence decides WHETHER to evict; production binds `deps.now`
+ *     to a monotonic source so wall-clock jumps can't distort the math.
+ *     Accepted timing behavior (ENG-E1): at the 30s default a failed
+ *     renewal (≤10s) + verify (≤10s) can span 20s > the 15s cadence, so
+ *     tickInFlight skips one tick — benign (a verify-success re-extends
+ *     the lease and resets the baseline); do not "fix" it into an
+ *     overlap. The failure counter is kept for audit-event labeling only.
  *
  *   - **Cancelled-tick race**: if the job ends while a renewLock call
  *     is mid-flight, the IIFE in worker.ts must bail without writing
@@ -98,12 +109,29 @@ export interface LockRenewalKnobs {
    */
   callTimeoutMs: number;
   /**
-   * Time-based abort fires when `now - lastSuccessfulRenewalAt >=
-   * lockDuration - safetyMarginMs`. Default safety margin gives ~5s
-   * of headroom before another worker could reclaim the lock.
+   * The soft deadline is `lockDuration - safetyMarginMs`: once the NEXT
+   * tick would land past it, the tick runs the at-deadline VERIFY renewal
+   * (fenced re-check) instead of retrying blindly. The margin is the
+   * headroom the verify has to complete before the lease actually lapses.
    * Env: `GBRAIN_LOCK_RENEWAL_SAFETY_MARGIN_MS`. Default: `lockDuration / 6`.
    */
   safetyMarginMs: number;
+  /**
+   * The hard local backstop (#4145): when even the VERIFY renewal is
+   * unreachable (throws/times out) for this long since the last success,
+   * abort anyway. This is an uncertainty BOUND, not a certainty claim —
+   * fenced-false is the only CERTAIN loss signal; the hard evict merely
+   * caps how long a handler with non-fenced EXTERNAL side effects may run
+   * blind during a total DB outage. APPROXIMATE by design: checked after
+   * a primary call + verify (overshoot up to ~2×callTimeoutMs + timer
+   * lateness), and eviction stays cooperative (an abort-ignoring handler
+   * outlives it — the kill/reap follow-up TODO is the true bound).
+   * Setting this to the soft deadline approximates the legacy
+   * abort-at-deadline behavior (the verify still runs once).
+   * Env: `GBRAIN_LOCK_RENEWAL_HARD_EVICT_MS`. Default: `2 × lockDuration`,
+   * floored to the soft deadline (warn-once on floor).
+   */
+  hardEvictMs: number;
 }
 
 /**
@@ -130,12 +158,14 @@ export function _resetKnobWarningsForTests(): void {
 export function resolveLockRenewalKnobs(
   env: Record<string, string | undefined>,
   lockDurationMs: number,
+  intervalMs: number = Math.max(1, Math.floor(lockDurationMs / 2)),
 ): LockRenewalKnobs {
   const defaultMaxFailures = 3;
   const defaultCallTimeout = Math.max(1, Math.floor(lockDurationMs / 3));
   const defaultSafetyMargin = Math.max(1, Math.floor(lockDurationMs / 6));
+  const defaultHardEvict = lockDurationMs * 2;
 
-  return {
+  const knobs: LockRenewalKnobs = {
     maxFailuresForAudit: parsePositiveInt(
       env.GBRAIN_LOCK_RENEWAL_MAX_FAILURES,
       defaultMaxFailures,
@@ -151,7 +181,54 @@ export function resolveLockRenewalKnobs(
       defaultSafetyMargin,
       'GBRAIN_LOCK_RENEWAL_SAFETY_MARGIN_MS',
     ),
+    hardEvictMs: parsePositiveInt(
+      env.GBRAIN_LOCK_RENEWAL_HARD_EVICT_MS,
+      defaultHardEvict,
+      'GBRAIN_LOCK_RENEWAL_HARD_EVICT_MS',
+    ),
   };
+
+  // [CDX-10] Relational validation: positive-integer parsing alone lets a
+  // margin exceed the lease or a call timeout exceed the cadence, which
+  // silently re-breaks the deadline math. Clamp the offending knob (to a
+  // relationally-valid derivation) and warn once per process per knob.
+  // Runs per job launch against the EFFECTIVE per-job lease.
+  if (knobs.safetyMarginMs >= lockDurationMs / 2) {
+    warnRelationalClamp(
+      'GBRAIN_LOCK_RENEWAL_SAFETY_MARGIN_MS',
+      `safetyMarginMs (${knobs.safetyMarginMs}) must be < lockDuration/2 (${lockDurationMs / 2})`,
+      defaultSafetyMargin,
+    );
+    knobs.safetyMarginMs = defaultSafetyMargin;
+  }
+  if (knobs.callTimeoutMs > intervalMs) {
+    warnRelationalClamp(
+      'GBRAIN_LOCK_RENEWAL_CALL_TIMEOUT_MS',
+      `callTimeoutMs (${knobs.callTimeoutMs}) must be <= the renewal cadence (${intervalMs}) or a slow call wedges tickInFlight across intervals`,
+      intervalMs,
+    );
+    knobs.callTimeoutMs = intervalMs;
+  }
+  const softDeadline = lockDurationMs - knobs.safetyMarginMs;
+  if (knobs.hardEvictMs < softDeadline) {
+    warnRelationalClamp(
+      'GBRAIN_LOCK_RENEWAL_HARD_EVICT_MS',
+      `hardEvictMs (${knobs.hardEvictMs}) must be >= the soft deadline (${softDeadline})`,
+      softDeadline,
+    );
+    knobs.hardEvictMs = softDeadline;
+  }
+  return knobs;
+}
+
+function warnRelationalClamp(name: string, violation: string, clampedTo: number): void {
+  const key = `relational:${name}`;
+  if (!_warnedKnobs.has(key)) {
+    _warnedKnobs.add(key);
+    process.stderr.write(
+      `[lock-renewal] ${violation}; clamping to ${clampedTo}\n`,
+    );
+  }
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number, name: string): number {
@@ -184,7 +261,13 @@ function warnAndFallback(name: string, raw: string, fallback: number): number {
  * `runLockRenewalTick` is pure and trivially testable.
  */
 export interface LockRenewalDeps {
-  renewLock: (jobId: number, lockToken: string, lockDurationMs: number) => Promise<boolean>;
+  /**
+   * The fenced renewal UPDATE. The optional `signal` (CDX-2/R2-2) lets the
+   * tick cancel an in-flight call when its own timeout race fires —
+   * BEST-EFFORT (see queue.renewLock); the fence is the correctness
+   * authority. Implementations may ignore the 4th param (older test fakes).
+   */
+  renewLock: (jobId: number, lockToken: string, lockDurationMs: number, signal?: AbortSignal) => Promise<boolean>;
   audit: LockRenewalAuditSinkLike;
   /** Injectable for hermetic time-based tests. Production: `Date.now`. */
   now: () => number;
@@ -322,19 +405,11 @@ export async function runLockRenewalTick(
 
   let renewed: boolean;
   try {
-    renewed = await Promise.race([
-      deps.renewLock(state.jobId, state.lockToken, state.lockDurationMs),
-      new Promise<never>((_, reject) => {
-        deps.setTimeout(() => {
-          reject(new RenewalCallTimeoutError('renewLock', state.knobs.callTimeoutMs));
-        }, state.knobs.callTimeoutMs);
-      }),
-    ]);
+    renewed = await racedRenewLock(deps, state);
   } catch (err) {
     if (state.cancelled()) return { kind: 'cancelled' };
     state.consecutiveFailures += 1;
-    const cause: RenewalFailureCause =
-      err instanceof Error && err.name === 'RenewalCallTimeoutError' ? 'call-timeout' : 'refused';
+    const cause = classifyFailure(err);
     const load = safeLoadSnapshot(deps);
     const telemetry: LockRenewalTelemetryCtx = {
       cause,
@@ -349,14 +424,85 @@ export async function runLockRenewalTick(
 
     const sinceLastSuccess = deps.now() - state.lastSuccessfulRenewalAt;
     const deadline = state.lockDurationMs - state.knobs.safetyMarginMs;
-    if (sinceLastSuccess >= deadline) {
+
+    // [CDX-4] Cadence-aware trigger: run the at-deadline VERIFY when the
+    // NEXT tick would land past the soft deadline — `>= deadline` alone is
+    // unreachable under cadence quantization (a 300s lease with a 60s
+    // cadence has no tick between 240s and expiry; the first eligible tick
+    // would already be past the lease).
+    if (sinceLastSuccess + state.intervalMs < deadline) {
+      // Not near the deadline: retry on the next tick.
+      // issue #1678 (Codex #2): if the engine can rebuild its pool, do it
+      // ONCE now (bounded) so the next renewLock sees a live connection.
+      await attemptReconnectOnce(deps, state, err);
+      if (state.cancelled()) return { kind: 'cancelled' };
+      return { kind: 'ok' }; // counter incremented; not yet at deadline
+    }
+
+    // ── At the deadline: VERIFY before evicting (#4145) ──────────────────
+    // The throw above is NOT evidence of loss (db-lock.ts doctrine:
+    // fenced-false = certain, throw = transient). Under event-loop
+    // starvation the renewal may even have LANDED server-side while our
+    // local race timeout won. renewLock is fenced on lock_token and does
+    // NOT check lock_until, so an expired-but-unstolen lease renews fine —
+    // ask the DB the authoritative question.
+    //
+    // Reconciling with queue.ts's "renewLock is deliberately not
+    // retry-wrapped" rationale (two-holders risk): that comment forbids
+    // BACKGROUND retries that outlive this tick's own timeout race. This
+    // verify is a synchronous, cancelled()-guarded, callTimeoutMs-bounded
+    // call INSIDE the tick's flow, and both UPDATEs are same-token
+    // idempotent lease extensions — a fenced row cannot gain two holders.
+    let verified: boolean | null = null; // null = the verify itself threw
+    let verifyErr: unknown = null;
+    try {
+      verified = await racedRenewLock(deps, state);
+    } catch (vErr) {
+      verifyErr = vErr;
+    }
+    if (state.cancelled()) return { kind: 'cancelled' };
+
+    if (verified === true) {
+      // Starved-but-ours: the lease is re-extended; the incident-saving path.
       try {
-        deps.audit.logGaveUp(state.jobId, state.jobName, state.consecutiveFailures, err, telemetry);
+        deps.audit.logSuccessAfterFailure(
+          state.jobId, state.jobName, state.consecutiveFailures, { via: 'verify' },
+        );
+      } catch { /* audit best-effort */ }
+      state.consecutiveFailures = 0;
+      state.lastSuccessfulRenewalAt = deps.now();
+      try { deps.onRenewalSuccess?.(); } catch { /* telemetry best-effort */ }
+      return { kind: 'ok' };
+    }
+
+    if (verified === false) {
+      // Fenced miss: CERTAIN loss (stall sweep reclaimed / pauseJob).
+      return { kind: 'lock_lost', cause: 'fenced-lost', via: 'verify' };
+    }
+
+    // The verify was unreachable too — that is a second failed attempt.
+    state.consecutiveFailures += 1;
+    const verifyCause = classifyFailure(verifyErr);
+    const verifyTelemetry: LockRenewalTelemetryCtx = {
+      cause: verifyCause,
+      lateness_ms: latenessMs,
+      overlap_skips: state.overlapSkips,
+      ...load,
+    };
+
+    if (sinceLastSuccess >= state.knobs.hardEvictMs) {
+      // Hard backstop: a LOCAL decision under uncertainty, by design —
+      // bounds how long non-fenced external side effects run blind during
+      // a total outage. DB writes stay split-brain-safe via the fence.
+      try {
+        deps.audit.logGaveUp(
+          state.jobId, state.jobName, state.consecutiveFailures, verifyErr ?? err, verifyTelemetry,
+        );
       } catch { /* audit best-effort */ }
       return {
         kind: 'should_abort',
         reason: 'lock-renewal-failed',
-        cause,
+        cause: verifyCause,
         latenessMs,
         sinceLastSuccessMs: sinceLastSuccess,
         overlapSkips: state.overlapSkips,
@@ -364,32 +510,19 @@ export async function runLockRenewalTick(
       };
     }
 
-    // issue #1678 (Codex #2): not yet at the deadline, so we'll retry on the
-    // next tick. If the engine can rebuild its pool, do it ONCE now (bounded
-    // by callTimeoutMs) so the next renewLock sees a live connection instead
-    // of throwing the same reaped-socket error until the deadline. Best-effort:
-    // a reconnect throw/timeout is swallowed (next tick retries) and must NEVER
-    // escape this catch — that would re-introduce the unhandledRejection class
-    // this module was built to close.
-    if (deps.reconnect) {
-      const reconnect = deps.reconnect;
-      try {
-        await Promise.race([
-          // Thread the triggering renewLock error (CODEX impl review #2) so the
-          // engine can classify a CONNECTION_ENDED pooler reap as `reap_detected`.
-          reconnect({ error: err }),
-          new Promise<never>((_, reject) => {
-            deps.setTimeout(
-              () => reject(new Error(`reconnect timed out after ${state.knobs.callTimeoutMs}ms`)),
-              state.knobs.callTimeoutMs,
-            );
-          }),
-        ]);
-      } catch { /* reconnect best-effort; next tick retries against a fresh attempt */ }
-      if (state.cancelled()) return { kind: 'cancelled' };
-    }
-
-    return { kind: 'ok' }; // counter incremented; not yet at deadline
+    // Deferred past the soft deadline: keep the job and retry next tick —
+    // the fence is the correctness backstop (a reclaim surfaces as a
+    // fenced-false on the next attempt; no attempt is burned). CEO-F3:
+    // give the next tick a live pool.
+    try {
+      deps.audit.logFailure(
+        state.jobId, state.jobName, state.consecutiveFailures, verifyErr ?? err,
+        { ...verifyTelemetry, deadline_deferred: true },
+      );
+    } catch { /* audit best-effort */ }
+    await attemptReconnectOnce(deps, state, verifyErr ?? err);
+    if (state.cancelled()) return { kind: 'cancelled' };
+    return { kind: 'ok' };
   }
 
   if (state.cancelled()) return { kind: 'cancelled' };
@@ -432,4 +565,57 @@ function safeLoadSnapshot(deps: LockRenewalDeps): { load1?: number; cores?: numb
   } catch {
     return {};
   }
+}
+
+/**
+ * One bounded renewal attempt: renewLock raced against callTimeoutMs.
+ * When the race timeout fires, the in-flight call is also aborted via
+ * AbortController (CDX-2/R2-2, best-effort — the fence is the correctness
+ * authority; PGLite ignores the signal and resolves via the race alone).
+ * The race attaches handlers to both contenders, so a late loser
+ * settlement is absorbed, never an unhandledRejection.
+ */
+function racedRenewLock(deps: LockRenewalDeps, state: LockRenewalState): Promise<boolean> {
+  const controller = new AbortController();
+  return Promise.race([
+    deps.renewLock(state.jobId, state.lockToken, state.lockDurationMs, controller.signal),
+    new Promise<never>((_, reject) => {
+      deps.setTimeout(() => {
+        try { controller.abort(); } catch { /* best-effort */ }
+        reject(new RenewalCallTimeoutError('renewLock', state.knobs.callTimeoutMs));
+      }, state.knobs.callTimeoutMs);
+    }),
+  ]);
+}
+
+function classifyFailure(err: unknown): RenewalFailureCause {
+  return err instanceof Error && err.name === 'RenewalCallTimeoutError' ? 'call-timeout' : 'refused';
+}
+
+/**
+ * issue #1678 (Codex #2): bounded, best-effort, ONCE-per-tick pool rebuild
+ * so the NEXT renewal attempt sees a live connection instead of throwing
+ * the same reaped-socket error. Threads the triggering error so the engine
+ * can classify a CONNECTION_ENDED pooler reap as `reap_detected`. A
+ * reconnect throw/timeout is swallowed — it must NEVER escape into the
+ * tick's catch (the unhandledRejection class this module exists to close).
+ */
+async function attemptReconnectOnce(
+  deps: LockRenewalDeps,
+  state: LockRenewalState,
+  err: unknown,
+): Promise<void> {
+  if (!deps.reconnect) return;
+  const reconnect = deps.reconnect;
+  try {
+    await Promise.race([
+      reconnect({ error: err }),
+      new Promise<never>((_, reject) => {
+        deps.setTimeout(
+          () => reject(new Error(`reconnect timed out after ${state.knobs.callTimeoutMs}ms`)),
+          state.knobs.callTimeoutMs,
+        );
+      }),
+    ]);
+  } catch { /* reconnect best-effort; next tick retries against a fresh attempt */ }
 }
