@@ -1037,7 +1037,15 @@ export class MinionWorker extends EventEmitter {
             this.formatEvictionTelemetry()
           );
           clearInterval(lockTimer);
-          this.inFlight.delete(job.id);
+          // R2-1 generation-safety: delete ONLY our own execution's entry.
+          // After a force-evict, this job id can be requeued and re-claimed
+          // by THIS worker while the old handler is still alive — an
+          // unconditional delete-by-id would then remove the NEW
+          // execution's entry (concurrency undercount, lost tracking).
+          // The lockToken is minted per claim, so it is the generation.
+          if (this.inFlight.get(job.id)?.lockToken === lockToken) {
+            this.inFlight.delete(job.id);
+          }
           // D8a: don't failJob if the abort was infrastructure. The
           // stall detector will reclaim the row cleanly because the
           // lock has expired (lock-renewal aborts only fire after
@@ -1084,7 +1092,12 @@ export class MinionWorker extends EventEmitter {
         clearInterval(lockTimer);
         if (timeoutTimer) clearTimeout(timeoutTimer);
         if (graceTimer) clearTimeout(graceTimer);
-        this.inFlight.delete(job.id);
+        // R2-1 generation-safety: a force-evicted execution's finally can
+        // fire long after the same job id was re-claimed by this worker.
+        // Only delete the entry if it is still OURS (token = generation).
+        if (this.inFlight.get(job.id)?.lockToken === lockToken) {
+          this.inFlight.delete(job.id);
+        }
         this.jobsCompleted += 1;
         this.checkMemoryLimit('post-job');
       })

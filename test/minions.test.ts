@@ -3203,3 +3203,59 @@ describe('MinionWorker: self-health-check behavior (v0.22.14)', () => {
     expect(() => new MinionWorker(engine, {})).not.toThrow();
   });
 });
+
+// --- v0.46 (#4145 R2-1): inFlight generation-safety ---
+
+describe('MinionWorker: inFlight generation-safety (#4145 R2-1)', () => {
+  test('a stale execution\'s finally does not delete the reclaimed execution\'s entry', async () => {
+    const worker = new MinionWorker(engine, { concurrency: 2, pollInterval: 50, lockDuration: 60000 });
+    // Two gated executions of the SAME job id: A (stale, will be superseded)
+    // and B (the same-worker re-claim). Each handler invocation blocks on
+    // its own gate so the test controls the interleave deterministically.
+    const gates: Array<() => void> = [];
+    const gatePromises = [
+      new Promise<void>(r => gates.push(r)),
+      new Promise<void>(r => gates.push(r)),
+    ];
+    let invocation = 0;
+    worker.register('gensafe', async () => {
+      const idx = invocation++;
+      await gatePromises[idx];
+      return { ok: true };
+    });
+
+    const row = await queue.add('gensafe', {});
+
+    // Execution A claims + launches.
+    const claimedA = await queue.claim('tok-A', 60000, 'default', ['gensafe']);
+    expect(claimedA?.id).toBe(row.id);
+    (worker as unknown as { launchJob(j: MinionJob, t: string): void }).launchJob(claimedA!, 'tok-A');
+
+    // Simulate the post-force-evict requeue (what handleStalled does) and a
+    // SAME-WORKER re-claim as execution B while A's handler is still alive.
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET status='waiting', lock_token=NULL, lock_until=NULL, started_at=NULL WHERE id = $1`,
+      [row.id]
+    );
+    const claimedB = await queue.claim('tok-B', 60000, 'default', ['gensafe']);
+    expect(claimedB?.id).toBe(row.id);
+    (worker as unknown as { launchJob(j: MinionJob, t: string): void }).launchJob(claimedB!, 'tok-B');
+
+    const inFlight = (worker as unknown as { inFlight: Map<number, { lockToken: string }> }).inFlight;
+    expect(inFlight.get(row.id)?.lockToken).toBe('tok-B');
+
+    // Release stale execution A: its completeJob is fenced-false ("completion
+    // dropped") and its finally fires. Pre-fix, that finally deleted B's
+    // entry by bare job.id — the R2-1 generation race.
+    gates[0]();
+    await new Promise(r => setTimeout(r, 150));
+    expect(inFlight.get(row.id)?.lockToken).toBe('tok-B'); // B survived A's finally
+
+    // Release B: its OWN finally removes its own entry and completes the row.
+    gates[1]();
+    await new Promise(r => setTimeout(r, 150));
+    expect(inFlight.has(row.id)).toBe(false);
+    const final = await queue.getJob(row.id);
+    expect(final!.status).toBe('completed');
+  });
+});
