@@ -87,7 +87,7 @@ describePty('gbrain init interactive pickers under a real PTY (keyless)', () => 
       // ── Prompt 1: embedding provider picker (pre-schema). Zero env-ready
       // providers → the menu still renders the keyless row for the embedding
       // touchpoint. Answer 0 (keyless).
-      await session.waitFor('0) none — continue keyless', { timeoutMs: 60_000 });
+      await session.waitFor('0) none', { timeoutMs: 60_000 });
       const afterMenu = session.mark();
       const tProvider = Date.now();
       session.send('0\r');
@@ -156,7 +156,7 @@ describePty('gbrain init interactive pickers under a real PTY (keyless)', () => 
       timeoutMs: 240_000,
     });
     try {
-      await session.waitFor('0) none — continue keyless', { timeoutMs: 60_000 });
+      await session.waitFor('0) none', { timeoutMs: 60_000 });
       const afterMenu = session.mark();
       const tEof = Date.now();
       session.sendKey('CtrlD');
