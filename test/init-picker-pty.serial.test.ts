@@ -41,13 +41,14 @@ const REPO_ROOT = join(import.meta.dir, '..');
 const CLI_TS = join(REPO_ROOT, 'src', 'cli.ts');
 
 // A prompt answered by a live send resolves fast; a dead send means
-// readLineSafe sits its full fallback window and proceeds with the default.
-// The window is 60s at both call sites this test drives
-// (src/commands/init-provider-picker.ts and src/commands/init-mode-picker.ts,
-// each passing 60_000 to readLineSafe) — the liveness bound is derived from
-// it with margin so the assertion keeps its power if the fallback moves.
-const READLINE_FALLBACK_MS = 60_000;
-const PROMPT_LIVENESS_MS = READLINE_FALLBACK_MS - 5_000;
+// readLineSafe sits its full fallback window (60s at both call sites this
+// test drives: src/commands/init-provider-picker.ts and
+// src/commands/init-mode-picker.ts) and proceeds with the default. The
+// liveness bound is a FIXED interaction budget, deliberately independent of
+// the fallback constant — generous enough for a loaded CI runner, strictly
+// below any plausible future fallback value, so dead input can never pass
+// even if the production fallback is shortened.
+const PROMPT_LIVENESS_MS = 20_000;
 
 // On CI the pinned Bun (engines >= 1.3.10) has PTY support — a skip here
 // would be silent coverage loss, so fail loud instead. Locally a missing
@@ -165,6 +166,12 @@ describePty('gbrain init interactive pickers under a real PTY (keyless)', () => 
       // deleted harness's comments falsely claimed to cover.
       await session.waitFor(/keyless mode/i, { timeoutMs: 60_000, since: afterMenu });
       expect(Date.now() - tEof).toBeLessThan(PROMPT_LIVENESS_MS);
+      // Deliberate early close: after EOF, Bun's stdin never yields another
+      // line while isTTY stays true, so the LATER mode picker sits its full
+      // 60s fallback before init completes (probed: exit at ~61s). That is a
+      // pre-existing product stall (readLineSafe does not latch EOF), filed
+      // in TODOS.md — running init to completion here would bake that 60s
+      // stall into every required-CI serial run.
     } finally {
       await session.close();
     }

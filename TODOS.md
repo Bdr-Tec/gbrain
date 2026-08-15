@@ -4286,6 +4286,17 @@ purpose; needs baseline-governance care per the BrainBench gate rules.
 
 ---
 
+### Ctrl-D during `gbrain init` stalls 60s at the next prompt (readLineSafe does not latch EOF)
+**Priority:** P2
+
+**What:** Pressing Ctrl-D at the interactive provider picker is detected immediately (keyless fallback in ~200ms), but Bun's stdin never yields another line after EOF while `isTTY` stays true — so the SUBSEQUENT search-mode picker sits its full 60s `readLineSafe` fallback before init completes (probed under a real PTY: keyless notice at 0.2s, mode prompt rendered at 1.2s, exit at 61.1s). Fix: `readLineSafe` (src/commands/init.ts) should latch EOF — once stdin has ended, later calls return their default immediately instead of waiting out the timer. Regression test: extend the EOF case in `test/init-picker-pty.serial.test.ts` to run init to completion and assert exit well under the fallback window (the case currently closes early on purpose to keep the 60s stall out of required CI — see the comment there).
+
+**Why:** A user who hits Ctrl-D at the first prompt stares at a frozen screen for a full minute before init finishes. Cross-model adversarial review finding (Codex), confirmed by a real-PTY probe.
+
+**Effort:** S (CC ~20m: EOF latch + regression-test extension).
+
+---
+
 ### Read-side host-isolation (`$GBRAIN_HOST_HOME`)
 **Priority:** P3
 
