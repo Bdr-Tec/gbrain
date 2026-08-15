@@ -25,7 +25,7 @@ import { logTurnContextDeliveryFireAndForget } from '../core/context/volunteer-e
 export async function resolveMcpStdioSourceScope(
   engine: BrainEngine,
   cwd: string = process.cwd(),
-): Promise<{ sourceId: string; localFederatedSourceIds?: string[] }> {
+): Promise<{ sourceId: string; localFederatedSourceIds?: string[]; tier: import('../core/source-resolver.ts').SourceTier }> {
   try {
     const { resolveSourceWithTier, localFederatedSourceIds } = await import('../core/source-resolver.ts');
     const resolved = await resolveSourceWithTier(engine, null, cwd);
@@ -33,13 +33,20 @@ export async function resolveMcpStdioSourceScope(
     return {
       sourceId: resolved.source_id,
       ...(federated ? { localFederatedSourceIds: federated } : {}),
+      tier: resolved.tier,
     };
   } catch {
-    return { sourceId: process.env.GBRAIN_SOURCE || 'default' };
+    // Resolution failure: report the tier truthfully so --source-guard can
+    // still make the safe call (env counts as deliberate; anything else is
+    // the ambiguous seed fallback).
+    const env = process.env.GBRAIN_SOURCE;
+    return env
+      ? { sourceId: env, tier: 'env' }
+      : { sourceId: 'default', tier: 'seed_default' };
   }
 }
 
-export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpSurface } = {}) {
+export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpSurface; sourceGuard?: boolean } = {}) {
   const server = new Server(
     { name: 'gbrain', version: VERSION },
     { capabilities: { tools: {} } },
@@ -105,6 +112,10 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
       ...(sourceScope.localFederatedSourceIds
         ? { localFederatedSourceIds: sourceScope.localFederatedSourceIds }
         : {}),
+      // --source-guard (plugin lanes): thread the winning resolution tier so
+      // dispatch can fail-close ambient-tier writes. Off (undefined) unless
+      // the serve was started with the flag.
+      ...(opts.sourceGuard ? { sourceGuardTier: sourceScope.tier } : {}),
       // v0.31 (eD3): _meta.brain_hot_memory injection so Claude Desktop /
       // Code see the brain's relevant hot memory automatically alongside
       // every tool-call response. Best-effort; absorbs errors.

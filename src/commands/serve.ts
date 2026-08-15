@@ -58,7 +58,7 @@ export interface ServeOptions {
   // (which unconditionally attaches a 'data' listener to real
   // process.stdin and would pollute the test runner's stdin handle).
   // Defaults to the real implementation when omitted.
-  startMcpServer?: (engine: BrainEngine, opts?: { surface?: 'verbs' | 'starter' | 'full' }) => Promise<void>;
+  startMcpServer?: (engine: BrainEngine, opts?: { surface?: 'verbs' | 'starter' | 'full'; sourceGuard?: boolean }) => Promise<void>;
   // Test seam for the parent-process watchdog. The default
   // (`readLiveParentPid`) reads the live kernel PPID via `ps` on POSIX
   // because `process.ppid` is captured at process creation and does not
@@ -180,6 +180,13 @@ export async function runServe(
   const { loadConfig } = await import('../core/config.ts');
   const surface = resolveSurface(parseSurfaceFlag(args), loadConfig());
 
+  // --source-guard (plugin lanes, EV1): fail-closed write routing for
+  // user-global serves whose cwd is meaningless (plugin snapshots). Write/
+  // admin ops error actionably unless the source resolution tier proves the
+  // binding is deliberate or unambiguous — sole-source brains are a pure
+  // no-op. Stdio-only: the OAuth HTTP path scopes writes per token instead.
+  const sourceGuard = args.includes('--source-guard');
+
   if (isHttp) {
     const portIdx = args.indexOf('--port');
     const port = portIdx >= 0 ? parseInt(args[portIdx + 1]) || 3131 : 3131;
@@ -287,7 +294,7 @@ export async function runServe(
   }
 
   try {
-    await start(engine, { surface });
+    await start(engine, { surface, ...(sourceGuard ? { sourceGuard } : {}) });
   } finally {
     if (bootDeadline) clearTimeout(bootDeadline);
   }

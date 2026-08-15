@@ -81,6 +81,15 @@ export interface DispatchOpts {
    */
   localFederatedSourceIds?: string[];
   /**
+   * `gbrain serve --source-guard` (plugin lanes): when set, write/admin ops
+   * are blocked unless the source resolution tier proves the binding is
+   * deliberate or unambiguous (see WRITE_SAFE_SOURCE_TIERS in
+   * source-resolver.ts). The transport passes the tier that WON the
+   * resolution for this call; unset means the guard is off (default —
+   * existing serves are untouched). Reads always pass.
+   */
+  sourceGuardTier?: import('../core/source-resolver.ts').SourceTier;
+  /**
    * CX2-11: opaque session identity resolved by the transport (e.g. from the
    * MCP request-level `_meta.session_id`). Clamped to 256 chars before it
    * reaches OperationContext. When unset, buildOperationContext falls back to
@@ -448,6 +457,33 @@ export async function dispatchToolCall(
   // transport at surface 'full' had no gate at all before this line.
   if (op.localOnly && opts.transport !== 'stdio') {
     return unknownToolEnvelope(name, opts.allowedOps);
+  }
+
+  // --source-guard (plugin lanes): fail-closed write routing. A user-global
+  // plugin serve has no per-workspace source binding, so an ambient-tier
+  // resolution must not be allowed to WRITE into whatever source it happened
+  // to fall through to. Enforced before validation so a blocked caller
+  // learns the routing rule, not the op's parameter shape.
+  if (opts.sourceGuardTier && op.scope !== 'read') {
+    const { sourceGuardBlocksWrite } = await import('../core/source-resolver.ts');
+    if (await sourceGuardBlocksWrite(engine, opts.sourceGuardTier)) {
+      logVerb(false);
+      const envelope = {
+        error: 'source_binding_required',
+        message:
+          'This brain has more than one source and the MCP server runs with --source-guard: ' +
+          `write operations need an explicit source binding so they cannot land in the wrong source (resolution tier: ${opts.sourceGuardTier}).`,
+        suggestion:
+          'Set GBRAIN_SOURCE=<source-id> in the environment that launches this MCP server ' +
+          '(plugin installs pass it through), or start the serve with an explicit --source. ' +
+          'List sources with `gbrain sources list`. Reads are unaffected.',
+        ...(isVerb ? { protocol_version: MEMORY_VERBS_VERSION } : {}),
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(envelope, null, 2) }],
+        isError: true,
+      };
+    }
   }
 
   const safeParams = normalizeOptionalParams(op, params || {});

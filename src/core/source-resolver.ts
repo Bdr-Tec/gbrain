@@ -461,6 +461,67 @@ export async function localFederatedSourceIds(
   return ids.length > 1 ? ids : undefined;
 }
 
+/**
+ * Source-guard write policy (`gbrain serve --source-guard`) — the plugin
+ * lanes' fail-closed routing rule.
+ *
+ * A plugin-managed MCP server is user-global and runs with the plugin
+ * snapshot as its cwd, so two ambient resolution tiers lose their meaning:
+ * `dotfile` never finds the user's project pin, and `local_path` can match a
+ * registered source whose local_path happens to CONTAIN the snapshot dir
+ * (e.g. a source registered at $HOME) — the exact silent-wrong-source write
+ * the guard exists to prevent. Under the guard, write/admin ops are allowed
+ * only when the binding is deliberate or unambiguous:
+ *
+ *   flag / env / dotfile   deliberate binding (dotfile still counts: if it
+ *                          resolved, someone placed a pin on the cwd path —
+ *                          a hand-run from a real project, not the snapshot)
+ *   brain_default          the operator configured sources.default
+ *   sole_non_default       exactly one candidate — unambiguous
+ *   seed_default           unambiguous ONLY while 'default' is the sole
+ *                          source; ambiguous the moment others exist
+ *   local_path             blocked — cwd-derived intent is invalid under a
+ *                          plugin-managed serve
+ *
+ * Reads stay unrestricted on every tier (within-brain, and the federated
+ * read scope is transport-computed) — the guard is a WRITE guard.
+ */
+export const WRITE_SAFE_SOURCE_TIERS: ReadonlySet<SourceTier> = new Set([
+  'flag',
+  'env',
+  'dotfile',
+  'brain_default',
+  'sole_non_default',
+]);
+
+/**
+ * Decide whether a write/admin op must be blocked under `--source-guard`
+ * for the given resolution tier. Engine is consulted only on the
+ * `seed_default` tier (source count decides ambiguity); errors fail CLOSED
+ * — if the guard cannot prove the write is unambiguous, it blocks.
+ */
+export async function sourceGuardBlocksWrite(
+  engine: BrainEngine,
+  tier: SourceTier,
+): Promise<boolean> {
+  if (WRITE_SAFE_SOURCE_TIERS.has(tier)) return false;
+  if (tier === 'local_path') return true;
+  // seed_default: block iff any source beyond the seeded 'default' exists.
+  try {
+    let rows: Array<{ id: string }>;
+    try {
+      rows = await engine.executeRaw<{ id: string }>(
+        `SELECT id FROM sources WHERE archived = false`,
+      );
+    } catch {
+      rows = await engine.executeRaw<{ id: string }>(`SELECT id FROM sources`);
+    }
+    return rows.some(r => r.id !== 'default');
+  } catch {
+    return true;
+  }
+}
+
 /** Exposed for tests. */
 export const __testing = {
   readDotfileWalk,
