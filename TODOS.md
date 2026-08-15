@@ -53,6 +53,28 @@
   kill-switch state, and per-pool probe latency. Comments in four files
   already reference this check as if it existed. **Effort:** S.
   **Priority:** P3.
+- [ ] **P3 — isolation test-gap follow-ups (pre-landing review).** **What:**
+  (a) spawned-CLI negative tests for `jobs run-child` bootstrap guards (PGLite
+  → exit 13; missing job-id/env → exit 13) and for `jobs work` with
+  isolation on + an unresolvable child CLI (fail-fast exit 1) — both need a
+  real engine bootstrap so they live in the e2e lane; (b) a behavioral (not
+  structural) test driving `withRefreshingLock` with a hung injected
+  `handle.refresh` (signal aborted at timeout, no overlapping ticks); (c) a
+  force-evict-skip test for isolation mode (needs the 30s evict window made
+  injectable); (d) operator-flow message tests (verdict-tailored FATAL text,
+  single-pool startup banner). **Why:** the ship coverage audit scored the
+  wave 82% — these are the surviving gaps. **Effort:** M. **Priority:** P3.
+- [ ] **P3 — raceWithAbortTimeout shared helper.** **What:** the
+  "Promise.race a query vs a setTimeout that aborts an AbortController,
+  clearTimeout in finally" pattern now exists at five sites (db-probe
+  withDeadline, synthesize runDrainRenewalTick, lock-renewal-tick callAbort,
+  db-lock tickAbort, supervisor probeAbort), each re-deriving the same
+  invariants. Extract one helper and adopt it. **Effort:** S. **Priority:** P3.
+- [ ] **P3 — lazy handler resolution in run-child.** **What:** every isolation
+  child runs full registerBuiltinHandlers (incl. plugin discovery) to resolve
+  ONE handler; the job name is known from the row — a resolve-by-name path
+  would skip discovery for builtins. Matters only if isolation is ever used
+  for short jobs (documented as not the target). **Effort:** S. **Priority:** P3.
 - [ ] **P3 — full checkout instrumentation via a Sql proxy.** **What:** the
   CheckoutGauge covers raw/direct/reserved/tx seams only; tagged-template
   traffic (most engine load) is untracked. A proxy around the postgres.js Sql

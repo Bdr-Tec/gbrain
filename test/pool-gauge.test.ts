@@ -119,3 +119,64 @@ describe('PostgresEngine gauge seams (fake pool)', () => {
     expect(diag).toBeNull();
   });
 });
+
+describe('PostgresEngine gauge seams: direct + tx (coverage-audit gaps)', () => {
+  test('executeRawDirect: counted as direct while in flight, released on resolve and reject', async () => {
+    let resolveQuery: (rows: unknown[]) => void = () => {};
+    const { engine, diagnostics } = makeEngine({
+      unsafe: () => new Promise((r) => { resolveQuery = r; }),
+    });
+    // No connectionManager on the fake -> executeRawDirect falls through to this.sql.
+    const p = engine.executeRawDirect('SELECT 1');
+    expect(diagnostics()?.tracked.direct).toBe(1);
+    resolveQuery([]);
+    await p;
+    expect(diagnostics()?.tracked.direct).toBe(0);
+
+    const { engine: rejEngine, diagnostics: rejDiag } = makeEngine({
+      unsafe: () => Promise.reject(new Error('boom')),
+    });
+    await expect(rejEngine.executeRawDirect('SELECT 1')).rejects.toThrow('boom');
+    expect(rejDiag()?.tracked.direct).toBe(0);
+  });
+
+  test('transaction: tx counter released on SYNCHRONOUS begin() throw (nested-tx clone class)', async () => {
+    const { engine, diagnostics } = makeEngine({ unsafe: () => Promise.resolve([]) });
+    // Fake pool has no .begin -> conn.begin(...) throws synchronously, the
+    // exact shape a nested transaction on a tx clone produces.
+    await expect(
+      (engine as unknown as { transaction: (fn: unknown) => Promise<unknown> }).transaction(async () => 'x'),
+    ).rejects.toThrow();
+    expect(diagnostics()?.tracked.tx).toBe(0);
+  });
+
+  test('withReservedConnection: ddl() throw falls back to the READ pool and releases the permit', async () => {
+    const log: string[] = [];
+    const readPool = {
+      unsafe: async () => [],
+      options: { max: 10 },
+      reserve: async () => {
+        log.push('reserve:read');
+        return { unsafe: async () => [], release: () => log.push('release:read') };
+      },
+    };
+    const engine = Object.create(PostgresEngine.prototype) as PostgresEngine;
+    Object.defineProperty(engine, 'sql', { get: () => readPool });
+    Object.defineProperty(engine, '_sql', { value: readPool, writable: true });
+    Object.defineProperty(engine, 'checkoutGauge', { value: new CheckoutGauge(), writable: true });
+    Object.defineProperty(engine, '_reservedDirectInFlight', { value: 0, writable: true });
+    Object.defineProperty(engine, 'connectionManager', {
+      value: {
+        peekReadPool: () => readPool,
+        isDualPoolActive: () => true,
+        describeMode: () => ({ direct_pool_size: 3 }),
+        ddl: async () => { throw new Error('EMAXCONNSESSION'); },
+      },
+      writable: true,
+    });
+    const out = await engine.withReservedConnection(async () => 'ok');
+    expect(out).toBe('ok');
+    expect(log).toEqual(['reserve:read', 'release:read']); // fell back, did not fail the caller
+    expect((engine as unknown as { _reservedDirectInFlight: number })._reservedDirectInFlight).toBe(0);
+  });
+});

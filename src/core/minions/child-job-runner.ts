@@ -33,7 +33,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildSpawnInvocation } from './spawn-helpers.ts';
-import { UnrecoverableError } from './types.ts';
+import {
+  UnrecoverableError,
+  ABORT_REASON_TIMEOUT,
+  ABORT_REASON_LOCK_LOST,
+  ABORT_REASON_LOCK_RENEWAL_FAILED,
+} from './types.ts';
 import {
   JOB_CHILD_EXIT_USAGE,
   JOB_CHILD_EXIT_NOT_CLAIMED,
@@ -41,10 +46,12 @@ import {
 import {
   CHILD_ENV,
   CHILD_KILL_GRACE_MS,
+  CHILD_READ_POOL_MAX,
   buildChildArgs,
-  decodeChildOutcomeFile,
+  decodeChildOutcomeFileAsync,
   killProcessGroup,
   reconstructHandlerError,
+  unrefTimer,
   type ChildCliInvocation,
 } from './job-isolation.ts';
 
@@ -76,17 +83,19 @@ export class ChildNotClaimedError extends Error {
   }
 }
 
-/** Per-job abort reasons that mean THE JOB was targeted (timeout / cancel /
- *  lock loss) rather than the worker winding down. gracefulShutdown('watchdog')
+/** Per-job abort reasons that mean THE JOB was targeted (timeout / lock
+ *  loss) rather than the worker winding down. gracefulShutdown('watchdog')
  *  aborts BOTH the shutdown signal and every per-job signal — the shutdown
  *  classification must win for those (adversarial-review P3: the watchdog
- *  drain otherwise burns an attempt on innocent isolated jobs). */
-const PER_JOB_ABORT_REASONS = new Set([
-  'timeout',
-  'cancel',
-  'cancelled',
-  'lock-lost',
-  'lock-renewal-failed',
+ *  drain otherwise burns an attempt on innocent isolated jobs). Built from
+ *  the shared literals in types.ts so a rename at an abort site cannot
+ *  silently flip child classification (maintainability review — the
+ *  never-produced 'cancel'/'cancelled' entries were dropped: cancellation
+ *  surfaces as lock-lost via the fenced renewLock). */
+const PER_JOB_ABORT_REASONS = new Set<string>([
+  ABORT_REASON_TIMEOUT,
+  ABORT_REASON_LOCK_LOST,
+  ABORT_REASON_LOCK_RENEWAL_FAILED,
 ]);
 
 export interface RunJobInChildOpts {
@@ -139,7 +148,7 @@ export async function runJobInChild(opts: RunJobInChildOpts): Promise<unknown> {
   };
   const childOverride = parsePoolSize(base[CHILD_ENV.childPoolSize]);
   const userPool = parsePoolSize(base.GBRAIN_POOL_SIZE);
-  const childPoolSize = childOverride ?? Math.min(userPool ?? 3, 3);
+  const childPoolSize = childOverride ?? Math.min(userPool ?? CHILD_READ_POOL_MAX, CHILD_READ_POOL_MAX);
 
   const childEnv: Record<string, string | undefined> = {
     ...base,
@@ -177,9 +186,23 @@ export async function runJobInChild(opts: RunJobInChildOpts): Promise<unknown> {
     if (child.pid != null) {
       killProcessGroup(child.pid, 'SIGTERM');
       killTimer = setTimeout(() => {
-        if (child.pid != null) killProcessGroup(child.pid, 'SIGKILL');
+        // Loud on failure (red-team finding): the /bin/kill fallback is the
+        // NORMAL delivery path in Bun-compiled binaries, and a container
+        // without /bin/kill (distroless) would otherwise silently void the
+        // SIGKILL guarantee while the child runs to completion and the job
+        // gets requeued elsewhere (duplicate side effects).
+        if (child.pid != null && child.exitCode == null && child.signalCode == null) {
+          const delivered = killProcessGroup(child.pid, 'SIGKILL');
+          if (!delivered) {
+            console.error(
+              `[isolation] job ${opts.jobId} (${opts.jobName}): group SIGKILL was NOT delivered ` +
+              `to pid ${child.pid} (platform=${process.platform}; is /bin/kill present?). ` +
+              `The child may still be running — the SIGKILL guarantee is degraded on this host.`,
+            );
+          }
+        }
       }, graceMs);
-      (killTimer as unknown as { unref?: () => void }).unref?.();
+      unrefTimer(killTimer);
     }
   };
   const onAbort = (): void => terminate();
@@ -223,9 +246,11 @@ export async function runJobInChild(opts: RunJobInChildOpts): Promise<unknown> {
       opts.shutdownSignal.aborted &&
       (abortReason === null || !PER_JOB_ABORT_REASONS.has(abortReason));
 
-    let outcome: ReturnType<typeof decodeChildOutcomeFile>;
+    let outcome: Awaited<ReturnType<typeof decodeChildOutcomeFileAsync>>;
     try {
-      outcome = decodeChildOutcomeFile(resultPath);
+      // Async decode: a large-but-allowed outcome must not block the worker
+      // event loop that runs lock-renewal ticks (performance review).
+      outcome = await decodeChildOutcomeFileAsync(resultPath);
     } catch (decodeErr) {
       // No usable outcome. Classify by WHY the child died.
       if (decodeErr instanceof UnrecoverableError) throw decodeErr; // oversize cap — dead on attempt 1

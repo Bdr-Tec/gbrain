@@ -18,7 +18,11 @@ import type {
   MinionJob, MinionJobContext, MinionHandler, MinionWorkerOpts,
   MinionQueueOpts, TokenUpdate,
 } from './types.ts';
-import { UnrecoverableError } from './types.ts';
+import {
+  UnrecoverableError,
+  ABORT_REASON_LOCK_RENEWAL_FAILED,
+  ABORT_REASON_LOCK_LOST,
+} from './types.ts';
 import { MinionQueue } from './queue.ts';
 import { calculateBackoff } from './backoff.ts';
 import { RateLeaseUnavailableError } from './handlers/subagent.ts';
@@ -31,6 +35,7 @@ import {
 } from './lock-renewal-tick.ts';
 import {
   runDbProbe,
+  getConnectionRouting,
   DIRECT_PROBE_TIMEOUT_MS,
   type DbProbeResult,
   type PoolDiagnostics,
@@ -62,8 +67,8 @@ import { reconnectAfterConnectionError as reconnectEngineAfterConnError } from '
  * to this set is a deliberate two-line change, not a silent regression).
  */
 export const INFRASTRUCTURE_ABORT_REASONS = new Set<string>([
-  'lock-renewal-failed',
-  'lock-lost',
+  ABORT_REASON_LOCK_RENEWAL_FAILED,
+  ABORT_REASON_LOCK_LOST,
 ]);
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
@@ -144,7 +149,8 @@ export type UnhealthyReason =
       message: string;
       verdict?: 'pool_starved' | 'server_unreachable' | 'unknown';
     }
-  | { reason: 'stalled'; waitingCount: number; idleMinutes: number };
+  | { reason: 'stalled'; waitingCount: number; idleMinutes: number }
+  | { reason: 'child_spawn_failing'; consecutiveFailures: number; message: string };
 
 /**
  * Read the quiet_hours JSONB column off a MinionJob, if present. The
@@ -209,6 +215,18 @@ export class MinionWorker extends EventEmitter {
   private _peakRssMb = 0;
   /** Latch so the 80%-of-cap soft-warn fires once per crossing, not every check. */
   private _softWarnFired = false;
+  /**
+   * Circuit breaker for deterministic child-bootstrap failures (red-team
+   * finding): a spawn failure releases the job with no attempt burned, the
+   * stall sweeper requeues it, the same worker re-claims — an infinite
+   * claim/release loop the stall detector cannot see (every settle refreshes
+   * the progress clock). After CHILD_SPAWN_FAIL_EXIT_AFTER consecutive
+   * spawn-class failures we emit 'unhealthy' so the process manager restarts
+   * the worker (and the supervisor's crash budget takes over if the child
+   * CLI stays broken).
+   */
+  private _consecutiveChildSpawnFailures = 0;
+  private static readonly CHILD_SPAWN_FAIL_EXIT_AFTER = 3;
 
   private opts: Required<MinionWorkerOpts>;
 
@@ -240,6 +258,18 @@ export class MinionWorker extends EventEmitter {
       childCliInvocation: opts?.childCliInvocation ?? null,
       childTiniPath: opts?.childTiniPath ?? '',
     };
+    // Process isolation contract: 'process' without a resolved child CLI
+    // invocation would silently execute handlers INLINE while the evict path
+    // believed it was isolated (predicate mismatch — red-team finding). The
+    // CLI layer always resolves + validates the invocation; library callers
+    // must too. Loud construction throw, same discipline as the stall
+    // thresholds below.
+    if (this.opts.jobIsolation === 'process' && this.opts.childCliInvocation == null) {
+      throw new Error(
+        "MinionWorkerOpts: jobIsolation 'process' requires childCliInvocation " +
+        '(resolve it via resolveChildCliInvocation and validate it exists before constructing the worker).',
+      );
+    }
     // Stall thresholds contract: exit MUST be strictly greater than warn.
     // If exit <= warn, the warn-then-exit semantics break: a single tick at
     // idle > warn would set stallWarningSince and the subsequent tick at
@@ -255,7 +285,6 @@ export class MinionWorker extends EventEmitter {
     }
   }
 
-  /** Register a handler for a job type. */
   /**
    * Read-only handler lookup. `gbrain jobs run-child` registers the builtin
    * handlers against a throwaway worker (registerBuiltinHandlers's existing
@@ -265,6 +294,7 @@ export class MinionWorker extends EventEmitter {
     return this.handlers.get(name);
   }
 
+  /** Register a handler for a job type. */
   register(name: string, handler: MinionHandler): void {
     this.handlers.set(name, handler);
   }
@@ -296,7 +326,9 @@ export class MinionWorker extends EventEmitter {
     if (this.listenerCount('unhealthy') === 0) {
       const detail = info.reason === 'db_dead'
         ? `DB unreachable (${info.consecutiveFailures} probes): ${info.message}`
-        : `worker stalled (${info.waitingCount} waiting, ${info.idleMinutes}m idle)`;
+        : info.reason === 'child_spawn_failing'
+          ? `job-child spawn failing (${info.consecutiveFailures} consecutive): ${info.message}`
+          : `worker stalled (${info.waitingCount} waiting, ${info.idleMinutes}m idle)`;
       console.error(
         `[health] FATAL: ${detail}. No 'unhealthy' listener registered; ` +
         `defaulting to process.exit(1) for process-manager restart.`,
@@ -429,9 +461,7 @@ export class MinionWorker extends EventEmitter {
       // genuinely active (a kill-switched executeRawDirect would probe the
       // same starved read pool twice and fake a verdict).
       const runProbe = async (): Promise<DbProbeResult> => {
-        const cm = (this.engine as {
-          connectionManager?: { isDualPoolActive?: () => boolean };
-        }).connectionManager;
+        const cm = getConnectionRouting(this.engine);
         const dualPool = cm?.isDualPoolActive?.() === true;
         const getDiag = (this.engine as {
           getPoolDiagnostics?: () => PoolDiagnostics | null;
@@ -989,20 +1019,12 @@ export class MinionWorker extends EventEmitter {
           );
           clearInterval(lockTimer);
           this.inFlight.delete(job.id);
-          // D8a: don't failJob if the abort was infrastructure. The
-          // stall detector will reclaim the row cleanly because the
-          // lock has expired (lock-renewal aborts only fire after
-          // lockDuration - safetyMargin elapsed without renewal).
-          // Isolation mode: also skip — the child is group-SIGKILLed at
-          // +25s, executeJob's own recording lands right behind it, and a
-          // competing evict failJob('dead') here would nondeterministically
-          // dead-letter a job with attempts remaining if that recording is
-          // merely slow (adversarial-review P3). The eviction from inFlight
-          // above is the part that unblocks the worker either way.
-          if (
-            !INFRASTRUCTURE_ABORT_REASONS.has(reason) &&
-            this.opts.jobIsolation !== 'process'
-          ) {
+          // D8a: don't failJob on infrastructure aborts (stall detector
+          // reclaims after lock expiry). Isolation mode: also skip — the
+          // group SIGKILL already fired and executeJob's own recording
+          // follows; a competing evict failJob('dead') could dead-letter a
+          // job with attempts remaining (adversarial-review P3).
+          if (!INFRASTRUCTURE_ABORT_REASONS.has(reason) && this.opts.jobIsolation !== 'process') {
             this.queue.failJob(
               job.id,
               lockToken,
@@ -1080,9 +1102,10 @@ export class MinionWorker extends EventEmitter {
     // the parent keeps claim/renewal and ALL result recording below — this
     // branch swaps ONLY the execution engine. When isolated, the parent-side
     // context is skipped entirely (the child builds its own against its own
-    // engine; building it here would be dead work holding closures).
-    const isolated =
-      this.opts.jobIsolation === 'process' && this.opts.childCliInvocation != null;
+    // engine; building it here would be dead work holding closures). The
+    // constructor guarantees childCliInvocation != null whenever
+    // jobIsolation === 'process', so this predicate matches the evict guard.
+    const isolated = this.opts.jobIsolation === 'process';
 
     // Build job context with per-job AbortSignal + shared shutdown signal.
     // Most handlers only care about `signal` (timeout / cancel / lock-loss).
@@ -1114,6 +1137,9 @@ export class MinionWorker extends EventEmitter {
             tiniPath: this.opts.childTiniPath,
           })
         : await handler(context as MinionJobContext);
+
+      // The child spawned and ran — the spawn path is healthy again.
+      this._consecutiveChildSpawnFailures = 0;
 
       clearInterval(lockTimer);
 
@@ -1169,6 +1195,12 @@ export class MinionWorker extends EventEmitter {
         return;
       }
 
+      // Any error that ISN'T a spawn failure proves the spawn path works —
+      // keep the breaker's "consecutive" semantics honest.
+      if (!(err instanceof ChildSpawnInfraError)) {
+        this._consecutiveChildSpawnFailures = 0;
+      }
+
       // issue #5 process isolation — two more infrastructure classes, same
       // release semantics as the block above (lock expires once launchJob's
       // finally clears the renewal timer; the stall sweeper requeues):
@@ -1183,6 +1215,19 @@ export class MinionWorker extends EventEmitter {
           `Job ${job.id} (${job.name}) released after child spawn failure — ` +
           `check the worker's child CLI configuration: ${errorText} (no attempt burned)`,
         );
+        this._consecutiveChildSpawnFailures += 1;
+        if (this._consecutiveChildSpawnFailures >= MinionWorker.CHILD_SPAWN_FAIL_EXIT_AFTER) {
+          console.error(
+            `[isolation] ${this._consecutiveChildSpawnFailures} consecutive child spawn/bootstrap ` +
+            `failures — the child CLI is deterministically broken. Emitting 'unhealthy' for ` +
+            `process-manager restart instead of looping claim/release forever.`,
+          );
+          this.emitUnhealthy({
+            reason: 'child_spawn_failing',
+            consecutiveFailures: this._consecutiveChildSpawnFailures,
+            message: errorText,
+          });
+        }
         return;
       }
       if (err instanceof ChildWorkerShutdownError) {

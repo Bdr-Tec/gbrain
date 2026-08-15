@@ -10,7 +10,7 @@ import {
   WORKER_EXIT_RSS_WATCHDOG,
   JOB_CHILD_EXIT_USAGE,
 } from '../core/minions/worker-exit-codes.ts';
-import { CHILD_ENV } from '../core/minions/job-isolation.ts';
+import { CHILD_ENV, resolveChildCliInvocation } from '../core/minions/job-isolation.ts';
 import { runChildJobEntry } from '../core/minions/run-child.ts';
 import type { MinionHandler, MinionJob, MinionJobStatus } from '../core/minions/types.ts';
 import type { PaceKeyOverrides } from '../core/pace-mode.ts';
@@ -1236,7 +1236,7 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       // exit. Deliberately absent from user-facing help. The CLI layer owns
       // engine.disconnect() + process.exit() (engine-ownership invariant).
       {
-        const config = (await import('../core/config.ts')).loadConfig();
+        const config = loadConfig();
         if (config?.engine === 'pglite') {
           console.error('[run-child] process isolation requires the Postgres engine.');
           await engine.disconnect();
@@ -1351,7 +1351,6 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       let childTiniPath = '';
       if (jobIsolation === 'process') {
         const { resolveGbrainCliPath } = await import('./autopilot.ts');
-        const { resolveChildCliInvocation } = await import('../core/minions/job-isolation.ts');
         const inv = resolveChildCliInvocation(
           process.env,
           process.execPath,
@@ -1365,7 +1364,13 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
           );
           process.exit(1);
         }
+        // Canonicalize BEFORE validating: existsSync on a relative name checks
+        // cwd while spawn() resolves via PATH — the validated file and the
+        // executed binary could differ (security review). Resolving to an
+        // absolute path makes the fail-fast check and the spawn agree.
         const { existsSync: childCliExists } = await import('node:fs');
+        const { resolve: resolveCliPath } = await import('node:path');
+        inv.cmd = resolveCliPath(inv.cmd);
         if (!childCliExists(inv.cmd)) {
           console.error(
             `Error: resolved child CLI does not exist: ${inv.cmd} ` +
@@ -1393,12 +1398,8 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       // the collapse loud at startup so a later 'pool_starved' incident has
       // an obvious prior warning instead of a mystery.
       {
-        const cm = (engine as unknown as {
-          connectionManager?: {
-            isDualPoolActive?: () => boolean;
-            describeMode?: () => { kill_switch_active?: boolean };
-          };
-        }).connectionManager;
+        const { getConnectionRouting } = await import('../core/minions/db-probe.ts');
+        const cm = getConnectionRouting(engine);
         if (cm?.isDualPoolActive && !cm.isDualPoolActive()) {
           const killSwitched = cm.describeMode?.().kill_switch_active === true;
           console.error(
@@ -1447,6 +1448,13 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
               `Exiting for process-manager restart.`,
             );
           }
+        } else if (info.reason === 'child_spawn_failing') {
+          console.error(
+            `[health] FATAL: ${info.consecutiveFailures} consecutive job-child spawn/bootstrap ` +
+            `failures (${info.message}). The child CLI is deterministically broken — fix the ` +
+            `worker's child CLI configuration (or GBRAIN_JOB_CHILD_CLI). Exiting for ` +
+            `process-manager restart.`,
+          );
         } else {
           console.error(
             `[health] FATAL: Worker stalled — ${info.waitingCount} waiting job(s) for ` +

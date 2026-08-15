@@ -83,7 +83,7 @@ import { GBrainError, PAGE_SORT_SQL, ENRICH_ORDER_SQL } from './types.ts';
 import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import { computeAnomaliesFromBuckets } from './cycle/anomaly.ts';
 import * as db from './db.ts';
-import { ConnectionManager } from './connection-manager.ts';
+import { ConnectionManager, DEFAULT_DIRECT_POOL_SIZE } from './connection-manager.ts';
 import { logConnectionEvent } from './connection-audit.ts';
 import { validateSlug, contentHash, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, takeRowToTake, takeHitRowToHit, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
@@ -1109,9 +1109,15 @@ export class PostgresEngine implements BrainEngine {
     let pool = this.sql;
     let fromDirect = false;
     if (!inTransaction && this.connectionManager?.isDualPoolActive()) {
-      const size = this.connectionManager.describeMode().direct_pool_size ?? 3;
-      const cap = Math.max(1, size - 1);
-      if (this._reservedDirectInFlight < cap) {
+      const size = this.connectionManager.describeMode().direct_pool_size ?? DEFAULT_DIRECT_POOL_SIZE;
+      // NO floor on the cap (red-team finding): at direct_pool_size=1 a
+      // Math.max(1, ...) floor would let a multi-minute reserve consume the
+      // ONLY direct session and starve claim/renewLock heartbeats — the
+      // exact #6 class, reintroduced on the direct pool. cap <= 0 means the
+      // direct lane has no spare capacity for reserves: use the read pool
+      // (the true status quo).
+      const cap = size - 1;
+      if (cap >= 1 && this._reservedDirectInFlight < cap) {
         // Take the permit in the SAME synchronous frame as the check — a
         // check-then-increment spanning `await ddl()` is a TOCTOU that lets
         // same-tick concurrent reserves overshoot the cap and starve the
@@ -1160,7 +1166,14 @@ export class PostgresEngine implements BrainEngine {
       };
       return await fn(conn);
     } finally {
-      reserved.release();
+      // Counter/gauge decrements run regardless of release() throwing
+      // (double-release or socket error must not permanently leak a permit
+      // of the small direct-reserve budget — data-migration review).
+      try {
+        reserved.release();
+      } catch {
+        // best-effort; the pool's own lifecycle handles a broken reservation
+      }
       this.checkoutGauge.release('reserved');
       if (fromDirect) this._reservedDirectInFlight -= 1;
     }

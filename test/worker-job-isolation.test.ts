@@ -88,6 +88,46 @@ async function jobRow(id: number): Promise<{ status: string; attempts_made: numb
 }
 
 describe('worker with jobIsolation=process (PGLite + fake child)', () => {
+  test("construction throws for jobIsolation 'process' without childCliInvocation (predicate-mismatch guard)", () => {
+    // Red-team finding: 'process' without an invocation silently executed
+    // handlers INLINE while the evict path believed it was isolated.
+    expect(
+      () => new MinionWorker(engine, { queue: 'default', jobIsolation: 'process' }),
+    ).toThrow(/childCliInvocation/);
+  });
+
+  test('spawn-failure circuit breaker: 3 consecutive bootstrap failures emit unhealthy(child_spawn_failing)', async () => {
+    // Red-team finding: a deterministic child-bootstrap failure looped
+    // claim/release forever, invisible to the stall detector (every settle
+    // refreshes the progress clock).
+    const j1 = await queue.add('isotest', {});
+    const j2 = await queue.add('isotest', {});
+    const j3 = await queue.add('isotest', {});
+    const worker = makeWorker('/nonexistent/gbrain-binary', []);
+    const unhealthy: unknown[] = [];
+    worker.on('unhealthy', (i) => unhealthy.push(i));
+    const run = worker.start();
+    const deadline = Date.now() + 10_000;
+    try {
+      while (Date.now() < deadline && unhealthy.length === 0) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    } finally {
+      worker.stop();
+      await run;
+    }
+    expect(unhealthy.length).toBeGreaterThan(0);
+    const info = unhealthy[0] as { reason: string; consecutiveFailures: number };
+    expect(info.reason).toBe('child_spawn_failing');
+    expect(info.consecutiveFailures).toBeGreaterThanOrEqual(3);
+    // No attempts burned anywhere — all three rows released, not failed.
+    for (const j of [j1, j2, j3]) {
+      const row = await jobRow(j.id);
+      expect(row.status).toBe('active');
+      expect(row.attempts_made).toBe(0);
+    }
+  }, 20_000);
+
   test('success: child result lands via the fenced completeJob', async () => {
     await withEnv({ FAKE_RUN_CHILD_MODE: 'success' }, async () => {
       const job = await queue.add('isotest', { prompt: 'hi' });

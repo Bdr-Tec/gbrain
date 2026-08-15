@@ -12,10 +12,11 @@
  * detection, no lock timer — the parent is the sole liveness owner. What it
  * does install:
  *
- *   - SIGTERM handler → aborts ctx.signal AND fires shutdownSignal, so
- *     handlers (e.g. shell) run their own SIGTERM→grace→SIGKILL cleanup and
- *     get the drain window to finish + write their outcome before the parent
- *     escalates to a group SIGKILL.
+ *   - SIGTERM handler → fires shutdownSignal ONLY (inline signal-separation
+ *     parity): cooperative handlers keep ctx.signal live, finish inside the
+ *     drain window, and write their outcome before the parent escalates to a
+ *     group SIGKILL. Handlers that watch shutdownSignal (shell) run their own
+ *     SIGTERM→grace→SIGKILL cleanup.
  *   - Parent-liveness watchdog: polls `process.kill(parentPid, 0)` every 15s
  *     (a ppid check is DEAD CODE under tini — the child's ppid is tini,
  *     which outlives the worker). On parent death: abort both signals, and
@@ -36,7 +37,7 @@ import {
   JOB_CHILD_EXIT_NOT_CLAIMED,
   JOB_CHILD_EXIT_RESULT_WRITE_FAILED,
 } from './worker-exit-codes.ts';
-import { encodeHandlerError, writeChildOutcomeFile } from './job-isolation.ts';
+import { encodeHandlerError, unrefTimer, writeChildOutcomeFile } from './job-isolation.ts';
 
 export interface RunChildOpts {
   jobId: number;
@@ -131,10 +132,10 @@ export async function runChildJobEntry(
         if (watchdog != null) clearInterval(watchdog);
         onOrphaned();
         const t = setTimeout(() => hardExit(1), graceMs);
-        (t as unknown as { unref?: () => void }).unref?.();
+        unrefTimer(t);
       }
     }, pollMs);
-    (watchdog as unknown as { unref?: () => void }).unref?.();
+    unrefTimer(watchdog);
   }
 
   try {

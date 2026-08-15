@@ -22,13 +22,19 @@ beforeEach(() => {
 });
 
 describe('resolveMaxLifetimeSeconds', () => {
-  test('default (no env): jittered 30-60 minutes, integer seconds', () => {
+  test('default (no env): a per-CONNECTION jitter FUNCTION, 30-60 minutes', () => {
+    // Must be a function, not a pre-evaluated number: postgres.js re-evaluates
+    // a function default per connection, so connections in one pool get
+    // independent recycle deadlines instead of a synchronized reconnect spike
+    // (data-migration specialist).
+    const v = resolveMaxLifetimeSeconds({});
+    expect(typeof v).toBe('function');
+    const fn = v as () => number;
     for (let i = 0; i < 20; i++) {
-      const v = resolveMaxLifetimeSeconds({});
-      expect(v).not.toBeNull();
-      expect(Number.isInteger(v)).toBe(true);
-      expect(v!).toBeGreaterThanOrEqual(1800);
-      expect(v!).toBeLessThanOrEqual(3600);
+      const n = fn();
+      expect(Number.isInteger(n)).toBe(true);
+      expect(n).toBeGreaterThanOrEqual(1800);
+      expect(n).toBeLessThanOrEqual(3600);
     }
   });
 
@@ -41,9 +47,9 @@ describe('resolveMaxLifetimeSeconds', () => {
     expect(resolveMaxLifetimeSeconds({ GBRAIN_POOL_MAX_LIFETIME_S: '0' })).toBeNull();
   });
 
-  test('empty string falls through to the default', () => {
+  test('empty string falls through to the default (function)', () => {
     const v = resolveMaxLifetimeSeconds({ GBRAIN_POOL_MAX_LIFETIME_S: '' });
-    expect(v).toBeGreaterThanOrEqual(1800);
+    expect(typeof v).toBe('function');
   });
 
   test('invalid values warn once on stderr and fall back to the default', () => {
@@ -56,8 +62,7 @@ describe('resolveMaxLifetimeSeconds', () => {
     try {
       for (const bad of ['abc', '-5', '3.5', 'NaN']) {
         const v = resolveMaxLifetimeSeconds({ GBRAIN_POOL_MAX_LIFETIME_S: bad });
-        expect(v).toBeGreaterThanOrEqual(1800);
-        expect(v).toBeLessThanOrEqual(3600);
+        expect(typeof v).toBe('function');
       }
     } finally {
       (process.stderr as { write: unknown }).write = realWrite;
@@ -67,9 +72,10 @@ describe('resolveMaxLifetimeSeconds', () => {
     expect(warnings.length).toBe(1);
   });
 
-  test('jitter varies per call (per-pool thundering-herd protection)', () => {
-    const values = new Set<number | null>();
-    for (let i = 0; i < 30; i++) values.add(resolveMaxLifetimeSeconds({}));
+  test('jitter varies per CONNECTION (thundering-herd protection)', () => {
+    const fn = resolveMaxLifetimeSeconds({}) as () => number;
+    const values = new Set<number>();
+    for (let i = 0; i < 30; i++) values.add(fn());
     expect(values.size).toBeGreaterThan(1);
   });
 
@@ -89,6 +95,23 @@ describe('resolveMaxLifetimeSeconds', () => {
         expect(
           (pool as unknown as { options: { max_lifetime: number | null } }).options.max_lifetime,
         ).toBe(900);
+      } finally {
+        await endPoolBounded(pool);
+      }
+    });
+  });
+
+  test('wiring: the default reaches a real pool as a FUNCTION (per-connection jitter)', async () => {
+    const { ConnectionManager } = await import('../src/core/connection-manager.ts');
+    const { endPoolBounded } = await import('../src/core/db.ts');
+    await withEnv({ GBRAIN_POOL_MAX_LIFETIME_S: undefined }, async () => {
+      const cm = new ConnectionManager({
+        url: 'postgresql://user:pass@127.0.0.1:5/never-connected',
+      });
+      const pool = await cm.getReadPool();
+      try {
+        const v = (pool as unknown as { options: { max_lifetime: unknown } }).options.max_lifetime;
+        expect(typeof v).toBe('function');
       } finally {
         await endPoolBounded(pool);
       }

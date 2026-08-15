@@ -122,26 +122,31 @@ export function _resetMaxLifetimeWarningForTests(): void {
 }
 
 /**
- * Client-pool connection max lifetime, in SECONDS, for every postgres()
- * call site (module singleton, engine instance pool, ConnectionManager read
- * + direct pools).
+ * Client-pool connection max lifetime for every postgres() call site
+ * (module singleton, engine instance pool, ConnectionManager read + direct
+ * pools).
  *
- * postgres.js already defaults to `60 * (30 + Math.random() * 30)` (30–60
- * min, jittered per pool) — verified against postgres@3.4.9 — and
- * max_lifetime only recycles connections as they are RETURNED to the pool;
- * it cannot reclaim a leaked checkout. So this resolver is explicitness + an
- * incident escape hatch, NOT a behavior change at default:
+ * postgres.js already defaults to `60 * (30 + Math.random() * 30)` — and
+ * critically that built-in default is a FUNCTION, re-evaluated PER
+ * CONNECTION (connection.js: `typeof seconds === 'function' ? seconds() :
+ * seconds`), so each connection gets its own 30–60min deadline. A
+ * pre-evaluated number would make every connection in a pool share ONE
+ * recycle deadline — a warm-up burst then reconnects simultaneously
+ * (data-migration specialist finding). The default here is therefore the
+ * same per-connection jitter function; only the env override returns a
+ * fixed number (the explicit escape hatch):
  *
  *   GBRAIN_POOL_MAX_LIFETIME_S=900   # recycle after 15 min
  *   GBRAIN_POOL_MAX_LIFETIME_S=0     # disable recycling entirely
  *
- * Returns seconds, or null for "disabled" (postgres.js accepts null).
- * Invalid values warn once on stderr and fall back to the jittered default.
- * The env param is injectable so tests never mutate process.env (rule R1).
+ * max_lifetime only recycles connections as they are RETURNED to the pool;
+ * it cannot reclaim a leaked checkout — this is explicitness + a knob, not
+ * a starvation fix. Invalid values warn once on stderr and fall back to the
+ * default. The env param is injectable so tests never mutate process.env.
  */
 export function resolveMaxLifetimeSeconds(
   env: Record<string, string | undefined> = process.env,
-): number | null {
+): number | null | (() => number) {
   const raw = env.GBRAIN_POOL_MAX_LIFETIME_S;
   if (raw !== undefined && raw !== '') {
     const parsed = Number(raw);
@@ -155,9 +160,8 @@ export function resolveMaxLifetimeSeconds(
       );
     }
   }
-  // Same shape as the postgres.js built-in default: jitter per pool so a
-  // fleet of pools doesn't thundering-herd reconnect on the same tick.
-  return Math.floor(60 * (30 + Math.random() * 30));
+  // Per-connection jitter, matching the postgres.js built-in default shape.
+  return () => Math.floor(60 * (30 + Math.random() * 30));
 }
 
 /**

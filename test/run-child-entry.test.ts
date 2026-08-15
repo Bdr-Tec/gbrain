@@ -216,11 +216,16 @@ describe('runChildJobEntry', () => {
     let sawAbort = false;
     const hardExits: number[] = [];
 
-    // parentPid that is guaranteed dead-ish: use an unlikely high pid.
-    // process.kill(pid, 0) throws ESRCH for it, tripping the watchdog fast.
+    // A GUARANTEED-dead parent pid: spawn a real short-lived process, wait
+    // for it to exit, and use its reaped pid. (A magic high pid is
+    // allocatable on Linux — default kernel.pid_max is 4,194,304 — so a real
+    // process could hold it and hang the test; testing specialist.)
+    const { spawnSync: spawnDead } = await import('node:child_process');
+    const deadPid = spawnDead('/bin/sh', ['-c', 'exit 0']).pid ?? 0;
+    expect(deadPid).toBeGreaterThan(0);
     const code = await runChildJobEntry(
       engine,
-      { jobId: job.id, lockToken: 'parent-tok-1', resultPath, parentPid: 2 ** 22 - 3 },
+      { jobId: job.id, lockToken: 'parent-tok-1', resultPath, parentPid: deadPid },
       {
         resolveHandler: () => async (ctx) =>
           new Promise((resolve) => {

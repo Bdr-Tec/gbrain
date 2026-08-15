@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -39,10 +39,33 @@ function makeHarness(name: string, body: string): string {
     `import { writeFileSync, renameSync } from 'node:fs';\n` +
     `const RESULT = process.env.GBRAIN_JOB_RESULT_PATH;\n` +
     `const writeOutcome = (o) => { writeFileSync(RESULT + '.tmp', JSON.stringify(o)); renameSync(RESULT + '.tmp', RESULT); };\n` +
-    body,
+    body +
+    // Readiness handshake LAST (after the body installed its signal
+    // handlers): fixed sleeps raced child startup on loaded CI runners —
+    // a SIGTERM landing before process.on('SIGTERM') installs takes the
+    // default disposition and flips shutdown-semantics assertions
+    // (testing specialist). The runner's outcome dir is internal, so the
+    // ready path comes from a TEST-provided env var.
+    `\nif (process.env.HARNESS_READY_PATH) writeFileSync(process.env.HARNESS_READY_PATH, '1');\n`,
     'utf8',
   );
   return path;
+}
+
+/** Make a per-test ready path + the env to hand runJobInChild. */
+function readiness(name: string): { env: Record<string, string | undefined>; wait: () => Promise<void> } {
+  const readyPath = join(harnessDir, `${name}.ready`);
+  return {
+    env: { ...process.env, HARNESS_READY_PATH: readyPath },
+    wait: async () => {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        if (existsSync(readyPath)) return;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error('harness never signalled readiness');
+    },
+  };
 }
 
 beforeAll(() => {
@@ -124,10 +147,10 @@ describe('runJobInChild (real children)', () => {
       `setInterval(() => {}, 1000);\n`, // never exits voluntarily
     );
     const abort = new AbortController();
-    const opts = { ...baseOpts(harness), abortSignal: abort.signal, killGraceMs: 400 };
+    const ready = readiness('stubborn');
+    const opts = { ...baseOpts(harness), abortSignal: abort.signal, killGraceMs: 400, env: ready.env };
     const p = runJobInChild(opts);
-    // Let it spawn, then abort (timeout/cancel/lock-loss class).
-    await new Promise((r) => setTimeout(r, 400));
+    await ready.wait();
     abort.abort(new Error('timeout'));
     const started = Date.now();
     await expect(p).rejects.toThrow(/terminated after abort/);
@@ -165,9 +188,10 @@ describe('runJobInChild (real children)', () => {
       `setInterval(() => {}, 1000);\n`,
     );
     const shutdown = new AbortController();
-    const opts = { ...baseOpts(harness), shutdownSignal: shutdown.signal, killGraceMs: 5_000 };
+    const ready = readiness('graceful-drain');
+    const opts = { ...baseOpts(harness), shutdownSignal: shutdown.signal, killGraceMs: 5_000, env: ready.env };
     const p = runJobInChild(opts);
-    await new Promise((r) => setTimeout(r, 400));
+    await ready.wait();
     shutdown.abort(new Error('worker-shutdown'));
     const result = (await p) as Record<string, unknown>;
     expect(result.finishedDuringDrain).toBe(true);
@@ -180,9 +204,10 @@ describe('runJobInChild (real children)', () => {
       `setInterval(() => {}, 1000);\n`,
     );
     const shutdown = new AbortController();
-    const opts = { ...baseOpts(harness), shutdownSignal: shutdown.signal, killGraceMs: 400 };
+    const ready = readiness('shutdown-stubborn');
+    const opts = { ...baseOpts(harness), shutdownSignal: shutdown.signal, killGraceMs: 400, env: ready.env };
     const p = runJobInChild(opts);
-    await new Promise((r) => setTimeout(r, 400));
+    await ready.wait();
     shutdown.abort(new Error('worker-shutdown'));
     await expect(p).rejects.toBeInstanceOf(ChildWorkerShutdownError);
   }, TEST_TIMEOUT_MS);
@@ -200,9 +225,10 @@ describe('runJobInChild (real children)', () => {
       `setInterval(() => {}, 1000);\n`,
     );
     const shutdown = new AbortController();
-    const opts = { ...baseOpts(harness), shutdownSignal: shutdown.signal, killGraceMs: 5_000 };
+    const ready = readiness('shutdown-error-report');
+    const opts = { ...baseOpts(harness), shutdownSignal: shutdown.signal, killGraceMs: 5_000, env: ready.env };
     const p = runJobInChild(opts);
-    await new Promise((r) => setTimeout(r, 400));
+    await ready.wait();
     shutdown.abort(new Error('worker-shutdown'));
     await expect(p).rejects.toBeInstanceOf(ChildWorkerShutdownError);
   }, TEST_TIMEOUT_MS);
@@ -215,14 +241,16 @@ describe('runJobInChild (real children)', () => {
     );
     const abort = new AbortController();
     const shutdown = new AbortController();
+    const ready = readiness('watchdog-stubborn');
     const opts = {
       ...baseOpts(harness),
       abortSignal: abort.signal,
       shutdownSignal: shutdown.signal,
       killGraceMs: 400,
+      env: ready.env,
     };
     const p = runJobInChild(opts);
-    await new Promise((r) => setTimeout(r, 400));
+    await ready.wait();
     // gracefulShutdown('watchdog') aborts BOTH — shutdown classification must win.
     shutdown.abort(new Error('watchdog'));
     abort.abort(new Error('watchdog'));
@@ -237,14 +265,16 @@ describe('runJobInChild (real children)', () => {
     );
     const abort = new AbortController();
     const shutdown = new AbortController();
+    const ready = readiness('timeout-during-shutdown');
     const opts = {
       ...baseOpts(harness),
       abortSignal: abort.signal,
       shutdownSignal: shutdown.signal,
       killGraceMs: 400,
+      env: ready.env,
     };
     const p = runJobInChild(opts);
-    await new Promise((r) => setTimeout(r, 400));
+    await ready.wait();
     shutdown.abort(new Error('worker-shutdown'));
     abort.abort(new Error('timeout')); // the JOB was targeted — not shutdown class
     await expect(p).rejects.toThrow(/terminated after abort/);

@@ -120,6 +120,16 @@ describe('withReservedConnection routing (issue #6)', () => {
     expect(log).toEqual(['reserve:direct', 'release:direct']);
   });
 
+  test('direct_pool_size=1: NEVER reserves from the direct pool (a reserve would starve ALL heartbeats)', async () => {
+    // Red-team finding: a Math.max(1, size-1) floor made cap=1 at size=1,
+    // letting a multi-minute reserve consume the ONLY direct session that
+    // claim/renewLock heartbeats depend on — the #6 class reintroduced.
+    const log: string[] = [];
+    const engine = makeEngine({ dualPool: true, directPoolSize: 1, log });
+    await engine.withReservedConnection(async () => 'ok');
+    expect(log).toEqual(['reserve:read', 'release:read']);
+  });
+
   test('fn throw releases the semaphore permit (leak guard)', async () => {
     const log: string[] = [];
     const engine = makeEngine({ dualPool: true, directPoolSize: 2, log }); // cap = 1

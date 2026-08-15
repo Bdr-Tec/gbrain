@@ -111,6 +111,66 @@ describe('issue #1801 fix #2 — supervised DB self-defense', () => {
     }
   });
 
+  it('dual-pool probe gating: probeDirect is wired ONLY when isDualPoolActive() is true', async () => {
+    // The load-bearing guard the adapter comments on: a kill-switched
+    // executeRawDirect would probe the same starved read pool twice and
+    // fabricate a verdict (testing specialist coverage gap).
+    const directCalls: string[] = [];
+    const runCase = async (dualPool: boolean): Promise<void> => {
+      const cmStub = { isDualPoolActive: () => dualPool };
+      (engine as unknown as { connectionManager?: unknown }).connectionManager = cmStub;
+      const realDirect = engine.executeRawDirect.bind(engine);
+      (engine as unknown as { executeRawDirect: unknown }).executeRawDirect = async (
+        sql: string,
+        params?: unknown[],
+        opts?: { signal?: AbortSignal },
+      ) => {
+        if (typeof sql === 'string' && sql.trim() === 'SELECT 1') {
+          directCalls.push(`dual=${dualPool}`);
+          return [];
+        }
+        return realDirect(sql, params as never, opts);
+      };
+      const restore = breakLivenessProbe(engine);
+      try {
+        await withEnv({ GBRAIN_SUPERVISED: '1' }, async () => {
+          const worker = new MinionWorker(engine, {
+            queue: 'default', concurrency: 1, pollInterval: 25, maxRssMb: 0,
+            healthCheckInterval: 20, dbFailExitAfter: 2, dbProbeTimeoutMs: 200,
+          });
+          worker.register('noop', async () => {});
+          const got = new Promise<UnhealthyReason>((resolve) => {
+            worker.on('unhealthy', (i) => resolve(i));
+          });
+          const runPromise = worker.start();
+          const info = await Promise.race([
+            got,
+            new Promise<null>((r) => setTimeout(() => r(null), 3000)),
+          ]);
+          worker.stop();
+          await runPromise;
+          expect(info).not.toBeNull();
+          if (dualPool) {
+            // Direct lane succeeded -> verdict names the pooler path.
+            expect(info!.reason === 'db_dead' && info!.verdict).toBe('pool_starved');
+          } else {
+            expect(info!.reason === 'db_dead' && info!.verdict).toBe('unknown');
+          }
+        });
+      } finally {
+        restore();
+        delete (engine as unknown as { executeRawDirect?: unknown }).executeRawDirect;
+        delete (engine as unknown as { connectionManager?: unknown }).connectionManager;
+      }
+    };
+
+    await runCase(false);
+    expect(directCalls.length).toBe(0); // single-pool: NEVER probes direct
+
+    await runCase(true);
+    expect(directCalls.filter((c) => c === 'dual=true').length).toBeGreaterThan(0);
+  }, 15_000);
+
   it('structural: DB probe is NOT gated on !isSupervisedChild; stall detection IS', () => {
     const src = readFileSync(
       join(import.meta.dir, '..', 'src', 'core', 'minions', 'worker.ts'),

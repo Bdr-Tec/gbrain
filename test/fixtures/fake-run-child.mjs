@@ -1,6 +1,7 @@
-// Fake `jobs run-child` for worker-job-isolation.test.ts: honors the
-// isolation env contract without needing a compiled gbrain binary or a
-// Postgres engine. Mode via FAKE_RUN_CHILD_MODE: success | error | crash.
+// Fake `jobs run-child` for the isolation tests (worker-job-isolation.test.ts
+// + test/e2e/job-isolation.test.ts): honors the isolation env contract
+// without needing a compiled gbrain binary or a Postgres engine.
+// Mode via FAKE_RUN_CHILD_MODE: success | error | exit15 | crash.
 import { writeFileSync, renameSync } from 'node:fs';
 
 const resultPath = process.env.GBRAIN_JOB_RESULT_PATH;

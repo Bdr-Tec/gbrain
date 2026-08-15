@@ -63,6 +63,22 @@ export type DbProbeResult =
   | { ok: true }
   | { ok: false; verdict: ProbeVerdict; detail: string };
 
+/**
+ * Narrow, shared view of the engine's ConnectionManager for routing-aware
+ * callers (the worker's probe adapter, jobs.ts's single-pool startup
+ * warning). One typed accessor instead of hand-rolled structural casts that
+ * drift independently from the real class (maintainability review).
+ */
+export interface EngineConnectionRouting {
+  isDualPoolActive?: () => boolean;
+  describeMode?: () => { kill_switch_active?: boolean; direct_pool_size?: number };
+}
+
+export function getConnectionRouting(engine: unknown): EngineConnectionRouting | null {
+  const cm = (engine as { connectionManager?: EngineConnectionRouting }).connectionManager;
+  return cm ?? null;
+}
+
 async function withDeadline(
   run: (signal: AbortSignal) => Promise<void>,
   ms: number,
