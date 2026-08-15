@@ -4502,27 +4502,38 @@ export class PGLiteEngine implements BrainEngine {
     // still trip Postgres 21000 on multi-source brains — caller's choice).
     // With opts.sourceId, the lookup is source-scoped so the right row
     // gets the raw_data attached.
+    // cathedral-4 parity: RETURNING id + zero-row check, matching the
+    // Postgres engine — a missing page must THROW, never silently no-op
+    // (callers treat a raw-data miss as an integrity failure).
     if (opts?.sourceId) {
-      await this.db.query(
+      const r = await this.db.query(
         `INSERT INTO raw_data (page_id, source, data)
          SELECT id, $2, $3::jsonb
          FROM pages WHERE slug = $1 AND source_id = $4
          ON CONFLICT (page_id, source) DO UPDATE SET
            data = EXCLUDED.data,
-           fetched_at = now()`,
+           fetched_at = now()
+         RETURNING id`,
         [slug, source, JSON.stringify(data), opts.sourceId]
       );
+      if (r.rows.length === 0) {
+        throw new Error(`putRawData failed: page "${slug}" (source=${opts.sourceId}) not found`);
+      }
       return;
     }
-    await this.db.query(
+    const r = await this.db.query(
       `INSERT INTO raw_data (page_id, source, data)
        SELECT id, $2, $3::jsonb
        FROM pages WHERE slug = $1
        ON CONFLICT (page_id, source) DO UPDATE SET
          data = EXCLUDED.data,
-         fetched_at = now()`,
+         fetched_at = now()
+       RETURNING id`,
       [slug, source, JSON.stringify(data)]
     );
+    if (r.rows.length === 0) {
+      throw new Error(`putRawData failed: page "${slug}" not found`);
+    }
   }
 
   async getRawData(

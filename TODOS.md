@@ -1,5 +1,87 @@
 # TODOS
 
+## Issues #5+#6 follow-ups (pool starvation + process isolation; plan: ~/.claude/plans/system-instruction-you-are-working-witty-moore.md)
+
+- [ ] **P1-companion — nested-checkout audit + dev-mode detection.** **What:**
+  `transaction()` callers that invoke parent-engine methods (or module helpers
+  taking `engine` not `tx`) take a SECOND read-pool slot while holding the tx
+  slot — e.g. the `operations.ts` advisory-lock loop around `tx.addLink`. Under
+  a saturated pool this is a client-side self-deadlock class. Audit call sites;
+  add a dev-mode warning (e.g. a tx-depth counter consulted by `runUnsafe`).
+  **Why:** the #6 incident's exact 240s-idle sessions were never reproduced
+  under a debugger; this is the strongest remaining candidate — the shipped
+  wave mitigates the starvation class but does not close this path. **Effort:**
+  M. **Priority:** P1-companion.
+- [ ] **P2 — per-handler isolation policy.** **What:** a per-handler-name set
+  (e.g. long-running LLM-bound handlers isolate, sub-second `lint`/`backlinks`
+  stay inline) instead of the all-or-nothing `--job-isolation process`.
+  **Why:** spawn cost (~0.3–1s) is noise for 644s subagent jobs, meaningful
+  for sub-second handlers; one worker should be able to mix. **Context:**
+  `worker.ts` executeJob's `isolated` gate is the seam. **Effort:** M.
+  **Priority:** P2.
+- [ ] **P2 — per-child --max-rss caps.** **What:** RSS watchdog for isolation
+  children (the worker-level watchdog covers the worker only in process mode;
+  a startup note ships today). **Context:** child-job-runner.ts owns the child
+  lifecycle; a poll of the child's RSS + group-kill on breach mirrors the
+  worker watchdog. **Effort:** M. **Priority:** P2.
+- [ ] **P2 — jobs-side connection-budget clamp for isolated workers.** **What:**
+  warn/clamp concurrency when `concurrency × (child pool + 1) + parent pools`
+  exceeds a configured budget (GBRAIN_MAX_CONNECTIONS-style; precedent
+  `sync-concurrency.ts:clampWorkersForConnectionBudget`). **Why:** isolation
+  multiplies pooler CLIENT connections (~73 at concurrency 15); today the
+  budget lives only in docs math. **Effort:** S. **Priority:** P2.
+- [ ] **P3 — --job-isolation pass-through for the autopilot's embedded
+  supervisor.** **What:** `autopilot.ts` builds its own worker args; add the
+  conditional flag there (jobs supervisor already passes through). **Effort:**
+  S. **Priority:** P3.
+- [ ] **P3 — runLockRenewalTick adoption in the cycle drain.** **What:**
+  `synthesize.ts` now uses the minimal `runDrainRenewalTick` (per-call signal +
+  guard); adopting the full tick would add the audit channel + bounded
+  reconnect. **Effort:** S. **Priority:** P3.
+- [ ] **P3 — streaming child progress.** **What:** isolation children report
+  progress via their own token-fenced DB writes today (identical to inline);
+  an IPC stream would only add parent-side visibility (e.g. lifecycle events
+  in `jobs watch`). **Effort:** M. **Priority:** P3.
+- [ ] **P3 — connection-audit release events + plain-idle visibility.**
+  **What:** `logConnectionEvent` never emits `release`, so the JSONL cannot
+  answer "who holds a slot"; and `getIdleBlockers` filters
+  `state='idle in transaction'` only — the #6 incident's plain-`idle` sessions
+  were invisible to it. **Effort:** M. **Priority:** P3.
+- [ ] **P3 — doctor connection_routing check.** **What:** wire
+  `ConnectionManager.describeMode()` + `healthCheck()` (both currently
+  zero-caller outside tests) into a doctor check naming the routing mode,
+  kill-switch state, and per-pool probe latency. Comments in four files
+  already reference this check as if it existed. **Effort:** S.
+  **Priority:** P3.
+- [ ] **P3 — isolation test-gap follow-ups (pre-landing review).** **What:**
+  (a) spawned-CLI negative tests for `jobs run-child` bootstrap guards (PGLite
+  → exit 13; missing job-id/env → exit 13) and for `jobs work` with
+  isolation on + an unresolvable child CLI (fail-fast exit 1) — both need a
+  real engine bootstrap so they live in the e2e lane; (b) a behavioral (not
+  structural) test driving `withRefreshingLock` with a hung injected
+  `handle.refresh` (signal aborted at timeout, no overlapping ticks); (c) a
+  force-evict-skip test for isolation mode (needs the 30s evict window made
+  injectable); (d) operator-flow message tests (verdict-tailored FATAL text,
+  single-pool startup banner). **Why:** the ship coverage audit scored the
+  wave 82% — these are the surviving gaps. **Effort:** M. **Priority:** P3.
+- [ ] **P3 — raceWithAbortTimeout shared helper.** **What:** the
+  "Promise.race a query vs a setTimeout that aborts an AbortController,
+  clearTimeout in finally" pattern now exists at five sites (db-probe
+  withDeadline, synthesize runDrainRenewalTick, lock-renewal-tick callAbort,
+  db-lock tickAbort, supervisor probeAbort), each re-deriving the same
+  invariants. Extract one helper and adopt it. **Effort:** S. **Priority:** P3.
+- [ ] **P3 — lazy handler resolution in run-child.** **What:** every isolation
+  child runs full registerBuiltinHandlers (incl. plugin discovery) to resolve
+  ONE handler; the job name is known from the row — a resolve-by-name path
+  would skip discovery for builtins. Matters only if isolation is ever used
+  for short jobs (documented as not the target). **Effort:** S. **Priority:** P3.
+- [ ] **P3 — full checkout instrumentation via a Sql proxy.** **What:** the
+  CheckoutGauge covers raw/direct/reserved/tx seams only; tagged-template
+  traffic (most engine load) is untracked. A proxy around the postgres.js Sql
+  callable could count real checkouts — investigate cost/fragility before
+  building. **Why:** would turn the probe's "tracked subset" caveat into full
+  coverage. **Effort:** M. **Priority:** P3.
+
 ## Security-process follow-ups (filed with Wave −1 of the fix-wave campaign, 2026-08-14)
 
 - [ ] **P2 — Vulnerability disclosure policy.** **What:** a written disclosure
@@ -254,14 +336,6 @@ fix-now findings landed on the branch; these four are the review-deferred tail.
   `requestToolsPersistLimiter`; the surface_change audit rows already give
   a DB-side count to enforce against if needed. **Effort:** medium.
   **Priority:** P3.
-- [ ] **P3 — cancel (not just abandon) timed-out submit-time queue probes.**
-  **What:** the WP5 wedge/pause probes time-bound via Promise.race, but the
-  losing query keeps running on the pool after the race resolves. Wire
-  AbortSignal / statement_timeout so a slow probe releases its slot. **Why:**
-  under pool exhaustion (the exact regime the probes exist to detect) an
-  abandoned probe query holds a pooler slot and makes the exhaustion worse.
-  **Context:** `src/core/minion/supervisor.ts` queryWedgeSignals callers in
-  `src/core/operations.ts` submit paths. **Effort:** small. **Priority:** P3.
 - [ ] **P3 — document the status --json snapshot union under schema_version.**
   **What:** a short protocol note (docs/progress-events.md sibling) pinning
   the `get_status_snapshot` v2 shape as a discriminated union on
@@ -361,7 +435,7 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
 
 - [ ] **`--live` agent-in-the-loop know-to-ask.** Replay fixtures with a real model deciding whether to issue retrieval calls; grade the agent, not just the deterministic reflex. Pre-registered in `docs/eval/BRAINBENCH.md` (the v1 metric grades the injection decision, which IS the shipped mechanism). Needs: seeded N-repeat methodology for model stochasticity + budget rails. Priority: P2.
 - [ ] **Intrusion-budget gating calibration.** `avg_injected_tokens` is reported, non-gating (decision 18) — a wrong threshold is worse than none. After a few weeks of scoreboard data across PRs, pick calibrated per-seam thresholds and promote it to a gated metric. Priority: P2.
-- [ ] **Flip contract adapters to production — claude-code half now unblocked.** `adapters/claude-code.ts` exports the UserPromptSubmit hook wire types; the real hook (`gbrain hook user-prompt`, shipped with the bootstrap lane and extended with cross-turn dedupe + the channel feedback loop in the cathedral-3 convergence) swaps the in-process transport for an exec of the hook script and flips `seam: 'contract'` → `'production'` with continuous bench numbers. Note the production hook also exercises transcript-based dedupe, which the memoryless contract row deliberately doesn't. Same for codex fragments when that integration lands. Priority: P1 (the claude-code integration has landed; this is now standalone-actionable).
+- [ ] **Flip contract adapters to production — claude-code half now unblocked.** `adapters/claude-code.ts` exports the UserPromptSubmit hook wire types; the real hook (`gbrain hook user-prompt`, shipped with the bootstrap lane and extended with cross-turn dedupe + the channel feedback loop in the cathedral-3 convergence) swaps the in-process transport for an exec of the hook script and flips `seam: 'contract'` → `'production'` with continuous bench numbers. Note the production hook also exercises transcript-based dedupe, which the memoryless contract row deliberately doesn't. For the codex half: the cathedral-4 transcripts lane shipped a verified codex rollout PARSER (`src/core/transcripts/codex.ts`, structural turn selection pinned against a live sample) — a codex contract adapter can now consume it instead of waiting for a hook integration. Priority: P1 (the claude-code integration has landed; codex parsing has landed; this is now standalone-actionable).
 - [ ] **Cathedral 1 conformance-kit fixture import.** The memory-verbs conformance scenarios convert to BrainBench fixtures via the published `evals/brainbench/schema/fixture.schema.json` once `garrytan/cathedral-1` merges ("conformance tests double as BrainBench seed fixtures", decision log 2026-06-12). Free corpus growth from already-reviewed scenarios. Blocked by: cathedral-1 on master. Priority: P2.
 - [ ] **Live-embeddings fidelity mode (`--embeddings`).** Hermetic CI grades the keyword/alias arms only (disclosed); an opt-in mode seeding real embeddings would grade write-back/continuity retrieval through the vector path. Same budget rails as `--llm`. Priority: P3.
 - [ ] **Community fixture intake + competitor adapters.** The TD1 remainder after the generated corpus absorbed in-PR growth: an `external-authors/`-style intake path for contributed fixtures (validator + privacy guard already gate them) and adapters for non-gbrain memory systems against the published schemas, enabling true head-to-head rows in the gbrain-evals scorecard. Priority: P3.
@@ -5852,10 +5926,14 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 - [ ] **P2 — `gbrain ingest feed`: native feed adapter.** blog-ingest ships the
   agent-procedure layer; the durable path is a deterministic RSS/Atom adapter
   (discovery, pagination, canonical-URL dedup, 429 backoff) behind one command.
-- [ ] **P2 — Native AI-chat export importer.** conversation-archive converts
-  ChatGPT/Claude/Perplexity exports via agent procedure; a native importer
-  (export JSON → conversations/ pages) makes it deterministic. Pairs with the
-  existing conversation-parser surface.
+- [x] **P2 — Native AI-chat export importer.** **Completed:** v0.46.0.0 (2026-08-14).
+  `gbrain transcripts ingest` imports extracted ChatGPT and Claude.ai
+  `conversations.json` exports natively (adapters at
+  `src/core/transcripts/{chatgpt-export,claude-export}.ts`, rendering on the
+  conversation-parser surface). Perplexity has no adapter yet — a candidate
+  leaf module on the same `TranscriptAdapter` seam (the pattern the
+  cathedral-4 "More harness adapters" follow-up below documents); the
+  conversation-archive skill keeps the manual procedure for it meanwhile.
 - [ ] **P2 — Entity-guard as a native op.** phonetic-name-guard's own changelog
   proves prose-only failed: ASR-variant entity collisions need a native check
   (registry + alias table consulted at put/import time). The wave shipped the
@@ -5948,6 +6026,21 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   free tier means the scenario should COMPLETE the bootstrap, making it a
   stronger promotion candidate than grok's sign-in-wall early-stop. Effort: M.
 
+## Transcripts-import follow-ups (filed from cathedral-4, `gbrain transcripts ingest`)
+
+Scoped OUT of the cathedral-4 PR by the CEO review's cherry-pick ceremony and the
+eng review — each carries a named design, none is a bug. Context: the import lane
+(adapters at `src/core/transcripts/`, session-atomic pipeline, embed-OFF default)
+covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
+
+- [ ] **OpenClaw go-forward capture.** Blocked upstream: the OpenClaw PluginApi exposes only `registerContextEngine` — no end-of-turn/agent-end capability. When the host grows one, the plugin (`src/openclaw-context-engine.ts`) subscribes and emits the session into the corpus lane (`~/.gbrain/transcripts/corpus` sidecar protocol) the way `gbrain hook session-end` does for Claude Code; the openclaw session PARSER already ships. Consent must ride a capture line like the bootstrap harness `--no-capture` model. Priority: P2.
+- [ ] **Codex go-forward capture (notify sweeper).** `docs/designs/AGENT_BOOTSTRAP_PLAN.md` FF2 names the design (notify sweeper over `~/.codex/sessions`); the rollout parser now ships in `src/core/transcripts/codex.ts`, so the sweeper is pure wiring: on codex notify, run `gbrain transcripts ingest <rollout> --quiet`. Needs the same consent posture as capture. Priority: P2.
+- [ ] **Scheduled re-import cycle phase.** `transcripts ingest --since last --all` as an opt-in cycle phase so dead-log import self-refreshes. REQUIRES its own consent-line design first: reading harness dirs on a schedule is capture-adjacent (the "Autonomous transcript watchers" decision above rules the spirit); the clean-scan watermark + status gap table already make manual re-runs cheap. Priority: P3.
+- [ ] **PII auto-detection redaction pass for imports.** The native lane redacts secrets (secret-scan) + user patterns (`harvest-private-patterns.txt`, emails included) and counts imperatives; broad PII detection (names, phones, addresses) is its own subsystem — the conversation-archive skill keeps the human scrub step for sensitive corpora meanwhile. Priority: P2.
+- [ ] **More harness adapters: Cursor / Gemini CLI / Copilot CLI.** Leaf modules on the `TranscriptAdapter` seam (~1h each with an agent): dated SPEC_TARGET + scrubbed fixture + drift alarm, per the shipped six. Formats unverified locally — verify a real sample first (the hermes gate pattern). Priority: P3.
+- [ ] **ChatGPT/Claude.ai export zip unwrapping.** v1 requires the EXTRACTED `conversations.json` ("unzip first" is documented + error-hinted). Add zip handling without a heavy dependency (Bun has no built-in zip; evaluate a minimal vendored inflate or shelling to `unzip` with confinement). Priority: P3.
+- [ ] **BrainBench raw-format fixture schema (sibling repo).** The in-repo pin (`test/e2e/transcripts-writeback-fidelity.test.ts`) grades raw files through the adapters with the gold extractor, but the BrainBench corpus schema (gbrain-evals) still rejects unknown keys and its corpus hash doesn't cover raw sidecars. Needs: versioned raw-fixture sidecar type + loader + hash coverage + baseline re-cut in gbrain-evals, then a `write_back_fidelity_raw` suite row here. Priority: P2.
+- [ ] **Hermes SPEC_TARGET verification against a populated store.** The schema came from the installed hermes-agent v0.20.0 source (`SCHEMA_SQL`), but no populated `state.db` existed on the dev machine — the fixture is synthetic-by-declaration. Verify against a real store after some Hermes sessions accrue, then flip `status: 'provisional'` → `'verified'` and pin the `active`/`compacted` semantics the adapter currently ignores. Priority: P3.
 ## Grok Build wave follow-ups (filed at build time)
 
 - [ ] **P1 — Enable the grok-door paid lane once XAI_API_KEY exists.** Admin
