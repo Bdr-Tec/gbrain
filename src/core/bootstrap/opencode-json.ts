@@ -33,16 +33,22 @@
  *   our entry deep-asserted, and every OTHER top-level key asserted to
  *   survive; on any failure the original file is untouched.
  * - Secrets hygiene: when the entry carries an inline bearer the target is
- *   forced 0600 and the .bak is chmod'd 0600 (on re-runs it carries the
- *   PREVIOUS token). Token-free entries inherit the file's existing mode.
+ *   forced 0600. Backups are UNIQUE per operation (`<config>.bak-<hex>`,
+ *   returned in the result) so two overlapping runs can never clobber each
+ *   other's snapshot, and a backup is chmod'd 0600 whenever the COPIED
+ *   content carries an inline bearer (write AND remove paths — on re-runs
+ *   the backup carries the PREVIOUS token). Token-free entries inherit the
+ *   file's existing mode.
  * - Concurrency: callers hold acquireBootstrapLock (config-dir →
  *   opencode-dir ordering, mirroring the codex lanes in harness.ts) — the
  *   writer itself is lock-free like codex-toml.ts.
  */
 
+import { randomBytes } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { applyEdits, modify, parse as parseJsonc, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import { atomicWriteTextFile } from './atomic-write.ts';
+import { opencodeGlobalSiblingPath } from './host-specs.ts';
 
 export const GBRAIN_REMOTE_TOKEN_ENV = 'GBRAIN_REMOTE_TOKEN';
 const ENV_INTERPOLATION = `{env:${GBRAIN_REMOTE_TOKEN_ENV}}`;
@@ -91,7 +97,13 @@ export interface WriteOpencodeEntryResult {
   replacedPrior: boolean;
   /** Kind of the pre-existing entry (what was there before this write). */
   priorKind: OpencodeEntryKind;
+  /** Unique per-write backup (`<config>.bak-<hex>`) of the prior file, or
+   * null on a fresh file. Callers that roll back restore from THIS path. */
   backupPath: string | null;
+  /** The EXACT text this write landed — rollback callers compare the current
+   * file content against it before restoring (a mismatch means a newer
+   * registration exists and a restore would clobber it). */
+  writtenText: string;
   notes: string[];
 }
 
@@ -154,9 +166,15 @@ function isGbrainShapedCommand(command: unknown): boolean {
   if (typeof head !== 'string') return false;
   if (head === 'gbrain') return true; // PATH-resolved (project scope)
   if (/[\\/]gbrain$/.test(head)) return true; // absolute binary path
-  // bun-run wrapper shim lane: `bun run <...>/src/cli.ts` / a *.ts cli path.
+  // bun-run wrapper shim lane: `bun run <...>/gbrain/src/cli.ts` etc. The
+  // arg match is ANCHORED like the head-path lane: some arg must carry an
+  // exact `gbrain` path segment (or a hyphen-suffixed `gbrain-*` one) — a
+  // loose substring scan classified `bun run /opt/gbrainy-fork/src/cli.ts`
+  // as ours (both the `gbrain` substring and a bare `src/cli.ts$` matched).
+  // A gbrain-less `bun run /repo/src/cli.ts` is now NOT ours (fail-closed:
+  // gbrain refuses to touch what it cannot prove it owns).
   if (head === 'bun' || head.endsWith('/bun')) {
-    return command.some((a) => typeof a === 'string' && /gbrain|src[\\/]cli\.ts$/.test(a));
+    return command.some((a) => typeof a === 'string' && /(?:^|[\\/])gbrain(?:[\\/-]|$)/.test(a));
   }
   // staged shim named gbrain-<suffix> (e.g. gbrain-shim from stageBinDir) —
   // hyphen-anchored so a foreign /opt/bin/gbrainy is NOT ours.
@@ -269,6 +287,29 @@ function entryCarriesSecret(entry: OpencodeMcpEntry): boolean {
   return entry.kind === 'remote' && entry.tokenMode === 'inline';
 }
 
+/** True when config text carries an INLINE bearer credential (any
+ * `Bearer <value>` that is not the `{env:…}` interpolation) — the rule that
+ * decides whether a backup copy must be tightened to 0600. */
+export function textCarriesInlineBearer(text: string): boolean {
+  return /Bearer\s+(?!\{env:)\S/.test(text);
+}
+
+/** Unique-suffix backup (`<config>.bak-<hex>`): two overlapping runs can
+ * never clobber each other's snapshot. The config-dir lock covers the WRITE,
+ * but a backup must survive until the caller's post-write verification (the
+ * harness network smoke) — which runs AFTER the lock is released, so a fixed
+ * `.bak` name would let run B's writer overwrite run A's snapshot and a
+ * failed run A would then restore (and revoke against) run B's state.
+ * chmod 0600 whenever the copied content carries an inline bearer
+ * (copyFileSync onto a fresh path takes the source mode, but a hand-loosened
+ * source must not propagate a loose mode to a token-bearing backup). */
+function createUniqueBackup(configPath: string, priorText: string): string {
+  const backupPath = `${configPath}.bak-${randomBytes(6).toString('hex')}`;
+  copyFileSync(configPath, backupPath);
+  if (textCarriesInlineBearer(priorText)) chmodSync(backupPath, 0o600);
+  return backupPath;
+}
+
 // No explicit eol: jsonc-parser detects and preserves the file's own EOLs
 // (verified: a CRLF config keeps CRLF through modify/applyEdits).
 const FORMATTING = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
@@ -304,13 +345,24 @@ export function writeOpencodeMcpEntry(
     );
   }
   if (priorKind === 'ours-other-source' && !opts.allowReplaceOtherSource) {
+    // Caller-appropriate refusal text: on the REMOTE path (expect.url — the
+    // harness/connect lanes) no GBRAIN_SOURCE is involved, and connect's
+    // documented escape hatch is --force; the GBRAIN_SOURCE wording belongs
+    // to the local/workspace lane only.
     throw new Error(
-      `mcp.${entry.name} in ${configPath} belongs to a DIFFERENT gbrain workspace ` +
-        `(GBRAIN_SOURCE mismatch) — re-run with the overwrite confirmation to reroute it, or pick another --name.`,
+      opts.expect?.url !== undefined
+        ? `mcp.${entry.name} in ${configPath} is a gbrain registration that does not match this endpoint ` +
+            `(${opts.expect.url}) — another install or lane owns it; pass --force to replace it, or pick another --name.`
+        : `mcp.${entry.name} in ${configPath} belongs to a DIFFERENT gbrain workspace ` +
+            `(GBRAIN_SOURCE mismatch) — re-run with the overwrite confirmation to reroute it, or pick another --name.`,
     );
   }
   if (priorKind === 'ours-other-source') {
-    notes.push(`replaced a gbrain registration that pointed at a different workspace (source mismatch).`);
+    notes.push(
+      opts.expect?.url !== undefined
+        ? `replaced a gbrain registration that did not match this endpoint (url/lane mismatch).`
+        : `replaced a gbrain registration that pointed at a different workspace (source mismatch).`,
+    );
   }
 
   const baseText = text.trim() === '' ? '{\n  "$schema": "https://opencode.ai/config.json"\n}\n' : text;
@@ -351,9 +403,8 @@ export function writeOpencodeMcpEntry(
   const secret = entryCarriesSecret(entry);
   let backupPath: string | null = null;
   if (existed) {
-    backupPath = `${configPath}.bak`;
-    copyFileSync(configPath, backupPath);
-    if (secret) chmodSync(backupPath, 0o600); // re-runs: .bak carries the previous token
+    backupPath = createUniqueBackup(configPath, text);
+    if (secret) chmodSync(backupPath, 0o600); // re-runs: the backup carries the previous token
   }
   atomicWriteTextFile(configPath, nextText, secret ? { forceMode: 0o600 } : { freshMode: 0o644 });
   if (secret && existed) {
@@ -365,6 +416,7 @@ export function writeOpencodeMcpEntry(
     replacedPrior: priorKind !== 'absent',
     priorKind,
     backupPath,
+    writtenText: nextText,
     notes,
   };
 }
@@ -420,10 +472,54 @@ export function removeOpencodeMcpEntry(
   const nextText = applyEdits(text, edits);
   parseOpencodeConfig(nextText, configPath); // never leave opencode unreadable
 
-  const backupPath = `${configPath}.bak`;
-  copyFileSync(configPath, backupPath);
+  // Unique backup, 0600 when the copied content carries an inline bearer —
+  // the removed entry may BE the token-bearing one, and a fixed-name copy
+  // onto a pre-existing loose-mode backup would keep the loose mode.
+  const backupPath = createUniqueBackup(configPath, text);
   atomicWriteTextFile(configPath, nextText);
   return { configPath, removed: true, backupPath, notes };
+}
+
+// ── Sibling-global reconcile (the two-filename merge blind spot) ────────────
+
+/**
+ * opencode merges the user-global `opencode.json` AND `opencode.jsonc` when
+ * both exist. Before writing `mcp.<name>` into one of them, reconcile the
+ * SIBLING file: an ours-classified entry there is removed (one owner per
+ * name — left in place it survives as a shadow registration whose merge
+ * winner is ambiguous, and a later removal of the primary "reveals" it); a
+ * FOREIGN entry refuses loudly naming BOTH files (same refusal posture as
+ * the primary-file foreign case — the merge winner is not ours to fight
+ * over). No-op when the path is not a global-pair member or the sibling is
+ * absent/entry-less. Callers hold the opencode config-dir bootstrap lock
+ * (both files share the dir — one lock covers both) and call this ONLY for
+ * user-global writes (project-scope sibling semantics are unobserved).
+ */
+export function reconcileOpencodeSiblingGlobal(
+  configPath: string,
+  name: string,
+  expect: OpencodeEntryExpectation = {},
+): { siblingPath: string | null; removed: boolean; notes: string[] } {
+  const siblingPath = opencodeGlobalSiblingPath(configPath);
+  if (!siblingPath || !existsSync(siblingPath)) return { siblingPath, removed: false, notes: [] };
+  const { text } = readConfigRaw(siblingPath);
+  const parsed = parseOpencodeConfig(text, siblingPath);
+  const kind = opencodeEntryKind(parsed, name, expect);
+  if (kind === 'absent') return { siblingPath, removed: false, notes: [] };
+  if (kind === 'foreign') {
+    throw new Error(
+      `mcp.${name} in ${siblingPath} is not a gbrain-managed entry — opencode merges ${siblingPath} AND ` +
+        `${configPath} when both exist, so writing mcp.${name} into ${configPath} would fight it with an ` +
+        `ambiguous merge winner. Remove it (or pick another --name) and re-run.`,
+    );
+  }
+  const r = removeOpencodeMcpEntry(siblingPath, name, expect);
+  const notes = [
+    `removed the gbrain mcp.${name} entry from ${siblingPath} — opencode merges both global filenames, and the ` +
+      `registration being written lands in ${configPath} (one owner per name).`,
+    ...r.notes,
+  ];
+  return { siblingPath, removed: r.removed, notes };
 }
 
 /**

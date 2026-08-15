@@ -20,7 +20,9 @@ import {
   opencodeEntrySnippet,
   parseOpencodeConfig,
   parseOpencodeEntryBearer,
+  reconcileOpencodeSiblingGlobal,
   removeOpencodeMcpEntry,
+  textCarriesInlineBearer,
   writeOpencodeMcpEntry,
   type OpencodeLocalEntry,
   type OpencodeRemoteEntry,
@@ -28,6 +30,7 @@ import {
 import {
   opencodeConfigDir,
   opencodeGlobalConfigPath,
+  opencodeGlobalSiblingPath,
   opencodeProjectConfigPath,
   OPENCODE_SPEC_ID,
   TARGETS,
@@ -206,7 +209,14 @@ describe('opencodeEntryKind — the ownership arbiter truth table', () => {
     // local × command shapes (all with matching source)
     { label: 'local abs path + same source', entry: { type: 'local', command: ['/opt/bin/gbrain', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'ours-same-source' },
     { label: 'local PATH-resolved + same source', entry: { type: 'local', command: ['gbrain', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'ours-same-source' },
-    { label: 'local bun-run wrapper + same source', entry: { type: 'local', command: ['bun', 'run', '/repo/src/cli.ts', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'ours-same-source' },
+    { label: 'local bun-run wrapper + same source (gbrain path segment)', entry: { type: 'local', command: ['bun', 'run', '/repo/gbrain/src/cli.ts', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'ours-same-source' },
+    // [anchored bun-arg fingerprint] a loose substring scan classified a
+    // gbrainy-fork checkout as ours; the anchor requires an exact `gbrain`
+    // (or `gbrain-*`) path segment in some arg — a gbrain-less cli path is
+    // fail-closed NOT ours.
+    { label: 'local bun-run of a gbrainy-fork cli is NOT ours', entry: { type: 'local', command: ['bun', 'run', '/opt/gbrainy-fork/src/cli.ts', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'foreign' },
+    { label: 'local bun-run with NO gbrain-ish segment is NOT ours (fail-closed)', entry: { type: 'local', command: ['bun', 'run', '/repo/src/cli.ts', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'foreign' },
+    { label: 'local bun-run of a gbrain-shim path is ours', entry: { type: 'local', command: ['bun', 'run', '/tmp/stage/gbrain-shim', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'ours-same-source' },
     { label: 'local staged shim + same source', entry: { type: 'local', command: ['/tmp/stage/gbrain', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'ours-same-source' },
     // source equality, not presence ([FIX7])
     { label: 'local + OTHER source', entry: { type: 'local', command: ['gbrain', 'serve'], environment: { GBRAIN_SOURCE: 'ws-b' } }, expectArg: { sourceId: 'ws-a' }, want: 'ours-other-source' },
@@ -309,6 +319,126 @@ describe('secret hygiene (inline bearer only)', () => {
     writeOpencodeMcpEntry(envCfg, remoteInline({ tokenMode: 'env', bearerToken: undefined }));
     expect(parseOpencodeEntryBearer(envCfg, 'gbrain')).toBeNull();
     expect(parseOpencodeEntryBearer(join(dir, 'absent.json'), 'gbrain')).toBeNull();
+  });
+});
+
+describe('unique backups (overlapping-run clobber guard)', () => {
+  test('each write takes a UNIQUE .bak-<hex> snapshot — two runs can never clobber each other\'s backup', () => {
+    writeOpencodeMcpEntry(cfg(), remoteInline());
+    const r1 = writeOpencodeMcpEntry(cfg(), remoteInline({ bearerToken: 'gbt_secret_token_2' }), {
+      expect: { url: 'http://127.0.0.1:7411/mcp' },
+    });
+    const r2 = writeOpencodeMcpEntry(cfg(), remoteInline({ bearerToken: 'gbt_secret_token_3' }), {
+      expect: { url: 'http://127.0.0.1:7411/mcp' },
+    });
+    expect(r1.backupPath).not.toBeNull();
+    expect(r2.backupPath).not.toBeNull();
+    expect(r1.backupPath).not.toBe(r2.backupPath);
+    expect(r1.backupPath as string).toMatch(/\.bak-[0-9a-f]+$/);
+    // BOTH snapshots survive: the fixed-name scheme would have overwritten r1's.
+    expect(readFileSync(r1.backupPath as string, 'utf8')).toContain('gbt_secret_token_1');
+    expect(readFileSync(r2.backupPath as string, 'utf8')).toContain('gbt_secret_token_2');
+  });
+
+  test('writtenText in the result is the exact bytes on disk (rollback compare seam)', () => {
+    const r = writeOpencodeMcpEntry(cfg(), remoteInline());
+    expect(r.writtenText).toBe(readFileSync(cfg(), 'utf8'));
+  });
+
+  test('remove path: backup is 0600 whenever the copied content carries an inline bearer', () => {
+    writeOpencodeMcpEntry(cfg(), remoteInline());
+    chmodSync(cfg(), 0o644); // hand-loosened source must not propagate to a token-bearing backup
+    const r = removeOpencodeMcpEntry(cfg(), 'gbrain', { url: 'http://127.0.0.1:7411/mcp' });
+    expect(r.removed).toBe(true);
+    expect(r.backupPath).toMatch(/\.bak-[0-9a-f]+$/);
+    expect(statSync(r.backupPath as string).mode & 0o777).toBe(0o600);
+    expect(readFileSync(r.backupPath as string, 'utf8')).toContain('gbt_secret_token_1');
+  });
+
+  test('remove path: env-interpolated (token-free) content does NOT force the backup to 0600', () => {
+    writeOpencodeMcpEntry(cfg(), remoteInline({ tokenMode: 'env', bearerToken: undefined }));
+    chmodSync(cfg(), 0o644);
+    const r = removeOpencodeMcpEntry(cfg(), 'gbrain');
+    expect(r.removed).toBe(true);
+    expect(statSync(r.backupPath as string).mode & 0o777).not.toBe(0o600);
+  });
+
+  test('textCarriesInlineBearer: inline bearer yes, {env:} interpolation no', () => {
+    expect(textCarriesInlineBearer('"Authorization": "Bearer gbt_x"')).toBe(true);
+    expect(textCarriesInlineBearer('"Authorization": "Bearer {env:GBRAIN_REMOTE_TOKEN}"')).toBe(false);
+    expect(textCarriesInlineBearer('{"theme":"dark"}')).toBe(false);
+  });
+});
+
+describe('sibling-global reconcile (two-filename merge blind spot)', () => {
+  test('opencodeGlobalSiblingPath pairs the two global names; non-members are null', () => {
+    expect(opencodeGlobalSiblingPath(join(dir, 'opencode.json'))).toBe(join(dir, 'opencode.jsonc'));
+    expect(opencodeGlobalSiblingPath(join(dir, 'opencode.jsonc'))).toBe(join(dir, 'opencode.json'));
+    expect(opencodeGlobalSiblingPath(join(dir, 'config.json'))).toBeNull();
+  });
+
+  test('sibling carrying OUR entry is cleaned (note printed) so exactly one global file owns the name', () => {
+    const primary = cfg('opencode.jsonc');
+    const sibling = cfg('opencode.json');
+    writeFileSync(sibling, '{"mcp":{"gbrain":{"type":"local","command":["gbrain","serve"],"environment":{"GBRAIN_SOURCE":"ws-b"}}}}');
+    const r = reconcileOpencodeSiblingGlobal(primary, 'gbrain', { sourceId: 'ws-a' });
+    expect(r.removed).toBe(true);
+    expect(r.siblingPath).toBe(sibling);
+    expect(r.notes.join(' ')).toContain('opencode merges both global filenames');
+    const parsed = parseOpencodeConfig(readFileSync(sibling, 'utf8'), sibling);
+    expect((parsed.mcp as Record<string, unknown> | undefined)?.gbrain).toBeUndefined();
+  });
+
+  test('sibling carrying a FOREIGN entry refuses loudly naming BOTH files', () => {
+    const primary = cfg('opencode.jsonc');
+    const sibling = cfg('opencode.json');
+    const foreign = '{"mcp":{"gbrain":{"type":"local","command":["npx","other"],"environment":{}}}}';
+    writeFileSync(sibling, foreign);
+    let message = '';
+    try {
+      reconcileOpencodeSiblingGlobal(primary, 'gbrain', { sourceId: 'ws-a' });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('not a gbrain-managed entry');
+    expect(message).toContain(sibling);
+    expect(message).toContain(primary);
+    expect(readFileSync(sibling, 'utf8')).toBe(foreign); // untouched
+  });
+
+  test('absent sibling / absent entry / non-pair paths are calm no-ops', () => {
+    expect(reconcileOpencodeSiblingGlobal(cfg('opencode.jsonc'), 'gbrain').removed).toBe(false);
+    writeFileSync(cfg('opencode.json'), '{"mcp":{}}');
+    expect(reconcileOpencodeSiblingGlobal(cfg('opencode.jsonc'), 'gbrain').removed).toBe(false);
+    expect(reconcileOpencodeSiblingGlobal(join(dir, 'not-a-pair.json'), 'gbrain').removed).toBe(false);
+  });
+});
+
+describe('remote-path refusal text is caller-appropriate (url, not GBRAIN_SOURCE)', () => {
+  test('ours entry at a DIFFERENT url refuses mentioning the url mismatch and --force', () => {
+    writeOpencodeMcpEntry(cfg(), remoteInline({ tokenMode: 'env', bearerToken: undefined, url: 'https://old.example/mcp' }));
+    let message = '';
+    try {
+      writeOpencodeMcpEntry(
+        cfg(),
+        remoteInline({ tokenMode: 'env', bearerToken: undefined, url: 'https://new.example/mcp' }),
+        { expect: { url: 'https://new.example/mcp' } },
+      );
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('does not match this endpoint');
+    expect(message).toContain('https://new.example/mcp');
+    expect(message).toContain('--force');
+    expect(message).not.toContain('GBRAIN_SOURCE');
+    // With the overwrite confirmation the rotation lands.
+    const r = writeOpencodeMcpEntry(
+      cfg(),
+      remoteInline({ tokenMode: 'env', bearerToken: undefined, url: 'https://new.example/mcp' }),
+      { expect: { url: 'https://new.example/mcp' }, allowReplaceOtherSource: true },
+    );
+    expect(r.priorKind).toBe('ours-other-source');
+    expect(r.notes.join(' ')).toContain('url/lane mismatch');
   });
 });
 

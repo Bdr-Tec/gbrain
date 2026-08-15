@@ -27,7 +27,8 @@
  * B5 relay instruction), never a stack trace.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { VERSION } from '../version.ts';
@@ -83,6 +84,7 @@ import {
   opencodeEntrySnippet,
   opencodeRemoteEntryExists,
   parseOpencodeConfig,
+  reconcileOpencodeSiblingGlobal,
   removeOpencodeMcpEntry,
   writeOpencodeMcpEntry,
 } from '../core/bootstrap/opencode-json.ts';
@@ -337,35 +339,117 @@ async function verifyMcpTargetsWorkspace(
 
 /** Wall-clock cap on the best-effort `opencode mcp list` probe: `mcp list`
  * SPAWNS every configured server, and a hung spawn must not hang the install
- * — on timeout the probe degrades to the could-not-confirm branch (code 124,
- * repo-visibility's raced-runner convention). */
+ * — on timeout the probe child is actually TERMINATED (SIGTERM, then SIGKILL
+ * ~2s later) and the result degrades to the could-not-confirm branch (code
+ * 124, repo-visibility's raced-runner convention). */
 const OPENCODE_PROBE_TIMEOUT_MS = 20_000;
 
-/** Run the opencode registration probe with OPENCODE_DISABLE_AUTOUPDATE=1
- * (OPENCODE-CLI-PIN.md §Probes: the auto-updater must never fire mid-probe).
- * The ExecRunner seam carries no env parameter, so the variable is staged in
- * process.env for the spawn (the default runner spreads process.env at spawn
- * time) and restored after. Raced against the wall-clock cap above. */
-async function runOpencodeProbe(
-  runner: ExecRunner,
+/** Injectable probe-spawn seam (the door serial tests capture argv + cwd +
+ * env and fake the child). The default holds the REAL process handle via
+ * Bun.spawn — a Promise.race that merely abandons a hung `opencode mcp list`
+ * leaves its spawned MCP servers running (including the just-registered
+ * `gbrain serve`, which then squats the PGLite single-writer lock) and keeps
+ * the CLI's event loop alive past flushThenExit. */
+export interface OpencodeProbeHandle {
+  exited: Promise<number>;
+  kill(force?: boolean): void;
+  stdout: Promise<string>;
+  stderr: Promise<string>;
+  /** Detach the child + its pipes from the event loop (called when the probe
+   * gives up on a hung child/grandchild so the CLI can still exit). */
+  unref?: () => void;
+}
+export type OpencodeProbeSpawn = (
   argv: string[],
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const prev = process.env.OPENCODE_DISABLE_AUTOUPDATE;
-  process.env.OPENCODE_DISABLE_AUTOUPDATE = '1';
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<{ code: number; stdout: string; stderr: string }>((res) => {
-    timer = setTimeout(
-      () => res({ code: 124, stdout: '', stderr: `timeout after ${OPENCODE_PROBE_TIMEOUT_MS}ms` }),
-      OPENCODE_PROBE_TIMEOUT_MS,
-    );
+  opts: { cwd: string; env: Record<string, string | undefined> },
+) => OpencodeProbeHandle;
+
+function defaultOpencodeProbeSpawn(
+  argv: string[],
+  opts: { cwd: string; env: Record<string, string | undefined> },
+): OpencodeProbeHandle {
+  const proc = Bun.spawn(argv, {
+    cwd: opts.cwd,
+    env: opts.env as Record<string, string>,
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
   });
+  return {
+    exited: proc.exited,
+    kill: (force?: boolean) => {
+      try {
+        proc.kill(force ? 9 : undefined);
+      } catch {
+        /* already dead */
+      }
+    },
+    stdout: new Response(proc.stdout).text().catch(() => ''),
+    stderr: new Response(proc.stderr).text().catch(() => ''),
+    unref: () => {
+      try {
+        proc.unref();
+      } catch {
+        /* best-effort */
+      }
+    },
+  };
+}
+
+/** Run the opencode registration probe with OPENCODE_DISABLE_AUTOUPDATE=1 on
+ * the spawn env (OPENCODE-CLI-PIN.md §Probes: the auto-updater must never
+ * fire mid-probe) from an explicit `cwd` — callers pass a fresh EMPTY temp
+ * dir, never the invoking cwd, because opencode merges a project
+ * opencode.json from cwd and spawns its local servers with NO trust prompt
+ * (a cloned malicious repo must not get code execution out of an install
+ * probe). On timeout the child is killed (SIGTERM → SIGKILL) and the pipes
+ * are drained BOUNDED (a spawned MCP-server grandchild can inherit the pipe
+ * fds and hold them open past the direct child's death). Exported for the
+ * timeout-kill unit test. */
+export async function runOpencodeProbe(
+  argv: string[],
+  opts: { cwd: string; spawn?: OpencodeProbeSpawn; timeoutMs?: number },
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const spawnFn = opts.spawn ?? defaultOpencodeProbeSpawn;
+  const timeoutMs = opts.timeoutMs ?? OPENCODE_PROBE_TIMEOUT_MS;
+  const env: Record<string, string | undefined> = { ...process.env, OPENCODE_DISABLE_AUTOUPDATE: '1' };
+  let handle: OpencodeProbeHandle;
   try {
-    return await Promise.race([runner(argv), timeout]);
-  } finally {
-    clearTimeout(timer);
-    if (prev === undefined) delete process.env.OPENCODE_DISABLE_AUTOUPDATE;
-    else process.env.OPENCODE_DISABLE_AUTOUPDATE = prev;
+    handle = spawnFn(argv, { cwd: opts.cwd, env });
+  } catch (e) {
+    // Bun.spawn throws synchronously when the binary is absent — map to the
+    // shell's 127 convention so the caller's not-on-PATH branch fires.
+    return { code: 127, stdout: '', stderr: e instanceof Error ? e.message : String(e) };
   }
+  // Bounded race helper that never leaves a live timer holding the loop.
+  const raceMs = async <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([p, new Promise<T>((res) => { timer = setTimeout(() => res(fallback), ms); })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  let code = await raceMs<number | null>(handle.exited, timeoutMs, null);
+  const timedOut = code === null;
+  if (code === null) {
+    handle.kill(); // graceful first — opencode tears its servers down on TERM
+    code = await raceMs<number | null>(handle.exited, 2_000, null);
+    if (code === null) {
+      handle.kill(true); // SIGKILL is not refusable; the wait below is paranoia-bounded
+      code = await raceMs<number | null>(handle.exited, 2_000, null);
+    }
+  }
+  const drainCap = timedOut ? 2_000 : 5_000;
+  const [stdout, stderr] = await Promise.all([
+    raceMs(handle.stdout, drainCap, ''),
+    raceMs(handle.stderr, drainCap, ''),
+  ]);
+  if (timedOut || code === null) {
+    handle.unref?.(); // a grandchild may still hold the pipes — never hold the CLI's exit
+    return { code: 124, stdout, stderr: stderr || `timeout after ${timeoutMs}ms` };
+  }
+  return { code, stdout, stderr };
 }
 
 async function withLock<T>(ws: string, fn: () => Promise<T>): Promise<T> {
@@ -836,7 +920,13 @@ async function runRepo(ws: string, rest: string[], home: string, runner: ExecRun
   });
 }
 
-async function runHooks(ws: string, rest: string[], home: string, runner: ExecRunner): Promise<number> {
+async function runHooks(
+  ws: string,
+  rest: string[],
+  home: string,
+  runner: ExecRunner,
+  probeSpawn?: OpencodeProbeSpawn,
+): Promise<number> {
   const harnessFlag = flagValue(rest, '--harness');
   const harness = isHarness(harnessFlag) ? harnessFlag : harnessFlag ? null : detectHarness();
   if (!harness) {
@@ -883,7 +973,10 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   const rawScopeAnswer = (() => {
     const read = readInterviewState(ws);
     const raw = read.ok ? read.state.answers['MCP_SCOPE'] : undefined;
-    return raw?.skipped !== true && typeof raw?.value === 'string' ? raw.value.toLowerCase() : undefined;
+    // .trim(): a hand-edited or sloppily-recorded ' project' must not
+    // silently resolve to the user-global default (scope answers are
+    // security-relevant on opencode).
+    return raw?.skipped !== true && typeof raw?.value === 'string' ? raw.value.trim().toLowerCase() : undefined;
   })();
   // Scope resolution is per-harness (exhaustive switch — see HARNESSES):
   // - claude-code: consent answer, bank default 'project' (the privacy-safe
@@ -1051,6 +1144,16 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
           if (existingKind === 'ours-other-source') {
             console.error(`existing 'gbrain' opencode entry targets a DIFFERENT workspace — replacing it.`);
           }
+          // Two-filename merge blind spot: opencode merges BOTH user-global
+          // filenames, so a same-name gbrain entry in the SIBLING file would
+          // survive this write as a shadow registration. Reconcile it under
+          // the same config-dir lock (ours → removed with a note; foreign →
+          // refuse loudly naming both files). User scope only — the project
+          // file has no observed sibling semantics.
+          if (mcpScope === 'user') {
+            const sib = reconcileOpencodeSiblingGlobal(configPath, 'gbrain', { sourceId });
+            for (const note of sib.notes) console.error(note);
+          }
           w = writeOpencodeMcpEntry(configPath, entry, {
             expect: { sourceId },
             allowReplaceOtherSource: true,
@@ -1097,10 +1200,32 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
           existsSync(configPath) ? readFileSync(configPath, 'utf8') : '',
           configPath,
         );
-        if (parsedCfg.plugin !== undefined) {
+        if (mcpScope === 'project') {
+          // SECURITY: opencode merges the project opencode.json from the
+          // probe's cwd and spawns its local servers with NO trust prompt —
+          // running `mcp list` inside this workspace would execute whatever
+          // the (possibly just-cloned) repo's config names. Parse-back stays
+          // the authoritative check; the human runs the live probe.
+          console.log(
+            'live `opencode mcp list` probe skipped for project scope — config parse-back is authoritative; ' +
+              'run `opencode mcp list` yourself in this workspace to confirm.',
+          );
+        } else if (parsedCfg.plugin !== undefined) {
           console.log('live `opencode mcp list` probe skipped (plugin-bearing config) — config parse-back is the verification.');
         } else {
-          const probe = await runOpencodeProbe(runner, ['opencode', 'mcp', 'list', '--pure']);
+          // SECURITY: the probe spawns from a fresh EMPTY temp dir, never the
+          // invoking cwd — no project opencode.json can load there (the same
+          // no-trust-prompt spawn surface as the project-scope skip above).
+          const probeCwd = mkdtempSync(join(tmpdir(), 'gbrain-opencode-probe-'));
+          let probe: { code: number; stdout: string; stderr: string };
+          try {
+            probe = await runOpencodeProbe(['opencode', 'mcp', 'list', '--pure'], {
+              cwd: probeCwd,
+              ...(probeSpawn ? { spawn: probeSpawn } : {}),
+            });
+          } finally {
+            rmSync(probeCwd, { recursive: true, force: true });
+          }
           // `mcp list` colorizes when a TTY-ish env leaks through — strip ANSI
           // escapes before matching, and anchor the name on whitespace/EOL so
           // a `gbrain-remote` entry can never satisfy a bare \bgbrain\b (\b
@@ -1620,6 +1745,9 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
 export interface RunBootstrapOpts {
   /** Exec seam for gh/claude/codex subprocesses (tests inject a recorder). */
   runner?: ExecRunner;
+  /** Spawn seam for the opencode `mcp list` probe (tests capture argv, cwd,
+   * and env; the default holds a real Bun.spawn handle so timeouts kill). */
+  probeSpawn?: OpencodeProbeSpawn;
 }
 
 /** Dispatch. Returns the process exit code (cli.ts passes it to setCliExitVerdict). */
@@ -1685,7 +1813,7 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
         code = await runRepo(ws, rest, home, runner);
         break;
       case 'hooks':
-        code = await runHooks(ws, rest, home, runner);
+        code = await runHooks(ws, rest, home, runner, opts.probeSpawn);
         break;
       case 'verify':
         code = await runVerify(ws, rest, home);

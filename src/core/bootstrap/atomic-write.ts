@@ -29,6 +29,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
@@ -40,7 +41,17 @@ import { dirname, isAbsolute, resolve } from 'node:path';
  * against loops) and the write lands at the final target, preserving the
  * link the same way the live-symlink realpath branch does. */
 function resolveWriteTarget(path: string): string {
-  if (existsSync(path)) return realpathSync(path); // live file / live symlink chain
+  if (existsSync(path)) {
+    // TOCTOU guard: the file can vanish between existsSync and realpathSync
+    // (a concurrent unlink), which would throw a raw ENOENT out of a writer
+    // that is perfectly able to proceed — fall through and treat the path as
+    // fresh/dangling instead.
+    try {
+      return realpathSync(path); // live file / live symlink chain
+    } catch {
+      /* raced away — resolve below */
+    }
+  }
   let target = path;
   for (let hops = 0; hops < 40; hops++) {
     let st;
@@ -74,7 +85,19 @@ export function atomicWriteTextFile(
     }
   }
   const tmp = `${target}.tmp-${randomBytes(6).toString('hex')}`;
-  writeFileSync(tmp, text, { encoding: 'utf8', ...(mode !== undefined ? { mode } : {}) });
-  if (mode !== undefined) chmodSync(tmp, mode);
-  renameSync(tmp, target);
+  // Failure hygiene: a throwing write/chmod/rename (ENOSPC, EACCES, target
+  // turned into a directory, …) must not leak the tmp file next to the
+  // user's config — unlink it best-effort and rethrow the original error.
+  try {
+    writeFileSync(tmp, text, { encoding: 'utf8', ...(mode !== undefined ? { mode } : {}) });
+    if (mode !== undefined) chmodSync(tmp, mode);
+    renameSync(tmp, target);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best-effort — the original error is the one that matters */
+    }
+    throw e;
+  }
 }

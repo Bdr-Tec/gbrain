@@ -21,7 +21,7 @@
 
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 // ── Spec-target registry [ENG-7] ────────────────────────────────────────────
 
@@ -315,6 +315,24 @@ export function opencodeGlobalConfigPath(): string {
   if (existsSync(jsonc)) return jsonc;
   if (existsSync(json)) return json;
   return jsonc;
+}
+
+/**
+ * The OTHER member of the global filename pair for a given config path
+ * (`opencode.json` ↔ `opencode.jsonc` in the same dir), or null when the
+ * basename is not a pair member. opencode MERGES both files when both exist,
+ * so global WRITERS must reconcile `mcp.<name>` across the pair — a same-name
+ * entry left in the sibling survives as a shadow registration whose merge
+ * winner is ambiguous (and a later removal of the primary "reveals" it).
+ * Callers apply this to the USER-GLOBAL pair only; project-scope sibling
+ * semantics are unobserved.
+ */
+export function opencodeGlobalSiblingPath(configPath: string): string | null {
+  const dir = dirname(configPath);
+  const base = basename(configPath);
+  if (base === 'opencode.json') return join(dir, 'opencode.jsonc');
+  if (base === 'opencode.jsonc') return join(dir, 'opencode.json');
+  return null;
 }
 
 /** Project-scope opencode config (docs-canonical name; opencode's lookup

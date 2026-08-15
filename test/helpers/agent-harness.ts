@@ -686,8 +686,16 @@ export async function runOneShotSpawn(opts: {
   }, opts.timeoutMs);
 
   const drainCap = opts.timeoutMs + 30_000;
-  const bounded = <T>(p: Promise<T>, fallback: T): Promise<T> =>
-    Promise.race([p, new Promise<T>((r) => setTimeout(() => r(fallback), drainCap))]);
+  // The cap timer is CLEARED when the real promise wins — an uncancelled
+  // drainCap timer (timeoutMs + 30s) would keep Bun's event loop alive for
+  // minutes after every successful door run.
+  const bounded = <T>(p: Promise<T>, fallback: T): Promise<T> => {
+    let capTimer: ReturnType<typeof setTimeout> | undefined;
+    const cap = new Promise<T>((r) => {
+      capTimer = setTimeout(() => r(fallback), drainCap);
+    });
+    return Promise.race([p, cap]).finally(() => clearTimeout(capTimer)) as Promise<T>;
+  };
   const [stdout, stderrText] = await Promise.all([
     bounded(new Response(proc.stdout).text(), ''),
     bounded(new Response(proc.stderr).text().catch(() => ''), ''),

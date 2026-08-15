@@ -660,16 +660,30 @@ jobs:
           bun build --compile --outfile "$RUNNER_TEMP/gbrain-door-bin" src/cli.ts
           echo "GBRAIN_COMPILED_BIN=$RUNNER_TEMP/gbrain-door-bin" >> "$GITHUB_ENV"
 
-      # SECRETLESS provisioning: registry integrity pre-checks (wrapper AND
-      # per-arch payload) pin that the registry still serves what we
-      # observed; version assert lives here too — before any secret-bearing
-      # step.
-      - name: Install opencode (pinned npm package)
+      # SECRETLESS provisioning, pack-verify-install: `npm pack` DOWNLOADS
+      # each artifact and reports the integrity of the BYTES it wrote, so the
+      # asserts below cover the tarballs actually held — closing the
+      # view-then-install TOCTOU (two registry round-trips a payload-swapping
+      # registry could split). The wrapper then installs FROM the verified
+      # local tarball, not a fresh registry resolve of the name. Payload
+      # resolution, honestly: that install still fetches the platform
+      # sub-package (opencode-linux-*) over the network; after the pack step
+      # byte-confirms the registry's payload artifact matches its pin, npm
+      # validates the install-time fetch against the same packument
+      # integrity. No --ignore-scripts: opencode-ai's postinstall places the
+      # platform binary (verified locally — with the flag the CLI refuses to
+      # run). Version assert lives here too — before any secret-bearing step.
+      - name: Install opencode (pinned npm package, pack-verify-install)
         timeout-minutes: 10
         run: |
-          served=$(npm view "$OPENCODE_NPM_PACKAGE@$OPENCODE_VERSION" dist.integrity 2>/dev/null || true)
+          packdir=$(mktemp -d)
+          read_integrity() {
+            node -e 'let d;try{d=JSON.parse(require("fs").readFileSync(0,"utf8"))}catch{d=[]}process.stdout.write((Array.isArray(d)&&d[0]&&d[0].integrity)||"")'
+          }
+          pushd "$packdir" >/dev/null
+          served=$(npm pack "$OPENCODE_NPM_PACKAGE@$OPENCODE_VERSION" --json 2>/dev/null | read_integrity || true)
           if [ "$served" != "$OPENCODE_NPM_INTEGRITY" ]; then
-            echo "::error::opencode npm integrity drift for $OPENCODE_NPM_PACKAGE@$OPENCODE_VERSION — registry serves '$served', pinned '$OPENCODE_NPM_INTEGRITY'. Re-pin deliberately: update the stamps in docs/mcp/OPENCODE-CLI-PIN.md + this workflow after reviewing upstream (see the pin doc's re-observation checklist)." >&2
+            echo "::error::opencode npm integrity drift for $OPENCODE_NPM_PACKAGE@$OPENCODE_VERSION — packed tarball integrity '$served', pinned '$OPENCODE_NPM_INTEGRITY'. Re-pin deliberately: update the stamps in docs/mcp/OPENCODE-CLI-PIN.md + this workflow after reviewing upstream (see the pin doc's re-observation checklist)." >&2
             exit 1
           fi
           arch=$(uname -m)
@@ -678,12 +692,14 @@ jobs:
             aarch64|arm64) plat_pkg="opencode-linux-arm64"; plat_pin="$OPENCODE_NPM_LINUX_ARM64_INTEGRITY" ;;
             *) echo "::error::unsupported runner arch for the opencode payload pin: $arch" >&2; exit 1 ;;
           esac
-          plat_served=$(npm view "$plat_pkg@$OPENCODE_VERSION" dist.integrity 2>/dev/null || true)
+          plat_served=$(npm pack "$plat_pkg@$OPENCODE_VERSION" --json 2>/dev/null | read_integrity || true)
           if [ "$plat_served" != "$plat_pin" ]; then
-            echo "::error::opencode platform payload integrity drift for $plat_pkg@$OPENCODE_VERSION — registry serves '$plat_served', pinned '$plat_pin'. Re-pin deliberately (OPENCODE-CLI-PIN.md stamps + this workflow)." >&2
+            echo "::error::opencode platform payload integrity drift for $plat_pkg@$OPENCODE_VERSION — packed tarball integrity '$plat_served', pinned '$plat_pin'. Re-pin deliberately (OPENCODE-CLI-PIN.md stamps + this workflow)." >&2
             exit 1
           fi
-          npm install -g "$OPENCODE_NPM_PACKAGE@$OPENCODE_VERSION"
+          npm install -g ./opencode-ai-*.tgz
+          popd >/dev/null
+          rm -rf "$packdir"
           if ! command -v opencode >/dev/null 2>&1; then
             echo "::error::opencode did not resolve on PATH after npm install" >&2
             exit 1

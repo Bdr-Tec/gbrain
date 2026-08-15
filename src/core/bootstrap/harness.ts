@@ -40,7 +40,7 @@
  *   revoke defers with a typed message under a live PGLite serve.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { VERSION } from '../../version.ts';
@@ -100,6 +100,7 @@ import {
   opencodeEntryKind,
   parseOpencodeConfig,
   parseOpencodeEntryBearer,
+  reconcileOpencodeSiblingGlobal,
   removeOpencodeMcpEntry,
   writeOpencodeMcpEntry,
 } from './opencode-json.ts';
@@ -531,13 +532,42 @@ async function cleanupStalePriorTargets(
           );
         }
       } else if (pt.host === 'codex' && pt.kind === 'mcp') {
-        const r = removeCodexHttpServerBlock(pt.path ?? d.codexConfig, pt.name ?? 'gbrain');
-        if (r.removed) d.log(`stale codex managed block removed from ${pt.path ?? d.codexConfig} (no longer planned).`);
+        // [X11] The caller holds only the claude config-dir lock; the codex
+        // config is a DIFFERENT shared file, and its read-modify-write must
+        // serialize on ITS directory's bootstrap lock too — a concurrent
+        // codex-dir-locked writer interleaving here would have one rename
+        // discard the other. Ordering matches apply/remove (claude/config
+        // dir first, then codex dir), so no lock-order inversion; the lock
+        // is non-reentrant, so the same-dir case skips the nested acquire.
+        const codexPath = pt.path ?? d.codexConfig;
+        const codexDir = dirname(codexPath);
+        mkdirSync(codexDir, { recursive: true });
+        const heldDir = resolve(dirname(d.userSettingsPath));
+        const lk = resolve(codexDir) === heldDir ? null : await acquireBootstrapLock(codexDir);
+        let r: ReturnType<typeof removeCodexHttpServerBlock>;
+        try {
+          r = removeCodexHttpServerBlock(codexPath, pt.name ?? 'gbrain');
+        } finally {
+          lk?.release();
+        }
+        if (r.removed) d.log(`stale codex managed block removed from ${codexPath} (no longer planned).`);
       } else if (pt.host === 'opencode' && pt.kind === 'mcp') {
         // Fingerprint-keyed against the PRIOR receipt's url — a foreign or
-        // rotated-away entry refuses inside the module (never guess).
-        const r = removeOpencodeMcpEntry(pt.path ?? d.opencodeConfig, pt.name ?? 'gbrain', { url: prior.url });
-        if (r.removed) d.log(`stale opencode entry removed from ${pt.path ?? d.opencodeConfig} (no longer planned).`);
+        // rotated-away entry refuses inside the module (never guess). Same
+        // [X11] nested-lock discipline as the codex branch above (claude/
+        // config dir held by the caller, then the opencode dir here).
+        const ocPath = pt.path ?? d.opencodeConfig;
+        const ocDir = dirname(ocPath);
+        mkdirSync(ocDir, { recursive: true });
+        const heldDir = resolve(dirname(d.userSettingsPath));
+        const lk = resolve(ocDir) === heldDir ? null : await acquireBootstrapLock(ocDir);
+        let r: ReturnType<typeof removeOpencodeMcpEntry>;
+        try {
+          r = removeOpencodeMcpEntry(ocPath, pt.name ?? 'gbrain', { url: prior.url });
+        } finally {
+          lk?.release();
+        }
+        if (r.removed) d.log(`stale opencode entry removed from ${ocPath} (no longer planned).`);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -859,7 +889,15 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   let oldClaudeReg: { url: string; token: string } | null = null;
   let claudeReplaced = false;
   let codexRollback: { path: string; backupPath: string | null; replacedPrior: boolean } | null = null;
-  let opencodeRollback: { path: string; backupPath: string | null; replacedPrior: boolean } | null = null;
+  let opencodeRollback: {
+    path: string;
+    backupPath: string | null;
+    replacedPrior: boolean;
+    /** Exact text this run's writer landed — the rollback compares the LIVE
+     * file against it before restoring (the lock is released before the
+     * smoke, so a newer registration may have landed since). */
+    writtenText: string;
+  } | null = null;
   let cfgLock: Awaited<ReturnType<typeof acquireBootstrapLock>> | null = null;
   if (wireClaude) {
     const cfgDir = dirname(d.userSettingsPath);
@@ -1042,6 +1080,13 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
             /* the writer's own read path raises the real error below */
           }
         }
+        // Two-filename merge blind spot: opencode merges BOTH user-global
+        // filenames, so a same-name gbrain entry in the SIBLING file would
+        // survive this write as a shadow registration. Reconcile under the
+        // same config-dir lock (ours → removed with a note; foreign →
+        // refuse loudly naming both files).
+        const sib = reconcileOpencodeSiblingGlobal(t.path!, flags.name, { url: expectUrl });
+        for (const note of sib.notes) d.log(note);
         r = writeOpencodeMcpEntry(
           t.path!,
           { kind: 'remote', name: flags.name, url, tokenMode: 'inline', bearerToken: token },
@@ -1051,7 +1096,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
         ocLock.release();
       }
       for (const note of r.notes) d.logError(note);
-      opencodeRollback = { path: t.path!, backupPath: r.backupPath, replacedPrior: r.replacedPrior };
+      opencodeRollback = { path: t.path!, backupPath: r.backupPath, replacedPrior: r.replacedPrior, writtenText: r.writtenText };
       confirm(t);
       d.log(
         `opencode wired: mcp.${flags.name} remote entry with inline bearer header in ${t.path} (0600). ` +
@@ -1137,11 +1182,28 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     }
     if (opencodeRollback) {
       try {
+        let failNote = 'rolled back to the previous opencode config after the failed smoke';
         const rbLock = await acquireBootstrapLock(dirname(opencodeRollback.path)); // [X11] parity
         try {
-          if (opencodeRollback.backupPath && existsSync(opencodeRollback.backupPath)) {
+          // Restore-guard: the config-dir lock was released before the smoke,
+          // so a NEWER registration (another run's) may have replaced ours —
+          // restoring this run's snapshot over it would clobber that newer
+          // wiring. Only restore when the live file still carries the EXACT
+          // text this run wrote; either way the fresh mint is revoked below.
+          const current = existsSync(opencodeRollback.path)
+            ? readFileSync(opencodeRollback.path, 'utf8')
+            : '';
+          if (current !== opencodeRollback.writtenText) {
+            failNote =
+              'smoke failed; opencode rollback SKIPPED — the config changed after this run wrote it ' +
+              '(a newer registration exists); this run\'s fresh mint is still revoked';
+            d.log(failNote + '.');
+          } else if (opencodeRollback.backupPath && existsSync(opencodeRollback.backupPath)) {
             // Atomic restore (codex-lane parity): never a torn config mid-crash.
             atomicWriteTextFile(opencodeRollback.path, readFileSync(opencodeRollback.backupPath, 'utf8'), { forceMode: 0o600 });
+            // Consumed — the unique backup carries the previous bearer and
+            // has no consumer once restored.
+            try { rmSync(opencodeRollback.backupPath, { force: true }); } catch { /* best-effort */ }
           } else if (!opencodeRollback.replacedPrior) {
             removeOpencodeMcpEntry(opencodeRollback.path, flags.name, { url });
           }
@@ -1149,7 +1211,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
           rbLock.release();
         }
         const ot = targets.find((t) => t.host === 'opencode' && t.kind === 'mcp');
-        if (ot) failTarget(ot, 'rolled back to the previous opencode config after the failed smoke');
+        if (ot) failTarget(ot, failNote);
       } catch (e) {
         d.logError(`opencode rollback failed: ${e instanceof Error ? e.message : String(e)} — re-run to converge.`);
       }
@@ -1208,6 +1270,18 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
             `revoke it manually: gbrain auth revoke with the id flag (${receipt.token.id}).`,
         );
       }
+    }
+  }
+
+  // The unique opencode backup carries the PREVIOUS bearer; once the new
+  // wiring is verified it has no consumer — unlink it so re-runs never
+  // accumulate token-bearing snapshots (failed runs consume it via the
+  // restore above; skipped restores leave it 0600 for manual recovery).
+  if (smokeOk && opencodeRollback?.backupPath) {
+    try {
+      rmSync(opencodeRollback.backupPath, { force: true });
+    } catch {
+      /* best-effort — it is 0600 either way */
     }
   }
 

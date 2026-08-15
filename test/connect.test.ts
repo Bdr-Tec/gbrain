@@ -1,4 +1,11 @@
 import { test, expect, describe } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  parseOpencodeConfig,
+  writeOpencodeMcpEntry,
+} from '../src/core/bootstrap/opencode-json.ts';
 import {
   normalizeMcpUrl,
   isLinkLocalOrMetadata,
@@ -952,6 +959,65 @@ describe('opencode lane', () => {
     );
     expect(r.exitCode).toBe(1);
     expect([...r.out, ...r.err].join('\n')).toMatch(/did not verify \(auth\)/);
+  });
+
+  test('url rotation WITHOUT --force → exit 1 with the caller-appropriate refusal (url + --force, no GBRAIN_SOURCE)', async () => {
+    // Real-writer pass-through (mirrors the default deps minus the lock) so
+    // the test pins the ACTUAL refusal text and the --force mapping.
+    const dir = mkdtempSync(join(tmpdir(), 'gb-connect-ocforce-'));
+    const cfg = join(dir, 'opencode.jsonc');
+    try {
+      // Seed: connect-lane entry ({env:} interpolation = ours) at the OLD url.
+      writeOpencodeMcpEntry(cfg, { kind: 'remote', name: 'gbrain', url: 'https://old.example/mcp', tokenMode: 'env' });
+      const writeThrough: ConnectDeps['writeOpencodeRemoteEntry'] = (name, url, o) => {
+        const r = writeOpencodeMcpEntry(
+          cfg,
+          { kind: 'remote', name, url, tokenMode: 'env' },
+          { expect: { url }, ...(o?.allowReplaceOtherSource ? { allowReplaceOtherSource: true } : {}) },
+        );
+        return { configPath: r.configPath, replacedPrior: r.replacedPrior };
+      };
+      const r1 = await runWithExitCapture(
+        ['https://new.example/mcp', '--token', 'gbrain_tok', '--agent', 'opencode', '--install', '--yes'],
+        installDeps({ writeOpencodeRemoteEntry: writeThrough }),
+      );
+      expect(r1.exitCode).toBe(1);
+      const all1 = [...r1.out, ...r1.err].join('\n');
+      expect(all1).toContain('does not match this endpoint');
+      expect(all1).toContain('--force');
+      expect(all1).not.toContain('GBRAIN_SOURCE'); // remote path — no source involved
+      // Old entry untouched.
+      const before = parseOpencodeConfig(readFileSync(cfg, 'utf8'), cfg);
+      expect(((before.mcp as Record<string, unknown>).gbrain as { url: string }).url).toBe('https://old.example/mcp');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('url rotation WITH --force → replaced, note printed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-connect-ocforce2-'));
+    const cfg = join(dir, 'opencode.jsonc');
+    try {
+      writeOpencodeMcpEntry(cfg, { kind: 'remote', name: 'gbrain', url: 'https://old.example/mcp', tokenMode: 'env' });
+      const writeThrough: ConnectDeps['writeOpencodeRemoteEntry'] = (name, url, o) => {
+        const r = writeOpencodeMcpEntry(
+          cfg,
+          { kind: 'remote', name, url, tokenMode: 'env' },
+          { expect: { url }, ...(o?.allowReplaceOtherSource ? { allowReplaceOtherSource: true } : {}) },
+        );
+        return { configPath: r.configPath, replacedPrior: r.replacedPrior };
+      };
+      const r = await runWithExitCapture(
+        ['https://new.example/mcp', '--token', 'gbrain_tok', '--agent', 'opencode', '--install', '--yes', '--force'],
+        installDeps({ writeOpencodeRemoteEntry: writeThrough }),
+      );
+      expect(r.exitCode).toBeUndefined();
+      expect(r.err.join('\n')).toContain('replaced the prior gbrain entry'); // the note
+      const after = parseOpencodeConfig(readFileSync(cfg, 'utf8'), cfg);
+      expect(((after.mcp as Record<string, unknown>).gbrain as { url: string }).url).toBe('https://new.example/mcp');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('--oauth is refused for opencode (bearer path only)', async () => {

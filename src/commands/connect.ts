@@ -43,7 +43,11 @@ import type { ConnectProbeResult } from '../core/connect-probe.ts';
 import { probeBrainIdentity, DEFAULT_PROBE_TIMEOUT_MS } from '../core/connect-probe.ts';
 import { opencodeGlobalConfigPath } from '../core/bootstrap/host-specs.ts';
 import { acquireBootstrapLock } from '../core/bootstrap/lock.ts';
-import { GBRAIN_REMOTE_TOKEN_ENV, writeOpencodeMcpEntry } from '../core/bootstrap/opencode-json.ts';
+import {
+  GBRAIN_REMOTE_TOKEN_ENV,
+  reconcileOpencodeSiblingGlobal,
+  writeOpencodeMcpEntry,
+} from '../core/bootstrap/opencode-json.ts';
 import { promptLine } from '../core/cli-util.ts';
 import {
   NAME_RE,
@@ -413,12 +417,15 @@ export interface ConnectDeps {
   registerOAuthClient(name: string, scopes: string): RegisterResult;
   /** opencode --install lane: direct JSONC write of a remote entry carrying
    * the literal `{env:GBRAIN_REMOTE_TOKEN}` interpolation (no binary execed,
-   * no token on disk). Throws on a foreign same-name entry. May be async: the
-   * default impl serializes on the config-dir bootstrap lock (the writer
-   * contract); sync test fakes remain assignable. */
+   * no token on disk). Throws on a foreign same-name entry; an OURS entry at
+   * a different url refuses unless `allowReplaceOtherSource` (connect maps
+   * --force onto it). May be async: the default impl serializes on the
+   * config-dir bootstrap lock (the writer contract); sync test fakes remain
+   * assignable. */
   writeOpencodeRemoteEntry(
     name: string,
     url: string,
+    opts?: { allowReplaceOtherSource?: boolean },
   ): { configPath: string; replacedPrior: boolean } | Promise<{ configPath: string; replacedPrior: boolean }>;
 }
 
@@ -477,7 +484,7 @@ const defaultDeps: ConnectDeps = {
   probe: (url, token, timeoutMs) => probeBrainIdentity(url, token, { timeoutMs }),
   env: (name) => process.env[name],
   registerOAuthClient: defaultRegisterOAuthClient,
-  writeOpencodeRemoteEntry: async (name, url) => {
+  writeOpencodeRemoteEntry: async (name, url, opts) => {
     // The writer's contract: callers hold acquireBootstrapLock on the config
     // dir (harness.ts [X11] parity) — the user-global file is shared across
     // workspaces and homes, so concurrent gbrain writers serialize here.
@@ -486,10 +493,16 @@ const defaultDeps: ConnectDeps = {
     mkdirSync(cfgDir, { recursive: true }); // the lock needs the dir; the writer mkdirs later anyway
     const lock = await acquireBootstrapLock(cfgDir);
     try {
+      // Two-filename merge blind spot: opencode merges BOTH user-global
+      // filenames, so a same-name gbrain entry in the SIBLING file would
+      // survive this write as a shadow registration (ours → removed with a
+      // note; foreign → refuse loudly naming both files).
+      const sib = reconcileOpencodeSiblingGlobal(configPath, name, { url });
+      for (const note of sib.notes) console.error(note);
       const r = writeOpencodeMcpEntry(
         configPath,
         { kind: 'remote', name, url, tokenMode: 'env' },
-        { expect: { url } },
+        { expect: { url }, ...(opts?.allowReplaceOtherSource ? { allowReplaceOtherSource: true } : {}) },
       );
       return { configPath: r.configPath, replacedPrior: r.replacedPrior };
     } finally {
@@ -678,7 +691,10 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
     // Direct-writer lane: no opencode binary required (the JSONC write IS the
     // registration), and the config carries only the {env:VAR} interpolation
     // — the writer's fingerprint handles idempotent re-runs and refuses a
-    // foreign same-name entry (--force cannot override that; pick --name).
+    // foreign same-name entry (--force cannot override THAT; pick --name).
+    // --force maps to the writer's allowReplaceOtherSource so an OURS entry
+    // at an old url (a rotated serve) is replaceable, mirroring the exec
+    // lanes' documented --force semantics.
     if (!f.yes) {
       if (!deps.isTTY()) {
         fail('--install in a non-interactive shell requires --yes (refusing to register a credential-bearing MCP server without confirmation).');
@@ -688,7 +704,7 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
     }
     let w: { configPath: string; replacedPrior: boolean };
     try {
-      w = await deps.writeOpencodeRemoteEntry(f.name, url);
+      w = await deps.writeOpencodeRemoteEntry(f.name, url, { allowReplaceOtherSource: f.force });
     } catch (e) {
       fail(redactToken((e as Error).message, realToken));
     }

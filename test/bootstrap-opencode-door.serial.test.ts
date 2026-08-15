@@ -22,11 +22,16 @@
  * Serial: mutates GBRAIN_HOME and XDG_CONFIG_HOME.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { detectHarness, runBootstrap } from '../src/commands/bootstrap.ts';
+import {
+  detectHarness,
+  runBootstrap,
+  runOpencodeProbe,
+  type OpencodeProbeSpawn,
+} from '../src/commands/bootstrap.ts';
 import type { ExecRunner } from '../src/core/bootstrap/repo.ts';
 import { readReceipt } from '../src/core/bootstrap/format.ts';
 import { opencodeGlobalConfigPath } from '../src/core/bootstrap/host-specs.ts';
@@ -49,16 +54,43 @@ let prevHome: string | undefined;
 let prevXdg: string | undefined;
 const FAKE_BIN = '/opt/fake/bin/gbrain';
 
-function makeRunner(listStdout = ''): { runner: ExecRunner; calls: string[][] } {
+function makeRunner(): { runner: ExecRunner; calls: string[][] } {
   const calls: string[][] = [];
   const runner: ExecRunner = async (argv: string[]) => {
     calls.push(argv);
-    if (argv[0] === 'opencode' && argv[1] === 'mcp' && argv[2] === 'list') {
-      return listStdout === '' ? { code: 127, stdout: '', stderr: 'not found' } : { code: 0, stdout: listStdout, stderr: '' };
-    }
     return { code: 0, stdout: '', stderr: '' };
   };
   return { runner, calls };
+}
+
+interface ProbeCall {
+  argv: string[];
+  cwd: string;
+  env: Record<string, string | undefined>;
+  cwdWasEmptyDir: boolean;
+}
+
+/** Fake for the probe-spawn seam. Empty stdout simulates opencode absent
+ * (spawn throws → the probe maps it to the shell's 127); otherwise a
+ * clean exit 0 with the given stdout. Captures argv + cwd + env. */
+function makeProbeSpawn(listStdout = ''): { spawn: OpencodeProbeSpawn; calls: ProbeCall[] } {
+  const calls: ProbeCall[] = [];
+  const spawn: OpencodeProbeSpawn = (argv, opts) => {
+    calls.push({
+      argv,
+      cwd: opts.cwd,
+      env: opts.env,
+      cwdWasEmptyDir: existsSync(opts.cwd) && readdirSync(opts.cwd).length === 0,
+    });
+    if (listStdout === '') throw new Error('Executable not found in $PATH: "opencode"');
+    return {
+      exited: Promise.resolve(0),
+      kill: () => {},
+      stdout: Promise.resolve(listStdout),
+      stderr: Promise.resolve(''),
+    };
+  };
+  return { spawn, calls };
 }
 
 async function capture<T>(fn: () => Promise<T>): Promise<{ result: T; out: string; err: string }> {
@@ -142,8 +174,9 @@ describe('opencode workspace lane — default scope is USER-GLOBAL', () => {
   test('no explicit MCP_SCOPE → user-global config, absolute binary, rationale printed, receipt scope user', async () => {
     const ws = await readyWs();
     const { runner } = makeRunner();
+    const probe = makeProbeSpawn(); // opencode absent → 127 branch
     const r = await capture(() =>
-      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], { runner }),
+      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], { runner, probeSpawn: probe.spawn }),
     );
     expect(r.result).toBe(0);
 
@@ -178,7 +211,8 @@ describe('opencode workspace lane — default scope is USER-GLOBAL', () => {
     const okWs = await readyWs();
     const ok = await capture(() =>
       runBootstrap(['hooks', '--workspace', okWs, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
-        runner: makeRunner('┌ MCP Servers\n✓ gbrain connected\n').runner,
+        runner: makeRunner().runner,
+        probeSpawn: makeProbeSpawn('┌ MCP Servers\n✓ gbrain connected\n').spawn,
       }),
     );
     expect(ok.result).toBe(0);
@@ -188,7 +222,8 @@ describe('opencode workspace lane — default scope is USER-GLOBAL', () => {
     const badWs = await readyWs();
     const bad = await capture(() =>
       runBootstrap(['hooks', '--workspace', badWs, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
-        runner: makeRunner('┌ MCP Servers\n✗ gbrain failed\n   Executable not found in $PATH\n').runner,
+        runner: makeRunner().runner,
+        probeSpawn: makeProbeSpawn('┌ MCP Servers\n✗ gbrain failed\n   Executable not found in $PATH\n').spawn,
       }),
     );
     expect(bad.result).toBe(0); // config parse-back is authoritative; the probe warns
@@ -196,22 +231,19 @@ describe('opencode workspace lane — default scope is USER-GLOBAL', () => {
     rmSync(badWs, { recursive: true, force: true });
   });
 
-  test('probe hardening: ANSI-colored output still matches, and OPENCODE_DISABLE_AUTOUPDATE=1 rides the spawn', async () => {
+  test('probe hardening: ANSI-colored output still matches, and OPENCODE_DISABLE_AUTOUPDATE=1 rides the spawn env', async () => {
     const ws = await readyWs();
-    let autoupdateDuringProbe: string | undefined;
-    const runner: ExecRunner = async (argv: string[]) => {
-      if (argv[0] === 'opencode') {
-        autoupdateDuringProbe = process.env.OPENCODE_DISABLE_AUTOUPDATE;
-        return { code: 0, stdout: '\u001b[1m┌ MCP Servers\u001b[0m\n\u001b[32m✓\u001b[0m gbrain connected\n', stderr: '' };
-      }
-      return { code: 0, stdout: '', stderr: '' };
-    };
+    const probe = makeProbeSpawn('\u001b[1m┌ MCP Servers\u001b[0m\n\u001b[32m✓\u001b[0m gbrain connected\n');
     const r = await capture(() =>
-      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], { runner }),
+      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
+        runner: makeRunner().runner,
+        probeSpawn: probe.spawn,
+      }),
     );
     expect(r.result).toBe(0);
     expect(r.out).toContain('✓ gbrain connected'); // ANSI stripped before matching
-    expect(autoupdateDuringProbe).toBe('1'); // the auto-updater is killed for the probe spawn
+    // The auto-updater kill rides the spawn's OWN env (no process.env staging).
+    expect(probe.calls[0]?.env.OPENCODE_DISABLE_AUTOUPDATE).toBe('1');
     rmSync(ws, { recursive: true, force: true });
   });
 
@@ -219,7 +251,8 @@ describe('opencode workspace lane — default scope is USER-GLOBAL', () => {
     const ws = await readyWs();
     const r = await capture(() =>
       runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
-        runner: makeRunner('┌ MCP Servers\n✓ gbrain-remote connected\n✗ gbrain failed\n').runner,
+        runner: makeRunner().runner,
+        probeSpawn: makeProbeSpawn('┌ MCP Servers\n✓ gbrain-remote connected\n✗ gbrain failed\n').spawn,
       }),
     );
     expect(r.result).toBe(0);
@@ -227,14 +260,63 @@ describe('opencode workspace lane — default scope is USER-GLOBAL', () => {
     expect(r.err).toContain('✗ gbrain failed');
     rmSync(ws, { recursive: true, force: true });
   });
+
+  test('SECURITY: the user-scope probe spawns from a fresh EMPTY temp dir, never the workspace cwd', async () => {
+    const ws = await readyWs();
+    const probe = makeProbeSpawn('┌ MCP Servers\n✓ gbrain connected\n');
+    const r = await capture(() =>
+      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
+        runner: makeRunner().runner,
+        probeSpawn: probe.spawn,
+      }),
+    );
+    expect(r.result).toBe(0);
+    expect(probe.calls.length).toBe(1);
+    const call = probe.calls[0];
+    expect(call.argv).toEqual(['opencode', 'mcp', 'list', '--pure']);
+    // A hostile project opencode.json must never load into the probe:
+    // opencode merges cwd config and spawns its servers with no trust gate.
+    expect(call.cwd).not.toBe(ws);
+    expect(call.cwd.startsWith(ws)).toBe(false);
+    expect(call.cwd).not.toBe(process.cwd());
+    expect(call.cwdWasEmptyDir).toBe(true);
+    expect(existsSync(call.cwd)).toBe(false); // cleaned up after the probe
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  test('runOpencodeProbe timeout actually KILLS the child (SIGTERM then SIGKILL) and degrades to code 124', async () => {
+    const kills: Array<boolean | undefined> = [];
+    let resolveExit: (code: number) => void = () => {};
+    const handle = {
+      exited: new Promise<number>((res) => { resolveExit = res; }),
+      kill: (force?: boolean) => {
+        kills.push(force);
+        if (force) resolveExit(137); // only SIGKILL lands — the child ignored SIGTERM
+      },
+      stdout: Promise.resolve(''),
+      stderr: Promise.resolve(''),
+    };
+    const res = await runOpencodeProbe(['opencode', 'mcp', 'list', '--pure'], {
+      cwd: tmpdir(),
+      spawn: () => handle,
+      timeoutMs: 50,
+    });
+    expect(kills).toEqual([undefined, true]); // graceful first, then SIGKILL after the grace window
+    expect(res.code).toBe(124); // the existing could-not-confirm branch
+    expect(res.stderr).toContain('timeout');
+  }, 15_000);
 });
 
 describe('opencode workspace lane — explicit project opt-in', () => {
-  test('MCP_SCOPE=project → workspace opencode.json, PATH-resolved command, SHARING WARNING', async () => {
+  test('MCP_SCOPE=project → workspace opencode.json, PATH-resolved command, SHARING WARNING, live probe SKIPPED', async () => {
     const ws = await readyWs({ scope: 'project' });
     const { runner } = makeRunner();
+    const probe = makeProbeSpawn('┌ MCP Servers\n✓ gbrain connected\n');
     const r = await capture(() =>
-      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], { runner }),
+      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
+        runner,
+        probeSpawn: probe.spawn,
+      }),
     );
     expect(r.result).toBe(0);
 
@@ -250,9 +332,94 @@ describe('opencode workspace lane — explicit project opt-in', () => {
     expect(r.err).toContain('GBRAIN_HOME');
     expect(r.err).toContain("won't be portable");
 
+    // SECURITY: project scope never runs the live probe — `opencode mcp list`
+    // from this workspace would spawn the project config's servers with no
+    // trust prompt. The skip note points the human at the manual check.
+    expect(probe.calls.length).toBe(0);
+    expect(r.out).toContain('probe skipped for project scope');
+    expect(r.out).toContain('run `opencode mcp list` yourself');
+
     const receipt = readReceipt(home);
     const regs = receipt?.registrations.filter((x) => x.host === 'opencode') ?? [];
     expect(regs.some((x) => x.scope === 'project')).toBe(true);
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  test("a whitespace-padded ' project ' MCP_SCOPE answer still resolves to project scope (trimmed)", async () => {
+    const ws = await readyWs();
+    // Hand-edit the recorded answer the way a user editing interview.json
+    // might — set-time validation normally rejects padding, but the raw file
+    // is user-editable and the scope switch must not silently fall through
+    // to the user-global default.
+    const statePath = join(ws, 'state', 'interview.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8')) as { answers: Record<string, unknown> };
+    state.answers.MCP_SCOPE = { value: ' project ' };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+    const probe = makeProbeSpawn('┌ MCP Servers\n✓ gbrain connected\n');
+    const r = await capture(() =>
+      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
+        runner: makeRunner().runner,
+        probeSpawn: probe.spawn,
+      }),
+    );
+    expect(r.result).toBe(0);
+    expect(r.out).toContain('project (explicit opt-in)'); // NOT user-global
+    expect(existsSync(join(ws, 'opencode.json'))).toBe(true);
+    rmSync(ws, { recursive: true, force: true });
+  });
+});
+
+describe('opencode two-filename WRITE reconcile (sibling global file)', () => {
+  test('a gbrain LOCAL entry in the SIBLING global file is cleaned when the write lands in the other (note printed)', async () => {
+    const ws = await readyWs();
+    const ocDir = join(xdg, 'opencode');
+    rmSync(ocDir, { recursive: true, force: true });
+    mkdirSync(ocDir, { recursive: true });
+    // Ours-classified local entry (another workspace's) lives in opencode.json;
+    // BOTH files exist so the resolver picks .jsonc for the write.
+    writeFileSync(
+      join(ocDir, 'opencode.json'),
+      JSON.stringify({ mcp: { gbrain: { type: 'local', command: ['gbrain', 'serve'], environment: { GBRAIN_SOURCE: 'some-other-ws' } } } }),
+    );
+    writeFileSync(join(ocDir, 'opencode.jsonc'), '{}\n');
+    const r = await capture(() =>
+      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
+        runner: makeRunner().runner,
+        probeSpawn: makeProbeSpawn().spawn,
+      }),
+    );
+    expect(r.result).toBe(0);
+    // The write landed in .jsonc; the shadow entry in .json is GONE.
+    const jsonc = parseOpencodeConfig(readFileSync(join(ocDir, 'opencode.jsonc'), 'utf8'), 'opencode.jsonc');
+    expect((jsonc.mcp as Record<string, unknown>).gbrain).toBeDefined();
+    const json = parseOpencodeConfig(readFileSync(join(ocDir, 'opencode.json'), 'utf8'), 'opencode.json');
+    expect((json.mcp as Record<string, unknown> | undefined)?.gbrain).toBeUndefined();
+    expect(r.err).toContain('opencode merges both global filenames');
+    rmSync(ocDir, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  test('a FOREIGN entry in the SIBLING global file refuses the write naming both files (exit 1, both untouched)', async () => {
+    const ws = await readyWs();
+    const ocDir = join(xdg, 'opencode');
+    rmSync(ocDir, { recursive: true, force: true });
+    mkdirSync(ocDir, { recursive: true });
+    const foreign = JSON.stringify({ mcp: { gbrain: { type: 'local', command: ['npx', 'other-brain'], environment: {} } } });
+    writeFileSync(join(ocDir, 'opencode.json'), foreign);
+    writeFileSync(join(ocDir, 'opencode.jsonc'), '{}\n');
+    const r = await capture(() =>
+      runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
+        runner: makeRunner().runner,
+        probeSpawn: makeProbeSpawn().spawn,
+      }),
+    );
+    expect(r.result).toBe(1);
+    expect(r.err).toContain('not a gbrain-managed entry');
+    expect(r.err).toContain(join(ocDir, 'opencode.json'));
+    expect(r.err).toContain(join(ocDir, 'opencode.jsonc'));
+    expect(readFileSync(join(ocDir, 'opencode.json'), 'utf8')).toBe(foreign);
+    expect(readFileSync(join(ocDir, 'opencode.jsonc'), 'utf8')).toBe('{}\n');
+    rmSync(ocDir, { recursive: true, force: true });
     rmSync(ws, { recursive: true, force: true });
   });
 });
@@ -384,6 +551,7 @@ describe('opencode uninstall sweep', () => {
       const hooks = await capture(() =>
         runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
           runner: makeRunner().runner,
+          probeSpawn: makeProbeSpawn().spawn,
         }),
       );
       expect(hooks.result).toBe(0);
@@ -417,6 +585,7 @@ describe('opencode uninstall sweep', () => {
       const hooks = await capture(() =>
         runBootstrap(['hooks', '--workspace', ws, '--harness', 'opencode', '--gbrain-bin', FAKE_BIN], {
           runner: makeRunner().runner,
+          probeSpawn: makeProbeSpawn().spawn,
         }),
       );
       expect(hooks.result).toBe(0);

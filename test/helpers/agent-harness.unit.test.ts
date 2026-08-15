@@ -39,6 +39,7 @@ import {
   hasOpencodeAuth,
   seedOpencodeConfig,
   parseOpencodeJsonl,
+  runOneShotSpawn,
 } from './agent-harness.ts';
 import { withEnv } from './with-env.ts';
 
@@ -623,5 +624,36 @@ describe('parseOpencodeJsonl (pure — fixtures pinned to observed v1.18.18 shap
   test('empty/garbage input → empty result, never throws', () => {
     expect(parseOpencodeJsonl([])).toEqual({ finalText: '', toolCalls: [] });
     expect(parseOpencodeJsonl(['{', 'null', '42'])).toEqual({ finalText: '', toolCalls: [] });
+  });
+});
+
+describe('runOneShotSpawn — drain-cap timer hygiene', () => {
+  test('returns promptly on a fast child and clears every drain-cap timer (no post-run event-loop hold)', async () => {
+    // The bounded() drain caps are timeoutMs + 30s each; uncleared they keep
+    // Bun alive for minutes after a successful door run. Spy on clearTimeout:
+    // the main kill timer + the three bounded races (stdout, stderr, exited)
+    // must ALL clear when the real promises win.
+    const realClear = globalThis.clearTimeout;
+    let clears = 0;
+    globalThis.clearTimeout = ((id: Parameters<typeof clearTimeout>[0]) => {
+      clears++;
+      return realClear(id);
+    }) as typeof clearTimeout;
+    try {
+      const t0 = Date.now();
+      const res = await runOneShotSpawn({
+        argv: ['echo', 'door-timer-hygiene'],
+        cwd: tmpdir(),
+        env: process.env,
+        timeoutMs: 240_000, // door-scale timeout — the leak would be ~270s of hold
+      });
+      expect(res.exitCode).toBe(0);
+      expect(res.finalText).toBe('door-timer-hygiene');
+      expect(res.timedOut).toBe(false);
+      expect(Date.now() - t0).toBeLessThan(10_000); // returned promptly, no cap wait
+      expect(clears).toBeGreaterThanOrEqual(4); // kill timer + 3 bounded drain caps
+    } finally {
+      globalThis.clearTimeout = realClear;
+    }
   });
 });

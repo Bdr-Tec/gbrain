@@ -17,6 +17,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -105,5 +106,36 @@ describe('atomicWriteTextFile — mode ladder', () => {
     atomicWriteTextFile(p, 'new', { freshMode: 0o600 }); // freshMode must NOT apply — the file exists
     expect(statSync(p).mode & 0o777).toBe(0o640);
     expect(readFileSync(p, 'utf8')).toBe('new');
+  });
+});
+
+describe('atomicWriteTextFile — failure hygiene (no tmp litter)', () => {
+  test('a failing rename does not leak the .tmp- file (target is a directory → rename throws)', () => {
+    // The resolved target being a DIRECTORY makes writeFileSync of the tmp
+    // succeed but renameSync(tmp, target) throw — the exact mid-sequence
+    // failure shape (ENOSPC/EACCES class) that used to strand tmp litter
+    // next to the user's config.
+    const target = join(dir, 'config.jsonc');
+    mkdirSync(target, { recursive: true });
+    expect(() => atomicWriteTextFile(target, '{"x":1}')).toThrow();
+    const litter = readdirSync(dir).filter((n) => n.includes('.tmp-'));
+    expect(litter).toEqual([]);
+    expect(lstatSync(target).isDirectory()).toBe(true); // target untouched
+  });
+
+  test('a failing write in a read-only dir throws without leaving litter behind', () => {
+    if (process.getuid?.() === 0) return; // root ignores modes
+    const ro = join(dir, 'ro');
+    mkdirSync(ro, { recursive: true });
+    writeFileSync(join(ro, 'config.jsonc'), 'old');
+    chmodSync(ro, 0o500);
+    try {
+      expect(() => atomicWriteTextFile(join(ro, 'config.jsonc'), 'new')).toThrow();
+    } finally {
+      chmodSync(ro, 0o700);
+    }
+    const litter = readdirSync(ro).filter((n) => n.includes('.tmp-'));
+    expect(litter).toEqual([]);
+    expect(readFileSync(join(ro, 'config.jsonc'), 'utf8')).toBe('old'); // original intact
   });
 });

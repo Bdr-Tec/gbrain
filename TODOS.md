@@ -6124,18 +6124,21 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   `scripts/check-pin-doc-privacy.sh` (in `bun run verify` + guards-manifest,
   fixture-tested) asserts every `docs/mcp/*-CLI-PIN.md` uses placeholder paths
   and carries no key-shaped material or non-example emails.
-- [ ] **P3 — opencode-door npm view-vs-install TOCTOU.** The door job checks
-  `npm view … dist.integrity` against the pin, then runs a separate
-  `npm install -g` — a registry that swaps payloads between the two calls
-  defeats the check. Verify the downloaded tarball bytes locally (`npm pack`
-  + sha512 over the tarball) before install, mirroring the hermes byte-pin.
-  Effort: S/M.
-- [ ] **P3 — `opencode mcp list` probe spawns project-config servers.** The
-  runHooks registration probe runs from the invoking cwd, and opencode spawns
-  project-config-defined servers with NO trust gate — a hostile opencode.json
-  anywhere in cwd..git-root gets code execution from a gbrain install probe.
-  Consider skipping the live probe when a project opencode.json exists in
-  cwd..git-root, or running the probe from a scratch cwd. Effort: S.
+- [x] **P3 — opencode-door npm view-vs-install TOCTOU.** DONE (adversarial-review
+  fix wave): the door job's install step is now pack-verify-install — `npm pack
+  <pkg>@<ver> --json` downloads the artifact and reports the integrity of the
+  BYTES written; both the wrapper and the platform payload are asserted against
+  their pins before `npm install -g ./opencode-ai-*.tgz` installs from the
+  verified local tarball (no fresh registry resolve of the name; the payload's
+  install-time fetch is npm-validated against the same byte-confirmed packument).
+  Verified locally on darwin-arm64 (wrapper integrity == pin; `--ignore-scripts`
+  breaks opencode's postinstall binary placement, so it is deliberately absent).
+- [x] **P3 — `opencode mcp list` probe spawns project-config servers.** DONE
+  (adversarial-review fix wave): the user-scope probe spawns from a fresh EMPTY
+  mkdtemp cwd (no project config can load), project scope SKIPS the live probe
+  entirely with a printed note (parse-back is authoritative), and the probe now
+  holds the real process handle so the 20s timeout actually kills the child
+  (SIGTERM → SIGKILL) instead of abandoning it.
 - [ ] **P3 — dedupe the opencode read→parse→classify dance.** The
   read-config → parseOpencodeConfig → opencodeEntryKind sequence is spelled
   three times (bootstrap.ts runHooks pre-check, harness.ts apply expectUrl
@@ -6143,3 +6146,37 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   `classifyOpencodeEntryAt(path, name, expect)` helper and drop the
   double-printed other-source warning (the caller AND the writer note it).
   Effort: S.
+
+## opencode adversarial-review fix-wave follow-ups (filed at fix time)
+
+- [ ] **P2 — per-harness MCP-scope consent key.** An interview MCP_SCOPE answer
+  recorded for Claude Code (where 'project' is the privacy-SAFE default)
+  currently authorizes opencode's INVERTED-risk scopes without fresh
+  confirmation ('project' on opencode = committed file that auto-spawns on
+  every collaborator machine, no trust gate), and an ABSENT answer defaults
+  opencode to user-global exposure (any repo on the machine reaches the
+  brain). Design a harness-specific consent confirm — either per-harness
+  answer keys (MCP_SCOPE_OPENCODE) or a one-time "your recorded scope means
+  something riskier here — confirm" gate on the opencode lane. Relates to the
+  agent-bootstrap A8 consent-semantics TODO. Effort: M.
+- [ ] **P3 — opencodeEntryKind remote ownership: normalize the url compare.**
+  Ownership uses exact string equality on the entry url vs the receipt/expect
+  url — trailing-slash and host-case variants misclassify in BOTH directions
+  (ours read as foreign → orphaned entry; a variant-url foreign endpoint
+  never matches, fine, but the asymmetry is accidental). Consider URL
+  normalization (scheme/host case-fold, trailing-slash) plus an
+  Authorization-shape check before comparing. Effort: S.
+- [ ] **P2 — claw-test --live runners inherit real HOME/XDG.** The grok /
+  hermes / opencode --live runners run against the operator's real
+  HOME/XDG config surface and only WARN on a pre-existing global gbrain
+  entry; a scripted run can mutate or exercise the operator's live wiring.
+  Consider a fail-closed flag (refuse when a global gbrain registration
+  exists unless --allow-live-config) or hermetic-by-default across the
+  runner family. Effort: M.
+- [ ] **P3 — fixed-name `.bak` parity: codex-toml.ts + hooks.ts writers.**
+  opencode-json.ts now takes UNIQUE `.bak-<hex>` backups per operation
+  (overlapping runs can't clobber each other's snapshot; harness restores
+  from the returned path and unlinks on success). The codex TOML writer and
+  the hooks settings writers still use fixed-name backups with the same
+  theoretical overlap window — port the unique-backup pattern (and the
+  restore-guard compare) for parity. Effort: S/M.
