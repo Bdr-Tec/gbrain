@@ -799,12 +799,35 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // Same one-time global cold-miss pattern as the bumps above; refills within
 // cache.ttl_seconds (3600s default).
 //
-// bump 15→16 (autocut weak-top floor, re-land of #3131): adds `acmts`
+// bump 15→16 (#3515): `detail` folds into the key via ctx.detail (det=).
+// detail is result-affecting by design — it gates dedup, chunk-source
+// filtering, and the compiled_truth boost — but was absent from the key, so
+// a `--detail low` write (compiled-truth-only result set) was served to a
+// default `medium` lookup for the whole TTL. Same contamination class as
+// [CDX-4], floor_ratio (v=3), and relationalRetrieval (v=10). v=14 was
+// claimed by #3514 (compiled_truth boost scope, #3430) and v=15 by the
+// `fts=` fold (#3677), so this lands as v=16 per the D8 sequencing
+// convention (see the v=4/v=5 note above). Same one-time global cold-miss
+// pattern as the bumps above.
+//
+// bump 16→17 (WP2/T3): degradation-stamp epoch. HybridSearchMeta gains
+// `degraded[]` + `retrieved_count` and every cache write now stamps them
+// (degraded rows additionally get a short TTL). A pre-stamp row served as a
+// hit would claim a clean run it can't prove; bumping makes pre-upgrade rows
+// unreachable (one-time cold-miss, refills within cache.ttl_seconds), and
+// any row that still lacks the stamp surfaces as
+// degraded:[{stage:'cache_prestamp'}] at hit time (belt-and-braces).
+// (Merge note: both this wave and master's #3515 wave claimed v=16 in
+// flight; the merge sequences them as 16 then 17.)
+//
+// bump 17→18 (autocut weak-top floor, re-land of #3131): adds `acmts`
 // (autocut_min_top_score). The floor changes WHETHER autocut cuts at all — a
 // write made with one floor must NOT be served to a lookup at a different
 // floor (the trimmed-vs-full set differs). Same one-time global cold-miss
 // pattern; fills within cache.ttl.
-export const KNOBS_HASH_VERSION = 16;
+// (Merge note: this wave authored the floor as v=16 before master claimed
+// 16 and 17 in flight; the merge sequences it as 18.)
+export const KNOBS_HASH_VERSION = 18;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
@@ -843,6 +866,17 @@ export interface KnobsHashContext {
    * 'none' for legacy callers that don't thread excludes.
    */
   hardExcludes?: string[];
+  /**
+   * v=16 (#3515): the EFFECTIVE detail level for this call — per-call
+   * SearchOpts.detail, or the auto-detected level when the caller didn't
+   * specify (hybridSearchCached threads `opts.detail ?? autoDetectDetail(query)`,
+   * matching what bare hybridSearch resolves). detail gates dedup,
+   * chunk-source filtering, and the compiled_truth boost, so a detail=low
+   * write must never be served to a detail=medium lookup. Lives in ctx (not
+   * ResolvedSearchKnobs) because it's per-call, not a mode knob — same path
+   * as col=/prov=. Undefined falls back to 'medium' (the documented default).
+   */
+  detail?: 'low' | 'medium' | 'high';
 }
 
 export function knobsHash(
@@ -946,7 +980,12 @@ export function knobsHash(
     // memoizes and validates against /^[a-z][a-z0-9_]*$/, so this stays a
     // cheap, bounded string.
     `fts=${getFtsLanguage()}`,
-    // v=16 addition (append-only) — autocut weak-top floor shifts whether
+    // v=16 addition (#3515, append-only): effective detail level. detail
+    // gates dedup, chunk-source filtering, and the compiled_truth boost, so
+    // a low write (compiled-truth-only set) must never be served to a
+    // medium/high lookup. Undefined falls back to 'medium' (the default).
+    `det=${ctx?.detail ?? 'medium'}`,
+    // v=18 addition (append-only) — autocut weak-top floor shifts whether
     // autocut cuts at all, so an autocut-cut write must not be served to a
     // different-floor lookup. `?? 0.5` mirrors the module default for
     // partial-knobs callers. 4 decimals (vs acj's 2): the floor is compared
