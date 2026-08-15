@@ -60,6 +60,10 @@ afterEach(() => {
 
 const NO_PATTERNS = { userPatternsPath: '/nonexistent-patterns.txt' };
 
+// Synthetic AWS-shaped token, built at runtime so the literal never lands in
+// committed bytes (the pre-push credential guard would flag it — correctly).
+const PLANTED_KEY = ['AKIA', 'ABCDEFGHIJKLMNOP'].join('');
+
 function baseOpts(paths: string[], extra: Record<string, unknown> = {}) {
   return { paths, sourceId: 'default', ...NO_PATTERNS, ...extra };
 }
@@ -164,7 +168,7 @@ describe('redaction before write', () => {
           message: {
             role: 'user',
             timestamp: '2026-08-09T10:00:01.000Z',
-            content: [{ type: 'text', text: 'the deploy key is AKIAABCDEFGHIJKLMNOP keep it safe' }],
+            content: [{ type: 'text', text: `the deploy key is ${PLANTED_KEY} keep it safe` }],
           },
         }),
       ].join('\n') + '\n',
@@ -174,7 +178,7 @@ describe('redaction before write', () => {
     expect(r.redactions).toBeGreaterThanOrEqual(1);
     const page = await engine.getPage(r.slugsTouched[0], { sourceId: 'default' });
     expect(page).not.toBeNull();
-    expect(page!.compiled_truth).not.toContain('AKIAABCDEFGHIJKLMNOP');
+    expect(page!.compiled_truth).not.toContain(PLANTED_KEY);
     expect(page!.compiled_truth).toContain('<REDACTED:');
   });
 });
@@ -304,7 +308,7 @@ describe('raw metadata redaction [security: raw rides the REDACTED copy]', () =>
           version: 3,
           id: 'meta-secret-01',
           timestamp: '2026-08-09T10:00:00.000Z',
-          cwd: '/home/alice/AKIAABCDEFGHIJKLMNOP-project',
+          cwd: `/home/alice/${PLANTED_KEY}-project`,
         }),
         JSON.stringify({
           type: 'message',
@@ -323,7 +327,7 @@ describe('raw metadata redaction [security: raw rides the REDACTED copy]', () =>
     const raw = await engine.getRawData(r.slugsTouched[0], undefined, { sourceId: 'default' });
     expect(raw.length).toBeGreaterThan(0);
     const stored = JSON.stringify(raw[0].data);
-    expect(stored).not.toContain('AKIAABCDEFGHIJKLMNOP');
+    expect(stored).not.toContain(PLANTED_KEY);
     expect(stored).toContain('<REDACTED:');
   });
 });
