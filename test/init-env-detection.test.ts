@@ -27,6 +27,26 @@ describe('groupReadyByProvider — embedding touchpoint', () => {
     expect(got.map(p => p.recipeId)).toContain('voyage');
   });
 
+  test('v0.47: file-plane voyage_api_key folds into readiness (buildGatewayConfig env)', async () => {
+    // init's resolveEmbeddingByEnv builds its effective env via
+    // buildGatewayConfig(fileCfg).env so keys placed in ~/.gbrain/config.json
+    // (the documented alternative to shell env) select a provider too. This
+    // pins the mechanism end-to-end: file key → gateway env fold → ready.
+    // buildEnv reads the REAL process.env (env wins over file), so scrub the
+    // ambient key for the duration — dev machines may have a live one set.
+    const saved = process.env.VOYAGE_API_KEY;
+    delete process.env.VOYAGE_API_KEY;
+    try {
+      const { buildGatewayConfig } = await import('../src/core/ai/build-gateway-config.ts');
+      const folded = buildGatewayConfig({ voyage_api_key: 'pa-file-plane' } as never).env;
+      expect(folded.VOYAGE_API_KEY).toBe('pa-file-plane');
+      const got = await groupReadyByProvider('embedding', folded as NodeJS.ProcessEnv);
+      expect(got.map(p => p.recipeId)).toContain('voyage');
+    } finally {
+      if (saved !== undefined) process.env.VOYAGE_API_KEY = saved;
+    }
+  });
+
   test('ZEROENTROPY_API_KEY alone → zeroentropyai is NOT auto-pickable (sunset exclusion)', async () => {
     // v0.47: recipes with `sunset` metadata are excluded from auto-pick —
     // a fresh install must not be steered onto a provider that dies on

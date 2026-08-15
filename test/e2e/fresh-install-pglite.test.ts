@@ -221,6 +221,36 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     }
   }, 30000);
 
+  test('v0.47: keyed NON-voyage install disables the reranker explicitly (no doomed legacy default)', async () => {
+    resetGateway();
+    delete process.env.VOYAGE_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-test-openai';
+    const origLog = console.log;
+    const origError = console.error;
+    console.log = () => {};
+    console.error = () => {};
+    try {
+      const { runInit } = await import('../../src/commands/init.ts');
+      await runInit(['--pglite', '--non-interactive']);
+      const cfg = JSON.parse(readFileSync(join(tmpHome, '.gbrain', 'config.json'), 'utf-8'));
+      expect(cfg.embedding_model).toBe('openai:text-embedding-3-large');
+      const { PGLiteEngine } = await import('../../src/core/pglite-engine.ts');
+      const engine = new PGLiteEngine();
+      await engine.connect({ database_path: cfg.database_path, engine: 'pglite' });
+      try {
+        // No voyage key on either plane → the fresh brain must not silently
+        // inherit the legacy sunset bundle reranker it has no key for.
+        expect(await engine.getConfig('search.reranker.model')).toBeNull();
+        expect(await engine.getConfig('search.reranker.enabled')).toBe('false');
+      } finally {
+        await engine.disconnect();
+      }
+    } finally {
+      console.log = origLog;
+      console.error = origError;
+    }
+  }, 30000);
+
   test('keyless fresh install sizes the column at the NEW-INSTALL width (1024), not the legacy 1280', async () => {
     resetGateway();
     delete process.env.VOYAGE_API_KEY; // zero keys → keyless continue
@@ -243,6 +273,51 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
         const colDim = await readContentChunksEmbeddingDim(engine);
         expect(colDim.exists).toBe(true);
         expect(colDim.dims).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
+      } finally {
+        await engine.disconnect();
+      }
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+      console.error = origError;
+    }
+  }, 30000);
+
+  test('v0.47: keyless recovery — `init --force --embedding-model` clears embedding_disabled', async () => {
+    // The documented recovery command for a deferred-setup brain is
+    // `gbrain init --force --embedding-model voyage:voyage-4`. Two traps made
+    // it a silent no-op: the seeded embedding_disabled sentinel set
+    // out.noEmbedding (which an explicit flag must clear), and the persist
+    // block's ...existingFile spread re-wrote the stale sentinel alongside
+    // the new model. This pins the full keyless → keyed round trip.
+    resetGateway();
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    console.log = () => {};
+    console.warn = () => {};
+    console.error = () => {};
+    try {
+      const { runInit } = await import('../../src/commands/init.ts');
+      // Step 1: keyless install → deferred-setup sentinel persisted.
+      delete process.env.VOYAGE_API_KEY;
+      await runInit(['--pglite', '--non-interactive']);
+      const cfgPath = join(tmpHome, '.gbrain', 'config.json');
+      expect(JSON.parse(readFileSync(cfgPath, 'utf-8')).embedding_disabled).toBe(true);
+      // Step 2: the key arrives; run the documented recovery command.
+      process.env.VOYAGE_API_KEY = 'pa-test-voyage';
+      await runInit(['--pglite', '--non-interactive', '--force', '--embedding-model', 'voyage:voyage-4']);
+      const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
+      expect(cfg.embedding_model).toBe('voyage:voyage-4');
+      expect(cfg.embedding_dimensions).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
+      expect(cfg.embedding_disabled).toBeUndefined();
+      // Keyless init wrote NO reranker config (deliberate), so the recovery
+      // re-init's voyage override lands instead of being never-clobbered.
+      const { PGLiteEngine } = await import('../../src/core/pglite-engine.ts');
+      const engine = new PGLiteEngine();
+      await engine.connect({ database_path: cfg.database_path, engine: 'pglite' });
+      try {
+        expect(await engine.getConfig('search.reranker.model')).toBe('voyage:rerank-2.5');
       } finally {
         await engine.disconnect();
       }
