@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 // scripts/build-pglite-snapshot.ts
 //
+// TZ pinned to UTC BEFORE any PGLite work: dumpDataDir bakes this process's
+// TimeZone into the tar's cluster defaults. Building under the host zone made
+// restored engines run sessions in the build machine's zone (the engine also
+// re-pins at restore — this is the belt to that suspender, and it keeps any
+// OTHER zone-derived state baked into the tar deterministic across hosts).
+process.env.TZ = 'UTC';
+//
 // Tier 3 fast-restore: boot a fresh PGLite, run the full initSchema (forward
 // bootstrap + PGLITE_SCHEMA_SQL + every migration), dump the post-init state
 // to a tar fixture. Test files that read GBRAIN_PGLITE_SNAPSHOT can skip the
