@@ -1354,15 +1354,21 @@ export class MinionQueue {
   /**
    * Renew lock (token-fenced). Returns false if token mismatch (job was reclaimed).
    *
-   * #4145 (CDX-2/R2-2): the optional `signal` lets the renewal tick abort an
-   * in-flight call when its own timeout race fires. BEST-EFFORT only — pool
-   * acquisition and PG protocol cancel are asynchronous, and PGLite ignores
-   * the signal entirely — so correctness never rests on it: a late-landing
-   * renewal UPDATE is fenced on OUR token, meaning it can only extend a lock
-   * nobody else has claimed; worst case is a stall-requeue delayed by ≤ one
-   * lease.
+   * `opts.signal` cancels the in-flight UPDATE (postgres.js `.cancel()`) when the
+   * caller's timeout race gives up on it — otherwise the abandoned query holds a
+   * checked-out pool slot for its full server-side duration (issue #6).
+   * Cancellation is BEST-EFFORT (#4145 CDX-2/R2-2): pool acquisition and PG
+   * protocol cancel are asynchronous, and PGLite ignores the signal — so
+   * correctness never rests on it. A late-landing renewal UPDATE is fenced on
+   * OUR token, meaning it can only extend a lock nobody else has claimed;
+   * worst case is a stall-requeue delayed by ≤ one lease.
    */
-  async renewLock(id: number, lockToken: string, lockDurationMs: number, signal?: AbortSignal): Promise<boolean> {
+  async renewLock(
+    id: number,
+    lockToken: string,
+    lockDurationMs: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<boolean> {
     // Direct (session-mode) pool — see claim(). The heartbeat that keeps a job
     // alive for minutes cannot run on the transaction pooler without periodic
     // CONNECTION_ENDED drops that look like lock-expiry and orphan the job.
@@ -1371,7 +1377,7 @@ export class MinionQueue {
        WHERE id = $2 AND lock_token = $3 AND status = 'active'
        RETURNING id`,
       [lockDurationMs, id, lockToken],
-      signal ? { signal } : undefined
+      opts
     );
     return rows.length > 0;
   }

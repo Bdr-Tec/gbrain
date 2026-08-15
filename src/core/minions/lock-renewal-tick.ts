@@ -267,12 +267,22 @@ function warnAndFallback(name: string, raw: string, fallback: number): number {
  */
 export interface LockRenewalDeps {
   /**
-   * The fenced renewal UPDATE. The optional `signal` (CDX-2/R2-2) lets the
-   * tick cancel an in-flight call when its own timeout race fires —
-   * BEST-EFFORT (see queue.renewLock); the fence is the correctness
-   * authority. Implementations may ignore the 4th param (older test fakes).
+   * The fenced renewal UPDATE. The optional `opts.signal` is aborted when
+   * this call loses the tick's timeout race (both attempts: primary AND the
+   * #4145 at-deadline verify), so the underlying UPDATE is CANCELLED
+   * (postgres.js `.cancel()` via executeRawDirect) instead of orphaned on a
+   * checked-out pool slot for its full server-side duration — the #6
+   * starvation class. Cancellation is BEST-EFFORT (pool acquisition and PG
+   * protocol cancel are async; PGLite ignores the signal); the token FENCE
+   * is the correctness authority. Optional-param widening keeps the legacy
+   * 3-arg test mocks compiling.
    */
-  renewLock: (jobId: number, lockToken: string, lockDurationMs: number, signal?: AbortSignal) => Promise<boolean>;
+  renewLock: (
+    jobId: number,
+    lockToken: string,
+    lockDurationMs: number,
+    opts?: { signal?: AbortSignal },
+  ) => Promise<boolean>;
   audit: LockRenewalAuditSinkLike;
   /** Injectable for hermetic time-based tests. Production: `Date.now`. */
   now: () => number;
@@ -280,8 +290,9 @@ export interface LockRenewalDeps {
    * Injectable for hermetic Promise.race tests. Production:
    * `globalThis.setTimeout`. The function must return a value that
    * `clearTimeout` accepts, but this seam doesn't expose clearTimeout
-   * because the timeout race fires-and-forgets (the lost race is
-   * harmless — at worst we have a dangling reject that no one awaits).
+   * because the timeout race fires-and-forgets. The losing renewLock is no
+   * longer merely abandoned: the timeout callback also aborts the per-call
+   * signal so the query releases its pool slot.
    */
   setTimeout: (cb: () => void, ms: number) => unknown;
   /**
@@ -574,16 +585,21 @@ function safeLoadSnapshot(deps: LockRenewalDeps): { load1?: number; cores?: numb
 
 /**
  * One bounded renewal attempt: renewLock raced against callTimeoutMs.
- * When the race timeout fires, the in-flight call is also aborted via
- * AbortController (CDX-2/R2-2, best-effort — the fence is the correctness
- * authority; PGLite ignores the signal and resolves via the race alone).
- * The race attaches handlers to both contenders, so a late loser
- * settlement is absorbed, never an unhandledRejection.
+ * When the timeout wins the race it also ABORTS the per-call signal so the
+ * losing UPDATE releases its pool slot instead of holding it until the
+ * server finishes (issue #6 — an abandoned racer under a saturated pooler
+ * pinned a checked-out connection for minutes). On the win path the
+ * late-firing timer aborts an already-settled query, which runUnsafe
+ * ignores (abort listener removed in its .finally). Cancellation is
+ * BEST-EFFORT (CDX-2/R2-2 — the fence is the correctness authority; PGLite
+ * ignores the signal and resolves via the race alone). The race attaches
+ * handlers to both contenders, so a late loser settlement is absorbed,
+ * never an unhandledRejection.
  */
 function racedRenewLock(deps: LockRenewalDeps, state: LockRenewalState): Promise<boolean> {
   const controller = new AbortController();
   return Promise.race([
-    deps.renewLock(state.jobId, state.lockToken, state.lockDurationMs, controller.signal),
+    deps.renewLock(state.jobId, state.lockToken, state.lockDurationMs, { signal: controller.signal }),
     new Promise<never>((_, reject) => {
       deps.setTimeout(() => {
         try { controller.abort(); } catch { /* best-effort */ }
