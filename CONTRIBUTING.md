@@ -115,6 +115,18 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5434/gbrain_test bun run t
 DATABASE_URL=postgresql://... bun run test:e2e
 ```
 
+Heads-up: a bare `bun test` refuses to start while `DATABASE_URL` or
+`GBRAIN_DATABASE_URL` is set in your environment — some tests run destructive
+SQL against whatever those URLs point at. Unset the variable for unit runs
+(they need no database) or use the wrappers: the unit/slow runners strip the
+variables at their boundary, and `bun run test:e2e` opts in at its own. The
+refusal message walks you through it; details in
+[`docs/TESTING.md`](docs/TESTING.md) ("Database-URL run guard"). If you point
+`bun run test:e2e` at your own Postgres or Supabase, a second floor applies:
+the database name must carry "test" as a word segment (like `gbrain_test`
+above) or destructive tests refuse to run — opt a differently-named database
+in one-shot with `GBRAIN_E2E_ALLOW_DB=<name>`.
+
 Use `bun run verify` before pushing. It runs 19+ guard checks in parallel
 (`scripts/run-verify-parallel.sh`), including: banned fork-name leaks
 (`scripts/check-privacy.sh`), `JSON.stringify(x)::jsonb` interpolation
