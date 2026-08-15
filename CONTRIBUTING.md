@@ -115,7 +115,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5434/gbrain_test bun run t
 DATABASE_URL=postgresql://... bun run test:e2e
 ```
 
-Use `bun run verify` before pushing. It runs 19+ guard checks in parallel
+Use `bun run verify` before pushing. It runs 40+ guard checks in parallel
 (`scripts/run-verify-parallel.sh`), including: banned fork-name leaks
 (`scripts/check-privacy.sh`), `JSON.stringify(x)::jsonb` interpolation
 patterns (`scripts/check-jsonb-pattern.sh`), `\r` progress bleed to stdout
@@ -124,8 +124,13 @@ patterns (`scripts/check-jsonb-pattern.sh`), `\r` progress bleed to stdout
 loop" below), silent fallback to recursive chunking in the compiled binary
 (`scripts/check-wasm-embedded.sh`), stale admin-dashboard build artifacts
 (`scripts/check-admin-build.sh`), resolver drift on bundled skills
-(`bun run check:resolver`), and typecheck. `bun run check:all` runs the full
-historical sweep including the trailing-newline and exports-count checks.
+(`bun run check:resolver`), and typecheck. The guard REGISTRY is
+`scripts/guards-manifest.tsv`, and `scripts/guard-self-test.sh` (also in
+`verify`) proves every scanner guard can actually fail by running it against
+known-bad fixtures — a new `scripts/check-*` guard must be registered in the
+manifest or the build fails. There is no `check:all` script; the
+trailing-newline, exports-count, and no-legacy-getconnection checks run in
+`verify` with everything else.
 
 ### Writing tests that survive the parallel loop
 
