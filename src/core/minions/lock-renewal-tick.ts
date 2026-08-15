@@ -305,8 +305,9 @@ export interface LockRenewalDeps {
   /**
    * Injectable for hermetic Promise.race tests. Production:
    * `globalThis.setTimeout`. The function must return a value that
-   * `clearTimeout` accepts, but this seam doesn't expose clearTimeout
-   * because the timeout race fires-and-forgets. The losing renewLock is no
+   * `clearTimeout` accepts: on the win path the race clears the losing
+   * timer (via global clearTimeout) so it doesn't later fire a stray
+   * no-op abort against a settled query. The losing renewLock is no
    * longer merely abandoned: the timeout callback also aborts the per-call
    * signal so the query releases its pool slot.
    */
@@ -513,16 +514,26 @@ export async function runLockRenewalTick(
     }
 
     // The verify was unreachable too — that is a second failed attempt.
+    // NOTE for audit readers: at the deadline `attempt` advances by 2 per
+    // tick (primary + verify) — the counter counts ATTEMPTS, not ticks.
     state.consecutiveFailures += 1;
     const verifyCause = classifyFailure(verifyErr);
+    // Re-sample load: the bounded verify can consume up to callTimeoutMs,
+    // and the verify-failure event should carry the load at ITS failure,
+    // not a snapshot stale by the verify's whole duration.
+    const verifyLoad = safeLoadSnapshot(deps);
     const verifyTelemetry: LockRenewalTelemetryCtx = {
       cause: verifyCause,
       lateness_ms: latenessMs,
       overlap_skips: state.overlapSkips,
-      ...load,
+      ...verifyLoad,
     };
 
-    if (sinceLastSuccess >= state.knobs.hardEvictMs) {
+    // Recompute elapsed AFTER the verify: the bounded verify itself can
+    // consume up to callTimeoutMs, and comparing the stale pre-verify value
+    // would defer one extra cadence past the advertised backstop.
+    const sinceLastSuccessAfterVerify = deps.now() - state.lastSuccessfulRenewalAt;
+    if (sinceLastSuccessAfterVerify >= state.knobs.hardEvictMs) {
       // Hard backstop: a LOCAL decision under uncertainty, by design —
       // bounds how long non-fenced external side effects run blind during
       // a total outage. DB writes stay split-brain-safe via the fence.
@@ -536,9 +547,9 @@ export async function runLockRenewalTick(
         reason: 'lock-renewal-failed',
         cause: verifyCause,
         latenessMs,
-        sinceLastSuccessMs: sinceLastSuccess,
+        sinceLastSuccessMs: sinceLastSuccessAfterVerify,
         overlapSkips: state.overlapSkips,
-        ...load,
+        ...verifyLoad,
       };
     }
 
@@ -614,15 +625,22 @@ function safeLoadSnapshot(deps: LockRenewalDeps): { load1?: number; cores?: numb
  */
 function racedRenewLock(deps: LockRenewalDeps, state: LockRenewalState): Promise<boolean> {
   const controller = new AbortController();
+  let timer: unknown;
   return Promise.race([
     deps.renewLock(state.jobId, state.lockToken, state.lockDurationMs, { signal: controller.signal }),
     new Promise<never>((_, reject) => {
-      deps.setTimeout(() => {
+      timer = deps.setTimeout(() => {
         try { controller.abort(); } catch { /* best-effort */ }
         reject(new RenewalCallTimeoutError('renewLock', state.knobs.callTimeoutMs));
       }, state.knobs.callTimeoutMs);
     }),
-  ]);
+  ]).finally(() => {
+    // Win-path hygiene: clear the losing timer so it can't fire a stray
+    // late abort at a settled query (absorbed by runUnsafe, but noisy).
+    // Test fakes may return null from the seam; clearTimeout(null) is a
+    // harmless no-op.
+    try { clearTimeout(timer as ReturnType<typeof setTimeout>); } catch { /* best-effort */ }
+  }) as Promise<boolean>;
 }
 
 function classifyFailure(err: unknown): RenewalFailureCause {
@@ -644,15 +662,19 @@ async function attemptReconnectOnce(
 ): Promise<void> {
   if (!deps.reconnect) return;
   const reconnect = deps.reconnect;
+  let timer: unknown;
   try {
     await Promise.race([
       reconnect({ error: err }),
       new Promise<never>((_, reject) => {
-        deps.setTimeout(
+        timer = deps.setTimeout(
           () => reject(new Error(`reconnect timed out after ${state.knobs.callTimeoutMs}ms`)),
           state.knobs.callTimeoutMs,
         );
       }),
     ]);
-  } catch { /* reconnect best-effort; next tick retries against a fresh attempt */ }
+  } catch { /* reconnect best-effort; next tick retries against a fresh attempt */
+  } finally {
+    try { clearTimeout(timer as ReturnType<typeof setTimeout>); } catch { /* best-effort */ }
+  }
 }

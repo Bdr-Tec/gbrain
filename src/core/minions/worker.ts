@@ -239,9 +239,14 @@ export class MinionWorker extends EventEmitter {
    * Event-loop-delay histogram (CDX-1/R2-9, issue #4145): the DIRECT
    * measurement of local starvation, sampled at eviction time and RESET
    * on every successful lock renewal so a sample attributes to the
-   * window since the last success — not process lifetime. Null when the
-   * runtime doesn't ship `monitorEventLoopDelay` (fail-open: eviction
-   * logs simply omit the eld fields).
+   * window since the last success — not process lifetime. The histogram
+   * is deliberately WORKER-global, not per-job: the event loop is one
+   * shared resource, and ANY job's successful renewal proves the loop was
+   * healthy enough to process a round-trip at that moment — a legitimate
+   * truncation of the starvation window even for a sibling job that
+   * evicts moments later (its per-job discriminator is tick lateness,
+   * which IS per-job). Null when the runtime doesn't ship
+   * `monitorEventLoopDelay` (fail-open: eviction logs omit eld fields).
    */
   private eldHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
   /** Core count cached once — pairs with raw loadavg in eviction telemetry. */
@@ -261,8 +266,10 @@ export class MinionWorker extends EventEmitter {
     this.cpuCores = cores;
     try {
       if (typeof monitorEventLoopDelay === 'function') {
+        // Created DISABLED: start() enables and stop() disables, so a
+        // constructed-but-never-started worker (setup failures, probe
+        // instances) never holds a native sampling timer.
         this.eldHistogram = monitorEventLoopDelay({ resolution: 20 });
-        this.eldHistogram.enable();
       }
     } catch { this.eldHistogram = null; /* fail-open */ }
     this.opts = {
@@ -1060,8 +1067,12 @@ export class MinionWorker extends EventEmitter {
       if (tickInFlight) {
         // Overlap skip (CDX-13): a prior tick is still awaiting its
         // renewal call. Count it — this is NOT a missed interval (those
-        // coalesce and show up as tick LATENESS instead).
+        // coalesce and show up as tick LATENESS instead) — and ADVANCE the
+        // lateness baseline: this callback fired on schedule, so the next
+        // executed tick must not book the skipped window as event-loop
+        // lateness (that would misclassify a slow DB call as starvation).
         renewalState.overlapSkips += 1;
+        renewalState.lastTickFiredAt = monotonicNow();
         return;
       }
       tickInFlight = true;

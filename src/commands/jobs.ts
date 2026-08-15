@@ -17,7 +17,7 @@ import type { PaceKeyOverrides } from '../core/pace-mode.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { parseNiceValue, applyNiceness, getEffectiveNiceness, formatNice } from '../core/minions/niceness.ts';
-import { defaultTimeoutMsFor, defaultLockDurationMsFor } from '../core/minions/handler-timeouts.ts';
+import { defaultTimeoutMsFor, defaultLockDurationMsFor, clampLockDurationMs } from '../core/minions/handler-timeouts.ts';
 
 function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -628,7 +628,12 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         if (backoffDelay !== undefined) console.log(`  Backoff delay: ${backoffDelay}ms`);
         if (backoffJitter !== undefined) console.log(`  Backoff jitter: ${backoffJitter}`);
         if (timeoutMs !== undefined) console.log(`  Timeout: ${timeoutMs}ms`);
-        if (lockDurationMs !== undefined) console.log(`  Lock lease: ${lockDurationMs}ms`);
+        if (lockDurationMs !== undefined) {
+          // Echo what will actually be STORED (queue.add clamps to [5s,1h]);
+          // a dry-run that prints the raw out-of-range input lies.
+          const stored = clampLockDurationMs(lockDurationMs);
+          console.log(`  Lock lease: ${stored}ms${stored !== lockDurationMs ? ` (clamped from ${lockDurationMs}ms)` : ''}`);
+        }
         if (idempotencyKey) console.log(`  Idempotency key: ${idempotencyKey}`);
         if (delay > 0) console.log(`  Delay: ${delay}ms`);
         console.log(`  Data: ${JSON.stringify(data)}`);

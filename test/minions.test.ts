@@ -3310,6 +3310,9 @@ describe('MinionQueue: stall-sweep reclaim grace (#4145)', () => {
     expect(resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: '25000' })).toBe(25_000);
     expect(resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: '-5' })).toBe(DEFAULT_STALL_RECLAIM_GRACE_MS);
     expect(resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: 'abc' })).toBe(DEFAULT_STALL_RECLAIM_GRACE_MS);
+    // Cap: an absurd digit string must not become Infinity and push the
+    // sweep cutoff to -infinity (which would disable stalled-job recovery).
+    expect(resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: '9'.repeat(40) })).toBe(600_000);
   });
 
   test('grace env warn fires once per bad value, not per call (warn-once dedupe)', async () => {

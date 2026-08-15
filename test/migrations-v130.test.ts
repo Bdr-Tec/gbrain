@@ -60,7 +60,7 @@ describe('migration v130 — structure', () => {
   test('adds the column IF NOT EXISTS and the CHECK via drop-then-add (v7 precedent); NO backfill', () => {
     expect(V130_SQL).toContain('ADD COLUMN IF NOT EXISTS lock_duration_ms INTEGER');
     expect(V130_SQL).toContain('DROP CONSTRAINT IF EXISTS chk_lock_duration_positive');
-    expect(V130_SQL).toContain('ADD CONSTRAINT chk_lock_duration_positive CHECK (lock_duration_ms IS NULL OR lock_duration_ms > 0)');
+    expect(V130_SQL).toContain('ADD CONSTRAINT chk_lock_duration_positive CHECK (lock_duration_ms IS NULL OR (lock_duration_ms >= 5000 AND lock_duration_ms <= 3600000))');
     // NULL = worker default = pre-#4145 behavior; a backfill would change
     // legacy rows' semantics for no benefit (claim COALESCE owns defaulting).
     expect(V130_SQL).not.toContain('UPDATE minion_jobs');
@@ -78,16 +78,17 @@ describe('migration v130 — semantics (PGLite)', () => {
     expect(rows[0].count).toBe('1');
   });
 
-  test('CHECK holds: 0/negative rejected, NULL + positive pass', async () => {
+  test('CHECK holds: out-of-range rejected, NULL + in-range pass', async () => {
     const job = await queue.add('lease-check', {});
     await engine.executeRaw(`UPDATE minion_jobs SET lock_duration_ms = 300000 WHERE id = $1`, [job.id]);
     await engine.executeRaw(`UPDATE minion_jobs SET lock_duration_ms = NULL WHERE id = $1`, [job.id]);
-    await expect(
-      engine.executeRaw(`UPDATE minion_jobs SET lock_duration_ms = 0 WHERE id = $1`, [job.id]),
-    ).rejects.toThrow(/chk_lock_duration_positive/);
-    await expect(
-      engine.executeRaw(`UPDATE minion_jobs SET lock_duration_ms = -5 WHERE id = $1`, [job.id]),
-    ).rejects.toThrow(/chk_lock_duration_positive/);
+    // The CHECK enforces the full advertised [5s,1h] range so a bypass
+    // writer can't stamp a thrash-lease or a weeks-long one (codex P2).
+    for (const bad of [0, -5, 1, 4999, 3_600_001]) {
+      await expect(
+        engine.executeRaw(`UPDATE minion_jobs SET lock_duration_ms = ${bad} WHERE id = $1`, [job.id]),
+      ).rejects.toThrow(/chk_lock_duration_positive/);
+    }
   });
 
   test('pre-v130 shape (column dropped) gains column + CHECK on re-run', async () => {
@@ -100,5 +101,21 @@ describe('migration v130 — semantics (PGLite)', () => {
     await expect(
       engine.executeRaw(`UPDATE minion_jobs SET lock_duration_ms = 0 WHERE id = $1`, [job.id]),
     ).rejects.toThrow(/chk_lock_duration_positive/);
+  });
+
+  test('claim SQL clamps a bypass-written lease before deriving lock_until (codex P2)', async () => {
+    // Simulate foreign tooling stamping a lease outside the advertised
+    // range directly (the CHECK blocks this on current schemas, so drop it
+    // for the simulation — the claim clamp is the layer under test).
+    await engine.executeRaw(`ALTER TABLE minion_jobs DROP CONSTRAINT IF EXISTS chk_lock_duration_positive`);
+    const job = await queue.add('bypass-lease', {});
+    await engine.executeRaw(`UPDATE minion_jobs SET lock_duration_ms = 2147483647 WHERE id = $1`, [job.id]);
+    const before = Date.now();
+    const claimed = await queue.claim('tok-bypass', 30_000, 'default', ['bypass-lease']);
+    expect(claimed!.lock_duration_ms).toBe(3_600_000); // stamped clamped
+    const horizon = claimed!.lock_until!.getTime() - before;
+    expect(horizon).toBeLessThan(3_700_000); // lock_until bounded to ~1h, not ~24.8 days
+    // Restore the range CHECK for subsequent tests.
+    await engine.executeRaw(`ALTER TABLE minion_jobs ADD CONSTRAINT chk_lock_duration_positive CHECK (lock_duration_ms IS NULL OR (lock_duration_ms >= 5000 AND lock_duration_ms <= 3600000))`);
   });
 });

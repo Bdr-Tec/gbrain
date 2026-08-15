@@ -81,7 +81,21 @@ export function resolveStallReclaimGraceMs(
     }
     return DEFAULT_STALL_RECLAIM_GRACE_MS;
   }
-  return Number(raw.trim());
+  const n = Number(raw.trim());
+  // Cap at 10 minutes: an absurd digit string (Number → huge/Infinity)
+  // would otherwise push the sweep cutoff to -infinity and silently
+  // disable stalled-job recovery altogether.
+  const MAX_GRACE_MS = 600_000;
+  if (n > MAX_GRACE_MS) {
+    if (!_warnedGraceEnv.has(raw)) {
+      _warnedGraceEnv.add(raw);
+      process.stderr.write(
+        `[minions] env GBRAIN_MINION_STALL_RECLAIM_GRACE_MS=${JSON.stringify(raw)} exceeds the ${MAX_GRACE_MS}ms cap; clamping\n`,
+      );
+    }
+    return MAX_GRACE_MS;
+  }
+  return n;
 }
 const DEFAULT_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MiB
 
@@ -826,13 +840,21 @@ export class MinionQueue {
     // same double-encode rule as $5) → worker default ($2), is STAMPED onto
     // the row (durable, like timeout_ms), and lock_until derives from the
     // same COALESCE (OLD-row semantics: repeat the expression, don't
-    // reference the assigned column).
+    // reference the assigned column). Both the stamp and lock_until are
+    // CASE-clamped to the [5s,1h] bound IN SQL (row/map resolution only —
+    // the worker-default fallback $2 is operator-configured, not row data,
+    // and tests/short-lived workers legitimately use sub-5s leases): the exposed
+    // submit surfaces clamp already, but a bypass-written row (direct SQL
+    // repair, foreign tooling) must not grant a ~24-day lease to a worker
+    // that crashes before its first renewal (or a 1ms one that thrashes).
     const rows = await this.engine.executeRawDirect<Record<string, unknown>>(
       `UPDATE minion_jobs SET
         status = 'active',
         lock_token = $1,
-        lock_until = now() + (COALESCE(lock_duration_ms, ($6::jsonb ->> name)::int, $2)::double precision * interval '1 millisecond'),
-        lock_duration_ms = COALESCE(lock_duration_ms, ($6::jsonb ->> name)::int),
+        lock_until = now() + ((CASE WHEN COALESCE(lock_duration_ms, ($6::jsonb ->> name)::int) IS NULL THEN $2
+                                    ELSE LEAST(GREATEST(COALESCE(lock_duration_ms, ($6::jsonb ->> name)::int), 5000), 3600000) END)::double precision * interval '1 millisecond'),
+        lock_duration_ms = CASE WHEN COALESCE(lock_duration_ms, ($6::jsonb ->> name)::int) IS NULL THEN NULL
+                                ELSE LEAST(GREATEST(COALESCE(lock_duration_ms, ($6::jsonb ->> name)::int), 5000), 3600000) END,
         timeout_ms = COALESCE(timeout_ms, ($5::jsonb ->> name)::int),
         timeout_at = CASE WHEN COALESCE(timeout_ms, ($5::jsonb ->> name)::int) IS NOT NULL
                           THEN now() + (COALESCE(timeout_ms, ($5::jsonb ->> name)::int)::double precision * interval '1 millisecond')
