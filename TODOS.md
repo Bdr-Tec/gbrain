@@ -5915,6 +5915,39 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   (`skillpack status`/`sync`, doctor `skill_currency`) already keeps the brain's skill
   set current on upgrade; this item is purely about semantic retrieval of skills.
 
+## opencode wave follow-ups (filed at build time)
+
+- [ ] **P2 — Watch the first opencode-door + canary dispatches.** The job is
+  day-one full posture (nightly + labels; keyless SMOKE + paid anthropic leg
+  on the existing secret) — after the wave merges, confirm the first nightly
+  run goes green end-to-end and the canary leg's latest-version result, then
+  update OPENCODE-CLI-PIN.md §Pending auth with anything the authed CI run
+  observes (exact `opencode models` output, per-turn cost note). Effort: S.
+- [ ] **P3 — Wire opencode's plugin/event system** (the ambient-recall lane).
+  opencode ships a JS plugin system with lifecycle events; `OPENCODE_HAS_HOOKS
+  = false` in host-specs.ts marks the gap. Needs its own observation pass
+  (plugin API shapes, event timing, context-injection surface) before design —
+  would upgrade opencode from pull-protocol to per-turn push, above codex.
+  Effort: M/L.
+- [ ] **P3 — BrainBench opencode adapter.** `src/eval/brainbench/adapters/` +
+  `ALL_HARNESSES` entry — build together with the already-filed hermes + grok
+  adapters (three pending; one eval wave). Effort: M.
+- [ ] **P3 — connect `--agent opencode --oauth`.** opencode's `mcp auth` is an
+  authorization-code OAuth flow (not client-credentials) — a connect lane for
+  it needs the interactive-grant plumbing the current `--oauth`
+  (perplexity/generic client-credentials) path does not model. Effort: M.
+- [ ] **P3 — Re-observe the OPENCODE_CONFIG* env trio on version bumps.**
+  Observed INERT in 1.18.18 (docs-contradiction pinned in OPENCODE-CLI-PIN.md
+  §Path seams); host-specs resolves via XDG only. If a future release
+  activates them, `opencodeConfigDir()` and the hermetic child-env deletes
+  must move together. The pin doc's re-observation checklist carries the
+  probe. Effort: S.
+- [ ] **P3 — opencode-install PTY promotion.** Same criterion as grok-install:
+  2 consecutive stable dx-scenario runs ≥1 month apart with unchanged
+  boot/first-run copy → promote to a PTY assertion test. opencode's keyless
+  free tier means the scenario should COMPLETE the bootstrap, making it a
+  stronger promotion candidate than grok's sign-in-wall early-stop. Effort: M.
+
 ## Grok Build wave follow-ups (filed at build time)
 
 - [ ] **P1 — Enable the grok-door paid lane once XAI_API_KEY exists.** Admin
@@ -5941,25 +5974,36 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   CLAUDE_CODE.md + GROK.md now recommend `--surface verbs`. Update the
   register one-liner + Direct config block (+ INSTALL_FOR_AGENTS hermes
   block) and re-verify against the pinned hermes. Effort: S.
-- [ ] **P2 — Backport the GITHUB_ENV/GITHUB_PATH/GITHUB_OUTPUT/GITHUB_STATE
+- [x] **P2 — Backport the GITHUB_ENV/GITHUB_PATH/GITHUB_OUTPUT/GITHUB_STATE
   deletion from `grokChildEnv` to `hermesChildEnv`** (and consider narrowing
   the `GITHUB_` ALLOW_PREFIX to the read-only metadata names) — the prefix
   rule forwards writable CI step-metadata files to untrusted agent children.
   Unit truth-table exists for the grok side to clone. Effort: S.
+  DONE (opencode-support wave): `hermesChildEnv` now rides `makeAgentChildEnv`,
+  which scrubs the GITHUB_* step-metadata files for every door agent; truth-table
+  extended in `test/helpers/agent-harness.unit.test.ts`.
 - [ ] **P3 — Grok bootstrap-harness target.** `gbrain bootstrap` personal-agent
   support for Grok Build: `HarnessSelector` + `parseHarnessArgs`, a dated
   `TARGETS` spec in `host-specs.ts`, a `wireGrok` branch + TOML writer (grok
   config schema pinned; `codex-toml.ts` is the precedent), receipt/rollback/
   status handling, and the INSTALL_FOR_AGENTS honest-classification flip.
   Docs currently state "bootstrap does not support Grok yet". Effort: M.
-- [ ] **P3 — Door-adapter extraction + CI-tail composite action.** Trigger: the
-  NEXT door agent (4th). Extract the agent-harness door family shape
-  (resolve/auth/seed/childEnv/pin/turn) and hoist the shared workflow tail
-  (evidence prep / scrub triple / upload / zero-pass grep / cred cleanup)
-  into a composite action; port grok-door as first consumer. Until then the
-  hermes-door/grok-door scrub blocks carry cross-reference comments. Also
-  adopt a door CADENCE policy: nightly for the newest/most-churning agent,
-  label-only after 2 stable monthly cycles per agent. Effort: M.
+- [x] **P3 — Door-adapter extraction (test-side) + door cadence policy.**
+  Trigger FIRED at the 4th door agent (opencode, the opencode-support wave):
+  `makeBinaryResolver`/`makeAgentChildEnv`/`runOneShotSpawn` extracted in
+  `test/helpers/agent-harness.ts`, grok+hermes ported (hermes gained the
+  GITHUB_* scrub + bounded drain), opencode landed as first consumer; the
+  cadence policy is adopted in `docs/TESTING.md` (nightly for the newest
+  agent, label-only after 2 stable monthly cycles).
+- [ ] **P3 — Door CI-tail composite action.** Trigger: the FIRST GREEN
+  grok-door AND opencode-door dispatches (workflow yaml cannot be proven
+  locally, and refactoring never-run jobs compounds risk — grok-door has
+  never dispatched: its XAI_API_KEY secret does not exist yet). Hoist the
+  shared workflow tail (evidence prep / scrub triple / upload / pass-count +
+  paid sentinels / version re-check / cred cleanup) from
+  hermes-door/grok-door/opencode-door into a composite action; port
+  opencode-door as first consumer (it is the freshest copy). Until then the
+  three doors' scrub blocks carry cross-reference comments. Effort: M.
 - [ ] **P3 — Promote grok-install to a PTY assertion test.** Criterion: 2
   consecutive stable runs ≥1 month apart of the dx scenario (pre-ship ritual
   on grok-touching waves) with unchanged boot/sign-in copy. Would be the
@@ -5983,7 +6027,7 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   registry shape generalizes. Unify into one data-driven table AFTER the
   door-adapter extraction lands (earn it — don't freeze hermes-isms in).
   Effort: L.
-- [ ] **P3 — PIN-doc privacy-guard candidate.** GROK-CLI-PIN/HERMES-CLI-PIN
-  carry verbatim observation transcripts; consider extending check-privacy.sh
-  (or a dedicated check) to assert pin docs use `<tmp>`/placeholder paths and
-  never carry key material or account ids. Effort: S.
+- [x] **P3 — PIN-doc privacy guard.** DONE (opencode-support wave):
+  `scripts/check-pin-doc-privacy.sh` (in `bun run verify` + guards-manifest,
+  fixture-tested) asserts every `docs/mcp/*-CLI-PIN.md` uses placeholder paths
+  and carries no key-shaped material or non-example emails.
