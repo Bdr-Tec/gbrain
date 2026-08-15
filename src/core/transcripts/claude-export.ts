@@ -11,7 +11,6 @@
  * runtime backstop.
  */
 
-import { readFileSync, statSync } from 'node:fs';
 import type { HostSpecTarget } from '../bootstrap/host-specs.ts';
 import type {
   FileDiagnostics,
@@ -20,7 +19,7 @@ import type {
   TranscriptAdapter,
   TranscriptMessage,
 } from './types.ts';
-import { TRANSCRIPT_EXPORT_JSON_HARD_CAP } from './types.ts';
+import { loadExportConversations } from './export-json.ts';
 
 export const CLAUDE_EXPORT_SPEC_TARGET: HostSpecTarget = {
   id: 'claude-ai-export-2026-08',
@@ -43,28 +42,17 @@ export const claudeExportAdapter: TranscriptAdapter = {
 
   detect(path: string, sample: Buffer): boolean {
     if (!path.endsWith('.json')) return false;
-    return sample.toString('utf8').includes('"chat_messages"');
+    const head = sample.toString('utf8');
+    // Symmetric guard with the chatgpt detector: a ChatGPT export whose
+    // early message TEXT contains the literal key name must not misdetect.
+    return head.includes('"chat_messages"') && !head.includes('"mapping"');
   },
 
   async *parse(path: string, opts: ParseSessionsOpts = {}): AsyncGenerator<ParsedSession, FileDiagnostics> {
-    const cap = opts.maxBytes ?? TRANSCRIPT_EXPORT_JSON_HARD_CAP;
-    const size = statSync(path).size;
-    if (size > cap) {
-      throw new Error(
-        `claude export too large for import: ${size} bytes (cap ${cap}) — split the export`,
-      );
-    }
-    let data: unknown;
-    try {
-      data = JSON.parse(readFileSync(path, 'utf8'));
-    } catch (err) {
-      throw new Error(
-        `not an extracted conversations.json (unzip the export first): ${String(err)}`,
-      );
-    }
-    if (!Array.isArray(data)) {
-      throw new Error('not an extracted conversations.json (expected a top-level array) — unzip the export first');
-    }
+    const { data, bytes: size } = loadExportConversations(path, {
+      maxBytes: opts.maxBytes,
+      label: 'claude',
+    });
 
     let sessions = 0;
     for (const conv of data) {
@@ -96,7 +84,11 @@ export const claudeExportAdapter: TranscriptAdapter = {
           title: typeof c.name === 'string' && c.name ? c.name : undefined,
           startedAt:
             (typeof c.created_at === 'string' && c.created_at) || messages[0].timestamp || undefined,
-          raw: { conversation_uuid: sessionId, name: c.name ?? null, source_path: path },
+          raw: {
+            conversation_uuid: sessionId,
+            name: typeof c.name === 'string' ? c.name : null,
+            source_path: path,
+          },
         },
         messages,
       };

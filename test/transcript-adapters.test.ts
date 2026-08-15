@@ -23,7 +23,8 @@ import {
 } from '../src/core/transcripts/detect.ts';
 import {
   buildTranscriptSlug,
-  transcriptId8,
+  transcriptFullId,
+  transcriptSlugId,
   type FileDiagnostics,
   type ParsedSession,
   type TranscriptFormat,
@@ -131,30 +132,38 @@ describe('parseClaudeSessionFile [timestamps preserved, never invented]', () => 
 // ── Slug builder [one helper, collision-proof suffixes] ─────────────────────
 
 describe('buildTranscriptSlug', () => {
-  test('harness sessions get per-day format+id8 slugs', () => {
-    expect(
-      buildTranscriptSlug('codex', '2026-08-14T15:12:45.000Z', { sessionId: 'AB12cd34ef56' }),
-    ).toBe('conversations/sessions/2026-08-14-codex-ab12cd34');
+  test('harness sessions get per-day format+hash12 slugs', () => {
+    const slug = buildTranscriptSlug('codex', '2026-08-14T15:12:45.000Z', {
+      sessionId: 'AB12cd34ef56',
+    });
+    expect(slug).toMatch(/^conversations\/sessions\/2026-08-14-codex-[0-9a-f]{12}$/);
+    expect(slug).toBe(
+      `conversations/sessions/2026-08-14-codex-${transcriptSlugId('AB12cd34ef56')}`,
+    );
   });
-  test('exports get per-provider dirs with title + id8', () => {
+  test('exports get per-provider dirs with title + hash12', () => {
     expect(
       buildTranscriptSlug('chatgpt', '2026-01-02T03:04:05Z', {
         sessionId: 'thread-777xyz00',
         title: 'Planning the Widget Co launch!',
       }),
-    ).toBe('conversations/chatgpt/2026-01-02-planning-the-widget-co-launch-thread77');
+    ).toMatch(/^conversations\/chatgpt\/2026-01-02-planning-the-widget-co-launch-[0-9a-f]{12}$/);
     expect(
       buildTranscriptSlug('claude-export', '2026-01-02T03:04:05Z', { sessionId: 'thread-777xyz00' }),
-    ).toBe('conversations/claude/2026-01-02-untitled-thread77');
+    ).toMatch(/^conversations\/claude\/2026-01-02-untitled-[0-9a-f]{12}$/);
   });
-  test('id8 hashes ids that are not slug-safe enough', () => {
-    const a = transcriptId8('!!');
-    const b = transcriptId8('!?');
-    expect(a).toMatch(/^[0-9a-f]{8}$/);
-    expect(b).toMatch(/^[0-9a-f]{8}$/);
-    expect(a).not.toBe(b);
-    // Deterministic across calls.
-    expect(transcriptId8('!!')).toBe(a);
+  test('identity is HASHED, never a prefix — same-prefix ids cannot collide', () => {
+    // The adversarially-reproduced P0: prefix identity made 'attackaa-one'
+    // and 'attackaa-two' share slug + dedup id (silent overwrite/skip).
+    expect(transcriptSlugId('attackaa-one')).not.toBe(transcriptSlugId('attackaa-two'));
+    expect(transcriptFullId('attackaa-one')).not.toBe(transcriptFullId('attackaa-two'));
+    // Fallback-id shapes that collided under prefixing are distinct too.
+    expect(transcriptSlugId('chatgpt-1')).not.toBe(transcriptSlugId('chatgpt-10'));
+    expect(transcriptSlugId('claude-export-0')).not.toBe(transcriptSlugId('claude-export-1'));
+    // Deterministic + well-formed.
+    expect(transcriptSlugId('x')).toBe(transcriptSlugId('x'));
+    expect(transcriptSlugId('x')).toMatch(/^[0-9a-f]{12}$/);
+    expect(transcriptFullId('x')).toMatch(/^[0-9a-f]{16}$/);
   });
 });
 
@@ -380,6 +389,20 @@ describe('claudeExportAdapter', () => {
     expect(s.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(s.messages[0].timestamp).toBe('2026-08-07T12:00:05.000Z');
     expect(diag.sessions).toBe(1);
+  });
+});
+
+// ── Source hygiene regression [the NUL-byte class] ──────────────────────────
+
+describe('adapter sources stay text-mode', () => {
+  test('no raw NUL bytes in src/core/transcripts (git would flag binary, guards would skip)', () => {
+    const { readdirSync, readFileSync } = require('node:fs') as typeof import('node:fs');
+    const dir = join(import.meta.dir, '..', 'src', 'core', 'transcripts');
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.ts')) continue;
+      const buf = readFileSync(join(dir, f));
+      expect(buf.includes(0)).toBe(false);
+    }
   });
 });
 

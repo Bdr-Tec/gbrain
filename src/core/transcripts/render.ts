@@ -30,12 +30,13 @@
 import { safeDump } from 'js-yaml';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { DEFAULT_BYTES_BLOCK } from '../content-sanity.ts';
 import { redactFindings } from '../secret-scan.ts';
 import { loadPatterns } from '../skillpack/harvest-lint.ts';
 import { ensureWellFormed, truncateUtf8 } from '../text-safe.ts';
 import { BUILTIN_PATTERNS } from '../conversation-parser/builtins.ts';
 import type { ParsedSession, TranscriptMessage } from './types.ts';
-import { buildTranscriptSlug, transcriptId8 } from './types.ts';
+import { buildTranscriptSlug, transcriptFullId } from './types.ts';
 
 // ── Shared line format (imessage-slack builtin) ─────────────────────────────
 
@@ -52,8 +53,14 @@ const DATE_HEADING_RE = /^#{1,6}\s*\d{4}-\d{2}-\d{2}\b/;
 /** ~4K chars per message keeps pages readable; full text stays in source_uri. */
 export const MESSAGE_CHAR_CAP = 4000;
 
-/** Part bodies target well under the ~500KB embed_skip threshold. */
-export const PART_TARGET_BYTES = 300 * 1024;
+/**
+ * Part bodies target well under the embed-skip/block threshold — the tie is
+ * CODE, not prose: a part page at or above the content-sanity block line
+ * would import as a zero-chunk, unsearchable page, defeating the split.
+ * (Operators can lower the threshold via config; the 0.6 factor leaves
+ * headroom for frontmatter overhead and modest overrides.)
+ */
+export const PART_TARGET_BYTES = Math.min(300 * 1024, Math.floor(DEFAULT_BYTES_BLOCK * 0.6));
 /** Messages repeated at each part boundary for cross-part fact grounding. */
 export const OVERLAP_MESSAGES = 2;
 
@@ -85,23 +92,32 @@ export interface RedactedSession {
   imperativesFlagged: number;
 }
 
+export type ImportRedactionPattern = { regex: RegExp; source: string };
+
+/**
+ * Compile the import-lane redaction pattern set ONCE per run. The harvest
+ * defaults include a slack-channel pattern that also matches issue/PR refs
+ * (a token like a hash-prefixed number) — ubiquitous in coding transcripts
+ * and NOT private — so it is excluded; the other defaults (private names,
+ * emails) plus every user-file pattern stay.
+ */
+export function loadImportRedactionPatterns(userPatternsPath?: string): ImportRedactionPattern[] {
+  return loadPatterns(userPatternsPath ?? defaultUserPatternsPath()).filter(
+    (p) => !p.source.includes('(?:^|\\s)#'),
+  );
+}
+
 /**
  * Secret-scan + user-pattern redaction over every text surface that will be
- * persisted (message text, title, raw-meta string fields). Throws on scanner
- * or pattern failure — page writes are FAIL-CLOSED (unlike the hook corpus
- * lane, these pages are searchable and synced).
+ * persisted (message text, SPEAKER labels, title, raw-meta string fields).
+ * Throws on scanner or pattern failure — page writes are FAIL-CLOSED (unlike
+ * the hook corpus lane, these pages are searchable and synced).
  */
 export function redactSession(
   session: ParsedSession,
-  opts: { userPatternsPath?: string } = {},
+  opts: { userPatternsPath?: string; patterns?: ImportRedactionPattern[] } = {},
 ): RedactedSession {
-  // The harvest defaults include a slack-channel pattern that also matches
-  // issue/PR refs (a token like a hash-prefixed number) — ubiquitous in
-  // coding transcripts and NOT private. The import lane keeps the other
-  // defaults (private names, emails) plus every user-file pattern.
-  const patterns = loadPatterns(opts.userPatternsPath ?? defaultUserPatternsPath()).filter(
-    (p) => !p.source.includes('(?:^|\\s)#'),
-  );
+  const patterns = opts.patterns ?? loadImportRedactionPatterns(opts.userPatternsPath);
   let redactionCount = 0;
   let imperativesFlagged = 0;
 
@@ -126,15 +142,27 @@ export function redactSession(
         break;
       }
     }
-    return { ...m, text: clean(m.text) };
+    // Speaker labels are persisted into the anchor line, so they get the
+    // same redaction as bodies (a secret or private name in a display name
+    // must not bypass the scan).
+    return {
+      ...m,
+      text: clean(m.text),
+      ...(m.speaker ? { speaker: clean(m.speaker) } : {}),
+    };
   });
 
   const meta = { ...session.meta };
   if (meta.title) meta.title = clean(meta.title);
   if (meta.raw) {
+    // Flatness is ENFORCED, not assumed: strings are cleaned; primitive
+    // scalars pass; anything nested (arrays/objects an adapter let through
+    // from hostile export data) is DROPPED — it would reach putRawData
+    // unscanned otherwise.
     const raw: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(meta.raw)) {
-      raw[k] = typeof v === 'string' ? clean(v) : v;
+      if (typeof v === 'string') raw[k] = clean(v);
+      else if (v === null || typeof v === 'number' || typeof v === 'boolean') raw[k] = v;
     }
     meta.raw = raw;
   }
@@ -185,9 +213,17 @@ export interface RenderSessionResult {
   dateIso: string;
 }
 
+/**
+ * Speaker label for the anchor line. Anchor-forming characters are stripped
+ * (never escaped — the label sits INSIDE the anchor, so a speaker containing
+ * `**` or `(date):` shapes could otherwise forge message boundaries on
+ * round-trip; hostile BODY lines are handled by escapeAnchorLines).
+ */
 function speakerLabel(m: TranscriptMessage): string {
-  if (m.speaker && m.speaker.trim()) return ensureWellFormed(m.speaker.trim());
-  return m.role === 'user' ? 'User' : 'Assistant';
+  const raw = m.speaker?.trim();
+  if (!raw) return m.role === 'user' ? 'User' : 'Assistant';
+  const cleaned = ensureWellFormed(raw).replace(/\*/g, '').replace(/[()\n:]/g, ' ').trim();
+  return cleaned || (m.role === 'user' ? 'User' : 'Assistant');
 }
 
 /**
@@ -216,7 +252,10 @@ export function renderSessionParts(
     sessionId: meta.sessionId,
     title: meta.title,
   });
-  const id8 = transcriptId8(meta.sessionId);
+  // Dedup identity: HARNESS-NAMESPACED 64-bit hash (importFromContent skips
+  // any cross-slug frontmatter-id match as a duplicate, so this id must be
+  // collision-proof across harnesses, days, and fallback session ids).
+  const identityBase = `${meta.harness}-${transcriptFullId(meta.sessionId)}`;
 
   // One rendered block per message (anchor line + escaped continuation).
   let lastTs = firstTs;
@@ -248,12 +287,12 @@ export function renderSessionParts(
   if (current.length) groups.push(current);
 
   const of = groups.length;
-  const title = meta.title?.trim() || `${meta.harness} session ${id8}`;
+  const title = meta.title?.trim() || `${meta.harness} session ${meta.sessionId.slice(0, 12)}`;
 
   const parts: RenderedPart[] = groups.map((group, idx) => {
     const part = idx + 1;
     const slug = part === 1 ? baseSlug : `${baseSlug}-p${part}`;
-    const frontmatterId = `${id8}-p${part}`;
+    const frontmatterId = `${identityBase}-p${part}`;
     const fm: Record<string, unknown> = {
       type: 'conversation',
       title: of > 1 ? `${title} (part ${part} of ${of})` : title,

@@ -64,11 +64,18 @@ export const codexAdapter: TranscriptAdapter = {
   detect(path: string, sample: Buffer): boolean {
     if (!path.endsWith('.jsonl')) return false;
     const firstLine = sample.toString('utf8').split('\n', 1)[0]?.trim();
-    if (!firstLine) return false;
-    // The session_meta header line can exceed the sample window's first read
-    // in pathological cases; a cheap key sniff keeps detection O(head).
-    if (!firstLine.startsWith('{')) return false;
-    return firstLine.includes('"session_meta"') && firstLine.includes('"payload"');
+    if (!firstLine || !firstLine.startsWith('{')) return false;
+    try {
+      const obj = JSON.parse(firstLine) as Record<string, unknown>;
+      // STRUCTURAL check — a substring sniff misdetects any transcript whose
+      // first message merely QUOTES rollout text (realistic for this repo's
+      // own users) and would strand it in the drift lane.
+      return obj !== null && typeof obj === 'object' && obj.type === 'session_meta';
+    } catch {
+      // First line truncated by the sample window (oversized session_meta):
+      // fall back to the key sniff for exactly that case.
+      return firstLine.includes('"session_meta"') && firstLine.includes('"payload"');
+    }
   },
 
   async *parse(path: string, opts: ParseSessionsOpts = {}): AsyncGenerator<ParsedSession, FileDiagnostics> {
@@ -81,7 +88,6 @@ export const codexAdapter: TranscriptAdapter = {
     let skippedLines = 0;
     let sessionId = '';
     let cwd: string | undefined;
-    let model: string | undefined;
     let startedAt = '';
     const messages: TranscriptMessage[] = [];
     let rawMeta: Record<string, unknown> | undefined;
@@ -138,7 +144,6 @@ export const codexAdapter: TranscriptAdapter = {
           harness: 'codex',
           sessionId: sid,
           cwd,
-          model,
           startedAt: startedAt || messages[0].timestamp || undefined,
           raw: rawMeta ?? { session_id: sid, source_path: path },
         },

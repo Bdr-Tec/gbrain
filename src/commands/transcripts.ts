@@ -101,6 +101,18 @@ function parseIngestArgs(args: string[]): IngestCliOpts | { help: true } | { err
     if (a === '--since') {
       const v = args[++i];
       if (!v) return { error: 'since needs an ISO timestamp or the word last' };
+      if (v !== 'last') {
+        // Validate + Z-normalize: the filter compares lexicographically
+        // against Z-form ISO, so an offset-form or garbage value would
+        // silently mis-filter (and a filtered-everything run would still
+        // look clean).
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) {
+          return { error: `since needs a parseable ISO timestamp or the word last (got '${v}')` };
+        }
+        opts.since = d.toISOString();
+        continue;
+      }
       opts.since = v;
       continue;
     }
@@ -149,14 +161,27 @@ skip). Embedding is OFF by default; run the embed backfill later or opt in.
   --json            Machine-readable result
   --quiet           Suppress the human summary
 
-recent — read recent dream-corpus transcripts (.txt):
-  --days N / --limit N / --full / --json    (see gbrain transcripts recent -h)
+recent — read recent raw dream-corpus transcripts (.txt), newest first:
+  --days N          Window in days (default 7)
+  --limit N         Max transcripts (default 50)
+  --full            Full content, capped 100KB/file (default: short summary)
+  --json            JSON output for agents
+  Dream-generated outputs (frontmatter dream_generated: true) are skipped.
 
 Notes: consumer exports must be unzipped first (pass conversations.json).
 On PGLite, stop gbrain serve first (single-writer lock).
 `;
 
-/** Expand path-or-glob args; checkpoint snapshots are never imported. */
+/** Extensions the importer understands; directory expansion filters to these. */
+const IMPORTABLE_EXTENSIONS = ['.jsonl', '.db', '.json'];
+
+/**
+ * Expand path-or-glob args. Directory specs filter to importable extensions —
+ * without the filter, every stray file in a real directory (macOS Finder
+ * metadata, editor backups, READMEs) becomes a permanent per-file error that
+ * breaks cleanScan on every run, silently killing the since-last resume for
+ * directory scopes. Checkpoint snapshots are never imported.
+ */
 async function expandPaths(specs: string[]): Promise<string[]> {
   const { statSync } = await import('node:fs');
   const out: string[] = [];
@@ -170,8 +195,7 @@ async function expandPaths(specs: string[]): Promise<string[]> {
       if (statSync(spec).isDirectory()) {
         const glob = new Bun.Glob('**/*');
         for (const p of glob.scanSync({ cwd: spec, absolute: true, onlyFiles: true })) {
-          out.push(p);
-          matched = true;
+          if (IMPORTABLE_EXTENSIONS.some((ext) => p.endsWith(ext))) out.push(p);
         }
         continue;
       }
@@ -206,6 +230,7 @@ function fmtSummary(r: TranscriptsIngestResult): string {
   );
   lines.push(
     `pages: ${r.pages.imported} imported, ${r.pages.skipped} unchanged` +
+      (r.pages.errored ? `, ${r.pages.errored} ERRORED` : '') +
       (r.pages.planned ? `, ${r.pages.planned} planned (dry run)` : '') +
       (r.partsDeleted ? `, ${r.partsDeleted} stale parts deleted` : ''),
   );
@@ -237,6 +262,19 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
     setCliExitVerdict(2);
     return;
   }
+  // The watermark fingerprint binds the USER-STATED spec, captured BEFORE
+  // discovery expands it — binding expanded file lists would mint a new
+  // fingerprint every time a harness writes a new session, so the all-lane
+  // since-last would never resume. Specs are RESOLVED first: the same
+  // relative spec from two different cwds names different scopes (must not
+  // share a watermark), and equivalent spellings of one dir must not
+  // fragment into separate watermarks.
+  const { resolve } = await import('node:path');
+  const checkpointSpec =
+    parsed.paths.length === 0
+      ? ['--all-discovery']
+      : [...parsed.paths].map((p) => resolve(p)).sort();
+
   // No paths: discovery. Without the all flag, show what WOULD be imported
   // and stop (a safe default for a command that can touch four harness
   // histories); with it, import the discovered set.
@@ -305,7 +343,7 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
     op: 'transcripts-ingest',
     fingerprint: fingerprint({
       sourceId,
-      pathspec: [...parsed.paths].sort(),
+      pathspec: checkpointSpec,
       format: parsed.format ?? 'auto',
       version: TRANSCRIPT_IMPORT_VERSION,
     }),
@@ -342,6 +380,9 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
       embed: parsed.embed,
       activePack,
       onFileDone: () => reporter.tick(),
+      // Multi-session stores (one hermes state.db = thousands of sessions)
+      // need liveness BETWEEN file ticks.
+      onSession: (sessionId) => reporter.heartbeat(`session ${sessionId.slice(0, 12)}`),
     });
   } finally {
     reporter.finish();
@@ -354,8 +395,12 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
     );
   }
 
-  // Watermark: advance ONLY on a clean, untruncated, non-dry scan.
-  if (result.cleanScan && result.maxSessionTs) {
+  // Watermark: advance ONLY on a clean, untruncated, non-dry scan — and only
+  // when the run ATTESTED full coverage (no since bound, or since=last). An
+  // explicit since run never scanned below its cutoff and must not vouch for
+  // sessions there.
+  const attestsCoverage = parsed.since === undefined || parsed.since === 'last';
+  if (result.cleanScan && result.maxSessionTs && attestsCoverage) {
     await recordCompleted(engine, checkpointKey, [`since:${result.maxSessionTs}`]);
   }
 

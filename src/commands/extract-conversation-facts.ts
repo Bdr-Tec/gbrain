@@ -259,7 +259,7 @@ export interface ExtractConversationFactsCoreOpts {
   slugs?: string[];
   /** Show would-do counts without writing facts or advancing checkpoint. */
   dryRun?: boolean;
-  /** Cap pages processed in this invocation. */
+  /** Cap pages processed in this invocation (enumeration path only; ignored when `slugs` is set). */
   limit?: number;
   /** ISO watermark; messages older than this are filtered out. */
   sinceIso?: string;
@@ -1344,7 +1344,10 @@ export async function runExtractConversationFactsCore(
     // types are not silently skipped (see ALLOWED_TYPE_ALIASES).
     const concreteTypes = pageTypesForAllowed(types);
 
-    if (opts.slugs && opts.slugs.length > 0) {
+    if (opts.slugs !== undefined) {
+      // Batch mode is selected by the PRESENCE of the selector: an empty
+      // list means "process exactly these zero pages" (a no-op), never a
+      // fall-through to full-corpus enumeration and its LLM spend.
       for (const slug of opts.slugs) {
         if (signal?.aborted) throw new Error('aborted');
         const page = await engine.getPage(slug, { sourceId });

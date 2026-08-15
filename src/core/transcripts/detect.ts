@@ -58,9 +58,9 @@ export function harnessRoots(overrides?: HarnessRoot[]): HarnessRoot[] {
 /**
  * Detection order: SQLite magic is unambiguous; JSONL first-line shapes are
  * mutually exclusive (session_meta / session-header / claude keys); the two
- * monolithic-JSON exports are sniffed by their distinguishing keys. Adapters
- * for formats behind gates (hermes) still register — gating is a scope
- * decision at the command layer, not a detection concern.
+ * monolithic-JSON exports are sniffed by their distinguishing keys. Every
+ * adapter registers here unconditionally; any format-level scoping belongs
+ * to callers.
  *
  */
 export function transcriptAdapters(): TranscriptAdapter[] {

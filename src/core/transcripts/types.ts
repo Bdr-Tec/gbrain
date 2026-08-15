@@ -91,8 +91,6 @@ export interface TranscriptAdapter {
 
 // ── Byte caps (format-specific; see adapter headers) ────────────────────────
 
-/** JSONL session logs: same soft budget the shipped Claude parser uses. */
-export const TRANSCRIPT_JSONL_MAX_BYTES = 10 * 1024 * 1024;
 /** Hard cap for any single session-log file. */
 export const TRANSCRIPT_JSONL_HARD_CAP = 50 * 1024 * 1024;
 /**
@@ -121,14 +119,19 @@ const HARNESS_FORMATS: ReadonlySet<TranscriptFormat> = new Set([
 ]);
 
 /**
- * Stable 8-char id suffix: the source id when it is already slug-safe,
- * otherwise a sha256 prefix. Deterministic — the collision-proofing suffix
- * the archive skill mandates (colliding slugs silently overwrite pages).
+ * Stable HASHED id suffixes. Always a sha256 prefix, never a cleaned prefix
+ * of the source id: prefix identity let same-prefix session ids silently
+ * overwrite a same-day page (slug collision) or dedup-skip a different-day
+ * one (frontmatter-id collision) — reproduced adversarially against PGLite.
+ * 12 hex chars (48 bits) for the slug keeps collisions negligible at
+ * backfill-everything scale; 16 hex chars (64 bits) for the dedup identity.
  */
-export function transcriptId8(sourceId: string): string {
-  const cleaned = sourceId.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (cleaned.length >= 8) return cleaned.slice(0, 8);
-  return createHash('sha256').update(sourceId).digest('hex').slice(0, 8);
+export function transcriptSlugId(sourceId: string): string {
+  return createHash('sha256').update(sourceId).digest('hex').slice(0, 12);
+}
+
+export function transcriptFullId(sourceId: string): string {
+  return createHash('sha256').update(sourceId).digest('hex').slice(0, 16);
 }
 
 /** Max slugified-title length inside an export slug (keeps slugs readable). */
@@ -137,9 +140,9 @@ const TITLE_SLUG_MAX = 48;
 /**
  * The one slug builder for every imported conversation page.
  *
- * Harness sessions:  conversations/sessions/YYYY-MM-DD-<harness>-<id8>
- * ChatGPT threads:   conversations/chatgpt/YYYY-MM-DD-<titleslug>-<id8>
- * Claude.ai threads: conversations/claude/YYYY-MM-DD-<titleslug>-<id8>
+ * Harness sessions:  conversations/sessions/YYYY-MM-DD-<harness>-<hash12>
+ * ChatGPT threads:   conversations/chatgpt/YYYY-MM-DD-<titleslug>-<hash12>
+ * Claude.ai threads: conversations/claude/YYYY-MM-DD-<titleslug>-<hash12>
  *
  * `dateIso` is the session start (UTC); callers fall back to the first
  * message timestamp when the source lacks a start time. Part pages append
@@ -151,11 +154,11 @@ export function buildTranscriptSlug(
   meta: { sessionId: string; title?: string },
 ): string {
   const day = dateIso.slice(0, 10);
-  const id8 = transcriptId8(meta.sessionId);
+  const id = transcriptSlugId(meta.sessionId);
   if (HARNESS_FORMATS.has(format)) {
-    return `${SLUG_DIRS[format]}/${day}-${format}-${id8}`;
+    return `${SLUG_DIRS[format]}/${day}-${format}-${id}`;
   }
   const title = slugifySegment(meta.title ?? '').slice(0, TITLE_SLUG_MAX).replace(/-$/, '');
   const label = title || 'untitled';
-  return `${SLUG_DIRS[format]}/${day}-${label}-${id8}`;
+  return `${SLUG_DIRS[format]}/${day}-${label}-${id}`;
 }

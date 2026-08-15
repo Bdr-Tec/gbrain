@@ -88,8 +88,11 @@ export interface ImportedSessionIndex {
 }
 
 /**
- * ONE paginated pages walk (type=conversation) with client-side
- * transcript_import filtering — never a query per harness.
+ * ONE frontmatter-only query — never a query per harness, and never
+ * `SELECT p.*`: conversation pages carry bodies up to the split target
+ * (~300KB per part by design), so a full-page walk at backfill scale
+ * (thousands of sessions) would stream hundreds of MB just to read two
+ * frontmatter keys. Both engines serve executeRaw.
  */
 export async function indexImportedSessions(
   engine: BrainEngine,
@@ -97,27 +100,24 @@ export async function indexImportedSessions(
 ): Promise<ImportedSessionIndex> {
   const byHarness = new Map<string, Set<string>>();
   let pagesScanned = 0;
-  const PAGE_BATCH = 200;
-  let offset = 0;
-  for (;;) {
-    const batch = await engine.listPages({ type: 'conversation', sourceId, limit: PAGE_BATCH, offset });
-    if (batch.length === 0) break;
-    for (const page of batch) {
-      pagesScanned++;
-      const fm = page.frontmatter as Record<string, unknown> | null | undefined;
-      const ti = fm?.transcript_import as
-        | { harness?: string; session_id?: string }
-        | undefined;
-      if (!ti || typeof ti.harness !== 'string' || typeof ti.session_id !== 'string') continue;
-      let set = byHarness.get(ti.harness);
-      if (!set) {
-        set = new Set();
-        byHarness.set(ti.harness, set);
-      }
-      set.add(ti.session_id);
+  const rows = await engine.executeRaw<{ frontmatter: unknown }>(
+    `SELECT frontmatter FROM pages
+     WHERE type = 'conversation' AND source_id = $1 AND deleted_at IS NULL`,
+    [sourceId],
+  );
+  for (const row of rows) {
+    pagesScanned++;
+    const fm = (typeof row.frontmatter === 'string' ? JSON.parse(row.frontmatter) : row.frontmatter) as
+      | Record<string, unknown>
+      | null;
+    const ti = fm?.transcript_import as { harness?: string; session_id?: string } | undefined;
+    if (!ti || typeof ti.harness !== 'string' || typeof ti.session_id !== 'string') continue;
+    let set = byHarness.get(ti.harness);
+    if (!set) {
+      set = new Set();
+      byHarness.set(ti.harness, set);
     }
-    if (batch.length < PAGE_BATCH) break;
-    offset += PAGE_BATCH;
+    set.add(ti.session_id);
   }
   return { byHarness, pagesScanned };
 }
@@ -135,8 +135,12 @@ export interface StatusRow {
 export function buildStatusRows(
   discovered: DiscoveredFile[],
   imported: ImportedSessionIndex,
+  roots?: HarnessRoot[],
 ): StatusRow[] {
-  const formats: TranscriptFormat[] = ['claude-code', 'codex', 'openclaw', 'hermes'];
+  // The harness list derives from the ONE registry (harnessRoots) — a new
+  // adapter added there appears in status automatically instead of silently
+  // vanishing from the gap table.
+  const formats = [...new Set(harnessRoots(roots).map((r) => r.format))];
   return formats.map((format) => {
     const files = discovered.filter((d) => d.format === format);
     const sessionIds = imported.byHarness.get(format) ?? new Set<string>();
@@ -144,6 +148,10 @@ export function buildStatusRows(
     if (format !== 'hermes') {
       gapFiles = files.filter((f) => {
         const base = f.path.split('/').pop() ?? '';
+        // Fast path: for claude-code/openclaw the basename stem IS the
+        // session id — a Set hit avoids the O(ids) substring scan.
+        const stem = base.replace(/\.jsonl$/, '');
+        if (sessionIds.has(stem)) return false;
         for (const id of sessionIds) {
           if (id && base.includes(id)) return false;
         }

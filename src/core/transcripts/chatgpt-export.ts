@@ -19,7 +19,6 @@
  * (bytesRead > 0, sessions == 0) is the runtime backstop.
  */
 
-import { readFileSync, statSync } from 'node:fs';
 import type { HostSpecTarget } from '../bootstrap/host-specs.ts';
 import type {
   FileDiagnostics,
@@ -28,7 +27,7 @@ import type {
   TranscriptAdapter,
   TranscriptMessage,
 } from './types.ts';
-import { TRANSCRIPT_EXPORT_JSON_HARD_CAP } from './types.ts';
+import { loadExportConversations } from './export-json.ts';
 
 export const CHATGPT_SPEC_TARGET: HostSpecTarget = {
   id: 'chatgpt-export-2026-08',
@@ -127,24 +126,10 @@ export const chatgptExportAdapter: TranscriptAdapter = {
   },
 
   async *parse(path: string, opts: ParseSessionsOpts = {}): AsyncGenerator<ParsedSession, FileDiagnostics> {
-    const cap = opts.maxBytes ?? TRANSCRIPT_EXPORT_JSON_HARD_CAP;
-    const size = statSync(path).size;
-    if (size > cap) {
-      throw new Error(
-        `chatgpt export too large for import: ${size} bytes (cap ${cap}) — split the export`,
-      );
-    }
-    let data: unknown;
-    try {
-      data = JSON.parse(readFileSync(path, 'utf8'));
-    } catch (err) {
-      throw new Error(
-        `not an extracted conversations.json (unzip the export first): ${String(err)}`,
-      );
-    }
-    if (!Array.isArray(data)) {
-      throw new Error('not an extracted conversations.json (expected a top-level array) — unzip the export first');
-    }
+    const { data, bytes: size } = loadExportConversations(path, {
+      maxBytes: opts.maxBytes,
+      label: 'chatgpt',
+    });
 
     let sessions = 0;
     for (const conv of data) {
@@ -172,7 +157,11 @@ export const chatgptExportAdapter: TranscriptAdapter = {
           sessionId,
           title: typeof c.title === 'string' ? c.title : undefined,
           startedAt: epochToIso(c.create_time) || messages[0].timestamp || undefined,
-          raw: { conversation_id: sessionId, title: c.title ?? null, source_path: path },
+          raw: {
+            conversation_id: sessionId,
+            title: typeof c.title === 'string' ? c.title : null,
+            source_path: path,
+          },
         },
         messages,
       };

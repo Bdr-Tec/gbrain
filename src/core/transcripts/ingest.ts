@@ -30,7 +30,11 @@ import type { BrainEngine } from '../engine.ts';
 import { importFromContent } from '../import-file.ts';
 import type { TranscriptAdapter, TranscriptFormat } from './types.ts';
 import { detectAdapter } from './detect.ts';
-import { redactSession, renderSessionParts } from './render.ts';
+import {
+  loadImportRedactionPatterns,
+  redactSession,
+  renderSessionParts,
+} from './render.ts';
 
 export interface IngestActivePack {
   page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }>;
@@ -56,8 +60,13 @@ export interface TranscriptsIngestOpts {
   userPatternsPath?: string;
   /** Adapter registry override (tests). */
   adapters?: TranscriptAdapter[];
-  /** Called once per processed file (progress heartbeats). */
+  /** Called once per processed file (progress ticks). */
   onFileDone?: (done: number, total: number, path: string) => void;
+  /**
+   * Called once per SESSION — the liveness signal for multi-session stores
+   * (one hermes state.db can hold thousands of sessions between file ticks).
+   */
+  onSession?: (sessionId: string) => void;
 }
 
 export interface IngestSessionOutcome {
@@ -101,10 +110,22 @@ export interface TranscriptsIngestResult {
   maxSessionTs: string;
 }
 
-/** Session's last message timestamp ('' when none carry one). */
+/**
+ * Session's last message timestamp, NORMALIZED to Z-form ISO ('' when none
+ * carry one). Normalization matters because since/watermark comparisons are
+ * lexicographic: an offset-form ISO (+07:00) string-sorts after a real-time
+ * newer Z-form and would poison the watermark. UNPARSEABLE timestamps are
+ * SKIPPED, never passed through — a single hostile/corrupt value like a
+ * letter-leading string would otherwise become the watermark and since-filter
+ * every real session forever.
+ */
 function lastMessageTs(messages: Array<{ timestamp: string }>): string {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].timestamp) return messages[i].timestamp;
+    const raw = messages[i].timestamp;
+    if (!raw) continue;
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) continue;
+    return d.toISOString();
   }
   return '';
 }
@@ -137,8 +158,14 @@ export async function runTranscriptsIngest(
   };
   let limitTruncated = false;
 
+  // Redaction patterns compile ONCE per run — loadPatterns re-reads and
+  // recompiles the pattern file on every call, which a bulk import would
+  // otherwise repeat thousands of times.
+  const redactionPatterns = loadImportRedactionPatterns(opts.userPatternsPath);
+
   const total = opts.paths.length;
   let done = 0;
+  let newWorkSessions = 0;
 
   for (const path of opts.paths) {
     if (limitTruncated) break;
@@ -178,6 +205,7 @@ export async function runTranscriptsIngest(
         }
         const session = step.value;
         result.sessionsSeen++;
+        opts.onSession?.(session.meta.sessionId);
         const lastTs = lastMessageTs(session.messages);
         if (lastTs && lastTs > result.maxSessionTs) result.maxSessionTs = lastTs;
 
@@ -186,7 +214,11 @@ export async function runTranscriptsIngest(
           step = await gen.next();
           continue;
         }
-        if (opts.limit !== undefined && result.sessionsImported >= opts.limit) {
+        // The limit counts NEW WORK only (sessions with a non-skipped part).
+        // Counting hash-skipped re-scans would make batched backfill loop
+        // over the same already-imported prefix forever: every run would
+        // burn the limit on free re-scans and truncate before new sessions.
+        if (opts.limit !== undefined && newWorkSessions >= opts.limit) {
           limitTruncated = true;
           result.cleanScan = false;
           await gen.return?.(undefined as never);
@@ -205,7 +237,10 @@ export async function runTranscriptsIngest(
         fileOutcome.sessions.push(outcome);
 
         try {
-          const redacted = redactSession(session, { userPatternsPath: opts.userPatternsPath });
+          const redacted = redactSession(session, {
+            userPatternsPath: opts.userPatternsPath,
+            patterns: redactionPatterns,
+          });
           outcome.redactions = redacted.redactionCount;
           outcome.imperatives = redacted.imperativesFlagged;
           const rendered = renderSessionParts(redacted, { sourcePath: path });
@@ -243,17 +278,41 @@ export async function runTranscriptsIngest(
               }
             }
 
-            // Session metadata rides the base page's raw_data. The page is
-            // guaranteed present (part 1 just imported or hash-skipped);
-            // a miss here is an integrity failure → run abort.
-            if (session.meta.raw) {
+            // importFromContent RETURNS status 'error' (it does not throw)
+            // for e.g. frontmatter-parse failures. A page that never landed
+            // is a session error and must freeze the watermark — otherwise
+            // a since-last run permanently skips content that never imported.
+            if (outcome.statuses.includes('error')) {
+              throw new Error(
+                `page import returned error status for session ${session.meta.sessionId}`,
+              );
+            }
+
+            const allSkipped =
+              outcome.statuses.length > 0 && outcome.statuses.every((s) => s === 'skipped');
+            if (!allSkipped) newWorkSessions++;
+
+            // Session metadata rides the base page's raw_data — the REDACTED
+            // copy, never the original (secrets in titles/cwd would otherwise
+            // bypass the page-body redaction). On all-skipped re-runs the
+            // write is HEALED, not assumed: a prior run can have committed
+            // the pages and then died before putRawData, and hash-skips
+            // would otherwise make that hole permanent.
+            if (redacted.session.meta.raw) {
               try {
-                await engine.putRawData(
-                  rendered.baseSlug,
-                  `transcript:${session.meta.harness}`,
-                  session.meta.raw,
-                  { sourceId: opts.sourceId },
-                );
+                const needsRaw = allSkipped
+                  ? (await engine.getRawData(rendered.baseSlug, undefined, {
+                      sourceId: opts.sourceId,
+                    })).length === 0
+                  : true;
+                if (needsRaw) {
+                  await engine.putRawData(
+                    rendered.baseSlug,
+                    `transcript:${session.meta.harness}`,
+                    redacted.session.meta.raw,
+                    { sourceId: opts.sourceId },
+                  );
+                }
               } catch (err) {
                 const e = new Error(
                   `${RUN_ABORT_MARKER}: putRawData failed for ${rendered.baseSlug}: ${
@@ -267,15 +326,24 @@ export async function runTranscriptsIngest(
 
             // Stale-part reconciliation: a session that shrank or re-split
             // leaves higher-numbered part pages behind — delete them, or a
-            // stale part stays searchable forever.
-            let n = rendered.parts.length + 1;
-            for (;;) {
-              const staleSlug = `${rendered.baseSlug}-p${n}`;
-              const existing = await engine.getPage(staleSlug, { sourceId: opts.sourceId });
-              if (!existing) break;
-              await engine.deletePage(staleSlug, { sourceId: opts.sourceId });
-              result.partsDeleted++;
-              n++;
+            // stale part stays searchable forever. ENUMERATED via one SQL
+            // query (never a sequential probe: a crash mid-delete leaves
+            // holes that a first-miss or bounded-miss probe walks past) and
+            // run on EVERY pass including all-skipped re-runs, because a
+            // prior run can have died between the page writes and this step.
+            const partRows = await engine.executeRaw<{ slug: string }>(
+              `SELECT slug FROM pages
+               WHERE source_id = $1 AND deleted_at IS NULL AND slug LIKE $2`,
+              [opts.sourceId, `${rendered.baseSlug}-p%`],
+            );
+            for (const row of partRows) {
+              const suffix = row.slug.slice(rendered.baseSlug.length);
+              const m = /^-p(\d+)$/.exec(suffix);
+              const num = m ? Number(m[1]) : NaN;
+              if (Number.isFinite(num) && num > rendered.parts.length) {
+                await engine.deletePage(row.slug, { sourceId: opts.sourceId });
+                result.partsDeleted++;
+              }
             }
           }
           result.sessionsImported++;
@@ -296,6 +364,17 @@ export async function runTranscriptsIngest(
         if (diag.bytesRead > 0 && diag.sessions === 0) {
           fileOutcome.drift = true;
           result.driftFiles++;
+          // A drifting file may hold sessions a fixed parser will surface
+          // later (torn hermes copy, transient format break) — the shared
+          // watermark must not advance past it.
+          result.cleanScan = false;
+        }
+        if (diag.skippedLines > 0) {
+          // Malformed lines can be DROPPED RECORDS (an actively-appended
+          // file read mid-write, corruption) — freeze the watermark so a
+          // later repair with an older timestamp is still picked up.
+          // Re-scans stay cheap via content-hash skip.
+          result.cleanScan = false;
         }
       }
     } catch (err) {
