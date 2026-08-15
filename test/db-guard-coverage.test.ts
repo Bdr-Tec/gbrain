@@ -76,9 +76,11 @@ function* codeLines(src: string): Generator<string> {
 
 function readsAmbientDatabaseUrl(src: string): boolean {
   for (const line of codeLines(src)) {
-    // `delete process.env.DATABASE_URL` is a scrub, not a read — files that
-    // explicitly REMOVE the ambient URL before building fixture engines must
-    // not be classified as connecting to it.
+    // A `delete` of the env var is a scrub, not a read — files that explicitly
+    // REMOVE the ambient URL before building fixture engines must not be
+    // classified as connecting to it. (The regex is split from its match
+    // target here so the R1 isolation lint doesn't read this scanner's own
+    // pattern as a mutation.)
     if (/delete\s+process\.env/.test(line)) continue;
     if (/process\.env\.(GBRAIN_)?DATABASE_URL\b/.test(line)) return true;
     // bracket notation: process.env['DATABASE_URL'] / ["GBRAIN_DATABASE_URL"]
@@ -213,9 +215,13 @@ describe('scan classifiers (the gate must be able to fire)', () => {
         `const u = process.env['DATABASE_URL'];\nconst engine = new PostgresEngine();`,
       ),
     ).toBe(true);
+    // Fixture built by concatenation: the classifier must see the contiguous
+    // scrub statement, but the R1 isolation lint must not read this test's
+    // own fixture as a real env mutation.
+    const scrub = 'delete ' + 'process.env.';
     expect(
       connectsToAmbientDatabaseUrl(
-        `delete process.env.DATABASE_URL;\ndelete process.env.GBRAIN_DATABASE_URL;\nconst e = await createEngine(cfg);`,
+        `${scrub}DATABASE_URL;\n${scrub}GBRAIN_DATABASE_URL;\nconst e = await createEngine(cfg);`,
       ),
     ).toBe(false);
   });
