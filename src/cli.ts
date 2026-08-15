@@ -154,6 +154,11 @@ const CLI_ONLY_SELF_HELP = new Set([
   // would leave that help dead code behind the generic stub (the init.ts:117
   // trap ENG-2 names).
   'bootstrap', 'hook', 'sweep',
+  // jobs ships JOBS_HELP + a per-subcommand record (JOBS_SUBCOMMAND_HELP) in
+  // jobs.ts, guarded BEFORE the thin-client refusal and the subcommand switch
+  // so `jobs work --help` prints help instead of starting a worker daemon.
+  // Without this entry the generic stub hid the worker entry point entirely.
+  'jobs',
 ]);
 
 /**
@@ -172,6 +177,9 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   maintain: async () => (await import('./commands/maintain.ts')).runMaintain as never,
   'extract-conversation-facts': async () =>
     (await import('./commands/extract-conversation-facts.ts')).runExtractConversationFacts as never,
+  // runJobs accepts BrainEngine | null and its help guard returns before any
+  // engine (or subcommand body) is touched.
+  jobs: async () => (await import('./commands/jobs.ts')).runJobs as never,
 };
 
 /** Returns true when the command's own help was printed. */
@@ -3229,7 +3237,9 @@ JOBS (Minions)
   jobs retry <id>                     Re-queue failed/dead job
   jobs prune [--older-than 30d]       Clean old jobs
   jobs stats                          Job health dashboard
+  jobs watch [--follow]               Live queue dashboard
   jobs work [--queue Q]               Start worker daemon (Postgres only)
+  jobs supervisor [start|status|stop] Auto-restarting worker wrapper
 
 ADMIN
   stats                              Brain statistics

@@ -12,6 +12,39 @@
   campaign's Codex review (CX-11); the campaign deliberately shipped only the
   toggle + reporter acknowledgment. Start from the responsible-disclosure rules
   already in CLAUDE.md and docs/RELEASING.md. **Effort:** M. **Priority:** P2.
+## Jobs fix-wave follow-ups (filed v0.45.15.0 — upstream issues #2/#3/#4)
+
+- [ ] **P2 — `jobs submit --max-pending` public flag.** maxPending stays an
+  internal submit option this wave (Codex C4): its semantics exclude
+  delayed/paused/waiting-children rows, and identity is (name, queue, source)
+  so distinct payloads collapse. Decide the public contract (include delayed?
+  explicit scope key?) after the primitive soaks in autopilot, then mirror
+  parseMaxWaitingFlag (clamp [1,100]) + help + flag-registry regen + optional
+  submit_job MCP param. Where: src/commands/jobs.ts, src/core/operations.ts.
+- [ ] **P2 — maxPending at the other single-flight dispatch sites.** The
+  freshness sync submit (src/commands/autopilot.ts freshness loop) and the
+  targeted remediation steps (autopilot.ts targeted-submit loop) still use
+  maxWaiting: 1; widening to maxPending changes behavior of those lanes
+  (suppression while a long run is active) and needs its own review. Where:
+  src/commands/autopilot.ts.
+- [ ] **P2 — Help-stub sweep for the other CLI_ONLY commands.** The `jobs`
+  defect class exists elsewhere: `gbrain search modes --help` connects an
+  engine before help routing, and the search subcommands have no help guards
+  (jobs/bootstrap/skillpack now carry the guard pattern to copy). Audit every
+  CLI_ONLY member missing from CLI_ONLY_SELF_HELP; the top-level help promises
+  per-command help for all of them. Where: src/cli.ts, src/commands/search.ts.
+- [ ] **P3 — jobs stats: fuller backpressure/audit surfacing.** The 24h
+  Backpressure line + suppressed-by hint shipped; per-decision breakdowns,
+  longer windows, and doctor integration remain (the audit file header's B4
+  follow-up). Where: src/commands/jobs.ts, src/core/minions/backpressure-audit.ts.
+- [ ] **P3 — jobs watch: timeout/deadline column.** `jobs get` shows the
+  effective budget; the live dashboard doesn't. Where: src/commands/jobs-watch.ts.
+- [ ] **P3 — jobs help + operator docs: handler catalog and dispatch-event
+  schema.** `gbrain jobs --help`'s HANDLER TYPES section lists 8 of the ~40
+  registered handlers, and the autopilot dispatch JSON events (`dispatched`,
+  `dispatch_coalesced`, `fanout_summary` with its `coalesced` array) have no
+  schema documentation outside the CHANGELOG. Where: src/commands/jobs.ts
+  (JOBS_HELP), docs/guides/queue-operations-runbook.md.
 
 ## Truthful-surface wave follow-ups (filed with T14, amendment 35 + D14.5)
 
@@ -707,6 +740,16 @@ job) and sync. See CLAUDE.md "Pace Mode".
   supervisor-detection downgrade. Today these inherit config/env pacing only when
   they call `runEmbedCore`.
 - [ ] **P1-companion — Supervisor concurrency 3→2 + job-kind slot fairness (E7).**
+  **v0.45.15.0 annotation (jobs fix wave):** make the whole wedge-detector FAMILY
+  suppression-aware while here — the supervisor watchdog (supervisor.ts wedge
+  predicate) and doctor's `wedged_queue` check both require waiting > 0, and
+  `maxPending` single-flight keeps waiting at 0 while a job is in flight.
+  Mitigations already shipped: maxPending counts only LIVE-LOCK actives (a
+  dead/blocked worker's expired-lock row never suppresses, so fresh waiting rows
+  re-feed the detectors) and `jobs stats` prints a Backpressure line + a
+  suppressed-by hint. Remaining: teach watchdog/doctor to treat
+  recent-coalesces + stale live active as wedge signal; also note the worker
+  in-flight stall-check hole (worker.ts stall check skips when inFlight > 0).
   The daemon-side root cause the external wrapper's probe was blind to:
   `embed-backfill`/`autopilot-cycle` jobs can occupy all supervisor slots
   (`:215` below). Pacing makes backfills safe; this fixes the residual death rate.
@@ -1260,11 +1303,14 @@ but were deliberately scoped OUT — neither is a #1784 regression.
   deserves its own deliberate change. Fix: mirror the extracted
   `buildCostRefusal({json, ...})` helper (`reindex-code.ts`). The guardrail
   (exit 2, no spend) stays; only the FORMAT splits on `--json`.
-- [ ] **P3 — `gbrain jobs --help` has no subcommand list.** jobs.ts dispatches
+- [x] **P3 — `gbrain jobs --help` has no subcommand list.** jobs.ts dispatches
   on a bare subcommand string with no HELP const, so `watch` (and every other
   jobs subcommand) is undocumented in `--help`. The new `watch` `--json` /
   `--follow` flags are documented only in the file JSDoc. Add a HELP table to the
   `jobs` command listing every subcommand + its flags.
+  **Completed:** v0.45.15.0 (2026-08-14) — JOBS_HELP + JOBS_SUBCOMMAND_HELP with a
+  guard above the thin-client refusal; `jobs`/`jobs work` etc. `--help` print real
+  usage engine-free and can never start a daemon.
 
 ## v0.42.12.0 self-upgrade follow-ups (v0.43+)
 
@@ -1436,7 +1482,11 @@ and tested; these are documented tradeoffs and stronger-but-bigger versions.
 Deferred from the v0.41.38.0 wave (code-callers/callees pin + dream-on-postgres).
 Documented tradeoffs, not blockers — the shipped bug fixes are complete and tested.
 
-- [ ] **P1 — Per-source autopilot fan-out passes the global repoPath.**
+- [x] **P1 — Per-source autopilot fan-out passes the global repoPath.**
+  **Completed (verified already fixed):** v0.45.15.0 audit (2026-08-14) — the
+  handler binds FS phases to the source's `local_path` and never falls through
+  to the global repoPath (`effectiveBrainDir = sourceId ? sourceLocalPath :
+  repoPath` in src/commands/jobs.ts, with per-source null → skip FS phases).
   `src/commands/autopilot-fanout.ts:~206` submits every per-source `autopilot-cycle`
   job with `repoPath: opts.repoPath` (the global checkout), not `src.local_path`.
   With v0.41.38.0's `cycleSourceId = opts.sourceId ?? resolveSourceForDir(...)`,
