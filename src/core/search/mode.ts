@@ -105,7 +105,7 @@ export interface ModeBundle {
   reranker_enabled: boolean;
   /**
    * Provider:model for the reranker. Bundle default `'zeroentropyai:zerank-2'`
-   * — LEGACY until the September removal (v0.47 split-default: existing
+   * — LEGACY until the September removal (v0.46.3 split-default: existing
    * ZE-keyed brains keep a working reranker until the hosted API dies on
    * 2026-09-04; voyage-keyed new installs get an explicit
    * `search.reranker.model voyage:rerank-2.5` override written at init

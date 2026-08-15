@@ -312,7 +312,7 @@ async function resolveAIOptions(opts: ResolveAIOptionsArgs): Promise<ResolvedAIO
 
   if (verbose) {
     out.embedding_model = verbose;
-    // v0.47: an EXPLICIT --embedding-model wins over a seeded deferred-setup
+    // v0.46.3: an EXPLICIT --embedding-model wins over a seeded deferred-setup
     // sentinel — without this, `gbrain init --force --embedding-model
     // voyage:voyage-4` on a keyless brain (embedding_disabled persisted) would
     // silently re-persist embedding_disabled and the documented recovery
@@ -338,7 +338,7 @@ async function resolveAIOptions(opts: ResolveAIOptionsArgs): Promise<ResolvedAIO
       );
       process.exit(1);
     }
-    // v0.47: the shorthand resolves the recipe's canonical model, not array
+    // v0.46.3: the shorthand resolves the recipe's canonical model, not array
     // position — Voyage lists voyage-4-large first but its canonical default
     // is voyage-4 (see EmbeddingTouchpoint.default_model).
     const canonicalModel =
@@ -348,7 +348,7 @@ async function resolveAIOptions(opts: ResolveAIOptionsArgs): Promise<ResolvedAIO
       process.exit(1);
     }
     out.embedding_model = `${shorthand}:${canonicalModel}`;
-    // v0.47: explicit flag wins over a seeded deferred-setup sentinel (see the
+    // v0.46.3: explicit flag wins over a seeded deferred-setup sentinel (see the
     // verbose branch above).
     delete out.noEmbedding;
     // #2051: width follows the model actually chosen, not the recipe default.
@@ -387,7 +387,7 @@ async function resolveAIOptions(opts: ResolveAIOptionsArgs): Promise<ResolvedAIO
     }
   }
 
-  // v0.47: an explicitly-requested sunset provider (verbose or shorthand form)
+  // v0.46.3: an explicitly-requested sunset provider (verbose or shorthand form)
   // is allowed until the removal release, but never silently — warn loudly and
   // proceed (D3: hide + warn, allow explicit).
   if (out.embedding_model) {
@@ -483,7 +483,7 @@ export async function groupReadyByProvider(
     // still picker-selectable explicitly, but silent auto-pick is wrong UX.
     const required = r.auth_env?.required ?? [];
     if (required.length === 0) continue;
-    // v0.47: never auto-pick a provider whose hosted API has an announced
+    // v0.46.3: never auto-pick a provider whose hosted API has an announced
     // shutdown (recipe.sunset). Explicit --embedding-model still works
     // (with a loud warning) until the removal release.
     if (r.sunset) continue;
@@ -551,7 +551,7 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
 }
 
 /**
- * v0.47: voyage-keyed installs (any picked embedding provider) get the
+ * v0.46.3: voyage-keyed installs (any picked embedding provider) get the
  * recommended reranker written as EXPLICIT per-brain config — the mode-bundle
  * reranker default stays on the sunsetting legacy provider until the
  * September removal (split-default), so without this write a fresh voyage
@@ -620,7 +620,7 @@ function printKeylessContinueNotice(): void {
 }
 
 async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boolean): Promise<void> {
-  // v0.47: provider readiness folds FILE-PLANE keys too (docs explicitly
+  // v0.46.3: provider readiness folds FILE-PLANE keys too (docs explicitly
   // permit `voyage_api_key` etc. in ~/.gbrain/config.json) — env still wins
   // via buildGatewayConfig's spread order. Without this, a non-interactive
   // fresh install keyed only via config.json reported zero providers and
@@ -632,7 +632,7 @@ async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boo
       const { buildGatewayConfig } = await import('../core/ai/build-gateway-config.ts');
       effectiveEnv = buildGatewayConfig(fileCfgForKeys).env as NodeJS.ProcessEnv;
     } catch {
-      // Fold failure → env-only readiness (pre-v0.47 behavior).
+      // Fold failure → env-only readiness (pre-v0.46.3 behavior).
     }
   }
   const ready = await groupReadyByProvider('embedding', effectiveEnv);
@@ -642,7 +642,7 @@ async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boo
     const r = ready[0].recipe;
     const tp = r.touchpoints.embedding!;
     if (Array.isArray(tp.models) && tp.models.length > 0) {
-      // v0.47: recipes carry a canonical default_model — array order is
+      // v0.46.3: recipes carry a canonical default_model — array order is
       // quality-sorted, not recommendation-sorted (Voyage lists voyage-4-large
       // first; the canonical pick is voyage-4).
       const model = tp.default_model ?? tp.models[0];
@@ -676,7 +676,7 @@ async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boo
   // MEANT to configure a key — completing keyless there would silently bury
   // their typo.
   if (ready.length === 0) {
-    // v0.47: the sunset exclusion must NOT convert a working legacy brain to
+    // v0.46.3: the sunset exclusion must NOT convert a working legacy brain to
     // keyless. A configless EXISTING brain (config.json has a database but no
     // embedding_model — it rides the legacy runtime fallback) being re-inited
     // with only a sunset-provider key would otherwise land in the zero-ready
@@ -1145,7 +1145,7 @@ async function initPGLite(opts: {
   // resolveAIOptions above: CLI flags > env vars > existing file > gateway
   // defaults.
   const { configureGateway } = await import('../core/ai/gateway.ts');
-  // v0.47: keyless fresh installs size the embedding column at the NEW-INSTALL
+  // v0.46.3: keyless fresh installs size the embedding column at the NEW-INSTALL
   // width (1024), not the legacy configless fallback (1280) — the sizing is an
   // explicit param here, NOT a rewire of the schema generators' legacy import
   // (those also run on existing-brain reconnects, where legacy must stay
@@ -1269,7 +1269,7 @@ async function initPGLite(opts: {
       // unless explicitly overridden by --schema-pack on re-init.
       ...(opts.schemaPack ? { schema_pack: opts.schemaPack } : {}),
     };
-    // v0.47: leaving deferred-setup mode — a resolved (model, dims) tuple must
+    // v0.46.3: leaving deferred-setup mode — a resolved (model, dims) tuple must
     // also CLEAR a stale embedding_disabled sentinel inherited via the
     // ...existingFile spread, or the documented recovery command
     // (`init --force --embedding-model ...`) persists a config that still
@@ -1416,7 +1416,7 @@ async function initPostgres(opts: {
 
   // T6: unconditional configureGateway BEFORE initSchema.
   const { configureGateway } = await import('../core/ai/gateway.ts');
-  // v0.47: keyless fresh installs size at the NEW-INSTALL width (see the
+  // v0.46.3: keyless fresh installs size at the NEW-INSTALL width (see the
   // PGLite path's comment — same explicit-param rationale).
   const { NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS: newInstallDims } =
     await import('../core/ai/defaults.ts');
@@ -1568,7 +1568,7 @@ async function initPostgres(opts: {
       // v0.42 (T17): same schema_pack default as PGLite path.
       ...(opts.schemaPack ? { schema_pack: opts.schemaPack } : {}),
     };
-    // v0.47: leaving deferred-setup mode — a resolved (model, dims) tuple must
+    // v0.46.3: leaving deferred-setup mode — a resolved (model, dims) tuple must
     // also CLEAR a stale embedding_disabled sentinel inherited via the
     // ...existingFile spread, or the documented recovery command
     // (`init --force --embedding-model ...`) persists a config that still

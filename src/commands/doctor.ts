@@ -2796,7 +2796,7 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
             : `embedding_model="${model}": the hosted API shut down on ${ZEROENTROPY_SUNSET_DATE}. No embedded vectors exist yet, so retrieval is not impacted — but embedding will fail until the config points elsewhere.`
           : `embedding_model="${model}": the hosted API shuts down on ${ZEROENTROPY_SUNSET_DATE}. On that date semantic retrieval stops entirely — existing vectors become unqueryable (query embedding uses the same endpoint), not just new content.`,
       );
-      // v0.47: the paste-ready fix is TARGET-AWARE on dimensions. Voyage's
+      // v0.46.3: the paste-ready fix is TARGET-AWARE on dimensions. Voyage's
       // valid widths are {256, 512, 1024, 2048} — blindly preserving this
       // brain's actual width (usually 1280) would emit a command Voyage
       // rejects. OpenAI text-3 supports flexible widths up to its native
@@ -2823,7 +2823,7 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
       parts.push(
         `Custom embedding column(s) backed by the shutting-down provider: ${zeColumns.join(', ')}. ` +
         `No automated off-ramp exists for custom columns yet (migrate embeddings covers the primary column only) — ` +
-        `re-declare them on a new provider and re-embed (skills/migrations/v0.47.0.0.md).`,
+        `re-declare them on a new provider and re-embed (skills/migrations/v0.46.3.0.md).`,
       );
     }
     if (onSunsetEmbedding || onSunsetReranker || onSunsetColumns) {

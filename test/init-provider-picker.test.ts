@@ -164,7 +164,7 @@ describe('pickProvider — defensive paths', () => {
   });
 });
 
-describe('pickProvider — v0.47 sunset filter + canonical default_model', () => {
+describe('pickProvider — v0.46.3 sunset filter + canonical default_model', () => {
   test('a sunset-only key offers NO provider rows (ZE filtered out)', async () => {
     // Only ZEROENTROPY_API_KEY set: the sunset filter drops ZE from the
     // offered list, keyless becomes the default choice, and readLineSafe's

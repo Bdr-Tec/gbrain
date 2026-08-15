@@ -31,7 +31,7 @@ interface ProviderOption {
   tier: 'native' | 'openai-compat';
   pros: string[];
   cons: string[];
-  /** v0.47: set when the provider's hosted API has an announced shutdown
+  /** v0.46.3: set when the provider's hosted API has an announced shutdown
    *  (recipe.sunset) — agent-facing consumers must not steer users here. */
   deprecated?: { date: string; replacement?: string };
 }
@@ -84,7 +84,7 @@ export function formatRecipeTable(recipes: Recipe[], env: NodeJS.ProcessEnv = pr
     const hasExpand = !!r.touchpoints.expansion;
     const hasChat = !!r.touchpoints.chat && r.touchpoints.chat.models.length > 0;
     const ready = envReady(r, env);
-    // v0.47: a sunsetting provider is flagged in the listing regardless of
+    // v0.46.3: a sunsetting provider is flagged in the listing regardless of
     // key readiness — "ready" on a dying API is not a state to advertise.
     const status = r.sunset
       ? `⚠ DEPRECATED — hosted API ends ${r.sunset.date}` +
@@ -336,7 +336,7 @@ async function runExplain(args: string[]): Promise<void> {
   for (const r of recipes) {
     if (r.touchpoints.embedding && r.touchpoints.embedding.models.length > 0) {
       const m = r.touchpoints.embedding;
-      // v0.47: canonical model, not array position (Voyage lists voyage-4-large
+      // v0.46.3: canonical model, not array position (Voyage lists voyage-4-large
       // first; its canonical default is voyage-4).
       const canonicalModel = m.default_model ?? m.models[0];
       // Price the CANONICAL model, not the recipe-wide touchpoint hint — the
@@ -482,7 +482,7 @@ function consFor(r: Recipe): string[] {
 
 function pickRecommended(options: ProviderOption[], env: Record<string, boolean>, ollamaReady: boolean): { id: string; reason: string } {
   // Embedding recommendation: prefer env-ready providers in canonical order —
-  // Voyage first (the v0.47 new-install default: one key covers embedding +
+  // Voyage first (the v0.46.3 new-install default: one key covers embedding +
   // rerank-2.5 + multimodal). Never recommend a sunsetting provider.
   const embOpts = options.filter(o => o.touchpoint === 'embedding' && !o.deprecated);
   if (env.VOYAGE_API_KEY) {

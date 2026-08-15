@@ -1,5 +1,5 @@
 /**
- * v0.47 — once-per-process sunset warn-on-use.
+ * v0.46.3 — once-per-process sunset warn-on-use.
  *
  * A recipe with `sunset` metadata warns on stderr the first time each
  * touchpoint is actually used, exactly once per (recipe, touchpoint), with a
@@ -51,7 +51,7 @@ afterEach(() => {
   resetGateway();
 });
 
-describe('sunset warn-on-use (v0.47)', () => {
+describe('sunset warn-on-use (v0.46.3)', () => {
   test('first ZE rerank prints the deprecation warning with the replacement command', async () => {
     await rerank({ query: 'q', documents: ['a'] });
     const all = stderrChunks.join('');
@@ -86,7 +86,7 @@ describe('sunset warn-on-use (v0.47)', () => {
   });
 });
 
-describe('sunset warn-on-use — embedding touchpoint (v0.47)', () => {
+describe('sunset warn-on-use — embedding touchpoint (v0.46.3)', () => {
   test('first ZE embed resolution warns with the migrate command', async () => {
     _resetSunsetWarningsForTest();
     stderrChunks = [];

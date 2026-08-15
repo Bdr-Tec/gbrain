@@ -110,7 +110,7 @@ export async function runZeSwitch(args: string[], engine: BrainEngine): Promise<
 
   const flags = parseFlags(args);
 
-  // v0.47: ZeroEntropy is shutting down. Switching a brain ONTO it — including
+  // v0.46.3: ZeroEntropy is shutting down. Switching a brain ONTO it — including
   // resuming a half-applied forward switch — is disabled; only --undo (which
   // moves a brain OFF it) and --dry-run (read-only plan) still run. The whole
   // command is deleted in the September removal release.

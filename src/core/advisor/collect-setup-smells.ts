@@ -41,7 +41,7 @@ export const collectSetupSmells: AdvisorCollector = {
         ask_user: true,
       });
     } else {
-      // v0.47: key the "will embeds work" claim on the EFFECTIVE model —
+      // v0.46.3: key the "will embeds work" claim on the EFFECTIVE model —
       // configless brains resolve the legacy runtime fallback until the
       // September cutover, so the credential that matters is that provider's,
       // not the recommended default's. Both key planes are checked (env +

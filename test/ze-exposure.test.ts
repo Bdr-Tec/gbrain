@@ -1,5 +1,5 @@
 /**
- * v0.47 — detectZeExposure truth table + engine-parity smoke.
+ * v0.46.3 — detectZeExposure truth table + engine-parity smoke.
  *
  * Exposure is EFFECTIVE-MODEL RESOLUTION (env → file → legacy fallback), not
  * vector evidence: a configless brain is deterministically ZE-exposed; 1280d
@@ -219,7 +219,7 @@ describe('renderZeActionRequired — notice copy', () => {
     expect(text).toContain('openai:text-embedding-3-small --dim <width>');
     expect(text).toContain('gbrain doctor');
     expect(text).toContain('search.reranker.model voyage:rerank-2.5');
-    expect(text).toContain('skills/migrations/v0.47.0.0.md');
+    expect(text).toContain('skills/migrations/v0.46.3.0.md');
     expect(text).toContain('Nothing has been changed automatically');
   });
 

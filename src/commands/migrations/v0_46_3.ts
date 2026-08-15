@@ -1,5 +1,5 @@
 /**
- * v0.47.0 migration — ZeroEntropy sunset notice (detect-and-notify ONLY).
+ * v0.46.3 migration — ZeroEntropy sunset notice (detect-and-notify ONLY).
  *
  * ZeroEntropy's hosted API shuts down on ZEROENTROPY_SUNSET_DATE (see
  * src/core/ai/defaults.ts). This orchestrator:
@@ -9,12 +9,12 @@
  *      resolved reranker and ZE-backed custom columns). Read-only.
  *   B. When exposed (or exposure is UNKNOWN — fail-safe): prints the ACTION
  *      REQUIRED block and appends one idempotent pending-host-work entry
- *      pointing the host agent at skills/migrations/v0.47.0.0.md.
+ *      pointing the host agent at skills/migrations/v0.46.3.0.md.
  *
  * It performs NO config writes, NO pinning, and NEVER invokes
  * `migrate embeddings` (the migration costs money and needs a target key the
  * user may not have — that decision belongs to the user/agent via the
- * playbook). The v0.47 split-default keeps existing brains fully working
+ * playbook). The v0.46.3 split-default keeps existing brains fully working
  * until the date; this migration is purely the loud, durable notification.
  *
  * UNKNOWN handling: returns `complete` with detail `exposure_unknown` — NOT
@@ -43,8 +43,8 @@ import { ZEROENTROPY_SUNSET_DATE } from '../../core/ai/defaults.ts';
 import { createEngine } from '../../core/engine-factory.ts';
 import type { BrainEngine } from '../../core/engine.ts';
 
-const MIGRATION_VERSION = '0.47.0';
-const PLAYBOOK_SKILL = 'skills/migrations/v0.47.0.0.md';
+const MIGRATION_VERSION = '0.46.3';
+const PLAYBOOK_SKILL = 'skills/migrations/v0.46.3.0.md';
 
 function pendingHostWorkDir(): string { return gbrainPath('migrations'); }
 function pendingHostWorkPath(): string { return join(pendingHostWorkDir(), 'pending-host-work.jsonl'); }
@@ -188,7 +188,7 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
     const banner = [
       '',
       '='.repeat(74),
-      'ACTION REQUIRED — ZeroEntropy shutdown (v0.47.0 migration notice)',
+      'ACTION REQUIRED — ZeroEntropy shutdown (v0.46.3 migration notice)',
       '='.repeat(74),
       renderZeActionRequired(exposure),
       '='.repeat(74),
@@ -205,7 +205,7 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
       [
         '',
         '='.repeat(74),
-        'ACTION REQUIRED — ZeroEntropy shutdown (v0.47.0 migration notice)',
+        'ACTION REQUIRED — ZeroEntropy shutdown (v0.46.3 migration notice)',
         '='.repeat(74),
         'Exposure detection failed on this host, so this brain is treated as',
         `affected until proven otherwise. ZeroEntropy stops working on ${ZEROENTROPY_SUNSET_DATE}.`,
@@ -243,7 +243,7 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
   };
 }
 
-export const v0_47_0: Migration = {
+export const v0_46_3: Migration = {
   version: MIGRATION_VERSION,
   featurePitch: {
     headline:
@@ -251,7 +251,7 @@ export const v0_47_0: Migration = {
     description:
       'Nothing changes automatically: existing brains keep working until the shutdown date. ' +
       'This migration detects whether your brain still resolves to ZeroEntropy (embedding, reranker, or custom columns) ' +
-      'and, if so, records an action item for your agent at skills/migrations/v0.47.0.0.md. ' +
+      'and, if so, records an action item for your agent at skills/migrations/v0.46.3.0.md. ' +
       'The one-command fix: `gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run` (cost preview), then `--yes`. ' +
       'OpenAI alternative can keep column widths up to 1536 (e.g. a 1280d brain: `--to openai:text-embedding-3-small --dim 1280`); `gbrain doctor` prints this brain\'s exact width-aware command. ' +
       'Reranker: `gbrain config set search.reranker.model voyage:rerank-2.5`.',

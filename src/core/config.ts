@@ -1140,7 +1140,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // reconcile-links, and sweep. The documented off-switch is `gbrain config
   // set auto_link false` — same unregistered-key class as auto_chronicle.
   'auto_link',
-  // v0.47: the provider_sunset doctor check's own suppression escape hatch
+  // v0.46.3: the provider_sunset doctor check's own suppression escape hatch
   // (doctor.ts) and docs/guides/embedding-migration.md both document
   // `gbrain config set doctor.suppress_provider_sunset true`, but the key was
   // never registered — the documented command exited 1 with "Unknown config

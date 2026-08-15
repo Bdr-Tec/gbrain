@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.47.0.0] - 2026-08-15
+## [0.46.3.0] - 2026-08-15
 
 **ZeroEntropy is shutting down on 2026-09-04 — gbrain now gets you off it
 before that date costs you retrieval.** The provider that shipped as the
@@ -31,11 +31,11 @@ instead of a surprise outage:
   --dim 1280`. Reranker: `gbrain config set search.reranker.model
   voyage:rerank-2.5`. Self-hosting the Apache-2.0 weights remains documented in
   docs/guides/embedding-migration.md.
-- **Your agent gets told too.** A v0.47.0 migration checks whether your brain
+- **Your agent gets told too.** A v0.46.3 migration checks whether your brain
   still resolves to the sunsetting provider (embedding, reranker, or custom
   columns), prints an ACTION REQUIRED notice with the blast radius and cost
   estimate, and files a durable action item pointing at the agent playbook
-  (`skills/migrations/v0.47.0.0.md`). `gbrain doctor`'s provider check now
+  (`skills/migrations/v0.46.3.0.md`). `gbrain doctor`'s provider check now
   prints width-aware paste-ready commands, and its documented suppression
   switch (`gbrain config set doctor.suppress_provider_sunset true`) actually
   works now.
@@ -50,7 +50,7 @@ instead of a surprise outage:
   (the deferred-setup sentinel is cleared); and keyless fresh installs size the
   embedding column at the new default width.
 
-### To take advantage of v0.47.0.0
+### To take advantage of v0.46.3.0
 
 `gbrain upgrade` is enough — no schema migration.
 
@@ -61,7 +61,7 @@ instead of a surprise outage:
    ```
 2. **If the upgrade printed ACTION REQUIRED** (or doctor flags
    `provider_sunset`): run the printed migrate command before 2026-09-04, or
-   hand your agent `skills/migrations/v0.47.0.0.md` — it walks the whole
+   hand your agent `skills/migrations/v0.46.3.0.md` — it walks the whole
    switch, including the reranker and edge cases.
 3. **Things to watch:** existing brains see zero behavior change from this
    release itself; fresh installs default to `voyage:voyage-4` at 1024

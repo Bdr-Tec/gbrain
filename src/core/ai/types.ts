@@ -29,7 +29,7 @@ export interface EmbeddingTouchpoint {
   models: string[];
   default_dims: number;
   /**
-   * v0.47: canonical model for this recipe's embedding touchpoint. Every
+   * v0.46.3: canonical model for this recipe's embedding touchpoint. Every
    * "pick a model for the user" surface resolves `default_model ?? models[0]`:
    * init auto-pick (single-key and multi-key canonical tiebreak), the
    * `--embedding-model <provider>` shorthand expansion, and the interactive
@@ -240,7 +240,7 @@ export interface RerankerTouchpoint {
    */
   path?: string;
   /**
-   * v0.47: request-body key for the "return top N" parameter. Named by wire
+   * v0.46.3: request-body key for the "return top N" parameter. Named by wire
    * shape, not provider. Defaults to 'top_n' (ZeroEntropy/llama-server/jina
    * dialect); Voyage's /v1/rerank takes 'top_k'. Response parsing accepts
    * both array keys (`results[]` for ZE/llama-server, `data[]` for Voyage's
@@ -327,7 +327,7 @@ export interface Recipe {
   /** One-line description of setup (shown in wizard + env subcommand). */
   setup_hint?: string;
   /**
-   * v0.47: the provider announced a hosted-API shutdown. Drives, from one
+   * v0.46.3: the provider announced a hosted-API shutdown. Drives, from one
    * source: init picker/auto-pick exclusion, the once-per-process warn-on-use
    * in the gateway, and the `gbrain providers` DEPRECATED annotation.
    * (`provider_sunset` in doctor stays provider-specific until the removal

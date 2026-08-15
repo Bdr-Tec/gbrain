@@ -82,11 +82,11 @@ such as ZeroEntropy (2026-09-04):
 - **`gbrain upgrade`** — a one-shot banner (gated by
   `ze_sunset_notice_shown`) with the same two fixes, plus a stage-2 banner
   per brain.
-- **The v0.47.0 version migration** (runs via `gbrain upgrade` /
+- **The v0.46.3 version migration** (runs via `gbrain upgrade` /
   `gbrain apply-migrations`) — detect-and-notify only: it checks the host
   brain's exposure (embedding, reranker, custom columns), prints the ACTION
   REQUIRED block, and files an agent action item pointing at
-  `skills/migrations/v0.47.0.0.md` in
+  `skills/migrations/v0.46.3.0.md` in
   `~/.gbrain/migrations/pending-host-work.jsonl`. It never changes config or
   spends money on your behalf.
 

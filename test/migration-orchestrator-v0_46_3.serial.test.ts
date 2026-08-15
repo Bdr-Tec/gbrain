@@ -1,5 +1,5 @@
 /**
- * v0.47.0 orchestrator — ZeroEntropy sunset notice (detect-and-notify only).
+ * v0.46.3 orchestrator — ZeroEntropy sunset notice (detect-and-notify only).
  *
  * Contract pins (registry shape mirrors migration-orchestrator-v0_21_0):
  *  - registered in the TS registry, correctly ordered after 0.43.0;
@@ -86,13 +86,13 @@ function pendingEntries(): Array<{ migration: string }> {
     .map((l) => JSON.parse(l));
 }
 
-describe('v0.47.0 registry contract', () => {
+describe('v0.46.3 registry contract', () => {
   test('registered, ordered after 0.43.0, pitch names the sunset', async () => {
     const { migrations, getMigration } = await import('../src/commands/migrations/index.ts');
     const versions = migrations.map((m) => m.version);
-    expect(versions).toContain('0.47.0');
-    expect(versions.indexOf('0.47.0')).toBeGreaterThan(versions.indexOf('0.43.0'));
-    const m = getMigration('0.47.0');
+    expect(versions).toContain('0.46.3');
+    expect(versions.indexOf('0.46.3')).toBeGreaterThan(versions.indexOf('0.43.0'));
+    const m = getMigration('0.46.3');
     expect(m).not.toBeNull();
     expect(m!.featurePitch.headline).toContain('2026-09-04');
     expect(m!.featurePitch.headline).toContain('Voyage');
@@ -101,10 +101,10 @@ describe('v0.47.0 registry contract', () => {
   });
 });
 
-describe('v0.47.0 orchestrator behavior', () => {
+describe('v0.46.3 orchestrator behavior', () => {
   test('no config at all → complete, no nag, no host-work file', async () => {
-    const { v0_47_0 } = await import('../src/commands/migrations/v0_47_0.ts');
-    const result = await v0_47_0.orchestrator({ yes: true, dryRun: false, noAutopilotInstall: true });
+    const { v0_46_3 } = await import('../src/commands/migrations/v0_46_3.ts');
+    const result = await v0_46_3.orchestrator({ yes: true, dryRun: false, noAutopilotInstall: true });
     expect(result.status).toBe('complete');
     expect(result.phases.some((p) => p.detail?.includes('no brain configured'))).toBe(true);
     expect(existsSync(pendingPath())).toBe(false);
@@ -113,26 +113,26 @@ describe('v0.47.0 orchestrator behavior', () => {
   test('exposed ZE brain → notice + one host-work entry; NO config writes; idempotent re-run', async () => {
     const cfgPath = writeZeConfig();
     const before = readFileSync(cfgPath, 'utf-8');
-    const { v0_47_0 } = await import('../src/commands/migrations/v0_47_0.ts');
+    const { v0_46_3 } = await import('../src/commands/migrations/v0_46_3.ts');
 
-    const first = await v0_47_0.orchestrator({ yes: true, dryRun: false, noAutopilotInstall: true });
+    const first = await v0_46_3.orchestrator({ yes: true, dryRun: false, noAutopilotInstall: true });
     expect(first.status).toBe('complete');
     expect(first.pending_host_work).toBe(1);
-    expect(pendingEntries().filter((e) => e.migration === '0.47.0').length).toBe(1);
+    expect(pendingEntries().filter((e) => e.migration === '0.46.3').length).toBe(1);
 
     // Detect-and-notify ONLY: the config file is byte-identical afterwards.
     expect(readFileSync(cfgPath, 'utf-8')).toBe(before);
 
-    const second = await v0_47_0.orchestrator({ yes: true, dryRun: false, noAutopilotInstall: true });
+    const second = await v0_46_3.orchestrator({ yes: true, dryRun: false, noAutopilotInstall: true });
     expect(second.status).toBe('complete');
-    expect(pendingEntries().filter((e) => e.migration === '0.47.0').length).toBe(1);
+    expect(pendingEntries().filter((e) => e.migration === '0.46.3').length).toBe(1);
     expect(second.phases.some((p) => p.detail === 'already recorded')).toBe(true);
   }, 120_000);
 
   test('dry-run on an exposed brain takes no side effects', async () => {
     writeZeConfig();
-    const { v0_47_0 } = await import('../src/commands/migrations/v0_47_0.ts');
-    const result = await v0_47_0.orchestrator({ yes: true, dryRun: true, noAutopilotInstall: true });
+    const { v0_46_3 } = await import('../src/commands/migrations/v0_46_3.ts');
+    const result = await v0_46_3.orchestrator({ yes: true, dryRun: true, noAutopilotInstall: true });
     expect(result.status).toBe('complete');
     expect(existsSync(pendingPath())).toBe(false);
     expect(result.phases.some((p) => p.name === 'host-work' && p.status === 'skipped')).toBe(true);
@@ -151,11 +151,11 @@ describe('v0.47.0 orchestrator behavior', () => {
         embedding_model: 'voyage:voyage-4',
       }),
     );
-    const { v0_47_0 } = await import('../src/commands/migrations/v0_47_0.ts');
-    const result = await v0_47_0.orchestrator({ yes: true, dryRun: false, noAutopilotInstall: true });
+    const { v0_46_3 } = await import('../src/commands/migrations/v0_46_3.ts');
+    const result = await v0_46_3.orchestrator({ yes: true, dryRun: false, noAutopilotInstall: true });
     // A clear-by-config brain whose probes can't run is UNKNOWN → complete
     // (no chain wedge) + host-work nag (fail-safe).
     expect(result.status).toBe('complete');
-    expect(pendingEntries().filter((e) => e.migration === '0.47.0').length).toBe(1);
+    expect(pendingEntries().filter((e) => e.migration === '0.46.3').length).toBe(1);
   }, 120_000);
 });

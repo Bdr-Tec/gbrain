@@ -1,8 +1,8 @@
 /**
- * ZeroEntropy sunset exposure detection (v0.47).
+ * ZeroEntropy sunset exposure detection (v0.46.3).
  *
  * One shared answer to "is this brain still depending on ZeroEntropy?" —
- * consumed by the v0.47.0 version migration (detect-and-notify) and the
+ * consumed by the v0.46.3 version migration (detect-and-notify) and the
  * stage-2 upgrade banner. Standalone module by design: the ze-switch /
  * retrieval-upgrade subsystem is deleted in the September removal release and
  * this file must survive it.
@@ -253,7 +253,7 @@ function fmtCount(n: number | null, capped: boolean): string {
 }
 
 /**
- * Render the shared ACTION REQUIRED body. Both the v0.47.0 migration notice
+ * Render the shared ACTION REQUIRED body. Both the v0.46.3 migration notice
  * and the stage-2 upgrade banner wrap this text (DRY: the exposure story is
  * written once). Plain ASCII, <= 78 cols per repo convention.
  */
@@ -337,6 +337,6 @@ export function renderZeActionRequired(exposure: ZeExposure): string {
     lines.push(`self-host continuity TODO in the playbook) — plan a migration anyway.`);
   }
   lines.push(`Nothing has been changed automatically; this brain keeps working until the date.`);
-  lines.push(`Agent playbook: skills/migrations/v0.47.0.0.md`);
+  lines.push(`Agent playbook: skills/migrations/v0.46.3.0.md`);
   return lines.join('\n');
 }

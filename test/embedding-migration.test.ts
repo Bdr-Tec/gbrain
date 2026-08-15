@@ -117,11 +117,11 @@ describe('resolveMigrationTarget', () => {
     expect(() => resolveMigrationTarget('litellm:my-custom-model')).toThrow(/--dim/);
     expect(resolveMigrationTarget('litellm:my-custom-model', 1024).toDims).toBe(1024);
   });
-  test('v0.47: refuses a sunset target (paid re-embed onto a dying provider)', () => {
+  test('v0.46.3: refuses a sunset target (paid re-embed onto a dying provider)', () => {
     expect(() => resolveMigrationTarget('zeroentropyai:zembed-1')).toThrow(/Refusing to migrate ONTO/);
     expect(() => resolveMigrationTarget('zeroentropyai:zembed-1')).toThrow(/--force-sunset-target/);
   });
-  test('v0.47: allowSunsetTarget is the loud escape hatch (self-hosted endpoint)', () => {
+  test('v0.46.3: allowSunsetTarget is the loud escape hatch (self-hosted endpoint)', () => {
     // Self-hosters keep the brain's existing width explicitly (--dim 1280).
     expect(resolveMigrationTarget('zeroentropyai:zembed-1', 1280, { allowSunsetTarget: true })).toEqual({
       toModel: 'zeroentropyai:zembed-1',

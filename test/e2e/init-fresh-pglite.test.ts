@@ -135,7 +135,7 @@ describe('v0.45 DX wave — non-TTY no-key defaults to keyless (typo still fail-
   test('--non-interactive with multiple provider keys auto-picks the canonical default', async () => {
     const multiHome = makeTempHome();
     try {
-      // v0.47: the canonical new-install default is voyage:voyage-4
+      // v0.46.3: the canonical new-install default is voyage:voyage-4
       // (NEW_INSTALL_DEFAULT_EMBEDDING_MODEL); a ZE key no longer counts —
       // sunset recipes are excluded from auto-pick entirely.
       const r = await runCli(['init', '--pglite', '--non-interactive'], {
@@ -197,7 +197,7 @@ describe('v0.45 DX wave — --supabase non-TTY guard + multi-key no-canonical fa
   }, 120000);
 
   test('multiple provider keys with NO canonical candidate stays fail-loud with disambiguation hint', async () => {
-    // The canonical default provider (voyage, v0.47) has no key here, so the
+    // The canonical default provider (voyage, v0.46.3) has no key here, so the
     // non-TTY auto-pick cannot resolve the ambiguity — it must fail loud
     // (D2/D3), not guess between openai and mistral.
     const home = makeTempHome();

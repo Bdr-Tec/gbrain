@@ -1,5 +1,5 @@
 /**
- * v0.47 — Voyage reranker touchpoint + canonical-model recipe contract.
+ * v0.46.3 — Voyage reranker touchpoint + canonical-model recipe contract.
  *
  * Pins:
  *  - The voyage recipe declares a reranker touchpoint: rerank-2.5 (default) +
@@ -25,7 +25,7 @@ import {
   NEW_INSTALL_DEFAULT_RERANKER_MODEL,
 } from '../../src/core/ai/defaults.ts';
 
-describe('voyage reranker touchpoint (v0.47)', () => {
+describe('voyage reranker touchpoint (v0.46.3)', () => {
   test('declares rerank-2.5 as the default reranker at /rerank with top_k', () => {
     const tp = voyage.touchpoints.reranker;
     expect(tp).toBeDefined();
@@ -46,7 +46,7 @@ describe('voyage reranker touchpoint (v0.47)', () => {
   });
 });
 
-describe('voyage canonical embedding model (v0.47)', () => {
+describe('voyage canonical embedding model (v0.46.3)', () => {
   test('default_model is voyage-4, NOT models[0] (voyage-4-large)', () => {
     const tp = voyage.touchpoints.embedding!;
     expect(tp.default_model).toBe('voyage-4');
@@ -67,7 +67,7 @@ describe('voyage canonical embedding model (v0.47)', () => {
   });
 });
 
-describe('zeroentropyai sunset metadata (v0.47)', () => {
+describe('zeroentropyai sunset metadata (v0.46.3)', () => {
   test('recipe carries sunset date + per-touchpoint replacements', () => {
     expect(zeroentropyai.sunset).toBeDefined();
     expect(zeroentropyai.sunset!.date).toBe('2026-09-04');
@@ -80,7 +80,7 @@ describe('zeroentropyai sunset metadata (v0.47)', () => {
   });
 });
 
-describe('voyage reranker pricing rows (v0.47)', () => {
+describe('voyage reranker pricing rows (v0.46.3)', () => {
   test('rerank-2.5 + rerank-2.5-lite are priced (budget-tracker fallback)', () => {
     expect(EMBEDDING_PRICING['voyage:rerank-2.5']?.pricePerMTok).toBe(0.05);
     expect(EMBEDDING_PRICING['voyage:rerank-2.5-lite']?.pricePerMTok).toBe(0.02);

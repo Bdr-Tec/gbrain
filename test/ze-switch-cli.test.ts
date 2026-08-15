@@ -1,5 +1,5 @@
 /**
- * v0.47 — `gbrain ze-switch` CLI tests (post-sunset-refusal contract).
+ * v0.46.3 — `gbrain ze-switch` CLI tests (post-sunset-refusal contract).
  *
  * ZeroEntropy shuts down 2026-09-04, so switching a brain ONTO it is
  * disabled. Pins:
@@ -104,7 +104,7 @@ async function setLegacyConfig() {
   await engine.setConfig('embedding_dimensions', '1536');
 }
 
-/** Seed the state a pre-v0.47 forward switch would have left behind, so the
+/** Seed the state a pre-v0.46.3 forward switch would have left behind, so the
  *  --undo path (which must survive until the September removal) is testable
  *  without the now-refused forward path. Mirrors applyRetrievalUpgrade's
  *  snapshot + config writes (retrieval-upgrade-planner.ts). */

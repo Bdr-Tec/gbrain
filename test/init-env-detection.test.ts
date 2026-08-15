@@ -28,7 +28,7 @@ describe('groupReadyByProvider — embedding touchpoint', () => {
     expect(got.map(p => p.recipeId)).toContain('voyage');
   });
 
-  test('v0.47: file-plane voyage_api_key folds into readiness (buildGatewayConfig env)', async () => {
+  test('v0.46.3: file-plane voyage_api_key folds into readiness (buildGatewayConfig env)', async () => {
     // init's resolveEmbeddingByEnv builds its effective env via
     // buildGatewayConfig(fileCfg).env so keys placed in ~/.gbrain/config.json
     // (the documented alternative to shell env) select a provider too. This
@@ -45,7 +45,7 @@ describe('groupReadyByProvider — embedding touchpoint', () => {
   });
 
   test('ZEROENTROPY_API_KEY alone → zeroentropyai is NOT auto-pickable (sunset exclusion)', async () => {
-    // v0.47: recipes with `sunset` metadata are excluded from auto-pick —
+    // v0.46.3: recipes with `sunset` metadata are excluded from auto-pick —
     // a fresh install must not be steered onto a provider that dies on
     // 2026-09-04. Explicit --embedding-model still works (with a warning).
     const got = await groupReadyByProvider('embedding', { ZEROENTROPY_API_KEY: 'ze-test' });

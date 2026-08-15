@@ -542,7 +542,7 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
           // Banner is cosmetic; never block the upgrade.
         }
 
-        // v0.47: stage-2 sunset notice, gated by `ze_sunset_notice_v2_shown`.
+        // v0.46.3: stage-2 sunset notice, gated by `ze_sunset_notice_v2_shown`.
         // Fires even for brains that saw stage 1 — this release ships the
         // migration playbook + the Voyage default, and the exposure story
         // widened (custom columns, env overrides, reranker-without-key).
@@ -562,14 +562,14 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
             if (exposure.status === 'exposed' || exposure.status === 'unknown') {
               console.log('');
               console.log('═══════════════════════════════════════════════════════════════');
-              console.log('[gbrain] ACTION REQUIRED — ZeroEntropy shutdown (v0.47 notice)');
+              console.log('[gbrain] ACTION REQUIRED — ZeroEntropy shutdown (v0.46.3 notice)');
               console.log('═══════════════════════════════════════════════════════════════');
               for (const line of renderZeActionRequired(exposure).split('\n')) {
                 console.log(`[gbrain] ${line}`);
               }
               console.log('[AGENT] Relay this to your operator: this brain needs an embedding/');
               console.log('[AGENT] reranker migration before the shutdown date. Playbook:');
-              console.log('[AGENT] skills/migrations/v0.47.0.0.md');
+              console.log('[AGENT] skills/migrations/v0.46.3.0.md');
               console.log('═══════════════════════════════════════════════════════════════');
               console.log('');
               await engine.setConfig('ze_sunset_notice_v2_shown', 'true');

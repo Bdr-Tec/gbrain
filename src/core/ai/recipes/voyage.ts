@@ -37,7 +37,7 @@ export const voyage: Recipe = {
         'voyage-code-3', 'voyage-finance-2', 'voyage-law-2',
         'voyage-multimodal-3',
       ],
-      // v0.47: canonical pick for every "choose a model for the user" surface.
+      // v0.46.3: canonical pick for every "choose a model for the user" surface.
       // models[0] is voyage-4-large (quality order); the new-install default is
       // voyage-4 (price/quality balance, shared v4 embedding space) — see
       // NEW_INSTALL_DEFAULT_EMBEDDING_MODEL in ai/defaults.ts.
@@ -65,7 +65,7 @@ export const voyage: Recipe = {
       // 4xx).
       multimodal_models: ['voyage-multimodal-3'],
     },
-    // v0.47: Voyage reranking (the recommended zerank-2 replacement — same
+    // v0.46.3: Voyage reranking (the recommended zerank-2 replacement — same
     // VOYAGE_API_KEY as embeddings). gateway.rerank() posts to
     // `${base_url_default}/rerank` (base already ends in /v1). Wire dialect:
     // request takes `top_k` (declared via top_param); response is

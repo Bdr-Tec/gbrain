@@ -108,7 +108,7 @@ export function resolveMigrationTarget(
   if (!recipe.touchpoints.embedding) {
     throw new Error(`Provider ${recipe.id} has no embedding support. Pick an embedding-capable provider:model.`);
   }
-  // v0.47: refuse a PAID full re-embed onto a provider with an announced
+  // v0.46.3: refuse a PAID full re-embed onto a provider with an announced
   // shutdown — the live probe passes while the hosted API is still up, so
   // without this gate an agent replaying an old runbook could strand the
   // brain days before the shutdown. Same posture as ze-switch's forward

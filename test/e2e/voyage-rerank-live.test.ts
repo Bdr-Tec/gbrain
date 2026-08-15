@@ -1,5 +1,5 @@
 /**
- * LIVE e2e — Voyage rerank + embed wire confirmation (v0.47).
+ * LIVE e2e — Voyage rerank + embed wire confirmation (v0.46.3).
  *
  * Skip-gated on VOYAGE_API_KEY. This is the REQUIRED pre-ship confirmation of
  * the rerank wire contract the unit tests pin with stubs: POST

@@ -82,7 +82,7 @@ describe('KNOWN_CONFIG_KEYS', () => {
     expect(KNOWN_CONFIG_KEYS).toContain('zeroentropy_api_key');
   });
 
-  test('registers the provider_sunset suppression key (v0.47 documented command)', () => {
+  test('registers the provider_sunset suppression key (v0.46.3 documented command)', () => {
     // doctor.ts + docs/guides/embedding-migration.md both document
     // `gbrain config set doctor.suppress_provider_sunset true`; the key must
     // be registered or the documented command exits 1 with "Unknown config

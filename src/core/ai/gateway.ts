@@ -98,7 +98,7 @@ function withDefaultTimeout(caller: AbortSignal | undefined, timeoutMs: number):
 }
 
 const MAX_CHARS = 8000;
-// v0.47 SPLIT-DEFAULT: DEFAULT_EMBEDDING_MODEL / DEFAULT_EMBEDDING_DIMENSIONS
+// v0.46.3 SPLIT-DEFAULT: DEFAULT_EMBEDDING_MODEL / DEFAULT_EMBEDDING_DIMENSIONS
 // are now the LEGACY CONFIGLESS RUNTIME FALLBACK only (brains with no
 // `embedding_model` in file config, whose stored vectors live in ZE's 1280d
 // space). ZeroEntropy's hosted API shuts down on ZEROENTROPY_SUNSET_DATE; the
@@ -113,7 +113,7 @@ const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
 // v0.35.0.0+: reranker default. Used only when search.reranker.enabled is set
 // AND no explicit reranker_model is configured. Mode bundles' per-mode
 // `reranker_model` default to this same value but can be overridden.
-// v0.47: stays on the LEGACY zerank-2 until the September removal (reranker
+// v0.46.3: stays on the LEGACY zerank-2 until the September removal (reranker
 // split-default: existing ZE-keyed brains keep their working reranker until
 // the API dies; voyage-keyed NEW installs get an explicit
 // `search.reranker.model voyage:rerank-2.5` override written at init, and
@@ -1417,7 +1417,7 @@ export const perplexityCompatFetch = (async (input: RequestInfo | URL, init?: Re
 }) as unknown as typeof fetch;
 
 /**
- * v0.47 once-per-(recipe,touchpoint) sunset warning. Fires when a recipe with
+ * v0.46.3 once-per-(recipe,touchpoint) sunset warning. Fires when a recipe with
  * `sunset` metadata is actually USED (embedding resolution / rerank call), so
  * brains still riding a dying provider hear about it on every process, not
  * only at upgrade time. Module-level memoization (same pattern as
@@ -3961,7 +3961,7 @@ export async function rerank(input: RerankInput): Promise<RerankResult[]> {
   // llama-server set `/v1/rerank`; Voyage sets `/rerank`. Response shape is
   // shared across all current dialects ({results: [{index, relevance_score}]});
   // the only request-side difference is the top-N key, declared per recipe via
-  // `top_param` (v0.47).
+  // `top_param` (v0.46.3).
   const url = `${compat.baseURL.replace(/\/$/, '')}${tp.path ?? '/models/rerank'}`;
   let auth: { apiKey?: string; headers?: Record<string, string> };
   try {
@@ -4055,7 +4055,7 @@ export async function rerank(input: RerankInput): Promise<RerankResult[]> {
       throw new RerankError(msg, reason, resp.status);
     }
     const json: any = await resp.json();
-    // v0.47: two response dialects share the item shape {index,
+    // v0.46.3: two response dialects share the item shape {index,
     // relevance_score} but differ in the array key — ZE/llama-server return
     // `results[]`, Voyage's REST returns `data[]` ({object: "list", data:
     // [...]}, live-wire verified 2026-08-15; Voyage's Python SDK renames it

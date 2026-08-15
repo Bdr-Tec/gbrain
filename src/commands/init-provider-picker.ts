@@ -123,7 +123,7 @@ export async function pickProvider(opts: PickProviderOpts): Promise<PickedProvid
   const all = listRecipes();
   let ready = readyRecipesForTouchpoint(all, opts.touchpoint, env);
 
-  // v0.47: never OFFER a provider whose hosted API has an announced shutdown
+  // v0.46.3: never OFFER a provider whose hosted API has an announced shutdown
   // (recipe.sunset) — a fresh install must not be steered onto a dying
   // provider. Explicit --embedding-model still works (with a loud warning)
   // until the removal release.
@@ -185,7 +185,7 @@ export async function pickProvider(opts: PickProviderOpts): Promise<PickedProvid
       label += `  (${tp.default_dims}d)`;
     }
     if (tp && 'models' in tp && Array.isArray(tp.models) && tp.models.length > 0) {
-      // v0.47: show the canonical model (default_model), not array position —
+      // v0.46.3: show the canonical model (default_model), not array position —
       // the displayed row must match what a pick actually selects.
       label += `  ${('default_model' in tp && tp.default_model) || tp.models[0]}`;
     }
@@ -223,7 +223,7 @@ export async function pickProvider(opts: PickProviderOpts): Promise<PickedProvid
   const tp = picked.touchpoints[opts.touchpoint];
   if (!tp) return null;
 
-  // v0.47: pick the recipe's canonical model (default_model), falling back to
+  // v0.46.3: pick the recipe's canonical model (default_model), falling back to
   // array position (callers can override via flag).
   const modelId = ('models' in tp && Array.isArray(tp.models) && tp.models.length > 0)
     ? (('default_model' in tp && tp.default_model) || tp.models[0])

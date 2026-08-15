@@ -16,7 +16,7 @@
 //
 // v0.36.0 chose ZeroEntropy as the system default (11/20 eval wins vs OpenAI
 // and Voyage). ZeroEntropy's hosted API shuts down on ZEROENTROPY_SUNSET_DATE,
-// so v0.47 split the default: these two constants now serve ONLY brains with
+// so v0.46.3 split the default: these two constants now serve ONLY brains with
 // no `embedding_model` in file config (old/hand-rolled installs whose stored
 // vectors live in ZE's 1280d space — flipping this under them would break
 // retrieval BEFORE the provider itself dies). Every new-install surface reads
@@ -26,7 +26,7 @@
 export const DEFAULT_EMBEDDING_MODEL = 'zeroentropyai:zembed-1';
 export const DEFAULT_EMBEDDING_DIMENSIONS = 1280;
 
-// NEW-INSTALL DEFAULT (v0.47): voyage-4 @ 1024d.
+// NEW-INSTALL DEFAULT (v0.46.3): voyage-4 @ 1024d.
 //
 // Why Voyage: ZeroEntropy covered BOTH gbrain touchpoints (embedding +
 // reranking); Voyage is the only replacement that covers both on one key
@@ -48,7 +48,7 @@ export const NEW_INSTALL_DEFAULT_EMBEDDING_MODEL = 'voyage:voyage-4';
 export const NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS = 1024;
 
 /**
- * Recommended reranker replacement (v0.47). The runtime reranker defaults
+ * Recommended reranker replacement (v0.46.3). The runtime reranker defaults
  * (gateway DEFAULT_RERANKER_MODEL + the mode-bundle reranker_model values)
  * stay on zerank-2 until the September removal so existing ZE-keyed brains
  * keep their working reranker until the API actually dies; init writes this

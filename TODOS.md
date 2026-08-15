@@ -1,8 +1,8 @@
 # TODOS
 
-## v0.48 SEPTEMBER REMOVAL — ZeroEntropy (filed v0.47.0.0; TARGET: ship 2026-09-04..2026-09-08)
+## v0.47 SEPTEMBER REMOVAL — ZeroEntropy (filed v0.46.3.0; TARGET: ship 2026-09-04..2026-09-08)
 
-ZeroEntropy's hosted API dies 2026-09-04. v0.47.0.0 deprecated it (split-default:
+ZeroEntropy's hosted API dies 2026-09-04. v0.46.3.0 deprecated it (split-default:
 new installs → voyage; legacy runtime fallbacks stay ZE; detect-and-notify
 migration). The removal wave deletes the provider and performs the hard cutover.
 Staged-deletion discipline (ship replacements → migrate call sites → update tests
@@ -32,24 +32,24 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   hardcoded ZE constants); pricing rows LAST (budget-tracker rerank metering reads
   them for historical audit rows). NOTE: test/ai/zeroentropy-compat-fetch.test.ts
   greps gateway.ts SOURCE TEXT — delete the test with the code, in the same commit.
-- [ ] **P1 — Self-host continuity decision.** The v0.47 playbook's zero-re-embed
+- [ ] **P1 — Self-host continuity decision.** The v0.46.3 playbook's zero-re-embed
   path keeps the `zeroentropyai:zembed-1` id behind a base-URL override to a
   ZE-wire-compatible endpoint. Recipe deletion breaks it. Decide: keep a minimal
   local-only recipe shell (no picker/auto-pick, no hosted default URL), ship a
   signature-migration tool (rewrite pages.embedding_signature provider ids without
   re-embedding), or explicitly end the promise with a loud migration note. The
-  playbook (skills/migrations/v0.47.0.0.md) links here — honor it.
+  playbook (skills/migrations/v0.46.3.0.md) links here — honor it.
 - [ ] **P2 — Tests + CI.** Delete the 8 ZE-dedicated test files
   (zeroentropy-recipe, zeroentropy-compat-fetch, dims-zeroentropy,
   e2e/zeroentropy-live, ze-switch-cli, ze-switch-env-override, doctor-ze-checks,
   provider-sunset-doctor.serial gets REWRITTEN generic not deleted) + update ~40
   coupled files; drop the zeroentropy-live job + ZEROENTROPY_API_KEY secret from
-  .github/workflows/e2e.yml:168,179 (already date-skip-gated since v0.47);
+  .github/workflows/e2e.yml:168,179 (already date-skip-gated since v0.46.3);
   scripts/test-weights.json rows.
 - [ ] **P2 — Config + docs.** `zeroentropy_api_key` config key: keep
   parseable-but-warned (removing it would make old config.json files fail to
   load); delete docs/ai-providers/zeroentropy.md + its scripts/llms-config.ts
-  entry (+ `bun run build:llms`); v0.47.0 migration stays registered and must
+  entry (+ `bun run build:llms`); v0.46.3 migration stays registered and must
   degrade gracefully once the recipe is gone (notice-only — verify its copy).
 - [ ] **P2 — Custom-column off-ramp (not removal-gated, but September makes it
   urgent for affected users).** Write-side custom-column migration
@@ -60,7 +60,7 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   strongest surviving hosted reranker (Agentset ELO 1629, behind only the dying
   zerank-2) for users who want max rerank quality on a dedicated key. Wire shape
   differs from the ZE/voyage dialect — needs its own `top_param`/response mapping
-  audit. Filed from the v0.47 CEO review (deferred cherry-pick).
+  audit. Filed from the v0.46.3 CEO review (deferred cherry-pick).
 
 ## Issues #5+#6 follow-ups (pool starvation + process isolation; plan: ~/.claude/plans/system-instruction-you-are-working-witty-moore.md)
 

@@ -35,7 +35,7 @@ import {
 
 const API_KEY = process.env.ZEROENTROPY_API_KEY;
 
-// v0.47 date guard: ZeroEntropy's hosted API shuts down on the sunset date.
+// v0.46.3 date guard: ZeroEntropy's hosted API shuts down on the sunset date.
 // After it, this live suite can only go permanently red against a dead
 // endpoint — auto-skip regardless of key presence so a slipped removal wave
 // can't wedge CI. The September removal release deletes this file entirely.

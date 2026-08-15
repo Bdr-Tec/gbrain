@@ -28,7 +28,7 @@ import {
 describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end', () => {
   let tmpHome: string;
   let origHome: string | undefined;
-  // v0.47: the single-ready provider for a fresh install is VOYAGE (ZE is
+  // v0.46.3: the single-ready provider for a fresh install is VOYAGE (ZE is
   // sunset-excluded from auto-pick). Scrub EVERY embedding-capable key a dev
   // machine might carry so init sees exactly one ready provider — otherwise
   // ambient multi-provider env (Garry's setup) fails the disambiguation gate
@@ -131,7 +131,7 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     expect(cfg.embedding_dimensions).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
 
     // The actual schema column dim matches, and the voyage-picked install
-    // wrote the explicit reranker override (v0.47 split-default: the bundle
+    // wrote the explicit reranker override (v0.46.3 split-default: the bundle
     // default stays legacy-ZE, so a fresh voyage brain needs this config or
     // it resolves a reranker whose key it doesn't have).
     const { PGLiteEngine } = await import('../../src/core/pglite-engine.ts');
@@ -221,7 +221,7 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     }
   }, 30000);
 
-  test('v0.47: keyed NON-voyage install disables the reranker explicitly (no doomed legacy default)', async () => {
+  test('v0.46.3: keyed NON-voyage install disables the reranker explicitly (no doomed legacy default)', async () => {
     resetGateway();
     delete process.env.VOYAGE_API_KEY;
     process.env.OPENAI_API_KEY = 'sk-test-openai';
@@ -283,7 +283,7 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     }
   }, 30000);
 
-  test('v0.47: keyless recovery — `init --force --embedding-model` clears embedding_disabled', async () => {
+  test('v0.46.3: keyless recovery — `init --force --embedding-model` clears embedding_disabled', async () => {
     // The documented recovery command for a deferred-setup brain is
     // `gbrain init --force --embedding-model voyage:voyage-4`. Two traps made
     // it a silent no-op: the seeded embedding_disabled sentinel set

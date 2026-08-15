@@ -432,7 +432,7 @@ describe('gateway.rerank() — v0.40.6.1 path regression: zerank-1-small unaffec
   });
 });
 
-describe('gateway.rerank() — v0.47 Voyage wire dialect', () => {
+describe('gateway.rerank() — v0.46.3 Voyage wire dialect', () => {
   function configureVoyage(model: string = 'voyage:rerank-2.5'): void {
     configureGateway({
       reranker_model: model,
