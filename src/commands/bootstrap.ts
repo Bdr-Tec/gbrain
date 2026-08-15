@@ -147,7 +147,9 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
                                   Receipt-keyed removal. The repo stays yours.
 
 Global flags: --workspace <dir> (default: cwd; refuses if the resolved
-             path is your home directory), --help.
+             path is your home directory — status/uninstall are exempt so
+             an existing $HOME install can still be inspected and removed),
+             --help.
 Env: GBRAIN_BOOTSTRAP_ABORT_AFTER=<phase> (test seam — abort after that phase's work).
 `;
 
@@ -252,16 +254,26 @@ function flagValues(args: string[], flag: string): string[] {
  * than attempt to enumerate every risky path — the fix is a real project
  * directory, not a bigger ignore list [HOME_WORKSPACE].
  *
- * `skipHomeGuard` is for callers (currently only the `harness` subcommand)
- * that still want the resolved cwd/`--workspace` value for `LogCtx.ws`
- * bookkeeping but never actually operate on a workspace — `runHarness` takes
- * no `ws` argument at all and mutates only `home` — so the workspace-scale
- * `git add -A` risk this guard exists for does not apply to them.
+ * `HOME_WORKSPACE_GUARD_EXEMPT` carves out the subcommands that never do any
+ * of that: `status` only reads and prints a report, `uninstall` removes
+ * EXACTLY `receipt.created_paths` (each containment-checked, see
+ * `core/bootstrap/uninstall.ts`) — never a `git add`/commit/push, never a
+ * workspace-wide scan — and `harness` operates only on `home` and never even
+ * receives a `ws` argument (`runHarness` — #4043 machine-level wiring), so
+ * the value resolved here is used only for `LogCtx.ws` bookkeeping.
+ * Exempting `status`/`uninstall` keeps the recovery path reachable for the
+ * guard's own victims: someone who already bootstrapped into `$HOME` before
+ * this guard existed needs `status` to see what's there and `uninstall` to
+ * remove it, both run with `--workspace` pointing AT `$HOME`. Every other
+ * subcommand (`interview`/`render`/`repo`/`hooks`/`verify`/`attach`) stages,
+ * commits, pushes, or writes identity/registration files into the
+ * workspace, so they stay refused.
  */
-function resolveWorkspace(args: string[], opts: { skipHomeGuard?: boolean } = {}): string {
+const HOME_WORKSPACE_GUARD_EXEMPT = new Set(['status', 'uninstall', 'harness']);
+
+function resolveWorkspace(args: string[], sub: string): string {
   const ws = flagValue(args, '--workspace');
   const resolved = ws ? resolve(ws) : process.cwd();
-  if (opts.skipHomeGuard) return resolved;
   const resolvedReal = realpathOrResolve(resolved);
   // `os.homedir()` in Bun mirrors `process.env.HOME` as of process start
   // (and ignores LATER `process.env.HOME` mutations — same pattern as
@@ -276,11 +288,13 @@ function resolveWorkspace(args: string[], opts: { skipHomeGuard?: boolean } = {}
   // strings) so a symlinked $HOME or a symlinked cwd (e.g. macOS's
   // /var -> /private/var tmp roots) still matches.
   const home = process.env.HOME || homedir();
-  if (home && realpathOrResolve(home) === resolvedReal) {
+  if (!HOME_WORKSPACE_GUARD_EXEMPT.has(sub) && home && realpathOrResolve(home) === resolvedReal) {
     throw new BootstrapError(
       'HOME_WORKSPACE',
       `refusing to bootstrap directly into your home directory (${resolved}) — SSH sessions often land here by default. ` +
-        're-run with `--workspace <dir>` pointing at the project directory you want to bootstrap, not your home directory itself.',
+        'If you already bootstrapped here, `gbrain bootstrap status` and `gbrain bootstrap uninstall` still work ' +
+        'directly at $HOME to inspect and remove it; otherwise re-run with `--workspace <dir>` pointing at the ' +
+        'project directory you actually want to bootstrap.',
       { details: { candidate: resolved } },
     );
   }
@@ -1913,10 +1927,7 @@ export async function runBootstrap(args: string[], opts: RunBootstrapOpts = {}):
 
   let ws: string;
   try {
-    // `harness` is a machine-level command (operates only on `home`; see
-    // `resolveWorkspace`'s doc comment) — it never triggers the HOME_WORKSPACE
-    // refusal, matching the pre-guard behavior it already had.
-    ws = resolveWorkspace(rest, { skipHomeGuard: sub === 'harness' });
+    ws = resolveWorkspace(rest, sub);
   } catch (e) {
     if (e instanceof BootstrapError) {
       console.error(e.message);

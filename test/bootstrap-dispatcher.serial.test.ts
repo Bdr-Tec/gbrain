@@ -1025,7 +1025,10 @@ describe('HOME_WORKSPACE guard — refuses to bootstrap directly into the home d
     process.env.HOME = fakeHome;
     process.chdir(fakeHome);
     try {
-      const r = await capture(() => runBootstrap(['status']));
+      // `render` (not `status`) — `status` and `uninstall` are exempt from
+      // this guard (see below); `render` stages/writes into the workspace
+      // and must stay refused, so it is the representative guarded command.
+      const r = await capture(() => runBootstrap(['render']));
       expect(r.result).toBe(1);
       expect(r.err).toContain('refusing to bootstrap directly into your home directory');
       expect(r.err).toContain(fakeHome);
@@ -1043,7 +1046,7 @@ describe('HOME_WORKSPACE guard — refuses to bootstrap directly into the home d
     const savedHome = process.env.HOME;
     process.env.HOME = fakeHome;
     try {
-      const r = await capture(() => runBootstrap(['status', '--workspace', fakeHome]));
+      const r = await capture(() => runBootstrap(['render', '--workspace', fakeHome]));
       expect(r.result).toBe(1);
       expect(r.err).toContain('refusing to bootstrap directly into your home directory');
     } finally {
@@ -1149,13 +1152,13 @@ describe('HOME_WORKSPACE guard — refuses to bootstrap directly into the home d
     try {
       // Direction 1: HOME is the real dir, --workspace is the symlink to it.
       process.env.HOME = realHome;
-      const r1 = await capture(() => runBootstrap(['status', '--workspace', homeLink]));
+      const r1 = await capture(() => runBootstrap(['render', '--workspace', homeLink]));
       expect(r1.result).toBe(1);
       expect(r1.err).toContain('refusing to bootstrap directly into your home directory');
 
       // Direction 2: HOME is the symlink, --workspace is the real target dir.
       process.env.HOME = homeLink;
-      const r2 = await capture(() => runBootstrap(['status', '--workspace', realHome]));
+      const r2 = await capture(() => runBootstrap(['render', '--workspace', realHome]));
       expect(r2.result).toBe(1);
       expect(r2.err).toContain('refusing to bootstrap directly into your home directory');
     } finally {
@@ -1192,6 +1195,109 @@ describe('HOME_WORKSPACE guard — refuses to bootstrap directly into the home d
       expect(last?.outcome).toBe('error');
       expect(last?.workspace).toBe(fakeHome);
       expect(existsSync(installLogPath(home))).toBe(true);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  // [#4066 review finding] the guard's own victims — people who already
+  // bootstrapped INTO $HOME before this guard existed — must not be locked
+  // out of the two subcommands that undo it. `status`/`uninstall` are
+  // exempt (HOME_WORKSPACE_GUARD_EXEMPT) because neither ever stages/
+  // commits/pushes or writes into the workspace; every other subcommand
+  // (proven above with `render`) still refuses.
+  test('status succeeds at $HOME — exempt, so an existing install can be inspected without a workaround', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      const r = await capture(() => runBootstrap(['status', '--workspace', fakeHome]));
+      expect(r.result).toBe(0);
+      expect(r.err).not.toContain('refusing to bootstrap directly into your home directory');
+      expect(r.out).toContain(`gbrain bootstrap status — ${fakeHome}`);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test('uninstall succeeds at $HOME — the exact recovery path for someone who already bootstrapped there', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    // Isolated home INSIDE the workspace (same S3#5 shape the existing
+    // --delete-brain test above uses) — GBRAIN_HOME is set for the whole
+    // file, so uninstall requires an explicit --home contained in the
+    // workspace with the config.json + brain.pglite signature.
+    const isoHome = join(fakeHome, '.gbrain');
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      mkdirSync(join(isoHome, 'brain.pglite'), { recursive: true });
+      mkdirSync(join(isoHome, 'bootstrap'), { recursive: true });
+      writeFileSync(join(isoHome, 'config.json'), '{"engine":"pglite"}', 'utf8');
+      writeFileSync(join(isoHome, 'brain.pglite', 'PG_VERSION'), '16', 'utf8');
+      const receipt: InstallReceipt = {
+        receipt_version: 1,
+        workspace_dir: fakeHome,
+        source_id: 'workspace',
+        agent_name: 'Dispatch',
+        created_at: new Date().toISOString(),
+        created_by: 'test',
+        brain_created_by_bootstrap: false,
+        created_paths: [],
+        registrations: [],
+      };
+      writeFileSync(receiptPath(isoHome), JSON.stringify(receipt), 'utf8');
+      const r = await capture(() =>
+        runBootstrap(['uninstall', '--workspace', fakeHome, '--yes', '--home', isoHome]),
+      );
+      expect(r.result).toBe(0);
+      expect(r.err).not.toContain('refusing to bootstrap directly into your home directory');
+      expect(r.out).toContain('removed paths: (none)');
+      expect(r.out).toContain('brain kept; receipt consumed.');
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  // `harness` (#4043 machine-level wiring) is the third HOME_WORKSPACE_GUARD_EXEMPT
+  // member — it operates only on `home` and never receives a `ws` argument at
+  // all (`runHarness`), so the value `resolveWorkspace` computes for it is
+  // used purely for `LogCtx.ws` bookkeeping and the guard must not apply.
+  // `--status` is read-only (no home mkdir, no lock), so this is safe
+  // against a fresh empty home.
+  test('harness --status succeeds at $HOME — exempt, it never touches a workspace', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    process.env.HOME = fakeHome;
+    process.chdir(fakeHome);
+    try {
+      const r = await capture(() => runBootstrap(['harness', '--status']));
+      expect(r.result).toBe(0);
+      expect(r.err).not.toContain('refusing to bootstrap directly into your home directory');
+    } finally {
+      process.chdir(savedCwd);
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test('the refusal message for a still-guarded subcommand names the now-reachable status/uninstall recovery path', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'gb-dispatch-home-'));
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      const r = await capture(() => runBootstrap(['render', '--workspace', fakeHome]));
+      expect(r.result).toBe(1);
+      expect(r.err).toContain('refusing to bootstrap directly into your home directory');
+      expect(r.err).toContain('gbrain bootstrap status');
+      expect(r.err).toContain('gbrain bootstrap uninstall');
     } finally {
       if (savedHome === undefined) delete process.env.HOME;
       else process.env.HOME = savedHome;
