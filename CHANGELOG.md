@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.1.0] - 2026-08-15
+## [0.46.2.0] - 2026-08-15
 
 **CI in half, evals actually gating.** The Test workflow ran 8–9.5 minutes on
 every push; its long pole was a serial-test job that executed ~140 per-file bun
@@ -28,7 +28,7 @@ files get a sequential rescue re-run (never a silent pass), machine-global
 files live on a growth-guarded exclusive lane, and the shard-balance test now
 asserts the matrix CI actually runs instead of recomputing its own inputs.
 
-**To take advantage of v0.46.1.0:** nothing to configure — CI and the local
+**To take advantage of v0.46.2.0:** nothing to configure — CI and the local
 loops (`bun run test`, `bun run test:serial`, `bun run verify`) are just
 faster. New knobs if you need them: `GBRAIN_SERIAL_POOL=1` restores the old
 fully-sequential serial lane, `GBRAIN_VERIFY_MAX_PARALLEL` bounds verify's
