@@ -5934,3 +5934,75 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
 - [ ] **ChatGPT/Claude.ai export zip unwrapping.** v1 requires the EXTRACTED `conversations.json` ("unzip first" is documented + error-hinted). Add zip handling without a heavy dependency (Bun has no built-in zip; evaluate a minimal vendored inflate or shelling to `unzip` with confinement). Priority: P3.
 - [ ] **BrainBench raw-format fixture schema (sibling repo).** The in-repo pin (`test/e2e/transcripts-writeback-fidelity.test.ts`) grades raw files through the adapters with the gold extractor, but the BrainBench corpus schema (gbrain-evals) still rejects unknown keys and its corpus hash doesn't cover raw sidecars. Needs: versioned raw-fixture sidecar type + loader + hash coverage + baseline re-cut in gbrain-evals, then a `write_back_fidelity_raw` suite row here. Priority: P2.
 - [ ] **Hermes SPEC_TARGET verification against a populated store.** The schema came from the installed hermes-agent v0.20.0 source (`SCHEMA_SQL`), but no populated `state.db` existed on the dev machine — the fixture is synthetic-by-declaration. Verify against a real store after some Hermes sessions accrue, then flip `status: 'provisional'` → `'verified'` and pin the `active`/`compacted` semantics the adapter currently ignores. Priority: P3.
+## Grok Build wave follow-ups (filed at build time)
+
+- [ ] **P1 — Enable the grok-door paid lane once XAI_API_KEY exists.** Admin
+  creates the `XAI_API_KEY` repo/environment secret (console.x.ai; prefer a
+  protected GitHub Environment scoped to door jobs), then one commit re-adds
+  to `grok-door` in heavy-tests.yml: the `schedule` leg, the `heavy-tests`
+  label leg, default-on dispatch, and a latest-version CANARY matrix leg
+  (`continue-on-error`, schedule-scoped, own timeout) so the pinned lane stays
+  deterministic while the canary tracks what users run. Same session: run the
+  pending-auth Phase-0 observations (paid one-shot smoke, authed model list +
+  measured per-turn cost pins, credential-file inventory after login → door
+  evidence exclusions + TTY secretPaths, authed first-run TUI copy) into
+  `docs/mcp/GROK-CLI-PIN.md`, and pin `parseGrokJson` + the separate
+  non-retried JSON toolCall door test (one extra paid turn) once the
+  streaming-json event shape is observed. Effort: S (CC ~30min + admin).
+- [ ] **P2 — `gbrain connect --agent grok`.** One-command install UX:
+  `AgentId`/`AGENT_SPECS`/`AGENT_IDS` in `src/commands/connect.ts`, a
+  `buildGrokMcpAddArgv` in `src/core/mcp-registration.ts` (shape already
+  pinned in GROK-CLI-PIN.md), connect tests ("all four agents" pin moves to
+  five), KEY_FILES entry. Deferred from the grok wave to avoid a second
+  observation pass; the pin doc now exists, so this is mechanical. Effort: S.
+- [ ] **P2 — HERMES.md surface refresh.** The hermes register command predates
+  the truthful-surface wave and wires the full 100+-op catalog;
+  CLAUDE_CODE.md + GROK.md now recommend `--surface verbs`. Update the
+  register one-liner + Direct config block (+ INSTALL_FOR_AGENTS hermes
+  block) and re-verify against the pinned hermes. Effort: S.
+- [ ] **P2 — Backport the GITHUB_ENV/GITHUB_PATH/GITHUB_OUTPUT/GITHUB_STATE
+  deletion from `grokChildEnv` to `hermesChildEnv`** (and consider narrowing
+  the `GITHUB_` ALLOW_PREFIX to the read-only metadata names) — the prefix
+  rule forwards writable CI step-metadata files to untrusted agent children.
+  Unit truth-table exists for the grok side to clone. Effort: S.
+- [ ] **P3 — Grok bootstrap-harness target.** `gbrain bootstrap` personal-agent
+  support for Grok Build: `HarnessSelector` + `parseHarnessArgs`, a dated
+  `TARGETS` spec in `host-specs.ts`, a `wireGrok` branch + TOML writer (grok
+  config schema pinned; `codex-toml.ts` is the precedent), receipt/rollback/
+  status handling, and the INSTALL_FOR_AGENTS honest-classification flip.
+  Docs currently state "bootstrap does not support Grok yet". Effort: M.
+- [ ] **P3 — Door-adapter extraction + CI-tail composite action.** Trigger: the
+  NEXT door agent (4th). Extract the agent-harness door family shape
+  (resolve/auth/seed/childEnv/pin/turn) and hoist the shared workflow tail
+  (evidence prep / scrub triple / upload / zero-pass grep / cred cleanup)
+  into a composite action; port grok-door as first consumer. Until then the
+  hermes-door/grok-door scrub blocks carry cross-reference comments. Also
+  adopt a door CADENCE policy: nightly for the newest/most-churning agent,
+  label-only after 2 stable monthly cycles per agent. Effort: M.
+- [ ] **P3 — Promote grok-install to a PTY assertion test.** Criterion: 2
+  consecutive stable runs ≥1 month apart of the dx scenario (pre-ship ritual
+  on grok-touching waves) with unchanged boot/sign-in copy. Would be the
+  repo's first gbrain-driving PTY assertion test — keep it an instrument
+  until the copy proves stable. Effort: M.
+- [ ] **P3 — Nightly cross-agent friction-diff artifact.** After door runs,
+  `gbrain friction diff --base <hermes-run> --compare <grok-run>` rendered
+  into a CI artifact so guide-following friction regressions surface without
+  a dev-box session. Effort: S/M.
+- [ ] **P3 — `xai:` provider block in model-pricing.ts.** Grok models
+  (grok-4.6/4.5 observed) for cost views once xAI pricing is sourced;
+  separate concern from the harness wave (CANONICAL_PRICING discipline).
+  Effort: S.
+- [ ] **P3 — BrainBench grok adapter.** `src/eval/brainbench/adapters/` +
+  `ALL_HARNESSES` entry — same seam as the already-filed hermes adapter
+  (TODOS "BrainBench hermes adapter"); build both together. Effort: M.
+- [ ] **P3 — Client-registry unification (Approach C).** The repo carries 7
+  hardcoded client lists (connect AGENT_SPECS, bootstrap Harness,
+  HarnessSelector, host-specs TARGETS, claw-test registry, brainbench
+  ALL_HARNESSES, volunteer HARNESS_CHANNELS); grok proved the claw-test
+  registry shape generalizes. Unify into one data-driven table AFTER the
+  door-adapter extraction lands (earn it — don't freeze hermes-isms in).
+  Effort: L.
+- [ ] **P3 — PIN-doc privacy-guard candidate.** GROK-CLI-PIN/HERMES-CLI-PIN
+  carry verbatim observation transcripts; consider extending check-privacy.sh
+  (or a dedicated check) to assert pin docs use `<tmp>`/placeholder paths and
+  never carry key material or account ids. Effort: S.

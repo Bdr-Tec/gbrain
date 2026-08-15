@@ -68,6 +68,7 @@ CHECKS=(
   "check:no-double-retry"
   "check:batch-audit-site"
   "check:engine-dynamic-import"
+  "check:grok-pin"
   "check:worker-lock-renewal-shape"
   "check:bootstrap-tag"
   "check:bootstrap-templates"

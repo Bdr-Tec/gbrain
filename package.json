@@ -50,6 +50,7 @@
     "check:admin-scope-drift": "bash scripts/check-admin-scope-drift.sh",
     "check:cli-exec": "bash scripts/check-cli-executable.sh",
     "check:engine-dynamic-import": "bash scripts/check-engine-dynamic-import.sh",
+    "check:grok-pin": "bash scripts/check-grok-pin.sh",
     "check:gateway-routed": "bash scripts/check-gateway-routed-no-direct-anthropic.sh",
     "check:worker-pool-atomicity": "bash scripts/check-worker-pool-atomicity.sh",
     "check:doc-history": "bash scripts/check-key-files-current-state.sh",
