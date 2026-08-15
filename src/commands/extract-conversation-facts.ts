@@ -249,6 +249,14 @@ export interface ExtractConversationFactsCoreOpts {
   types?: AllowedType[];
   /** Process a single page; otherwise iterate all matching pages in the source. */
   slug?: string;
+  /**
+   * cathedral-4 batch selector: process exactly these pages (serial, with
+   * the same per-page advisory lock + durable-outcome gates as enumeration).
+   * ONE core invocation per caller run — per-slug invocations multiply
+   * config resolution, checkpoint IO, and receipt writes by page count.
+   * Takes precedence over `slug`.
+   */
+  slugs?: string[];
   /** Show would-do counts without writing facts or advancing checkpoint. */
   dryRun?: boolean;
   /** Cap pages processed in this invocation. */
@@ -1336,7 +1344,21 @@ export async function runExtractConversationFactsCore(
     // types are not silently skipped (see ALLOWED_TYPE_ALIASES).
     const concreteTypes = pageTypesForAllowed(types);
 
-    if (opts.slug) {
+    if (opts.slugs && opts.slugs.length > 0) {
+      for (const slug of opts.slugs) {
+        if (signal?.aborted) throw new Error('aborted');
+        const page = await engine.getPage(slug, { sourceId });
+        if (!page) {
+          result.pages_skipped_disappeared++;
+          continue;
+        }
+        if (!concreteTypes.includes(page.type)) {
+          result.pages_skipped++;
+          continue;
+        }
+        await processPageWithLock(page);
+      }
+    } else if (opts.slug) {
       const page = await engine.getPage(opts.slug, { sourceId });
       if (!page) {
         result.pages_skipped_disappeared++;
