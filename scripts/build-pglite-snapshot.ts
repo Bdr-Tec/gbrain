@@ -18,9 +18,22 @@
 //
 // Re-run whenever you touch src/core/migrate.ts or src/schema.sql.
 
-import { writeFileSync, mkdirSync, existsSync, readFileSync, rmdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, rmdirSync, mkdtempSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import * as crypto from "node:crypto";
+
+// W0 fix-wave: build under the EXACT embedding shape the test suite pins.
+// bunfig.toml preloads test/helpers/legacy-embedding-preload.ts, which
+// configures the gateway to the shared LEGACY_EMBEDDING_CONFIG (OpenAI
+// 1536-d) for every `bun test` file — so the snapshot's baked vector(dims)
+// columns MUST match that shape, not the builder machine's ambient config
+// (nor the shipped 1280-d default an unconfigured gateway falls back to).
+// GBRAIN_HOME is still isolated so no other ambient config leaks in.
+import { configureGateway, getEmbeddingDimensions, getEmbeddingModel } from "../src/core/ai/gateway.ts";
+import { LEGACY_EMBEDDING_CONFIG } from "../test/helpers/legacy-embedding-config.ts";
+process.env.GBRAIN_HOME = mkdtempSync(join(tmpdir(), "gbrain-snapshot-hermetic-"));
+configureGateway({ ...LEGACY_EMBEDDING_CONFIG, env: { ...process.env } });
 
 import { PGLiteEngine, computeSnapshotSchemaHash } from "../src/core/pglite-engine.ts";
 import { MIGRATIONS } from "../src/core/migrate.ts";
@@ -41,10 +54,13 @@ async function main() {
   // W0 fix-wave (Tier-1 #16): idempotent short-circuit. Runners now call this
   // script UNCONDITIONALLY (build-if-missing left stale-but-present snapshots
   // permanently on the warn+slow path); a fresh snapshot exits in ~ms.
-  const isFresh = () =>
-    existsSync(fixturePath)
-    && existsSync(versionPath)
-    && readFileSync(versionPath, "utf-8").trim() === schemaHash;
+  const isFresh = () => {
+    if (!existsSync(fixturePath) || !existsSync(versionPath)) return false;
+    const lines = readFileSync(versionPath, "utf-8").trim().split("\n");
+    return lines[0] === schemaHash
+      && lines[1] === `dims=${getEmbeddingDimensions()}`
+      && lines[2] === `model=${getEmbeddingModel()}`;
+  };
   if (isFresh()) {
     console.log(`[build-pglite-snapshot] up to date (hash ${schemaHash.slice(0, 16)}...) — nothing to do`);
     return;
@@ -91,9 +107,11 @@ async function main() {
 
   // Write tar first, version LAST — the version file is the commit point, so
   // a crash between the writes leaves a stale-hash (ignored) snapshot, never
-  // a fresh-looking torn one.
+  // a fresh-looking torn one. Lines 2-3 record the embedding shape the
+  // snapshot was baked with; the loader refuses a shape-mismatched snapshot
+  // (the W0 1280-vs-1536 incident class).
   writeFileSync(fixturePath, buffer);
-  writeFileSync(versionPath, schemaHash + "\n");
+  writeFileSync(versionPath, `${schemaHash}\ndims=${getEmbeddingDimensions()}\nmodel=${getEmbeddingModel()}\n`);
   await engine.disconnect();
 
   console.log(`[build-pglite-snapshot] wrote ${fixturePath} (${buffer.length} bytes)`);

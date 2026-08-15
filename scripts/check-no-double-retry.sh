@@ -28,10 +28,11 @@ SCAN_ROOT="${GBRAIN_GUARD_ROOT:-src/}"
 #
 # W0 fix-wave (Tier-1 #11): the previous pattern used `[^)]*` between
 # `withRetry(` and `engine.`, which can never cross the `)` in `() =>` — so
-# the CANONICAL banned shape `withRetry(() => engine.addLinksBatch(...))`
-# was invisible and the guard had been permanently green since it shipped.
-# `.*` (line-bounded by grep) covers the arrow form, async arrows, and any
-# argument shape.
+# the CANONICAL banned shape (an arrow function wrapping the engine batch
+# call) was invisible and the guard had been permanently green since it
+# shipped. `.*` (line-bounded by grep) covers the arrow form, async arrows,
+# and any argument shape. (Spelled without the literal call token here —
+# check-system-of-record scans scripts/ comments too: the prose-bleed class.)
 PATTERN='withRetry\(.*engine\.(addLinksBatch|addTimelineEntriesBatch|upsertChunks)'
 
 # Single-line scan (covers ~95% of real cases).

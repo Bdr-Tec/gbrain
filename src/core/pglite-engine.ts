@@ -144,7 +144,32 @@ function tryLoadSnapshot(snapshotPath: string): Blob | null {
       return null;
     }
     const expectedHash = computeSnapshotSchemaHash(MIGRATIONS, PGLITE_SCHEMA_SQL, crypto);
-    const actualHash = fs.readFileSync(versionPath, 'utf8').trim();
+    const versionLines = fs.readFileSync(versionPath, 'utf8').trim().split('\n');
+    const actualHash = versionLines[0] ?? '';
+
+    // W0 fix-wave: the version file's dims=/model= lines record the embedding
+    // shape the snapshot was BAKED with. A snapshot whose vector(dims) columns
+    // differ from what THIS process would create poisons every embedding
+    // write ("expected 1280 dimensions, not 1536" — the W0 incident when the
+    // fixture went default-on). Resolve our would-be shape through the same
+    // gateway-with-default fallback initSchema uses and refuse a mismatch.
+    // Version files without the shape lines (pre-W0) are treated as stale.
+    let wantDims: number | string = DEFAULT_EMBEDDING_DIMENSIONS;
+    let wantModel: string = DEFAULT_EMBEDDING_MODEL;
+    try {
+      const gw = require('./ai/gateway.ts') as typeof import('./ai/gateway.ts'); // engine-dynamic-import-ok
+      wantDims = gw.getEmbeddingDimensions();
+      wantModel = gw.getEmbeddingModel();
+    } catch { /* gateway not configured — defaults, same as initSchema */ }
+    const shapeOk = versionLines[1] === `dims=${wantDims}` && versionLines[2] === `model=${wantModel}`;
+    if (!shapeOk) {
+      if (!_snapshotWarnLogged) {
+        // eslint-disable-next-line no-console
+        console.warn(`[pglite] snapshot embedding shape mismatch (want dims=${wantDims} model=${wantModel}, have ${versionLines[1] ?? 'none'} ${versionLines[2] ?? ''}) — using normal init. Rebuild with: bun run build:pglite-snapshot`);
+        _snapshotWarnLogged = true;
+      }
+      return null;
+    }
     if (expectedHash !== actualHash) {
       if (!_snapshotWarnLogged) {
         // eslint-disable-next-line no-console
