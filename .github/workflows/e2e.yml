@@ -103,6 +103,15 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
           # #3485 preload guard: this job intentionally tests against a DB.
           GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+      - name: Run engine parity suite
+        # The behavioral parity pin for the two engines (containment-sprint
+        # engine peels lean on it). Own invocation line: this suite has only
+        # ever run one-process-per-file via run-e2e.sh — do not fold it into
+        # the shared-process tier1 line above.
+        run: bun test --timeout=60000 test/e2e/engine-parity.test.ts
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
+          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
 
   tier2:
     name: Tier 2 (LLM Skills)
