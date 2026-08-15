@@ -8,10 +8,11 @@ All notable changes to GBrain will be documented in this file.
 every push; its long pole was a serial-test job that executed ~140 per-file bun
 processes strictly one-at-a-time even though the quarantine only ever required
 per-process isolation. This release pools that lane (8.5 min → ~4 min in CI,
-~2.5 min locally), wires the PGLite schema-snapshot fast-path into every CI
-runner (it previously existed but only the local loop used it), and rebalances
-the 10-shard matrix on freshly mined weights — a measured branch run landed the
-whole workflow at 255s. E2E stops spending real provider tokens on doc-only
+~2.5 min locally), wires the PGLite schema-snapshot fast-path into the CI test
+runners (it previously existed but only the local loop used it), and rebalances
+the 10-shard matrix on freshly mined weights (new files without a mined weight
+now fall back to the p75 file weight instead of the median) — a measured branch
+run landed the whole workflow at 255s. E2E stops spending real provider tokens on doc-only
 pushes (content-hash skip with nightly + manual-dispatch exemptions) and runs
 its tiers in parallel behind a fast broken-build spend gate.
 
