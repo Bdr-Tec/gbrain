@@ -304,6 +304,125 @@ describe('OpenClawRunner invoke env (shim — pins the shared-allowlist leak bar
   });
 });
 
+describe('GrokRunner detection (reliable on box without grok)', () => {
+  test('detect returns the contract shape when GROK_BIN unset', async () => {
+    const orig = process.env.GROK_BIN;
+    delete process.env.GROK_BIN;
+    try {
+      const { GrokRunner } = await import('../src/core/claw-test/runners/grok.ts');
+      const d = await new GrokRunner().detect();
+      expect(typeof d.available).toBe('boolean');
+      if (!d.available) expect(typeof d.reason).toBe('string');
+      else expect(d.binPath?.startsWith('/')).toBe(true);
+    } finally {
+      if (orig !== undefined) process.env.GROK_BIN = orig;
+    }
+  });
+
+  test('detect rejects relative GROK_BIN', async () => {
+    const orig = process.env.GROK_BIN;
+    process.env.GROK_BIN = 'relative/grok';
+    try {
+      const { GrokRunner } = await import('../src/core/claw-test/runners/grok.ts');
+      const d = await new GrokRunner().detect();
+      expect(d.available).toBe(false);
+      expect(d.reason).toMatch(/GROK_BIN must be absolute/);
+    } finally {
+      if (orig !== undefined) process.env.GROK_BIN = orig;
+      else delete process.env.GROK_BIN;
+    }
+  });
+
+  test("detect rejects '..' segments in GROK_BIN", async () => {
+    const orig = process.env.GROK_BIN;
+    process.env.GROK_BIN = '/tmp/foo/../grok';
+    try {
+      const { GrokRunner } = await import('../src/core/claw-test/runners/grok.ts');
+      const d = await new GrokRunner().detect();
+      expect(d.available).toBe(false);
+      expect(d.reason).toMatch(/'\.\.' segments/);
+    } finally {
+      if (orig !== undefined) process.env.GROK_BIN = orig;
+      else delete process.env.GROK_BIN;
+    }
+  });
+
+  test('detect rejects shell metacharacters in GROK_BIN (through-runner injection pin)', async () => {
+    // validateBinPathEnv's metachar branch is unit-tested directly below;
+    // this pins that a runner's detect() actually routes through it — the
+    // first through-runner coverage of the injection-relevant branch.
+    const orig = process.env.GROK_BIN;
+    process.env.GROK_BIN = '/tmp/gr"ok';
+    try {
+      const { GrokRunner } = await import('../src/core/claw-test/runners/grok.ts');
+      const d = await new GrokRunner().detect();
+      expect(d.available).toBe(false);
+      expect(d.reason).toMatch(/quotes, backslashes, dollar signs/);
+    } finally {
+      if (orig !== undefined) process.env.GROK_BIN = orig;
+      else delete process.env.GROK_BIN;
+    }
+  });
+});
+
+describe('GrokRunner invoke argv/env (shim — no grok binary needed)', () => {
+  test('argv is the pinned one-shot shape; GROK_HOME + XAI_API_KEY propagate; unlisted env does not', async () => {
+    const orig = {
+      GROK_BIN: process.env.GROK_BIN,
+      GROK_HOME: process.env.GROK_HOME,
+      XAI_API_KEY: process.env.XAI_API_KEY,
+      LEAK_CANARY: process.env.LEAK_CANARY,
+      GBRAIN_DATABASE_URL: process.env.GBRAIN_DATABASE_URL,
+    };
+    const shim = join(tmp, 'grok-shim');
+    // The runner first execs the shim with a version flag (the transcript
+    // preamble), then spawns the real turn — the shim answers both.
+    writeFileSync(shim, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "grok 9.9.9 (shimhash)"; exit 0; fi\nprintf "ARGV:%s\\n" "$@"\nprintf "GH:[%s] KEY:[%s] CANARY:[%s] DBURL:[%s]\\n" "$GROK_HOME" "$XAI_API_KEY" "$LEAK_CANARY" "$GBRAIN_DATABASE_URL"\n', 'utf-8');
+    chmodSync(shim, 0o755);
+    process.env.GROK_BIN = shim;
+    process.env.GROK_HOME = '/tmp/gh-canary-test';
+    // grok's documented headless auth path (docs/mcp/GROK-CLI-PIN.md): the
+    // grok delta must forward it or env-key operators get "Not signed in"
+    // blamed on the agent.
+    process.env.XAI_API_KEY = 'xai-sentinel-3fa1';
+    process.env.LEAK_CANARY = 'must-not-leak';
+    process.env.GBRAIN_DATABASE_URL = 'postgres://must-not-leak';
+    try {
+      const { GrokRunner } = await import('../src/core/claw-test/runners/grok.ts');
+      const chunks: Buffer[] = [];
+      const result = await new GrokRunner().invoke({
+        cwd: tmp,
+        brief: 'BRIEF BODY sentinel-9e4d',
+        env: {},
+        timeoutMs: 10_000,
+        transcriptSink: {
+          write: (e) => { if (e.channel === 'stdout') chunks.push(e.bytes); },
+          nextOffset: () => 0,
+          close: async () => {},
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      const stdout = Buffer.concat(chunks).toString('utf-8');
+      // Version preamble recorded as a plain stdout transcript event.
+      expect(stdout).toContain('[grok-runner preamble] version: grok 9.9.9 (shimhash)');
+      // Pinned argv: single-shot flag, brief, then plain output format
+      // (docs/mcp/GROK-CLI-PIN.md; permission flags deliberately absent
+      // pending the authed observation).
+      expect(stdout).toContain('ARGV:-p\nARGV:BRIEF BODY sentinel-9e4d\nARGV:--output-format\nARGV:plain');
+      // Allowlist held: the grok delta passes; the canary and the
+      // deliberately-delisted GBRAIN_DATABASE_URL don't.
+      expect(stdout).toContain('GH:[/tmp/gh-canary-test]');
+      expect(stdout).toContain('KEY:[xai-sentinel-3fa1]');
+      expect(stdout).toContain('CANARY:[] DBURL:[]');
+    } finally {
+      for (const [k, v] of Object.entries(orig)) {
+        if (v !== undefined) process.env[k] = v;
+        else delete process.env[k];
+      }
+    }
+  });
+});
+
 describe('validateBinPathEnv — shim-quoting hardening', () => {
   test('rejects quote/metacharacter values that would break out of the generated shim quoting', () => {
     // The value is interpolated single-quoted into sh shim scripts; each of

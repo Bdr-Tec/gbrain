@@ -1,8 +1,9 @@
 /**
  * AgentRunner — pluggable contract for invoking external agents (openclaw,
- * hermes, codex, …) inside the claw-test harness. Two implementations ship
- * (openclaw, hermes); the interface stays narrow and concrete so adding
- * another runner is a ~100-line file.
+ * hermes, grok, …) inside the claw-test harness. Three implementations ship
+ * (openclaw, hermes, grok); the interface stays narrow and concrete — with
+ * the shared detect/env helpers below, adding another runner is a ~50-line
+ * file plus one registerAgentRunner line.
  *
  * The harness wraps spawn/timeout/transcript-capture; runners only have to
  * answer "where's your binary?" and "how do I invoke it with this prompt?".
