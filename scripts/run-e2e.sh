@@ -198,6 +198,10 @@ for f in "${files[@]}"; do
   # files in their own job WITHOUT this wrapper (see .github/workflows/
   # e2e.yml tier2), so the cap only ever bit local runs: give them 4x.
   file_timeout="${GBRAIN_E2E_FILE_TIMEOUT:-180}"
+  # Digits-only validation (same strict positive-int posture as the TS env
+  # knobs): a malformed value falls back to the default instead of
+  # word-splitting into extra gtimeout arguments or breaking the 4x math.
+  case "$file_timeout" in ''|*[!0-9]*) file_timeout=180 ;; esac
   case "$f" in
     */skills.test.ts|*/zeroentropy-live.test.ts) file_timeout=$((file_timeout * 4)) ;;
   esac

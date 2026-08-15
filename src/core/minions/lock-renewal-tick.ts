@@ -104,7 +104,9 @@ export interface LockRenewalKnobs {
   maxFailuresForAudit: number;
   /**
    * Per-renewLock-call timeout enforced via `Promise.race`.
-   * Env: `GBRAIN_LOCK_RENEWAL_CALL_TIMEOUT_MS`. Default: `lockDuration / 3`.
+   * Env: `GBRAIN_LOCK_RENEWAL_CALL_TIMEOUT_MS`. Default: `min(lockDuration / 3, 15s)`
+   * (the cap keeps a long per-job lease from inheriting a call budget that
+   * wedges tickInFlight across cadence windows).
    * Bounds the "hung renewLock wedges the re-entrancy guard forever" vector.
    */
   callTimeoutMs: number;
@@ -113,7 +115,7 @@ export interface LockRenewalKnobs {
    * tick would land past it, the tick runs the at-deadline VERIFY renewal
    * (fenced re-check) instead of retrying blindly. The margin is the
    * headroom the verify has to complete before the lease actually lapses.
-   * Env: `GBRAIN_LOCK_RENEWAL_SAFETY_MARGIN_MS`. Default: `lockDuration / 6`.
+   * Env: `GBRAIN_LOCK_RENEWAL_SAFETY_MARGIN_MS`. Default: `min(lockDuration / 6, 30s)`.
    */
   safetyMarginMs: number;
   /**
@@ -155,10 +157,24 @@ export function _resetKnobWarningsForTests(): void {
  * operator who sets `GBRAIN_LOCK_RENEWAL_CALL_TIMEOUT_MS=abc` gets a
  * loud-but-not-fatal nudge AND a working worker.
  */
+/**
+ * The renewal cadence cap: a long lease renews every 60s (multiple chances
+ * per window, matching the cycle refresher's philosophy) instead of the
+ * bare lease/2. Leases ≤120s keep the legacy /2 exactly. ONE home for the
+ * formula — the worker's timer and resolveLockRenewalKnobs' default both
+ * derive from it, so the relational validation always runs against the
+ * cadence production actually uses.
+ */
+export const RENEWAL_INTERVAL_CAP_MS = 60_000;
+
+export function renewalIntervalFor(lockDurationMs: number): number {
+  return Math.max(1, Math.min(Math.floor(lockDurationMs / 2), RENEWAL_INTERVAL_CAP_MS));
+}
+
 export function resolveLockRenewalKnobs(
   env: Record<string, string | undefined>,
   lockDurationMs: number,
-  intervalMs: number = Math.max(1, Math.floor(lockDurationMs / 2)),
+  intervalMs: number = renewalIntervalFor(lockDurationMs),
 ): LockRenewalKnobs {
   const defaultMaxFailures = 3;
   // #4145: the derived defaults CAP at 15s/30s so a long per-job lease

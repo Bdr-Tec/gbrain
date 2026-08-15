@@ -3264,7 +3264,7 @@ describe('MinionWorker: inFlight generation-safety (#4145 R2-1)', () => {
 
 describe('MinionQueue: stall-sweep reclaim grace (#4145)', () => {
   async function activeJobWithLockLapsedMs(msAgo: number): Promise<MinionJob> {
-    const job = await queue.add('grace-test', {});
+    await queue.add('grace-test', {});
     const claimed = await queue.claim('tok-grace', 60000, 'default', ['grace-test']);
     await engine.executeRaw(
       `UPDATE minion_jobs SET lock_until = now() - ($1::double precision * interval '1 millisecond') WHERE id = $2`,
@@ -3311,6 +3311,25 @@ describe('MinionQueue: stall-sweep reclaim grace (#4145)', () => {
     expect(resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: '-5' })).toBe(DEFAULT_STALL_RECLAIM_GRACE_MS);
     expect(resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: 'abc' })).toBe(DEFAULT_STALL_RECLAIM_GRACE_MS);
   });
+
+  test('grace env warn fires once per bad value, not per call (warn-once dedupe)', async () => {
+    const { resolveStallReclaimGraceMs, _resetStallGraceWarningsForTests } =
+      await import('../src/core/minions/queue.ts');
+    _resetStallGraceWarningsForTests();
+    const captured: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as { write: (chunk: string | Uint8Array) => boolean }).write = (chunk) => {
+      captured.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    };
+    try {
+      resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: 'bogus' });
+      resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: 'bogus' });
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    expect(captured.filter(c => c.includes('GBRAIN_MINION_STALL_RECLAIM_GRACE_MS')).length).toBe(1);
+  });
 });
 
 // --- v0.46 (#4145): per-job lock_duration_ms — three-layer lease resolution ---
@@ -3347,6 +3366,71 @@ describe('MinionQueue: per-job lock lease (#4145)', () => {
 
     const ceiled = await queue.add('ceiling', {}, { lock_duration_ms: 99_999_999 });
     expect(ceiled.lock_duration_ms).toBe(3_600_000);
+  });
+
+  test('claim precedence: an explicit row lease beats the handler map at the claim UPDATE', async () => {
+    // The claim COALESCE is (row, map, worker default) in that order — if it
+    // were ever flipped (map before row) the explicit lease would be silently
+    // overwritten at claim while the add()-time tests stayed green.
+    await queue.add('subagent', {}, { lock_duration_ms: 120_000 }, { allowProtectedSubmit: true });
+    const before = Date.now();
+    const claimed = await queue.claim('tok-precedence', 30_000, 'default', ['subagent']);
+    expect(claimed!.lock_duration_ms).toBe(120_000); // row wins, not the 300s map
+    const horizon = claimed!.lock_until!.getTime() - before;
+    expect(horizon).toBeGreaterThan(90_000);
+    expect(horizon).toBeLessThan(150_000);
+  });
+
+  test('worker renews with the per-job lease, not the worker default (launchJob wiring)', async () => {
+    // GAP-1 pin: effectiveLockMs = row lease drives BOTH the renewal call's
+    // duration arg and the cadence. A 5s lease (clamp floor) under a worker
+    // configured at 60s yields a 2.5s cadence — observable within test time.
+    const worker = new MinionWorker(engine, { concurrency: 1, pollInterval: 50, lockDuration: 60_000 });
+    let release: () => void = () => {};
+    const gate = new Promise<void>(r => { release = r; });
+    worker.register('leased-renewal', async () => { await gate; return { ok: true }; });
+
+    await queue.add('leased-renewal', {}, { lock_duration_ms: 5_000 });
+    const claimed = await queue.claim('tok-lease-renew', 5_000, 'default', ['leased-renewal']);
+    expect(claimed!.lock_duration_ms).toBe(5_000);
+
+    const durs: number[] = [];
+    const q = (worker as unknown as { queue: MinionQueue }).queue;
+    const orig = q.renewLock.bind(q);
+    q.renewLock = ((id: number, tok: string, dur: number, opts?: { signal?: AbortSignal }) => {
+      durs.push(dur);
+      return orig(id, tok, dur, opts);
+    }) as typeof q.renewLock;
+
+    (worker as unknown as { launchJob(j: MinionJob, t: string): void }).launchJob(claimed!, 'tok-lease-renew');
+    // Cadence = min(5000/2, 60000) = 2500ms; wait for at least one tick.
+    const started = Date.now();
+    while (durs.length === 0 && Date.now() - started < 8_000) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    release();
+    await new Promise(r => setTimeout(r, 150));
+    expect(durs.length).toBeGreaterThanOrEqual(1);
+    // Every renewal used the per-job 5s lease — NOT the worker's 60s default.
+    expect(new Set(durs)).toEqual(new Set([5_000]));
+  });
+
+  test('MCP submit_job threads lock_duration_ms through the shared clamp (round-trip)', async () => {
+    const { operationsByName } = await import('../src/core/operations.ts');
+    const op = operationsByName['submit_job'];
+    const ctx = { engine, remote: false, dryRun: false } as never;
+
+    const clamped = await op.handler(ctx, { name: 'lease-op-test', lock_duration_ms: 99_999_999 }) as { id: number };
+    expect((await queue.getJob(clamped.id))!.lock_duration_ms).toBe(3_600_000); // ceiling
+
+    const exact = await op.handler(ctx, { name: 'lease-op-test', lock_duration_ms: 60_000 }) as { id: number };
+    expect((await queue.getJob(exact.id))!.lock_duration_ms).toBe(60_000);
+
+    // Boundary pin: 0 is falsy through the op's `|| undefined` coercion and
+    // falls to the handler-map/worker default (NULL for an unmapped name) —
+    // the documented remote semantics, distinct from the CLI's exit-1 reject.
+    const zero = await op.handler(ctx, { name: 'lease-op-test', lock_duration_ms: 0 }) as { id: number };
+    expect((await queue.getJob(zero.id))!.lock_duration_ms).toBeNull();
   });
 
   test('idempotent re-submit never mutates the first submitter\'s lease (INSERT-only)', async () => {

@@ -30,10 +30,12 @@ import { logLeasePressure } from './lease-pressure-audit.ts';
 import {
   runLockRenewalTick,
   resolveLockRenewalKnobs,
+  renewalIntervalFor,
   type LockRenewalDeps,
   type LockRenewalState,
   type TickResult,
 } from './lock-renewal-tick.ts';
+import { clampLockDurationMs } from './handler-timeouts.ts';
 import {
   runDbProbe,
   getConnectionRouting,
@@ -370,6 +372,10 @@ export class MinionWorker extends EventEmitter {
 
     await this.queue.ensureSchema();
     this.running = true;
+    // R2-9 lifecycle: (re-)enable the event-loop-delay histogram for this
+    // run; stop() disables it so embedding hosts / test suites that cycle
+    // start()/stop() don't leak a ~50Hz native sampling timer per instance.
+    try { this.eldHistogram?.enable(); } catch { /* fail-open */ }
 
     // Graceful shutdown. Fires shutdownAbort so handlers subscribed to
     // `ctx.shutdownSignal` (currently: shell handler) can run their own cleanup
@@ -829,6 +835,7 @@ export class MinionWorker extends EventEmitter {
   /** Stop the worker gracefully. */
   stop(): void {
     this.running = false;
+    try { this.eldHistogram?.disable(); } catch { /* fail-open */ }
   }
 
   /**
@@ -948,6 +955,20 @@ export class MinionWorker extends EventEmitter {
    * the process-level handler and crash the daemon.
    */
   /**
+   * One formatter for the classified abort telemetry (R2-7) so the
+   * should_abort warn and the 30s-later grace-evict line can never drift
+   * apart (they briefly did: `load1:` vs `load1_at_abort:`).
+   */
+  private formatAbortMeta(meta: Extract<TickResult, { kind: 'lock_lost' | 'should_abort' }>): string {
+    if (meta.kind === 'lock_lost') {
+      return `cause: ${meta.cause}, via: ${meta.via}`;
+    }
+    return `cause: ${meta.cause}, since_last_success_ms: ${Math.round(meta.sinceLastSuccessMs)}, ` +
+      `tick_lateness_ms: ${Math.round(meta.latenessMs)}, overlap_skips: ${meta.overlapSkips}` +
+      `${meta.load1 !== undefined ? `, load1: ${meta.load1.toFixed(2)}/${meta.cores} cores` : ''}`;
+  }
+
+  /**
    * Event-loop-delay sample for eviction log lines (CDX-1). The histogram
    * resets on every successful renewal (R2-9 via deps.onRenewalSuccess),
    * so these numbers attribute to the window since the last success —
@@ -991,8 +1012,16 @@ export class MinionWorker extends EventEmitter {
     // clamps to 60s so a 300s lease renews 5x per window (matching the
     // cycle refresher's multiple-chances philosophy) instead of the bare
     // lease/2 = every 150s; leases ≤120s keep the legacy /2 exactly.
-    const effectiveLockMs = job.lock_duration_ms ?? this.opts.lockDuration;
-    const renewalIntervalMs = Math.min(effectiveLockMs / 2, 60_000);
+    // Defense-in-depth: re-clamp the row value at consumption. The exposed
+    // submit surfaces already clamp, but the claim COALESCE trusts the row
+    // and the DB CHECK only enforces > 0 — a writer that bypasses add()
+    // (direct SQL repair, foreign tooling) could otherwise stamp a 1ms
+    // lease (renewal-storm setInterval) or a ~25-day one (weeks-long
+    // dead-worker pin).
+    const effectiveLockMs = job.lock_duration_ms != null
+      ? clampLockDurationMs(job.lock_duration_ms)
+      : this.opts.lockDuration;
+    const renewalIntervalMs = renewalIntervalFor(effectiveLockMs);
     const knobs = resolveLockRenewalKnobs(process.env, effectiveLockMs, renewalIntervalMs);
     const renewalState: LockRenewalState = {
       jobId: job.id,
@@ -1048,7 +1077,7 @@ export class MinionWorker extends EventEmitter {
                 abortMeta = result;
                 console.warn(
                   `Lock lost for job ${job.id}, aborting execution ` +
-                  `(cause: ${result.cause}, via: ${result.via}${this.formatEvictionTelemetry()})`,
+                  `(${this.formatAbortMeta(result)}${this.formatEvictionTelemetry()})`,
                 );
                 clearInterval(lockTimer);
                 abort.abort(new Error('lock-lost'));
@@ -1061,10 +1090,7 @@ export class MinionWorker extends EventEmitter {
                 // forensics — WHY renewal failed + was the loop starved.
                 console.warn(
                   `Lock renewal failed for job ${job.id} (${job.name}); aborting ` +
-                  `(cause: ${result.cause}, since_last_success_ms: ${Math.round(result.sinceLastSuccessMs)}, ` +
-                  `tick_lateness_ms: ${Math.round(result.latenessMs)}, overlap_skips: ${result.overlapSkips}` +
-                  `${result.load1 !== undefined ? `, load1: ${result.load1.toFixed(2)}/${result.cores} cores` : ''}` +
-                  `${this.formatEvictionTelemetry()})`,
+                  `(${this.formatAbortMeta(result)}${this.formatEvictionTelemetry()})`,
                 );
                 clearInterval(lockTimer);
                 abort.abort(new Error(result.reason));
@@ -1104,11 +1130,7 @@ export class MinionWorker extends EventEmitter {
           // R2-7: abortMeta carries the tick's classified cause + starvation
           // telemetry captured AT abort time — the Error string alone would
           // make this line read like an orphan leak (the #4145 forensics trap).
-          const meta = abortMeta === null ? '' : abortMeta.kind === 'lock_lost'
-            ? ` (cause: ${abortMeta.cause}, via: ${abortMeta.via})`
-            : ` (cause: ${abortMeta.cause}, since_last_success_ms: ${Math.round(abortMeta.sinceLastSuccessMs)}, ` +
-              `tick_lateness_ms: ${Math.round(abortMeta.latenessMs)}, overlap_skips: ${abortMeta.overlapSkips}` +
-              `${abortMeta.load1 !== undefined ? `, load1_at_abort: ${abortMeta.load1.toFixed(2)}/${abortMeta.cores} cores` : ''})`;
+          const meta = abortMeta === null ? '' : ` (${this.formatAbortMeta(abortMeta)})`;
           console.warn(
             `Job ${job.id} (${job.name}) did not exit within 30s of abort (reason: ${reason}).${meta} ` +
             `Force-evicting from inFlight to unblock worker. ` +
