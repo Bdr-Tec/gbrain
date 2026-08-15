@@ -215,10 +215,16 @@ describe('opencodeEntryKind — the ownership arbiter truth table', () => {
     { label: 'local non-gbrain command', entry: { type: 'local', command: ['npx', 'other-mcp'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'foreign' },
     { label: 'local gbrain command but NO GBRAIN_SOURCE', entry: { type: 'local', command: ['gbrain', 'serve'], environment: {} }, expectArg: { sourceId: 'ws-a' }, want: 'foreign' },
     { label: 'local gbrain-prefixed foreign binary is NOT ours', entry: { type: 'local', command: ['/opt/bin/gbrainy', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { sourceId: 'ws-a' }, want: 'foreign' },
+    // kind mismatch (red-team): a remote expectation finding a LOCAL gbrain
+    // entry (and vice versa) is ANOTHER lane's registration — never a silent
+    // same-source match (which would replace it, and --remove would delete it).
+    { label: 'local entry + remote expectation (url) → ours-other-source, never silently replaceable', entry: { type: 'local', command: ['gbrain', 'serve'], environment: { GBRAIN_SOURCE: 'ws-a' } }, expectArg: { url: 'http://h:1/mcp' }, want: 'ours-other-source' },
+    { label: 'remote env-interpolated entry + local expectation (sourceId) → ours-other-source', entry: { type: 'remote', url: 'http://h:9/mcp', headers: { Authorization: 'Bearer {env:GBRAIN_REMOTE_TOKEN}' } }, expectArg: { sourceId: 'ws-a' }, want: 'ours-other-source' },
     // remote
     { label: 'remote url matches receipt', entry: { type: 'remote', url: 'http://h:1/mcp', headers: { Authorization: 'Bearer abc' } }, expectArg: { url: 'http://h:1/mcp' }, want: 'ours-same-source' },
     { label: 'remote url differs from receipt, opaque token', entry: { type: 'remote', url: 'http://h:2/mcp', headers: { Authorization: 'Bearer abc' } }, expectArg: { url: 'http://h:1/mcp' }, want: 'foreign' },
     { label: 'remote env-interpolated token, no receipt → connect-lane ours', entry: { type: 'remote', url: 'http://h:9/mcp', headers: { Authorization: 'Bearer {env:GBRAIN_REMOTE_TOKEN}' } }, expectArg: {}, want: 'ours-same-source' },
+    { label: 'remote env-interpolated token + expect url DIFFERENT from entry url → ours-other-source', entry: { type: 'remote', url: 'http://h:9/mcp', headers: { Authorization: 'Bearer {env:GBRAIN_REMOTE_TOKEN}' } }, expectArg: { url: 'http://h:1/mcp' }, want: 'ours-other-source' },
     { label: 'remote plain foreign', entry: { type: 'remote', url: 'https://other.example/mcp', headers: {} }, expectArg: {}, want: 'foreign' },
     // degenerate shapes
     { label: 'unknown type', entry: { type: 'websocket', url: 'x' }, expectArg: {}, want: 'foreign' },
@@ -343,6 +349,19 @@ describe('remove', () => {
     expect(() => removeOpencodeMcpEntry(cfg(), 'gbrain')).toThrow(/refusing to remove/);
     expect(readFileSync(cfg(), 'utf8')).toContain('npx');
   });
+
+  test('skipOtherSource: a DIFFERENT workspace\'s entry is left in place with a note (uninstall-sweep shape)', () => {
+    const before = '{"mcp":{"gbrain":{"type":"local","command":["gbrain","serve"],"environment":{"GBRAIN_SOURCE":"ws-b"}}}}';
+    writeFileSync(cfg(), before);
+    const r = removeOpencodeMcpEntry(cfg(), 'gbrain', { sourceId: 'ws-a' }, { skipOtherSource: true });
+    expect(r.removed).toBe(false);
+    expect(r.notes.join(' ')).toMatch(/DIFFERENT gbrain workspace.*left in place/);
+    expect(readFileSync(cfg(), 'utf8')).toBe(before);
+    // Without the flag the pre-existing behavior holds: removed with a note.
+    const r2 = removeOpencodeMcpEntry(cfg(), 'gbrain', { sourceId: 'ws-a' });
+    expect(r2.removed).toBe(true);
+    expect(r2.notes.join(' ')).toContain('different workspace');
+  });
 });
 
 describe('misc', () => {
@@ -354,5 +373,27 @@ describe('misc', () => {
     const snippet = opencodeEntrySnippet(localEntry());
     const parsed = JSON.parse(snippet) as { mcp: Record<string, { type: string }> };
     expect(parsed.mcp.gbrain.type).toBe('local');
+  });
+
+  test('snippet NEVER embeds an inline bearer — placeholder only (error paths render the snippet)', () => {
+    const snippet = opencodeEntrySnippet(remoteInline());
+    expect(snippet).not.toContain('gbt_secret_token_1');
+    expect(snippet).toContain('Bearer <paste-token-here>');
+    // The write path is unaffected: the real token still lands in the file.
+    writeOpencodeMcpEntry(cfg(), remoteInline());
+    expect(readFileSync(cfg(), 'utf8')).toContain('gbt_secret_token_1');
+  });
+
+  test('parse-refusal error text carries the placeholder snippet, not the token', () => {
+    writeFileSync(cfg(), '{"mcp": {{{');
+    let message = '';
+    try {
+      writeOpencodeMcpEntry(cfg(), remoteInline());
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/does not parse as JSONC/);
+    expect(message).toContain('<paste-token-here>');
+    expect(message).not.toContain('gbt_secret_token_1');
   });
 });

@@ -943,6 +943,37 @@ describe('opencode harness target (managed JSONC entry)', () => {
     expect(f.out.join('\n') + f.err.join('\n')).toMatch(/rolled back to the previous opencode config/);
   });
 
+  test('[X5] smoke failure on a RE-APPLY rolls the opencode config back byte-for-byte (codex-lane mirror)', async () => {
+    const f = makeFake();
+    expect(await applyHarness(flags(['--harness', 'opencode']), f.deps)).toBe(0); // entry with TOKEN_A
+    const preRun = readFileSync(f.opencodeConfig, 'utf8');
+    const f2deps: HarnessDeps = {
+      ...f.deps,
+      probeIdentity: async () => ({ ok: false, reason: 'unreachable', message: 'boom' }),
+    };
+    expect(await applyHarness(flags(['--harness', 'opencode']), f2deps)).toBe(1); // mints B, smoke fails
+    expect(readFileSync(f.opencodeConfig, 'utf8')).toBe(preRun); // TOKEN_A entry restored, byte-identical
+    // The OLD token (ID_A) stays live and wired; the FRESH mint (ID_B) — sent
+    // to the unverified endpoint — is retired immediately.
+    expect(f.revoked).toEqual([ID_B]);
+  });
+
+  test('a corrupt opencode config fails the target WITHOUT leaking the minted bearer (snippet placeholder + redaction)', async () => {
+    const f = makeFake();
+    writeFileSync(f.opencodeConfig, '{"mcp": {{{');
+    expect(await applyHarness(flags(['--harness', 'opencode']), f.deps)).toBe(1);
+    const err = f.err.join('\n');
+    expect(err).toMatch(/does not parse as JSONC/);
+    expect(err).not.toContain(TOKEN_A); // neither the snippet nor the message may carry the mint
+    const state = readHarnessReceiptState(f.home);
+    const t = (state as { receipt: { targets: Array<{ host: string; state: string; error?: string }> } }).receipt.targets.find(
+      (x) => x.host === 'opencode',
+    );
+    expect(t?.state).toBe('failed');
+    expect(t?.error ?? '').not.toContain(TOKEN_A); // the receipt is durable — no token in it either
+    expect(readFileSync(f.opencodeConfig, 'utf8')).toBe('{"mcp": {{{'); // untouched
+  });
+
   test('--status recovers the bearer from the opencode entry (url-matched) and verifies it', async () => {
     const f = makeFake();
     expect(await applyHarness(flags(['--harness', 'opencode']), f.deps)).toBe(0);

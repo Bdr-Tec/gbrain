@@ -536,6 +536,30 @@ describe('opencodeChildEnv — XDG redirection + explicit anthropic re-admission
   });
 });
 
+describe('CI credential scrub — no door agent child ever sees the workflow/OIDC tokens (5a-core factory)', () => {
+  test('GITHUB_TOKEN, ACTIONS_RUNTIME_TOKEN, ACTIONS_ID_TOKEN_REQUEST_TOKEN are deleted for EVERY agent child env', async () => {
+    await withEnv({
+      GITHUB_TOKEN: 'ghs_must-not-leak', // rides the GITHUB_ prefix allowlist without the scrub
+      ACTIONS_RUNTIME_TOKEN: 'art-must-not-leak',
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'oidc-must-not-leak',
+      GITHUB_ACTIONS: 'true',
+    }, () => {
+      const envs: Array<[string, NodeJS.ProcessEnv]> = [
+        ['hermes', hermesChildEnv('/tmp/agent-cred-scrub')],
+        ['grok', grokChildEnv('/tmp/agent-cred-scrub')],
+        ['opencode', opencodeChildEnv('/tmp/agent-cred-scrub')],
+      ];
+      for (const [label, env] of envs) {
+        expect(`${label}:${env.GITHUB_TOKEN ?? ''}`).toBe(`${label}:`);
+        expect(`${label}:${env.ACTIONS_RUNTIME_TOKEN ?? ''}`).toBe(`${label}:`);
+        expect(`${label}:${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN ?? ''}`).toBe(`${label}:`);
+        // Benign CI metadata still flows — the scrub is credential-shaped, not prefix-wide.
+        expect(env.GITHUB_ACTIONS).toBe('true');
+      }
+    });
+  });
+});
+
 describe('hasOpencodeAuth — the PAID leg gate only (keyless free tier carries the core SMOKE)', () => {
   test('non-empty ANTHROPIC_API_KEY (or its GSTACK_ promotion) → true; blank/absent → false', async () => {
     await withEnv({ ANTHROPIC_API_KEY: 'ant-key', GSTACK_ANTHROPIC_API_KEY: undefined }, () => {

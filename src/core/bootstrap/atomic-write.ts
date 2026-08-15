@@ -6,7 +6,8 @@
  * Semantics, hardened for shared user-scope targets [C10 / X11]:
  * - The SYMLINK TARGET is resolved first so a dotfile-manager-linked config
  *   survives as a link (a bare rename would replace the link with a regular
- *   file).
+ *   file). DANGLING links are resolved too (readlink, hop by hop): the write
+ *   creates the missing target and the link survives.
  * - tmp file uses a random suffix and inherits the EXISTING file's mode; a
  *   fresh file takes `freshMode` (caller's convention — secret-bearing
  *   targets pass 0o600). `forceMode` overrides both (codex-toml forces 0600
@@ -22,20 +23,45 @@ import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
+
+/** Resolve the write target through symlinks, INCLUDING dangling ones.
+ * existsSync follows symlinks, so a DANGLING link reads "absent" and a bare
+ * rename would replace the link itself with a regular file — instead the
+ * link text is resolved hop by hop (relative to each link's dir, bounded
+ * against loops) and the write lands at the final target, preserving the
+ * link the same way the live-symlink realpath branch does. */
+function resolveWriteTarget(path: string): string {
+  if (existsSync(path)) return realpathSync(path); // live file / live symlink chain
+  let target = path;
+  for (let hops = 0; hops < 40; hops++) {
+    let st;
+    try {
+      st = lstatSync(target);
+    } catch {
+      return target; // truly absent — fresh-file target
+    }
+    if (!st.isSymbolicLink()) return target;
+    const linkText = readlinkSync(target);
+    target = isAbsolute(linkText) ? linkText : resolve(dirname(target), linkText);
+  }
+  return target; // pathological loop — bounded, last hop wins
+}
 
 export function atomicWriteTextFile(
   path: string,
   text: string,
   opts?: { freshMode?: number; forceMode?: number },
 ): void {
-  const target = existsSync(path) ? realpathSync(path) : path;
+  const target = resolveWriteTarget(path);
   mkdirSync(dirname(target), { recursive: true });
   let mode: number | undefined;
   if (opts?.forceMode !== undefined) {

@@ -962,4 +962,39 @@ describe('opencode lane', () => {
     expect(r.exitCode).toBe(1);
     expect(r.err.join('\n')).toMatch(/connector-style agents/);
   });
+
+  test('--install non-TTY without --yes → exit 1, requires --yes, writer NEVER called', async () => {
+    let called = false;
+    const r = await runWithExitCapture(
+      ['https://brain.example.com/mcp', '--token', 'gbrain_tok', '--agent', 'opencode', '--install'],
+      installDeps({
+        isTTY: () => false,
+        writeOpencodeRemoteEntry: () => {
+          called = true;
+          return { configPath: '/tmp/xdg/opencode/opencode.jsonc', replacedPrior: false };
+        },
+      }),
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.err.join('\n')).toMatch(/requires --yes/);
+    expect(called).toBe(false);
+  });
+
+  test('--install TTY prompt declined → Aborted, writer NEVER called', async () => {
+    let called = false;
+    const r = await runWithExitCapture(
+      ['https://brain.example.com/mcp', '--token', 'gbrain_tok', '--agent', 'opencode', '--install'],
+      installDeps({
+        isTTY: () => true,
+        promptYesNo: async () => false,
+        writeOpencodeRemoteEntry: () => {
+          called = true;
+          return { configPath: '/tmp/xdg/opencode/opencode.jsonc', replacedPrior: false };
+        },
+      }),
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.err.join('\n')).toMatch(/Aborted/);
+    expect(called).toBe(false);
+  });
 });

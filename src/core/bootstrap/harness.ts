@@ -1,8 +1,8 @@
 /**
  * harness.ts — `gbrain bootstrap harness` (#4043): default brain wiring for
  * agent-framework-driven coding (a downstream framework spawning Claude Code
- * `claude -p` / codex exec on a box that already hosts a brain + a running
- * `gbrain serve --http`).
+ * `claude -p` / codex exec / opencode run on a box that already hosts a brain
+ * + a running `gbrain serve --http`).
  *
  * What it wires, per harness:
  * - Claude Code: user-scope HTTP MCP registration (`claude mcp add --scope
@@ -40,7 +40,7 @@
  *   revoke defers with a typed message under a live PGLite serve.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { VERSION } from '../../version.ts';
@@ -70,6 +70,7 @@ import {
   type HarnessReceipt,
   type HarnessTarget,
 } from './format.ts';
+import { atomicWriteTextFile } from './atomic-write.ts';
 import {
   removeCodexHttpServerBlock,
   writeCodexHttpServerBlock,
@@ -1059,7 +1060,10 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
           'reads config at session start.',
       );
     } catch (e) {
-      failTarget(t, e instanceof Error ? e.message : String(e));
+      // Redaction parity with the claude lane: the writer's refusal messages
+      // can embed a paste-by-hand snippet, and the receipt + stderr must
+      // never carry the live bearer under any error shape.
+      failTarget(t, redactToken(e instanceof Error ? e.message : String(e), token));
     }
   }
 
@@ -1116,7 +1120,9 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
         const rbLock = await acquireBootstrapLock(dirname(codexRollback.path)); // [X11] parity
         try {
           if (codexRollback.backupPath && existsSync(codexRollback.backupPath)) {
-            copyFileSync(codexRollback.backupPath, codexRollback.path);
+            // Atomic restore: a crash mid-copy must never leave a torn config
+            // (the backup carries the previous bearer — 0600 stays forced).
+            atomicWriteTextFile(codexRollback.path, readFileSync(codexRollback.backupPath, 'utf8'), { forceMode: 0o600 });
           } else if (!codexRollback.replacedPrior) {
             removeCodexHttpServerBlock(codexRollback.path, flags.name);
           }
@@ -1134,7 +1140,8 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
         const rbLock = await acquireBootstrapLock(dirname(opencodeRollback.path)); // [X11] parity
         try {
           if (opencodeRollback.backupPath && existsSync(opencodeRollback.backupPath)) {
-            copyFileSync(opencodeRollback.backupPath, opencodeRollback.path);
+            // Atomic restore (codex-lane parity): never a torn config mid-crash.
+            atomicWriteTextFile(opencodeRollback.path, readFileSync(opencodeRollback.backupPath, 'utf8'), { forceMode: 0o600 });
           } else if (!opencodeRollback.replacedPrior) {
             removeOpencodeMcpEntry(opencodeRollback.path, flags.name, { url });
           }

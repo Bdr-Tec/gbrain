@@ -37,10 +37,13 @@
  */
 
 import { execFileSync } from 'child_process';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { ConnectProbeResult } from '../core/connect-probe.ts';
 import { probeBrainIdentity, DEFAULT_PROBE_TIMEOUT_MS } from '../core/connect-probe.ts';
 import { opencodeGlobalConfigPath } from '../core/bootstrap/host-specs.ts';
-import { writeOpencodeMcpEntry } from '../core/bootstrap/opencode-json.ts';
+import { acquireBootstrapLock } from '../core/bootstrap/lock.ts';
+import { GBRAIN_REMOTE_TOKEN_ENV, writeOpencodeMcpEntry } from '../core/bootstrap/opencode-json.ts';
 import { promptLine } from '../core/cli-util.ts';
 import {
   NAME_RE,
@@ -77,7 +80,9 @@ export {
   type UrlResult,
 } from '../core/mcp-registration.ts';
 
-export const ENV_VAR = 'GBRAIN_REMOTE_TOKEN';
+// Defined from the writer's exported constant so the printed interpolation and
+// the ownership fingerprint literal ({env:GBRAIN_REMOTE_TOKEN}) cannot drift.
+export const ENV_VAR = GBRAIN_REMOTE_TOKEN_ENV;
 export const PLACEHOLDER_TOKEN = '<paste-your-token>';
 export const PLACEHOLDER_SECRET = '<paste-your-client-secret>';
 export const DEFAULT_NAME = 'gbrain';
@@ -98,7 +103,9 @@ interface AgentSpec {
 export const AGENT_SPECS: Record<AgentId, AgentSpec> = {
   'claude-code': { id: 'claude-code', label: 'Claude Code', binary: 'claude', installable: true, supportsOAuth: false },
   codex: { id: 'codex', label: 'Codex', binary: 'codex', installable: true, supportsOAuth: false },
-  opencode: { id: 'opencode', label: 'opencode', binary: 'opencode', installable: true, supportsOAuth: false },
+  // No `binary`: the opencode --install lane never execs a CLI (direct JSONC
+  // write), and it branches before the exec lane's `spec.binary` read.
+  opencode: { id: 'opencode', label: 'opencode', installable: true, supportsOAuth: false },
   perplexity: { id: 'perplexity', label: 'Perplexity Computer', installable: false, supportsOAuth: true },
   generic: { id: 'generic', label: 'your agent', installable: false, supportsOAuth: true },
 };
@@ -406,8 +413,13 @@ export interface ConnectDeps {
   registerOAuthClient(name: string, scopes: string): RegisterResult;
   /** opencode --install lane: direct JSONC write of a remote entry carrying
    * the literal `{env:GBRAIN_REMOTE_TOKEN}` interpolation (no binary execed,
-   * no token on disk). Throws on a foreign same-name entry. */
-  writeOpencodeRemoteEntry(name: string, url: string): { configPath: string; replacedPrior: boolean };
+   * no token on disk). Throws on a foreign same-name entry. May be async: the
+   * default impl serializes on the config-dir bootstrap lock (the writer
+   * contract); sync test fakes remain assignable. */
+  writeOpencodeRemoteEntry(
+    name: string,
+    url: string,
+  ): { configPath: string; replacedPrior: boolean } | Promise<{ configPath: string; replacedPrior: boolean }>;
 }
 
 async function defaultPromptYesNo(question: string): Promise<boolean> {
@@ -465,13 +477,24 @@ const defaultDeps: ConnectDeps = {
   probe: (url, token, timeoutMs) => probeBrainIdentity(url, token, { timeoutMs }),
   env: (name) => process.env[name],
   registerOAuthClient: defaultRegisterOAuthClient,
-  writeOpencodeRemoteEntry: (name, url) => {
-    const r = writeOpencodeMcpEntry(
-      opencodeGlobalConfigPath(),
-      { kind: 'remote', name, url, tokenMode: 'env' },
-      { expect: { url } },
-    );
-    return { configPath: r.configPath, replacedPrior: r.replacedPrior };
+  writeOpencodeRemoteEntry: async (name, url) => {
+    // The writer's contract: callers hold acquireBootstrapLock on the config
+    // dir (harness.ts [X11] parity) — the user-global file is shared across
+    // workspaces and homes, so concurrent gbrain writers serialize here.
+    const configPath = opencodeGlobalConfigPath();
+    const cfgDir = dirname(configPath);
+    mkdirSync(cfgDir, { recursive: true }); // the lock needs the dir; the writer mkdirs later anyway
+    const lock = await acquireBootstrapLock(cfgDir);
+    try {
+      const r = writeOpencodeMcpEntry(
+        configPath,
+        { kind: 'remote', name, url, tokenMode: 'env' },
+        { expect: { url } },
+      );
+      return { configPath: r.configPath, replacedPrior: r.replacedPrior };
+    } finally {
+      lock.release();
+    }
   },
 };
 
@@ -665,7 +688,7 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
     }
     let w: { configPath: string; replacedPrior: boolean };
     try {
-      w = deps.writeOpencodeRemoteEntry(f.name, url);
+      w = await deps.writeOpencodeRemoteEntry(f.name, url);
     } catch (e) {
       fail(redactToken((e as Error).message, realToken));
     }

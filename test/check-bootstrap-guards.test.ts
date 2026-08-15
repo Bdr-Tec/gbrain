@@ -805,6 +805,74 @@ describe('check-opencode-pin.sh', () => {
       expect(r.out).toContain('npm_version stamp');
     });
   });
+
+  test('FAIL: linux platform-integrity stamps must match the job env (missing AND drifted)', () => {
+    const stampsWithLinux = [
+      OPENCODE_PIN_STAMPS_NPM,
+      '<!-- opencode-pin: npm_linux_x64_integrity=sha512-X64= -->',
+      '<!-- opencode-pin: npm_linux_arm64_integrity=sha512-ARM= -->',
+    ].join('\n');
+    // Missing from the job env → fail.
+    withFixture({
+      'docs/mcp/OPENCODE-CLI-PIN.md': `# pin\n${stampsWithLinux}\n`,
+      '.github/workflows/heavy-tests.yml': opencodeDoorWorkflow(OPENCODE_NPM_ENV_OK),
+    }, (dir) => {
+      const r = runOpencodePinGuard(dir);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('OPENCODE_NPM_LINUX_X64_INTEGRITY');
+    });
+    // Present but drifted → fail.
+    withFixture({
+      'docs/mcp/OPENCODE-CLI-PIN.md': `# pin\n${stampsWithLinux}\n`,
+      '.github/workflows/heavy-tests.yml': opencodeDoorWorkflow([
+        ...OPENCODE_NPM_ENV_OK,
+        'OPENCODE_NPM_LINUX_X64_INTEGRITY: "sha512-X64="',
+        'OPENCODE_NPM_LINUX_ARM64_INTEGRITY: "sha512-DRIFT="',
+      ]),
+    }, (dir) => {
+      const r = runOpencodePinGuard(dir);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('drift');
+    });
+    // Both matching → ok.
+    withFixture({
+      'docs/mcp/OPENCODE-CLI-PIN.md': `# pin\n${stampsWithLinux}\n`,
+      '.github/workflows/heavy-tests.yml': opencodeDoorWorkflow([
+        ...OPENCODE_NPM_ENV_OK,
+        'OPENCODE_NPM_LINUX_X64_INTEGRITY: "sha512-X64="',
+        'OPENCODE_NPM_LINUX_ARM64_INTEGRITY: "sha512-ARM="',
+      ]),
+    }, (dir) => {
+      const r = runOpencodePinGuard(dir);
+      expect(r.out).toContain('check-opencode-pin: ok');
+      expect(r.status).toBe(0);
+    });
+  });
+
+  test('FAIL: a second OPENCODE_VERSION copy elsewhere in the workflow disagreeing with the stamp', () => {
+    // The real workflow carries a second OPENCODE_VERSION in the
+    // real-agent-e2e job — every copy must move with the stamp.
+    const workflow = [
+      'jobs:',
+      '  real-agent-e2e:',
+      '    env:',
+      '      OPENCODE_VERSION: "1.18.19"', // drifted second copy
+      '    steps: []',
+      '  opencode-door:',
+      '    env:',
+      ...OPENCODE_NPM_ENV_OK.map((l) => `      ${l}`),
+      '    steps: []',
+      '',
+    ].join('\n');
+    withFixture({
+      'docs/mcp/OPENCODE-CLI-PIN.md': `# pin\n${OPENCODE_PIN_STAMPS_NPM}\n`,
+      '.github/workflows/heavy-tests.yml': workflow,
+    }, (dir) => {
+      const r = runOpencodePinGuard(dir);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('every copy in the workflow moves with the stamp');
+    });
+  });
 });
 
 // ── check-pin-doc-privacy.sh ─────────────────────────────────────────────────

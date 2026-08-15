@@ -187,6 +187,12 @@ export function opencodeEntryKind(
         ? (env as Record<string, unknown>).GBRAIN_SOURCE
         : undefined;
     if (typeof src !== 'string' || src === '') return 'foreign';
+    // Kind mismatch (red-team): a caller expecting a REMOTE entry (harness /
+    // connect lanes pass expect.url) that finds a LOCAL gbrain entry is
+    // looking at ANOTHER lane's registration (the workspace stdio lane's) —
+    // never `ours-same-source`, or a silent replace (and a later --remove)
+    // would eat it. `ours-other-source` fires the refuse/confirm machinery.
+    if (expect.url !== undefined) return 'ours-other-source';
     if (expect.sourceId === undefined) return 'ours-same-source';
     return src === expect.sourceId ? 'ours-same-source' : 'ours-other-source';
   }
@@ -200,8 +206,13 @@ export function opencodeEntryKind(
         : undefined;
     if (typeof auth === 'string' && auth.includes(ENV_INTERPOLATION)) {
       // Only the gbrain connect lane writes the {env:GBRAIN_REMOTE_TOKEN}
-      // interpolation — unambiguously ours even without a receipt url.
-      return expect.url === undefined ? 'ours-same-source' : 'ours-other-source';
+      // interpolation — unambiguously ours even without a receipt url. But a
+      // url mismatch (another serve) OR a LOCAL expectation (expect.sourceId
+      // — the workspace stdio lane; the kind-mismatch mirror of the local
+      // branch above) is another lane's wiring: ours-other-source.
+      return expect.url === undefined && expect.sourceId === undefined
+        ? 'ours-same-source'
+        : 'ours-other-source';
     }
     return 'foreign';
   }
@@ -232,9 +243,18 @@ function entryValue(entry: OpencodeMcpEntry): Record<string, unknown> {
   };
 }
 
-/** Copy-pasteable snippet for the refusal paths (the user is never stranded). */
+/** Copy-pasteable snippet for the refusal paths (the user is never stranded).
+ * SECURITY: an inline bearer is substituted with a literal placeholder — the
+ * snippet rides thrown error messages (parse refusal, foreign refusal), and an
+ * error path must never embed the real secret in text that lands in logs,
+ * receipts, or stderr. Only the human-facing snippet changes; the write path
+ * still renders the real token. */
 export function opencodeEntrySnippet(entry: OpencodeMcpEntry): string {
-  return JSON.stringify({ mcp: { [entry.name]: entryValue(entry) } }, null, 2);
+  const safe: OpencodeMcpEntry =
+    entry.kind === 'remote' && entry.tokenMode === 'inline'
+      ? { ...entry, bearerToken: '<paste-token-here>' }
+      : entry;
+  return JSON.stringify({ mcp: { [safe.name]: entryValue(safe) } }, null, 2);
 }
 
 function assertEntryName(name: string): void {
@@ -355,11 +375,15 @@ export function writeOpencodeMcpEntry(
  * Remove the managed entry (fingerprint-keyed; everything else survives
  * byte-for-byte). Absent file / absent entry are calm no-ops. Foreign
  * entries refuse — removal never deletes what gbrain does not own.
+ * `skipOtherSource` turns an `ours-other-source` match into a calm skip-with-
+ * note instead of a removal (the uninstall sweep passes it: a gbrain entry
+ * from a DIFFERENT workspace is not this uninstall's to delete).
  */
 export function removeOpencodeMcpEntry(
   configPath: string,
   name: string,
   expect: OpencodeEntryExpectation = {},
+  opts: { skipOtherSource?: boolean } = {},
 ): RemoveOpencodeEntryResult {
   assertEntryName(name);
   const notes: string[] = [];
@@ -377,6 +401,16 @@ export function removeOpencodeMcpEntry(
     throw new Error(
       `mcp.${name} in ${configPath} is not a gbrain-managed entry — refusing to remove it.`,
     );
+  }
+  if (kind === 'ours-other-source' && opts.skipOtherSource) {
+    return {
+      configPath,
+      removed: false,
+      backupPath: null,
+      notes: [
+        `mcp.${name} in ${configPath} belongs to a DIFFERENT gbrain workspace (source mismatch) — left in place.`,
+      ],
+    };
   }
   if (kind === 'ours-other-source') {
     notes.push('removed a gbrain registration that pointed at a different workspace (source mismatch).');

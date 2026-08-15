@@ -6124,3 +6124,22 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   `scripts/check-pin-doc-privacy.sh` (in `bun run verify` + guards-manifest,
   fixture-tested) asserts every `docs/mcp/*-CLI-PIN.md` uses placeholder paths
   and carries no key-shaped material or non-example emails.
+- [ ] **P3 — opencode-door npm view-vs-install TOCTOU.** The door job checks
+  `npm view … dist.integrity` against the pin, then runs a separate
+  `npm install -g` — a registry that swaps payloads between the two calls
+  defeats the check. Verify the downloaded tarball bytes locally (`npm pack`
+  + sha512 over the tarball) before install, mirroring the hermes byte-pin.
+  Effort: S/M.
+- [ ] **P3 — `opencode mcp list` probe spawns project-config servers.** The
+  runHooks registration probe runs from the invoking cwd, and opencode spawns
+  project-config-defined servers with NO trust gate — a hostile opencode.json
+  anywhere in cwd..git-root gets code execution from a gbrain install probe.
+  Consider skipping the live probe when a project opencode.json exists in
+  cwd..git-root, or running the probe from a scratch cwd. Effort: S.
+- [ ] **P3 — dedupe the opencode read→parse→classify dance.** The
+  read-config → parseOpencodeConfig → opencodeEntryKind sequence is spelled
+  three times (bootstrap.ts runHooks pre-check, harness.ts apply expectUrl
+  fallback, harness.ts remove ownership check); extract a
+  `classifyOpencodeEntryAt(path, name, expect)` helper and drop the
+  double-printed other-source warning (the caller AND the writer note it).
+  Effort: S.

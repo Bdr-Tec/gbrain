@@ -28,7 +28,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { VERSION } from '../version.ts';
 import { loadConfig, loadConfigFileOnly, toEngineConfig } from '../core/config.ts';
@@ -77,9 +77,10 @@ import {
   statusHarness,
   type HarnessDeps,
 } from '../core/bootstrap/harness.ts';
-import { codexConfigPath, opencodeGlobalConfigPath, opencodeProjectConfigPath } from '../core/bootstrap/host-specs.ts';
+import { codexConfigPath, opencodeConfigDir, opencodeGlobalConfigPath, opencodeProjectConfigPath } from '../core/bootstrap/host-specs.ts';
 import {
   opencodeEntryKind,
+  opencodeEntrySnippet,
   opencodeRemoteEntryExists,
   parseOpencodeConfig,
   removeOpencodeMcpEntry,
@@ -95,7 +96,7 @@ import {
 } from '../core/bootstrap/status.ts';
 import { verifyWorkspace, deriveWorkspaceSourceId } from '../core/bootstrap/verify.ts';
 
-export const BOOTSTRAP_HELP = `gbrain bootstrap — paste-in agent install (Claude Code / Codex)
+export const BOOTSTRAP_HELP = `gbrain bootstrap — paste-in agent install (Claude Code / Codex / opencode)
 
 Usage: gbrain bootstrap <subcommand> [flags]
 
@@ -127,12 +128,13 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
   harness [--harness claude-code|codex|opencode|all] [--url U | --port N] [--source ID]
           [--token-name NAME | --token TOK] [--name MCPNAME] [--project DIR]...
           [--no-hooks] [--no-capture] [--force] [--status] [--remove] [--yes] [--json]
-                                  Wire framework-spawned Claude Code / Codex sessions to a
-                                  RUNNING \`gbrain serve --http\` on this box (#4043): scoped
-                                  bearer token, user-scope MCP + headless pre-approval,
-                                  lifecycle hooks (user scope, or per --project dir), codex
-                                  config block. No agent.json needed. Idempotent; --remove
-                                  tears it down. (--local is an accepted no-op alias.)
+                                  Wire framework-spawned Claude Code / Codex / opencode
+                                  sessions to a RUNNING \`gbrain serve --http\` on this box
+                                  (#4043): scoped bearer token, user-scope MCP + headless
+                                  pre-approval, lifecycle hooks (user scope, or per --project
+                                  dir), codex config block, opencode config entry. No
+                                  agent.json needed. Idempotent; --remove tears it down.
+                                  (--local is an accepted no-op alias.)
   cloud-setup-script              Print the paste-ready cloud environment setup
                                   script (installs the gbrain binary into the
                                   environment snapshot; npm-based — bun fetching
@@ -331,6 +333,39 @@ async function verifyMcpTargetsWorkspace(
   const hasBin = out.includes(gbrainBin);
   const hasSource = out.includes(`GBRAIN_SOURCE=${sourceId}`);
   return hasBin && hasSource ? 'match' : 'mismatch';
+}
+
+/** Wall-clock cap on the best-effort `opencode mcp list` probe: `mcp list`
+ * SPAWNS every configured server, and a hung spawn must not hang the install
+ * — on timeout the probe degrades to the could-not-confirm branch (code 124,
+ * repo-visibility's raced-runner convention). */
+const OPENCODE_PROBE_TIMEOUT_MS = 20_000;
+
+/** Run the opencode registration probe with OPENCODE_DISABLE_AUTOUPDATE=1
+ * (OPENCODE-CLI-PIN.md §Probes: the auto-updater must never fire mid-probe).
+ * The ExecRunner seam carries no env parameter, so the variable is staged in
+ * process.env for the spawn (the default runner spreads process.env at spawn
+ * time) and restored after. Raced against the wall-clock cap above. */
+async function runOpencodeProbe(
+  runner: ExecRunner,
+  argv: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const prev = process.env.OPENCODE_DISABLE_AUTOUPDATE;
+  process.env.OPENCODE_DISABLE_AUTOUPDATE = '1';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ code: number; stdout: string; stderr: string }>((res) => {
+    timer = setTimeout(
+      () => res({ code: 124, stdout: '', stderr: `timeout after ${OPENCODE_PROBE_TIMEOUT_MS}ms` }),
+      OPENCODE_PROBE_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([runner(argv), timeout]);
+  } finally {
+    clearTimeout(timer);
+    if (prev === undefined) delete process.env.OPENCODE_DISABLE_AUTOUPDATE;
+    else process.env.OPENCODE_DISABLE_AUTOUPDATE = prev;
+  }
 }
 
 async function withLock<T>(ws: string, fn: () => Promise<T>): Promise<T> {
@@ -907,8 +942,17 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   }
   // Same ownership rule, opencode spelling: a REMOTE-type mcp.gbrain in the
   // user-global config is either the harness lane's (inline bearer) or
-  // foreign — the stdio lane must not fight it in either case.
-  if (harness === 'opencode' && mcpScope === 'user' && opencodeRemoteEntryExists(opencodeGlobalConfigPath(), 'gbrain')) {
+  // foreign — the stdio lane must not fight it in either case. BOTH global
+  // filenames are checked: opencode merges opencode.json AND opencode.jsonc
+  // when both exist, so a remote entry in EITHER file owns the name even
+  // when the path resolver would pick the other for writing.
+  if (
+    harness === 'opencode' &&
+    mcpScope === 'user' &&
+    [join(opencodeConfigDir(), 'opencode.jsonc'), join(opencodeConfigDir(), 'opencode.json')].some((p) =>
+      opencodeRemoteEntryExists(p, 'gbrain'),
+    )
+  ) {
     console.log(
       "the 'gbrain' opencode MCP entry in the user-global config is a remote server (managed by " +
         '`gbrain bootstrap harness`, or foreign) — skipping the stdio registration. Run ' +
@@ -980,22 +1024,40 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
         environment: { GBRAIN_SOURCE: sourceId, ...(gbrainHome ? { GBRAIN_HOME: gbrainHome } : {}) },
       };
       try {
-        // [FIX7] parity: an existing entry pointing at a DIFFERENT workspace
-        // is warned about and replaced (same behavior as the exec lanes'
-        // mismatch path); a FOREIGN entry refuses inside the writer.
-        const existingText = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
-        const existingKind = opencodeEntryKind(
-          parseOpencodeConfig(existingText, configPath),
-          'gbrain',
-          { sourceId },
-        );
-        if (existingKind === 'ours-other-source') {
-          console.error(`existing 'gbrain' opencode entry targets a DIFFERENT workspace — replacing it.`);
+        // [X11] config-dir lock parity with the harness lane: the user-global
+        // config is shared across workspaces AND homes, so gbrain writers
+        // serialize on ITS directory. The project-scope file lives in the
+        // workspace root, which withLock(ws) already holds — the lock is
+        // non-reentrant, so the same-dir case skips the nested acquire.
+        const ocCfgDir = dirname(configPath);
+        let ocLock: { release(): void } | null = null;
+        if (resolve(ocCfgDir) !== resolve(ws)) {
+          mkdirSync(ocCfgDir, { recursive: true }); // the lock needs the dir; the writer mkdirs later anyway
+          ocLock = await acquireBootstrapLock(ocCfgDir);
         }
-        const w = writeOpencodeMcpEntry(configPath, entry, {
-          expect: { sourceId },
-          allowReplaceOtherSource: true,
-        });
+        let w: ReturnType<typeof writeOpencodeMcpEntry>;
+        try {
+          // [FIX7] parity: an existing entry pointing at a DIFFERENT workspace
+          // is warned about and replaced (same behavior as the exec lanes'
+          // mismatch path); a FOREIGN entry refuses inside the writer. The
+          // pre-check parse carries the same paste-by-hand snippet the writer
+          // uses so a corrupt config never strands the user.
+          const existingText = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
+          const existingKind = opencodeEntryKind(
+            parseOpencodeConfig(existingText, configPath, opencodeEntrySnippet(entry)),
+            'gbrain',
+            { sourceId },
+          );
+          if (existingKind === 'ours-other-source') {
+            console.error(`existing 'gbrain' opencode entry targets a DIFFERENT workspace — replacing it.`);
+          }
+          w = writeOpencodeMcpEntry(configPath, entry, {
+            expect: { sourceId },
+            allowReplaceOtherSource: true,
+          });
+        } finally {
+          ocLock?.release();
+        }
         console.log(
           `MCP registered with opencode (scope: ${mcpScope === 'project' ? 'project (explicit opt-in)' : 'user-global'}) — ` +
             `wrote ${w.configPath}${w.replacedPrior ? ' (replaced prior gbrain entry)' : ''}; ` +
@@ -1008,7 +1070,10 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
               'if this opencode.json is committed, every collaborator machine will spawn gbrain (teammates ' +
               'without gbrain see a failing spawn each session; teammates WITH gbrain attach THEIR host ' +
               'brain to this repo). The command is PATH-resolved ("gbrain" — requires gbrain on PATH); ' +
-              'the teammate opt-out is `"enabled": false` on the entry. The user-global default avoids all of this.',
+              'the teammate opt-out is `"enabled": false` on the entry. The user-global default avoids all of this.' +
+              (gbrainHome
+                ? ` Also: the entry embeds this machine's GBRAIN_HOME path (${gbrainHome}) — it won't be portable to other machines.`
+                : ''),
           );
         } else if (rawScopeAnswer === undefined) {
           console.log(
@@ -1035,12 +1100,17 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
         if (parsedCfg.plugin !== undefined) {
           console.log('live `opencode mcp list` probe skipped (plugin-bearing config) — config parse-back is the verification.');
         } else {
-          const probe = await runner(['opencode', 'mcp', 'list', '--pure']);
+          const probe = await runOpencodeProbe(runner, ['opencode', 'mcp', 'list', '--pure']);
+          // `mcp list` colorizes when a TTY-ish env leaks through — strip ANSI
+          // escapes before matching, and anchor the name on whitespace/EOL so
+          // a `gbrain-remote` entry can never satisfy a bare \bgbrain\b (\b
+          // matches before the hyphen).
+          const plain = probe.stdout.replace(/\u001b\[[0-9;]*m/g, '');
           if (probe.code === 127) {
             console.log('`opencode` is not on PATH — registration written; the config activates when opencode next starts here.');
-          } else if (probe.code === 0 && /✓\s+gbrain\b/.test(probe.stdout)) {
+          } else if (probe.code === 0 && /✓\s+gbrain(\s|$)/.test(plain)) {
             console.log('`opencode mcp list` handshake: ✓ gbrain connected.');
-          } else if (probe.code === 0 && /✗\s+gbrain\b/.test(probe.stdout)) {
+          } else if (probe.code === 0 && /✗\s+gbrain(\s|$)/.test(plain)) {
             console.error(
               'WARNING: `opencode mcp list` reports ✗ gbrain failed — the spawn did not handshake ' +
                 '(is the gbrain binary path valid on this machine?). The exit code of `mcp list` is 0 even ' +
@@ -1449,18 +1519,45 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
         }
         case 'opencode': {
           // Direct-writer removal (fingerprint-keyed; foreign entries refuse
-          // inside the module). Both scope files best-effort — the receipt's
-          // scope names where the registration landed, but a stale entry in
-          // the other file costs nothing to sweep.
-          for (const p of [opencodeGlobalConfigPath(), opencodeProjectConfigPath(ws)]) {
+          // inside the module). Every candidate file best-effort — the
+          // receipt's scope names where the registration landed, but a stale
+          // entry in another file costs nothing to sweep. BOTH global
+          // filenames are swept: opencode merges opencode.json AND
+          // opencode.jsonc when both exist, so sweeping only the resolver's
+          // pick would strand a gbrain entry in the other file. The removal
+          // is expectation-keyed on THIS workspace's source id — a gbrain
+          // entry from a DIFFERENT workspace is skipped with a note, never
+          // silently deleted (it is not this uninstall's to remove).
+          const sweep = (p: string): void => {
             try {
-              const r = removeOpencodeMcpEntry(p, 'gbrain');
+              const r = removeOpencodeMcpEntry(p, 'gbrain', { sourceId: durabilitySourceId }, { skipOtherSource: true });
               if (r.removed) console.log(`removed the gbrain opencode MCP entry from ${p}`);
               for (const note of r.notes) console.error(note);
             } catch (e) {
               console.error(`note: could not remove the gbrain opencode entry from ${p}: ${(e as Error).message}`);
             }
+          };
+          // Global files run under the config-dir bootstrap lock (the writer
+          // contract; harness.ts [X11] parity). Only when the dir exists — no
+          // dir means no config, and uninstall must not create one just to
+          // lock it.
+          const ocDir = opencodeConfigDir();
+          const globals = [join(ocDir, 'opencode.jsonc'), join(ocDir, 'opencode.json')].filter((p) => existsSync(p));
+          if (globals.length > 0) {
+            try {
+              const ocLock = await acquireBootstrapLock(ocDir);
+              try {
+                for (const p of globals) sweep(p);
+              } finally {
+                ocLock.release();
+              }
+            } catch (e) {
+              console.error(`note: could not lock the opencode config dir (${(e as Error).message}) — entries left for a re-run.`);
+            }
           }
+          // The project file's dir IS the workspace, which withLock(ws)
+          // already holds — the lock is non-reentrant, so no nested acquire.
+          sweep(opencodeProjectConfigPath(ws));
           break;
         }
       }

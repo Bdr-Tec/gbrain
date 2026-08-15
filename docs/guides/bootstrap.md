@@ -194,6 +194,10 @@ mode wires them in one command, with no `agent.json` and no interview:
   comment-preserving editor the workspace lane uses — the `{env:…}`
   interpolation the `connect` path prefers would resolve empty under a
   framework-spawned opencode for the same no-shell-profile reason.
+  Note: downgrading gbrain below the release that introduced opencode support
+  after wiring it leaves the opencode entry in place for manual removal —
+  edit the opencode config by hand, or re-upgrade and run
+  `gbrain bootstrap harness --remove`.
 - Honesty on Postgres brains: per-turn injection is degraded (the matrix row
   above); MCP is the active seam and the summary says so.
 - `--status [--json]` probes the live truth (serve health, token validity via

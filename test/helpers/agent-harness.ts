@@ -619,6 +619,15 @@ const GITHUB_STEP_META_KEYS = [
   'GITHUB_STEP_SUMMARY', 'GITHUB_ACTION_PATH',
 ] as const;
 
+/** CI credential material that must never reach an UNTRUSTED agent child:
+ *  GITHUB_TOKEN rides the GITHUB_ prefix rule, and the ACTIONS_* runtime/OIDC
+ *  tokens are scrubbed unconditionally as defense-in-depth (an exfiltrated
+ *  workflow token is repo write access; the OIDC request token mints cloud
+ *  credentials). */
+const CI_CREDENTIAL_KEYS = [
+  'GITHUB_TOKEN', 'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+] as const;
+
 /**
  * Per-agent hermetic child-env factory: hermeticChildEnv + the agent's home
  * overrides, then key deletion (single-auth-source discipline), the
@@ -634,6 +643,7 @@ export function makeAgentChildEnv(spec: {
     const env = hermeticChildEnv(spec.overrides(home));
     for (const k of spec.deleteKeys ?? []) delete env[k];
     for (const k of GITHUB_STEP_META_KEYS) delete env[k];
+    for (const k of CI_CREDENTIAL_KEYS) delete env[k];
     if (opts?.binDir) env.PATH = `${opts.binDir}:${env.PATH ?? ''}`;
     return env;
   };

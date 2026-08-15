@@ -98,6 +98,16 @@ WF_INSTALL_SHA=$(wf_env OPENCODE_INSTALL_SHA256)
 [ -n "$WF_VERSION" ] || fail "opencode-door job env is missing OPENCODE_VERSION"
 [ "$WF_VERSION" = "$OPENCODE_VERSION_PIN" ] || fail "OPENCODE_VERSION drift — workflow '$WF_VERSION' vs pin-doc stamp '$OPENCODE_VERSION_PIN' (update together; see the pin doc's re-observation checklist)"
 
+# EVERY OPENCODE_VERSION: env line in the WHOLE workflow (the real-agent-e2e
+# door job carries a second copy) must equal the stamp — bumping the door job
+# alone must never pass green. Env keys sit at line start after indentation,
+# so comments mentioning the name never match.
+all_wf_versions=$({ grep -E '^[[:space:]]*OPENCODE_VERSION:' "$WORKFLOW" || true; } \
+  | sed -e 's/^[[:space:]]*OPENCODE_VERSION:[[:space:]]*//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")
+for v in $all_wf_versions; do
+  [ "$v" = "$OPENCODE_VERSION_PIN" ] || fail "an OPENCODE_VERSION occurrence elsewhere in heavy-tests.yml ('$v') disagrees with the pin-doc stamp '$OPENCODE_VERSION_PIN' — every copy in the workflow moves with the stamp"
+done
+
 if [ "$DIST_KIND" = "npm" ]; then
   NPM_PACKAGE_PIN=$(stamp npm_package)
   NPM_INTEGRITY_PIN=$(stamp npm_integrity)
@@ -112,6 +122,20 @@ if [ "$DIST_KIND" = "npm" ]; then
   NPM_VERSION_PIN=$(stamp npm_version)
   if [ -n "$NPM_VERSION_PIN" ] && [ "$NPM_VERSION_PIN" != "$OPENCODE_VERSION_PIN" ]; then
     fail "npm_version stamp ($NPM_VERSION_PIN) disagrees with opencode_version stamp ($OPENCODE_VERSION_PIN) — update together"
+  fi
+  # Platform-payload integrity stamps (the door job byte-pins the linux
+  # sub-packages too): when the pin doc carries them, the job env must match.
+  X64_PIN=$(stamp npm_linux_x64_integrity)
+  if [ -n "$X64_PIN" ]; then
+    WF_X64=$(wf_env OPENCODE_NPM_LINUX_X64_INTEGRITY)
+    [ -n "$WF_X64" ] || fail "pin doc stamps npm_linux_x64_integrity but the opencode-door job env is missing OPENCODE_NPM_LINUX_X64_INTEGRITY"
+    [ "$WF_X64" = "$X64_PIN" ] || fail "OPENCODE_NPM_LINUX_X64_INTEGRITY drift — workflow vs stamp mismatch"
+  fi
+  ARM64_PIN=$(stamp npm_linux_arm64_integrity)
+  if [ -n "$ARM64_PIN" ]; then
+    WF_ARM64=$(wf_env OPENCODE_NPM_LINUX_ARM64_INTEGRITY)
+    [ -n "$WF_ARM64" ] || fail "pin doc stamps npm_linux_arm64_integrity but the opencode-door job env is missing OPENCODE_NPM_LINUX_ARM64_INTEGRITY"
+    [ "$WF_ARM64" = "$ARM64_PIN" ] || fail "OPENCODE_NPM_LINUX_ARM64_INTEGRITY drift — workflow vs stamp mismatch"
   fi
   [ -z "$WF_INSTALL_SHA" ] || fail "distribution_kind=npm but the opencode-door job also pins OPENCODE_INSTALL_SHA256 — one provisioning mode only (mode exclusivity)"
 else
