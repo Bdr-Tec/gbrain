@@ -19,43 +19,57 @@ import {
   configureGateway,
   resetGateway,
   __setEmbedTransportForTests,
-  DEFAULT_EMBEDDING_MODEL,
-  DEFAULT_EMBEDDING_DIMENSIONS,
 } from '../../src/core/ai/gateway.ts';
+import {
+  NEW_INSTALL_DEFAULT_EMBEDDING_MODEL,
+  NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS,
+} from '../../src/core/ai/defaults.ts';
 
 describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end', () => {
   let tmpHome: string;
   let origHome: string | undefined;
-  let origZeKey: string | undefined;
-  let origOpenaiKey: string | undefined;
-  let origVoyageKey: string | undefined;
+  // v0.47: the single-ready provider for a fresh install is VOYAGE (ZE is
+  // sunset-excluded from auto-pick). Scrub EVERY embedding-capable key a dev
+  // machine might carry so init sees exactly one ready provider — otherwise
+  // ambient multi-provider env (Garry's setup) fails the disambiguation gate
+  // before the test body runs.
+  const SCRUB_KEYS = [
+    'ZEROENTROPY_API_KEY',
+    'OPENAI_API_KEY',
+    'VOYAGE_API_KEY',
+    'OPENROUTER_API_KEY',
+    'PERPLEXITY_API_KEY',
+    'GOOGLE_GENERATIVE_AI_API_KEY',
+    'GEMINI_API_KEY',
+    'DASHSCOPE_API_KEY',
+    'MISTRAL_API_KEY',
+    'NVIDIA_API_KEY',
+    'ZHIPU_API_KEY',
+    'MINIMAX_API_KEY',
+    'AZURE_OPENAI_API_KEY',
+  ] as const;
+  const savedKeys: Record<string, string | undefined> = {};
 
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-e2e-fresh-'));
     origHome = process.env.GBRAIN_HOME;
-    origZeKey = process.env.ZEROENTROPY_API_KEY;
-    // Save + clear OPENAI_API_KEY + VOYAGE_API_KEY so init only sees
-    // one provider as env-ready (ZE). Without this, dev machines with
-    // multi-provider env (Garry's setup) fail init's disambiguation gate
-    // ("Multiple embedding providers env-ready: openai, voyage,
-    // zeroentropyai") before the test body runs.
-    origOpenaiKey = process.env.OPENAI_API_KEY;
-    origVoyageKey = process.env.VOYAGE_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.VOYAGE_API_KEY;
+    for (const k of SCRUB_KEYS) {
+      savedKeys[k] = process.env[k];
+      delete process.env[k];
+    }
     process.env.GBRAIN_HOME = tmpHome;
-    // Stub key so init's setup-hint check passes.
-    process.env.ZEROENTROPY_API_KEY = 'sk-test-ze';
+    // Stub key so init auto-picks the canonical voyage default.
+    process.env.VOYAGE_API_KEY = 'pa-test-voyage';
   });
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
     if (origHome === undefined) delete process.env.GBRAIN_HOME;
     else process.env.GBRAIN_HOME = origHome;
-    if (origZeKey === undefined) delete process.env.ZEROENTROPY_API_KEY;
-    else process.env.ZEROENTROPY_API_KEY = origZeKey;
-    if (origOpenaiKey !== undefined) process.env.OPENAI_API_KEY = origOpenaiKey;
-    if (origVoyageKey !== undefined) process.env.VOYAGE_API_KEY = origVoyageKey;
+    for (const k of SCRUB_KEYS) {
+      if (savedKeys[k] === undefined) delete process.env[k];
+      else process.env[k] = savedKeys[k];
+    }
     __setEmbedTransportForTests(null);
     // Restore legacy-preload gateway state.
     configureGateway({
@@ -65,17 +79,16 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     });
   });
 
-  test('bare `init --pglite`: schema sized to gateway defaults (ZE/1280)', async () => {
-    // Reset gateway so init.ts has to resolve defaults from
+  test('bare `init --pglite`: schema sized to the new-install default (voyage-4/1024)', async () => {
+    // Reset gateway so init.ts has to resolve the new-install default from
     // ai/defaults.ts. This is the actual production code path for a
-    // fresh install: bare `gbrain init --pglite` with no env or file
-    // config.
+    // fresh install: bare `gbrain init --pglite` with a single ready key.
     resetGateway();
 
-    // Stub embed transport to return synthetic 1280-dim vectors. The
+    // Stub embed transport to return synthetic target-width vectors. The
     // bug fix is dimension alignment — actual provider correctness is
     // tested elsewhere.
-    const synthVec = Array.from({ length: DEFAULT_EMBEDDING_DIMENSIONS }, () => 0.01);
+    const synthVec = Array.from({ length: NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS }, () => 0.01);
     __setEmbedTransportForTests(async (args: any) => ({
       embeddings: args.values.map(() => synthVec),
     }) as any);
@@ -106,16 +119,16 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     const allOut = stdoutBuf.join('\n');
 
     // Init prints the resolved embedding choice (B.1).
-    expect(allOut).toContain(DEFAULT_EMBEDDING_MODEL);
-    expect(allOut).toContain(`(${DEFAULT_EMBEDDING_DIMENSIONS}d)`);
+    expect(allOut).toContain(NEW_INSTALL_DEFAULT_EMBEDDING_MODEL);
+    expect(allOut).toContain(`(${NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS}d)`);
 
     // config.json contains the saved resolved defaults (B.4 + CDX-3).
     const cfgPath = join(tmpHome, '.gbrain', 'config.json');
     expect(existsSync(cfgPath)).toBe(true);
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
     expect(cfg.engine).toBe('pglite');
-    expect(cfg.embedding_model).toBe(DEFAULT_EMBEDDING_MODEL);
-    expect(cfg.embedding_dimensions).toBe(DEFAULT_EMBEDDING_DIMENSIONS);
+    expect(cfg.embedding_model).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_MODEL);
+    expect(cfg.embedding_dimensions).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
 
     // The actual schema column dim matches.
     const { PGLiteEngine } = await import('../../src/core/pglite-engine.ts');
@@ -125,7 +138,7 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
       const { readContentChunksEmbeddingDim } = await import('../../src/core/embedding-dim-check.ts');
       const colDim = await readContentChunksEmbeddingDim(engine);
       expect(colDim.exists).toBe(true);
-      expect(colDim.dims).toBe(DEFAULT_EMBEDDING_DIMENSIONS);
+      expect(colDim.dims).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
     } finally {
       await engine.disconnect();
     }
@@ -133,7 +146,7 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
 
   test('init → seed page → embed: chunks have non-null embeddings, no dim mismatch', async () => {
     resetGateway();
-    const synthVec = Array.from({ length: DEFAULT_EMBEDDING_DIMENSIONS }, (_, i) => i === 0 ? 1 : 0.01);
+    const synthVec = Array.from({ length: NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS }, (_, i) => i === 0 ? 1 : 0.01);
     __setEmbedTransportForTests(async (args: any) => ({
       embeddings: args.values.map(() => synthVec),
     }) as any);

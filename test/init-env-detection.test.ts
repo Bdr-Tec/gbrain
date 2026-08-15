@@ -27,9 +27,12 @@ describe('groupReadyByProvider — embedding touchpoint', () => {
     expect(got.map(p => p.recipeId)).toContain('voyage');
   });
 
-  test('ZEROENTROPY_API_KEY alone → zeroentropyai is ready', async () => {
+  test('ZEROENTROPY_API_KEY alone → zeroentropyai is NOT auto-pickable (sunset exclusion)', async () => {
+    // v0.47: recipes with `sunset` metadata are excluded from auto-pick —
+    // a fresh install must not be steered onto a provider that dies on
+    // 2026-09-04. Explicit --embedding-model still works (with a warning).
     const got = await groupReadyByProvider('embedding', { ZEROENTROPY_API_KEY: 'ze-test' });
-    expect(got.map(p => p.recipeId)).toContain('zeroentropyai');
+    expect(got.map(p => p.recipeId)).not.toContain('zeroentropyai');
   });
 
   test('OPENAI_API_KEY + VOYAGE_API_KEY → both providers in ready list', async () => {

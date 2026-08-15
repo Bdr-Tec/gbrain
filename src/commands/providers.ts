@@ -80,7 +80,14 @@ export function formatRecipeTable(recipes: Recipe[], env: NodeJS.ProcessEnv = pr
     const hasExpand = !!r.touchpoints.expansion;
     const hasChat = !!r.touchpoints.chat && r.touchpoints.chat.models.length > 0;
     const ready = envReady(r, env);
-    const status = ready ? '✓ ready' : `✗ missing ${r.auth_env?.required?.[0] ?? 'setup'}`;
+    // v0.47: a sunsetting provider is flagged in the listing regardless of
+    // key readiness — "ready" on a dying API is not a state to advertise.
+    const status = r.sunset
+      ? `⚠ DEPRECATED — hosted API ends ${r.sunset.date}` +
+        (r.sunset.replacement?.embedding ? `; use ${r.sunset.replacement.embedding}` : '')
+      : ready
+        ? '✓ ready'
+        : `✗ missing ${r.auth_env?.required?.[0] ?? 'setup'}`;
     rows.push(
       r.id.padEnd(idCol) +
       r.tier.padEnd(18) +

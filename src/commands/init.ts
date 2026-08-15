@@ -331,15 +331,19 @@ async function resolveAIOptions(opts: ResolveAIOptionsArgs): Promise<ResolvedAIO
       );
       process.exit(1);
     }
-    const firstModel = recipe.touchpoints.embedding?.models[0];
-    if (!firstModel) {
+    // v0.47: the shorthand resolves the recipe's canonical model, not array
+    // position — Voyage lists voyage-4-large first but its canonical default
+    // is voyage-4 (see EmbeddingTouchpoint.default_model).
+    const canonicalModel =
+      recipe.touchpoints.embedding?.default_model ?? recipe.touchpoints.embedding?.models[0];
+    if (!canonicalModel) {
       console.error(`Provider ${shorthand} has no embedding models listed. Use --embedding-model provider:model.`);
       process.exit(1);
     }
-    out.embedding_model = `${shorthand}:${firstModel}`;
+    out.embedding_model = `${shorthand}:${canonicalModel}`;
     // #2051: width follows the model actually chosen, not the recipe default.
     const { embeddingDimsForModel } = await import('../core/ai/model-resolver.ts');
-    out.embedding_dimensions = embeddingDimsForModel(recipe, firstModel);
+    out.embedding_dimensions = embeddingDimsForModel(recipe, canonicalModel);
   }
 
   if (dimsArg !== null && !Number.isNaN(dimsArg) && dimsArg > 0) {
@@ -370,6 +374,22 @@ async function resolveAIOptions(opts: ResolveAIOptionsArgs): Promise<ResolvedAIO
       const { embeddingDimsForModel } = await import('../core/ai/model-resolver.ts');
       const dims = embeddingDimsForModel(recipe, out.embedding_model);
       if (dims > 0) out.embedding_dimensions = dims;
+    }
+  }
+
+  // v0.47: an explicitly-requested sunset provider (verbose or shorthand form)
+  // is allowed until the removal release, but never silently — warn loudly and
+  // proceed (D3: hide + warn, allow explicit).
+  if (out.embedding_model) {
+    const { getRecipe } = await import('../core/ai/recipes/index.ts');
+    const sunsetRecipe = getRecipe(out.embedding_model.split(':')[0]);
+    if (sunsetRecipe?.sunset) {
+      const rep = sunsetRecipe.sunset.replacement?.embedding;
+      console.error(
+        `WARNING: ${sunsetRecipe.name} stops working on ${sunsetRecipe.sunset.date}. ` +
+        `Proceeding because you asked explicitly${rep ? `, but the recommended provider is ${rep}` : ''}. ` +
+        `Migrate before that date: gbrain migrate embeddings --to ${rep ?? '<provider:model>'} --dry-run`,
+      );
     }
   }
 
@@ -453,6 +473,10 @@ export async function groupReadyByProvider(
     // still picker-selectable explicitly, but silent auto-pick is wrong UX.
     const required = r.auth_env?.required ?? [];
     if (required.length === 0) continue;
+    // v0.47: never auto-pick a provider whose hosted API has an announced
+    // shutdown (recipe.sunset). Explicit --embedding-model still works
+    // (with a loud warning) until the removal release.
+    if (r.sunset) continue;
     if (envReady(r, env)) {
       ready.push({ recipeId: r.id, recipe: r });
       seen.add(r.id);
@@ -501,13 +525,12 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
   console.error('   gbrain init --force --pglite --embedding-model <id>)');
   console.error('');
   console.error('Or set a key for semantic search:');
+  console.error('  export VOYAGE_API_KEY=pa-…        # voyage:voyage-4 (1024d) — default');
   console.error('  export OPENAI_API_KEY=sk-…        # openai:text-embedding-3-large (1536d)');
-  console.error('  export ZEROENTROPY_API_KEY=ze-…   # zeroentropyai:zembed-1 (2560d, Matryoshka)');
-  console.error('  export VOYAGE_API_KEY=pa-…        # voyage:voyage-3-large (1024d)');
   console.error('Then re-run: gbrain init --pglite');
   console.error('');
   console.error('Or pick explicitly:');
-  console.error('  gbrain init --pglite --embedding-model openai:text-embedding-3-large');
+  console.error('  gbrain init --pglite --embedding-model voyage:voyage-4');
   // D13: surface near-miss env vars (e.g. OPENAPI_API_KEY → OPENAI_API_KEY).
   if (typos.length > 0) {
     console.error('');
@@ -538,21 +561,21 @@ async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boo
     const r = ready[0].recipe;
     const tp = r.touchpoints.embedding!;
     if (Array.isArray(tp.models) && tp.models.length > 0) {
-      const model = tp.models[0];
+      // v0.47: recipes carry a canonical default_model — array order is
+      // quality-sorted, not recommendation-sorted (Voyage lists voyage-4-large
+      // first; the canonical pick is voyage-4).
+      const model = tp.default_model ?? tp.models[0];
       const fullModel = `${r.id}:${model}`;
-      // When the resolved provider matches the canonical default model
-      // (DEFAULT_EMBEDDING_MODEL), use the gateway's
-      // DEFAULT_EMBEDDING_DIMENSIONS instead of the recipe's `default_dims`
-      // (which is the recipe's "largest sensible" tier). This keeps
-      // fresh-install schema width aligned with the v0.37.11.0 system
-      // default — for ZE that means 1280 (the Matryoshka step closest to
-      // legacy OpenAI 1536), not the recipe's 2560.
-      const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } =
+      // When the resolved provider matches the NEW-INSTALL canonical default
+      // model, use NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS instead of the
+      // recipe's `default_dims` so fresh-install schema width stays aligned
+      // with the system default (1024 for voyage-4).
+      const { NEW_INSTALL_DEFAULT_EMBEDDING_MODEL, NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS } =
         await import('../core/ai/defaults.ts');
       const { embeddingDimsForModel } = await import('../core/ai/model-resolver.ts');
       // #2051: non-canonical models resolve per-model, not recipe-wide.
-      const dims = fullModel === DEFAULT_EMBEDDING_MODEL
-        ? DEFAULT_EMBEDDING_DIMENSIONS
+      const dims = fullModel === NEW_INSTALL_DEFAULT_EMBEDDING_MODEL
+        ? NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS
         : embeddingDimsForModel(r, model);
       out.embedding_model = fullModel;
       out.embedding_dimensions = dims;
@@ -601,16 +624,16 @@ async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boo
   // keys — failing there blocked scripted installs), else fail-loud per D2/D3
   // (a genuinely ambiguous set with no canonical candidate stays explicit).
   if (!isTTY) {
-    const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } =
+    const { NEW_INSTALL_DEFAULT_EMBEDDING_MODEL, NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS } =
       await import('../core/ai/defaults.ts');
-    const canonicalProvider = DEFAULT_EMBEDDING_MODEL.split(':')[0];
+    const canonicalProvider = NEW_INSTALL_DEFAULT_EMBEDDING_MODEL.split(':')[0];
     const canonical = ready.find((p) => p.recipeId === canonicalProvider);
     if (canonical) {
-      out.embedding_model = DEFAULT_EMBEDDING_MODEL;
-      out.embedding_dimensions = DEFAULT_EMBEDDING_DIMENSIONS;
+      out.embedding_model = NEW_INSTALL_DEFAULT_EMBEDDING_MODEL;
+      out.embedding_dimensions = NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS;
       console.error(
         `Multiple embedding providers env-ready (${ready.map(p => p.recipeId).join(', ')}). ` +
-        `Using the default ${DEFAULT_EMBEDDING_MODEL} (${DEFAULT_EMBEDDING_DIMENSIONS}d). ` +
+        `Using the default ${NEW_INSTALL_DEFAULT_EMBEDDING_MODEL} (${NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS}d). ` +
         `Override with --embedding-model.`,
       );
       return;
@@ -924,8 +947,8 @@ function printResolvedAIChoice(
       console.warn('    export ZEROENTROPY_API_KEY=...');
       console.warn('  Or add to ~/.gbrain/config.json:');
       console.warn('    "zeroentropy_api_key": "..."');
-      console.warn('  Or pick a different provider:');
-      console.warn('    gbrain init --pglite --embedding-model openai:text-embedding-3-large --embedding-dimensions 1536');
+      console.warn('  NOTE: ZeroEntropy shuts down 2026-09-04 — prefer the default instead:');
+      console.warn('    gbrain init --pglite --embedding-model voyage:voyage-4');
     }
   }
 }
@@ -981,9 +1004,20 @@ async function initPGLite(opts: {
   // resolveAIOptions above: CLI flags > env vars > existing file > gateway
   // defaults.
   const { configureGateway } = await import('../core/ai/gateway.ts');
+  // v0.47: keyless fresh installs size the embedding column at the NEW-INSTALL
+  // width (1024), not the legacy configless fallback (1280) — the sizing is an
+  // explicit param here, NOT a rewire of the schema generators' legacy import
+  // (those also run on existing-brain reconnects, where legacy must stay
+  // legacy). Existing keyless brains are unaffected: initSchema never resizes
+  // an existing column, and the Lane B.5 mismatch guard stays off for keyless
+  // (resolvedDim is undefined).
+  const { NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS: newInstallDims } =
+    await import('../core/ai/defaults.ts');
   configureGateway({
     embedding_model: resolvedModel ?? opts.aiOpts?.embedding_model,
-    embedding_dimensions: resolvedDim ?? opts.aiOpts?.embedding_dimensions,
+    embedding_dimensions:
+      resolvedDim ?? opts.aiOpts?.embedding_dimensions ??
+      (opts.aiOpts?.noEmbedding ? newInstallDims : undefined),
     expansion_model: opts.aiOpts?.expansion_model,
     chat_model: opts.aiOpts?.chat_model,
     env: { ...process.env },
@@ -1063,6 +1097,26 @@ async function initPGLite(opts: {
           databasePath: dbPath,
         }));
         process.exit(1);
+      }
+    }
+
+    // v0.47: voyage-picked installs get the recommended reranker written as
+    // EXPLICIT per-brain config — the mode-bundle reranker default stays on the
+    // sunsetting legacy provider until the September removal (split-default),
+    // so without this write a fresh voyage brain would resolve a reranker whose
+    // key it doesn't have. Never clobbers an existing explicit choice
+    // (re-init preserves user config). Best-effort: reranking is fail-open, a
+    // missed override degrades to no-rerank, never breaks init.
+    if (resolvedModel?.startsWith('voyage:')) {
+      try {
+        const existingReranker = await engine.getConfig('search.reranker.model');
+        if (!existingReranker) {
+          const { NEW_INSTALL_DEFAULT_RERANKER_MODEL } = await import('../core/ai/defaults.ts');
+          await engine.setConfig('search.reranker.model', NEW_INSTALL_DEFAULT_RERANKER_MODEL);
+          console.log(`  Reranker: ${NEW_INSTALL_DEFAULT_RERANKER_MODEL} (same VOYAGE_API_KEY)`);
+        }
+      } catch {
+        // Cosmetic; never block init.
       }
     }
 
@@ -1231,9 +1285,15 @@ async function initPostgres(opts: {
 
   // T6: unconditional configureGateway BEFORE initSchema.
   const { configureGateway } = await import('../core/ai/gateway.ts');
+  // v0.47: keyless fresh installs size at the NEW-INSTALL width (see the
+  // PGLite path's comment — same explicit-param rationale).
+  const { NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS: newInstallDims } =
+    await import('../core/ai/defaults.ts');
   configureGateway({
     embedding_model: resolvedModel ?? opts.aiOpts?.embedding_model,
-    embedding_dimensions: resolvedDim ?? opts.aiOpts?.embedding_dimensions,
+    embedding_dimensions:
+      resolvedDim ?? opts.aiOpts?.embedding_dimensions ??
+      (opts.aiOpts?.noEmbedding ? newInstallDims : undefined),
     expansion_model: opts.aiOpts?.expansion_model,
     chat_model: opts.aiOpts?.chat_model,
     env: { ...process.env },
@@ -1352,6 +1412,21 @@ async function initPostgres(opts: {
           engineKind: 'postgres',
         }));
         process.exit(1);
+      }
+    }
+
+    // v0.47: voyage-picked installs get the explicit reranker override —
+    // same rationale + same never-clobber contract as the PGLite path above.
+    if (resolvedModel?.startsWith('voyage:')) {
+      try {
+        const existingReranker = await engine.getConfig('search.reranker.model');
+        if (!existingReranker) {
+          const { NEW_INSTALL_DEFAULT_RERANKER_MODEL } = await import('../core/ai/defaults.ts');
+          await engine.setConfig('search.reranker.model', NEW_INSTALL_DEFAULT_RERANKER_MODEL);
+          console.log(`  Reranker: ${NEW_INSTALL_DEFAULT_RERANKER_MODEL} (same VOYAGE_API_KEY)`);
+        }
+      } catch {
+        // Cosmetic; never block init.
       }
     }
 
