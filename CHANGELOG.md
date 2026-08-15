@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.45.15.0] - 2026-08-14
+## [0.45.17.0] - 2026-08-15
 
 **A test run can no longer silently touch a real brain.** `gbrain init` writes your
 database URL into `~/.gbrain/.env`; anyone who had that sourced and ran a bare
@@ -55,7 +55,7 @@ each one fails loudly instead of silently skipping:
 - The phantom-redirect engine-parity test's Postgres arm is now carried by
   the e2e lane and CI's parity job — previously no lane could reach it.
 
-### To take advantage of v0.45.15.0
+### To take advantage of v0.45.17.0
 
 Nothing to configure. If a bare `bun test` now refuses to start, the message
 tells you exactly why and what to do — usually just unset the database URL
