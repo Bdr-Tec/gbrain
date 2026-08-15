@@ -32,7 +32,12 @@ import {
 import { codexAdapter } from '../src/core/transcripts/codex.ts';
 import { isOpenclawCheckpointFile, openclawAdapter } from '../src/core/transcripts/openclaw.ts';
 import { hermesAdapter } from '../src/core/transcripts/hermes.ts';
+import { chatgptExportAdapter } from '../src/core/transcripts/chatgpt-export.ts';
+import { claudeExportAdapter } from '../src/core/transcripts/claude-export.ts';
 import { buildHermesFixture } from './fixtures/transcripts/hermes-fixture-builder.ts';
+
+const CHATGPT_FIXTURE = join(import.meta.dir, 'fixtures', 'transcripts', 'chatgpt-conversations.json');
+const CLAUDE_EXPORT_FIXTURE = join(import.meta.dir, 'fixtures', 'transcripts', 'claude-export.json');
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'conversation-formats', 'claude-code.jsonl');
 const CODEX_FIXTURE = join(import.meta.dir, 'fixtures', 'transcripts', 'codex-rollout.jsonl');
@@ -329,6 +334,55 @@ describe('hermesAdapter', () => {
   });
 });
 
+// ── ChatGPT export adapter [mapping-tree walk: T13 edge fixture] ────────────
+
+describe('chatgptExportAdapter', () => {
+  test('canonical path via current_node; branches, tool nodes, and system-only convs never leak', async () => {
+    const { sessions, diag } = await drain(chatgptExportAdapter.parse(CHATGPT_FIXTURE));
+    // Conversation 3 is system-only → skipped.
+    expect(sessions).toHaveLength(2);
+    const [c1, c2] = sessions;
+    expect(c1.meta.sessionId).toBe('cgpt-conv-0001');
+    expect(c1.meta.title).toBe('Widget launch naming');
+    expect(c1.meta.startedAt).toBe(new Date(1786080000 * 1000).toISOString());
+    expect(c1.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    const all = c1.messages.map((m) => m.text).join('\n');
+    expect(all).toContain('Call it LaunchPanel.');
+    expect(all).toContain('LaunchPanel works. Ship it Friday.');
+    expect(all).not.toContain('BRANCH-A-ONLY-TEXT');
+    expect(all).not.toContain('TOOL-ONLY-TEXT');
+    // Fallback walk: no current_node, orphaned root pointer terminates quietly.
+    expect(c2.meta.sessionId).toBe('cgpt-conv-0002');
+    expect(c2.messages.map((m) => m.text)).toEqual([
+      'Where did we land on pricing?',
+      'Pricing lands at 49.',
+    ]);
+    expect(diag.sessions).toBe(2);
+  });
+
+  test('rejects a non-array file with an unzip-first error', async () => {
+    const d = tdir();
+    const p = join(d, 'not-export.json');
+    writeFileSync(p, '{"mapping": {}}');
+    await expect(drain(chatgptExportAdapter.parse(p))).rejects.toThrow(/unzip the export first/);
+  });
+});
+
+// ── Claude.ai export adapter ────────────────────────────────────────────────
+
+describe('claudeExportAdapter', () => {
+  test('human→user mapping, empty-text rows skipped, empty threads skipped', async () => {
+    const { sessions, diag } = await drain(claudeExportAdapter.parse(CLAUDE_EXPORT_FIXTURE));
+    expect(sessions).toHaveLength(1);
+    const s = sessions[0];
+    expect(s.meta.sessionId).toBe('claude-conv-0001');
+    expect(s.meta.title).toBe('Deal memo review');
+    expect(s.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(s.messages[0].timestamp).toBe('2026-08-07T12:00:05.000Z');
+    expect(diag.sessions).toBe(1);
+  });
+});
+
 // ── Cross-format detection matrix ───────────────────────────────────────────
 
 describe('detection matrix', () => {
@@ -340,6 +394,8 @@ describe('detection matrix', () => {
       [CODEX_FIXTURE, 'codex'],
       [AGENT_FIXTURE, 'openclaw'],
       [dbPath, 'hermes'],
+      [CHATGPT_FIXTURE, 'chatgpt'],
+      [CLAUDE_EXPORT_FIXTURE, 'claude-export'],
     ];
     for (const [path, format] of cases) {
       const r = detectAdapter(path);

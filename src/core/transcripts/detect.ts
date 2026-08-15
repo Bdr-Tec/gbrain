@@ -22,6 +22,8 @@ import { claudeCodeAdapter } from './claude-code.ts';
 import { codexAdapter } from './codex.ts';
 import { openclawAdapter } from './openclaw.ts';
 import { hermesAdapter } from './hermes.ts';
+import { chatgptExportAdapter } from './chatgpt-export.ts';
+import { claudeExportAdapter } from './claude-export.ts';
 
 // ── Harness discovery roots (discovery mode only) ───────────────────────────
 
@@ -60,11 +62,16 @@ export function harnessRoots(overrides?: HarnessRoot[]): HarnessRoot[] {
  * for formats behind gates (hermes) still register — gating is a scope
  * decision at the command layer, not a detection concern.
  *
- * NOTE: the two consumer-export adapters land in their own commit; the
- * registry grows as they do.
  */
 export function transcriptAdapters(): TranscriptAdapter[] {
-  return [hermesAdapter, openclawAdapter, codexAdapter, claudeCodeAdapter];
+  return [
+    hermesAdapter,
+    openclawAdapter,
+    codexAdapter,
+    claudeCodeAdapter,
+    claudeExportAdapter,
+    chatgptExportAdapter,
+  ];
 }
 
 const SAMPLE_BYTES = 64 * 1024;
