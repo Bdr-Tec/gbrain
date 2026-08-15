@@ -56,6 +56,8 @@ fi
 
 cd "$(dirname "$0")/.."
 
+. scripts/lib/test-env.sh
+
 # Collect non-E2E, non-serial unit test files. Slow files INCLUDED — see
 # header comment. Local run-unit-shard.sh excludes slow files (different
 # policy by design).
@@ -94,6 +96,12 @@ if [ "$DRY_RUN_LIST" = "1" ]; then
   exit 0
 fi
 
+# Snapshot fast-path (after the dry-run exit so list-only calls stay
+# instant): ~370 PGLite-booting matrix files pay ~3.1s cold init each
+# without it. The echo inside makes silent cold-init regressions visible
+# in CI logs.
+ensure_pglite_snapshot "test-shard"
+
 ALL_COUNT=$(printf '%s\n' "$ALL_FILES" | grep -c '^' || true)
 SHARD_COUNT=$(printf '%s\n' "$SHARD_FILES" | grep -c '^' || true)
 # grep -c on empty input returns 0 even with trailing newline edge cases
@@ -108,4 +116,7 @@ fi
 
 # Convert newline-separated file list to argv. xargs handles the
 # whitespace correctly without word-splitting on spaces in paths.
-printf '%s\n' "$SHARD_FILES" | xargs bun test --timeout=60000
+# --max-concurrency mirrors the local runner: unbounded intra-process
+# concurrency under parallel PGLite boots produced real shard deaths (the
+# 22-minute matrix timeout in test.yml records 13 of them).
+printf '%s\n' "$SHARD_FILES" | xargs bun test --timeout=60000 --max-concurrency="${GBRAIN_TEST_MAX_CONCURRENCY:-4}"

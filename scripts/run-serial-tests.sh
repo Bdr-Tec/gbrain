@@ -1,17 +1,70 @@
 #!/usr/bin/env bash
-# scripts/run-serial-tests.sh — run *.serial.test.ts files with --max-concurrency=1.
+# scripts/run-serial-tests.sh — run *.serial.test.ts files, one bun process per
+# file, POOLED across files.
 #
 # Serial files are tests that share file-wide state (top-level mock.module,
 # module-level singletons that intentionally cross test cases) and would race
 # under intra-file concurrency. Discovered via filename suffix; no annotation
 # inside the file is needed.
 #
+# Each file gets its OWN bun process. `--max-concurrency=1` alone was not
+# enough: files in the same process share the module registry, so a top-level
+# `mock.module(...)` in one file leaks into the next file's imports. Per-file
+# processes give true isolation — and that isolation is per-PROCESS, not
+# per-machine, so separate processes run CONCURRENTLY through the pool below.
+# (The previous runner executed the ~140 processes strictly one-at-a-time:
+# an 8.5-minute CI job whose serialization was never required by the
+# quarantine contract.)
+#
 # Excluded by run-unit-shard.sh and run-unit-parallel.sh's parallel pass.
 # Invoked separately by run-unit-parallel.sh after the parallel pass succeeds.
+#
+# Knobs:
+#   GBRAIN_SERIAL_POOL=N          pool width (default min(detect_cpus, 4),
+#                                 then memory-adapted; 1 restores the old
+#                                 fully-sequential behavior)
+#   GBRAIN_SERIAL_FILE_TIMEOUT=S  wall-clock kill per file (default 300;
+#                                 needs timeout/gtimeout on PATH, else no wrap)
+#   GBRAIN_TEST_MEM_PER_FILE_MB   per-process memory budget (default 1536)
+#   GBRAIN_TEST_NO_MEM_ADAPT=1    skip the memory clamp
 
 set -euo pipefail
 
+# #3485: serial tests need no database — strip ambient DB URLs at this
+# wrapper boundary (same four-layer guard as run-slow-tests.sh / the
+# parallel runner) so the bunfig preload guard passes and nothing can
+# reach a real brain.
+unset DATABASE_URL GBRAIN_DATABASE_URL
 cd "$(dirname "$0")/.."
+
+. scripts/lib/test-env.sh
+
+# ──────────────────────────────────────────────────────────────────────────
+# EXCLUSIVE_FILES: files that touch MACHINE-GLOBAL state and must never run
+# concurrently with anything else. They run sequentially AFTER the pool
+# drains, without the wall-clock kill (a SIGKILL mid-registration could
+# strand a real scheduled job). Growth guard: test/scripts/serial-files
+# .test.ts fails when this list grows past 3 entries — every addition needs
+# a justification comment like the two below.
+# ──────────────────────────────────────────────────────────────────────────
+EXCLUSIVE_FILES=(
+  # launchd/cron lifecycle arc: install → self-disable → reinstall →
+  # uninstall ordering against (PATH-shimmed) launchctl; the arc asserts
+  # machine-level sequencing and is the flake-class canary.
+  "test/autopilot-launchd-lifecycle.serial.test.ts"
+  # hardenBrainRepo({installCron:true}) executes REAL launchctl/crontab
+  # (src/core/brain-repo-durability.ts) — a concurrent or killed run could
+  # strand a real scheduled job on the machine.
+  "test/brain-durability-hook.serial.test.ts"
+)
+
+is_exclusive() {
+  local f="$1" e
+  for e in "${EXCLUSIVE_FILES[@]}"; do
+    [ "$f" = "$e" ] && return 0
+  done
+  return 1
+}
 
 # Use while-read for portability to macOS bash 3.2 (no mapfile).
 files=()
@@ -24,35 +77,165 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 0
 fi
 
-# --dry-run-list mirrors run-unit-shard.sh for inline checks/tests.
+# --dry-run-list mirrors run-unit-shard.sh for inline checks/tests. Lists
+# ALL discovered files, pooled and exclusive alike.
 if [ "${1:-}" = "--dry-run-list" ]; then
   printf '%s\n' "${files[@]}"
   exit 0
 fi
 
-echo "[serial-tests] running ${#files[@]} file(s), one bun process per file"
+ensure_pglite_snapshot "serial-tests"
 
-# Each serial file gets its OWN bun process. `--max-concurrency=1` was not
-# enough: files in the same process share the module registry, so a top-level
-# `mock.module(...)` in one file leaks into the next file's imports
-# (eval-takes-quality-runner mocks gateway.ts and the next file fails on
-# `import { resetGateway }` because the mock factory didn't export it).
-# Per-file processes give true isolation; cost is ~100ms startup × N files.
-fail_count=0
-failed_files=()
+# Partition into pooled vs exclusive (exclusive entries missing from the
+# discovered set are simply ignored — the list names repo files, and a
+# sandbox copy of this script won't have them).
+pool_files=()
+exclusive_present=()
 for f in "${files[@]}"; do
-  if ! bun test --max-concurrency=1 --timeout=60000 "$f"; then
-    fail_count=$((fail_count + 1))
-    failed_files+=("$f")
+  if is_exclusive "$f"; then
+    exclusive_present+=("$f")
+  else
+    pool_files+=("$f")
   fi
 done
 
+# ──────────────────────────────────────────────────────────────────────────
+# Pool sizing: min(detect_cpus, 4) — each pooled bun process can hold a
+# PGLite WASM instance (~1.5GB) — then clamped by available memory (same
+# layer-1 doctrine as run-unit-parallel.sh, 4GB OS reserve).
+# ──────────────────────────────────────────────────────────────────────────
+POOL="${GBRAIN_SERIAL_POOL:-}"
+if [ -z "$POOL" ]; then
+  POOL=$(detect_cpus)
+  [ "$POOL" -gt 4 ] && POOL=4
+  if [ "${GBRAIN_TEST_NO_MEM_ADAPT:-0}" != "1" ]; then
+    MEM_PER_FILE_MB="${GBRAIN_TEST_MEM_PER_FILE_MB:-1536}"
+    AVAIL_MB=$(detect_available_mem_mb)
+    if [ "${AVAIL_MB:-0}" -gt 0 ] 2>/dev/null; then
+      BUDGET_MB=$((AVAIL_MB - 4096))
+      [ "$BUDGET_MB" -lt "$MEM_PER_FILE_MB" ] && BUDGET_MB="$MEM_PER_FILE_MB"
+      MAX_POOL=$((BUDGET_MB / MEM_PER_FILE_MB))
+      [ "$MAX_POOL" -lt 1 ] && MAX_POOL=1
+      [ "$POOL" -gt "$MAX_POOL" ] && POOL="$MAX_POOL"
+    fi
+  fi
+fi
+if ! printf '%s' "$POOL" | grep -qE '^[0-9]+$' || [ "$POOL" -lt 1 ]; then
+  echo "[serial-tests] ERROR: invalid pool size: $POOL" >&2
+  exit 2
+fi
+
+# Wall-clock kill per pooled file: contains the exit-hang class (a bun
+# process that finishes its tests but never exits). SIGTERM first, SIGKILL
+# after a grace period (`timeout -k`). macOS without coreutils has neither
+# binary — run unwrapped there (CI is Linux and always wraps).
+PER_FILE_TIMEOUT="${GBRAIN_SERIAL_FILE_TIMEOUT:-300}"
+TIMEOUT_BIN=""
+command -v timeout >/dev/null 2>&1 && TIMEOUT_BIN="timeout"
+[ -z "$TIMEOUT_BIN" ] && command -v gtimeout >/dev/null 2>&1 && TIMEOUT_BIN="gtimeout"
+
+LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-serial.XXXXXX")
+trap 'rm -rf "$LOG_DIR"' EXIT
+
+echo "[serial-tests] ${#files[@]} file(s): pool=$POOL (${#exclusive_present[@]} exclusive), per-file timeout=${TIMEOUT_BIN:+${PER_FILE_TIMEOUT}s via $TIMEOUT_BIN}${TIMEOUT_BIN:-none}"
+
+# Per-test timeout is 120s (not the fast-loop 60s): pooled contention can
+# push a 30-50s file past 60s — the same flake class the slow lane hardened
+# against in v0.40.10. The literal `bun test --max-concurrency=1` below is
+# contract-pinned by test/scripts/serial-files.test.ts.
+run_one_file() {
+  # $1 file, $2 log path, $3 exit-sentinel path, $4 wrap ("wrap"|"nowrap")
+  local f="$1" log="$2" exitf="$3" wrap="$4" rc=0
+  if [ "$wrap" = "wrap" ] && [ -n "$TIMEOUT_BIN" ]; then
+    "$TIMEOUT_BIN" -k 15 "$PER_FILE_TIMEOUT" \
+      bun test --max-concurrency=1 --timeout=120000 "$f" > "$log" 2>&1 || rc=$?
+  else
+    bun test --max-concurrency=1 --timeout=120000 "$f" > "$log" 2>&1 || rc=$?
+  fi
+  echo "$rc" > "$exitf"
+}
+
+start_epoch=$(date +%s)
+idx=0
+if [ "${#pool_files[@]}" -gt 0 ]; then
+  for f in "${pool_files[@]}"; do
+    while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$POOL" ]; do
+      sleep 0.2
+    done
+    (
+      s=$(date +%s)
+      run_one_file "$f" "$LOG_DIR/$idx.log" "$LOG_DIR/$idx.exit" "wrap"
+      e=$(date +%s)
+      echo "$((e - s))" > "$LOG_DIR/$idx.dur"
+    ) &
+    idx=$((idx + 1))
+  done
+  wait
+fi
+
+# Exclusive lane: sequential, unwrapped (see EXCLUSIVE_FILES comment).
+if [ "${#exclusive_present[@]}" -gt 0 ]; then
+  for f in "${exclusive_present[@]}"; do
+    s=$(date +%s)
+    run_one_file "$f" "$LOG_DIR/$idx.log" "$LOG_DIR/$idx.exit" "nowrap"
+    e=$(date +%s)
+    echo "$((e - s))" > "$LOG_DIR/$idx.dur"
+    idx=$((idx + 1))
+  done
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+# Aggregate from the exit sentinels. A MISSING sentinel means the wrapper
+# subshell itself died (external SIGKILL / OOM) — that is a FAILURE, never a
+# silent pass. Timeout kills surface as exit 124 (or 137 after SIGKILL).
+# ──────────────────────────────────────────────────────────────────────────
+ordered_files=()
+if [ "${#pool_files[@]}" -gt 0 ]; then ordered_files+=("${pool_files[@]}"); fi
+if [ "${#exclusive_present[@]}" -gt 0 ]; then ordered_files+=("${exclusive_present[@]}"); fi
+
+fail_count=0
+failed_files=()
+i=0
+for f in "${ordered_files[@]}"; do
+  dur="?"
+  [ -f "$LOG_DIR/$i.dur" ] && dur=$(cat "$LOG_DIR/$i.dur")
+  if [ ! -f "$LOG_DIR/$i.exit" ]; then
+    echo "[serial-tests] FAIL ${dur}s $f — missing exit sentinel (runner subshell died: external kill/OOM)" >&2
+    [ -f "$LOG_DIR/$i.log" ] && cat "$LOG_DIR/$i.log" >&2
+    fail_count=$((fail_count + 1))
+    failed_files+=("$f")
+  else
+    rc=$(cat "$LOG_DIR/$i.exit")
+    if [ "$rc" = "0" ]; then
+      summary=$(grep -E '^ *[0-9]+ pass' "$LOG_DIR/$i.log" | tail -1 | tr -d ' ' || true)
+      echo "[serial-tests] PASS ${dur}s $f ${summary:+($summary)}"
+    else
+      note=""
+      { [ "$rc" = "124" ] || [ "$rc" = "137" ]; } && note=" (killed by ${PER_FILE_TIMEOUT}s per-file timeout)"
+      echo "[serial-tests] FAIL ${dur}s $f — exit $rc$note" >&2
+      cat "$LOG_DIR/$i.log" >&2
+      fail_count=$((fail_count + 1))
+      failed_files+=("$f")
+    fi
+  fi
+  i=$((i + 1))
+done
+
+# Slowest-file table: feeds flake triage + future weight mining.
+echo "[serial-tests] slowest files:"
+i=0
+for f in "${ordered_files[@]}"; do
+  [ -f "$LOG_DIR/$i.dur" ] && echo "$(cat "$LOG_DIR/$i.dur") $f"
+  i=$((i + 1))
+done | sort -rn | head -10 | sed 's/^/  /'
+
+total_epoch=$(( $(date +%s) - start_epoch ))
 if [ "$fail_count" -gt 0 ]; then
   echo "" >&2
-  echo "[serial-tests] $fail_count file(s) failed:" >&2
+  echo "[serial-tests] $fail_count file(s) failed (${total_epoch}s total):" >&2
   for f in "${failed_files[@]}"; do
     echo "  - $f" >&2
   done
   exit 1
 fi
-echo "[serial-tests] all ${#files[@]} file(s) passed"
+echo "[serial-tests] all ${#ordered_files[@]} file(s) passed in ${total_epoch}s (pool=$POOL)"
