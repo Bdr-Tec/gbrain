@@ -4,9 +4,12 @@
  */
 
 import { describe, test, expect, beforeEach } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   registerAgentRunner, resolveAgentRunner, listRegisteredAgents,
-  _resetRegistryForTests,
+  _resetRegistryForTests, detectBinary, filterAllowlistEnv,
   type AgentRunner, type DetectResult, type InvokeOpts, type InvokeResult, type TranscriptSink,
 } from '../src/core/claw-test/agent-runner.ts';
 
@@ -93,5 +96,48 @@ describe('agent-agnosticism guard', () => {
     const d = await r.detect();
     expect(d.available).toBe(false);
     expect(d.reason).toBe('not installed');
+  });
+});
+
+describe('shared runner helpers (detectBinary / filterAllowlistEnv)', () => {
+  test('filterAllowlistEnv: overrides win over process.env (PATH-shim precedence)', () => {
+    const realPath = process.env.PATH;
+    expect(realPath).toBeTruthy();
+    const env = filterAllowlistEnv(['PATH', 'HOME'], { PATH: '/shim-bin:/usr/bin' });
+    expect(env.PATH).toBe('/shim-bin:/usr/bin');
+    expect(env.PATH).not.toBe(realPath);
+    if (typeof process.env.HOME === 'string') expect(env.HOME).toBe(process.env.HOME);
+  });
+
+  test('filterAllowlistEnv: unlisted process.env keys never reach the child', () => {
+    process.env.AGENT_RUNNER_TEST_LEAK_CANARY = 'leaked';
+    try {
+      const env = filterAllowlistEnv(['PATH'], {});
+      expect(env.AGENT_RUNNER_TEST_LEAK_CANARY).toBeUndefined();
+    } finally {
+      delete process.env.AGENT_RUNNER_TEST_LEAK_CANARY;
+    }
+  });
+
+  test('detectBinary: non-executable regular file is unavailable with the stat reason', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-runner-detect-'));
+    const p = join(dir, 'not-exec');
+    try {
+      writeFileSync(p, '#!/bin/sh\n', { mode: 0o644 });
+      process.env.AGENT_RUNNER_TEST_BIN = p;
+      const d = detectBinary('AGENT_RUNNER_TEST_BIN', 'definitely-not-a-real-binary-name');
+      expect(d.available).toBe(false);
+      expect(d.reason).toBe(`not executable: ${p}`);
+    } finally {
+      delete process.env.AGENT_RUNNER_TEST_BIN;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('detectBinary: missing env + missing binary reports not-on-PATH', () => {
+    delete process.env.AGENT_RUNNER_TEST_BIN;
+    const d = detectBinary('AGENT_RUNNER_TEST_BIN', 'definitely-not-a-real-binary-name');
+    expect(d.available).toBe(false);
+    expect(d.reason).toBe('definitely-not-a-real-binary-name not on PATH');
   });
 });
