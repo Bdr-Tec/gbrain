@@ -38,6 +38,48 @@ export interface TrustedSubmitOpts {
 const MIGRATION_VERSION = 7;
 
 const DEFAULT_MAX_SPAWN_DEPTH = 5;
+
+/**
+ * Stall-sweep reclaim grace (#4145, CDX-7): don't reclaim a row whose
+ * `lock_until` lapsed within the last N ms. When a CPU-starved worker's
+ * event loop unblocks, its coalesced renewal tick and the stall sweep
+ * fire in the same burst — if the sweep's UPDATE lands first it steals
+ * the OWNER'S live job. The grace is a HEAD-START for the owner's
+ * recovery renewal, not a guarantee: it only covers starvation bursts
+ * shorter than the grace, and a healthy second worker's sweep still
+ * wins beyond it. Minion analog of `GBRAIN_LOCK_STEAL_GRACE_SECONDS`
+ * (db-lock.ts), adapted because minion_jobs has no last_refreshed_at.
+ *
+ * Cost: dead-worker recovery becomes lock_until + grace + up to
+ * stalledInterval. Env `GBRAIN_MINION_STALL_RECLAIM_GRACE_MS` (0 allowed
+ * — restores the exact legacy reclaim predicate).
+ */
+export const DEFAULT_STALL_RECLAIM_GRACE_MS = 15_000;
+
+const _warnedGraceEnv = new Set<string>();
+
+export function _resetStallGraceWarningsForTests(): void {
+  _warnedGraceEnv.clear();
+}
+
+export function resolveStallReclaimGraceMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.GBRAIN_MINION_STALL_RECLAIM_GRACE_MS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_STALL_RECLAIM_GRACE_MS;
+  // Unlike the lock-renewal knobs, 0 is a VALID value here (legacy reclaim).
+  if (!/^\d+$/.test(raw.trim())) {
+    if (!_warnedGraceEnv.has(raw)) {
+      _warnedGraceEnv.add(raw);
+      process.stderr.write(
+        `[minions] env GBRAIN_MINION_STALL_RECLAIM_GRACE_MS=${JSON.stringify(raw)} is not a non-negative integer; ` +
+        `falling back to default ${DEFAULT_STALL_RECLAIM_GRACE_MS}\n`,
+      );
+    }
+    return DEFAULT_STALL_RECLAIM_GRACE_MS;
+  }
+  return Number(raw.trim());
+}
 const DEFAULT_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MiB
 
 const TERMINAL_STATUSES = ['completed', 'failed', 'dead', 'cancelled'] as const;
@@ -1355,18 +1397,25 @@ export class MinionQueue {
   }
 
   /** Detect and handle stalled jobs. Single CTE, no off-by-one. Returns affected jobs. */
-  async handleStalled(): Promise<{ requeued: MinionJob[]; dead: MinionJob[] }> {
+  async handleStalled(graceMsOverride?: number): Promise<{ requeued: MinionJob[]; dead: MinionJob[] }> {
     // W0 fix-wave (Tier-1 #4): the dead-letter branch previously emitted NO
     // child_done and never unblocked aggregator parents — a child that died
     // via max-stall stranded its parent in 'waiting-children' forever (the
     // exact hang the v0.15 comment says was fixed for timeouts; there was no
     // compensating sweep anywhere). Restructured into the parents-first
     // discover/lock/kill shape (D5.12) with the shared killJobs() tail.
+    //
+    // #4145 (CDX-7): the reclaim predicate carries a grace — see
+    // resolveStallReclaimGraceMs. Callers (tests) may pass an explicit
+    // override; the worker sweep resolves from env/default.
+    const graceMs = graceMsOverride ?? resolveStallReclaimGraceMs();
     return this.engine.transaction(async (tx) => {
       const candidates = await tx.executeRaw<{ id: number; parent_job_id: number | null; stalled_counter: number; max_stalled: number }>(
         `SELECT id, parent_job_id, stalled_counter, max_stalled
            FROM minion_jobs
-          WHERE status = 'active' AND lock_until < now()`
+          WHERE status = 'active'
+            AND lock_until < now() - ($1::double precision * interval '1 millisecond')`,
+        [graceMs]
       );
       if (candidates.length === 0) return { requeued: [], dead: [] };
       const ids = candidates.map(c => c.id);
@@ -1384,12 +1433,13 @@ export class MinionQueue {
          WHERE id IN (
            SELECT id FROM minion_jobs
             WHERE id = ANY($1::bigint[])
-              AND status = 'active' AND lock_until < now()
+              AND status = 'active'
+              AND lock_until < now() - ($2::double precision * interval '1 millisecond')
               AND stalled_counter + 1 < max_stalled
             FOR UPDATE SKIP LOCKED
          )
          RETURNING *`,
-        [ids]
+        [ids, graceMs]
       );
       const deadRows = await tx.executeRaw<Record<string, unknown>>(
         `UPDATE minion_jobs SET
@@ -1400,12 +1450,13 @@ export class MinionQueue {
          WHERE id IN (
            SELECT id FROM minion_jobs
             WHERE id = ANY($1::bigint[])
-              AND status = 'active' AND lock_until < now()
+              AND status = 'active'
+              AND lock_until < now() - ($2::double precision * interval '1 millisecond')
               AND stalled_counter + 1 >= max_stalled
             FOR UPDATE SKIP LOCKED
          )
          RETURNING *`,
-        [ids]
+        [ids, graceMs]
       );
       // THE FIX: stall-death now notifies + unblocks parents like every
       // other terminal kill. Outcome 'dead' (not 'timeout') so consumers can
