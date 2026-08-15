@@ -88,7 +88,7 @@ describe('resolveMaxLifetimeSeconds', () => {
     const { endPoolBounded } = await import('../src/core/db.ts');
     await withEnv({ GBRAIN_POOL_MAX_LIFETIME_S: '900' }, async () => {
       const cm = new ConnectionManager({
-        url: 'postgresql://user:pass@127.0.0.1:5/never-connected',
+        url: 'postgresql://user@127.0.0.1:5/never-connected',
       });
       const pool = await cm.getReadPool();
       try {
@@ -106,7 +106,7 @@ describe('resolveMaxLifetimeSeconds', () => {
     const { endPoolBounded } = await import('../src/core/db.ts');
     await withEnv({ GBRAIN_POOL_MAX_LIFETIME_S: undefined }, async () => {
       const cm = new ConnectionManager({
-        url: 'postgresql://user:pass@127.0.0.1:5/never-connected',
+        url: 'postgresql://user@127.0.0.1:5/never-connected',
       });
       const pool = await cm.getReadPool();
       try {
