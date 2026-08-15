@@ -22,6 +22,23 @@ All notable changes to GBrain will be documented in this file.
 - **CI guards now prove they can fail.** A guard registry classifies all 45 check scripts; self-tested scanner guards run against known-bad fixtures on every verify (the registry tracks fixture coverage for the rest), so a guard whose pattern rots into a permanently-green no-op fails the build instead of masquerading as coverage. Two such rotted patterns were found and fixed in the process, along with three guards that were wired into a registry nobody ran.
 
 To take advantage of v0.45.16.0: upgrade and restart any long-running `gbrain serve`, autopilot, or jobs supervisor/worker daemon so the fenced lock refresh and job-reaper fixes take effect. If you run image search, run `gbrain backfill modality` once after upgrading to restore any image chunks a prior re-embed flipped to text (`gbrain doctor` surfaces the affected count and the exact command). No schema migration and no config changes are required.
+## [0.45.15.0] - 2026-08-14
+
+**The queue that drains itself: three background-jobs fixes reported from a downstream agent deployment (upstream issues #2, #3, #4).** A brain whose autopilot cycle stalled mid-run could accumulate byte-identical queued cycles forever while every long job queued before an upgrade died minutes in — and the operator diagnosing it couldn't even find the worker entry point, because `gbrain jobs --help` printed a one-line stub. All three failure modes are closed, and the queue now tells you when it's holding work back.
+
+### Fixed
+
+- **Stalled cycles no longer breed duplicates.** Autopilot dispatch now uses a single-flight guard (`maxPending`) that counts waiting jobs AND actively-running jobs with a live lock, scoped per source — so a cycle stuck in `active` suppresses re-dispatch instead of minting a new duplicate every tick. A job whose worker died stops counting the moment its lock lapses, so a dead worker can never silently freeze dispatch: the fresh waiting row keeps feeding the existing wedge detectors. Applies to per-source cycles, the legacy single-source path, and brain-wide maintenance.
+- **Long jobs queued before an upgrade get their real budget.** Handler wall-clock budgets now also resolve at claim time (not just at submit), so rows inserted with no budget — including anything queued on an older version — run with their documented allowance instead of being dead-lettered by the minutes-scale default. Migration v128 backfills budgets for everything still in flight and cancels the duplicate cycle backlog (newest per source survives; manually submitted cycles without a ticker-style idempotency key are never touched; cancelled rows are kept for audit).
+- **`gbrain jobs --help` prints the real surface.** The full subcommand list plus dedicated help for `work`, `supervisor`, `submit`, `watch`, and `prune` — engine-free, and a help flag after a subcommand can no longer fall through and start a real worker daemon.
+
+### Added
+
+- **`gbrain jobs stats` shows suppressed dispatch.** A `Backpressure (24h)` line reports submissions coalesced onto in-flight jobs, plus a hint naming the specific in-flight job holding a queue-empty name back — the visibility that was missing when "nothing queued, nothing completing" was the only symptom.
+- **`gbrain jobs get <id>` shows the effective wall-clock budget** — the stamped timeout and deadline, or which default applies and when it kicks in.
+- Autopilot cycle dispatch tells the truth: a submission that coalesced onto an existing job reports `dispatch_coalesced` (and `coalesced: true` in `jobs submit`'s JSON output) instead of claiming a dispatch that never inserted a row.
+
+To take advantage of v0.45.15.0: upgrade and run any gbrain command — migration v128 applies automatically, backfilling budgets for queued long jobs and clearing any duplicate cycle backlog. If a queue looked wedged before, `gbrain jobs stats` now names the in-flight job to inspect and `gbrain jobs work --help` documents the worker daemon flags end to end.
 
 ## [0.45.14.0] - 2026-08-14
 
