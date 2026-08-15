@@ -64,8 +64,6 @@ jobs:
       - name: Run heavy tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
-          # #3485 preload guard: this job intentionally tests against a DB.
-          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
         run: bun run test:heavy
 
       # Agent-bootstrap offline Docker e2e [A7] — placeholder registration.

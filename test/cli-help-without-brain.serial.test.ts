@@ -26,6 +26,7 @@ const HELP_WITHOUT_BRAIN = [
   'maintain',
   'extract-conversation-facts',
   'transcripts',
+  'jobs',
 ];
 
 /**

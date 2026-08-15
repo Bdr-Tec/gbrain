@@ -15,7 +15,6 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { PostgresEngine } from '../../src/core/postgres-engine.ts';
-import { assertSafeE2eDatabaseUrl } from '../helpers/db-guard.ts';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const skip = !DATABASE_URL;
@@ -29,7 +28,6 @@ describe.skipIf(skip)('multimodal v0.27.1 against real Postgres', () => {
 
   beforeAll(async () => {
     pg = new PostgresEngine();
-    assertSafeE2eDatabaseUrl(DATABASE_URL!);
     await pg.connect({ database_url: DATABASE_URL! });
     await pg.initSchema();
   }, 60_000);

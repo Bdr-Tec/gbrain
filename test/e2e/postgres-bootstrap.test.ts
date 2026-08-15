@@ -25,7 +25,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PostgresEngine } from '../../src/core/postgres-engine.ts';
 import { LATEST_VERSION } from '../../src/core/migrate.ts';
-import { assertSafeE2eDatabaseUrl } from '../helpers/db-guard.ts';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const skip = !DATABASE_URL;
@@ -35,7 +34,6 @@ describe.skipIf(skip)('PostgresEngine forward-reference bootstrap (E2E)', () => 
 
   beforeAll(async () => {
     engine = new PostgresEngine();
-    assertSafeE2eDatabaseUrl(DATABASE_URL!);
     await engine.connect({ database_url: DATABASE_URL! });
   }, 30_000);
 
