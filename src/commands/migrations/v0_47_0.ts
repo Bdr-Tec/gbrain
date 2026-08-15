@@ -1,0 +1,215 @@
+/**
+ * v0.47.0 migration — ZeroEntropy sunset notice (detect-and-notify ONLY).
+ *
+ * ZeroEntropy's hosted API shuts down on ZEROENTROPY_SUNSET_DATE (see
+ * src/core/ai/defaults.ts). This orchestrator:
+ *
+ *   A. Detects the HOST brain's exposure via src/core/ze-exposure.ts
+ *      (effective-model resolution — env → file → legacy fallback; plus the
+ *      resolved reranker and ZE-backed custom columns). Read-only.
+ *   B. When exposed (or exposure is UNKNOWN — fail-safe): prints the ACTION
+ *      REQUIRED block and appends one idempotent pending-host-work entry
+ *      pointing the host agent at skills/migrations/v0.47.0.0.md.
+ *
+ * It performs NO config writes, NO pinning, and NEVER invokes
+ * `migrate embeddings` (the migration costs money and needs a target key the
+ * user may not have — that decision belongs to the user/agent via the
+ * playbook). The v0.47 split-default keeps existing brains fully working
+ * until the date; this migration is purely the loud, durable notification.
+ *
+ * UNKNOWN handling: returns `complete` with detail `exposure_unknown` — NOT
+ * `partial`. Three consecutive partials would wedge the whole migration chain
+ * behind `--force-retry` (apply-migrations.ts); the stage-2 upgrade banner and
+ * `gbrain doctor` carry the ongoing nag instead.
+ *
+ * Host-scoped: apply-migrations runs once per host (global completed.jsonl).
+ * Mounted/team brains are covered by the per-brain stage-2 banner + doctor.
+ *
+ * NOTE: `apply-migrations --dry-run` exits before invoking orchestrators —
+ * the `opts.dryRun` path here is exercised by tests, not by that CLI flag.
+ */
+
+import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'fs';
+import { join } from 'path';
+
+import type {
+  Migration,
+  OrchestratorOpts,
+  OrchestratorResult,
+  OrchestratorPhaseResult,
+} from './types.ts';
+import { loadConfig, toEngineConfig, gbrainPath } from '../../core/config.ts';
+import { createEngine } from '../../core/engine-factory.ts';
+import type { BrainEngine } from '../../core/engine.ts';
+
+function pendingHostWorkDir(): string { return gbrainPath('migrations'); }
+function pendingHostWorkPath(): string { return join(pendingHostWorkDir(), 'pending-host-work.jsonl'); }
+
+interface PendingHostWorkEntry {
+  migration: string;
+  ts: string;
+  skill: string;
+  reason: string;
+}
+
+function existingEntryForVersion(version: string): boolean {
+  const p = pendingHostWorkPath();
+  if (!existsSync(p)) return false;
+  try {
+    const raw = readFileSync(p, 'utf-8');
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const obj = JSON.parse(trimmed) as PendingHostWorkEntry;
+        if (obj.migration === version) return true;
+      } catch { /* skip malformed */ }
+    }
+  } catch { /* read error */ }
+  return false;
+}
+
+function emitHostWork(reason: string): OrchestratorPhaseResult {
+  try {
+    if (existingEntryForVersion('0.47.0')) {
+      return { name: 'host-work', status: 'skipped', detail: 'already recorded' };
+    }
+    mkdirSync(pendingHostWorkDir(), { recursive: true });
+    const entry: PendingHostWorkEntry = {
+      migration: '0.47.0',
+      ts: new Date().toISOString(),
+      skill: 'skills/migrations/v0.47.0.0.md',
+      reason,
+    };
+    appendFileSync(pendingHostWorkPath(), JSON.stringify(entry) + '\n');
+    return { name: 'host-work', status: 'complete', detail: pendingHostWorkPath() };
+  } catch (e) {
+    return {
+      name: 'host-work',
+      status: 'failed',
+      detail: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult> {
+  const phases: OrchestratorPhaseResult[] = [];
+
+  const config = loadConfig();
+  const { loadConfigFileOnly } = await import('../../core/config.ts');
+  const fileCfg = loadConfigFileOnly();
+  if (!config && !fileCfg) {
+    // No gbrain install on this host — nothing to notify about.
+    phases.push({ name: 'detect', status: 'skipped', detail: 'no brain configured' });
+    return { version: '0.47.0', status: 'complete', phases };
+  }
+
+  let engine: BrainEngine | null = null;
+  let exposure: import('../../core/ze-exposure.ts').ZeExposure | null = null;
+  try {
+    const { detectZeExposure } = await import('../../core/ze-exposure.ts');
+    if (config) {
+      try {
+        engine = await createEngine(toEngineConfig(config));
+        await engine.connect(toEngineConfig(config));
+      } catch {
+        engine = null; // DB probes will fail → tri-state handles it below.
+      }
+    }
+    if (engine) {
+      exposure = await detectZeExposure(engine, fileCfg);
+      phases.push({
+        name: 'detect',
+        status: 'complete',
+        detail:
+          exposure.status === 'unknown'
+            ? `exposure_unknown (failed probes: ${exposure.unknownProbes.join(', ')})`
+            : exposure.status,
+      });
+    } else {
+      // Config exists but the brain is unreachable: resolution-based exposure
+      // still works from the file plane alone; DB-backed probes are unknown.
+      const fakeEngine = {
+        getConfig: async () => null,
+        executeRaw: async () => {
+          throw new Error('brain unreachable');
+        },
+      } as unknown as BrainEngine;
+      exposure = await detectZeExposure(fakeEngine, fileCfg);
+      // Force fail-safe posture: probes could not run.
+      if (exposure.status === 'clear') {
+        exposure = { ...exposure, status: 'unknown', unknownProbes: ['engine_connect'] };
+      }
+      phases.push({
+        name: 'detect',
+        status: 'complete',
+        detail: `brain unreachable — ${exposure.status}`,
+      });
+    }
+  } catch (e) {
+    phases.push({
+      name: 'detect',
+      status: 'complete',
+      detail: `exposure_unknown (${e instanceof Error ? e.message : String(e)})`,
+    });
+    exposure = null;
+  } finally {
+    try { await engine?.disconnect(); } catch { /* best-effort */ }
+  }
+
+  const status = exposure?.status ?? 'unknown';
+  if (status === 'clear') {
+    // Unexposed brains complete as a no-op — no nag, no host work.
+    return { version: '0.47.0', status: 'complete', phases };
+  }
+
+  // Exposed OR unknown → print the notice + emit host work (fail-safe: when
+  // we can't prove the brain is clear, nag rather than stay silent).
+  if (exposure) {
+    const { renderZeActionRequired } = await import('../../core/ze-exposure.ts');
+    const banner = [
+      '',
+      '='.repeat(74),
+      'ACTION REQUIRED — ZeroEntropy shutdown (v0.47.0 migration notice)',
+      '='.repeat(74),
+      renderZeActionRequired(exposure),
+      '='.repeat(74),
+      '',
+    ].join('\n');
+    // eslint-disable-next-line no-console
+    console.error(banner);
+  }
+
+  if (opts.dryRun) {
+    phases.push({ name: 'host-work', status: 'skipped', detail: 'dry-run' });
+    return { version: '0.47.0', status: 'complete', phases };
+  }
+
+  const hostWork = emitHostWork(
+    `ZeroEntropy hosted API sunset — embedding/reranker migration required (status: ${status})`,
+  );
+  phases.push(hostWork);
+
+  return {
+    version: '0.47.0',
+    status: 'complete',
+    phases,
+    pending_host_work: hostWork.status === 'complete' ? 1 : 0,
+  };
+}
+
+export const v0_47_0: Migration = {
+  version: '0.47.0',
+  featurePitch: {
+    headline:
+      'ZeroEntropy is shutting down 2026-09-04 — brains embedding or reranking with it must switch. New default: Voyage (voyage-4 + rerank-2.5, one key).',
+    description:
+      'Nothing changes automatically: existing brains keep working until the shutdown date. ' +
+      'This migration detects whether your brain still resolves to ZeroEntropy (embedding, reranker, or custom columns) ' +
+      'and, if so, records an action item for your agent at skills/migrations/v0.47.0.0.md. ' +
+      'The one-command fix: `gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run` (cost preview), then `--yes`. ' +
+      'OpenAI alternative (keeps your column width): `--to openai:text-embedding-3-small --dim 1280`. ' +
+      'Reranker: `gbrain config set search.reranker.model voyage:rerank-2.5`.',
+  },
+  orchestrator,
+};
