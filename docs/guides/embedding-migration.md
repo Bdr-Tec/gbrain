@@ -27,6 +27,11 @@ gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --yes
 declared width and is required for recipes that don't declare one (litellm,
 llama-server, and other bring-your-own-model providers).
 
+Targets on a provider with an announced shutdown are refused (a paid re-embed
+onto a dying API would strand the brain). Self-hosting a wire-compatible
+endpoint behind a `provider_base_urls` override? `--force-sunset-target` is
+the explicit escape hatch.
+
 ## Recommended targets
 
 - **`voyage:voyage-4 --dim 1024`** (the new-install default). One
