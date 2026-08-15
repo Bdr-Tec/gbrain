@@ -14,14 +14,14 @@ All notable changes to GBrain will be documented in this file.
 - **Re-embedding no longer flips image chunks to text.** `gbrain embed --stale` (including the autopilot path) preserved every chunk field except `modality`, silently zeroing image retrieval until the next full import. One shared carry list now serves every re-embed path.
 - **A failed first sync no longer kills the MCP server.** Import preflight failures (missing embedding credentials, unreadable target) now surface as normal tool errors instead of terminating the serving process mid-call.
 - **`gbrain lint --fix` reports the true fix count** (it previously scanned everything twice and reported "0 auto-fixed" after fixing issues) and walks the tree once.
-- **Destructive-command prompts can no longer hang forever** on closed or piped stdin: EOF declines safely, and prompts write to stderr so `--json` output stays clean.
+- **The PGLite repair and re-init confirmation prompts can no longer hang forever** on closed or piped stdin: EOF declines safely, and prompts write to stderr so `--json` output stays clean.
 
 ### Changed
 
 - **`bun run test` is ~10x faster** (measured: a full parallel suite run dropped from ~82 to ~8 minutes). The PGLite schema snapshot is now default-on for the everyday test loop, rebuilt automatically when migrations or the pinned embedding shape change, concurrency-safe across parallel shards and workspaces, and refused on any shape mismatch so a wrong fixture can never poison the suite.
-- **CI guards now prove they can fail.** A guard registry classifies all 45 check scripts; scanner guards run against known-bad fixtures on every verify, so a guard whose pattern rots into a permanently-green no-op fails the build instead of masquerading as coverage. Two such rotted patterns were found and fixed in the process, along with three guards that were wired into a registry nobody ran.
+- **CI guards now prove they can fail.** A guard registry classifies all 45 check scripts; self-tested scanner guards run against known-bad fixtures on every verify (the registry tracks fixture coverage for the rest), so a guard whose pattern rots into a permanently-green no-op fails the build instead of masquerading as coverage. Two such rotted patterns were found and fixed in the process, along with three guards that were wired into a registry nobody ran.
 
-To take advantage of v0.45.15.0: upgrade and restart any long-running `gbrain serve` or autopilot daemon so the fenced lock refresh and job-reaper fixes take effect. If you run image search, re-run `gbrain embed --stale` once after upgrading to restore any image chunks a prior re-embed flipped to text (`gbrain doctor` surfaces the affected count). No schema migration and no config changes are required.
+To take advantage of v0.45.15.0: upgrade and restart any long-running `gbrain serve`, autopilot, or jobs supervisor/worker daemon so the fenced lock refresh and job-reaper fixes take effect. If you run image search, run `gbrain backfill modality` once after upgrading to restore any image chunks a prior re-embed flipped to text (`gbrain doctor` surfaces the affected count and the exact command). No schema migration and no config changes are required.
 
 ## [0.45.14.0] - 2026-08-14
 

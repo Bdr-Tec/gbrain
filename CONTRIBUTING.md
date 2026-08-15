@@ -92,11 +92,11 @@ The canonical reference for test tiers, isolation rules, timing, and the E2E
 lifecycle is [`docs/TESTING.md`](docs/TESTING.md). The short version:
 
 ```bash
-# Inner edit loop (~85s on a Mac dev box)
-bun run test                      # parallel 4-shard fan-out (memory-adaptive) + serial post-pass
+# Inner edit loop (~8min full suite on a Mac dev box; single files in seconds)
+bun run test                      # parallel 4-shard fan-out (memory-adaptive) + serial post-pass; PGLite snapshot default-on
 bun test test/markdown.test.ts    # specific unit test
 
-# Pre-push gate (19+ parallel checks + typecheck)
+# Pre-push gate (40+ parallel checks + typecheck)
 bun run verify
 
 # Pre-merge sanity (everything CI runs)
@@ -126,9 +126,10 @@ loop" below), silent fallback to recursive chunking in the compiled binary
 (`scripts/check-admin-build.sh`), resolver drift on bundled skills
 (`bun run check:resolver`), and typecheck. The guard REGISTRY is
 `scripts/guards-manifest.tsv`, and `scripts/guard-self-test.sh` (also in
-`verify`) proves every scanner guard can actually fail by running it against
-known-bad fixtures — a new `scripts/check-*` guard must be registered in the
-manifest or the build fails. There is no `check:all` script; the
+`verify`) proves each self-tested scanner guard (`selftest=yes` in the
+manifest; coverage ratchets up from the `todo` rows) can actually fail by
+running it against known-bad fixtures — a new `scripts/check-*` guard must be
+registered in the manifest or the build fails. There is no `check:all` script; the
 trailing-newline, exports-count, and no-legacy-getconnection checks run in
 `verify` with everything else.
 

@@ -31,13 +31,13 @@ God-file line counts (the audit's structural targets, BEFORE the registry waves)
 |---|---|
 | src/commands/doctor.ts | 10,057 |
 | src/core/operations.ts | 7,459 |
-| src/core/pglite-engine.ts | 6,849 |
+| src/core/pglite-engine.ts | 6,874 |
 | src/core/postgres-engine.ts | 6,847 |
 | src/core/migrate.ts | 6,201 |
 | src/commands/sync.ts | 5,991 |
 | src/core/ai/gateway.ts | 4,049 |
 | src/cli.ts | 3,301 |
-| src/core/cycle.ts | 2,887 |
+| src/core/cycle.ts | 2,933 |
 | src/core/search/hybrid.ts | 2,453 |
 | src/core/engine.ts | 2,320 |
 | src/core/search/mode.ts | 1,232 |

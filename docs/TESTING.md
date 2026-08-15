@@ -48,7 +48,9 @@ Measured effect: a full parallel suite run drops ~10x (PGLite-booting files go
   staleness-verified takeover of a crashed builder; the tar is written first
   and the version file last, so a crash can never leave a fresh-looking torn
   fixture. `GBRAIN_SNAPSHOT_LOCK_TIMEOUT_MS` (default 120000) bounds the
-  waiter.
+  waiter; an exhausted waiter facing a still-live lock proceeds unlocked as a
+  last resort (the loader gate below validates the version file, not the tar
+  bytes).
 - **Never authoritative.** The loader (`tryLoadSnapshot` in
   `src/core/pglite-engine.ts`) verifies the schema hash AND the embedding
   shape the snapshot was baked with (`dims=` / `model=` lines in the version
