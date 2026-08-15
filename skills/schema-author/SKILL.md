@@ -93,8 +93,8 @@ DON'T invoke for "where does THIS note go" (use brain-taxonomist) or
 
 ## Tutorial + vision
 
-- **Why this matters:** [`docs/what-schemas-unlock.md`](../../docs/what-schemas-unlock.md) — 7 killer use cases (4000 invisible meetings made queryable, founder ops brain, research brain, legal brain, team brain, agent-as-co-curator) plus the structural argument for why types matter at query time. Read this before pitching schema authoring to a user — it's the doc that explains the difference between a pile of notes and a brain with structure.
-- **5-minute walkthrough:** [`docs/schema-author-tutorial.md`](../../docs/schema-author-tutorial.md) — fork the bundled pack, add a researcher type, sync, prove the T1.5 wiring via `gbrain whoknows`. Use placeholder pages so it runs against any brain without affecting real content.
+- **Why this matters:** [`docs/what-schemas-unlock.md`](https://github.com/garrytan/gbrain/blob/master/docs/what-schemas-unlock.md) — 7 killer use cases (4000 invisible meetings made queryable, founder ops brain, research brain, legal brain, team brain, agent-as-co-curator) plus the structural argument for why types matter at query time. Read this before pitching schema authoring to a user — it's the doc that explains the difference between a pile of notes and a brain with structure.
+- **5-minute walkthrough:** [`docs/schema-author-tutorial.md`](https://github.com/garrytan/gbrain/blob/master/docs/schema-author-tutorial.md) — fork the bundled pack, add a researcher type, sync, prove the T1.5 wiring via `gbrain whoknows`. Use placeholder pages so it runs against any brain without affecting real content.
 
 ## Workflow
 
@@ -264,7 +264,7 @@ When invoked, this skill produces structured output suitable for both human + JS
 
 **Per-mutation result (JSON):**
 ```json
-{"schema_version": 1, "pack": "mine", "path": "/Users/.../pack.json", "format": "json", "prev_sha8": "a1b2c3d4", "new_sha8": "e5f6g7h8"}
+{"schema_version": 1, "pack": "mine", "path": "~/.gbrain/schema-packs/mine/pack.json", "format": "json", "prev_sha8": "a1b2c3d4", "new_sha8": "e5f6g7h8"}
 ```
 
 **Per-batch result (from `schema_apply_mutations` MCP op):**
@@ -287,7 +287,7 @@ When invoked, this skill produces structured output suitable for both human + JS
 - Stats: total pages, typed %, untyped count, per-type breakdown, dead-prefix list
 - Sync: per-prefix `would_apply`/`applied` count + sample slugs in dry-run mode
 
-On failure, the error envelope follows the standard `StructuredAgentError` shape from `src/core/errors.ts`: `{error, code, message, details?}`. Codes from the mutation primitives: `PACK_NOT_FOUND`, `PACK_READONLY`, `PACK_CORRUPT`, `TYPE_EXISTS`, `TYPE_NOT_FOUND`, `INVALID_PRIMITIVE`, `INVALID_RESULT`, `IO_ERROR`, `STILL_REFERENCED`, `LOCK_BUSY`.
+On failure, the error envelope follows the standard `StructuredAgentError` shape: `{error, code, message, details?}`. Codes from the mutation primitives: `PACK_NOT_FOUND`, `PACK_READONLY`, `PACK_CORRUPT`, `TYPE_EXISTS`, `TYPE_NOT_FOUND`, `INVALID_PRIMITIVE`, `INVALID_RESULT`, `IO_ERROR`, `STILL_REFERENCED`, `LOCK_BUSY`.
 
 ## Failure modes
 

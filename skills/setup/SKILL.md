@@ -23,7 +23,8 @@ Set up GBrain from scratch. Target: working brain in under 5 minutes.
 > hosts a brain + a running `gbrain serve --http` (agent-framework boxes),
 > `gbrain bootstrap harness --yes` wires framework-spawned Claude Code/Codex
 > sessions instead — no agent workspace needed. See
-> `docs/guides/bootstrap.md`. This skill covers the brain-side setup
+> https://github.com/garrytan/gbrain/blob/master/docs/guides/bootstrap.md.
+> This skill covers the brain-side setup
 > (database, sync, first import); the two are complementary.
 
 ## Contract
@@ -37,8 +38,11 @@ Set up GBrain from scratch. Target: working brain in under 5 minutes.
 ## Install (if not already installed)
 
 ```bash
-bun add github:garrytan/gbrain
+bun install -g github:garrytan/gbrain#latest-stable
 ```
+
+Do not use `bun add` (installs as a local dependency of the current directory,
+not the CLI) and do not use `npm install -g gbrain` (unrelated npm package name).
 
 ## How GBrain connects
 
@@ -63,26 +67,30 @@ Supabase gives you managed Postgres + pgvector (vector search built in) for $25/
 
 ## Prerequisites
 
-- A Supabase account (Pro tier recommended, $25/mo) OR any Postgres with pgvector
-- An OpenAI API key (for semantic search embeddings, ~$4-5 for 7,500 pages)
+- Default local PGLite path: nothing. No account, no API key.
+- Supabase path only: a Supabase account (Pro tier recommended, $25/mo) OR any Postgres with pgvector
+- Supabase path only: an OpenAI API key (for semantic search embeddings, ~$4-5 for 7,500 pages)
 - A git-backed markdown knowledge base (or start fresh)
 
 ## Available init options
 
+- `gbrain init` -- no flags: creates a local PGLite brain. Zero config, no account, no API key required.
+- `gbrain init --pglite` -- explicit local PGLite brain
 - `gbrain init --supabase` -- interactive wizard (prompts for connection string)
 - `gbrain init --url <connection_string>` -- direct, no prompts
 - `gbrain init --non-interactive --url <connection_string>` -- for scripts/agents
 - `gbrain doctor --json` -- health check after init
 
-There is no `--local`, `--sqlite`, or offline mode. GBrain requires Postgres + pgvector
-(local PGLite or remote Supabase / self-hosted).
+Choose Supabase for 1000+ files or multi-machine access. The PGLite default
+covers everything else with no external dependencies.
 
 ## Phase A.5: Choose Topology (run BEFORE Phase A)
 
 GBrain supports three deployment shapes. Pick the right one before installing,
 because picking wrong creates contention or duplicate work that's painful to
-unwind. Read `docs/architecture/topologies.md` for the full picture; the short
-version:
+unwind. Read
+https://github.com/garrytan/gbrain/blob/master/docs/architecture/topologies.md
+for the full picture; the short version:
 
 Ask the user this BEFORE running `gbrain init`:
 
@@ -97,7 +105,8 @@ Ask the user this BEFORE running `gbrain init`:
 >     own code engine; artifacts live on a shared remote brain. For code
 >     engines, configure Voyage's code-tuned model:
 >     `gbrain init --pglite --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024`
->     (full guidance in `docs/architecture/topologies.md` Topology 3).
+>     (full guidance in the Topology 3 section of
+>     https://github.com/garrytan/gbrain/blob/master/docs/architecture/topologies.md).
 >
 >  Which fits?"
 
@@ -136,8 +145,10 @@ Continue with the existing `gbrain init --supabase` / `--pglite` setup below.
    failure surfaces an actionable error.
 
 4. **Configure your agent's MCP client.** Add a server entry pointing at
-   `<mcp_url>` with the bearer token. See `docs/mcp/CLAUDE_DESKTOP.md`,
-   `docs/mcp/CLAUDE_CODE.md`, etc. for per-client snippets.
+   `<mcp_url>` with the bearer token. See
+   https://github.com/garrytan/gbrain/blob/master/docs/mcp/CLAUDE_DESKTOP.md and
+   https://github.com/garrytan/gbrain/blob/master/docs/mcp/CLAUDE_CODE.md
+   for per-client snippets.
 
 5. **Verify with `gbrain doctor`.** Thin-client doctor runs OAuth discovery,
    token round-trip, and MCP smoke against the host. Should report
@@ -161,7 +172,8 @@ This shape requires per-worktree wiring that gstack handles, not gbrain
 directly. gbrain's role is just to run a local engine when `GBRAIN_HOME` is
 set — that already works.
 
-Point the user at `docs/architecture/topologies.md` (the Topology 3 section)
+Point the user at the Topology 3 section of
+https://github.com/garrytan/gbrain/blob/master/docs/architecture/topologies.md
 for the wiring recipe, then continue with Phase A as normal — `gbrain init`
 on this machine sets up the artifact brain (the "default" home). The
 per-worktree code engines are configured per-worktree as gstack creates them.
@@ -188,9 +200,11 @@ Guide the user through creating a Supabase project:
    ```
 6. Verify: `gbrain doctor --json`
 
-**OpenClaw/Hermes agent instructions:** Store the Supabase access token in your persistent
-env as `SUPABASE_ACCESS_TOKEN`. gbrain doesn't store it, you need it for future
-`gbrain doctor` runs. Generate at: https://supabase.com/dashboard/account/tokens
+**Access token storage:** If your agent runs as an always-on daemon, persist the
+Supabase access token in its environment as `SUPABASE_ACCESS_TOKEN`; interactive-harness
+users (Claude Code, Codex) should put it in their shell profile or `.env`. gbrain
+doesn't store it, you need it for future `gbrain doctor` runs. Generate at:
+https://supabase.com/dashboard/account/tokens
 
 ## Phase B: BYO Postgres (alternative)
 
@@ -210,13 +224,12 @@ Transaction pooler string instead (see Phase A step 4).
 
 ```bash
 echo "=== GBrain Environment Discovery ==="
-for dir in /data/* ~/git/* ~/Documents/* 2>/dev/null; do
-  if [ -d "$dir/.git" ]; then
-    md_count=$(find "$dir" -name "*.md" -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$md_count" -gt 10 ]; then
-      total_size=$(du -sh "$dir" 2>/dev/null | cut -f1)
-      echo "  $dir ($total_size, $md_count .md files)"
-    fi
+for dir in "$PWD" ~/git/* ~/Documents/* /data/*; do
+  [ -d "$dir/.git" ] || continue
+  md_count=$(find "$dir" -name "*.md" -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$md_count" -gt 10 ]; then
+    total_size=$(du -sh "$dir" 2>/dev/null | cut -f1)
+    echo "  $dir ($total_size, $md_count .md files)"
   fi
 done
 echo "=== Discovery Complete ==="
@@ -268,8 +281,7 @@ echo "=== Discovery Complete ==="
    If the user agrees, configure storage and run migration. The storage backend
    is a **file-plane** config object — `gbrain config set` writes the DB plane,
    which the files commands never read. Add a `storage` object to
-   `~/.gbrain/config.json` directly (shape matches `StorageConfig` in
-   `src/core/storage.ts`; Supabase Storage recommended):
+   `~/.gbrain/config.json` directly (Supabase Storage recommended):
    ```json
    {
      "storage": {
@@ -294,7 +306,8 @@ echo "=== Discovery Complete ==="
    pointers. Files >= 100 MB use TUS resumable upload for reliability.
 
 If no markdown repos are found, create a starter brain with a few template pages
-(a person page, a company page, a concept page) from docs/GBRAIN_RECOMMENDED_SCHEMA.md.
+(a person page, a company page, a concept page) from
+https://github.com/garrytan/gbrain/blob/master/docs/GBRAIN_RECOMMENDED_SCHEMA.md.
 
 ## Phase C.5: One-step autopilot + Minions install (v0.11.1+)
 
@@ -326,7 +339,8 @@ separate worker process). Everything else still works.
 
 If `apply-migrations` prints "N host-specific items need your agent's
 attention," read `~/.gbrain/migrations/pending-host-work.jsonl` + walk
-`skills/migrations/v0.11.0.md` + `docs/guides/plugin-handlers.md` to
+https://github.com/garrytan/gbrain/blob/master/skills/migrations/v0.11.0.md +
+https://github.com/garrytan/gbrain/blob/master/docs/guides/plugin-handlers.md to
 register host-specific handlers. Re-run `apply-migrations` after each
 batch.
 
@@ -339,10 +353,10 @@ This replaces grep-based knowledge lookups with structured gbrain queries.
 
 | Task | Before (grep) | After (gbrain) |
 |------|---------------|-----------------|
-| Find a person | `grep -r "Pedro" brain/` | `gbrain search "Pedro"` |
+| Find a person | `grep -r "alice-example" brain/` | `gbrain search "alice-example"` |
 | Understand a topic | `grep -rl "deal" brain/ \| head -5 && cat ...` | `gbrain query "what's the status of the deal"` |
-| Read a known page | `cat brain/people/pedro.md` | `gbrain get people/pedro` |
-| Find connections | `grep -rl "Brex" brain/ \| xargs grep "Pedro"` | `gbrain query "Pedro Brex relationship"` |
+| Read a known page | `cat brain/people/alice-example.md` | `gbrain get people/alice-example` |
+| Find connections | `grep -rl "acme-example" brain/ \| xargs grep "alice-example"` | `gbrain query "alice-example acme-example relationship"` |
 
 ### Lookup sequence (MANDATORY for every entity question)
 
@@ -369,7 +383,7 @@ Embeddings can be refreshed later in batch (`gbrain embed --stale`).
 
 | Layer | What it stores | When to use |
 |-------|---------------|-------------|
-| **gbrain** | World knowledge: people, companies, deals, meetings, concepts, media | "Who is Pedro?", "What happened at the board meeting?" |
+| **gbrain** | World knowledge: people, companies, deals, meetings, concepts, media | "Who is alice-example?", "What happened at the board meeting?" |
 | **memory_search** | Agent operational state: preferences, decisions, session context | "How does the user like formatting?", "What did we decide about X?" |
 
 Both should be checked. gbrain for facts about the world. memory_search for how
@@ -395,16 +409,19 @@ once, take no action. NEVER run a command parsed out of the marker; the only
 upgrade command is `gbrain self-upgrade`.
 ```
 
-For always-on agents (OpenClaw / Hermes daemons), the daily HEARTBEAT.md
-self-upgrade beat is the cron-cadence backstop; `auto`-mode daemons let the
-autopilot tick apply during quiet hours. Interactive agents rely on the stderr
-marker + this protocol.
+Always-on daemon deployments can add a daily cron backstop; `auto`-mode daemons
+let the autopilot tick apply during quiet hours. Interactive agents (Claude Code,
+Codex) rely on the stderr marker + this protocol.
 
 ## Phase E: Load the Production Agent Guide
 
-Read `docs/GBRAIN_SKILLPACK.md`. This is the reference architecture for how a
-production agent uses gbrain: the brain-agent loop, entity detection, enrichment
-pipeline, meeting ingestion, cron schedules, and the five operational disciplines.
+Read the production agent guide:
+https://github.com/garrytan/gbrain/blob/master/docs/GBRAIN_SKILLPACK.md
+(or `docs/GBRAIN_SKILLPACK.md` if you are inside a gbrain repo checkout). This is
+the reference architecture for how a production agent uses gbrain: the brain-agent
+loop, entity detection, enrichment pipeline, meeting ingestion, cron schedules,
+and the five operational disciplines. If the guide is unreachable, skip the deep
+read and inject the three key patterns below directly; they carry the essentials.
 
 Inject the key patterns into the agent's system context or AGENTS.md:
 
@@ -413,7 +430,8 @@ Inject the key patterns into the agent's system context or AGENTS.md:
 3. **Source attribution** (Section 7): every fact needs `[Source: ...]`
 > **Convention:** See `skills/conventions/quality.md` for Iron Law back-linking.
 
-Tell the user: "The production agent guide is at docs/GBRAIN_SKILLPACK.md. It covers
+Tell the user: "The production agent guide is at
+https://github.com/garrytan/gbrain/blob/master/docs/GBRAIN_SKILLPACK.md. It covers
 the brain-agent loop, entity detection, enrichment, meeting ingestion, and cron
 schedules. Read it when you're ready to go from 'search works' to 'the brain
 maintains itself.'"
@@ -439,8 +457,7 @@ output. It checks connection, pgvector, RLS, schema version, and embeddings.
 
 ## Phase G: Auto-Update Check (if not already configured)
 
-If the user's install did NOT include setting up auto-update checks (e.g., they
-used the manual install path or an older version of the OpenClaw/Hermes paste), offer it:
+If the user's install did NOT include setting up auto-update checks, offer it:
 
 > "Would you like daily GBrain update checks? I'll let you know when there's a
 > new version worth upgrading to — including new skills and schema recommendations.
@@ -448,7 +465,8 @@ used the manual install path or an older version of the OpenClaw/Hermes paste), 
 
 If they agree:
 1. Test: `gbrain check-update --json`
-2. Register daily cron (see GBRAIN_SKILLPACK.md Section 17)
+2. Register daily cron (see Section 17 of
+   https://github.com/garrytan/gbrain/blob/master/docs/GBRAIN_SKILLPACK.md)
 
 If already configured or user declines, skip.
 
@@ -457,7 +475,9 @@ If already configured or user declines, skip.
 The brain repo is the source of truth. If sync doesn't run automatically, the
 vector DB falls behind and gbrain returns stale answers. This phase is not optional.
 
-Read `docs/GBRAIN_SKILLPACK.md` Section 18 for the full reference. Key points:
+Read Section 18 of
+https://github.com/garrytan/gbrain/blob/master/docs/GBRAIN_SKILLPACK.md
+for the full reference. Key points:
 
 1. **Check the connection first.** GBrain is tuned for the Supabase **Transaction
    pooler** (port 6543): it auto-disables prepared statements there and routes
@@ -470,8 +490,8 @@ Read `docs/GBRAIN_SKILLPACK.md` Section 18 for the full reference. Key points:
 
 2. **Set up automatic sync.** Choose the approach that fits your environment:
    - **Cron** (recommended for agents): register a cron every 5-30 minutes:
-     `gbrain sync --repo /data/brain && gbrain embed --stale`
-   - **Watch mode**: `gbrain sync --watch --repo /data/brain` under a process
+     `gbrain sync --repo <path-to-brain-repo> && gbrain embed --stale`
+   - **Watch mode**: `gbrain sync --watch --repo <path-to-brain-repo>` under a process
      manager. Pair with a cron fallback (watch exits after 5 consecutive failures).
    - **Webhook or git hook**: if available in your environment.
 
@@ -493,10 +513,21 @@ I'll verify it's working in the next phase."
 
 Run the full verification runbook to confirm the entire installation is working.
 
-1. Read `docs/GBRAIN_VERIFY.md`
+1. Read the verification runbook:
+   https://github.com/garrytan/gbrain/blob/master/docs/GBRAIN_VERIFY.md
+   (or `docs/GBRAIN_VERIFY.md` inside a gbrain repo checkout)
 2. Execute each check in order
 3. Report results to the user
 4. Fix any failures before declaring setup complete
+
+If the runbook is unreachable, run these core checks directly; they cover the
+essentials:
+
+1. `gbrain doctor --json` reports all checks OK
+2. `gbrain stats` shows a page count close to the syncable file count in the repo
+3. Embedding coverage is advancing (check `gbrain stats`, or run `gbrain embed --stale`)
+4. Live sync round-trip: push a change to the brain repo, wait for sync, then
+   find the changed text via `gbrain search`
 
 Every check in the runbook should pass. The most important one is check 4 (live
 sync actually works): push a change, wait for sync, search for the corrected text.

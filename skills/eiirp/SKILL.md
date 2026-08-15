@@ -62,8 +62,9 @@ writes_to:
   - guides/
   - research/
 filing_exempt: true
-# The auto-fire gate section below is imported content:
-upstream: deep-analysis-brain-auto@fc834ee
+# The auto-fire gate section below was merged from an upstream
+# deep-analysis auto-filing skill:
+upstream: deep-analysis-brain-auto
 distinct_from:
   - name: brain-taxonomist
     reason: "brain-taxonomist classifies individual pages at write time (the filing GATE). EIIRP orchestrates the full post-work LIFECYCLE — inventory + taxonomy + schema + skillify + verify."
@@ -179,6 +180,13 @@ it and let it file:
    formatted per `skills/brain-link-discipline/SKILL.md` (it owns the
    link format and the resolve-verification step). Multiple pages →
    list every link.
+4. **First-fire notice.** The very first time the gate fires for a
+   user, append one line to the delivery reply so they learn about
+   auto-filing at the moment it starts, not after: `Auto-filed to
+   <path>; say "stop auto-filing" to disable.` Record that the notice
+   was given (a per-user storage-policy note) so it never repeats.
+   Alternatively, ask once at setup and record the policy before the
+   first write.
 
 ### Per-user storage policy
 
@@ -274,10 +282,10 @@ gbrain schema review-candidates --json
 gbrain schema review-candidates --apply <prefix-or-type-name>
 ```
 
-**Confidence floor (codex finding #9):** when `gbrain schema suggest`
-returns confidence < 0.6 on a proposed type, DO NOT auto-apply. Surface
-the suggestion to the user and let them choose. The schema-cathedral
-ships the primitives; EIIRP enforces the human-in-the-loop gate.
+**Confidence floor:** when `gbrain schema suggest` returns confidence
+< 0.6 on a proposed type, DO NOT auto-apply. Surface the suggestion to
+the user and let them choose. The schema-cathedral ships the
+primitives; EIIRP enforces the human-in-the-loop gate.
 
 If schema needs change:
 - Propose the addition to the user before running `review-candidates --apply`.
@@ -312,6 +320,12 @@ brain repo). Verify every link resolves.
 ## Phase 5: SKILL GRAPH AUDIT — DRY + MECE on capabilities
 
 This phase operates on the SKILL graph, not just the research.
+
+> **Read-only plugin installs:** the shipped plugin snapshot is not
+> writable. New or updated skills and `lib/` extractions target your
+> own project skill directory or a brain-resident skillpack
+> (`gbrain skillpack init-brain-pack`), never the shipped snapshot.
+> Phases 1-4 and the `gbrain` CLI checks in Phase 6 work everywhere.
 
 ### 5a. New pattern identification
 
@@ -379,7 +393,7 @@ gbrain orphans                                  # any pages without inbound link
 Confirm:
 - [ ] All brain pages have proper frontmatter against active schema pack
 - [ ] All entity pages are cross-linked
-- [ ] Any new skills have routing entries in `skills/RESOLVER.md`
+- [ ] Any new skills have routing entries in `skills/RESOLVER.md` (where the skills tree is writable)
 - [ ] No DRY violations (no duplicated logic across skills)
 - [ ] No MECE violations (no ambiguous routing between skills)
 - [ ] Active schema pack updated if new content types emerged
@@ -446,11 +460,10 @@ reads it; doctor cross-references the pack version).
 
 - **Hardcoding directory tables in EIIRP's logic.** Every filing decision
   reads `gbrain schema show --json`. Users on `gbrain-recommended` AND
-  custom packs MUST get the right behavior automatically. Pinned by D9
-  from /plan-eng-review.
+  custom packs MUST get the right behavior automatically.
 - **Auto-applying low-confidence schema suggestions.** Confidence < 0.6
-  from `gbrain schema suggest` is "manual review required" per codex
-  finding #9. EIIRP surfaces it; the user accepts.
+  from `gbrain schema suggest` means manual review is required. EIIRP
+  surfaces it; the user accepts.
 - **Skipping Phase 5 SKILL GRAPH AUDIT because "this was a one-off."**
   If the work took >10 minutes, the methodology is probably reusable.
   Audit anyway; defer the skillify decision to the user.
@@ -493,7 +506,7 @@ reads it; doctor cross-references the pack version).
 
 ## Changelog
 
-### v1.1.0 — auto-fire gate merge (upstream deep-analysis-brain-auto@fc834ee)
+### v1.1.0 — auto-fire gate merge (from an upstream deep-analysis auto-filing skill)
 - Merged the always-on auto-fire gate: when >=500 words of structured
   analysis on a user-shared document is about to be delivered, file the
   brain page first, then deliver analysis + link in that same reply.

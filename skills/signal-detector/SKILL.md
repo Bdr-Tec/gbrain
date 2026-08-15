@@ -2,9 +2,10 @@
 name: signal-detector
 version: 1.0.0
 description: |
-  Always-on ambient signal capture. Fires on every inbound message to detect
-  original thinking and entity mentions. Spawn as a cheap sub-agent in parallel,
-  never block the main response.
+  Always-on ambient signal capture. Applies on every substantive inbound
+  message to detect original thinking and entity mentions. Spawn as a cheap
+  sub-agent where the harness supports it; otherwise run detection inline.
+  Aim to never block the main response.
 triggers:
   - every inbound message (always-on)
 tools:
@@ -24,8 +25,8 @@ writes_to:
 
 # Signal Detector — Ambient Brain Capture
 
-Lightweight sub-agent that fires on every inbound message to capture TWO things
-with EQUAL priority:
+Lightweight capture pass applied to every substantive inbound message. It
+watches for TWO things with EQUAL priority:
 
 1. **Original thinking** — the user's ideas, observations, theses, frameworks
 2. **Entity mentions** — people, companies, media references
@@ -36,13 +37,23 @@ intellectual capital. Entities are bookkeeping. Both compound over time.
 ## Contract
 
 This skill guarantees:
-- Fires on every message (no exceptions unless purely operational)
-- Runs in parallel (spawned, never blocks main response)
+- Applies on every substantive message where the harness supports ambient
+  routing (skips: purely operational messages, users who turned capture off)
+- Spawns as a sub-agent where the harness supports it; otherwise runs the
+  detection inline before composing the reply. Never blocking the response
+  is the intent, not a runtime contract
+- Announces itself on first fire and honors the per-user off switch
 - Captures ideas with the user's EXACT phrasing (no paraphrasing)
 - Detects entity mentions and creates/enriches brain pages
 - Logs a one-line summary of what was captured
 - Back-links all entity mentions (Iron Law)
 - Citations on every fact written
+
+Always-on is a harness-routing convention that a well-behaved agent
+follows, not a mechanical guarantee; nothing in the gbrain runtime blocks
+a reply if the skill never loads. On harnesses without per-message ambient
+routing (Claude Code, Codex), apply this skill as an agent convention or
+wire it via a prompt-submit hook.
 
 > **Convention:** See `skills/conventions/quality.md` for Iron Law back-linking.
 
@@ -51,6 +62,25 @@ Every time this skill creates or updates a brain page that mentions a person or 
 2. If yes → add a back-link FROM their page TO the page you just created/updated
 3. Format: `- **YYYY-MM-DD** | Referenced in [page title](path) — brief context`
 4. An unlinked mention is a broken brain.
+
+## First-Fire Consent
+
+Ambient capture persists the user's words into the brain, so the user must
+know it is on. The FIRST time this skill captures anything for a user,
+announce it in the visible reply: ambient signal capture is on, it stores
+ideas and entity mentions as brain pages, and saying "turn off signal
+capture" disables it. Record that the announcement happened (a preference
+note in the brain works) so it fires once, not every message. Asking once
+and recording the answer is equally valid; either way the preference is
+stored, never re-asked per message.
+
+## Per-User Storage Policy
+
+Ambient capture is a DEFAULT, not a mandate. If the user turns it off (or
+asks for chat-only handling of a specific message), record the preference
+and stop firing: no pages, no links, no timeline entries. Re-enable on
+request. Users who turned capture off sit on the skip list alongside
+purely operational messages.
 
 ## Phases
 
@@ -85,14 +115,18 @@ need to call `gbrain link` manually. Timeline entries still need explicit calls.
 
 Always log a one-line summary:
 - `Signals: 0 ideas, 0 entities, 0 facts (skipped: operational)`
+- `Signals: 0 ideas, 0 entities, 0 facts (skipped: capture off)`
 - `Signals: 1 idea (captured → originals/x), 2 entities (enriched → people/y, companies/z)`
 
 This makes the ambient capture loop debuggable.
 
 ## Output Format
 
-No visible output to the user. This skill runs silently in the background.
-The output is brain pages created/updated and the signal log line.
+Runs in the background, but not fully silent at first: until the user has
+seen the first-fire consent announcement, surface the one-line signal log
+in the visible reply so early captures are never invisible. After that the
+skill runs quietly; the output is brain pages created/updated and the
+signal log line.
 
 ## Anti-Patterns
 
@@ -101,6 +135,10 @@ The output is brain pages created/updated and the signal log line.
 - Creating pages for non-notable entities (one-off mentions)
 - Skipping back-links after creating/updating pages
 - Running on purely operational messages ("ok", "thanks", "do it")
+- Capturing after the user turned signal capture off (storage policy is a
+  default, not a mandate)
+- Staying fully silent on early captures (surface the signal log until the
+  first-fire consent announcement has happened)
 
 ## Tools Used
 

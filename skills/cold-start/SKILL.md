@@ -83,7 +83,14 @@ Data sources ranked by **information density × ease of import**:
 | 7 | File archives (Dropbox/Drive/local) | Historical documents, old writing, photos | 30+ min | varies |
 | 8 | Meeting transcripts (Circleback/etc.) | Deep relationship context from recorded calls | 20 min | 10-50 |
 
-## Phase 0: ClawVisor Setup (Required for API Access)
+## Phase 0: ClawVisor Setup (only if your agent harness integrates ClawVisor)
+
+**Harness check first.** ClawVisor requires an agent host with a ClawVisor
+integration (for example, an OpenClaw deployment). On harnesses without one,
+such as Codex or Claude Code, skip this phase: the documented default for
+Contacts, Calendar, and Gmail is a [Google Takeout](https://takeout.google.com)
+export, which covers all three offline (contacts CSV, calendar ICS, Gmail mbox).
+Phases 2-4 below document the Takeout path first.
 
 > **Safety boundary:** An AI agent with raw OAuth tokens to your Gmail, Calendar,
 > and Contacts is an uncontrolled attack surface. One prompt injection, one
@@ -108,7 +115,10 @@ them at request time, enforces policies, and logs everything.
 2. Create an agent in the dashboard, copy the agent token
 3. Set environment variables (in the host agent's environment — shell profile
    or harness config; gbrain itself has no ClawVisor config keys, these are
-   consumed by the host's ClawVisor integration):
+   consumed by the host's ClawVisor integration. This requires an agent host
+   with a ClawVisor integration, such as an OpenClaw deployment. Codex and
+   Claude Code do not consume these variables; use the offline import path
+   instead):
    ```bash
    export CLAWVISOR_URL="https://app.clawvisor.com"
    export CLAWVISOR_AGENT_TOKEN="<token>"
@@ -129,9 +139,9 @@ threads" works. The intent model uses the purpose to judge each request.
 
 ### If the user declines ClawVisor
 
-Do NOT fall back to direct OAuth. Instead, skip Phases 2-4 (Contacts, Calendar,
-Gmail) and proceed with offline-only imports:
+Do NOT fall back to direct OAuth. Instead, proceed with offline-only imports:
 
+- **Phases 2-4** (Contacts, Calendar, Gmail) — work from a Google Takeout export
 - **Phase 1** (markdown/Obsidian) — works without any API access
 - **Phase 5** (conversation exports) — works from downloaded JSON files
 - **Phase 6** (X/Twitter) — works from downloaded archive
@@ -139,9 +149,9 @@ Gmail) and proceed with offline-only imports:
 - **Phase 8** (meeting transcripts) — works from exported transcripts
 
 Tell the user:
-> "No problem. We'll skip the Google imports for now and work with file-based
-> sources. You can set up ClawVisor anytime to unlock Contacts, Calendar, and
-> Gmail imports safely."
+> "No problem. We'll work from file-based sources: a Google Takeout export
+> covers Contacts, Calendar, and Gmail. You can set up ClawVisor anytime for
+> live sync instead of point-in-time exports."
 
 **Do NOT offer direct OAuth as an alternative.** An agent holding raw Google
 tokens is a security liability. The skill should not teach agents to store
@@ -156,7 +166,7 @@ is hundreds or thousands of structured pages ready to go.
 
 ```bash
 echo "=== Markdown Repository Discovery ==="
-for dir in /data/* ~/git/* ~/Documents/* ~/notes/* ~/obsidian/* 2>/dev/null; do
+for dir in ~/git/* ~/Documents/* ~/notes/* ~/obsidian/*; do
   if [ -d "$dir" ]; then
     md_count=$(find "$dir" -name "*.md" -not -path "*/node_modules/*" \
       -not -path "*/.git/*" -not -path "*/.obsidian/*" 2>/dev/null | wc -l | tr -d ' ')
@@ -202,7 +212,16 @@ with name, email, phone, company, and notes. This is the foundation that all oth
 imports build on — when Gmail references "john@acme.com", the brain already knows
 who John is.
 
-### Via ClawVisor
+### Via Google Takeout (default on harnesses without ClawVisor)
+
+1. Export contacts from [takeout.google.com](https://takeout.google.com)
+   (select Contacts, CSV format), or directly from
+   [contacts.google.com](https://contacts.google.com) via Export → Google CSV.
+2. Parse the CSV: each row carries name, email(s), phone(s), organization,
+   and notes.
+3. Run each row through the processing rules below to create people/ pages.
+
+### Via ClawVisor (ClawVisor-integrated hosts only; pseudo-code)
 
 ```javascript
 // Fetch all contacts
@@ -210,13 +229,6 @@ const contacts = await clawvisor('google.contacts', 'list_contacts', {
   limit: 1000,
   fields: 'names,emailAddresses,phoneNumbers,organizations,biographies'
 });
-```
-
-### Via direct Google People API
-
-```bash
-curl -s -H "Authorization: Bearer $GOOGLE_TOKEN" \
-  "https://people.googleapis.com/v1/people/me/connections?personFields=names,emailAddresses,phoneNumbers,organizations,biographies&pageSize=1000"
 ```
 
 ### Processing rules
@@ -245,6 +257,13 @@ with, how often, and in what context. Combined with contacts, this builds a rich
 relationship map.
 
 ### Fetch events
+
+**Via Google Takeout (default on harnesses without ClawVisor):** export
+Calendar from [takeout.google.com](https://takeout.google.com) (ICS format,
+one file per calendar). Parse each event (title, start/end, attendees), keep
+the last 90 days, and file them into the brain structure below.
+
+**Via ClawVisor (ClawVisor-integrated hosts only; pseudo-code):**
 
 ```javascript
 // Via ClawVisor — query ALL calendar accounts
@@ -282,6 +301,10 @@ For each event with attendees:
 
 **Relationship context and active threads.** Email reveals organizational
 relationships, ongoing conversations, and communication patterns.
+
+On harnesses without a ClawVisor integration, the source is the Gmail mbox
+file from a [Google Takeout](https://takeout.google.com) export. The sampling
+and filtering rules below apply the same way.
 
 ### Strategy: Smart sampling, not bulk import
 
@@ -450,7 +473,7 @@ After completing available phases:
    > Live sync is configured for [sources]. From here:
    > - The **signal-detector** captures entities from every conversation
    > - The **briefing** skill can compile daily context
-   > - The **executive-assistant** pattern handles email triage
+   > - The **daily-task-prep** skill handles day planning
    > - Say 'enrich [person]' to deep-dive any contact"
 
 ## Anti-Patterns

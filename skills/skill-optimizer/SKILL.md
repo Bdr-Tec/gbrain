@@ -71,6 +71,17 @@ gbrain skillopt <skill-name> [flags]
   └── Final test eval on D_test → run receipt
 ```
 
+## Where your skills live
+
+Plugin-bundled skills ship as a read-only snapshot; you cannot write a
+benchmark or optimization artifacts next to them. Run skillopt against your
+own writable skills directory: pass `--skills-dir <path>`
+(`gbrain skillopt X --skills-dir ~/my-project/skills`), or run from a
+workspace that contains a `skills/` tree and the CLI auto-detects it. Every
+`skills/X/...` path below refers to that writable directory (your own
+authored skills, skillify-scaffolded skills, or a brain-resident skillpack),
+not the plugin snapshot.
+
 ## Starting a benchmark from the skill itself (the common case)
 
 **The user will NOT hand-write a benchmark, and you shouldn't start from a blank
@@ -119,8 +130,8 @@ richer checks (or an `llm` judge) during review.
 possible for very behavior-shaped skills), discard it and write the JSONL
 yourself: read the SKILL.md, write ~15 realistic tasks covering the boring middle,
 attach >=2 rule checks each, save to `skills/X/skillopt-benchmark.jsonl`, run with
-`--split 1:1:1`. The human walkthrough lives at
-`docs/tutorials/improving-skills-with-skillopt.md`.
+`--split 1:1:1`. The full walkthrough lives at
+https://github.com/garrytan/gbrain/blob/master/docs/tutorials/improving-skills-with-skillopt.md.
 
 ## Decision tree
 
@@ -130,7 +141,7 @@ attach >=2 rule checks each, save to `skills/X/skillopt-benchmark.jsonl`, run wi
 | Skill has a `routing-eval.jsonl` and you want a head start | `gbrain skillopt foo --bootstrap-from-routing` → review the generated tasks → `--bootstrap-reviewed` (routing tasks test dispatch; tighten them into quality tasks before trusting) |
 | Iterating on an existing skill | `gbrain skillopt foo --benchmark skills/foo/skillopt-benchmark.jsonl` |
 | Costly run, want preview | Add `--dry-run` |
-| Bundled skill (skills/ in gbrain repo) | Default writes proposed.md; to commit in place add `--allow-mutate-bundled` AND `--held-out <path>` (>=5 benchmark-disjoint tasks) — else it hard-refuses |
+| Bundled skill (skills/ in gbrain repo) | Default writes proposed.md; to commit in place add `--allow-mutate-bundled` AND `--held-out <path>` (>=5 benchmark-disjoint tasks) — else it hard-refuses. Plugin installs cannot mutate bundled skills in place (the snapshot is read-only): copy the SKILL.md into your own skills dir to iterate, or stick with the default proposed.md review flow |
 | Want to review changes before applying | Add `--no-mutate` (writes proposed.md, no held-out needed) |
 | Guard against benchmark overfitting | Add `--held-out <path>` — a candidate that beats the benchmark but regresses on the held-out set is refused |
 | Mid-run crash | `gbrain skillopt foo --resume <run-id>` |

@@ -36,7 +36,7 @@ Brain pages pile up over months. Agents write them with malformed frontmatter:
 - Unstructured YAML in meeting pages (ingestion bugs)
 - Slug mismatches (path renames not propagated)
 - Null bytes (binary corruption from copy-paste accidents)
-- Nested double quotes in titles (`title: "Phil "Nick" Last"`)
+- Nested double quotes in titles (`title: "Alice "Ace" Example"`)
 
 Without a guard, these accumulate silently until `gbrain sync` chokes or search returns garbage. The guard makes the failure visible at audit time and trivially fixable.
 
