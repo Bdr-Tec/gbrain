@@ -4,7 +4,7 @@ All notable changes to GBrain will be documented in this file.
 
 ## [0.45.15.0] - 2026-08-14
 
-**A test run can no longer touch a real brain.** `gbrain init` writes your
+**A test run can no longer silently touch a real brain.** `gbrain init` writes your
 database URL into `~/.gbrain/.env`; anyone who had that sourced and ran a bare
 `bun test` in the repo was one destructive fixture away from their own data
 (#3485 — it has happened). Four independent layers now stand in the way, and
@@ -14,14 +14,15 @@ each one fails loudly instead of silently skipping:
   `bunfig.toml`) hard-fails any `bun test` invocation while `DATABASE_URL` or
   `GBRAIN_DATABASE_URL` is ambient, with instructions — it never silently
   unsets, because a silent unset would turn database-gated e2e tests into
-  green skips. The e2e and heavy lanes opt in at their own wrapper boundary;
+  green skips. The e2e and heavy lanes opt in at their own boundary;
   the unit and slow lanes strip the variables at theirs, so
   `bun run test:full` with a database URL exported still reaches its e2e leg.
 - **Destructive tests check the database name.** Every test that runs
   destructive SQL against the ambient URL now calls a shared name floor
   (moved to a leaf module so unit-directory tests can use it too): the
   database name must carry "test" as a word segment, or be opted in
-  explicitly, one-shot. This adopts the patch contributed in #3485 by
+  explicitly, one-shot. (One suite keeps its own equivalent inline floor,
+  pinned by the coverage gate.) This adopts the patch contributed in #3485 by
   @cheRoma — thank you — extended to two newer files the original audit
   predates and one raw-client suite it couldn't see.
 - **Shell lanes get the same floor.** The heavy-test scripts (schema drops,
