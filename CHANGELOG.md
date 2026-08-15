@@ -2,6 +2,27 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.15.0] - 2026-08-14
+
+**Fix wave W0: the verified-bug hotfix pass of the code-smell series.** A 10-auditor sweep of the codebase produced 122 findings; the top claims were adversarially verified, and this release fixes every verified live bug — the ones that survived the skeptic pass. Long-running brains get the biggest wins: background cycles can no longer silently run twice, dead background jobs no longer strand their parents, and image search no longer silently degrades after re-embedding. Developers get a test suite that runs 10x faster.
+
+### Fixed
+
+- **The background-cycle lock is now actually refreshed while a cycle runs.** Long phases (synthesis, pattern extraction, consolidation — up to 35-minute waits) previously outlived the 5-minute lock TTL with no heartbeat, so a second cycle could start against the same brain and both would write concurrently — duplicated LLM spend and racy writes on Postgres/Supabase brains. A dedicated refresher now heartbeats the lock, every refresh and release is fenced to the exact acquisition (a recycled PID or a superseded run can never touch a successor's lock — including the PGLite file lock, which is no longer rewritten after a detected steal), and a run that loses its lock stops at the next phase boundary with a structured `lock_stolen` report instead of compounding. The job supervisor treats a fenced miss as certain loss and exits for a clean restart.
+- **Background jobs that die from repeated stalls now notify and unblock their waiting parents.** Previously an aggregator parent whose child was dead-lettered by the stall sweep waited forever; a self-healing sweep also releases parents stranded before the upgrade.
+- **Retried jobs no longer burn their wall-clock budget while waiting in backoff.** Every automatic re-run path — and every parent-unblock path — resets the per-attempt clock, so exponential-backoff retries and long-waiting aggregators aren't dead-lettered before executing a line.
+- **Re-embedding no longer flips image chunks to text.** `gbrain embed --stale` (including the autopilot path) preserved every chunk field except `modality`, silently zeroing image retrieval until the next full import. One shared carry list now serves every re-embed path.
+- **A failed first sync no longer kills the MCP server.** Import preflight failures (missing embedding credentials, unreadable target) now surface as normal tool errors instead of terminating the serving process mid-call.
+- **`gbrain lint --fix` reports the true fix count** (it previously scanned everything twice and reported "0 auto-fixed" after fixing issues) and walks the tree once.
+- **Destructive-command prompts can no longer hang forever** on closed or piped stdin: EOF declines safely, and prompts write to stderr so `--json` output stays clean.
+
+### Changed
+
+- **`bun run test` is ~10x faster** (measured: a full parallel suite run dropped from ~82 to ~8 minutes). The PGLite schema snapshot is now default-on for the everyday test loop, rebuilt automatically when migrations or the pinned embedding shape change, concurrency-safe across parallel shards and workspaces, and refused on any shape mismatch so a wrong fixture can never poison the suite.
+- **CI guards now prove they can fail.** A guard registry classifies all 45 check scripts; scanner guards run against known-bad fixtures on every verify, so a guard whose pattern rots into a permanently-green no-op fails the build instead of masquerading as coverage. Two such rotted patterns were found and fixed in the process, along with three guards that were wired into a registry nobody ran.
+
+To take advantage of v0.45.15.0: upgrade and restart any long-running `gbrain serve` or autopilot daemon so the fenced lock refresh and job-reaper fixes take effect. If you run image search, re-run `gbrain embed --stale` once after upgrading to restore any image chunks a prior re-embed flipped to text (`gbrain doctor` surfaces the affected count). No schema migration and no config changes are required.
+
 ## [0.45.14.0] - 2026-08-14
 
 **The box that already has a brain: framework-spawned coding agents get brain access by default.** The bootstrap door built in v0.45.0.0 was for a human at a laptop. A growing share of Claude Code and Codex sessions are spawned by an agent framework — your OpenClaw, or anything that shells out to headless sessions — on a machine that already hosts a brain and a running `gbrain serve --http`. Until now those sessions got nothing unless someone hand-replicated settings writers across every project directory. One command fixes that:
