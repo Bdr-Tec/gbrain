@@ -13,9 +13,11 @@ instead of a surprise outage:
 - **New default: Voyage.** Fresh installs land on `voyage:voyage-4` (1024d) —
   the strongest hosted retrieval embedder on current benchmarks — and the same
   `VOYAGE_API_KEY` powers the new `voyage:rerank-2.5` reranker (written as
-  explicit config on voyage-picked installs) and the multimodal model. One key,
-  all three touchpoints. The v4 family shares one embedding space, so you can
-  later point queries at `voyage-4-large` or `-lite` without re-indexing.
+  explicit config whenever a Voyage key is present at init; keyed installs
+  without one get reranking explicitly disabled instead of inheriting a
+  fallback they can't use) and the multimodal model. One key, all three
+  touchpoints. The v4 family shares one embedding space, so you can later
+  point queries at `voyage-4-large` or `-lite` without re-indexing.
 - **Nothing changes out from under existing brains.** A brain configured for
   ZeroEntropy (or riding the old default) keeps working exactly as before until
   the shutdown date — this release only detects, warns, and hands you the
@@ -38,8 +40,15 @@ instead of a surprise outage:
   switch (`gbrain config set doctor.suppress_provider_sunset true`) actually
   works now.
 - `gbrain ze-switch` no longer switches brains onto the sunsetting provider
-  (`--undo` still moves brains off it). Voyage's `voyage-code-4` is available
-  for code-heavy brains.
+  (`--undo` still moves brains off it), and `gbrain migrate embeddings` refuses
+  a re-embed onto a provider with an announced shutdown — self-hosters with a
+  wire-compatible endpoint pass `--force-sunset-target`. Voyage's
+  `voyage-code-4` is available for code-heavy brains.
+- Setup fixes that ride along: init now detects provider keys stored in
+  `~/.gbrain/config.json` (file plane), not just env vars; a keyless brain
+  upgrades in place via `gbrain init --force --embedding-model voyage:voyage-4`
+  (the deferred-setup sentinel is cleared); and keyless fresh installs size the
+  embedding column at the new default width.
 
 ### To take advantage of v0.47.0.0
 

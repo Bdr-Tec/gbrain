@@ -551,11 +551,13 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
 }
 
 /**
- * v0.47: voyage-picked installs get the recommended reranker written as
- * EXPLICIT per-brain config — the mode-bundle reranker default stays on the
- * sunsetting legacy provider until the September removal (split-default), so
- * without this write a fresh voyage brain would resolve a reranker whose key
- * it doesn't have. Never clobbers an existing explicit choice (re-init
+ * v0.47: voyage-keyed installs (any picked embedding provider) get the
+ * recommended reranker written as EXPLICIT per-brain config — the mode-bundle
+ * reranker default stays on the sunsetting legacy provider until the
+ * September removal (split-default), so without this write a fresh voyage
+ * brain would resolve a reranker whose key it doesn't have; keyed non-voyage
+ * installs get explicit `search.reranker.enabled false` instead, and keyless
+ * installs get no write. Never clobbers an existing explicit choice (re-init
  * preserves user config). Best-effort: reranking is fail-open, a missed
  * override degrades to no-rerank, never breaks init. Shared by the PGLite and
  * Postgres init paths (one edit site for the September bundle flip).

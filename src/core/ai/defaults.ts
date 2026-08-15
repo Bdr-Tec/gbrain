@@ -52,8 +52,10 @@ export const NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS = 1024;
  * (gateway DEFAULT_RERANKER_MODEL + the mode-bundle reranker_model values)
  * stay on zerank-2 until the September removal so existing ZE-keyed brains
  * keep their working reranker until the API actually dies; init writes this
- * as an explicit `search.reranker.model` config for voyage-picked installs,
- * and the migration playbook sets it for migrating users.
+ * as an explicit `search.reranker.model` config for voyage-keyed installs
+ * (any picked embedding provider; keyed non-voyage installs get explicit
+ * `search.reranker.enabled false` instead), and the migration playbook sets
+ * it for migrating users.
  */
 export const NEW_INSTALL_DEFAULT_RERANKER_MODEL = 'voyage:rerank-2.5';
 

@@ -56,15 +56,16 @@ reads.
 it.** A different width triggers the destructive schema transition (column +
 index rebuild across all three dim-pinned tables); the same width skips it
 entirely. `gbrain doctor` (check `provider_sunset`, for providers with an
-announced shutdown) prints the paste-ready command with your actual width
-already filled in — it reads the real `vector(N)` column, not the config
-value, which can drift.
+announced shutdown) prints target-aware paste-ready commands — the Voyage
+command at its valid 1024 width, plus an OpenAI keep-width alternative with
+your actual width filled in when that width is valid there — reading the real
+`vector(N)` column, not the config value, which can drift.
 
 ## How affected brains find out (provider sunsets)
 
-Two surfaces flag a brain whose embedding model (or reranker) is on a
-provider with an announced hosted-API shutdown, such as ZeroEntropy
-(2026-09-04):
+Three surfaces flag a brain whose embedding model, reranker, or custom
+embedding columns are on a provider with an announced hosted-API shutdown,
+such as ZeroEntropy (2026-09-04):
 
 - **`gbrain doctor`** — the `provider_sunset` check warns on every run until
   the brain is off the provider. After the shutdown date it escalates to
@@ -73,8 +74,10 @@ provider with an announced hosted-API shutdown, such as ZeroEntropy
   resolves to the dead default stays `warn`, so doctor-as-CI-gate setups
   don't start exiting 1 on the date. The reranker side resolves through the
   same plane search actually reranks with (the mode bundle +
-  `search.reranker.*` overrides). The message carries the paste-ready
-  migration command with the brain's actual `--dim`. Accepted the risk?
+  `search.reranker.*` overrides), and ZE-backed custom `embedding_columns`
+  entries are flagged too. The message carries target-aware paste-ready
+  migration commands (Voyage at 1024; OpenAI keep-width when your width is
+  valid there). Accepted the risk?
   `gbrain config set doctor.suppress_provider_sunset true` silences it.
 - **`gbrain upgrade`** — a one-shot banner (gated by
   `ze_sunset_notice_shown`) with the same two fixes, plus a stage-2 banner
@@ -87,9 +90,9 @@ provider with an announced hosted-API shutdown, such as ZeroEntropy
   `~/.gbrain/migrations/pending-host-work.jsonl`. It never changes config or
   spends money on your behalf.
 
-Both state the full consequence: after the shutdown, **existing vectors
-become unqueryable** — query embedding uses the same endpoint as ingestion —
-not just new content.
+All of them state the full consequence: after the shutdown, **existing
+vectors become unqueryable** — query embedding uses the same endpoint as
+ingestion — not just new content.
 
 ## What it does, in order
 

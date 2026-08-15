@@ -115,8 +115,9 @@ const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
 // `reranker_model` default to this same value but can be overridden.
 // v0.47: stays on the LEGACY zerank-2 until the September removal (reranker
 // split-default: existing ZE-keyed brains keep their working reranker until
-// the API dies; voyage-picked NEW installs get an explicit
-// `search.reranker.model voyage:rerank-2.5` override written at init).
+// the API dies; voyage-keyed NEW installs get an explicit
+// `search.reranker.model voyage:rerank-2.5` override written at init, and
+// keyed non-voyage installs get explicit `search.reranker.enabled false`).
 const DEFAULT_RERANKER_MODEL = 'zeroentropyai:zerank-2';
 
 let _config: AIGatewayConfig | null = null;

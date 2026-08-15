@@ -61,6 +61,7 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   zerank-2) for users who want max rerank quality on a dedicated key. Wire shape
   differs from the ZE/voyage dialect — needs its own `top_param`/response mapping
   audit. Filed from the v0.47 CEO review (deferred cherry-pick).
+
 ## Issues #5+#6 follow-ups (pool starvation + process isolation; plan: ~/.claude/plans/system-instruction-you-are-working-witty-moore.md)
 
 - [ ] **P1-companion — nested-checkout audit + dev-mode detection.** **What:**

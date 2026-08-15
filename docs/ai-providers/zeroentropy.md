@@ -24,8 +24,9 @@
 >    voyage:rerank-2.5` (needs `VOYAGE_API_KEY`) or `gbrain config set
 >    search.reranker.enabled false`. See
 >    [the migration guide](../guides/embedding-migration.md); `gbrain
->    doctor` (check `provider_sunset`) prints the command with your
->    brain's actual `--dim` filled in.
+>    doctor` (check `provider_sunset`) prints both commands target-aware
+>    (Voyage at 1024; OpenAI keep-width when your brain's actual width is
+>    valid there).
 > 2. **Self-host the same model (zero re-embed, advanced)** — zembed-1
 >    weights are Apache-2.0. Keep the `zeroentropyai:zembed-1` model id
 >    (the embedding signature must not change) and point its base URL at
@@ -126,8 +127,9 @@ enforcement in hybrid search.
 The `balanced` and `tokenmax` mode bundles default
 `search.reranker.enabled = true`. Brains that never set
 `search.reranker.model` still fall back to `zerank-2` (the legacy bundle
-default until the September cutover — new installs write
-`voyage:rerank-2.5` as explicit config instead). With
+default until the September cutover — new installs write explicit reranker
+config instead: `voyage:rerank-2.5` when a Voyage key is present, otherwise
+`search.reranker.enabled false`). With
 `ZEROENTROPY_API_KEY` set, the ZE reranker fires automatically. Without
 the key, every rerank call fails-open (audit-logged) and search returns
 RRF order — same UX as before, just with an observable failure surfaced
