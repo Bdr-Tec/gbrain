@@ -2,6 +2,68 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.15.0] - 2026-08-14
+
+**A test run can no longer touch a real brain.** `gbrain init` writes your
+database URL into `~/.gbrain/.env`; anyone who had that sourced and ran a bare
+`bun test` in the repo was one destructive fixture away from their own data
+(#3485 — it has happened). Four independent layers now stand in the way, and
+each one fails loudly instead of silently skipping:
+
+- **The run refuses to start.** A test preload (registered first in
+  `bunfig.toml`) hard-fails any `bun test` invocation while `DATABASE_URL` or
+  `GBRAIN_DATABASE_URL` is ambient, with instructions — it never silently
+  unsets, because a silent unset would turn database-gated e2e tests into
+  green skips. The e2e and heavy lanes opt in at their own wrapper boundary;
+  the unit and slow lanes strip the variables at theirs, so
+  `bun run test:full` with a database URL exported still reaches its e2e leg.
+- **Destructive tests check the database name.** Every test that runs
+  destructive SQL against the ambient URL now calls a shared name floor
+  (moved to a leaf module so unit-directory tests can use it too): the
+  database name must carry "test" as a word segment, or be opted in
+  explicitly, one-shot. This adopts the patch contributed in #3485 by
+  @cheRoma — thank you — extended to two newer files the original audit
+  predates and one raw-client suite it couldn't see.
+- **Shell lanes get the same floor.** The heavy-test scripts (schema drops,
+  parallel syncs, migration replays) share a floor that checks BOTH database
+  URL variables and strips query strings before extracting the name, so a
+  `?host=/tmp/test-sockets` parameter can't smuggle a test-shaped segment
+  past it.
+- **A repo-wide static gate keeps it that way.** A scanner walks every test
+  file bun would collect (all naming patterns, fixtures included), flags any
+  file that reads an ambient database URL, opens a connection, and runs
+  destructive SQL without a guard — and its own classifiers are pinned by
+  positive controls so the gate can never rot into passing vacuously.
+
+### Added
+- Test-run guard preload (`test/helpers/database-url-guard-preload.ts`) with
+  subprocess tests covering every branch: both variables, both-set, override,
+  strict override value, empty-string, and clean runs.
+- Shared destructive-SQL name floor `test/helpers/db-guard.ts` (re-exported
+  from `test/e2e/helpers.ts` for existing call sites) and shell twin
+  `tests/heavy/_db_floor.sh`.
+- Repo-wide destructive-SQL coverage gate `test/db-guard-coverage.test.ts`
+  with classifier self-tests and positive controls.
+
+### Fixed
+- Ten destructive test files now verify the database name before connecting
+  (#3485; patch by @cheRoma, extended).
+- The heavy lane's fixture builder, sync-lock, upgrade-matrix, and wallclock
+  scripts refuse non-test-shaped database names instead of operating on
+  whatever the environment points at.
+- The phantom-redirect engine-parity test's Postgres arm is now carried by
+  the e2e lane and CI's parity job — previously no lane could reach it.
+
+### To take advantage of v0.45.15.0
+
+Nothing to configure. If a bare `bun test` now refuses to start, the message
+tells you exactly why and what to do — usually just unset the database URL
+(unit tests need no database) or use `bun run test:e2e`, which opts in at its
+own boundary. If your e2e database has a non-test-shaped name, opt in one-shot
+with `GBRAIN_E2E_ALLOW_DB=<name>` rather than exporting it in your shell
+profile — a permanent export would disarm the guard for exactly the database
+it protects.
+
 ## [0.45.14.0] - 2026-08-14
 
 **The box that already has a brain: framework-spawned coding agents get brain access by default.** The bootstrap door built in v0.45.0.0 was for a human at a laptop. A growing share of Claude Code and Codex sessions are spawned by an agent framework — your OpenClaw, or anything that shells out to headless sessions — on a machine that already hosts a brain and a running `gbrain serve --http`. Until now those sessions got nothing unless someone hand-replicated settings writers across every project directory. One command fixes that:

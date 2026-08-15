@@ -161,6 +161,26 @@ The quarantine has grown to dozens of files — treat it as debt: every addition
 
 `bun test` runs all tests without a database. E2E tests skip gracefully when `DATABASE_URL` is not set.
 
+**Database-URL run guard (#3485).** A `bun test` invocation REFUSES to start while
+`DATABASE_URL` or `GBRAIN_DATABASE_URL` is ambient in the environment, because some
+tests run destructive SQL against whatever those URLs point at (a bare `bun test`
+with `~/.gbrain/.env` sourced has wiped a real brain). The guard is a bunfig
+`[test]` preload (`test/helpers/database-url-guard-preload.ts`); it hard-fails with
+instructions rather than silently unsetting (a silent unset would turn
+DATABASE_URL-gated e2e tests into green skips). The e2e wrappers
+(`scripts/run-e2e.sh`, the e2e/heavy workflows) opt in at their own boundary via
+`GBRAIN_TEST_ALLOW_DATABASE_URL=1`; the unit/slow wrappers instead strip both
+URL vars at their boundary (unit tests need no database), which keeps
+`bun run test:full` working with DATABASE_URL exported. Caveat: bun loads
+`bunfig.toml` from the invocation cwd, so the preload layer only applies to
+runs started at the repo root — the per-file name floor below is the layer
+that doesn't care about cwd. Two more layers apply after the opt-in: every
+test that runs destructive SQL on the ambient URL must call
+`assertSafeE2eDatabaseUrl()` (`test/helpers/db-guard.ts` — name floor: the database
+name must contain "test" as a segment, or be opted in via `GBRAIN_E2E_ALLOW_DB`),
+and `test/db-guard-coverage.test.ts` statically scans the suite and fails when a
+file connects to `DATABASE_URL` and runs destructive SQL unguarded.
+
 Unit tests and what they cover:
 
 - `test/markdown.test.ts` — frontmatter parsing; `splitBody` sentinel precedence, horizontal-rule preservation, `inferType` wiki subtypes.
