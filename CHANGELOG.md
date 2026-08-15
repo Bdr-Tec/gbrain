@@ -2,6 +2,22 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.19.0] - 2026-08-15
+
+**The interactive `gbrain init` pickers are now tested on a real terminal — and the repo carries one PTY layer instead of two.** The first thing every new user touches (the embedding provider picker and the search-mode picker) previously had no true-TTY coverage; the comments that claimed otherwise pointed at a harness nothing ever called.
+
+### Added
+- A real-PTY test for the interactive init flow (`test/init-picker-pty.serial.test.ts`). It drives both pickers under a true pseudo-terminal, proves typed input actually lands (non-default selections plus bounded response times, so dead input can never pass through the pickers' silent defaults), covers the Ctrl-D/EOF fallback, and runs in the required serial CI lane. Fully hermetic: temp-root home, no provider keys visible, child process reaped even on failed assertions.
+
+### Removed
+- The unused second PTY harness (`test/helpers/cli-pty-runner.ts` plus its self-test, ~657 lines). Its spawn path never gained a caller across ~20 minor versions. The real-terminal layer is consolidated on `test/helpers/tty-harness.ts` (Bun's built-in `terminal:` spawn — no native modules).
+
+### Fixed
+- Three test-file comments that claimed interactive-picker coverage existed where it didn't — two deferred to each other in a circle, one described a piped-stdin test as PTY-based. All three now point at the real coverage.
+
+### Changed
+- `docs/TESTING.md` gains a four-tier decision table for TTY and interactive-CLI testing (injected `isTTY` → piped stdin → real-PTY serial test → DX-exploration instrument), including the rule that CI-required interactive tests live in the serial lane. `docs/architecture/KEY_FILES.md` now describes the surviving harness accurately, and related project docs and the stale shard-weight entry were trued up to match.
+
 ## [0.45.18.0] - 2026-08-15
 
 **Today's agent spend now reads correctly at every hour, in every timezone.** The admin spend endpoint computed "today" against a naive timestamp that each database session reinterpreted in its own timezone — on any non-UTC session (a PGLite brain following the host clock, a timezone-configured Postgres role), the day boundary shifted by the offset and every evening's spend silently underreported as 0. The boundary is now a UTC instant, independent of session timezone, pinned by a regression test that exercises sessions 12 hours either side of UTC at any wall-clock hour.
