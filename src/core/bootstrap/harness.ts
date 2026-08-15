@@ -12,6 +12,10 @@
  *   required anywhere.
  * - Codex: one managed `[mcp_servers.<name>]` TOML block with the inline
  *   bearer token (codex-toml.ts — `codex mcp add` cannot express it).
+ * - opencode: one managed `mcp.<name>` remote entry with the inline bearer
+ *   header in the user-global JSONC config (opencode-json.ts —
+ *   framework-spawned opencode inherits no shell env, so the `{env:…}`
+ *   interpolation the connect lane uses would resolve empty here).
  *
  * Contracts folded from the CEO review + outside voice (letters reference the
  * plan file):
@@ -87,12 +91,21 @@ import {
   claudeUserSettingsPath,
   codexConfigPath,
   mcpPermissionEntry,
+  opencodeConfigDir,
+  opencodeGlobalConfigPath,
   type ClaudeHookEvent,
 } from './host-specs.ts';
+import {
+  opencodeEntryKind,
+  parseOpencodeConfig,
+  parseOpencodeEntryBearer,
+  removeOpencodeMcpEntry,
+  writeOpencodeMcpEntry,
+} from './opencode-json.ts';
 
 // ── Flags ───────────────────────────────────────────────────────────────────
 
-export type HarnessSelector = 'claude-code' | 'codex' | 'all';
+export type HarnessSelector = 'claude-code' | 'codex' | 'opencode' | 'all';
 
 export interface HarnessFlags {
   harness: HarnessSelector;
@@ -143,8 +156,8 @@ export function parseHarnessArgs(rest: string[]): HarnessFlags {
   };
   const h = value('--harness');
   if (h !== undefined) {
-    if (h !== 'claude-code' && h !== 'codex' && h !== 'all') {
-      out.error = `unknown --harness '${h}' — pass claude-code, codex, or all`;
+    if (h !== 'claude-code' && h !== 'codex' && h !== 'opencode' && h !== 'all') {
+      out.error = `unknown --harness '${h}' — pass claude-code, codex, opencode, or all`;
       return out;
     }
     out.harness = h;
@@ -230,6 +243,8 @@ export interface HarnessDeps {
   userSettingsPath?: string;
   /** Resolved codex config path (tests point at a temp CODEX_HOME). */
   codexConfig?: string;
+  /** Resolved opencode config path (tests point at a temp XDG_CONFIG_HOME). */
+  opencodeConfig?: string;
   /** Engine-backed mint; tests inject a fake. */
   mint?: (opts: {
     name: string;
@@ -241,6 +256,7 @@ export interface HarnessDeps {
   pgliteLiveServe?: () => boolean;
   detectClaude?: () => boolean;
   detectCodex?: () => boolean;
+  detectOpencode?: () => boolean;
   gbrainBin?: string | null;
   log?: (line: string) => void;
   logError?: (line: string) => void;
@@ -256,6 +272,7 @@ function resolveDeps(deps: HarnessDeps): Required<Omit<HarnessDeps, 'gbrainBin'>
     probeIdentity: deps.probeIdentity ?? ((url, token) => probeBrainIdentity(url, token)),
     userSettingsPath: deps.userSettingsPath ?? claudeUserSettingsPath(),
     codexConfig: deps.codexConfig ?? codexConfigPath(),
+    opencodeConfig: deps.opencodeConfig ?? opencodeGlobalConfigPath(),
     mint: deps.mint ?? defaultMint,
     revokeById: deps.revokeById ?? defaultRevokeById,
     pgliteLiveServe: deps.pgliteLiveServe ?? defaultPgliteLiveServe,
@@ -263,6 +280,9 @@ function resolveDeps(deps: HarnessDeps): Required<Omit<HarnessDeps, 'gbrainBin'>
     detectCodex:
       deps.detectCodex ??
       (() => whichSafe('codex') !== null || existsSync(deps.codexConfig ?? codexConfigPath())),
+    detectOpencode:
+      deps.detectOpencode ??
+      (() => whichSafe('opencode') !== null || existsSync(opencodeConfigDir())),
     gbrainBin: deps.gbrainBin !== undefined ? deps.gbrainBin : null,
     log: deps.log ?? ((l) => console.log(l)),
     logError: deps.logError ?? ((l) => console.error(l)),
@@ -357,12 +377,14 @@ export function buildConsentBlock(p: {
   url: string;
   wireClaude: boolean;
   wireCodex: boolean;
+  wireOpencode: boolean;
   hooks: boolean;
   capture: boolean;
   hookScope: string;
   name: string;
   userSettingsPath: string;
   codexConfig: string;
+  opencodeConfig: string;
 }): string {
   const lines: string[] = [
     'gbrain bootstrap harness — wire framework-spawned coding sessions to this brain',
@@ -402,14 +424,23 @@ export function buildConsentBlock(p: {
         `${p.codexConfig} (0600) — framework-spawned codex inherits no shell env, so an env-var token would not reach it.`,
     );
   }
+  if (p.wireOpencode) {
+    lines.push(
+      `  ${n++}. opencode (user-global): write the mcp.${p.name} remote entry with the bearer token INLINE into ` +
+        `${p.opencodeConfig} (0600) — framework-spawned opencode inherits no shell env, so the {env:…} ` +
+        `interpolation would resolve empty.`,
+    );
+  }
   // [X7] The reach statement matches what is ACTUALLY being wired — it must
-  // never claim a host or a hook lane this invocation does not touch.
-  const hosts =
-    p.wireClaude && p.wireCodex
-      ? 'EVERY Claude Code and Codex session'
-      : p.wireClaude
-        ? 'EVERY Claude Code session'
-        : 'EVERY Codex session';
+  // never claim a host or a hook lane this invocation does not touch. Joined
+  // list, not a ternary tree: a fourth harness must be a compile-time nudge
+  // here, not a silent mislabel.
+  const hostNames = [
+    ...(p.wireClaude ? ['Claude Code'] : []),
+    ...(p.wireCodex ? ['Codex'] : []),
+    ...(p.wireOpencode ? ['opencode'] : []),
+  ];
+  const hosts = `EVERY ${hostNames.join(' and ')} session`;
   const hookLine = !p.wireClaude || !p.hooks
     ? 'No hooks are wired by this invocation.'
     : p.capture
@@ -421,6 +452,7 @@ export function buildConsentBlock(p: {
     '`gbrain auth revoke --id <id>` (see auth list)',
     ...(p.wireClaude ? [`\`claude mcp remove ${p.name} --scope user\``] : []),
     ...(p.wireCodex ? ['edit the codex config'] : []),
+    ...(p.wireOpencode ? ['edit the opencode config'] : []),
   ];
   lines.push(
     '',
@@ -500,6 +532,11 @@ async function cleanupStalePriorTargets(
       } else if (pt.host === 'codex' && pt.kind === 'mcp') {
         const r = removeCodexHttpServerBlock(pt.path ?? d.codexConfig, pt.name ?? 'gbrain');
         if (r.removed) d.log(`stale codex managed block removed from ${pt.path ?? d.codexConfig} (no longer planned).`);
+      } else if (pt.host === 'opencode' && pt.kind === 'mcp') {
+        // Fingerprint-keyed against the PRIOR receipt's url — a foreign or
+        // rotated-away entry refuses inside the module (never guess).
+        const r = removeOpencodeMcpEntry(pt.path ?? d.opencodeConfig, pt.name ?? 'gbrain', { url: prior.url });
+        if (r.removed) d.log(`stale opencode entry removed from ${pt.path ?? d.opencodeConfig} (no longer planned).`);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -539,14 +576,17 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   // explicit (we exec `claude mcp add`; it owns ~/.claude.json).
   const wireClaude = (flags.harness === 'all' || flags.harness === 'claude-code') && d.detectClaude();
   const wireCodex = flags.harness === 'codex' || (flags.harness === 'all' && d.detectCodex());
+  // opencode mirrors codex: an explicit --harness opencode FORCES wiring (the
+  // JSONC writer needs no opencode CLI and creates the config file itself).
+  const wireOpencode = flags.harness === 'opencode' || (flags.harness === 'all' && d.detectOpencode());
   if (flags.harness === 'claude-code' && !wireClaude) {
     d.logError('claude CLI not found on PATH — the user-scope MCP registration needs it (it owns ~/.claude.json).');
     return 2;
   }
-  if (!wireClaude && !wireCodex) {
+  if (!wireClaude && !wireCodex && !wireOpencode) {
     d.logError(
-      'no harness detected on this box (claude CLI not on PATH; no codex install) — ' +
-        'pass --harness claude-code|codex explicitly if detection is wrong.',
+      'no harness detected on this box (claude CLI not on PATH; no codex install; no opencode install) — ' +
+        'pass --harness claude-code|codex|opencode explicitly if detection is wrong.',
     );
     return 2;
   }
@@ -597,12 +637,14 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     url,
     wireClaude,
     wireCodex,
+    wireOpencode,
     hooks: wireHooks,
     capture: !flags.noCapture,
     hookScope,
     name: flags.name,
     userSettingsPath: d.userSettingsPath,
     codexConfig: d.codexConfig,
+    opencodeConfig: d.opencodeConfig,
   });
   d.log(consent);
   if (!flags.yes) {
@@ -719,6 +761,17 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
       mechanism: 'toml-block',
     });
   }
+  if (wireOpencode) {
+    targets.push({
+      host: 'opencode',
+      kind: 'mcp',
+      state: 'pending',
+      scope: 'user',
+      path: d.opencodeConfig,
+      name: flags.name,
+      mechanism: 'jsonc-entry',
+    });
+  }
   // [X4] EVERY unrevoked prior minted id is carried — on the --token lane
   // too. A failed rotation must never forget the token before last.
   const carriedPreviousIds = [
@@ -805,6 +858,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   let oldClaudeReg: { url: string; token: string } | null = null;
   let claudeReplaced = false;
   let codexRollback: { path: string; backupPath: string | null; replacedPrior: boolean } | null = null;
+  let opencodeRollback: { path: string; backupPath: string | null; replacedPrior: boolean } | null = null;
   let cfgLock: Awaited<ReturnType<typeof acquireBootstrapLock>> | null = null;
   if (wireClaude) {
     const cfgDir = dirname(d.userSettingsPath);
@@ -957,6 +1011,58 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     }
   }
 
+  // 7b. opencode wiring — the managed JSONC entry is the single write
+  // mechanism (opencode-json.ts; fingerprint-owned, comment-preserving).
+  // Same [X11] lock discipline; same forced-wire posture as codex.
+  for (const t of targets) {
+    if (t.host !== 'opencode') continue;
+    try {
+      const ocDir = dirname(t.path!);
+      mkdirSync(ocDir, { recursive: true });
+      const ocLock = await acquireBootstrapLock(ocDir);
+      let r: ReturnType<typeof writeOpencodeMcpEntry>;
+      try {
+        // Ownership [C8]: an entry at OUR new url (idempotent re-run) or at
+        // the PRIOR receipt's url (rotation across a port change) is ours;
+        // anything else under the name refuses inside the writer. The prior
+        // url is offered as the expectation only when the current one does
+        // not classify the entry as ours.
+        let expectUrl = url;
+        if (prior && prior.url !== url && existsSync(t.path!)) {
+          try {
+            const parsedExisting = parseOpencodeConfig(readFileSync(t.path!, 'utf8'), t.path!);
+            if (
+              opencodeEntryKind(parsedExisting, flags.name, { url }) === 'foreign' &&
+              opencodeEntryKind(parsedExisting, flags.name, { url: prior.url }) === 'ours-same-source'
+            ) {
+              expectUrl = prior.url;
+            }
+          } catch {
+            /* the writer's own read path raises the real error below */
+          }
+        }
+        r = writeOpencodeMcpEntry(
+          t.path!,
+          { kind: 'remote', name: flags.name, url, tokenMode: 'inline', bearerToken: token },
+          { expect: { url: expectUrl }, allowReplaceOtherSource: true },
+        );
+      } finally {
+        ocLock.release();
+      }
+      for (const note of r.notes) d.logError(note);
+      opencodeRollback = { path: t.path!, backupPath: r.backupPath, replacedPrior: r.replacedPrior };
+      confirm(t);
+      d.log(
+        `opencode wired: mcp.${flags.name} remote entry with inline bearer header in ${t.path} (0600). ` +
+          'opencode ships a plugin/event system, but gbrain does not wire it yet — per-turn context on ' +
+          'opencode is MCP tools + the pull protocol (AGENTS.md loads natively). Restart opencode: it ' +
+          'reads config at session start.',
+      );
+    } catch (e) {
+      failTarget(t, e instanceof Error ? e.message : String(e));
+    }
+  }
+
   // 8. Smoke [C3-enriched message; X10 verbs-surface honesty]. An
   // unknown-tool tool_error means initialize + auth ALREADY succeeded — a
   // serve running a narrowed --surface (e.g. verbs) is verified, not broken.
@@ -1021,6 +1127,24 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
         if (ct) failTarget(ct, 'rolled back to the previous codex config after the failed smoke');
       } catch (e) {
         d.logError(`codex rollback failed: ${e instanceof Error ? e.message : String(e)} — re-run to converge.`);
+      }
+    }
+    if (opencodeRollback) {
+      try {
+        const rbLock = await acquireBootstrapLock(dirname(opencodeRollback.path)); // [X11] parity
+        try {
+          if (opencodeRollback.backupPath && existsSync(opencodeRollback.backupPath)) {
+            copyFileSync(opencodeRollback.backupPath, opencodeRollback.path);
+          } else if (!opencodeRollback.replacedPrior) {
+            removeOpencodeMcpEntry(opencodeRollback.path, flags.name, { url });
+          }
+        } finally {
+          rbLock.release();
+        }
+        const ot = targets.find((t) => t.host === 'opencode' && t.kind === 'mcp');
+        if (ot) failTarget(ot, 'rolled back to the previous opencode config after the failed smoke');
+      } catch (e) {
+        d.logError(`opencode rollback failed: ${e instanceof Error ? e.message : String(e)} — re-run to converge.`);
       }
     }
     const mt = targets.find((t) => t.host === 'claude-code' && t.kind === 'mcp');
@@ -1286,6 +1410,47 @@ export async function removeHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
             ? `Codex managed block removed from ${codexPath}.`
             : `no managed block in ${codexPath} — counted as removed.`,
         );
+      } else if (t.host === 'opencode') {
+        const ocPath = t.path ?? d.opencodeConfig;
+        // [C8] Ownership before removal: an entry now at a DIFFERENT url is
+        // another install's — skip with a note, cleared from the receipt
+        // (mirror of the claude not-ours branch; the module's foreign check
+        // would THROW, which reads as a failure rather than a skip).
+        let kind: ReturnType<typeof opencodeEntryKind> = 'absent';
+        if (existsSync(ocPath)) {
+          try {
+            kind = opencodeEntryKind(
+              parseOpencodeConfig(readFileSync(ocPath, 'utf8'), ocPath),
+              t.name ?? 'gbrain',
+              { url: receipt.url },
+            );
+          } catch (e) {
+            throw new Error(`opencode config unreadable: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+        if (kind === 'absent') {
+          d.log(`opencode entry '${t.name}' already gone — counted as removed.`); // [F2]
+        } else if (kind !== 'ours-same-source') {
+          d.log(
+            `opencode entry '${t.name}' does not match this receipt's url (${receipt.url}) — owned by another ` +
+              'install; skipping, cleared from the receipt.',
+          );
+        } else {
+          const ocDir = dirname(ocPath);
+          mkdirSync(ocDir, { recursive: true });
+          const ocLock = resolve(ocDir) === resolve(rmCfgDir) ? null : await acquireBootstrapLock(ocDir);
+          let r: ReturnType<typeof removeOpencodeMcpEntry>;
+          try {
+            r = removeOpencodeMcpEntry(ocPath, t.name ?? 'gbrain', { url: receipt.url });
+          } finally {
+            ocLock?.release();
+          }
+          d.log(
+            r.removed
+              ? `opencode managed entry removed from ${ocPath}.`
+              : `no managed entry in ${ocPath} — counted as removed.`,
+          );
+        }
       }
     } catch (e) {
       anyFailed = true;
@@ -1441,6 +1606,15 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
       } catch {
         /* degrade */
       }
+    }
+  }
+  if (!token) {
+    const ocMcp = receipt.targets.find((t) => t.host === 'opencode' && t.kind === 'mcp');
+    if (ocMcp?.path) {
+      // [C8] url-matched inside the helper: a foreign/rotated entry's bearer
+      // is never recovered (it was not issued for receipt.url).
+      token = parseOpencodeEntryBearer(ocMcp.path, ocMcp.name ?? 'gbrain', receipt.url);
+      if (token) tokenSource = 'opencode config entry';
     }
   }
 

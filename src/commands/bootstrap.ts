@@ -124,7 +124,7 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
   verify [--json]                 The whole install contract (round-trip, graph floor,
                                   magic moment, scans, hooks smoke). Exit 0 or not done.
   attach [--harness H]            Machine two: adopt a cloned agent workspace.
-  harness [--harness claude-code|codex|all] [--url U | --port N] [--source ID]
+  harness [--harness claude-code|codex|opencode|all] [--url U | --port N] [--source ID]
           [--token-name NAME | --token TOK] [--name MCPNAME] [--project DIR]...
           [--no-hooks] [--no-capture] [--force] [--status] [--remove] [--yes] [--json]
                                   Wire framework-spawned Claude Code / Codex sessions to a
