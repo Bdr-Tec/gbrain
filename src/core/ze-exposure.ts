@@ -35,11 +35,20 @@ import { loadConfigFileOnly } from './config.ts';
 import { DEFAULT_EMBEDDING_MODEL, ZEROENTROPY_SUNSET_DATE } from './ai/defaults.ts';
 import {
   NEW_INSTALL_DEFAULT_EMBEDDING_MODEL,
+  NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS,
   NEW_INSTALL_DEFAULT_RERANKER_MODEL,
 } from './ai/defaults.ts';
 import { lookupEmbeddingPrice } from './embedding-pricing.ts';
 
 const ZE_PREFIX = 'zeroentropyai:';
+
+/** Strict column-name shape (mirrors the registry's validateColumnKey
+ *  contract). Registry keys read here come from BOTH config planes — the DB
+ *  plane can be written by another party on mounted/team brains, and these
+ *  names are rendered verbatim into the agent-directed ACTION REQUIRED banner,
+ *  so nonconforming names are dropped rather than echoed (text-injection
+ *  hardening; sanctioned write paths already enforce this shape). */
+const SAFE_COLUMN_KEY = /^[a-z_][a-z0-9_]{0,62}$/;
 
 /** Blast-radius counts are LIMIT-capped so a million-chunk brain can't stall
  *  apply-migrations on a full-table COUNT. */
@@ -81,6 +90,9 @@ export interface ZeExposure {
   blastRadius: ZeBlastRadius;
 }
 
+/** PRIVATE — both call sites pass hardcoded literal SQL; never pass dynamic
+ *  or config-derived strings into `innerSql` (it is string-composed). If a
+ *  future probe needs a parameter, add a fixed named query instead. */
 async function cappedCount(engine: BrainEngine, innerSql: string): Promise<number> {
   const rows = await engine.executeRaw<{ n: number }>(
     `SELECT COUNT(*)::int AS n FROM (${innerSql} LIMIT ${BLAST_RADIUS_CAP + 1}) t`,
@@ -91,6 +103,7 @@ async function cappedCount(engine: BrainEngine, innerSql: string): Promise<numbe
 function zeColumnsFromRegistry(registry: unknown, out: Set<string>): void {
   if (!registry || typeof registry !== 'object') return;
   for (const [name, entry] of Object.entries(registry as Record<string, unknown>)) {
+    if (!SAFE_COLUMN_KEY.test(name)) continue; // never echo nonconforming names
     const provider = (entry as { provider?: unknown } | null)?.provider;
     if (typeof provider === 'string' && provider.startsWith(ZE_PREFIX)) out.add(name);
   }
@@ -238,13 +251,18 @@ export function renderZeActionRequired(exposure: ZeExposure): string {
           : ''),
     );
     lines.push(
-      `Fix: gbrain migrate embeddings --to ${NEW_INSTALL_DEFAULT_EMBEDDING_MODEL} --dim 1024 --dry-run`,
+      `Fix: gbrain migrate embeddings --to ${NEW_INSTALL_DEFAULT_EMBEDDING_MODEL} ` +
+        `--dim ${NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS} --dry-run`,
     );
     lines.push(
-      `  (1280 is not a valid Voyage width — the migration rebuilds the column at 1024.`,
+      `  (Voyage's valid widths are 256/512/1024/2048 — legacy default brains are ` +
+        `1280d and get a one-time rebuild to ${NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS}.`,
     );
     lines.push(
-      `   OpenAI alternative keeps the width: --to openai:text-embedding-3-small --dim 1280)`,
+      `   OpenAI can keep widths up to 1536: --to openai:text-embedding-3-small --dim <width>.`,
+    );
+    lines.push(
+      `   \`gbrain doctor\` prints this brain's exact width-aware command.)`,
     );
     if (exposure.envOverride) {
       lines.push(

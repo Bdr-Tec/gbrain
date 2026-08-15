@@ -546,19 +546,20 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
         // Fires even for brains that saw stage 1 — this release ships the
         // migration playbook + the Voyage default, and the exposure story
         // widened (custom columns, env overrides, reranker-without-key).
-        // The gate opens on `exposed`, on `unknown` (fail-safe: nag rather
-        // than stay silent), and independently on a ZE-resolved reranker
-        // without a Voyage key — an OpenAI/Voyage-embedding brain whose
-        // reranking still rides the legacy ZE bundle default is exposed on
-        // the reranker axis even when its embeddings are clear.
+        // The gate opens on `exposed` and on `unknown` (fail-safe: nag rather
+        // than stay silent). Reranker-only exposure is COVERED by `exposed`:
+        // detectZeExposure sets status='exposed' whenever the resolved
+        // reranker is ZE (including the legacy bundle default), so an
+        // OpenAI/Voyage-embedding brain whose reranking rides the ZE bundle
+        // still opens the gate, and renderZeActionRequired includes the
+        // reranker paragraph.
         try {
           const shownV2 = await engine.getConfig('ze_sunset_notice_v2_shown');
           if (shownV2 !== 'true') {
             const { detectZeExposure, renderZeActionRequired } =
               await import('../core/ze-exposure.ts');
             const exposure = await detectZeExposure(engine);
-            const rerankerGate = exposure.zeReranker && !exposure.hasVoyageKey;
-            if (exposure.status === 'exposed' || exposure.status === 'unknown' || rerankerGate) {
+            if (exposure.status === 'exposed' || exposure.status === 'unknown') {
               console.log('');
               console.log('═══════════════════════════════════════════════════════════════');
               console.log('[gbrain] ACTION REQUIRED — ZeroEntropy shutdown (v0.47 notice)');

@@ -38,9 +38,12 @@ import type {
   OrchestratorResult,
   OrchestratorPhaseResult,
 } from './types.ts';
-import { loadConfig, toEngineConfig, gbrainPath } from '../../core/config.ts';
+import { loadConfig, loadConfigFileOnly, toEngineConfig, gbrainPath } from '../../core/config.ts';
 import { createEngine } from '../../core/engine-factory.ts';
 import type { BrainEngine } from '../../core/engine.ts';
+
+const MIGRATION_VERSION = '0.47.0';
+const PLAYBOOK_SKILL = 'skills/migrations/v0.47.0.0.md';
 
 function pendingHostWorkDir(): string { return gbrainPath('migrations'); }
 function pendingHostWorkPath(): string { return join(pendingHostWorkDir(), 'pending-host-work.jsonl'); }
@@ -71,17 +74,26 @@ function existingEntryForVersion(version: string): boolean {
 
 function emitHostWork(reason: string): OrchestratorPhaseResult {
   try {
-    if (existingEntryForVersion('0.47.0')) {
+    if (existingEntryForVersion(MIGRATION_VERSION)) {
       return { name: 'host-work', status: 'skipped', detail: 'already recorded' };
     }
     mkdirSync(pendingHostWorkDir(), { recursive: true });
     const entry: PendingHostWorkEntry = {
-      migration: '0.47.0',
+      migration: MIGRATION_VERSION,
       ts: new Date().toISOString(),
-      skill: 'skills/migrations/v0.47.0.0.md',
+      skill: PLAYBOOK_SKILL,
       reason,
     };
-    appendFileSync(pendingHostWorkPath(), JSON.stringify(entry) + '\n');
+    // Torn-write guard: a prior crashed writer can leave the file without a
+    // trailing newline; appending directly would concatenate onto the torn
+    // line, producing one unparseable line that existingEntryForVersion skips
+    // forever — losing THE deliverable of this migration. Ensure separation.
+    let prefix = '';
+    if (existsSync(pendingHostWorkPath())) {
+      const raw = readFileSync(pendingHostWorkPath(), 'utf-8');
+      if (raw.length > 0 && !raw.endsWith('\n')) prefix = '\n';
+    }
+    appendFileSync(pendingHostWorkPath(), prefix + JSON.stringify(entry) + '\n');
     return { name: 'host-work', status: 'complete', detail: pendingHostWorkPath() };
   } catch (e) {
     return {
@@ -96,12 +108,11 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
   const phases: OrchestratorPhaseResult[] = [];
 
   const config = loadConfig();
-  const { loadConfigFileOnly } = await import('../../core/config.ts');
   const fileCfg = loadConfigFileOnly();
   if (!config && !fileCfg) {
     // No gbrain install on this host — nothing to notify about.
     phases.push({ name: 'detect', status: 'skipped', detail: 'no brain configured' });
-    return { version: '0.47.0', status: 'complete', phases };
+    return { version: MIGRATION_VERSION, status: 'complete', phases };
   }
 
   let engine: BrainEngine | null = null;
@@ -160,7 +171,7 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
   const status = exposure?.status ?? 'unknown';
   if (status === 'clear') {
     // Unexposed brains complete as a no-op — no nag, no host work.
-    return { version: '0.47.0', status: 'complete', phases };
+    return { version: MIGRATION_VERSION, status: 'complete', phases };
   }
 
   // Exposed OR unknown → print the notice + emit host work (fail-safe: when
@@ -182,7 +193,7 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
 
   if (opts.dryRun) {
     phases.push({ name: 'host-work', status: 'skipped', detail: 'dry-run' });
-    return { version: '0.47.0', status: 'complete', phases };
+    return { version: MIGRATION_VERSION, status: 'complete', phases };
   }
 
   const hostWork = emitHostWork(
@@ -190,16 +201,24 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
   );
   phases.push(hostWork);
 
+  // A FAILED host-work write (unwritable ~/.gbrain, full disk) is a different
+  // class from `exposure_unknown`: the durable action item — this migration's
+  // entire deliverable — was not recorded. Return `partial` so apply-migrations
+  // retries on the next run and converges once writable; a persistently
+  // unwritable dir earns the loud three-partial WEDGED warning. (`skipped` =
+  // already recorded = fine.)
+  const failedWrite = hostWork.status === 'failed';
+
   return {
-    version: '0.47.0',
-    status: 'complete',
+    version: MIGRATION_VERSION,
+    status: failedWrite ? 'partial' : 'complete',
     phases,
     pending_host_work: hostWork.status === 'complete' ? 1 : 0,
   };
 }
 
 export const v0_47_0: Migration = {
-  version: '0.47.0',
+  version: MIGRATION_VERSION,
   featurePitch: {
     headline:
       'ZeroEntropy is shutting down 2026-09-04 — brains embedding or reranking with it must switch. New default: Voyage (voyage-4 + rerank-2.5, one key).',
@@ -208,7 +227,7 @@ export const v0_47_0: Migration = {
       'This migration detects whether your brain still resolves to ZeroEntropy (embedding, reranker, or custom columns) ' +
       'and, if so, records an action item for your agent at skills/migrations/v0.47.0.0.md. ' +
       'The one-command fix: `gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run` (cost preview), then `--yes`. ' +
-      'OpenAI alternative (keeps your column width): `--to openai:text-embedding-3-small --dim 1280`. ' +
+      'OpenAI alternative can keep column widths up to 1536 (e.g. a 1280d brain: `--to openai:text-embedding-3-small --dim 1280`); `gbrain doctor` prints this brain\'s exact width-aware command. ' +
       'Reranker: `gbrain config set search.reranker.model voyage:rerank-2.5`.',
   },
   orchestrator,

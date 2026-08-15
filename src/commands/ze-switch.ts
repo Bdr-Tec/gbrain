@@ -110,16 +110,20 @@ export async function runZeSwitch(args: string[], engine: BrainEngine): Promise<
 
   const flags = parseFlags(args);
 
-  // v0.47: ZeroEntropy is shutting down (see ZEROENTROPY_SUNSET_DATE in
-  // src/core/ai/defaults.ts). Switching a brain ONTO it — including resuming a
-  // half-applied forward switch — is disabled; only --undo (which moves a
-  // brain OFF it) and --dry-run (read-only plan) still run. The whole command
-  // is deleted in the September removal release.
+  // v0.47: ZeroEntropy is shutting down. Switching a brain ONTO it — including
+  // resuming a half-applied forward switch — is disabled; only --undo (which
+  // moves a brain OFF it) and --dry-run (read-only plan) still run. The whole
+  // command is deleted in the September removal release.
   if (!flags.undo && !flags.dryRun) {
+    const {
+      ZEROENTROPY_SUNSET_DATE,
+      NEW_INSTALL_DEFAULT_EMBEDDING_MODEL,
+      NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS,
+    } = await import('../core/ai/defaults.ts');
     const msg =
-      'ze-switch is disabled: ZeroEntropy shuts down its hosted API on 2026-09-04.\n' +
+      `ze-switch is disabled: ZeroEntropy shuts down its hosted API on ${ZEROENTROPY_SUNSET_DATE}.\n` +
       'Switching onto it (or resuming a half-applied switch) would strand this brain.\n' +
-      'To LEAVE ZeroEntropy: gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run\n' +
+      `To LEAVE ZeroEntropy: gbrain migrate embeddings --to ${NEW_INSTALL_DEFAULT_EMBEDDING_MODEL} --dim ${NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS} --dry-run\n` +
       'To undo a prior switch: gbrain ze-switch --undo';
     if (flags.json) {
       console.log(JSON.stringify({ status: 'refused', reason: 'provider_sunset', message: msg }));

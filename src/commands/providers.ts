@@ -30,6 +30,9 @@ interface ProviderOption {
   tier: 'native' | 'openai-compat';
   pros: string[];
   cons: string[];
+  /** v0.47: set when the provider's hosted API has an announced shutdown
+   *  (recipe.sunset) — agent-facing consumers must not steer users here. */
+  deprecated?: { date: string; replacement?: string };
 }
 
 function configureFromEnv(): void {
@@ -332,17 +335,30 @@ async function runExplain(args: string[]): Promise<void> {
   for (const r of recipes) {
     if (r.touchpoints.embedding && r.touchpoints.embedding.models.length > 0) {
       const m = r.touchpoints.embedding;
+      // v0.47: canonical model, not array position (Voyage lists voyage-4-large
+      // first; its canonical default is voyage-4).
+      const canonicalModel = m.default_model ?? m.models[0];
       options.push({
-        id: `${r.id}:${m.models[0]}`,
+        id: `${r.id}:${canonicalModel}`,
         touchpoint: 'embedding',
-        model: m.models[0],
+        model: canonicalModel,
         dims: m.default_dims,
         cost_per_1m_tokens_usd: m.cost_per_1m_tokens_usd,
         price_last_verified: m.price_last_verified,
         env_ready: envReady(r) || (r.id === 'ollama' && ollama.models_endpoint_valid === true),
         tier: r.tier,
         pros: prosFor(r, 'embedding'),
-        cons: consFor(r),
+        cons: r.sunset
+          ? [...consFor(r), `DEPRECATED — hosted API ends ${r.sunset.date}`]
+          : consFor(r),
+        ...(r.sunset
+          ? {
+              deprecated: {
+                date: r.sunset.date,
+                replacement: r.sunset.replacement?.embedding,
+              },
+            }
+          : {}),
       });
     }
     if (r.touchpoints.expansion) {
@@ -459,11 +475,17 @@ function consFor(r: Recipe): string[] {
 }
 
 function pickRecommended(options: ProviderOption[], env: Record<string, boolean>, ollamaReady: boolean): { id: string; reason: string } {
-  // Embedding recommendation: prefer env-ready native providers in this order.
-  const embOpts = options.filter(o => o.touchpoint === 'embedding');
+  // Embedding recommendation: prefer env-ready providers in canonical order —
+  // Voyage first (the v0.47 new-install default: one key covers embedding +
+  // rerank-2.5 + multimodal). Never recommend a sunsetting provider.
+  const embOpts = options.filter(o => o.touchpoint === 'embedding' && !o.deprecated);
+  if (env.VOYAGE_API_KEY) {
+    const voyage = embOpts.find(o => o.id.startsWith('voyage:'));
+    if (voyage) return { id: voyage.id, reason: 'VOYAGE_API_KEY set — the default: voyage-4 at 1024 dims; the same key powers the rerank-2.5 reranker and the multimodal model.' };
+  }
   if (env.OPENAI_API_KEY) {
     const openai = embOpts.find(o => o.id.startsWith('openai:'));
-    if (openai) return { id: openai.id, reason: 'OPENAI_API_KEY set — OpenAI default is high-quality and preserves existing 1536-dim schema.' };
+    if (openai) return { id: openai.id, reason: 'OPENAI_API_KEY set — high-quality and preserves an existing 1536-dim schema.' };
   }
   if (ollamaReady) {
     const ollama = embOpts.find(o => o.id.startsWith('ollama:'));
@@ -473,13 +495,9 @@ function pickRecommended(options: ProviderOption[], env: Record<string, boolean>
     const google = embOpts.find(o => o.id.startsWith('google:'));
     if (google) return { id: google.id, reason: 'GOOGLE_GENERATIVE_AI_API_KEY set — Gemini embedding at 768 dims.' };
   }
-  if (env.VOYAGE_API_KEY) {
-    const voyage = embOpts.find(o => o.id.startsWith('voyage:'));
-    if (voyage) return { id: voyage.id, reason: 'VOYAGE_API_KEY set — Voyage at 1024 dims.' };
-  }
-  // Nothing ready. Recommend OpenAI as the lowest-friction path.
+  // Nothing ready. Recommend the canonical default as the setup path.
   return {
-    id: 'openai:text-embedding-3-large',
-    reason: 'No provider env detected. OpenAI is the fastest setup — get a key at https://platform.openai.com/api-keys.',
+    id: 'voyage:voyage-4',
+    reason: 'No provider env detected. Voyage is the default — get a key at https://dash.voyageai.com/api-keys (one key also powers reranking + multimodal).',
   };
 }

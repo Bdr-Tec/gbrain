@@ -540,6 +540,33 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
   }
 }
 
+/**
+ * v0.47: voyage-picked installs get the recommended reranker written as
+ * EXPLICIT per-brain config — the mode-bundle reranker default stays on the
+ * sunsetting legacy provider until the September removal (split-default), so
+ * without this write a fresh voyage brain would resolve a reranker whose key
+ * it doesn't have. Never clobbers an existing explicit choice (re-init
+ * preserves user config). Best-effort: reranking is fail-open, a missed
+ * override degrades to no-rerank, never breaks init. Shared by the PGLite and
+ * Postgres init paths (one edit site for the September bundle flip).
+ */
+async function writeVoyageRerankerDefault(
+  engine: { getConfig(key: string): Promise<string | null>; setConfig(key: string, value: string): Promise<void> },
+  resolvedModel: string | undefined,
+): Promise<void> {
+  if (!resolvedModel?.startsWith('voyage:')) return;
+  try {
+    const existingReranker = await engine.getConfig('search.reranker.model');
+    if (!existingReranker) {
+      const { NEW_INSTALL_DEFAULT_RERANKER_MODEL } = await import('../core/ai/defaults.ts');
+      await engine.setConfig('search.reranker.model', NEW_INSTALL_DEFAULT_RERANKER_MODEL);
+      console.log(`  Reranker: ${NEW_INSTALL_DEFAULT_RERANKER_MODEL} (same VOYAGE_API_KEY)`);
+    }
+  } catch {
+    // Cosmetic; never block init.
+  }
+}
+
 /** Loud keyless-continue notice for the no-keys default path. The upgrade
  *  command is `init --force` re-init, NOT `config set embedding_model` — that
  *  key is a schema-sizing file-plane field that `gbrain config set` refuses
@@ -976,7 +1003,7 @@ async function initPGLite(opts: {
   let resolvedModel: string | undefined;
   if (opts.aiOpts?.noEmbedding) {
     // D9 deferred-setup mode: skip preflight, no model/dim resolved.
-    console.log(`  --no-embedding: deferred setup — configure with \`gbrain config set embedding_model <id>\` before import`);
+    console.log(`  --no-embedding: deferred setup — enable later with \`gbrain init --force --embedding-model voyage:voyage-4\` (\`config set embedding_model\` is refused by design)`);
   } else if (opts.aiOpts?.embedding_model) {
     const { resolveSchemaEmbeddingDim } = await import('../core/embedding-dim-check.ts');
     const pre = resolveSchemaEmbeddingDim({
@@ -1100,25 +1127,7 @@ async function initPGLite(opts: {
       }
     }
 
-    // v0.47: voyage-picked installs get the recommended reranker written as
-    // EXPLICIT per-brain config — the mode-bundle reranker default stays on the
-    // sunsetting legacy provider until the September removal (split-default),
-    // so without this write a fresh voyage brain would resolve a reranker whose
-    // key it doesn't have. Never clobbers an existing explicit choice
-    // (re-init preserves user config). Best-effort: reranking is fail-open, a
-    // missed override degrades to no-rerank, never breaks init.
-    if (resolvedModel?.startsWith('voyage:')) {
-      try {
-        const existingReranker = await engine.getConfig('search.reranker.model');
-        if (!existingReranker) {
-          const { NEW_INSTALL_DEFAULT_RERANKER_MODEL } = await import('../core/ai/defaults.ts');
-          await engine.setConfig('search.reranker.model', NEW_INSTALL_DEFAULT_RERANKER_MODEL);
-          console.log(`  Reranker: ${NEW_INSTALL_DEFAULT_RERANKER_MODEL} (same VOYAGE_API_KEY)`);
-        }
-      } catch {
-        // Cosmetic; never block init.
-      }
-    }
+    await writeVoyageRerankerDefault(engine, resolvedModel);
 
     // v0.37.10.0 T7 (D9) + v0.37.11.0 Lane B.4: atomic embedding-config
     // persistence on top of the existing file-plane config (preserves
@@ -1265,7 +1274,7 @@ async function initPostgres(opts: {
   let resolvedDim: number | undefined;
   let resolvedModel: string | undefined;
   if (opts.aiOpts?.noEmbedding) {
-    console.log(`  --no-embedding: deferred setup — configure with \`gbrain config set embedding_model <id>\` before import`);
+    console.log(`  --no-embedding: deferred setup — enable later with \`gbrain init --force --embedding-model voyage:voyage-4\` (\`config set embedding_model\` is refused by design)`);
   } else if (opts.aiOpts?.embedding_model) {
     const { resolveSchemaEmbeddingDim } = await import('../core/embedding-dim-check.ts');
     const pre = resolveSchemaEmbeddingDim({
@@ -1415,20 +1424,7 @@ async function initPostgres(opts: {
       }
     }
 
-    // v0.47: voyage-picked installs get the explicit reranker override —
-    // same rationale + same never-clobber contract as the PGLite path above.
-    if (resolvedModel?.startsWith('voyage:')) {
-      try {
-        const existingReranker = await engine.getConfig('search.reranker.model');
-        if (!existingReranker) {
-          const { NEW_INSTALL_DEFAULT_RERANKER_MODEL } = await import('../core/ai/defaults.ts');
-          await engine.setConfig('search.reranker.model', NEW_INSTALL_DEFAULT_RERANKER_MODEL);
-          console.log(`  Reranker: ${NEW_INSTALL_DEFAULT_RERANKER_MODEL} (same VOYAGE_API_KEY)`);
-        }
-      } catch {
-        // Cosmetic; never block init.
-      }
-    }
+    await writeVoyageRerankerDefault(engine, resolvedModel);
 
     // v0.37.10.0 T7 (D9) + v0.37.11.0 Lane B.4 (Postgres mirror): atomic
     // embedding-config persistence on top of the existing file-plane config.
