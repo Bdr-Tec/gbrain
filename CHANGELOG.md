@@ -50,6 +50,11 @@ fenced re-check) and keeps the job whenever the lease is still its own.
   wall-clock budget, including the default that will stamp at claim.
 
 ### Fixed
+- **The unit-suite's SIGTERM-semantics test no longer kills its own
+  shard.** A bare in-process signal broadcast could reach a leaked
+  cleanup handler from an earlier test file and exit the whole test
+  process mid-suite, misreading as an external kill; the test now fires
+  only the listeners it registered.
 - **`gbrain verify` no longer leaves probe tombstones in your brain.**
   The end-of-run probe cleanup previously soft-deleted its two probe
   pages; every verify run left residue visible to `include_deleted`
