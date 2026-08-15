@@ -23,8 +23,9 @@ Claude.ai `conversations.json`) import through the same door.
   (bodies, titles, speaker labels, and session metadata; plus your
   `harvest-private-patterns.txt` rules), message content that mimics
   conversation formatting cannot forge speakers or timestamps, and imports
-  are a readable text-turn archive by design — tool traffic and thinking
-  blocks never land in pages. Embedding is off by default for bulk backfills
+  are a readable text-turn archive by design — tool payloads and thinking
+  blocks never land in pages (one-line placeholders mark where they
+  happened). Embedding is off by default for bulk backfills
   (opt in with the embed flag, or run the embed backfill later).
 - **Free to re-run.** Unchanged sessions skip on content hash; long sessions
   split into searchable parts that reconcile themselves when a session
@@ -33,12 +34,12 @@ Claude.ai `conversations.json`) import through the same door.
   advances past files it could not fully read.
 - **Facts on demand.** `--facts` extracts through the shipped
   conversation-facts pipeline under a budget cap; imported pages also flow
-  into the existing scheduled backfill.
+  into the existing scheduled backfill when that cycle phase is enabled.
 
 ### Added
 - `gbrain transcripts ingest` and `gbrain transcripts status` subcommands
   (engine-free `--help`), with discovery mode, `--all`, `--dry-run`,
-  `--limit`, `--since <iso|last>`, `--source-id`, `--facts`,
+  `--format`, `--limit`, `--since <iso|last>`, `--source-id`, `--facts`,
   `--max-cost-usd`, `--embed`, `--json`, `--quiet`.
 - Transcript-adapter seam at `src/core/transcripts/` (session-granular
   contract with per-file diagnostics and drift alarms; dated spec targets per

@@ -49,9 +49,11 @@ upstream: conversation-history+transcript-save@fc834ee
 
 Two halves of one loop:
 
-1. **IMPORT** — raw export or session log → one dated markdown page per
-   conversation under `conversations/` → `gbrain import`/`gbrain sync` →
-   parser validation → fact extraction → gap check.
+1. **IMPORT** — raw export or session log → dated markdown pages under
+   `conversations/` (the native importer writes them directly and splits
+   long sessions into parts; the manual path converts one page per
+   conversation, then `gbrain import`/`gbrain sync`) → parser validation →
+   fact extraction → gap check.
 2. **RETRIEVE** — search the archive, pull threads, build timelines, and
    answer "when did I first discuss X".
 
@@ -76,8 +78,12 @@ Native-vs-manual delta to know: the native lane redacts SECRETS (key
 patterns) plus your `~/.gbrain/harvest-private-patterns.txt` regexes and
 counts agent-directed imperatives into frontmatter, but broad PII detection
 (names, phones, addresses) remains YOUR review pass — the manual procedure's
-human scrub step still applies to sensitive corpora. Providers without a
-native adapter (e.g. Perplexity) keep using the manual conversion below.
+human scrub step still applies to sensitive corpora. Two more deltas: the
+native lane caps each message at ~4K characters in the page body (readable
+archive, not verbatim — the session file named in `source_uri` stays the
+verbatim record), and tool/thinking traffic appears only as one-line
+placeholders. Providers without a native adapter (e.g. Perplexity) keep
+using the manual conversion below.
 
 ## Where Conversations Live
 

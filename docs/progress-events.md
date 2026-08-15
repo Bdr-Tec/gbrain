@@ -28,7 +28,7 @@ Any of these commands stream events when `--progress-json` is set:
 - `gbrain eval`
 - `gbrain eval brainbench`
 - `gbrain apply-migrations` (the orchestrator + every child command)
-- `gbrain transcripts ingest` (per-file heartbeat over the import set)
+- `gbrain transcripts ingest` (per-file ticks + a per-session heartbeat over the import set)
 
 Non-bulk commands (`stats`, `graph-query`, `get`, `put`, etc.) don't emit
 events — they return in under a second.
@@ -161,7 +161,7 @@ Stable phase names shipped in v0.15.2:
 - `files.sync`
 - `transcripts.ingest` (one tick per session-log file; sessions inside a
   multi-session file — the hermes store, consumer exports — don't get their
-  own ticks, so total = file count)
+  own ticks, so total = file count; each session emits a heartbeat instead)
 
 Sub-phases exposed via `child()`:
 

@@ -3181,7 +3181,7 @@ TOOLS
   orphans [--json] [--count]         Find pages with no inbound wikilinks
   salience [--days N] [--kind P]     v0.29: pages ranked by emotional + activity salience
   anomalies [--since D] [--sigma N]  v0.29: cohort-based statistical anomalies (tag, type)
-  transcripts recent [--days N]      v0.29: recent raw .txt transcripts (local-only)
+  transcripts <ingest|status|recent> v0.46: import agent session logs + chat exports (local-only)
   dream [--dry-run] [--json]         Run the overnight maintenance cycle once (cron-friendly).
                                      See also: autopilot --install (continuous daemon).
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)

@@ -5755,10 +5755,14 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 - [ ] **P2 — `gbrain ingest feed`: native feed adapter.** blog-ingest ships the
   agent-procedure layer; the durable path is a deterministic RSS/Atom adapter
   (discovery, pagination, canonical-URL dedup, 429 backoff) behind one command.
-- [ ] **P2 — Native AI-chat export importer.** conversation-archive converts
-  ChatGPT/Claude/Perplexity exports via agent procedure; a native importer
-  (export JSON → conversations/ pages) makes it deterministic. Pairs with the
-  existing conversation-parser surface.
+- [x] **P2 — Native AI-chat export importer.** **Completed:** v0.46.0.0 (2026-08-14).
+  `gbrain transcripts ingest` imports extracted ChatGPT and Claude.ai
+  `conversations.json` exports natively (adapters at
+  `src/core/transcripts/{chatgpt-export,claude-export}.ts`, rendering on the
+  conversation-parser surface). Perplexity has no adapter yet — a candidate
+  leaf module on the same `TranscriptAdapter` seam (the pattern the
+  cathedral-4 "More harness adapters" follow-up below documents); the
+  conversation-archive skill keeps the manual procedure for it meanwhile.
 - [ ] **P2 — Entity-guard as a native op.** phonetic-name-guard's own changelog
   proves prose-only failed: ASR-variant entity collisions need a native check
   (registry + alias table consulted at put/import time). The wave shipped the
