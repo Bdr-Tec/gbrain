@@ -159,6 +159,32 @@ export function resolveWorkerConcurrency(args: string[], env: NodeJS.ProcessEnv 
   return parsed;
 }
 
+export type JobIsolationMode = 'inline' | 'process';
+
+/**
+ * issue #5: `--job-isolation <inline|process>` (space or `=` form), env
+ * fallback GBRAIN_JOB_ISOLATION, default inline. `process` runs each claimed
+ * job in a SIGKILL-able child process — blast radius 1 job instead of N.
+ * Env injected as a param so tests never mutate process.env (rule R1).
+ * Invalid values fail fast (parseMaxRssFlag convention).
+ */
+export function parseJobIsolationFlag(
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): JobIsolationMode {
+  let raw: string | undefined;
+  const eqForm = args.find((a) => a.startsWith('--job-isolation='));
+  if (eqForm !== undefined) raw = eqForm.slice('--job-isolation='.length);
+  if (raw === undefined) raw = parseFlag(args, '--job-isolation');
+  if (raw === undefined || raw === '') raw = env.GBRAIN_JOB_ISOLATION;
+  if (raw === undefined || raw === '') return 'inline';
+  if (raw === 'inline' || raw === 'process') return raw;
+  console.error(
+    `Error: invalid job isolation mode ${JSON.stringify(raw)}. Valid: inline, process.`,
+  );
+  process.exit(1);
+}
+
 /**
  * #3026: the thin-client `list`/`get` branches receive jobs as parsed JSON
  * off the MCP wire, where every timestamp is an ISO string — but formatJob /
@@ -274,11 +300,13 @@ USAGE
   gbrain jobs watch [--json] [--follow] [--refresh-ms=N]
   gbrain jobs work [--queue Q] [--concurrency N] [--max-rss MB]
                    [--health-interval MS] [--nice N]
+                   [--job-isolation inline|process]
   gbrain jobs supervisor [start] [--detach] [--json]
                          [--concurrency N] [--queue Q] [--pid-file PATH]
                          [--max-crashes N] [--health-interval N]
                          [--allow-shell-jobs] [--cli-path PATH]
                          [--max-rss MB] [--nice N]
+                         [--job-isolation inline|process]
 
     --nice N   OS scheduling priority, -20 (highest) to 19 (nicest). Lowers CPU
                priority without cutting concurrency — full throughput when the
@@ -349,9 +377,18 @@ const JOBS_SUBCOMMAND_HELP: Record<string, string> = {
 USAGE
   gbrain jobs work [--queue Q] [--concurrency N] [--max-rss MB]
                    [--health-interval MS] [--nice N]
+                   [--job-isolation inline|process]
 
 OPTIONS
   --queue Q            Queue to claim from (default: default)
+  --job-isolation M    inline (default): handlers run in the worker process.
+                       process: each claimed job runs in its own child
+                       process — a stuck handler is group-SIGKILLed instead
+                       of abandoned, and a crash takes one job, not all N.
+                       Env fallback: GBRAIN_JOB_ISOLATION. Recommended for
+                       long-running LLM-bound handlers (subagent). Note:
+                       --max-rss then covers the worker only, and each child
+                       adds ~4 pooler client connections.
   --concurrency N      Max jobs in flight. Resolution: flag, then
                        GBRAIN_WORKER_CONCURRENCY env, then 1. Values < 1
                        are clamped to 1 with a loud stderr note.
@@ -381,6 +418,7 @@ USAGE
                          [--max-crashes N] [--health-interval N]
                          [--allow-shell-jobs] [--cli-path PATH]
                          [--max-rss MB] [--nice N]
+                         [--job-isolation inline|process]
   gbrain jobs supervisor status [--json] [--pid-file PATH]
   gbrain jobs supervisor stop [--json] [--pid-file PATH]
 
@@ -402,6 +440,7 @@ OPTIONS (start)
   --cli-path PATH      Explicit gbrain binary for the worker child
   --max-rss MB         RSS watchdog for the worker (same rules as jobs work)
   --nice N             OS priority for supervisor + worker children
+  --job-isolation M    Passed through to the worker (see jobs work --help)
 
 EXIT CODES (start)
   0 clean shutdown   1 max crashes exceeded
@@ -1303,6 +1342,49 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         }
       }
 
+      // issue #5: per-job process isolation. Resolve + validate the child CLI
+      // invocation ONCE at startup and refuse to start on failure — a bad
+      // path discovered per-job would release every claim as infra failures
+      // (never dead-lettering, but never progressing either).
+      const jobIsolation = parseJobIsolationFlag(args);
+      let childCliInvocation: { cmd: string; argsPrefix: string[] } | null = null;
+      let childTiniPath = '';
+      if (jobIsolation === 'process') {
+        const { resolveGbrainCliPath } = await import('./autopilot.ts');
+        const { resolveChildCliInvocation } = await import('../core/minions/job-isolation.ts');
+        const inv = resolveChildCliInvocation(
+          process.env,
+          process.execPath,
+          process.argv[1],
+          () => resolveGbrainCliPath(),
+        );
+        if (!inv) {
+          console.error(
+            'Error: process isolation needs a resolvable gbrain CLI for job children ' +
+            '(compiled binary on PATH, or GBRAIN_JOB_CHILD_CLI override).',
+          );
+          process.exit(1);
+        }
+        const { existsSync: childCliExists } = await import('node:fs');
+        if (!childCliExists(inv.cmd)) {
+          console.error(
+            `Error: resolved child CLI does not exist: ${inv.cmd} ` +
+            '(set GBRAIN_JOB_CHILD_CLI to a valid gbrain binary).',
+          );
+          process.exit(1);
+        }
+        childCliInvocation = inv;
+        const { detectTini } = await import('../core/minions/spawn-helpers.ts');
+        childTiniPath = detectTini();
+        if (maxRssMb > 0) {
+          console.error(
+            '[gbrain jobs] note: with process isolation on, the --max-rss watchdog covers the ' +
+            'WORKER process only — handler memory now lives in job children. Per-child caps are ' +
+            'a filed follow-up; size host memory for concurrency x handler footprint.',
+          );
+        }
+      }
+
       try { await queue.ensureSchema(); }
       catch (e) { console.error(e instanceof Error ? e.message : String(e)); process.exit(1); }
 
@@ -1330,6 +1412,7 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
 
       const worker = new MinionWorker(engine, {
         queue: queueName, concurrency, maxRssMb, healthCheckInterval,
+        jobIsolation, childCliInvocation, childTiniPath,
       });
       await registerBuiltinHandlers(worker, engine);
 
@@ -1348,7 +1431,8 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
               `[health] FATAL: connection-pool path saturated after ${info.consecutiveFailures} probes — ` +
               `the database server itself is reachable. (${info.message}) ` +
               `Likely causes: long-running handler queries holding pool slots, or too-small GBRAIN_POOL_SIZE ` +
-              `for this workload. ` +
+              `for this workload. Consider --job-isolation process for long-running handlers ` +
+              `(handler connections then die with each job's child process). ` +
               `Exiting for process-manager restart (frees all client-held slots).`,
             );
           } else if (info.verdict === 'server_unreachable') {
@@ -1390,7 +1474,10 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
             : `, health-check: ${Math.round(healthCheckInterval / 1000)}s`)
         : '';
       const niceNote = niceResult ? `, nice: ${formatNice(niceResult.effective ?? niceVal!)}` : '';
-      console.log(`Minion worker started (queue: ${queueName}, concurrency: ${concurrency}${watchdogNote}${healthNote}${niceNote})`);
+      const isolationNote = jobIsolation === 'process'
+        ? `, isolation: process (child cli: ${childCliInvocation?.cmd}${childTiniPath ? ', tini' : ''})`
+        : '';
+      console.log(`Minion worker started (queue: ${queueName}, concurrency: ${concurrency}${watchdogNote}${healthNote}${niceNote}${isolationNote})`);
       console.log(`Registered handlers: ${worker.registeredNames.join(', ')}`);
 
       // Register in the live worker registry (issue #1815) so jobs stats / doctor
@@ -1709,6 +1796,7 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         allowShellJobs,
         json: jsonMode,
         maxRssMb,
+        jobIsolation: parseJobIsolationFlag(args),
         ...(supNice !== undefined ? { nice_requested: supNice } : {}),
         ...(supNiceResult?.effective != null ? { nice_effective: supNiceResult.effective } : {}),
         ...(supNiceResult?.error ? { nice_error: supNiceResult.error } : {}),

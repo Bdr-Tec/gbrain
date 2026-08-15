@@ -37,5 +37,11 @@ if (mode === 'error') {
   process.exit(0);
 }
 
+if (mode === 'exit15') {
+  // Simulates a result-write failure (JOB_CHILD_EXIT_RESULT_WRITE_FAILED):
+  // handler ran, outcome could not be persisted.
+  process.exit(15);
+}
+
 // crash: no outcome file
 process.exit(1);

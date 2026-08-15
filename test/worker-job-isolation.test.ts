@@ -130,6 +130,34 @@ describe('worker with jobIsolation=process (PGLite + fake child)', () => {
     });
   }, 20_000);
 
+  test('serialization parity (codex-2 #8): unreportable results fail in BOTH modes, never complete', async () => {
+    // Inline: a circular result blows up in completeJob's serialization →
+    // failJob (attempt burned).
+    const inlineWorker = new MinionWorker(engine, {
+      queue: 'default', concurrency: 1, pollInterval: 25, healthCheckInterval: 0, maxRssMb: 0,
+    });
+    inlineWorker.register('isotest', async () => {
+      const a: Record<string, unknown> = {};
+      a.self = a; // circular — not JSONB-serializable
+      return a;
+    });
+    const j1 = await queue.add('isotest', {}, { max_attempts: 1 });
+    await runWorkerUntil(inlineWorker, async () => {
+      const s = (await jobRow(j1.id)).status;
+      return s !== 'waiting' && s !== 'active';
+    });
+    expect((await jobRow(j1.id)).status).not.toBe('completed');
+
+    // Process mode: a child that cannot persist its outcome (exit 15) lands
+    // in the same terminal class — failed loudly, never falsely completed.
+    await withEnv({ FAKE_RUN_CHILD_MODE: 'exit15' }, async () => {
+      const j2 = await queue.add('isotest', {}, { max_attempts: 1 });
+      const worker = makeWorker();
+      await runWorkerUntil(worker, async () => (await jobRow(j2.id)).status === 'dead');
+      expect((await jobRow(j2.id)).error_text).toContain('outcome file');
+    });
+  }, 30_000);
+
   test('spawn failure: RELEASED — still active, attempts NOT burned (infra class)', async () => {
     const job = await queue.add('isotest', {});
     const worker = makeWorker('/nonexistent/gbrain-binary', []);

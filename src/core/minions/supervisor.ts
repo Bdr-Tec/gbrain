@@ -98,6 +98,10 @@ export interface SupervisorOpts {
   nice_requested?: number;
   /** Effective niceness of the supervisor process after its own renice attempt. */
   nice_effective?: number;
+  /** issue #5: when 'process', the spawned worker runs each claimed job in a
+   *  SIGKILL-able child process (passed through as `--job-isolation process`).
+   *  Omitted/inline: today's shared-process execution. */
+  jobIsolation?: 'inline' | 'process';
   /** Error string if the supervisor's own renice failed (e.g. EPERM). */
   nice_error?: string;
   /**
@@ -174,7 +178,7 @@ const DEFAULTS: Omit<SupervisorOpts, 'cliPath'> = {
  * niceness also inherits to the worker's own children automatically.
  */
 export function buildWorkerArgs(
-  opts: Pick<SupervisorOpts, 'concurrency' | 'queue' | 'maxRssMb' | 'nice_requested'>,
+  opts: Pick<SupervisorOpts, 'concurrency' | 'queue' | 'maxRssMb' | 'nice_requested' | 'jobIsolation'>,
 ): string[] {
   const args = [
     'jobs', 'work',
@@ -186,6 +190,11 @@ export function buildWorkerArgs(
   }
   if (opts.nice_requested !== undefined) {
     args.push('--nice', String(opts.nice_requested));
+  }
+  // Conditional push (issue #5): omitted for inline so existing deployments'
+  // argv is byte-identical (pinned by supervisor-build-worker-args.test.ts).
+  if (opts.jobIsolation === 'process') {
+    args.push('--job-isolation', 'process');
   }
   return args;
 }
