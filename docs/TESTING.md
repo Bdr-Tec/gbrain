@@ -149,7 +149,8 @@ Four escalating tools; reach for the cheapest one that answers the question:
 
 Real-PTY test rules: put the file in the serial lane (`*.serial.test.ts` — that
 lane runs in required CI; a new `test/e2e/*` file does NOT, since unit shards
-exclude the directory and the e2e workflow runs only its named tier-1 files);
+exclude the directory and the e2e workflow runs only explicitly named files,
+no glob);
 assert NON-default picker values (bare Enter and each prompt's 60s
 `readLineSafe` timeout both resolve to the default, so a defaults-asserting
 test passes with dead input); always `await session.close()` in a `finally`

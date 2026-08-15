@@ -15,9 +15,10 @@
  *   1. DX-exploration runs (`scripts/dx-explore.ts`) — capture the fresh-user
  *      install funnel as timestamped transcripts for Don't-Make-Me-Think
  *      audits (stall report + verbatim rendered copy per step).
- *   2. Future PTY e2e tests — the same waitFor/sendKey primitives the gstack
- *      plan-mode PTY suite uses (pattern adapted from gstack's
- *      test/helpers/claude-pty-runner.ts; no node-pty, no native modules).
+ *   2. PTY e2e tests — test/init-picker-pty.serial.test.ts and future
+ *      siblings use the same waitFor/sendKey primitives (pattern adapted from
+ *      gstack's test/helpers/claude-pty-runner.ts; no node-pty, no native
+ *      modules).
  *
  * Hermeticity matches agent-harness.ts: every spawn goes through
  * hermeticChildEnv, so a DX run can NEVER see (or mutate) the operator's real

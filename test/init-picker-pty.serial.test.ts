@@ -9,7 +9,7 @@
  * Why serial: PTY spawns plus a full PGLite bootstrap are too heavy for the
  * concurrent fast loop — and the serial runner is the lane that actually
  * executes in required CI (unit shards exclude the e2e directory, and the
- * e2e workflow runs two named tier-1 files only).
+ * e2e workflow runs only explicitly named files — no glob).
  *
  * Input-liveness discipline: bare Enter AND the 60s readLineSafe timeout both
  * resolve each prompt to its default, so a test asserting defaults would pass
@@ -20,7 +20,7 @@
  *
  * Hermeticity: HOME and GBRAIN_HOME both point at the temp root — init probes
  * host paths under the real home (gstack discovery via homedir()) — and the
- * Anthropic key is dropped (the only auth key hermeticChildEnv passes
+ * Anthropic credentials are dropped (the auth vars hermeticChildEnv passes
  * through), so zero providers are env-ready and picker state is
  * machine-independent.
  *
@@ -41,9 +41,13 @@ const REPO_ROOT = join(import.meta.dir, '..');
 const CLI_TS = join(REPO_ROOT, 'src', 'cli.ts');
 
 // A prompt answered by a live send resolves fast; a dead send means
-// readLineSafe sits its full 60s and proceeds with the default. Anything
-// under this bound proves the input was read.
-const PROMPT_LIVENESS_MS = 55_000;
+// readLineSafe sits its full fallback window and proceeds with the default.
+// The window is 60s at both call sites this test drives
+// (src/commands/init-provider-picker.ts and src/commands/init-mode-picker.ts,
+// each passing 60_000 to readLineSafe) — the liveness bound is derived from
+// it with margin so the assertion keeps its power if the fallback moves.
+const READLINE_FALLBACK_MS = 60_000;
+const PROMPT_LIVENESS_MS = READLINE_FALLBACK_MS - 5_000;
 
 // On CI the pinned Bun (engines >= 1.3.10) has PTY support — a skip here
 // would be silent coverage loss, so fail loud instead. Locally a missing
@@ -75,7 +79,7 @@ describePty('gbrain init interactive pickers under a real PTY (keyless)', () => 
     const session = launchTty(['bun', 'run', CLI_TS, 'init', '--pglite'], {
       cwd: workDir,
       env: { HOME: homeDir, GBRAIN_HOME: homeDir },
-      dropEnv: ['ANTHROPIC_API_KEY'],
+      dropEnv: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
       timeoutMs: 240_000,
     });
 
@@ -137,5 +141,32 @@ describePty('gbrain init interactive pickers under a real PTY (keyless)', () => 
     });
     expect(readBack.status).toBe(0);
     expect((readBack.stdout ?? '').trim()).toBe('tokenmax');
+  }, 300_000);
+
+  test('Ctrl-D at the provider prompt falls back to keyless via EOF detection', async () => {
+    const homeDir2 = join(tmpRoot, 'home-eof');
+    const workDir2 = join(tmpRoot, 'work-eof');
+    mkdirSync(homeDir2, { recursive: true });
+    mkdirSync(workDir2, { recursive: true });
+
+    const session = launchTty(['bun', 'run', CLI_TS, 'init', '--pglite'], {
+      cwd: workDir2,
+      env: { HOME: homeDir2, GBRAIN_HOME: homeDir2 },
+      dropEnv: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+      timeoutMs: 240_000,
+    });
+    try {
+      await session.waitFor('0) none — continue keyless', { timeoutMs: 60_000 });
+      const afterMenu = session.mark();
+      const tEof = Date.now();
+      session.sendKey('CtrlD');
+      // EOF must be DETECTED (immediate keyless fallback), not absorbed until
+      // the readLineSafe fallback timer fires — this is the shared branch the
+      // deleted harness's comments falsely claimed to cover.
+      await session.waitFor(/keyless mode/i, { timeoutMs: 60_000, since: afterMenu });
+      expect(Date.now() - tEof).toBeLessThan(PROMPT_LIVENESS_MS);
+    } finally {
+      await session.close();
+    }
   }, 300_000);
 });
