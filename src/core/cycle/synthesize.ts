@@ -865,13 +865,33 @@ export async function runPhaseSynthesize(
 
       // Daily cap: skip the WHOLE file when its chunk set would cross the cap
       // — never submit a partial chunk set. Idempotency keys make the retry
-      // free on a later cycle.
+      // free on a later cycle. Structured-review P2: the cap bounds NEW
+      // spend, not re-submission — a file whose keys already exist (a prior
+      // capped-out run died mid-drain) coalesces/self-heals at zero new cost
+      // and must not be stranded for the rest of the 24h window.
       if (capActive && submittedToday + chunks.length > dailyCap) {
-        skipReports.push({
-          filePath: t.filePath,
-          reason: `daily_cap_reached: ${submittedToday}/${dailyCap}`,
-        });
-        continue;
+        const fileKeys = chunks.length > 1
+          ? chunks.map((_, i) =>
+              `dream:synth-v2:${encodeURIComponent(opts.sourceId ?? 'default')}` +
+              `:filename:${encodeURIComponent(basename(t.filePath))}:${hash16}:c${i}of${chunks.length}`)
+          : [`dream:synth-v2:${encodeURIComponent(opts.sourceId ?? 'default')}` +
+              `:filename:${encodeURIComponent(basename(t.filePath))}:${hash16}`];
+        let existingKeys = 0;
+        try {
+          const rows = await engine.executeRaw<{ n: number }>(
+            `SELECT COUNT(*)::int AS n FROM minion_jobs WHERE idempotency_key = ANY($1::text[])`,
+            [fileKeys],
+          );
+          existingKeys = rows[0]?.n ?? 0;
+        } catch { /* fail-open like the cap count itself: treat as no existing keys */ }
+        const newKeysNeeded = chunks.length - existingKeys;
+        if (newKeysNeeded > 0 && submittedToday + newKeysNeeded > dailyCap) {
+          skipReports.push({
+            filePath: t.filePath,
+            reason: `daily_cap_reached: ${submittedToday}/${dailyCap}`,
+          });
+          continue;
+        }
       }
 
       const isChunked = chunks.length > 1;

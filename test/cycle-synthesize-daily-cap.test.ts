@@ -245,6 +245,35 @@ describe('daily cap — engaged', () => {
     }
   }, 60_000);
 
+  test('SR-P2: an exhausted cap does NOT strand a file whose keys already exist (idempotent retry)', async () => {
+    const rig = await setupRig();
+    try {
+      await rig.engine.setConfig('dream.synthesize.max_submissions_per_source_per_day', '1');
+      // Cap fully consumed by an unrelated recent submission…
+      await seedSubmissionRow(rig, { ageHours: 1, tag: 'consumed.txt' });
+      // …but THIS file's job already exists from a prior run that died
+      // mid-drain (stranded in a dead inline queue). Re-running must reach
+      // queue.add so coalesce/self-heal recovers it — zero NEW spend.
+      const filePath = await seedPassingFile(rig, '2026-08-09-retry.txt');
+      const content = `conversation in 2026-08-09-retry.txt\n`.repeat(200);
+      const hash16 = createHash('sha256').update(content, 'utf8').digest('hex').slice(0, 16);
+      const key = `dream:synth-v2:default:filename:${encodeURIComponent('2026-08-09-retry.txt')}:${hash16}`;
+      await rig.engine.executeRaw(
+        `INSERT INTO minion_jobs (name, queue, status, data, idempotency_key)
+         VALUES ('subagent', 'dream-inline-1700000000000-deadbeef', 'waiting', '{}'::jsonb, $1)`,
+        [key],
+      );
+      const details = await runPhase(rig);
+      // The file was NOT daily-cap skipped: self-heal cancelled the stranded
+      // row and re-added into the live run's queue.
+      expect(details.skips.filter(s => s.reason.startsWith('daily_cap'))).toHaveLength(0);
+      expect(details.children_submitted).toBe(1);
+      expect(filePath).toContain('2026-08-09-retry.txt');
+    } finally {
+      await rig.cleanup();
+    }
+  }, 60_000);
+
   test('fail-open: a throwing count query warns to stderr and skips the cap for the run', async () => {
     const rig = await setupRig();
     try {

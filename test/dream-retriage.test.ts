@@ -354,6 +354,78 @@ describe('dream retriage — reconcile matrix', () => {
     }
   }, 30_000);
 
+  test('SR-P1: --max-usd + --audit-rejects with an unpriced SYNTHESIS model → exit 2', async () => {
+    const rig = await setupRig();
+    try {
+      // Triage model priced; synthesis (audit) model unpriced — the audit's
+      // budget share would be silently un-metered without the guard.
+      await rig.engine.setConfig('models.dream.synthesize', 'ollama:unpriced-frontier');
+      writeTranscript(rig.corpusDir, '2026-08-26-audit-unpriced.txt');
+      await withoutAnthropicKey(() =>
+        runDreamRetriage(rig.engine, ['--max-usd', '1', '--audit-rejects', '2', '--yes']));
+      expect(process.exitCode).toBe(2);
+    } finally {
+      await rig.cleanup();
+    }
+  }, 30_000);
+
+  test('SR-P2: a DELAYED job in a provably-dead inline queue converts for resubmit', async () => {
+    const rig = await setupRig();
+    try {
+      const above = writeTranscript(rig.corpusDir, '2026-08-27-delayed.txt');
+      await seedScore(rig, above.filePath, above.hash, 0.9);
+      const delayedJob = await seedJob(rig, {
+        key: synthKey('default', basename(above.filePath), above.hash16),
+        status: 'delayed',
+      });
+      const { out } = await captureStdout(() => withoutAnthropicKey(() =>
+        runDreamRetriage(rig.engine, ['--reconcile-queue', '--json'])));
+      const summary = JSON.parse(out) as { queue: { converted_for_resubmit: number } };
+      expect(await jobStatus(rig, delayedJob)).toBe('cancelled');
+      expect(summary.queue.converted_for_resubmit).toBe(1);
+    } finally {
+      await rig.cleanup();
+    }
+  }, 30_000);
+
+  test('SR-P2: a live cycle lock marks even OLD inline queues possibly-live (no conversions)', async () => {
+    const rig = await setupRig();
+    try {
+      const above = writeTranscript(rig.corpusDir, '2026-08-28-locked.txt');
+      await seedScore(rig, above.filePath, above.hash, 0.9);
+      const job = await seedJob(rig, { key: synthKey('default', basename(above.filePath), above.hash16) });
+      // Simulate a running cycle: an unexpired cycle-lock row.
+      await rig.engine.executeRaw(
+        `INSERT INTO gbrain_cycle_locks (id, holder_pid, ttl_expires_at)
+         VALUES ('gbrain-cycle:default', 12345, NOW() + interval '10 minutes')`,
+      );
+      const { out } = await captureStdout(() => withoutAnthropicKey(() =>
+        runDreamRetriage(rig.engine, ['--reconcile-queue', '--json'])));
+      const summary = JSON.parse(out) as { queue: { kept_live_queue: number; converted_for_resubmit: number } };
+      expect(await jobStatus(rig, job)).toBe('waiting');
+      expect(summary.queue.kept_live_queue).toBe(1);
+      expect(summary.queue.converted_for_resubmit).toBe(0);
+    } finally {
+      await rig.cleanup();
+    }
+  }, 30_000);
+
+  test('SR-P2: dry-run counts would-cancel unmatched rows instead of understating the preview', async () => {
+    const rig = await setupRig();
+    try {
+      const real = writeTranscript(rig.corpusDir, '2026-08-29-anchor.txt');
+      await seedScore(rig, real.filePath, real.hash, 0.9);
+      const ghost = await seedJob(rig, { key: synthKey('default', 'ghost-preview.txt', 'dddddddddddddddd') });
+      const { out } = await captureStdout(() => withoutAnthropicKey(() =>
+        runDreamRetriage(rig.engine, ['--reconcile-queue', '--cancel-unmatched', '--dry-run', '--json'])));
+      const summary = JSON.parse(out) as { queue: { unmatched_cancelled: number } };
+      expect(summary.queue.unmatched_cancelled).toBe(1); // would cancel
+      expect(await jobStatus(rig, ghost)).toBe('waiting'); // but did not
+    } finally {
+      await rig.cleanup();
+    }
+  }, 30_000);
+
   test('CX1: rows in a YOUNG dream-inline-* queue are kept as possibly-live, never cancelled', async () => {
     const rig = await setupRig();
     try {

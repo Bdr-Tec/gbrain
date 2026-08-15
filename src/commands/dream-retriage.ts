@@ -351,14 +351,30 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
     const auditPerFileUsd = parsed.auditRejects !== null
       ? estimatePerFileUsd(config.model, config.triage.maxChars, config.triage.maxTokens)
       : null;
+    // Codex structured review P1: an unpriced SYNTHESIS model would zero out
+    // the audit's share of the estimate AND silently disable --max-usd inside
+    // the audit loop — refuse the budget flag, and always confirm when the
+    // audit spend cannot be estimated.
+    const auditUnpriced = parsed.auditRejects !== null && auditPerFileUsd === null;
+    if (parsed.maxUsd !== null && auditUnpriced) {
+      console.error(
+        `dream retriage: --max-usd with --audit-rejects requires a priced synthesis model; ` +
+        `"${config.model}" has no CANONICAL_PRICING entry`,
+      );
+      process.exitCode = 2;
+      return;
+    }
     const auditEstimateUsd = parsed.auditRejects !== null && auditPerFileUsd !== null
       ? parsed.auditRejects * auditPerFileUsd
       : 0;
     const estimateUsd = perFileUsd === null ? null : missCount * perFileUsd + auditEstimateUsd;
-    const gateTriggered = estimateUsd !== null
+    const gateTriggered = (estimateUsd !== null
       ? estimateUsd > SPEND_CONFIRM_USD
-      : missCount > UNPRICED_CONFIRM_FILES;
-    const auditSuffix = auditEstimateUsd > 0 ? ` (incl. ≤ $${auditEstimateUsd.toFixed(2)} audit)` : '';
+      : missCount > UNPRICED_CONFIRM_FILES)
+      || auditUnpriced; // un-estimable audit spend always confirms
+    const auditSuffix = auditUnpriced
+      ? ` (audit model "${config.model}" unpriced — audit spend cannot be estimated)`
+      : auditEstimateUsd > 0 ? ` (incl. ≤ $${auditEstimateUsd.toFixed(2)} audit)` : '';
     const estimateLine = estimateUsd !== null
       ? `[retriage] ${missCount} file(s) to judge with ${config.triage.model} — estimated ≤ $${estimateUsd.toFixed(2)}${auditSuffix}`
       : `[retriage] ${missCount} file(s) to judge with ${config.triage.model} — no pricing entry for this model (cannot estimate; the ${UNPRICED_CONFIRM_FILES}-file confirmation gate applies)`;
@@ -457,6 +473,20 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
       by_source: {},
       by_queue_kind: { dream_inline: 0, other: 0 },
     };
+    // Codex structured review P2: queue age alone is not liveness — a cycle
+    // with several slow sequential children can legitimately exceed the 1h
+    // grace. Consult the REAL signal: a live (unexpired) cycle lock means a
+    // cycle is running right now, so no dream-inline queue is provably dead.
+    const liveLocks = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM gbrain_cycle_locks WHERE ttl_expires_at > NOW() AND id LIKE 'gbrain-cycle%'`,
+    );
+    const cycleRunning = liveLocks.length > 0;
+    if (cycleRunning) {
+      process.stderr.write(
+        `[retriage] live cycle lock(s) detected (${liveLocks.map(l => l.id).join(', ')}); ` +
+        `dream-inline queues are treated as possibly-live — conversions skipped this sweep\n`,
+      );
+    }
     const cancelRow = async (id: number): Promise<'cancelled' | 'already_terminal'> => {
       // Pre-cancel status re-check (C9): a candidate claimed by a live worker
       // between the snapshot SELECT and now is skipped, not killed.
@@ -477,9 +507,12 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
       // CX1: a dream-inline-* queue younger than the liveness grace may belong
       // to a cycle that is RUNNING right now — its inline drain will claim
       // these rows. Never cancel anything in a possibly-live private queue
-      // (unparseable-timestamp names count as possibly-live, fail-safe).
+      // (unparseable-timestamp names count as possibly-live, fail-safe), and
+      // a live cycle lock marks EVERY inline queue possibly-live regardless
+      // of age (structured-review P2: slow sequential children can outlive
+      // the grace).
       const possiblyLiveQueue = isInlineQueue
-        && (inlineQueueAge === null || inlineQueueAge <= DREAM_INLINE_LIVE_GRACE_MS);
+        && (cycleRunning || inlineQueueAge === null || inlineQueueAge <= DREAM_INLINE_LIVE_GRACE_MS);
       if (possiblyLiveQueue) {
         reconcile.kept_live_queue++;
         continue;
@@ -508,10 +541,17 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
         const isMatchedUnscored = discoveredKeys.has(matchKey);
         if (isMatchedUnscored) {
           reconcile.kept_unscored++;
-        } else if (parsed.cancelUnmatched && !parsed.dryRun) {
-          const outcome = await cancelRow(row.id);
-          if (outcome === 'cancelled') reconcile.unmatched_cancelled++;
-          else reconcile.already_terminal++;
+        } else if (parsed.cancelUnmatched) {
+          // Structured-review P2: the dry-run preview must count would-cancel
+          // unmatched rows the same way the below-threshold branch does — a
+          // destructive preview that understates its impact is worse than none.
+          if (parsed.dryRun) {
+            reconcile.unmatched_cancelled++; // dry-run: would cancel
+          } else {
+            const outcome = await cancelRow(row.id);
+            if (outcome === 'cancelled') reconcile.unmatched_cancelled++;
+            else reconcile.already_terminal++;
+          }
         } else {
           reconcile.unmatched++;
         }
@@ -527,12 +567,14 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
         }
         continue;
       }
-      // Above threshold. C1: a row stranded `waiting` in a provably-dead
-      // per-run dream-inline-* queue (older than the liveness grace — the
-      // possibly-live case was already kept above) will never be claimed —
-      // cancel it so the next cycle's queue.add re-creates it in a live drain
-      // (the cancelled row releases its idempotency slot).
-      if (isInlineQueue && row.status === 'waiting') {
+      // Above threshold. C1: a row stranded in a provably-dead per-run
+      // dream-inline-* queue (older than the liveness grace, no live cycle
+      // lock — the possibly-live case was already kept above) will never be
+      // claimed — cancel it so the next cycle's queue.add re-creates it in a
+      // live drain (the cancelled row releases its idempotency slot).
+      // `delayed` counts too (structured-review P2): a transient-failure
+      // retry parked in a dead queue has no worker to promote or drain it.
+      if (isInlineQueue && (row.status === 'waiting' || row.status === 'delayed')) {
         if (!parsed.dryRun) {
           const outcome = await cancelRow(row.id);
           if (outcome === 'cancelled') reconcile.converted_for_resubmit++;
