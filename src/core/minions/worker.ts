@@ -28,8 +28,11 @@ import {
   resolveLockRenewalKnobs,
   type LockRenewalDeps,
   type LockRenewalState,
+  type TickResult,
 } from './lock-renewal-tick.ts';
 import { lockRenewalAudit } from '../audit/lock-renewal-audit.ts';
+import { loadavg, cpus } from 'os';
+import { monitorEventLoopDelay } from 'perf_hooks';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { reconnectAfterConnectionError as reconnectEngineAfterConnError } from './reconnect.ts';
 
@@ -191,6 +194,18 @@ export class MinionWorker extends EventEmitter {
 
   private opts: Required<MinionWorkerOpts>;
 
+  /**
+   * Event-loop-delay histogram (CDX-1/R2-9, issue #4145): the DIRECT
+   * measurement of local starvation, sampled at eviction time and RESET
+   * on every successful lock renewal so a sample attributes to the
+   * window since the last success — not process lifetime. Null when the
+   * runtime doesn't ship `monitorEventLoopDelay` (fail-open: eviction
+   * logs simply omit the eld fields).
+   */
+  private eldHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
+  /** Core count cached once — pairs with raw loadavg in eviction telemetry. */
+  private readonly cpuCores: number;
+
   constructor(
     private engine: BrainEngine,
     opts?: MinionWorkerOpts & MinionQueueOpts,
@@ -200,6 +215,15 @@ export class MinionWorker extends EventEmitter {
       maxSpawnDepth: opts?.maxSpawnDepth,
       maxAttachmentBytes: opts?.maxAttachmentBytes,
     });
+    let cores = 0;
+    try { cores = cpus().length; } catch { /* telemetry best-effort */ }
+    this.cpuCores = cores;
+    try {
+      if (typeof monitorEventLoopDelay === 'function') {
+        this.eldHistogram = monitorEventLoopDelay({ resolution: 20 });
+        this.eldHistogram.enable();
+      }
+    } catch { this.eldHistogram = null; /* fail-open */ }
     this.opts = {
       queue: opts?.queue ?? 'default',
       concurrency: opts?.concurrency ?? 1,
@@ -850,6 +874,26 @@ export class MinionWorker extends EventEmitter {
    * `failJob` throwing during the same DB outage) can't propagate to
    * the process-level handler and crash the daemon.
    */
+  /**
+   * Event-loop-delay sample for eviction log lines (CDX-1). The histogram
+   * resets on every successful renewal (R2-9 via deps.onRenewalSuccess),
+   * so these numbers attribute to the window since the last success —
+   * i.e. exactly the window in which renewal was failing. ns→ms. Empty
+   * string when the runtime lacks the histogram or sampling throws
+   * (fail-open: never let telemetry break the eviction path).
+   */
+  private formatEvictionTelemetry(): string {
+    const h = this.eldHistogram;
+    if (h === null) return '';
+    try {
+      const p99Ms = Math.round(h.percentile(99) / 1e6);
+      const maxMs = Math.round(h.max / 1e6);
+      return ` [event_loop_delay since last renewal: p99 ${p99Ms}ms, max ${maxMs}ms]`;
+    } catch {
+      return '';
+    }
+  }
+
   private launchJob(job: MinionJob, lockToken: string): void {
     const abort = new AbortController();
 
@@ -857,18 +901,32 @@ export class MinionWorker extends EventEmitter {
     let cancelled = false;
     // --- re-entrancy guard for overlapping ticks during PgBouncer stalls ---
     let tickInFlight = false;
+    // --- R2-7: the tick's final result, stashed at abort time so the ---
+    // --- grace-evict log (which fires 30s LATER) can report cause/    ---
+    // --- lateness/load instead of just the Error string.              ---
+    let abortMeta: Extract<TickResult, { kind: 'lock_lost' | 'should_abort' }> | null = null;
+
+    // R2-4: ALL elapsed-time arithmetic in the renewal state machine runs
+    // on a monotonic clock — a wall-clock jump (NTP step, DST bug) must
+    // never evict or indefinitely defer. Date.now stays only in log/audit
+    // timestamps (the audit writer stamps its own `ts`).
+    const monotonicNow = () => performance.now();
 
     // --- D3: pure-function lock renewal ---
     const knobs = resolveLockRenewalKnobs(process.env, this.opts.lockDuration);
+    const renewalIntervalMs = this.opts.lockDuration / 2;
     const renewalState: LockRenewalState = {
       jobId: job.id,
       jobName: job.name,
       lockToken,
       lockDurationMs: this.opts.lockDuration,
       knobs,
-      lastSuccessfulRenewalAt: Date.now(),
+      lastSuccessfulRenewalAt: monotonicNow(),
       consecutiveFailures: 0,
       cancelled: () => cancelled,
+      intervalMs: renewalIntervalMs,
+      lastTickFiredAt: monotonicNow(),
+      overlapSkips: 0,
     };
     // issue #1678 (Codex #2): hand the tick a bounded reconnect-once hook when
     // the engine owns a pool that a transaction-mode pooler can reap. Postgres
@@ -878,15 +936,26 @@ export class MinionWorker extends EventEmitter {
     const renewalDeps: LockRenewalDeps = {
       renewLock: (id, tok, dur) => this.queue.renewLock(id, tok, dur),
       audit: lockRenewalAudit,
-      now: Date.now,
+      // R2-4: monotonic — see monotonicNow above.
+      now: monotonicNow,
       setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),
       // Forward the tick's classified error (CODEX impl review #2) so a pooler
       // reap during lock renewal is audited as reap_detected, not reconnect_other.
       ...(engineReconnect ? { reconnect: (ctx?: { error?: unknown }) => engineReconnect.call(this.engine, ctx) } : {}),
+      // Issue #4145 telemetry: raw loadavg + cached cores (CEO-F2: the tick
+      // try/catches every call), and the R2-9 histogram reset-on-success.
+      loadSnapshot: () => ({ load1: loadavg()[0], cores: this.cpuCores }),
+      onRenewalSuccess: () => { try { this.eldHistogram?.reset(); } catch { /* fail-open */ } },
     };
 
     const lockTimer = setInterval(() => {
-      if (tickInFlight) return;
+      if (tickInFlight) {
+        // Overlap skip (CDX-13): a prior tick is still awaiting its
+        // renewal call. Count it — this is NOT a missed interval (those
+        // coalesce and show up as tick LATENESS instead).
+        renewalState.overlapSkips += 1;
+        return;
+      }
       tickInFlight = true;
       void runLockRenewalTick(renewalDeps, renewalState)
         .then((result) => {
@@ -897,13 +966,27 @@ export class MinionWorker extends EventEmitter {
               return;
             case 'lock_lost':
               if (!abort.signal.aborted) {
-                console.warn(`Lock lost for job ${job.id}, aborting execution`);
+                abortMeta = result;
+                console.warn(
+                  `Lock lost for job ${job.id}, aborting execution ` +
+                  `(cause: ${result.cause}, via: ${result.via}${this.formatEvictionTelemetry()})`,
+                );
                 clearInterval(lockTimer);
                 abort.abort(new Error('lock-lost'));
               }
               return;
             case 'should_abort':
               if (!abort.signal.aborted) {
+                abortMeta = result;
+                // Issue #4145 request 3: the one line that saves the 8h of
+                // forensics — WHY renewal failed + was the loop starved.
+                console.warn(
+                  `Lock renewal failed for job ${job.id} (${job.name}); aborting ` +
+                  `(cause: ${result.cause}, since_last_success_ms: ${Math.round(result.sinceLastSuccessMs)}, ` +
+                  `tick_lateness_ms: ${Math.round(result.latenessMs)}, overlap_skips: ${result.overlapSkips}` +
+                  `${result.load1 !== undefined ? `, load1: ${result.load1.toFixed(2)}/${result.cores} cores` : ''}` +
+                  `${this.formatEvictionTelemetry()})`,
+                );
                 clearInterval(lockTimer);
                 abort.abort(new Error(result.reason));
               }
@@ -939,10 +1022,19 @@ export class MinionWorker extends EventEmitter {
           const reason = abort.signal.reason instanceof Error
             ? abort.signal.reason.message
             : String(abort.signal.reason);
+          // R2-7: abortMeta carries the tick's classified cause + starvation
+          // telemetry captured AT abort time — the Error string alone would
+          // make this line read like an orphan leak (the #4145 forensics trap).
+          const meta = abortMeta === null ? '' : abortMeta.kind === 'lock_lost'
+            ? ` (cause: ${abortMeta.cause}, via: ${abortMeta.via})`
+            : ` (cause: ${abortMeta.cause}, since_last_success_ms: ${Math.round(abortMeta.sinceLastSuccessMs)}, ` +
+              `tick_lateness_ms: ${Math.round(abortMeta.latenessMs)}, overlap_skips: ${abortMeta.overlapSkips}` +
+              `${abortMeta.load1 !== undefined ? `, load1_at_abort: ${abortMeta.load1.toFixed(2)}/${abortMeta.cores} cores` : ''})`;
           console.warn(
-            `Job ${job.id} (${job.name}) did not exit within 30s of abort (reason: ${reason}). ` +
+            `Job ${job.id} (${job.name}) did not exit within 30s of abort (reason: ${reason}).${meta} ` +
             `Force-evicting from inFlight to unblock worker. ` +
-            `The handler is still running but the worker will claim new jobs.`
+            `The handler is still running but the worker will claim new jobs.` +
+            this.formatEvictionTelemetry()
           );
           clearInterval(lockTimer);
           this.inFlight.delete(job.id);

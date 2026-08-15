@@ -47,6 +47,43 @@
  * below; tests + workers both consume it.
  */
 
+/**
+ * Named error for the per-call timeout race so cause classification is
+ * name-based (`call-timeout` vs `refused`), never message-sniffing
+ * (issue #4145 request 3).
+ */
+export class RenewalCallTimeoutError extends Error {
+  constructor(what: string, ms: number) {
+    super(`${what} timed out after ${ms}ms`);
+    this.name = 'RenewalCallTimeoutError';
+  }
+}
+
+/**
+ * Why a renewal attempt failed, as far as the tick can tell:
+ *   - `call-timeout`  — our own race timer fired (starved loop, slow pool,
+ *                       or slow DB — the tick can't distinguish; lateness
+ *                       + load telemetry does).
+ *   - `refused`       — the driver threw (SQLSTATE rides in the audit event).
+ *   - `fenced-lost`   — the fenced UPDATE matched 0 rows: CERTAIN loss.
+ */
+export type RenewalFailureCause = 'call-timeout' | 'refused' | 'fenced-lost';
+
+/**
+ * Optional telemetry threaded to the audit sink alongside each event.
+ * All fields additive — the 4-outcome audit contract is unchanged and
+ * pre-upgrade JSONL lines parse fine without them.
+ */
+export interface LockRenewalTelemetryCtx {
+  cause?: RenewalFailureCause;
+  lateness_ms?: number;
+  overlap_skips?: number;
+  load1?: number;
+  cores?: number;
+  via?: 'renewal' | 'verify';
+  deadline_deferred?: boolean;
+}
+
 export interface LockRenewalKnobs {
   /**
    * Failure counter cap used ONLY for audit-event labeling.
@@ -177,6 +214,21 @@ export interface LockRenewalDeps {
    * (optional-param) signature stays back-compatible with no-arg test mocks.
    */
   reconnect?: (ctx?: { error?: unknown }) => Promise<void>;
+  /**
+   * OPTIONAL host-load probe for eviction telemetry (issue #4145 req 3).
+   * The worker binds `os.loadavg()[0]` + a cached core count. Every call
+   * is wrapped in try/catch here (CEO-F2) — a throwing telemetry hook
+   * must never re-open the unhandledRejection class this module exists
+   * to close; on throw the event simply logs without load fields.
+   */
+  loadSnapshot?: () => { load1: number; cores: number };
+  /**
+   * OPTIONAL success hook. The worker resets its event-loop-delay
+   * histogram here (R2-9) so an eviction-time sample attributes to the
+   * window since the LAST SUCCESSFUL renewal, not process lifetime.
+   * Best-effort: called inside try/catch.
+   */
+  onRenewalSuccess?: () => void;
 }
 
 /**
@@ -185,9 +237,11 @@ export interface LockRenewalDeps {
  * import the full audit module and inflate the test surface.
  */
 export interface LockRenewalAuditSinkLike {
-  logFailure(jobId: number, jobName: string, attempt: number, err: unknown): void;
-  logSuccessAfterFailure(jobId: number, jobName: string, recoveredAfterAttempts: number): void;
-  logGaveUp(jobId: number, jobName: string, totalFailures: number, err: unknown): void;
+  // The trailing `ctx` is optional and additive (ENG-E2): pre-existing
+  // test fakes with the old arity stay structurally assignable.
+  logFailure(jobId: number, jobName: string, attempt: number, err: unknown, ctx?: LockRenewalTelemetryCtx): void;
+  logSuccessAfterFailure(jobId: number, jobName: string, recoveredAfterAttempts: number, ctx?: LockRenewalTelemetryCtx): void;
+  logGaveUp(jobId: number, jobName: string, totalFailures: number, err: unknown, ctx?: LockRenewalTelemetryCtx): void;
 }
 
 export interface LockRenewalState {
@@ -208,13 +262,45 @@ export interface LockRenewalState {
    * cancellation event AND the post-await branch decisions.
    */
   cancelled: () => boolean;
+  /**
+   * The renewal timer's cadence (ms) — the SAME value the worker gave
+   * setInterval. Used for tick-lateness telemetry (below) and the
+   * cadence-aware verify trigger.
+   */
+  intervalMs: number;
+  /**
+   * Timestamp of the previous tick's entry, on the SAME clock as
+   * `deps.now` (production binds a monotonic source; R2-4). Seeded to
+   * launch time. Lateness = max(0, now - lastTickFiredAt - intervalMs)
+   * is the PRIMARY local-starvation signal: interval callbacks COALESCE
+   * under a blocked event loop (one late callback, not N), so a
+   * missed-tick counter cannot measure starvation — lateness can.
+   */
+  lastTickFiredAt: number;
+  /**
+   * Count of interval callbacks skipped by the worker's tickInFlight
+   * re-entrancy guard. These are OVERLAP skips (a prior tick still in
+   * flight), NOT missed intervals — see lastTickFiredAt. Incremented by
+   * the worker's interval closure; read here for telemetry.
+   */
+  overlapSkips: number;
 }
 
 export type TickResult =
   | { kind: 'ok' }
   | { kind: 'cancelled' }
-  | { kind: 'lock_lost' }
-  | { kind: 'should_abort'; reason: 'lock-renewal-failed' };
+  | { kind: 'lock_lost'; cause: 'fenced-lost'; via: 'renewal' | 'verify' }
+  | {
+      kind: 'should_abort';
+      reason: 'lock-renewal-failed';
+      /** What the FINAL failed attempt looked like (R2-7 telemetry). */
+      cause: RenewalFailureCause;
+      latenessMs: number;
+      sinceLastSuccessMs: number;
+      overlapSkips: number;
+      load1?: number;
+      cores?: number;
+    };
 
 /**
  * Execute one renewal tick. Returns a tagged result the worker switches
@@ -225,6 +311,13 @@ export async function runLockRenewalTick(
   deps: LockRenewalDeps,
   state: LockRenewalState,
 ): Promise<TickResult> {
+  // Tick-lateness telemetry (CDX-13): how late did this callback fire vs
+  // its own cadence? Computed FIRST — even a cancelled tick advances the
+  // baseline so the next measurement stays honest.
+  const tickEnteredAt = deps.now();
+  const latenessMs = Math.max(0, tickEnteredAt - state.lastTickFiredAt - state.intervalMs);
+  state.lastTickFiredAt = tickEnteredAt;
+
   if (state.cancelled()) return { kind: 'cancelled' };
 
   let renewed: boolean;
@@ -233,25 +326,42 @@ export async function runLockRenewalTick(
       deps.renewLock(state.jobId, state.lockToken, state.lockDurationMs),
       new Promise<never>((_, reject) => {
         deps.setTimeout(() => {
-          reject(new Error(`renewLock timed out after ${state.knobs.callTimeoutMs}ms`));
+          reject(new RenewalCallTimeoutError('renewLock', state.knobs.callTimeoutMs));
         }, state.knobs.callTimeoutMs);
       }),
     ]);
   } catch (err) {
     if (state.cancelled()) return { kind: 'cancelled' };
     state.consecutiveFailures += 1;
+    const cause: RenewalFailureCause =
+      err instanceof Error && err.name === 'RenewalCallTimeoutError' ? 'call-timeout' : 'refused';
+    const load = safeLoadSnapshot(deps);
+    const telemetry: LockRenewalTelemetryCtx = {
+      cause,
+      lateness_ms: latenessMs,
+      overlap_skips: state.overlapSkips,
+      ...load,
+    };
     // Defense-in-depth (codex C4): audit must never escape this catch.
     try {
-      deps.audit.logFailure(state.jobId, state.jobName, state.consecutiveFailures, err);
+      deps.audit.logFailure(state.jobId, state.jobName, state.consecutiveFailures, err, telemetry);
     } catch { /* audit best-effort */ }
 
     const sinceLastSuccess = deps.now() - state.lastSuccessfulRenewalAt;
     const deadline = state.lockDurationMs - state.knobs.safetyMarginMs;
     if (sinceLastSuccess >= deadline) {
       try {
-        deps.audit.logGaveUp(state.jobId, state.jobName, state.consecutiveFailures, err);
+        deps.audit.logGaveUp(state.jobId, state.jobName, state.consecutiveFailures, err, telemetry);
       } catch { /* audit best-effort */ }
-      return { kind: 'should_abort', reason: 'lock-renewal-failed' };
+      return {
+        kind: 'should_abort',
+        reason: 'lock-renewal-failed',
+        cause,
+        latenessMs,
+        sinceLastSuccessMs: sinceLastSuccess,
+        overlapSkips: state.overlapSkips,
+        ...load,
+      };
     }
 
     // issue #1678 (Codex #2): not yet at the deadline, so we'll retry on the
@@ -287,8 +397,9 @@ export async function runLockRenewalTick(
     // Token-fence failure: another worker reclaimed the row, or pauseJob
     // cleared the token. NOT an infrastructure fault — no audit event
     // (audit channel is for infrastructure faults only). The worker
-    // observes `lock_lost` and stderr-warns + aborts.
-    return { kind: 'lock_lost' };
+    // observes `lock_lost` and stderr-warns + aborts. This is the ONLY
+    // CERTAIN loss signal (exactly 0 rows matched the fence).
+    return { kind: 'lock_lost', cause: 'fenced-lost', via: 'renewal' };
   }
 
   if (state.consecutiveFailures > 0) {
@@ -297,10 +408,28 @@ export async function runLockRenewalTick(
         state.jobId,
         state.jobName,
         state.consecutiveFailures,
+        { via: 'renewal' },
       );
     } catch { /* audit best-effort */ }
     state.consecutiveFailures = 0;
   }
   state.lastSuccessfulRenewalAt = deps.now();
+  // R2-9: let the worker reset its event-loop-delay histogram so the next
+  // eviction-time sample attributes to the window since THIS success.
+  try { deps.onRenewalSuccess?.(); } catch { /* telemetry best-effort */ }
   return { kind: 'ok' };
+}
+
+/**
+ * CEO-F2: telemetry must never throw into the tick's control flow — a
+ * throwing loadavg probe re-opening the unhandledRejection class would
+ * be a bitter irony. On throw, the event logs without load fields.
+ */
+function safeLoadSnapshot(deps: LockRenewalDeps): { load1?: number; cores?: number } {
+  try {
+    const s = deps.loadSnapshot?.();
+    return s ? { load1: s.load1, cores: s.cores } : {};
+  } catch {
+    return {};
+  }
 }
