@@ -15,6 +15,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { groupReadyByProvider, findEnvKeyTypos, seedAIOptionsFromConfig } from '../src/commands/init.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 describe('groupReadyByProvider — embedding touchpoint', () => {
   test('OPENAI_API_KEY alone → openai is ready', async () => {
@@ -34,17 +35,13 @@ describe('groupReadyByProvider — embedding touchpoint', () => {
     // pins the mechanism end-to-end: file key → gateway env fold → ready.
     // buildEnv reads the REAL process.env (env wins over file), so scrub the
     // ambient key for the duration — dev machines may have a live one set.
-    const saved = process.env.VOYAGE_API_KEY;
-    delete process.env.VOYAGE_API_KEY;
-    try {
+    await withEnv({ VOYAGE_API_KEY: undefined }, async () => {
       const { buildGatewayConfig } = await import('../src/core/ai/build-gateway-config.ts');
       const folded = buildGatewayConfig({ voyage_api_key: 'pa-file-plane' } as never).env;
       expect(folded.VOYAGE_API_KEY).toBe('pa-file-plane');
       const got = await groupReadyByProvider('embedding', folded as NodeJS.ProcessEnv);
       expect(got.map(p => p.recipeId)).toContain('voyage');
-    } finally {
-      if (saved !== undefined) process.env.VOYAGE_API_KEY = saved;
-    }
+    });
   });
 
   test('ZEROENTROPY_API_KEY alone → zeroentropyai is NOT auto-pickable (sunset exclusion)', async () => {
