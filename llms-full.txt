@@ -1845,6 +1845,21 @@ curl -X POST https://your-brain/ingest \
 For mobile capture, the inbox folder source picks up anything dropped into
 `~/.gbrain/inbox/` from iOS Shortcuts / AirDrop / Drafts / Finder.
 
+Your other agents' histories import in one command. `gbrain transcripts ingest`
+parses agent session logs (Claude Code, Codex, OpenClaw, Hermes) and extracted
+consumer chat exports (ChatGPT / Claude.ai `conversations.json`) into readable
+conversation pages with provenance back to the exact session file. Secrets are
+scrubbed from message bodies, titles, speakers, and session metadata before
+anything is written, embedding is off by default for bulk backfills, and
+re-runs are free — unchanged sessions skip on content hash:
+
+```bash
+gbrain transcripts ingest                    # discover importable session logs
+gbrain transcripts ingest --all              # import everything discovered
+gbrain transcripts ingest ~/Downloads/conversations.json  # consumer export (unzip first)
+gbrain transcripts status                    # found vs imported, per harness
+```
+
 Third-party skillpacks can ship custom ingestion sources (Granola, Linear,
 voice, OCR) against the versioned `IngestionSource` contract at
 `gbrain/ingestion`. See [`docs/skillpack-anatomy.md`](docs/skillpack-anatomy.md).

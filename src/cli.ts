@@ -154,6 +154,9 @@ const CLI_ONLY_SELF_HELP = new Set([
   // would leave that help dead code behind the generic stub (the init.ts:117
   // trap ENG-2 names).
   'bootstrap', 'hook', 'sweep',
+  // cathedral-4: transcripts ships its own HELP (the ingest import lane +
+  // the v0.29 recent reader). Without this the generic stub hides both.
+  'transcripts',
   // jobs ships JOBS_HELP + a per-subcommand record (JOBS_SUBCOMMAND_HELP) in
   // jobs.ts, guarded BEFORE the thin-client refusal and the subcommand switch
   // so `jobs work --help` prints help instead of starting a worker daemon.
@@ -177,6 +180,7 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   maintain: async () => (await import('./commands/maintain.ts')).runMaintain as never,
   'extract-conversation-facts': async () =>
     (await import('./commands/extract-conversation-facts.ts')).runExtractConversationFacts as never,
+  transcripts: async () => (await import('./commands/transcripts.ts')).runTranscripts as never,
   // runJobs accepts BrainEngine | null and its help guard returns before any
   // engine (or subcommand body) is touched.
   jobs: async () => (await import('./commands/jobs.ts')).runJobs as never,
@@ -3195,7 +3199,7 @@ TOOLS
   orphans [--json] [--count]         Find pages with no inbound wikilinks
   salience [--days N] [--kind P]     v0.29: pages ranked by emotional + activity salience
   anomalies [--since D] [--sigma N]  v0.29: cohort-based statistical anomalies (tag, type)
-  transcripts recent [--days N]      v0.29: recent raw .txt transcripts (local-only)
+  transcripts <ingest|status|recent> v0.46: import agent session logs + chat exports (local-only)
   dream [--dry-run] [--json]         Run the overnight maintenance cycle once (cron-friendly).
                                      See also: autopilot --install (continuous daemon).
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)

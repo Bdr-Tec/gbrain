@@ -406,7 +406,7 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
 
 - [ ] **`--live` agent-in-the-loop know-to-ask.** Replay fixtures with a real model deciding whether to issue retrieval calls; grade the agent, not just the deterministic reflex. Pre-registered in `docs/eval/BRAINBENCH.md` (the v1 metric grades the injection decision, which IS the shipped mechanism). Needs: seeded N-repeat methodology for model stochasticity + budget rails. Priority: P2.
 - [ ] **Intrusion-budget gating calibration.** `avg_injected_tokens` is reported, non-gating (decision 18) — a wrong threshold is worse than none. After a few weeks of scoreboard data across PRs, pick calibrated per-seam thresholds and promote it to a gated metric. Priority: P2.
-- [ ] **Flip contract adapters to production — claude-code half now unblocked.** `adapters/claude-code.ts` exports the UserPromptSubmit hook wire types; the real hook (`gbrain hook user-prompt`, shipped with the bootstrap lane and extended with cross-turn dedupe + the channel feedback loop in the cathedral-3 convergence) swaps the in-process transport for an exec of the hook script and flips `seam: 'contract'` → `'production'` with continuous bench numbers. Note the production hook also exercises transcript-based dedupe, which the memoryless contract row deliberately doesn't. Same for codex fragments when that integration lands. Priority: P1 (the claude-code integration has landed; this is now standalone-actionable).
+- [ ] **Flip contract adapters to production — claude-code half now unblocked.** `adapters/claude-code.ts` exports the UserPromptSubmit hook wire types; the real hook (`gbrain hook user-prompt`, shipped with the bootstrap lane and extended with cross-turn dedupe + the channel feedback loop in the cathedral-3 convergence) swaps the in-process transport for an exec of the hook script and flips `seam: 'contract'` → `'production'` with continuous bench numbers. Note the production hook also exercises transcript-based dedupe, which the memoryless contract row deliberately doesn't. For the codex half: the cathedral-4 transcripts lane shipped a verified codex rollout PARSER (`src/core/transcripts/codex.ts`, structural turn selection pinned against a live sample) — a codex contract adapter can now consume it instead of waiting for a hook integration. Priority: P1 (the claude-code integration has landed; codex parsing has landed; this is now standalone-actionable).
 - [ ] **Cathedral 1 conformance-kit fixture import.** The memory-verbs conformance scenarios convert to BrainBench fixtures via the published `evals/brainbench/schema/fixture.schema.json` once `garrytan/cathedral-1` merges ("conformance tests double as BrainBench seed fixtures", decision log 2026-06-12). Free corpus growth from already-reviewed scenarios. Blocked by: cathedral-1 on master. Priority: P2.
 - [ ] **Live-embeddings fidelity mode (`--embeddings`).** Hermetic CI grades the keyword/alias arms only (disclosed); an opt-in mode seeding real embeddings would grade write-back/continuity retrieval through the vector path. Same budget rails as `--llm`. Priority: P3.
 - [ ] **Community fixture intake + competitor adapters.** The TD1 remainder after the generated corpus absorbed in-PR growth: an `external-authors/`-style intake path for contributed fixtures (validator + privacy guard already gate them) and adapters for non-gbrain memory systems against the published schemas, enabling true head-to-head rows in the gbrain-evals scorecard. Priority: P3.
@@ -5907,10 +5907,14 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
 - [ ] **P2 — `gbrain ingest feed`: native feed adapter.** blog-ingest ships the
   agent-procedure layer; the durable path is a deterministic RSS/Atom adapter
   (discovery, pagination, canonical-URL dedup, 429 backoff) behind one command.
-- [ ] **P2 — Native AI-chat export importer.** conversation-archive converts
-  ChatGPT/Claude/Perplexity exports via agent procedure; a native importer
-  (export JSON → conversations/ pages) makes it deterministic. Pairs with the
-  existing conversation-parser surface.
+- [x] **P2 — Native AI-chat export importer.** **Completed:** v0.46.0.0 (2026-08-14).
+  `gbrain transcripts ingest` imports extracted ChatGPT and Claude.ai
+  `conversations.json` exports natively (adapters at
+  `src/core/transcripts/{chatgpt-export,claude-export}.ts`, rendering on the
+  conversation-parser surface). Perplexity has no adapter yet — a candidate
+  leaf module on the same `TranscriptAdapter` seam (the pattern the
+  cathedral-4 "More harness adapters" follow-up below documents); the
+  conversation-archive skill keeps the manual procedure for it meanwhile.
 - [ ] **P2 — Entity-guard as a native op.** phonetic-name-guard's own changelog
   proves prose-only failed: ASR-variant entity collisions need a native check
   (registry + alias table consulted at put/import time). The wave shipped the
@@ -5970,6 +5974,21 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   (`skillpack status`/`sync`, doctor `skill_currency`) already keeps the brain's skill
   set current on upgrade; this item is purely about semantic retrieval of skills.
 
+## Transcripts-import follow-ups (filed from cathedral-4, `gbrain transcripts ingest`)
+
+Scoped OUT of the cathedral-4 PR by the CEO review's cherry-pick ceremony and the
+eng review — each carries a named design, none is a bug. Context: the import lane
+(adapters at `src/core/transcripts/`, session-atomic pipeline, embed-OFF default)
+covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
+
+- [ ] **OpenClaw go-forward capture.** Blocked upstream: the OpenClaw PluginApi exposes only `registerContextEngine` — no end-of-turn/agent-end capability. When the host grows one, the plugin (`src/openclaw-context-engine.ts`) subscribes and emits the session into the corpus lane (`~/.gbrain/transcripts/corpus` sidecar protocol) the way `gbrain hook session-end` does for Claude Code; the openclaw session PARSER already ships. Consent must ride a capture line like the bootstrap harness `--no-capture` model. Priority: P2.
+- [ ] **Codex go-forward capture (notify sweeper).** `docs/designs/AGENT_BOOTSTRAP_PLAN.md` FF2 names the design (notify sweeper over `~/.codex/sessions`); the rollout parser now ships in `src/core/transcripts/codex.ts`, so the sweeper is pure wiring: on codex notify, run `gbrain transcripts ingest <rollout> --quiet`. Needs the same consent posture as capture. Priority: P2.
+- [ ] **Scheduled re-import cycle phase.** `transcripts ingest --since last --all` as an opt-in cycle phase so dead-log import self-refreshes. REQUIRES its own consent-line design first: reading harness dirs on a schedule is capture-adjacent (the "Autonomous transcript watchers" decision above rules the spirit); the clean-scan watermark + status gap table already make manual re-runs cheap. Priority: P3.
+- [ ] **PII auto-detection redaction pass for imports.** The native lane redacts secrets (secret-scan) + user patterns (`harvest-private-patterns.txt`, emails included) and counts imperatives; broad PII detection (names, phones, addresses) is its own subsystem — the conversation-archive skill keeps the human scrub step for sensitive corpora meanwhile. Priority: P2.
+- [ ] **More harness adapters: Cursor / Gemini CLI / Copilot CLI.** Leaf modules on the `TranscriptAdapter` seam (~1h each with an agent): dated SPEC_TARGET + scrubbed fixture + drift alarm, per the shipped six. Formats unverified locally — verify a real sample first (the hermes gate pattern). Priority: P3.
+- [ ] **ChatGPT/Claude.ai export zip unwrapping.** v1 requires the EXTRACTED `conversations.json` ("unzip first" is documented + error-hinted). Add zip handling without a heavy dependency (Bun has no built-in zip; evaluate a minimal vendored inflate or shelling to `unzip` with confinement). Priority: P3.
+- [ ] **BrainBench raw-format fixture schema (sibling repo).** The in-repo pin (`test/e2e/transcripts-writeback-fidelity.test.ts`) grades raw files through the adapters with the gold extractor, but the BrainBench corpus schema (gbrain-evals) still rejects unknown keys and its corpus hash doesn't cover raw sidecars. Needs: versioned raw-fixture sidecar type + loader + hash coverage + baseline re-cut in gbrain-evals, then a `write_back_fidelity_raw` suite row here. Priority: P2.
+- [ ] **Hermes SPEC_TARGET verification against a populated store.** The schema came from the installed hermes-agent v0.20.0 source (`SCHEMA_SQL`), but no populated `state.db` existed on the dev machine — the fixture is synthetic-by-declaration. Verify against a real store after some Hermes sessions accrue, then flip `status: 'provisional'` → `'verified'` and pin the `active`/`compacted` semantics the adapter currently ignores. Priority: P3.
 ## Grok Build wave follow-ups (filed at build time)
 
 - [ ] **P1 — Enable the grok-door paid lane once XAI_API_KEY exists.** Admin
