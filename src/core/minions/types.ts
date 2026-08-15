@@ -218,6 +218,16 @@ export interface MinionWorkerOpts {
    *  hung probe would wedge the recursive setTimeout chain forever and
    *  silently disable the health monitor. Default: 10000 (10 seconds). */
   dbProbeTimeoutMs?: number;
+  /** issue #5: 'process' runs each claimed job in a SIGKILL-able child
+   *  process (blast radius = 1 job). Default 'inline' (today's behavior).
+   *  Requires childCliInvocation; the CLI layer resolves + validates it. */
+  jobIsolation?: 'inline' | 'process';
+  /** How to invoke the gbrain CLI for job children (resolved fail-fast at
+   *  worker startup by the CLI layer; structurally ChildCliInvocation from
+   *  job-isolation.ts — kept inline here to avoid an import cycle). */
+  childCliInvocation?: { cmd: string; argsPrefix: string[] } | null;
+  /** tini path for wrapping job children ('' = absent, direct spawn). */
+  childTiniPath?: string;
 }
 
 // --- Job Context (passed to handlers) ---

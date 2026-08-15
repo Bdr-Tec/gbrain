@@ -36,6 +36,11 @@ import {
   type PoolDiagnostics,
 } from './db-probe.ts';
 import { buildJobContext } from './job-context.ts';
+import {
+  runJobInChild,
+  ChildSpawnInfraError,
+  ChildWorkerShutdownError,
+} from './child-job-runner.ts';
 import { lockRenewalAudit } from '../audit/lock-renewal-audit.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { reconnectAfterConnectionError as reconnectEngineAfterConnError } from './reconnect.ts';
@@ -230,6 +235,9 @@ export class MinionWorker extends EventEmitter {
       stallExitAfterMs: opts?.stallExitAfterMs ?? 10 * 60_000,
       dbFailExitAfter: opts?.dbFailExitAfter ?? 3,
       dbProbeTimeoutMs: opts?.dbProbeTimeoutMs ?? 10_000,
+      jobIsolation: opts?.jobIsolation ?? 'inline',
+      childCliInvocation: opts?.childCliInvocation ?? null,
+      childTiniPath: opts?.childTiniPath ?? '',
     };
     // Stall thresholds contract: exit MUST be strictly greater than warn.
     // If exit <= warn, the warn-then-exit semantics break: a single tick at
@@ -1058,6 +1066,14 @@ export class MinionWorker extends EventEmitter {
       return;
     }
 
+    // issue #5: 'process' isolation runs the handler in a SIGKILL-able child;
+    // the parent keeps claim/renewal and ALL result recording below — this
+    // branch swaps ONLY the execution engine. When isolated, the parent-side
+    // context is skipped entirely (the child builds its own against its own
+    // engine; building it here would be dead work holding closures).
+    const isolated =
+      this.opts.jobIsolation === 'process' && this.opts.childCliInvocation != null;
+
     // Build job context with per-job AbortSignal + shared shutdown signal.
     // Most handlers only care about `signal` (timeout / cancel / lock-loss).
     // `shutdownSignal` is separate: fires only on worker process SIGTERM/SIGINT.
@@ -1065,17 +1081,29 @@ export class MinionWorker extends EventEmitter {
     // SIGTERM→5s→SIGKILL on its child) subscribe to shutdownSignal too.
     // Builder shared with `gbrain jobs run-child` (job-context.ts) so the
     // process-isolation child wires the exact same DB-backed callbacks.
-    const context: MinionJobContext = buildJobContext(
-      this.engine,
-      this.queue,
-      job,
-      lockToken,
-      abort.signal,
-      this.shutdownAbort.signal,
-    );
+    const context: MinionJobContext | null = isolated
+      ? null
+      : buildJobContext(
+          this.engine,
+          this.queue,
+          job,
+          lockToken,
+          abort.signal,
+          this.shutdownAbort.signal,
+        );
 
     try {
-      const result = await handler(context);
+      const result = isolated
+        ? await runJobInChild({
+            jobId: job.id,
+            jobName: job.name,
+            lockToken,
+            abortSignal: abort.signal,
+            shutdownSignal: this.shutdownAbort.signal,
+            invocation: this.opts.childCliInvocation as { cmd: string; argsPrefix: string[] },
+            tiniPath: this.opts.childTiniPath,
+          })
+        : await handler(context as MinionJobContext);
 
       clearInterval(lockTimer);
 
@@ -1126,6 +1154,30 @@ export class MinionWorker extends EventEmitter {
       if (abortReason !== null && INFRASTRUCTURE_ABORT_REASONS.has(abortReason)) {
         console.log(
           `Job ${job.id} (${job.name}) released after infrastructure abort (${abortReason}); ` +
+          `stall detector will requeue (no attempt burned)`,
+        );
+        return;
+      }
+
+      // issue #5 process isolation — two more infrastructure classes, same
+      // release semantics as the block above (lock expires once launchJob's
+      // finally clears the renewal timer; the stall sweeper requeues):
+      //   - spawn failure: an ops misconfiguration (bad child CLI path) must
+      //     not burn attempts job-by-job until the queue dead-letters. The
+      //     CLI layer also fail-fast validates the invocation at startup.
+      //   - worker shutdown: a routine deploy killed the child before it
+      //     could report (codex-2 #7); burning an attempt per deploy would
+      //     dead-letter long jobs after a few releases.
+      if (err instanceof ChildSpawnInfraError) {
+        console.error(
+          `Job ${job.id} (${job.name}) released after child spawn failure — ` +
+          `check the worker's child CLI configuration: ${errorText} (no attempt burned)`,
+        );
+        return;
+      }
+      if (err instanceof ChildWorkerShutdownError) {
+        console.log(
+          `Job ${job.id} (${job.name}) released after worker shutdown (${errorText}); ` +
           `stall detector will requeue (no attempt burned)`,
         );
         return;

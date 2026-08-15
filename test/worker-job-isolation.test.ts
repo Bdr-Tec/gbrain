@@ -1,0 +1,146 @@
+/**
+ * issue #5 — full parent path with isolation on: claim → spawn child →
+ * decode outcome → completeJob / failJob / release. Real in-memory PGLite
+ * worker + the fake-run-child.mjs fixture standing in for the compiled CLI
+ * (reads the isolation env contract, writes canned outcomes).
+ *
+ * Pins:
+ *   - success: job completes with the CHILD's result (fenced completeJob)
+ *   - error outcome: failJob path — attempt burned, delayed/dead per policy
+ *   - crash (exit 1, no file): attempt burned
+ *   - spawn failure (bad child CLI): RELEASED — status stays 'active',
+ *     attempts NOT burned (infra class; stall sweeper would requeue)
+ */
+
+import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { join } from 'node:path';
+import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { MinionQueue } from '../src/core/minions/queue.ts';
+import { MinionWorker } from '../src/core/minions/worker.ts';
+import { withEnv } from './helpers/with-env.ts';
+
+const FIXTURE = join(import.meta.dir, 'fixtures', 'fake-run-child.mjs');
+
+let engine: PGLiteEngine;
+let queue: MinionQueue;
+
+beforeAll(async () => {
+  engine = new PGLiteEngine();
+  await engine.connect({ database_url: '' });
+  await engine.initSchema();
+  queue = new MinionQueue(engine);
+});
+
+afterAll(async () => {
+  await engine.disconnect();
+});
+
+beforeEach(async () => {
+  await engine.executeRaw('DELETE FROM minion_jobs');
+});
+
+function makeWorker(invocationCmd = process.execPath, argsPrefix = [FIXTURE]) {
+  const worker = new MinionWorker(engine, {
+    queue: 'default',
+    concurrency: 1,
+    pollInterval: 25,
+    healthCheckInterval: 0,
+    maxRssMb: 0,
+    jobIsolation: 'process',
+    childCliInvocation: { cmd: invocationCmd, argsPrefix },
+  });
+  // Handler must exist in the parent registry (name-scoped claiming); its
+  // body never runs in isolation mode.
+  worker.register('isotest', async () => {
+    throw new Error('parent-side handler must not run when isolated');
+  });
+  return worker;
+}
+
+async function runWorkerUntil(
+  worker: MinionWorker,
+  done: () => Promise<boolean>,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const run = worker.start();
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      if (await done()) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('runWorkerUntil timed out');
+  } finally {
+    worker.stop();
+    await run;
+  }
+}
+
+async function jobRow(id: number): Promise<{ status: string; attempts_made: number; result: unknown; error_text: string | null }> {
+  const rows = await engine.executeRaw<{
+    status: string;
+    attempts_made: number;
+    result: unknown;
+    error_text: string | null;
+  }>('SELECT status, attempts_made, result, error_text FROM minion_jobs WHERE id = $1', [id]);
+  if (!rows[0]) throw new Error('job row missing');
+  return rows[0];
+}
+
+describe('worker with jobIsolation=process (PGLite + fake child)', () => {
+  test('success: child result lands via the fenced completeJob', async () => {
+    await withEnv({ FAKE_RUN_CHILD_MODE: 'success' }, async () => {
+      const job = await queue.add('isotest', { prompt: 'hi' });
+      const worker = makeWorker();
+      await runWorkerUntil(worker, async () => (await jobRow(job.id)).status === 'completed');
+      const row = await jobRow(job.id);
+      expect(row.status).toBe('completed');
+      const result = typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
+      expect((result as { fromChild?: boolean }).fromChild).toBe(true);
+      // The child got the REAL claim token through the env contract.
+      expect((result as { token?: string }).token).toMatch(/^.+:.+$/);
+    });
+  }, 20_000);
+
+  test('error outcome: failJob path, attempt burned', async () => {
+    await withEnv({ FAKE_RUN_CHILD_MODE: 'error' }, async () => {
+      const job = await queue.add('isotest', {}, { max_attempts: 1 });
+      const worker = makeWorker();
+      await runWorkerUntil(worker, async () => {
+        const s = (await jobRow(job.id)).status;
+        return s === 'dead' || s === 'failed';
+      });
+      const row = await jobRow(job.id);
+      expect(row.status).toBe('dead'); // maxAttempts 1 → attempt burned → dead
+      expect(row.error_text).toContain('fake child handler failure');
+    });
+  }, 20_000);
+
+  test('crash (exit 1, no outcome file): attempt burned', async () => {
+    await withEnv({ FAKE_RUN_CHILD_MODE: 'crash' }, async () => {
+      const job = await queue.add('isotest', {}, { max_attempts: 1 });
+      const worker = makeWorker();
+      await runWorkerUntil(worker, async () => {
+        const s = (await jobRow(job.id)).status;
+        return s === 'dead' || s === 'failed';
+      });
+      const row = await jobRow(job.id);
+      expect(row.status).toBe('dead');
+      expect(row.error_text).toContain('exit code=1');
+    });
+  }, 20_000);
+
+  test('spawn failure: RELEASED — still active, attempts NOT burned (infra class)', async () => {
+    const job = await queue.add('isotest', {});
+    const worker = makeWorker('/nonexistent/gbrain-binary', []);
+    // The claim happens, the spawn fails, the job is released (stays
+    // 'active' until lock expiry — the stall sweeper's requeue territory).
+    const run = worker.start();
+    await new Promise((r) => setTimeout(r, 1_500));
+    worker.stop();
+    await run;
+    const row = await jobRow(job.id);
+    expect(row.status).toBe('active'); // NOT dead, NOT failed
+    expect(row.attempts_made).toBe(0); // release = no failJob = no attempt burned
+  }, 20_000);
+});
