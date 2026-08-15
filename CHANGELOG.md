@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **gbrain is now a native Codex plugin — and a Claude Code plugin — from one repo.** Two commands install the MCP server plus a curated brain-first skill set: `codex plugin marketplace add garrytan/gbrain@codex-plugin` + `codex plugin add gbrain@gbrain` (Claude Code: `/plugin marketplace add garrytan/gbrain` + `/plugin install gbrain@gbrain`). The plugin serves the `starter` MCP surface (the seven memory verbs + the daily-driver ops) through a bundled launcher that resolves your installed gbrain binary and fails with the exact install one-liner when it's missing. Each release also publishes a slim `codex-plugin` dist branch so the plugin download is the plugin, not the development repo. Verified end-to-end against the real codex and claude binaries (install, skills, a live brain answer through the plugin-provided server).
+- **`gbrain serve --source-guard`** — fail-closed write routing for user-global serves (the plugin lanes pass it): on a brain with more than one source and no explicit source binding (`GBRAIN_SOURCE` / `--source`), write operations return an actionable error instead of landing in whatever source ambient resolution fell through to. Single-source brains are unaffected; reads always pass.
+- **Plugin-lane coexistence.** `gbrain bootstrap hooks` skips its own MCP registration when the plugin already provides the server (healthy skip, exit 0, hooks still install; override with `--mcp-even-if-plugin`), the harness lane warns on a two-layer name collision, and `gbrain doctor` gains a `plugin_lane_collision` check that warns only on a real double-registration.
+- **Curated plugin skill tree.** `skills/plugin-lanes.json` records one publication decision per skill for the plugin lanes (the openclaw bundle's curation is untouched); `scripts/generate-plugin-tree.ts` emits the committed `plugin/` tree and `scripts/check-plugin-tree.sh` gates drift. Skills newly published to plugin consumers got a portability/consent/privacy sweep (50 fixes across 10 skills — sanctioned install commands, synthetic example names, first-fire consent for ambient capture, host-only assumptions labeled).
+
+### Fixed
+- The deprecated frontmatterless `skills/install/` tombstone is gone — harness skill scanners error on frontmatterless SKILL.md files.
+
 ## [0.46.1.0] - 2026-08-15
 
 **A stuck job can no longer take down your whole worker.** Field reports from

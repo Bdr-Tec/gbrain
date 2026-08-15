@@ -31,6 +31,13 @@ If you fetched this file by URL without cloning yet, the companion files live at
 > If an unrelated npm install is already present, remove it first
 > (`npm uninstall -g gbrain` / `bun remove -g gbrain`); `gbrain doctor` also detects this.
 
+> **On Codex or Claude Code?** After the CLI install below, the plugin is the
+> fastest way to wire the MCP server + curated skills:
+> `codex plugin marketplace add garrytan/gbrain@codex-plugin` +
+> `codex plugin add gbrain@gbrain` (Claude Code: `/plugin marketplace add
+> garrytan/gbrain` + `/plugin install gbrain@gbrain`). Details:
+> docs/mcp/CODEX.md and docs/mcp/CLAUDE_CODE.md.
+
 Default path (Bun is required — gbrain is a Bun + TypeScript runtime):
 
 ```bash

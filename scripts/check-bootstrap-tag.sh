@@ -115,3 +115,23 @@ if [ "$checked" -eq 0 ]; then
 else
   echo "check-bootstrap-tag: ok ($checked doc(s) on the '$SANCTIONED' distribution ref)"
 fi
+
+# ── Rule 4: plugin marketplace refs pin a sanctioned ref ─────────────────────
+# `codex plugin marketplace add garrytan/gbrain@<ref>` in docs must use the
+# release channel (@latest-stable) or the slim dist branch (@codex-plugin) —
+# a bare or arbitrary ref would hand readers master-tip installs (same class
+# as Rules 1–2).
+while IFS=: read -r file line match; do
+  ref="${match##*@}"
+  case "$ref" in
+    latest-stable|codex-plugin) ;;
+    *)
+      fail=1
+      echo "FAIL: $file:$line pins 'marketplace add garrytan/gbrain@$ref' — use @latest-stable or @codex-plugin." >&2
+      ;;
+  esac
+done < <(grep -RInE 'plugin marketplace add garrytan/gbrain@[A-Za-z0-9._-]+' \
+  "$ROOT/README.md" "$ROOT/BOOTSTRAP_FOR_AGENTS.md" "$ROOT/INSTALL_FOR_AGENTS.md" "$ROOT/docs" 2>/dev/null \
+  | sed -E 's/^([^:]+):([0-9]+):.*(plugin marketplace add garrytan\/gbrain@[A-Za-z0-9._-]+).*/\1:\2:\3/' || true)
+
+exit "$fail"
