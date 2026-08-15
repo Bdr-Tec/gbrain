@@ -33,14 +33,59 @@ fix-wave plan; the wave series (W0.5–W9, 3.4, 3.6) tracks its own scope there.
 - [ ] **Legacy Anthropic-SDK subagent loop deletion.** **Priority: P2.** One
   release after W8 flips `agent.use_gateway_loop` default ON (flag stays as
   the revert path for that release).
-- [ ] **Deeper test-suite speedup** beyond the W0 snapshot default-on (which
-  already cut the full parallel suite ~4,900s → ~490s). **Priority: P3.**
-  Revisit with post-W0 timing data; diminishing returns until measured.
+- [x] **Deeper test-suite speedup** beyond the W0 snapshot default-on —
+  LANDED in the test/eval/CI speedup pass (serial pool 8.5min → ~2.5min,
+  snapshot in every CI runner + memoized loader, verify worker pool,
+  perf-gate row shrink, chunk-grain engine consolidation). Remaining
+  long-tail items are filed in "Test/eval/CI speedup pass deferrals" below.
 - [ ] **PGLite schema build-time derivation** from SCHEMA_SQL via a named
   transform list. **Priority: P3.** Only if W3's schema drift TEST proves
   annoying in practice — the test alone kills the drift bug class (Codex
   D4.8/D5.23: fresh-schema equivalence ≠ upgrade correctness; old-shape
   bootstrap fixtures + replay coverage stay regardless).
+## Test/eval/CI speedup pass deferrals (filed with the pass; plan: ~/.claude/plans/system-instruction-you-are-working-iterative-hopcroft.md)
+
+Each was explicitly deferred in the pass's CEO/eng/outside-voice reviews.
+
+- [ ] **Sleep-to-poll conversions.** **What:** replace ~49.5s of hard-coded
+  `setTimeout` waits with event/poll-based waits; no fake timers exist in the
+  suite. Worst offenders: test/minions.test.ts (12.2s across 43 sites),
+  test/process-cleanup.test.ts (5.0s), test/worker-lock-renewal-e2e.serial.test.ts
+  (4.0s), test/e2e/worker-abort-recovery.test.ts (3.6s), test/e2e/zombie-reaping.test.ts
+  (3.3s). **Why deferred:** careful per-site work against flake-hardened timings;
+  ~50s ceiling. **Effort:** M. **Priority:** P3.
+- [ ] **E2E: PGLite-only parallel lane + default SHARD.** **What:** run-e2e.sh runs
+  181 files sequentially (one bun cold start each); ~42 PGLite-only files need no
+  Postgres and no TRUNCATE-race protection — run them in a parallel lane; default
+  the existing SHARD support (only ci-local uses it). Fold into the Postgres
+  template-database entry below in this file (CREATE DATABASE … TEMPLATE, ~50ms).
+  **Why deferred:** e2e is off the CI critical path after the workflow restructure;
+  ci-local + nightly benefit only. **Effort:** M. **Priority:** P2.
+- [ ] **Second PGLite snapshot keyed by dims/model.** **What:** ~34 test files
+  configure zembed/1280 and always cold-init (the snapshot's shape gate correctly
+  refuses the 1536 fixture). Bake a second snapshot per shape; the version-file
+  format already carries dims/model. **Why deferred:** moderate effort, small win,
+  and it interacts with the shape gate the memoized loader deliberately keeps hot.
+  **Effort:** M. **Priority:** P3.
+- [ ] **Persistent-engine snapshot.** **What:** the snapshot fast-path only covers
+  in-memory engines (`!dataDir` gate at pglite-engine.ts). ~58 files pass
+  database_path and pay full cold init (~121s weighted). Needs tar-extract-into-
+  dataDir (or PGlite loadDataDir with a dataDir) design. **Effort:** M. **Priority:** P3.
+- [ ] **Engine consolidation audit: doctor/bootstrap/migrations-v0_19_0.** **What:**
+  33 files construct 95 engines; chunk-grain-fts was consolidated in-pass, but
+  doctor.test.ts (9 engines), bootstrap.test.ts (9), migrations-v0_19_0.test.ts (7)
+  need a per-file audit — migration-from-old-schema tests structurally cannot share
+  a current-schema engine or use the snapshot. **Effort:** M. **Priority:** P3.
+- [ ] **Verify per-check double-spawn removal.** **What:** each CHECKS entry costs a
+  `bun run <key>` startup before its bash script; invoking scripts directly from a
+  manifest would drop ~47 bun startups. **Why deferred:** micro-win; touches the
+  package.json-scripts-as-API convention. **Effort:** S. **Priority:** P3.
+- [ ] **check-image-decoders-embedded.sh into verify CHECKS.** **What:** the guard
+  runs its own `bun build --compile` (~60s) — too heavy per-verify. Revisit if the
+  binary-embed bug class recurs; guards-manifest.tsv carries the exemption note,
+  and the registration⇒execution coverage test allowlists it explicitly.
+  **Effort:** S. **Priority:** P3.
+
 ## Jobs fix-wave follow-ups (filed v0.45.15.0 — upstream issues #2/#3/#4)
 
 - [ ] **P2 — `jobs submit --max-pending` public flag.** maxPending stays an
@@ -2874,8 +2919,13 @@ outside-voice triage on the reshaped plan.
 - [ ] **v0.42+: ship the coordinated `gbrain-evals/baselines/v0.41-launch.baseline.ndjson`
   + `gbrain-evals/qrels/v0.41-launch.qrels.json` (hermetic-synthetic per D9).**
   Generate locally via `gbrain bench publish --from <hermetic-test-corpus>` then
-  commit to the sibling gbrain-evals repo. Gives `gbrain eval gate` a canonical
-  baseline target so users don't have to bootstrap their own immediately.
+  commit to the sibling gbrain-evals repo. PARTIALLY SUPERSEDED by the test/eval/CI
+  speedup pass: an in-repo canonical qrels target now exists (`gbrain eval gate`
+  with the deterministic embedder option against `test/fixtures/eval-baselines/
+  qrels-search.json`; runner `scripts/run-eval-canary.ts`, CI-gated via
+  check:eval-canary, ledger `.gbrain-evals/eval-results.jsonl`). What remains
+  here is only the sibling-repo REGRESSION baseline (.baseline.ndjson for the
+  jaccard/top1 gate) — the correctness-gate half is done.
 
 ## v0.40.7.0 Schema Cathedral v3 follow-ups (v0.40.7+)
 
@@ -3951,7 +4001,12 @@ verify Voyage adapter integration in `src/core/ai/recipes/voyage.ts`).
 ## test infra (v0.26.4 follow-up — intra-file parallelism)
 
 ### Sweep cross-file shared-state contention; enable `bun test --concurrent` for another 2-3x speedup
-**Priority:** P0
+**Priority:** P3 (downgraded from P0 in the test/eval/CI speedup pass — premises stale:
+the entry says "~58 PGLiteEngine instantiations", the suite now has 600+; the serial
+quarantine grew from 4 files to ~140, and the pass's pooled serial runner + CI snapshot
++ verify pool delivered a comparable multiple for hours of work instead of the 1-2
+weeks this sweep estimates. Re-scope against post-pass timing data before spending
+anything here; `test.concurrent` adoption remains at zero.)
 **Status:** v0.26.7 shipped foundation slice (helpers + lint + mock.module quarantine). v0.26.8 (env sweep) and v0.26.9 (PGLite sweep + codemod + measurement) carry the rest.
 
 **What:** v0.26.4 shipped file-level parallel fan-out (8 shards) and got `bun run test` from 18 minutes to ~85s — a 12x speedup. The next layer is **intra-file** parallelism via Bun's `--concurrent` flag (or per-test `test.concurrent()` markers). This requires every test file to be safe under concurrent execution within the same `bun test` process.
