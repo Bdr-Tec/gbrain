@@ -40,6 +40,7 @@ import {
   runJobInChild,
   ChildSpawnInfraError,
   ChildWorkerShutdownError,
+  ChildNotClaimedError,
 } from './child-job-runner.ts';
 import { lockRenewalAudit } from '../audit/lock-renewal-audit.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
@@ -992,7 +993,16 @@ export class MinionWorker extends EventEmitter {
           // stall detector will reclaim the row cleanly because the
           // lock has expired (lock-renewal aborts only fire after
           // lockDuration - safetyMargin elapsed without renewal).
-          if (!INFRASTRUCTURE_ABORT_REASONS.has(reason)) {
+          // Isolation mode: also skip — the child is group-SIGKILLed at
+          // +25s, executeJob's own recording lands right behind it, and a
+          // competing evict failJob('dead') here would nondeterministically
+          // dead-letter a job with attempts remaining if that recording is
+          // merely slow (adversarial-review P3). The eviction from inFlight
+          // above is the part that unblocks the worker either way.
+          if (
+            !INFRASTRUCTURE_ABORT_REASONS.has(reason) &&
+            this.opts.jobIsolation !== 'process'
+          ) {
             this.queue.failJob(
               job.id,
               lockToken,
@@ -1180,6 +1190,13 @@ export class MinionWorker extends EventEmitter {
           `Job ${job.id} (${job.name}) released after worker shutdown (${errorText}); ` +
           `stall detector will requeue (no attempt burned)`,
         );
+        return;
+      }
+      if (err instanceof ChildNotClaimedError) {
+        // The child proved the claim is gone (reclaimed/cancelled before the
+        // handler ran). The token-fenced failJob would no-op anyway — return
+        // without burning anything against a claim we no longer hold.
+        console.log(`Job ${job.id} (${job.name}): ${errorText}`);
         return;
       }
 

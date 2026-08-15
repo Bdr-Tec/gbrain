@@ -23,6 +23,7 @@ import {
   runJobInChild,
   ChildSpawnInfraError,
   ChildWorkerShutdownError,
+  ChildNotClaimedError,
 } from '../src/core/minions/child-job-runner.ts';
 import { UnrecoverableError } from '../src/core/minions/types.ts';
 import { RateLeaseUnavailableError } from '../src/core/minions/handlers/subagent.ts';
@@ -184,5 +185,91 @@ describe('runJobInChild (real children)', () => {
     await new Promise((r) => setTimeout(r, 400));
     shutdown.abort(new Error('worker-shutdown'));
     await expect(p).rejects.toBeInstanceOf(ChildWorkerShutdownError);
+  }, TEST_TIMEOUT_MS);
+
+  test('ERROR outcome during worker shutdown → ChildWorkerShutdownError, not a burned attempt (adversarial P2)', async () => {
+    // A cooperative handler that bails on shutdown and reports an error must
+    // be RELEASED — punishing exactly the well-behaved handlers on every
+    // deploy inverts the no-burn guarantee.
+    const harness = makeHarness(
+      'shutdown-error-report',
+      `process.on('SIGTERM', () => {\n` +
+      `  writeOutcome({ outcome: 'error', errorKind: 'generic', message: 'aborted: shutdown' });\n` +
+      `  process.exit(0);\n` +
+      `});\n` +
+      `setInterval(() => {}, 1000);\n`,
+    );
+    const shutdown = new AbortController();
+    const opts = { ...baseOpts(harness), shutdownSignal: shutdown.signal, killGraceMs: 5_000 };
+    const p = runJobInChild(opts);
+    await new Promise((r) => setTimeout(r, 400));
+    shutdown.abort(new Error('worker-shutdown'));
+    await expect(p).rejects.toBeInstanceOf(ChildWorkerShutdownError);
+  }, TEST_TIMEOUT_MS);
+
+  test('watchdog drain (BOTH signals aborted, non-per-job reason) → shutdown class, not a burned attempt (adversarial P3)', async () => {
+    const harness = makeHarness(
+      'watchdog-stubborn',
+      `process.on('SIGTERM', () => {});\n` +
+      `setInterval(() => {}, 1000);\n`,
+    );
+    const abort = new AbortController();
+    const shutdown = new AbortController();
+    const opts = {
+      ...baseOpts(harness),
+      abortSignal: abort.signal,
+      shutdownSignal: shutdown.signal,
+      killGraceMs: 400,
+    };
+    const p = runJobInChild(opts);
+    await new Promise((r) => setTimeout(r, 400));
+    // gracefulShutdown('watchdog') aborts BOTH — shutdown classification must win.
+    shutdown.abort(new Error('watchdog'));
+    abort.abort(new Error('watchdog'));
+    await expect(p).rejects.toBeInstanceOf(ChildWorkerShutdownError);
+  }, TEST_TIMEOUT_MS);
+
+  test('per-job reason (timeout) wins over a concurrent shutdown — attempt semantics preserved', async () => {
+    const harness = makeHarness(
+      'timeout-during-shutdown',
+      `process.on('SIGTERM', () => {});\n` +
+      `setInterval(() => {}, 1000);\n`,
+    );
+    const abort = new AbortController();
+    const shutdown = new AbortController();
+    const opts = {
+      ...baseOpts(harness),
+      abortSignal: abort.signal,
+      shutdownSignal: shutdown.signal,
+      killGraceMs: 400,
+    };
+    const p = runJobInChild(opts);
+    await new Promise((r) => setTimeout(r, 400));
+    shutdown.abort(new Error('worker-shutdown'));
+    abort.abort(new Error('timeout')); // the JOB was targeted — not shutdown class
+    await expect(p).rejects.toThrow(/terminated after abort/);
+  }, TEST_TIMEOUT_MS);
+
+  test('bootstrap exit codes: 13 → ChildSpawnInfraError, 14 → ChildNotClaimedError (no burned attempts)', async () => {
+    const usage = makeHarness('exit13', `process.exit(13);\n`);
+    await expect(runJobInChild(baseOpts(usage))).rejects.toBeInstanceOf(ChildSpawnInfraError);
+
+    const notClaimed = makeHarness('exit14', `process.exit(14);\n`);
+    await expect(runJobInChild(baseOpts(notClaimed))).rejects.toBeInstanceOf(ChildNotClaimedError);
+  }, TEST_TIMEOUT_MS);
+
+  test('child pool-size env: a STRICTER user GBRAIN_POOL_SIZE is respected; explicit child override wins; invalid falls back', async () => {
+    const harness = makeHarness(
+      'pool-echo',
+      `writeOutcome({ outcome: 'success', result: { poolSize: process.env.GBRAIN_POOL_SIZE } });\n` +
+      `process.exit(0);\n`,
+    );
+    const run = (env: Record<string, string | undefined>) =>
+      runJobInChild({ ...baseOpts(harness), env: { ...process.env, ...env } }) as Promise<{ poolSize: string }>;
+
+    expect((await run({ GBRAIN_POOL_SIZE: '2' })).poolSize).toBe('2'); // stricter user tuning respected
+    expect((await run({ GBRAIN_POOL_SIZE: '10' })).poolSize).toBe('3'); // never raised above the child default
+    expect((await run({ GBRAIN_POOL_SIZE: '2', GBRAIN_JOB_CHILD_POOL_SIZE: '5' })).poolSize).toBe('5'); // explicit knob wins
+    expect((await run({ GBRAIN_JOB_CHILD_POOL_SIZE: 'abc' })).poolSize).toBe('3'); // invalid → default
   }, TEST_TIMEOUT_MS);
 });

@@ -144,7 +144,7 @@ describe('runChildJobEntry', () => {
     expect(code).toBe(JOB_CHILD_EXIT_NOT_CLAIMED);
   });
 
-  test('missing handler: generic error outcome, exit 0 (parent maps it to failJob)', async () => {
+  test('missing handler: UNRECOVERABLE error outcome (inline parity: dead on attempt 1), exit 0', async () => {
     const job = await addAndClaim('exotic-plugin-job');
     const resultPath = join(dir, `nohandler-${job.id}.json`);
 
@@ -158,9 +158,56 @@ describe('runChildJobEntry', () => {
     const outcome = decodeChildOutcomeFile(resultPath);
     expect(outcome.outcome).toBe('error');
     if (outcome.outcome === 'error') {
-      expect(outcome.errorKind).toBe('generic');
+      expect(outcome.errorKind).toBe('unrecoverable');
       expect(outcome.message).toContain("No handler for job type 'exotic-plugin-job'");
     }
+  });
+
+  test('SIGTERM aborts ONLY shutdownSignal — ctx.signal stays live (inline signal-separation parity)', async () => {
+    const job = await addAndClaim('sync');
+    const resultPath = join(dir, `sigterm-${job.id}.json`);
+    let ctxSignalAbortedAtShutdown: boolean | null = null;
+
+    const entry = runChildJobEntry(
+      engine,
+      { jobId: job.id, lockToken: 'parent-tok-1', resultPath, parentPid: 0 },
+      handlers({
+        sync: (ctx) =>
+          new Promise((resolve) => {
+            ctx.shutdownSignal.addEventListener('abort', () => {
+              // The whole point: a cooperative handler gets the drain window
+              // with its per-job signal STILL LIVE, finishes, and reports.
+              ctxSignalAbortedAtShutdown = ctx.signal.aborted;
+              resolve('finished-during-drain');
+            });
+          }),
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    // Trigger the entry's process.on('SIGTERM') handler in-process without
+    // sending a real signal to the test runner.
+    (process as unknown as { emit: (event: string) => boolean }).emit('SIGTERM');
+    const code = await entry;
+
+    expect(code).toBe(0);
+    // TS control-flow can't see the closure write; compare explicitly.
+    expect(ctxSignalAbortedAtShutdown === false).toBe(true);
+    const outcome = decodeChildOutcomeFile(resultPath);
+    expect(outcome).toEqual({ outcome: 'success', result: { value: 'finished-during-drain' } });
+  });
+
+  test('primitive results are wrapped {value: x} CHILD-side (completeJob shape parity across the JSON boundary)', async () => {
+    const job = await addAndClaim('sync');
+    const resultPath = join(dir, `wrap-${job.id}.json`);
+
+    const code = await runChildJobEntry(
+      engine,
+      { jobId: job.id, lockToken: 'parent-tok-1', resultPath, parentPid: 0 },
+      handlers({ sync: async () => 42 }),
+    );
+
+    expect(code).toBe(0);
+    expect(decodeChildOutcomeFile(resultPath)).toEqual({ outcome: 'success', result: { value: 42 } });
   });
 
   test('parent-death watchdog: aborts the handler and schedules the hard exit', async () => {

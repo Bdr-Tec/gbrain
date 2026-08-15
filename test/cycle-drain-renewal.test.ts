@@ -13,7 +13,32 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { runDrainRenewalTick } from '../src/core/cycle/synthesize.ts';
+
+describe('drain-loop wiring (structural — the shape guard only covers worker.ts)', () => {
+  const src = readFileSync(
+    new URL('../src/core/cycle/synthesize.ts', import.meta.url),
+    'utf-8',
+  );
+  test('the renewTimer interval is guarded and routes through runDrainRenewalTick', () => {
+    expect(src).toContain('if (drainTickInFlight) return;');
+    expect(src).toContain('void runDrainRenewalTick(');
+    // The pre-fix inline shape (an unguarded queue.renewLock(...).then chain
+    // inside the interval) must not come back.
+    expect(src).not.toMatch(/setInterval\(\(\) => \{\s*\n\s*queue\.renewLock\(/);
+  });
+});
+
+describe('db-lock heartbeat wiring (structural — issue #6 cancellation)', () => {
+  const src = readFileSync(new URL('../src/core/db-lock.ts', import.meta.url), 'utf-8');
+  test('withRefreshingLock aborts a per-tick signal into handle.refresh and guards re-entrancy', () => {
+    expect(src).toContain('handle.refresh({ signal: tickAbort.signal })');
+    expect(src).toContain('if (refreshTickInFlight) return;');
+    // refresh() forwards the opts to executeRawDirect as the trailing arg.
+    expect(src).toMatch(/executeRawDirect<\{ id: string \}>\([\s\S]*?refreshOpts,\s*\)/);
+  });
+});
 
 describe('runDrainRenewalTick (issue #6)', () => {
   test('successful renewal: signal not aborted, onLost not called', async () => {

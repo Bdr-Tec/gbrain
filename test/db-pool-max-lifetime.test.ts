@@ -15,6 +15,7 @@ import {
   resolveMaxLifetimeSeconds,
   _resetMaxLifetimeWarningForTests,
 } from '../src/core/db.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 beforeEach(() => {
   _resetMaxLifetimeWarningForTests();
@@ -70,5 +71,27 @@ describe('resolveMaxLifetimeSeconds', () => {
     const values = new Set<number | null>();
     for (let i = 0; i < 30; i++) values.add(resolveMaxLifetimeSeconds({}));
     expect(values.size).toBeGreaterThan(1);
+  });
+
+  test('wiring: the env override reaches a REAL constructed pool (ConnectionManager read pool)', async () => {
+    // postgres() is lazy — constructing the pool performs no I/O, so this
+    // pins the construction seam without a database. Without this, the
+    // resolver could be green while GBRAIN_POOL_MAX_LIFETIME_S is silently
+    // dead at every call site (adversarial-review vacuity finding).
+    const { ConnectionManager } = await import('../src/core/connection-manager.ts');
+    const { endPoolBounded } = await import('../src/core/db.ts');
+    await withEnv({ GBRAIN_POOL_MAX_LIFETIME_S: '900' }, async () => {
+      const cm = new ConnectionManager({
+        url: 'postgresql://user:pass@127.0.0.1:5/never-connected',
+      });
+      const pool = await cm.getReadPool();
+      try {
+        expect(
+          (pool as unknown as { options: { max_lifetime: number | null } }).options.max_lifetime,
+        ).toBe(900);
+      } finally {
+        await endPoolBounded(pool);
+      }
+    });
   });
 });

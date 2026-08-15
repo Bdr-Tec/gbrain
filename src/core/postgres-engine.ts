@@ -1069,14 +1069,21 @@ export class PostgresEngine implements BrainEngine {
 
   async transaction<T>(fn: (engine: BrainEngine) => Promise<T>): Promise<T> {
     const conn = this.sql;
+    // try/finally, not .finally on the chained promise: begin() can throw
+    // SYNCHRONOUSLY (e.g. nested transaction on a tx clone whose conn has no
+    // .begin), which would skip a chained .finally and leak the counter.
     this.checkoutGauge.acquire('tx');
-    return (conn.begin(async (tx) => {
-      // Create a scoped engine with tx as its connection, no shared state mutation
-      const txEngine = Object.create(this) as PostgresEngine;
-      Object.defineProperty(txEngine, 'sql', { get: () => tx });
-      Object.defineProperty(txEngine, '_sql', { value: tx as unknown as ReturnType<typeof postgres>, writable: false });
-      return fn(txEngine);
-    }) as Promise<T>).finally(() => this.checkoutGauge.release('tx'));
+    try {
+      return await (conn.begin(async (tx) => {
+        // Create a scoped engine with tx as its connection, no shared state mutation
+        const txEngine = Object.create(this) as PostgresEngine;
+        Object.defineProperty(txEngine, 'sql', { get: () => tx });
+        Object.defineProperty(txEngine, '_sql', { value: tx as unknown as ReturnType<typeof postgres>, writable: false });
+        return fn(txEngine);
+      }) as Promise<T>);
+    } finally {
+      this.checkoutGauge.release('tx');
+    }
   }
 
   /**
@@ -1105,15 +1112,20 @@ export class PostgresEngine implements BrainEngine {
       const size = this.connectionManager.describeMode().direct_pool_size ?? 3;
       const cap = Math.max(1, size - 1);
       if (this._reservedDirectInFlight < cap) {
+        // Take the permit in the SAME synchronous frame as the check — a
+        // check-then-increment spanning `await ddl()` is a TOCTOU that lets
+        // same-tick concurrent reserves overshoot the cap and starve the
+        // heartbeat slot the cap exists to protect (adversarial-review P2).
+        this._reservedDirectInFlight += 1;
+        fromDirect = true;
         try {
           pool = await this.connectionManager.ddl();
-          fromDirect = true;
-          this._reservedDirectInFlight += 1;
         } catch {
           // ddl() failure flips its own kill switch; fall back to the read
           // pool (status quo) rather than failing the caller.
-          pool = this.sql;
+          this._reservedDirectInFlight -= 1;
           fromDirect = false;
+          pool = this.sql;
         }
       }
     }

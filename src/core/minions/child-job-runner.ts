@@ -35,6 +35,10 @@ import { join } from 'node:path';
 import { buildSpawnInvocation } from './spawn-helpers.ts';
 import { UnrecoverableError } from './types.ts';
 import {
+  JOB_CHILD_EXIT_USAGE,
+  JOB_CHILD_EXIT_NOT_CLAIMED,
+} from './worker-exit-codes.ts';
+import {
   CHILD_ENV,
   CHILD_KILL_GRACE_MS,
   buildChildArgs,
@@ -61,6 +65,29 @@ export class ChildWorkerShutdownError extends Error {
     this.name = 'ChildWorkerShutdownError';
   }
 }
+
+/** Child found the job reclaimed/cancelled (exit 14) — provably owned
+ *  elsewhere. The worker releases without failJob (the fenced failJob would
+ *  no-op anyway); definitely not an attempt against THIS claim. */
+export class ChildNotClaimedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ChildNotClaimedError';
+  }
+}
+
+/** Per-job abort reasons that mean THE JOB was targeted (timeout / cancel /
+ *  lock loss) rather than the worker winding down. gracefulShutdown('watchdog')
+ *  aborts BOTH the shutdown signal and every per-job signal — the shutdown
+ *  classification must win for those (adversarial-review P3: the watchdog
+ *  drain otherwise burns an attempt on innocent isolated jobs). */
+const PER_JOB_ABORT_REASONS = new Set([
+  'timeout',
+  'cancel',
+  'cancelled',
+  'lock-lost',
+  'lock-renewal-failed',
+]);
 
 export interface RunJobInChildOpts {
   jobId: number;
@@ -98,17 +125,29 @@ export async function runJobInChild(opts: RunJobInChildOpts): Promise<unknown> {
   const graceMs = opts.killGraceMs ?? CHILD_KILL_GRACE_MS;
   const base = opts.env ?? process.env;
 
+  // Bound the child's pools: sockets die with the process (the isolation
+  // win), but per-child footprint must stay small — read pool <= 3, direct
+  // pool 1 (a child runs no claim/renewal heartbeats; codex-2 #6). An
+  // operator's own GBRAIN_POOL_SIZE is respected when STRICTER than the
+  // default (their pooler MaxClients tuning must not be silently raised);
+  // GBRAIN_JOB_CHILD_POOL_SIZE, when valid, is the explicit per-child knob
+  // and wins outright. Invalid values fall through to the default.
+  const parsePoolSize = (v: string | undefined): number | null => {
+    if (v === undefined || v === '') return null;
+    const n = parseInt(v, 10);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  };
+  const childOverride = parsePoolSize(base[CHILD_ENV.childPoolSize]);
+  const userPool = parsePoolSize(base.GBRAIN_POOL_SIZE);
+  const childPoolSize = childOverride ?? Math.min(userPool ?? 3, 3);
+
   const childEnv: Record<string, string | undefined> = {
     ...base,
     [CHILD_ENV.lockToken]: opts.lockToken,
     [CHILD_ENV.resultPath]: resultPath,
     [CHILD_ENV.isChild]: '1',
     [CHILD_ENV.parentPid]: String(process.pid),
-    // Bound the child's pools: sockets die with the process (the isolation
-    // win), but per-child footprint must stay small — read pool 3 (override
-    // via GBRAIN_JOB_CHILD_POOL_SIZE), direct pool 1 (a child runs no
-    // claim/renewal heartbeats; codex-2 #6).
-    GBRAIN_POOL_SIZE: base[CHILD_ENV.childPoolSize] ?? '3',
+    GBRAIN_POOL_SIZE: String(childPoolSize),
     GBRAIN_DIRECT_POOL_SIZE: '1',
   };
 
@@ -171,12 +210,30 @@ export async function runJobInChild(opts: RunJobInChildOpts): Promise<unknown> {
       `exited code=${exit.code ?? 'null'} signal=${exit.signal ?? 'null'}`,
     );
 
+    const abortReason = opts.abortSignal.aborted
+      ? (opts.abortSignal.reason instanceof Error
+          ? opts.abortSignal.reason.message
+          : String(opts.abortSignal.reason ?? 'aborted'))
+      : null;
+    // Shutdown classification wins UNLESS the per-job abort names a
+    // job-targeted reason. gracefulShutdown('watchdog') aborts BOTH signals —
+    // checking abortSignal first would shadow the no-burn shutdown release
+    // and dead-letter innocent isolated jobs (adversarial-review P3).
+    const isShutdownClass =
+      opts.shutdownSignal.aborted &&
+      (abortReason === null || !PER_JOB_ABORT_REASONS.has(abortReason));
+
     let outcome: ReturnType<typeof decodeChildOutcomeFile>;
     try {
       outcome = decodeChildOutcomeFile(resultPath);
     } catch (decodeErr) {
       // No usable outcome. Classify by WHY the child died.
       if (decodeErr instanceof UnrecoverableError) throw decodeErr; // oversize cap — dead on attempt 1
+      if (isShutdownClass) {
+        throw new ChildWorkerShutdownError(
+          `job child terminated by worker shutdown before reporting (exit code=${exit.code} signal=${exit.signal})`,
+        );
+      }
       if (opts.abortSignal.aborted) {
         // executeJob's catch reads abort.signal.reason first, so infra
         // reasons (lock-renewal-failed / lock-lost) still burn no attempt
@@ -185,9 +242,18 @@ export async function runJobInChild(opts: RunJobInChildOpts): Promise<unknown> {
           `job child terminated after abort without an outcome (exit code=${exit.code} signal=${exit.signal})`,
         );
       }
-      if (opts.shutdownSignal.aborted) {
-        throw new ChildWorkerShutdownError(
-          `job child terminated by worker shutdown before reporting (exit code=${exit.code} signal=${exit.signal})`,
+      // Bootstrap failures carry reserved exit codes and are NOT handler
+      // defects: 13 = usage/config (ops misconfiguration — release like a
+      // spawn failure), 14 = job reclaimed before the handler ran (owned
+      // elsewhere — release; the fenced failJob would no-op regardless).
+      if (exit.code === JOB_CHILD_EXIT_USAGE) {
+        throw new ChildSpawnInfraError(
+          `job child bootstrap failed (exit ${exit.code}) — check the worker's child CLI/engine configuration`,
+        );
+      }
+      if (exit.code === JOB_CHILD_EXIT_NOT_CLAIMED) {
+        throw new ChildNotClaimedError(
+          `job child found the claim gone (exit ${exit.code}) — reclaimed or cancelled before the handler ran`,
         );
       }
       throw new Error(
@@ -197,6 +263,17 @@ export async function runJobInChild(opts: RunJobInChildOpts): Promise<unknown> {
     }
 
     if (outcome.outcome === 'success') return outcome.result;
+    // A handler-error outcome DURING worker shutdown is presumed
+    // shutdown-induced (cooperative handlers that honor shutdownSignal bail
+    // and report an error): release with no attempt burned rather than
+    // punishing exactly the well-behaved handlers on every deploy
+    // (adversarial-review P2). Worst case a genuinely-failing job that
+    // coincided with a deploy gets one free retry — bounded and benign.
+    if (isShutdownClass) {
+      throw new ChildWorkerShutdownError(
+        `job child reported an error during worker shutdown (${outcome.message}) — released, not burned`,
+      );
+    }
     throw reconstructHandlerError(outcome);
   } finally {
     if (killTimer != null) clearTimeout(killTimer);

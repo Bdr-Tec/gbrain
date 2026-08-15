@@ -78,11 +78,14 @@ export async function runChildJobEntry(
 
   const handler = injectables.resolveHandler(job.name);
   if (!handler) {
-    // Parent-side failJob will record the real error; we just report it.
+    // Parity with inline mode, which dead-letters a missing handler
+    // immediately (failJob 'dead') — 'unrecoverable' reconstructs to
+    // UnrecoverableError parent-side, so the parent dead-letters on attempt 1
+    // instead of retrying a deterministic condition (adversarial-review P3).
     try {
       writeChildOutcomeFile(opts.resultPath, {
         outcome: 'error',
-        errorKind: 'generic',
+        errorKind: 'unrecoverable',
         message: `No handler for job type '${job.name}' in the isolation child`,
       });
       return 0;
@@ -94,8 +97,19 @@ export async function runChildJobEntry(
   const abort = new AbortController();
   const shutdown = new AbortController();
 
+  // SIGTERM = worker shutdown: fire ONLY shutdownSignal, preserving the
+  // inline signal-separation contract (worker.ts aborts only shutdownAbort on
+  // SIGTERM; per-job ctx.signal stays live so cooperative handlers finish +
+  // report inside the drain window instead of aborting mid-deploy —
+  // adversarial-review P2). The parent's group SIGKILL at drain end is the
+  // backstop for handlers that keep running.
   const onSigterm = (): void => {
     if (!shutdown.signal.aborted) shutdown.abort(new Error('worker-shutdown'));
+  };
+  // Parent death (orphan) aborts BOTH: nobody will SIGKILL us, the lock will
+  // expire and the job will be requeued — stop the handler outright.
+  const onOrphaned = (): void => {
+    onSigterm();
     if (!abort.signal.aborted) abort.abort(new Error('worker-shutdown'));
   };
   process.on('SIGTERM', onSigterm);
@@ -115,7 +129,7 @@ export async function runChildJobEntry(
           `hard exit in ${Math.round(graceMs / 1000)}s\n`,
         );
         if (watchdog != null) clearInterval(watchdog);
-        onSigterm();
+        onOrphaned();
         const t = setTimeout(() => hardExit(1), graceMs);
         (t as unknown as { unref?: () => void }).unref?.();
       }
@@ -135,7 +149,15 @@ export async function runChildJobEntry(
     let outcome;
     try {
       const result = await handler(context);
-      outcome = { outcome: 'success' as const, result };
+      // completeJob's {value: x} wrap decision must run BEFORE JSON
+      // serialization: a JSON round-trip changes typeof for Date /
+      // toJSON-bearing results (object → string), which would flip the wrap
+      // parent-side (adversarial-review P3, result-shape parity). Wrap here;
+      // the parent's own wrap is then a no-op (object/undefined passthrough).
+      const wrapped = result != null
+        ? (typeof result === 'object' ? (result as Record<string, unknown>) : { value: result })
+        : undefined;
+      outcome = { outcome: 'success' as const, result: wrapped };
     } catch (err) {
       outcome = encodeHandlerError(err);
     }
