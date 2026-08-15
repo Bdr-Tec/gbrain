@@ -56,6 +56,7 @@
     "check:doc-history": "bash scripts/check-key-files-current-state.sh",
     "check:resolver": "bun src/cli.ts check-resolvable --strict --skills-dir skills/",
     "check:skill-brain-first": "bash scripts/check-skill-brain-first.sh",
+    "check:plugin-tree": "bash scripts/check-plugin-tree.sh",
     "check:wasm": "bash scripts/check-wasm-embedded.sh",
     "check:pglite-embedded": "bash scripts/check-pglite-embedded.sh",
     "check:newlines": "bash scripts/check-trailing-newline.sh",

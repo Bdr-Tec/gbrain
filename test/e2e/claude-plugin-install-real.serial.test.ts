@@ -19,13 +19,14 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
   resolveClaudeBinary,
   claudeSupportsPlugins,
+  hasClaudeAuth,
   claudeHeadlessTurn,
   seedBrainForAgent,
   hermeticChildEnv,
@@ -101,7 +102,7 @@ describe.skipIf(!PLUGIN_CAPABLE)('claude plugin door — VALIDATE + INSTALL (no 
   }, 300_000);
 });
 
-describe.skipIf(!PLUGIN_CAPABLE)('claude plugin door — SMOKE (live turn)', () => {
+describe.skipIf(!PLUGIN_CAPABLE || !hasClaudeAuth())('claude plugin door — SMOKE (live turn)', () => {
   test('plugin-provided MCP server answers from the brain', async () => {
     const home = mkdtempSync(join(tmpdir(), 'gb-cplugin-smoke-'));
     const configDir = join(home, '.claude');

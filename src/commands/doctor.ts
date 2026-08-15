@@ -8784,8 +8784,8 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
       codexAnyRegistrationExists,
       claudeAnyRegistrationExists,
     } = await import('../core/bootstrap/harness.ts');
-    const { codexConfigPath, claudeUserSettingsPath } = await import('../core/bootstrap/host-specs.ts');
-    const claudeUserMcpConfig = join(process.env.HOME?.trim() || homedir(), '.claude.json');
+    const { codexConfigPath, claudeUserSettingsPath, claudeUserMcpConfigPath } = await import('../core/bootstrap/host-specs.ts');
+    const claudeUserMcpConfig = claudeUserMcpConfigPath();
     const lanes: Array<{ harness: string; plugin: string; dup: boolean; disambiguate: string }> = [];
     const codexPlugin = codexPluginProvidesName(codexConfigPath(), 'gbrain');
     if (codexPlugin) {

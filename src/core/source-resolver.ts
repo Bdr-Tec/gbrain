@@ -500,6 +500,14 @@ export const WRITE_SAFE_SOURCE_TIERS: ReadonlySet<SourceTier> = new Set([
  * `seed_default` tier (source count decides ambiguity); errors fail CLOSED
  * — if the guard cannot prove the write is unambiguous, it blocks.
  */
+/**
+ * Which sources-query shape this engine's schema supports. Cached at module
+ * level after the first successful probe so a pre-`archived`-column schema
+ * pays the fallback exception ONCE, not on every guarded write (the guard
+ * runs on the seed_default tier of every write/admin MCP call).
+ */
+let sourcesQueryShape: 'archived' | 'legacy' | null = null;
+
 export async function sourceGuardBlocksWrite(
   engine: BrainEngine,
   tier: SourceTier,
@@ -507,19 +515,36 @@ export async function sourceGuardBlocksWrite(
   if (WRITE_SAFE_SOURCE_TIERS.has(tier)) return false;
   if (tier === 'local_path') return true;
   // seed_default: block iff any source beyond the seeded 'default' exists.
+  // Bounded single-row probe (LIMIT 1) — the verdict needs existence, not the
+  // full source list, and this runs per guarded write.
   try {
     let rows: Array<{ id: string }>;
-    try {
+    if (sourcesQueryShape !== 'legacy') {
+      try {
+        rows = await engine.executeRaw<{ id: string }>(
+          `SELECT id FROM sources WHERE id <> 'default' AND archived = false LIMIT 1`,
+        );
+        sourcesQueryShape = 'archived';
+      } catch {
+        rows = await engine.executeRaw<{ id: string }>(
+          `SELECT id FROM sources WHERE id <> 'default' LIMIT 1`,
+        );
+        sourcesQueryShape = 'legacy';
+      }
+    } else {
       rows = await engine.executeRaw<{ id: string }>(
-        `SELECT id FROM sources WHERE archived = false`,
+        `SELECT id FROM sources WHERE id <> 'default' LIMIT 1`,
       );
-    } catch {
-      rows = await engine.executeRaw<{ id: string }>(`SELECT id FROM sources`);
     }
-    return rows.some(r => r.id !== 'default');
+    return rows.length > 0;
   } catch {
     return true;
   }
+}
+
+/** Test seam: reset the cached sources-query shape (module-level memo). */
+export function __resetSourceGuardQueryShape(): void {
+  sourcesQueryShape = null;
 }
 
 /** Exposed for tests. */

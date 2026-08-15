@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { readFileSync, readdirSync, existsSync, statSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, statSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -330,4 +330,71 @@ describe('curated tree membership + scanner guard', () => {
       rmSync(out, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+describe('generator negative fixtures (a guard that cannot fail is not coverage)', () => {
+  function fixtureRoot(lanes: Record<string, unknown>, betaTools: string[] = []): string {
+    const root = mkdtempSync(join(tmpdir(), 'gb-lanes-fixture-'));
+    writeFileSync(join(root, 'VERSION'), '0.0.0.0\n');
+    writeFileSync(join(root, 'openclaw.plugin.json'), JSON.stringify({ skills: ['skills/alpha'] }));
+    mkdirSync(join(root, 'skills', 'alpha'), { recursive: true });
+    mkdirSync(join(root, 'skills', 'beta'), { recursive: true });
+    mkdirSync(join(root, 'skills', 'conventions'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'alpha', 'SKILL.md'), '---\nname: alpha\ndescription: fixture skill\n---\n# alpha\n');
+    const toolsBlock = betaTools.length ? `tools:\n${betaTools.map(t => `  - ${t}`).join('\n')}\n` : '';
+    writeFileSync(join(root, 'skills', 'beta', 'SKILL.md'), `---\nname: beta\ndescription: fixture skill\n${toolsBlock}---\n# beta\n`);
+    writeFileSync(join(root, 'skills', 'manifest.json'), JSON.stringify({ skills: [{ name: 'alpha' }, { name: 'beta' }] }));
+    writeFileSync(
+      join(root, 'skills', 'plugin-lanes.json'),
+      JSON.stringify({ starter_policy: 'x', additions: {}, base_exclusions: {}, not_added: {}, starter_gaps: {}, ...lanes }),
+    );
+    return root;
+  }
+
+  function runGenerator(root: string) {
+    const out = join(root, 'out');
+    return spawnSync('bun', ['run', join(ROOT, 'scripts/generate-plugin-tree.ts'), '--out', out], {
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: { ...process.env, GBRAIN_PLUGIN_TREE_ROOT: root },
+    });
+  }
+
+  test('a sub-10-char curation reason fails', () => {
+    const root = fixtureRoot({ additions: { beta: 'short' } });
+    try {
+      const r = runGenerator(root);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('needs a real reason');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('an addition already in the openclaw base fails', () => {
+    const root = fixtureRoot({ additions: { alpha: 'a reason long enough to pass the length check' } });
+    try {
+      const r = runGenerator(root);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('already in the openclaw base');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a stale starter_gaps snapshot fails with the refresh instruction', () => {
+    // beta declares a beyond-starter MCP op but the recorded snapshot is empty.
+    const root = fixtureRoot(
+      { additions: { beta: 'a reason long enough to pass the length check' } },
+      ['add_link'],
+    );
+    try {
+      const r = runGenerator(root);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('starter_gaps snapshot');
+      expect(r.stderr).toContain('--write-gaps');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

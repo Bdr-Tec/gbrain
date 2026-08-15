@@ -171,7 +171,6 @@ describe.skipIf(!PLUGIN_CAPABLE)('codex plugin door — INSTALL (no auth needed)
       // (b) plugin add — the exact command the docs headline.
       const addPlugin = run([CODEX_BIN!, 'plugin', 'add', 'gbrain@gbrain']);
       expect(addPlugin.code, addPlugin.stderr).toBe(0);
-      const toml = readFileSync(join(codexHome, 'config.toml'), 'utf8');
       expect(codexPluginProvidesName(join(codexHome, 'config.toml'), 'gbrain')).toBe('gbrain@gbrain');
 
       // (c) snapshot contents: curated skills, NON-ROOT mcp.json honored,

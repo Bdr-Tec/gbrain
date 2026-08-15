@@ -14,19 +14,38 @@
  *      transport reports which tier won so the gate can decide per call.
  */
 
-import { describe, test, expect, afterEach } from 'bun:test';
+import { describe, test, expect, afterEach, beforeEach } from 'bun:test';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
 import { operations } from '../src/core/operations.ts';
-import { sourceGuardBlocksWrite, WRITE_SAFE_SOURCE_TIERS, type SourceTier } from '../src/core/source-resolver.ts';
+import { sourceGuardBlocksWrite, WRITE_SAFE_SOURCE_TIERS, __resetSourceGuardQueryShape, type SourceTier } from '../src/core/source-resolver.ts';
 import { resolveMcpStdioSourceScope } from '../src/mcp/server.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
 function engineWithSources(ids: string[]): BrainEngine {
   return {
     kind: 'postgres',
-    executeRaw: async () => ids.map(id => ({ id })),
+    // Emulates just enough SQL semantics for the guard's bounded probe:
+    // the `id <> 'default'` filter (both the archived and legacy shapes).
+    executeRaw: async (sql: string) => {
+      const rows = ids.map(id => ({ id }));
+      return sql.includes("id <> 'default'") ? rows.filter(r => r.id !== 'default') : rows;
+    },
     getConfig: async () => null,
     sql: async () => [],
+  } as unknown as BrainEngine;
+}
+
+/** Pre-`archived`-column schema: the filtered-by-archived query throws, the
+ *  legacy shape succeeds. */
+function legacyEngine(ids: string[]): BrainEngine {
+  return {
+    kind: 'postgres',
+    executeRaw: async (sql: string) => {
+      if (sql.includes('archived')) throw new Error('column "archived" does not exist');
+      const rows = ids.map(id => ({ id }));
+      return sql.includes("id <> 'default'") ? rows.filter(r => r.id !== 'default') : rows;
+    },
+    getConfig: async () => null,
   } as unknown as BrainEngine;
 }
 
@@ -43,6 +62,12 @@ function parsed(result: { content: Array<{ text: string }> }) {
 }
 
 describe('sourceGuardBlocksWrite tier policy', () => {
+  beforeEach(() => {
+    // The query-shape memo is module-level; reset so each test exercises the
+    // shape it constructs rather than inheriting a prior test's probe result.
+    __resetSourceGuardQueryShape();
+  });
+
   test('deliberate/unambiguous tiers never block (no engine consulted)', async () => {
     for (const tier of WRITE_SAFE_SOURCE_TIERS) {
       expect(await sourceGuardBlocksWrite(throwingEngine, tier)).toBe(false);
@@ -65,6 +90,30 @@ describe('sourceGuardBlocksWrite tier policy', () => {
 
   test('engine failure fails CLOSED on seed_default', async () => {
     expect(await sourceGuardBlocksWrite(throwingEngine, 'seed_default')).toBe(true);
+  });
+
+  test('pre-archived-column schema resolves through the legacy fallback', async () => {
+    expect(await sourceGuardBlocksWrite(legacyEngine(['default']), 'seed_default')).toBe(false);
+    __resetSourceGuardQueryShape();
+    expect(await sourceGuardBlocksWrite(legacyEngine(['default', 'wiki']), 'seed_default')).toBe(true);
+  });
+
+  test('legacy shape is memoized — the archived query throws once, not per call', async () => {
+    let archivedAttempts = 0;
+    const counting = {
+      kind: 'postgres',
+      executeRaw: async (sql: string) => {
+        if (sql.includes('archived')) {
+          archivedAttempts++;
+          throw new Error('column "archived" does not exist');
+        }
+        return [];
+      },
+      getConfig: async () => null,
+    } as unknown as BrainEngine;
+    await sourceGuardBlocksWrite(counting, 'seed_default');
+    await sourceGuardBlocksWrite(counting, 'seed_default');
+    expect(archivedAttempts).toBe(1);
   });
 });
 

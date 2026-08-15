@@ -12,6 +12,7 @@ import type { OperationContext, AuthInfo } from '../core/operations.ts';
 import { loadConfig } from '../core/config.ts';
 import { VERB_NAMES, MEMORY_VERBS_VERSION } from '../core/verbs.ts';
 import { logVerbUsage } from '../core/verbs/usage-log.ts';
+import { sourceGuardBlocksWrite } from '../core/source-resolver.ts';
 import { suggestNearest } from '../core/levenshtein.ts';
 import {
   normalizeOptionalParams,
@@ -465,7 +466,6 @@ export async function dispatchToolCall(
   // to fall through to. Enforced before validation so a blocked caller
   // learns the routing rule, not the op's parameter shape.
   if (opts.sourceGuardTier && op.scope !== 'read') {
-    const { sourceGuardBlocksWrite } = await import('../core/source-resolver.ts');
     if (await sourceGuardBlocksWrite(engine, opts.sourceGuardTier)) {
       logVerb(false);
       const envelope = {

@@ -107,20 +107,13 @@ if [ -f "$runbook" ]; then
   fi
 fi
 
-if [ "$fail" -ne 0 ]; then
-  exit 1
-fi
-if [ "$checked" -eq 0 ]; then
-  echo "check-bootstrap-tag: ok (no bootstrap entry docs present yet — all checks skipped)"
-else
-  echo "check-bootstrap-tag: ok ($checked doc(s) on the '$SANCTIONED' distribution ref)"
-fi
-
 # ── Rule 4: plugin marketplace refs pin a sanctioned ref ─────────────────────
 # `codex plugin marketplace add garrytan/gbrain@<ref>` in docs must use the
-# release channel (@latest-stable) or the slim dist branch (@codex-plugin) —
-# a bare or arbitrary ref would hand readers master-tip installs (same class
-# as Rules 1–2).
+# release channel (@latest-stable) or the slim dist branch (@codex-plugin).
+# The @-less form (`plugin marketplace add garrytan/gbrain`) is deliberately
+# OUT of scope: Claude Code marketplace adds have no ref pin syntax, so the
+# Claude lane documents the bare form and installs the repo default branch —
+# a recorded decision, not a gate hole. Codex docs headline the pinned form.
 while IFS=: read -r file line match; do
   ref="${match##*@}"
   case "$ref" in
@@ -134,4 +127,11 @@ done < <(grep -RInE 'plugin marketplace add garrytan/gbrain@[A-Za-z0-9._-]+' \
   "$ROOT/README.md" "$ROOT/BOOTSTRAP_FOR_AGENTS.md" "$ROOT/INSTALL_FOR_AGENTS.md" "$ROOT/docs" 2>/dev/null \
   | sed -E 's/^([^:]+):([0-9]+):.*(plugin marketplace add garrytan\/gbrain@[A-Za-z0-9._-]+).*/\1:\2:\3/' || true)
 
-exit "$fail"
+if [ "$fail" -ne 0 ]; then
+  exit 1
+fi
+if [ "$checked" -eq 0 ]; then
+  echo "check-bootstrap-tag: ok (no bootstrap entry docs present yet — all checks skipped)"
+else
+  echo "check-bootstrap-tag: ok ($checked doc(s) on the '$SANCTIONED' distribution ref)"
+fi

@@ -651,11 +651,13 @@ jobs:
           bun test --timeout=600000 test/e2e/codex-plugin-install-real.serial.test.ts > codex-plugin-door.txt 2>&1 || EXIT=$?
           tail -40 codex-plugin-door.txt
           if [ "$EXIT" -ne 0 ]; then exit "$EXIT"; fi
-          # Exact expected shape: the INSTALL test passes; the auth-gated SMOKE
-          # self-skips (no codex auth.json in CI). Zero-pass refuses green.
+          # Exact expected shape (grok-door posture): exactly 1 INSTALL test
+          # passes; the auth-gated SMOKE self-skips (no codex auth.json in
+          # CI). Any other count — zero, partial, or a silently-skipped new
+          # test — refuses green. Update the pin deliberately with new tests.
           pass_count=$(grep -Eo '[0-9]+ pass' codex-plugin-door.txt | tail -1 | grep -Eo '^[0-9]+' || true)
-          if [ -z "$pass_count" ] || [ "$pass_count" -lt 1 ]; then
-            echo "::error::codex plugin door expected >=1 passing INSTALL test, summary shows '${pass_count:-none}' — refusing to go green" >&2
+          if [ "${pass_count:-0}" -ne 1 ]; then
+            echo "::error::codex plugin door expected exactly 1 passing INSTALL test, summary shows '${pass_count:-none}' — refusing to go green (re-pin deliberately when tests are added)" >&2
             exit 1
           fi
 
@@ -666,7 +668,7 @@ jobs:
           tail -40 claude-plugin-door.txt
           if [ "$EXIT" -ne 0 ]; then exit "$EXIT"; fi
           pass_count=$(grep -Eo '[0-9]+ pass' claude-plugin-door.txt | tail -1 | grep -Eo '^[0-9]+' || true)
-          if [ -z "$pass_count" ] || [ "$pass_count" -lt 1 ]; then
-            echo "::error::claude plugin door expected >=1 passing INSTALL test, summary shows '${pass_count:-none}' — refusing to go green" >&2
+          if [ "${pass_count:-0}" -ne 1 ]; then
+            echo "::error::claude plugin door expected exactly 1 passing INSTALL test, summary shows '${pass_count:-none}' — refusing to go green (re-pin deliberately when tests are added)" >&2
             exit 1
           fi

@@ -810,10 +810,15 @@ async function scenarioCodexPluginInstall(ctx: ScenarioCtx, args: CliArgs): Prom
     encoding: 'utf8',
   });
   if (initR.status !== 0) throw new Error(`gbrain init failed: ${(initR.stderr ?? '').slice(0, 300)}`);
-  spawnSync(ctx.gbrainBin, ['call', 'remember', JSON.stringify({
+  const seedR = spawnSync(ctx.gbrainBin, ['call', 'remember', JSON.stringify({
     content: 'The dx-explore plugin probe codeword is heliograph.',
     provenance: 'dx-explore codex-plugin-install scenario',
   })], { env: { ...pluginEnv, GBRAIN_HOME: gbHome }, cwd: ws, encoding: 'utf8' });
+  if (seedR.status !== 0) {
+    // Fail fast — proceeding would burn a paid, minutes-long interactive
+    // session that can only fail confusingly on the codeword probe.
+    throw new Error(`seed remember failed: ${(seedR.stderr ?? '').slice(0, 300)}`);
+  }
 
   log('REAL interactive codex with the gbrain PLUGIN installed (minutes, real API cost)');
   await runInstallSession(ctx, {

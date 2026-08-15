@@ -186,6 +186,16 @@ export async function runServe(
   // binding is deliberate or unambiguous — sole-source brains are a pure
   // no-op. Stdio-only: the OAuth HTTP path scopes writes per token instead.
   const sourceGuard = args.includes('--source-guard');
+  if (sourceGuard && isHttp) {
+    // Loud posture warning (the --log-full-params precedent): the guard is a
+    // stdio-lane mechanism; HTTP writes are scoped per token instead. An
+    // operator who passed the flag believing fail-closed routing is active
+    // must not discover otherwise silently.
+    console.error(
+      '[gbrain serve] WARNING: --source-guard applies to the stdio lane only and is IGNORED with --http — ' +
+        'HTTP writes are scoped by per-token grants (access_tokens.permissions), not the tier guard.',
+    );
+  }
 
   if (isHttp) {
     const portIdx = args.indexOf('--port');

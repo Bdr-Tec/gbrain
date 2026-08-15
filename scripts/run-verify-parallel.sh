@@ -72,6 +72,7 @@ CHECKS=(
   "check:worker-lock-renewal-shape"
   "check:bootstrap-tag"
   "check:bootstrap-templates"
+  "check:plugin-tree"
   "check:skill-refs"
   # W0 fix-wave (Tier-1 #11): guard self-tests — every scanner guard proves it
   # can fail (bad fixture → exit 1) before it counts as coverage. Registry:

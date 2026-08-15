@@ -39,8 +39,12 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { STARTER_OPS } from '../src/mcp/surface.ts';
+import { parseSkillFrontmatter } from '../src/core/skill-frontmatter.ts';
 
-const ROOT = resolve(import.meta.dir, '..');
+// GBRAIN_PLUGIN_TREE_ROOT is the negative-fixture test seam: the manifest
+// test points the generator at a synthetic repo root to prove each curation
+// violation actually fails (a guard that cannot fail is not coverage).
+const ROOT = process.env.GBRAIN_PLUGIN_TREE_ROOT || resolve(import.meta.dir, '..');
 
 function usage(): never {
   console.error('usage: bun run scripts/generate-plugin-tree.ts --out <dir> [--write-gaps]');
@@ -108,30 +112,22 @@ const laneSet = [
 const HARNESS_TOOLS = new Set(['shell', 'exec', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'gbrain']);
 
 function frontmatterTools(slug: string): string[] {
+  // Canonical parser (src/core/skill-frontmatter.ts) — handles BOTH the
+  // inline (`tools: [a, b]`) and block-list YAML forms; a hand-rolled
+  // block-only parser here would silently drop gaps if a skill switched to
+  // the inline form (the exact drift the starter_gaps snapshot exists to
+  // catch).
   const text = readFileSync(join(ROOT, 'skills', slug, 'SKILL.md'), 'utf8');
-  const fm = text.match(/^---\n([\s\S]*?)\n---/);
-  if (!fm) return [];
-  const tools: string[] = [];
-  let inTools = false;
-  for (const line of fm[1].split('\n')) {
-    if (/^tools:\s*$/.test(line)) {
-      inTools = true;
-      continue;
-    }
-    if (inTools) {
-      const m = line.match(/^\s+-\s+(\S+)/);
-      if (m) tools.push(m[1]);
-      else if (!/^\s/.test(line)) inTools = false;
-    }
-  }
-  return tools;
+  return parseSkillFrontmatter(text)?.tools ?? [];
 }
 
 const computedGaps: Record<string, string[]> = {};
 for (const slug of laneSet) {
   const mcpOps = frontmatterTools(slug)
     .map(t => (t.startsWith('mcp:') ? t.slice(4) : t))
-    .filter(t => !HARNESS_TOOLS.has(t));
+    // Multi-word entries ("gbrain schema add-type …") are CLI command
+    // strings, not MCP op names — same class as the bare `gbrain` marker.
+    .filter(t => !HARNESS_TOOLS.has(t) && !t.startsWith('gbrain '));
   const gaps = [...new Set(mcpOps.filter(t => !STARTER_OPS.has(t)))].sort();
   if (gaps.length > 0) computedGaps[slug] = gaps;
 }
