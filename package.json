@@ -99,7 +99,8 @@
     "check:skill-refs": "bun scripts/check-skill-refs.mjs",
     "gate:skills": "bash scripts/skills-commit-gate.sh",
     "check:guard-self-test": "bash scripts/guard-self-test.sh",
-    "check:no-legacy-getconnection": "bash scripts/check-no-legacy-getconnection.sh"
+    "check:no-legacy-getconnection": "bash scripts/check-no-legacy-getconnection.sh",
+    "check:module-size": "bash scripts/check-module-size.sh"
   },
   "openclaw": {
     "compat": {

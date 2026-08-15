@@ -61,3 +61,4 @@ check-bootstrap-tag.sh	repostate	exempt	VERSION stamp drift check
 check-cli-executable.sh	repostate	exempt	file-mode check
 check-no-tracked-symlinks.sh	repostate	exempt	git index state check
 check-grok-pin.sh	repostate	exempt	pin-stamp drift check (GROK-CLI-PIN.md stamps vs heavy-tests grok-door env); own bun guard tests in test/check-bootstrap-guards.test.ts
+check-module-size.sh	scanner	yes	committed per-file line ceilings (module-size-limits.tsv); growth + stale-ceiling + missing-row + new-file cap; region-exempt policy for migrate.ts

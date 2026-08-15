@@ -81,6 +81,7 @@ CHECKS=(
   "check:newlines"
   "check:exports-count"
   "check:no-legacy-getconnection"
+  "check:module-size"
   "typecheck"
 )
 
