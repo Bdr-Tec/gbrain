@@ -3,9 +3,9 @@
 `gbrain migrate embeddings` re-embeds an entire brain onto a different
 embedding provider/model, safely and resumably. It is the forward path off a
 sunsetting provider (for example ZeroEntropy's hosted API, which shuts down
-2026-09-04 and is the shipped default for brains that never picked a model) —
-but it is provider-agnostic: any configured `provider:model` works as a
-target.
+2026-09-04 and remains the configless runtime fallback for existing brains
+that never picked a model — new installs default to `voyage:voyage-4`) — but
+it is provider-agnostic: any configured `provider:model` works as a target.
 
 Also reachable as `gbrain retrieval-upgrade` — the alias that `gbrain doctor`
 repair hints and the README point at.
@@ -14,18 +14,38 @@ repair hints and the README point at.
 
 ```bash
 # Preview the work + cost. Changes nothing.
-gbrain migrate embeddings --to openai:text-embedding-3-small --dry-run
+gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run
 
 # Run it (interactive confirm shows chunk count + $ estimate first).
-gbrain migrate embeddings --to openai:text-embedding-3-small
+gbrain migrate embeddings --to voyage:voyage-4 --dim 1024
 
 # Non-interactive (cron / scripts): --yes is required, else exit 2.
-gbrain migrate embeddings --to voyage:voyage-3-large --yes
+gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --yes
 ```
 
 `--dim <N>` overrides the target width; it defaults to the provider recipe's
 declared width and is required for recipes that don't declare one (litellm,
 llama-server, and other bring-your-own-model providers).
+
+## Recommended targets
+
+- **`voyage:voyage-4 --dim 1024`** (the new-install default). One
+  `VOYAGE_API_KEY` covers embedding, the `rerank-2.5` reranker, and the
+  multimodal model; the voyage-4 family shares one embedding space, so you
+  can later point the query model at `voyage-4-large` or `voyage-4-lite`
+  without reindexing. Note: **1280 is not a valid Voyage width** (valid:
+  256/512/1024/2048), so a legacy 1280d brain gets a one-time schema/HNSW
+  index rebuild to 1024 — the command handles it, and it is resumable if
+  killed.
+- **`openai:text-embedding-3-small --dim 1280`** — the keep-your-width
+  alternative: OpenAI's text-embedding-3 models support flexible dims, so a
+  1280d brain keeps its column (no schema rebuild). No reranker coverage on
+  the OpenAI key.
+
+Set the target's API key via `export VOYAGE_API_KEY=...` (or edit
+`~/.gbrain/config.json` directly) — do NOT use `gbrain config set
+voyage_api_key`: that writes the DB plane, which the embedding pipeline never
+reads.
 
 **Pick `--dim` = your brain's current column width when the target supports
 it.** A different width triggers the destructive schema transition (column +
@@ -52,7 +72,15 @@ provider with an announced hosted-API shutdown, such as ZeroEntropy
   migration command with the brain's actual `--dim`. Accepted the risk?
   `gbrain config set doctor.suppress_provider_sunset true` silences it.
 - **`gbrain upgrade`** — a one-shot banner (gated by
-  `ze_sunset_notice_shown`) with the same two fixes.
+  `ze_sunset_notice_shown`) with the same two fixes, plus a stage-2 banner
+  per brain.
+- **The v0.47.0 version migration** (runs via `gbrain upgrade` /
+  `gbrain apply-migrations`) — detect-and-notify only: it checks the host
+  brain's exposure (embedding, reranker, custom columns), prints the ACTION
+  REQUIRED block, and files an agent action item pointing at
+  `skills/migrations/v0.47.0.0.md` in
+  `~/.gbrain/migrations/pending-host-work.jsonl`. It never changes config or
+  spends money on your behalf.
 
 Both state the full consequence: after the shutdown, **existing vectors
 become unqueryable** — query embedding uses the same endpoint as ingestion —
@@ -162,14 +190,32 @@ vector spaces in one index, degrading retrieval with nothing in the logs.
 ## Reranker
 
 Migrating embeddings does not touch the reranker. If
-`search.reranker.model` points at the outgoing provider, the plan prints a
-warning; disable it (`gbrain config set search.reranker.enabled false`) or
-point it at another provider.
+`search.reranker.model` (or the mode-bundle fallback) resolves to the
+outgoing provider, the plan prints a warning; point it at the recommended
+replacement — `gbrain config set search.reranker.model voyage:rerank-2.5`
+(needs `VOYAGE_API_KEY`) — or disable it
+(`gbrain config set search.reranker.enabled false`).
+
+## Custom embedding columns
+
+There is **no automated off-ramp for custom `embedding_columns` entries**:
+`migrate embeddings` covers the primary column only. Re-declare each custom
+column's config on the new provider and re-embed its content, or drop the
+column config.
 
 ## Self-hosting instead of migrating
 
 If the outgoing model's weights are available (zembed-1's are Apache-2.0),
-serving them locally via `llama-server` / `ollama` / a LiteLLM proxy
-preserves your existing vectors — no re-embed at all. Point
-`embedding_model` at the local recipe and keep the same dimensions. The
+self-hosting preserves your existing vectors — no re-embed at all — but only
+when the embedding signature doesn't change: keep the SAME model id
+(`zeroentropyai:zembed-1`) and point its base URL at your endpoint with
+`gbrain config set provider_base_urls.zeroentropyai <url>`. The endpoint
+must speak ZeroEntropy's wire dialect (`/models/embed`,
+`{results: [...]}` responses) — the model id routes through a ZE-specific
+compat fetch, so a generic OpenAI-compatible `llama-server` or Ollama
+endpoint will NOT work without a compat proxy in front. Switching the
+provider id instead (e.g. `llama-server:zembed-1`) changes
+`pages.embedding_signature`, and the next stale-embed pass re-embeds
+everything — a full re-embed, not a zero-cost move. This path survives only
+until the September removal release deletes the `zeroentropyai` recipe. The
 migration command is for when you'd rather move to a hosted provider.

@@ -65,7 +65,7 @@ src/
     yaml-lite.ts          Lightweight YAML parser
     chunkers/             3-tier chunking (recursive, semantic, llm)
     search/               Hybrid search (vector, keyword, hybrid, expansion, dedup)
-    embedding.ts          Embedding service (provider-routed; ZeroEntropy default)
+    embedding.ts          Embedding service (provider-routed; Voyage default)
   mcp/
     server.ts             MCP stdio server (generated from operations)
     http-transport.ts     HTTP MCP transport (OAuth, body caps)
