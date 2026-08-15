@@ -154,6 +154,9 @@ const CLI_ONLY_SELF_HELP = new Set([
   // would leave that help dead code behind the generic stub (the init.ts:117
   // trap ENG-2 names).
   'bootstrap', 'hook', 'sweep',
+  // cathedral-4: transcripts ships its own HELP (the ingest import lane +
+  // the v0.29 recent reader). Without this the generic stub hides both.
+  'transcripts',
 ]);
 
 /**
@@ -172,6 +175,7 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   maintain: async () => (await import('./commands/maintain.ts')).runMaintain as never,
   'extract-conversation-facts': async () =>
     (await import('./commands/extract-conversation-facts.ts')).runExtractConversationFacts as never,
+  transcripts: async () => (await import('./commands/transcripts.ts')).runTranscripts as never,
 };
 
 /** Returns true when the command's own help was printed. */
