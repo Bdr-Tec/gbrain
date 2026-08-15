@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.2.0] - 2026-08-15
+## [0.46.4.0] - 2026-08-15
 
 **opencode joins the supported-client roster — at full parity from day one.**
 (opencode is opencode.ai, SST's terminal agent — not OpenClaw.) Unlike earlier
@@ -63,7 +63,7 @@ calls, so the end-to-end proof needs zero secrets.
   paths never echo credentials; test-harness child processes drop CI
   credentials before spawning third-party binaries.
 
-### To take advantage of v0.46.2.0
+### To take advantage of v0.46.4.0
 opencode users: run `gbrain bootstrap hooks --harness opencode` in your
 brain workspace (or paste the standard bootstrap block into an opencode
 session). The keyless free tier is enough to verify the wiring end to end —
