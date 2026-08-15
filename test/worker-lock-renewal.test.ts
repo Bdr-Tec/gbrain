@@ -647,13 +647,18 @@ describe('resolveLockRenewalKnobs', () => {
     expect(ok.callTimeoutMs).toBe(12_000);
   });
 
-  test('case 15c — relational validation runs against the EFFECTIVE per-job lease (300s knobs)', () => {
+  test('case 15c — per-job lease knob derivation: 300s lease gets capped 15s/30s defaults + 600s hardEvict', () => {
     _resetKnobWarningsForTests();
     const knobs = resolveLockRenewalKnobs({}, 300_000, 60_000);
     expect(knobs.hardEvictMs).toBe(600_000);
-    // Defaults at a 300s lease: callTimeout 100000 > cadence 60000 → clamped.
-    expect(knobs.callTimeoutMs).toBe(60_000);
-    expect(knobs.safetyMarginMs).toBe(50_000);
+    // The lock/3 and lock/6 derivations CAP at 15s/30s for long leases —
+    // a 100s call timeout would wedge tickInFlight across cadence windows.
+    expect(knobs.callTimeoutMs).toBe(15_000);
+    expect(knobs.safetyMarginMs).toBe(30_000);
+    // 30s worker default keeps today's numbers exactly.
+    const legacy = resolveLockRenewalKnobs({}, 30_000, 15_000);
+    expect(legacy.callTimeoutMs).toBe(10_000);
+    expect(legacy.safetyMarginMs).toBe(5_000);
   });
 });
 

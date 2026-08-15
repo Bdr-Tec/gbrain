@@ -3312,3 +3312,109 @@ describe('MinionQueue: stall-sweep reclaim grace (#4145)', () => {
     expect(resolveStallReclaimGraceMs({ GBRAIN_MINION_STALL_RECLAIM_GRACE_MS: 'abc' })).toBe(DEFAULT_STALL_RECLAIM_GRACE_MS);
   });
 });
+
+// --- v0.46 (#4145): per-job lock_duration_ms — three-layer lease resolution ---
+
+describe('MinionQueue: per-job lock lease (#4145)', () => {
+  test('claim stamps the handler-map default (300s) for subagent and derives lock_until from it', async () => {
+    await queue.add('subagent', {}, undefined, { allowProtectedSubmit: true });
+    const before = Date.now();
+    const claimed = await queue.claim('tok-lease', 30_000, 'default', ['subagent']);
+    expect(claimed).not.toBeNull();
+    expect(claimed!.lock_duration_ms).toBe(300_000); // stamped from the map
+    const horizon = claimed!.lock_until!.getTime() - before;
+    // lock_until derives from the 300s lease, NOT the worker's 30s default.
+    expect(horizon).toBeGreaterThan(250_000);
+    expect(horizon).toBeLessThan(360_000);
+  });
+
+  test('an unmapped handler keeps NULL lease → worker default horizon (legacy behavior)', async () => {
+    await queue.add('shortling', {});
+    const before = Date.now();
+    const claimed = await queue.claim('tok-short', 30_000, 'default', ['shortling']);
+    expect(claimed!.lock_duration_ms).toBeNull();
+    const horizon = claimed!.lock_until!.getTime() - before;
+    expect(horizon).toBeGreaterThan(20_000);
+    expect(horizon).toBeLessThan(40_000);
+  });
+
+  test('explicit submit value wins over the map and is clamped to [5s, 1h]', async () => {
+    const explicit = await queue.add('subagent', {}, { lock_duration_ms: 120_000 }, { allowProtectedSubmit: true });
+    expect(explicit.lock_duration_ms).toBe(120_000);
+
+    const floored = await queue.add('floorling', {}, { lock_duration_ms: 1 });
+    expect(floored.lock_duration_ms).toBe(5_000);
+
+    const ceiled = await queue.add('ceiling', {}, { lock_duration_ms: 99_999_999 });
+    expect(ceiled.lock_duration_ms).toBe(3_600_000);
+  });
+
+  test('idempotent re-submit never mutates the first submitter\'s lease (INSERT-only)', async () => {
+    const first = await queue.add('lease-idem', {}, { lock_duration_ms: 60_000, idempotency_key: 'lease-key-1' });
+    expect(first.lock_duration_ms).toBe(60_000);
+    const second = await queue.add('lease-idem', {}, { lock_duration_ms: 600_000, idempotency_key: 'lease-key-1' });
+    expect(second.id).toBe(first.id);
+    expect(second.lock_duration_ms).toBe(60_000); // unchanged
+  });
+
+  test('REGRESSION pin: NULL-lease rows keep the exact legacy wall-clock null-fallback', async () => {
+    // handleWallClockTimeouts' null-timeout branch is COALESCE(lock_duration_ms, $1)
+    // — rows WITHOUT a lease must behave exactly as before (worker default drives
+    // the 2x * max_stalled bound), and rows WITH a lease use their own.
+    const legacy = await queue.add('wallclock-legacy', {}, { max_stalled: 1 });
+    await queue.claim('tok-wc-legacy', 1_000, 'default', ['wallclock-legacy']);
+    // started 10s ago; NULL lease → threshold = 2 * 1000ms (worker default $1) * 1 = 2s → dead.
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET started_at = now() - interval '10 seconds', timeout_ms = NULL, timeout_at = NULL WHERE id = $1`,
+      [legacy.id]
+    );
+    const killedLegacy = await queue.handleWallClockTimeouts(1_000);
+    expect(killedLegacy.map(j => j.id)).toContain(legacy.id);
+
+    // Same shape WITH a 60s lease: threshold = 2 * 60000 * 1 = 120s → survives 10s.
+    const leased = await queue.add('wallclock-leased', {}, { max_stalled: 1, lock_duration_ms: 60_000 });
+    await queue.claim('tok-wc-leased', 1_000, 'default', ['wallclock-leased']);
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET started_at = now() - interval '10 seconds', timeout_ms = NULL, timeout_at = NULL WHERE id = $1`,
+      [leased.id]
+    );
+    const killedLeased = await queue.handleWallClockTimeouts(1_000);
+    expect(killedLeased.map(j => j.id)).not.toContain(leased.id);
+    const survivor = await queue.getJob(leased.id);
+    expect(survivor!.status).toBe('active');
+  });
+
+  test('repeated infrastructure evictions eventually dead-letter via max_stalled (lifetime accumulation pin)', async () => {
+    // The "no attempt burned" contract survives only max_stalled - 1
+    // requeues: stalled_counter accumulates across the job's lifetime and
+    // the final stall burns one attempt and dead-letters. Known coverage
+    // gap flagged in the #4145 review — pinned here.
+    const job = await queue.add('evict-accumulate', {}, { max_stalled: 3 });
+    for (let round = 1; round <= 2; round++) {
+      const claimed = await queue.claim(`tok-ev-${round}`, 30_000, 'default', ['evict-accumulate']);
+      expect(claimed!.id).toBe(job.id);
+      await engine.executeRaw(
+        `UPDATE minion_jobs SET lock_until = now() - interval '30 seconds' WHERE id = $1`,
+        [job.id]
+      );
+      const { requeued, dead } = await queue.handleStalled();
+      expect(requeued.map(j => j.id)).toContain(job.id);
+      expect(dead).toHaveLength(0);
+      const after = await queue.getJob(job.id);
+      expect(after!.stalled_counter).toBe(round);
+      expect(after!.attempts_made).toBe(0); // no attempt burned on requeue
+    }
+    // Third stall: stalled_counter + 1 >= max_stalled → dead + attempt burned.
+    await queue.claim('tok-ev-3', 30_000, 'default', ['evict-accumulate']);
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET lock_until = now() - interval '30 seconds' WHERE id = $1`,
+      [job.id]
+    );
+    const finalSweep = await queue.handleStalled();
+    expect(finalSweep.dead.map(j => j.id)).toContain(job.id);
+    const final = await queue.getJob(job.id);
+    expect(final!.status).toBe('dead');
+    expect(final!.attempts_made).toBe(1);
+    expect(final!.error_text).toBe('max stalled count exceeded');
+  });
+});

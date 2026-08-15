@@ -161,8 +161,13 @@ export function resolveLockRenewalKnobs(
   intervalMs: number = Math.max(1, Math.floor(lockDurationMs / 2)),
 ): LockRenewalKnobs {
   const defaultMaxFailures = 3;
-  const defaultCallTimeout = Math.max(1, Math.floor(lockDurationMs / 3));
-  const defaultSafetyMargin = Math.max(1, Math.floor(lockDurationMs / 6));
+  // #4145: the derived defaults CAP at 15s/30s so a long per-job lease
+  // (300s) doesn't inherit a 100s call timeout (which would wedge
+  // tickInFlight across cadence windows) or a 50s margin. The 30s worker
+  // default keeps today's 10s/5s exactly. Env overrides are still applied
+  // first and then pass the relational validation below.
+  const defaultCallTimeout = Math.min(Math.max(1, Math.floor(lockDurationMs / 3)), 15_000);
+  const defaultSafetyMargin = Math.min(Math.max(1, Math.floor(lockDurationMs / 6)), 30_000);
   const defaultHardEvict = lockDurationMs * 2;
 
   const knobs: LockRenewalKnobs = {

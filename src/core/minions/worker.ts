@@ -913,13 +913,19 @@ export class MinionWorker extends EventEmitter {
     const monotonicNow = () => performance.now();
 
     // --- D3: pure-function lock renewal ---
-    const knobs = resolveLockRenewalKnobs(process.env, this.opts.lockDuration);
-    const renewalIntervalMs = this.opts.lockDuration / 2;
+    // #4145: the EFFECTIVE lease is per-job (claim stamped it from the
+    // handler map / explicit submit; NULL = worker default). The cadence
+    // clamps to 60s so a 300s lease renews 5x per window (matching the
+    // cycle refresher's multiple-chances philosophy) instead of the bare
+    // lease/2 = every 150s; leases ≤120s keep the legacy /2 exactly.
+    const effectiveLockMs = job.lock_duration_ms ?? this.opts.lockDuration;
+    const renewalIntervalMs = Math.min(effectiveLockMs / 2, 60_000);
+    const knobs = resolveLockRenewalKnobs(process.env, effectiveLockMs, renewalIntervalMs);
     const renewalState: LockRenewalState = {
       jobId: job.id,
       jobName: job.name,
       lockToken,
-      lockDurationMs: this.opts.lockDuration,
+      lockDurationMs: effectiveLockMs,
       knobs,
       lastSuccessfulRenewalAt: monotonicNow(),
       consecutiveFailures: 0,
@@ -1006,7 +1012,7 @@ export class MinionWorker extends EventEmitter {
         .finally(() => {
           tickInFlight = false;
         });
-    }, this.opts.lockDuration / 2);
+    }, renewalIntervalMs);
 
     // --- D8b: universal grace-eviction timer ---
     // Fires for ANY abort reason (not just job.timeout_ms). Without

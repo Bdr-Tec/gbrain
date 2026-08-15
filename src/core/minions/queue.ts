@@ -16,7 +16,10 @@ import type {
 import { rowToMinionJob, rowToInboxMessage, rowToAttachment } from './types.ts';
 import { validateAttachment } from './attachments.ts';
 import { isProtectedJobName } from './protected-names.ts';
-import { defaultTimeoutMsFor, HANDLER_DEFAULT_TIMEOUT_MS } from './handler-timeouts.ts';
+import {
+  defaultTimeoutMsFor, HANDLER_DEFAULT_TIMEOUT_MS,
+  defaultLockDurationMsFor, HANDLER_DEFAULT_LOCK_DURATION_MS, clampLockDurationMs,
+} from './handler-timeouts.ts';
 import {
   withRetry, BULK_RETRY_OPTS, resolveBulkRetryOpts, computeNextDelay,
   isRetryableConnError,
@@ -392,11 +395,11 @@ export class MinionQueue {
 
       const baseCols = `name, queue, status, priority, data, max_attempts, backoff_type,
             backoff_delay, backoff_jitter, delay_until, parent_job_id, on_child_fail,
-            depth, max_children, timeout_ms, remove_on_complete, remove_on_fail, idempotency_key,
+            depth, max_children, timeout_ms, lock_duration_ms, remove_on_complete, remove_on_fail, idempotency_key,
             quiet_hours, stagger_key`;
-      const baseVals = `$1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20`;
+      const baseVals = `$1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20::jsonb, $21`;
       const cols = hasMaxStalled ? `${baseCols}, max_stalled` : baseCols;
-      const vals = hasMaxStalled ? `${baseVals}, $21` : baseVals;
+      const vals = hasMaxStalled ? `${baseVals}, $22` : baseVals;
 
       const insertSql = opts?.idempotency_key
         ? `INSERT INTO minion_jobs (${cols})
@@ -426,6 +429,14 @@ export class MinionQueue {
         // sane long wall-clock default stamped at submit when the caller didn't
         // pass one, so they aren't killed mid-progress by the short null-default.
         opts?.timeout_ms ?? defaultTimeoutMsFor(jobName),
+        // #4145: same three-layer pattern for the lock lease. Explicit input
+        // is clamped to [5s,1h]; absent → handler map default; NULL row =
+        // worker-global lockDuration at claim. INSERT-only (see the
+        // max_stalled footgun note above): an idempotency-key re-submit
+        // never mutates the first submitter's lease.
+        opts?.lock_duration_ms != null
+          ? clampLockDurationMs(opts.lock_duration_ms)
+          : defaultLockDurationMsFor(jobName),
         opts?.remove_on_complete ?? false,
         opts?.remove_on_fail ?? false,
         opts?.idempotency_key ?? null,
@@ -810,11 +821,18 @@ export class MinionQueue {
     // Direct (session-mode) pool: claim opens the lock that renewLock then
     // heartbeats. Both must live on a connection the transaction-mode pooler
     // won't recycle mid-hold, or the lock orphans and the worker wedges.
+    //
+    // #4145: lock_duration_ms resolves row → handler map ($6, RAW object —
+    // same double-encode rule as $5) → worker default ($2), is STAMPED onto
+    // the row (durable, like timeout_ms), and lock_until derives from the
+    // same COALESCE (OLD-row semantics: repeat the expression, don't
+    // reference the assigned column).
     const rows = await this.engine.executeRawDirect<Record<string, unknown>>(
       `UPDATE minion_jobs SET
         status = 'active',
         lock_token = $1,
-        lock_until = now() + ($2::double precision * interval '1 millisecond'),
+        lock_until = now() + (COALESCE(lock_duration_ms, ($6::jsonb ->> name)::int, $2)::double precision * interval '1 millisecond'),
+        lock_duration_ms = COALESCE(lock_duration_ms, ($6::jsonb ->> name)::int),
         timeout_ms = COALESCE(timeout_ms, ($5::jsonb ->> name)::int),
         timeout_at = CASE WHEN COALESCE(timeout_ms, ($5::jsonb ->> name)::int) IS NOT NULL
                           THEN now() + (COALESCE(timeout_ms, ($5::jsonb ->> name)::int)::double precision * interval '1 millisecond')
@@ -830,7 +848,7 @@ export class MinionQueue {
          LIMIT 1
        )
        RETURNING *`,
-      [lockToken, lockDurationMs, queue, registeredNames, HANDLER_DEFAULT_TIMEOUT_MS]
+      [lockToken, lockDurationMs, queue, registeredNames, HANDLER_DEFAULT_TIMEOUT_MS, HANDLER_DEFAULT_LOCK_DURATION_MS]
     );
     return rows.length > 0 ? rowToMinionJob(rows[0]) : null;
   }
@@ -997,7 +1015,7 @@ export class MinionQueue {
             AND EXTRACT(EPOCH FROM (now() - started_at)) * 1000 >
               CASE
                 WHEN timeout_ms IS NOT NULL THEN timeout_ms * 2
-                ELSE $1::double precision * 2 * GREATEST(max_stalled, 1)
+                ELSE COALESCE(lock_duration_ms, $1)::double precision * 2 * GREATEST(max_stalled, 1)
               END`,
         [lockDurationMs]
       );
@@ -1020,7 +1038,7 @@ export class MinionQueue {
               AND EXTRACT(EPOCH FROM (now() - started_at)) * 1000 >
                 CASE
                   WHEN timeout_ms IS NOT NULL THEN timeout_ms * 2
-                  ELSE $1::double precision * 2 * GREATEST(max_stalled, 1)
+                  ELSE COALESCE(lock_duration_ms, $1)::double precision * 2 * GREATEST(max_stalled, 1)
                 END
             FOR UPDATE SKIP LOCKED
          )
