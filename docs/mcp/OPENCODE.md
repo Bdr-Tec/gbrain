@@ -8,7 +8,10 @@
 > the finished brain into opencode over stdio MCP. opencode is a
 > **bootstrap-supported harness**: `gbrain bootstrap hooks --harness opencode`
 > registers the brain for you (and `gbrain connect --agent opencode` handles
-> remote brains) — the commands below are the manual equivalents.
+> remote brains — see below) — the commands on this page are the standalone
+> manual recipe. Bootstrap's own registration additionally pins the workspace
+> source (`GBRAIN_SOURCE`) and the full op surface, so the two are not
+> byte-identical.
 
 opencode spawns `gbrain serve` as a local stdio subprocess. No server, no
 tunnel, no token needed. Works with both PGLite and Supabase engines — and
@@ -79,6 +82,11 @@ opencode mcp list        # the real probe: SPAWNS the server
 `opencode mcp list` performs the actual spawn + handshake for every
 configured server — expect `✓ gbrain connected`. A broken registration shows
 `✗ gbrain failed` with the reason (e.g. `Executable not found in $PATH`).
+Because it spawns everything — including any project `opencode.json` entries
+in your cwd, with no trust prompt — run it from a directory you trust
+(gbrain's own bootstrap verification probe runs from an empty temp directory
+for exactly this reason, and skips the live probe entirely for project-scoped
+registrations).
 Two caveats: the exit code is 0 even when servers fail (read the output, not
 `$?`), and `opencode mcp debug` is OAuth-only diagnostics — it is NOT a
 handshake probe for local servers. Then one real round-trip:
@@ -89,6 +97,26 @@ opencode run "use the gbrain recall tool to answer: what did I import most recen
 
 `opencode run` (headless one-shot) prints the final answer alone on stdout
 (UI goes to stderr). MCP tools work in run mode without any permission flags.
+
+## Remote brains (`gbrain connect`)
+
+For a brain served over HTTP on another machine:
+
+```bash
+gbrain connect https://your-host/mcp --token gbrain_xxx --agent opencode [--install]
+```
+
+Without `--install` it prints the config block to add; with `--install` it
+writes the entry directly into the user-global config (no opencode binary
+required — the JSONC write IS the registration) and smoke-tests the token.
+Either way the config stores only the `{env:GBRAIN_REMOTE_TOKEN}`
+interpolation — opencode resolves the env var at read time, so the token
+never lands in the file. Export `GBRAIN_REMOTE_TOKEN` in your shell profile.
+`--force` replaces a gbrain-managed entry whose endpoint moved (a rotated
+serve); an entry gbrain didn't write is never replaced — pick another
+`--name`. (Framework-spawned opencode inherits no shell profile;
+`gbrain bootstrap harness --harness opencode` covers that case with an
+inline-bearer entry written 0600.)
 
 ## Auth + model pin
 

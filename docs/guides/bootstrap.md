@@ -1,7 +1,7 @@
 # GBrain Bootstrap — your harness as your agent
 
-`gbrain bootstrap` turns a Claude Code or Codex session into a persistent personal
-agent: identity files rendered from your own answers, a local PGLite brain,
+`gbrain bootstrap` turns a Claude Code, Codex, or opencode session into a
+persistent personal agent: identity files rendered from your own answers, a local PGLite brain,
 per-turn context, session-triggered schedules, and a private GitHub repo as the
 agent's durable, portable body. This guide is the full contract — what gets
 installed, what runs when, what it can and cannot do, and how to undo all of it.
@@ -19,7 +19,7 @@ follows is `BOOTSTRAP_FOR_AGENTS.md` at the repo root, fetched at the
 | Identity files (SOUL/USER/MEMORY/AGENTS/CLAUDE/HEARTBEAT/ACCESS_POLICY/GITHUB) | your workspace folder | loaded at session start |
 | `agent.json` manifest + `brain/`, `memory/`, `skills/`, `state/` | workspace | — |
 | Local brain (PGLite) | `~/.gbrain/` (never in the repo) | while a session's MCP serve is open |
-| MCP registration (`gbrain serve`) | Claude Code: project scope by default; Codex: user-global (no scope flag) | spawned by your harness per session |
+| MCP registration (`gbrain serve`) | Claude Code: project scope by default; Codex: user-global (no scope flag); opencode: user-global by default (project scope is an explicit opt-in — see the degradation matrix) | spawned by your harness per session |
 | Hooks (Claude Code, ON by default) | local installs: `.claude/settings.local.json` (gitignored); cloud sandboxes: the COMMITTED `.claude/settings.json` (PATH-resolved, fail-open commands) | each prompt; fail-open; `--no-hooks` opts out at install, `GBRAIN_HOOKS=0` disables at runtime |
 | Per-turn persistence | Stop hook → debounced, detached scan-gated push (per workspace; 5 min default, every turn in cloud sandboxes) | after each assistant turn; `GBRAIN_STOP_PUSH=0` disables; `GBRAIN_STOP_PUSH_DEBOUNCE_MIN` / config `hooks.stop_push_debounce_min` tune it |
 | Session persistence | SessionEnd hook → scan-gated commit+push | at session end (note: the harness never fires SessionEnd on `/exit` — the per-turn push is what covers that) |
@@ -283,6 +283,11 @@ that changed shape, a harness that stopped calling our MCP server):
   spends one live `codex exec` turn to prove real codex → gbrain MCP → brain →
   a seeded, brain-only fact (falling back to a shell `gbrain query` if headless
   stdio-MCP is unavailable).
+
+opencode's real-binary door lives in
+`test/e2e/install-real-opencode.serial.test.ts` (its writer-parity leg
+handshakes gbrain's direct JSONC registration through the actual binary);
+`docs/TESTING.md` carries the full door inventory and cadence policy.
 
 These pay real API cost and take 30s–2min per turn, so they are NOT in the PR
 shard. Everything is hermetic (temp `HOME` / `CODEX_HOME` / `CLAUDE_CONFIG_DIR` /

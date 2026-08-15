@@ -30,12 +30,18 @@ collision.
   trimmed output; SST identity is discriminated by the `mcp`+`debug` subcommands
   existing (`opencode debug paths` exits 0 and prints the path table below —
   the renamed-to-Crush ancestor and other claimants have neither).
-- **Provisioning (CI + local): pinned npm install** — `opencode-ai@1.18.18`,
-  registry integrity `sha512-J+5HFq…`. The wrapper fans out to per-platform
+- **Provisioning (CI + local): pinned npm, pack-verify-install** —
+  `opencode-ai@1.18.18`, registry integrity `sha512-J+5HFq…`. The CI job
+  `npm pack`s the wrapper AND the runner's platform payload first (pack
+  reports the integrity of the bytes it actually downloaded — closing the
+  view-then-install TOCTOU), asserts both against the stamps above, then
+  installs FROM the verified local wrapper tarball; the install-time platform
+  sub-package fetch is validated by npm against the same packument integrity
+  the pack step just byte-confirmed. The wrapper fans out to per-platform
   payloads (`opencode-{darwin,linux,windows}-{arm64,x64}[-baseline|-musl]`) as
-  optionalDependencies at the same version; the CI job pins the LINUX payload
-  integrities (stamps above) because the wrapper's integrity covers only the
-  wrapper tarball. Darwin arm64 payload observed at
+  optionalDependencies at the same version; the LINUX payload integrities are
+  pinned separately because the wrapper's integrity covers only the wrapper
+  tarball. Darwin arm64 payload observed at
   `sha512-VkG+bz8u8Xqg9NzPK+2/71nEd4DKKlo2NLZurQ1eLAzDnmb1CMYZif/o6Shl8YFuTuYU/30k6yufl4Zr0Ij64g==`
   (informational — the CI runners are linux). Same npm version-immutability
   assumption as the grok pin, stated explicitly.
