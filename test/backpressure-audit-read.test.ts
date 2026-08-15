@@ -46,9 +46,14 @@ describe('readRecentCoalesceCounts', () => {
     ]);
     await withEnv({ GBRAIN_AUDIT_DIR: dir }, async () => {
       const counts = readRecentCoalesceCounts({ queue: 'default', windowMs: 24 * 3600_000, now });
-      expect(counts.get('autopilot-cycle')).toBe(2); // other-queue + >24h excluded
-      expect(counts.get('sync')).toBe(1);
+      expect(counts.get('autopilot-cycle')?.count).toBe(2); // other-queue + >24h excluded
+      expect(counts.get('sync')?.count).toBe(1);
       expect(counts.size).toBe(2);
+      // Latest event wins the hint target: the 10-min-ago event (job 1) is
+      // newer than the 20-min-ago one, and other-queue/out-of-window events
+      // never contribute a target.
+      expect(counts.get('autopilot-cycle')?.last_returned_job_id).toBe(1);
+      expect(counts.get('sync')?.last_returned_job_id).toBe(2);
     });
   });
 
@@ -70,7 +75,10 @@ describe('readRecentCoalesceCounts', () => {
     ]);
     await withEnv({ GBRAIN_AUDIT_DIR: dir }, async () => {
       const counts = readRecentCoalesceCounts({ queue: 'default', windowMs: 24 * 3600_000, now });
-      expect(counts.get('autopilot-cycle')).toBe(2);
+      expect(counts.get('autopilot-cycle')?.count).toBe(2);
+      // Latest in-window event (1h ago, current week, job 1) wins the target
+      // over the older previous-week event (20h ago, job 2).
+      expect(counts.get('autopilot-cycle')?.last_returned_job_id).toBe(1);
     });
   });
 
@@ -83,7 +91,7 @@ describe('readRecentCoalesceCounts', () => {
         JSON.stringify({ ts: now.toISOString(), queue: 'default', name: 'ok', decision: 'coalesced', returned_job_id: 1 }) + '\n' +
         '{"truncated":\n', 'utf8');
       const counts = readRecentCoalesceCounts({ queue: 'default', windowMs: 24 * 3600_000, now });
-      expect(counts.get('ok')).toBe(1);
+      expect(counts.get('ok')?.count).toBe(1);
       expect(counts.size).toBe(1);
     });
   });

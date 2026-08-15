@@ -5735,7 +5735,12 @@ export const MIGRATIONS: Migration[] = [
     //    but the newest waiting row per (name, queue, source scope),
     //    restricted to ticker-keyed rows (idempotency-key prefix heuristic:
     //    manually submitted cycles carry no key unless the operator passes
-    //    one; mimicking the ticker prefix opts into ticker dedup semantics).
+    //    one; mimicking the ticker prefix opts into ticker dedup semantics)
+    //    AND to rows without a camelCase data.sourceId — the ticker only
+    //    ever writes snake_case source_id, so a sourceId row is by
+    //    definition not ticker-provenance and must never be swept
+    //    (adversarial-review tightening: prevents distinct sourceId scopes
+    //    collapsing into the empty source_id group).
     //    Rows are preserved as 'cancelled' for audit; their idempotency keys
     //    free naturally via the dead/cancelled key-NULLing rule in add().
     //    Leaves <=1 waiting (+ possibly 1 active) per scope — converges to
@@ -5775,6 +5780,7 @@ export const MIGRATIONS: Migration[] = [
        WHERE status = 'waiting' AND parent_job_id IS NULL
          AND name IN ('autopilot-cycle','autopilot-global-maintenance')
          AND (idempotency_key LIKE 'autopilot-cycle:%' OR idempotency_key LIKE 'autopilot-global:%')
+         AND data->>'sourceId' IS NULL
          AND id NOT IN (
            SELECT id FROM (
              SELECT DISTINCT ON (name, queue, COALESCE(data->>'source_id','')) id
@@ -5782,6 +5788,7 @@ export const MIGRATIONS: Migration[] = [
              WHERE status = 'waiting' AND parent_job_id IS NULL
                AND name IN ('autopilot-cycle','autopilot-global-maintenance')
                AND (idempotency_key LIKE 'autopilot-cycle:%' OR idempotency_key LIKE 'autopilot-global:%')
+               AND data->>'sourceId' IS NULL
              ORDER BY name, queue, COALESCE(data->>'source_id',''), created_at DESC, id DESC
            ) keep
          );

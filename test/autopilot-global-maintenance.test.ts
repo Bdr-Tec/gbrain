@@ -113,7 +113,9 @@ describe('dispatchGlobalMaintenance — single-flight gate', () => {
     const r = await dispatchGlobalMaintenance(engine, queue, {
       repoPath: '/tmp', slot: 's1', timeoutMs: 1, jsonMode: true, emit: (l: string) => events.push(l),
     });
-    expect(r.dispatched).toBe(true);
+    // Honest-dispatch contract: nothing was inserted, so dispatched is false;
+    // coalesced says the work is already in flight.
+    expect(r.dispatched).toBe(false);
     expect(r.coalesced).toBe(true);
     const kinds = events.map(e => JSON.parse(e).event);
     expect(kinds).toContain('dispatch_coalesced');

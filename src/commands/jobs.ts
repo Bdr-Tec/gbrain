@@ -286,8 +286,9 @@ USAGE
 
     Auto-restarting wrapper around 'gbrain jobs work'. Spawns the worker
     as a child process and restarts on crash with exponential backoff
-    (1s -> 60s cap). Writes a PID file to ~/.gbrain/supervisor.pid by
-    default (override via --pid-file or GBRAIN_SUPERVISOR_PID_FILE env).
+    (1s -> 60s cap). Writes a brain-scoped PID file to
+    ~/.gbrain/supervisor-<brain-id>.pid by default (override via
+    --pid-file or GBRAIN_SUPERVISOR_PID_FILE env).
     Lifecycle events are appended to
       \${GBRAIN_AUDIT_DIR:-~/.gbrain/audit}/supervisor-YYYY-Www.jsonl
 
@@ -383,9 +384,14 @@ OPTIONS (start)
   --json               JSONL lifecycle events on stdout
   --concurrency N      Worker concurrency (default 2)
   --queue Q            Queue to claim from (default: default)
-  --pid-file PATH      PID file (default ~/.gbrain/supervisor.pid;
+  --pid-file PATH      PID file (default: brain-scoped
+                       ~/.gbrain/supervisor-<brain-id>.pid;
                        env GBRAIN_SUPERVISOR_PID_FILE)
-  --max-crashes N      Give up after N worker crashes in 24h (default 10)
+  --max-crashes N      Soft crash threshold (default 10): past N crashes in
+                       24h the supervisor reports degraded and keeps backing
+                       off. It only STOPS permanently at the hard ceiling —
+                       default 10 x N; override or disable (0 = never) via
+                       GBRAIN_SUPERVISOR_HARD_STOP_CRASHES.
   --health-interval N  Worker health probe cadence in ms
   --allow-shell-jobs   Enable the shell handler on the spawned worker
   --cli-path PATH      Explicit gbrain binary for the worker child
@@ -904,27 +910,32 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
           const coalesceCounts = readRecentCoalesceCounts({ queue: statsQueue, windowMs: 24 * 3600_000 });
           if (coalesceCounts.size > 0) {
             const parts = [...coalesceCounts.entries()]
-              .sort((a, b) => b[1] - a[1])
-              .map(([name, n]) => `${name}: ${n}`);
+              .sort((a, b) => b[1].count - a[1].count)
+              .map(([name, s]) => `${name}: ${s.count}`);
             console.log(`\n  Backpressure (24h): submissions coalesced onto in-flight jobs — ${parts.join(', ')}`);
             // Hint loop is bounded: names come from the 24h audit window
             // (normally a handful), capped defensively — this is an
-            // operator-invoked diagnostic, not a hot path.
-            const hintNames = [...coalesceCounts.keys()].slice(0, 10);
-            for (const name of hintNames) {
-              // One CTE computes the oldest live-lock active row so the
-              // live-lock predicate exists in exactly one place.
+            // operator-invoked diagnostic, not a hot path. Each hint is
+            // driven by the LATEST coalesce target for the name (the audit's
+            // returned_job_id), scoped to that job's source — a name-wide
+            // aggregate would let source A's waiting row mask source B's
+            // wedge, or name A's job for B's coalesce (multi-source brains).
+            const hints = [...coalesceCounts.entries()].slice(0, 10);
+            for (const [name, summary] of hints) {
+              if (summary.last_returned_job_id == null) continue;
               const rows = await engine.executeRaw<{ waiting: string; live_id: string | null; age_min: string | null }>(
-                `WITH live AS (
-                   SELECT id, started_at FROM minion_jobs
-                    WHERE name = $1 AND queue = $2 AND status = 'active' AND lock_until > now()
-                    ORDER BY started_at ASC NULLS LAST LIMIT 1
+                `WITH target AS (
+                   SELECT id, started_at, status, lock_until,
+                          COALESCE(data->>'sourceId', data->>'source_id') AS scope
+                     FROM minion_jobs WHERE id = $3
                  )
-                 SELECT (SELECT count(*)::text FROM minion_jobs
-                          WHERE name = $1 AND queue = $2 AND status = 'waiting') AS waiting,
-                        (SELECT id::text FROM live) AS live_id,
-                        (SELECT floor(EXTRACT(EPOCH FROM (now() - started_at)) / 60)::text FROM live) AS age_min`,
-                [name, statsQueue],
+                 SELECT (SELECT count(*)::text FROM minion_jobs m, target t
+                          WHERE m.name = $1 AND m.queue = $2 AND m.status = 'waiting'
+                            AND COALESCE(m.data->>'sourceId', m.data->>'source_id') IS NOT DISTINCT FROM t.scope) AS waiting,
+                        (SELECT id::text FROM target WHERE status = 'active' AND lock_until > now()) AS live_id,
+                        (SELECT floor(EXTRACT(EPOCH FROM (now() - started_at)) / 60)::text FROM target
+                          WHERE status = 'active' AND lock_until > now()) AS age_min`,
+                [name, statsQueue, summary.last_returned_job_id],
               );
               const r = rows[0];
               const ageMin = r?.age_min != null ? parseInt(r.age_min, 10) : null;

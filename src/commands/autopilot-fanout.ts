@@ -629,7 +629,10 @@ export async function dispatchGlobalMaintenance(
     } else {
       log(`[dispatch] coalesced onto job #${job.id} autopilot-global-maintenance (already in flight)`);
     }
-    return { dispatched: true, coalesced: true, reason: 'stale' };
+    // dispatched: false — no row was inserted (same honest-dispatch contract
+    // as dispatchPerSource, where coalesced sources are excluded from
+    // `dispatched`). The coalesced flag says work is already in flight.
+    return { dispatched: false, coalesced: true, reason: 'stale' };
   }
   if (opts.jsonMode) {
     emit(JSON.stringify({ event: 'dispatched', job_id: job.id, mode: 'global_maintenance', slot: opts.slot }));

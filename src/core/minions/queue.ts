@@ -42,20 +42,30 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MiB
 
 const TERMINAL_STATUSES = ['completed', 'failed', 'dead', 'cancelled'] as const;
 
+/** Audit payload deferred from inside the submission transaction. */
+type CoalesceAuditEvent = {
+  queue: string; name: string; returned_job_id: number;
+  waiting_count?: number; max_waiting?: number;
+  pending_count?: number; max_pending?: number;
+};
+
 /** Shared cap-hit coalesce return for the backpressure guards: hydrate the
- *  existing row, stamp the non-persisted `coalesced` marker, best-effort
- *  audit, return. Both maxWaiting and maxPending route through here so the
- *  coalesce contract cannot drift between them. */
-async function coalesceReturn(
+ *  existing row, stamp the non-persisted `coalesced` marker, hand the audit
+ *  payload to the caller's sink, return. Both maxWaiting and maxPending route
+ *  through here so the coalesce contract cannot drift between them.
+ *
+ *  The sink DEFERS the audit write to after the transaction commits: the
+ *  audit append is filesystem I/O, and doing it while holding the advisory
+ *  lock + a pool connection would let a hung audit volume serialize every
+ *  submission for the scope (adversarial-review finding). */
+function coalesceReturn(
   row: Record<string, unknown>,
-  audit: { queue: string; name: string; waiting_count?: number; max_waiting?: number; pending_count?: number; max_pending?: number },
-): Promise<MinionJob> {
+  audit: Omit<CoalesceAuditEvent, 'returned_job_id'>,
+  sink: (ev: CoalesceAuditEvent) => void,
+): MinionJob {
   const coalesced = rowToMinionJob(row);
   coalesced.coalesced = true;
-  try {
-    const { logBackpressureCoalesce } = await import('./backpressure-audit.ts');
-    logBackpressureCoalesce({ ...audit, returned_job_id: coalesced.id });
-  } catch { /* audit failures never block submission */ }
+  sink({ ...audit, returned_job_id: coalesced.id });
   return coalesced;
 }
 
@@ -146,7 +156,11 @@ export class MinionQueue {
     const delayUntil = opts?.delay ? new Date(Date.now() + opts.delay) : null;
     const maxSpawnDepth = opts?.max_spawn_depth ?? this.maxSpawnDepth;
 
-    return this.engine.transaction(async (tx) => {
+    // Set inside the transaction by a cap-hit coalesce; flushed AFTER commit
+    // so audit filesystem I/O never runs while holding the advisory lock.
+    let coalesceAudit: CoalesceAuditEvent | null = null;
+
+    const result = await this.engine.transaction(async (tx) => {
       // 1. Idempotency fast path — if a row already exists for this key, return it
       //    without doing any other work. The unique partial index guarantees
       //    no second row can be inserted with the same non-null key.
@@ -245,12 +259,12 @@ export class MinionQueue {
               [jobName, backpressureQueue, bpSourceId]
             );
             if (existingPending.length > 0) {
-              return await coalesceReturn(existingPending[0], {
+              return coalesceReturn(existingPending[0], {
                 queue: backpressureQueue,
                 name: jobName,
                 pending_count: pendingCount,
                 max_pending: maxPending,
-              });
+              }, ev => { coalesceAudit = ev; });
             }
           }
         }
@@ -275,12 +289,12 @@ export class MinionQueue {
               [jobName, backpressureQueue, bpSourceId]
             );
             if (existingWaiting.length > 0) {
-              return await coalesceReturn(existingWaiting[0], {
+              return coalesceReturn(existingWaiting[0], {
                 queue: backpressureQueue,
                 name: jobName,
                 waiting_count: waitingCount,
                 max_waiting: maxWaiting,
-              });
+              }, ev => { coalesceAudit = ev; });
             }
           }
         }
@@ -409,6 +423,18 @@ export class MinionQueue {
 
       return child;
     });
+
+    // Deferred audit flush — after commit, advisory lock released, connection
+    // returned to the pool. A hung/slow audit volume degrades only this one
+    // submission's latency, never the queue.
+    if (coalesceAudit) {
+      try {
+        const { logBackpressureCoalesce } = await import('./backpressure-audit.ts');
+        logBackpressureCoalesce(coalesceAudit);
+      } catch { /* audit failures never block submission */ }
+    }
+
+    return result;
   }
 
   /** Get a job by ID. Returns null if not found. */

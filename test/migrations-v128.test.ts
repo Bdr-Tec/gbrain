@@ -151,6 +151,15 @@ describe('migration v128 — backfill + cleanup semantics (PGLite)', () => {
     // NO ticker key — must never be touched (Codex C5).
     const manual = await queue.add('autopilot-cycle', { source_id: 'src-dup', phases: ['sync'] });
     await forceRow(manual.id, `created_at = now() - interval '5 hours'`);
+    // Ticker-mimicking key but camelCase sourceId payload: the ticker never
+    // writes sourceId, so this row is not ticker-provenance — the cleanup's
+    // sourceId-IS-NULL guard must leave it alone even though its key matches
+    // the prefix (adversarial-review tightening: without the guard, distinct
+    // sourceId scopes would collapse into the empty source_id group).
+    const camelMimic = await queue.add('autopilot-cycle', { sourceId: 'camel-src' }, {
+      idempotency_key: 'autopilot-cycle:camel-mimic:slot-1',
+    });
+    await forceRow(camelMimic.id, `created_at = now() - interval '7 hours'`);
     // Parented row with a ticker-looking key: guarded by parent_job_id IS NULL.
     // Parent is seeded by direct UPDATE — add()'s parent_job_id opt would flip
     // the parent row to 'waiting-children' and pollute the dup-scope fixtures.
@@ -193,6 +202,7 @@ describe('migration v128 — backfill + cleanup semantics (PGLite)', () => {
     expect(byId.get(manual.id)!.status).toBe('waiting');            // manual never touched (C5)
     expect(byId.get(manual.id)!.error_text).toBeNull();
     expect(byId.get(parented.id)!.status).toBe('waiting');          // parented never touched
+    expect(byId.get(camelMimic.id)!.status).toBe('waiting');        // camelCase sourceId never swept
 
     // Ledger idempotency: re-run applies nothing.
     const rerun = await runMigrations(engine);

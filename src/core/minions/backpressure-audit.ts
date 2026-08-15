@@ -75,11 +75,20 @@ export function resolveAuditDir(): string {
  * command is scoped to. Best-effort: missing/unreadable files and malformed
  * lines are skipped; callers omit the display line when the map is empty.
  */
+export interface CoalesceSummary {
+  count: number;
+  /** returned_job_id of the LATEST coalesce event in the window — the
+   *  specific in-flight job submissions coalesced onto. Lets consumers
+   *  (jobs stats) scope diagnostics to the actual target instead of
+   *  aggregating across every source sharing the job name. */
+  last_returned_job_id: number | null;
+}
+
 export function readRecentCoalesceCounts(opts: {
   queue: string;
   windowMs: number;
   now?: Date;
-}): Map<string, number> {
+}): Map<string, CoalesceSummary> {
   const now = opts.now ?? new Date();
   const dir = resolveAuditDir();
   const cutoff = now.getTime() - opts.windowMs;
@@ -87,11 +96,32 @@ export function readRecentCoalesceCounts(opts: {
     computeAuditFilename(now),
     computeAuditFilename(new Date(now.getTime() - 7 * 86400000)),
   ]);
-  const counts = new Map<string, number>();
+  const counts = new Map<string, CoalesceSummary>();
+  const latestTs = new Map<string, number>();
+  // Cap per-file reads: coalesce volume is caller-influenced (webhook-driven
+  // submitters can grow the weekly file), and the newest events — the ones a
+  // 24h window wants — are at the END. Reading an uncapped file into memory
+  // would let the audit trail OOM the diagnostic that reads it.
+  const MAX_READ_BYTES = 4 * 1024 * 1024;
   for (const filename of files) {
     let raw: string;
     try {
-      raw = fs.readFileSync(path.join(dir, filename), 'utf8');
+      const fullPath = path.join(dir, filename);
+      const size = fs.statSync(fullPath).size;
+      if (size > MAX_READ_BYTES) {
+        const fd = fs.openSync(fullPath, 'r');
+        try {
+          const buf = Buffer.alloc(MAX_READ_BYTES);
+          fs.readSync(fd, buf, 0, MAX_READ_BYTES, size - MAX_READ_BYTES);
+          raw = buf.toString('utf8');
+          // Drop the first (likely partial) line of the tail slice.
+          raw = raw.slice(raw.indexOf('\n') + 1);
+        } finally {
+          fs.closeSync(fd);
+        }
+      } else {
+        raw = fs.readFileSync(fullPath, 'utf8');
+      }
     } catch {
       continue; // missing file for that week — fine
     }
@@ -103,7 +133,14 @@ export function readRecentCoalesceCounts(opts: {
         if (ev.queue !== opts.queue) continue;
         const t = Date.parse(ev.ts);
         if (!Number.isFinite(t) || t < cutoff || t > now.getTime()) continue;
-        counts.set(ev.name, (counts.get(ev.name) ?? 0) + 1);
+        const prev = counts.get(ev.name);
+        const entry: CoalesceSummary = prev ?? { count: 0, last_returned_job_id: null };
+        entry.count += 1;
+        if ((latestTs.get(ev.name) ?? -Infinity) <= t && typeof ev.returned_job_id === 'number') {
+          entry.last_returned_job_id = ev.returned_job_id;
+          latestTs.set(ev.name, t);
+        }
+        counts.set(ev.name, entry);
       } catch {
         // malformed line — skip
       }
