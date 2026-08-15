@@ -60,3 +60,4 @@ check-wasm-embedded.sh	buildfresh	exempt	binary embed check
 check-bootstrap-tag.sh	repostate	exempt	VERSION stamp drift check
 check-cli-executable.sh	repostate	exempt	file-mode check
 check-no-tracked-symlinks.sh	repostate	exempt	git index state check
+check-grok-pin.sh	repostate	exempt	pin-stamp drift check (GROK-CLI-PIN.md stamps vs heavy-tests grok-door env); own bun guard tests in test/check-bootstrap-guards.test.ts
