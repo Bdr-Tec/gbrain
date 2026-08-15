@@ -69,6 +69,9 @@ import {
   saveTranscript,
   seedClaudeTuiConfig,
   parseDriveCommand,
+  ptySupported,
+  redactSecrets,
+  stripAnsi,
   type TtySession,
 } from '../test/helpers/tty-harness.ts';
 
@@ -202,8 +205,23 @@ interface ScenarioCtx {
    *  suffixes). ALWAYS deleted at cleanup — --keep keeps transcripts and
    *  hermetic dirs for forensics, never credentials. */
   secretPaths: string[];
+  /** Secret VALUES (name → value) redacted from every written artifact —
+   *  transcripts, the live screen mirror, events.jsonl. Structural, not
+   *  checklist: writes go through redactSecrets at the write site. */
+  redact: Record<string, string>;
   events: Array<{ tMs: number; kind: 'input' | 'note' | 'screen'; data: string }>;
   t0: number;
+}
+
+/** Non-empty provider-key VALUES currently in the environment — the redaction
+ *  map for every artifact write. */
+function buildRedactMap(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of PROVIDER_KEY_NAMES) {
+    const v = process.env[name];
+    if (v && v.trim().length >= 8) out[name] = v;
+  }
+  return out;
 }
 
 function newCtx(args: CliArgs, needsGbrain: boolean): ScenarioCtx {
@@ -217,6 +235,7 @@ function newCtx(args: CliArgs, needsGbrain: boolean): ScenarioCtx {
     keep: args.keep,
     cleanups: [],
     secretPaths: [],
+    redact: buildRedactMap(),
     events: [],
     t0: Date.now(),
   };
@@ -266,7 +285,10 @@ function finishCtx(ctx: ScenarioCtx): void {
   scrubSecrets(ctx);
   fs.writeFileSync(
     path.join(ctx.outDir, 'events.jsonl'),
-    ctx.events.map((e) => JSON.stringify(e)).join('\n') + (ctx.events.length ? '\n' : ''),
+    redactSecrets(
+      ctx.events.map((e) => JSON.stringify(e)).join('\n') + (ctx.events.length ? '\n' : ''),
+      ctx.redact,
+    ),
   );
   if (ctx.keep && ctx.secretPaths.length > 0) {
     log(`--keep: retained hermetic dirs, but scrubbed ${ctx.secretPaths.length} credential file(s)`);
@@ -290,13 +312,20 @@ function finishCtx(ctx: ScenarioCtx): void {
 }
 
 /** Live session mirror so a watcher (or a Conductor agent) can follow along:
- *  session/screen.txt (latest visible tail) + session/status.json. */
-function mirrorSession(dir: string, session: TtySession): () => void {
+ *  session/screen.txt (latest visible tail) + session/status.json. Each tick
+ *  strips only a bounded RAW tail (a full-buffer stripAnsi every 500ms is
+ *  quadratic on a 25-minute session) and redacts before writing — the mirror
+ *  is a live artifact that outlives an interrupted run, so it must never
+ *  carry a raw key even transiently. */
+function mirrorSession(dir: string, session: TtySession, redact?: Record<string, string>): () => void {
   const sessDir = path.join(dir, 'session');
   fs.mkdirSync(sessDir, { recursive: true });
   const timer = setInterval(() => {
     try {
-      fs.writeFileSync(path.join(sessDir, 'screen.txt'), session.visible().slice(-8000));
+      fs.writeFileSync(
+        path.join(sessDir, 'screen.txt'),
+        redactSecrets(stripAnsi(session.raw().slice(-32_000)).slice(-8000), redact),
+      );
       fs.writeFileSync(
         path.join(sessDir, 'status.json'),
         JSON.stringify(
@@ -322,6 +351,7 @@ function saveSession(ctx: ScenarioCtx, name: string, session: TtySession, extraM
   saveTranscript(dir, {
     frames: session.frames(),
     raw: session.raw(),
+    redact: ctx.redact,
     meta: {
       scenario: name || path.basename(ctx.outDir),
       argv: session.argv,
@@ -331,6 +361,37 @@ function saveSession(ctx: ScenarioCtx, name: string, session: TtySession, extraM
       ...extraMeta,
     },
   });
+  assertNoSecrets(dir, ctx.redact);
+}
+
+/** Independent double-check of the structural redaction above: grep every
+ *  written artifact for each raw secret value and HARD-FAIL on a hit (delete
+ *  the leaking file, mark the run failed). A leak here means redactSecrets
+ *  missed a rendering (e.g. ANSI-interleaved) — that is a bug to fix, never
+ *  a warning to scroll past. */
+function assertNoSecrets(dir: string, redact: Record<string, string>): void {
+  const values = Object.entries(redact).filter(([, v]) => v && v.length >= 8);
+  if (values.length === 0) return;
+  const walk = (d: string): string[] =>
+    fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => {
+      const p = path.join(d, e.name);
+      return e.isDirectory() ? walk(p) : e.isFile() ? [p] : [];
+    });
+  let leaked = false;
+  for (const file of walk(dir)) {
+    let body: string;
+    try { body = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    for (const [name, value] of values) {
+      if (body.includes(value)) {
+        leaked = true;
+        fs.rmSync(file, { force: true });
+        log(`SECRET LEAK: ${file} contained ${name} despite structural redaction — file deleted; fix redactSecrets coverage before trusting transcripts`);
+      }
+    }
+  }
+  if (leaked) {
+    process.exitCode = 1;
+  }
 }
 
 // ── scenario: help ───────────────────────────────────────────────────────────
@@ -455,6 +516,19 @@ async function settlePastBootDialogs(
       await Bun.sleep(300);
       session.sendKey('Enter');
       continue;
+    }
+    // Grok Build sign-in screen (observed keyless copy: "Not signed in").
+    // No unattended path exists past it — record the friction and stop
+    // settling; the caller's wall clock must not burn on a login dialog.
+    if (/not signed in/i.test(tail)) {
+      event(ctx, 'note', 'boot dialog: grok sign-in required — no unattended path; stopping settle');
+      return;
+    }
+    // Quiet with no KNOWN dialog: if the tail still LOOKS like a prompt
+    // (numbered options / y-n / picker glyph), note it — a silently
+    // mis-settled boot is otherwise invisible in the audit trail.
+    if (/(?:^|\n)\s*(?:\d+\.\s|[❯›]\s)|\((?:y\/n|Y\/n)\)/m.test(tail.slice(-400))) {
+      event(ctx, 'note', 'settle: quiet with an unmatched dialog-shaped tail — proceeding (note-only; check the transcript if the paste lands oddly)');
     }
     return; // quiet + no dialog = at the input prompt
   }
@@ -705,6 +779,10 @@ const SCENARIOS: Record<string, { needsGbrain: boolean; run: (ctx: ScenarioCtx, 
 };
 
 async function main(): Promise<void> {
+  if (!ptySupported()) {
+    log('this Bun lacks PTY (terminal:) support — upgrade Bun (engines.bun in package.json) before running dx scenarios');
+    process.exit(2);
+  }
   const args = parseArgs(process.argv.slice(2));
   const scenario = SCENARIOS[args.scenario];
   if (!scenario) {

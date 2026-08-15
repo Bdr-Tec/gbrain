@@ -19,6 +19,7 @@ import {
   parseDriveCommand,
   buildClaudeTuiSeed,
   saveTranscript,
+  redactSecrets,
   launchTty,
   ptySupported,
   KEY_MAP,
@@ -191,6 +192,45 @@ describe('saveTranscript', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test('redact: the raw secret value appears in NO written file, the marker does', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-tty-unit-'));
+    const secret = 'xai-supersecret-value-1234';
+    try {
+      const frames: PtyFrame[] = [
+        // Secret split across a frame boundary — the joined-string pass
+        // still catches it in frames.jsonl's neighbors and in raw/visible.
+        { tMs: 10, data: `key is ${secret.slice(0, 10)}` },
+        { tMs: 20, data: `${secret.slice(10)} — do not log\n` },
+        { tMs: 30, data: `again: ${secret}\n` },
+      ];
+      saveTranscript(dir, {
+        frames,
+        raw: frames.map((f) => f.data).join(''),
+        meta: {
+          scenario: 'unit-redact',
+          argv: ['sh'],
+          startedAtIso: '2026-08-14T00:00:00.000Z',
+          exitCode: 0,
+          durationMs: 100,
+        },
+        redact: { XAI_API_KEY: secret, EMPTY: '', SHORT: 'abc' },
+      });
+      for (const f of ['meta.json', 'raw.txt', 'visible.txt', 'frames.jsonl', 'stalls.md']) {
+        expect(readFileSync(join(dir, f), 'utf8')).not.toContain(secret);
+      }
+      expect(readFileSync(join(dir, 'raw.txt'), 'utf8')).toContain('[REDACTED:XAI_API_KEY]');
+      expect(readFileSync(join(dir, 'visible.txt'), 'utf8')).toContain('[REDACTED:XAI_API_KEY]');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('redactSecrets is pure and skips empty/too-short values', () => {
+    expect(redactSecrets('hello world', undefined)).toBe('hello world');
+    expect(redactSecrets('abc abc', { K: 'abc' })).toBe('abc abc'); // <8 chars: skipped
+    expect(redactSecrets('token=longsecret42 end', { K: 'longsecret42' })).toBe('token=[REDACTED:K] end');
   });
 });
 

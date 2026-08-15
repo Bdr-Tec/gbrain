@@ -568,18 +568,49 @@ export interface TranscriptMeta {
  *   frames.jsonl  — one {tMs, data} per output burst (timing analysis)
  *   stalls.md     — the rendered silence report (thresholdMs = 2000)
  */
+/**
+ * Replace every occurrence of each secret VALUE with `[REDACTED:<name>]`.
+ * Pure, single pass per secret over the whole string — callers apply it to
+ * SERIALIZED artifacts (the joined frames.jsonl string, not per-frame), which
+ * also catches a value split across frame boundaries after joining. Values
+ * shorter than 8 chars are skipped: too collision-prone to blank out
+ * (a 3-char "key" would redact innocent substrings across the transcript).
+ */
+export function redactSecrets(text: string, redact?: Record<string, string>): string {
+  if (!redact) return text;
+  let out = text;
+  for (const [name, value] of Object.entries(redact)) {
+    if (!value || value.length < 8) continue;
+    out = out.split(value).join(`[REDACTED:${name}]`);
+  }
+  return out;
+}
+
 export function saveTranscript(
   dir: string,
-  data: { frames: readonly PtyFrame[]; raw: string; meta: TranscriptMeta },
+  data: {
+    frames: readonly PtyFrame[];
+    raw: string;
+    meta: TranscriptMeta;
+    /** Secret values to redact (name → value) from EVERY written artifact.
+     *  The explicit seam: callers own which values are secret. */
+    redact?: Record<string, string>;
+  },
 ): void {
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(data.meta, null, 2));
-  fs.writeFileSync(path.join(dir, 'raw.txt'), data.raw);
-  fs.writeFileSync(path.join(dir, 'visible.txt'), stripAnsi(data.raw));
+  const r = (s: string) => redactSecrets(s, data.redact);
+  fs.writeFileSync(path.join(dir, 'meta.json'), r(JSON.stringify(data.meta, null, 2)));
+  fs.writeFileSync(path.join(dir, 'raw.txt'), r(data.raw));
+  fs.writeFileSync(path.join(dir, 'visible.txt'), r(stripAnsi(data.raw)));
+  // Redaction runs over the JOINED serialized string (one pass), so a secret
+  // that straddles a frame boundary in the raw byte stream still cannot
+  // survive into frames.jsonl intact… unless the split points land exactly on
+  // JSON record boundaries — the visible/raw redactions above cover the
+  // realistic renderings, and callers keep an independent grep as the check.
   fs.writeFileSync(
     path.join(dir, 'frames.jsonl'),
-    data.frames.map((f) => JSON.stringify(f)).join('\n') + (data.frames.length ? '\n' : ''),
+    r(data.frames.map((f) => JSON.stringify(f)).join('\n') + (data.frames.length ? '\n' : '')),
   );
   const stalls = computeStalls(data.frames, { endMs: data.meta.durationMs });
-  fs.writeFileSync(path.join(dir, 'stalls.md'), renderStallsReport(stalls, data.meta.durationMs));
+  fs.writeFileSync(path.join(dir, 'stalls.md'), r(renderStallsReport(stalls, data.meta.durationMs)));
 }
