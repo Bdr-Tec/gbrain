@@ -211,6 +211,8 @@ export function mcpPermissionEntry(serverName: string): string {
  * test that remaps HOME would otherwise read the operator's REAL config.
  */
 export function claudeUserMcpConfigPath(): string {
+  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (configDir) return join(configDir, '.claude.json');
   const home = process.env.HOME?.trim();
   return join(home || homedir(), '.claude.json');
 }

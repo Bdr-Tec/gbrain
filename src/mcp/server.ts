@@ -36,11 +36,18 @@ export async function resolveMcpStdioSourceScope(
       tier: resolved.tier,
     };
   } catch {
-    // Resolution failure: report the tier truthfully so --source-guard can
-    // still make the safe call (env counts as deliberate; anything else is
-    // the ambiguous seed fallback).
+    // Resolution failure. Report the tier truthfully so --source-guard makes
+    // the safe call. A MALFORMED GBRAIN_SOURCE can never be a real binding —
+    // launder it through as tier 'env' and the guard would pass the write,
+    // which then dies downstream on the sources FK with a raw error instead
+    // of the guard's actionable envelope. So a format-invalid env value falls
+    // back to the ambiguous seed tier (guard blocks with "set GBRAIN_SOURCE /
+    // --source"). A well-formed value keeps tier 'env': a nonexistent-source
+    // or a transient engine blit is a separate downstream concern, and
+    // blocking a valid binding on a blip is worse.
+    const { isValidSourceId } = await import('../core/source-id.ts');
     const env = process.env.GBRAIN_SOURCE;
-    return env
+    return env && isValidSourceId(env)
       ? { sourceId: env, tier: 'env' }
       : { sourceId: 'default', tier: 'seed_default' };
   }

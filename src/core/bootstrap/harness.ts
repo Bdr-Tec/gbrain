@@ -1654,18 +1654,39 @@ export function claudeAnyRegistrationExists(
   name: string,
   projectDir?: string,
 ): boolean {
-  const hasServer = (path: string): boolean => {
-    if (!existsSync(path)) return false;
+  const hasInMcpServers = (servers: unknown): boolean =>
+    !!servers && typeof servers === 'object' && Object.prototype.hasOwnProperty.call(servers, name);
+  const readJson = (path: string): Record<string, unknown> | null => {
+    if (!existsSync(path)) return null;
     try {
-      const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
-        mcpServers?: Record<string, unknown>;
-      };
-      return !!parsed.mcpServers && Object.prototype.hasOwnProperty.call(parsed.mcpServers, name);
+      return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
     } catch {
-      return false;
+      return null;
     }
   };
-  if (hasServer(userConfigPath)) return true;
-  if (projectDir && hasServer(join(projectDir, '.mcp.json'))) return true;
+  const userCfg = readJson(userConfigPath) as {
+    mcpServers?: unknown;
+    projects?: Record<string, { mcpServers?: unknown }>;
+  } | null;
+  if (userCfg) {
+    // User scope: top-level mcpServers.
+    if (hasInMcpServers(userCfg.mcpServers)) return true;
+    // LOCAL scope: `claude mcp add` (README Option 1) defaults here —
+    // projects.<cwd>.mcpServers in ~/.claude.json, keyed by the resolved
+    // project path. Scan the projectDir entry (and, defensively, any entry —
+    // a duplicate under ANY project path is still a real coexistence).
+    const projects = userCfg.projects;
+    if (projects && typeof projects === 'object') {
+      if (projectDir && hasInMcpServers(projects[projectDir]?.mcpServers)) return true;
+      for (const entry of Object.values(projects)) {
+        if (hasInMcpServers(entry?.mcpServers)) return true;
+      }
+    }
+  }
+  // Project-committed .mcp.json.
+  if (projectDir) {
+    const projCfg = readJson(join(projectDir, '.mcp.json')) as { mcpServers?: unknown } | null;
+    if (projCfg && hasInMcpServers(projCfg.mcpServers)) return true;
+  }
   return false;
 }

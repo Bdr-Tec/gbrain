@@ -1296,13 +1296,28 @@ async function runUninstall(ws: string, rest: string[], home: string, runner: Ex
 
     // Execute the structured host-registration removals the module returned.
     for (const reg of result.registration_removals) {
+      // Plugin-owned registrations were NEVER created by us (the plugin
+      // provides the MCP server; bootstrap only recorded a hooks-only
+      // receipt). Running `mcp remove gbrain` here would delete whatever
+      // registration DOES own the name — e.g. a hand-wired `codex mcp add`
+      // or `gbrain connect --install` the user added later. Remove only the
+      // hooks half for these; leave the MCP owner alone.
+      const pluginOwned = typeof reg.detail === 'string' && reg.detail.endsWith('plugin-mcp');
       if (reg.host === 'claude-code') {
         const r = removeClaudeHooks(ws);
         if (r.removed > 0) console.log(`removed ${r.removed} gbrain hook entr${r.removed === 1 ? 'y' : 'ies'} from ${r.settingsPath}`);
         for (const note of r.notes) console.error(note);
+        if (pluginOwned) {
+          console.log('MCP server was provided by the gbrain plugin (not registered by bootstrap) — leaving it; `claude plugin uninstall gbrain@gbrain` removes the plugin.');
+          continue;
+        }
         const rm = await runner(['claude', 'mcp', 'remove', 'gbrain']);
         if (rm.code !== 0) console.error('note: `claude mcp remove gbrain` did not succeed — remove it by hand if it lingers.');
       } else {
+        if (pluginOwned) {
+          console.log('MCP server was provided by the gbrain plugin (not registered by bootstrap) — leaving it; `codex plugin remove gbrain@gbrain` removes the plugin.');
+          continue;
+        }
         const rm = await runner(['codex', 'mcp', 'remove', 'gbrain']);
         if (rm.code !== 0) console.error('note: `codex mcp remove gbrain` did not succeed — remove it by hand if it lingers.');
       }

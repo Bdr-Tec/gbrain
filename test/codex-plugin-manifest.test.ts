@@ -87,6 +87,7 @@ describe('codex mcp.json', () => {
       'src/core/ai/build-gateway-config.ts',
       'src/core/ai/gateway.ts',
       'src/core/capability.ts',
+      'src/core/transcription.ts',
       ...readdirSync(join(ROOT, 'src/core/ai/recipes'))
         .filter(f => f.endsWith('.ts'))
         .map(f => `src/core/ai/recipes/${f}`),
@@ -118,6 +119,10 @@ describe('claude plugin.json', () => {
     expect(Object.keys(claudePlugin.mcpServers)).toEqual(['gbrain']);
     expect(server.command).toBe('${CLAUDE_PLUGIN_ROOT}/.agents/gbrain-launcher');
     expect(server.args).toEqual(EXPECTED_ARGS);
+    // cwd pinned to the plugin root for guard-premise parity with codex —
+    // both lanes' serve cwd is the (source-routing-meaningless) snapshot dir,
+    // so --source-guard's "cwd is meaningless" premise holds identically.
+    expect(server.cwd).toBe('${CLAUDE_PLUGIN_ROOT}');
   });
 
   test('skill tree pointer matches the codex lane', () => {

@@ -23,11 +23,14 @@ if ! command -v bun >/dev/null 2>&1; then
 fi
 
 if [ ! -d "$ROOT/plugin" ]; then
-  echo "check-plugin-tree: SKIP (no committed plugin/ tree yet)"
-  exit 0
+  # plugin/ has landed; a missing tree now means a bad merge or a script that
+  # deleted it wholesale — FAIL loudly rather than fail-open green.
+  echo "check-plugin-tree: FAILED — committed plugin/ tree is missing. Regenerate: bun run scripts/generate-plugin-tree.ts --out plugin" >&2
+  exit 1
 fi
 
 TMP="$(mktemp -d /tmp/gbrain-plugin-tree-XXXXXX)"
+[ -n "$TMP" ] || { echo "check-plugin-tree: mktemp failed" >&2; exit 2; }
 trap 'rm -rf "$TMP"' EXIT
 
 if ! bun run "$ROOT/scripts/generate-plugin-tree.ts" --out "$TMP/plugin" >/dev/null; then

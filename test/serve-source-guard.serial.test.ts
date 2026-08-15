@@ -74,10 +74,6 @@ describe('sourceGuardBlocksWrite tier policy', () => {
     }
   });
 
-  test('local_path always blocks — cwd intent is invalid under a plugin serve', async () => {
-    expect(await sourceGuardBlocksWrite(engineWithSources(['default']), 'local_path')).toBe(true);
-  });
-
   test("seed_default passes while 'default' is the sole source", async () => {
     expect(await sourceGuardBlocksWrite(engineWithSources(['default']), 'seed_default')).toBe(false);
     expect(await sourceGuardBlocksWrite(engineWithSources([]), 'seed_default')).toBe(false);
@@ -90,6 +86,19 @@ describe('sourceGuardBlocksWrite tier policy', () => {
 
   test('engine failure fails CLOSED on seed_default', async () => {
     expect(await sourceGuardBlocksWrite(throwingEngine, 'seed_default')).toBe(true);
+  });
+
+  test('sole_non_default is write-safe (one real source = unambiguous)', async () => {
+    // The tier fires when exactly one non-default source exists; the write
+    // can only go there, so it is NOT a misroute. Engine never consulted.
+    expect(await sourceGuardBlocksWrite(throwingEngine, 'sole_non_default')).toBe(false);
+  });
+
+  test('local_path blocks only when another source exists (sole-source is safe)', async () => {
+    __resetSourceGuardQueryShape();
+    expect(await sourceGuardBlocksWrite(engineWithSources(['default']), 'local_path')).toBe(false);
+    __resetSourceGuardQueryShape();
+    expect(await sourceGuardBlocksWrite(engineWithSources(['default', 'wiki']), 'local_path')).toBe(true);
   });
 
   test('pre-archived-column schema resolves through the legacy fallback', async () => {
@@ -166,6 +175,15 @@ describe('dispatch gate', () => {
     if (result.isError) {
       expect(parsed(result).error).not.toBe('source_binding_required');
     }
+  });
+
+  test('__all__ sentinel write is blocked with a sentinel-specific hint even on a write-safe tier', async () => {
+    const result = await dispatchToolCall(multiSource, A_WRITE_OP, {}, {
+      remote: true, transport: 'stdio', sourceId: '__all__', sourceGuardTier: 'env',
+    });
+    expect(result.isError).toBe(true);
+    expect(parsed(result).error).toBe('source_binding_required');
+    expect(parsed(result).message).toContain('__all__');
   });
 
   test('guard off (no sourceGuardTier) never blocks — regression pin', async () => {

@@ -313,7 +313,7 @@ describe('doctor plugin_lane_collision (serial: env fixtures)', () => {
     const rows = checks.filter((c) => c.name === 'plugin_lane_collision');
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('ok');
-    expect(rows[0].message).toContain('sole gbrain MCP owner');
+    expect(rows[0].message).toContain('no hand-wired registration');
   });
 
   test('plugin + hand-wired registration → warn row with both off-ramps', async () => {
@@ -336,7 +336,7 @@ describe('doctor plugin_lane_collision (serial: env fixtures)', () => {
       join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json'),
       JSON.stringify({ enabledPlugins: { 'gbrain@gbrain': true } }),
     );
-    writeFileSync(join(process.env.HOME!, '.claude.json'), JSON.stringify({ mcpServers: { gbrain: {} } }));
+    writeFileSync(join(process.env.CLAUDE_CONFIG_DIR!, '.claude.json'), JSON.stringify({ mcpServers: { gbrain: {} } }));
     const checks = await bootstrapDoctorChecks(null);
     const rows = checks.filter((c) => c.name === 'plugin_lane_collision');
     expect(rows).toHaveLength(1);

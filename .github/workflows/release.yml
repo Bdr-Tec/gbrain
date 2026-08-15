@@ -281,6 +281,11 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/plugin-dist
           cp -R .agents .codex-plugin .claude-plugin plugin /tmp/plugin-dist/
+          # Both plugin manifests declare "license": "MIT"; the slim branch is
+          # exactly the artifact whose consumers never see the repo root, so
+          # it must carry the license text.
+          cp LICENSE /tmp/plugin-dist/ 2>/dev/null || cp LICENSE.md /tmp/plugin-dist/LICENSE
+          test -f /tmp/plugin-dist/LICENSE
           # Keep the launcher's exec bit explicit (cp -R preserves it, but the
           # branch contract is load-bearing — assert it).
           test -x /tmp/plugin-dist/.agents/gbrain-launcher
@@ -296,4 +301,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -q -m "gbrain v${RELEASE_VERSION} codex/claude plugin dist (history-less; source: the release commit)"
-          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" codex-plugin
+          # Out-of-band credential (mirrors the publish-template job): the PAT
+          # rides GIT_ASKPASS at prompt time, never the push URL / argv (where
+          # a same-user process could read it from the process table).
+          ASKPASS="$RUNNER_TEMP/git-askpass-plugin.sh"
+          printf '#!/bin/sh\nexec echo "$GH_TOKEN"\n' > "$ASKPASS"
+          chmod +x "$ASKPASS"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+            git -c credential.username=x-access-token \
+            push --force "https://github.com/${GITHUB_REPOSITORY}.git" codex-plugin
+          rm -f "$ASKPASS"

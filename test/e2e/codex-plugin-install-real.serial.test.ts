@@ -233,14 +233,31 @@ describe.skipIf(!PLUGIN_CAPABLE)('codex plugin door — INSTALL (no auth needed)
       expect(cold.stderr).toContain('No brain configured');
       expect(cold.stderr).toContain('gbrain init');
 
-      // (g) --source-guard: the seeded brain has 2 sources (default +
-      // workspace) → an env-less write via the plugin serve is BLOCKED with
-      // the actionable envelope; GBRAIN_SOURCE unblocks it.
+      // (g) --source-guard: a GENUINELY AMBIGUOUS brain (default + TWO
+      // non-default sources, so resolution can't land on the unambiguous
+      // sole_non_default tier) → an env-less write via the plugin serve is
+      // BLOCKED with the actionable envelope; GBRAIN_SOURCE unblocks it.
+      // (A sole-source brain is unambiguous and correctly NOT blocked — that
+      // is the guard's contract, so it can't be the block fixture.)
+      const guardHome = mkdtempSync(join(tmpdir(), 'gb-plugin-guard-'));
+      await seedBrainForAgent(guardHome, 'workspace');
+      {
+        const { createEngine } = await import('../../src/core/engine-factory.ts');
+        const { addSource } = await import('../../src/core/sources-ops.ts');
+        const dbPath = join(guardHome, '.gbrain', 'brain.pglite');
+        const cfg = { engine: 'pglite' as const, database_path: dbPath };
+        const eng = await createEngine(cfg);
+        await eng.connect(cfg);
+        const secondDir = join(guardHome, 'source-notes');
+        mkdirSync(secondDir, { recursive: true });
+        await addSource(eng, { id: 'notes', localPath: secondDir, force: true });
+        await eng.disconnect();
+      }
       const blocked = await mcpToolCallProbe({
         command: launcher,
         args: serverArgs,
         cwd: snap!,
-        env: hermeticChildEnv({ HOME: seededHome, GBRAIN_BIN: gbrainBin, GBRAIN_HOME: seededHome }),
+        env: hermeticChildEnv({ HOME: guardHome, GBRAIN_BIN: gbrainBin, GBRAIN_HOME: guardHome }),
         tool: 'remember',
         params: { content: 'guard probe', provenance: 'e2e source-guard probe' },
       });
@@ -250,11 +267,12 @@ describe.skipIf(!PLUGIN_CAPABLE)('codex plugin door — INSTALL (no auth needed)
         command: launcher,
         args: serverArgs,
         cwd: snap!,
-        env: probeEnv,
+        env: hermeticChildEnv({ HOME: guardHome, GBRAIN_BIN: gbrainBin, GBRAIN_HOME: guardHome, GBRAIN_SOURCE: 'workspace' }),
         tool: 'remember',
         params: { content: 'guard probe ok', provenance: 'e2e source-guard probe' },
       });
       expect(allowed.text).not.toContain('source_binding_required');
+      rmSync(guardHome, { recursive: true, force: true });
 
       // (h) coexistence probe: a hand-wired `codex mcp add` NEXT TO the
       // plugin — record the deterministic outcome; both owners visible in

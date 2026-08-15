@@ -2,7 +2,12 @@
   "mcpServers": {
     "gbrain": {
       "command": "./.agents/gbrain-launcher",
-      "args": ["serve", "--surface", "starter", "--source-guard"],
+      "args": [
+        "serve",
+        "--surface",
+        "starter",
+        "--source-guard"
+      ],
       "cwd": ".",
       "env_vars": [
         "ANTHROPIC_API_KEY",
@@ -10,6 +15,7 @@
         "AZURE_OPENAI_API_KEY",
         "DASHSCOPE_API_KEY",
         "DATABASE_URL",
+        "DEEPGRAM_API_KEY",
         "DEEPSEEK_API_KEY",
         "GBRAIN_BIN",
         "GBRAIN_BRAIN_ID",

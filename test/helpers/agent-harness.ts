@@ -1251,9 +1251,18 @@ export async function mcpToolsListProbe(opts: {
   let buf = '';
   let tools: string[] | null = null;
   const deadline = Date.now() + timeoutMs;
+  // Race each read against the remaining deadline: a child that opens stdout
+  // but never writes would otherwise block `reader.read()` forever, past the
+  // deadline the while-condition can only check between reads.
+  const readOrTimeout = () => Promise.race([
+    reader.read(),
+    new Promise<{ done: true; value: undefined }>((res) =>
+      setTimeout(() => res({ done: true, value: undefined }), Math.max(0, deadline - Date.now())),
+    ),
+  ]);
   try {
     while (tools === null && Date.now() < deadline) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readOrTimeout();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       const parts = buf.split('\n');

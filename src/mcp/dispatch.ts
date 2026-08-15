@@ -466,12 +466,19 @@ export async function dispatchToolCall(
   // to fall through to. Enforced before validation so a blocked caller
   // learns the routing rule, not the op's parameter shape.
   if (opts.sourceGuardTier && op.scope !== 'read') {
-    if (await sourceGuardBlocksWrite(engine, opts.sourceGuardTier)) {
+    // The `__all__` read-span sentinel can never be a valid WRITE target (no
+    // source has that id — the write would die downstream on the FK). Under
+    // the guard, block it with a sentinel-specific hint rather than the
+    // generic ambiguity copy. This is independent of the tier probe below.
+    const sentinelWrite = opts.sourceId === '__all__';
+    if (sentinelWrite || (await sourceGuardBlocksWrite(engine, opts.sourceGuardTier))) {
       logVerb(false);
       const envelope = {
         error: 'source_binding_required',
-        message:
-          'This brain has more than one source and the MCP server runs with --source-guard: ' +
+        message: sentinelWrite
+          ? 'GBRAIN_SOURCE=__all__ is a read-span sentinel, not a write target — a write cannot resolve to "all sources". ' +
+            'Set GBRAIN_SOURCE to a concrete source id (or pass --source) for writes.'
+          : 'This brain has more than one source to choose from and the MCP server runs with --source-guard: ' +
           `write operations need an explicit source binding so they cannot land in the wrong source (resolution tier: ${opts.sourceGuardTier}).`,
         suggestion:
           'Set GBRAIN_SOURCE=<source-id> in the environment that launches this MCP server ' +

@@ -8793,7 +8793,7 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
         harness: 'codex',
         plugin: codexPlugin,
         dup: codexAnyRegistrationExists(codexConfigPath(), 'gbrain'),
-        disambiguate: 'keep one owner: `codex mcp remove gbrain` (drop the hand-wired entry) or `codex plugin remove gbrain` (drop the plugin)',
+        disambiguate: 'keep one owner: `codex mcp remove gbrain` (drop the hand-wired entry) or `codex plugin remove gbrain@gbrain` (drop the plugin)',
       });
     }
     const claudePlugin = claudePluginProvidesName(claudeUserSettingsPath(), 'gbrain');
@@ -8819,7 +8819,7 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
           : {
               name: 'plugin_lane_collision',
               status: 'ok',
-              message: `${lane.harness}: the '${lane.plugin}' plugin is the sole gbrain MCP owner (no hand-wired duplicate).`,
+              message: `${lane.harness}: the '${lane.plugin}' plugin provides gbrain and no hand-wired registration was found in the scanned configs (user scope + this directory).`,
             },
       );
     }

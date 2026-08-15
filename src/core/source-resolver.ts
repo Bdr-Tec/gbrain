@@ -508,35 +508,48 @@ export const WRITE_SAFE_SOURCE_TIERS: ReadonlySet<SourceTier> = new Set([
  */
 let sourcesQueryShape: 'archived' | 'legacy' | null = null;
 
+/** True iff a source other than the seeded 'default' exists. Bounded single-
+ *  row probe (the verdict needs existence, not the list) with the
+ *  pre-`archived`-column fallback. The `legacy` shape is memoized ONLY when
+ *  the archived query fails with a missing-column error — a transient error
+ *  (pool blip, connection reset) must NOT poison the shape for the process
+ *  lifetime (which would make archived-capable brains block forever). Errors
+ *  propagate to the caller, which decides the fail-closed verdict. */
+async function otherSourceExists(engine: BrainEngine): Promise<boolean> {
+  if (sourcesQueryShape !== 'legacy') {
+    try {
+      const rows = await engine.executeRaw<{ id: string }>(
+        `SELECT id FROM sources WHERE id <> 'default' AND archived = false LIMIT 1`,
+      );
+      sourcesQueryShape = 'archived';
+      return rows.length > 0;
+    } catch (err) {
+      // Cache 'legacy' ONLY for a genuine missing-column error; re-throw
+      // anything else so a transient failure doesn't permanently degrade.
+      const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+      const missingColumn = msg.includes('archived') && (msg.includes('column') || msg.includes('does not exist') || msg.includes('no such column'));
+      if (!missingColumn) throw err;
+      sourcesQueryShape = 'legacy';
+    }
+  }
+  const rows = await engine.executeRaw<{ id: string }>(
+    `SELECT id FROM sources WHERE id <> 'default' LIMIT 1`,
+  );
+  return rows.length > 0;
+}
+
 export async function sourceGuardBlocksWrite(
   engine: BrainEngine,
   tier: SourceTier,
 ): Promise<boolean> {
   if (WRITE_SAFE_SOURCE_TIERS.has(tier)) return false;
-  if (tier === 'local_path') return true;
-  // seed_default: block iff any source beyond the seeded 'default' exists.
-  // Bounded single-row probe (LIMIT 1) — the verdict needs existence, not the
-  // full source list, and this runs per guarded write.
+  // local_path AND seed_default are cwd-derived / seed-fallback tiers under a
+  // plugin serve — block ONLY when the binding is genuinely ambiguous (some
+  // OTHER source exists). A sole-source brain is unambiguous even when its
+  // local_path contains the serve cwd, so it must not be blocked. Engine
+  // failure fails CLOSED.
   try {
-    let rows: Array<{ id: string }>;
-    if (sourcesQueryShape !== 'legacy') {
-      try {
-        rows = await engine.executeRaw<{ id: string }>(
-          `SELECT id FROM sources WHERE id <> 'default' AND archived = false LIMIT 1`,
-        );
-        sourcesQueryShape = 'archived';
-      } catch {
-        rows = await engine.executeRaw<{ id: string }>(
-          `SELECT id FROM sources WHERE id <> 'default' LIMIT 1`,
-        );
-        sourcesQueryShape = 'legacy';
-      }
-    } else {
-      rows = await engine.executeRaw<{ id: string }>(
-        `SELECT id FROM sources WHERE id <> 'default' LIMIT 1`,
-      );
-    }
-    return rows.length > 0;
+    return await otherSourceExists(engine);
   } catch {
     return true;
   }

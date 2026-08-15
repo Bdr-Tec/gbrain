@@ -36,7 +36,9 @@ that exact install one-liner on stderr; with no brain, it exits with
 
 **What ships.** The MCP server runs `gbrain serve --surface starter
 --source-guard` through the bundled launcher (`.agents/gbrain-launcher`,
-resolution order: `$GBRAIN_BIN` → `gbrain` on PATH → `~/.bun/bin/gbrain`).
+resolution order: `$GBRAIN_BIN` → `~/.bun/bin/gbrain` → `gbrain` on PATH — the
+sanctioned install location is preferred over PATH so a stray `gbrain` earlier
+on PATH can't shadow it).
 `starter` is the ~20-op daily-driver surface (the seven memory verbs + daily
 brain ops) — the curated skills drive everything else through the `gbrain`
 CLI. Widen a machine without editing the snapshot: `GBRAIN_SURFACE=full` in
@@ -51,9 +53,12 @@ with the plugin snapshot as its working directory, so the per-project
 axis with `GBRAIN_SOURCE=<source-id>` in the environment that launches
 Codex; route the brain axis with `GBRAIN_BRAIN_ID` (env only — there is no
 config default for the brain axis). `--source-guard` makes this fail-closed:
-on a brain with more than one source, write operations error with an
-actionable message until a source binding exists; single-source brains are
-unaffected, reads always pass.
+when a brain has more than one source to choose from and no binding, write
+operations error with an actionable message until a source is bound; a sole
+real source is unambiguous and unaffected, and reads always pass. (Edge case:
+a `.gbrain-source` dotfile placed at `$HOME` is an ancestor of the plugin
+snapshot dir and would bind every plugin-lane write to it — put source pins
+in project directories, not `$HOME`.)
 
 **One owner per name.** Three lanes can each provide a server named
 `gbrain`: this plugin, a hand-wired `codex mcp add` (below), and the

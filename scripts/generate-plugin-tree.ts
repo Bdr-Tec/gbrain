@@ -97,6 +97,7 @@ for (const slug of Object.keys(lanes.additions)) {
 }
 for (const slug of Object.keys(lanes.base_exclusions)) {
   if (!baseSet.has(slug)) fail(`base_exclusion '${slug}' is not in the openclaw base — stale record`);
+  if (slug in lanes.not_added) fail(`'${slug}' appears in BOTH base_exclusions and not_added`);
 }
 for (const [slug, reason] of [...Object.entries(lanes.additions), ...Object.entries(lanes.base_exclusions), ...Object.entries(lanes.not_added)]) {
   if (typeof reason !== 'string' || reason.length < 10) fail(`'${slug}' needs a real reason (>=10 chars)`);

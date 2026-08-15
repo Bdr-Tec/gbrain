@@ -517,6 +517,12 @@ four numeric segments are required first. Historical 3-segment versions
 
 **Auto-derived (no manual edit; refreshed by their own commands):**
 
+- `plugin/` — the committed codex/claude plugin skill tree embeds a
+  `gbrain-plugin-tree-stamp: X.Y.Z.W` in its generated README, so every
+  version bump drifts it. Regenerate after the bump: `bun run
+  scripts/generate-plugin-tree.ts --out plugin` (guarded by
+  `scripts/check-plugin-tree.sh` in `bun run verify`; the release
+  `publish-codex-plugin` job also drift-gates it before publishing).
 - `bun.lock` — root-package version is auto-pinned from `package.json`. After
   bumping `package.json`, run `bun install` to refresh the lockfile.
 - `llms-full.txt` / `llms.txt` — auto-generated documentation bundles. **Any
