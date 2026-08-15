@@ -240,6 +240,21 @@ personal-agent path does not support Grok yet (Claude Code/Codex only).
 Verified against Grok Build v1.0.4. Full reference:
 [docs/mcp/GROK.md](docs/mcp/GROK.md).
 
+**If you are opencode** (the SST terminal agent, opencode.ai — not OpenClaw):
+you are a bootstrap-supported harness — for the full persistent-personal-agent
+install, follow `BOOTSTRAP_FOR_AGENTS.md` instead of this page. For the
+brain-only MCP registration:
+
+```bash
+opencode mcp add gbrain --env GBRAIN_HOME=$HOME -- gbrain serve --surface verbs
+```
+
+The add is lazy (exit 0 without connecting) — verify with `opencode mcp list`,
+which spawns the server and must show `✓ gbrain connected` (the exit code is 0
+even on failure; read the output). Restart opencode afterwards — it reads
+config at session start. Verified against opencode v1.18.18. Full reference:
+[docs/mcp/OPENCODE.md](docs/mcp/OPENCODE.md).
+
 Whether you scaffolded or not, read `skills/RESOLVER.md` (in your workspace, or the
 bundled copy at `~/gbrain/skills/RESOLVER.md` when running from the cloned repo). It's
 the skill dispatcher — tells you which skill to read for any task. Save this to your

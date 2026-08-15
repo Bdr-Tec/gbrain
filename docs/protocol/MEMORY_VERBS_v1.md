@@ -69,6 +69,11 @@ codex mcp add gbrain -- gbrain serve --surface verbs
 grok mcp add gbrain -e "GBRAIN_HOME=$HOME" -- gbrain serve --surface verbs
 ```
 
+**opencode** (verify with `opencode mcp list` — the add is lazy, and list SPAWNS the server)
+```bash
+opencode mcp add gbrain --env GBRAIN_HOME=$HOME -- gbrain serve --surface verbs
+```
+
 **OpenClaw / any stdio MCP host** — register the server command
 `gbrain serve --surface verbs`. Remote brains: `gbrain serve --http` on the
 host, then `gbrain connect https://host/mcp --token gbrain_xxx --install` on

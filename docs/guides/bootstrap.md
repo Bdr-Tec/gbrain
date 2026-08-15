@@ -155,6 +155,7 @@ you'd apply to any journal: write what you'd be comfortable persisting.
 | GitHub / `gh` | full local agent | off-machine durability (repo re-runnable later) |
 | Hooks (Claude Code) | pull protocol via AGENTS.md gates | automatic per-turn context + session-end persistence |
 | Codex (no wired hooks, no MCP scope flag) | pull protocol + MCP tools | per-turn push (stated plainly; not oversold — codex 0.147+ ships a hook system, but gbrain does not wire it yet) + the ability to confine MCP reach to one folder (`codex mcp add` is always user-global) |
+| opencode (no wired hooks; scope INVERTED: user-global by default) | pull protocol (opencode reads AGENTS.md natively) + MCP tools; project scope available as an explicit opt-in | per-turn push (opencode ships a plugin/event system, but gbrain does not wire it yet). The project-scope default is deliberately NOT offered: opencode spawns project-config servers with no trust prompt, so a committed entry would auto-execute on every collaborator machine |
 | Second simultaneous session | first session unaffected | second session's brain tools fail politely (one live serve per brain — v1 contract) |
 | Postgres brain (incl. harness mode) | MCP tools every session + pull protocol | per-turn hook injection (`no_pglite_path`: the hook IPC socket is PGLite-only today; hooks stay pre-wired and light up when the engine-uniform listener lands) |
 
@@ -188,6 +189,11 @@ mode wires them in one command, with no `agent.json` and no interview:
   INLINE in the codex config (0600) — framework-spawned codex inherits no
   shell profile, so the env-var lane the `connect` path uses would never
   reach it.
+- opencode: one managed `mcp.gbrain` remote entry with the bearer header
+  INLINE in the user-global JSONC config (0600), written by the same
+  comment-preserving editor the workspace lane uses — the `{env:…}`
+  interpolation the `connect` path prefers would resolve empty under a
+  framework-spawned opencode for the same no-shell-profile reason.
 - Honesty on Postgres brains: per-turn injection is degraded (the matrix row
   above); MCP is the active seam and the summary says so.
 - `--status [--json]` probes the live truth (serve health, token validity via
@@ -294,7 +300,7 @@ bun test test/e2e/bootstrap-real-codex.serial.test.ts
 ## DX exploration harness (developer instrument, not a test)
 
 The door tests prove the install WORKS; they say nothing about how it FEELS.
-`test/helpers/tty-harness.ts` spawns any CLI (gbrain, `claude`, `codex`, `grok`) under a
+`test/helpers/tty-harness.ts` spawns any CLI (gbrain, `claude`, `codex`, `grok`, `opencode`) under a
 real pseudo-terminal (Bun's `terminal:` spawn option) and records every output
 burst with a millisecond timestamp, so unnecessary pauses become a measurable
 artifact (`computeStalls` → `stalls.md`) instead of a vibe. Same hermetic env as
@@ -313,6 +319,7 @@ bun run scripts/dx-explore.ts help              # comprehension surfaces (no key
 bun run scripts/dx-explore.ts init [--keyless]  # interactive init, naive-user autopilot
 bun run scripts/dx-explore.ts claude-install    # REAL claude running the paste-in bootstrap
 bun run scripts/dx-explore.ts codex-install     # REAL codex, same
+bun run scripts/dx-explore.ts opencode-install  # REAL opencode running the paste-in bootstrap
 bun run scripts/dx-explore.ts grok-install      # REAL grok, brain-only GROK.md install (no bootstrap path)
 bun run scripts/dx-explore.ts drive -- gbrain init   # manual: steer a live TUI via a file channel
 ```
