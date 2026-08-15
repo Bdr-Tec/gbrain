@@ -32,10 +32,6 @@ ROOT="${GBRAIN_GROK_PIN_GUARD_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 PIN_FILE="$ROOT/docs/mcp/GROK-CLI-PIN.md"
 WORKFLOW="$ROOT/.github/workflows/heavy-tests.yml"
 
-if [ ! -f "$PIN_FILE" ]; then
-  echo "check-grok-pin: SKIP (no $PIN_FILE)"
-  exit 0
-fi
 if [ ! -f "$WORKFLOW" ]; then
   echo "check-grok-pin: SKIP (no $WORKFLOW)"
   exit 0
@@ -43,6 +39,12 @@ fi
 if ! grep -q '^  grok-door:' "$WORKFLOW"; then
   echo "check-grok-pin: SKIP (no grok-door job in heavy-tests.yml yet)"
   exit 0
+fi
+# Once the grok-door job EXISTS, a missing pin doc is a FAILURE, not a skip —
+# deleting/renaming the doc must not silently disable the supply-chain gate.
+if [ ! -f "$PIN_FILE" ]; then
+  echo "check-grok-pin: FAIL — grok-door job exists but $PIN_FILE is missing (the pin doc is the gate's source of truth)" >&2
+  exit 1
 fi
 
 fail() {
@@ -82,8 +84,10 @@ job_block=$(awk '
 [ -n "$job_block" ] || fail "could not extract the grok-door job block"
 
 wf_env() {
+  # Strip either quote style: a YAML-formatter pass flipping double to single
+  # quotes must not read as pin drift.
   { printf '%s\n' "$job_block" | grep -E "^      $1:" || true; } | head -1 \
-    | sed -e "s/^      $1:[[:space:]]*//" -e 's/^"//' -e 's/"$//'
+    | sed -e "s/^      $1:[[:space:]]*//" -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
 }
 
 WF_VERSION=$(wf_env GROK_VERSION)
@@ -103,6 +107,12 @@ if [ "$DIST_KIND" = "npm" ]; then
   [ -n "$WF_NPM_INTEGRITY" ] || fail "distribution_kind=npm but the grok-door job env is missing GROK_NPM_INTEGRITY"
   [ "$WF_NPM_PACKAGE" = "$NPM_PACKAGE_PIN" ] || fail "GROK_NPM_PACKAGE drift — workflow '$WF_NPM_PACKAGE' vs stamp '$NPM_PACKAGE_PIN'"
   [ "$WF_NPM_INTEGRITY" = "$NPM_INTEGRITY_PIN" ] || fail "GROK_NPM_INTEGRITY drift — workflow vs stamp mismatch"
+  # npm_version is a documented near-duplicate of grok_version — assert they
+  # agree so bumping one alone can never pass green.
+  NPM_VERSION_PIN=$(stamp npm_version)
+  if [ -n "$NPM_VERSION_PIN" ] && [ "$NPM_VERSION_PIN" != "$GROK_VERSION_PIN" ]; then
+    fail "npm_version stamp ($NPM_VERSION_PIN) disagrees with grok_version stamp ($GROK_VERSION_PIN) — update together"
+  fi
   [ -z "$WF_INSTALL_SHA" ] || fail "distribution_kind=npm but the grok-door job also pins GROK_INSTALL_SHA256 — one provisioning mode only (mode exclusivity)"
 else
   INSTALL_SHA_PIN=$(stamp installer_sha256)

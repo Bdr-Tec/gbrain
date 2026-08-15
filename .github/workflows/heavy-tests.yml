@@ -131,6 +131,10 @@ jobs:
       # a grok binary, which a stock runner does not have.
       GBRAIN_REAL_HERMES_E2E: '1'
       GBRAIN_REAL_GROK_E2E: '1'
+      # Pin so a provisioned runner's grok version-shape test asserts against
+      # the supported version (and a colliding community `grok` binary fails
+      # loud instead of running the keyless tier confusingly).
+      GROK_VERSION: "1.0.4"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
@@ -388,6 +392,10 @@ jobs:
       GROK_VERSION: "1.0.4"
       GROK_NPM_PACKAGE: "@xai-official/grok"
       GROK_NPM_INTEGRITY: "sha512-Nu3SFXTqwvCQr/LQFwrQYgngJhUQwX2h9ZSgzW4HowidjbPBWtMVO0xI88d2z6/zlDSNaT5YP/uk+2DthKQMsg=="
+      # Per-platform payload pins: the wrapper's integrity covers only the
+      # wrapper tarball; the binary that EXECUTES is the platform sub-package.
+      GROK_NPM_LINUX_X64_INTEGRITY: "sha512-Dan2LfKcFBiabuDGHaGgMT8Ndzibo2ljvSjh4MlpV5117JL+S/0KMbdyYpk+13d7t+4znniW1cm+rRwUGSAvtw=="
+      GROK_NPM_LINUX_ARM64_INTEGRITY: "sha512-zGK42Eq3ZmIa7cSVnl6CiJ4cxTCMsNLQCmCoLJhy5eZXfAvZ1DA3K3HXmKCj4OScX8SalYlp7mx8HWl9Y6gytw=="
       GBRAIN_REAL_GROK_E2E: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -403,6 +411,14 @@ jobs:
           echo "GBRAIN_E2E_EVIDENCE_DIR=$RUNNER_TEMP/grok-door-evidence" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/grok-door-evidence"
 
+      # Compile gbrain ONCE for both bun test invocations below —
+      # ensureCompiledGbrain's cache is per-process, so without this the
+      # keyless and paid runs each pay the 2-4 min compile.
+      - name: Build gbrain (compile once for both door runs)
+        run: |
+          bun build --compile --outfile "$RUNNER_TEMP/gbrain-door-bin" src/cli.ts
+          echo "GBRAIN_COMPILED_BIN=$RUNNER_TEMP/gbrain-door-bin" >> "$GITHUB_ENV"
+
       # SECRETLESS provisioning: the npm registry verifies the per-platform
       # payload against its integrity metadata; the pre-check pins that the
       # registry still serves the SAME integrity we observed (a re-published
@@ -415,6 +431,20 @@ jobs:
           served=$(npm view "$GROK_NPM_PACKAGE@$GROK_VERSION" dist.integrity 2>/dev/null || true)
           if [ "$served" != "$GROK_NPM_INTEGRITY" ]; then
             echo "::error::grok npm integrity drift for $GROK_NPM_PACKAGE@$GROK_VERSION — registry serves '$served', pinned '$GROK_NPM_INTEGRITY'. Re-pin deliberately: update the stamps in docs/mcp/GROK-CLI-PIN.md + this workflow after reviewing upstream (see the pin doc's re-observation checklist)." >&2
+            exit 1
+          fi
+          # The platform sub-package is the binary that actually runs — pin it
+          # too (per-arch; ubuntu-latest is x64 today, arm64 pinned for a
+          # future runner switch).
+          arch=$(uname -m)
+          case "$arch" in
+            x86_64) plat_pkg="$GROK_NPM_PACKAGE-linux-x64"; plat_pin="$GROK_NPM_LINUX_X64_INTEGRITY" ;;
+            aarch64|arm64) plat_pkg="$GROK_NPM_PACKAGE-linux-arm64"; plat_pin="$GROK_NPM_LINUX_ARM64_INTEGRITY" ;;
+            *) echo "::error::unsupported runner arch for the grok payload pin: $arch" >&2; exit 1 ;;
+          esac
+          plat_served=$(npm view "$plat_pkg@$GROK_VERSION" dist.integrity 2>/dev/null || true)
+          if [ "$plat_served" != "$plat_pin" ]; then
+            echo "::error::grok platform payload integrity drift for $plat_pkg@$GROK_VERSION — registry serves '$plat_served', pinned '$plat_pin'. Re-pin deliberately (GROK-CLI-PIN.md stamps + this workflow)." >&2
             exit 1
           fi
           npm install -g "$GROK_NPM_PACKAGE@$GROK_VERSION"
@@ -469,8 +499,17 @@ jobs:
         run: |
           export GROK_HOME="$RUNNER_TEMP/grok-preflight-home"
           mkdir -p "$GROK_HOME"
+          # Verbatim kill-switch homes (update together): seedGrokConfig in
+          # test/helpers/agent-harness.ts and scenarioGrokInstall in
+          # scripts/dx-explore.ts.
           printf '[cli]\nauto_update = false\n' > "$GROK_HOME/config.toml"
-          out=$(grok -p "reply with exactly: PREFLIGHT-OK" --output-format plain 2>&1) || {
+          # This step runs the third-party agent binary directly: never hand
+          # it the WRITABLE step-metadata files (appending to GITHUB_ENV/PATH
+          # poisons the later secret-bearing steps — the same channel
+          # grokChildEnv scrubs for test-spawned children), and kill its web
+          # tools like the door SMOKE does.
+          out=$(env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STATE -u GITHUB_STEP_SUMMARY \
+            grok -p "reply with exactly: PREFLIGHT-OK" --output-format plain --disable-web-search 2>&1) || {
             echo "::error::grok auth preflight failed — the XAI_API_KEY secret is present but rejected (rotate it at console.x.ai; see GROK-CLI-PIN.md triage table). Output: ${out:0:300}" >&2
             exit 1
           }
@@ -489,7 +528,8 @@ jobs:
           fi
           # PAID-SENTINEL: with the key present, a skipping paid tier must
           # never read as green (the split-gating false-green class). The
-          # suite logs its skip reason; require the full 5-test pass.
+          # grep target is the suite's literal skip log — mirrored in
+          # test/e2e/install-real-grok.serial.test.ts (change together).
           if grep -q 'SKIP paid tier' door.txt; then
             echo "::error::grok door paid tier skipped despite a present XAI_API_KEY — hasGrokAuth() gate drift; refusing to go green" >&2
             exit 1
@@ -546,4 +586,10 @@ jobs:
       # on a future self-hosted runner.
       - name: Remove grok credentials (unconditional)
         if: always()
-        run: rm -f ~/.grok/mcp_credentials.json
+        run: |
+          rm -f ~/.grok/mcp_credentials.json
+          rm -rf "$RUNNER_TEMP/grok-preflight-home"
+          # Cancellation/timeout bypasses the suite's afterAll cleanup — the
+          # hermetic homes carry no key file (env-only auth) but may hold
+          # grok-derived credentials once the authed inventory lands.
+          rm -rf /tmp/gb-grok-* 2>/dev/null || true

@@ -463,7 +463,14 @@ export function launchTty(argv: string[], opts: TtyLaunchOpts = {}): TtySession 
     const since = waitOpts?.since;
     const start = Date.now();
     for (;;) {
-      const visible = since !== undefined ? stripAnsi(buffer.slice(since)) : stripAnsi(buffer);
+      // Bounded per-poll strip: under a repaint-heavy TUI the (since-scoped)
+      // buffer grows by MBs, and re-stripping all of it every poll is the
+      // quadratic hot loop this harness's consumers keep re-finding. A 256KB
+      // tail caps per-poll work while staying far wider than any single
+      // screen repaint; a pattern would have to scroll >256KB past between
+      // two 200ms polls to be missed.
+      const windowStart = Math.max(since ?? 0, buffer.length - 262_144);
+      const visible = stripAnsi(buffer.slice(windowStart));
       for (let i = 0; i < patterns.length; i++) {
         const p = patterns[i]!;
         const idx = typeof p === 'string' ? visible.indexOf(p) : visible.search(p);
@@ -561,6 +568,93 @@ export interface TranscriptMeta {
 }
 
 /**
+ * Minimum secret-value length the redaction machinery acts on. Shorter values
+ * are too collision-prone to blank out (a 3-char "key" would redact innocent
+ * substrings across the transcript). Shared by redactSecrets, dx-explore's
+ * buildRedactMap, and assertNoSecrets — one constant so the layers can never
+ * disagree about what counts as a redactable secret.
+ */
+export const MIN_REDACT_SECRET_LEN = 8;
+
+/**
+ * Replace every occurrence of each secret VALUE with `[REDACTED:<name>]`.
+ * Pure, single pass per secret over the whole string. NOTE: this only
+ * catches CONTIGUOUS occurrences — a value split across PTY frame records
+ * stays split in the serialized frames.jsonl (every frame boundary is a JSON
+ * record boundary), which is why saveTranscript coalesces straddling frames
+ * BEFORE serialization (coalesceSecretStraddles below).
+ */
+export function redactSecrets(text: string, redact?: Record<string, string>): string {
+  if (!redact) return text;
+  let out = text;
+  for (const [name, value] of Object.entries(redact)) {
+    if (!value || value.length < MIN_REDACT_SECRET_LEN) continue;
+    out = out.split(value).join(`[REDACTED:${name}]`);
+  }
+  return out;
+}
+
+/**
+ * Merge any run of frames that a secret value straddles into one frame, so a
+ * subsequent per-string redaction pass sees the value contiguously. Without
+ * this, a key split across two output bursts survives frames.jsonl as two
+ * innocent-looking halves that are trivially joinable (verified empirically
+ * in review). Pure: returns a new array; timing of the merged frame is the
+ * first covered frame's tMs.
+ */
+export function coalesceSecretStraddles(
+  frames: readonly PtyFrame[],
+  redact?: Record<string, string>,
+): PtyFrame[] {
+  const values = Object.values(redact ?? {}).filter((v) => v && v.length >= MIN_REDACT_SECRET_LEN);
+  if (values.length === 0 || frames.length === 0) return [...frames];
+
+  // Frame start offsets in the joined stream.
+  const starts: number[] = new Array(frames.length);
+  let acc = 0;
+  for (let i = 0; i < frames.length; i++) {
+    starts[i] = acc;
+    acc += frames[i]!.data.length;
+  }
+  const joined = frames.map((f) => f.data).join('');
+
+  // Mark every frame boundary that falls INSIDE a secret occurrence:
+  // mergeWithNext[i] = the boundary between frame i and i+1 must go away.
+  const mergeWithNext = new Array<boolean>(frames.length - 1).fill(false);
+  let anyMerge = false;
+  for (const value of values) {
+    let idx = joined.indexOf(value);
+    while (idx >= 0) {
+      const end = idx + value.length; // exclusive
+      for (let b = 0; b < mergeWithNext.length; b++) {
+        const boundary = starts[b + 1]!;
+        if (boundary > idx && boundary < end) {
+          mergeWithNext[b] = true;
+          anyMerge = true;
+        }
+      }
+      idx = joined.indexOf(value, idx + 1);
+    }
+  }
+  if (!anyMerge) return [...frames];
+
+  const out: PtyFrame[] = [];
+  let i = 0;
+  while (i < frames.length) {
+    let data = frames[i]!.data;
+    const tMs = frames[i]!.tMs;
+    let j = i;
+    while (j < mergeWithNext.length && mergeWithNext[j]) {
+      data += frames[j + 1]!.data;
+      j++;
+    }
+    out.push({ tMs, data });
+    i = j + 1;
+  }
+  return out;
+}
+
+/**
  * Write a transcript bundle into `dir`:
  *   meta.json     — scenario, argv, timing, exit code, notes
  *   raw.txt       — full output with ANSI (replayable)
@@ -568,24 +662,6 @@ export interface TranscriptMeta {
  *   frames.jsonl  — one {tMs, data} per output burst (timing analysis)
  *   stalls.md     — the rendered silence report (thresholdMs = 2000)
  */
-/**
- * Replace every occurrence of each secret VALUE with `[REDACTED:<name>]`.
- * Pure, single pass per secret over the whole string — callers apply it to
- * SERIALIZED artifacts (the joined frames.jsonl string, not per-frame), which
- * also catches a value split across frame boundaries after joining. Values
- * shorter than 8 chars are skipped: too collision-prone to blank out
- * (a 3-char "key" would redact innocent substrings across the transcript).
- */
-export function redactSecrets(text: string, redact?: Record<string, string>): string {
-  if (!redact) return text;
-  let out = text;
-  for (const [name, value] of Object.entries(redact)) {
-    if (!value || value.length < 8) continue;
-    out = out.split(value).join(`[REDACTED:${name}]`);
-  }
-  return out;
-}
-
 export function saveTranscript(
   dir: string,
   data: {
@@ -602,14 +678,14 @@ export function saveTranscript(
   fs.writeFileSync(path.join(dir, 'meta.json'), r(JSON.stringify(data.meta, null, 2)));
   fs.writeFileSync(path.join(dir, 'raw.txt'), r(data.raw));
   fs.writeFileSync(path.join(dir, 'visible.txt'), r(stripAnsi(data.raw)));
-  // Redaction runs over the JOINED serialized string (one pass), so a secret
-  // that straddles a frame boundary in the raw byte stream still cannot
-  // survive into frames.jsonl intact… unless the split points land exactly on
-  // JSON record boundaries — the visible/raw redactions above cover the
-  // realistic renderings, and callers keep an independent grep as the check.
+  // A secret split across PTY frames is two innocent halves in frames.jsonl
+  // (every frame boundary is a JSON record boundary — the serialized string
+  // never contains the contiguous value). Coalesce straddling frames FIRST,
+  // then redact; per-frame timing granularity is lost only for the merged run.
+  const coalesced = coalesceSecretStraddles(data.frames, data.redact);
   fs.writeFileSync(
     path.join(dir, 'frames.jsonl'),
-    r(data.frames.map((f) => JSON.stringify(f)).join('\n') + (data.frames.length ? '\n' : '')),
+    r(coalesced.map((f) => JSON.stringify(f)).join('\n') + (coalesced.length ? '\n' : '')),
   );
   const stalls = computeStalls(data.frames, { endMs: data.meta.durationMs });
   fs.writeFileSync(path.join(dir, 'stalls.md'), r(renderStallsReport(stalls, data.meta.durationMs)));

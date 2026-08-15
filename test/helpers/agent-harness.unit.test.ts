@@ -343,28 +343,28 @@ describe('hasGrokAuth truth table (env-only — pins the non-empty-value gate)',
   // Env-only on purpose: keyless grok exits 1 with "Not signed in … set the
   // XAI_API_KEY environment variable" (observed v1.0.4); no credential file
   // was observed keyless (GROK-CLI-PIN.md marks the authed inventory pending).
-  test('non-empty XAI_API_KEY → true', () => {
-    withEnv({ XAI_API_KEY: 'xai-sentinel' }, () => {
+  test('non-empty XAI_API_KEY → true', async () => {
+    await withEnv({ XAI_API_KEY: 'xai-sentinel' }, () => {
       expect(hasGrokAuth()).toBe(true);
     });
   });
 
-  test('blank XAI_API_KEY (empty CI secret) → false, never a paid failure', () => {
-    withEnv({ XAI_API_KEY: '   ' }, () => {
+  test('blank XAI_API_KEY (empty CI secret) → false, never a paid failure', async () => {
+    await withEnv({ XAI_API_KEY: '   ' }, () => {
       expect(hasGrokAuth()).toBe(false);
     });
   });
 
-  test('unset XAI_API_KEY → false', () => {
-    withEnv({ XAI_API_KEY: undefined }, () => {
+  test('unset XAI_API_KEY → false', async () => {
+    await withEnv({ XAI_API_KEY: undefined }, () => {
       expect(hasGrokAuth()).toBe(false);
     });
   });
 });
 
 describe('grokChildEnv — explicit key re-admission + CI metadata scrub', () => {
-  test('XAI_API_KEY survives via explicit override; HOME/GROK_HOME point at the temp home', () => {
-    withEnv({ XAI_API_KEY: 'xai-child-sentinel' }, () => {
+  test('XAI_API_KEY survives via explicit override; HOME/GROK_HOME point at the temp home', async () => {
+    await withEnv({ XAI_API_KEY: 'xai-child-sentinel' }, () => {
       const env = grokChildEnv('/tmp/grok-child-test');
       // Not in ALLOW_EXACT — only the explicit override carries it through.
       expect(env.XAI_API_KEY).toBe('xai-child-sentinel');
@@ -373,8 +373,8 @@ describe('grokChildEnv — explicit key re-admission + CI metadata scrub', () =>
     });
   });
 
-  test('other provider keys and GITHUB_* step-metadata files are deleted', () => {
-    withEnv({
+  test('other provider keys and GITHUB_* step-metadata files are deleted', async () => {
+    await withEnv({
       XAI_API_KEY: 'xai-x',
       ANTHROPIC_API_KEY: 'ant-must-not-leak',
       OPENAI_API_KEY: 'oai-must-not-leak',
@@ -429,10 +429,42 @@ describe('seedGrokConfig — the auto-update kill-switch seed', () => {
   });
 });
 
-describe('resolveGrokBinary smoke', () => {
+describe('resolveGrokBinary — fail-closed GROK_BIN handling', () => {
   test('returns a string-or-null; a string is an absolute path', () => {
     const p = resolveGrokBinary();
     if (p !== null) expect(p.startsWith('/')).toBe(true);
     else expect(p).toBeNull();
+  });
+
+  test('valid executable GROK_BIN is returned verbatim', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'grok-resolve-'));
+    const shim = join(dir, 'grok');
+    try {
+      writeFileSync(shim, '#!/bin/sh\n', { mode: 0o755 });
+      await withEnv({ GROK_BIN: shim }, () => {
+        expect(resolveGrokBinary()).toBe(shim);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('set-but-invalid GROK_BIN fails CLOSED — never falls through to PATH (community-binary mis-bind guard)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'grok-resolve-'));
+    const notExec = join(dir, 'grok-noexec');
+    try {
+      writeFileSync(notExec, '#!/bin/sh\n', { mode: 0o644 });
+      await withEnv({ GROK_BIN: notExec }, () => {
+        expect(resolveGrokBinary()).toBeNull();
+      });
+      await withEnv({ GROK_BIN: 'relative/grok' }, () => {
+        expect(resolveGrokBinary()).toBeNull();
+      });
+      await withEnv({ GROK_BIN: '/tmp/foo/../grok' }, () => {
+        expect(resolveGrokBinary()).toBeNull();
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

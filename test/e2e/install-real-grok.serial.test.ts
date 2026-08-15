@@ -128,6 +128,24 @@ function copyEvidence(): void {
         }
       }
       try { rmSync(join(dst, '.grok_mcp_credentials.json'), { force: true }); } catch { /* best-effort */ }
+      // Same content-grep the CI scrub applies: a grok-written log that
+      // embeds the key must never land in an artifact, local or uploaded.
+      const key = process.env.XAI_API_KEY?.trim();
+      if (key && key.length >= 8) {
+        const walk = (d: string): string[] => {
+          try {
+            return require('node:fs').readdirSync(d, { withFileTypes: true }).flatMap((e: { name: string; isDirectory(): boolean; isFile(): boolean }) => {
+              const p = join(d, e.name);
+              return e.isDirectory() ? walk(p) : e.isFile() ? [p] : [];
+            });
+          } catch { return []; }
+        };
+        for (const f of walk(dst)) {
+          try {
+            if (readFileSync(f, 'utf8').includes(key)) rmSync(f, { force: true });
+          } catch { /* unreadable → leave */ }
+        }
+      }
     } catch { /* best-effort */ }
   }
 }
@@ -403,7 +421,11 @@ describe.skipIf(!CAN_RUN_PAID)('install real-grok door — paid tier (serial e2e
     // PER-RUN nonce fact (never the committed Summit/Rivermouth string): grok
     // has filesystem/shell tools, so recall of a string that is greppable in
     // ANY reachable file proves nothing. The nonce exists only in the
-    // hermetic brain.
+    // hermetic brain — which lives under this same hermetic HOME, so an agent
+    // that greps $HOME/.gbrain could still surface it without MCP; web search
+    // is flag-disabled, fs/shell are prompt-forbidden only. The planned
+    // streaming-json toolCall assertion (pending the authed observation) is
+    // what upgrades this to proof of tool mediation.
     const nonce = `kestrel-${randomBytes(4).toString('hex')}`;
     const seeded = await seedBrainForAgent(home, 'workspace', {
       entity: 'Kestrel Logistics',
@@ -440,6 +462,10 @@ describe.skipIf(!CAN_RUN_PAID)('install real-grok door — paid tier (serial e2e
         home,
         timeoutMs: 240_000,
         disableWebSearch: true,
+        // The MCP registration is the DOCUMENTED bare `gbrain` — the turn's
+        // own child env must resolve it too, or grok can't start the server
+        // mid-turn on a clean runner (doctor passing is not enough).
+        binDir,
       });
       finalText = turn.finalText;
       lastExit = turn.exitCode;

@@ -16,7 +16,7 @@ tunnel, no token needed. Works with both PGLite and Supabase engines.
 ## Register (recommended)
 
 ```bash
-grok mcp add gbrain -e GBRAIN_HOME=$HOME -- gbrain serve --surface verbs
+grok mcp add gbrain -e "GBRAIN_HOME=$HOME" -- gbrain serve --surface verbs
 ```
 
 `--surface verbs` exposes the seven-verb memory protocol (`recall`,

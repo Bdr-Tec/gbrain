@@ -542,20 +542,53 @@ describe('check-grok-pin.sh', () => {
     });
   });
 
-  test('SKIP-graceful when the pin doc or the grok-door job is absent', () => {
+  test('SKIP-graceful pre-landing; FAIL-closed once the door job exists without the pin doc', () => {
+    // Door job present + pin doc MISSING = the gate's source of truth was
+    // deleted — that must fail, not skip (post-landing fail-closed rule).
     withFixture({
       '.github/workflows/heavy-tests.yml': grokDoorWorkflow(GROK_NPM_ENV_OK),
     }, (dir) => {
       const r = runGrokPinGuard(dir);
-      expect(r.out).toContain('SKIP');
-      expect(r.status).toBe(0);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('pin doc is the gate');
     });
+    // No door job yet: pin doc alone is fine to skip (pre-landing posture).
     withFixture({
       'docs/mcp/GROK-CLI-PIN.md': `# pin\n${GROK_PIN_STAMPS_NPM}\n`,
       '.github/workflows/heavy-tests.yml': 'jobs:\n  other-job:\n    steps: []\n',
     }, (dir) => {
       const r = runGrokPinGuard(dir);
       expect(r.out).toContain('SKIP');
+      expect(r.status).toBe(0);
+    });
+  });
+
+  test('FAIL: npm_version stamp disagreeing with grok_version can never pass green', () => {
+    const stamps = GROK_PIN_STAMPS_NPM.replace(
+      '<!-- grok-pin: npm_version=1.0.4 -->',
+      '<!-- grok-pin: npm_version=1.0.5 -->',
+    );
+    withFixture({
+      'docs/mcp/GROK-CLI-PIN.md': `# pin\n${stamps}\n`,
+      '.github/workflows/heavy-tests.yml': grokDoorWorkflow(GROK_NPM_ENV_OK),
+    }, (dir) => {
+      const r = runGrokPinGuard(dir);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('npm_version stamp');
+    });
+  });
+
+  test('single-quoted workflow env values are not read as drift', () => {
+    withFixture({
+      'docs/mcp/GROK-CLI-PIN.md': `# pin\n${GROK_PIN_STAMPS_NPM}\n`,
+      '.github/workflows/heavy-tests.yml': grokDoorWorkflow([
+        "GROK_VERSION: '1.0.4'",
+        "GROK_NPM_PACKAGE: '@example/grok'",
+        "GROK_NPM_INTEGRITY: 'sha512-AAA='",
+      ]),
+    }, (dir) => {
+      const r = runGrokPinGuard(dir);
+      expect(r.out).toContain('check-grok-pin: ok');
       expect(r.status).toBe(0);
     });
   });

@@ -20,6 +20,7 @@ import {
   buildClaudeTuiSeed,
   saveTranscript,
   redactSecrets,
+  coalesceSecretStraddles,
   launchTty,
   ptySupported,
   KEY_MAP,
@@ -220,6 +221,16 @@ describe('saveTranscript', () => {
       for (const f of ['meta.json', 'raw.txt', 'visible.txt', 'frames.jsonl', 'stalls.md']) {
         expect(readFileSync(join(dir, f), 'utf8')).not.toContain(secret);
       }
+      // The REAL frames assertion: a per-record grep is vacuous for a secret
+      // split across frame boundaries (each half is innocent) — join the data
+      // fields and assert the reassembled stream carries no secret. This is
+      // what coalesceSecretStraddles guarantees.
+      const joined = readFileSync(join(dir, 'frames.jsonl'), 'utf8')
+        .trim().split('\n')
+        .map((l) => (JSON.parse(l) as { data: string }).data)
+        .join('');
+      expect(joined).not.toContain(secret);
+      expect(joined).toContain('[REDACTED:XAI_API_KEY]');
       expect(readFileSync(join(dir, 'raw.txt'), 'utf8')).toContain('[REDACTED:XAI_API_KEY]');
       expect(readFileSync(join(dir, 'visible.txt'), 'utf8')).toContain('[REDACTED:XAI_API_KEY]');
     } finally {
@@ -231,6 +242,25 @@ describe('saveTranscript', () => {
     expect(redactSecrets('hello world', undefined)).toBe('hello world');
     expect(redactSecrets('abc abc', { K: 'abc' })).toBe('abc abc'); // <8 chars: skipped
     expect(redactSecrets('token=longsecret42 end', { K: 'longsecret42' })).toBe('token=[REDACTED:K] end');
+  });
+
+  test('coalesceSecretStraddles merges only the frames a secret spans', () => {
+    const secret = 'straddling-secret-99';
+    const frames: PtyFrame[] = [
+      { tMs: 1, data: 'before ' },
+      { tMs: 2, data: `x${secret.slice(0, 7)}` },
+      { tMs: 3, data: secret.slice(7, 14) },
+      { tMs: 4, data: `${secret.slice(14)} after` },
+      { tMs: 5, data: 'untouched' },
+    ];
+    const out = coalesceSecretStraddles(frames, { K: secret });
+    expect(out.length).toBe(3); // frames 2-4 merged; 1 and 5 intact
+    expect(out[0]!.data).toBe('before ');
+    expect(out[1]!.data).toContain(secret); // contiguous now — redactable
+    expect(out[2]!.data).toBe('untouched');
+    // No secrets → identity (new array, same content).
+    const same = coalesceSecretStraddles(frames, {});
+    expect(same.map((f) => f.data)).toEqual(frames.map((f) => f.data));
   });
 });
 

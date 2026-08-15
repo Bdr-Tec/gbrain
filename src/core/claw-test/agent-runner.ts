@@ -16,7 +16,7 @@
  *  └────────────────────┘
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { statSync } from 'fs';
 
 export interface AgentRunner {
@@ -146,7 +146,10 @@ export function detectBinary(envName: string, binName: string): DetectResult {
     binPath = fromEnv;
   } else {
     try {
-      const out = execSync(`which ${binName}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+      // execFileSync, not a shell string: binName comes from callers today
+      // (constants), but this helper is exported — interpolating it into a
+      // shell would make a future metachar-bearing name become code.
+      const out = execFileSync('which', [binName], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
       const found = out.trim();
       if (!found || !found.startsWith('/')) {
         return { available: false, reason: `${binName} not on PATH` };

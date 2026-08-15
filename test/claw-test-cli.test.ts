@@ -373,11 +373,13 @@ describe('GrokRunner invoke argv/env (shim — no grok binary needed)', () => {
       XAI_API_KEY: process.env.XAI_API_KEY,
       LEAK_CANARY: process.env.LEAK_CANARY,
       GBRAIN_DATABASE_URL: process.env.GBRAIN_DATABASE_URL,
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     };
     const shim = join(tmp, 'grok-shim');
     // The runner first execs the shim with a version flag (the transcript
     // preamble), then spawns the real turn — the shim answers both.
-    writeFileSync(shim, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "grok 9.9.9 (shimhash)"; exit 0; fi\nprintf "ARGV:%s\\n" "$@"\nprintf "GH:[%s] KEY:[%s] CANARY:[%s] DBURL:[%s]\\n" "$GROK_HOME" "$XAI_API_KEY" "$LEAK_CANARY" "$GBRAIN_DATABASE_URL"\n', 'utf-8');
+    writeFileSync(shim, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "grok 9.9.9 (shimhash)"; exit 0; fi\nprintf "ARGV:%s\\n" "$@"\nprintf "GH:[%s] KEY:[%s] CANARY:[%s] DBURL:[%s] ANT:[%s] OAI:[%s]\\n" "$GROK_HOME" "$XAI_API_KEY" "$LEAK_CANARY" "$GBRAIN_DATABASE_URL" "$ANTHROPIC_API_KEY" "$OPENAI_API_KEY"\n', 'utf-8');
     chmodSync(shim, 0o755);
     process.env.GROK_BIN = shim;
     process.env.GROK_HOME = '/tmp/gh-canary-test';
@@ -387,6 +389,11 @@ describe('GrokRunner invoke argv/env (shim — no grok binary needed)', () => {
     process.env.XAI_API_KEY = 'xai-sentinel-3fa1';
     process.env.LEAK_CANARY = 'must-not-leak';
     process.env.GBRAIN_DATABASE_URL = 'postgres://must-not-leak';
+    // Foreign provider keys: in BASE_ENV_ALLOWLIST (hermes needs them) but
+    // deliberately filtered OUT of grok's list — a single-provider third-party
+    // binary must never receive the operator's Anthropic/OpenAI credentials.
+    process.env.ANTHROPIC_API_KEY = 'ant-must-not-leak';
+    process.env.OPENAI_API_KEY = 'oai-must-not-leak';
     try {
       const { GrokRunner } = await import('../src/core/claw-test/runners/grok.ts');
       const chunks: Buffer[] = [];
@@ -413,12 +420,89 @@ describe('GrokRunner invoke argv/env (shim — no grok binary needed)', () => {
       // deliberately-delisted GBRAIN_DATABASE_URL don't.
       expect(stdout).toContain('GH:[/tmp/gh-canary-test]');
       expect(stdout).toContain('KEY:[xai-sentinel-3fa1]');
-      expect(stdout).toContain('CANARY:[] DBURL:[]');
+      expect(stdout).toContain('CANARY:[] DBURL:[] ANT:[] OAI:[]');
     } finally {
       for (const [k, v] of Object.entries(orig)) {
         if (v !== undefined) process.env[k] = v;
         else delete process.env[k];
       }
+    }
+  });
+});
+
+describe('GrokRunner vendor-config tripwire + preamble resilience (shim)', () => {
+  async function invokeWithHome(home: string): Promise<{ warns: string[]; exitCode: number; stdout: string }> {
+    const shim = join(tmp, 'grok-shim-tripwire');
+    writeFileSync(shim, '#!/bin/sh\nif [ "$1" = "--version" ]; then exit 1; fi\necho ok\n', 'utf-8');
+    chmodSync(shim, 0o755);
+    const origBin = process.env.GROK_BIN;
+    process.env.GROK_BIN = shim;
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (m: unknown) => { warns.push(String(m)); };
+    try {
+      const { GrokRunner } = await import('../src/core/claw-test/runners/grok.ts');
+      const chunks: Buffer[] = [];
+      const result = await new GrokRunner().invoke({
+        cwd: tmp,
+        brief: 'brief',
+        env: { HOME: home },
+        timeoutMs: 10_000,
+        transcriptSink: {
+          write: (e) => { if (e.channel === 'stdout') chunks.push(e.bytes); },
+          nextOffset: () => 0,
+          close: async () => {},
+        },
+      });
+      return { warns, exitCode: result.exitCode, stdout: Buffer.concat(chunks).toString('utf-8') };
+    } finally {
+      console.warn = origWarn;
+      if (origBin !== undefined) process.env.GROK_BIN = origBin;
+      else delete process.env.GROK_BIN;
+    }
+  }
+
+  test('warns loudly when ~/.claude.json registers mcpServers.gbrain (real-brain contamination channel)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'grok-vendor-'));
+    try {
+      writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { gbrain: {} } }));
+      const r = await invokeWithHome(home);
+      expect(r.warns.some((w) => w.includes('REAL brain'))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('stays silent without a gbrain vendor entry; a broken --version never fails the run', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'grok-vendor-'));
+    try {
+      writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { other: {} } }));
+      const r = await invokeWithHome(home);
+      expect(r.warns.some((w) => w.includes('REAL brain'))).toBe(false);
+      // The shim's --version exits 1 (preamble failure path): the run still
+      // completes with the main turn's exit code and simply has no preamble.
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).not.toContain('[grok-runner preamble]');
+      expect(r.stdout).toContain('ok');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('flag-registry accepted over-inclusion — SAFETY_FLAGS collision guard', () => {
+  test("no grok argv literal collides with the generator's SAFETY_FLAGS", async () => {
+    // The claw-test registry entry absorbs grok's long-form argv literals by
+    // design (prose-bleed over-inclusion is tolerated); what must NEVER
+    // happen is one of them colliding with a SAFETY flag the generator
+    // deliberately excludes from validity (a collision would make a safety
+    // flag silently valid on claw-test).
+    const { CLI_FLAG_REGISTRY } = await import('../src/core/cli-flag-registry.generated.ts');
+    const clawFlags: readonly string[] = CLI_FLAG_REGISTRY['claw-test'] ?? [];
+    expect(clawFlags.length).toBeGreaterThan(0);
+    const SAFETY_FLAGS = ['--dry-run']; // mirrors scripts/generate-flag-registry.ts
+    for (const f of SAFETY_FLAGS) {
+      expect(clawFlags).not.toContain(f);
     }
   });
 });

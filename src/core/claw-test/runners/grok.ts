@@ -40,7 +40,7 @@
  * the transcript so a mis-bound binary is diagnosable from the transcript.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import {
@@ -61,8 +61,17 @@ import { spawnWithCapture } from '../transcript-capture.ts';
  * grok's documented headless auth path (keyless one-shot exits 1 with
  * "Not signed in" — see docs/mcp/GROK-CLI-PIN.md) — an operator who auths
  * via that env var would otherwise be blamed as an agent failure.
+ * FOREIGN provider keys are removed from the base: grok is single-provider
+ * (xAI) — forwarding the operator's Anthropic/OpenAI credentials to a
+ * third-party binary buys nothing and is the exact cross-provider exposure
+ * the door lane's grokChildEnv scrub exists to prevent.
  */
-const ENV_ALLOWLIST = [...BASE_ENV_ALLOWLIST, 'GROK_HOME', 'XAI_API_KEY'];
+const FOREIGN_PROVIDER_KEYS = new Set(['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']);
+const ENV_ALLOWLIST = [
+  ...BASE_ENV_ALLOWLIST.filter((k) => !FOREIGN_PROVIDER_KEYS.has(k)),
+  'GROK_HOME',
+  'XAI_API_KEY',
+];
 
 export class GrokRunner implements AgentRunner {
   readonly name = 'grok';
@@ -85,11 +94,16 @@ export class GrokRunner implements AgentRunner {
     // transcript schema is stdio-bytes-only, so this is a captured preamble,
     // not a new event type). Makes a mis-bound community binary or an
     // auto-updated version diagnosable from the transcript alone.
+    // execFileSync (no shell — the which-resolved path is not metachar-
+    // validated) with the SAME filtered env as the turn itself: the resolved
+    // binary must never see ambient secrets the allowlist excludes.
     try {
-      const version = execSync(`'${detected.binPath}' --version`, {
+      const version = execFileSync(detected.binPath, ['--version'], {
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 15_000,
+        env: env as NodeJS.ProcessEnv,
+        cwd: opts.cwd,
       }).trim();
       opts.transcriptSink.write({
         ts: Date.now(),

@@ -66,7 +66,7 @@ codex mcp add gbrain -- gbrain serve --surface verbs
 
 **Grok Build** (verify with `grok mcp doctor gbrain` — the add is lazy)
 ```bash
-grok mcp add gbrain -e GBRAIN_HOME=$HOME -- gbrain serve --surface verbs
+grok mcp add gbrain -e "GBRAIN_HOME=$HOME" -- gbrain serve --surface verbs
 ```
 
 **OpenClaw / any stdio MCP host** — register the server command

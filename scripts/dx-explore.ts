@@ -72,6 +72,7 @@ import {
   ptySupported,
   redactSecrets,
   stripAnsi,
+  MIN_REDACT_SECRET_LEN,
   type TtySession,
 } from '../test/helpers/tty-harness.ts';
 
@@ -222,7 +223,7 @@ function buildRedactMap(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of PROVIDER_KEY_NAMES) {
     const v = process.env[name];
-    if (v && v.trim().length >= 8) out[name] = v;
+    if (v && v.trim().length >= MIN_REDACT_SECRET_LEN) out[name] = v;
   }
   return out;
 }
@@ -327,7 +328,7 @@ function mirrorSession(dir: string, session: TtySession, redact?: Record<string,
     try {
       fs.writeFileSync(
         path.join(sessDir, 'screen.txt'),
-        redactSecrets(stripAnsi(session.raw().slice(-32_000)).slice(-8000), redact),
+        redactSecrets(stripAnsi(session.raw().slice(-131_072)).slice(-8000), redact),
       );
       fs.writeFileSync(
         path.join(sessDir, 'status.json'),
@@ -364,7 +365,7 @@ function saveSession(ctx: ScenarioCtx, name: string, session: TtySession, extraM
       ...extraMeta,
     },
   });
-  assertNoSecrets(dir, ctx.redact);
+  assertNoSecrets(dir, ctx.redact, ctx.t0);
 }
 
 /** Independent double-check of the structural redaction above: grep every
@@ -372,8 +373,8 @@ function saveSession(ctx: ScenarioCtx, name: string, session: TtySession, extraM
  *  the leaking file, mark the run failed). A leak here means redactSecrets
  *  missed a rendering (e.g. ANSI-interleaved) — that is a bug to fix, never
  *  a warning to scroll past. */
-function assertNoSecrets(dir: string, redact: Record<string, string>): void {
-  const values = Object.entries(redact).filter(([, v]) => v && v.length >= 8);
+function assertNoSecrets(dir: string, redact: Record<string, string>, sinceMs: number): void {
+  const values = Object.entries(redact).filter(([, v]) => v && v.length >= MIN_REDACT_SECRET_LEN);
   if (values.length === 0) return;
   const walk = (d: string): string[] =>
     fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => {
@@ -382,10 +383,26 @@ function assertNoSecrets(dir: string, redact: Record<string, string>): void {
     });
   let leaked = false;
   for (const file of walk(dir)) {
+    // NEVER touch files that predate this run: --dir can point anywhere
+    // (repo root, even $HOME) and deleting a pre-existing .env that happens
+    // to contain the key would be data loss, not leak containment.
+    try { if (fs.statSync(file).mtimeMs < sinceMs - 1000) continue; } catch { continue; }
     let body: string;
     try { body = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    // Joined-data pass for frame records: a secret split across JSONL
+    // records never appears contiguously in the file body.
+    let joinedData = '';
+    if (file.endsWith('.jsonl')) {
+      for (const line of body.split('\n')) {
+        try { joinedData += String(JSON.parse(line)?.data ?? ''); } catch { /* not a data record */ }
+      }
+    }
     for (const [name, value] of values) {
-      if (body.includes(value)) {
+      const hit =
+        body.includes(value) ||
+        stripAnsi(body).includes(value) || // ANSI-interleaved rendering
+        (joinedData !== '' && (joinedData.includes(value) || stripAnsi(joinedData).includes(value)));
+      if (hit) {
         leaked = true;
         fs.rmSync(file, { force: true });
         log(`SECRET LEAK: ${file} contained ${name} despite structural redaction — file deleted; fix redactSecrets coverage before trusting transcripts`);
@@ -440,7 +457,7 @@ async function scenarioInit(ctx: ScenarioCtx, args: CliArgs): Promise<void> {
     dropEnv: args.keyless ? PROVIDER_KEY_NAMES : undefined,
     timeoutMs: 600_000,
   });
-  const stopMirror = mirrorSession(ctx.outDir, session);
+  const stopMirror = mirrorSession(ctx.outDir, session, ctx.redact);
 
   const steps: string[] = [];
   let lastMarkPos = 0;
@@ -496,7 +513,7 @@ async function settlePastBootDialogs(
     // Bounded strip: a repaint-heavy TUI (observed: grok's splash animation)
     // grows the raw buffer by MBs — stripping the FULL buffer every
     // iteration is the quadratic hot loop; strip a raw tail instead.
-    const tail = stripAnsi(session.raw().slice(-32_000)).slice(-2500);
+    const tail = stripAnsi(session.raw().slice(-131_072)).slice(-2500);
     if (!handled.has('trust') && /trust this ?folder/i.test(tail.replace(/\s+/g, ' '))) {
       handled.add('trust');
       event(ctx, 'note', 'boot dialog: workspace trust — accepted (option 1)');
@@ -572,6 +589,7 @@ interface InstallSessionOpts {
  *  scenario — the loop is what was duplicated, the prep genuinely differs. */
 async function runInstallSession(ctx: ScenarioCtx, opts: InstallSessionOpts): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 1_800_000;
+  let earlyTerminal: string | undefined;
   log(`watch live: cat ${path.join(ctx.outDir, 'session', 'screen.txt')}`);
   const session = launchTty(opts.argv, {
     cwd: opts.cwd,
@@ -590,7 +608,7 @@ async function runInstallSession(ctx: ScenarioCtx, opts: InstallSessionOpts): Pr
     // screen still carries no meaningful text — or shows the sign-in copy —
     // record the friction (that IS the keyless measurement) and end early
     // instead of pasting into a wall for the full wall clock.
-    const tailText = () => stripAnsi(session.raw().slice(-32_000)).slice(-2500);
+    const tailText = () => stripAnsi(session.raw().slice(-131_072)).slice(-2500);
     // Sign-in copy, both surfaces observed (GROK-CLI-PIN.md): headless prints
     // "Not signed in"; the TUI settles (~6s, after an intro animation) onto
     // "Approve in your browser to finish signing in" + a device code.
@@ -607,10 +625,8 @@ async function runInstallSession(ctx: ScenarioCtx, opts: InstallSessionOpts): Pr
       await Bun.sleep(3000);
       if (!session.exited() && (signInWall() || meaningfulLen(tailText()) < 40)) {
         event(ctx, 'note', 'sign-in wall / no textual prompt persists — ending session early (keyless friction recorded)');
-        await session.close();
-        stopMirror();
-        saveSession(ctx, '', session, { ...opts.meta, terminal: 'sign-in-wall-or-splash' });
-        return;
+        earlyTerminal = 'sign-in-wall-or-splash';
+        return; // finally owns cleanup; save happens after it
       }
     }
     event(ctx, 'input', 'paste install prompt');
@@ -635,7 +651,7 @@ async function runInstallSession(ctx: ScenarioCtx, opts: InstallSessionOpts): Pr
     stopMirror();
     await session.close();
   }
-  saveSession(ctx, '', session, opts.meta);
+  saveSession(ctx, '', session, earlyTerminal ? { ...opts.meta, terminal: earlyTerminal } : opts.meta);
 }
 
 /** The README paste block, pointed at THIS repo's runbook, plus a persona
@@ -659,7 +675,7 @@ function installPrompt(): string {
   );
 }
 
-async function scenarioClaudeInstall(ctx: ScenarioCtx): Promise<void> {
+async function scenarioClaudeInstall(ctx: ScenarioCtx, args: CliArgs): Promise<void> {
   const home = tmp(ctx, 'gb-dx-home-');
   const cfg = tmp(ctx, 'gb-dx-ccfg-');
   const gbHome = tmp(ctx, 'gb-dx-gbhome-');
@@ -690,6 +706,7 @@ async function scenarioClaudeInstall(ctx: ScenarioCtx): Promise<void> {
       GBRAIN_HOME: gbHome,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
     },
+    dropEnv: args.keyless ? PROVIDER_KEY_NAMES : undefined,
     prompt: installPrompt(),
     meta: {
       promptDeviation: 'unattended persona appendix + local runbook path + preinstalled binary',
@@ -698,7 +715,7 @@ async function scenarioClaudeInstall(ctx: ScenarioCtx): Promise<void> {
   });
 }
 
-async function scenarioCodexInstall(ctx: ScenarioCtx): Promise<void> {
+async function scenarioCodexInstall(ctx: ScenarioCtx, args: CliArgs): Promise<void> {
   const home = tmp(ctx, 'gb-dx-home-');
   const gbHome = tmp(ctx, 'gb-dx-gbhome-');
   const ws = tmp(ctx, 'gb-dx-ws-');
@@ -730,6 +747,7 @@ async function scenarioCodexInstall(ctx: ScenarioCtx): Promise<void> {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
     },
     extraAllow: ['OPENAI_API_KEY', 'CODEX_*'],
+    dropEnv: args.keyless ? PROVIDER_KEY_NAMES : undefined,
     prompt: installPrompt(),
     meta: {
       promptDeviation: 'unattended persona appendix + local runbook path + preinstalled binary',
@@ -769,7 +787,7 @@ function grokInstallPrompt(): string {
   );
 }
 
-async function scenarioGrokInstall(ctx: ScenarioCtx): Promise<void> {
+async function scenarioGrokInstall(ctx: ScenarioCtx, args: CliArgs): Promise<void> {
   const home = tmp(ctx, 'gb-dx-home-');
   const gbHome = tmp(ctx, 'gb-dx-gbhome-');
   const ws = tmp(ctx, 'gb-dx-ws-');
@@ -782,6 +800,9 @@ async function scenarioGrokInstall(ctx: ScenarioCtx): Promise<void> {
   // that never appears is a no-op).
   const grokHome = path.join(home, '.grok');
   fs.mkdirSync(grokHome, { recursive: true });
+  // Verbatim kill-switch homes (update together): seedGrokConfig in
+  // test/helpers/agent-harness.ts and the grok-door auth-preflight printf
+  // in .github/workflows/heavy-tests.yml.
   fs.writeFileSync(path.join(grokHome, 'config.toml'), '[cli]\nauto_update = false\n');
   ctx.secretPaths.push(path.join(grokHome, 'mcp_credentials.json'));
 
@@ -800,6 +821,9 @@ async function scenarioGrokInstall(ctx: ScenarioCtx): Promise<void> {
       BROWSER: '/usr/bin/false',
     },
     extraAllow: ['XAI_API_KEY'],
+    // --keyless drops provider keys AFTER extraAllow re-admission — a keyless
+    // grok-install must measure the sign-in wall, not silently run authed.
+    dropEnv: args.keyless ? PROVIDER_KEY_NAMES : undefined,
     prompt: grokInstallPrompt(),
     successPatterns: GROK_INSTALL_SUCCESS_PATTERNS,
     meta: {
@@ -843,7 +867,7 @@ async function scenarioDrive(ctx: ScenarioCtx, args: CliArgs): Promise<void> {
     env,
     timeoutMs: 3_600_000,
   });
-  const stopMirror = mirrorSession(ctx.outDir, session);
+  const stopMirror = mirrorSession(ctx.outDir, session, ctx.redact);
 
   let offset = 0;
   let stopping = false;

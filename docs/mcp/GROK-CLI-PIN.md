@@ -14,6 +14,8 @@ inference, `src/core/ai/recipes/groq.ts`, `GROQ_API_KEY`) and not **ngrok** (tun
 <!-- grok-pin: npm_package=@xai-official/grok -->
 <!-- grok-pin: npm_version=1.0.4 -->
 <!-- grok-pin: npm_integrity=sha512-Nu3SFXTqwvCQr/LQFwrQYgngJhUQwX2h9ZSgzW4HowidjbPBWtMVO0xI88d2z6/zlDSNaT5YP/uk+2DthKQMsg== -->
+<!-- grok-pin: npm_linux_x64_integrity=sha512-Dan2LfKcFBiabuDGHaGgMT8Ndzibo2ljvSjh4MlpV5117JL+S/0KMbdyYpk+13d7t+4znniW1cm+rRwUGSAvtw== -->
+<!-- grok-pin: npm_linux_arm64_integrity=sha512-zGK42Eq3ZmIa7cSVnl6CiJ4cxTCMsNLQCmCoLJhy5eZXfAvZ1DA3K3HXmKCj4OScX8SalYlp7mx8HWl9Y6gytw== -->
 <!-- grok-pin: grok_version=1.0.4 -->
 <!-- grok-pin: installer_sha256=43d0943123edade1383a476a4f778674877acee7c1f98a00f094c4a0f7349321 -->
 <!-- grok-pin: observed_date=2026-08-14 -->
@@ -22,10 +24,13 @@ inference, `src/core/ai/recipes/groq.ts`, `GROQ_API_KEY`) and not **ngrok** (tun
 - **Grok Build v1.0.4**, `grok --version` output shape: `grok 1.0.4 (d846eb93d94d)`
   (version + build hash; the door's shape assert is `/^grok \d+\.\d+\.\d+ \([0-9a-f]+\)$/`).
 - **Provisioning (CI + local): pinned npm install** — `@xai-official/grok@1.0.4`,
-  registry integrity `sha512-Nu3SFX…` (npm verifies per-platform payloads itself: the
-  package fans out to `@xai-official/grok-{darwin,linux,win32}-{arm64,x64}` optional
-  deps at the same version, so no hand-pinned Linux binary sha is needed — npm-mode
-  supply-chain is registry-integrity-verified end to end).
+  registry integrity `sha512-Nu3SFX…`. The package fans out to
+  `@xai-official/grok-{darwin,linux,win32}-{arm64,x64}` optional deps at the same
+  version; the CI job pins the LINUX payload integrities too (stamps above) because
+  the wrapper's integrity covers only the wrapper tarball — the platform sub-package
+  is the binary that executes. Load-bearing assumption, stated explicitly: npm
+  version-immutability (a published version cannot be replaced on npmjs; only a new
+  version or an unpublish, both of which fail the pinned install loudly).
 - Installer path (fallback only): `https://x.ai/cli/install.sh`, sha256
   `43d0943123edade1383a476a4f778674877acee7c1f98a00f094c4a0f7349321` (17,686 bytes).
   It SUPPORTS version pinning (`bash -s <X.Y.Z>`) and downloads versioned artifacts

@@ -230,7 +230,7 @@ Keep `--args` last (everything after it becomes server argv) and verify with
 **If you are Grok Build** (xAI's `grok` CLI): register gbrain as your MCP server:
 
 ```bash
-grok mcp add gbrain -e GBRAIN_HOME=$HOME -- gbrain serve --surface verbs
+grok mcp add gbrain -e "GBRAIN_HOME=$HOME" -- gbrain serve --surface verbs
 ```
 
 The add is lazy (exit 0 without connecting) — verify with
