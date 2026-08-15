@@ -534,6 +534,71 @@ async function settlePastBootDialogs(
   }
 }
 
+/** Stage the compiled gbrain into a fresh bin dir (PATH-prepend target) so
+ *  the agent's bare `gbrain` runs this checkout. */
+function stageBinDir(ctx: ScenarioCtx): string {
+  const binDir = tmp(ctx, 'gb-dx-bin-');
+  fs.copyFileSync(ctx.gbrainBin, path.join(binDir, 'gbrain'));
+  fs.chmodSync(path.join(binDir, 'gbrain'), 0o755);
+  return binDir;
+}
+
+interface InstallSessionOpts {
+  argv: string[];
+  cwd: string;
+  env: Record<string, string | undefined>;
+  extraAllow?: string[];
+  dropEnv?: string[];
+  /** The pasted prompt. Per-agent: the bootstrap runbook block for
+   *  claude/codex, a brain-only GROK.md-driven block for grok. */
+  prompt: string;
+  timeoutMs?: number;
+  meta: Record<string, unknown>;
+}
+
+/** The shared install-session tail the claude/codex/grok scenarios all run:
+ *  launch → mirror → settle boot dialogs → paste the prompt → race
+ *  verify-success copy vs exit → let trailing output land → save. Per-agent
+ *  PREPARATION (TUI seeds, auth copies, git init) deliberately stays in each
+ *  scenario — the loop is what was duplicated, the prep genuinely differs. */
+async function runInstallSession(ctx: ScenarioCtx, opts: InstallSessionOpts): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 1_800_000;
+  log(`watch live: cat ${path.join(ctx.outDir, 'session', 'screen.txt')}`);
+  const session = launchTty(opts.argv, {
+    cwd: opts.cwd,
+    env: opts.env,
+    extraAllow: opts.extraAllow,
+    dropEnv: opts.dropEnv,
+    timeoutMs,
+  });
+  const stopMirror = mirrorSession(ctx.outDir, session, ctx.redact);
+  try {
+    await settlePastBootDialogs(ctx, session);
+    event(ctx, 'input', 'paste install prompt');
+    // Scope the verify match to output AFTER the paste: the pasted prompt
+    // itself contains verify-adjacent copy, and matching the full buffer
+    // re-scans a growing transcript every poll.
+    const pasteMark = session.mark();
+    session.send(opts.prompt);
+    await Bun.sleep(1500);
+    session.sendKey('Enter');
+    const raceBudget = Math.max(timeoutMs - 300_000, Math.floor(timeoutMs * 0.8));
+    const done = await Promise.race([
+      session
+        .waitForAny(VERIFY_SUCCESS_PATTERNS, { timeoutMs: raceBudget, since: pasteMark })
+        .then(() => 'verify-signal')
+        .catch(() => 'no-signal'),
+      session.waitForExit(raceBudget).then(() => 'exited'),
+    ]);
+    event(ctx, 'note', `terminal condition: ${done}`);
+    await session.waitForQuiet({ quietMs: 5000, timeoutMs: 60_000 });
+  } finally {
+    stopMirror();
+    await session.close();
+  }
+  saveSession(ctx, '', session, opts.meta);
+}
+
 /** The README paste block, pointed at THIS repo's runbook, plus a persona
  *  appendix so the interview completes unattended. The appendix is the ONLY
  *  deviation from the shipped block — flagged in meta so the audit discounts it. */
@@ -560,9 +625,7 @@ async function scenarioClaudeInstall(ctx: ScenarioCtx): Promise<void> {
   const cfg = tmp(ctx, 'gb-dx-ccfg-');
   const gbHome = tmp(ctx, 'gb-dx-gbhome-');
   const ws = tmp(ctx, 'gb-dx-ws-');
-  const binDir = tmp(ctx, 'gb-dx-bin-');
-  fs.copyFileSync(ctx.gbrainBin, path.join(binDir, 'gbrain'));
-  fs.chmodSync(path.join(binDir, 'gbrain'), 0o755);
+  const binDir = stageBinDir(ctx);
 
   seedClaudeTuiConfig(cfg, {
     apiKey: process.env.ANTHROPIC_API_KEY ?? process.env.GSTACK_ANTHROPIC_API_KEY,
@@ -575,51 +638,24 @@ async function scenarioClaudeInstall(ctx: ScenarioCtx): Promise<void> {
   ctx.secretPaths.push(path.join(cfg, '.claude.json'));
 
   log('REAL interactive claude running the paste-in bootstrap (10-25 min, real API cost)');
-  log(`watch live: cat ${path.join(ctx.outDir, 'session', 'screen.txt')}`);
-  const session = launchTty(
-    // --dangerously-skip-permissions: v1 measures flow + copy + stalls without
-    // permission-dialog babysitting. Permission-prompt COUNT is a separate
-    // drive-mode pass (the dialogs are Claude Code's chrome, not gbrain copy).
-    ['claude', '--dangerously-skip-permissions'],
-    {
-      cwd: ws,
-      env: {
-        HOME: home,
-        CLAUDE_CONFIG_DIR: cfg,
-        GBRAIN_HOME: gbHome,
-        PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      },
-      timeoutMs: 1_800_000,
+  await runInstallSession(ctx, {
+    // dangerously-skip-permissions (spelled dash-free here): v1 measures flow
+    // + copy + stalls without permission-dialog babysitting. Permission-prompt
+    // COUNT is a separate drive-mode pass (the dialogs are Claude Code's
+    // chrome, not gbrain copy).
+    argv: ['claude', '--dangerously-skip-permissions'],
+    cwd: ws,
+    env: {
+      HOME: home,
+      CLAUDE_CONFIG_DIR: cfg,
+      GBRAIN_HOME: gbHome,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
     },
-  );
-  const stopMirror = mirrorSession(ctx.outDir, session);
-  try {
-    // Get past first-run chrome (trust dialog, bypass warning), then paste.
-    await settlePastBootDialogs(ctx, session);
-    event(ctx, 'input', 'paste install prompt');
-    session.send(installPrompt());
-    await Bun.sleep(1500);
-    session.sendKey('Enter');
-    // Run until verify-success copy or exit or wall clock.
-    const done = await Promise.race([
-      session
-        .waitForAny(VERIFY_SUCCESS_PATTERNS, {
-          timeoutMs: 1_500_000,
-        })
-        .then(() => 'verify-signal')
-        .catch(() => 'no-signal'),
-      session.waitForExit(1_500_000).then(() => 'exited'),
-    ]);
-    event(ctx, 'note', `terminal condition: ${done}`);
-    // Let trailing output land.
-    await session.waitForQuiet({ quietMs: 5000, timeoutMs: 60_000 });
-  } finally {
-    stopMirror();
-    await session.close();
-  }
-  saveSession(ctx, '', session, {
-    promptDeviation: 'unattended persona appendix + local runbook path + preinstalled binary',
-    runbook: 'BOOTSTRAP_FOR_AGENTS.md (local)',
+    prompt: installPrompt(),
+    meta: {
+      promptDeviation: 'unattended persona appendix + local runbook path + preinstalled binary',
+      runbook: 'BOOTSTRAP_FOR_AGENTS.md (local)',
+    },
   });
 }
 
@@ -627,9 +663,7 @@ async function scenarioCodexInstall(ctx: ScenarioCtx): Promise<void> {
   const home = tmp(ctx, 'gb-dx-home-');
   const gbHome = tmp(ctx, 'gb-dx-gbhome-');
   const ws = tmp(ctx, 'gb-dx-ws-');
-  const binDir = tmp(ctx, 'gb-dx-bin-');
-  fs.copyFileSync(ctx.gbrainBin, path.join(binDir, 'gbrain'));
-  fs.chmodSync(path.join(binDir, 'gbrain'), 0o755);
+  const binDir = stageBinDir(ctx);
 
   // Hermetic ~/.codex with ONLY the operator's auth (same posture as the
   // codex door test). codex refuses untrusted cwds — a git repo satisfies it.
@@ -647,46 +681,21 @@ async function scenarioCodexInstall(ctx: ScenarioCtx): Promise<void> {
   spawnSync('git', ['-C', ws, 'config', 'user.name', 'DX Explore']);
 
   log('REAL interactive codex running the paste-in bootstrap (10-25 min, real API cost)');
-  log(`watch live: cat ${path.join(ctx.outDir, 'session', 'screen.txt')}`);
-  const session = launchTty(
-    ['codex', '--sandbox', 'workspace-write', '--ask-for-approval', 'never'],
-    {
-      cwd: ws,
-      env: {
-        HOME: home,
-        CODEX_HOME: codexHome,
-        GBRAIN_HOME: gbHome,
-        PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      },
-      extraAllow: ['OPENAI_API_KEY', 'CODEX_*'],
-      timeoutMs: 1_800_000,
+  await runInstallSession(ctx, {
+    argv: ['codex', '--sandbox', 'workspace-write', '--ask-for-approval', 'never'],
+    cwd: ws,
+    env: {
+      HOME: home,
+      CODEX_HOME: codexHome,
+      GBRAIN_HOME: gbHome,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
     },
-  );
-  const stopMirror = mirrorSession(ctx.outDir, session);
-  try {
-    await settlePastBootDialogs(ctx, session);
-    event(ctx, 'input', 'paste install prompt');
-    session.send(installPrompt());
-    await Bun.sleep(1500);
-    session.sendKey('Enter');
-    const done = await Promise.race([
-      session
-        .waitForAny(VERIFY_SUCCESS_PATTERNS, {
-          timeoutMs: 1_500_000,
-        })
-        .then(() => 'verify-signal')
-        .catch(() => 'no-signal'),
-      session.waitForExit(1_500_000).then(() => 'exited'),
-    ]);
-    event(ctx, 'note', `terminal condition: ${done}`);
-    await session.waitForQuiet({ quietMs: 5000, timeoutMs: 60_000 });
-  } finally {
-    stopMirror();
-    await session.close();
-  }
-  saveSession(ctx, '', session, {
-    promptDeviation: 'unattended persona appendix + local runbook path + preinstalled binary',
-    runbook: 'BOOTSTRAP_FOR_AGENTS.md (local)',
+    extraAllow: ['OPENAI_API_KEY', 'CODEX_*'],
+    prompt: installPrompt(),
+    meta: {
+      promptDeviation: 'unattended persona appendix + local runbook path + preinstalled binary',
+      runbook: 'BOOTSTRAP_FOR_AGENTS.md (local)',
+    },
   });
 }
 
