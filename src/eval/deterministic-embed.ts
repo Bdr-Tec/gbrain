@@ -32,8 +32,28 @@ export function fnv1a(text: string): number {
   return h | 0;
 }
 
-interface LegacyQrelsShape {
-  queries?: Array<{ query?: unknown; embedding_dim?: unknown }>;
+export interface LegacyQrelsQuery {
+  query_id: string;
+  query: string;
+  embedding_dim: number;
+  relevant_slugs: string[];
+  first_relevant_slug: string;
+}
+
+/**
+ * Parse the legacy qrels fixture shape
+ * ({queries: [{query, embedding_dim, relevant_slugs, first_relevant_slug}]}).
+ * THE single parser for this shape — the canary runner and the embedder
+ * builder both consume it. Throws on malformed JSON or a missing `queries`
+ * array (callers surface a usage error; the gate's own qrels parser reports
+ * shape problems in detail).
+ */
+export function parseLegacyQrels(raw: string): LegacyQrelsQuery[] {
+  const parsed = JSON.parse(raw) as { queries?: unknown };
+  if (!Array.isArray(parsed.queries)) {
+    throw new Error('qrels fixture missing "queries" array');
+  }
+  return parsed.queries as LegacyQrelsQuery[];
 }
 
 /**
@@ -48,13 +68,10 @@ interface LegacyQrelsShape {
  * usage error; the gate's own qrels parser reports shape problems in detail).
  */
 export function buildQrelsQueryEmbedFn(qrelsRaw: string): (text: string) => Float32Array {
-  const parsed = JSON.parse(qrelsRaw) as LegacyQrelsShape;
-  if (!Array.isArray(parsed.queries)) {
-    throw new Error('qrels fixture missing "queries" array — cannot build the deterministic embedder');
-  }
+  const queries = parseLegacyQrels(qrelsRaw);
   const dimByQuery = new Map<string, number>();
-  for (const q of parsed.queries) {
-    if (typeof q?.query === 'string' && typeof q?.embedding_dim === 'number') {
+  for (const q of queries) {
+    if (typeof (q as { query?: unknown })?.query === 'string' && typeof (q as { embedding_dim?: unknown })?.embedding_dim === 'number') {
       dimByQuery.set(q.query, q.embedding_dim);
     }
   }

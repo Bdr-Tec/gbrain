@@ -92,11 +92,9 @@ describe("partition — fallback semantics", () => {
       ["b", 50],
     ]);
     const out = partition(["a", "b", "c", "d"], weights, 2);
-    // Effective weights: a=100, b=50, c=100, d=100. LPT desc (a,c,d ties →
-    // path asc): a=100→s0, c=100→s1, d=100→s0(200 vs 100? no: s1=100 ties
-    // s0=100 → lowest index s0 wins? argmin ties → first) — assert the
-    // invariant rather than the exact layout: totals differ by ≤ the
-    // fallback (LPT bound), and every unknown file got p75 not median.
+    // Effective weights: a=100, b=50, c=100, d=100. Exact LPT placement of
+    // ties is implementation-defined — assert the invariant instead: totals
+    // differ by ≤ the fallback (the LPT bound), and every file landed once.
     const totalsEffective = out.map((s) =>
       s.reduce((acc, f) => acc + (weights.get(f) ?? 100), 0),
     );

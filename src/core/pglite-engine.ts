@@ -131,7 +131,10 @@ let _snapshotWarnLogged = false;
 // Accepted limitation: a snapshot file rewritten mid-process is not observed;
 // the only writer (build-pglite-snapshot.ts) runs before test fan-out.
 let _snapshotSchemaHashMemo: string | null = null;
-const _snapshotFileMemo = new Map<string, { versionLines: string[]; blob: Blob } | null>();
+// blob stays null until the FIRST caller whose shape gate passes — a process
+// whose gateway shape never matches the snapshot (the zembed/1280 test
+// files) never pays the 42MB tar read at all.
+const _snapshotFileMemo = new Map<string, { versionLines: string[]; blob: Blob | null } | null>();
 let _snapshotTarReads = 0;
 
 export function __snapshotMemoStatsForTests(): { tarReads: number; memoEntries: number } {
@@ -190,17 +193,7 @@ export function tryLoadSnapshot(snapshotPath: string): Blob | null {
         _snapshotFileMemo.set(snapshotPath, null);
         return null;
       }
-      try {
-        const buf = fs.readFileSync(snapshotPath);
-        _snapshotTarReads += 1;
-        entry = {
-          versionLines,
-          blob: new Blob([new Uint8Array(buf.buffer as ArrayBuffer, buf.byteOffset, buf.byteLength)]),
-        };
-      } catch {
-        _snapshotFileMemo.set(snapshotPath, null);
-        return null;
-      }
+      entry = { versionLines, blob: null };
       _snapshotFileMemo.set(snapshotPath, entry);
     }
 
@@ -228,6 +221,20 @@ export function tryLoadSnapshot(snapshotPath: string): Blob | null {
         _snapshotWarnLogged = true;
       }
       return null;
+    }
+    if (entry.blob === null) {
+      // Tar read deferred until the first shape-matching caller (see memo
+      // comment above). A torn/unreadable tar is terminal for the process.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fs = require('node:fs') as typeof import('node:fs'); // engine-dynamic-import-ok
+        const buf = fs.readFileSync(snapshotPath);
+        _snapshotTarReads += 1;
+        entry.blob = new Blob([new Uint8Array(buf.buffer as ArrayBuffer, buf.byteOffset, buf.byteLength)]);
+      } catch {
+        _snapshotFileMemo.set(snapshotPath, null);
+        return null;
+      }
     }
     return entry.blob;
   } catch {

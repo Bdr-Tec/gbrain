@@ -150,13 +150,19 @@ describe('run-eval-canary.ts (check mode)', () => {
   let runExit: number | null = null;
 
   test('spawns the real CLI gate hermetically and passes the floors', () => {
-    statusBefore = execSync('git status --porcelain', { cwd: ROOT, encoding: 'utf-8' });
+    // Status scoped to the paths check mode could plausibly touch — a
+    // whole-tree porcelain diff flakes when a concurrent shard sibling (or a
+    // developer save) creates an unrelated file during the ~30s window.
+    const STATUS_SCOPE = 'git status --porcelain -- .gbrain-evals test/fixtures docs/eval';
+    statusBefore = execSync(STATUS_SCOPE, { cwd: ROOT, encoding: 'utf-8' });
     const child = spawnSync(
       process.execPath,
       [join(ROOT, 'scripts', 'run-eval-canary.ts')],
-      { cwd: ROOT, encoding: 'utf-8', timeout: 110_000 },
+      // Outer budget strictly above the runner's inner CLI-child timeout so
+      // the runner's own diagnostics always win the race.
+      { cwd: ROOT, encoding: 'utf-8', timeout: 118_000 },
     );
-    statusAfter = execSync('git status --porcelain', { cwd: ROOT, encoding: 'utf-8' });
+    statusAfter = execSync(STATUS_SCOPE, { cwd: ROOT, encoding: 'utf-8' });
     runExit = child.status;
 
     const combined = (child.stdout ?? '') + (child.stderr ?? '');

@@ -40,12 +40,13 @@ cd "$(dirname "$0")/.."
 . scripts/lib/test-env.sh
 
 # ──────────────────────────────────────────────────────────────────────────
-# EXCLUSIVE_FILES: files that touch MACHINE-GLOBAL state and must never run
-# concurrently with anything else. They run sequentially AFTER the pool
-# drains, without the wall-clock kill (a SIGKILL mid-registration could
-# strand a real scheduled job). Growth guard: test/scripts/serial-files
-# .test.ts fails when this list grows past 3 entries — every addition needs
-# a justification comment like the two below.
+# EXCLUSIVE_FILES: files that must never run concurrently with anything else
+# (machine-global state or contention-critical timing). They run sequentially
+# AFTER the pool drains, without the wall-clock kill (a SIGKILL
+# mid-registration could strand a real scheduled job). Growth guard:
+# test/scripts/serial-files.test.ts fails when this list grows past 3
+# entries — every addition needs a justification comment like the entries
+# below.
 # ──────────────────────────────────────────────────────────────────────────
 EXCLUSIVE_FILES=(
   # launchd/cron lifecycle arc: install → self-disable → reinstall →
@@ -230,6 +231,14 @@ for f in "${ordered_files[@]}"; do
     if [ "$rc" = "0" ]; then
       summary=$(grep -E '^ *[0-9]+ pass' "$LOG_DIR/$i.log" | tail -1 | tr -d ' ' || true)
       echo "[serial-tests] PASS ${dur}s $f ${summary:+($summary)}"
+    elif [ "$rc" = "137" ] && [ "$dur" != "?" ] && [ "$dur" -ge "$PER_FILE_TIMEOUT" ] 2>/dev/null; then
+      # 137 with full duration = OUR timeout's SIGKILL escalation (a hang
+      # that ignored SIGTERM), not an external kill — a real failure; a
+      # rescue re-run would just re-hang for another ~315s.
+      echo "[serial-tests] FAIL ${dur}s $f — exit 137 (hang survived SIGTERM; killed by ${PER_FILE_TIMEOUT}s per-file timeout)" >&2
+      cat "$LOG_DIR/$i.log" >&2
+      fail_count=$((fail_count + 1))
+      failed_files+=("$f")
     elif [ "$rc" = "143" ] || [ "$rc" = "137" ]; then
       echo "[serial-tests] KILLED ${dur}s $f — exit $rc (external SIGTERM/SIGKILL) — queued for serial rescue" >&2
       rescue_files+=("$f")
@@ -251,8 +260,12 @@ done
 if [ "${#rescue_files[@]}" -gt 0 ]; then
   echo "[serial-tests] rescue pass: ${#rescue_files[@]} externally-killed file(s), re-running serially" >&2
   for f in "${rescue_files[@]}"; do
+    # Exclusive-lane files keep their no-kill contract on rescue too (the
+    # lane exists because a SIGKILL mid-registration strands real state).
+    wrap_mode="wrap"
+    is_exclusive "$f" && wrap_mode="nowrap"
     s=$(date +%s)
-    run_one_file "$f" "$LOG_DIR/$i.log" "$LOG_DIR/$i.exit" "wrap"
+    run_one_file "$f" "$LOG_DIR/$i.log" "$LOG_DIR/$i.exit" "$wrap_mode"
     e=$(date +%s)
     rc=$(cat "$LOG_DIR/$i.exit" 2>/dev/null || echo 1)
     if [ "$rc" = "0" ]; then

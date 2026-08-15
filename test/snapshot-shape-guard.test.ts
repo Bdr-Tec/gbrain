@@ -81,17 +81,19 @@ test('memo: same path is read once per process, blob identical across calls', ()
   expect(afterSecond).toBe(1);
 });
 
-test('memo: shape refusal is per-call, never cached as terminal', () => {
-  // Hash matches but dims mismatch: the entry is memoized (tar read once) yet
-  // every call re-runs the shape gate against the CURRENT gateway config —
-  // an engine with a matching config later in the same process could still
-  // load this snapshot. This is the zembed/1280 poisoning guard staying hot
-  // behind the memo.
+test('memo: shape refusal is per-call, never cached as terminal — and costs zero tar reads', () => {
+  // Hash matches but dims mismatch: the version entry is memoized yet every
+  // call re-runs the shape gate against the CURRENT gateway config — an
+  // engine with a matching config later in the same process could still
+  // load this snapshot (the zembed/1280 poisoning guard staying hot behind
+  // the memo). The 42MB tar read is deferred until a shape-MATCHING caller,
+  // so a process that only ever refuses never reads it at all.
   const tar = writeFixture(`${currentHash()}\ndims=99999\nmodel=${getEmbeddingModel()}\n`);
   expect(tryLoadSnapshot(tar)).toBeNull();
-  expect(__snapshotMemoStatsForTests().tarReads).toBe(1);
+  expect(__snapshotMemoStatsForTests().tarReads).toBe(0);
+  expect(__snapshotMemoStatsForTests().memoEntries).toBe(1); // entry exists — not terminal
   expect(tryLoadSnapshot(tar)).toBeNull();
-  expect(__snapshotMemoStatsForTests().tarReads).toBe(1);
+  expect(__snapshotMemoStatsForTests().tarReads).toBe(0);
 });
 
 test('memo: stale hash is terminal — tar never read, repeat calls short-circuit', () => {

@@ -67,7 +67,7 @@ jobs:
     # silently skip.
     name: JSONB parity (#2339 regression guard)
     needs: e2e-cache-check
-    if: needs.e2e-cache-check.outputs.hit != 'true' || github.event_name == 'schedule'
+    if: needs.e2e-cache-check.outputs.hit != 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -119,7 +119,7 @@ jobs:
   tier1:
     name: Tier 1 (Mechanical)
     needs: e2e-cache-check
-    if: needs.e2e-cache-check.outputs.hit != 'true' || github.event_name == 'schedule'
+    if: needs.e2e-cache-check.outputs.hit != 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -163,7 +163,7 @@ jobs:
     # OpenAI/Anthropic/ZeroEntropy tokens and must not fire when the build
     # can't even pass the cheapest DB guard.
     needs: [e2e-cache-check, jsonb-parity]
-    if: needs.e2e-cache-check.outputs.hit != 'true' || github.event_name == 'schedule'
+    if: needs.e2e-cache-check.outputs.hit != 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -281,7 +281,10 @@ jobs:
           EVENT="${{ github.event_name }}"
           echo "e2e-cache-check.hit=$HIT event=$EVENT"
           echo "jsonb-parity=$JSONB  tier1=$TIER1  tier2=$TIER2"
-          if [ "$HIT" = "true" ] && [ "$EVENT" != "schedule" ]; then
+          # schedule AND workflow_dispatch always run the real suite — a
+          # manual dispatch is an explicit ask for a live run, so a cache
+          # hit must not report green-without-running for either.
+          if [ "$HIT" = "true" ] && [ "$EVENT" != "schedule" ] && [ "$EVENT" != "workflow_dispatch" ]; then
             echo "✓ e2e cache HIT for hash ${{ needs.e2e-cache-check.outputs.hash }} — E2E green"
             exit 0
           fi

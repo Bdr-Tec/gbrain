@@ -151,6 +151,15 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-cache-${{ runner.os }}-${{ hashFiles('bun.lock', 'admin/bun.lock') }}
           restore-keys: bun-cache-${{ runner.os }}-
+      # verify's runner sources test-env.sh and builds the snapshot for its
+      # PGLite-booting eval checks — restore the cache so it's the ~40ms
+      # freshness check, not a cold build ahead of all ~47 checks.
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            test/fixtures/pglite-snapshot.tar
+            test/fixtures/pglite-snapshot.version
+          key: pglite-snapshot-${{ runner.os }}-${{ hashFiles('src/core/migrate.ts', 'src/core/pglite-schema.ts', 'test/helpers/legacy-embedding-config.ts', 'scripts/build-pglite-snapshot.ts') }}
       - run: bun install --frozen-lockfile
       - run: bun run verify
       # Guard: no bare `bun test` in workflows/scripts — bun ignores
@@ -182,9 +191,12 @@ jobs:
       # PGLite schema snapshot (~42MB): the runner builds it when absent or
       # stale (its runtime hash is authoritative — a stale restore is rebuilt,
       # never trusted). Cached so the build is paid once per schema change,
-      # not once per job per run. This job SAVES; matrix + slow jobs
+      # not once per job per run. This job SAVES; verify + matrix + slow jobs
       # restore-only. The key is an approximation on purpose: it only has to
       # be a superset-trigger of real schema changes.
+      # KEY HAS 5 HOMES in this file (this save + 4 restores: verify, matrix,
+      # slow-eval, slow-perf) — edit all together, or drift shows up only as
+      # silent rebuild cost.
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
         with:
           path: |

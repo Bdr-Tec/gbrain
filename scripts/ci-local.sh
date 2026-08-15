@@ -11,8 +11,8 @@
 #   bash scripts/ci-local.sh --clean      # nuke named volumes for cold debug
 #   bash scripts/ci-local.sh --no-shard   # debug: run E2E sequentially against postgres-1 only
 #
-# 4-way E2E sharding: 4 pgvector services on host ports 5434-5437. The test/e2e/ file set (181 files and growing)
-# files split N/4 per shard; shards run in parallel. Within a shard, files run
+# 4-way E2E sharding: 4 pgvector services on host ports 5434-5437. The test/e2e/ file set splits
+# roughly N/4 per shard; shards run in parallel. Within a shard, files run
 # sequentially (TRUNCATE CASCADE no-race property documented in run-e2e.sh).
 # Wall-time on a 16-core host: ~6 min sequential -> ~1.5-2 min sharded.
 #

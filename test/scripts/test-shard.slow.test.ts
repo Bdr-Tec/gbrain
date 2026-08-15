@@ -156,7 +156,7 @@ describe('test-shard.sh — LPT balance contract', () => {
     expect(matrix.length).toBe(CI_SHARDS);
   });
 
-  it(`${10}-shard wallclock imbalance ratio ≤ 1.5 (the configuration CI actually runs)`, () => {
+  it(`${CI_SHARDS}-shard wallclock imbalance ratio ≤ 1.5 (the configuration CI actually runs)`, () => {
     const shards = Array.from({ length: CI_SHARDS }, (_, i) => dryRunList(i + 1, CI_SHARDS));
     for (const s of shards) expect(s.length).toBeGreaterThan(0);
     const totals = totalsFor(shards);

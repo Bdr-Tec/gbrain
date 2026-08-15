@@ -37,7 +37,8 @@ import { fileURLToPath } from 'node:url';
 import { execSync, spawnSync } from 'node:child_process';
 import type { BrainEngine } from '../src/core/engine.ts';
 import type { ChunkInput } from '../src/core/types.ts';
-import { basisEmbedding } from '../src/eval/deterministic-embed.ts';
+import { basisEmbedding, parseLegacyQrels } from '../src/eval/deterministic-embed.ts';
+import type { LegacyQrelsQuery } from '../src/eval/deterministic-embed.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const QRELS_PATH = join(ROOT, 'test', 'fixtures', 'eval-baselines', 'qrels-search.json');
@@ -72,22 +73,10 @@ const CHILD_ENV_STRIP = [
   'GEMINI_API_KEY',
 ];
 
-export interface LegacyQrelsQuery {
-  query_id: string;
-  query: string;
-  embedding_dim: number;
-  relevant_slugs: string[];
-  first_relevant_slug: string;
-}
-
-/** Parse the legacy qrels fixture shape ({queries: [{query, embedding_dim, relevant_slugs, first_relevant_slug}]}). */
-export function parseLegacyQrels(raw: string): LegacyQrelsQuery[] {
-  const parsed = JSON.parse(raw) as { queries?: unknown };
-  if (!Array.isArray(parsed.queries)) {
-    throw new Error('qrels fixture missing "queries" array');
-  }
-  return parsed.queries as LegacyQrelsQuery[];
-}
+// The legacy qrels parser lives with the embedder builder — one parser for
+// the shape (re-exported here for the test that drives this runner).
+export { parseLegacyQrels };
+export type { LegacyQrelsQuery };
 
 /**
  * Seed the V2 canary corpus. For each query's relevant slugs:

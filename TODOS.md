@@ -80,6 +80,24 @@ Each was explicitly deferred in the pass's CEO/eng/outside-voice reviews.
   `bun run <key>` startup before its bash script; invoking scripts directly from a
   manifest would drop ~47 bun startups. **Why deferred:** micro-win; touches the
   package.json-scripts-as-API convention. **Effort:** S. **Priority:** P3.
+- [ ] **Snapshot-tar digest verification (defense-in-depth).** **What:** the CI
+  actions/cache for `test/fixtures/pglite-snapshot.tar` validates only the
+  schema-hash/dims lines in the sidecar `.version` — which travels in the SAME
+  cache entry, so both are forgeable together by anyone with cache write access.
+  Record a sha256 of the tar bytes in the version file at build time and have
+  `tryLoadSnapshot` verify it (mirror of the gitleaks fetch-fresh-digest
+  pattern). **Why deferred:** exploitability bounded by GitHub cache scoping
+  (fork caches isolated; poisoning needs push access) and impact is test-DB
+  contents only. **Effort:** S. **Priority:** P3.
+- [ ] **Redact provider/DB strings in eval ledger writes.** **What:**
+  `EvalRunRecord.error` (free text) is persisted unredacted by
+  `persistRunRecord` (eval-run-all) and the canary's record mode into the now-
+  TRACKED `.gbrain-evals/eval-results.jsonl` — a failed keyed run whose error
+  embeds a connection string would ride a later commit into the public repo.
+  Route `record.error` + provider-derived params through
+  `redactConnectionInfo`/`redactPgUrl` before append; optionally add
+  `.gbrain-evals/` to the fixture-privacy scan surface. **Effort:** S.
+  **Priority:** P2.
 - [ ] **check-image-decoders-embedded.sh into verify CHECKS.** **What:** the guard
   runs its own `bun build --compile` (~60s) — too heavy per-verify. Revisit if the
   binary-embed bug class recurs; guards-manifest.tsv carries the exemption note,
