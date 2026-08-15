@@ -586,6 +586,23 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
     await runDreamRetriage(engine, args.slice(1));
     return;
   }
+  // Fail-loud guard (structured-review r3 P1): the CLI flag registry unions
+  // retriage's flags into `dream`, so the pre-dispatch validator accepts
+  // `gbrain dream --reconcile-queue` — but without the `retriage` positional,
+  // parseArgs would ignore the flag and silently run the full (paid, writing)
+  // maintenance cycle instead of the reconciliation the user asked for.
+  {
+    const RETRIAGE_ONLY_FLAGS = ['--reconcile-queue', '--cancel-unmatched', '--audit-rejects'];
+    const stray = args.find(a => RETRIAGE_ONLY_FLAGS.includes(a));
+    if (stray) {
+      console.error(
+        `gbrain dream: ${stray} belongs to the 'retriage' subcommand — ` +
+        `did you mean: gbrain dream retriage ${args.join(' ')}`,
+      );
+      process.exitCode = 2;
+      return;
+    }
+  }
 
   const opts = parseArgs(args);
 

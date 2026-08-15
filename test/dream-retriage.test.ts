@@ -388,6 +388,46 @@ describe('dream retriage — reconcile matrix', () => {
     }
   }, 30_000);
 
+  test('SR3-P1: dream --reconcile-queue without the retriage positional fails loud (exit code 2)', async () => {
+    // The flag registry unions retriage flags into `dream`, so the strict
+    // pre-dispatch validator accepts them — the guard in runDream must reject
+    // instead of silently running the full paid maintenance cycle.
+    for (const stray of ['--reconcile-queue', '--cancel-unmatched', '--audit-rejects']) {
+      process.exitCode = 0;
+      const result = await runDream(null, [stray]);
+      expect(result).toBeUndefined(); // no cycle ran
+      expect(process.exitCode).toBe(2);
+    }
+  });
+
+  test('SR3-P2: gbrain models reports models.dream.triage as the effective triage route', async () => {
+    const rig = await setupRig();
+    try {
+      await rig.engine.setConfig('models.dream.triage', 'anthropic:claude-sonnet-4-6');
+      const { runModels } = await import('../src/commands/models.ts');
+      // runModels writes through process.stdout.write; capture that stream.
+      const chunks: string[] = [];
+      const orig = process.stdout.write.bind(process.stdout);
+      (process.stdout as unknown as { write: (c: unknown) => boolean }).write = (c: unknown) => {
+        chunks.push(String(c));
+        return true;
+      };
+      try {
+        await captureStdout(() => runModels(rig.engine as never, ['--json']));
+      } finally {
+        (process.stdout as unknown as { write: typeof orig }).write = orig;
+      }
+      const raw = chunks.join('');
+      const jsonStart = raw.indexOf('{');
+      const report = JSON.parse(raw.slice(jsonStart)) as { per_task: Array<{ key: string; resolved: string; source: string }> };
+      const row = report.per_task.find(r => r.key === 'models.dream.synthesize_verdict')!;
+      expect(row.resolved).toBe('anthropic:claude-sonnet-4-6');
+      expect(row.source).toBe('config: models.dream.triage');
+    } finally {
+      await rig.cleanup();
+    }
+  }, 30_000);
+
   test('SR2-P1: unpriced TRIAGE model + priced audit still confirms on the audit dollars', async () => {
     const rig = await setupRig();
     try {
