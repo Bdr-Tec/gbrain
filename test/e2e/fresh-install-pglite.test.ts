@@ -130,7 +130,10 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     expect(cfg.embedding_model).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_MODEL);
     expect(cfg.embedding_dimensions).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
 
-    // The actual schema column dim matches.
+    // The actual schema column dim matches, and the voyage-picked install
+    // wrote the explicit reranker override (v0.47 split-default: the bundle
+    // default stays legacy-ZE, so a fresh voyage brain needs this config or
+    // it resolves a reranker whose key it doesn't have).
     const { PGLiteEngine } = await import('../../src/core/pglite-engine.ts');
     const engine = new PGLiteEngine();
     await engine.connect({ database_path: cfg.database_path, engine: 'pglite' });
@@ -139,8 +142,114 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
       const colDim = await readContentChunksEmbeddingDim(engine);
       expect(colDim.exists).toBe(true);
       expect(colDim.dims).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
+      expect(await engine.getConfig('search.reranker.model')).toBe('voyage:rerank-2.5');
     } finally {
       await engine.disconnect();
+    }
+  }, 30000);
+
+  test('re-init never clobbers an existing explicit reranker choice', async () => {
+    resetGateway();
+    const synthVec = Array.from({ length: NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS }, () => 0.01);
+    __setEmbedTransportForTests(async (args: any) => ({
+      embeddings: args.values.map(() => synthVec),
+    }) as any);
+    const origLog = console.log;
+    const origWarn = console.warn;
+    console.log = () => {};
+    console.warn = () => {};
+    try {
+      const { runInit } = await import('../../src/commands/init.ts');
+      await runInit(['--pglite', '--non-interactive']);
+      const cfgPath = join(tmpHome, '.gbrain', 'config.json');
+      const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
+      const { PGLiteEngine } = await import('../../src/core/pglite-engine.ts');
+      const engine = new PGLiteEngine();
+      await engine.connect({ database_path: cfg.database_path, engine: 'pglite' });
+      try {
+        await engine.setConfig('search.reranker.model', 'openrouter:cohere/rerank-custom');
+      } finally {
+        await engine.disconnect();
+      }
+      // Re-init the same brain: the override write must respect the user's
+      // explicit choice (never-clobber contract).
+      await runInit(['--pglite', '--non-interactive', '--force']);
+      const engine2 = new PGLiteEngine();
+      await engine2.connect({ database_path: cfg.database_path, engine: 'pglite' });
+      try {
+        expect(await engine2.getConfig('search.reranker.model')).toBe('openrouter:cohere/rerank-custom');
+      } finally {
+        await engine2.disconnect();
+      }
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+    }
+  }, 60000);
+
+  test('explicit --embedding-model on a sunset provider proceeds WITH a loud warning (D3 allow-explicit)', async () => {
+    resetGateway();
+    process.env.ZEROENTROPY_API_KEY = 'ze-test-explicit';
+    const synthVec = Array.from({ length: 1280 }, () => 0.01);
+    __setEmbedTransportForTests(async (args: any) => ({
+      embeddings: args.values.map(() => synthVec),
+    }) as any);
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    let errBuf = '';
+    console.log = () => {};
+    console.warn = () => {};
+    console.error = (...args: unknown[]) => { errBuf += args.join(' ') + '\n'; };
+    try {
+      const { runInit } = await import('../../src/commands/init.ts');
+      await runInit([
+        '--pglite', '--non-interactive',
+        '--embedding-model', 'zeroentropyai:zembed-1',
+        '--embedding-dimensions', '1280',
+      ]);
+      const cfg = JSON.parse(readFileSync(join(tmpHome, '.gbrain', 'config.json'), 'utf-8'));
+      // Allowed until the September removal — explicit choice is honored...
+      expect(cfg.embedding_model).toBe('zeroentropyai:zembed-1');
+      // ...but never silently: the sunset warning names the date + escape route.
+      expect(errBuf).toContain('2026-09-04');
+      expect(errBuf).toContain('migrate embeddings');
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+      console.error = origError;
+    }
+  }, 30000);
+
+  test('keyless fresh install sizes the column at the NEW-INSTALL width (1024), not the legacy 1280', async () => {
+    resetGateway();
+    delete process.env.VOYAGE_API_KEY; // zero keys → keyless continue
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    console.log = () => {};
+    console.warn = () => {};
+    console.error = () => {};
+    try {
+      const { runInit } = await import('../../src/commands/init.ts');
+      await runInit(['--pglite', '--non-interactive']);
+      const cfg = JSON.parse(readFileSync(join(tmpHome, '.gbrain', 'config.json'), 'utf-8'));
+      expect(cfg.embedding_disabled).toBe(true);
+      const { PGLiteEngine } = await import('../../src/core/pglite-engine.ts');
+      const engine = new PGLiteEngine();
+      await engine.connect({ database_path: cfg.database_path, engine: 'pglite' });
+      try {
+        const { readContentChunksEmbeddingDim } = await import('../../src/core/embedding-dim-check.ts');
+        const colDim = await readContentChunksEmbeddingDim(engine);
+        expect(colDim.exists).toBe(true);
+        expect(colDim.dims).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
+      } finally {
+        await engine.disconnect();
+      }
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+      console.error = origError;
     }
   }, 30000);
 

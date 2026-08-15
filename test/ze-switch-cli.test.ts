@@ -237,3 +237,16 @@ describe('--undo (moves brains OFF the provider — still works)', () => {
     expect(await engine.getConfig(KEY_APPLIED)).toBeNull();
   });
 });
+
+describe('--dry-run --json (read-only plan still allowed until removal)', () => {
+  test('emits the planned envelope with the ZE target', async () => {
+    await setLegacyConfig();
+    await seedPages(150);
+    const r = await captureExit(() => runZeSwitch(['--dry-run', '--json'], engine));
+    expect(r.exitCode).toBe(0);
+    const env = JSON.parse(r.stdout);
+    expect(env.status).toBe('planned');
+    expect(env.plan).toBeDefined();
+    expect(env.plan.target_dim).toBe(ZE_TARGET_EMBEDDING_DIM);
+  });
+});

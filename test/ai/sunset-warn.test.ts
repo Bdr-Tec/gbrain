@@ -85,3 +85,28 @@ describe('sunset warn-on-use (v0.47)', () => {
     expect(stderrChunks.join('')).not.toContain('DEPRECATED');
   });
 });
+
+describe('sunset warn-on-use — embedding touchpoint (v0.47)', () => {
+  test('first ZE embed resolution warns with the migrate command', async () => {
+    _resetSunsetWarningsForTest();
+    stderrChunks = [];
+    resetGateway();
+    configureGateway({
+      embedding_model: 'zeroentropyai:zembed-1',
+      embedding_dimensions: 1280,
+      env: { ZEROENTROPY_API_KEY: 'sk-test-zerokey' },
+    });
+    const { __setEmbedTransportForTests, embedQuery } = await import('../../src/core/ai/gateway.ts');
+    __setEmbedTransportForTests(async (args: any) => ({
+      embeddings: args.values.map(() => Array.from({ length: 1280 }, () => 0.01)),
+    }) as any);
+    try {
+      await embedQuery('hello');
+    } finally {
+      __setEmbedTransportForTests(null);
+    }
+    const all = stderrChunks.join('');
+    expect(all).toContain('DEPRECATED');
+    expect(all).toContain('migrate embeddings --to voyage:voyage-4');
+  });
+});

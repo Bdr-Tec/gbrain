@@ -3,9 +3,10 @@
  *
  * Skip-gated on VOYAGE_API_KEY. This is the REQUIRED pre-ship confirmation of
  * the rerank wire contract the unit tests pin with stubs: POST
- * https://api.voyageai.com/v1/rerank with `top_k`, response `results[]` of
- * {index, relevance_score}. Also round-trips one voyage-4 embed at the
- * new-install width (1024).
+ * https://api.voyageai.com/v1/rerank with `top_k`, response
+ * `{object: "list", data: [{index, relevance_score}]}` (the gateway parser
+ * accepts both data[] and the legacy results[] dialect). Also round-trips one
+ * voyage-4 embed at the new-install width (1024).
  *
  * Run: VOYAGE_API_KEY=... bun test test/e2e/voyage-rerank-live.test.ts
  */
@@ -36,7 +37,7 @@ afterAll(() => {
 });
 
 describe('Voyage live — rerank wire contract', () => {
-  test('rerank-2.5 returns relevance-ordered results[] and honors top_k', async () => {
+  test('rerank-2.5 returns relevance-ordered data[] and honors top_k', async () => {
     if (skipAll) {
       console.warn('[skip] VOYAGE_API_KEY not set');
       return;

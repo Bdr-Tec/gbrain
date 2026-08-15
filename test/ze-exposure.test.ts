@@ -213,7 +213,11 @@ describe('renderZeActionRequired — notice copy', () => {
     const text = renderZeActionRequired(e);
     expect(text).toContain('2026-09-04');
     expect(text).toContain('migrate embeddings --to voyage:voyage-4 --dim 1024');
-    expect(text).toContain('openai:text-embedding-3-small --dim 1280');
+    // Width-honest copy: the OpenAI alternative names the width slot generically
+    // (the doctor prints the brain's exact width-aware command) — a static 1280
+    // here would be wrong for 640d/2560d ZE brains.
+    expect(text).toContain('openai:text-embedding-3-small --dim <width>');
+    expect(text).toContain('gbrain doctor');
     expect(text).toContain('search.reranker.model voyage:rerank-2.5');
     expect(text).toContain('skills/migrations/v0.47.0.0.md');
     expect(text).toContain('Nothing has been changed automatically');
