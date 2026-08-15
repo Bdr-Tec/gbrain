@@ -68,6 +68,7 @@ interface IngestCliOpts {
   facts?: boolean;
   maxCostUsd?: number;
   embed?: boolean;
+  all?: boolean;
   json?: boolean;
   quiet?: boolean;
 }
@@ -82,6 +83,7 @@ function parseIngestArgs(args: string[]): IngestCliOpts | { help: true } | { err
     if (a === '--dry-run') { opts.dryRun = true; continue; }
     if (a === '--embed') { opts.embed = true; continue; }
     if (a === '--facts') { opts.facts = true; continue; }
+    if (a === '--all') { opts.all = true; continue; }
     if (a === '--format') {
       const v = args[++i] as TranscriptFormat | undefined;
       if (!v || !FORMATS.includes(v)) {
@@ -122,6 +124,9 @@ function parseIngestArgs(args: string[]): IngestCliOpts | { help: true } | { err
 
 const HELP = `Usage:
   gbrain transcripts ingest <path-or-glob>... [options]
+  gbrain transcripts ingest              # discovery: show found session logs
+  gbrain transcripts ingest --all        # import everything discovered
+  gbrain transcripts status              # found vs imported gap table
   gbrain transcripts recent [options]
 
 ingest — import dead session logs and chat exports as conversation pages
@@ -129,6 +134,8 @@ ingest — import dead session logs and chat exports as conversation pages
 long sessions split into searchable parts). Re-runs are free (content-hash
 skip). Embedding is OFF by default; run the embed backfill later or opt in.
 
+  --all             Import every session log discovered under the harness
+                    roots (claude/codex/openclaw projects + the hermes store)
   --format F        claude-code | codex | openclaw | hermes | chatgpt |
                     claude-export (auto-detected when omitted)
   --dry-run         Parse + redact + report; writes nothing
@@ -230,11 +237,32 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
     setCliExitVerdict(2);
     return;
   }
+  // No paths: discovery. Without the all flag, show what WOULD be imported
+  // and stop (a safe default for a command that can touch four harness
+  // histories); with it, import the discovered set.
   if (parsed.paths.length === 0) {
-    console.error('gbrain transcripts ingest: no paths given (discovery mode lands with `status`)');
-    console.log(HELP);
-    setCliExitVerdict(2);
-    return;
+    const { discoverTranscriptFiles } = await import('../core/transcripts/discover.ts');
+    const discovered = discoverTranscriptFiles();
+    if (discovered.length === 0) {
+      console.log('discovery: no session logs found under the harness roots');
+      return;
+    }
+    if (!parsed.all) {
+      const byFormat = new Map<string, { n: number; bytes: number }>();
+      for (const d of discovered) {
+        const cur = byFormat.get(d.format) ?? { n: 0, bytes: 0 };
+        cur.n++;
+        cur.bytes += d.bytes;
+        byFormat.set(d.format, cur);
+      }
+      console.log('discovery (nothing imported yet — add the all flag to import):');
+      for (const [format, { n, bytes }] of byFormat) {
+        console.log(`  ${format.padEnd(12)} ${String(n).padStart(5)} file(s)  ${(bytes / 1024 / 1024).toFixed(1)} MB`);
+      }
+      console.log('  tip: `gbrain transcripts status` shows found vs imported per harness');
+      return;
+    }
+    parsed.paths = discovered.map((d) => d.path);
   }
 
   // Source: the canonical 6-tier chain (capture.ts pattern) — one resolved
@@ -366,10 +394,45 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
   if (allFailed) setCliExitVerdict(1);
 }
 
+async function runStatus(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  let sourceId = 'default';
+  try {
+    const { resolveSourceWithTier } = await import('../core/source-resolver.ts');
+    sourceId = (await resolveSourceWithTier(engine, null)).source_id;
+  } catch {
+    // Fall through with default — status is read-only.
+  }
+  const { buildStatusRows, discoverTranscriptFiles, indexImportedSessions } = await import(
+    '../core/transcripts/discover.ts'
+  );
+  const rows = buildStatusRows(discoverTranscriptFiles(), await indexImportedSessions(engine, sourceId));
+  if (json) {
+    console.log(JSON.stringify({ source_id: sourceId, rows }, null, 2));
+    return;
+  }
+  console.log(`transcripts status (source: ${sourceId})`);
+  console.log('  harness       found   imported-sessions   not-yet-imported');
+  for (const r of rows) {
+    const gap = r.gapFiles === null ? '(store-level; run ingest to see)' : String(r.gapFiles);
+    console.log(
+      `  ${r.format.padEnd(12)} ${String(r.found).padStart(6)} ${String(r.importedSessions).padStart(12)}        ${gap}`,
+    );
+  }
+  const totalGap = rows.reduce((n, r) => n + (r.gapFiles ?? 0), 0);
+  if (totalGap > 0) {
+    console.log(`  backfill: gbrain transcripts ingest --all   (${totalGap} file(s) waiting)`);
+  }
+}
+
 export async function runTranscripts(engine: BrainEngine, args: string[]): Promise<void> {
   const sub = args[0];
   if (sub === 'ingest') {
     await runIngest(engine, args.slice(1));
+    return;
+  }
+  if (sub === 'status') {
+    await runStatus(engine, args.slice(1));
     return;
   }
   if (sub !== 'recent') {
