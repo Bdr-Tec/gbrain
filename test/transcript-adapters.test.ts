@@ -26,9 +26,23 @@ import {
   transcriptId8,
   type FileDiagnostics,
   type ParsedSession,
+  type TranscriptFormat,
 } from '../src/core/transcripts/types.ts';
 
+import { codexAdapter } from '../src/core/transcripts/codex.ts';
+import { isOpenclawCheckpointFile, openclawAdapter } from '../src/core/transcripts/openclaw.ts';
+import { hermesAdapter } from '../src/core/transcripts/hermes.ts';
+import { buildHermesFixture } from './fixtures/transcripts/hermes-fixture-builder.ts';
+
 const FIXTURE = join(import.meta.dir, 'fixtures', 'conversation-formats', 'claude-code.jsonl');
+const CODEX_FIXTURE = join(import.meta.dir, 'fixtures', 'transcripts', 'codex-rollout.jsonl');
+const AGENT_FIXTURE = join(import.meta.dir, 'fixtures', 'transcripts', 'agent-session.jsonl');
+const CHECKPOINT_FIXTURE = join(
+  import.meta.dir,
+  'fixtures',
+  'transcripts',
+  'agent-session.checkpoint.11111111-aaaa-bbbb-cccc-222222222222.jsonl',
+);
 
 let tmp: string | null = null;
 function tdir(): string {
@@ -219,5 +233,118 @@ describe('claudeCodeAdapter', () => {
 
   test('detect sniffs the first line shape', () => {
     expect(claudeCodeAdapter.detect(FIXTURE, readSample(FIXTURE))).toBe(true);
+  });
+});
+
+// ── Codex adapter [structural turn selection, never preamble heuristics] ────
+
+describe('codexAdapter', () => {
+  test('user turns from event_msg, assistant from output_text; injected preambles never leak', async () => {
+    const { sessions, diag } = await drain(codexAdapter.parse(CODEX_FIXTURE));
+    expect(sessions).toHaveLength(1);
+    const s = sessions[0];
+    expect(s.meta.sessionId).toBe('codex-fixture-session-1');
+    expect(s.meta.cwd).toBe('/home/alice-example/agent-workspace');
+    expect(s.meta.startedAt).toBe('2026-08-02T09:00:00.000Z');
+    expect(s.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(s.messages[0].text).toContain('which fund led the widget-co seed');
+    expect(s.messages[0].timestamp).toBe('2026-08-02T09:00:03.000Z');
+    expect(s.messages[1].text).toContain('fund-a led the widget-co seed');
+    expect(s.messages[3].text).toBe('Noted: bridge check-in every Thursday.\nI will keep that in the plan.');
+    const all = s.messages.map((m) => m.text).join('\n');
+    expect(all).not.toContain('PREAMBLE-ONLY-TEXT');
+    expect(all).not.toContain('PLUGIN-LIST-ONLY-TEXT');
+    expect(all).not.toContain('REASONING-ONLY-TEXT');
+    expect(all).not.toContain('TOOL-OUTPUT-ONLY-TEXT');
+    expect(diag.sessions).toBe(1);
+    expect(diag.skippedLines).toBe(1); // the malformed tail line
+  });
+
+  test('detect matches the rollout head line', () => {
+    expect(codexAdapter.detect(CODEX_FIXTURE, readSample(CODEX_FIXTURE))).toBe(true);
+    expect(codexAdapter.detect(FIXTURE, readSample(FIXTURE))).toBe(false);
+  });
+});
+
+// ── OpenClaw adapter [checkpoint siblings never imported] ───────────────────
+
+describe('openclawAdapter', () => {
+  test('messages only; model_change/custom/compaction skipped; timestamps kept', async () => {
+    const { sessions, diag } = await drain(openclawAdapter.parse(AGENT_FIXTURE));
+    expect(sessions).toHaveLength(1);
+    const s = sessions[0];
+    expect(s.meta.sessionId).toBe('agent-fixture-session-1');
+    expect(s.meta.startedAt).toBe('2026-08-03T14:00:00.000Z');
+    expect(s.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(s.messages[1].timestamp).toBe('2026-08-03T14:00:05.000Z');
+    const all = s.messages.map((m) => m.text).join('\n');
+    expect(all).toContain('acme-seed memo');
+    expect(all).not.toContain('CUSTOM-ONLY-TEXT');
+    expect(all).not.toContain('COMPACTION-ONLY-TEXT');
+    expect(diag.skippedLines).toBe(1);
+  });
+
+  test('checkpoint siblings are rejected by detect and flagged by the helper', () => {
+    expect(isOpenclawCheckpointFile(CHECKPOINT_FIXTURE)).toBe(true);
+    expect(isOpenclawCheckpointFile(AGENT_FIXTURE)).toBe(false);
+    expect(openclawAdapter.detect(CHECKPOINT_FIXTURE, readSample(CHECKPOINT_FIXTURE))).toBe(false);
+    expect(openclawAdapter.detect(AGENT_FIXTURE, readSample(AGENT_FIXTURE))).toBe(true);
+  });
+});
+
+// ── Hermes adapter [copy-then-read; multi-session cardinality] ──────────────
+
+describe('hermesAdapter', () => {
+  test('yields sessions in start order; tool rows and empty content skipped; epoch → ISO', async () => {
+    const d = tdir();
+    const dbPath = buildHermesFixture(d);
+    const { sessions, diag } = await drain(hermesAdapter.parse(dbPath));
+    // Session 3 is tool-only → skipped entirely.
+    expect(sessions).toHaveLength(2);
+    const [s1, s2] = sessions;
+    expect(s1.meta.sessionId).toBe('hermes-fixture-1');
+    expect(s1.meta.title).toBe('widget planning');
+    expect(s1.meta.startedAt).toBe('2026-08-05T08:00:00.000Z');
+    expect(s1.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(s1.messages[0].text).toContain('widget-co launch checklist');
+    // JSON block-array contents unwrap to text.
+    expect(s2.meta.sessionId).toBe('hermes-fixture-2');
+    expect(s2.messages.map((m) => m.text)).toEqual([
+      'When is the acme-seed close?',
+      'acme-seed closes at the end of the month.',
+    ]);
+    expect(diag.sessions).toBe(2);
+    // The original store is untouched and still readable after copy-then-read.
+    const again = await drain(hermesAdapter.parse(dbPath));
+    expect(again.sessions).toHaveLength(2);
+  });
+
+  test('detect requires the sqlite magic', async () => {
+    const d = tdir();
+    const dbPath = buildHermesFixture(d);
+    expect(hermesAdapter.detect(dbPath, readSample(dbPath))).toBe(true);
+    const fake = join(d, 'fake.db');
+    writeFileSync(fake, 'not a database');
+    expect(hermesAdapter.detect(fake, readSample(fake))).toBe(false);
+  });
+});
+
+// ── Cross-format detection matrix ───────────────────────────────────────────
+
+describe('detection matrix', () => {
+  test('each fixture detects as its own format', async () => {
+    const d = tdir();
+    const dbPath = buildHermesFixture(d);
+    const cases: Array<[string, TranscriptFormat]> = [
+      [FIXTURE, 'claude-code'],
+      [CODEX_FIXTURE, 'codex'],
+      [AGENT_FIXTURE, 'openclaw'],
+      [dbPath, 'hermes'],
+    ];
+    for (const [path, format] of cases) {
+      const r = detectAdapter(path);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.adapter.format).toBe(format);
+    }
   });
 });
