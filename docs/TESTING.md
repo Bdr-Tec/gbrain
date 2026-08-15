@@ -136,6 +136,28 @@ Triage rule: a `warn-pass` EXIT-HANG line in `.context/test-summary.txt` is NOT 
 - `tests/heavy/*.sh` → ops-shape shell scripts. Cost minutes per run; NOT in default `bun test`. Run via `bun run test:heavy` or scheduled nightly via `.github/workflows/heavy-tests.yml`. Examples: pg_upgrade matrix (boot legacy brain → walk to head), RSS budget gate (measure peak worker RSS vs committed baseline), read-latency-under-sync (p50/p95/p99 under concurrent writer load), sync lock regression (N concurrent syncs assert 1 winner + N-1 lock-busy + zero leaked `gbrain_cycle_locks` rows). See `tests/heavy/README.md` for when to add a script here vs `*.slow.test.ts`. Files prefixed with `_` (e.g. `tests/heavy/_build_legacy_fixtures.sh`) are helpers/libs invoked by sibling tests — the runner skips them.
 - `test/fuzz/*.test.ts` → property-based fuzz harness. Pure-validator targets in `pure-validators.test.ts` are guarded by `scripts/check-fuzz-purity.sh` (in `bun run verify`), which `bun build --target=bun` bundles each target and greps the resulting bundle for banned transitive imports (`node:fs`, `node:child_process`, engine modules). Anything that fails the guard moves to `mixed-validators.test.ts` (still property-tested, but no purity guarantee) or `filesystem-validators.test.ts` (fs-backed, uses temp dirs). Fuzz tests run in the default `bun test` loop because they're fast (~3s for ~12 properties × 1000 runs each).
 
+### TTY and interactive-CLI testing
+
+Four escalating tools; reach for the cheapest one that answers the question:
+
+| Question | Tool | Example |
+|---|---|---|
+| Does the TTY/non-TTY branch logic pick right? | Inject `isTTY` into the pure function — no subprocess | `test/init-provider-picker.test.ts`, `test/jobs-watch-mode.test.ts` |
+| Does the real CLI behave right when stdin is NOT a terminal? | Spawn the CLI with piped/ignored stdio | `test/cli-stdin-hang.test.ts` (fast loop); `test/e2e/init-fresh-pglite.test.ts` (manual `test:e2e` lane — see the TODOS e2e CI-lane entry) |
+| Does the real CLI render menus and read typed input under a REAL terminal? | `launchTty` from `test/helpers/tty-harness.ts` in a `*.serial.test.ts` file | `test/init-picker-pty.serial.test.ts` |
+| How does the install FEEL (stalls, copy, silence windows)? | `scripts/dx-explore.ts` — instrument, not a test; nothing asserts | transcripts under `.context/dx-runs/` (see `docs/guides/bootstrap.md`) |
+
+Real-PTY test rules: put the file in the serial lane (`*.serial.test.ts` — that
+lane runs in required CI; a new `test/e2e/*` file does NOT, since unit shards
+exclude the directory and the e2e workflow runs only explicitly named files,
+no glob);
+assert NON-default picker values (bare Enter and each prompt's 60s
+`readLineSafe` timeout both resolve to the default, so a defaults-asserting
+test passes with dead input); always `await session.close()` in a `finally`
+(only `close()` clears the harness wall timer); and point `HOME` plus
+`GBRAIN_HOME` at a temp root with pass-through auth keys stripped via
+`dropEnv` so picker state is machine-independent.
+
 ### Skills-manifest freshness guard
 
 `skills/skills.lock.json` is a committed sha256 inventory of every bundled file under
@@ -263,6 +285,8 @@ Unit tests and what they cover:
 - `test/volunteer-context.test.ts` — push-based context core (#2095), hermetic in-memory PGLite: `parseWindow` lenient `user:`/`assistant:` parsing, multi-turn window extraction, confidence-gated volunteering (arm confidences, multi-turn/newest-turn boosts, `min_confidence` gate, max-pages cap), slug-only suppression, privacy (rationales are deterministic templates; synopses pass the takes/facts fence), and the approximate usage-stats join.
 - `test/watch-command.test.ts` — `gbrain watch` push transport (#2095): streaming loop, rolling window, session dedupe, `--json` JSONL shape, `channel: 'watch'` event logging, clean EOF return. Hermetic PGLite + injected line/write deps (no subprocess, no real stdin).
 - `test/watch-sigint.serial.test.ts` — `gbrain watch` SIGINT lifecycle against a real spawned CLI subprocess with a tmpdir brain. SERIAL: parallel unit shards flake on concurrent subprocess spawns (same rationale as `apply-migrations-pglite-spawn.serial.test.ts`).
+- `test/init-picker-pty.serial.test.ts` — the interactive `gbrain init` pickers (embedding-provider + search-mode) driven under a REAL pseudo-terminal via `launchTty`: typed input lands (a NON-default mode choice verified by a follow-up non-TTY config read — bare Enter and the `readLineSafe` timeout both resolve to defaults, so a defaults-asserting test would pass with dead input), prompt-to-acknowledgement gaps bounded well under the fallback window, plus the Ctrl-D/EOF keyless fallback. On CI, missing PTY support fails loud instead of skipping. Hermetic: HOME + GBRAIN_HOME at a temp root, pass-through auth keys stripped via `dropEnv`; `session.close()` in `finally`. Serial: PTY spawn + full PGLite bootstrap, and the serial lane is what runs in required CI.
+- `test/tty-harness.test.ts` — the real-PTY harness's pure helpers (`stripAnsi`, `computeStalls`, `renderStallsReport`, `parseDriveCommand`, `buildClaudeTuiSeed`) with zero subprocesses; the file's live-PTY smokes are `describe.skipIf(!ptySupported())`-gated.
 - `test/autopilot-launchd-lifecycle.serial.test.ts` — autopilot lifecycle behavior, not generated-string assertions: the full install → self-disable → status → reinstall → uninstall arc with `launchctl` replaced by an argv recorder and the generated wrapper executed by a REAL bash against a genuinely deleted repo (every platform), plus a darwin-only fail-SKIP describe against the real launchd under a per-run unique label (`GBRAIN_AUTOPILOT_LABEL`) so it can never collide with — or tear down — a real install on the host. Serial: spawns subprocesses and pins HOME/GBRAIN_HOME for the whole file.
 - `test/autopilot-fanout.test.ts` — Autopilot fan-out and #4046 policy regression: targeted idempotency keys reopen per dispatch interval while stable doctor/remediate keys remain unchanged; the 60-minute full-cycle floor wins with a remaining small plan, and an all-fresh restart check advances the process-local clock without masking failed stale-source submissions.
 - `test/agent-scheduler-contract.serial.test.ts` — the documented external agent-scheduler shell chain (`gbrain sync --repo X && gbrain embed --stale`, live-sync.md / INSTALL_FOR_AGENTS.md Step 7) driven end-to-end through a real `/bin/sh` against a keyless PGLite brain: the `&&` short-circuit IS the contract (argv arrays can't exercise it), the keyless bare stale embed exits 0, and the pull-failure case that must break the chain does. Anti-vacuity: the fixture commits a real page and every read-back asserts pages >= 1. Serial: real spawned CLI + tmpdir HOME.
