@@ -1,5 +1,17 @@
 # TODOS
 
+## Security-process follow-ups (filed with Wave −1 of the fix-wave campaign, 2026-08-14)
+
+- [ ] **P2 — Vulnerability disclosure policy.** **What:** a written disclosure
+  process: advisory ownership, severity ladder, reporter acknowledgment SLA,
+  embargo windows, private patch review, supported-version/backport policy,
+  release timing, post-release rotation guidance. **Why:** private vulnerability
+  reporting is now enabled (#579) and a reporter has a channel, but a channel
+  without a process leaves triage decisions ad-hoc; a public PR diff can still
+  broadcast attack surface mid-embargo. **Context:** filed from the fix-wave
+  campaign's Codex review (CX-11); the campaign deliberately shipped only the
+  toggle + reporter acknowledgment. Start from the responsible-disclosure rules
+  already in CLAUDE.md and docs/RELEASING.md. **Effort:** M. **Priority:** P2.
 ## Code-smell fix-wave deferrals (filed at W0; plan: ~/.claude/plans/system-instruction-you-are-working-encapsulated-eclipse.md)
 
 Each was individually decided as a deferral in the CEO/eng reviews of the
