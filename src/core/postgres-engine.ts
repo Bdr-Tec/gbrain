@@ -1079,8 +1079,44 @@ export class PostgresEngine implements BrainEngine {
     }) as Promise<T>).finally(() => this.checkoutGauge.release('tx'));
   }
 
+  /**
+   * issue #6 (reserved-connection routing): concurrent DIRECT-pool reserves
+   * are capped at directPoolSize - 1 so the claim/renewLock heartbeats always
+   * keep >= 1 direct slot; overflow falls back to the READ pool — exactly the
+   * pre-routing behavior, so this change is strictly never-worse than the
+   * status quo (deliberate rejection of queue-for-a-permit: that would block
+   * migrations behind multi-minute CREATE INDEX holds). Per-process by
+   * design: each process owns its own direct pool, so a CLI migration's
+   * reserves cannot starve a worker's heartbeats.
+   */
+  private _reservedDirectInFlight = 0;
+
   async withReservedConnection<T>(fn: (conn: ReservedConnection) => Promise<T>): Promise<T> {
-    const pool = this.sql;
+    // Long-hold reserved work (CREATE INDEX CONCURRENTLY, transaction:false
+    // migration DDL, backfill BEGIN..COMMIT batches) belongs on the DIRECT
+    // session lane: 30-min statement_timeout + maintenance_work_mem GUCs and
+    // it stops pinning the worker's shared read pool (the observed 353s
+    // COMMIT in issue #6 was a reserved read-pool slot). Never reroute inside
+    // an open transaction (same guard shape as executeRawDirect).
+    const inTransaction = this._sql !== null && this.connectionManager?.peekReadPool() !== this._sql;
+    let pool = this.sql;
+    let fromDirect = false;
+    if (!inTransaction && this.connectionManager?.isDualPoolActive()) {
+      const size = this.connectionManager.describeMode().direct_pool_size ?? 3;
+      const cap = Math.max(1, size - 1);
+      if (this._reservedDirectInFlight < cap) {
+        try {
+          pool = await this.connectionManager.ddl();
+          fromDirect = true;
+          this._reservedDirectInFlight += 1;
+        } catch {
+          // ddl() failure flips its own kill switch; fall back to the read
+          // pool (status quo) rather than failing the caller.
+          pool = this.sql;
+          fromDirect = false;
+        }
+      }
+    }
     // Gauge BEFORE reserve(): a reserve() stuck waiting for a free slot is
     // exactly the in-flight pressure the probe diagnostics should surface.
     this.checkoutGauge.acquire('reserved');
@@ -1089,6 +1125,7 @@ export class PostgresEngine implements BrainEngine {
       reserved = await pool.reserve();
     } catch (e) {
       this.checkoutGauge.release('reserved');
+      if (fromDirect) this._reservedDirectInFlight -= 1;
       throw e;
     }
     try {
@@ -1113,6 +1150,7 @@ export class PostgresEngine implements BrainEngine {
     } finally {
       reserved.release();
       this.checkoutGauge.release('reserved');
+      if (fromDirect) this._reservedDirectInFlight -= 1;
     }
   }
 
