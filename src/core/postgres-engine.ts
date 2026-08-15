@@ -297,6 +297,8 @@ export class PostgresEngine implements BrainEngine {
         max: size,
         idle_timeout: 20,
         connect_timeout: 10,
+        // Explicit (matches the postgres.js implicit default; GBRAIN_POOL_MAX_LIFETIME_S overrides).
+        max_lifetime: db.resolveMaxLifetimeSeconds(),
         types: { bigint: postgres.BigInt },
         // Silence postgres NOTICE-level messages by default. See db.ts for
         // rationale (stdout-parsing callers like jobs-submit --json break when
