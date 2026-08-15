@@ -1,0 +1,12 @@
+{
+  "name": "gbrain",
+  "owner": { "name": "Garry Tan" },
+  "plugins": [
+    {
+      "name": "gbrain",
+      "source": "./",
+      "description": "Personal knowledge brain for your coding agent — hybrid search, synthesis, and durable cross-session memory, plus a curated brain-first skill set.",
+      "category": "productivity"
+    }
+  ]
+}
