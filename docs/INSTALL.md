@@ -99,6 +99,7 @@ Per-client setup guides live in [`docs/mcp/`](mcp/):
 - [`docs/mcp/CLAUDE_DESKTOP.md`](mcp/CLAUDE_DESKTOP.md)
 - [`docs/mcp/CHATGPT.md`](mcp/CHATGPT.md)
 - [`docs/mcp/PERPLEXITY.md`](mcp/PERPLEXITY.md)
+- [`docs/mcp/GROK.md`](mcp/GROK.md) — Grok Build (xAI CLI)
 - [`docs/mcp/DEPLOY.md`](mcp/DEPLOY.md) — production deploy patterns
 
 The HTTP server ships with an admin SPA at `/admin`, an SSE activity feed at `/admin/events`, DCR-style client registration, scope-gated `read`/`write`/`admin` access, and rate limiting.
