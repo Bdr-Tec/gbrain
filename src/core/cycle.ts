@@ -53,16 +53,30 @@ import { tryAcquireDbLock, reapDeadHolderLocks, LockStolenError, type DbLockHand
 
 /**
  * W0 fix-wave: combine abort signals (external caller signal + the internal
- * lock-steal controller). Uses the platform AbortSignal.any when available;
- * manual fan-in otherwise.
+ * lock-steal controller) into one REAL AbortSignal.
+ *
+ * Deliberately NOT AbortSignal.any: CycleOpts.signal has always been duck-
+ * typed in practice (test stubs pass `{ aborted: false }` and flip the flag;
+ * pre-W0 the raw object flowed straight into checkAborted, which only reads
+ * `.aborted`/`.reason`). AbortSignal.any throws ERR_INVALID_ARG_TYPE on
+ * those. Manual fan-in: real signals propagate via listener; listener-less
+ * stubs are polled at 50ms — semantically the flip is seen within a tick,
+ * and the RETURNED signal is a genuine AbortSignal so phases can hand it to
+ * fetch/timers safely.
  */
 function anyAbortSignal(signals: AbortSignal[]): AbortSignal {
-  const native = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
-  if (typeof native === 'function') return native.call(AbortSignal, signals);
   const c = new AbortController();
+  const forward = (s: AbortSignal) => { if (!c.signal.aborted) c.abort(s.reason); };
   for (const s of signals) {
-    if (s.aborted) { c.abort(s.reason); break; }
-    s.addEventListener('abort', () => { if (!c.signal.aborted) c.abort(s.reason); }, { once: true });
+    if (!s) continue;
+    if (s.aborted) { forward(s); break; }
+    if (typeof (s as Partial<AbortSignal>).addEventListener === 'function') {
+      s.addEventListener('abort', () => forward(s), { once: true });
+    } else {
+      const t = setInterval(() => { if (s.aborted) { forward(s); clearInterval(t); } }, 50);
+      (t as unknown as { unref?: () => void }).unref?.();
+      c.signal.addEventListener('abort', () => clearInterval(t), { once: true });
+    }
   }
   return c.signal;
 }

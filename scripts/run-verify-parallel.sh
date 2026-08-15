@@ -80,6 +80,7 @@ CHECKS=(
   "check:newlines"
   "check:exports-count"
   "check:no-legacy-getconnection"
+  "typecheck"
 )
 
 if [ "${#CHECKS[@]}" -eq 0 ]; then

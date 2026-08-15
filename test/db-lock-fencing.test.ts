@@ -101,7 +101,12 @@ describe('startCycleLockRefresher (Tier-1 #1 + D5.11)', () => {
     const controller = new AbortController();
     const stop = startCycleLockRefresher(fakeLock(async () => false), controller, 'test-lock', 15);
     try {
-      await new Promise(r => setTimeout(r, 120));
+      // Poll instead of a fixed sleep: under full-suite shard load, timer
+      // ticks can be starved well past the nominal interval.
+      const deadline = Date.now() + 5_000;
+      while (!controller.signal.aborted && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 25));
+      }
       expect(controller.signal.aborted).toBe(true);
       expect(controller.signal.reason).toBeInstanceOf(LockStolenError);
     } finally {
