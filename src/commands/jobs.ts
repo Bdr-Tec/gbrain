@@ -401,6 +401,7 @@ OPTIONS (start)
 EXIT CODES (start)
   0 clean shutdown   1 max crashes exceeded
   2 another supervisor holds the PID lock   3 PID file unwritable
+  4 DB queue lock lost (repeated refresh failures; restart re-acquires)
 `,
   submit: `gbrain jobs submit — enqueue a background job
 
@@ -449,7 +450,8 @@ USAGE
 
 OPTIONS
   --older-than AGE  Delete completed/failed/dead/cancelled jobs older than
-                    AGE (default 30d; accepts Nd/Nh forms)
+                    AGE in days (default 30d; bare N or Nd — hour forms
+                    are not supported)
   --dry-run         Report what would be deleted without deleting
 `,
 };

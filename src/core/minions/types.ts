@@ -95,7 +95,7 @@ export interface MinionJob {
    *  when it returned an EXISTING row instead of inserting (idempotency
    *  fast-path, backpressure cap-hit, or the ON CONFLICT zero-row fallback).
    *  rowToMinionJob never sets it; absent on fresh inserts and on rows read
-   *  back later. Surfaces in `jobs submit --json` output — intended and
+   *  back later. Surfaces in `jobs submit`'s JSON output — intended and
    *  additive, so scripts can tell a real dispatch from a coalesce. */
   coalesced?: boolean;
 }

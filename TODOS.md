@@ -27,6 +27,12 @@
   follow-up). Where: src/commands/jobs.ts, src/core/minions/backpressure-audit.ts.
 - [ ] **P3 — jobs watch: timeout/deadline column.** `jobs get` shows the
   effective budget; the live dashboard doesn't. Where: src/commands/jobs-watch.ts.
+- [ ] **P3 — jobs help + operator docs: handler catalog and dispatch-event
+  schema.** `gbrain jobs --help`'s HANDLER TYPES section lists 8 of the ~40
+  registered handlers, and the autopilot dispatch JSON events (`dispatched`,
+  `dispatch_coalesced`, `fanout_summary` with its `coalesced` array) have no
+  schema documentation outside the CHANGELOG. Where: src/commands/jobs.ts
+  (JOBS_HELP), docs/guides/queue-operations-runbook.md.
 
 ## Truthful-surface wave follow-ups (filed with T14, amendment 35 + D14.5)
 
