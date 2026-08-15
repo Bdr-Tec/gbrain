@@ -87,6 +87,53 @@ check warns if what you asked for isn't what's actually running (e.g. a
 negative value denied without privilege, or an OS `RLIMIT_NICE` clamp). This
 is distinct from the concurrency / inflight cap and composes with it.
 
+### Per-job process isolation (`--job-isolation process`)
+
+By default all concurrency slots execute inside one worker process. A
+handler that ignores its abort signal can only be force-evicted — the
+promise is abandoned, still running, still holding connections and memory —
+and any worker exit destroys every in-flight job at once. With isolation on,
+each claimed job runs in its own child process: a stuck handler is
+group-SIGKILLed for real, a crash or OOM takes one job instead of all N, and
+the OS reclaims every leaked resource when the child dies:
+
+```bash
+# Recommended for long-running LLM-bound handlers (subagent):
+gbrain jobs supervisor --concurrency 4 --job-isolation process
+
+# Bare worker, or durably via env:
+GBRAIN_JOB_ISOLATION=process gbrain jobs work --concurrency 4
+```
+
+How it works: the worker keeps claim, lock renewal, and all result
+recording; the child (an internal `run-child` entrypoint of the same gbrain
+binary) re-validates the claim, runs the handler with its own small engine
+pool, and reports one atomic outcome file. Handler-error semantics are
+preserved across the boundary (unrecoverable → dead, rate-lease → no attempt
+burned, everything else → normal backoff). On worker shutdown children get
+the drain window to finish and report; a child killed before reporting is
+released with no attempt burned. If the worker dies hard, the orphaned child
+self-terminates via a parent-liveness watchdog and the stall sweeper
+requeues the job after lock expiry — the lock token fences all of the
+orphan's writes into no-ops.
+
+Sizing notes:
+
+- **Connections:** each child opens its own small pools (read 3 via
+  `GBRAIN_JOB_CHILD_POOL_SIZE`, direct 1). Worked example at concurrency 15:
+  15×(3+1) + the worker's 10+3 ≈ **73 pooler client connections**. Server
+  backends are unchanged — the transaction pooler multiplexes; client
+  connections are what you're budgeting.
+- **Memory:** `--max-rss` covers the WORKER process only in this mode
+  (handler memory lives in the children; the worker prints a note when both
+  are set). Size host memory for concurrency × handler footprint.
+- **Spawn cost:** ~0.3–1s per job (engine connect included) — noise for
+  long-running handlers, meaningful for sub-second ones (`lint`,
+  `backlinks`). Keep those inline or on a separate inline worker.
+- **Security note:** the child receives the job's lock token via env. It is
+  a *fencing* token (split-brain protection), not a secret — same-user env
+  already contains the database URL.
+
 ### Which supervisor when?
 
 The supervisor solves in-process crash recovery. Platform-level
