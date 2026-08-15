@@ -191,7 +191,7 @@ mode wires them in one command, with no `agent.json` and no interview:
   reach it. One owner per server name: if the gbrain codex PLUGIN is
   also enabled, two `gbrain` servers exist in different layers — the wire
   proceeds with a loud WARNING and `gbrain doctor` reports the collision
-  (`plugin_lane_collision`); keep one (`codex plugin remove gbrain`, or
+  (`plugin_lane_collision`); keep one (`codex plugin remove gbrain@gbrain`, or
   `--remove` here).
 - Honesty on Postgres brains: per-turn injection is degraded (the matrix row
   above); MCP is the active seam and the summary says so.

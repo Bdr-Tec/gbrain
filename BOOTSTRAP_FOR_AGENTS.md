@@ -70,10 +70,11 @@ approve those prompts when they appear." If approvals are globally disabled, ask
 human to enable workspace-write + network for this session. Count the approval taps
 you needed; report the count at the end (it feeds the install-time measurement).
 
-If the gbrain CODEX PLUGIN is already installed (`[plugins."gbrain@…"] enabled = true`
-in the codex config), the hooks phase skips its own `codex mcp add` — the plugin
-already provides the MCP server (one owner per name). That skip is healthy, not an
-error; force the hand-wired registration only with `--mcp-even-if-plugin`.
+If the gbrain PLUGIN is already installed and enabled (codex: `[plugins."gbrain@…"]
+enabled = true`; Claude Code: `enabledPlugins["gbrain@…"] = true`), the hooks phase
+skips its own `mcp add` on that harness — the plugin already provides the MCP server
+(one owner per name). That skip is healthy, not an error; force the hand-wired
+registration only with `--mcp-even-if-plugin`.
 
 ## Phase walkthrough (commentary — the CLI's list wins)
 

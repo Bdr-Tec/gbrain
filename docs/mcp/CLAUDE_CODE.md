@@ -143,5 +143,7 @@ sub-second, world-visibility by default, and available on `--surface verbs`.
 ## Remove
 
 ```bash
-claude mcp remove gbrain
+claude mcp remove gbrain     # the Option 1 local/stdio registration
+# Installed as the Option 0 plugin instead? Remove it with:
+#   claude plugin uninstall gbrain@gbrain
 ```

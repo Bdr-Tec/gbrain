@@ -477,12 +477,12 @@ export async function dispatchToolCall(
         error: 'source_binding_required',
         message: sentinelWrite
           ? 'GBRAIN_SOURCE=__all__ is a read-span sentinel, not a write target — a write cannot resolve to "all sources". ' +
-            'Set GBRAIN_SOURCE to a concrete source id (or pass --source) for writes.'
+            'Set GBRAIN_SOURCE to a concrete source id for writes.'
           : 'This brain has more than one source to choose from and the MCP server runs with --source-guard: ' +
-          `write operations need an explicit source binding so they cannot land in the wrong source (resolution tier: ${opts.sourceGuardTier}).`,
+          `write/admin operations need an explicit source binding so they cannot land in the wrong source (resolution tier: ${opts.sourceGuardTier}).`,
         suggestion:
           'Set GBRAIN_SOURCE=<source-id> in the environment that launches this MCP server ' +
-          '(plugin installs pass it through), or start the serve with an explicit --source. ' +
+          '(plugin installs pass it through — the user-global stdio serve binds the source from the env, not a flag). ' +
           'List sources with `gbrain sources list`. Reads are unaffected.',
         ...(isVerb ? { protocol_version: MEMORY_VERBS_VERSION } : {}),
       };

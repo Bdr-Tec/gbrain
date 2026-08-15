@@ -39,7 +39,7 @@ that exact install one-liner on stderr; with no brain, it exits with
 resolution order: `$GBRAIN_BIN` → `~/.bun/bin/gbrain` → `gbrain` on PATH — the
 sanctioned install location is preferred over PATH so a stray `gbrain` earlier
 on PATH can't shadow it).
-`starter` is the ~20-op daily-driver surface (the seven memory verbs + daily
+`starter` is the 26-op daily-driver surface (the seven memory verbs + daily
 brain ops) — the curated skills drive everything else through the `gbrain`
 CLI. Widen a machine without editing the snapshot: `GBRAIN_SURFACE=full` in
 the env that launches Codex (new sessions pick it up), or use the bootstrap
@@ -54,7 +54,8 @@ axis with `GBRAIN_SOURCE=<source-id>` in the environment that launches
 Codex; route the brain axis with `GBRAIN_BRAIN_ID` (env only — there is no
 config default for the brain axis). `--source-guard` makes this fail-closed:
 when a brain has more than one source to choose from and no binding, write
-operations error with an actionable message until a source is bound; a sole
+and admin operations error with an actionable message until a source is bound
+(the user-global stdio serve binds the source from `GBRAIN_SOURCE`, not a flag); a sole
 real source is unambiguous and unaffected, and reads always pass. (Edge case:
 a `.gbrain-source` dotfile placed at `$HOME` is an ancestor of the plugin
 snapshot dir and would bind every plugin-lane write to it — put source pins
