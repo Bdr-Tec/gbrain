@@ -309,6 +309,7 @@ bun run scripts/dx-explore.ts help              # comprehension surfaces (no key
 bun run scripts/dx-explore.ts init [--keyless]  # interactive init, naive-user autopilot
 bun run scripts/dx-explore.ts claude-install    # REAL claude running the paste-in bootstrap
 bun run scripts/dx-explore.ts codex-install     # REAL codex, same
+bun run scripts/dx-explore.ts grok-install      # REAL grok, brain-only GROK.md install (no bootstrap path)
 bun run scripts/dx-explore.ts drive -- gbrain init   # manual: steer a live TUI via a file channel
 ```
 

@@ -121,11 +121,14 @@ interface CliArgs {
   driveArgv: string[];
 }
 
-/** Provider keys the hermetic base allows through; --keyless drops them. */
+/** Provider keys the hermetic base allows through; --keyless drops them.
+ *  Also the redaction-map source: every non-empty value here is scrubbed
+ *  from every written artifact. */
 const PROVIDER_KEY_NAMES = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
   'OPENAI_API_KEY',
+  'XAI_API_KEY',
   'GSTACK_ANTHROPIC_API_KEY',
   'GSTACK_OPENAI_API_KEY',
 ];
@@ -490,7 +493,10 @@ async function settlePastBootDialogs(
   while (Date.now() < deadline) {
     await session.waitForQuiet({ quietMs: 2000, timeoutMs: 30_000 });
     if (session.exited()) return;
-    const tail = session.visible().slice(-2500);
+    // Bounded strip: a repaint-heavy TUI (observed: grok's splash animation)
+    // grows the raw buffer by MBs — stripping the FULL buffer every
+    // iteration is the quadratic hot loop; strip a raw tail instead.
+    const tail = stripAnsi(session.raw().slice(-32_000)).slice(-2500);
     if (!handled.has('trust') && /trust this ?folder/i.test(tail.replace(/\s+/g, ' '))) {
       handled.add('trust');
       event(ctx, 'note', 'boot dialog: workspace trust — accepted (option 1)');
@@ -552,6 +558,9 @@ interface InstallSessionOpts {
   /** The pasted prompt. Per-agent: the bootstrap runbook block for
    *  claude/codex, a brain-only GROK.md-driven block for grok. */
   prompt: string;
+  /** Success copy to race against (default: the bootstrap verify patterns).
+   *  Brain-only scenarios pass their own — grok's is the doctor banner. */
+  successPatterns?: Array<RegExp | string>;
   timeoutMs?: number;
   meta: Record<string, unknown>;
 }
@@ -574,6 +583,36 @@ async function runInstallSession(ctx: ScenarioCtx, opts: InstallSessionOpts): Pr
   const stopMirror = mirrorSession(ctx.outDir, session, ctx.redact);
   try {
     await settlePastBootDialogs(ctx, session);
+    // Sign-in wall / textless splash: no unattended path exists past either.
+    // Observed (grok v1.0.4 keyless): headless prints "Not signed in"; the
+    // TUI loops a full-screen glyph animation with NO textual prompt for 8+
+    // minutes. Try one Enter (the common skip-splash gesture), then if the
+    // screen still carries no meaningful text — or shows the sign-in copy —
+    // record the friction (that IS the keyless measurement) and end early
+    // instead of pasting into a wall for the full wall clock.
+    const tailText = () => stripAnsi(session.raw().slice(-32_000)).slice(-2500);
+    // Sign-in copy, both surfaces observed (GROK-CLI-PIN.md): headless prints
+    // "Not signed in"; the TUI settles (~6s, after an intro animation) onto
+    // "Approve in your browser to finish signing in" + a device code.
+    const signInWall = () =>
+      /not signed in|approve in your browser|finish signing in|sign in with/i.test(tailText());
+    // Word-like text only: splash/spinner screens render Braille-pattern
+    // glyphs (U+2800 range, observed) with scattered digits/SGR residue but
+    // ZERO 3+-letter runs, while any real prompt/sign-in screen carries
+    // words. Counting letter runs beats enumerating glyph exceptions.
+    const meaningfulLen = (s: string) => (s.match(/[A-Za-z]{3,}/g) ?? []).join('').length;
+    if (!session.exited() && (signInWall() || meaningfulLen(tailText()) < 40)) {
+      event(ctx, 'note', 'sign-in wall or textless splash — sending one Enter (skip-splash attempt)');
+      session.sendKey('Enter');
+      await Bun.sleep(3000);
+      if (!session.exited() && (signInWall() || meaningfulLen(tailText()) < 40)) {
+        event(ctx, 'note', 'sign-in wall / no textual prompt persists — ending session early (keyless friction recorded)');
+        await session.close();
+        stopMirror();
+        saveSession(ctx, '', session, { ...opts.meta, terminal: 'sign-in-wall-or-splash' });
+        return;
+      }
+    }
     event(ctx, 'input', 'paste install prompt');
     // Scope the verify match to output AFTER the paste: the pasted prompt
     // itself contains verify-adjacent copy, and matching the full buffer
@@ -585,7 +624,7 @@ async function runInstallSession(ctx: ScenarioCtx, opts: InstallSessionOpts): Pr
     const raceBudget = Math.max(timeoutMs - 300_000, Math.floor(timeoutMs * 0.8));
     const done = await Promise.race([
       session
-        .waitForAny(VERIFY_SUCCESS_PATTERNS, { timeoutMs: raceBudget, since: pasteMark })
+        .waitForAny(opts.successPatterns ?? VERIFY_SUCCESS_PATTERNS, { timeoutMs: raceBudget, since: pasteMark })
         .then(() => 'verify-signal')
         .catch(() => 'no-signal'),
       session.waitForExit(raceBudget).then(() => 'exited'),
@@ -699,6 +738,77 @@ async function scenarioCodexInstall(ctx: ScenarioCtx): Promise<void> {
   });
 }
 
+// ── scenario: grok-install ───────────────────────────────────────────────────
+
+/** Brain-only success copy for the grok scenario: the doctor banner proves
+ *  the registration handshook (observed, docs/mcp/GROK-CLI-PIN.md) — grok has
+ *  NO bootstrap path, so the bootstrap verify patterns must not be its bar. */
+const GROK_INSTALL_SUCCESS_PATTERNS: Array<RegExp | string> = [
+  /7 tools discovered/i,
+  /handshake OK/i,
+];
+
+/** GROK.md-driven brain-only prompt — deliberately NOT the bootstrap paste
+ *  block: the docs classify grok as brain-only install (no `gbrain bootstrap`
+ *  support), so the scenario must not test an unsupported flow. */
+function grokInstallPrompt(): string {
+  const guide = path.join(REPO_ROOT, 'docs', 'mcp', 'GROK.md');
+  return (
+    `Read and follow: ${guide}\n` +
+    `Goal: wire the gbrain memory brain into you (Grok Build) over stdio MCP — ` +
+    `brain-only install, no bootstrap. Steps: ` +
+    `1) run \`gbrain init --pglite --no-embedding --non-interactive\`; ` +
+    `2) register gbrain exactly as the guide's Register section shows; ` +
+    `3) verify with \`grok mcp doctor gbrain\` — you are not done until it reports ` +
+    `the tools-discovered check passing; ` +
+    `4) one recall round-trip: use the gbrain remember tool to store ` +
+    `"${PERSONA.AGENT_NAME} prefers ${PERSONA.VOICE_REGISTER}" and then recall it.\n\n` +
+    `[Unattended-run appendix — I am stepping away; do not wait for my input. ` +
+    `gbrain is already installed and on PATH. If a step needs auth that is ` +
+    `unavailable, note the exact error and stop.]`
+  );
+}
+
+async function scenarioGrokInstall(ctx: ScenarioCtx): Promise<void> {
+  const home = tmp(ctx, 'gb-dx-home-');
+  const gbHome = tmp(ctx, 'gb-dx-gbhome-');
+  const ws = tmp(ctx, 'gb-dx-ws-');
+  const binDir = stageBinDir(ctx);
+
+  // Hermetic ~/.grok seeded with the auto-update kill-switch (config-only
+  // mechanism, default ON — observed v1.0.4). Auth travels via XAI_API_KEY
+  // env only; grok MAY persist derived credentials after an authed session,
+  // so the known candidate is pre-registered for the scrub (rm of a file
+  // that never appears is a no-op).
+  const grokHome = path.join(home, '.grok');
+  fs.mkdirSync(grokHome, { recursive: true });
+  fs.writeFileSync(path.join(grokHome, 'config.toml'), '[cli]\nauto_update = false\n');
+  ctx.secretPaths.push(path.join(grokHome, 'mcp_credentials.json'));
+
+  log('REAL interactive grok running the GROK.md brain-only install (real API cost when authed)');
+  log('keyless runs stop at the observed sign-in screen — that friction IS the measurement');
+  await runInstallSession(ctx, {
+    argv: ['grok'],
+    cwd: ws,
+    env: {
+      HOME: home,
+      GROK_HOME: grokHome,
+      GBRAIN_HOME: gbHome,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      // Never let a keyless first-run bounce the OPERATOR's browser for
+      // sign-in; the settle loop stops at the observed "Not signed in" copy.
+      BROWSER: '/usr/bin/false',
+    },
+    extraAllow: ['XAI_API_KEY'],
+    prompt: grokInstallPrompt(),
+    successPatterns: GROK_INSTALL_SUCCESS_PATTERNS,
+    meta: {
+      promptDeviation: 'unattended appendix + local GROK.md path + preinstalled binary',
+      runbook: 'docs/mcp/GROK.md (local, brain-only — grok has no bootstrap path)',
+    },
+  });
+}
+
 // ── scenario: drive (manual control channel) ─────────────────────────────────
 
 async function scenarioDrive(ctx: ScenarioCtx, args: CliArgs): Promise<void> {
@@ -784,6 +894,7 @@ const SCENARIOS: Record<string, { needsGbrain: boolean; run: (ctx: ScenarioCtx, 
   init: { needsGbrain: true, run: scenarioInit },
   'claude-install': { needsGbrain: true, run: scenarioClaudeInstall },
   'codex-install': { needsGbrain: true, run: scenarioCodexInstall },
+  'grok-install': { needsGbrain: true, run: scenarioGrokInstall },
   drive: { needsGbrain: true, run: scenarioDrive },
 };
 

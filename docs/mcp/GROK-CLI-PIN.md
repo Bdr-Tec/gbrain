@@ -161,11 +161,25 @@ Re-observation checklist on a version bump: re-run the npm/installer pin capture
 mcp add → saved-TOML → doctor sequence (§add/§probes). The one-shot/auth/model
 sections only need re-observation if their assertions start failing.
 
+## Keyless TUI behavior (observed via the dx-explore PTY instrument)
+Under a real PTY with no credentials, interactive `grok` plays a Braille-
+pattern intro animation (U+2800-range glyphs) for a few seconds, then settles
+(~6s) onto a SIGN-IN screen: "Approve in your browser to finish signing in"
+plus a device code (and a ctrl+c hint). There is no unattended path past it.
+Two hazards for PTY automation, both observed: the animation frames carry
+zero word-like text (3+-letter runs) — a text-presence heuristic must count
+letter runs, not enumerate glyphs; and pasting into the sign-in screen leaves
+a persistent full-screen spinner redrawing at ~5 frames/sec, which starves
+quiet-based settling and makes full-buffer ANSI stripping the hot loop
+(strip bounded raw tails instead). Headless keyless is the clean
+`Not signed in` error above. The `grok-install` dx scenario early-stops at
+the sign-in copy (or a persistently textless screen) with the friction
+recorded — that IS the keyless measurement.
+
 ## Supported-version policy
 gbrain's grok integration is verified against **Grok Build v1.0.4** (this pin). The
 canary CI leg (enabled with the secret) tracks latest and is continue-on-error; the
 pinned lane is the deterministic gate. **Pending auth** (requires `XAI_API_KEY`):
 paid one-shot smoke, authed model list + per-turn cost pins, credential-file
-inventory after login (feeds evidence exclusions + TTY secretPaths), first-run TUI
-dialog copy (feeds the dx-explore matcher; the keyless headless `Not signed in`
-copy is pinned above).
+inventory after login (feeds evidence exclusions + TTY secretPaths), AUTHED
+first-run TUI dialog copy (the keyless TUI + headless copies are pinned above).
