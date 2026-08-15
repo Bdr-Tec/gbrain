@@ -9,7 +9,7 @@
  * needed for the connection.
  *
  *   gbrain connect <mcp-url> [--token <bearer>] [--name gbrain]
- *                  [--agent claude-code|codex|perplexity|generic]
+ *                  [--agent claude-code|codex|opencode|perplexity|generic]
  *                  [--oauth [--register | --client-id ID --client-secret SECRET] [--scopes "read write"]]
  *                  [--install] [--yes] [--json] [--show-token] [--force]
  *                  [--timeout-ms N]
@@ -27,6 +27,10 @@
  *     only; --install runs it).
  *   - codex: `codex mcp add <name> --url <url> --bearer-token-env-var
  *     GBRAIN_REMOTE_TOKEN` (bearer via env var; --install runs it).
+ *   - opencode: `opencode mcp add <name> --url <url> --header
+ *     "Authorization=Bearer {env:GBRAIN_REMOTE_TOKEN}"` (the interpolation is
+ *     stored literally; --install writes the entry directly via
+ *     opencode-json.ts — no binary needed).
  *   - perplexity: GUI connector (Settings → Connectors). Supports bearer or
  *     OAuth; no --install.
  *   - generic: prints the connector fields for any other MCP client.
@@ -35,12 +39,15 @@
 import { execFileSync } from 'child_process';
 import type { ConnectProbeResult } from '../core/connect-probe.ts';
 import { probeBrainIdentity, DEFAULT_PROBE_TIMEOUT_MS } from '../core/connect-probe.ts';
+import { opencodeGlobalConfigPath } from '../core/bootstrap/host-specs.ts';
+import { writeOpencodeMcpEntry } from '../core/bootstrap/opencode-json.ts';
 import { promptLine } from '../core/cli-util.ts';
 import {
   NAME_RE,
   REDACTED,
   buildClaudeMcpAddArgv,
   buildCodexMcpAddArgv,
+  buildOpencodeMcpAddArgv,
   cmdString,
   isValidName,
   issuerFromMcpUrl,
@@ -58,6 +65,7 @@ export {
   REDACTED,
   buildClaudeMcpAddArgv,
   buildCodexMcpAddArgv,
+  buildOpencodeMcpAddArgv,
   cmdString,
   isLinkLocalOrMetadata,
   issuerFromMcpUrl,
@@ -77,12 +85,12 @@ export const DEFAULT_SCOPES = 'read write';
 // Single source of truth shared with the probe (was a duplicated 15_000 literal).
 const DEFAULT_TIMEOUT_MS = DEFAULT_PROBE_TIMEOUT_MS;
 
-export type AgentId = 'claude-code' | 'codex' | 'perplexity' | 'generic';
+export type AgentId = 'claude-code' | 'codex' | 'opencode' | 'perplexity' | 'generic';
 
 interface AgentSpec {
   id: AgentId;
   label: string;       // human label for messages
-  binary?: string;     // CLI binary backing --install ('claude' | 'codex')
+  binary?: string;     // CLI binary backing --install ('claude' | 'codex'; opencode installs via the direct JSONC writer)
   installable: boolean;
   supportsOAuth: boolean; // accepts OAuth client-credentials connector fields
 }
@@ -90,11 +98,12 @@ interface AgentSpec {
 export const AGENT_SPECS: Record<AgentId, AgentSpec> = {
   'claude-code': { id: 'claude-code', label: 'Claude Code', binary: 'claude', installable: true, supportsOAuth: false },
   codex: { id: 'codex', label: 'Codex', binary: 'codex', installable: true, supportsOAuth: false },
+  opencode: { id: 'opencode', label: 'opencode', binary: 'opencode', installable: true, supportsOAuth: false },
   perplexity: { id: 'perplexity', label: 'Perplexity Computer', installable: false, supportsOAuth: true },
   generic: { id: 'generic', label: 'your agent', installable: false, supportsOAuth: true },
 };
 
-export const AGENT_IDS: AgentId[] = ['claude-code', 'codex', 'perplexity', 'generic'];
+export const AGENT_IDS: AgentId[] = ['claude-code', 'codex', 'opencode', 'perplexity', 'generic'];
 
 // The named tools MUST be real MCP-exposed ops (verified by the round-trip
 // E2E). `capture` is intentionally absent: it's a CLI-only convenience wrapper,
@@ -127,7 +136,7 @@ Usage:
   gbrain connect <mcp-url> [--token <bearer>] [flags]
 
 Prints a copy-paste setup block for your agent, or wires it up directly with
---install (claude-code + codex only). The MCP URL is your remote
+--install (claude-code, codex + opencode). The MCP URL is your remote
 'gbrain serve --http' endpoint; a bare host is rejected — pass an explicit
 https:// URL.
 
@@ -140,14 +149,15 @@ Auth:
 Flags:
   --token <bearer>     Bearer token (else $${ENV_VAR}; from 'gbrain auth create')
   --name <id>          MCP server name in the agent (default: ${DEFAULT_NAME})
-  --agent <kind>       claude-code (default) | codex | perplexity | generic
+  --agent <kind>       claude-code (default) | codex | opencode | perplexity | generic
   --oauth              Use OAuth client credentials instead of a bearer token
   --register           With --oauth: mint a client on the host (gbrain auth register-client)
   --client-id <id>     With --oauth: use an existing OAuth client id
   --client-secret <s>  With --oauth: use an existing OAuth client secret
   --scopes "<s>"       With --oauth --register: client scopes (default: "${DEFAULT_SCOPES}")
   --install            Run the agent's MCP-add command, then smoke-test the token
-                       (claude-code + codex only)
+                       (claude-code + codex + opencode; opencode installs via a direct
+                       config write — no binary needed, token stays out of the file)
   --yes                Skip the install confirmation prompt
   --force              On --install, replace an existing server of the same name
   --json               Emit machine-readable JSON (secret redacted)
@@ -158,6 +168,7 @@ Examples:
   gbrain connect https://brain.example.com/mcp --token gbrain_xxx
   gbrain connect https://brain.example.com:3131 --install --yes
   gbrain connect https://brain.example.com/mcp --token gbrain_xxx --agent codex
+  gbrain connect https://brain.example.com/mcp --token gbrain_xxx --agent opencode --install
   gbrain connect https://brain.example.com/mcp --agent perplexity --oauth --register
   gbrain connect https://brain.example.com/mcp --agent perplexity --oauth \\
     --client-id gbrain_cl_xxx --client-secret gbrain_cs_xxx
@@ -217,6 +228,31 @@ function codexBlock(p: { name: string; url: string; token: string | null }): str
   if (!p.token) lines.push(`Replace ${PLACEHOLDER_TOKEN} with a token from \`gbrain auth create "codex"\` on the host.`, '');
   lines.push(
     `Codex reads the token from $${ENV_VAR} at runtime — keep that variable set in your shell profile so new Codex sessions can reach the brain.`,
+    '',
+    LEARN_INSTRUCTION,
+    '',
+    SECRET_NOTE,
+  );
+  return lines.join('\n');
+}
+
+function opencodeBlock(p: { name: string; url: string; token: string | null }): string {
+  const tokenValue = p.token ?? PLACEHOLDER_TOKEN;
+  const cmd = cmdString('opencode', buildOpencodeMcpAddArgv({ name: p.name, url: p.url, envVar: ENV_VAR }));
+  const lines = [
+    '# Paste into opencode:',
+    '',
+    'Connect my knowledge brain, then learn what it can do:',
+    '',
+    `  export ${ENV_VAR}=${shellQuote(tokenValue)}`,
+    `  ${cmd}`,
+    '',
+  ];
+  if (!p.token) lines.push(`Replace ${PLACEHOLDER_TOKEN} with a token from \`gbrain auth create "opencode"\` on the host.`, '');
+  lines.push(
+    `The config stores the literal \`{env:${ENV_VAR}}\` interpolation — opencode resolves it at read time, ` +
+      `so keep that variable exported in your shell profile; the token never lands in the config file. ` +
+      `Restart opencode after registering (config is read at session start).`,
     '',
     LEARN_INSTRUCTION,
     '',
@@ -296,6 +332,7 @@ export function buildConnectBlock(p: { agent: AgentId; name: string; url: string
   switch (p.agent) {
     case 'claude-code': return claudeBlock(p);
     case 'codex': return codexBlock(p);
+    case 'opencode': return opencodeBlock(p);
     case 'perplexity': return perplexityBearerBlock(p);
     case 'generic': return genericBearerBlock(p);
   }
@@ -330,6 +367,10 @@ export function buildJson(p: { url: string; name: string; agent: AgentId; token:
     // Codex command carries no token (env-var name only), so it's safe verbatim.
     command_argv = buildCodexMcpAddArgv({ name: p.name, url: p.url, envVar: ENV_VAR });
     command = cmdString('codex', command_argv);
+  } else if (p.agent === 'opencode') {
+    // The literal {env:VAR} interpolation, not a token — safe verbatim.
+    command_argv = buildOpencodeMcpAddArgv({ name: p.name, url: p.url, envVar: ENV_VAR });
+    command = cmdString('opencode', command_argv);
   }
   return {
     schema_version: 1,
@@ -363,6 +404,10 @@ export interface ConnectDeps {
   probe(url: string, token: string, timeoutMs: number): Promise<ConnectProbeResult>;
   env(name: string): string | undefined;
   registerOAuthClient(name: string, scopes: string): RegisterResult;
+  /** opencode --install lane: direct JSONC write of a remote entry carrying
+   * the literal `{env:GBRAIN_REMOTE_TOKEN}` interpolation (no binary execed,
+   * no token on disk). Throws on a foreign same-name entry. */
+  writeOpencodeRemoteEntry(name: string, url: string): { configPath: string; replacedPrior: boolean };
 }
 
 async function defaultPromptYesNo(question: string): Promise<boolean> {
@@ -420,6 +465,14 @@ const defaultDeps: ConnectDeps = {
   probe: (url, token, timeoutMs) => probeBrainIdentity(url, token, { timeoutMs }),
   env: (name) => process.env[name],
   registerOAuthClient: defaultRegisterOAuthClient,
+  writeOpencodeRemoteEntry: (name, url) => {
+    const r = writeOpencodeMcpEntry(
+      opencodeGlobalConfigPath(),
+      { kind: 'remote', name, url, tokenMode: 'env' },
+      { expect: { url } },
+    );
+    return { configPath: r.configPath, replacedPrior: r.replacedPrior };
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -595,8 +648,49 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
   // --install path. token is guaranteed literal here (install mode resolveToken).
   const realToken = token as string;
   if (!spec.installable) {
-    fail(`--install supports claude-code and codex. ${spec.label} is set up through its own UI — drop --install to print the setup steps.`);
+    fail(`--install supports claude-code, codex, and opencode. ${spec.label} is set up through its own UI — drop --install to print the setup steps.`);
   }
+
+  if (f.agent === 'opencode') {
+    // Direct-writer lane: no opencode binary required (the JSONC write IS the
+    // registration), and the config carries only the {env:VAR} interpolation
+    // — the writer's fingerprint handles idempotent re-runs and refuses a
+    // foreign same-name entry (--force cannot override that; pick --name).
+    if (!f.yes) {
+      if (!deps.isTTY()) {
+        fail('--install in a non-interactive shell requires --yes (refusing to register a credential-bearing MCP server without confirmation).');
+      }
+      const ok = await deps.promptYesNo(`Add MCP entry '${f.name}' -> ${url} to the opencode user-global config?`);
+      if (!ok) fail('Aborted.');
+    }
+    let w: { configPath: string; replacedPrior: boolean };
+    try {
+      w = deps.writeOpencodeRemoteEntry(f.name, url);
+    } catch (e) {
+      fail(redactToken((e as Error).message, realToken));
+    }
+    console.error(
+      `Added MCP entry '${f.name}' -> ${url} in ${w.configPath}` +
+        `${w.replacedPrior ? ' (replaced the prior gbrain entry)' : ''}. Restart opencode (config is read at session start).`,
+    );
+    if (deps.env(ENV_VAR) !== realToken) {
+      console.error(`opencode resolves {env:${ENV_VAR}} at read time. Add this to your shell profile so sessions can reach the brain:`);
+      console.error(`  export ${ENV_VAR}=<your-token>`);
+    }
+    const ocProbe = await deps.probe(url, realToken, f.timeoutMs);
+    if (ocProbe.ok) {
+      console.error(`Verified: ${ocProbe.identity || 'brain reachable'}`);
+      console.error('');
+      console.error(LEARN_INSTRUCTION);
+      return;
+    }
+    console.error(
+      `Warning: registered '${f.name}', but the smoke-test did not verify (${ocProbe.reason}): ${redactToken(ocProbe.message, realToken)}`,
+    );
+    console.error('The agent will likely hit 401/errors until the token or URL is fixed.');
+    process.exit(1);
+  }
+
   const binary = spec.binary as string; // 'claude' | 'codex'
   if (!deps.hasBinary(binary)) {
     fail(`${spec.label} CLI ('${binary}') not found on PATH. Install ${spec.label}, or drop --install to print the command to run manually.`);
