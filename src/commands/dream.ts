@@ -32,6 +32,7 @@ import {
   type CycleReport,
 } from '../core/cycle.ts';
 import { resolveSourceId } from '../core/source-resolver.ts';
+import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { fetchSource } from '../core/sources-load.ts';
 import { existsSync } from 'fs';
 import { resolve } from 'node:path';
@@ -599,7 +600,7 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
         `gbrain dream: ${stray} belongs to the 'retriage' subcommand — ` +
         `did you mean: gbrain dream retriage ${args.join(' ')}`,
       );
-      process.exitCode = 2;
+      setCliExitVerdict(2);
       return;
     }
   }

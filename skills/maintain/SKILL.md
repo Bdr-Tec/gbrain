@@ -18,6 +18,8 @@ triggers:
   - "populate links"
   - "backfill graph"
   - "extract timeline entries"
+  - "retriage the backlog"
+  - "re-score the triage"
   - "run dream"
   - "process today's session"
   - "process yesterday's transcripts"

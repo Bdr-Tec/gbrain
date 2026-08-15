@@ -50,6 +50,7 @@ import {
   type TriageFileReport,
 } from '../core/cycle/synthesize.ts';
 import { discoverTranscripts } from '../core/cycle/transcript-discovery.ts';
+import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { MinionQueue } from '../core/minions/queue.ts';
 import { canonicalLookup } from '../core/model-pricing.ts';
 import { SPEND_CONFIRM_USD, UNPRICED_CONFIRM_FILES } from './dream-retriage-constants.ts';
@@ -253,7 +254,7 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
   } catch (e) {
     if (e instanceof UsageError) {
       console.error(`dream retriage: ${e.message} (see: gbrain dream retriage --help)`);
-      process.exitCode = 2;
+      setCliExitVerdict(2);
       return;
     }
     throw e;
@@ -265,14 +266,14 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
   }
   if (engine === null) {
     console.error('gbrain dream retriage requires a connected brain; run `gbrain init` first');
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
 
   const config = await loadSynthConfig(engine);
   if (!config.corpusDir) {
     console.error('dream retriage: dream.synthesize.session_corpus_dir is unset — nothing to retriage');
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
   const threshold = parsed.threshold ?? config.triage.threshold;
@@ -343,7 +344,7 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
       console.error(
         `dream retriage: --max-usd requires a priced model; "${config.triage.model}" has no CANONICAL_PRICING entry`,
       );
-      process.exitCode = 2;
+      setCliExitVerdict(2);
       return;
     }
     // The frontier audit spends too (security review): fold its worst case
@@ -361,7 +362,7 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
         `dream retriage: --max-usd with --audit-rejects requires a priced synthesis model; ` +
         `"${config.model}" has no CANONICAL_PRICING entry`,
       );
-      process.exitCode = 2;
+      setCliExitVerdict(2);
       return;
     }
     const auditEstimateUsd = parsed.auditRejects !== null && auditPerFileUsd !== null
@@ -386,13 +387,13 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
     if (gateTriggered && !parsed.yes) {
       if (parsed.json || !process.stdin.isTTY) {
         console.error('dream retriage: spend estimate exceeds the confirmation gate; re-run with --yes (non-interactive)');
-        process.exitCode = 2;
+        setCliExitVerdict(2);
         return;
       }
       const ok = await confirmOnTty(`Proceed with ~$${estimateUsd?.toFixed(2) ?? '?'} of triage spend?`);
       if (!ok) {
         console.error('dream retriage: aborted at spend confirmation');
-        process.exitCode = 2;
+        setCliExitVerdict(2);
         return;
       }
     }
@@ -459,7 +460,7 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
         `dream retriage: discovery found 0 transcripts but ${rows.length} queued job(s) exist; ` +
         'refusing --cancel-unmatched (corpus may be unreachable). Fix discovery or drop the flag.',
       );
-      process.exitCode = 2;
+      setCliExitVerdict(2);
       return;
     }
     reconcile = {
