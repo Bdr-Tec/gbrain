@@ -35,6 +35,7 @@ import {
   type DbProbeResult,
   type PoolDiagnostics,
 } from './db-probe.ts';
+import { buildJobContext } from './job-context.ts';
 import { lockRenewalAudit } from '../audit/lock-renewal-audit.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { reconnectAfterConnectionError as reconnectEngineAfterConnError } from './reconnect.ts';
@@ -1053,40 +1054,16 @@ export class MinionWorker extends EventEmitter {
     // `shutdownSignal` is separate: fires only on worker process SIGTERM/SIGINT.
     // Handlers that need to run cleanup before worker exit (shell handler's
     // SIGTERM→5s→SIGKILL on its child) subscribe to shutdownSignal too.
-    const context: MinionJobContext = {
-      id: job.id,
-      name: job.name,
-      data: job.data,
-      attempts_made: job.attempts_made,
-      signal: abort.signal,
-      deadlineAtMs: job.timeout_at != null ? job.timeout_at.getTime() : null,
-      shutdownSignal: this.shutdownAbort.signal,
-      updateProgress: async (progress: unknown) => {
-        await this.queue.updateProgress(job.id, lockToken, progress);
-      },
-      updateTokens: async (tokens: TokenUpdate) => {
-        await this.queue.updateTokens(job.id, lockToken, tokens);
-      },
-      log: async (message: string | Record<string, unknown>) => {
-        const value = typeof message === 'string' ? message : JSON.stringify(message);
-        await this.engine.executeRaw(
-          `UPDATE minion_jobs SET stacktrace = COALESCE(stacktrace, '[]'::jsonb) || to_jsonb($1::text),
-            updated_at = now()
-           WHERE id = $2 AND status = 'active' AND lock_token = $3`,
-          [value, job.id, lockToken]
-        );
-      },
-      isActive: async () => {
-        const rows = await this.engine.executeRaw<{ id: number }>(
-          `SELECT id FROM minion_jobs WHERE id = $1 AND status = 'active' AND lock_token = $2`,
-          [job.id, lockToken]
-        );
-        return rows.length > 0;
-      },
-      readInbox: async () => {
-        return this.queue.readInbox(job.id, lockToken);
-      },
-    };
+    // Builder shared with `gbrain jobs run-child` (job-context.ts) so the
+    // process-isolation child wires the exact same DB-backed callbacks.
+    const context: MinionJobContext = buildJobContext(
+      this.engine,
+      this.queue,
+      job,
+      lockToken,
+      abort.signal,
+      this.shutdownAbort.signal,
+    );
 
     try {
       const result = await handler(context);
