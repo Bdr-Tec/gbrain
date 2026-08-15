@@ -62,3 +62,4 @@ check-cli-executable.sh	repostate	exempt	file-mode check
 check-no-tracked-symlinks.sh	repostate	exempt	git index state check
 check-grok-pin.sh	repostate	exempt	pin-stamp drift check (GROK-CLI-PIN.md stamps vs heavy-tests grok-door env); own bun guard tests in test/check-bootstrap-guards.test.ts
 check-module-size.sh	scanner	yes	committed per-file line ceilings (module-size-limits.tsv); growth + stale-ceiling + missing-row + new-file cap; region-exempt policy for migrate.ts
+check-structural-manifest.sh	buildfresh	exempt	regenerate+diff of structural-suites.tsv (classify-tests.ts); the diff IS the self-test
