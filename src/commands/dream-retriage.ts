@@ -145,11 +145,11 @@ function parseRetriageArgs(args: string[]): RetriageArgs {
   if (out.cancelUnmatched && !out.reconcileQueue) {
     throw new UsageError('--cancel-unmatched requires --reconcile-queue');
   }
-  // CX2: a --limit-truncated corpus scan would misclassify every file outside
+  // CX2: a corpus scan truncated by --limit would misclassify every file outside
   // the slice as "unmatched" — combining it with --cancel-unmatched would
   // mass-cancel valid backlog.
   if (out.cancelUnmatched && out.limit !== null) {
-    throw new UsageError('--cancel-unmatched cannot combine with --limit (truncated scans misclassify files as unmatched)');
+    throw new UsageError('--cancel-unmatched cannot combine with --limit: a truncated scan misclassifies files as unmatched');
   }
   return out;
 }
