@@ -65,7 +65,7 @@ const BANK_JSON = JSON.stringify({
     MCP_SCOPE: {
       consent: true,
       phase: 'interview',
-      question: '(Claude Code only. Codex has no scope flag.) Register for this folder or the whole machine?',
+      question: '(Claude Code and opencode. Codex has no scope flag.) Register for this folder or the whole machine?',
       maxLength: 8,
     },
     UNUSED_OPTIONAL: { maxLength: 8 },
@@ -75,7 +75,7 @@ const BANK_JSON = JSON.stringify({
 // Minimal runbook that satisfies the section (e) counter-signal pins; fixtures
 // exercising OTHER failure modes include it so they fail only for their own
 // reason.
-const RUNBOOK_PINS = 'Claude Code only\nDo NOT offer an MCP scope choice\n';
+const RUNBOOK_PINS = 'Claude Code and opencode\nDo NOT offer an MCP scope choice\nNO trust prompt\n';
 
 describe('check-bootstrap-tag.sh', () => {
   test('exists and is executable', () => {
@@ -307,7 +307,7 @@ describe('check-bootstrap-templates.sh', () => {
         'templates/bootstrap/questions.json': BANK_JSON,
         'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
         'BOOTSTRAP_FOR_AGENTS.md':
-          '<!-- gbrain-runbook-stamp: 1.2.3.4 -->\nClaude Code only\n(counter-signal deleted)\n',
+          '<!-- gbrain-runbook-stamp: 1.2.3.4 -->\nClaude Code and opencode\nNO trust prompt\n(counter-signal deleted)\n',
       },
       (dir) => {
         const r = runGuard(TPL_GUARD, dir);
@@ -317,18 +317,34 @@ describe('check-bootstrap-templates.sh', () => {
     );
   });
 
-  test("(e) fails when the runbook loses the 'Claude Code only' consent scoping", () => {
+  test("(e) fails when the runbook loses the 'Claude Code and opencode' consent scoping", () => {
     withFixture(
       {
         'templates/bootstrap/questions.json': BANK_JSON,
         'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
         'BOOTSTRAP_FOR_AGENTS.md':
-          '<!-- gbrain-runbook-stamp: 1.2.3.4 -->\nDo NOT offer an MCP scope choice\n',
+          '<!-- gbrain-runbook-stamp: 1.2.3.4 -->\nDo NOT offer an MCP scope choice\nNO trust prompt\n',
       },
       (dir) => {
         const r = runGuard(TPL_GUARD, dir);
         expect(r.status).toBe(1);
-        expect(r.out).toContain("'Claude Code only'");
+        expect(r.out).toContain("'Claude Code and opencode'");
+      },
+    );
+  });
+
+  test("(e) fails when the runbook loses the opencode 'no trust prompt' rationale", () => {
+    withFixture(
+      {
+        'templates/bootstrap/questions.json': BANK_JSON,
+        'templates/bootstrap/SOUL.md.template': '# {{AGENT_NAME}}\n',
+        'BOOTSTRAP_FOR_AGENTS.md':
+          '<!-- gbrain-runbook-stamp: 1.2.3.4 -->\nClaude Code and opencode\nDo NOT offer an MCP scope choice\n',
+      },
+      (dir) => {
+        const r = runGuard(TPL_GUARD, dir);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain('spawn-gate rationale');
       },
     );
   });
@@ -343,7 +359,7 @@ describe('check-bootstrap-templates.sh', () => {
       (dir) => {
         const r = runGuard(TPL_GUARD, dir);
         expect(r.status).toBe(1);
-        expect(r.out).toContain("must start with '(Claude Code only'");
+        expect(r.out).toContain("must start with '(Claude Code and opencode'");
       },
     );
   });
@@ -368,7 +384,7 @@ describe('check-bootstrap-templates.sh', () => {
       (dir) => {
         const r = runGuard(TPL_GUARD, dir);
         expect(r.status).toBe(1);
-        expect(r.out).toContain("must start with '(Claude Code only'");
+        expect(r.out).toContain("must start with '(Claude Code and opencode'");
       },
     );
   });
@@ -385,7 +401,7 @@ describe('check-bootstrap-templates.sh', () => {
         MCP_SCOPE: {
           consent: true,
           phase: 'wire',
-          question: '(Claude Code only. Codex has no scope flag.) Register for this folder or the whole machine?',
+          question: '(Claude Code and opencode. Codex has no scope flag.) Register for this folder or the whole machine?',
           maxLength: 8,
         },
       },
@@ -425,7 +441,7 @@ describe('check-bootstrap-templates.sh', () => {
       (dir) => {
         const r = runGuard(TPL_GUARD, dir);
         expect(r.status).toBe(1);
-        expect(r.out).toContain("must start with '(Claude Code only'");
+        expect(r.out).toContain("must start with '(Claude Code and opencode'");
       },
     );
   });

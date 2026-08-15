@@ -392,6 +392,29 @@ export function removeOpencodeMcpEntry(
   return { configPath, removed: true, backupPath, notes };
 }
 
+/**
+ * True when `mcp.<name>` exists as a REMOTE-type entry (regardless of
+ * ownership). The workspace stdio lane consults this before writing a local
+ * entry into the user-global config: a remote entry under our name is either
+ * the harness lane's (bootstrap harness) or foreign — either way the stdio
+ * lane must not fight it (the codexBlockOwnsName analog, #4043 ownership
+ * rule). Best-effort: unreadable/unparseable configs return false (the write
+ * path re-checks with full refusal semantics).
+ */
+export function opencodeRemoteEntryExists(configPath: string, name: string): boolean {
+  try {
+    const { text, existed } = readConfigRaw(configPath);
+    if (!existed) return false;
+    const parsed = parseOpencodeConfig(text, configPath);
+    const mcp = parsed.mcp;
+    if (typeof mcp !== 'object' || mcp === null) return false;
+    const entry = (mcp as Record<string, unknown>)[name];
+    return typeof entry === 'object' && entry !== null && (entry as Record<string, unknown>).type === 'remote';
+  } catch {
+    return false;
+  }
+}
+
 // ── Status/recovery helpers ─────────────────────────────────────────────────
 
 /**
