@@ -141,7 +141,10 @@ describe.skipIf(!PLUGIN_CAPABLE)('claude plugin door — SMOKE (live turn)', () 
           timeoutMs: 230_000,
           extraEnv: { GBRAIN_BIN: gbrainBin, GBRAIN_HOME: home, GBRAIN_SOURCE: sourceId },
         });
-        const usedMcp = turn.toolCalls.some((c) => c.startsWith('mcp__gbrain'));
+        // Plugin-provided servers are plugin-namespaced (observed live:
+        // `mcp__plugin_gbrain_gbrain__search`); a bootstrap-lane server would
+        // be `mcp__gbrain__…`. Match both shapes.
+        const usedMcp = turn.toolCalls.some((c) => /^mcp__.*gbrain.*__/.test(c));
         const gotFact = turn.finalText.toLowerCase().includes(fact);
         lastEvidence =
           `[claude plugin smoke attempt ${attempt}/${maxAttempts}] exit=${turn.exitCode} ` +

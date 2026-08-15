@@ -93,7 +93,7 @@ describe('parseCodexJsonl', () => {
   });
 
   test('empty input yields empty result, never throws', () => {
-    expect(parseCodexJsonl([])).toEqual({ finalText: '', toolCalls: [], reasoning: [] });
+    expect(parseCodexJsonl([])).toEqual({ finalText: '', toolCalls: [], reasoning: [], mcpToolCalls: [] });
   });
 });
 

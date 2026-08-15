@@ -1243,7 +1243,7 @@ export async function mcpToolsListProbe(opts: {
     { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
   ];
   proc.stdin.write(frames.map((f) => JSON.stringify(f)).join('\n') + '\n');
-  await proc.stdin.end().catch?.(() => {});
+  try { await proc.stdin.end(); } catch { /* already closed */ }
 
   const stderrDone = new Response(proc.stderr).text();
   const reader = proc.stdout.getReader();
