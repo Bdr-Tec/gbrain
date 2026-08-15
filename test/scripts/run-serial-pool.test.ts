@@ -134,6 +134,35 @@ describe('pooled serial runner', () => {
     rmSync(join(ROOT, 'test', 'a-ok.serial.test.ts'));
   });
 
+  it('an externally-SIGTERMed file is rescued by a sequential re-run (phantom stays green)', () => {
+    // Self-kills with SIGTERM on first run (exit 143 — the external-kill
+    // class: sibling-workspace cleanup, memory jetsam), passes on the
+    // rescue re-run. Mirrors run-unit-parallel's oom-once fixture.
+    const sentinel = join(ROOT, 'test', 'killed-once.sentinel');
+    const KILLED_ONCE = `import { it, expect } from 'bun:test';
+import { existsSync, writeFileSync } from 'fs';
+it('passes after one external SIGTERM', () => {
+  const sentinel = ${JSON.stringify(sentinel)};
+  if (!existsSync(sentinel)) {
+    writeFileSync(sentinel, '1');
+    process.kill(process.pid, 'SIGTERM');
+  }
+  expect(1).toBe(1);
+});`;
+    writeFileSync(join(ROOT, 'test', 'k-killed.serial.test.ts'), KILLED_ONCE);
+    try {
+      const r = runScript();
+      // (The "queued for serial rescue" line goes to stderr, which the
+      // success path of runScript doesn't capture — the stdout rescue
+      // marker + exit 0 are the contract.)
+      expect(r.out).toContain('rescued: external-kill phantom');
+      expect(r.code).toBe(0);
+    } finally {
+      rmSync(join(ROOT, 'test', 'k-killed.serial.test.ts'), { force: true });
+      rmSync(sentinel, { force: true });
+    }
+  }, 60000);
+
   it('a hung file is killed by the per-file wall-clock timeout', () => {
     if (!hasTimeoutBin) return; // macOS without coreutils: no wrapper, documented
     writeFileSync(join(ROOT, 'test', 'h-hang.serial.test.ts'), HANGING);

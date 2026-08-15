@@ -56,6 +56,15 @@ EXCLUSIVE_FILES=(
   # (src/core/brain-repo-durability.ts) — a concurrent or killed run could
   # strand a real scheduled job on the machine.
   "test/brain-durability-hook.serial.test.ts"
+  # hardenBrainRepo's own scaffolding commit fires the just-installed
+  # post-commit hook (background push) which races the synchronous
+  # push-probe on the same bare remote ("cannot lock ref" →
+  # needs_attention non-empty). The race is intra-call; pooled CPU
+  # contention widens the window past what the assertions tolerate
+  # (observed on a 4-vCPU CI runner, never locally). Sequential lane
+  # restores master-era timing until the probe learns to retry ref-lock
+  # contention.
+  "test/brain-repo-durability.serial.test.ts"
 )
 
 is_exclusive() {
@@ -137,7 +146,12 @@ command -v timeout >/dev/null 2>&1 && TIMEOUT_BIN="timeout"
 LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-serial.XXXXXX")
 trap 'rm -rf "$LOG_DIR"' EXIT
 
-echo "[serial-tests] ${#files[@]} file(s): pool=$POOL (${#exclusive_present[@]} exclusive), per-file timeout=${TIMEOUT_BIN:+${PER_FILE_TIMEOUT}s via $TIMEOUT_BIN}${TIMEOUT_BIN:-none}"
+if [ -n "$TIMEOUT_BIN" ]; then
+  TIMEOUT_DESC="${PER_FILE_TIMEOUT}s via $TIMEOUT_BIN"
+else
+  TIMEOUT_DESC="none (no timeout/gtimeout on PATH)"
+fi
+echo "[serial-tests] ${#files[@]} file(s): pool=$POOL (${#exclusive_present[@]} exclusive), per-file timeout=$TIMEOUT_DESC"
 
 # Per-test timeout is 120s (not the fast-loop 60s): pooled contention can
 # push a 30-50s file past 60s — the same flake class the slow lane hardened
@@ -185,9 +199,17 @@ if [ "${#exclusive_present[@]}" -gt 0 ]; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
-# Aggregate from the exit sentinels. A MISSING sentinel means the wrapper
-# subshell itself died (external SIGKILL / OOM) — that is a FAILURE, never a
-# silent pass. Timeout kills surface as exit 124 (or 137 after SIGKILL).
+# Aggregate from the exit sentinels.
+#   exit 0                → pass
+#   exit 124              → killed by the per-file wall-clock timeout (real
+#                           failure: the exit-hang class this cap exists for)
+#   exit 143 / 137, or a  → EXTERNAL-KILL class: a stray SIGTERM/SIGKILL from
+#   missing sentinel        outside this runner (sibling workspaces' process
+#                           cleanup, memory jetsam — the same class
+#                           run-unit-parallel.sh rescues). Queued for ONE
+#                           sequential rescue re-run below; a rescue that
+#                           fails again is a real failure. Never a silent pass.
+#   anything else         → real failure
 # ──────────────────────────────────────────────────────────────────────────
 ordered_files=()
 if [ "${#pool_files[@]}" -gt 0 ]; then ordered_files+=("${pool_files[@]}"); fi
@@ -195,23 +217,25 @@ if [ "${#exclusive_present[@]}" -gt 0 ]; then ordered_files+=("${exclusive_prese
 
 fail_count=0
 failed_files=()
+rescue_files=()
 i=0
 for f in "${ordered_files[@]}"; do
   dur="?"
   [ -f "$LOG_DIR/$i.dur" ] && dur=$(cat "$LOG_DIR/$i.dur")
   if [ ! -f "$LOG_DIR/$i.exit" ]; then
-    echo "[serial-tests] FAIL ${dur}s $f — missing exit sentinel (runner subshell died: external kill/OOM)" >&2
-    [ -f "$LOG_DIR/$i.log" ] && cat "$LOG_DIR/$i.log" >&2
-    fail_count=$((fail_count + 1))
-    failed_files+=("$f")
+    echo "[serial-tests] KILLED ${dur}s $f — missing exit sentinel (external kill/OOM) — queued for serial rescue" >&2
+    rescue_files+=("$f")
   else
     rc=$(cat "$LOG_DIR/$i.exit")
     if [ "$rc" = "0" ]; then
       summary=$(grep -E '^ *[0-9]+ pass' "$LOG_DIR/$i.log" | tail -1 | tr -d ' ' || true)
       echo "[serial-tests] PASS ${dur}s $f ${summary:+($summary)}"
+    elif [ "$rc" = "143" ] || [ "$rc" = "137" ]; then
+      echo "[serial-tests] KILLED ${dur}s $f — exit $rc (external SIGTERM/SIGKILL) — queued for serial rescue" >&2
+      rescue_files+=("$f")
     else
       note=""
-      { [ "$rc" = "124" ] || [ "$rc" = "137" ]; } && note=" (killed by ${PER_FILE_TIMEOUT}s per-file timeout)"
+      [ "$rc" = "124" ] && note=" (killed by ${PER_FILE_TIMEOUT}s per-file timeout)"
       echo "[serial-tests] FAIL ${dur}s $f — exit $rc$note" >&2
       cat "$LOG_DIR/$i.log" >&2
       fail_count=$((fail_count + 1))
@@ -220,6 +244,29 @@ for f in "${ordered_files[@]}"; do
   fi
   i=$((i + 1))
 done
+
+# Rescue pass: one sequential, unpooled re-run per externally-killed file.
+# Phantoms pass here and the run stays green (with a rescue note); real
+# failures fail again and go red. Mirrors run-unit-parallel.sh's doctrine.
+if [ "${#rescue_files[@]}" -gt 0 ]; then
+  echo "[serial-tests] rescue pass: ${#rescue_files[@]} externally-killed file(s), re-running serially" >&2
+  for f in "${rescue_files[@]}"; do
+    s=$(date +%s)
+    run_one_file "$f" "$LOG_DIR/$i.log" "$LOG_DIR/$i.exit" "wrap"
+    e=$(date +%s)
+    rc=$(cat "$LOG_DIR/$i.exit" 2>/dev/null || echo 1)
+    if [ "$rc" = "0" ]; then
+      summary=$(grep -E '^ *[0-9]+ pass' "$LOG_DIR/$i.log" | tail -1 | tr -d ' ' || true)
+      echo "[serial-tests] PASS $((e - s))s $f ${summary:+($summary)} (rescued: external-kill phantom)"
+    else
+      echo "[serial-tests] FAIL $((e - s))s $f — exit $rc on rescue re-run" >&2
+      cat "$LOG_DIR/$i.log" >&2
+      fail_count=$((fail_count + 1))
+      failed_files+=("$f")
+    fi
+    i=$((i + 1))
+  done
+fi
 
 # Slowest-file table: feeds flake triage + future weight mining.
 echo "[serial-tests] slowest files:"
