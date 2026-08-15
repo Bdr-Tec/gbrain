@@ -2,6 +2,99 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.18.0] - 2026-08-15
+
+**Today's agent spend now reads correctly at every hour, in every timezone.** The admin spend endpoint computed "today" against a naive timestamp that each database session reinterpreted in its own timezone — on any non-UTC session (a PGLite brain following the host clock, a timezone-configured Postgres role), the day boundary shifted by the offset and every evening's spend silently underreported as 0. The boundary is now a UTC instant, independent of session timezone, pinned by a regression test that exercises sessions 12 hours either side of UTC at any wall-clock hour.
+
+The same class also made the new test-suite snapshot fixture time-of-day flaky: the snapshot bakes the build machine's timezone into the restored cluster, so snapshot-restored engines ran sessions in the builder's zone while cold-init engines followed the running process. Restored engines now re-pin their session to the runtime zone (existing tarballs heal without a rebuild), the snapshot builder pins UTC so tarballs are deterministic across hosts, and a parity test asserts cold and snapshot engines agree on their UTC offset.
+
+### Fixed
+- `/admin/api/agents/spend`: `spent_cents_today` no longer underreports on non-UTC sessions (UTC-instant day boundary).
+- Snapshot-restored PGLite engines behave identically to cold-init engines regardless of the machine that built the tarball.
+
+## [0.45.17.0] - 2026-08-15
+
+**A test run can no longer silently touch a real brain.** `gbrain init` writes your
+database URL into `~/.gbrain/.env`; anyone who had that sourced and ran a bare
+`bun test` in the repo was one destructive fixture away from their own data
+(#3485 — it has happened). Four independent layers now stand in the way, and
+each one fails loudly instead of silently skipping:
+
+- **The run refuses to start.** A test preload (registered first in
+  `bunfig.toml`) hard-fails any `bun test` invocation while `DATABASE_URL` or
+  `GBRAIN_DATABASE_URL` is ambient, with instructions — it never silently
+  unsets, because a silent unset would turn database-gated e2e tests into
+  green skips. The e2e and heavy lanes opt in at their own boundary;
+  the unit and slow lanes strip the variables at theirs, so
+  `bun run test:full` with a database URL exported still reaches its e2e leg.
+- **Destructive tests check the database name.** Every test that runs
+  destructive SQL against the ambient URL now calls a shared name floor
+  (moved to a leaf module so unit-directory tests can use it too): the
+  database name must carry "test" as a word segment, or be opted in
+  explicitly, one-shot. (One suite keeps its own equivalent inline floor,
+  pinned by the coverage gate.) This adopts the patch contributed in #3485 by
+  @cheRoma — thank you — extended to two newer files the original audit
+  predates and one raw-client suite it couldn't see.
+- **Shell lanes get the same floor.** The heavy-test scripts (schema drops,
+  parallel syncs, migration replays) share a floor that checks BOTH database
+  URL variables and strips query strings before extracting the name, so a
+  `?host=/tmp/test-sockets` parameter can't smuggle a test-shaped segment
+  past it.
+- **A repo-wide static gate keeps it that way.** A scanner walks every test
+  file bun would collect (all naming patterns, fixtures included), flags any
+  file that reads an ambient database URL, opens a connection, and runs
+  destructive SQL without a guard — and its own classifiers are pinned by
+  positive controls so the gate can never rot into passing vacuously.
+
+### Added
+- Test-run guard preload (`test/helpers/database-url-guard-preload.ts`) with
+  subprocess tests covering every branch: both variables, both-set, override,
+  strict override value, empty-string, and clean runs.
+- Shared destructive-SQL name floor `test/helpers/db-guard.ts` (re-exported
+  from `test/e2e/helpers.ts` for existing call sites) and shell twin
+  `tests/heavy/_db_floor.sh`.
+- Repo-wide destructive-SQL coverage gate `test/db-guard-coverage.test.ts`
+  with classifier self-tests and positive controls.
+
+### Fixed
+- Ten destructive test files now verify the database name before connecting
+  (#3485; patch by @cheRoma, extended).
+- The heavy lane's fixture builder, sync-lock, upgrade-matrix, and wallclock
+  scripts refuse non-test-shaped database names instead of operating on
+  whatever the environment points at.
+- The phantom-redirect engine-parity test's Postgres arm is now carried by
+  the e2e lane and CI's parity job — previously no lane could reach it.
+
+### To take advantage of v0.45.17.0
+
+Nothing to configure. If a bare `bun test` now refuses to start, the message
+tells you exactly why and what to do — usually just unset the database URL
+(unit tests need no database) or use `bun run test:e2e`, which opts in at its
+own boundary. If your e2e database has a non-test-shaped name, opt in one-shot
+with `GBRAIN_E2E_ALLOW_DB=<name>` rather than exporting it in your shell
+profile — a permanent export would disarm the guard for exactly the database
+it protects.
+
+## [0.45.16.0] - 2026-08-14
+
+**Fix wave W0: the verified-bug hotfix pass of the code-smell series.** A 10-auditor sweep of the codebase produced 122 findings; the top claims were adversarially verified, and this release fixes every verified live bug — the ones that survived the skeptic pass. Long-running brains get the biggest wins: background cycles can no longer silently run twice, dead background jobs no longer strand their parents, and image search no longer silently degrades after re-embedding. Developers get a test suite that runs 10x faster.
+
+### Fixed
+
+- **The background-cycle lock is now actually refreshed while a cycle runs.** Long phases (synthesis, pattern extraction, consolidation — up to 35-minute waits) previously outlived the 5-minute lock TTL with no heartbeat, so a second cycle could start against the same brain and both would write concurrently — duplicated LLM spend and racy writes on Postgres/Supabase brains. A dedicated refresher now heartbeats the lock, every refresh and release is fenced to the exact acquisition (a recycled PID or a superseded run can never touch a successor's lock — including the PGLite file lock, which is no longer rewritten after a detected steal), and a run that loses its lock stops at the next phase boundary with a structured `lock_stolen` report instead of compounding. The job supervisor treats a fenced miss as certain loss and exits for a clean restart.
+- **Background jobs that die from repeated stalls now notify and unblock their waiting parents.** Previously an aggregator parent whose child was dead-lettered by the stall sweep waited forever; a self-healing sweep also releases parents stranded before the upgrade.
+- **Retried jobs no longer burn their wall-clock budget while waiting in backoff.** Every automatic re-run path — and every parent-unblock path — resets the per-attempt clock, so exponential-backoff retries and long-waiting aggregators aren't dead-lettered before executing a line.
+- **Re-embedding no longer flips image chunks to text.** `gbrain embed --stale` (including the autopilot path) preserved every chunk field except `modality`, silently zeroing image retrieval until the next full import. One shared carry list now serves every re-embed path.
+- **A failed first sync no longer kills the MCP server.** Import preflight failures (missing embedding credentials, unreadable target) now surface as normal tool errors instead of terminating the serving process mid-call.
+- **`gbrain lint --fix` reports the true fix count** (it previously scanned everything twice and reported "0 auto-fixed" after fixing issues) and walks the tree once.
+- **The PGLite repair and re-init confirmation prompts can no longer hang forever** on closed or piped stdin: EOF declines safely, and prompts write to stderr so `--json` output stays clean.
+
+### Changed
+
+- **`bun run test` is ~10x faster** (measured: a full parallel suite run dropped from ~82 to ~8 minutes). The PGLite schema snapshot is now default-on for the everyday test loop, rebuilt automatically when migrations or the pinned embedding shape change, concurrency-safe across parallel shards and workspaces, and refused on any shape mismatch so a wrong fixture can never poison the suite.
+- **CI guards now prove they can fail.** A guard registry classifies all 45 check scripts; self-tested scanner guards run against known-bad fixtures on every verify (the registry tracks fixture coverage for the rest), so a guard whose pattern rots into a permanently-green no-op fails the build instead of masquerading as coverage. Two such rotted patterns were found and fixed in the process, along with three guards that were wired into a registry nobody ran.
+
+To take advantage of v0.45.16.0: upgrade and restart any long-running `gbrain serve`, autopilot, or jobs supervisor/worker daemon so the fenced lock refresh and job-reaper fixes take effect. If you run image search, run `gbrain backfill modality` once after upgrading to restore any image chunks a prior re-embed flipped to text (`gbrain doctor` surfaces the affected count and the exact command). No schema migration and no config changes are required.
 ## [0.45.15.0] - 2026-08-14
 
 **The queue that drains itself: three background-jobs fixes reported from a downstream agent deployment (upstream issues #2, #3, #4).** A brain whose autopilot cycle stalled mid-run could accumulate byte-identical queued cycles forever while every long job queued before an upgrade died minutes in — and the operator diagnosing it couldn't even find the worker entry point, because `gbrain jobs --help` printed a one-line stub. All three failure modes are closed, and the queue now tells you when it's holding work back.
