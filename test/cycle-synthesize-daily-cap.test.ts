@@ -66,16 +66,25 @@ async function setupRig(): Promise<Rig> {
   };
 }
 
-async function withSubagentAutoCancel<T>(engine: PGLiteEngine, body: () => Promise<T>): Promise<T> {
+async function withSubagentAutoCancel<T>(
+  engine: PGLiteEngine,
+  body: () => Promise<T>,
+  opts: { excludeQueue?: string } = {},
+): Promise<T> {
   let stopped = false;
   const loop = (async () => {
     while (!stopped) {
       await new Promise(r => setTimeout(r, 50));
       try {
+        // excludeQueue: deliberately-seeded fixture rows must be handled by
+        // the code under test, not this poller (a poller cancel changes the
+        // row's coalescibility and races the assertion).
         await engine.executeRaw(
           `UPDATE minion_jobs
               SET status = 'cancelled', finished_at = now()
-            WHERE name = 'subagent' AND status IN ('waiting', 'active')`,
+            WHERE name = 'subagent' AND status IN ('waiting', 'active')
+              AND ($1::text IS NULL OR queue <> $1)`,
+          [opts.excludeQueue ?? null],
         );
       } catch { /* race against shutdown is fine */ }
     }
@@ -126,15 +135,17 @@ interface CapDetails {
   skips: Array<{ filePath: string; reason: string }>;
 }
 
-async function runPhase(rig: Rig, opts: { date?: string } = {}): Promise<CapDetails> {
+async function runPhase(rig: Rig, opts: { date?: string; excludeQueue?: string } = {}): Promise<CapDetails> {
   // No key + isolated GBRAIN_HOME: every seeded verdict is a cache hit, so no
   // judge call happens; the env isolation is belt-and-suspenders against a
   // dev machine whose config file carries a real key.
+  const { excludeQueue, ...phaseOpts } = opts;
   const tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-cap-isol-'));
   try {
     const result = await withEnv({ ANTHROPIC_API_KEY: undefined, GBRAIN_HOME: tmpHome }, () =>
       withSubagentAutoCancel(rig.engine, () =>
-        runPhaseSynthesize(rig.engine, { brainDir: rig.brainDir, dryRun: false, ...opts })));
+        runPhaseSynthesize(rig.engine, { brainDir: rig.brainDir, dryRun: false, ...phaseOpts }),
+      { excludeQueue }));
     expect(result.status).toBe('ok');
     return result.details as unknown as CapDetails;
   } finally {
@@ -263,7 +274,7 @@ describe('daily cap — engaged', () => {
          VALUES ('subagent', 'dream-inline-1700000000000-deadbeef', 'waiting', '{}'::jsonb, $1)`,
         [key],
       );
-      const details = await runPhase(rig);
+      const details = await runPhase(rig, { excludeQueue: 'dream-inline-1700000000000-deadbeef' });
       // The file was NOT daily-cap skipped: self-heal cancelled the stranded
       // row and re-added into the live run's queue.
       expect(details.skips.filter(s => s.reason.startsWith('daily_cap'))).toHaveLength(0);

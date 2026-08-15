@@ -367,17 +367,21 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
     const auditEstimateUsd = parsed.auditRejects !== null && auditPerFileUsd !== null
       ? parsed.auditRejects * auditPerFileUsd
       : 0;
-    const estimateUsd = perFileUsd === null ? null : missCount * perFileUsd + auditEstimateUsd;
-    const gateTriggered = (estimateUsd !== null
-      ? estimateUsd > SPEND_CONFIRM_USD
-      : missCount > UNPRICED_CONFIRM_FILES)
+    // Structured-review round 2 P1: the KNOWN portion of the estimate gates
+    // independently of whether the triage model is priced — an unpriced
+    // triage model with a large PRICED audit must still confirm on the audit
+    // dollars, not slide through the file-count gate on cached rejects.
+    const knownEstimateUsd = (perFileUsd ?? 0) * missCount + auditEstimateUsd;
+    const estimateUsd = perFileUsd === null ? null : knownEstimateUsd;
+    const gateTriggered = knownEstimateUsd > SPEND_CONFIRM_USD
+      || (perFileUsd === null && missCount > UNPRICED_CONFIRM_FILES)
       || auditUnpriced; // un-estimable audit spend always confirms
     const auditSuffix = auditUnpriced
       ? ` (audit model "${config.model}" unpriced — audit spend cannot be estimated)`
       : auditEstimateUsd > 0 ? ` (incl. ≤ $${auditEstimateUsd.toFixed(2)} audit)` : '';
     const estimateLine = estimateUsd !== null
       ? `[retriage] ${missCount} file(s) to judge with ${config.triage.model} — estimated ≤ $${estimateUsd.toFixed(2)}${auditSuffix}`
-      : `[retriage] ${missCount} file(s) to judge with ${config.triage.model} — no pricing entry for this model (cannot estimate; the ${UNPRICED_CONFIRM_FILES}-file confirmation gate applies)`;
+      : `[retriage] ${missCount} file(s) to judge with ${config.triage.model} — no pricing entry for this model (cannot estimate; the ${UNPRICED_CONFIRM_FILES}-file confirmation gate applies)${auditSuffix}`;
     process.stderr.write(estimateLine + '\n');
     if (gateTriggered && !parsed.yes) {
       if (parsed.json || !process.stdin.isTTY) {
@@ -480,11 +484,20 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
     const liveLocks = await engine.executeRaw<{ id: string }>(
       `SELECT id FROM gbrain_cycle_locks WHERE ttl_expires_at > NOW() AND id LIKE 'gbrain-cycle%'`,
     );
-    const cycleRunning = liveLocks.length > 0;
-    if (cycleRunning) {
+    // Structured-review round 2 P2: cycle locks are per-source
+    // (`gbrain-cycle:<source>`) — a cycle running for source A must not
+    // suppress conversions for source B indefinitely. Only the legacy bare
+    // `gbrain-cycle` lock is global.
+    const globalLockLive = liveLocks.some(l => l.id === 'gbrain-cycle');
+    const liveLockSources = new Set(
+      liveLocks
+        .map(l => (l.id.startsWith('gbrain-cycle:') ? l.id.slice('gbrain-cycle:'.length) : null))
+        .filter((s): s is string => s !== null),
+    );
+    if (liveLocks.length > 0) {
       process.stderr.write(
         `[retriage] live cycle lock(s) detected (${liveLocks.map(l => l.id).join(', ')}); ` +
-        `dream-inline queues are treated as possibly-live — conversions skipped this sweep\n`,
+        `dream-inline queues for those sources are treated as possibly-live — conversions skipped\n`,
       );
     }
     const cancelRow = async (id: number): Promise<'cancelled' | 'already_terminal'> => {
@@ -508,11 +521,13 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
       // to a cycle that is RUNNING right now — its inline drain will claim
       // these rows. Never cancel anything in a possibly-live private queue
       // (unparseable-timestamp names count as possibly-live, fail-safe), and
-      // a live cycle lock marks EVERY inline queue possibly-live regardless
-      // of age (structured-review P2: slow sequential children can outlive
-      // the grace).
+      // a live cycle lock FOR THIS ROW'S SOURCE marks its inline queues
+      // possibly-live regardless of age (structured-review P2: slow
+      // sequential children can outlive the grace; round 2: per-source, so a
+      // busy source A never suppresses source B's cleanup indefinitely).
+      const lockLiveForRow = globalLockLive || liveLockSources.has(row.source_id);
       const possiblyLiveQueue = isInlineQueue
-        && (cycleRunning || inlineQueueAge === null || inlineQueueAge <= DREAM_INLINE_LIVE_GRACE_MS);
+        && (lockLiveForRow || inlineQueueAge === null || inlineQueueAge <= DREAM_INLINE_LIVE_GRACE_MS);
       if (possiblyLiveQueue) {
         reconcile.kept_live_queue++;
         continue;

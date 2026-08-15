@@ -878,8 +878,13 @@ export async function runPhaseSynthesize(
               `:filename:${encodeURIComponent(basename(t.filePath))}:${hash16}`];
         let existingKeys = 0;
         try {
+          // Only COALESCIBLE rows count as "already exists": queue.add clears
+          // the keys of cancelled/dead rows and inserts fresh PAID jobs, so
+          // those must not be credited as zero-cost (structured-review r2 P2).
           const rows = await engine.executeRaw<{ n: number }>(
-            `SELECT COUNT(*)::int AS n FROM minion_jobs WHERE idempotency_key = ANY($1::text[])`,
+            `SELECT COUNT(*)::int AS n FROM minion_jobs
+              WHERE idempotency_key = ANY($1::text[])
+                AND status NOT IN ('cancelled', 'dead')`,
             [fileKeys],
           );
           existingKeys = rows[0]?.n ?? 0;

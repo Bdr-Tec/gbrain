@@ -388,6 +388,52 @@ describe('dream retriage — reconcile matrix', () => {
     }
   }, 30_000);
 
+  test('SR2-P1: unpriced TRIAGE model + priced audit still confirms on the audit dollars', async () => {
+    const rig = await setupRig();
+    try {
+      // Triage unpriced (file-count gate alone would NOT trigger for 1 file),
+      // synthesis model priced by default — a large --audit-rejects must gate
+      // on its own estimated dollars.
+      await rig.engine.setConfig('models.dream.triage', 'ollama:totally-unpriced-model');
+      const reject = writeTranscript(rig.corpusDir, '2026-08-30-audit-gate.txt');
+      // Seed a below-threshold verdict UNDER THE UNPRICED MODEL so it is a
+      // cache hit (missCount 0) and the audit is the only spend.
+      await rig.engine.putDreamVerdict(reject.filePath, reject.hash, {
+        worth_processing: false, reasons: ['seed'], score: 0.1, content_type: null,
+        segments: [], entities: [], model: 'ollama:totally-unpriced-model', triage_version: TRIAGE_VERSION,
+      });
+      await withoutAnthropicKey(() =>
+        runDreamRetriage(rig.engine, ['--audit-rejects', '100000', '--json']));
+      expect(process.exitCode).toBe(2); // gate fired without --yes
+      const rows = await rig.engine.executeRaw<{ n: number }>(
+        `SELECT COUNT(*)::int AS n FROM dream_verdicts WHERE model <> 'ollama:totally-unpriced-model'`);
+      expect(rows[0].n).toBe(0); // nothing audited
+    } finally {
+      await rig.cleanup();
+    }
+  }, 30_000);
+
+  test('SR2-P2: a live lock for ANOTHER source does not suppress this source\'s conversions', async () => {
+    const rig = await setupRig();
+    try {
+      const above = writeTranscript(rig.corpusDir, '2026-08-31-other-lock.txt');
+      await seedScore(rig, above.filePath, above.hash, 0.9);
+      const job = await seedJob(rig, { key: synthKey('default', basename(above.filePath), above.hash16) });
+      await rig.engine.executeRaw(
+        `INSERT INTO gbrain_cycle_locks (id, holder_pid, ttl_expires_at)
+         VALUES ('gbrain-cycle:some-other-source', 12345, NOW() + interval '10 minutes')`,
+      );
+      const { out } = await captureStdout(() => withoutAnthropicKey(() =>
+        runDreamRetriage(rig.engine, ['--reconcile-queue', '--json'])));
+      const summary = JSON.parse(out) as { queue: { converted_for_resubmit: number; kept_live_queue: number } };
+      expect(await jobStatus(rig, job)).toBe('cancelled'); // converted despite the foreign lock
+      expect(summary.queue.converted_for_resubmit).toBe(1);
+      expect(summary.queue.kept_live_queue).toBe(0);
+    } finally {
+      await rig.cleanup();
+    }
+  }, 30_000);
+
   test('SR-P2: a live cycle lock marks even OLD inline queues possibly-live (no conversions)', async () => {
     const rig = await setupRig();
     try {
