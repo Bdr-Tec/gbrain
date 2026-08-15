@@ -250,6 +250,7 @@ export async function queryWedgeSignals(
   engine: BrainEngine,
   queue: string,
   handlerNames: string[],
+  opts?: { signal?: AbortSignal },
 ): Promise<WedgeSignals> {
   const rows = await engine.executeRaw<{
     stalled: string;
@@ -272,6 +273,7 @@ export async function queryWedgeSignals(
      FROM minion_jobs
      WHERE queue = $1`,
     [queue, handlerNames],
+    opts,
   );
   const row = rows[0] ?? {
     stalled: '0', active_healthy: '0', waiting: '0',
@@ -339,11 +341,23 @@ export async function probeQueueState(
 ): Promise<QueueSubmitState> {
   const timeoutMs = opts.timeoutMs ?? QUEUE_PROBE_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // issue #6 / TODOS "cancel timed-out submit-time queue probes": the losing
+  // inner probe used to keep running on the pool after the race resolved —
+  // under pool exhaustion the abandoned query held a slot and made the
+  // exhaustion worse. The timeout now aborts a per-probe signal so the
+  // in-flight SQL is cancelled (postgres.js .cancel()) and its slot released.
+  const probeAbort = new AbortController();
   const timeout = new Promise<QueueSubmitState>((resolveTimeout) => {
-    timer = setTimeout(() => resolveTimeout({ probe_failed: true }), timeoutMs);
+    timer = setTimeout(() => {
+      probeAbort.abort();
+      resolveTimeout({ probe_failed: true });
+    }, timeoutMs);
   });
   try {
-    return await Promise.race([probeQueueStateInner(engine, queue, handlerNames), timeout]);
+    return await Promise.race([
+      probeQueueStateInner(engine, queue, handlerNames, { signal: probeAbort.signal }),
+      timeout,
+    ]);
   } catch {
     return { probe_failed: true };
   } finally {
@@ -355,8 +369,9 @@ async function probeQueueStateInner(
   engine: BrainEngine,
   queue: string,
   handlerNames: string[],
+  opts?: { signal?: AbortSignal },
 ): Promise<QueueSubmitState> {
-  const sig = await queryWedgeSignals(engine, queue, handlerNames);
+  const sig = await queryWedgeSignals(engine, queue, handlerNames, opts);
 
   // Oldest-waiting age, same filter shape as the wedge signals. Perf: the
   // wave's migration (landing in another lane) adds the btree
@@ -368,6 +383,7 @@ async function probeQueueStateInner(
        FROM minion_jobs
       WHERE queue = $1 AND status = 'waiting'`,
     [queue],
+    opts,
   );
   const rawAge = ageRows[0]?.age ?? null;
   const oldestAge = rawAge === null ? null : Number(rawAge);

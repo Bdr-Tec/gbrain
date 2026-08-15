@@ -254,14 +254,6 @@ fix-now findings landed on the branch; these four are the review-deferred tail.
   `requestToolsPersistLimiter`; the surface_change audit rows already give
   a DB-side count to enforce against if needed. **Effort:** medium.
   **Priority:** P3.
-- [ ] **P3 — cancel (not just abandon) timed-out submit-time queue probes.**
-  **What:** the WP5 wedge/pause probes time-bound via Promise.race, but the
-  losing query keeps running on the pool after the race resolves. Wire
-  AbortSignal / statement_timeout so a slow probe releases its slot. **Why:**
-  under pool exhaustion (the exact regime the probes exist to detect) an
-  abandoned probe query holds a pooler slot and makes the exhaustion worse.
-  **Context:** `src/core/minion/supervisor.ts` queryWedgeSignals callers in
-  `src/core/operations.ts` submit paths. **Effort:** small. **Priority:** P3.
 - [ ] **P3 — document the status --json snapshot union under schema_version.**
   **What:** a short protocol note (docs/progress-events.md sibling) pinning
   the `get_status_snapshot` v2 shape as a discriminated union on
