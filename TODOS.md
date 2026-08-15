@@ -12,6 +12,35 @@
   campaign's Codex review (CX-11); the campaign deliberately shipped only the
   toggle + reporter acknowledgment. Start from the responsible-disclosure rules
   already in CLAUDE.md and docs/RELEASING.md. **Effort:** M. **Priority:** P2.
+## Code-smell fix-wave deferrals (filed at W0; plan: ~/.claude/plans/system-instruction-you-are-working-encapsulated-eclipse.md)
+
+Each was individually decided as a deferral in the CEO/eng reviews of the
+fix-wave plan; the wave series (W0.5–W9, 3.4, 3.6) tracks its own scope there.
+
+- [ ] **Full engine staged merge** (~10 domains onto shared query modules +
+  Dialect record). **Priority: P2.** Gated on the W9 two-slice pilot criteria
+  (structure+params+results parity on chronicle AND the searchKeyword/CJK
+  hard seam; ≥40% domain LOC cut; Dialect ≤~6 fields; query-builder extension
+  ≤~150 lines). The terminal fix for the engine-divergence/JSONB class —
+  blast radius is the production hot path, hence pilot-gated. Blocked by: W9.
+- [ ] **gateway.ts file split** behind a re-export facade (~121 import sites
+  unmoved). **Priority: P3.** After W8's behavior changes so the split is
+  pure motion; needs the CLAUDE.md engine-dynamic-import exemption-path
+  chasers + check-engine-dynamic-import.sh + build:llms.
+- [ ] **BrainEngine 149-method interface → domain repos** (65 methods have
+  0-1 callers; 3 already deleted in W3). **Priority: P3.** Shape informed by
+  the W9 pilot's query-module seam.
+- [ ] **Legacy Anthropic-SDK subagent loop deletion.** **Priority: P2.** One
+  release after W8 flips `agent.use_gateway_loop` default ON (flag stays as
+  the revert path for that release).
+- [ ] **Deeper test-suite speedup** beyond the W0 snapshot default-on (which
+  already cut the full parallel suite ~4,900s → ~490s). **Priority: P3.**
+  Revisit with post-W0 timing data; diminishing returns until measured.
+- [ ] **PGLite schema build-time derivation** from SCHEMA_SQL via a named
+  transform list. **Priority: P3.** Only if W3's schema drift TEST proves
+  annoying in practice — the test alone kills the drift bug class (Codex
+  D4.8/D5.23: fresh-schema equivalence ≠ upgrade correctness; old-shape
+  bootstrap fixtures + replay coverage stay regardless).
 ## Jobs fix-wave follow-ups (filed v0.45.15.0 — upstream issues #2/#3/#4)
 
 - [ ] **P2 — `jobs submit --max-pending` public flag.** maxPending stays an
@@ -1852,18 +1881,14 @@ single canonical `src/core/model-pricing.ts` with `canonicalLookup`.
   operator pipes directly into `crontab -e` instead of copy-paste-massage.
   ~80 LOC. Mirrors `gbrain sync --break-lock` argv shape.
 
-- **TODO-OPS-2 (P2)**: Lock-loss detection — extend `DbLockHandle.refresh()`
-  to throw `LockLostError` on 0 rows affected. Codex caught during the
-  v0.41.19.0 plan review: `refresh()` runs `UPDATE ... WHERE holder_pid = pid`
-  with no rows-affected check (`db-lock.ts:108-114`, `:151-156`). If the
-  TTL expired and another worker took over, the original keeps writing
-  silently. v0.41.19.0 ships TTL=5min + active in-phase refresh via
-  `buildYieldDuringPhase` which makes the race window much narrower, but
-  an `await chat()` call that exceeds the 5min wallclock window can still
-  hit it. Fix: `RETURNING id` on the UPDATE + check `rows.length === 0` →
-  throw tagged `LockLostError`. Phases catch + abort cleanly (write partial
-  progress, return `status: 'fail'` with reason `'lock_lost'`). Behavioral
-  contract change with phase-abort fallout; needs its own design pass.
+- [x] **TODO-OPS-2 (P2)**: Lock-loss detection — CLOSED by the W0 fix-wave
+  (code-smell series). `refresh()` now runs a FENCED update (id + holder_pid +
+  epoch-rendered `acquired_at`) with `RETURNING id`, returns `false` on 0
+  rows, and runCycle's steal controller aborts the run at the next boundary
+  with a structured `reason: 'lock_stolen'` partial report (LockStolenError;
+  raced awaits cover the 5 long phases). The supervisor exits LOCK_LOST
+  immediately on a fenced miss. Pinned by `test/db-lock-fencing.test.ts` +
+  `test/cycle-lock-steal.serial.test.ts`.
 
 ## v0.41.20.0 status + doctor-categories wave follow-ups (v0.42+)
 

@@ -1937,10 +1937,11 @@ export async function registerBuiltinHandlers(
   });
 
   worker.register('import', async (job) => {
-    // import.ts Core extraction deferred to v0.12.0 (import has parallel
-    // workers + checkpointing). Keep the CLI wrapper call but note the
-    // worker-kill risk is bounded: import's only process.exit fires on
-    // a missing dir arg, which this handler always passes.
+    // import.ts Core extraction deferred (import has parallel workers +
+    // checkpointing; the typed-API split lands in W7 of the fix-wave).
+    // W0 (Tier-1 #5): runImport no longer contains ANY process.exit — all
+    // five preflight sites throw typed ImportAbortError, which this
+    // handler's catch converts to a normal failJob. No worker-kill risk.
     const { runImport } = await import('./import.ts');
     const importArgs: string[] = [];
     if (job.data.dir) importArgs.push(String(job.data.dir));
