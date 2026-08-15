@@ -422,6 +422,8 @@ export interface ClaudeTurnOpts {
   mcpConfigPath?: string;
   model?: string;
   timeoutMs?: number;
+  /** Extra env for the child (spread LAST — wins). See CodexTurnOpts.extraEnv. */
+  extraEnv?: Record<string, string>;
 }
 
 export interface ClaudeTurnResult {
@@ -456,7 +458,7 @@ export async function claudeHeadlessTurn(opts: ClaudeTurnOpts): Promise<ClaudeTu
   const claudeBin = resolveClaudeBinary() ?? 'claude';
   const proc = Bun.spawn([claudeBin, ...args], {
     cwd: opts.cwd,
-    env: hermeticChildEnv({ HOME: opts.home, CLAUDE_CONFIG_DIR: opts.claudeConfigDir }),
+    env: hermeticChildEnv({ HOME: opts.home, CLAUDE_CONFIG_DIR: opts.claudeConfigDir, ...opts.extraEnv }),
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -491,12 +493,18 @@ export interface CodexTurnOpts {
   home: string;
   timeoutMs?: number;
   sandbox?: string;
+  /** Extra env for the child (spread LAST — wins). The plugin doors use this
+   *  to thread GBRAIN_BIN/GBRAIN_HOME/GBRAIN_SOURCE through codex's env_vars
+   *  passthrough into the plugin-launched MCP server. */
+  extraEnv?: Record<string, string>;
 }
 
 export interface CodexTurnResult {
   finalText: string;
   toolCalls: string[];
   reasoning: string[];
+  /** MCP tool invocations ({server, tool}) — see ParsedCodexJsonl.mcpToolCalls. */
+  mcpToolCalls: Array<{ server: string; tool: string }>;
   rawLines: string[];
   exitCode: number | null;
   timedOut: boolean;
@@ -531,7 +539,7 @@ export async function codexExecTurn(opts: CodexTurnOpts): Promise<CodexTurnResul
   const codexBin = resolveCodexBinary() ?? 'codex';
   const proc = Bun.spawn([codexBin, 'exec', opts.prompt, '--json', '-s', sandbox], {
     cwd: opts.cwd,
-    env: hermeticChildEnv({ HOME: opts.home }, { extraAllow: ['OPENAI_API_KEY', 'CODEX_*'] }),
+    env: hermeticChildEnv({ HOME: opts.home, ...opts.extraEnv }, { extraAllow: ['OPENAI_API_KEY', 'CODEX_*'] }),
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -556,6 +564,7 @@ export async function codexExecTurn(opts: CodexTurnOpts): Promise<CodexTurnResul
     finalText: parsed.finalText,
     toolCalls: parsed.toolCalls,
     reasoning: parsed.reasoning,
+    mcpToolCalls: parsed.mcpToolCalls,
     rawLines,
     exitCode: timedOut ? 124 : exitCode,
     timedOut,

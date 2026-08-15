@@ -1,5 +1,6 @@
 {
   "name": "gbrain",
+  "description": "GBrain — a persistent knowledge brain for your coding agent: hybrid search, synthesis, and cross-session memory.",
   "owner": { "name": "Garry Tan" },
   "plugins": [
     {
