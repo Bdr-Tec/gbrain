@@ -119,6 +119,25 @@ claiming. Start one:
 GBRAIN_ALLOW_SHELL_JOBS=1 gbrain jobs work --concurrency 4
 ```
 
+## Reading the DB-probe verdicts (pool starved vs server unreachable)
+
+When the worker's health probe fails, every `[health] DB probe failed (N/3)`
+line carries a verdict that names the failing LAYER. Read it before touching
+anything — the historical failure mode here was hours spent evaluating a
+database instance upgrade while the server sat at 10% of max_connections.
+
+| Verdict | What it means | What to do |
+|---|---|---|
+| `pool_starved` | The read-pool probe failed but the DIRECT-lane probe succeeded — the database server is reachable; the fault is in the transaction-pooler path (client pool exhaustion or a pooler-layer fault; the probe deliberately does not distinguish the two). | Look at client-side load: long-running handler queries holding slots, `GBRAIN_POOL_SIZE` too small for the workload, or a pooler-layer incident. Do NOT resize the database. The worker exit is correct recovery — it frees every client-held slot. |
+| `server_unreachable` | Both the pooler lane and the direct lane failed. | Now it actually is connectivity/capacity: check network, DNS, the database itself. |
+| `unknown` | The read probe failed and no direct lane exists to disambiguate (single-pool mode: non-Supabase, kill switch active, or no derivable direct URL). | Check the startup log for the single-pool warning; consider `GBRAIN_DIRECT_DATABASE_URL` so future incidents self-diagnose. |
+
+The `gbrain-tracked in flight` counts in the message are a tracked SUBSET
+(raw/direct/reserved/transaction seams only) — most template-path queries are
+untracked, so `0 in flight` next to a `pool_starved` verdict means the
+saturation lives in that untracked traffic, not that the pool is idle. The
+verdict, not the counts, is the authoritative signal.
+
 ## Related
 
 - [Minions worker deployment](minions-deployment.md) — supervisor lifecycle,

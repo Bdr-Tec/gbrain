@@ -29,6 +29,12 @@ import {
   type LockRenewalDeps,
   type LockRenewalState,
 } from './lock-renewal-tick.ts';
+import {
+  runDbProbe,
+  DIRECT_PROBE_TIMEOUT_MS,
+  type DbProbeResult,
+  type PoolDiagnostics,
+} from './db-probe.ts';
 import { lockRenewalAudit } from '../audit/lock-renewal-audit.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { reconnectAfterConnectionError as reconnectEngineAfterConnError } from './reconnect.ts';
@@ -120,9 +126,17 @@ export function getAccurateRss(
 }
 
 /** Reason payload emitted with `'unhealthy'` when self-health-check trips.
- *  CLI layer (jobs.ts:work) subscribes and decides whether to call process.exit. */
+ *  CLI layer (jobs.ts:work) subscribes and decides whether to call process.exit.
+ *  `verdict` (issue #6) distinguishes local pool starvation from a genuinely
+ *  unreachable server so operators stop debugging the wrong layer; absent on
+ *  engines without the probe's disambiguation lane. */
 export type UnhealthyReason =
-  | { reason: 'db_dead'; consecutiveFailures: number; message: string }
+  | {
+      reason: 'db_dead';
+      consecutiveFailures: number;
+      message: string;
+      verdict?: 'pool_starved' | 'server_unreachable' | 'unknown';
+    }
   | { reason: 'stalled'; waitingCount: number; idleMinutes: number };
 
 /**
@@ -388,32 +402,38 @@ export class MinionWorker extends EventEmitter {
       let healthRunning = false;
       let healthExited = false;
 
-      // Race executeRaw against a wall-clock deadline. A hung connection
-      // (network-partitioned PgBouncer, deadlocked backend) would otherwise
-      // hold the await forever — the recursive setTimeout's next tick is only
-      // scheduled in `finally`, so a hung probe would silently disable the
-      // entire health monitor. The timeout treats hangs as failures and feeds
-      // them into `dbFailExitAfter`.
-      const probeWithTimeout = async (): Promise<void> => {
-        const ac = new AbortController();
-        const timeoutMs = this.opts.dbProbeTimeoutMs;
-        const timer = setTimeout(() => ac.abort(), timeoutMs);
-        try {
-          await Promise.race([
-            // Pass the deadline's signal so a hung probe is CANCELLED
-            // (postgres.js .cancel() via runUnsafe) — not abandoned on a
-            // checked-out pool slot. Under pool exhaustion an orphaned
-            // SELECT 1 held a slot and made the exhaustion worse (issue #6).
-            this.engine.executeRaw('SELECT 1', undefined, { signal: ac.signal }),
-            new Promise<never>((_, reject) => {
-              ac.signal.addEventListener('abort', () => {
-                reject(new Error(`probe timeout after ${timeoutMs}ms`));
-              });
-            }),
-          ]);
-        } finally {
-          clearTimeout(timer);
-        }
+      // DB liveness probe with pool-starvation disambiguation (issue #6).
+      // The probe body lives in db-probe.ts (hermetically tested,
+      // lock-renewal-tick pattern); this is the thin adapter. Both probes
+      // carry an AbortSignal — a hung probe is CANCELLED (slot released),
+      // never abandoned. The direct-lane probe runs ONLY when dual-pool is
+      // genuinely active (a kill-switched executeRawDirect would probe the
+      // same starved read pool twice and fake a verdict).
+      const runProbe = async (): Promise<DbProbeResult> => {
+        const cm = (this.engine as {
+          connectionManager?: { isDualPoolActive?: () => boolean };
+        }).connectionManager;
+        const dualPool = cm?.isDualPoolActive?.() === true;
+        const getDiag = (this.engine as {
+          getPoolDiagnostics?: () => PoolDiagnostics | null;
+        }).getPoolDiagnostics;
+        return runDbProbe({
+          probeRead: async (signal) => {
+            await this.engine.executeRaw('SELECT 1', undefined, { signal });
+          },
+          ...(dualPool
+            ? {
+                probeDirect: async (signal: AbortSignal) => {
+                  await this.engine.executeRawDirect('SELECT 1', undefined, { signal });
+                },
+              }
+            : {}),
+          ...(typeof getDiag === 'function'
+            ? { getDiagnostics: () => getDiag.call(this.engine) }
+            : {}),
+          timeoutMs: this.opts.dbProbeTimeoutMs,
+          directTimeoutMs: DIRECT_PROBE_TIMEOUT_MS,
+        });
       };
 
       const runHealthCheck = async (): Promise<void> => {
@@ -421,25 +441,25 @@ export class MinionWorker extends EventEmitter {
         healthRunning = true;
         try {
           // --- 1. DB liveness probe ---
-          try {
-            await probeWithTimeout();
+          const probe = await runProbe();
+          if (probe.ok) {
             consecutiveDbFailures = 0;
-          } catch (e) {
+          } else {
             consecutiveDbFailures++;
-            const msg = e instanceof Error ? e.message : String(e);
             console.error(
-              `[health] DB probe failed (${consecutiveDbFailures}/${this.opts.dbFailExitAfter}): ${msg}`,
+              `[health] DB probe failed (${consecutiveDbFailures}/${this.opts.dbFailExitAfter}): ${probe.detail}`,
             );
             if (consecutiveDbFailures >= this.opts.dbFailExitAfter) {
               console.error(
-                `[health] DB unreachable after ${this.opts.dbFailExitAfter} consecutive probes. ` +
-                `Emitting 'unhealthy' for process-manager restart.`,
+                `[health] DB probe failed ${this.opts.dbFailExitAfter} consecutive times ` +
+                `(verdict: ${probe.verdict}). Emitting 'unhealthy' for process-manager restart.`,
               );
               healthExited = true;
               this.emitUnhealthy({
                 reason: 'db_dead',
                 consecutiveFailures: consecutiveDbFailures,
-                message: msg,
+                message: probe.detail,
+                verdict: probe.verdict,
               });
             }
             return; // Skip stall check when DB is flaky

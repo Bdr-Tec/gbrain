@@ -1248,6 +1248,28 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       try { await queue.ensureSchema(); }
       catch (e) { console.error(e instanceof Error ? e.message : String(e)); process.exit(1); }
 
+      // issue #6: the direct-pool kill switch collapses lock renewal, health
+      // probes, and handler workload onto ONE shared pool — silently. Make
+      // the collapse loud at startup so a later 'pool_starved' incident has
+      // an obvious prior warning instead of a mystery.
+      {
+        const cm = (engine as unknown as {
+          connectionManager?: {
+            isDualPoolActive?: () => boolean;
+            describeMode?: () => { kill_switch_active?: boolean };
+          };
+        }).connectionManager;
+        if (cm?.isDualPoolActive && !cm.isDualPoolActive()) {
+          const killSwitched = cm.describeMode?.().kill_switch_active === true;
+          console.error(
+            `[gbrain jobs] single-pool mode: lock renewal, health probes and handler workload share ` +
+            `one connection pool${killSwitched ? ' (direct-lane kill switch is active)' : ''}. ` +
+            `Under heavy handler load this pool can starve the lock heartbeat. For Supabase brains, ` +
+            `ensure the direct (5432) host is reachable or set GBRAIN_DIRECT_DATABASE_URL.`,
+          );
+        }
+      }
+
       const worker = new MinionWorker(engine, {
         queue: queueName, concurrency, maxRssMb, healthCheckInterval,
       });
@@ -1259,10 +1281,30 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       // the external PM (systemd, Docker, cron watchdog) restart cleanly.
       worker.on('unhealthy', (info) => {
         if (info.reason === 'db_dead') {
-          console.error(
-            `[health] FATAL: DB unreachable after ${info.consecutiveFailures} probes (${info.message}). ` +
-            `Exiting for process-manager restart.`,
-          );
+          // issue #6: name the failing LAYER, not just "DB unreachable" —
+          // that message sent operators chasing database capacity while the
+          // real fault was client-side pool exhaustion. Exiting is still
+          // correct recovery either way (it frees every client-held slot).
+          if (info.verdict === 'pool_starved') {
+            console.error(
+              `[health] FATAL: connection-pool path saturated after ${info.consecutiveFailures} probes — ` +
+              `the database server itself is reachable. (${info.message}) ` +
+              `Likely causes: long-running handler queries holding pool slots, or too-small GBRAIN_POOL_SIZE ` +
+              `for this workload. ` +
+              `Exiting for process-manager restart (frees all client-held slots).`,
+            );
+          } else if (info.verdict === 'server_unreachable') {
+            console.error(
+              `[health] FATAL: database server unreachable after ${info.consecutiveFailures} probes ` +
+              `(both pooler and direct lanes failed). (${info.message}) ` +
+              `Exiting for process-manager restart.`,
+            );
+          } else {
+            console.error(
+              `[health] FATAL: DB probe failed ${info.consecutiveFailures} consecutive times (${info.message}). ` +
+              `Exiting for process-manager restart.`,
+            );
+          }
         } else {
           console.error(
             `[health] FATAL: Worker stalled — ${info.waitingCount} waiting job(s) for ` +
