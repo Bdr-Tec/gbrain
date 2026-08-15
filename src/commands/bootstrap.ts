@@ -70,14 +70,16 @@ import {
 } from '../core/bootstrap/format.ts';
 import {
   applyHarness,
+  claudePluginProvidesName,
   codexBlockOwnsName,
+  codexPluginProvidesName,
   ensureHarnessHome,
   parseHarnessArgs,
   removeHarness,
   statusHarness,
   type HarnessDeps,
 } from '../core/bootstrap/harness.ts';
-import { codexConfigPath } from '../core/bootstrap/host-specs.ts';
+import { claudeUserSettingsPath, codexConfigPath } from '../core/bootstrap/host-specs.ts';
 import { promptLine } from '../core/cli-util.ts';
 import {
   appendInstallLog,
@@ -783,6 +785,11 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
   // `--no-hooks` is the explicit install-time opt-out; `GBRAIN_HOOKS=0` and
   // `uninstall` are the runtime/after off-ramps.
   const noHooks = rest.includes('--no-hooks');
+  // Plugin-lane override: detection reads the plugin-ENABLE config entry,
+  // which is not a health signal — a plugin whose launcher can't find the
+  // gbrain binary still matches. This flag forces the hand-wired MCP
+  // registration through anyway.
+  const mcpEvenIfPlugin = rest.includes('--mcp-even-if-plugin');
 
   const state = readManifest(ws);
   if (state.state !== 'initialized') {
@@ -889,8 +896,33 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
     // binary. The old early-return silently dropped hooks while the copy said
     // only "MCP registration skipped".
     let mcpSkipped = false;
-    const argvs =
-      harness === 'claude-code'
+    // Plugin-lane ownership: when the harness's gbrain PLUGIN provides the
+    // MCP server, a hand-wired registration would double-register the name.
+    // DISTINCT from mcpSkipped (host failure → exit 2, failure-owned
+    // receipt): a plugin-owned skip is HEALTHY — exit 0, hooks still
+    // install below, receipt records hooks-only ownership. The registration
+    // smoke is also skipped (plugin MCP servers are invisible to
+    // `codex mcp list` / `mcp get`).
+    const mcpPluginOwned = mcpEvenIfPlugin
+      ? null
+      : harness === 'codex'
+        ? codexPluginProvidesName(codexConfigPath(), 'gbrain')
+        : claudePluginProvidesName(claudeUserSettingsPath(), 'gbrain');
+    if (mcpPluginOwned) {
+      console.log(
+        `the '${mcpPluginOwned}' plugin already provides the gbrain MCP server on ${harness} — ` +
+          'skipping the hand-wired MCP registration (one owner per name). The plugin serve is ' +
+          `user-global: route this workspace's writes with GBRAIN_SOURCE=${sourceId} (and ` +
+          'GBRAIN_BRAIN_ID for mounted brains) in the environment that launches the harness. ' +
+          'Note: the plugin being ENABLED is a config signal, not a health signal — if its MCP ' +
+          'server is not actually working, either fix the plugin (is the gbrain binary installed?), ' +
+          `remove it (\`codex plugin remove gbrain\` / disable it in Claude Code), or force this ` +
+          'workspace-bound registration with `--mcp-even-if-plugin`.',
+      );
+    }
+    const argvs = mcpPluginOwned
+      ? []
+      : harness === 'claude-code'
         ? registerClaudeMcp({ gbrainBin, scope: mcpScope, sourceId, ...(gbrainHome ? { gbrainHome } : {}) })
         : registerCodexMcp({ gbrainBin, sourceId, ...(gbrainHome ? { gbrainHome } : {}) });
     for (const argv of argvs) {
@@ -971,8 +1003,10 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
 
     // 2. Registration smoke [FIX7]: confirm the EXPECTED server (binary path +
     // GBRAIN_SOURCE), not merely a 'gbrain' substring in `mcp list`. Falls back
-    // to the list probe only when the host has no `mcp get`.
-    if (!mcpSkipped) try {
+    // to the list probe only when the host has no `mcp get`. Plugin-owned
+    // installs skip it: plugin MCP servers never appear in `mcp get`/`list`,
+    // so the smoke would report a spurious mismatch.
+    if (!mcpSkipped && !mcpPluginOwned) try {
       const listBin = harness === 'claude-code' ? 'claude' : 'codex';
       const scopeLabel = harness === 'claude-code' ? mcpScope : 'user-global';
       const verdict = await verifyMcpTargetsWorkspace(runner, harness, 'gbrain', gbrainBin, sourceId);
@@ -1050,7 +1084,17 @@ async function runHooks(ws: string, rest: string[], home: string, runner: ExecRu
 
     // 4. Receipt registration record [CX2-12]. Detail records what actually
     // landed; nothing landed at all (127 + no hooks) → no receipt entry.
-    if (!mcpSkipped || hooksWritten) {
+    // Plugin-owned installs record hooks-only ownership ('hooks+plugin-mcp')
+    // or, when nothing was written by us at all (codex has no hooks), a bare
+    // 'plugin-mcp' marker so status/uninstall know the MCP owner is the
+    // plugin, not a missing registration.
+    if (mcpPluginOwned) {
+      appendReceiptRegistration(home, ws, {
+        host: harness,
+        scope: harness === 'claude-code' ? mcpScope : 'user',
+        detail: hooksWritten ? 'hooks+plugin-mcp' : 'plugin-mcp',
+      });
+    } else if (!mcpSkipped || hooksWritten) {
       appendReceiptRegistration(home, ws, {
         host: harness,
         scope: harness === 'claude-code' ? mcpScope : 'user',

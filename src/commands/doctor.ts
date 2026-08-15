@@ -8768,6 +8768,65 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   } catch {
     return [];
   }
+
+  // 00. Plugin-lane coexistence. Runs BEFORE the bootstrap-state gate: a
+  // hand-wired registration can coexist with a plugin on machines that never
+  // ran `gbrain bootstrap`. Emits rows ONLY when a gbrain plugin is ENABLED
+  // in a harness config (machines without the plugin get zero noise):
+  // warn = a hand-wired registration also exists (duplicate tool
+  // registration; which server wins is host-defined), ok = the plugin is the
+  // sole owner. "Enabled" is a CONFIG signal, not a health signal — the row
+  // says so. Fail-soft like every probe in this group.
+  try {
+    const {
+      codexPluginProvidesName,
+      claudePluginProvidesName,
+      codexAnyRegistrationExists,
+      claudeAnyRegistrationExists,
+    } = await import('../core/bootstrap/harness.ts');
+    const { codexConfigPath, claudeUserSettingsPath } = await import('../core/bootstrap/host-specs.ts');
+    const claudeUserMcpConfig = join(process.env.HOME?.trim() || homedir(), '.claude.json');
+    const lanes: Array<{ harness: string; plugin: string; dup: boolean; disambiguate: string }> = [];
+    const codexPlugin = codexPluginProvidesName(codexConfigPath(), 'gbrain');
+    if (codexPlugin) {
+      lanes.push({
+        harness: 'codex',
+        plugin: codexPlugin,
+        dup: codexAnyRegistrationExists(codexConfigPath(), 'gbrain'),
+        disambiguate: 'keep one owner: `codex mcp remove gbrain` (drop the hand-wired entry) or `codex plugin remove gbrain` (drop the plugin)',
+      });
+    }
+    const claudePlugin = claudePluginProvidesName(claudeUserSettingsPath(), 'gbrain');
+    if (claudePlugin) {
+      lanes.push({
+        harness: 'claude-code',
+        plugin: claudePlugin,
+        dup: claudeAnyRegistrationExists(claudeUserMcpConfig, 'gbrain', process.cwd()),
+        disambiguate: 'keep one owner: `claude mcp remove gbrain` (drop the hand-wired entry) or disable the plugin in Claude Code',
+      });
+    }
+    for (const lane of lanes) {
+      checks.push(
+        lane.dup
+          ? {
+              name: 'plugin_lane_collision',
+              status: 'warn',
+              message:
+                `${lane.harness}: the '${lane.plugin}' plugin AND a hand-wired gbrain MCP registration both exist — ` +
+                `duplicate tool registration is host-defined behavior; ${lane.disambiguate}. ` +
+                '(Plugin enabled is a config signal, not a health signal.)',
+            }
+          : {
+              name: 'plugin_lane_collision',
+              status: 'ok',
+              message: `${lane.harness}: the '${lane.plugin}' plugin is the sole gbrain MCP owner (no hand-wired duplicate).`,
+            },
+      );
+    }
+  } catch {
+    /* fail-soft: a broken harness config never breaks doctor */
+  }
+
   const receipt = readReceipt(home);
   // One reader for every push-status surface [D8]; per-root files [D13].
   const { readPushStatuses, pushStatusFilesExist } = await import('../core/workspace-push.ts');
@@ -8779,7 +8838,9 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   const harnessState = readHarnessReceiptState(home);
   const hasBootstrapState =
     receipt !== null || statusFilesOnDisk || existsSync(heartbeatFile) || harnessState.state !== 'absent';
-  if (!hasBootstrapState) return [];
+  // Return the pre-gate rows (plugin-lane coexistence) even on machines with
+  // no bootstrap state — the plugin lane needs no bootstrap to exist.
+  if (!hasBootstrapState) return checks;
 
   const ws = receipt?.workspace_dir ?? null;
 

@@ -933,6 +933,20 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   for (const t of targets) {
     if (t.host !== 'codex') continue;
     try {
+      // Plugin-lane collision WARN (not a refusal — the harness lane serves
+      // framework-spawned sessions over HTTP and may legitimately coexist
+      // with the plugin's stdio serve): two servers named `<name>` in
+      // different layers means duplicate tool registration, and which wins
+      // is host-defined.
+      const pluginOwner = codexPluginProvidesName(t.path!, flags.name);
+      if (pluginOwner) {
+        d.logError(
+          `WARNING: the '${pluginOwner}' codex plugin also provides an MCP server named '${flags.name}' — ` +
+            'after this wire, two servers with the same name exist in different layers (plugin + managed block); ' +
+            'duplicate tool registration behavior is host-defined. Keep one: `codex plugin remove gbrain`, ' +
+            'or re-run with `--remove` to drop the managed block.',
+        );
+      }
       const codexDir = dirname(t.path!);
       mkdirSync(codexDir, { recursive: true });
       const codexLock = await acquireBootstrapLock(codexDir);
@@ -1552,4 +1566,106 @@ export function codexBlockOwnsName(configPath: string, name: string): boolean {
   } catch {
     return false;
   }
+}
+
+// ── Plugin-lane detection (codex/claude plugins provide an MCP server) ─────
+//
+// Plugin-provided MCP servers never appear in `codex mcp list` or in
+// `[mcp_servers.*]` — the only cheap CONFIG signal is the plugin-enable
+// entry in the harness's own config. Config is not health (an enabled
+// plugin whose launcher can't find the gbrain binary still matches), so
+// every consumer pairs the detection with an override path
+// (`--mcp-even-if-plugin`) and copy that says "enabled, not necessarily
+// healthy". All three detectors below share the read/normalize posture of
+// codexBlockOwnsName: fail-open (null/false) on any read or parse error.
+
+/**
+ * Marketplace-qualified id (`<name>@<marketplace>`) when an ENABLED codex
+ * plugin named `name` exists in the codex config, else null. Line-anchored
+ * table-header scan — a commented-out lookalike or an inline mention never
+ * matches — followed by `enabled = true` before the next table header.
+ */
+export function codexPluginProvidesName(configPath: string, name: string): string | null {
+  if (!existsSync(configPath)) return null;
+  try {
+    const lines = readFileSync(configPath, 'utf8').replace(/\r\n/g, '\n').split('\n');
+    const header = new RegExp(`^\\[plugins\\."${name}@([^"]+)"\\]\\s*$`);
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(header);
+      if (!m) continue;
+      for (let j = i + 1; j < lines.length; j++) {
+        const line = lines[j].trim();
+        if (line.startsWith('[')) break;
+        if (/^enabled\s*=\s*true\b/.test(line)) return `${name}@${m[1]}`;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Marketplace-qualified id when an ENABLED Claude Code plugin named `name`
+ * exists in `~/.claude/settings.json` (`enabledPlugins`: `"<name>@<mkt>":
+ * true` — the shape verified on a live install), else null. User-level file
+ * only; project-scope enablement is out of best-effort scope.
+ */
+export function claudePluginProvidesName(settingsPath: string, name: string): string | null {
+  if (!existsSync(settingsPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as {
+      enabledPlugins?: Record<string, unknown>;
+    };
+    const enabled = parsed.enabledPlugins;
+    if (!enabled || typeof enabled !== 'object') return null;
+    const prefix = `${name}@`;
+    for (const [key, value] of Object.entries(enabled)) {
+      if (key.startsWith(prefix) && value === true) return key;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Doctor-side coexistence scan: does ANY registration for `name` exist in
+ * the harness config, regardless of owner? Unlike codexBlockOwnsName this
+ * deliberately counts foreign/manual entries — a hand-wired
+ * `[mcp_servers.<name>]` next to an enabled plugin is exactly the
+ * double-registration the doctor advisory reports. Claude side scans BOTH
+ * the user config (`~/.claude.json` mcpServers) and, when a project dir is
+ * given, the project-scope `.mcp.json`.
+ */
+export function codexAnyRegistrationExists(configPath: string, name: string): boolean {
+  if (!existsSync(configPath)) return false;
+  try {
+    const lines = readFileSync(configPath, 'utf8').replace(/\r\n/g, '\n').split('\n');
+    const header = new RegExp(`^\\[mcp_servers\\.(?:${name}|"${name}")\\]\\s*$`);
+    return lines.some(l => header.test(l));
+  } catch {
+    return false;
+  }
+}
+
+export function claudeAnyRegistrationExists(
+  userConfigPath: string,
+  name: string,
+  projectDir?: string,
+): boolean {
+  const hasServer = (path: string): boolean => {
+    if (!existsSync(path)) return false;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      return !!parsed.mcpServers && Object.prototype.hasOwnProperty.call(parsed.mcpServers, name);
+    } catch {
+      return false;
+    }
+  };
+  if (hasServer(userConfigPath)) return true;
+  if (projectDir && hasServer(join(projectDir, '.mcp.json'))) return true;
+  return false;
 }
