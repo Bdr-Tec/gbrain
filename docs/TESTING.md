@@ -77,6 +77,27 @@ Triage rule: a `warn-pass` EXIT-HANG line in `.context/test-summary.txt` is NOT 
 - `tests/heavy/*.sh` → ops-shape shell scripts. Cost minutes per run; NOT in default `bun test`. Run via `bun run test:heavy` or scheduled nightly via `.github/workflows/heavy-tests.yml`. Examples: pg_upgrade matrix (boot legacy brain → walk to head), RSS budget gate (measure peak worker RSS vs committed baseline), read-latency-under-sync (p50/p95/p99 under concurrent writer load), sync lock regression (N concurrent syncs assert 1 winner + N-1 lock-busy + zero leaked `gbrain_cycle_locks` rows). See `tests/heavy/README.md` for when to add a script here vs `*.slow.test.ts`. Files prefixed with `_` (e.g. `tests/heavy/_build_legacy_fixtures.sh`) are helpers/libs invoked by sibling tests — the runner skips them.
 - `test/fuzz/*.test.ts` → property-based fuzz harness. Pure-validator targets in `pure-validators.test.ts` are guarded by `scripts/check-fuzz-purity.sh` (in `bun run verify`), which `bun build --target=bun` bundles each target and greps the resulting bundle for banned transitive imports (`node:fs`, `node:child_process`, engine modules). Anything that fails the guard moves to `mixed-validators.test.ts` (still property-tested, but no purity guarantee) or `filesystem-validators.test.ts` (fs-backed, uses temp dirs). Fuzz tests run in the default `bun test` loop because they're fast (~3s for ~12 properties × 1000 runs each).
 
+### TTY and interactive-CLI testing
+
+Four escalating tools; reach for the cheapest one that answers the question:
+
+| Question | Tool | Example |
+|---|---|---|
+| Does the TTY/non-TTY branch logic pick right? | Inject `isTTY` into the pure function — no subprocess | `test/init-provider-picker.test.ts`, `test/jobs-watch-mode.test.ts` |
+| Does the real CLI behave right when stdin is NOT a terminal? | Spawn the CLI with piped/ignored stdio | `test/e2e/init-fresh-pglite.test.ts`, `test/e2e/non-tty-output.serial.test.ts` |
+| Does the real CLI render menus and read typed input under a REAL terminal? | `launchTty` from `test/helpers/tty-harness.ts` in a `*.serial.test.ts` file | `test/init-picker-pty.serial.test.ts` |
+| How does the install FEEL (stalls, copy, silence windows)? | `scripts/dx-explore.ts` — instrument, not a test; nothing asserts | transcripts under `.context/dx-runs/` (see `docs/guides/bootstrap.md`) |
+
+Real-PTY test rules: put the file in the serial lane (`*.serial.test.ts` — that
+lane runs in required CI; a new `test/e2e/*` file does NOT, since unit shards
+exclude the directory and the e2e workflow runs only its named tier-1 files);
+assert NON-default picker values (bare Enter and each prompt's 60s
+`readLineSafe` timeout both resolve to the default, so a defaults-asserting
+test passes with dead input); always `await session.close()` in a `finally`
+(only `close()` clears the harness wall timer); and point `HOME` plus
+`GBRAIN_HOME` at a temp root with pass-through auth keys stripped via
+`dropEnv` so picker state is machine-independent.
+
 ### Skills-manifest freshness guard
 
 `skills/skills.lock.json` is a committed sha256 inventory of every bundled file under

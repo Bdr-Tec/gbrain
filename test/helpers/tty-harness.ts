@@ -25,8 +25,9 @@
  * temp-dir override in.
  *
  * Pure helpers (stripAnsi, computeStalls, parseDriveCommand,
- * renderStallsReport, buildClaudeTuiSeed) are exported for the zero-subprocess
- * unit suite (test/tty-harness.test.ts).
+ * renderStallsReport, buildClaudeTuiSeed) are exported for the unit suite
+ * (test/tty-harness.test.ts) — mostly pure describes, plus a
+ * ptySupported()-gated live block that spawns real sh children.
  */
 
 import * as fs from 'node:fs';
