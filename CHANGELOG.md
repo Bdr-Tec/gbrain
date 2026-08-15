@@ -22,6 +22,9 @@ fenced re-check) and keeps the job whenever the lease is still its own.
   `gbrain jobs submit --lock-duration-ms N` (clamped to 5s–1h; also an
   MCP `submit_job` param). Stored on the job row (migration v130), so it
   survives worker restarts, and renewed at a `min(lease/2, 60s)` cadence.
+  The bound is enforced end-to-end — at submit, again on the resolved
+  lease at claim, and by a database range constraint — and
+  `--dry-run` echoes the clamped value that will actually be stored.
 - **Self-explaining eviction forensics.** Every renewal fault now logs and
   audits WHY it failed (call-timeout vs refused vs fenced-lost), how late
   the renewal timer fired vs its own cadence (the "was the worker starved
@@ -31,8 +34,9 @@ fenced re-check) and keeps the job whenever the lease is still its own.
   (`GBRAIN_LOCK_RENEWAL_*`, `GBRAIN_MINION_STALL_RECLAIM_GRACE_MS`).
 - **Stall-sweep reclaim grace.** A lease that lapsed within the last 15s
   is not reclaimed — a just-recovered worker's own renewal wins the race
-  against the sweep instead of having its live job stolen (env-tunable;
-  `0` restores the previous behavior).
+  against the sweep instead of having its live job stolen (env-tunable,
+  capped at 10 minutes with a warn-once clamp; `0` restores the previous
+  behavior).
 
 ### Changed
 - **Eviction requires evidence.** The renewal state machine aborts a job

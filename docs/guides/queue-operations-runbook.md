@@ -143,7 +143,7 @@ defaults derive from the per-job lease):
 | `GBRAIN_LOCK_RENEWAL_SAFETY_MARGIN_MS` | `min(lease/6, 30s)` | Headroom before lease expiry; the fenced verify fires when the NEXT tick would land past `lease - margin`. |
 | `GBRAIN_LOCK_RENEWAL_HARD_EVICT_MS` | `2 × lease` | Hard local backstop when even the verify is unreachable (total outage). Floored to the soft deadline. Setting it TO the soft deadline approximates the legacy abort-at-deadline behavior. |
 | `GBRAIN_LOCK_RENEWAL_MAX_FAILURES` | 3 | Audit-event labeling only — never gates eviction. |
-| `GBRAIN_MINION_STALL_RECLAIM_GRACE_MS` | 15000 | Stall-sweep reclaim grace: a lease that lapsed within this window is not reclaimed (starved-owner head start). `0` restores the legacy `lock_until < now()` predicate. |
+| `GBRAIN_MINION_STALL_RECLAIM_GRACE_MS` | 15000 | Stall-sweep reclaim grace: a lease that lapsed within this window is not reclaimed (starved-owner head start). `0` restores the legacy `lock_until < now()` predicate. Capped at 600000 (10 min, warn-once + clamp) — an oversized value would otherwise disable stalled-job recovery fleet-wide. |
 
 Cross-knob invariants are enforced with warn-once clamps (margin < lease/2,
 call timeout ≤ renewal cadence, hard evict ≥ soft deadline) — a
@@ -151,7 +151,9 @@ misconfigured knob can degrade cadence but cannot silently re-break the
 deadline math.
 
 Per-job lease: `gbrain jobs submit --lock-duration-ms N` (clamped
-[5 s, 1 h]); long LLM handlers default to 300 s via
+[5 s, 1 h] — enforced at submit, re-applied to the resolved lease at
+claim, and backed by a database range constraint; `--dry-run` echoes the
+clamped value that will actually be stored); long LLM handlers default to 300 s via
 `HANDLER_DEFAULT_LOCK_DURATION_MS` in `src/core/minions/handler-timeouts.ts`.
 Renewal cadence is `min(lease/2, 60 s)`. Trade-off: a genuinely dead
 worker's long-lease job requeues after lease + grace + one sweep interval.
