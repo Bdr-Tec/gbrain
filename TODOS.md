@@ -4267,11 +4267,33 @@ purpose; needs baseline-governance care per the BrainBench gate rules.
 ### PTY-mode transcript capture
 **Priority:** P3
 
-**What:** `transcript-capture.ts` currently uses plain `child_process.spawn` pipes. Some agents only emit ANSI colors / progress UI on a TTY. v1.1 adds a PTY mode (likely via `node-pty`) so live-mode transcripts capture the full agent UX.
+**What:** `transcript-capture.ts` currently uses plain `child_process.spawn` pipes. Some agents only emit ANSI colors / progress UI on a TTY. v1.1 adds a PTY mode so live-mode transcripts capture the full agent UX. Do NOT add node-pty for this: Bun's built-in `terminal:` spawn option (Bun 1.3.10+, already pinned in engines) is the dependency-free path, proven by `test/helpers/tty-harness.ts` — reuse `launchTty` or its spawn shape.
 
 **Why:** Faithful transcripts make the friction → reasoning link more useful. v1 accepts that some agent UI is lost.
 
 **Effort:** S (CC ~30m). Mostly a ~30 LOC swap inside `spawnWithCapture`.
+
+---
+
+### Non-tier-1 e2e files run in no required CI lane
+**Priority:** P2
+
+**What:** Unit shards exclude `test/e2e/*` (`scripts/test-shard.sh`), and `.github/workflows/e2e.yml` runs only explicitly named files (a handful across its jobs — e.g. `test/e2e/mechanical.test.ts`, `test/e2e/mcp.test.ts`, the jsonb-parity pair); there is no glob. Every other `test/e2e/*.test.ts` — including PGLite-only files that need no `DATABASE_URL`, like `init-fresh-pglite.test.ts` — executes only when someone runs `bun run test:e2e` by hand. Decide per file: wire into a required workflow, re-home PGLite-only files to the serial lane (the pattern `test/init-picker-pty.serial.test.ts` uses), or explicitly document them as manual-only.
+
+**Why:** Tests that never run in required CI are silent coverage loss — they rot without failing. Surfaced by the TTY-harness cleanup review when the new PTY picker test almost landed in the same dead lane.
+
+**Effort:** S-M (CC ~30-60m for the audit + re-homing; workflow wiring adds CI-minutes cost per file).
+
+---
+
+### Ctrl-D during `gbrain init` stalls 60s at the next prompt (readLineSafe does not latch EOF)
+**Priority:** P2
+
+**What:** Pressing Ctrl-D at the interactive provider picker is detected immediately (keyless fallback in ~200ms), but Bun's stdin never yields another line after EOF while `isTTY` stays true — so the SUBSEQUENT search-mode picker sits its full 60s `readLineSafe` fallback before init completes (probed under a real PTY: keyless notice at 0.2s, mode prompt rendered at 1.2s, exit at 61.1s). Fix: `readLineSafe` (src/commands/init.ts) should latch EOF — once stdin has ended, later calls return their default immediately instead of waiting out the timer. Regression test: extend the EOF case in `test/init-picker-pty.serial.test.ts` to run init to completion and assert exit well under the fallback window (the case currently closes early on purpose to keep the 60s stall out of required CI — see the comment there).
+
+**Why:** A user who hits Ctrl-D at the first prompt stares at a frozen screen for a full minute before init finishes. Cross-model adversarial review finding (Codex), confirmed by a real-PTY probe.
+
+**Effort:** S (CC ~20m: EOF latch + regression-test extension).
 
 ---
 

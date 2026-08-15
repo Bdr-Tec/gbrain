@@ -300,6 +300,10 @@ burst with a millisecond timestamp, so unnecessary pauses become a measurable
 artifact (`computeStalls` → `stalls.md`) instead of a vibe. Same hermetic env as
 `agent-harness.ts`; pure helpers are unit-tested in `test/tty-harness.test.ts`
 (zero subprocesses, PTY smokes self-skip where `terminal:` is unavailable).
+The harness itself also backs one required-CI test: `test/init-picker-pty.serial.test.ts`
+asserts the interactive `gbrain init` pickers under a real PTY (see the
+TTY decision table in `docs/TESTING.md`). The DX-exploration layer below stays
+an instrument — nothing in it asserts.
 
 `scripts/dx-explore.ts` drives it to capture the fresh-user funnel as timestamped
 transcripts under `.context/dx-runs/` (gitignored — nothing asserts, no CI):
