@@ -59,6 +59,12 @@ CHECKS=(
   # Boots its own PGLite — budget ≤60s under a saturated pool; if it breaches
   # ~100s under contention, move it into the serial-tests CI job instead.
   "check:eval-chronicle"
+  # Retrieval canary: $0, hermetic, deterministic-embedder CLI run of the
+  # qrels correctness gate. Boots two PGLite processes (seed + real CLI) —
+  # budget ≤60s under a saturated pool; if it breaches ~100s under
+  # contention, move it into the serial-tests CI job instead (same fallback
+  # as eval-chronicle above).
+  "check:eval-canary"
   "check:bootstrap-templates"
   "check:skill-brain-first"
   "check:conversation-parser"

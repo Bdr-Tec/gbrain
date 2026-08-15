@@ -51,8 +51,14 @@ Test infra: PGLite snapshot default-on for `bun run test`. Per-PGLite-file:
 Full-suite wall-clock (post-snapshot): recorded in the W0 ship notes — see
 the run banner of the W0 PR's `bun run test` evidence.
 
-Retrieval canary: NOT RUN at W0 (production brain locked by live serve; W0
-touches no search paths). REQUIRED before W1 lands.
+Retrieval canary: PASS @ f2b40f7ef (hermetic deterministic-embedder CLI run;
+recall@10=1.0000 first_relevant=1.0000 expected_top1=0.8333 vs floors
+0.70/0.60/0.50; run `bun run scripts/run-eval-canary.ts` to reproduce, ledger:
+.gbrain-evals/eval-results.jsonl). Honest scope: the canary gates the hybrid
+ranking pipeline (keyword/title/alias arms + RRF against gold qrels) with
+synthetic basis vectors — no API keys, no production brain, so the live-serve
+lock is moot. Semantic-embedding regressions remain the keyed eval suites'
+job. Wired into `bun run verify` as check:eval-canary.
 
 Verified-bug status at W0 ship: cycle-lock refresh + fencing (TODO-OPS-2
 closed), stall-death parent unblock, started_at ×4, modality carry, import
