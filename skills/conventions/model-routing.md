@@ -28,6 +28,10 @@ Override priority (highest first):
 7. Tier default (the table above)
 8. Hardcoded caller fallback
 
+One exception: the dream triage judge pre-reads `models.dream.triage` first —
+when that key is set, it wins over this entire chain (`gbrain models` reports
+it as the effective route).
+
 Power-user recipes:
 
 ```bash

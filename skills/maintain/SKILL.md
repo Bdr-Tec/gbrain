@@ -116,7 +116,8 @@ gbrain extract timeline --dir ~/brain
 
 ### Dream cycle (v0.23): synthesize + patterns
 
-`gbrain dream` runs the full 8-phase maintenance cycle:
+`gbrain dream` runs the full maintenance cycle (core phases shown; opt-in
+phases like atoms/concepts/drift slot in between):
 
 ```
 lint -> backlinks -> sync -> synthesize -> extract -> patterns -> embed -> orphans
@@ -128,7 +129,9 @@ The two new phases consolidate yesterday's conversations into long-term memory:
 `dream.synthesize.session_corpus_dir`, then triages before it spends: a cheap
 utility-tier judge (`models.dream.triage`) scores every new file 0–1 for
 salience and pre-extracts candidate quotes + entities, cached in
-`dream_verdicts` with the judging model + prompt version. Only files scoring
+`dream_verdicts` with the judging model + prompt version (bounded per cycle
+by `dream.triage.max_ms`, default 5 min — deferred files retry next cycle,
+never silently rejected). Only files scoring
 at or above `dream.triage.threshold` (default 0.5 — applied at read time, so
 retuning the threshold re-gates with zero new LLM calls) fan out one synthesis
 subagent per transcript chunk, each primed with the triage map and capped at
@@ -137,9 +140,10 @@ subagent per transcript chunk, each primed with the triage map and capped at
 people timeline entries. The orchestrator collects the slugs from
 `subagent_tool_executions` (NOT `pages.updated_at` — that would pick up
 unrelated writes) and reverse-renders each new page from DB → markdown on
-disk. To re-score the corpus or drain a queued backlog after retuning the
-threshold, run `gbrain dream retriage --dry-run` (zero LLM calls) then
-`gbrain dream retriage --reconcile-queue`.
+disk. To re-apply the gate after retuning the threshold or drain a queued
+backlog, run `gbrain dream retriage --dry-run` (zero LLM calls, cached
+scores only) then `gbrain dream retriage --reconcile-queue`; `--force`
+re-judges everything from scratch.
 
 **Patterns phase:** runs after `extract` (so the graph state is fresh).
 Reads recent reflections within `dream.patterns.lookback_days` (default 30),
@@ -172,15 +176,17 @@ timestamp is stored in `dream.synthesize.last_completion_ts` and is written
 ONLY on successful runs (not on skipped/failed). Explicit `--input` /
 `--date` / `--from` / `--to` invocations bypass cooldown.
 
-**`--dry-run` semantics:** runs the cheap Haiku significance filter (caches
-verdicts) but skips the Sonnet synthesis pass. NOT zero LLM calls.
+**`--dry-run` semantics:** runs the scored triage pass (judges + caches
+verdicts for new files) but skips the synthesis subagents. NOT zero LLM
+calls — for a zero-call preview from cached scores use
+`gbrain dream retriage --dry-run` instead.
 
 **Configure synthesize on a fresh brain:**
 ```bash
 gbrain config set dream.synthesize.session_corpus_dir /path/to/transcripts
 gbrain config set dream.synthesize.enabled true
 gbrain dream --phase synthesize --dry-run --json   # preview
-gbrain dream                                       # full 8-phase cycle
+gbrain dream                                       # full cycle
 ```
 
 **Invocation patterns:**

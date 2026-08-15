@@ -125,12 +125,20 @@ per-transcript synthesis subagents. The dials:
   retuning it re-gates instantly with **zero** new LLM calls. Raise it if too
   much routine content synthesizes; lower it if real signal is being skipped.
 - `models.dream.triage` — the triage model (default: utility tier / Haiku).
+- `dream.triage.max_chars` (default 24000, floor 1000) — per-transcript
+  sample window (head/middle/tail) sent to the judge. Not part of cache
+  validity — after changing it, `gbrain dream retriage --force` re-judges
+  under the new sampling.
+- `dream.triage.max_tokens` (default 2048, floor 256) — judge output budget.
+- `dream.triage.concurrency` (default 4, clamped 1–16) — concurrent judge
+  calls.
 - `dream.synthesize.max_turns` (default 16) — synthesis turn budget. The
   triage map hands the subagent pre-extracted segments, so the mid-tier
   default model (`models.dream.synthesize`, tier `reasoning`) with a 16-turn
   budget is the intended pairing — frontier-model overrides are unnecessary
   and slow the queue. Completeness comes from triage coverage (every file
-  scored) plus segment-guided prompts, not model size. If written-page counts
+  scored, minus files deferred under the `max_ms` budget below) plus
+  segment-guided prompts, not model size. If written-page counts
   drop after upgrading, set it back to 30 and check
   `details.synthesis.avg_turns` for cap pressure.
 - `dream.triage.max_ms` (default 5 min) — per-cycle wall-clock budget for
@@ -147,7 +155,7 @@ Maintenance recipe — after changing the threshold, upgrading through a
 ```bash
 gbrain dream retriage --dry-run          # what would change (zero LLM calls)
 gbrain dream retriage --reconcile-queue  # re-score + cancel below-threshold queued jobs
-gbrain dream retriage --audit-rejects 20 # frontier second opinion on 20 rejects
+gbrain dream retriage --audit-rejects 20 # synthesis-model second opinion on 20 rejects
 ```
 
 ### What It Does
