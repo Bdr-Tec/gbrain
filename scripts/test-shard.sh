@@ -74,7 +74,13 @@ cd "$(dirname "$0")/.."
 # total bounded. With 10 matrix shards the per-shard total drops to ~272s.
 # Dedicated jobs run in parallel so total CI wallclock = max(matrix ~4.5min,
 # slow-eval ~3.3min, slow-entity-resolve-perf ~2.6min) ≈ 4.5min.
-ALL_FILES=$(find test -name '*.test.ts' \
+# evals/ is included: its *.test.ts files (eval-harness unit tests) were
+# previously collected by NO runner — 45+ real tests never executed anywhere.
+# Every collected evals file must be KEYLESS (no API keys, no network) —
+# enforced by the allowlist guard in test/scripts/evals-collection.test.ts.
+# The local fast loop (run-unit-shard.sh) stays test-only by design (see
+# docs/TESTING.md "CI vs local: intentionally divergent file sets").
+ALL_FILES=$(find test evals -name '*.test.ts' \
   -not -name '*.serial.test.ts' \
   -not -name 'eval-longmemeval-e2e.slow.test.ts' \
   -not -name 'entity-resolve-perf.slow.test.ts' \
