@@ -1261,7 +1261,16 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
                 submitOpts,
                 isProtected ? { allowProtectedSubmit: true } : undefined,
               );
-              if (jsonMode) {
+              // Honest-dispatch contract (same as the fanout paths): a
+              // coalesced submission never claims a dispatch that didn't
+              // insert a row.
+              if (job.coalesced) {
+                if (jsonMode) {
+                  process.stderr.write(JSON.stringify({ event: 'dispatch_coalesced', job_id: job.id, mode: 'targeted', step: step.id, score, plan_size: plan.length }) + '\n');
+                } else {
+                  console.log(`[dispatch] coalesced onto job #${job.id} ${step.job} (targeted: ${step.id}; already in flight)`);
+                }
+              } else if (jsonMode) {
                 process.stderr.write(JSON.stringify({ event: 'dispatched', job_id: job.id, mode: 'targeted', step: step.id, score, plan_size: plan.length }) + '\n');
               } else {
                 console.log(`[dispatch] job #${job.id} ${step.job} (targeted: ${step.id}; score=${score})`);

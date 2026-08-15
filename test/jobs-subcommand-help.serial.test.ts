@@ -117,4 +117,15 @@ describe('jobs --help and jobs <subcommand> --help print real help, never the st
     expect(out).toContain('--cluster-errors');
     expect(out).not.toContain(STUB_MARKER);
   }, 30_000);
+
+  test('jobs constructor --help: prototype key falls back to the full help, never Object.prototype garbage', async () => {
+    // Red-team finding: a plain-object lookup resolves inherited keys, so
+    // without Object.hasOwn this printed `function Object() { ... }`.
+    const { code, out } = await runJobsHelp(['constructor', '--help']);
+    expect(code).toBe(0);
+    expect(out).toContain('Minions job queue');
+    expect(out).not.toContain('native code');
+    expect(out).not.toContain('function Object');
+    expect(out).not.toContain(STUB_MARKER);
+  }, 30_000);
 });

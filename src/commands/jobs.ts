@@ -469,7 +469,10 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
     return;
   }
   if (args.slice(1).includes('--help') || args.slice(1).includes('-h')) {
-    console.log(JOBS_SUBCOMMAND_HELP[sub] ?? JOBS_HELP);
+    // Object.hasOwn: a plain-object lookup resolves inherited keys, so
+    // `jobs constructor --help` (toString/valueOf/…) would print the
+    // Object.prototype function instead of falling back to the full help.
+    console.log(Object.hasOwn(JOBS_SUBCOMMAND_HELP, sub) ? JOBS_SUBCOMMAND_HELP[sub] : JOBS_HELP);
     return;
   }
 
@@ -911,9 +914,13 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
           const { readRecentCoalesceCounts } = await import('../core/minions/backpressure-audit.ts');
           const coalesceCounts = readRecentCoalesceCounts({ queue: statsQueue, windowMs: 24 * 3600_000 });
           if (coalesceCounts.size > 0) {
-            const parts = [...coalesceCounts.entries()]
-              .sort((a, b) => b[1].count - a[1].count)
-              .map(([name, s]) => `${name}: ${s.count}`);
+            // Sort once, reuse for the summary AND the hint slice — slicing
+            // insertion order would let low-volume early-in-file names crowd
+            // out the highest-volume (most likely wedged) ones the summary
+            // line just highlighted.
+            const sortedCoalesces = [...coalesceCounts.entries()]
+              .sort((a, b) => b[1].count - a[1].count);
+            const parts = sortedCoalesces.map(([name, s]) => `${name}: ${s.count}`);
             console.log(`\n  Backpressure (24h): submissions coalesced onto in-flight jobs — ${parts.join(', ')}`);
             // Hint loop is bounded: names come from the 24h audit window
             // (normally a handful), capped defensively — this is an
@@ -922,14 +929,18 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
             // returned_job_id), scoped to that job's source — a name-wide
             // aggregate would let source A's waiting row mask source B's
             // wedge, or name A's job for B's coalesce (multi-source brains).
-            const hints = [...coalesceCounts.entries()].slice(0, 10);
+            const hints = sortedCoalesces.slice(0, 10);
             for (const [name, summary] of hints) {
               if (summary.last_returned_job_id == null) continue;
+              // The target CTE re-checks name+queue: the audit dir is shared
+              // across brains in one GBRAIN_HOME, so an id from another
+              // brain's audit trail must fail the match here rather than
+              // name an unrelated job as the suppressor.
               const rows = await engine.executeRaw<{ waiting: string; live_id: string | null; age_min: string | null }>(
                 `WITH target AS (
                    SELECT id, started_at, status, lock_until,
                           COALESCE(data->>'sourceId', data->>'source_id') AS scope
-                     FROM minion_jobs WHERE id = $3
+                     FROM minion_jobs WHERE id = $3 AND name = $1 AND queue = $2
                  )
                  SELECT (SELECT count(*)::text FROM minion_jobs m, target t
                           WHERE m.name = $1 AND m.queue = $2 AND m.status = 'waiting'

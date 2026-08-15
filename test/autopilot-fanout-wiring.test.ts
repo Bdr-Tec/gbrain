@@ -88,6 +88,13 @@ describe('autopilot.ts ↔ dispatchPerSource wiring', () => {
     expect(AUTOPILOT_SRC).toMatch(/event: 'fanout_summary',[\s\S]{0,200}coalesced: result\.coalesced/);
   });
 
+  test('targeted-plan dispatch honors the honest-dispatch contract (red-team finding)', () => {
+    // The targeted remediation loop submits with maxWaiting:1 and expects
+    // coalesces when a handler outlives one interval — its events must split
+    // on job.coalesced like every other dispatch surface in this file.
+    expect(AUTOPILOT_SRC).toMatch(/event: 'dispatch_coalesced',[\s\S]{0,80}mode: 'targeted'/);
+  });
+
   test('freshness sync dispatch uses the parsed source config for pull policy', () => {
     const freshnessIdx = AUTOPILOT_SRC.indexOf('idempotency_key: `autopilot-sync:');
     expect(freshnessIdx).toBeGreaterThan(-1);
