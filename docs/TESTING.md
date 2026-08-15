@@ -132,7 +132,7 @@ Triage rule: a `warn-pass` EXIT-HANG line in `.context/test-summary.txt` is NOT 
 - `*.test.ts` → fast loop (parallel up-to-4-shard fan-out, memory-adaptive).
 - `*.slow.test.ts` → run via `bun run test:slow` only (intentional cold-path tests; would dominate the fast loop's wallclock).
 - `*.serial.test.ts` → run via `bun run test:serial` after the parallel pass completes; one bun process per file (`--max-concurrency=1` within a shared process is not enough — the module registry still leaks `mock.module`). Quarantine for tests that share file-wide state and race when run alongside other files in the same `bun test` process. Several dozen files, discovered by the `*.serial.test.ts` glob — no list to maintain. Typical residents: `mock.module(...)` users (top-level mocks leak across files in a shard process, e.g. `test/embed.serial.test.ts`), env-coupled files (e.g. `test/brain-registry.serial.test.ts`), and process-lifecycle suites that assert on `process.exitCode` (e.g. `test/pglite-engine-disconnect.serial.test.ts`). **Do not put the parallelism back on a serial file unless you've fixed the contention root cause** (it just re-introduces the flake).
-- `test/e2e/*.test.ts` → real-Postgres E2E. Skipped when `DATABASE_URL` is unset.
+- `test/e2e/*.test.ts` → real-Postgres E2E. Skipped when `DATABASE_URL` is unset. One out-of-directory file rides this lane: `test/phantom-redirect-engine-parity.test.ts` (lives in `test/` for its PGLite arm, but its Postgres arm is only reachable through a DATABASE_URL-bearing lane — the unit wrappers strip the URL per #3485, so `run-e2e.sh`'s no-args list and CI's parity job carry it).
 - `tests/heavy/*.sh` → ops-shape shell scripts. Cost minutes per run; NOT in default `bun test`. Run via `bun run test:heavy` or scheduled nightly via `.github/workflows/heavy-tests.yml`. Examples: pg_upgrade matrix (boot legacy brain → walk to head), RSS budget gate (measure peak worker RSS vs committed baseline), read-latency-under-sync (p50/p95/p99 under concurrent writer load), sync lock regression (N concurrent syncs assert 1 winner + N-1 lock-busy + zero leaked `gbrain_cycle_locks` rows). See `tests/heavy/README.md` for when to add a script here vs `*.slow.test.ts`. Files prefixed with `_` (e.g. `tests/heavy/_build_legacy_fixtures.sh`) are helpers/libs invoked by sibling tests — the runner skips them.
 - `test/fuzz/*.test.ts` → property-based fuzz harness. Pure-validator targets in `pure-validators.test.ts` are guarded by `scripts/check-fuzz-purity.sh` (in `bun run verify`), which `bun build --target=bun` bundles each target and greps the resulting bundle for banned transitive imports (`node:fs`, `node:child_process`, engine modules). Anything that fails the guard moves to `mixed-validators.test.ts` (still property-tested, but no purity guarantee) or `filesystem-validators.test.ts` (fs-backed, uses temp dirs). Fuzz tests run in the default `bun test` loop because they're fast (~3s for ~12 properties × 1000 runs each).
 
@@ -219,6 +219,35 @@ The quarantine has grown to dozens of files — treat it as debt: every addition
 ### Unit test inventory
 
 `bun test` runs all tests without a database. E2E tests skip gracefully when `DATABASE_URL` is not set.
+
+**Database-URL run guard (#3485).** A `bun test` invocation REFUSES to start while
+`DATABASE_URL` or `GBRAIN_DATABASE_URL` is ambient in the environment, because some
+tests run destructive SQL against whatever those URLs point at (a bare `bun test`
+with `~/.gbrain/.env` sourced has wiped a real brain). The guard is a bunfig
+`[test]` preload (`test/helpers/database-url-guard-preload.ts`); it hard-fails with
+instructions rather than silently unsetting (a silent unset would turn
+DATABASE_URL-gated e2e tests into green skips). The e2e wrappers
+(`scripts/run-e2e.sh`, the e2e/heavy workflows) opt in at their own boundary via
+`GBRAIN_TEST_ALLOW_DATABASE_URL=1`; the unit/slow wrappers instead strip both
+URL vars at their boundary (unit tests need no database), which keeps
+`bun run test:full` working with DATABASE_URL exported. Caveat: bun loads
+`bunfig.toml` from the invocation cwd, so the preload layer only applies to
+runs started at the repo root — the per-file name floor below is the layer
+that doesn't care about cwd. Two more layers apply after the opt-in: every
+test that runs destructive SQL on the ambient URL must call
+`assertSafeE2eDatabaseUrl()` (`test/helpers/db-guard.ts` — name floor: the database
+name must contain "test" as a segment, or be opted in via `GBRAIN_E2E_ALLOW_DB`)
+or carry an inline name floor the coverage gate recognizes
+(`test/e2e/schema-drift.test.ts` keeps its own `looksLikeTestDb`, deliberately
+different because it also accepts `*_e2e`), and `test/db-guard-coverage.test.ts`
+statically scans the suite and fails when a file connects to `DATABASE_URL` and
+runs destructive SQL unguarded. The heavy shell lane gets the same floor outside
+bun: `tests/heavy/_db_floor.sh` (sourced by `scripts/run-heavy.sh` for the whole
+lane, and by each database-touching heavy script itself, since scripts are
+documented for direct invocation — the PGLite-based heavy scripts unset the URL
+instead) checks BOTH URL variables and strips query strings before extracting
+the database name, so a `?host=/tmp/test-sockets` parameter can't smuggle a
+test-shaped segment past it.
 
 Unit tests and what they cover:
 
@@ -335,7 +364,7 @@ Unit tests and what they cover:
 
 ### E2E test inventory
 
-E2E tests live in `test/e2e/` and run against real Postgres+pgvector (require `DATABASE_URL`), except where noted as PGLite in-memory (no `DATABASE_URL` needed).
+E2E tests live in `test/e2e/` and run against real Postgres+pgvector (require `DATABASE_URL`), except where noted as PGLite in-memory (no `DATABASE_URL` needed). One file outside the directory also rides the e2e lane: `test/phantom-redirect-engine-parity.test.ts` (Postgres arm; see the file taxonomy above).
 
 - `bun run test:e2e` runs Tier 1 (mechanical, all operations, no API keys). Includes dedicated cases for the postgres-engine `addLinksBatch` / `addTimelineEntriesBatch` bind path — postgres-js's JSONB bind (`jsonb_to_recordset(($1::jsonb)->'rows')`) differs from PGLite's and gets its own coverage.
 - `test/e2e/search-quality.test.ts` — search quality against PGLite (no API keys, in-memory).
