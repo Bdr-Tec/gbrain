@@ -2752,7 +2752,18 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
     }
     const onSunsetEmbedding = model.startsWith('zeroentropyai:');
     const onSunsetReranker = !!reranker?.startsWith('zeroentropyai:');
-    if (!onSunsetEmbedding && !onSunsetReranker) {
+    // Custom embedding columns can route queries through a ZE-backed model
+    // even when the primary embedding + reranker are clear — without this arm
+    // the check reports ok while those columns die on the date.
+    let zeColumns: string[] = [];
+    try {
+      const { detectZeCustomColumns } = await import('../core/ze-exposure.ts');
+      zeColumns = (await detectZeCustomColumns(engine)).columns;
+    } catch {
+      // Probe failed — make no custom-column claim.
+    }
+    const onSunsetColumns = zeColumns.length > 0;
+    if (!onSunsetEmbedding && !onSunsetReranker && !onSunsetColumns) {
       return {
         name,
         status: 'ok',
@@ -2808,7 +2819,14 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
         `Fix: gbrain config set search.reranker.model voyage:rerank-2.5 (needs VOYAGE_API_KEY), or disable: gbrain config set search.reranker.enabled false.`,
       );
     }
-    if (onSunsetEmbedding || onSunsetReranker) {
+    if (onSunsetColumns) {
+      parts.push(
+        `Custom embedding column(s) backed by the shutting-down provider: ${zeColumns.join(', ')}. ` +
+        `No automated off-ramp exists for custom columns yet (migrate embeddings covers the primary column only) — ` +
+        `re-declare them on a new provider and re-embed (skills/migrations/v0.47.0.0.md).`,
+      );
+    }
+    if (onSunsetEmbedding || onSunsetReranker || onSunsetColumns) {
       parts.push('Accepted the risk? Silence this check: gbrain config set doctor.suppress_provider_sunset true');
     }
     // fail = retrieval is ACTUALLY down (past the date AND embedded vectors

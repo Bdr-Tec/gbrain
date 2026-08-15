@@ -39,6 +39,7 @@ import type {
   OrchestratorPhaseResult,
 } from './types.ts';
 import { loadConfig, loadConfigFileOnly, toEngineConfig, gbrainPath } from '../../core/config.ts';
+import { ZEROENTROPY_SUNSET_DATE } from '../../core/ai/defaults.ts';
 import { createEngine } from '../../core/engine-factory.ts';
 import type { BrainEngine } from '../../core/engine.ts';
 
@@ -140,8 +141,14 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
     } else {
       // Config exists but the brain is unreachable: resolution-based exposure
       // still works from the file plane alone; DB-backed probes are unknown.
+      // getConfig THROWS (not null): returning null would fabricate verified
+      // claims from a DB we never reached — "no ZE custom columns" and "no
+      // reranker override" would read as checked when they weren't. Throwing
+      // routes those probes into unknownProbes (honest tri-state).
       const fakeEngine = {
-        getConfig: async () => null,
+        getConfig: async () => {
+          throw new Error('brain unreachable');
+        },
         executeRaw: async () => {
           throw new Error('brain unreachable');
         },
@@ -189,6 +196,25 @@ async function orchestrator(opts: OrchestratorOpts): Promise<OrchestratorResult>
     ].join('\n');
     // eslint-disable-next-line no-console
     console.error(banner);
+  } else {
+    // Detection itself crashed (exposure === null): still print a loud,
+    // self-contained advisory — the host-work entry alone is silent until an
+    // agent reads it, and the whole point of this migration is the notice.
+    // eslint-disable-next-line no-console
+    console.error(
+      [
+        '',
+        '='.repeat(74),
+        'ACTION REQUIRED — ZeroEntropy shutdown (v0.47.0 migration notice)',
+        '='.repeat(74),
+        'Exposure detection failed on this host, so this brain is treated as',
+        `affected until proven otherwise. ZeroEntropy stops working on ${ZEROENTROPY_SUNSET_DATE}.`,
+        'Run `gbrain doctor` (provider_sunset) and see the agent playbook:',
+        `  ${PLAYBOOK_SKILL}`,
+        '='.repeat(74),
+        '',
+      ].join('\n'),
+    );
   }
 
   if (opts.dryRun) {

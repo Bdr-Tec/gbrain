@@ -25,38 +25,58 @@ export const collectSetupSmells: AdvisorCollector = {
     const findings: AdvisorFinding[] = [];
     const cfg = ctx.config ?? ({} as typeof ctx.config);
 
-    // Embeddings disabled — deferred setup never completed.
+    // Embeddings disabled — deferred setup never completed. No command_argv:
+    // `config set embedding_model` is hard-refused (schema-sizing file-plane
+    // key); the sanctioned path is a re-init.
     if (cfg.embedding_disabled === true) {
       findings.push({
         id: 'embeddings_disabled',
         severity: 'warn',
         title: 'Embeddings are disabled — semantic search and dedup are off.',
-        detail: 'Set an embedding model to turn on vector search.',
-        fix: { command_argv: ['gbrain', 'config', 'set', 'embedding_model', '<model-id>'] },
-        collector: 'setup-smells',
-        ask_user: true,
-      });
-    } else if (
-      !cfg.embedding_model &&
-      !cfg.voyage_api_key &&
-      !process.env.VOYAGE_API_KEY &&
-      !process.env.OPENAI_API_KEY
-    ) {
-      // No key for the recommended providers anywhere → embeds will fail.
-      // No command_argv: API keys are env/file-plane only (`gbrain config set
-      // voyage_api_key` writes the DB plane, which the embedding pipeline
-      // never reads — see src/core/config.ts's two-plane doc).
-      findings.push({
-        id: 'embedding_key_missing',
-        severity: 'warn',
-        title: 'No embedding provider key is set — embedding will fail at write time.',
         detail:
-          'Set VOYAGE_API_KEY in the environment (or add voyage_api_key to ~/.gbrain/config.json), ' +
-          'then `gbrain init --force --embedding-model voyage:voyage-4`. OPENAI_API_KEY works too.',
+          'Enable with `gbrain init --force --embedding-model voyage:voyage-4` ' +
+          '(set VOYAGE_API_KEY first).',
         fix: { command_argv: null },
         collector: 'setup-smells',
         ask_user: true,
       });
+    } else {
+      // v0.47: key the "will embeds work" claim on the EFFECTIVE model —
+      // configless brains resolve the legacy runtime fallback until the
+      // September cutover, so the credential that matters is that provider's,
+      // not the recommended default's. Both key planes are checked (env +
+      // file config; the DB plane is never read by the embed pipeline).
+      const { DEFAULT_EMBEDDING_MODEL } = await import('../ai/defaults.ts');
+      const { getRecipe } = await import('../ai/recipes/index.ts');
+      const effectiveModel = cfg.embedding_model ?? DEFAULT_EMBEDDING_MODEL;
+      const provider = effectiveModel.split(':')[0];
+      const recipe = getRecipe(provider);
+      const keyName = recipe?.auth_env?.required?.[0];
+      const fileKeys: Record<string, string | undefined> = {
+        OPENAI_API_KEY: cfg.openai_api_key,
+        VOYAGE_API_KEY: cfg.voyage_api_key,
+        ZEROENTROPY_API_KEY: cfg.zeroentropy_api_key,
+      };
+      const keyMissing = !!keyName && !process.env[keyName] && !fileKeys[keyName];
+      if (keyMissing) {
+        const sunsetNote = recipe?.sunset
+          ? ` NOTE: ${recipe.name} shuts down ${recipe.sunset.date} — migrate instead of ` +
+            `setting its key: \`gbrain migrate embeddings --to ` +
+            `${recipe.sunset.replacement?.embedding ?? 'voyage:voyage-4'} --dry-run\`.`
+          : '';
+        findings.push({
+          id: 'embedding_key_missing',
+          severity: 'warn',
+          title: `Embedding resolves to ${effectiveModel} but ${keyName} is not set — embedding will fail at write time.`,
+          detail:
+            `Set ${keyName} in the environment (or add it to ~/.gbrain/config.json).` +
+            sunsetNote +
+            ' To switch providers: `gbrain init --force --embedding-model voyage:voyage-4` with VOYAGE_API_KEY set.',
+          fix: { command_argv: null },
+          collector: 'setup-smells',
+          ask_user: true,
+        });
+      }
     }
 
     // Remote-MCP brain serving agents but skill publishing is off → agents hit

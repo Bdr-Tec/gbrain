@@ -85,6 +85,11 @@ export interface ZeExposure {
   zeCustomColumns: string[];
   /** VOYAGE_API_KEY in env OR voyage_api_key in file config. */
   hasVoyageKey: boolean;
+  /** provider_base_urls.zeroentropyai is overridden (file or DB plane) — the
+   *  operator may be self-hosting a ZE-wire endpoint, so the HOSTED shutdown
+   *  may not break them. Exposure stays exposed (fail-safe: we can't verify
+   *  the endpoint), but the notice says so instead of claiming certain death. */
+  selfHostBaseUrl: boolean;
   /** Names of probes that failed (drove status to 'unknown'). */
   unknownProbes: string[];
   blastRadius: ZeBlastRadius;
@@ -107,6 +112,28 @@ function zeColumnsFromRegistry(registry: unknown, out: Set<string>): void {
     const provider = (entry as { provider?: unknown } | null)?.provider;
     if (typeof provider === 'string' && provider.startsWith(ZE_PREFIX)) out.add(name);
   }
+}
+
+/**
+ * ZE-backed custom-column names for this brain (file + DB registry planes).
+ * Shared by detectZeExposure and doctor's provider_sunset check — the doctor
+ * must not report ok while a ZE-backed custom column is still live.
+ */
+export async function detectZeCustomColumns(
+  engine: BrainEngine,
+  fileCfgArg?: GBrainConfig | null,
+): Promise<{ columns: string[]; probeFailed: boolean }> {
+  const fileCfg = fileCfgArg !== undefined ? fileCfgArg : loadConfigFileOnly();
+  const zeCols = new Set<string>();
+  zeColumnsFromRegistry(fileCfg?.embedding_columns, zeCols);
+  let probeFailed = false;
+  try {
+    const raw = await engine.getConfig('embedding_columns');
+    if (raw) zeColumnsFromRegistry(JSON.parse(raw), zeCols);
+  } catch {
+    probeFailed = true;
+  }
+  return { columns: [...zeCols].sort(), probeFailed };
 }
 
 /**
@@ -145,17 +172,21 @@ export async function detectZeExposure(
   }
 
   // --- Custom-column axis: both planes (file + DB registry) ----------------
-  const zeCols = new Set<string>();
-  zeColumnsFromRegistry(fileCfg?.embedding_columns, zeCols);
-  try {
-    const raw = await engine.getConfig('embedding_columns');
-    if (raw) zeColumnsFromRegistry(JSON.parse(raw), zeCols);
-  } catch {
-    unknownProbes.push('embedding_columns_db');
-  }
-  const zeCustomColumns = [...zeCols].sort();
+  const colProbe = await detectZeCustomColumns(engine, fileCfg);
+  if (colProbe.probeFailed) unknownProbes.push('embedding_columns_db');
+  const zeCustomColumns = colProbe.columns;
 
   const hasVoyageKey = !!(env.VOYAGE_API_KEY || fileCfg?.voyage_api_key);
+
+  // --- Self-host signal (informational): base-URL override on either plane --
+  let selfHostBaseUrl = !!fileCfg?.provider_base_urls?.zeroentropyai;
+  if (!selfHostBaseUrl) {
+    try {
+      selfHostBaseUrl = !!(await engine.getConfig('provider_base_urls.zeroentropyai'));
+    } catch {
+      // Informational only — a failed probe never flips status here.
+    }
+  }
 
   // --- Blast radius (informational; failures do NOT flip status) -----------
   const blastRadius: ZeBlastRadius = {
@@ -210,6 +241,7 @@ export async function detectZeExposure(
     zeReranker,
     zeCustomColumns,
     hasVoyageKey,
+    selfHostBaseUrl,
     unknownProbes,
     blastRadius,
   };
@@ -247,7 +279,7 @@ export function renderZeActionRequired(exposure: ZeExposure): string {
         `ZE-stamped pages / ${fmtCount(exposure.blastRadius.embeddedChunks, exposure.blastRadius.embeddedChunksCapped)} ` +
         `embedded chunks` +
         (exposure.blastRadius.estReembedUsd !== null
-          ? ` (~$${exposure.blastRadius.estReembedUsd.toFixed(2)} to re-embed with ${NEW_INSTALL_DEFAULT_EMBEDDING_MODEL})`
+          ? ` (${exposure.blastRadius.embeddedChunksCapped ? 'at least ' : ''}~$${exposure.blastRadius.estReembedUsd.toFixed(2)} to re-embed with ${NEW_INSTALL_DEFAULT_EMBEDDING_MODEL})`
           : ''),
     );
     lines.push(
@@ -291,6 +323,18 @@ export function renderZeActionRequired(exposure: ZeExposure): string {
     lines.push(
       `the primary column only) — re-declare them on the new provider and re-embed.`,
     );
+  }
+  if (exposure.selfHostBaseUrl) {
+    lines.push(
+      `NOTE: provider_base_urls.zeroentropyai is overridden. If that endpoint is a`,
+    );
+    lines.push(
+      `self-hosted ZE-wire-compatible server, the hosted shutdown does not break it —`,
+    );
+    lines.push(
+      `but the zeroentropyai provider id is still slated for removal (see the`,
+    );
+    lines.push(`self-host continuity TODO in the playbook) — plan a migration anyway.`);
   }
   lines.push(`Nothing has been changed automatically; this brain keeps working until the date.`);
   lines.push(`Agent playbook: skills/migrations/v0.47.0.0.md`);

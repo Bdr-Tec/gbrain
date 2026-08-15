@@ -1431,6 +1431,12 @@ function warnSunsetOnce(recipe: Recipe, touchpoint: 'embedding' | 'reranker'): v
   try {
     const sunset = recipe.sunset;
     if (!sunset) return;
+    // A base-URL override routes this provider id to a user-supplied endpoint
+    // (typically a self-hosted wire-compatible server) — the HOSTED shutdown
+    // doesn't apply, so a per-call deprecation warning would be a false
+    // positive. The removal-release continuity story is carried by the
+    // migration notice/banner instead.
+    if (_config?.base_urls?.[recipe.id]) return;
     const key = `${recipe.id}:${touchpoint}`;
     if (_sunsetWarned.has(key)) return;
     _sunsetWarned.add(key);

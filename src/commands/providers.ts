@@ -11,6 +11,7 @@ import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
 import { probeOllama, probeLMStudio } from '../core/ai/probes.ts';
 import { loadConfig } from '../core/config.ts';
 import { AIConfigError, AITransientError } from '../core/ai/errors.ts';
+import { lookupEmbeddingPrice } from '../core/embedding-pricing.ts';
 import type { Recipe } from '../core/ai/types.ts';
 
 const SCHEMA_VERSION = 1;
@@ -338,12 +339,17 @@ async function runExplain(args: string[]): Promise<void> {
       // v0.47: canonical model, not array position (Voyage lists voyage-4-large
       // first; its canonical default is voyage-4).
       const canonicalModel = m.default_model ?? m.models[0];
+      // Price the CANONICAL model, not the recipe-wide touchpoint hint — the
+      // touchpoint cost tracks models[0], which can differ from the canonical
+      // pick (voyage-4 is $0.06/M; the recipe-wide hint reflects the flagship).
+      const modelPrice = lookupEmbeddingPrice(`${r.id}:${canonicalModel}`);
       options.push({
         id: `${r.id}:${canonicalModel}`,
         touchpoint: 'embedding',
         model: canonicalModel,
         dims: m.default_dims,
-        cost_per_1m_tokens_usd: m.cost_per_1m_tokens_usd,
+        cost_per_1m_tokens_usd:
+          modelPrice.kind === 'known' ? modelPrice.pricePerMTok : m.cost_per_1m_tokens_usd,
         price_last_verified: m.price_last_verified,
         env_ready: envReady(r) || (r.id === 'ollama' && ollama.models_endpoint_valid === true),
         tier: r.tier,
