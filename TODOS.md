@@ -1,5 +1,68 @@
 # TODOS
 
+## Code-smell fix-wave deferrals (filed at W0; plan: ~/.claude/plans/system-instruction-you-are-working-encapsulated-eclipse.md)
+
+Each was individually decided as a deferral in the CEO/eng reviews of the
+fix-wave plan; the wave series (W0.5–W9, 3.4, 3.6) tracks its own scope there.
+
+- [ ] **Full engine staged merge** (~10 domains onto shared query modules +
+  Dialect record). **Priority: P2.** Gated on the W9 two-slice pilot criteria
+  (structure+params+results parity on chronicle AND the searchKeyword/CJK
+  hard seam; ≥40% domain LOC cut; Dialect ≤~6 fields; query-builder extension
+  ≤~150 lines). The terminal fix for the engine-divergence/JSONB class —
+  blast radius is the production hot path, hence pilot-gated. Blocked by: W9.
+- [ ] **gateway.ts file split** behind a re-export facade (~121 import sites
+  unmoved). **Priority: P3.** After W8's behavior changes so the split is
+  pure motion; needs the CLAUDE.md engine-dynamic-import exemption-path
+  chasers + check-engine-dynamic-import.sh + build:llms.
+- [ ] **BrainEngine 149-method interface → domain repos** (65 methods have
+  0-1 callers; 3 already deleted in W3). **Priority: P3.** Shape informed by
+  the W9 pilot's query-module seam.
+- [ ] **Legacy Anthropic-SDK subagent loop deletion.** **Priority: P2.** One
+  release after W8 flips `agent.use_gateway_loop` default ON (flag stays as
+  the revert path for that release).
+- [ ] **Deeper test-suite speedup** beyond the W0 snapshot default-on (which
+  already cut the full parallel suite ~4,900s → ~490s). **Priority: P3.**
+  Revisit with post-W0 timing data; diminishing returns until measured.
+- [ ] **PGLite schema build-time derivation** from SCHEMA_SQL via a named
+  transform list. **Priority: P3.** Only if W3's schema drift TEST proves
+  annoying in practice — the test alone kills the drift bug class (Codex
+  D4.8/D5.23: fresh-schema equivalence ≠ upgrade correctness; old-shape
+  bootstrap fixtures + replay coverage stay regardless).
+## Jobs fix-wave follow-ups (filed v0.45.15.0 — upstream issues #2/#3/#4)
+
+- [ ] **P2 — `jobs submit --max-pending` public flag.** maxPending stays an
+  internal submit option this wave (Codex C4): its semantics exclude
+  delayed/paused/waiting-children rows, and identity is (name, queue, source)
+  so distinct payloads collapse. Decide the public contract (include delayed?
+  explicit scope key?) after the primitive soaks in autopilot, then mirror
+  parseMaxWaitingFlag (clamp [1,100]) + help + flag-registry regen + optional
+  submit_job MCP param. Where: src/commands/jobs.ts, src/core/operations.ts.
+- [ ] **P2 — maxPending at the other single-flight dispatch sites.** The
+  freshness sync submit (src/commands/autopilot.ts freshness loop) and the
+  targeted remediation steps (autopilot.ts targeted-submit loop) still use
+  maxWaiting: 1; widening to maxPending changes behavior of those lanes
+  (suppression while a long run is active) and needs its own review. Where:
+  src/commands/autopilot.ts.
+- [ ] **P2 — Help-stub sweep for the other CLI_ONLY commands.** The `jobs`
+  defect class exists elsewhere: `gbrain search modes --help` connects an
+  engine before help routing, and the search subcommands have no help guards
+  (jobs/bootstrap/skillpack now carry the guard pattern to copy). Audit every
+  CLI_ONLY member missing from CLI_ONLY_SELF_HELP; the top-level help promises
+  per-command help for all of them. Where: src/cli.ts, src/commands/search.ts.
+- [ ] **P3 — jobs stats: fuller backpressure/audit surfacing.** The 24h
+  Backpressure line + suppressed-by hint shipped; per-decision breakdowns,
+  longer windows, and doctor integration remain (the audit file header's B4
+  follow-up). Where: src/commands/jobs.ts, src/core/minions/backpressure-audit.ts.
+- [ ] **P3 — jobs watch: timeout/deadline column.** `jobs get` shows the
+  effective budget; the live dashboard doesn't. Where: src/commands/jobs-watch.ts.
+- [ ] **P3 — jobs help + operator docs: handler catalog and dispatch-event
+  schema.** `gbrain jobs --help`'s HANDLER TYPES section lists 8 of the ~40
+  registered handlers, and the autopilot dispatch JSON events (`dispatched`,
+  `dispatch_coalesced`, `fanout_summary` with its `coalesced` array) have no
+  schema documentation outside the CHANGELOG. Where: src/commands/jobs.ts
+  (JOBS_HELP), docs/guides/queue-operations-runbook.md.
+
 ## Truthful-surface wave follow-ups (filed with T14, amendment 35 + D14.5)
 
 Deferred from the MCP consumer-feedback wave (plan at
@@ -694,6 +757,16 @@ job) and sync. See CLAUDE.md "Pace Mode".
   supervisor-detection downgrade. Today these inherit config/env pacing only when
   they call `runEmbedCore`.
 - [ ] **P1-companion — Supervisor concurrency 3→2 + job-kind slot fairness (E7).**
+  **v0.45.15.0 annotation (jobs fix wave):** make the whole wedge-detector FAMILY
+  suppression-aware while here — the supervisor watchdog (supervisor.ts wedge
+  predicate) and doctor's `wedged_queue` check both require waiting > 0, and
+  `maxPending` single-flight keeps waiting at 0 while a job is in flight.
+  Mitigations already shipped: maxPending counts only LIVE-LOCK actives (a
+  dead/blocked worker's expired-lock row never suppresses, so fresh waiting rows
+  re-feed the detectors) and `jobs stats` prints a Backpressure line + a
+  suppressed-by hint. Remaining: teach watchdog/doctor to treat
+  recent-coalesces + stale live active as wedge signal; also note the worker
+  in-flight stall-check hole (worker.ts stall check skips when inFlight > 0).
   The daemon-side root cause the external wrapper's probe was blind to:
   `embed-backfill`/`autopilot-cycle` jobs can occupy all supervisor slots
   (`:215` below). Pacing makes backfills safe; this fixes the residual death rate.
@@ -1247,11 +1320,14 @@ but were deliberately scoped OUT — neither is a #1784 regression.
   deserves its own deliberate change. Fix: mirror the extracted
   `buildCostRefusal({json, ...})` helper (`reindex-code.ts`). The guardrail
   (exit 2, no spend) stays; only the FORMAT splits on `--json`.
-- [ ] **P3 — `gbrain jobs --help` has no subcommand list.** jobs.ts dispatches
+- [x] **P3 — `gbrain jobs --help` has no subcommand list.** jobs.ts dispatches
   on a bare subcommand string with no HELP const, so `watch` (and every other
   jobs subcommand) is undocumented in `--help`. The new `watch` `--json` /
   `--follow` flags are documented only in the file JSDoc. Add a HELP table to the
   `jobs` command listing every subcommand + its flags.
+  **Completed:** v0.45.15.0 (2026-08-14) — JOBS_HELP + JOBS_SUBCOMMAND_HELP with a
+  guard above the thin-client refusal; `jobs`/`jobs work` etc. `--help` print real
+  usage engine-free and can never start a daemon.
 
 ## v0.42.12.0 self-upgrade follow-ups (v0.43+)
 
@@ -1423,7 +1499,11 @@ and tested; these are documented tradeoffs and stronger-but-bigger versions.
 Deferred from the v0.41.38.0 wave (code-callers/callees pin + dream-on-postgres).
 Documented tradeoffs, not blockers — the shipped bug fixes are complete and tested.
 
-- [ ] **P1 — Per-source autopilot fan-out passes the global repoPath.**
+- [x] **P1 — Per-source autopilot fan-out passes the global repoPath.**
+  **Completed (verified already fixed):** v0.45.15.0 audit (2026-08-14) — the
+  handler binds FS phases to the source's `local_path` and never falls through
+  to the global repoPath (`effectiveBrainDir = sourceId ? sourceLocalPath :
+  repoPath` in src/commands/jobs.ts, with per-source null → skip FS phases).
   `src/commands/autopilot-fanout.ts:~206` submits every per-source `autopilot-cycle`
   job with `repoPath: opts.repoPath` (the global checkout), not `src.local_path`.
   With v0.41.38.0's `cycleSourceId = opts.sourceId ?? resolveSourceForDir(...)`,
@@ -1789,18 +1869,14 @@ single canonical `src/core/model-pricing.ts` with `canonicalLookup`.
   operator pipes directly into `crontab -e` instead of copy-paste-massage.
   ~80 LOC. Mirrors `gbrain sync --break-lock` argv shape.
 
-- **TODO-OPS-2 (P2)**: Lock-loss detection — extend `DbLockHandle.refresh()`
-  to throw `LockLostError` on 0 rows affected. Codex caught during the
-  v0.41.19.0 plan review: `refresh()` runs `UPDATE ... WHERE holder_pid = pid`
-  with no rows-affected check (`db-lock.ts:108-114`, `:151-156`). If the
-  TTL expired and another worker took over, the original keeps writing
-  silently. v0.41.19.0 ships TTL=5min + active in-phase refresh via
-  `buildYieldDuringPhase` which makes the race window much narrower, but
-  an `await chat()` call that exceeds the 5min wallclock window can still
-  hit it. Fix: `RETURNING id` on the UPDATE + check `rows.length === 0` →
-  throw tagged `LockLostError`. Phases catch + abort cleanly (write partial
-  progress, return `status: 'fail'` with reason `'lock_lost'`). Behavioral
-  contract change with phase-abort fallout; needs its own design pass.
+- [x] **TODO-OPS-2 (P2)**: Lock-loss detection — CLOSED by the W0 fix-wave
+  (code-smell series). `refresh()` now runs a FENCED update (id + holder_pid +
+  epoch-rendered `acquired_at`) with `RETURNING id`, returns `false` on 0
+  rows, and runCycle's steal controller aborts the run at the next boundary
+  with a structured `reason: 'lock_stolen'` partial report (LockStolenError;
+  raced awaits cover the 5 long phases). The supervisor exits LOCK_LOST
+  immediately on a fenced miss. Pinned by `test/db-lock-fencing.test.ts` +
+  `test/cycle-lock-steal.serial.test.ts`.
 
 ## v0.41.20.0 status + doctor-categories wave follow-ups (v0.42+)
 

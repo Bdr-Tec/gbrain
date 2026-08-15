@@ -117,14 +117,14 @@ const PGLITE_EDGE_BATCH_MAX_BIND_PARAMS = 30_000;
 // silently fall through to a normal initSchema (snapshot is just an
 // optimization, never authoritative).
 let _snapshotWarnLogged = false;
-function tryLoadSnapshot(snapshotPath: string): Blob | null {
+export function tryLoadSnapshot(snapshotPath: string): Blob | null {
   try {
     // Lazy require so production builds without these imports don't crash.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require('node:fs') as typeof import('node:fs');
-    const crypto = require('node:crypto') as typeof import('node:crypto');
-    const { MIGRATIONS } = require('./migrate.ts') as typeof import('./migrate.ts');
-    const { PGLITE_SCHEMA_SQL } = require('./pglite-schema.ts') as typeof import('./pglite-schema.ts');
+    const fs = require('node:fs') as typeof import('node:fs'); // engine-dynamic-import-ok
+    const crypto = require('node:crypto') as typeof import('node:crypto'); // engine-dynamic-import-ok
+    const { MIGRATIONS } = require('./migrate.ts') as typeof import('./migrate.ts'); // engine-dynamic-import-ok
+    const { PGLITE_SCHEMA_SQL } = require('./pglite-schema.ts') as typeof import('./pglite-schema.ts'); // engine-dynamic-import-ok
 
     if (!fs.existsSync(snapshotPath)) {
       if (!_snapshotWarnLogged) {
@@ -144,7 +144,32 @@ function tryLoadSnapshot(snapshotPath: string): Blob | null {
       return null;
     }
     const expectedHash = computeSnapshotSchemaHash(MIGRATIONS, PGLITE_SCHEMA_SQL, crypto);
-    const actualHash = fs.readFileSync(versionPath, 'utf8').trim();
+    const versionLines = fs.readFileSync(versionPath, 'utf8').trim().split('\n');
+    const actualHash = versionLines[0] ?? '';
+
+    // W0 fix-wave: the version file's dims=/model= lines record the embedding
+    // shape the snapshot was BAKED with. A snapshot whose vector(dims) columns
+    // differ from what THIS process would create poisons every embedding
+    // write ("expected 1280 dimensions, not 1536" — the W0 incident when the
+    // fixture went default-on). Resolve our would-be shape through the same
+    // gateway-with-default fallback initSchema uses and refuse a mismatch.
+    // Version files without the shape lines (pre-W0) are treated as stale.
+    let wantDims: number | string = DEFAULT_EMBEDDING_DIMENSIONS;
+    let wantModel: string = DEFAULT_EMBEDDING_MODEL;
+    try {
+      const gw = require('./ai/gateway.ts') as typeof import('./ai/gateway.ts'); // engine-dynamic-import-ok
+      wantDims = gw.getEmbeddingDimensions();
+      wantModel = gw.getEmbeddingModel();
+    } catch { /* gateway not configured — defaults, same as initSchema */ }
+    const shapeOk = versionLines[1] === `dims=${wantDims}` && versionLines[2] === `model=${wantModel}`;
+    if (!shapeOk) {
+      if (!_snapshotWarnLogged) {
+        // eslint-disable-next-line no-console
+        console.warn(`[pglite] snapshot embedding shape mismatch (want dims=${wantDims} model=${wantModel}, have ${versionLines[1] ?? 'none'} ${versionLines[2] ?? ''}) — using normal init. Rebuild with: bun run build:pglite-snapshot`);
+        _snapshotWarnLogged = true;
+      }
+      return null;
+    }
     if (expectedHash !== actualHash) {
       if (!_snapshotWarnLogged) {
         // eslint-disable-next-line no-console
@@ -162,7 +187,7 @@ function tryLoadSnapshot(snapshotPath: string): Blob | null {
 }
 
 export function computeSnapshotSchemaHash(
-  migrations: Array<{ version: number; name: string; sql?: string; sqlFor?: { pglite?: string } }>,
+  migrations: Array<{ version: number; name: string; sql?: string; sqlFor?: { pglite?: string }; handler?: unknown }>,
   schemaSQL: string,
   crypto: typeof import('node:crypto'),
 ): string {
@@ -178,6 +203,13 @@ export function computeSnapshotSchemaHash(
     hash.update(m.sql ?? '');
     hash.update('\t');
     hash.update(m.sqlFor?.pglite ?? '');
+    hash.update('\t');
+    // W0 fix-wave (D5.13, Codex #4): 19+ migrations carry executable
+    // `handler` code with empty/absent sql — invisible to the sql-only hash,
+    // so editing a handler reused a stale snapshot. Function.prototype
+    // .toString folds the handler SOURCE into the hash (deterministic within
+    // a checkout; this is a dev/test fixture, not a shipped artifact).
+    hash.update(typeof m.handler === 'function' ? String(m.handler) : '');
     hash.update('\n');
   }
   return hash.digest('hex');
