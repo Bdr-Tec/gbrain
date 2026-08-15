@@ -219,6 +219,12 @@ if [ "${#exclusive_present[@]}" -gt 0 ]; then ordered_files+=("${exclusive_prese
 fail_count=0
 failed_files=()
 rescue_files=()
+# Aggregate pass count across pooled files, re-emitted below in bun's own
+# " N pass" summary format so run-unit-parallel.sh's headline counter
+# (bun_summary_count) still sees the serial suite's tests. Failing files'
+# logs are cat'ed raw (their " N pass/fail" lines land in the stream
+# directly), so only PASSING files accumulate here — no double counting.
+pass_total=0
 i=0
 for f in "${ordered_files[@]}"; do
   dur="?"
@@ -230,6 +236,8 @@ for f in "${ordered_files[@]}"; do
     rc=$(cat "$LOG_DIR/$i.exit")
     if [ "$rc" = "0" ]; then
       summary=$(grep -E '^ *[0-9]+ pass' "$LOG_DIR/$i.log" | tail -1 | tr -d ' ' || true)
+      n=$(printf '%s' "$summary" | grep -oE '^[0-9]+' || echo 0)
+      pass_total=$((pass_total + n))
       echo "[serial-tests] PASS ${dur}s $f ${summary:+($summary)}"
     elif [ "$rc" = "137" ] && [ "$dur" != "?" ] && [ "$dur" -ge "$PER_FILE_TIMEOUT" ] 2>/dev/null; then
       # 137 with full duration = OUR timeout's SIGKILL escalation (a hang
@@ -270,6 +278,8 @@ if [ "${#rescue_files[@]}" -gt 0 ]; then
     rc=$(cat "$LOG_DIR/$i.exit" 2>/dev/null || echo 1)
     if [ "$rc" = "0" ]; then
       summary=$(grep -E '^ *[0-9]+ pass' "$LOG_DIR/$i.log" | tail -1 | tr -d ' ' || true)
+      n=$(printf '%s' "$summary" | grep -oE '^[0-9]+' || echo 0)
+      pass_total=$((pass_total + n))
       echo "[serial-tests] PASS $((e - s))s $f ${summary:+($summary)} (rescued: external-kill phantom)"
     else
       echo "[serial-tests] FAIL $((e - s))s $f — exit $rc on rescue re-run" >&2
@@ -298,4 +308,8 @@ if [ "$fail_count" -gt 0 ]; then
   done
   exit 1
 fi
+# bun-summary-format aggregate: run-unit-parallel.sh's headline counter
+# (bun_summary_count awk: $1 numeric, $2 == "pass") reads this line — without
+# it the serial suite's tests vanish from `bun run test`'s pass=N banner.
+echo " $pass_total pass"
 echo "[serial-tests] all ${#ordered_files[@]} file(s) passed in ${total_epoch}s (pool=$POOL)"
