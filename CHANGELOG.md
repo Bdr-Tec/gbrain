@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.45.15.0] - 2026-08-14
+## [0.45.16.0] - 2026-08-14
 
 **Google chat works again, OpenAI defaults are current, and every model a default can resolve to is now verified live — with a guard so a dead default can never ship again.**
 
@@ -28,7 +28,7 @@ gbrain config set models.chat google:gemini-3.6-flash    # or openai:gpt-5.6-ter
 - `gpt-4o-mini` left the OpenAI chat list (its 128K window would be misreported by the touchpoint-wide 1M context setting) but remains the expansion fallback.
 - The default evaluation panels (cross-modal slot A, takes-quality) follow the refresh to `openai:gpt-5.6-terra` and `google:gemini-3.6-flash`.
 
-### To take advantage of v0.45.15.0
+### To take advantage of v0.45.16.0
 ## [0.45.14.0] - 2026-08-14
 
 **The box that already has a brain: framework-spawned coding agents get brain access by default.** The bootstrap door built in v0.45.0.0 was for a human at a laptop. A growing share of Claude Code and Codex sessions are spawned by an agent framework — your OpenClaw, or anything that shells out to headless sessions — on a machine that already hosts a brain and a running `gbrain serve --http`. Until now those sessions got nothing unless someone hand-replicated settings writers across every project directory. One command fixes that:
