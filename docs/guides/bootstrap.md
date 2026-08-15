@@ -294,7 +294,7 @@ bun test test/e2e/bootstrap-real-codex.serial.test.ts
 ## DX exploration harness (developer instrument, not a test)
 
 The door tests prove the install WORKS; they say nothing about how it FEELS.
-`test/helpers/tty-harness.ts` spawns any CLI (gbrain, `claude`, `codex`) under a
+`test/helpers/tty-harness.ts` spawns any CLI (gbrain, `claude`, `codex`, `grok`) under a
 real pseudo-terminal (Bun's `terminal:` spawn option) and records every output
 burst with a millisecond timestamp, so unnecessary pauses become a measurable
 artifact (`computeStalls` → `stalls.md`) instead of a vibe. Same hermetic env as
