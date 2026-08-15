@@ -25,6 +25,7 @@ import {
 import type { HarnessRoot } from '../../src/core/transcripts/detect.ts';
 import { MESSAGE_CHAR_CAP } from '../../src/core/transcripts/render.ts';
 import { buildTranscriptSlug } from '../../src/core/transcripts/types.ts';
+import { buildHermesFixture } from '../fixtures/transcripts/hermes-fixture-builder.ts';
 
 const CODEX_SLUG = buildTranscriptSlug('codex', '2026-08-02T09:00:00.000Z', {
   sessionId: 'codex-fixture-session-1',
@@ -35,6 +36,27 @@ const AGENT_SLUG = buildTranscriptSlug('openclaw', '2026-08-03T14:00:00.000Z', {
 
 const CODEX_FIXTURE = join(import.meta.dir, '..', 'fixtures', 'transcripts', 'codex-rollout.jsonl');
 const AGENT_FIXTURE = join(import.meta.dir, '..', 'fixtures', 'transcripts', 'agent-session.jsonl');
+const CLAUDE_CODE_FIXTURE = join(
+  import.meta.dir,
+  '..',
+  'fixtures',
+  'conversation-formats',
+  'claude-code.jsonl',
+);
+const CHATGPT_FIXTURE = join(
+  import.meta.dir,
+  '..',
+  'fixtures',
+  'transcripts',
+  'chatgpt-conversations.json',
+);
+const CLAUDE_EXPORT_FIXTURE = join(
+  import.meta.dir,
+  '..',
+  'fixtures',
+  'transcripts',
+  'claude-export.json',
+);
 
 let engine: PGLiteEngine;
 let tmp: string;
@@ -294,6 +316,101 @@ describe('error taxonomy', () => {
     const r = await runTranscriptsIngest(engine, baseOpts([empty], { format: 'openclaw' }));
     expect(r.driftFiles).toBe(1);
     expect(r.sessionsImported).toBe(0);
+  });
+});
+
+describe('all six formats travel the FULL pipeline (parse → redact → render → import)', () => {
+  test('claude-code: the shipped fixture imports as a page with placeholders and real timestamps', async () => {
+    const r = await runTranscriptsIngest(engine, baseOpts([CLAUDE_CODE_FIXTURE]));
+    expect(r.sessionsImported).toBe(1);
+    expect(r.pages.imported).toBe(1);
+    const slug = buildTranscriptSlug('claude-code', '2026-08-01T10:00:00.000Z', {
+      sessionId: 'fixture-session-1',
+    });
+    const page = await engine.getPage(slug, { sourceId: 'default' });
+    expect(page).not.toBeNull();
+    expect(page!.type).toBe('conversation');
+    const fm = page!.frontmatter as Record<string, any>;
+    expect(fm.transcript_import.harness).toBe('claude-code');
+    expect(fm.date).toBe('2026-08-01');
+    // Text turns land; tool traffic appears only as placeholders; the
+    // anchor lines carry the fixture's REAL timestamps.
+    expect(page!.compiled_truth).toContain("widget-co's seed round");
+    expect(page!.compiled_truth).toContain('[tool: search_brain]');
+    expect(page!.compiled_truth).toContain('(2026-08-01 10:00 AM)');
+  });
+
+  test('hermes: ONE store file yields MANY pages (multi-session ingest path)', async () => {
+    const dbPath = buildHermesFixture(tmp);
+    const r = await runTranscriptsIngest(engine, baseOpts([dbPath]));
+    // 3 sessions in the store; the tool-only one never yields → 2 imported.
+    expect(r.sessionsImported).toBe(2);
+    expect(r.pages.imported).toBe(2);
+    expect(r.cleanScan).toBe(true);
+    const s1 = buildTranscriptSlug('hermes', '2026-08-05T08:00:00.000Z', {
+      sessionId: 'hermes-fixture-1',
+    });
+    const s2 = buildTranscriptSlug('hermes', '2026-08-06T08:00:00.000Z', {
+      sessionId: 'hermes-fixture-2',
+    });
+    const p1 = await engine.getPage(s1, { sourceId: 'default' });
+    const p2 = await engine.getPage(s2, { sourceId: 'default' });
+    expect(p1).not.toBeNull();
+    expect(p2).not.toBeNull();
+    // Title is promoted to the page COLUMN at import (not kept in frontmatter).
+    expect(p1!.title).toContain('widget planning');
+    // Session 2's JSON block-array contents unwrapped to text in the page.
+    expect(p2!.compiled_truth).toContain('acme-seed closes at the end of the month.');
+    // Session metadata rode raw_data for BOTH sessions of the one file.
+    const raw1 = await engine.getRawData(s1, 'transcript:hermes', { sourceId: 'default' });
+    const raw2 = await engine.getRawData(s2, 'transcript:hermes', { sourceId: 'default' });
+    expect(raw1.length).toBe(1);
+    expect(raw2.length).toBe(1);
+
+    // limit interplay on a multi-session FILE: limit=1 imports one session,
+    // truncates cleanly, and the follow-up run converges.
+    await resetPgliteState(engine);
+    const rLimit = await runTranscriptsIngest(engine, baseOpts([dbPath], { limit: 1 }));
+    expect(rLimit.sessionsImported).toBe(1);
+    expect(rLimit.cleanScan).toBe(false);
+    const rRest = await runTranscriptsIngest(engine, baseOpts([dbPath]));
+    expect(rRest.pages.imported + rRest.pages.skipped).toBe(2);
+  });
+
+  test('chatgpt export: one file → per-thread pages under conversations/chatgpt/ with title slugs', async () => {
+    const r = await runTranscriptsIngest(engine, baseOpts([CHATGPT_FIXTURE]));
+    // Conversation 3 is system-only → skipped by the adapter.
+    expect(r.sessionsImported).toBe(2);
+    expect(r.pages.imported).toBe(2);
+    const slug = buildTranscriptSlug('chatgpt', new Date(1786080000 * 1000).toISOString(), {
+      sessionId: 'cgpt-conv-0001',
+      title: 'Widget launch naming',
+    });
+    expect(slug).toContain('conversations/chatgpt/');
+    expect(slug).toContain('widget-launch-naming');
+    const page = await engine.getPage(slug, { sourceId: 'default' });
+    expect(page).not.toBeNull();
+    expect(page!.title).toBe('Widget launch naming');
+    // Canonical path only — the abandoned branch never lands in the page.
+    expect(page!.compiled_truth).toContain('Call it LaunchPanel.');
+    expect(page!.compiled_truth).not.toContain('BRANCH-A-ONLY-TEXT');
+  });
+
+  test('claude.ai export: one file → pages under conversations/claude/ with title slugs', async () => {
+    const r = await runTranscriptsIngest(engine, baseOpts([CLAUDE_EXPORT_FIXTURE]));
+    expect(r.sessionsImported).toBe(1);
+    expect(r.pages.imported).toBe(1);
+    const slug = buildTranscriptSlug('claude-export', '2026-08-07T12:00:00.000Z', {
+      sessionId: 'claude-conv-0001',
+      title: 'Deal memo review',
+    });
+    expect(slug).toContain('conversations/claude/');
+    expect(slug).toContain('deal-memo-review');
+    const page = await engine.getPage(slug, { sourceId: 'default' });
+    expect(page).not.toBeNull();
+    expect(page!.compiled_truth).toContain('fund-a term sheet date');
+    const fm = page!.frontmatter as Record<string, any>;
+    expect(fm.transcript_import.harness).toBe('claude-export');
   });
 });
 
