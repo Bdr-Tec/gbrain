@@ -124,14 +124,22 @@ lint -> backlinks -> sync -> synthesize -> extract -> patterns -> embed -> orpha
 
 The two new phases consolidate yesterday's conversations into long-term memory:
 
-**Synthesize phase:** reads transcripts from `dream.synthesize.session_corpus_dir`,
-runs a cheap Haiku verdict (cached in `dream_verdicts`) to filter routine
-ops sessions, then fans out one Sonnet subagent per worth-processing
-transcript. Each subagent writes reflections (`wiki/personal/reflections/...`),
-originals (`wiki/originals/ideas/...`), and people timeline entries. The
-orchestrator collects the slugs from `subagent_tool_executions` (NOT
-`pages.updated_at` — that would pick up unrelated writes) and reverse-renders
-each new page from DB → markdown on disk.
+**Synthesize phase (two-stage cascade):** reads transcripts from
+`dream.synthesize.session_corpus_dir`, then triages before it spends: a cheap
+utility-tier judge (`models.dream.triage`) scores every new file 0–1 for
+salience and pre-extracts candidate quotes + entities, cached in
+`dream_verdicts` with the judging model + prompt version. Only files scoring
+at or above `dream.triage.threshold` (default 0.5 — applied at read time, so
+retuning the threshold re-gates with zero new LLM calls) fan out one synthesis
+subagent per transcript chunk, each primed with the triage map and capped at
+`dream.synthesize.max_turns` (default 16). Each subagent writes reflections
+(`wiki/personal/reflections/...`), originals (`wiki/originals/ideas/...`), and
+people timeline entries. The orchestrator collects the slugs from
+`subagent_tool_executions` (NOT `pages.updated_at` — that would pick up
+unrelated writes) and reverse-renders each new page from DB → markdown on
+disk. To re-score the corpus or drain a queued backlog after retuning the
+threshold, run `gbrain dream retriage --dry-run` (zero LLM calls) then
+`gbrain dream retriage --reconcile-queue`.
 
 **Patterns phase:** runs after `extract` (so the graph state is fresh).
 Reads recent reflections within `dream.patterns.lookback_days` (default 30),
