@@ -59,11 +59,25 @@ Years of AI-assistant history is one of the largest personal corpora most
 users own. This skill makes it first-class brain content instead of a JSON
 blob in a downloads folder.
 
-**No native raw-export importer exists.** `gbrain import <dir>` ingests
-markdown directories; nothing in the CLI parses a provider's raw
-`conversations.json` directly. The conversion step below is agent work.
-(A native `gbrain import --format chatgpt|claude` is a filed follow-up; until
-it lands, this procedure is the supported path.)
+**A native importer now exists: `gbrain transcripts ingest`.** It parses
+agent session logs (Claude Code, Codex, OpenClaw, Hermes) AND extracted
+consumer exports (ChatGPT `conversations.json`, Claude.ai export) directly:
+detection, secret redaction, imessage-slack rendering, long-session
+splitting, and idempotent re-runs are all native. Prefer it over the manual
+procedure whenever the source is one of those six formats:
+
+```
+gbrain transcripts ingest ~/Downloads/conversations.json   # unzip first
+gbrain transcripts ingest                                  # discover harness logs
+gbrain transcripts status                                  # found vs imported gaps
+```
+
+Native-vs-manual delta to know: the native lane redacts SECRETS (key
+patterns) plus your `~/.gbrain/harvest-private-patterns.txt` regexes and
+counts agent-directed imperatives into frontmatter, but broad PII detection
+(names, phones, addresses) remains YOUR review pass — the manual procedure's
+human scrub step still applies to sensitive corpora. Providers without a
+native adapter (e.g. Perplexity) keep using the manual conversion below.
 
 ## Where Conversations Live
 
