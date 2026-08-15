@@ -144,7 +144,10 @@ describe('v0.47.0 orchestrator behavior', () => {
       join(gbrainDir(), 'config.json'),
       JSON.stringify({
         engine: 'postgres',
-        database_url: 'postgres://nobody:nope@127.0.0.1:1/void',
+        // Credential-free on purpose: port 1 refuses connections, which is
+        // all this fixture needs (a user:pass URL trips the push-time
+        // secret-scan guardrail even when synthetic).
+        database_url: 'postgres://127.0.0.1:1/void',
         embedding_model: 'voyage:voyage-4',
       }),
     );
