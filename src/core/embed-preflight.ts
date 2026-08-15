@@ -70,7 +70,10 @@ export function formatEmbeddingCredsError(d: EmbeddingDiagnosis): string {
       return [
         'No embedding model is configured for this brain.',
         '',
-        '  Set one: gbrain config set embedding_model openai:text-embedding-3-small',
+        // NOT `gbrain config set embedding_model` — that key is file-plane
+        // schema-sizing config the command refuses; init --force is the
+        // sanctioned re-configuration path.
+        '  Set one: gbrain init --force --embedding-model voyage:voyage-4',
         '  Or skip embedding now: re-run with --no-embed',
       ].join('\n');
 

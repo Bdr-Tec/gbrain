@@ -110,6 +110,25 @@ export async function runZeSwitch(args: string[], engine: BrainEngine): Promise<
 
   const flags = parseFlags(args);
 
+  // v0.47: ZeroEntropy is shutting down (see ZEROENTROPY_SUNSET_DATE in
+  // src/core/ai/defaults.ts). Switching a brain ONTO it — including resuming a
+  // half-applied forward switch — is disabled; only --undo (which moves a
+  // brain OFF it) and --dry-run (read-only plan) still run. The whole command
+  // is deleted in the September removal release.
+  if (!flags.undo && !flags.dryRun) {
+    const msg =
+      'ze-switch is disabled: ZeroEntropy shuts down its hosted API on 2026-09-04.\n' +
+      'Switching onto it (or resuming a half-applied switch) would strand this brain.\n' +
+      'To LEAVE ZeroEntropy: gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run\n' +
+      'To undo a prior switch: gbrain ze-switch --undo';
+    if (flags.json) {
+      console.log(JSON.stringify({ status: 'refused', reason: 'provider_sunset', message: msg }));
+    } else {
+      console.error(msg);
+    }
+    process.exit(1);
+  }
+
   try {
     // --dry-run: just plan, never apply.
     if (flags.dryRun) {

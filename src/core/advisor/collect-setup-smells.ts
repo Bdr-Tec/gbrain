@@ -36,14 +36,24 @@ export const collectSetupSmells: AdvisorCollector = {
         collector: 'setup-smells',
         ask_user: true,
       });
-    } else if (!cfg.embedding_model && !cfg.zeroentropy_api_key && !process.env.ZEROENTROPY_API_KEY) {
-      // Default provider needs a key; none present anywhere → embeds will fail.
+    } else if (
+      !cfg.embedding_model &&
+      !cfg.voyage_api_key &&
+      !process.env.VOYAGE_API_KEY &&
+      !process.env.OPENAI_API_KEY
+    ) {
+      // No key for the recommended providers anywhere → embeds will fail.
+      // No command_argv: API keys are env/file-plane only (`gbrain config set
+      // voyage_api_key` writes the DB plane, which the embedding pipeline
+      // never reads — see src/core/config.ts's two-plane doc).
       findings.push({
         id: 'embedding_key_missing',
         severity: 'warn',
         title: 'No embedding provider key is set — embedding will fail at write time.',
-        detail: 'Set zeroentropy_api_key (or choose another provider via embedding_model).',
-        fix: { command_argv: ['gbrain', 'config', 'set', 'zeroentropy_api_key', '<key>'] },
+        detail:
+          'Set VOYAGE_API_KEY in the environment (or add voyage_api_key to ~/.gbrain/config.json), ' +
+          'then `gbrain init --force --embedding-model voyage:voyage-4`. OPENAI_API_KEY works too.',
+        fix: { command_argv: null },
         collector: 'setup-smells',
         ask_user: true,
       });
