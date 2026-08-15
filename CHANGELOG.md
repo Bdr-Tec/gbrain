@@ -2,6 +2,40 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.1.0] - 2026-08-15
+
+**CI in half, evals actually gating.** The Test workflow ran 8–9.5 minutes on
+every push; its long pole was a serial-test job that executed ~140 per-file bun
+processes strictly one-at-a-time even though the quarantine only ever required
+per-process isolation. This release pools that lane (8.5 min → ~4 min in CI,
+~2.5 min locally), wires the PGLite schema-snapshot fast-path into every CI
+runner (it previously existed but only the local loop used it), and rebalances
+the 10-shard matrix on freshly mined weights — a measured branch run landed the
+whole workflow at 255s. E2E stops spending real provider tokens on doc-only
+pushes (content-hash skip with nightly + manual-dispatch exemptions) and runs
+its tiers in parallel behind a fast broken-build spend gate.
+
+Retrieval quality now has a hermetic CLI canary: `gbrain eval gate` accepts a
+deterministic embedder option that drives the full hybrid/RRF pipeline with
+zero API keys, gated in CI on every run (`check:eval-canary`, alongside the new
+`check:eval-chronicle` gate) with its run ledger committed to
+`.gbrain-evals/eval-results.jsonl`. Two registered-but-never-executed guards
+came alive, a registration⇒execution coverage test closes that class for good,
+and 47 orphaned eval-harness tests joined the CI matrix behind a keyless
+allowlist. Test reliability hardening rounds it out: externally-killed serial
+files get a sequential rescue re-run (never a silent pass), machine-global
+files live on a growth-guarded exclusive lane, and the shard-balance test now
+asserts the matrix CI actually runs instead of recomputing its own inputs.
+
+**To take advantage of v0.46.1.0:** nothing to configure — CI and the local
+loops (`bun run test`, `bun run test:serial`, `bun run verify`) are just
+faster. New knobs if you need them: `GBRAIN_SERIAL_POOL=1` restores the old
+fully-sequential serial lane, `GBRAIN_VERIFY_MAX_PARALLEL` bounds verify's
+worker pool, `GBRAIN_NO_SNAPSHOT=1` opts any runner out of the snapshot
+fast-path. Run the retrieval canary yourself with
+`bun run scripts/run-eval-canary.ts` (add `--record` to append the committed
+ledger).
+
 ## [0.46.0.0] - 2026-08-14
 
 **Your other agents' sessions become brain knowledge.** Until now only Claude
