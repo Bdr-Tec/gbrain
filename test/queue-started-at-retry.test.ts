@@ -34,6 +34,13 @@ beforeEach(async () => {
   await engine.executeRaw('DELETE FROM minion_jobs');
 });
 
+async function jobStatus(id: number): Promise<string> {
+  const rows = await engine.executeRaw<{ status: string }>(
+    `SELECT status FROM minion_jobs WHERE id = $1`, [id],
+  );
+  return rows[0]!.status;
+}
+
 async function startedAtOf(id: number): Promise<string | null> {
   const rows = await engine.executeRaw<{ started_at: string | null }>(
     `SELECT started_at::text AS started_at FROM minion_jobs WHERE id = $1`, [id],
@@ -121,4 +128,34 @@ test('end-to-end: a retried job survives the wall-clock sweep on its fresh attem
   );
   const killed2 = await queue.handleWallClockTimeouts(30_000);
   expect(killed2.map(j => j.id)).toContain(id);
+});
+
+test('red-team 5th path: a re-claimed aggregator parent survives the wall-clock sweep', async () => {
+  // Parent parked in waiting-children for LONGER than the wall-clock
+  // threshold while its child runs; every unblock path (killJobs,
+  // completeJob resolve, failJob branches, cancelJob, retroactive sweep,
+  // resolveParent) must clear started_at, or claim()'s COALESCE keeps the
+  // attempt-1 anchor and the sweep dead-letters the aggregation attempt
+  // before it executes a line.
+  const parent = await queue.add('agg-wallclock', {});
+  const child = await queue.add('child-wc', {}, { parent_job_id: parent.id, max_stalled: 1 });
+  // Parent claimed long ago (attempt-1 anchor), then parked waiting-children.
+  await engine.executeRaw(
+    `UPDATE minion_jobs SET status = 'waiting-children', started_at = now() - interval '1 hour' WHERE id = $1`, [parent.id],
+  );
+  // Child stalls to death → killJobs unblocks the parent.
+  await queue.claim('tok-wc', 30_000, 'default', ['child-wc', 'agg-wallclock']);
+  await engine.executeRaw(
+    `UPDATE minion_jobs SET lock_until = now() - interval '1 second' WHERE id = $1`, [child.id],
+  );
+  await queue.handleStalled();
+  expect(await jobStatus(parent.id)).toBe('waiting');
+  // The fix: unblock cleared the stale anchor.
+  expect(await startedAtOf(parent.id)).toBeNull();
+
+  // Parent re-claims for its aggregation attempt → fresh anchor → survives.
+  const reclaimed = await queue.claim('tok-wc2', 30_000, 'default', ['agg-wallclock', 'child-wc']);
+  expect(reclaimed?.id).toBe(parent.id);
+  const killed = await queue.handleWallClockTimeouts(30_000);
+  expect(killed.map(j => j.id)).not.toContain(parent.id);
 });

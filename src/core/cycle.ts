@@ -1836,8 +1836,14 @@ export async function runCycle(
               // W0 (D5.10): the DB row is the authoritative multi-writer
               // identity; the file refresh is best-effort freshness. Propagate
               // the fenced result so steal detection reaches the refresher.
+              // Red-team catch: NEVER rewrite the file half after the fence
+              // reports loss — the unconditional rewrite let the losing
+              // holder clobber the successor's file lock (our pid back in the
+              // file) on the very tick it detected the steal, after which our
+              // pid-checked file release would DELETE the successor's only
+              // host-local protection mid-run.
               const stillOwned = await dbLock!.refresh();
-              await pgliteFileLock!.refresh();
+              if (stillOwned) await pgliteFileLock!.refresh();
               return stillOwned;
             },
             release: async () => {
@@ -1990,7 +1996,13 @@ export async function runCycle(
       } else {
         progress.start('cycle.sync');
         syncAttempted = true; // sync ran its work; undefined pagesAffected now means failure
-        const { result, duration_ms } = await timePhase(() => runPhaseSync(engine, brainDir, dryRun, pull, phases.includes('extract')));
+        // Red-team catch: sync is production's LONGEST phase (resumable
+        // imports can run hours) and was the one long await outside steal
+        // coverage. Raced like the other five: an abandoned wait is safe —
+        // sync checkpoints its progress, holds its own per-source lock (the
+        // successor's sync phase skips with lock-busy), and its stall
+        // watchdog bounds the dangling import. Signal threading lands in W6.
+        const { result, duration_ms } = await racedTimePhase(() => runPhaseSync(engine, brainDir, dryRun, pull, phases.includes('extract')));
         result.duration_ms = duration_ms;
         // Capture changed slugs for incremental extract.
         syncPagesAffected = (result as SyncPhaseResult).pagesAffected;

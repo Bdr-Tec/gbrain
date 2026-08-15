@@ -482,7 +482,7 @@ export class MinionQueue {
       // waiting-children whose last open child we just cancelled.
       for (const parentId of parentIds) {
         await tx.executeRaw(
-          `UPDATE minion_jobs SET status = 'waiting', updated_at = now()
+          `UPDATE minion_jobs SET status = 'waiting', started_at = NULL, updated_at = now()
            WHERE id = $1 AND status = 'waiting-children'
              AND NOT EXISTS (
                SELECT 1 FROM minion_jobs
@@ -803,7 +803,7 @@ export class MinionQueue {
     // Unblock any aggregator parents whose last open child we just killed.
     for (const parentId of [...parentIds].sort((a, b) => a - b)) {
       await tx.executeRaw(
-        `UPDATE minion_jobs SET status = 'waiting', updated_at = now()
+        `UPDATE minion_jobs SET status = 'waiting', started_at = NULL, updated_at = now()
          WHERE id = $1 AND status = 'waiting-children'
            AND NOT EXISTS (
              SELECT 1 FROM minion_jobs
@@ -973,7 +973,7 @@ export class MinionQueue {
         // child with on_child_fail='continue'/'ignore' doesn't strand the
         // parent in waiting-children forever (v0.15 aggregator fix).
         await tx.executeRaw(
-          `UPDATE minion_jobs SET status = 'waiting', updated_at = now()
+          `UPDATE minion_jobs SET status = 'waiting', started_at = NULL, updated_at = now()
            WHERE id = $1 AND status = 'waiting-children'
              AND NOT EXISTS (
                SELECT 1 FROM minion_jobs
@@ -1091,7 +1091,7 @@ export class MinionQueue {
           // After dropping the dep, try to resolve the parent if all OTHER
           // kids are terminal. Terminal set includes 'failed' (v0.15).
           await tx.executeRaw(
-            `UPDATE minion_jobs SET status = 'waiting', updated_at = now()
+            `UPDATE minion_jobs SET status = 'waiting', started_at = NULL, updated_at = now()
              WHERE id = $1 AND status = 'waiting-children'
                AND NOT EXISTS (
                  SELECT 1 FROM minion_jobs
@@ -1109,7 +1109,7 @@ export class MinionQueue {
           // remain. Run the resolve check here so the last child transitioning
           // via THIS code path still unblocks the parent.
           await tx.executeRaw(
-            `UPDATE minion_jobs SET status = 'waiting', updated_at = now()
+            `UPDATE minion_jobs SET status = 'waiting', started_at = NULL, updated_at = now()
              WHERE id = $1 AND status = 'waiting-children'
                AND NOT EXISTS (
                  SELECT 1 FROM minion_jobs
@@ -1322,7 +1322,7 @@ export class MinionQueue {
       // 30s sweep cadence.
       try {
         await this.engine.executeRaw(
-          `UPDATE minion_jobs SET status = 'waiting', updated_at = now()
+          `UPDATE minion_jobs SET status = 'waiting', started_at = NULL, updated_at = now()
             WHERE status = 'waiting-children'
               AND NOT EXISTS (
                 SELECT 1 FROM minion_jobs c
@@ -1344,7 +1344,7 @@ export class MinionQueue {
    */
   async resolveParent(parentId: number): Promise<MinionJob | null> {
     const rows = await this.engine.executeRaw<Record<string, unknown>>(
-      `UPDATE minion_jobs SET status = 'waiting', updated_at = now()
+      `UPDATE minion_jobs SET status = 'waiting', started_at = NULL, updated_at = now()
        WHERE id = $1 AND status = 'waiting-children'
          AND NOT EXISTS (
            SELECT 1 FROM minion_jobs
