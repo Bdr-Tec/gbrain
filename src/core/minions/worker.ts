@@ -400,7 +400,11 @@ export class MinionWorker extends EventEmitter {
         const timer = setTimeout(() => ac.abort(), timeoutMs);
         try {
           await Promise.race([
-            this.engine.executeRaw('SELECT 1'),
+            // Pass the deadline's signal so a hung probe is CANCELLED
+            // (postgres.js .cancel() via runUnsafe) — not abandoned on a
+            // checked-out pool slot. Under pool exhaustion an orphaned
+            // SELECT 1 held a slot and made the exhaustion worse (issue #6).
+            this.engine.executeRaw('SELECT 1', undefined, { signal: ac.signal }),
             new Promise<never>((_, reject) => {
               ac.signal.addEventListener('abort', () => {
                 reject(new Error(`probe timeout after ${timeoutMs}ms`));
@@ -876,7 +880,7 @@ export class MinionWorker extends EventEmitter {
     // and the tick keeps its legacy no-reconnect behavior.
     const engineReconnect = (this.engine as { reconnect?: (ctx?: { error?: unknown }) => Promise<void> }).reconnect;
     const renewalDeps: LockRenewalDeps = {
-      renewLock: (id, tok, dur) => this.queue.renewLock(id, tok, dur),
+      renewLock: (id, tok, dur, opts) => this.queue.renewLock(id, tok, dur, opts),
       audit: lockRenewalAudit,
       now: Date.now,
       setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),

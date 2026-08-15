@@ -35,11 +35,19 @@ afterAll(async () => {
 
 /** Make the DB-liveness probe (`SELECT 1`) throw; delegate every other query.
  *  Returns a restore fn that removes the instance override (falls back to the
- *  prototype method). */
+ *  prototype method). Also records the probe's `opts` so tests can pin that
+ *  the worker passes a cancellation signal (issue #6: a hung probe must be
+ *  cancelled, not abandoned on a checked-out pool slot). */
+const probeOptsSeen: Array<{ signal?: AbortSignal } | undefined> = [];
 function breakLivenessProbe(eng: PGLiteEngine): () => void {
   const real = eng.executeRaw.bind(eng);
-  (eng as { executeRaw: unknown }).executeRaw = async (sql: string, params?: unknown[]) => {
+  (eng as { executeRaw: unknown }).executeRaw = async (
+    sql: string,
+    params?: unknown[],
+    opts?: { signal?: AbortSignal },
+  ) => {
     if (typeof sql === 'string' && sql.trim() === 'SELECT 1') {
+      probeOptsSeen.push(opts);
       throw new Error('probe boom (simulated dead pool)');
     }
     return real(sql, params as never);
@@ -94,6 +102,14 @@ describe('issue #1801 fix #2 — supervised DB self-defense', () => {
     expect(info).not.toBeNull();
     expect(info?.reason).toBe('db_dead');
   }, 10_000);
+
+  it('the probe passes a cancellation AbortSignal so a hung SELECT 1 releases its slot (issue #6)', () => {
+    // Populated by the two runUntilUnhealthy() calls above (>= 3 probes each).
+    expect(probeOptsSeen.length).toBeGreaterThan(0);
+    for (const opts of probeOptsSeen) {
+      expect(opts?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
 
   it('structural: DB probe is NOT gated on !isSupervisedChild; stall detection IS', () => {
     const src = readFileSync(
