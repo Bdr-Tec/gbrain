@@ -2,6 +2,16 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.18.0] - 2026-08-15
+
+**Today's agent spend now reads correctly at every hour, in every timezone.** The admin spend endpoint computed "today" against a naive timestamp that each database session reinterpreted in its own timezone — on any non-UTC session (a PGLite brain following the host clock, a timezone-configured Postgres role), the day boundary shifted by the offset and every evening's spend silently underreported as 0. The boundary is now a UTC instant, independent of session timezone, pinned by a regression test that exercises sessions 12 hours either side of UTC at any wall-clock hour.
+
+The same class also made the new test-suite snapshot fixture time-of-day flaky: the snapshot bakes the build machine's timezone into the restored cluster, so snapshot-restored engines ran sessions in the builder's zone while cold-init engines followed the running process. Restored engines now re-pin their session to the runtime zone (existing tarballs heal without a rebuild), the snapshot builder pins UTC so tarballs are deterministic across hosts, and a parity test asserts cold and snapshot engines agree on their UTC offset.
+
+### Fixed
+- `/admin/api/agents/spend`: `spent_cents_today` no longer underreports on non-UTC sessions (UTC-instant day boundary).
+- Snapshot-restored PGLite engines behave identically to cold-init engines regardless of the machine that built the tarball.
+
 ## [0.45.16.0] - 2026-08-14
 
 **Fix wave W0: the verified-bug hotfix pass of the code-smell series.** A 10-auditor sweep of the codebase produced 122 findings; the top claims were adversarially verified, and this release fixes every verified live bug — the ones that survived the skeptic pass. Long-running brains get the biggest wins: background cycles can no longer silently run twice, dead background jobs no longer strand their parents, and image search no longer silently degrades after re-embedding. Developers get a test suite that runs 10x faster.
