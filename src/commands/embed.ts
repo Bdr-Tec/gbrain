@@ -785,9 +785,11 @@ async function embedPage(
 }
 
 /**
- * Carry code-chunk metadata (language, symbol_name, symbol_type, line range,
- * parent scope, doc comment, qualified name) from a loaded Chunk back into a
- * ChunkInput destined for upsertChunks.
+ * Carry per-chunk metadata — modality (the W0 fix: its omission flipped
+ * image chunks to text) plus the code fields (language, symbol_name,
+ * symbol_type, line range, parent scope, doc comment, qualified name) — from
+ * a loaded Chunk back into a ChunkInput destined for upsertChunks. The
+ * shared carryChunkMetadata list (core/embed-stale.ts) is authoritative.
  *
  * Issue #769: every re-embed used to strip these fields, and upsertChunks
  * overwrites (does not COALESCE) the metadata columns from EXCLUDED, so

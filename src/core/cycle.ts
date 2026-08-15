@@ -50,36 +50,6 @@ import type { BrainEngine } from './engine.ts';
 import { createProgress, type ProgressReporter } from './progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 import { tryAcquireDbLock, reapDeadHolderLocks, LockStolenError, type DbLockHandle } from './db-lock.ts';
-
-/**
- * W0 fix-wave: combine abort signals (external caller signal + the internal
- * lock-steal controller) into one REAL AbortSignal.
- *
- * Deliberately NOT AbortSignal.any: CycleOpts.signal has always been duck-
- * typed in practice (test stubs pass `{ aborted: false }` and flip the flag;
- * pre-W0 the raw object flowed straight into checkAborted, which only reads
- * `.aborted`/`.reason`). AbortSignal.any throws ERR_INVALID_ARG_TYPE on
- * those. Manual fan-in: real signals propagate via listener; listener-less
- * stubs are polled at 50ms — semantically the flip is seen within a tick,
- * and the RETURNED signal is a genuine AbortSignal so phases can hand it to
- * fetch/timers safely.
- */
-function anyAbortSignal(signals: AbortSignal[]): AbortSignal {
-  const c = new AbortController();
-  const forward = (s: AbortSignal) => { if (!c.signal.aborted) c.abort(s.reason); };
-  for (const s of signals) {
-    if (!s) continue;
-    if (s.aborted) { forward(s); break; }
-    if (typeof (s as Partial<AbortSignal>).addEventListener === 'function') {
-      s.addEventListener('abort', () => forward(s), { once: true });
-    } else {
-      const t = setInterval(() => { if (s.aborted) { forward(s); clearInterval(t); } }, 50);
-      (t as unknown as { unref?: () => void }).unref?.();
-      c.signal.addEventListener('abort', () => clearInterval(t), { once: true });
-    }
-  }
-  return c.signal;
-}
 import { assertValidSourceId } from './source-id.ts';
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -764,6 +734,49 @@ function acquireFileLock(lockPath = getLockFilePathDefault()): LockHandle | null
  * Returns `undefined` when there's no lock AND no outer hook so phases
  * short-circuit via their `if (!opts.yieldDuringPhase) return;` guard.
  */
+/**
+ * W0 fix-wave: combine abort signals (external caller signal + the internal
+ * lock-steal controller) into one REAL AbortSignal.
+ *
+ * Deliberately NOT AbortSignal.any: CycleOpts.signal has always been duck-
+ * typed in practice (test stubs pass `{ aborted: false }` and flip the flag;
+ * pre-W0 the raw object flowed straight into checkAborted, which only reads
+ * `.aborted`/`.reason`). AbortSignal.any throws ERR_INVALID_ARG_TYPE on
+ * those. Manual fan-in: real signals propagate via listener; listener-less
+ * stubs are polled at 50ms — semantically the flip is seen within a tick,
+ * and the RETURNED signal is a genuine AbortSignal so phases can hand it to
+ * fetch/timers safely.
+ *
+ * ALWAYS call dispose() when the consuming scope ends (runCycle's finally):
+ * the forward listeners live on the CALLER's signals, and long-lived callers
+ * (the autopilot daemon passes its daemon-lifetime shutdown signal into
+ * every cycle tick) would otherwise accumulate one listener + captured
+ * controller per invocation forever (ship-review perf catch).
+ */
+export function anyAbortSignal(signals: AbortSignal[]): { signal: AbortSignal; dispose: () => void } {
+  const c = new AbortController();
+  const cleanups: Array<() => void> = [];
+  const forward = (s: AbortSignal) => { if (!c.signal.aborted) c.abort(s.reason); };
+  for (const s of signals) {
+    if (!s) continue;
+    if (s.aborted) { forward(s); break; }
+    if (typeof (s as Partial<AbortSignal>).addEventListener === 'function') {
+      const listener = () => forward(s);
+      s.addEventListener('abort', listener, { once: true });
+      cleanups.push(() => s.removeEventListener('abort', listener));
+    } else {
+      const t = setInterval(() => { if (s.aborted) { forward(s); clearInterval(t); } }, 50);
+      (t as unknown as { unref?: () => void }).unref?.();
+      c.signal.addEventListener('abort', () => clearInterval(t), { once: true });
+      cleanups.push(() => clearInterval(t));
+    }
+  }
+  return {
+    signal: c.signal,
+    dispose: () => { for (const fn of cleanups) { try { fn(); } catch { /* best effort */ } } },
+  };
+}
+
 export function buildYieldDuringPhase(
   lock: LockHandle | null,
   outer?: () => Promise<void>,
@@ -842,7 +855,7 @@ export function startCycleLockRefresher(
 }
 
 /** Refresh 6x per TTL window (~50s at the 5-min TTL), matching withRefreshingLock's cadence. */
-export const CYCLE_LOCK_REFRESH_INTERVAL_MS = Math.max(15_000, LOCK_TTL_MS / 6);
+const CYCLE_LOCK_REFRESH_INTERVAL_MS = Math.max(15_000, LOCK_TTL_MS / 6);
 
 /**
  * GBRAIN_CYCLE_LOCK_REFRESH_MS: env-only escape hatch (incident tuning +
@@ -1871,9 +1884,12 @@ export async function runCycle(
   // steal is caught below and returned as a structured partial report.
   const externalSignal = opts.signal;
   const stolen: AbortController | null = lock ? new AbortController() : null;
-  const cycleSignal: AbortSignal | undefined = stolen
-    ? (externalSignal ? anyAbortSignal([externalSignal, stolen.signal]) : stolen.signal)
-    : externalSignal;
+  const combinedSignal = stolen && externalSignal
+    ? anyAbortSignal([externalSignal, stolen.signal])
+    : null;
+  const cycleSignal: AbortSignal | undefined = combinedSignal
+    ? combinedSignal.signal
+    : (stolen?.signal ?? externalSignal);
   const stopRefresher: (() => void) | undefined = lock && stolen
     ? startCycleLockRefresher(lock, stolen, cycleLockIdFor(opts.sourceId))
     : undefined;
@@ -2697,6 +2713,10 @@ export async function runCycle(
     }
   } finally {
     stopRefresher?.();
+    // Detach the combined-signal forwarders from the CALLER's signal — the
+    // autopilot daemon reuses one shutdown signal across every tick, and
+    // undisposed listeners accumulate for the daemon's lifetime.
+    combinedSignal?.dispose();
     if (lock) {
       try {
         // Safe after a steal: release() is fenced on (id, pid, acquired_at),

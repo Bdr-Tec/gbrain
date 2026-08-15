@@ -26,20 +26,21 @@ SCAN_ROOT="${GBRAIN_GUARD_ROOT:-src/}"
 # W0 fix-wave (Tier-1 #11): the previous `\([^)]*\)` argument matcher could
 # not cross a nested `)` — `${JSON.stringify(obj.get())}::jsonb` was
 # invisible (the same regex-hole class that made check-no-double-retry a
-# permanently-green no-op). `.*\)` spans nested calls; the trailing literal
-# `)}::jsonb` adjacency keeps the SAFE `${JSON.stringify(x)}::text::jsonb`
-# spelling unflagged (no `)}::jsonb` adjacency there).
-PATTERN='\$\{JSON\.stringify\(.*\)\}::jsonb'
+# permanently-green no-op). `[^}]*` spans nested parens but CANNOT cross the
+# interpolation's closing `}`, so a safe `${JSON.stringify(x)}::text::jsonb`
+# followed by a separate `${expr()}::jsonb` on the same line is not spanned
+# into a false positive (ship-review catch — the greedy `.*` variant was).
+PATTERN='\$\{JSON\.stringify\([^}]*\)\}::jsonb'
 
 if grep -rEn "$PATTERN" "$SCAN_ROOT" 2>/dev/null; then
   echo
-  echo "ERROR: Found JSON.stringify(...)::jsonb pattern in src/."
+  echo "ERROR: Found JSON.stringify(...)::jsonb pattern in $SCAN_ROOT."
   echo "       postgres.js v3 stringifies again, producing JSONB string literals."
   echo "       Use sql.json(x) instead. See feedback_postgres_jsonb_double_encode.md."
   exit 1
 fi
 
-echo "OK: no JSON.stringify(x)::jsonb interpolation pattern in src/"
+echo "OK: no JSON.stringify(x)::jsonb interpolation pattern in $SCAN_ROOT"
 
 # v0.13.1 #219: guard against max_stalled DEFAULT 1 regressing in any schema
 # source file. DEFAULT 1 dead-lettered any SIGKILL'd job on first stall, making

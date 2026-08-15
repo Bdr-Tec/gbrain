@@ -28,7 +28,9 @@ export interface DbLockHandle {
   id: string;
   /**
    * Per-acquisition fencing identity (W0 fix-wave, D5.10): the row's
-   * `acquired_at` as DB-rendered text, captured at acquire time. refresh()
+   * acquired_at rendered as epoch-seconds text (GUC-independent — timestamptz::text
+   * would vary with per-session TimeZone/DateStyle across pools), captured at
+   * acquire time. refresh()
    * and release() require an exact match, so a PID-reuse impostor (or this
    * handle after a steal) can never refresh or delete a successor's row.
    * `(id, holder_pid)` alone is NOT identity — PIDs recycle.
@@ -245,18 +247,22 @@ export async function tryAcquireDbLock(
         WHERE gbrain_cycle_locks.ttl_expires_at < NOW()
           AND (gbrain_cycle_locks.last_refreshed_at IS NULL
                OR gbrain_cycle_locks.last_refreshed_at < NOW() - ${stealGraceSeconds} * INTERVAL '1 second')
-      RETURNING id, acquired_at::text AS fence
+      RETURNING id, extract(epoch from acquired_at)::text AS fence
     `;
     if (rows.length === 0) return null;
     // Fencing identity (D5.10): acquired_at is written fresh on INSERT and on
-    // every steal, so its DB-rendered text uniquely names THIS acquisition.
-    // Compared as text (column cast, not param parse) so timestamp precision
-    // survives the round-trip exactly.
+    // every steal, so it uniquely names THIS acquisition. Rendered as
+    // extract(epoch ...)::text — GUC-INDEPENDENT (ship-review catch, 3
+    // specialists): plain timestamptz::text varies with per-session
+    // TimeZone/DateStyle, and the fence is captured on the acquire pool but
+    // compared on the direct pool; a GUC divergence would turn every fenced
+    // refresh into a false steal. Epoch text is stable across sessions and
+    // keeps microsecond precision.
     const fence = rows[0].fence;
     const deregister = registerCleanup(`db-lock:${lockId}`, async () => {
       await sql`
         DELETE FROM gbrain_cycle_locks
-        WHERE id = ${lockId} AND holder_pid = ${pid} AND acquired_at::text = ${fence}
+        WHERE id = ${lockId} AND holder_pid = ${pid} AND extract(epoch from acquired_at)::text = ${fence}
       `;
     });
     return {
@@ -271,7 +277,7 @@ export async function tryAcquireDbLock(
           `UPDATE gbrain_cycle_locks
               SET ttl_expires_at = NOW() + ($1)::interval,
                   last_refreshed_at = NOW()
-            WHERE id = $2 AND holder_pid = $3 AND acquired_at::text = $4
+            WHERE id = $2 AND holder_pid = $3 AND extract(epoch from acquired_at)::text = $4
             RETURNING id`,
           [ttl, lockId, pid, fence],
         );
@@ -281,7 +287,7 @@ export async function tryAcquireDbLock(
         deregister();
         await sql`
           DELETE FROM gbrain_cycle_locks
-          WHERE id = ${lockId} AND holder_pid = ${pid} AND acquired_at::text = ${fence}
+          WHERE id = ${lockId} AND holder_pid = ${pid} AND extract(epoch from acquired_at)::text = ${fence}
         `;
       },
     };
@@ -302,7 +308,7 @@ export async function tryAcquireDbLock(
          WHERE gbrain_cycle_locks.ttl_expires_at < NOW()
            AND (gbrain_cycle_locks.last_refreshed_at IS NULL
                 OR gbrain_cycle_locks.last_refreshed_at < NOW() - $5 * INTERVAL '1 second')
-       RETURNING id, acquired_at::text AS fence`,
+       RETURNING id, extract(epoch from acquired_at)::text AS fence`,
       [lockId, pid, host, ttl, stealGraceSeconds],
     );
     if (rows.length === 0) return null;
@@ -310,7 +316,7 @@ export async function tryAcquireDbLock(
     const fence = String((rows[0] as { fence: string }).fence);
     const deregister = registerCleanup(`db-lock:${lockId}`, async () => {
       await db.query(
-        `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND acquired_at::text = $3`,
+        `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND extract(epoch from acquired_at)::text = $3`,
         [lockId, pid, fence],
       );
     });
@@ -322,7 +328,7 @@ export async function tryAcquireDbLock(
           `UPDATE gbrain_cycle_locks
               SET ttl_expires_at = NOW() + $1::interval,
                   last_refreshed_at = NOW()
-            WHERE id = $2 AND holder_pid = $3 AND acquired_at::text = $4
+            WHERE id = $2 AND holder_pid = $3 AND extract(epoch from acquired_at)::text = $4
             RETURNING id`,
           [ttl, lockId, pid, fence],
         );
@@ -331,7 +337,7 @@ export async function tryAcquireDbLock(
       release: async () => {
         deregister();
         await db.query(
-          `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND acquired_at::text = $3`,
+          `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND extract(epoch from acquired_at)::text = $3`,
           [lockId, pid, fence],
         );
       },

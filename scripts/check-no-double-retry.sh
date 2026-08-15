@@ -59,12 +59,19 @@ fi
 # next 3 lines. W0 fix-wave (Tier-1 #11): the previous pass was gated on
 # pcregrep, which is not installed on dev machines OR CI — it never ran.
 # perl is always available; same 3-line window, always on.
-if find "$SCAN_ROOT" -name '*.ts' -type f -print0 2>/dev/null | xargs -0 perl -0777 -ne '
+#
+# Ship-review catch: perl must ALWAYS exit 0 and let OUTPUT PRESENCE decide.
+# An exit-1-from-clean-batches design breaks under `set -o pipefail` the
+# moment src/ outgrows one xargs batch (xargs exits 123, overriding grep's
+# verdict) — a silently missed violation, the same permanently-green class
+# this guard was just cured of.
+MULTILINE_MATCHES=$(find "$SCAN_ROOT" -name '*.ts' -type f -print0 2>/dev/null | xargs -0 perl -0777 -ne '
   if (/withRetry\([^\n]*\n(?:[^\n]*\n){0,2}?[^\n]*engine\.(?:addLinksBatch|addTimelineEntriesBatch|upsertChunks)/) {
-    print "$ARGV: multi-line withRetry(...engine.batch...) wrap\n"; $found = 1;
+    print "$ARGV: multi-line withRetry wrap around an engine batch call\n";
   }
-  END { exit($found ? 0 : 1) }
-' 2>/dev/null | grep -q .; then
+' 2>/dev/null || true)
+if [ -n "$MULTILINE_MATCHES" ]; then
+  echo "$MULTILINE_MATCHES"
   echo
   echo "ERROR: Multi-line withRetry(...engine.batch...) wrap found in $SCAN_ROOT. See above."
   exit 1

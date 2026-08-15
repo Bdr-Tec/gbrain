@@ -443,15 +443,22 @@ export interface LintOpts {
   exclude?: string[];
   /**
    * W0 fix-wave (Tier-1 #14): per-page hook fired for every page WITH
-   * issues, before any fix is applied. The CLI passes a printer so human
-   * detail and the aggregate counts come from ONE scan — pre-fix, runLint
-   * ran its own full read+lint+fix loop and THEN called runLintCore for the
-   * summary, linting every page twice and reporting "0 auto-fixed" because
-   * the second pass saw already-fixed files.
+   * issues, after this run's fix attempt for that page — fixedCount is the
+   * number of fixes just applied (0 when --fix is off or nothing was
+   * fixable). The CLI passes a printer so human detail and the aggregate
+   * counts come from ONE scan — pre-fix, runLint ran its own full
+   * read+lint+fix loop and THEN called runLintCore for the summary, linting
+   * every page twice and reporting "0 auto-fixed" because the second pass
+   * saw already-fixed files.
    */
   onPageIssues?: (relPath: string, issues: LintIssue[], fixedCount: number) => void;
   /** Companion to onPageIssues: per-page progress tick (CLI progress bar). */
   onPageScanned?: () => void;
+  /**
+   * Fired once with the collected page count before scanning starts, so the
+   * CLI can size its progress bar without walking the tree a second time.
+   */
+  onPagesCollected?: (count: number) => void;
 }
 
 export interface LintResult {
@@ -479,6 +486,7 @@ export async function runLintCore(opts: LintOpts): Promise<LintResult> {
 
   const isSingleFile = statSync(opts.target).isFile();
   const pages = isSingleFile ? [opts.target] : collectPages(opts.target, opts.exclude ?? []);
+  opts.onPagesCollected?.(pages.length);
 
   // Resolve content-sanity config once for this lint run (D1: lift DB
   // config when reachable). Caller can pre-pass via opts.contentSanity
@@ -568,20 +576,21 @@ export async function runLint(args: string[]) {
   // saw already-fixed files so the summary reported "0 auto-fixed" after
   // fixing N. Human detail now streams from runLintCore's per-page hooks
   // and the counts come from the same single pass.
-  const isSingleFile = statSync(target).isFile();
-  const pageCount = isSingleFile ? 1 : collectPages(target, extraExcludes).length;
-
   // Progress on stderr. Stdout keeps the per-issue human output it always had.
+  // Ship-review perf catch: the tree is walked ONCE — runLintCore reports the
+  // collected count via onPagesCollected (pre-fix the CLI ran its own
+  // collectPages just to size the progress bar, a second full readdir/stat
+  // walk on every directory lint).
   const { createProgress } = await import('../core/progress.ts');
   const { getCliOptions, cliOptsToProgressOptions } = await import('../core/cli-options.ts');
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
-  progress.start('lint.pages', pageCount);
 
   const result = await runLintCore({
     target,
     fix: doFix,
     dryRun,
     exclude: extraExcludes,
+    onPagesCollected: (count) => progress.start('lint.pages', count),
     onPageScanned: () => progress.tick(1),
     onPageIssues: (relPath, issues, fixedCount) => {
       console.log(`\n${relPath}:`);

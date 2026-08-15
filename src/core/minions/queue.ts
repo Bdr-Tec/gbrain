@@ -1311,6 +1311,27 @@ export class MinionQueue {
       // distinguish "died via max-stall" from "timed out during run".
       await this.killJobs(tx, deadRows, 'dead', 'max stalled count exceeded');
       return { requeued: requeuedRows.map(rowToMinionJob), dead: deadRows.map(rowToMinionJob) };
+    }).then(async (result) => {
+      // W0 ship-review (data-migration): the per-kill unblock above is
+      // forward-only — parents stranded in 'waiting-children' by PRE-upgrade
+      // stall-deaths (children already status='dead') are never revisited by
+      // any per-event unblock site. This idempotent sweep self-heals ALL
+      // stranding classes, retroactive included, once per stall tick: any
+      // waiting-children parent with zero non-terminal children flips back to
+      // 'waiting'. Cheap (single UPDATE, NOT EXISTS on an indexed FK) at the
+      // 30s sweep cadence.
+      try {
+        await this.engine.executeRaw(
+          `UPDATE minion_jobs SET status = 'waiting', updated_at = now()
+            WHERE status = 'waiting-children'
+              AND NOT EXISTS (
+                SELECT 1 FROM minion_jobs c
+                WHERE c.parent_job_id = minion_jobs.id
+                  AND c.status NOT IN ('completed', 'failed', 'dead', 'cancelled')
+              )`
+        );
+      } catch { /* best-effort backstop; the per-kill unblock is the primary path */ }
+      return result;
     });
   }
 

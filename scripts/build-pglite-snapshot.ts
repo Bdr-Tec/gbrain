@@ -18,22 +18,13 @@
 //
 // Re-run whenever you touch src/core/migrate.ts or src/schema.sql.
 
-import { writeFileSync, mkdirSync, existsSync, readFileSync, rmdirSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, rmdirSync, rmSync, mkdtempSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import * as crypto from "node:crypto";
 
-// W0 fix-wave: build under the EXACT embedding shape the test suite pins.
-// bunfig.toml preloads test/helpers/legacy-embedding-preload.ts, which
-// configures the gateway to the shared LEGACY_EMBEDDING_CONFIG (OpenAI
-// 1536-d) for every `bun test` file — so the snapshot's baked vector(dims)
-// columns MUST match that shape, not the builder machine's ambient config
-// (nor the shipped 1280-d default an unconfigured gateway falls back to).
-// GBRAIN_HOME is still isolated so no other ambient config leaks in.
 import { configureGateway, getEmbeddingDimensions, getEmbeddingModel } from "../src/core/ai/gateway.ts";
 import { LEGACY_EMBEDDING_CONFIG } from "../test/helpers/legacy-embedding-config.ts";
-process.env.GBRAIN_HOME = mkdtempSync(join(tmpdir(), "gbrain-snapshot-hermetic-"));
-configureGateway({ ...LEGACY_EMBEDDING_CONFIG, env: { ...process.env } });
 
 import { PGLiteEngine, computeSnapshotSchemaHash } from "../src/core/pglite-engine.ts";
 import { MIGRATIONS } from "../src/core/migrate.ts";
@@ -48,6 +39,20 @@ async function main() {
   const versionPath = "test/fixtures/pglite-snapshot.version";
   const lockPath = "test/fixtures/.pglite-snapshot.lock";
   mkdirSync(dirname(fixturePath), { recursive: true });
+
+  // W0 fix-wave: build under the EXACT embedding shape the test suite pins.
+  // bunfig.toml preloads test/helpers/legacy-embedding-preload.ts, which
+  // configures the gateway to the shared LEGACY_EMBEDDING_CONFIG (OpenAI
+  // 1536-d) for every `bun test` file — so the snapshot's baked vector(dims)
+  // columns MUST match that shape, not the builder machine's ambient config
+  // (nor the shipped 1280-d default an unconfigured gateway falls back to).
+  // GBRAIN_HOME is isolated so no ambient config leaks in. Set here in
+  // main(), not module scope: ESM hoists imports, so module-scope placement
+  // implied an ordering it never had — it works because config reads are
+  // lazy, and being inside main() makes that explicit.
+  const hermeticHome = mkdtempSync(join(tmpdir(), "gbrain-snapshot-hermetic-"));
+  process.env.GBRAIN_HOME = hermeticHome;
+  configureGateway({ ...LEGACY_EMBEDDING_CONFIG, env: { ...process.env } });
 
   const schemaHash = computeSchemaHash();
 
@@ -76,7 +81,8 @@ async function main() {
     ownLock = true;
   } catch {
     console.log(`[build-pglite-snapshot] another builder holds ${lockPath}; waiting...`);
-    const deadline = Date.now() + 120_000;
+    const timeoutMs = Number(process.env.GBRAIN_SNAPSHOT_LOCK_TIMEOUT_MS) || 120_000;
+    const deadline = Date.now() + timeoutMs;
     while (existsSync(lockPath) && Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 250));
     }
@@ -84,8 +90,20 @@ async function main() {
       console.log(`[build-pglite-snapshot] concurrent builder finished; snapshot fresh`);
       return;
     }
-    // Stale lock (crashed builder) or still-stale snapshot: take over.
-    try { mkdirSync(lockPath); ownLock = true; } catch { /* proceed unlocked as last resort */ }
+    // Stale lock (crashed builder) or still-stale snapshot: TAKE OVER.
+    // W0 ship-review catch: mkdirSync on a still-existing dir always throws
+    // EEXIST — the original retry could never acquire, so a single crashed
+    // builder left every future rebuild waiting the full deadline and then
+    // proceeding UNLOCKED forever (the stale dir was never removed). Remove
+    // the stale dir first, then re-acquire.
+    try {
+      if (existsSync(lockPath)) {
+        console.log(`[build-pglite-snapshot] stale lock (crashed builder?) — taking over`);
+        rmdirSync(lockPath);
+      }
+      mkdirSync(lockPath);
+      ownLock = true;
+    } catch { /* lost the takeover race to another builder; proceed unlocked as last resort */ }
   }
   try {
   console.log(`[build-pglite-snapshot] schema hash: ${schemaHash.slice(0, 16)}...`);
@@ -118,6 +136,7 @@ async function main() {
   console.log(`[build-pglite-snapshot] wrote ${versionPath}`);
   } finally {
     if (ownLock) { try { rmdirSync(lockPath); } catch { /* best effort */ } }
+    try { rmSync(hermeticHome, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 }
 

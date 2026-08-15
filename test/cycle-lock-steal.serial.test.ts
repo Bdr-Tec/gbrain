@@ -67,8 +67,11 @@ test('mid-run steal → structured partial report, no further phases, successor 
           WHERE id = $1`,
         [lockId],
       );
-      // Give the 20ms refresher ample time to observe the steal.
-      await new Promise(r => setTimeout(r, 200));
+      // Give the 20ms refresher a 1.5s window (75 nominal ticks) to observe
+      // the steal — sized for shard-load timer starvation, the flake class
+      // db-lock-fencing.test.ts documents (a 200ms window ≈ 10 ticks proved
+      // too tight under a loaded suite).
+      await new Promise(r => setTimeout(r, 1_500));
     },
   });
 

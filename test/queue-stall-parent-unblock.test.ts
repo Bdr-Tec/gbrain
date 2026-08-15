@@ -137,3 +137,33 @@ test('all three reapers route through the shared kill tail with their own outcom
   await expectMsg(p1.id, c1.id, 'timeout', 'timeout exceeded');
   await expectMsg(p2.id, c2.id, 'timeout', 'wall-clock timeout exceeded');
 });
+
+test('retroactive sweep: a parent stranded BEFORE the fix (children already dead) self-heals on the next stall tick', async () => {
+  // Simulate the pre-upgrade world: child is already terminal ('dead') with
+  // NO child_done ever emitted, parent parked in waiting-children. No
+  // per-kill unblock will ever revisit this pair — only the sweep can.
+  const parent = await queue.add('agg-stranded', {});
+  const child = await queue.add('child-stranded', {}, { parent_job_id: parent.id });
+  await engine.executeRaw(
+    `UPDATE minion_jobs SET status = 'waiting-children' WHERE id = $1`, [parent.id],
+  );
+  await engine.executeRaw(
+    `UPDATE minion_jobs SET status = 'dead', error_text = 'max stalled count exceeded (pre-upgrade)' WHERE id = $1`, [child.id],
+  );
+
+  const { requeued, dead } = await queue.handleStalled();
+  expect(requeued).toHaveLength(0);
+  expect(dead).toHaveLength(0);
+  // The sweep healed the stranded parent even though THIS tick killed nothing.
+  expect(await jobStatus(parent.id)).toBe('waiting');
+});
+
+test('retroactive sweep does NOT unblock a parent with a live child', async () => {
+  const parent = await queue.add('agg-live', {});
+  await queue.add('child-live', {}, { parent_job_id: parent.id });
+  await engine.executeRaw(
+    `UPDATE minion_jobs SET status = 'waiting-children' WHERE id = $1`, [parent.id],
+  );
+  await queue.handleStalled();
+  expect(await jobStatus(parent.id)).toBe('waiting-children');
+});
