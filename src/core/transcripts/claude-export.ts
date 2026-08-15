@@ -75,7 +75,13 @@ export const claudeExportAdapter: TranscriptAdapter = {
         });
       }
       if (!messages.length) continue;
-      const sessionId = (typeof c.uuid === 'string' && c.uuid) || `claude-export-${sessions}`;
+      // Content-derived fallback (see chatgpt-export.ts): a bare per-file
+      // ordinal collides across export files.
+      const sessionId =
+        (typeof c.uuid === 'string' && c.uuid) ||
+        `claude-export-fallback-${typeof c.name === 'string' ? c.name : ''}-${
+          typeof c.created_at === 'string' ? c.created_at : ''
+        }-${messages[0]?.timestamp ?? ''}-${sessions}`;
       sessions++;
       yield {
         meta: {

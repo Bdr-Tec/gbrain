@@ -270,9 +270,15 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
   // share a watermark), and equivalent spellings of one dir must not
   // fragment into separate watermarks.
   const { resolve } = await import('node:path');
+  const { hostname } = await import('node:os');
+  // The all-lane scope is THIS machine's harness roots, so the fingerprint
+  // carries host + roots: checkpoints are DB-backed and shared across every
+  // machine on the brain — a bare literal would let machine B inherit
+  // machine A's watermark and silently skip local sessions it never scanned.
+  const { harnessRoots } = await import('../core/transcripts/detect.ts');
   const checkpointSpec =
     parsed.paths.length === 0
-      ? ['--all-discovery']
+      ? ['--all-discovery', hostname(), ...harnessRoots().map((r) => r.root).sort()]
       : [...parsed.paths].map((p) => resolve(p)).sort();
 
   // No paths: discovery. Without the all flag, show what WOULD be imported

@@ -251,6 +251,12 @@ export async function runTranscriptsIngest(
             outcome.statuses = rendered.parts.map(() => 'planned' as const);
             result.pages.planned += rendered.parts.length;
           } else {
+            // The RESOLVED base slug: identity dedup can resolve part 1 to an
+            // EXISTING page under a different slug (same session id, changed
+            // title or corrected start date) — raw-data writes and stale-part
+            // reconciliation must follow the page that actually exists, or
+            // every re-run aborts on a nonexistent slug.
+            let resolvedBaseSlug = rendered.baseSlug;
             for (const part of rendered.parts) {
               try {
                 const r = await importFromContent(engine, part.slug, part.content, {
@@ -265,7 +271,9 @@ export async function runTranscriptsIngest(
                 if (r.status === 'imported') result.pages.imported++;
                 else if (r.status === 'skipped') result.pages.skipped++;
                 else result.pages.errored++;
-                result.slugsTouched.push(part.slug);
+                const actualSlug = r.slug || part.slug;
+                if (part.part === 1 && actualSlug) resolvedBaseSlug = actualSlug;
+                result.slugsTouched.push(actualSlug);
               } catch (err) {
                 if (isPerSessionImportError(err)) throw err; // → per-session catch
                 const e = new Error(
@@ -300,22 +308,29 @@ export async function runTranscriptsIngest(
             // would otherwise make that hole permanent.
             if (redacted.session.meta.raw) {
               try {
-                const needsRaw = allSkipped
-                  ? (await engine.getRawData(rendered.baseSlug, undefined, {
-                      sourceId: opts.sourceId,
-                    })).length === 0
-                  : true;
+                const rawSource = `transcript:${session.meta.harness}`;
+                // Skipped re-runs COMPARE, never assume: existence alone is
+                // not freshness — a private pattern added AFTER the first
+                // import must refresh the stored copy, and a prior run can
+                // have died before this write. Content-equal rows skip the
+                // write so healthy re-runs stay write-free.
+                let needsRaw = true;
+                if (allSkipped) {
+                  const existing = await engine.getRawData(resolvedBaseSlug, rawSource, {
+                    sourceId: opts.sourceId,
+                  });
+                  needsRaw =
+                    existing.length === 0 ||
+                    JSON.stringify(existing[0].data) !== JSON.stringify(redacted.session.meta.raw);
+                }
                 if (needsRaw) {
-                  await engine.putRawData(
-                    rendered.baseSlug,
-                    `transcript:${session.meta.harness}`,
-                    redacted.session.meta.raw,
-                    { sourceId: opts.sourceId },
-                  );
+                  await engine.putRawData(resolvedBaseSlug, rawSource, redacted.session.meta.raw, {
+                    sourceId: opts.sourceId,
+                  });
                 }
               } catch (err) {
                 const e = new Error(
-                  `${RUN_ABORT_MARKER}: putRawData failed for ${rendered.baseSlug}: ${
+                  `${RUN_ABORT_MARKER}: putRawData failed for ${resolvedBaseSlug}: ${
                     err instanceof Error ? err.message : String(err)
                   }`,
                 );
@@ -334,10 +349,10 @@ export async function runTranscriptsIngest(
             const partRows = await engine.executeRaw<{ slug: string }>(
               `SELECT slug FROM pages
                WHERE source_id = $1 AND deleted_at IS NULL AND slug LIKE $2`,
-              [opts.sourceId, `${rendered.baseSlug}-p%`],
+              [opts.sourceId, `${resolvedBaseSlug}-p%`],
             );
             for (const row of partRows) {
-              const suffix = row.slug.slice(rendered.baseSlug.length);
+              const suffix = row.slug.slice(resolvedBaseSlug.length);
               const m = /^-p(\d+)$/.exec(suffix);
               const num = m ? Number(m[1]) : NaN;
               if (Number.isFinite(num) && num > rendered.parts.length) {

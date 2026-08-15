@@ -146,10 +146,15 @@ export const chatgptExportAdapter: TranscriptAdapter = {
       if (!leaf) continue;
       const messages = walkFrom(mapping, leaf);
       if (!messages.length) continue;
+      // Fallback ids are CONTENT-DERIVED, never a bare per-file ordinal: two
+      // export files' first id-less conversations would otherwise both hash
+      // from the same string and dedup-skip or abort each other.
       const sessionId =
         (typeof c.conversation_id === 'string' && c.conversation_id) ||
         (typeof c.id === 'string' && c.id) ||
-        `chatgpt-${sessions}`;
+        `chatgpt-fallback-${typeof c.title === 'string' ? c.title : ''}-${
+          typeof c.create_time === 'number' ? c.create_time : ''
+        }-${messages[0]?.timestamp ?? ''}-${sessions}`;
       sessions++;
       yield {
         meta: {
