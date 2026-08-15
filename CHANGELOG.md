@@ -48,9 +48,10 @@ adds real per-job blast-radius control.
   abort the query via its cancellation signal so the slot is released.
 - Long-running maintenance holds (index rebuilds, non-transactional
   migrations, backfill write batches) now reserve from the direct session
-  lane instead of pinning the worker's shared pool — capped so the
-  claim/renewal heartbeats always keep a free slot, and falling back to the
-  previous behavior when the direct lane is unavailable.
+  lane instead of pinning the worker's shared pool — capped so reserved
+  holds always leave a direct-lane slot for the claim/renewal heartbeats,
+  and falling back to the previous behavior when the direct lane is
+  unavailable.
 
 Full operational detail: `docs/guides/minions-deployment.md` (isolation
 sizing: connections, memory, spawn cost) and
