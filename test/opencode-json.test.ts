@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { withEnv } from './helpers/with-env.ts';
 import {
   opencodeEntryKind,
   opencodeEntrySnippet,
@@ -69,35 +70,26 @@ describe('host-specs opencode path helpers', () => {
     expect(t.references.join(' ')).toContain('OPENCODE-CLI-PIN.md');
   });
 
-  test('config dir resolves via XDG_CONFIG_HOME, then HOME — OPENCODE_CONFIG* deliberately inert', () => {
-    const savedXdg = process.env.XDG_CONFIG_HOME;
-    const savedHome = process.env.HOME;
-    const savedCfg = process.env.OPENCODE_CONFIG;
-    const savedCfgDir = process.env.OPENCODE_CONFIG_DIR;
-    try {
-      process.env.OPENCODE_CONFIG = join(dir, 'somewhere-else.json');
-      process.env.OPENCODE_CONFIG_DIR = join(dir, 'somewhere-else');
-      process.env.XDG_CONFIG_HOME = join(dir, 'xdg');
+  test('config dir resolves via XDG_CONFIG_HOME, then HOME — OPENCODE_CONFIG* deliberately inert', async () => {
+    await withEnv({
+      OPENCODE_CONFIG: join(dir, 'somewhere-else.json'),
+      OPENCODE_CONFIG_DIR: join(dir, 'somewhere-else'),
+      XDG_CONFIG_HOME: join(dir, 'xdg'),
+    }, () => {
       expect(opencodeConfigDir()).toBe(join(dir, 'xdg', 'opencode'));
-      delete process.env.XDG_CONFIG_HOME;
-      process.env.HOME = join(dir, 'home');
+    });
+    await withEnv({
+      OPENCODE_CONFIG: join(dir, 'somewhere-else.json'),
+      OPENCODE_CONFIG_DIR: join(dir, 'somewhere-else'),
+      XDG_CONFIG_HOME: undefined,
+      HOME: join(dir, 'home'),
+    }, () => {
       expect(opencodeConfigDir()).toBe(join(dir, 'home', '.config', 'opencode'));
-    } finally {
-      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = savedXdg;
-      if (savedHome === undefined) delete process.env.HOME;
-      else process.env.HOME = savedHome;
-      if (savedCfg === undefined) delete process.env.OPENCODE_CONFIG;
-      else process.env.OPENCODE_CONFIG = savedCfg;
-      if (savedCfgDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
-      else process.env.OPENCODE_CONFIG_DIR = savedCfgDir;
-    }
+    });
   });
 
-  test('global path prefers the file that exists; .jsonc wins ties and fresh dirs (vendor parity)', () => {
-    const savedXdg = process.env.XDG_CONFIG_HOME;
-    try {
-      process.env.XDG_CONFIG_HOME = join(dir, 'xdg');
+  test('global path prefers the file that exists; .jsonc wins ties and fresh dirs (vendor parity)', async () => {
+    await withEnv({ XDG_CONFIG_HOME: join(dir, 'xdg') }, () => {
       const ocDir = join(dir, 'xdg', 'opencode');
       // Fresh: .jsonc (what `opencode mcp add` itself writes).
       expect(opencodeGlobalConfigPath()).toBe(join(ocDir, 'opencode.jsonc'));
@@ -108,10 +100,7 @@ describe('host-specs opencode path helpers', () => {
       // Both exist → .jsonc wins.
       writeFileSync(join(ocDir, 'opencode.jsonc'), '{}');
       expect(opencodeGlobalConfigPath()).toBe(join(ocDir, 'opencode.jsonc'));
-    } finally {
-      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = savedXdg;
-    }
+    });
   });
 
   test('project path is the docs-canonical opencode.json in the workspace root', () => {

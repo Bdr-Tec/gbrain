@@ -69,6 +69,8 @@ CHECKS=(
   "check:batch-audit-site"
   "check:engine-dynamic-import"
   "check:grok-pin"
+  "check:opencode-pin"
+  "check:pin-doc-privacy"
   "check:worker-lock-renewal-shape"
   "check:bootstrap-tag"
   "check:bootstrap-templates"
