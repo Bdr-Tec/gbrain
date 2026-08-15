@@ -4230,11 +4230,22 @@ purpose; needs baseline-governance care per the BrainBench gate rules.
 ### PTY-mode transcript capture
 **Priority:** P3
 
-**What:** `transcript-capture.ts` currently uses plain `child_process.spawn` pipes. Some agents only emit ANSI colors / progress UI on a TTY. v1.1 adds a PTY mode (likely via `node-pty`) so live-mode transcripts capture the full agent UX.
+**What:** `transcript-capture.ts` currently uses plain `child_process.spawn` pipes. Some agents only emit ANSI colors / progress UI on a TTY. v1.1 adds a PTY mode so live-mode transcripts capture the full agent UX. Do NOT add node-pty for this: Bun's built-in `terminal:` spawn option (Bun 1.3.10+, already pinned in engines) is the dependency-free path, proven by `test/helpers/tty-harness.ts` — reuse `launchTty` or its spawn shape.
 
 **Why:** Faithful transcripts make the friction → reasoning link more useful. v1 accepts that some agent UI is lost.
 
 **Effort:** S (CC ~30m). Mostly a ~30 LOC swap inside `spawnWithCapture`.
+
+---
+
+### Non-tier-1 e2e files run in no required CI lane
+**Priority:** P2
+
+**What:** Unit shards exclude `test/e2e/*` (`scripts/test-shard.sh`), and `.github/workflows/e2e.yml` Tier 1 runs exactly two named files (`test/e2e/mechanical.test.ts`, `test/e2e/mcp.test.ts`). Every other `test/e2e/*.test.ts` — including PGLite-only files that need no `DATABASE_URL`, like `init-fresh-pglite.test.ts` — executes only when someone runs `bun run test:e2e` by hand. Decide per file: wire into a required workflow, re-home PGLite-only files to the serial lane (the pattern `test/init-picker-pty.serial.test.ts` uses), or explicitly document them as manual-only.
+
+**Why:** Tests that never run in required CI are silent coverage loss — they rot without failing. Surfaced by the TTY-harness cleanup review when the new PTY picker test almost landed in the same dead lane.
+
+**Effort:** S-M (CC ~30-60m for the audit + re-homing; workflow wiring adds CI-minutes cost per file).
 
 ---
 
