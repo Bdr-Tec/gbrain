@@ -247,6 +247,15 @@ export class MinionWorker extends EventEmitter {
   }
 
   /** Register a handler for a job type. */
+  /**
+   * Read-only handler lookup. `gbrain jobs run-child` registers the builtin
+   * handlers against a throwaway worker (registerBuiltinHandlers's existing
+   * contract) and resolves the one it needs through this accessor.
+   */
+  getHandler(name: string): MinionHandler | undefined {
+    return this.handlers.get(name);
+  }
+
   register(name: string, handler: MinionHandler): void {
     this.handlers.set(name, handler);
   }

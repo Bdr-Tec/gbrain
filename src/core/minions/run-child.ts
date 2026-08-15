@@ -1,0 +1,154 @@
+/**
+ * `gbrain jobs run-child` core (issue #5 — per-job process isolation).
+ *
+ * The child side of the isolation boundary. The PARENT worker owns claim,
+ * lock renewal, completeJob/failJob and all attempt accounting; this process
+ * only executes the handler and reports ONE outcome file (see
+ * job-isolation.ts for the protocol). Child-owns-engine: every ctx callback
+ * below is token-fenced, so if the job is reclaimed while we run, our writes
+ * degrade to no-ops.
+ *
+ * Deliberately runs NONE of the worker machinery: no health probe, no stall
+ * detection, no lock timer — the parent is the sole liveness owner. What it
+ * does install:
+ *
+ *   - SIGTERM handler → aborts ctx.signal AND fires shutdownSignal, so
+ *     handlers (e.g. shell) run their own SIGTERM→grace→SIGKILL cleanup and
+ *     get the drain window to finish + write their outcome before the parent
+ *     escalates to a group SIGKILL.
+ *   - Parent-liveness watchdog: polls `process.kill(parentPid, 0)` every 15s
+ *     (a ppid check is DEAD CODE under tini — the child's ppid is tini,
+ *     which outlives the worker). On parent death: abort both signals, and
+ *     hard-exit after a 30s grace so an orphaned LLM-bound handler doesn't
+ *     burn spend to completion. Lock expiry + the stall sweeper requeue the
+ *     job on the parent's side of the world.
+ *
+ * The CLI layer (jobs.ts case 'run-child') owns engine.disconnect() and
+ * process.exit() — this module returns an exit code (engine-ownership
+ * invariant, same as MinionWorker).
+ */
+
+import type { BrainEngine } from '../engine.ts';
+import { MinionQueue } from './queue.ts';
+import type { MinionHandler } from './types.ts';
+import { buildJobContext } from './job-context.ts';
+import {
+  JOB_CHILD_EXIT_NOT_CLAIMED,
+  JOB_CHILD_EXIT_RESULT_WRITE_FAILED,
+} from './worker-exit-codes.ts';
+import { encodeHandlerError, writeChildOutcomeFile } from './job-isolation.ts';
+
+export interface RunChildOpts {
+  jobId: number;
+  lockToken: string;
+  resultPath: string;
+  /** Worker pid for the liveness watchdog; 0/absent disables the watchdog. */
+  parentPid: number;
+}
+
+export interface RunChildInjectables {
+  /** Hermetic tests inject a handler map instead of registerBuiltinHandlers. */
+  resolveHandler: (name: string) => MinionHandler | undefined;
+  /** Watchdog cadence override (default 15s). */
+  parentPollMs?: number;
+  /** Orphan hard-exit grace override (default 30s). */
+  orphanGraceMs?: number;
+  /** Exit hook for tests (default process.exit for the orphan path only). */
+  hardExit?: (code: number) => void;
+}
+
+export async function runChildJobEntry(
+  engine: BrainEngine,
+  opts: RunChildOpts,
+  injectables: RunChildInjectables,
+): Promise<number> {
+  const queue = new MinionQueue(engine);
+
+  // Ground truth is the DB row, re-read here (one SELECT) rather than a
+  // serialized payload: the parent claimed it, but reclaim/cancel can race
+  // our startup. A mismatch means we must not run the handler at all.
+  const job = await queue.getJob(opts.jobId);
+  if (!job || job.status !== 'active' || job.lock_token !== opts.lockToken) {
+    process.stderr.write(
+      `[run-child] job ${opts.jobId} is not claimed by this token ` +
+      `(status=${job?.status ?? 'missing'}) — exiting without running the handler\n`,
+    );
+    return JOB_CHILD_EXIT_NOT_CLAIMED;
+  }
+
+  const handler = injectables.resolveHandler(job.name);
+  if (!handler) {
+    // Parent-side failJob will record the real error; we just report it.
+    try {
+      writeChildOutcomeFile(opts.resultPath, {
+        outcome: 'error',
+        errorKind: 'generic',
+        message: `No handler for job type '${job.name}' in the isolation child`,
+      });
+      return 0;
+    } catch {
+      return JOB_CHILD_EXIT_RESULT_WRITE_FAILED;
+    }
+  }
+
+  const abort = new AbortController();
+  const shutdown = new AbortController();
+
+  const onSigterm = (): void => {
+    if (!shutdown.signal.aborted) shutdown.abort(new Error('worker-shutdown'));
+    if (!abort.signal.aborted) abort.abort(new Error('worker-shutdown'));
+  };
+  process.on('SIGTERM', onSigterm);
+
+  // Parent-liveness watchdog (unref'd — never keeps the child alive).
+  const pollMs = injectables.parentPollMs ?? 15_000;
+  const graceMs = injectables.orphanGraceMs ?? 30_000;
+  const hardExit = injectables.hardExit ?? ((code: number) => process.exit(code));
+  let watchdog: ReturnType<typeof setInterval> | null = null;
+  if (opts.parentPid > 0) {
+    watchdog = setInterval(() => {
+      try {
+        process.kill(opts.parentPid, 0);
+      } catch {
+        process.stderr.write(
+          `[run-child] parent worker (pid ${opts.parentPid}) is gone — aborting handler; ` +
+          `hard exit in ${Math.round(graceMs / 1000)}s\n`,
+        );
+        if (watchdog != null) clearInterval(watchdog);
+        onSigterm();
+        const t = setTimeout(() => hardExit(1), graceMs);
+        (t as unknown as { unref?: () => void }).unref?.();
+      }
+    }, pollMs);
+    (watchdog as unknown as { unref?: () => void }).unref?.();
+  }
+
+  try {
+    const context = buildJobContext(
+      engine,
+      queue,
+      job,
+      opts.lockToken,
+      abort.signal,
+      shutdown.signal,
+    );
+    let outcome;
+    try {
+      const result = await handler(context);
+      outcome = { outcome: 'success' as const, result };
+    } catch (err) {
+      outcome = encodeHandlerError(err);
+    }
+    try {
+      writeChildOutcomeFile(opts.resultPath, outcome);
+    } catch (writeErr) {
+      const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+      process.stderr.write(`[run-child] failed to write outcome file: ${msg}\n`);
+      return JOB_CHILD_EXIT_RESULT_WRITE_FAILED;
+    }
+    return 0;
+  } finally {
+    if (watchdog != null) clearInterval(watchdog);
+    process.off('SIGTERM', onSigterm);
+  }
+}

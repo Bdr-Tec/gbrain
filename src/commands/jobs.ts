@@ -6,7 +6,12 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { MinionQueue } from '../core/minions/queue.ts';
 import { MinionWorker } from '../core/minions/worker.ts';
-import { WORKER_EXIT_RSS_WATCHDOG } from '../core/minions/worker-exit-codes.ts';
+import {
+  WORKER_EXIT_RSS_WATCHDOG,
+  JOB_CHILD_EXIT_USAGE,
+} from '../core/minions/worker-exit-codes.ts';
+import { CHILD_ENV } from '../core/minions/job-isolation.ts';
+import { runChildJobEntry } from '../core/minions/run-child.ts';
 import type { MinionHandler, MinionJob, MinionJobStatus } from '../core/minions/types.ts';
 import type { PaceKeyOverrides } from '../core/pace-mode.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
@@ -1185,6 +1190,59 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       process.exit(0);
     }
 
+    case 'run-child': {
+      // INTERNAL (issue #5 process isolation): spawned by `jobs work` with
+      // process isolation enabled. One job, one process: validate the claim,
+      // run the handler with the child's own engine, write ONE outcome file,
+      // exit. Deliberately absent from user-facing help. The CLI layer owns
+      // engine.disconnect() + process.exit() (engine-ownership invariant).
+      {
+        const config = (await import('../core/config.ts')).loadConfig();
+        if (config?.engine === 'pglite') {
+          console.error('[run-child] process isolation requires the Postgres engine.');
+          await engine.disconnect();
+          process.exit(JOB_CHILD_EXIT_USAGE);
+        }
+        const jobIdRaw = parseFlag(args, '--job-id');
+        const jobId = jobIdRaw != null ? parseInt(jobIdRaw, 10) : NaN;
+        const lockToken = process.env[CHILD_ENV.lockToken];
+        const resultPath = process.env[CHILD_ENV.resultPath];
+        const parentPidRaw = parseInt(process.env[CHILD_ENV.parentPid] ?? '0', 10);
+        if (!Number.isInteger(jobId) || jobId <= 0 || !lockToken || !resultPath) {
+          console.error(
+            '[run-child] internal command spawned by the jobs worker; requires ' +
+            `a numeric job id plus ${CHILD_ENV.lockToken} and ${CHILD_ENV.resultPath} in env.`,
+          );
+          await engine.disconnect();
+          process.exit(JOB_CHILD_EXIT_USAGE);
+        }
+
+        // Same handler surface as the worker: registerBuiltinHandlers also
+        // performs plugin discovery, so plugin subagent jobs isolate too.
+        const throwaway = new MinionWorker(engine, { queue: 'default', concurrency: 1 });
+        await registerBuiltinHandlers(throwaway, engine, { quiet: true });
+
+        let code: number;
+        try {
+          code = await runChildJobEntry(
+            engine,
+            {
+              jobId,
+              lockToken,
+              resultPath,
+              parentPid: Number.isInteger(parentPidRaw) && parentPidRaw > 0 ? parentPidRaw : 0,
+            },
+            { resolveHandler: (name) => throwaway.getHandler(name) },
+          );
+        } catch (e) {
+          console.error(`[run-child] fatal: ${e instanceof Error ? e.message : String(e)}`);
+          code = 1;
+        }
+        await engine.disconnect();
+        process.exit(code);
+      }
+    }
+    // eslint-disable-next-line no-fallthrough -- unreachable: the case above always exits
     case 'work': {
       // Check if PGLite
       const config = (await import('../core/config.ts')).loadConfig();
