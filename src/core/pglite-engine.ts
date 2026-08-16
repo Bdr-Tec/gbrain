@@ -117,35 +117,85 @@ const PGLITE_EDGE_BATCH_MAX_BIND_PARAMS = 30_000;
 // silently fall through to a normal initSchema (snapshot is just an
 // optimization, never authoritative).
 let _snapshotWarnLogged = false;
+
+// Per-process memo. MIGRATIONS + PGLITE_SCHEMA_SQL are static for the life of
+// the process, so the schema hash is too; the version file and the ~42MB tar
+// are read once per (path, process) instead of once per engine construction
+// (a full suite constructs 600+ engines — the un-memoized loader re-read the
+// tar and re-hashed 131 migration handler sources every time, ~84MB of
+// transient allocation per call). A null entry means the path is terminally
+// unusable this process (missing/stale/torn) — no retry per construction.
+// The dims/model shape gate is deliberately NOT memoized: tests reconfigure
+// the gateway mid-process (zembed/1280) and a mismatched engine must fall
+// back to cold init even when an earlier engine loaded this same snapshot.
+// Accepted limitation: a snapshot file rewritten mid-process is not observed;
+// the only writer (build-pglite-snapshot.ts) runs before test fan-out.
+let _snapshotSchemaHashMemo: string | null = null;
+// blob stays null until the FIRST caller whose shape gate passes — a process
+// whose gateway shape never matches the snapshot (the zembed/1280 test
+// files) never pays the 42MB tar read at all.
+const _snapshotFileMemo = new Map<string, { versionLines: string[]; blob: Blob | null } | null>();
+let _snapshotTarReads = 0;
+
+export function __snapshotMemoStatsForTests(): { tarReads: number; memoEntries: number } {
+  return { tarReads: _snapshotTarReads, memoEntries: _snapshotFileMemo.size };
+}
+
+export function __resetSnapshotMemoForTests(): void {
+  _snapshotSchemaHashMemo = null;
+  _snapshotFileMemo.clear();
+  _snapshotTarReads = 0;
+  _snapshotWarnLogged = false;
+}
+
 export function tryLoadSnapshot(snapshotPath: string): Blob | null {
   try {
-    // Lazy require so production builds without these imports don't crash.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require('node:fs') as typeof import('node:fs'); // engine-dynamic-import-ok
-    const crypto = require('node:crypto') as typeof import('node:crypto'); // engine-dynamic-import-ok
-    const { MIGRATIONS } = require('./migrate.ts') as typeof import('./migrate.ts'); // engine-dynamic-import-ok
-    const { PGLITE_SCHEMA_SQL } = require('./pglite-schema.ts') as typeof import('./pglite-schema.ts'); // engine-dynamic-import-ok
+    let entry = _snapshotFileMemo.get(snapshotPath);
+    if (entry === null) return null; // terminally unusable this process
+    if (entry === undefined) {
+      // First touch of this path in this process — do the file work once.
+      // Lazy require so production builds without these imports don't crash.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fs = require('node:fs') as typeof import('node:fs'); // engine-dynamic-import-ok
+      const crypto = require('node:crypto') as typeof import('node:crypto'); // engine-dynamic-import-ok
+      const { MIGRATIONS } = require('./migrate.ts') as typeof import('./migrate.ts'); // engine-dynamic-import-ok
+      const { PGLITE_SCHEMA_SQL } = require('./pglite-schema.ts') as typeof import('./pglite-schema.ts'); // engine-dynamic-import-ok
 
-    if (!fs.existsSync(snapshotPath)) {
-      if (!_snapshotWarnLogged) {
-        // eslint-disable-next-line no-console
-        console.warn(`[pglite] GBRAIN_PGLITE_SNAPSHOT set but file missing: ${snapshotPath} — using normal init.`);
-        _snapshotWarnLogged = true;
+      if (!fs.existsSync(snapshotPath)) {
+        if (!_snapshotWarnLogged) {
+          // eslint-disable-next-line no-console
+          console.warn(`[pglite] GBRAIN_PGLITE_SNAPSHOT set but file missing: ${snapshotPath} — using normal init.`);
+          _snapshotWarnLogged = true;
+        }
+        _snapshotFileMemo.set(snapshotPath, null);
+        return null;
       }
-      return null;
-    }
-    const versionPath = snapshotPath.replace(/\.tar(?:\.gz)?$/, '.version');
-    if (!fs.existsSync(versionPath)) {
-      if (!_snapshotWarnLogged) {
-        // eslint-disable-next-line no-console
-        console.warn(`[pglite] snapshot version file missing: ${versionPath} — using normal init.`);
-        _snapshotWarnLogged = true;
+      const versionPath = snapshotPath.replace(/\.tar(?:\.gz)?$/, '.version');
+      if (!fs.existsSync(versionPath)) {
+        if (!_snapshotWarnLogged) {
+          // eslint-disable-next-line no-console
+          console.warn(`[pglite] snapshot version file missing: ${versionPath} — using normal init.`);
+          _snapshotWarnLogged = true;
+        }
+        _snapshotFileMemo.set(snapshotPath, null);
+        return null;
       }
-      return null;
+      if (_snapshotSchemaHashMemo === null) {
+        _snapshotSchemaHashMemo = computeSnapshotSchemaHash(MIGRATIONS, PGLITE_SCHEMA_SQL, crypto);
+      }
+      const versionLines = fs.readFileSync(versionPath, 'utf8').trim().split('\n');
+      if (_snapshotSchemaHashMemo !== (versionLines[0] ?? '')) {
+        if (!_snapshotWarnLogged) {
+          // eslint-disable-next-line no-console
+          console.warn(`[pglite] snapshot stale (schema hash mismatch) — using normal init. Rebuild with: bun run build:pglite-snapshot`);
+          _snapshotWarnLogged = true;
+        }
+        _snapshotFileMemo.set(snapshotPath, null);
+        return null;
+      }
+      entry = { versionLines, blob: null };
+      _snapshotFileMemo.set(snapshotPath, entry);
     }
-    const expectedHash = computeSnapshotSchemaHash(MIGRATIONS, PGLITE_SCHEMA_SQL, crypto);
-    const versionLines = fs.readFileSync(versionPath, 'utf8').trim().split('\n');
-    const actualHash = versionLines[0] ?? '';
 
     // W0 fix-wave: the version file's dims=/model= lines record the embedding
     // shape the snapshot was BAKED with. A snapshot whose vector(dims) columns
@@ -154,6 +204,8 @@ export function tryLoadSnapshot(snapshotPath: string): Blob | null {
     // fixture went default-on). Resolve our would-be shape through the same
     // gateway-with-default fallback initSchema uses and refuse a mismatch.
     // Version files without the shape lines (pre-W0) are treated as stale.
+    // Re-evaluated on EVERY call against the CURRENT gateway config — never
+    // memoized (see memo comment above).
     let wantDims: number | string = DEFAULT_EMBEDDING_DIMENSIONS;
     let wantModel: string = DEFAULT_EMBEDDING_MODEL;
     try {
@@ -161,25 +213,30 @@ export function tryLoadSnapshot(snapshotPath: string): Blob | null {
       wantDims = gw.getEmbeddingDimensions();
       wantModel = gw.getEmbeddingModel();
     } catch { /* gateway not configured — defaults, same as initSchema */ }
-    const shapeOk = versionLines[1] === `dims=${wantDims}` && versionLines[2] === `model=${wantModel}`;
+    const shapeOk = entry.versionLines[1] === `dims=${wantDims}` && entry.versionLines[2] === `model=${wantModel}`;
     if (!shapeOk) {
       if (!_snapshotWarnLogged) {
         // eslint-disable-next-line no-console
-        console.warn(`[pglite] snapshot embedding shape mismatch (want dims=${wantDims} model=${wantModel}, have ${versionLines[1] ?? 'none'} ${versionLines[2] ?? ''}) — using normal init. Rebuild with: bun run build:pglite-snapshot`);
+        console.warn(`[pglite] snapshot embedding shape mismatch (want dims=${wantDims} model=${wantModel}, have ${entry.versionLines[1] ?? 'none'} ${entry.versionLines[2] ?? ''}) — using normal init. Rebuild with: bun run build:pglite-snapshot`);
         _snapshotWarnLogged = true;
       }
       return null;
     }
-    if (expectedHash !== actualHash) {
-      if (!_snapshotWarnLogged) {
-        // eslint-disable-next-line no-console
-        console.warn(`[pglite] snapshot stale (schema hash mismatch) — using normal init. Rebuild with: bun run build:pglite-snapshot`);
-        _snapshotWarnLogged = true;
+    if (entry.blob === null) {
+      // Tar read deferred until the first shape-matching caller (see memo
+      // comment above). A torn/unreadable tar is terminal for the process.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fs = require('node:fs') as typeof import('node:fs'); // engine-dynamic-import-ok
+        const buf = fs.readFileSync(snapshotPath);
+        _snapshotTarReads += 1;
+        entry.blob = new Blob([new Uint8Array(buf.buffer as ArrayBuffer, buf.byteOffset, buf.byteLength)]);
+      } catch {
+        _snapshotFileMemo.set(snapshotPath, null);
+        return null;
       }
-      return null;
     }
-    const buf = fs.readFileSync(snapshotPath);
-    return new Blob([buf]);
+    return entry.blob;
   } catch {
     // Any failure -> fall through to normal init. Never block tests.
     return null;

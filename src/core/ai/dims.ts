@@ -24,6 +24,9 @@ const VOYAGE_OUTPUT_DIMENSION_MODELS = new Set([
   'voyage-4-large',
   'voyage-4',
   'voyage-4-lite',
+  // voyage-code-4: hosted, flexible dims 256/512/1024/2048 per Voyage's
+  // embeddings docs (verified 2026-08-15).
+  'voyage-code-4',
   'voyage-3-large',
   'voyage-3.5',
   'voyage-3.5-lite',

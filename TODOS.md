@@ -1,5 +1,67 @@
 # TODOS
 
+## v0.47 SEPTEMBER REMOVAL — ZeroEntropy (filed v0.46.3.0; TARGET: ship 2026-09-04..2026-09-08)
+
+ZeroEntropy's hosted API dies 2026-09-04. v0.46.3.0 deprecated it (split-default:
+new installs → voyage; legacy runtime fallbacks stay ZE; detect-and-notify
+migration). The removal wave deletes the provider and performs the hard cutover.
+Staged-deletion discipline (ship replacements → migrate call sites → update tests
+→ THEN delete; see the skills/_brain-filing-rules precedent below):
+
+- [ ] **P1 — HARD CUTOVER: retire the legacy configless runtime fallbacks.**
+  `DEFAULT_EMBEDDING_MODEL`/`DEFAULT_EMBEDDING_DIMENSIONS` (src/core/ai/defaults.ts)
+  stop resolving to `zeroentropyai:*`; unmigrated configless brains get a HARD,
+  actionable error naming `gbrain migrate embeddings --to voyage:voyage-4 --dim 1024`.
+  Also flip `DEFAULT_RERANKER_MODEL` (gateway.ts) + the three mode-bundle
+  `reranker_model` values (mode.ts:298,348,403) to `voyage:rerank-2.5` — one-time
+  knobs-hash query-cache miss for ALL modes incl. conservative (reranker_model is
+  hashed unconditionally; document in that release's CHANGELOG). Verify the schema
+  generators' legacy-constant consumers (pglite-schema, postgres-engine,
+  embedding-column.ts registry fallback) get a deliberate post-ZE story.
+- [ ] **P1 — PREREQ before recipe deletion: move gateway.ts's `'/models/rerank'`
+  default path onto explicit per-recipe `path` fields.** llama-server-reranker and
+  dashscope-rerank may ride the implicit ZE-shaped fallback — audit + pin with tests
+  FIRST or their rerank calls 404 the day the fallback goes.
+- [ ] **P1 — Delete the provider surface.** `src/core/ai/recipes/zeroentropyai.ts` +
+  registry entries (recipes/index.ts); `zeroEntropyCompatFetch`,
+  `MAX_ZEROENTROPY_RESPONSE_BYTES`, `ZeroEntropyResponseTooLargeError` + the
+  fetch-ternary arm (gateway.ts); ZE sets in dims.ts; `ze-switch.ts` +
+  `retrieval-upgrade-planner.ts` + `retrieval-upgrade-prompt.ts` (~1200 lines) +
+  cli.ts dispatch/CLI_ONLY/flag-registry rows; `checkZeEmbeddingHealth` in doctor
+  (`provider_sunset` STAYS and goes generic — read `recipe.sunset` instead of the
+  hardcoded ZE constants); pricing rows LAST (budget-tracker rerank metering reads
+  them for historical audit rows). NOTE: test/ai/zeroentropy-compat-fetch.test.ts
+  greps gateway.ts SOURCE TEXT — delete the test with the code, in the same commit.
+- [ ] **P1 — Self-host continuity decision.** The v0.46.3 playbook's zero-re-embed
+  path keeps the `zeroentropyai:zembed-1` id behind a base-URL override to a
+  ZE-wire-compatible endpoint. Recipe deletion breaks it. Decide: keep a minimal
+  local-only recipe shell (no picker/auto-pick, no hosted default URL), ship a
+  signature-migration tool (rewrite pages.embedding_signature provider ids without
+  re-embedding), or explicitly end the promise with a loud migration note. The
+  playbook (skills/migrations/v0.46.3.0.md) links here — honor it.
+- [ ] **P2 — Tests + CI.** Delete the 8 ZE-dedicated test files
+  (zeroentropy-recipe, zeroentropy-compat-fetch, dims-zeroentropy,
+  e2e/zeroentropy-live, ze-switch-cli, ze-switch-env-override, doctor-ze-checks,
+  provider-sunset-doctor.serial gets REWRITTEN generic not deleted) + update ~40
+  coupled files; drop the zeroentropy-live job + ZEROENTROPY_API_KEY secret from
+  .github/workflows/e2e.yml:168,179 (already date-skip-gated since v0.46.3);
+  scripts/test-weights.json rows.
+- [ ] **P2 — Config + docs.** `zeroentropy_api_key` config key: keep
+  parseable-but-warned (removing it would make old config.json files fail to
+  load); delete docs/ai-providers/zeroentropy.md + its scripts/llms-config.ts
+  entry (+ `bun run build:llms`); v0.46.3 migration stays registered and must
+  degrade gracefully once the recipe is gone (notice-only — verify its copy).
+- [ ] **P2 — Custom-column off-ramp (not removal-gated, but September makes it
+  urgent for affected users).** Write-side custom-column migration
+  (`gbrain embed --column X --model Y`, embedding-column.ts:60-62 v2 deferral) so
+  ZE-backed `embedding_columns` entries get an executable migration instead of
+  drop-and-re-embed guidance.
+- [ ] **P3 — Optional `cohere-rerank` recipe.** Cohere rerank-4.0-pro is the
+  strongest surviving hosted reranker (Agentset ELO 1629, behind only the dying
+  zerank-2) for users who want max rerank quality on a dedicated key. Wire shape
+  differs from the ZE/voyage dialect — needs its own `top_param`/response mapping
+  audit. Filed from the v0.46.3 CEO review (deferred cherry-pick).
+
 ## Issues #5+#6 follow-ups (pool starvation + process isolation; plan: ~/.claude/plans/system-instruction-you-are-working-witty-moore.md)
 
 - [ ] **P1-companion — nested-checkout audit + dev-mode detection.** **What:**
@@ -115,14 +177,77 @@ fix-wave plan; the wave series (W0.5–W9, 3.4, 3.6) tracks its own scope there.
 - [ ] **Legacy Anthropic-SDK subagent loop deletion.** **Priority: P2.** One
   release after W8 flips `agent.use_gateway_loop` default ON (flag stays as
   the revert path for that release).
-- [ ] **Deeper test-suite speedup** beyond the W0 snapshot default-on (which
-  already cut the full parallel suite ~4,900s → ~490s). **Priority: P3.**
-  Revisit with post-W0 timing data; diminishing returns until measured.
+- [x] **Deeper test-suite speedup** beyond the W0 snapshot default-on —
+  LANDED in the test/eval/CI speedup pass (serial pool 8.5min → ~2.5min,
+  snapshot in every CI runner + memoized loader, verify worker pool,
+  perf-gate row shrink, chunk-grain engine consolidation). Remaining
+  long-tail items are filed in "Test/eval/CI speedup pass deferrals" below.
 - [ ] **PGLite schema build-time derivation** from SCHEMA_SQL via a named
   transform list. **Priority: P3.** Only if W3's schema drift TEST proves
   annoying in practice — the test alone kills the drift bug class (Codex
   D4.8/D5.23: fresh-schema equivalence ≠ upgrade correctness; old-shape
   bootstrap fixtures + replay coverage stay regardless).
+## Test/eval/CI speedup pass deferrals (filed with the pass; plan: ~/.claude/plans/system-instruction-you-are-working-iterative-hopcroft.md)
+
+Each was explicitly deferred in the pass's CEO/eng/outside-voice reviews.
+
+- [ ] **Sleep-to-poll conversions.** **What:** replace ~49.5s of hard-coded
+  `setTimeout` waits with event/poll-based waits; no fake timers exist in the
+  suite. Worst offenders: test/minions.test.ts (12.2s across 43 sites),
+  test/process-cleanup.test.ts (5.0s), test/worker-lock-renewal-e2e.serial.test.ts
+  (4.0s), test/e2e/worker-abort-recovery.test.ts (3.6s), test/e2e/zombie-reaping.test.ts
+  (3.3s). **Why deferred:** careful per-site work against flake-hardened timings;
+  ~50s ceiling. **Effort:** M. **Priority:** P3.
+- [ ] **E2E: PGLite-only parallel lane + default SHARD.** **What:** run-e2e.sh runs
+  181 files sequentially (one bun cold start each); ~42 PGLite-only files need no
+  Postgres and no TRUNCATE-race protection — run them in a parallel lane; default
+  the existing SHARD support (only ci-local uses it). Fold into the Postgres
+  template-database entry below in this file (CREATE DATABASE … TEMPLATE, ~50ms).
+  **Why deferred:** e2e is off the CI critical path after the workflow restructure;
+  ci-local + nightly benefit only. **Effort:** M. **Priority:** P2.
+- [ ] **Second PGLite snapshot keyed by dims/model.** **What:** ~34 test files
+  configure zembed/1280 and always cold-init (the snapshot's shape gate correctly
+  refuses the 1536 fixture). Bake a second snapshot per shape; the version-file
+  format already carries dims/model. **Why deferred:** moderate effort, small win,
+  and it interacts with the shape gate the memoized loader deliberately keeps hot.
+  **Effort:** M. **Priority:** P3.
+- [ ] **Persistent-engine snapshot.** **What:** the snapshot fast-path only covers
+  in-memory engines (`!dataDir` gate at pglite-engine.ts). ~58 files pass
+  database_path and pay full cold init (~121s weighted). Needs tar-extract-into-
+  dataDir (or PGlite loadDataDir with a dataDir) design. **Effort:** M. **Priority:** P3.
+- [ ] **Engine consolidation audit: doctor/bootstrap/migrations-v0_19_0.** **What:**
+  33 files construct 95 engines; chunk-grain-fts was consolidated in-pass, but
+  doctor.test.ts (9 engines), bootstrap.test.ts (9), migrations-v0_19_0.test.ts (7)
+  need a per-file audit — migration-from-old-schema tests structurally cannot share
+  a current-schema engine or use the snapshot. **Effort:** M. **Priority:** P3.
+- [ ] **Verify per-check double-spawn removal.** **What:** each CHECKS entry costs a
+  `bun run <key>` startup before its bash script; invoking scripts directly from a
+  manifest would drop ~47 bun startups. **Why deferred:** micro-win; touches the
+  package.json-scripts-as-API convention. **Effort:** S. **Priority:** P3.
+- [ ] **Snapshot-tar digest verification (defense-in-depth).** **What:** the CI
+  actions/cache for `test/fixtures/pglite-snapshot.tar` validates only the
+  schema-hash/dims lines in the sidecar `.version` — which travels in the SAME
+  cache entry, so both are forgeable together by anyone with cache write access.
+  Record a sha256 of the tar bytes in the version file at build time and have
+  `tryLoadSnapshot` verify it (mirror of the gitleaks fetch-fresh-digest
+  pattern). **Why deferred:** exploitability bounded by GitHub cache scoping
+  (fork caches isolated; poisoning needs push access) and impact is test-DB
+  contents only. **Effort:** S. **Priority:** P3.
+- [ ] **Redact provider/DB strings in eval ledger writes.** **What:**
+  `EvalRunRecord.error` (free text) is persisted unredacted by
+  `persistRunRecord` (eval-run-all) and the canary's record mode into the now-
+  TRACKED `.gbrain-evals/eval-results.jsonl` — a failed keyed run whose error
+  embeds a connection string would ride a later commit into the public repo.
+  Route `record.error` + provider-derived params through
+  `redactConnectionInfo`/`redactPgUrl` before append; optionally add
+  `.gbrain-evals/` to the fixture-privacy scan surface. **Effort:** S.
+  **Priority:** P2.
+- [ ] **check-image-decoders-embedded.sh into verify CHECKS.** **What:** the guard
+  runs its own `bun build --compile` (~60s) — too heavy per-verify. Revisit if the
+  binary-embed bug class recurs; guards-manifest.tsv carries the exemption note,
+  and the registration⇒execution coverage test allowlists it explicitly.
+  **Effort:** S. **Priority:** P3.
+
 ## Jobs fix-wave follow-ups (filed v0.45.15.0 — upstream issues #2/#3/#4)
 
 - [ ] **P2 — `jobs submit --max-pending` public flag.** maxPending stays an
@@ -743,9 +868,10 @@ The eng-review + Codex outside-voice narrowed the wave to these deferrals:
   covers anthropic + openai; Google was deferred because Gemini's native suffix is unproven
   (its OpenAI-compat route is `/v1beta/openai`). Verify the correct `@ai-sdk/google` suffix,
   then add `google` to the helper. Where: `src/core/ai/gateway.ts:resolveNativeBaseUrl`.
-- [ ] **P3 — Fold Voyage/Google/LiteLLM/OpenRouter API keys into `buildGatewayConfig`.**
-  It folds only OPENAI/ANTHROPIC/ZEROENTROPY file-plane keys today, so `config.json`-set keys
-  for other providers only work if also in `process.env`. Extend the mapping. Where:
+- [ ] **P3 — Fold Google/LiteLLM/OpenRouter API keys into `buildGatewayConfig`.**
+  Voyage + Dashscope + Google were folded by #2662 (`build-gateway-config.ts:33-60`);
+  remaining gaps are the aggregator keys (litellm, openrouter) whose `config.json`-set
+  keys only work if also in `process.env`. Extend the mapping. Where:
   `src/core/ai/build-gateway-config.ts`.
 - [ ] **P3 — OpenRouter per-model custom-dim handling.** OpenRouter declares recipe-wide
   `dims_options` and mixes fixed-dim + arbitrary models, so it's excluded from `trust_custom_dims`.
@@ -2948,8 +3074,13 @@ outside-voice triage on the reshaped plan.
 - [ ] **v0.42+: ship the coordinated `gbrain-evals/baselines/v0.41-launch.baseline.ndjson`
   + `gbrain-evals/qrels/v0.41-launch.qrels.json` (hermetic-synthetic per D9).**
   Generate locally via `gbrain bench publish --from <hermetic-test-corpus>` then
-  commit to the sibling gbrain-evals repo. Gives `gbrain eval gate` a canonical
-  baseline target so users don't have to bootstrap their own immediately.
+  commit to the sibling gbrain-evals repo. PARTIALLY SUPERSEDED by the test/eval/CI
+  speedup pass: an in-repo canonical qrels target now exists (`gbrain eval gate`
+  with the deterministic embedder option against `test/fixtures/eval-baselines/
+  qrels-search.json`; runner `scripts/run-eval-canary.ts`, CI-gated via
+  check:eval-canary, ledger `.gbrain-evals/eval-results.jsonl`). What remains
+  here is only the sibling-repo REGRESSION baseline (.baseline.ndjson for the
+  jaccard/top1 gate) — the correctness-gate half is done.
 
 ## v0.40.7.0 Schema Cathedral v3 follow-ups (v0.40.7+)
 
@@ -4025,7 +4156,12 @@ verify Voyage adapter integration in `src/core/ai/recipes/voyage.ts`).
 ## test infra (v0.26.4 follow-up — intra-file parallelism)
 
 ### Sweep cross-file shared-state contention; enable `bun test --concurrent` for another 2-3x speedup
-**Priority:** P0
+**Priority:** P3 (downgraded from P0 in the test/eval/CI speedup pass — premises stale:
+the entry says "~58 PGLiteEngine instantiations", the suite now has 600+; the serial
+quarantine grew from 4 files to ~140, and the pass's pooled serial runner + CI snapshot
++ verify pool delivered a comparable multiple for hours of work instead of the 1-2
+weeks this sweep estimates. Re-scope against post-pass timing data before spending
+anything here; `test.concurrent` adoption remains at zero.)
 **Status:** v0.26.7 shipped foundation slice (helpers + lint + mock.module quarantine). v0.26.8 (env sweep) and v0.26.9 (PGLite sweep + codemod + measurement) carry the rest.
 
 **What:** v0.26.4 shipped file-level parallel fan-out (8 shards) and got `bun run test` from 18 minutes to ~85s — a 12x speedup. The next layer is **intra-file** parallelism via Bun's `--concurrent` flag (or per-test `test.concurrent()` markers). This requires every test file to be safe under concurrent execution within the same `bun test` process.
@@ -5993,6 +6129,39 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   (`skillpack status`/`sync`, doctor `skill_currency`) already keeps the brain's skill
   set current on upgrade; this item is purely about semantic retrieval of skills.
 
+## opencode wave follow-ups (filed at build time)
+
+- [ ] **P2 — Watch the first opencode-door + canary dispatches.** The job is
+  day-one full posture (nightly + labels; keyless SMOKE + paid anthropic leg
+  on the existing secret) — after the wave merges, confirm the first nightly
+  run goes green end-to-end and the canary leg's latest-version result, then
+  update OPENCODE-CLI-PIN.md §Pending auth with anything the authed CI run
+  observes (exact `opencode models` output, per-turn cost note). Effort: S.
+- [ ] **P3 — Wire opencode's plugin/event system** (the ambient-recall lane).
+  opencode ships a JS plugin system with lifecycle events; `OPENCODE_HAS_HOOKS
+  = false` in host-specs.ts marks the gap. Needs its own observation pass
+  (plugin API shapes, event timing, context-injection surface) before design —
+  would upgrade opencode from pull-protocol to per-turn push, above codex.
+  Effort: M/L.
+- [ ] **P3 — BrainBench opencode adapter.** `src/eval/brainbench/adapters/` +
+  `ALL_HARNESSES` entry — build together with the already-filed hermes + grok
+  adapters (three pending; one eval wave). Effort: M.
+- [ ] **P3 — connect `--agent opencode --oauth`.** opencode's `mcp auth` is an
+  authorization-code OAuth flow (not client-credentials) — a connect lane for
+  it needs the interactive-grant plumbing the current `--oauth`
+  (perplexity/generic client-credentials) path does not model. Effort: M.
+- [ ] **P3 — Re-observe the OPENCODE_CONFIG* env trio on version bumps.**
+  Observed INERT in 1.18.18 (docs-contradiction pinned in OPENCODE-CLI-PIN.md
+  §Path seams); host-specs resolves via XDG only. If a future release
+  activates them, `opencodeConfigDir()` and the hermetic child-env deletes
+  must move together. The pin doc's re-observation checklist carries the
+  probe. Effort: S.
+- [ ] **P3 — opencode-install PTY promotion.** Same criterion as grok-install:
+  2 consecutive stable dx-scenario runs ≥1 month apart with unchanged
+  boot/first-run copy → promote to a PTY assertion test. opencode's keyless
+  free tier means the scenario should COMPLETE the bootstrap, making it a
+  stronger promotion candidate than grok's sign-in-wall early-stop. Effort: M.
+
 ## Transcripts-import follow-ups (filed from cathedral-4, `gbrain transcripts ingest`)
 
 Scoped OUT of the cathedral-4 PR by the CEO review's cherry-pick ceremony and the
@@ -6034,25 +6203,36 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   CLAUDE_CODE.md + GROK.md now recommend `--surface verbs`. Update the
   register one-liner + Direct config block (+ INSTALL_FOR_AGENTS hermes
   block) and re-verify against the pinned hermes. Effort: S.
-- [ ] **P2 — Backport the GITHUB_ENV/GITHUB_PATH/GITHUB_OUTPUT/GITHUB_STATE
+- [x] **P2 — Backport the GITHUB_ENV/GITHUB_PATH/GITHUB_OUTPUT/GITHUB_STATE
   deletion from `grokChildEnv` to `hermesChildEnv`** (and consider narrowing
   the `GITHUB_` ALLOW_PREFIX to the read-only metadata names) — the prefix
   rule forwards writable CI step-metadata files to untrusted agent children.
   Unit truth-table exists for the grok side to clone. Effort: S.
+  DONE (opencode-support wave): `hermesChildEnv` now rides `makeAgentChildEnv`,
+  which scrubs the GITHUB_* step-metadata files for every door agent; truth-table
+  extended in `test/helpers/agent-harness.unit.test.ts`.
 - [ ] **P3 — Grok bootstrap-harness target.** `gbrain bootstrap` personal-agent
   support for Grok Build: `HarnessSelector` + `parseHarnessArgs`, a dated
   `TARGETS` spec in `host-specs.ts`, a `wireGrok` branch + TOML writer (grok
   config schema pinned; `codex-toml.ts` is the precedent), receipt/rollback/
   status handling, and the INSTALL_FOR_AGENTS honest-classification flip.
   Docs currently state "bootstrap does not support Grok yet". Effort: M.
-- [ ] **P3 — Door-adapter extraction + CI-tail composite action.** Trigger: the
-  NEXT door agent (4th). Extract the agent-harness door family shape
-  (resolve/auth/seed/childEnv/pin/turn) and hoist the shared workflow tail
-  (evidence prep / scrub triple / upload / zero-pass grep / cred cleanup)
-  into a composite action; port grok-door as first consumer. Until then the
-  hermes-door/grok-door scrub blocks carry cross-reference comments. Also
-  adopt a door CADENCE policy: nightly for the newest/most-churning agent,
-  label-only after 2 stable monthly cycles per agent. Effort: M.
+- [x] **P3 — Door-adapter extraction (test-side) + door cadence policy.**
+  Trigger FIRED at the 4th door agent (opencode, the opencode-support wave):
+  `makeBinaryResolver`/`makeAgentChildEnv`/`runOneShotSpawn` extracted in
+  `test/helpers/agent-harness.ts`, grok+hermes ported (hermes gained the
+  GITHUB_* scrub + bounded drain), opencode landed as first consumer; the
+  cadence policy is adopted in `docs/TESTING.md` (nightly for the newest
+  agent, label-only after 2 stable monthly cycles).
+- [ ] **P3 — Door CI-tail composite action.** Trigger: the FIRST GREEN
+  grok-door AND opencode-door dispatches (workflow yaml cannot be proven
+  locally, and refactoring never-run jobs compounds risk — grok-door has
+  never dispatched: its XAI_API_KEY secret does not exist yet). Hoist the
+  shared workflow tail (evidence prep / scrub triple / upload / pass-count +
+  paid sentinels / version re-check / cred cleanup) from
+  hermes-door/grok-door/opencode-door into a composite action; port
+  opencode-door as first consumer (it is the freshest copy). Until then the
+  three doors' scrub blocks carry cross-reference comments. Effort: M.
 - [ ] **P3 — Promote grok-install to a PTY assertion test.** Criterion: 2
   consecutive stable runs ≥1 month apart of the dx scenario (pre-ship ritual
   on grok-touching waves) with unchanged boot/sign-in copy. Would be the
@@ -6076,11 +6256,66 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   registry shape generalizes. Unify into one data-driven table AFTER the
   door-adapter extraction lands (earn it — don't freeze hermes-isms in).
   Effort: L.
-- [ ] **P3 — PIN-doc privacy-guard candidate.** GROK-CLI-PIN/HERMES-CLI-PIN
-  carry verbatim observation transcripts; consider extending check-privacy.sh
-  (or a dedicated check) to assert pin docs use `<tmp>`/placeholder paths and
-  never carry key material or account ids. Effort: S.
+- [x] **P3 — PIN-doc privacy guard.** DONE (opencode-support wave):
+  `scripts/check-pin-doc-privacy.sh` (in `bun run verify` + guards-manifest,
+  fixture-tested) asserts every `docs/mcp/*-CLI-PIN.md` uses placeholder paths
+  and carries no key-shaped material or non-example emails.
+- [x] **P3 — opencode-door npm view-vs-install TOCTOU.** DONE (adversarial-review
+  fix wave): the door job's install step is now pack-verify-install — `npm pack
+  <pkg>@<ver> --json` downloads the artifact and reports the integrity of the
+  BYTES written; both the wrapper and the platform payload are asserted against
+  their pins before `npm install -g ./opencode-ai-*.tgz` installs from the
+  verified local tarball (no fresh registry resolve of the name; the payload's
+  install-time fetch is npm-validated against the same byte-confirmed packument).
+  Verified locally on darwin-arm64 (wrapper integrity == pin; `--ignore-scripts`
+  breaks opencode's postinstall binary placement, so it is deliberately absent).
+- [x] **P3 — `opencode mcp list` probe spawns project-config servers.** DONE
+  (adversarial-review fix wave): the user-scope probe spawns from a fresh EMPTY
+  mkdtemp cwd (no project config can load), project scope SKIPS the live probe
+  entirely with a printed note (parse-back is authoritative), and the probe now
+  holds the real process handle so the 20s timeout actually kills the child
+  (SIGTERM → SIGKILL) instead of abandoning it.
+- [ ] **P3 — dedupe the opencode read→parse→classify dance.** The
+  read-config → parseOpencodeConfig → opencodeEntryKind sequence is spelled
+  three times (bootstrap.ts runHooks pre-check, harness.ts apply expectUrl
+  fallback, harness.ts remove ownership check); extract a
+  `classifyOpencodeEntryAt(path, name, expect)` helper and drop the
+  double-printed other-source warning (the caller AND the writer note it).
+  Effort: S.
 
+## opencode adversarial-review fix-wave follow-ups (filed at fix time)
+
+- [ ] **P2 — per-harness MCP-scope consent key.** An interview MCP_SCOPE answer
+  recorded for Claude Code (where 'project' is the privacy-SAFE default)
+  currently authorizes opencode's INVERTED-risk scopes without fresh
+  confirmation ('project' on opencode = committed file that auto-spawns on
+  every collaborator machine, no trust gate), and an ABSENT answer defaults
+  opencode to user-global exposure (any repo on the machine reaches the
+  brain). Design a harness-specific consent confirm — either per-harness
+  answer keys (MCP_SCOPE_OPENCODE) or a one-time "your recorded scope means
+  something riskier here — confirm" gate on the opencode lane. Relates to the
+  agent-bootstrap A8 consent-semantics TODO. Effort: M.
+- [ ] **P3 — opencodeEntryKind remote ownership: normalize the url compare.**
+  Ownership uses exact string equality on the entry url vs the receipt/expect
+  url — trailing-slash and host-case variants misclassify in BOTH directions
+  (ours read as foreign → orphaned entry; a variant-url foreign endpoint
+  never matches, fine, but the asymmetry is accidental). Consider URL
+  normalization (scheme/host case-fold, trailing-slash) plus an
+  Authorization-shape check before comparing. Effort: S.
+- [ ] **P2 — claw-test --live runners inherit real HOME/XDG.** The grok /
+  hermes / opencode --live runners run against the operator's real
+  HOME/XDG config surface and only WARN on a pre-existing global gbrain
+  entry; a scripted run can mutate or exercise the operator's live wiring.
+  Consider a fail-closed flag (refuse when a global gbrain registration
+  exists unless --allow-live-config) or hermetic-by-default across the
+  runner family. Effort: M.
+- [ ] **P3 — fixed-name `.bak` parity: codex-toml.ts + hooks.ts writers.**
+  opencode-json.ts now takes UNIQUE `.bak-<hex>` backups per operation
+  (overlapping runs can't clobber each other's snapshot; harness restores
+  from the returned path and unlinks on success). The codex TOML writer and
+  the hooks settings writers still use fixed-name backups with the same
+  theoretical overlap window — port the unique-backup pattern (and the
+  restore-guard compare) for parity. Effort: S/M.
 ## Dream triage cascade follow-ups (#4152, filed at implementation)
 
 - [ ] **P2 — Incremental submit-drain + deadline threading in synthesize
