@@ -26,11 +26,11 @@
  *   ze_switch_declined_at     : ISO ts when user said "never ask again"
  *   ze_switch_previous_snapshot : JSON snapshot for --undo (D16)
  *
- * State diagram:
+ * RETIRED state machine (historical — no CLI path reaches it anymore):
  *
  *   [fresh brain]
  *        |
- *        |  user picks "s" or runs `gbrain ze-switch`
+ *        |  (pre-v0.46.3) forward switch requested
  *        v
  *   prompt_shown=true, requested=true
  *        |
@@ -40,23 +40,19 @@
  *        |
  *        |  config writes (embedding_model, dim, reranker)
  *        v
- *   applied=true  -> stable. Re-embed via `gbrain embed --stale` or autopilot.
+ *   applied=true  -> stable.
  *
- *   Crash between schema and config writes:
- *     requested=true, applied=false, schema is at target width.
- *     Doctor's `embedding_width_consistency` detects + suggests `--resume`.
- *
- *   "Never ask again" path:
- *     prompt_shown=true, declined_at=<iso>. Re-asked after 90 days (C3).
- *
- *   Undo path:
- *     ze_switch_previous_snapshot JSON drives reverse schema + config.
+ * Every arrow above is CLI-unreachable today: `gbrain ze-switch` is a pure
+ * refusal/redirect shim (the sunset refusal landed in v0.46.3; the undo/
+ * dry-run actions were retired in the interim ZE cleanup because apply/undo
+ * write DB-plane config the post-v0.37 file-plane-canonical runtime never
+ * reads). The functions below survive ONLY as test vehicles — they carry the
+ * multimodal-column preservation pins and the env-override gate cases until
+ * the v0.47 removal deletes this file wholesale.
  *
  * The planner is intentionally NOT a migration in the MIGRATIONS array.
- * Migrations are forward-only and run for every brain on every upgrade.
- * The ZE switch is conditional (user-requested), idempotent (re-runnable),
- * and reversible (--undo). Mixing it into MIGRATIONS would muddy the
- * ledger semantics (see plan D12 for full rationale).
+ * Migrations are forward-only and run for every brain on every upgrade;
+ * this machine was conditional, idempotent, and reversible (see plan D12).
  */
 
 import type { BrainEngine } from './engine.ts';
@@ -81,7 +77,7 @@ export type { EnvOverrideWarning };
 // Constants
 // ============================================================================
 
-/** v0.36.0.0 cutover target: ZeroEntropy zembed-1 at 1024d via Matryoshka. */
+/** v0.36.0.0 cutover target: ZeroEntropy zembed-1 at 1280d via Matryoshka. */
 export const ZE_TARGET_EMBEDDING_MODEL = 'zeroentropyai:zembed-1';
 export const ZE_TARGET_EMBEDDING_DIM = 1280;
 export const ZE_TARGET_RERANKER_MODEL = 'zeroentropyai:zerank-2';
@@ -286,8 +282,9 @@ export async function planRetrievalUpgrade(engine: BrainEngine): Promise<Retriev
  *   5. Set ze_switch_applied = true
  *
  * Crash between (3) and (4) leaves the schema at the target width but the
- * config at the source. Doctor's `embedding_width_consistency` detects this
- * and suggests `gbrain ze-switch --resume`.
+ * config at the source. Doctor's `embedding_width_consistency` detects the
+ * drift and prints the engine-branched recovery recipe (there is no CLI
+ * resume anymore — the ze-switch shim refuses everything).
  */
 export async function applyRetrievalUpgrade(
   engine: BrainEngine,

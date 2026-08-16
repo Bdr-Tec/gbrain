@@ -249,13 +249,33 @@ export async function checkZeEmbeddingHealth(engine: BrainEngine): Promise<Check
     // File plane: zeroentropy_api_key on GBrainConfig (added by C.3).
     const fileKey = loadConfigFileOnly()?.zeroentropy_api_key;
     if (!envKey && !fileKey) {
+      // Migration-first: when the provider has an announced shutdown, the fix
+      // for a missing key is to migrate OFF, not to sign up. The key path
+      // survives as the secondary note for someone who needs the remaining
+      // hosted window. (Generic on recipe.sunset so the copy self-corrects if
+      // the recipe ever changes; the whole check is deleted in v0.47.)
+      const { getRecipe } = await import('../../../core/ai/recipes/index.ts');
+      const sunset = getRecipe('zeroentropyai')?.sunset;
+      if (sunset) {
+        const { renderCanonicalMigrationCommands } = await import('../../../core/ai/defaults.ts');
+        return {
+          name: 'ze_embedding_health',
+          status: 'warn',
+          message:
+            `embedding_model="${model}" but ZEROENTROPY_API_KEY is not set — and the ` +
+            `hosted API shuts down on ${sunset.date}. Fix: migrate off it: ` +
+            `${renderCanonicalMigrationCommands().recommendedDryRun}. If you need hosted ` +
+            `ZeroEntropy for the remaining weeks, set the key via ` +
+            `\`export ZEROENTROPY_API_KEY=...\` or "zeroentropy_api_key" in ` +
+            `~/.gbrain/config.json (gbrain config set writes the DB plane, which the embed pipeline ignores).`,
+        };
+      }
       return {
         name: 'ze_embedding_health',
         status: 'warn',
         message:
           `embedding_model="${model}" but ZEROENTROPY_API_KEY is not set. ` +
-          `Fix: get a key at https://dashboard.zeroentropy.dev and either ` +
-          `\`export ZEROENTROPY_API_KEY=...\` or edit ~/.gbrain/config.json ` +
+          `Fix: \`export ZEROENTROPY_API_KEY=...\` or edit ~/.gbrain/config.json ` +
           `to add "zeroentropy_api_key": "...". (gbrain config set writes the DB plane, which the embed pipeline ignores.)`,
       };
     }
@@ -426,10 +446,11 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
  * v0.36.0.0 (A5): embedding_width_consistency doctor check.
  *
  * Cross-checks that `config.embedding_dimensions` matches the actual
- * `vector(N)` width on `content_chunks.embedding`. Drift here means the
- * ze-switch was interrupted mid-flight (schema changed but config write
- * crashed, or vice versa). Surfaces a paste-ready `gbrain ze-switch
- * --resume` hint.
+ * `vector(N)` width on `content_chunks.embedding`. Drift means a width
+ * transition was interrupted mid-flight (schema changed but config write
+ * crashed, or vice versa). Surfaces the engine-kind-branched recovery recipe
+ * from embeddingMismatchMessage — NOT a ze-switch hint; that command is a
+ * refusal shim now.
  */
 export async function checkEmbeddingWidthConsistency(engine: BrainEngine): Promise<Check> {
   try {

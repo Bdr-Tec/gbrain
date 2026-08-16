@@ -111,6 +111,92 @@ Everything else is automatic. Capped runs that previously under-counted
 expansion/OCR spend may now hit their ceiling — that is the fix working;
 raise the cap if the new accounting says you were spending more than you
 budgeted.
+## [0.46.12.0] - 2026-08-16
+
+**Every surface that could still steer you toward the retiring embedding
+provider now tells the truth.** The provider's hosted API ends 2026-09-04;
+v0.46.3.0 stopped the CLI from *acting* on a switch, but the discovery
+surfaces — help text, provider setup output, doctor hints, historical agent
+playbooks — still read like a recommendation. A downstream agent reading that
+copy recommended switching a brain ONTO the dying provider; this release makes
+that impossible.
+
+### Changed
+
+- **`gbrain ze-switch` is now a pure refusal/redirect shim.** `--help` leads
+  with RETIRED, the sunset date, and the one maintained off-ramp
+  (`gbrain migrate embeddings --to voyage:voyage-4 --dim 1024`), and it now
+  actually reaches you through the compiled binary (the generic help
+  short-circuit used to hide the command's own help entirely). Every
+  invocation refuses or redirects with exit 1; retired flags (`--resume`,
+  `--non-interactive`, `--force`, …) are still accepted so old scripts get
+  the refusal message instead of an unknown-flag error — even on a machine
+  with no brain configured.
+- **Two scripted contracts changed deliberately:** `ze-switch --undo` no
+  longer acts — it prints the exact `gbrain migrate embeddings` command that
+  returns the brain to its pre-switch provider (the retired action wrote
+  config the runtime never read and emptied vectors with no verified
+  re-embed); and `ze-switch --dry-run --json` now returns
+  `{status:'refused', reason:'provider_sunset'}` with exit 1 instead of a
+  machine-readable plan targeting the dying provider (`status:'planned'`,
+  exit 0). JSON envelopes carry both `…_preview` (cost preview) and live
+  command fields, and every command those envelopes render preserves an
+  explicit `--brain` selector so multi-brain setups are never pointed at the
+  wrong database (the engine-free `--help` text shows the generic command).
+- **`gbrain providers env <sunsetting-provider>` replaces the signup funnel**
+  (dashboard URL + get-a-key hint) with the deprecation notice, replacement
+  models, and the migration command — key STATUS still renders for existing
+  users. `providers explain` marks sunsetting rows with ⚠ instead of a green
+  ready-check. Both render through one shared marker so the surfaces can't
+  drift, and the behavior is generic: any future provider sunset inherits it.
+- **`gbrain doctor`'s missing-key hint is migration-first** on a sunsetting
+  provider: the fix is the off-ramp; the key path survives as a secondary
+  note for the remaining hosted window.
+- **Historical migration playbooks can no longer be followed past their
+  banners.** The two switch-era skill files now open with "Do not execute
+  any command in this file", their imperative recommendations are rewritten
+  as past-tense record, and their frontmatter pitches are marked HISTORICAL.
+  Provider docs drop the price-comparison sell copy and retitle setup as
+  "existing brains and self-hosters only — do not onboard".
+
+### Fixed
+
+- The undo guidance is exact: a snapshot with reranking disabled but a model
+  id still set now yields `--reranker off` (the old precedence would have
+  re-enabled a reranker the pre-switch brain had off); nested model ids
+  (`ollama:model:tag`, `openrouter:org/model`) validate correctly; snapshot
+  fields are shape-checked before they land in a command you're told to run;
+  a failed `--undo` never points back at `--undo`; and the three undo
+  failure states (missing / invalid / unreadable snapshot) each report
+  truthfully instead of claiming no switch was recorded.
+
+### Removed
+
+- The retired interactive switch banner and its benchmark pitch ("switch to
+  the new provider — RECOMMENDED") no longer ship in the binary; the module
+  that carried them is deleted ahead of the September removal.
+
+### To take advantage of v0.46.12.0
+
+`gbrain upgrade` is enough — no schema migration.
+
+1. **Upgrade:**
+   ```bash
+   gbrain upgrade
+   ```
+2. **If your brain still embeds or reranks through the retiring provider**,
+   run the off-ramp before 2026-09-04 (cost preview first):
+   ```bash
+   gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run
+   gbrain migrate embeddings --to voyage:voyage-4 --dim 1024
+   ```
+   Your agent can follow `skills/migrations/v0.46.3.0.md` end to end.
+3. **Things to watch:** scripts that parsed `ze-switch --dry-run --json`'s
+   old `planned` envelope or relied on `ze-switch --undo` acting in place
+   must switch to `gbrain migrate embeddings` (the printed guidance names
+   the exact command, including your `--brain` selector). If anything looks
+   wrong, file an issue with `gbrain doctor` output:
+   https://github.com/garrytan/gbrain/issues
 
 ## [0.46.11.0] - 2026-08-16
 
@@ -19360,7 +19446,6 @@ The OAuth provider in `src/core/oauth-provider.ts` got a parallel hardening pass
 Smaller hardening: admin cookies set `Secure` when behind HTTPS or a public-URL proxy (F9), magic-link nonces are bounded by an LRU cap (F10), `/mcp` wraps `transport.handleRequest` in try/catch so SDK throws hit a JSON-RPC 500 instead of express's default HTML error page (F14), and OperationError + unexpected exceptions both route through the unified `buildError`/`serializeError` envelope (F15). DCR disable became a constructor option on the provider rather than a serve-http monkey-patch (F12 — cleanup, not security).
 
 To take advantage of v0.26.9
-=====================
 `gbrain upgrade` is a one-step upgrade. There is no migration; all changes are application-layer.
 
 1. **Upgrade.** `gbrain upgrade`. Confirm `gbrain --version` shows `0.26.9`.
@@ -19494,7 +19579,6 @@ Both run at `--max-concurrency=1` after the parallel pass, same as the existing 
 Wallclock observed: 74s on a Mac dev box (running `bun run test` with the new quarantines). Already at the v0.26.9 informational target. The full intra-file marker flip (with codemod + per-file `test.concurrent()`) lands in v0.26.9 and aims for the same ≤60s with pinned config.
 
 To take advantage of v0.26.7
-=====================
 `gbrain upgrade` does nothing functional in this release — it ships test infrastructure, not user-facing code. But if you contribute tests:
 
 1. **Run `bun run verify` before pushing.** The new `check-test-isolation.sh` runs alongside the privacy + jsonb + progress checks. Catches new env-mutation, mock.module, and PGLite-pattern violations before CI does.
