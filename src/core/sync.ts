@@ -403,7 +403,27 @@ export type SyncableReason =
   | 'strategy'
   | 'pruned-dir'
   | 'include-glob-miss'
-  | 'exclude-glob-hit';
+  | 'exclude-glob-hit'
+  | 'malformed-path';
+
+/**
+ * Path segments that can never be legitimate page filenames: square brackets
+ * (the signature of markdown-link syntax leaking into a literal filename —
+ * files named `[atoms/foo.md](https:/...)` were minted by misbehaving
+ * producers and polluted search because slugifySegment STRIPS brackets
+ * instead of rejecting them, yielding plausible-looking slugs) and ASCII
+ * control characters. Parentheses are deliberately allowed — `meeting (1).md`
+ * is a legitimate filename shape.
+ *
+ * IMPORTANT: this is a PATH check only. `](` inside file BODIES is normal
+ * markdown and must never trip this.
+ */
+export const MALFORMED_PATH_SEGMENT_RE = /[\[\]\x00-\x1f]/;
+
+/** True when any path segment contains bracket or control characters. */
+export function hasMalformedPathSegment(path: string): boolean {
+  return MALFORMED_PATH_SEGMENT_RE.test(path);
+}
 
 /**
  * Canonical metafile basenames the markdown sync strategy intentionally
@@ -437,6 +457,11 @@ function classifySync(path: string, opts: SyncableOptions = {}): SyncableReason 
   const strategy = opts.strategy || 'markdown';
 
   if (!isAllowedByStrategy(path, strategy)) return 'strategy';
+
+  // Reject filenames that can't be legitimate pages (bracket/control chars —
+  // markdown-link syntax as a literal filename). Checked after `strategy` so
+  // only files that would otherwise be admitted change classification.
+  if (hasMalformedPathSegment(path)) return 'malformed-path';
 
   // Skip every path segment that pruneDir would block walkers from descending
   // into. Catches hidden dirs (`.git`, `.obsidian`), `.raw/` sidecars, and

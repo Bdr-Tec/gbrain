@@ -6203,6 +6203,41 @@ export async function buildChecks(
     // Best-effort; audit-log read failure shouldn't stop doctor.
   }
 
+  // 3d.05 Malformed-path pages. DB pages whose backing FILENAME contains
+  // bracket/control characters (markdown-link syntax as a literal filename).
+  // Sync now refuses to import such paths, but rows ingested before that
+  // gate — or whose junk file still sits in the repo — are permanent search
+  // pollution until swept. A full 'gbrain sync' reconcile removes them
+  // (reconcile treats malformed-path rows as eligible); this check is the
+  // discovery surface in between.
+  if (engine) {
+    try {
+      const { hasMalformedPathSegment } = await import('../core/sync.ts');
+      const candidates = await engine.executeRaw<{ slug: string; source_id: string; source_path: string }>(
+        `SELECT slug, source_id, source_path FROM pages
+          WHERE source_path IS NOT NULL AND deleted_at IS NULL
+            AND (source_path LIKE '%[%' OR source_path LIKE '%]%')`,
+        [],
+      );
+      const malformed = candidates.filter(r => hasMalformedPathSegment(r.source_path));
+      if (malformed.length > 0) {
+        const preview = malformed.slice(0, 3).map(r => r.slug).join(', ');
+        checks.push({
+          name: 'malformed_path_pages',
+          status: 'warn',
+          message:
+            `${malformed.length} page(s) backed by malformed filenames (bracket/control ` +
+            `characters) pollute search: ${preview}` +
+            `${malformed.length > 3 ? `, and ${malformed.length - 3} more` : ''}. ` +
+            `Fix: run a full 'gbrain sync' to reconcile them away, or rename the ` +
+            `backing files and re-sync to keep the content.`,
+        });
+      }
+    } catch {
+      // Best-effort; a schema without source_path shouldn't stop doctor.
+    }
+  }
+
   // 3d.1 Nightly quality probe (v0.40.1.0 Track D / T7). Reads the last
   // 7 days of quality-probe-YYYY-Www.jsonl audit events. SKIPPED with
   // paste-ready enable hint when the feature is opt-in disabled (default).

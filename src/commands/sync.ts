@@ -204,6 +204,12 @@ export interface SyncResult {
   pagesAffected: string[];
   failedFiles?: number; // count of parse failures (Bug 9)
   /**
+   * Files skipped because their FILENAME contains bracket/control characters
+   * (SyncableReason 'malformed-path'). Informational — these never gate
+   * bookmark advancement; rename the files to import them.
+   */
+  malformedSkipped?: number;
+  /**
    * v0.41.13.0 partial-sync fields (only set when status === 'partial').
    *
    * D-V3-1 (honest scope): --timeout aborts ONLY in pre-bookmark phases
@@ -2492,11 +2498,22 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     added: manifest.added.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)),
     modified: manifest.modified.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)),
     deleted: unique([
-      ...manifest.deleted.filter(p => inScope(p) && isSyncable(p, syncOpts)),
+      // 'malformed-path' deletions MUST still process: the classifier makes
+      // junk filenames unsyncable, but their previously-ingested DB rows are
+      // exactly what a delete event is supposed to remove — filtering them
+      // out here would orphan those rows (searchable forever). Mirror of the
+      // metafile carve-out, in the opposite direction.
+      ...manifest.deleted.filter(p => inScope(p) &&
+        (isSyncable(p, syncOpts) || unsyncableReason(p, syncOpts) === 'malformed-path')),
       ...renamedToUnsyncable,
     ]),
     renamed: manifest.renamed.filter(r => inScope(r.to) && !excluded(r.to) && isSyncable(r.to, syncOpts)),
   };
+
+  // Surface malformed-filename skips: they were silently dropped from the
+  // `filtered` manifest above, and a skip nobody can see reads as "synced".
+  const malformedSkipped = unique([...manifest.added, ...manifest.modified])
+    .filter(p => inScope(p) && unsyncableReason(p, syncOpts) === 'malformed-path');
 
   // NAV-4: warn when --exclude filtered out every candidate change — almost
   // always a mistyped pattern, and otherwise indistinguishable from
@@ -2522,9 +2539,13 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     if (filtered.modified.length) slog(`  Modified: ${filtered.modified.join(', ')}`);
     if (filtered.deleted.length) slog(`  Deleted: ${filtered.deleted.join(', ')}`);
     if (filtered.renamed.length) slog(`  Renamed: ${filtered.renamed.map(r => `${r.from} -> ${r.to}`).join(', ')}`);
+    if (malformedSkipped.length) {
+      slog(`  Skipped (malformed filename — brackets/control chars; rename to import): ${malformedSkipped.join(', ')}`);
+    }
     if (totalChanges === 0) slog(`  No syncable changes.`);
     return {
       status: 'dry_run',
+      malformedSkipped: malformedSkipped.length,
       fromCommit: lastCommit,
       toCommit: headCommit,
       added: filtered.added.length,
@@ -3024,7 +3045,11 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
           const result = await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack });
           importResult = result;
           if (result.status === 'imported') chunksCreated += result.chunks;
-          else if (result.status === 'skipped' && (result as { error?: string }).error) {
+          else if (result.status === 'skipped' && result.skip_reason === 'malformed_path') {
+            // Informational skip — a bracket/control-char filename can never
+            // import; counting it as a failure would gate the bookmark forever.
+            serr(`  Skipped (malformed filename): ${to}`);
+          } else if (result.status === 'skipped' && (result as { error?: string }).error) {
             failedFiles.push({ path: to, error: String((result as { error?: string }).error) });
           }
         } catch (e: unknown) {
@@ -3301,6 +3326,12 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
           // much actually landed before --timeout fired.
           filesImported++;
           // v0.42.x (#1794): checkpoint this path so a kill banks it.
+          await markCompleted(path);
+        } else if (result.status === 'skipped' && result.skip_reason === 'malformed_path') {
+          // Informational skip (bracket/control-char filename): never a
+          // failure, and stable across runs — checkpoint it as done so a
+          // resumed sync doesn't re-attempt it forever.
+          serr(`  Skipped (malformed filename — rename to import): ${path}`);
           await markCompleted(path);
         } else if (result.status === 'skipped' && (result as any).error) {
           failedFiles.push({ path, error: String((result as any).error) });
@@ -3811,6 +3842,13 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     slog(`Text imported. Run 'gbrain embed --stale' to generate embeddings.`);
   }
 
+  if (malformedSkipped.length > 0) {
+    serr(
+      `\n  ${malformedSkipped.length} file(s) skipped: malformed filename ` +
+      `(brackets/control chars) — rename to import. Not counted as failures.`,
+    );
+  }
+
   return {
     status: 'synced',
     fromCommit: lastCommit,
@@ -3822,6 +3860,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     chunksCreated,
     embedded,
     pagesAffected,
+    malformedSkipped: malformedSkipped.length,
   };
 }
 
@@ -4029,10 +4068,20 @@ async function performFullSync(
     // root-level sync of this source) are out of this walk's sight and must
     // not be treated as stale.
     const scopePrefix = slugRoot ? relative(gitContextRoot, syncScopeRoot) + '/' : '';
+    // 'malformed-path' rows ARE reconcile-eligible: junk filenames (bracket /
+    // control-char paths minted by misbehaving producers) can never be
+    // re-imported, so their rows are permanent search pollution unless the
+    // reconcile can sweep them. Strategy safety is preserved by classifier
+    // ordering — a path that fails the strategy check classifies as
+    // 'strategy', never 'malformed-path', so a markdown sync still can't
+    // delete code pages. The #1433 metafile protection is likewise untouched.
+    const reconcileEligible = (p: string): boolean =>
+      isSyncable(p, reconcileSyncOpts) ||
+      unsyncableReason(p, reconcileSyncOpts) === 'malformed-path';
     const plan = planReconcileDeletes(
       rows,
       currentFiles,
-      p => (scopePrefix === '' || p.startsWith(scopePrefix)) && isSyncable(p, reconcileSyncOpts),
+      p => (scopePrefix === '' || p.startsWith(scopePrefix)) && reconcileEligible(p),
     );
     if (plan.staleSlugs.length > 0 && plan.massDelete && !massReconcileAllowed()) {
       // #2828 mass-delete safety valve: a reconcile that would sweep more than

@@ -32,6 +32,12 @@ describe('#1433 — isSyncable / unsyncableReason are duals of one classifier', 
     { path: 'vendor/pkg/note.md', expected: 'pruned-dir', note: 'vendor/ is pruned' },
     { path: '.git/notes.md', expected: 'pruned-dir', note: 'hidden dir pruned' },
     { path: 'node_modules/foo/README.md', expected: 'pruned-dir', note: 'node_modules pruned' },
+    // Poisoned-path incident class: markdown-link syntax as a literal filename.
+    { path: '[atoms/foo.md](https:/example).md', expected: 'malformed-path', note: 'markdown-link-shaped junk filename rejected' },
+    { path: 'notes/[wip] draft.md', expected: 'malformed-path', note: 'bare bracket in filename rejected' },
+    { path: 'notes/bell' + '\x07' + '.md', expected: 'malformed-path', note: 'control character in filename rejected' },
+    { path: 'notes/meeting (1).md', expected: null, note: 'parens are legitimate filename characters — deliberately allowed' },
+    { path: 'people/alice.txt](x', expected: 'strategy', note: 'strategy check wins before malformed-path (classifier ordering keeps reconcile strategy-safe)' },
   ];
 
   for (const c of cases) {

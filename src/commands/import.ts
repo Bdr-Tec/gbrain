@@ -8,6 +8,7 @@ import { loadConfig, gbrainPath } from '../core/config.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import {
+  hasMalformedPathSegment,
   isCodeFilePath,
   isMarkdownFilePath,
   isImageFilePath as isImageFilePathFromSync,
@@ -386,7 +387,12 @@ export async function runImport(
         succeededPaths.push(importRelPath); // #3839
       } else {
         skipped++;
-        if (result.error && result.error !== 'unchanged') {
+        if (result.skip_reason === 'malformed_path') {
+          // Informational skip (bracket/control-char filename): never a
+          // failure-ledger row, and stable across runs — checkpoint as done.
+          console.error(`  Skipped (malformed filename — rename to import): ${relativePath}`);
+          completed.add(relativePath);
+        } else if (result.error && result.error !== 'unchanged') {
           console.error(`  Skipped ${relativePath}: ${result.error}`);
           // Bug 9 — non-"unchanged" skips carry a real error reason.
           // #774: ledger paths use the slug base so an incremental sync's
@@ -726,6 +732,11 @@ function isCollectibleForWalker(
   // check pruneDir already applied there — no behavior change on that route.)
   const segments = path.split('/');
   if (segments.some((seg) => !pruneDir(seg))) return false;
+
+  // Malformed filenames (brackets / control chars — markdown-link syntax as a
+  // literal filename) are rejected on BOTH collection routes, same as
+  // incremental sync's classifySync. Full and incremental must agree.
+  if (hasMalformedPathSegment(path)) return false;
 
   // Metafiles are directory scaffolding (READMEs / index / log / schema /
   // resolver), not typed brain pages — same exclusion `sync`'s `isSyncable`

@@ -9,7 +9,7 @@ import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION }
 import { findChunkForOffset } from './chunkers/edge-extractor.ts';
 import { extractCodeRefs, imageOfCandidates } from './link-extraction.ts';
 import { embedBatch, embedMultimodal, currentEmbeddingSignature } from './embedding.ts';
-import { slugifyPath, slugifyCodePath, isCodeFilePath } from './sync.ts';
+import { slugifyPath, slugifyCodePath, isCodeFilePath, hasMalformedPathSegment } from './sync.ts';
 import type { ChunkInput, PageInput, PageType } from './types.ts';
 import { computeEffectiveDate } from './effective-date.ts';
 import { MARKDOWN_CHUNKER_VERSION } from './chunkers/recursive.ts';
@@ -235,6 +235,14 @@ export interface ImportResult {
   flagged?: boolean;
   /** Which flag tier fired, when `flagged`. */
   flag_reason?: 'markup_heavy' | 'oversized';
+  /**
+   * Machine-readable skip class for status='skipped' rows that must NOT be
+   * treated as failures. 'malformed_path' = the FILENAME contains bracket or
+   * control characters (never importable; rename the file) — sync counts these
+   * in its malformed summary and keeps them OUT of failedFiles / the failure
+   * ledger so they can never gate bookmark advancement.
+   */
+  skip_reason?: 'malformed_path';
 }
 
 const MAX_FILE_SIZE = 5_000_000; // 5MB
@@ -1144,6 +1152,24 @@ export async function importFromFile(
   // parsed.slug is `frontmatter.slug || inferSlug(filePath)` where inferSlug
   // falls back to slugifyPath(). So parsed.slug.length > 0 with empty
   // expectedSlug = frontmatter provided one; both empty = no usable slug.
+  // Defense-in-depth for callers that bypass the sync/import classifiers
+  // (direct importFromFile, capture paths): a filename with bracket/control
+  // characters is never importable — slugifyPath would STRIP the brackets and
+  // mint a plausible-looking slug for a junk file (the exact mechanism that
+  // polluted search in the poisoned-path incident). skip_reason marks this as
+  // informational so sync's failure gate never counts it.
+  if (hasMalformedPathSegment(relativePath)) {
+    return {
+      slug: '',
+      status: 'skipped',
+      skip_reason: 'malformed_path',
+      chunks: 0,
+      error:
+        `Path "${relativePath}" contains bracket or control characters and ` +
+        `cannot be imported. Rename the file to import it.`,
+    };
+  }
+
   const expectedSlug = slugifyPath(relativePath);
   let resolvedSlug = expectedSlug;
   let usedFrontmatterFallback = false;
