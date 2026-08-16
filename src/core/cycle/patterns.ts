@@ -75,8 +75,12 @@ export interface PatternsPhaseOpts {
  * wait returns and the handler unwinds cleanly before the worker's abort
  * fires: wait poll interval (5s) + worker force-evict grace (30s) + lock
  * and DB cleanup headroom.
+ *
+ * #4168: the definition moved to base-phase.ts (one home for every phase);
+ * re-exported here so existing imports (tests included) keep working.
  */
-export const CYCLE_DEADLINE_RESERVE_MS = 60 * 1000;
+import { CYCLE_DEADLINE_RESERVE_MS } from './base-phase.ts';
+export { CYCLE_DEADLINE_RESERVE_MS };
 
 /**
  * Smallest remaining budget worth submitting a subagent for. Below this,

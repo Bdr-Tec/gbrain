@@ -52,6 +52,7 @@ import { parseLlmJson } from '../llm-json.ts';
 import type { BrainEngine, DreamVerdict, TriageSegment } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { MinionQueue } from '../minions/queue.ts';
+import { clampSubagentBudgets } from './patterns.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
@@ -349,6 +350,13 @@ export interface SynthesizePhaseOpts {
   date?: string;
   from?: string;
   to?: string;
+  /** #4168 sibling: absolute wall-clock deadline (epoch ms) of the enclosing
+   *  minion job. When set, child-subagent timeout_ms/wait are clamped via the
+   *  clampSubagentBudgets template so a child submitted late in the cycle
+   *  cannot outlive the parent's kill switch; under the minimum budget the
+   *  phase skips honestly instead of submitting a guaranteed-timeout child.
+   *  Null/unset (`gbrain dream` CLI) keeps the configured defaults. */
+  deadlineAtMs?: number | null;
   /**
    * Disable the self-consumption guard. Wired from the
    * `--unsafe-bypass-dream-guard` CLI flag. NOT auto-applied for `--input`
@@ -635,6 +643,24 @@ export async function runPhaseSynthesize(
   }
   try {
     const config = await loadSynthConfig(engine);
+
+    // #4168 sibling: clamp the child-subagent budgets to the REAL remaining
+    // job time (patterns.ts clampSubagentBudgets template). Pre-fix,
+    // DEFAULT_SUBAGENT_TIMEOUT_MS (30min) was submitted raw as the child's
+    // timeout_ms even when the parent cycle had two minutes left — the same
+    // deadline-equals-kill-switch collision propose_takes had, one process
+    // boundary further out.
+    const clamped = clampSubagentBudgets(
+      { subagentTimeoutMs: config.subagentTimeoutMs, subagentWaitTimeoutMs: config.subagentWaitTimeoutMs },
+      opts.deadlineAtMs,
+      Date.now(),
+    );
+    if (clamped === null) {
+      return skipped('insufficient_cycle_budget',
+        'remaining cycle budget too small to submit a synthesize child that could finish; next cycle retries with a fresh budget');
+    }
+    config.subagentTimeoutMs = clamped.timeoutMs;
+    config.subagentWaitTimeoutMs = clamped.waitTimeoutMs;
 
     // Allow ad-hoc --input to run even when config is disabled.
     if (!opts.inputFile && !config.corpusDir) {

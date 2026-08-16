@@ -11,7 +11,7 @@ src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely;
 src/commands/sync.ts	4121	ratchet	peel target: containment sprint C13-C14
 src/core/ai/gateway.ts	4234	ratchet	watchlist
 src/cli.ts	3337	ratchet	watchlist
-src/core/cycle.ts	2933	ratchet
+src/core/cycle.ts	2939	ratchet
 src/commands/serve-http.ts	2836	ratchet
 src/commands/jobs.ts	2826	ratchet
 src/core/search/hybrid.ts	2479	ratchet
@@ -20,7 +20,7 @@ src/commands/autopilot.ts	2301	ratchet
 src/commands/extract.ts	2161	ratchet
 src/commands/extract-conversation-facts.ts	1968	ratchet
 src/core/import-file.ts	1895	ratchet
-src/core/cycle/synthesize.ts	2616	ratchet
+src/core/cycle/synthesize.ts	2642	ratchet
 src/commands/embed.ts	1859	ratchet
 src/core/types.ts	1822	ratchet
 src/commands/skillpack.ts	1763	ratchet

@@ -41,6 +41,17 @@ import type { ProgressReporter } from '../progress.ts';
  * BaseCyclePhase. The base class produces these via `this.scope()`; subclasses
  * receive them as the only sanctioned way to read source-scoped data.
  */
+/**
+ * Reserve carved out of the enclosing job's remaining wall-clock before a
+ * cycle phase commits to more work: enough headroom that a child-subagent
+ * wait returns and the handler unwinds cleanly before the worker's abort
+ * fires: wait poll interval (5s) + worker force-evict grace (30s) + lock
+ * and DB cleanup headroom. ONE home (#4168) — patterns.ts re-exports it;
+ * a second `60 * 1000` copy would recreate the duplicated-literal drift
+ * this constant exists to prevent.
+ */
+export const CYCLE_DEADLINE_RESERVE_MS = 60 * 1000;
+
 export interface ScopedReadOpts {
   sourceId?: string;
   sourceIds?: string[];
@@ -49,6 +60,14 @@ export interface ScopedReadOpts {
 export interface BasePhaseOpts {
   /** Optional progress reporter. Phases call tick() / start() through the base. */
   reporter?: ProgressReporter;
+  /** Absolute wall-clock deadline (epoch ms) of the ENCLOSING minion job
+   *  (#2781/#4168), threaded from MinionJobContext.deadlineAtMs by the
+   *  autopilot-cycle handler via runCycle. Null/unset for direct
+   *  `gbrain dream` callers — phases then fall back to their derived
+   *  defaults. Phases that spend real time (propose_takes, patterns,
+   *  synthesize) clamp against this so their clean-exit paths fire BEFORE
+   *  the job's kill switch instead of being structurally unreachable. */
+  deadlineAtMs?: number | null;
   /** Dry-run mode propagated from cycle opts. Subclasses honor this in process(). */
   dryRun?: boolean;
   /** Optional explicit budget override in USD. Otherwise base reads config. */
