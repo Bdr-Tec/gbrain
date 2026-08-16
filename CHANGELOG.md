@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.9.0] - 2026-08-16
+## [0.46.10.0] - 2026-08-16
 
 **Switching embedding and reranking providers is now one guess-free
 command.** `gbrain migrate embeddings` verifies against the database —
@@ -101,7 +101,7 @@ the same canonical, paste-ready command.
   recovery section, an exit-code table, and a DB-verified verify step
   (skills/migrations/v0.46.3.0.md).
 
-**To take advantage of v0.46.9.0:** upgrade and re-run `gbrain doctor`.
+**To take advantage of v0.46.10.0:** upgrade and re-run `gbrain doctor`.
 Embedding-coverage numbers become truthful on upgrade — a brain that
 previously reported inflated coverage may show lower numbers or a new
 doctor warning; that is the pre-existing state becoming visible, not a
@@ -110,6 +110,65 @@ regression. The fix is one command: `gbrain embed --stale` (add
 mid-migration off a sunsetting provider, `gbrain migrate embeddings
 --status` shows exactly where you are and the exact resume command.
 
+## [0.46.9.1] - 2026-08-16
+
+**Coverage is now measured, honestly, on every PR — and the six giant modules stopped growing.**
+
+### Added
+- **Merged code-coverage reporting in CI.** Every PR run now collects per-lane
+  lcov from the 10 unit shards, the serial lane, and the two slow jobs, merges
+  them (`scripts/merge-lcov.ts`), and renders one honest number to the run
+  summary — with lane-completeness manifests, a degraded banner when a lane is
+  missing, a never-loaded-file list instead of fake all-files math, and
+  behavioral-vs-structural test counts side by side. A nightly pipeline runs
+  every lane INCLUDING the full real-Postgres e2e glob inside one workflow for
+  the true unit+serial+E2E merged number.
+- **Diff-coverage gate (report-only, graduating).** New and changed source
+  lines are held to an 80% coverage bar with a per-file uncovered-line table on
+  every PR. It reports without blocking until the measurement machinery has two
+  weeks of receipts, then flips to enforcing via a one-line change. Escape
+  hatch: a `[coverage-exempt: reason]` commit trailer. A corpus-matched
+  baseline gate (brainbench-style governance against origin/master's committed
+  baseline) catches whole-repo regressions.
+- **Module-size ratchet.** `check:module-size` (in `bun run verify`) pins every
+  oversized file to a committed ceiling: growth fails, stale slack after a
+  shrink fails, and any unlisted src file over 1,500 lines fails. Growing a
+  giant now requires a reviewer-visible edit to
+  `scripts/module-size-limits.tsv`. The append-only migrations file is
+  region-aware: the migration array grows freely while the runner logic around
+  it is ratcheted.
+- **Test-intent classification.** `scripts/classify-tests.ts` separates suites
+  that execute product behavior from suites that assert on source/doc text
+  (wiring guards, drift pins), with a freshness-checked committed inventory —
+  so the headline test count stops conflating the two.
+- The 34-test behavioral engine-parity suite now runs in CI on every PR and
+  push to master (it previously only ran locally).
+
+### Changed
+- **The four biggest modules are now façades over focused modules** (~19,500
+  lines peeled, behavior unchanged and pinned by the existing parity/guard
+  suites): the operations contract assembles from `src/core/ops/*` domain
+  modules; doctor's check library lives in `src/commands/doctor/checks/*`
+  bundles plus four tail-cluster modules; sync's cost-gate/git/anchor/lock/
+  reconcile/status-report clusters live in `src/core/sync-*`; and both database
+  engines delegate their facts/takes/code-edges/salience method groups to
+  narrow-interface modules, moved in lockstep and verified against live
+  Postgres. Every façade re-exports its full prior surface, so imports and the
+  published package exports are unchanged.
+- The CLI flag-registry generator understands the new façade layout, so
+  command flag surfaces are byte-identical to before the split.
+
+### Fixed
+- Structural guard tests that pinned source text in the peeled files now read
+  the whole module surface (or the specific post-peel file), so a future move
+  can never silently blind a guard.
+
+To take advantage of v0.46.9.1: upgrade normally — no schema changes, no
+config changes, no action required. Contributors get the new guards
+automatically via `bun run verify`; coverage numbers appear in each CI run's
+summary. If `check:module-size` fails on your branch, the message names the
+exact ceiling to raise (a conscious, reviewer-visible TSV edit) or — better —
+the sibling module dir to put the new code in.
 ## [0.46.8.0] - 2026-08-15
 
 **The full local test suite is trustworthy again.** `bun run test` and

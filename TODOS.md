@@ -1,5 +1,66 @@
 # TODOS
 
+## Containment-sprint follow-ups (coverage truth + module peels; plan: ~/.claude/plans/system-instruction-you-are-working-serialized-forest.md)
+
+- [ ] **P1 — Graduate the diff-coverage gate to blocking (time-boxed 2 weeks from merge).**
+  **What:** flip `COVERAGE_GATE_ENFORCE` to `'1'` in test.yml's coverage-report job, add
+  coverage-report to test-status's required-success set and cache-write's needs, and replace
+  the provisional `scripts/coverage-baseline.json` corpus sections with CI-derived values via
+  `scripts/update-coverage-baseline.ts --promote`. **Criteria:** 10 consecutive green
+  coverage-report runs on PRs (master runs are structurally cache-skipped — a squash-merged
+  tree equals its green PR tree, so the ci-pass marker hits; never count master runs) plus 3
+  green nightly fullCorpus merges and zero merge-infrastructure failures. **Why:** the 80%
+  diff gate is built and reporting on every PR; blocking is a one-line flip once the
+  measurement machinery has receipts. Review `scripts/coverage-gate-exemptions.txt` against
+  report-only-window data in the same PR (shrink what gained unit coverage, add only what
+  repeatedly false-positives). **Adversarial acceptance items for the same PR:** decide the
+  enforce-mode degraded posture (today degraded -> report-only, which post-graduation is a
+  bypass channel - fail loud, or require explicit re-run); set a baseline re-seed cadence so
+  serial sub-threshold drops (<=0.49pp) cannot compound unboundedly. **Effort:** S. **Priority:** P1.
+- [ ] **P2 — Wave 4a: decompose performSyncInner (own plan).** **What:** the 1,923-line
+  procedure inside src/commands/sync.ts → sync-phase-{deletes,renames,imports} modules.
+  **Why:** the six pure clusters are peeled (sync.ts 5,991→4,121); the remaining bulk is one
+  function. **Blocked by:** re-pointing the two positional source-text guards
+  (test/sync.test.ts #132 prelude scan, test/redos-hardening.test.ts ordering) at the phase
+  modules — needs its own plan. **Effort:** L→M with CC. **Priority:** P2.
+- [ ] **P2 — Wave 4b: hoist buildChecks' ~220 inline checks.push literals into named
+  functions, then finish the doctor split (own plan).** **What:** doctor.ts is 4,177 lines,
+  ~3,240 of them buildChecks. Hoisting the inline literals into named check functions makes
+  them movable into the checks/ bundles. **Why:** completes the assessment's #1 named peel
+  target. **Effort:** L→M with CC. **Priority:** P2.
+- [ ] **P2 — CLI subprocess coverage.** **What:** investigate an in-process CLI-invocation
+  harness for a coverage lane (import cli.ts main instead of spawning) and track bun
+  child-process coverage support upstream. **Why:** E2E-spawned `bun src/cli.ts` children are
+  invisible to bun's coverage (the documented 15.2% cli.ts undercount);
+  src/cli.ts sits in the gate exemption list until this closes. **Effort:** M. **Priority:** P2.
+- [ ] **P3 — Migrate-runner extraction (revisit only on evidence).** **What:** the ~668
+  region-guarded runner lines in src/core/migrate.ts could move to migrate-runner.ts.
+  **Why deferred:** 9 slice-window source-text assertions in test/migrate.test.ts pin
+  locality; the region-exempt ratchet already forbids logic growth. Revisit if the region
+  guard starts failing on legitimate runner work. **Effort:** M. **Priority:** P3.
+- [ ] **P3 — Shrink coverage-gate-exemptions.txt as engine unit coverage rises.** **What:**
+  the engine files + dirs are exempt because the PR corpus can't see their e2e coverage;
+  nightly fullCorpus data shows their true numbers (postgres-engine 40% merged). As narrow-deps
+  modules gain unit tests, delist them. **Effort:** S per file. **Priority:** P3.
+- [ ] **P3 — Branch coverage when bun ships it.** **What:** bun 1.3.x emits line+function
+  lcov only (and JSC omits function names). When branch records (BRDA) land upstream, extend
+  merge-lcov.ts and report branch coverage. **Effort:** S. **Priority:** P3.
+- [ ] **P2 — Local shard-1 SIGTERM self-kill under load (master-inherited).** **What:** the
+  local fast loop's shard 1/4 dies rc=143 with ZERO test failures ~50–85s in when the machine
+  carries concurrent bun-test load: an `extract.stale` abort observes SIGTERM and the parent
+  bun process dies (`[run-child] job ... not claimed` lines adjacent). Reproduced
+  byte-identically on a clean master worktree (`SHARD=1/4 bash scripts/run-unit-shard.sh
+  --max-concurrency=2`), so it predates the containment sprint — most plausibly a
+  process-group signal escaping a per-job isolation test (#4151 landed the process-isolation
+  lane). **Why:** a self-killing shard reads as CI/local flake and poisons full-suite runs.
+  **Where to start:** the shard-1 file set's isolation/lifecycle tests
+  (test/run-child-entry.test.ts, test/worker-job-isolation.test.ts, test/extract-stale.test.ts)
+  — audit for kill(0)/process-group signals under contention. **Effort:** M. **Priority:** P2.
+- [ ] **P3 — Evidence-gated engine-core dedup.** **What:** the narrow-deps engine modules
+  (facts/takes/code-edges/salience × both engines) are the stepping stone toward a shared
+  engine core, NOT the substitute. The prior proposal drew 15 substantive review objections
+  (see the earlier module-singleton TODO) — pull this in only when parity maintenance costs
+  demonstrably recur. **Effort:** XL→L with CC. **Priority:** P3.
 ## Codex/Claude plugin lane follow-ups (filed from the plugin packaging wave)
 
 - [ ] **Plugin-lane receipt provenance: re-run bootstrap after plugin install can strand a hand-wired registration.** `appendReceiptRegistration` dedups by (host, scope), so wiring via bootstrap (detail:`mcp`) → enabling the plugin → re-running `bootstrap hooks` overwrites the record with `plugin-mcp`; the plugin-owned uninstall guard then skips `mcp remove` forever, stranding the registration bootstrap itself created. Narrow sequence (plugin enabled AFTER a hand-wired bootstrap). Fix: on the plugin-owned skip, don't downgrade an existing `mcp`-detail record for the same (host,scope), or offer to remove the stale hand-wired entry. Priority: P3. Surfaced by the ship-stage red-team review of the codex-plugin wave.

@@ -151,12 +151,15 @@ describe('canonical migration command (single home: ai/defaults.ts)', () => {
       'src/core/advisor/collect-setup-smells.ts',
       'src/commands/upgrade.ts',
       'src/core/ze-exposure.ts',
-      'src/commands/doctor.ts',
       'src/commands/ze-switch.ts',
     ];
     for (const rel of consumers) {
       const text = readFileSync(join(import.meta.dir, '..', rel), 'utf-8');
       expect(text.includes('renderCanonicalMigrationCommands')).toBe(true);
     }
+    // Doctor's consumer (checkProviderSunset) lives in the peeled checks tree;
+    // the containment convention reads the concatenated doctor surface.
+    const { doctorSource } = require('./helpers/doctor-source.ts');
+    expect(doctorSource().includes('renderCanonicalMigrationCommands')).toBe(true);
   });
 });
