@@ -287,6 +287,14 @@ export const CLIENT_FENCED_WRITE_OPS: ReadonlySet<string> = new Set([
   // would break the original feature for clients that legitimately hold both
   // a binding and `agent` scope.
   'submit_agent',
+  // CLI→MCP gap-closure wave: capture delegates to put_page with the same ctx
+  // (inheriting its enforceClientSlugFence) and [EV7] defaults its slug UNDER
+  // the caller's first bound prefix — the zero-config path exists for exactly
+  // the bound-agent audience. The takes write verbs each call
+  // enforceClientSlugFence themselves (their markdown mirror writes the
+  // page file under the slug), the same guarantee as add_tag/add_timeline_entry.
+  'capture',
+  'takes_add', 'takes_update', 'takes_resolve', 'takes_supersede',
 ]);
 
 /**
