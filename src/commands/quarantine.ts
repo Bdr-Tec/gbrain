@@ -15,7 +15,7 @@ import { serializePageToMarkdown, serializeMarkdown } from '../core/markdown.ts'
 import { importFromContent } from '../core/import-file.ts';
 import type { PageType } from '../core/types.ts';
 
-interface QuarantineRow {
+export interface QuarantineRow {
   slug: string;
   source_id: string;
   marker: 'quarantine' | 'content_flag';
@@ -23,7 +23,7 @@ interface QuarantineRow {
   assessed_at: string;
 }
 
-function rowFor(page: { slug: string; source_id?: string; frontmatter?: Record<string, unknown> | null }): QuarantineRow | null {
+export function rowFor(page: { slug: string; source_id?: string; frontmatter?: Record<string, unknown> | null }): QuarantineRow | null {
   const fm = page.frontmatter ?? null;
   if (isQuarantined(fm)) {
     const m = (fm as Record<string, unknown>)[QUARANTINE_KEY] as Record<string, unknown>;
@@ -49,25 +49,68 @@ function rowFor(page: { slug: string; source_id?: string; frontmatter?: Record<s
   return null;
 }
 
-async function runList(engine: BrainEngine, args: string[]): Promise<void> {
-  const json = args.includes('--json');
-  const includeFlagged = args.includes('--include-flagged');
-  // Paginate so a huge brain doesn't pull everything at once.
+export interface CollectQuarantineOpts {
+  includeFlagged?: boolean;
+  /** Max ROWS returned (op default 200, cap 1000). Undefined = unbounded (CLI). */
+  limit?: number;
+  /** Max PAGES scanned (op default 20000, cap 100000). Undefined = full scan (CLI). */
+  maxScan?: number;
+  /** Source scope (the op threads sourceScopeOpts; the CLI scans unscoped). */
+  sourceId?: string;
+  sourceIds?: string[];
+}
+
+export interface CollectQuarantineResult {
+  rows: QuarantineRow[];
+  scanned: number;
+  /** True when a bound stopped the scan — `rows.length` is a LOWER BOUND. */
+  truncated: boolean;
+}
+
+/**
+ * Shared frontmatter scan behind `gbrain quarantine list` and the
+ * quarantine_list op. Scan order is pinned to listPages' default
+ * `updated_desc` (most recently updated pages first), so a bounded scan sees
+ * the newest markers before older ones [OV13].
+ */
+export async function collectQuarantineRows(
+  engine: BrainEngine,
+  opts: CollectQuarantineOpts = {},
+): Promise<CollectQuarantineResult> {
   const rows: QuarantineRow[] = [];
   const PAGE = 1000;
   let offset = 0;
-  for (;;) {
-    const pages = await engine.listPages({ limit: PAGE, offset });
+  let scanned = 0;
+  let truncated = false;
+  outer: for (;;) {
+    const pages = await engine.listPages({
+      limit: PAGE,
+      offset,
+      sort: 'updated_desc',
+      ...(opts.sourceIds && opts.sourceIds.length > 0
+        ? { sourceIds: opts.sourceIds }
+        : opts.sourceId ? { sourceId: opts.sourceId } : {}),
+    });
     if (pages.length === 0) break;
     for (const p of pages) {
+      if (opts.maxScan !== undefined && scanned >= opts.maxScan) { truncated = true; break outer; }
+      scanned += 1;
       const r = rowFor(p);
       if (!r) continue;
-      if (r.marker === 'content_flag' && !includeFlagged) continue;
+      if (r.marker === 'content_flag' && !opts.includeFlagged) continue;
       rows.push(r);
+      if (opts.limit !== undefined && rows.length >= opts.limit) { truncated = true; break outer; }
     }
     if (pages.length < PAGE) break;
     offset += PAGE;
   }
+  return { rows, scanned, truncated };
+}
+
+async function runList(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const includeFlagged = args.includes('--include-flagged');
+  const { rows } = await collectQuarantineRows(engine, { includeFlagged });
 
   if (json) {
     console.log(JSON.stringify({ schema_version: 1, count: rows.length, rows }, null, 2));
