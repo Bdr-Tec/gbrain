@@ -349,9 +349,9 @@ export function applyPattern(
     entry.multi_line === true &&
     entry.score_continuations_as_body === true &&
     (entry.test_positive ?? []).some((s) => /^#{2,3}\s/.test(s));
-  let inFence = false;
+  let fenceMarker: '```' | '~~~' | null = null;
   const collectFoldedHeading = (line: string): void => {
-    if (!headingAnchored || inFence || !diag) return;
+    if (!headingAnchored || fenceMarker !== null || !diag) return;
     if (diag.unrecognized_headings.length >= MAX_UNRECOGNIZED_HEADINGS) return;
     const h = UNRECOGNIZED_HEADING_RE.exec(line);
     if (!h) return;
@@ -366,7 +366,19 @@ export function applyPattern(
     const rawLine = lines[i];
     const line = rawLine.trim();
     if (!line) continue;
-    if (headingAnchored && FENCE_RE.test(line)) inFence = !inFence;
+    if (headingAnchored) {
+      // Adversarial F6 (partial): a fence closes only on ITS OWN marker —
+      // CommonMark treats a mismatched marker as content, so `~~~` must not
+      // close a ```-opened fence. (An UNCLOSED fence still suppresses
+      // detection for the rest of the document — CommonMark-consistent, and
+      // the fail direction is warn-noise-free but detection-free; noted in
+      // the PR body as a known residual for truncated-LLM-output corpora.)
+      const fm = FENCE_RE.exec(line)?.[1] as '```' | '~~~' | undefined;
+      if (fm) {
+        if (fenceMarker === null) fenceMarker = fm;
+        else if (fenceMarker === fm) fenceMarker = null;
+      }
+    }
 
     const dateHeader = dateHeaderRe.exec(line);
     if (dateHeader) {

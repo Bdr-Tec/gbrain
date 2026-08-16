@@ -733,10 +733,17 @@ describe('resolveProposeTakesDeadlineMs — derived phase budget (#4168)', () =>
     expect(resolveProposeTakesDeadlineMs(tight, NOW)).toBe(Math.floor(remaining * 0.8));
   });
 
-  test('boundary: exactly at MIN is non-null; one ms under is null; already-expired is null', () => {
-    const atMin = NOW + MIN_PROPOSE_TAKES_BUDGET_MS + CYCLE_DEADLINE_RESERVE_MS;
-    expect(resolveProposeTakesDeadlineMs(atMin, NOW)).toBe(MIN_PROPOSE_TAKES_BUDGET_MS);
-    expect(resolveProposeTakesDeadlineMs(atMin - 1, NOW)).toBeNull();
+  test('boundary: the skip line sits where the FRACTIONED budget crosses MIN (adversarial F4 — never clamp a sub-MIN fraction back up)', () => {
+    // Non-null requires floor(remaining * 0.8) >= MIN, i.e. remaining >= MIN/0.8.
+    const minRemaining = Math.ceil(MIN_PROPOSE_TAKES_BUDGET_MS / 0.8);
+    const atBoundary = NOW + CYCLE_DEADLINE_RESERVE_MS + minRemaining;
+    expect(resolveProposeTakesDeadlineMs(atBoundary, NOW)).toBe(MIN_PROPOSE_TAKES_BUDGET_MS);
+    // remaining == MIN exactly → fractioned < MIN → honest skip (was: clamped
+    // UP to MIN, handing propose_takes the whole window and starving the
+    // downstream calibration phases into the reserve).
+    const atMin = NOW + CYCLE_DEADLINE_RESERVE_MS + MIN_PROPOSE_TAKES_BUDGET_MS;
+    expect(resolveProposeTakesDeadlineMs(atMin, NOW)).toBeNull();
+    expect(resolveProposeTakesDeadlineMs(atBoundary - 2, NOW)).toBeNull();
     expect(resolveProposeTakesDeadlineMs(NOW - 1, NOW)).toBeNull();
   });
 });
@@ -760,7 +767,8 @@ describe('deadlineAtMs threading through the phase (#4168)', () => {
     // unit tests + the skip case below (the two reachable production shapes).
     const result = await runPhaseProposeTakes(buildCtx(engine), {
       extractor,
-      deadlineAtMs: Date.now() + CYCLE_DEADLINE_RESERVE_MS + MIN_PROPOSE_TAKES_BUDGET_MS + 10_000,
+      // Above the F4 boundary: non-null needs floor(remaining*0.8) >= MIN.
+      deadlineAtMs: Date.now() + CYCLE_DEADLINE_RESERVE_MS + Math.ceil(MIN_PROPOSE_TAKES_BUDGET_MS / 0.8) + 10_000,
     });
     expect(result.status).not.toBe('skipped'); // enough budget → runs
   });

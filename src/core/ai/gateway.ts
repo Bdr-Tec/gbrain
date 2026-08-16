@@ -169,6 +169,12 @@ let _generateTextTransport: GenerateTextFn = generateText;
 // swapped in production — expand() always calls the real generateObject.
 type GenerateObjectFn = typeof generateObject;
 let _generateObjectTransport: GenerateObjectFn = generateObject;
+// Adversarial F5 (#4121): recipes that DECLARE structured-output support but
+// reject json_schema at call time would otherwise pay the rejected attempt —
+// and a pessimistic '.failed' budget record — on EVERY expand() call
+// (persistent ~2x phantom overcount that can trip caps). Remember the
+// rejection per recipe for the process lifetime and go straight to viaText.
+const _structuredOutputRejectedRecipes = new Set<string>();
 // v0.41.6.0 D1: tests that install a transport stub also pass the
 // embedding-creds preflight, matching the chat-transport fast-path
 // pattern. Set when __setEmbedTransportForTests is called with a
@@ -625,6 +631,7 @@ function clearGatewayState(): void {
   _embedTransport = embedMany;
   _generateTextTransport = generateText;
   _generateObjectTransport = generateObject;
+  _structuredOutputRejectedRecipes.clear();
   _embedTransportInstalled = false;
   _chatTransport = null;
   _warnedRecipes.clear();
@@ -2537,16 +2544,21 @@ const OCR_IMAGE_INPUT_TOKEN_ESTIMATE = 1600;
  */
 function normalizeSdkUsage(usage: unknown): { inputTokens: number; outputTokens: number } {
   const u = (usage ?? {}) as Record<string, unknown>;
-  // finite-or-zero: some openai-compatible backends emit NaN for unknown
-  // usage, and `NaN ?? 0` keeps the NaN — one NaN record poisons the
-  // tracker's running total and every later `spent > cap` check fails OPEN.
-  const finite = (v: unknown): number => {
-    const n = Number(v ?? 0);
-    return Number.isFinite(n) ? n : 0;
+  // First FINITE field wins (adversarial F9): `??` only skips null/undefined,
+  // so a NaN v6 field would shadow a REAL legacy promptTokens value — and an
+  // unguarded NaN poisons the tracker's running total, failing every later
+  // cap check open. Fall through NaN to the legacy field, then to 0.
+  const firstFinite = (...vals: unknown[]): number => {
+    for (const v of vals) {
+      if (v === null || v === undefined) continue;
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+    return 0;
   };
   return {
-    inputTokens: finite((u.inputTokens as number | undefined) ?? (u.promptTokens as number | undefined)),
-    outputTokens: finite((u.outputTokens as number | undefined) ?? (u.completionTokens as number | undefined)),
+    inputTokens: firstFinite(u.inputTokens, u.promptTokens),
+    outputTokens: firstFinite(u.outputTokens, u.completionTokens),
   };
 }
 
@@ -2671,7 +2683,7 @@ export async function expand(query: string): Promise<string[]> {
       }
       recordExpansionUsage(modelLabel, result.usage);
       expansions = result.object?.queries ?? [];
-    } else if (recipeSupportsStructuredOutputs(recipe)) {
+    } else if (recipeSupportsStructuredOutputs(recipe) && !_structuredOutputRejectedRecipes.has(recipe.id)) {
       // openai-compatible backend that honors strict json_schema: request the
       // schema (strict validation), and fall back to the text path if it is
       // rejected at call time so a mis-declared capability never drops expansion.
@@ -2688,6 +2700,9 @@ export async function expand(query: string): Promise<string[]> {
         // The rejected structured attempt billed real tokens — record it
         // before the fallback bills its own call (two records, both true).
         recordExpansionFailure(modelLabel, err);
+        // Adversarial F5: don't re-pay this attempt on every call — the
+        // capability mis-declaration is stable for the process lifetime.
+        _structuredOutputRejectedRecipes.add(recipe.id);
         expansions = await viaText();
       }
     } else {

@@ -452,15 +452,15 @@ export function resolveProposeTakesDeadlineMs(
 ): number | null {
   if (deadlineAtMs == null) return PROPOSE_TAKES_FALLBACK_DEADLINE_MS;
   const remaining = deadlineAtMs - CYCLE_DEADLINE_RESERVE_MS - nowMs;
-  if (remaining < MIN_PROPOSE_TAKES_BUDGET_MS) return null;
-  // Red-team: the grade_takes/calibration_profile headroom the 0.8 fraction
-  // exists for must apply on the THREADED path too — un-fractioned, a small
-  // remaining budget was consumed whole and the downstream phases started
-  // inside the reserve, the exact mid-write-kill class #4168 closes.
-  return Math.min(
-    Math.max(MIN_PROPOSE_TAKES_BUDGET_MS, Math.floor(remaining * PHASE_DEADLINE_FRACTION_OF_JOB)),
-    PROPOSE_TAKES_FALLBACK_DEADLINE_MS,
-  );
+  // Red-team + adversarial F4: the grade_takes/calibration_profile headroom
+  // the 0.8 fraction exists for must apply on the THREADED path too, and the
+  // MIN floor must gate the FRACTIONED value — clamping a sub-MIN fraction
+  // back UP to MIN would hand propose_takes the whole remaining window and
+  // start the downstream phases inside the reserve. Under the floor, skip
+  // honestly instead.
+  const fractioned = Math.floor(remaining * PHASE_DEADLINE_FRACTION_OF_JOB);
+  if (fractioned < MIN_PROPOSE_TAKES_BUDGET_MS) return null;
+  return Math.min(fractioned, PROPOSE_TAKES_FALLBACK_DEADLINE_MS);
 }
 
 class ProposeTakesPhase extends BaseCyclePhase {

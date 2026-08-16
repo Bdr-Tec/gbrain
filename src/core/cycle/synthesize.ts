@@ -52,7 +52,7 @@ import { parseLlmJson } from '../llm-json.ts';
 import type { BrainEngine, DreamVerdict, TriageSegment } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { MinionQueue } from '../minions/queue.ts';
-import { clampSubagentBudgets, CYCLE_DEADLINE_RESERVE_MS } from './patterns.ts';
+import { clampSubagentBudgets, CYCLE_DEADLINE_RESERVE_MS, MIN_PATTERNS_SUBAGENT_BUDGET_MS } from './patterns.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
@@ -415,6 +415,14 @@ export async function runSubagentsInline(
   yieldDuringPhase?: () => Promise<void>,
   handler: MinionHandler = makeSubagentHandler({ engine }),
   lockMs: number = INLINE_LOCK_MS,
+  /** #4168 adversarial: absolute parent-job deadline. When the remaining
+   *  budget drops under the minimum child budget, the drain stops CLAIMING —
+   *  the caller cancels the still-waiting children and defers their
+   *  transcripts (children submit fast, so submit-time clamps alone cannot
+   *  bound a sequential multi-child drain). Residual, documented: the LAST
+   *  claimed child may still overrun the parent by up to its own clamped
+   *  timeout; the worker abort + reserve absorb one child, not N. */
+  deadlineAtMs?: number | null,
 ): Promise<void> {
   // #3555 interaction: the drain's queue ops used to be bare awaits, so a
   // transient pooler reap mid-drain threw out of the loop and stranded the
@@ -437,6 +445,15 @@ export async function runSubagentsInline(
   };
 
   while (true) {
+    // #4168 adversarial: stop claiming when the parent budget cannot fit
+    // another child. Already-running work is unaffected; unclaimed children
+    // stay 'waiting' for the caller's cancel-and-defer pass.
+    if (
+      deadlineAtMs != null &&
+      deadlineAtMs - CYCLE_DEADLINE_RESERVE_MS - Date.now() < MIN_PATTERNS_SUBAGENT_BUDGET_MS
+    ) {
+      return;
+    }
     const lockToken = randomUUID();
     let job: Awaited<ReturnType<MinionQueue['claim']>>;
     try {
@@ -1053,7 +1070,27 @@ export async function runPhaseSynthesize(
     // terminal child states instead of polling waiters until
     // subagentWaitTimeoutMs expires. Runs on BOTH engines — on Postgres the
     // parent job otherwise deadlocks a fully-occupied worker (#2050).
-    await runSubagentsInline(engine, queue, childQueueName, opts.yieldDuringPhase);
+    await runSubagentsInline(
+      engine, queue, childQueueName, opts.yieldDuringPhase,
+      undefined, undefined, opts.deadlineAtMs ?? null,
+    );
+
+    // #4168 adversarial: children the deadline-gated drain never claimed
+    // would strand in this per-run private queue forever (no worker claims
+    // it). Cancel them and defer their transcripts to the next cycle.
+    if (opts.deadlineAtMs != null) {
+      const stillWaiting = await engine.executeRaw<{ id: number }>(
+        `SELECT id FROM minion_jobs WHERE queue = $1 AND status IN ('waiting', 'delayed')`,
+        [childQueueName],
+      );
+      for (const row of stillWaiting) {
+        const cancelled = await queue.cancelJob(row.id);
+        if (cancelled) {
+          const src = jobRawSource.get(row.id);
+          if (src) budgetExhaustedDeferrals.push(basename(src));
+        }
+      }
+    }
 
     // Wait for every child to reach a terminal state. Tick yieldDuringPhase
     // every 5 min so the cycle lock TTL refreshes.
@@ -1123,10 +1160,20 @@ export async function runPhaseSynthesize(
     }
 
     // Write completion timestamp ON SUCCESS only.
-    await engine.setConfig('dream.synthesize.last_completion_ts', new Date().toISOString());
+    // Adversarial F2: a run that deferred transcripts mid-fan-out must NOT
+    // start the 12h cooldown — "deferred transcripts retry next cycle" is a
+    // lie if the next cycle is cooldown-skipped for half a day.
+    if (budgetExhaustedDeferrals.length === 0) {
+      await engine.setConfig('dream.synthesize.last_completion_ts', new Date().toISOString());
+    }
 
     const ms = Date.now() - start;
-    const submittedTranscripts = worthProcessing.length - skipReports.length;
+    // Adversarial F3: deferred transcripts were NOT synthesized — a run that
+    // deferred 8 of 10 must not report "10 synthesized".
+    const submittedTranscripts = Math.max(
+      0,
+      worthProcessing.length - skipReports.length - budgetExhaustedDeferrals.length,
+    );
     const turnsSamples = childOutcomes.filter(
       (o): o is { jobId: number; status: string; turns: number } => typeof o.turns === 'number',
     );
