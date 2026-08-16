@@ -43,7 +43,7 @@ import { sanitizeForJsonb, buildLinkRows, buildTimelineRows } from './batch-rows
 import { runMigrations } from './migrate.ts';
 import { SCHEMA_SQL } from './schema-embedded.ts';
 import { verifySchema } from './schema-verify.ts';
-import { applyChunkEmbeddingIndexPolicy, dropZombieIndexes, hnswEfSearchFor, HNSW_EF_SEARCH_MAX } from './vector-index.ts';
+import { applyChunkEmbeddingIndexPolicy, dropZombieIndexes, hnswEfSearchFor, hnswIndexExpected, HNSW_EF_SEARCH_MAX } from './vector-index.ts';
 import {
   normalizeEngineColumn,
   buildVectorCastFragment,
@@ -2326,15 +2326,29 @@ export class PostgresEngine implements BrainEngine {
     const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', boostMap, opts?.detail, 'unverified_stub');
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
     const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
-    // v0.46.8 (retrieval-cathedral P1): innerLimit counts CHUNKS before the
+    // v0.36 (D11): column routing via resolved descriptor. Engine doesn't
+    // read config — caller (hybrid/op) resolved it and passed it in.
+    // normalizeEngineColumn accepts the legacy union (string literals,
+    // ResolvedColumn, undefined) and produces a canonical descriptor.
+    // (Hoisted above innerLimit so the escalation cap can key off the
+    // column's index eligibility.)
+    const resolvedCol = normalizeEngineColumn(opts?.embeddingColumn);
+    // v0.46.11 (retrieval-cathedral P1): innerLimit counts CHUNKS before the
     // best-per-page DISTINCT collapse — one dense page (150+ chunks near the
     // query) could consume the whole pool and underfill the PAGE result. The
     // execution below runs a bounded escalation loop (×4, ≤3 times) when the
     // page set comes back short while the candidate pool was FULL (more
-    // candidates existed). Hard-capped at the HNSW substrate bound: an HNSW
-    // scan returns at most ef_search rows and the GUC ceilings at 1000, so
-    // inner limits beyond that are fictitious (outside-voice R2-10).
-    const innerLimit = Math.min(offset + Math.max(limit * 5, 100), HNSW_EF_SEARCH_MAX);
+    // candidates existed). Cap policy (outside-voice R2-10 + codex ship
+    // review): for HNSW-backed columns the scan returns at most ef_search
+    // rows and the GUC ceilings at 1000, so inner limits beyond that are
+    // fictitious. Columns ABOVE the index dim ceiling (e.g. vector >2000d)
+    // fall back to exact scans where ef_search is irrelevant — capping their
+    // SQL LIMIT would make offset >= 1000 permanently empty; they stay
+    // bounded by the escalation count instead.
+    const innerCap = hnswIndexExpected(resolvedCol.type, resolvedCol.dimensions)
+      ? HNSW_EF_SEARCH_MAX
+      : Number.MAX_SAFE_INTEGER;
+    const innerLimit = Math.min(offset + Math.max(limit * 5, 100), innerCap);
 
     const params: unknown[] = [vecStr];
     let typeClause = '';
@@ -2402,16 +2416,10 @@ export class PostgresEngine implements BrainEngine {
     // wasting candidate slots on hidden rows.
     const visibilityClause = buildVisibilityClause('p', 's');
 
-    // v0.36 (D11): column routing via resolved descriptor. Engine doesn't
-    // read config — caller (hybrid/op) resolved it and passed it in.
-    // normalizeEngineColumn accepts the legacy union (string literals,
-    // ResolvedColumn, undefined) and produces a canonical descriptor.
-    //
     // v0.36 Phase 3: 'embedding_multimodal' is the unified column populated
     // by `gbrain reindex --multimodal`. Carries BOTH text and image content
     // in Voyage multimodal-3 space — no modality filter; the column itself
     // is the discriminator (rows without embedding_multimodal aren't searched).
-    const resolvedCol = normalizeEngineColumn(opts?.embeddingColumn);
     const { col, castSql } = buildVectorCastFragment(resolvedCol);
     let modalityFilter: string;
     if (resolvedCol.name === 'embedding_image') {
@@ -2488,7 +2496,7 @@ export class PostgresEngine implements BrainEngine {
     // hnswEfSearchFor. Transaction-local (is_local=true); non-HNSW plans
     // (seq scan, or corpora without the index) ignore the GUC.
     //
-    // v0.46.8 bounded escalation (identical logic in pglite-engine —
+    // v0.46.11 bounded escalation (identical logic in pglite-engine —
     // engine-parity pinned): retry ×4 up to 3 times while the PAGE set is
     // short but the pre-collapse candidate pool was FULL. A short page with
     // a non-full pool is a genuine final page (corpus/filter exhausted) —
@@ -2508,13 +2516,13 @@ export class PostgresEngine implements BrainEngine {
       const pool = rows.length > 0 ? Number((rows[0] as { candidate_pool?: number }).candidate_pool ?? 0) : null;
       const shouldEscalate = pool !== null ? pool >= il : offset > 0;
       if (!shouldEscalate) break;
-      if (il >= HNSW_EF_SEARCH_MAX || escalations >= 3) {
+      if (il >= innerCap || escalations >= 3) {
         if (pool !== null && pool >= il) {
           opts?.onVectorPoolMeta?.({ underfilled: true, escalations, innerLimit: il });
         }
         break;
       }
-      params[innerLimitIdx] = Math.min(il * 4, HNSW_EF_SEARCH_MAX);
+      params[innerLimitIdx] = Math.min(il * 4, innerCap);
       escalations++;
       rows = await runOnce(params[innerLimitIdx] as number);
     }

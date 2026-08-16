@@ -27,6 +27,7 @@
  */
 
 import type { BrainEngine } from './engine.ts';
+import { isUndefinedTableError } from './utils.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import { stripCodeBlocks } from './link-extraction.ts';
 
@@ -40,6 +41,8 @@ export const LINKABLE_ENTITY_TYPES = ['person', 'company', 'organization', 'enti
  * pack-aware follow-up (TODO-1) can let users opt specific 3-char entity
  * types in.
  */
+let aliasGazetteerWarned = false;
+
 const MIN_NAME_LENGTH = 4;
 const MIN_CJK_NAME_LENGTH = 2;
 
@@ -390,7 +393,7 @@ export async function buildGazetteer(
     if (!row.title) continue;
     if (!hasCJK(row.title) && row.title.length < MIN_NAME_LENGTH) continue;
     if (hasCJK(row.title) && cjkCharCount(row.title) < MIN_CJK_NAME_LENGTH) continue;
-    // NOTE (v0.46.8, deliberately preserved): for TITLES this condition is
+    // NOTE (v0.46.11, deliberately preserved): for TITLES this condition is
     // intentionally vacuous — every row here IS a real page, so an
     // ignore-listed name the user explicitly created a page for is always
     // allowed (documented CK12 policy). The ignore list bites only via
@@ -414,7 +417,7 @@ export async function buildGazetteer(
     else gazetteer.set(key, [entry]);
   }
 
-  // ── Alias entries (v0.46.8 identity wave, #3801) ────────────────────────
+  // ── Alias entries (v0.46.11 identity wave, #3801) ────────────────────────
   // page_aliases rows joined to LIVE entity-typed pages become additional
   // gazetteer entries, so a body mention of "saoirse" links to
   // people/saoirse-x. Guards (stricter than titles — aliases are not
@@ -475,8 +478,15 @@ export async function buildGazetteer(
       if (bucket) bucket.push(entry);
       else gazetteer.set(key, [entry]);
     }
-  } catch {
-    /* pre-v110 brains: no page_aliases table — titles-only gazetteer */
+  } catch (err) {
+    // pre-v110 brains: no page_aliases table — titles-only gazetteer.
+    // Any OTHER failure (connection blip, permission) warns once per process
+    // (adversarial F12): a silently titles-only gazetteer under-links every
+    // page processed until restart, and nobody would know why.
+    if (!isUndefinedTableError(err) && !aliasGazetteerWarned) {
+      aliasGazetteerWarned = true;
+      console.error(`[gbrain] gazetteer alias load degraded (titles-only): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // Sort each bucket by token-count DESC so maximal-munch walks longest-first.

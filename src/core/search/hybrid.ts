@@ -1096,10 +1096,15 @@ export async function hybridSearch(
     // Direct searchKeyword consumers (countMentions, link-extraction, eval)
     // do NOT set this and keep the strict-AND contract.
     orFallback: true,
-    // v0.46.8: collect searchVector's bounded-escalation exhaustion signal —
+    // v0.46.11: collect searchVector's bounded-escalation exhaustion signal —
     // engines have no telemetry sink (R2-10); hybrid owns the meta emit.
+    // ACCUMULATES across vector calls (adversarial F8): expansion runs N
+    // sub-queries through this one opts object — last-write-wins would
+    // under-report multi-query exhaustion. Keep the max-escalations event.
     onVectorPoolMeta: (m) => {
-      vectorPoolUnderfill = { escalations: m.escalations, innerLimit: m.innerLimit };
+      if (!vectorPoolUnderfill || m.escalations >= vectorPoolUnderfill.escalations) {
+        vectorPoolUnderfill = { escalations: m.escalations, innerLimit: m.innerLimit };
+      }
     },
   };
   let vectorPoolUnderfill: { escalations: number; innerLimit: number } | undefined;
@@ -1879,7 +1884,7 @@ export async function hybridSearch(
   let returnPool = aliasHopped;
   let adaptiveDecision: AdaptiveReturnDecision | undefined;
   if (adaptiveCfg.enabled && offset === 0) {
-    // v0.46.8: 'concept' maps to the recall-preserving 'general' cap for
+    // v0.46.11: 'concept' maps to the recall-preserving 'general' cap for
     // adaptive return — the narrower AdaptiveQueryIntent union predates the
     // concept intent, and concept queries are exactly the ones that want
     // breadth (widening the union is the adaptive-ablation wave's call).
@@ -1905,7 +1910,7 @@ export async function hybridSearch(
     const r = applyAutocut(
       returnPool,
       (x) => x.rerank_score,
-      // v0.46.8 (#1863): minTopScore is the weak-top floor — below it the
+      // v0.46.11 (#1863): minTopScore is the weak-top floor — below it the
       // cliff signal is untrustworthy and autocut no-ops.
       { enabled: true, jumpRatio: resolvedMode.autocut_jump, minKeep: 1, minTopScore: resolvedMode.autocut_min_top },
       // Preserve alias-hop exact matches: applyAliasHop injects the canonical
@@ -2477,7 +2482,7 @@ async function cosineReScore(
       console.error(`[search-debug] ${r.slug}:${r.chunk_id} cosine=${cosine.toFixed(4)} norm_rrf=${normRrf.toFixed(4)} blended=${blended.toFixed(4)}`);
     }
 
-    // v0.46.8: stamp the raw cosine — evidence + --explain read it (the
+    // v0.46.11: stamp the raw cosine — evidence + --explain read it (the
     // hydration map is already paid for; zero extra probes).
     return { ...r, score: blended, cosine };
   }).sort((a, b) => b.score - a.score);

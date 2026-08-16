@@ -159,19 +159,26 @@ export interface HookIo {
   /** TEST SEAM: user-prompt deadline override (wall-clock flake control). */
   userPromptDeadlineMs?: number;
   /**
-   * TEST SEAM (v0.46.8, BrainBench production seam): config override for
+   * TEST SEAM (v0.46.11, BrainBench production seam): config override for
    * hookUserPrompt — `undefined` = load the real file-plane config;
    * `null`/object = use as-is. Lets the bench point the hook at a throwaway
    * brain WITHOUT mutating process-global GBRAIN_HOME (parallel-test safe).
    */
   configOverride?: GBrainConfig | null;
   /**
-   * TEST SEAM (v0.46.8): suppress the pending-push failure banner. The
+   * TEST SEAM (v0.46.11): suppress the pending-push failure banner. The
    * banner reads the OPERATOR's real push-status files — on a bench run
    * that's environmental contamination (a locally-failing push would inject
    * a banner on stay-silent turns and read as a false fire).
    */
   disablePushBanner?: boolean;
+  /**
+   * TEST SEAM (v0.46.11, codex ship-review): suppress hook telemetry WRITES
+   * (heartbeat JSONL). Telemetry paths resolve from GBRAIN_HOME/homedir —
+   * NOT from configOverride — so a hermetic bench replay would otherwise
+   * append every fixture turn to the operator's real hook-health history.
+   */
+  disableTelemetry?: boolean;
   /**
    * Feedback-loop attribution channel (`--harness <claude-code|codex|opencode>`).
    * Default 'claude-code' — the only harness bootstrap registers hooks for
@@ -443,7 +450,12 @@ const HEARTBEAT_COMPACT_CHECK_BYTES = 2 * HEARTBEAT_MAX_LINES * 40;
  * check says the file exceeds ~2x the cap. Fields are copied EXPLICITLY — the
  * schema allowlist is enforced by construction, not by trust. Never throws.
  */
-async function writeHeartbeat(entry: HookHeartbeatEntry): Promise<void> {
+async function writeHeartbeat(io: HookIo, entry: HookHeartbeatEntry): Promise<void> {
+  // TEST SEAM (codex ship-review): a BrainBench replay drives the REAL hook
+  // in-process without redirecting GBRAIN_HOME — without this gate every
+  // fixture turn would append to the OPERATOR's real hook-health history and
+  // skew doctor/failure-notice reads. Benches are hermetic; telemetry is not.
+  if (io.disableTelemetry) return;
   try {
     const p = await heartbeatPath();
     const line = JSON.stringify({
@@ -590,7 +602,7 @@ async function hookSessionStart(io: HookIo): Promise<number> {
     outcome = 'error';
     reason = errorCode(e); // fail-open: empty stdout, exit 0
   }
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'session-start',
     outcome,
@@ -1217,7 +1229,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     );
     pendingBanner.record();
   }
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'user-prompt',
     outcome: result.outcome,
@@ -1305,7 +1317,7 @@ async function hookCompact(io: HookIo): Promise<number> {
     outcome = 'error';
     reason = errorCode(e); // fail-open: exit 0
   }
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'compact',
     outcome,
@@ -1348,7 +1360,7 @@ async function hookStop(io: HookIo): Promise<number> {
   } catch {
     pushReason = 'push_unavailable';
   }
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'stop',
     outcome,
@@ -1525,7 +1537,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
     /* best effort */
   }
 
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'session-end',
     outcome,

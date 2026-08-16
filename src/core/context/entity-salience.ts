@@ -29,7 +29,7 @@ export interface EntityCandidate {
   /** Text fed to alias-normalize / slugify for resolution (no leading @, no possessive). */
   query: string;
   /**
-   * Lowercase weak candidate (v0.46.8 identity wave). Emitted by the
+   * Lowercase weak candidate (v0.46.11 identity wave). Emitted by the
    * lowercase pass for turns like "remind me what saoirse said" — the v1
    * capitalization-biased extractor was blind to these (the documented
    * know-to-ask limit). Weak candidates are resolution-restricted: the
@@ -176,7 +176,7 @@ export function extractCandidates(text: string): EntityCandidate[] {
     const surface = m[0];
     const idx = m.index ?? 0;
     consider(surface, surface, !isAtSentenceStart(text, idx));
-    // Leading-stopword trim (v0.46.8 identity wave): a sentence-start
+    // Leading-stopword trim (v0.46.11 identity wave): a sentence-start
     // auxiliary glues into the run — "Did Galewright ever…" extracts
     // "Did Galewright", which resolves to nothing. ALSO consider the
     // remainder with the leading hard-stopword tokens shed. The trimmed
@@ -213,14 +213,19 @@ export function extractCandidates(text: string): EntityCandidate[] {
     if (out.length >= MAX_CANDIDATES) break;
   }
 
-  // 2.5→3.5. Lowercase WEAK pass (v0.46.8 identity wave, documented v1 limit).
+  // 2.5→3.5. Lowercase WEAK pass (v0.46.11 identity wave, documented v1 limit).
   // Users type names lowercase ("remind me what saoirse said"); the alias
   // table stores normalized forms, so an exact unique alias hit is the same
   // evidence class regardless of source casing. Weak candidates ride a
   // SEPARATE budget (never evict strong), and the resolver restricts them to
   // the alias arm — a generic lowercase word only fabricates a pointer if it
   // is literally a unique registered alias.
-  const strongNorms = new Set(acc.keys());
+  // Built from the EMITTED strong list, not the raw accumulator (adversarial
+  // F10): a strong candidate the precision filter REJECTED (e.g. a common
+  // word seen only at sentence start) must not shadow the same norm's weak
+  // alias probe — that's exactly the name-collides-with-a-common-word case
+  // the alias table exists to disambiguate.
+  const strongNorms = new Set(out.map((c) => normalizeAlias(c.query)).filter(Boolean));
   const weakSeen = new Set<string>();
   let weakCount = 0;
   for (const m of text.matchAll(WEAK_TOKEN_RE)) {

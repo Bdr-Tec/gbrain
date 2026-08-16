@@ -23,6 +23,7 @@
 
 import type { BrainEngine } from '../engine.ts';
 import { normalizeAlias } from '../search/alias-normalize.ts';
+import { isUndefinedTableError } from '../utils.ts';
 
 /**
  * Canonicalize a free-form entity reference to a page slug.
@@ -56,7 +57,7 @@ export async function resolveEntitySlug(
     if (exact) return exact;
   }
 
-  // 1.5. Alias-exact (v0.46.8 identity wave, #3730): an unambiguous
+  // 1.5. Alias-exact (v0.46.11 identity wave, #3730): an unambiguous
   //      page_aliases hit resolves BEFORE prefix expansion / fuzzy — the
   //      alias table is curated ground truth ("saoirse" → people/saoirse-x)
   //      while fuzzy is a guess. Live-page verified (page_aliases has no FK).
@@ -101,23 +102,33 @@ function fallbackSlugify(trimmed: string): string {
 }
 
 /**
- * Alias-exact arm (v0.46.8, #3730): unambiguous single-slug page_aliases hit,
- * verified against a LIVE page — page_aliases has no FK to pages, so a stale
- * alias row could otherwise resolve to a deleted/phantom slug (outside-voice
- * R2-8). Fail-open on any error (pre-v110 brains have no page_aliases table).
+ * Alias-exact arm (v0.46.11, #3730): unambiguous single-slug page_aliases hit,
+ * verified against LIVE pages — page_aliases has no FK to pages, so stale
+ * alias rows for deleted/renamed pages linger (outside-voice R2-8).
+ * Liveness is filtered BEFORE uniqueness (codex ship-review): a stale sibling
+ * row must not veto the sole live target — that fall-through would land on
+ * fuzzy/slugify and could recreate a phantom slug on a WRITE path.
+ * Fail-open on undefined-table (pre-v110 brains have no page_aliases table);
+ * other errors warn once per process so degradation isn't silent.
  */
+let aliasExactWarned = false;
 async function tryAliasExact(engine: BrainEngine, source_id: string, raw: string): Promise<string | null> {
   const norm = normalizeAlias(raw);
   if (!norm) return null;
   try {
     const hits = (await engine.resolveAliases([norm], { sourceId: source_id })).get(norm) ?? [];
-    if (hits.length !== 1) return null;
+    if (!hits.length) return null;
     const rows = await engine.executeRaw<{ slug: string }>(
-      `SELECT slug FROM pages WHERE deleted_at IS NULL AND source_id = $1 AND slug = $2 LIMIT 1`,
-      [source_id, hits[0].slug],
+      `SELECT slug FROM pages WHERE deleted_at IS NULL AND source_id = $1 AND slug = ANY($2::text[])`,
+      [source_id, [...new Set(hits.map((h) => h.slug))]],
     );
-    return rows.length ? hits[0].slug : null;
-  } catch {
+    const live = [...new Set(rows.map((r) => r.slug))];
+    return live.length === 1 ? live[0] : null;
+  } catch (err) {
+    if (!isUndefinedTableError(err) && !aliasExactWarned) {
+      aliasExactWarned = true;
+      console.error(`[gbrain] alias-exact resolution degraded (falling through to fuzzy): ${err instanceof Error ? err.message : String(err)}`);
+    }
     return null;
   }
 }

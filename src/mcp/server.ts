@@ -177,9 +177,15 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
                 priorContextText: req.priorContextText,
                 maxPointers: req.maxPointers,
                 suppression: req.suppression,
-                // v0.46.8 kill switch: either side may disable — a client
+                // v0.46.11 kill switch: either side may disable — a client
                 // `false` wins, else the server's own file-config gate.
-                lexicalArms: req.lexicalArms === false ? false : lexicalArmsEnabled(cfg),
+                // Config is re-read PER REQUEST (adversarial F3): `gbrain
+                // serve` is long-running, and the switch's whole value is
+                // reverting a false-fire regression on the NEXT TURN with a
+                // config edit — a startup snapshot would freeze it until a
+                // serve restart. loadConfig is a file read (~1ms) inside the
+                // 400ms IPC budget.
+                lexicalArms: req.lexicalArms === false ? false : lexicalArmsEnabled(loadConfig()),
               },
             ),
           // IPC v2 [ENG-3]: per-turn context assembly for the hook command.
@@ -193,7 +199,9 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
               priorContextText: req.priorContextText,
               sessionId: req.sessionId,
               maxBytes: req.maxBytes,
-              lexicalArms: lexicalArmsEnabled(cfg),
+              // Per-request config read — same next-turn-revert rationale as
+              // the resolve handler above (adversarial F3).
+              lexicalArms: lexicalArmsEnabled(loadConfig()),
             }),
           // v0.45.7 ambient recall: boundary context pack. Extracted to
           // context-pack-handler.ts (directly testable against a real engine);

@@ -41,7 +41,10 @@ export class CodexAdapter implements HarnessAdapter {
   private tmpDir: string | null = null;
   private fixtureSeq = 0;
   /** Turn texts the REAL rollout parser selected as user turns. */
-  private parserSelected = new Set<string>();
+  // Multiset keyed on trimmed text (adversarial F14): a Set could not see a
+  // parser that DROPS one of two duplicate turns, and exact-equality keying
+  // read cosmetic whitespace normalization as total turn loss.
+  private parserSelected = new Map<string, number>();
 
   async setupRun(): Promise<void> {
     this.tmpDir = mkdtempSync(join(tmpdir(), 'brainbench-codex-'));
@@ -60,7 +63,7 @@ export class CodexAdapter implements HarnessAdapter {
     this.sourceId = fixture.active_source;
     this.firstTurn = true;
     this.preamble = await this.buildPreamble();
-    // v0.46.8 (F5, parser integration): the fixture conversation round-trips
+    // v0.46.11 (F5, parser integration): the fixture conversation round-trips
     // through the REAL codex rollout format + the REAL shipped parser
     // (src/core/transcripts/codex.ts) for structural TURN SELECTION — a
     // parser drift that loses user turns now tanks the row visibly. The
@@ -70,7 +73,7 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   /** Synthesize the rollout JSONL and run the shipped parser over it. */
-  private async parseRollout(fixture: AdapterFixtureView): Promise<Set<string>> {
+  private async parseRollout(fixture: AdapterFixtureView): Promise<Map<string, number>> {
     this.fixtureSeq += 1;
     const path = join(this.tmpDir!, `rollout-${this.fixtureSeq}.jsonl`);
     const ts = '2026-01-01T00:00:00.000Z';
@@ -97,11 +100,13 @@ export class CodexAdapter implements HarnessAdapter {
       }
     }
     writeFileSync(path, lines.join('\n') + '\n');
-    const selected = new Set<string>();
+    const selected = new Map<string, number>();
     const gen = codexTranscriptAdapter.parse(path);
     for await (const session of gen) {
       for (const m of session.messages) {
-        if (m.role === 'user') selected.add(m.text);
+        if (m.role !== 'user') continue;
+        const key = m.text.trim();
+        selected.set(key, (selected.get(key) ?? 0) + 1);
       }
     }
     return selected;
@@ -134,9 +139,12 @@ export class CodexAdapter implements HarnessAdapter {
     // Parser-selected turns only (F5): a user turn the shipped rollout
     // parser failed to surface never reaches the fragment pipeline — parser
     // drift shows up as missed retrievals, not as a silently-passing bench.
-    if (!this.parserSelected.has(turn.text)) {
+    const selKey = turn.text.trim();
+    const remaining = this.parserSelected.get(selKey) ?? 0;
+    if (remaining <= 0) {
       return toTurnResult(null, null, performance.now() - started);
     }
+    this.parserSelected.set(selKey, remaining - 1);
     const block = await runReflexPipeline(this.engine, this.sourceId, turn, priorContextText, {
       maxPointers: CODEX_MAX_FRAGMENTS,
       suppression: 'prior-context',

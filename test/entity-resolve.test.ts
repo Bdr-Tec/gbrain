@@ -325,7 +325,7 @@ describe('resolveEntitySlugWithSource — back-compat with resolveEntitySlug', (
   });
 });
 
-describe('alias_exact branch (v0.46.8 identity wave, #3730)', () => {
+describe('alias_exact branch (v0.46.11 identity wave, #3730)', () => {
   it('an unambiguous registered alias resolves before prefix expansion / fuzzy', async () => {
     await engine.setPageAliases('people/bob-rosenstein', 'default', ['rosey']);
     const a = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'rosey');
@@ -353,5 +353,37 @@ describe('alias_exact branch (v0.46.8 identity wave, #3730)', () => {
     const r = await resolveEntitySlugWithSource(engine as unknown as BrainEngine, 'default', 'spectre');
     expect(r!.source).toBe<ResolutionSource>('fallback_slugify');
     expect(r!.slug).toBe('spectre');
+  });
+});
+
+describe('alias_exact — liveness before uniqueness (v0.46.11 codex ship-review)', () => {
+  it('a stale sibling alias row (deleted page) cannot veto the sole live target', async () => {
+    await engine.putPage('people/nickname-live', {
+      type: 'person', title: 'Nickname Live', compiled_truth: 'b', timeline: '', frontmatter: {},
+    } as never);
+    await engine.putPage('people/nickname-old', {
+      type: 'person', title: 'Nickname Old', compiled_truth: 'b', timeline: '', frontmatter: {},
+    } as never);
+    await engine.setPageAliases('people/nickname-live', 'default', ['nicky']);
+    await engine.setPageAliases('people/nickname-old', 'default', ['nicky']);
+    await engine.softDeletePage('people/nickname-old');
+    // Raw-hit uniqueness would see 2 rows, reject, and fall through to
+    // fallback_slugify('nicky') — recreating a phantom slug on a WRITE path.
+    const r = await resolveEntitySlugWithSource(engine as unknown as BrainEngine, 'default', 'nicky');
+    expect(r!.slug).toBe('people/nickname-live');
+    expect(r!.source).toBe<ResolutionSource>('alias_exact');
+  });
+
+  it('two LIVE holders of the same alias stay ambiguous (no pointer)', async () => {
+    await engine.putPage('people/twin-a', {
+      type: 'person', title: 'Twin A', compiled_truth: 'b', timeline: '', frontmatter: {},
+    } as never);
+    await engine.putPage('people/twin-b', {
+      type: 'person', title: 'Twin B', compiled_truth: 'b', timeline: '', frontmatter: {},
+    } as never);
+    await engine.setPageAliases('people/twin-a', 'default', ['twinsy']);
+    await engine.setPageAliases('people/twin-b', 'default', ['twinsy']);
+    const r = await resolveEntitySlugWithSource(engine as unknown as BrainEngine, 'default', 'twinsy');
+    expect(r!.source).not.toBe<ResolutionSource>('alias_exact');
   });
 });

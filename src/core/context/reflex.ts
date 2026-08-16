@@ -39,7 +39,7 @@ export interface ResolveEntitiesOpts {
   maxPointers?: number;
   /** v0.43 (#2095): 'slug-only' under windowing — see ResolvePointersOpts. */
   suppression?: 'slug-and-title' | 'slug-only';
-  /** v0.46.8: lexical-arms kill switch — see ResolvePointersOpts.lexicalArms. */
+  /** v0.46.11: lexical-arms kill switch — see ResolvePointersOpts.lexicalArms. */
   lexicalArms?: boolean;
 }
 
@@ -109,14 +109,17 @@ export function reflexEnabled(cfg: GBrainConfig | null): boolean {
 }
 
 /**
- * v0.46.8 identity wave — kill switch for the lexical recall arms
+ * v0.46.11 identity wave — kill switch for the lexical recall arms
  * (weak-candidate alias arm + surname arm). Default ON; same env-direct
  * pattern as reflexEnabled/windowTurnCount so a config-less environment
  * still honors the escape hatch.
  */
 export function lexicalArmsEnabled(cfg: GBrainConfig | null): boolean {
   const env = process.env.GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS;
-  if (env != null && env !== '') return !(env === 'false' || env === '0');
+  // Case-insensitive + common negatives (adversarial F11): this is the
+  // incident escape hatch — an operator typing FALSE/off/no mid-incident must
+  // not get a silent no-op. (Sibling gates keep the stricter legacy parse.)
+  if (env != null && env !== '') return !/^(false|0|off|no)$/i.test(env.trim());
   return cfg?.retrieval_reflex_lexical_arms !== false;
 }
 

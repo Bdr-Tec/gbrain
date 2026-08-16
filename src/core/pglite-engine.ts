@@ -43,7 +43,7 @@ import {
 } from './chronicle/ontology.ts';
 import { logBatchRetry as auditLogBatchRetry, logBatchExhausted as auditLogBatchExhausted } from './audit/batch-retry-audit.ts';
 import { runMigrations } from './migrate.ts';
-import { hnswEfSearchFor, HNSW_EF_SEARCH_MAX } from './vector-index.ts';
+import { hnswEfSearchFor, hnswIndexExpected, HNSW_EF_SEARCH_MAX } from './vector-index.ts';
 import { PGLITE_SCHEMA_SQL, getPGLiteSchema } from './pglite-schema.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
 import { DELETE_BATCH_SIZE } from './engine-constants.ts';
@@ -2563,11 +2563,19 @@ export class PGLiteEngine implements BrainEngine {
     const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', boostMap, opts?.detail, 'unverified_stub');
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
     const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
-    // v0.46.8 (retrieval-cathedral P1): bounded escalation — see
+    // v0.46.11 (retrieval-cathedral P1): bounded escalation — see
     // postgres-engine.ts searchVector for the full rationale; the logic here
-    // is IDENTICAL (engine-parity pinned). Substrate cap: ef_search ceilings
-    // at 1000, so inner limits beyond that are fictitious (R2-10).
-    const innerLimit = Math.min(offset + Math.max(limit * 5, 100), HNSW_EF_SEARCH_MAX);
+    // is IDENTICAL (engine-parity pinned). Cap policy (R2-10 + codex ship
+    // review): the ef_search ceiling applies only to HNSW-backed columns;
+    // above-ceiling columns fall back to exact scans where capping the SQL
+    // LIMIT would make offset >= 1000 permanently empty — those stay bounded
+    // by the escalation count instead. (Hoisted resolvedColEarly: same
+    // descriptor the cast fragment uses below.)
+    const resolvedColEarly = normalizeEngineColumn(opts?.embeddingColumn);
+    const innerCap = hnswIndexExpected(resolvedColEarly.type, resolvedColEarly.dimensions)
+      ? HNSW_EF_SEARCH_MAX
+      : Number.MAX_SAFE_INTEGER;
+    const innerLimit = Math.min(offset + Math.max(limit * 5, 100), innerCap);
 
     const params: unknown[] = [vecStr, innerLimit, limit, offset];
     const innerLimitIdx = 1; // mutated by the escalation loop
@@ -2620,7 +2628,7 @@ export class PGLiteEngine implements BrainEngine {
     // v0.36 Phase 3: 'embedding_multimodal' is the unified column populated
     // by `gbrain reindex --multimodal`. No modality filter — the column
     // itself is the discriminator (only re-embedded rows have non-NULL).
-    const resolvedCol = normalizeEngineColumn(opts?.embeddingColumn);
+    const resolvedCol = resolvedColEarly;
     const { col, castSql } = buildVectorCastFragment(resolvedCol);
     let modalityFilter: string;
     if (resolvedCol.name === 'embedding_image') {
@@ -2690,7 +2698,7 @@ export class PGLiteEngine implements BrainEngine {
       );
     })).rows;
 
-    // v0.46.8 bounded escalation loop — IDENTICAL logic to postgres-engine
+    // v0.46.11 bounded escalation loop — IDENTICAL logic to postgres-engine
     // (parity-pinned): retry ×4 up to 3 times while the PAGE set is short
     // but the pre-collapse candidate pool was full; a short page with a
     // non-full pool is a genuine final page. Zero rows with offset>0
@@ -2705,13 +2713,13 @@ export class PGLiteEngine implements BrainEngine {
         : null;
       const shouldEscalate = pool !== null ? pool >= il : offset > 0;
       if (!shouldEscalate) break;
-      if (il >= HNSW_EF_SEARCH_MAX || escalations >= 3) {
+      if (il >= innerCap || escalations >= 3) {
         if (pool !== null && pool >= il) {
           opts?.onVectorPoolMeta?.({ underfilled: true, escalations, innerLimit: il });
         }
         break;
       }
-      params[innerLimitIdx] = Math.min(il * 4, HNSW_EF_SEARCH_MAX);
+      params[innerLimitIdx] = Math.min(il * 4, innerCap);
       escalations++;
       rows = await runOnce(params[innerLimitIdx] as number);
     }

@@ -266,7 +266,7 @@ export interface GBrainConfig {
    */
   retrieval_reflex_window_turns?: number;
   /**
-   * v0.46.8 (identity wave) — kill switch for the reflex's lexical recall
+   * v0.46.11 (identity wave) — kill switch for the reflex's lexical recall
    * arms (lowercase weak-candidate alias arm + surname arm). Default ON
    * (absent = enabled); `false` reproduces pre-wave resolution exactly.
    * File-plane / env (GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS) only — same
@@ -678,9 +678,10 @@ export function loadConfig(): GBrainConfig | null {
       : {}),
     ...(process.env.GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS
       ? {
-          retrieval_reflex_lexical_arms: !(
-            process.env.GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS === 'false' ||
-            process.env.GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS === '0'
+          // Case-insensitive + common negatives — incident escape hatch;
+          // mirrors reflex.ts:lexicalArmsEnabled (adversarial F11).
+          retrieval_reflex_lexical_arms: !/^(false|0|off|no)$/i.test(
+            process.env.GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS.trim(),
           ),
         }
       : {}),

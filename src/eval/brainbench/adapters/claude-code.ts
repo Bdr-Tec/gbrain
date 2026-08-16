@@ -1,5 +1,5 @@
 /**
- * BrainBench Claude Code adapter — seam: 'production' (v0.46.8, TODOS:556 P1).
+ * BrainBench Claude Code adapter — seam: 'production' (v0.46.11, TODOS:556 P1).
  *
  * Drives the REAL shipped integration end-to-end: the fixture turn becomes
  * `UserPromptSubmit` hook stdin JSON, `runHook(['user-prompt'], io)` executes
@@ -118,23 +118,31 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       {
         // The resolve kind mirrors the serve wiring; the hook lane uses
         // turn_context, but a v1 client probing the socket must not crash it.
+        // Null-engine guards (adversarial F13b): endConversation nulls the
+        // engine while the socket server stays up for the next fixture — a
+        // deadline-abandoned in-flight request must degrade to empty, not
+        // crash the server on `this.engine!`.
         resolve: (req) =>
-          resolveEntitiesToPointers(this.engine!, this.sourceId, req.candidates ?? [], {
-            priorContextText: req.priorContextText,
-            maxPointers: req.maxPointers,
-            suppression: req.suppression,
-            lexicalArms: req.lexicalArms,
-          }),
+          this.engine
+            ? resolveEntitiesToPointers(this.engine, this.sourceId, req.candidates ?? [], {
+                priorContextText: req.priorContextText,
+                maxPointers: req.maxPointers,
+                suppression: req.suppression,
+                lexicalArms: req.lexicalArms,
+              })
+            : Promise.resolve(null),
         // The SAME handler shape gbrain serve registers (mcp/server.ts):
         // always assembles against the adapter's active source.
         turn_context: (req) =>
-          assembleTurnContext(this.engine!, {
-            sourceId: this.sourceId,
-            window: req.window ?? [],
-            priorContextText: req.priorContextText,
-            sessionId: req.sessionId,
-            maxBytes: req.maxBytes,
-          }),
+          this.engine
+            ? assembleTurnContext(this.engine, {
+                sourceId: this.sourceId,
+                window: req.window ?? [],
+                priorContextText: req.priorContextText,
+                sessionId: req.sessionId,
+                maxBytes: req.maxBytes,
+              })
+            : Promise.resolve(null),
       },
       { secret: this.secret },
     );
@@ -218,6 +226,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       userPromptDeadlineMs: BENCH_USER_PROMPT_DEADLINE_MS,
       configOverride: cfg,
       disablePushBanner: true,
+      // Telemetry paths resolve from GBRAIN_HOME/homedir, not configOverride
+      // — without this, every fixture turn appends to the OPERATOR's real
+      // hook heartbeat history (codex ship-review).
+      disableTelemetry: true,
     });
     if (exit !== 0) {
       // The hook is fail-open by design (exit 0 on degraded paths); a nonzero
