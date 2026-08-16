@@ -1,5 +1,51 @@
 # TODOS
 
+## chennai fix-wave follow-ups (filed 2026-08-16)
+
+- [ ] **P2 — Cache-MODE enum: implicit vs Anthropic-explicit prompt caching.**
+  **What:** replace `supports_prompt_cache`'s boolean/predicate with a mode
+  (`explicit-anthropic` | `implicit` | `none`) so the gateway's cache-marker
+  injection is driven by MODE, not by "caching exists". **Why:** the Google
+  predicate fix (#4158) is functionally safe today only because anthropic-
+  namespaced providerOptions are ignored on native-google — a transport-level
+  pin test (`recipe-google-prompt-cache.test.ts`) guards that; the semantic
+  conflation stays until modes exist. **Context:** cross-model review finding
+  on PR #4159; the pin test names this TODO. **Effort:** M (CC: S). **P2.**
+- [ ] **P2 — Abort-signal threading through BasePhaseOpts + dream generators.**
+  **What:** thread an AbortSignal from the job deadline into every calibration
+  phase's LLM calls so an in-flight hung request is CANCELLED, not just
+  observed at the next loop boundary. **Why:** #4168's clamp restores the
+  clean partial-exit but a wedged provider call still burns the reserve.
+  **Context:** adjacent to banked PR #4077 (cooperative abort through
+  synthesis) — the same seam should serve both. **Effort:** M. **P2.**
+- [ ] **P2 — transcripts parser: surface out-of-set speaker headings (#4136).**
+  **What:** optional ParseResult field (`suspect_heading_labels` + count) when
+  a heading-only anchor-shaped continuation line with an out-of-set label is
+  folded under a heading-anchored multi_line pattern; extract-conversation-
+  facts warns. **Why:** silent speaker misattribution is accepted parse today.
+  **Context:** reporter offered the PR (green-lit in the issue thread with the
+  three-label reproducer as tests); keep phase `regex_match`; a decline
+  threshold is a follow-on decision. **Effort:** M. **P2.**
+- [ ] **P2 — skillopt field-report items (#4119, all verified at HEAD).**
+  **What:** (a) in-loop runtime-deadline check (orchestrator.ts:440 is
+  step-granular); (b) output-size-aware cost estimate (preflight.ts fixed
+  800-token constant); (c) validation-gate n-gram overlap detector vs judge
+  definitions; (d) stronger bootstrap judges; (e) opt-in `--hermetic-config`
+  (CLAUDE_CONFIG_DIR) for claude-cli children — default-on needs its own
+  security decision (the provider deliberately rides the operator's ~/.claude
+  OAuth session); (f) docs: rule judges as a gameable optimizer target, D13
+  limitation, cap sizing, human review of proposed.md is load-bearing.
+  **Context:** issue thread carries the full analysis; CLAUDE_CONFIG_DIR is
+  the documented interim mitigation. **Effort:** M spread. **P2.**
+- [ ] **P3 — orphans.exclude_domains (feature, #4157).** Third exclusion axis
+  on the shared orphan policy, matched on the derived domain; must thread the
+  orphans denominator query AND both engines' getHealth page-scope rows
+  (engine parity). **Effort:** S. **P3.**
+- [ ] **P3 — dream.synthesize flat/root output_root (feature, #4117).**
+  Per-family prefix shape (reflections/originals prefixes derived into prompts
+  AND the fail-closed allow-list; default preserves wiki/). No config-registry
+  drift to fix (`dream.` prefix already accepted). **Effort:** M. **P3.**
+
 ## Codex/Claude plugin lane follow-ups (filed from the plugin packaging wave)
 
 - [ ] **Plugin-lane receipt provenance: re-run bootstrap after plugin install can strand a hand-wired registration.** `appendReceiptRegistration` dedups by (host, scope), so wiring via bootstrap (detail:`mcp`) → enabling the plugin → re-running `bootstrap hooks` overwrites the record with `plugin-mcp`; the plugin-owned uninstall guard then skips `mcp remove` forever, stranding the registration bootstrap itself created. Narrow sequence (plugin enabled AFTER a hand-wired bootstrap). Fix: on the plugin-owned skip, don't downgrade an existing `mcp`-detail record for the same (host,scope), or offer to remove the stale hand-wired entry. Priority: P3. Surfaced by the ship-stage red-team review of the codex-plugin wave.
