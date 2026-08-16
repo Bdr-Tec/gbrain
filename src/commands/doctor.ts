@@ -97,6 +97,7 @@ export {
   checkSearchMode,
   checkEvalDrift,
   checkEmbeddingEnvOverride,
+  checkEmbeddingMigrationState,
   checkSubagentCapability,
   computeConversationParserProbeHealthCheck,
   computeNightlyQualityProbeHealthCheck,
@@ -173,6 +174,7 @@ import {
   checkSearchMode,
   checkEvalDrift,
   checkEmbeddingEnvOverride,
+  checkEmbeddingMigrationState,
   checkSubagentCapability,
   computeConversationParserProbeHealthCheck,
   computeNightlyQualityProbeHealthCheck,
@@ -1917,12 +1919,26 @@ export async function buildChecks(
   try {
     const health = await engine.getHealth();
     const pct = (health.embed_coverage * 100).toFixed(0);
+    // Coverage + missing now share one source (the stored vector over
+    // eligible chunks), so the two numbers can no longer contradict each
+    // other. When the READ path rides a custom active column, say so — this
+    // check reports the default write-side column; the active-column truth
+    // lives in embedding_column_registry.
+    let carveOut = '';
+    try {
+      const activeCol = await engine.getConfig('search_embedding_column');
+      if (activeCol && activeCol !== 'embedding') {
+        carveOut = ` (read path uses '${activeCol}'; see embedding_column_registry)`;
+      }
+    } catch {
+      // Config read is best-effort; the coverage numbers stand alone.
+    }
     if (health.embed_coverage >= 0.9) {
-      checks.push({ name: 'embeddings', status: 'ok', message: `${pct}% coverage, ${health.missing_embeddings} missing` });
+      checks.push({ name: 'embeddings', status: 'ok', message: `${pct}% coverage, ${health.missing_embeddings} missing${carveOut}` });
     } else if (health.embed_coverage > 0) {
-      checks.push({ name: 'embeddings', status: 'warn', message: `${pct}% coverage, ${health.missing_embeddings} missing. Run: gbrain embed --stale` });
+      checks.push({ name: 'embeddings', status: 'warn', message: `${pct}% coverage, ${health.missing_embeddings} missing. Run: gbrain embed --stale${carveOut}` });
     } else {
-      checks.push({ name: 'embeddings', status: 'warn', message: 'No embeddings yet. Run: gbrain embed --stale' });
+      checks.push({ name: 'embeddings', status: 'warn', message: `No embeddings yet. Run: gbrain embed --stale${carveOut}` });
     }
   } catch {
     checks.push({ name: 'embeddings', status: 'warn', message: 'Could not check embedding health' });
@@ -2221,11 +2237,13 @@ export async function buildChecks(
         // Only warn when there's a real coverage gap. Empty brain (0 chunks)
         // is a normal state for new installs — skip the gate entirely.
         if (total > 0 && pct < 90) {
+          // NOTE: there is NO per-column embed flag (write-side custom-column
+          // support is a filed follow-up) — the old hint prescribed one.
           coverageWarn =
             `Active column '${activeCol}' is ${pct.toFixed(1)}% populated. ` +
             `Search quality silently degraded on un-embedded chunks. ` +
-            `Fix: gbrain embed --column ${activeCol} --stale (write-side support v2) ` +
-            `OR gbrain config set search_embedding_column embedding`;
+            `Fix: gbrain config set search_embedding_column embedding (read the default column), ` +
+            `then gbrain embed --stale; per-column write-side backfill is a filed follow-up (TODOS.md)`;
         }
       }
 
@@ -2265,6 +2283,10 @@ export async function buildChecks(
   //     checkEmbeddingEnvOverride() helper.
   progress.heartbeat('embedding_env_override');
   checks.push(await checkEmbeddingEnvOverride(engine));
+
+  // Surface the migration state marker (previously write-only): a live
+  // marker = mid-migration brain, with the exact resume + status commands.
+  checks.push(await checkEmbeddingMigrationState(engine));
 
   // 9. Graph health (link + timeline coverage on entity pages).
   // dead_links removed in v0.10.1: ON DELETE CASCADE on link FKs makes it always 0.

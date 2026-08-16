@@ -2,6 +2,114 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.10.0] - 2026-08-16
+
+**Switching embedding and reranking providers is now one guess-free
+command.** `gbrain migrate embeddings` verifies against the database —
+column widths, stale censuses, config planes, and the migration marker —
+so a stale environment variable or config value can never fake a
+completed migration, and every surface that mentions migrating prints
+the same canonical, paste-ready command.
+
+### Added
+- **`gbrain migrate embeddings --status [--json]`** — read-only status:
+  per-plane model resolution (env presence, file, DB — API keys shown as
+  set/unset booleans only), actual column widths, NULL-vector and
+  signature censuses, the in-flight marker with the exact resume
+  command, and the last completion's smoke-check outcome. Never embeds,
+  never refuses on env.
+- **`--reranker auto|off|keep|<provider:model>`** — the reranker rides
+  the same migration flow. `auto` resolves the ACTIVE reranker through
+  the search-mode bundle defaults (not just explicitly-set keys), probes
+  the target reranker live before any write, and lands the config write
+  and query-cache purge in one transaction. When the target provider
+  ships no reranker, the plan prints the exact follow-up command instead
+  of silently enabling a third provider. Invalid values refuse with the
+  list of valid reranker recipes before anything runs.
+- **`--retarget`** — abandoning a different in-flight migration target
+  is an explicit decision; the refusal names both the resume and
+  retarget commands, and the marker keeps a history of superseded
+  targets.
+- **Post-migration smoke check.** Completion runs a self-retrieval probe
+  (sampled pages must find themselves; warn-only, never blocks or
+  re-bills) and stamps the outcome into the completion marker, where
+  `--status` reads it without re-spending.
+- **Doctor: `embedding_migration_state` check** — warns with the exact
+  resume + status commands while a migration is in flight or was
+  interrupted. Two companion notes land in existing checks: the
+  env-override check now notes when env vars agree with stored config
+  (they still override the file plane at runtime), and the embeddings
+  coverage check notes when the read path uses a custom embedding column.
+- **One canonical migration command.** Every surface that suggests
+  migrating (upgrade banner, init, doctor, advisor, sunset notices,
+  docs) renders through one shared helper, with a drift-guard test
+  sweeping src + docs.
+- **Migration plan honesty.** The plan header names the exact brain/DB
+  target (redacted) and scope; renders a DESTRUCTIVE warning whenever a
+  rebuild will drop stored vectors (including the absent-column case);
+  reports pages that will re-embed at a lower context tier; warns when
+  live workers or queued embed jobs could write outside the migration
+  locks; and notes when the target width exceeds the ANN-index cap
+  (search falls back to exact scan).
+
+### Changed
+- **The "nothing to migrate" skip is DB-verified.** Completion now
+  requires the column width, every dim-pinned companion column, the
+  wide stale census (pages with no recorded signature included), the
+  chunkless-page census, the marker, and the config planes to all agree
+  with the target. Config and env values alone can no longer produce a
+  false "Nothing to migrate".
+- **Coverage tells the truth.** `gbrain stats` embedded counts, health
+  embed-coverage, and doctor's embeddings check now key on the stored
+  vector itself rather than bookkeeping timestamps, and skip-marked
+  chunks are excluded from both sides of the ratio (an all-skip brain
+  reads 100%, not 0%-with-nothing-to-do).
+- **Env vars are handled honestly.** Env pinning the same target
+  proceeds with a loud keep-in-sync notice; env disagreeing still
+  refuses with the override box. On a brain with no config file, a fully
+  pinning env is accepted as canonical — and nothing env-sourced (keys,
+  URLs) is ever written into the config file.
+- **Background embed parity.** `gbrain embed --background` now carries
+  catch-up, include-null-signature, batch-size, and priority into the
+  job payload; the job handlers read all of them. The doc-recommended
+  migration follow-up command behaves identically foreground and
+  background.
+- **Schema transitions are safer.** Each dim-pinned column is checked
+  and repaired independently; a same-width re-run or resume never drops
+  stored vectors; targets above the ANN-index dimension cap skip index
+  creation cleanly instead of failing DDL.
+- **Migrations single-flight properly.** A brain-wide migration lock
+  plus per-source locks (sorted, archived included) are held across the
+  drain with a heartbeat; losing the lock aborts cleanly and resumably
+  instead of racing another writer. Completion bookkeeping is
+  transactional — a crash can't lose both the resume marker and the
+  receipt.
+- **`doctor --remediate`** includes the unsigned-page cohort in its
+  embed step and its cost estimate when that cohort is non-empty.
+- **Unknown-provenance honesty.** When the embedding gateway can't
+  resolve a model, nothing stamps a fabricated signature; those pages
+  are counted as unknown provenance and picked up by the widened
+  censuses.
+
+### Fixed
+- Five surfaces printed five different migration command strings — some
+  with unsubstituted placeholders or invalid widths for the suggested
+  model. All render the canonical command now.
+- Doctor's embeddings hint named a flag that doesn't exist; it now
+  prescribes the real remediation.
+- The migration playbook gained an env preflight, a quiesce step, a
+  recovery section, an exit-code table, and a DB-verified verify step
+  (skills/migrations/v0.46.3.0.md).
+
+**To take advantage of v0.46.10.0:** upgrade and re-run `gbrain doctor`.
+Embedding-coverage numbers become truthful on upgrade — a brain that
+previously reported inflated coverage may show lower numbers or a new
+doctor warning; that is the pre-existing state becoming visible, not a
+regression. The fix is one command: `gbrain embed --stale` (add
+`--include-null-signature` if doctor reports unsigned pages). If you are
+mid-migration off a sunsetting provider, `gbrain migrate embeddings
+--status` shows exactly where you are and the exact resume command.
+
 ## [0.46.9.1] - 2026-08-16
 
 **Coverage is now measured, honestly, on every PR — and the six giant modules stopped growing.**
