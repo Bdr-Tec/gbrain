@@ -20,14 +20,21 @@ The boundary guarantee is **bytes durable at the boundary; facts moments
 after; links at the next boundary**:
 
 - `gbrain hook compact` (PreCompact, bootstrap-installed) writes the
-  since-last-boundary window to `<corpus>/<session>.seg-<hash12>.txt` INSIDE
-  its 3s deadline — before any IPC. A hook crash after this point loses
-  nothing: the maintenance sweep's corpus pass extracts every `.txt` segment.
+  since-last-boundary window to `<corpus>/<session>.seg-<hash24>.txt` INSIDE
+  its 3s deadline — before any IPC. The window is read from the newest 2 MiB
+  of the transcript, and a too-tight deadline degrades to a typed skip
+  (`deadline_scan`/`deadline_write` below) rather than an unscanned write —
+  in both cases the session-end/sweep lane still covers the text. A hook
+  crash after the write loses nothing: the maintenance sweep's corpus pass
+  extracts every `.txt` segment.
 - Serve's checkpoint harvest (fire-and-forget from the same IPC round trip
   that banks standing entities) runs the facts pipeline over the segment,
   verifies each candidate link with a source-scoped page read (a link that
   resolves to nothing is never banked), and banks a manifest into
-  `session_context_state.checkpoint_manifest`.
+  `session_context_state.checkpoint_manifest`. Every extraction lane
+  (harvest AND sweep) is capability-gated: a keyless install, or facts
+  extraction switched off, still banks segments but defers extraction
+  (typed `keyless` / `extraction_disabled` skips) until the gate opens.
 - The post-compaction SessionStart (`source=compact`) pack renders the banked
   links as a `## Compaction checkpoints` section. Links that miss the
   immediate pack (harvest still running) surface on the next session start.
@@ -54,7 +61,11 @@ Coverage is decided by **exact-set hashes**, not counts: session-end
 recomputes every boundary window's redacted hash from its own full parse and
 requires each in the per-session ledger (`<session>.ledger.json`). A missed
 compaction, a deadline'd segment write, or an unreadable ledger all fall back
-to the full-transcript write; fact-level dedup absorbs the overlap. Degraded
+to the full-transcript write (bounded by the 10 MiB transcript parse budget —
+beyond it only the newest tail is read); fact-level dedup absorbs the
+overlap. A session where the harness never fires SessionEnd (e.g. `/exit`)
+keeps its banked segments; the post-last-boundary remainder waits for the
+next boundary or a manual `gbrain transcripts ingest`. Degraded
 configs with a chat key but no embedding provider may insert duplicate fence
 rows on that fallback (the 0.95 dedup arm needs embeddings) — segmentation
 makes this the exception path.
@@ -78,8 +89,10 @@ makes this the exception path.
 ## Operational runbook — reason vocabulary
 
 Hook + harvest telemetry rides the hooks heartbeat JSONL
-(`<gbrain home>/integrations/hooks/heartbeat.jsonl`; surfaced by doctor and
-`readHeartbeatTail`). Counts and codes only — never content.
+(`<gbrain home>/integrations/hooks/heartbeat.jsonl`; read it with
+`readHeartbeatTail` — doctor's hooks check reports only the aggregate
+hard-error rate and deliberately ignores typed degrades). Counts and codes
+only — never content.
 
 - `compact` events carry a `segment` code: `segment_banked` / `segment_dup`
   (idempotent retry) / `empty_window` / `deadline_scan` (budget too tight to
@@ -93,8 +106,10 @@ Hook + harvest telemetry rides the hooks heartbeat JSONL
 - `checkpoint-harvest` events (serve-side pump outcomes) carry
   `inserted`/`duplicate`/`links` counters and skip reasons: `keyless` /
   `extraction_disabled` / `already_ingested` / `claimed_elsewhere` /
-  `aborted` (retryable — nothing was written) / `manifest_failed` (receipt
-  kept; the retry re-publishes without re-extracting).
+  `dream_output` (dream-cycle output is never re-harvested) / `aborted`
+  (retryable — nothing was written) / `manifest_failed` (receipt kept; the
+  retry re-publishes without re-extracting). Hard failures carry the error
+  name as the reason.
 
 **Single-corpus-dir invariant:** the hook resolves the corpus dir from file
 config while serve resolves it from DB config. Keep
@@ -115,12 +130,25 @@ gbrain compile-context --target openclaw                     # .gbrain/compiled-
 gbrain compile-context --target claude-code --check          # exit 1 when the committed file is stale
 ```
 
+Selection is three deterministic arms over ONE source (the command compiles
+exactly one source; thin clients are refused — run it on the host install):
+the durable prefixes (`concepts/` `people/` `companies/` `originals/`, cap
+50 each), pages tagged `compile-context` (the explicit pin: always a
+candidate, ranked above every unpinned page — the scan and the budget still
+apply), and the newest 30 days of pages (cap 500). Entries are
+world-visibility excerpts (600 chars max; private-visibility fences never
+leave the brain).
+
 Deterministic by construction: selection anchors recency decay to the newest
 `updated_at` among candidates (never wall-clock), ordering is a total order,
 and an unchanged brain produces identical bytes across runs and days. The
-budget caps the WHOLE file. Content that trips the sensitivity scan (secrets,
-PII shapes, operator blocklist/pattern file) drops that page's entry — always
-reported, never silent — and `.gbrain-scan-allow` fingerprints un-drop
-reviewed false positives uniformly across every detector family. Engine read
-errors abort the run without writing; only scan hits drop entries. Pin a page
-into every compile with the `compile-context` tag.
+budget caps the WHOLE file, header included (a budget below the fixed header
+floor emits just the header plus an honest no-fit comment). Content that
+trips the sensitivity scan (secrets, PII shapes, operator blocklist/pattern
+file) drops that page's entry, and entries past the budget are dropped by
+the packer — both always reported, never silent — and `.gbrain-scan-allow`
+fingerprints un-drop reviewed false positives uniformly across every
+detector family. Engine read errors abort the run without writing. The
+openclaw target writes the file only — nothing auto-loads
+`.gbrain/compiled-context.md` yet; reference it from a workspace file your
+engine already loads.

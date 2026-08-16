@@ -26,7 +26,7 @@ than insight; session-start packs and post-compaction rehydration are nearly
 pure win. See the per-verb latency table in
 [`docs/protocol/MEMORY_VERBS_v1.md`](../protocol/MEMORY_VERBS_v1.md#latency-classes-per-verb).
 
-## Two integration surfaces
+## Three integration surfaces
 
 - **Pull (works everywhere, including Codex + Postgres/Supabase):** the harness
   calls `context_pack` / `delta` over MCP (they are on `--surface verbs`) or the
@@ -44,6 +44,11 @@ pure win. See the per-verb latency table in
   [`checkpoint-compaction.md`](./checkpoint-compaction.md)). Heartbeat deltas
   are the PULL path — there is deliberately no push heartbeat; call `delta`
   per the HEARTBEAT cadence table.
+- **Engine-internal (OpenClaw):** the context engine runs the checkpoint lane
+  itself — `compact()` banks the boundary segment before delegating and
+  `assemble()` injects the banked checkpoint block (engine contract 0.3.0;
+  no hooks, no recipe — see
+  [`checkpoint-compaction.md`](./checkpoint-compaction.md)).
 
 ## Visibility — world-only by default
 

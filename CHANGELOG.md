@@ -18,7 +18,7 @@ hand.
 - **Checkpoint compaction on Claude Code — zero new setup.** The
   bootstrap-installed PreCompact hook now banks the since-last-compaction
   window as a secret-scanned, content-addressed corpus segment *inside its
-  deadline, before anything else* — a crash after that point loses nothing
+  deadline, before any IPC* — a crash after that point loses nothing
   (the maintenance sweep extracts every segment as a backstop). The same IPC
   round trip asks a running `gbrain serve` to harvest the segment promptly:
   facts land with session provenance, and only links whose page actually
@@ -42,8 +42,9 @@ hand.
   `--check` is a real staleness probe (exit 1 when the committed file is
   stale). The budget caps the whole file; anything that trips the secret/PII
   scan drops that page's entry with a report, and reviewed false positives
-  un-drop via the fingerprint allowlist. Pin any page into every compile
-  with the `compile-context` tag.
+  un-drop via the fingerprint allowlist. Pin any page to the top of every
+  compile with the `compile-context` tag (the scan and the budget still
+  apply).
 - **Session-end corpus writes got smarter.** When every compaction window
   was already segment-banked, session-end writes only the remainder —
   coverage decided by exact content hashes, never counts, so a missed
@@ -56,15 +57,17 @@ hand.
   is the guide and runbook.
 
 ### Changed
-- Transcript parsing surfaces compaction-boundary *positions* (both the
-  Claude Code and OpenClaw formats), enabling precise boundary windows
-  everywhere; the OpenClaw line mapping is exported from the adapter so
-  every consumer shares the same dated format contract.
+- Transcript parsing surfaces compaction-boundary *positions* (returned
+  directly by the Claude Code parser; the OpenClaw format goes through its
+  exported line mapper), enabling precise boundary windows everywhere; the
+  mapper export means every boundary consumer shares the same dated format
+  contract.
 - The facts pipeline reports which entity pages actually received
   fence-written facts in a run — the truthful-links source for checkpoint
   manifests — and `hook:compact` is a first-class provenance tag.
 - The PII scrubber's regex families are now an ordered, exported pattern
-  set (`findPii`) with byte-identical scrubbing behavior, composed with the
+  set (`PII_PATTERNS`, queried via `findPii`) with byte-identical scrubbing
+  behavior, composed with the
   secret scanner, path/blocklist families, and the operator pattern file
   into one sensitivity scan used by compiled views.
 
@@ -85,6 +88,7 @@ section appear on re-entry). Then try
 printed one-line `@import` to your CLAUDE.md; re-run it (or `--check` in CI)
 whenever the brain changes. Codex/opencode users: the AGENTS.md target works
 today; native codex hooks are a filed follow-up.
+
 ## [0.46.12.2] - 2026-08-16
 
 **Your agent can now do over MCP what it could only do from the CLI.** An
