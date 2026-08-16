@@ -159,6 +159,20 @@ export interface HookIo {
   /** TEST SEAM: user-prompt deadline override (wall-clock flake control). */
   userPromptDeadlineMs?: number;
   /**
+   * TEST SEAM (v0.46.8, BrainBench production seam): config override for
+   * hookUserPrompt — `undefined` = load the real file-plane config;
+   * `null`/object = use as-is. Lets the bench point the hook at a throwaway
+   * brain WITHOUT mutating process-global GBRAIN_HOME (parallel-test safe).
+   */
+  configOverride?: GBrainConfig | null;
+  /**
+   * TEST SEAM (v0.46.8): suppress the pending-push failure banner. The
+   * banner reads the OPERATOR's real push-status files — on a bench run
+   * that's environmental contamination (a locally-failing push would inject
+   * a banner on stay-silent turns and read as a false fire).
+   */
+  disablePushBanner?: boolean;
+  /**
    * Feedback-loop attribution channel (`--harness <claude-code|codex|opencode>`).
    * Default 'claude-code' — the only harness bootstrap registers hooks for
    * today; a codex/opencode hook registration passes the flag explicitly.
@@ -1051,7 +1065,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
   let wrotePayload = false;
 
   const work = (async (): Promise<UserPromptOutcome> => {
-    banner = pendingPushFailureBanner();
+    banner = io.disablePushBanner ? null : pendingPushFailureBanner();
     const j = await readStdinJson(io, 300);
     if (!j) return { outcome: 'degraded', reason: 'no_stdin' };
 
@@ -1103,7 +1117,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     if (prompt.trim()) turns = [...turns, { role: 'user', text: prompt }];
     if (turns.length === 0) return { outcome: 'ok', reason: 'empty_window' };
 
-    const cfg = loadConfig();
+    const cfg = io.configOverride !== undefined ? io.configOverride : loadConfig();
     if (!cfg?.database_path) {
       // No config, or a Postgres brain (no PGLite data dir → no IPC socket).
       // ENGINE-FREE means no direct-engine fallback here; pull-mode covers it.

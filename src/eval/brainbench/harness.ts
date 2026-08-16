@@ -78,9 +78,18 @@ function makeAdapter(name: HarnessName): HarnessAdapter {
 
 const SEAM: Record<HarnessName, 'production' | 'contract'> = {
   openclaw: 'production',
-  'claude-code': 'contract',
+  // v0.46.8 (TODOS:556 P1): the claude-code row now drives the REAL
+  // UserPromptSubmit hook over the real IPC socket — see the adapter header.
+  'claude-code': 'production',
   codex: 'contract',
 };
+
+/** The SEAM map and the adapters' own seam fields must agree — pinned by
+ * test/brainbench-adapters.test.ts (outside-voice F4: the scoreboard reads
+ * THIS map, so a flipped adapter field alone changes nothing). */
+export function seamFor(name: HarnessName): 'production' | 'contract' {
+  return SEAM[name];
+}
 
 function adapterView(lf: LoadedFixture): AdapterFixtureView {
   return {
@@ -175,6 +184,18 @@ export async function runBrainBench(
   const turnRows: TurnRow[] = [];
   const seedFailures: Array<{ fixture_id: string; error: string }> = [];
 
+  // v0.46.8 (F4/R2-5): ONE adapter per harness per RUN, constructed here and
+  // torn down in the finally — a production seam owns long-lived
+  // infrastructure (the claude-code IPC server) across fixtures instead of
+  // paying per-fixture setup (the ~15s gate stays fast).
+  const adapters = new Map<HarnessName, HarnessAdapter>();
+  for (const h of opts.harnesses) {
+    const a = makeAdapter(h);
+    await a.setupRun?.();
+    adapters.set(h, a);
+  }
+  const adapterFor = (h: HarnessName): HarnessAdapter => adapters.get(h)!;
+
   const wantedSuites = new Set(opts.suites);
   const eligible = corpus.fixtures.filter((lf) => {
     if (lf.fixture.holdout && !opts.includeHoldout) return false;
@@ -237,7 +258,7 @@ export async function runBrainBench(
       );
       if (retrievalSuites.length > 0) {
         for (const harness of opts.harnesses) {
-          const adapter = makeAdapter(harness);
+          const adapter = adapterFor(harness);
           const rows = await replayFixture(engine, adapter, lf, seed, retrievalSuites);
           turnRows.push(...rows);
         }
@@ -316,7 +337,7 @@ export async function runBrainBench(
 
       // Every requested harness reads the SAME persisted state (read-only).
       for (const readerHarness of opts.harnesses) {
-        const readerAdapter = makeAdapter(readerHarness);
+        const readerAdapter = adapterFor(readerHarness);
         const readerRows = await replayFixture(engine, readerAdapter, reader, mergedSeed, ['continuity']);
         turnRows.push(...readerRows);
 
@@ -334,6 +355,13 @@ export async function runBrainBench(
       }
     }
   } finally {
+    for (const a of adapters.values()) {
+      try {
+        await a.teardownRun?.();
+      } catch {
+        /* teardown is best-effort — a leaked temp dir must not fail the run */
+      }
+    }
     await engine.disconnect();
   }
 

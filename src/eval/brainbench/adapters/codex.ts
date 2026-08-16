@@ -13,7 +13,11 @@
  * diagnostics (decision 18) see its cost.
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { PGLiteEngine } from '../../../core/pglite-engine.ts';
+import { codexAdapter as codexTranscriptAdapter } from '../../../core/transcripts/codex.ts';
 import type {
   AdapterFixtureView,
   HarnessAdapter,
@@ -34,12 +38,73 @@ export class CodexAdapter implements HarnessAdapter {
   private sourceId = 'default';
   private preamble = '';
   private firstTurn = true;
+  private tmpDir: string | null = null;
+  private fixtureSeq = 0;
+  /** Turn texts the REAL rollout parser selected as user turns. */
+  private parserSelected = new Set<string>();
+
+  async setupRun(): Promise<void> {
+    this.tmpDir = mkdtempSync(join(tmpdir(), 'brainbench-codex-'));
+  }
+
+  async teardownRun(): Promise<void> {
+    if (this.tmpDir) {
+      rmSync(this.tmpDir, { recursive: true, force: true });
+      this.tmpDir = null;
+    }
+  }
 
   async beginConversation(engine: PGLiteEngine, fixture: AdapterFixtureView): Promise<void> {
+    if (!this.tmpDir) await this.setupRun();
     this.engine = engine;
     this.sourceId = fixture.active_source;
     this.firstTurn = true;
     this.preamble = await this.buildPreamble();
+    // v0.46.8 (F5, parser integration): the fixture conversation round-trips
+    // through the REAL codex rollout format + the REAL shipped parser
+    // (src/core/transcripts/codex.ts) for structural TURN SELECTION — a
+    // parser drift that loses user turns now tanks the row visibly. The
+    // fragment DELIVERY below remains a harness-shaped contract (disclosed
+    // in docs/eval/BRAINBENCH.md); the full production flip is a filed TODO.
+    this.parserSelected = await this.parseRollout(fixture);
+  }
+
+  /** Synthesize the rollout JSONL and run the shipped parser over it. */
+  private async parseRollout(fixture: AdapterFixtureView): Promise<Set<string>> {
+    this.fixtureSeq += 1;
+    const path = join(this.tmpDir!, `rollout-${this.fixtureSeq}.jsonl`);
+    const ts = '2026-01-01T00:00:00.000Z';
+    const lines: string[] = [
+      JSON.stringify({
+        timestamp: ts,
+        type: 'session_meta',
+        payload: { session_id: `brainbench-${fixture.fixture_id}`, cwd: '/', timestamp: ts, cli_version: 'bench' },
+      }),
+    ];
+    for (const t of fixture.turns) {
+      if (t.role === 'user') {
+        lines.push(
+          JSON.stringify({ timestamp: ts, type: 'event_msg', payload: { type: 'user_message', message: t.text } }),
+        );
+      } else {
+        lines.push(
+          JSON.stringify({
+            timestamp: ts,
+            type: 'response_item',
+            payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: t.text }] },
+          }),
+        );
+      }
+    }
+    writeFileSync(path, lines.join('\n') + '\n');
+    const selected = new Set<string>();
+    const gen = codexTranscriptAdapter.parse(path);
+    for await (const session of gen) {
+      for (const m of session.messages) {
+        if (m.role === 'user') selected.add(m.text);
+      }
+    }
+    return selected;
   }
 
   /** Static entity index: titles + slugs in the active source, alphabetical. */
@@ -66,6 +131,12 @@ export class CodexAdapter implements HarnessAdapter {
   async replayTurn(turn: PublicTurn, priorContextText: string): Promise<HarnessTurnResult> {
     if (!this.engine) throw new Error('codex adapter: beginConversation not called');
     const started = performance.now();
+    // Parser-selected turns only (F5): a user turn the shipped rollout
+    // parser failed to surface never reaches the fragment pipeline — parser
+    // drift shows up as missed retrievals, not as a silently-passing bench.
+    if (!this.parserSelected.has(turn.text)) {
+      return toTurnResult(null, null, performance.now() - started);
+    }
     const block = await runReflexPipeline(this.engine, this.sourceId, turn, priorContextText, {
       maxPointers: CODEX_MAX_FRAGMENTS,
       suppression: 'prior-context',
