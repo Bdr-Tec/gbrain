@@ -22,6 +22,13 @@ export interface CopyItem {
   source: string;
   /** Absolute target path. */
   target: string;
+  /**
+   * Inline content to write instead of reading `source` (the harness
+   * bridge's rendered stub bodies). `source` stays set for reporting.
+   * The source-side gates (rejectSymlinks / confineRealpath / existence)
+   * are skipped for content items — there is no source read.
+   */
+  content?: string;
 }
 
 export interface CopyArtifactsOpts {
@@ -132,6 +139,7 @@ export function copyArtifacts(items: CopyItem[], opts: CopyArtifactsOpts = {}): 
 
   // Validate every item first (atomic-refusal contract).
   for (const item of items) {
+    if (item.content != null) continue; // inline content — no source read
     if (!existsSync(item.source)) {
       throw new CopyError(
         `Source path does not exist: ${item.source}`,
@@ -175,7 +183,7 @@ export function copyArtifacts(items: CopyItem[], opts: CopyArtifactsOpts = {}): 
       continue;
     }
     if (!dryRun) {
-      const content = readFileSync(item.source);
+      const content = item.content != null ? item.content : readFileSync(item.source);
       mkdirSync(dirname(item.target), { recursive: true });
       writeFileSync(item.target, content);
     }
