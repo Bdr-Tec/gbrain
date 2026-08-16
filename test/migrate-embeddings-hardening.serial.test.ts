@@ -666,7 +666,10 @@ describe('config-plane hygiene (env leak + env-canonical gates)', () => {
     process.env.GBRAIN_EMBEDDING_MODEL = 'zeroentropyai:zembed-1';
     process.env.GBRAIN_EMBEDDING_DIMENSIONS = String(FROM_DIMS);
     process.env.VOYAGE_API_KEY = 'pa-env-secret-canary';
-    process.env.DATABASE_URL = 'postgres://leak:leakpw@env-host-canary:5432/leakdb';
+    // Password-less on purpose: the assertion is that the database_url KEY
+    // never lands in the file at all, and a userinfo-bearing URL literal
+    // would (rightly) trip the pre-push credential scanner.
+    process.env.DATABASE_URL = 'postgres://env-host-canary:5432/leakdb';
     try {
       await persistEmbeddingFileConfig('voyage:voyage-4', 1024);
       const raw = readFileSync(cfgPath, 'utf-8');
