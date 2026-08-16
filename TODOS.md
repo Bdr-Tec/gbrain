@@ -42,6 +42,17 @@
 - [ ] **P3 — Branch coverage when bun ships it.** **What:** bun 1.3.x emits line+function
   lcov only (and JSC omits function names). When branch records (BRDA) land upstream, extend
   merge-lcov.ts and report branch coverage. **Effort:** S. **Priority:** P3.
+- [ ] **P2 — Local shard-1 SIGTERM self-kill under load (master-inherited).** **What:** the
+  local fast loop's shard 1/4 dies rc=143 with ZERO test failures ~50–85s in when the machine
+  carries concurrent bun-test load: an `extract.stale` abort observes SIGTERM and the parent
+  bun process dies (`[run-child] job ... not claimed` lines adjacent). Reproduced
+  byte-identically on a clean master worktree (`SHARD=1/4 bash scripts/run-unit-shard.sh
+  --max-concurrency=2`), so it predates the containment sprint — most plausibly a
+  process-group signal escaping a per-job isolation test (#4151 landed the process-isolation
+  lane). **Why:** a self-killing shard reads as CI/local flake and poisons full-suite runs.
+  **Where to start:** the shard-1 file set's isolation/lifecycle tests
+  (test/run-child-entry.test.ts, test/worker-job-isolation.test.ts, test/extract-stale.test.ts)
+  — audit for kill(0)/process-group signals under contention. **Effort:** M. **Priority:** P2.
 - [ ] **P3 — Evidence-gated engine-core dedup.** **What:** the narrow-deps engine modules
   (facts/takes/code-edges/salience × both engines) are the stepping stone toward a shared
   engine core, NOT the substitute. The prior proposal drew 15 substantive review objections
