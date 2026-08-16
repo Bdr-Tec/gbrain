@@ -50,6 +50,7 @@ check-admin-build.sh	buildfresh	exempt	runs the admin build; the build is the te
 check-admin-embedded.sh	buildfresh	exempt	embed freshness diff; not in verify CHECKS: duplicates check:admin-build's build
 check-admin-scope-drift.sh	buildfresh	exempt	regenerates + diffs
 check-bootstrap-templates.sh	buildfresh	exempt	regenerates template tree + diffs
+check-plugin-tree.sh	buildfresh	exempt	regenerates the plugin tree + diffs (curation record validated by the generator)
 check-eval-glossary-fresh.sh	buildfresh	exempt	regenerates + diffs
 check-fuzz-purity.sh	buildfresh	exempt	executes fuzz corpus
 check-image-decoders-embedded.sh	buildfresh	exempt	binary embed check; not in verify CHECKS: own bun build --compile too heavy per-verify
