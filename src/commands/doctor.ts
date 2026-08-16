@@ -7427,7 +7427,12 @@ export async function buildChecks(
   try {
     const health = await engine.getHealth();
     const entityCount = (await engine.executeRaw<{ count: number }>(
-      "SELECT COUNT(*)::int AS count FROM pages WHERE type IN ('entity', 'person', 'company', 'organization')",
+      // deleted_at IS NULL: a brain whose only entity pages are soft-deleted has
+      // zero LIVE entities, and must take the short-circuit below rather than
+      // warn about coverage on pages the rest of the system treats as gone.
+      // buildGazetteer (src/core/by-mention.ts) already filters this way, so
+      // without it the two disagree about whether entity pages exist at all.
+      "SELECT COUNT(*)::int AS count FROM pages WHERE deleted_at IS NULL AND type IN ('entity', 'person', 'company', 'organization')",
     ))[0]?.count ?? 0;
 
     // Compute coverage against eligible entities only — exclude test fixtures
@@ -7438,7 +7443,8 @@ export async function buildChecks(
     const eligibleStats = (await engine.executeRaw<{ entities: number; linked_from: number; timeline: number }>(
       `WITH eligible AS (
         SELECT id FROM pages
-        WHERE type IN ('entity','person','company','organization')
+        WHERE deleted_at IS NULL
+          AND type IN ('entity','person','company','organization')
           AND slug NOT LIKE 'tools/gbrain/test/%'
           AND slug <> 'templates/new-person'
       )
@@ -8871,6 +8877,65 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   } catch {
     return [];
   }
+
+  // 00. Plugin-lane coexistence. Runs BEFORE the bootstrap-state gate: a
+  // hand-wired registration can coexist with a plugin on machines that never
+  // ran `gbrain bootstrap`. Emits rows ONLY when a gbrain plugin is ENABLED
+  // in a harness config (machines without the plugin get zero noise):
+  // warn = a hand-wired registration also exists (duplicate tool
+  // registration; which server wins is host-defined), ok = the plugin is the
+  // sole owner. "Enabled" is a CONFIG signal, not a health signal — the row
+  // says so. Fail-soft like every probe in this group.
+  try {
+    const {
+      codexPluginProvidesName,
+      claudePluginProvidesName,
+      codexAnyRegistrationExists,
+      claudeAnyRegistrationExists,
+    } = await import('../core/bootstrap/harness.ts');
+    const { codexConfigPath, claudeUserSettingsPath, claudeUserMcpConfigPath } = await import('../core/bootstrap/host-specs.ts');
+    const claudeUserMcpConfig = claudeUserMcpConfigPath();
+    const lanes: Array<{ harness: string; plugin: string; dup: boolean; disambiguate: string }> = [];
+    const codexPlugin = codexPluginProvidesName(codexConfigPath(), 'gbrain');
+    if (codexPlugin) {
+      lanes.push({
+        harness: 'codex',
+        plugin: codexPlugin,
+        dup: codexAnyRegistrationExists(codexConfigPath(), 'gbrain'),
+        disambiguate: 'keep one owner: `codex mcp remove gbrain` (drop the hand-wired entry) or `codex plugin remove gbrain@gbrain` (drop the plugin)',
+      });
+    }
+    const claudePlugin = claudePluginProvidesName(claudeUserSettingsPath(), 'gbrain');
+    if (claudePlugin) {
+      lanes.push({
+        harness: 'claude-code',
+        plugin: claudePlugin,
+        dup: claudeAnyRegistrationExists(claudeUserMcpConfig, 'gbrain', process.cwd()),
+        disambiguate: 'keep one owner: `claude mcp remove gbrain` (drop the hand-wired entry) or disable the plugin in Claude Code',
+      });
+    }
+    for (const lane of lanes) {
+      checks.push(
+        lane.dup
+          ? {
+              name: 'plugin_lane_collision',
+              status: 'warn',
+              message:
+                `${lane.harness}: the '${lane.plugin}' plugin AND a hand-wired gbrain MCP registration both exist — ` +
+                `duplicate tool registration is host-defined behavior; ${lane.disambiguate}. ` +
+                '(Plugin enabled is a config signal, not a health signal.)',
+            }
+          : {
+              name: 'plugin_lane_collision',
+              status: 'ok',
+              message: `${lane.harness}: the '${lane.plugin}' plugin provides gbrain and no hand-wired registration was found in the scanned configs (user scope + this directory).`,
+            },
+      );
+    }
+  } catch {
+    /* fail-soft: a broken harness config never breaks doctor */
+  }
+
   const receipt = readReceipt(home);
   // One reader for every push-status surface [D8]; per-root files [D13].
   const { readPushStatuses, pushStatusFilesExist } = await import('../core/workspace-push.ts');
@@ -8882,7 +8947,9 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   const harnessState = readHarnessReceiptState(home);
   const hasBootstrapState =
     receipt !== null || statusFilesOnDisk || existsSync(heartbeatFile) || harnessState.state !== 'absent';
-  if (!hasBootstrapState) return [];
+  // Return the pre-gate rows (plugin-lane coexistence) even on machines with
+  // no bootstrap state — the plugin lane needs no bootstrap to exist.
+  if (!hasBootstrapState) return checks;
 
   const ws = receipt?.workspace_dir ?? null;
 

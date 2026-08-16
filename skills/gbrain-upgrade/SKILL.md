@@ -43,8 +43,8 @@ This skill guarantees:
 ## When to run
 
 Run when you see `UPGRADE_AVAILABLE <old> <new>` on stderr from any `gbrain`
-command, OR when the operator asks to update gbrain, OR on the daily HEARTBEAT
-self-upgrade check.
+command, OR when the operator asks to update gbrain, OR on any scheduled/daily
+upgrade check your deployment runs.
 
 First, read the mode:
 

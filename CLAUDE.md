@@ -485,7 +485,7 @@ ms, max waiters) for `--json`; a one-line summary prints to stderr.
 
 ## Version locations (single source of truth: `VERSION` file)
 
-Every release advances the version in **six files at once**. Keep these in
+Every release advances the version in **seven files at once**. Keep these in
 sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
 package.json drift), but the canonical list lives here so future runs and
 the auto-update agent know where to look.
@@ -501,7 +501,7 @@ four numeric segments are required first. Historical 3-segment versions
 (`0.31.3`, `0.22.1`) remain valid in `git log` and migration filenames
 (`skills/migrations/v0.21.0.md`); do NOT rewrite them. Going forward only.
 
-**Required (every release must update all six):**
+**Required (every release must update all seven):**
 
 | File | What lives there | Format |
 |---|---|---|
@@ -511,11 +511,18 @@ four numeric segments are required first. Historical 3-segment versions
 | `TODOS.md` | Any TODO entries that mention "follow-up from vX.Y.Z.W" use the version of the release that filed them. Update only when filing NEW follow-up TODOs. | Inline `vX.Y.Z.W` references in TODO bodies. |
 | `CLAUDE.md` | The Key Files section's per-file annotations carry `vX.Y.Z.W (#NNN)` tags noting which release introduced a behavior. Update whenever a wave's annotations get folded in. | Inline `vX.Y.Z.W (#NNN, contributed by @user)` references. |
 | `openclaw.plugin.json` | OpenClaw plugin manifest (v0.45.6.0, #4033). Hand-maintained; `test/openclaw-plugin-manifest.test.ts` fails the suite if it drifts from `package.json`. Merges from master auto-resolve it to master's version — re-bump it with the trio. | `"version": "0.45.12.0"` |
+| `.codex-plugin/plugin.json` + `.claude-plugin/plugin.json` | Codex + Claude Code plugin manifests. Hand-maintained; `test/codex-plugin-manifest.test.ts` fails the suite when either drifts from `package.json` (the bump is now a FIVE-file lockstep: VERSION, package.json, openclaw.plugin.json, and both plugin manifests). Merges from master auto-resolve them to master's version — re-bump with the version set. | `"version": "0.46.7.0"` |
 | `BOOTSTRAP_FOR_AGENTS.md` | Runbook stamp on line 1. `scripts/check-bootstrap-tag.sh` (in `bun run verify` + CI) fails when it drifts from `VERSION`; refresh it in the same commit as the bump. | `<!-- gbrain-runbook-stamp: X.Y.Z.W -->` |
 | `templates/bootstrap/template-repo/` | Vendored template tree with an embedded version stamp. Auto-derived, but NOT by `bun install`: run `bun run scripts/generate-template-repo.ts --out templates/bootstrap/template-repo` after the bump; `scripts/check-bootstrap-templates.sh` fails CI on drift. | `<!-- gbrain-template-stamp: X.Y.Z.W -->` in generated files. |
 
 **Auto-derived (no manual edit; refreshed by their own commands):**
 
+- `plugin/` — the committed codex/claude plugin skill tree embeds a
+  `gbrain-plugin-tree-stamp: X.Y.Z.W` in its generated README, so every
+  version bump drifts it. Regenerate after the bump: `bun run
+  scripts/generate-plugin-tree.ts --out plugin` (guarded by
+  `scripts/check-plugin-tree.sh` in `bun run verify`; the release
+  `publish-codex-plugin` job also drift-gates it before publishing).
 - `bun.lock` — root-package version is auto-pinned from `package.json`. After
   bumping `package.json`, run `bun install` to refresh the lockfile.
 - `llms-full.txt` / `llms.txt` — auto-generated documentation bundles. **Any
