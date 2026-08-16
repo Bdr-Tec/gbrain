@@ -27,6 +27,24 @@
 - [ ] **P3 — Re-eval community #717 (graph-hop wikilink rerank, claimed +2.6/+2.8
   P@5/R@5) against the post-v0.46.8 ranker** — the concept intent + dedup scope fix
   may have absorbed part of its headroom.
+- [ ] **P1 — Cat 13 conceptual recall: the concept tilt is NOT enough; the fusion
+  itself is the suspect.** Pre-merge receipt (v0.46.8, voyage-4/1024 space, 500
+  seeded probes, all adapters on the SAME gateway): bare vector 49.5 nDCG@5,
+  grep-only 46.2, vector+grep RRF fusion 40.5, gbrain hybrid 35.6 — and a master
+  A/B at the merge-base scored gbrain BYTE-IDENTICAL (35.6, every template), so the
+  wave neither regressed nor improved Cat 13. Two honest findings: (a) the
+  pre-registered "hybrid ≥ bare vector" target is NOT met — the ±10-20% RRF-k
+  concept tilt provably works on a discriminating corpus
+  (test/search/concept-weights.test.ts) but is a wash on this probe mix; (b)
+  FUSION ITSELF loses to its own best single arm here (40.5 < 46.2 < 49.5) — the
+  keyword arm's noise on paraphrase probes drags the merge below either component.
+  Next: instrument per-arm rank contributions on the Cat 13 losers
+  (synonym 38.7 vs vector 66.4 is the widest), then evaluate arm-confidence-
+  weighted fusion (down-weight keyword when its top score is weak) rather than a
+  bigger static tilt. Ship with the evals-repo PR (the three uncommitted gateway-
+  config patches in gbrain-evals are part of it). Also note: the recorded 47.0-vs-
+  49.1 OpenAI-space numbers cannot be reproduced keylessly; the voyage-space gap
+  is WIDER — stronger embedders make hybrid's keyword noise relatively costlier.
 
 ## LongMemEval temporal gap — date-proximity signal SPIKE-REJECTED (filed v0.46.8.0, identity/retrieval wave)
 
