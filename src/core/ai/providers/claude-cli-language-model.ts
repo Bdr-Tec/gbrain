@@ -219,10 +219,22 @@ function runClaude(
     // (subscription), never via an inherited API key. Without this, an
     // ANTHROPIC_API_KEY in gbrain's env (the exact setup this recipe is meant
     // to replace) silently flips billing to per-token API usage.
+    //
+    // Also scrub the CLAUDE_CODE_USE_* backend-switch flags: Bedrock, Vertex
+    // AI, Mantle, Microsoft Foundry, and Claude Platform on AWS are each
+    // gated by one of these, take priority over subscription OAuth when set,
+    // and route billing through a cloud account instead. Clearing the switch
+    // is sufficient — provider-specific creds (AWS_*, ANTHROPIC_VERTEX_*,
+    // ANTHROPIC_FOUNDRY_*, ANTHROPIC_AWS_*, ...) are inert without it.
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
+    delete env.CLAUDE_CODE_USE_BEDROCK;
+    delete env.CLAUDE_CODE_USE_VERTEX;
+    delete env.CLAUDE_CODE_USE_MANTLE;
+    delete env.CLAUDE_CODE_USE_FOUNDRY;
+    delete env.CLAUDE_CODE_USE_ANTHROPIC_AWS;
     const child = spawn(claudeBin(), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: ensureCleanCwd(),

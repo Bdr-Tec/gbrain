@@ -425,19 +425,24 @@ describe('claude-cli LanguageModel — context isolation', () => {
     });
   });
 
-  test('scrubs ANTHROPIC_* credentials from the child env (subscription-only auth)', async () => {
+  test('scrubs ANTHROPIC_* credentials and cloud-auth backend switches from the child env (subscription-only auth)', async () => {
     await withStubEnv(async () => {
       await withEnv(
         {
           ANTHROPIC_API_KEY: 'sk-should-never-leak',
           ANTHROPIC_AUTH_TOKEN: 'tok-should-never-leak',
           ANTHROPIC_BASE_URL: 'https://proxy.should.never.leak',
+          CLAUDE_CODE_USE_BEDROCK: '1',
+          CLAUDE_CODE_USE_VERTEX: '1',
+          CLAUDE_CODE_USE_MANTLE: '1',
+          CLAUDE_CODE_USE_FOUNDRY: '1',
+          CLAUDE_CODE_USE_ANTHROPIC_AWS: '1',
         },
         async () => {
           const envLog = join(stubDir, 'env.log');
           const envStub = [
             '#!/bin/sh',
-            `printf "key=%s\\ntoken=%s\\nbase=%s\\n" "\${ANTHROPIC_API_KEY:-UNSET}" "\${ANTHROPIC_AUTH_TOKEN:-UNSET}" "\${ANTHROPIC_BASE_URL:-UNSET}" > "${envLog}"`,
+            `printf "key=%s\\ntoken=%s\\nbase=%s\\nbedrock=%s\\nvertex=%s\\nmantle=%s\\nfoundry=%s\\nanthropicAws=%s\\n" "\${ANTHROPIC_API_KEY:-UNSET}" "\${ANTHROPIC_AUTH_TOKEN:-UNSET}" "\${ANTHROPIC_BASE_URL:-UNSET}" "\${CLAUDE_CODE_USE_BEDROCK:-UNSET}" "\${CLAUDE_CODE_USE_VERTEX:-UNSET}" "\${CLAUDE_CODE_USE_MANTLE:-UNSET}" "\${CLAUDE_CODE_USE_FOUNDRY:-UNSET}" "\${CLAUDE_CODE_USE_ANTHROPIC_AWS:-UNSET}" > "${envLog}"`,
             'cat > /dev/null',
             `cat "${stubResponsePath}"`,
           ].join('\n');
@@ -457,6 +462,11 @@ describe('claude-cli LanguageModel — context isolation', () => {
             expect(seen).toContain('key=UNSET');
             expect(seen).toContain('token=UNSET');
             expect(seen).toContain('base=UNSET');
+            expect(seen).toContain('bedrock=UNSET');
+            expect(seen).toContain('vertex=UNSET');
+            expect(seen).toContain('mantle=UNSET');
+            expect(seen).toContain('foundry=UNSET');
+            expect(seen).toContain('anthropicAws=UNSET');
           } finally {
             const fastStub = [
               '#!/bin/sh',
