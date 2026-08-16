@@ -1351,14 +1351,24 @@ export async function makeContext(engine: BrainEngine, params: Record<string, un
   // engine) — re-merging unconditionally would double the per-key reads that
   // #3980 measures at ~1.5s per command on a hosted brain.
   //
-  // Fail-open: a brain mid-migration whose config table is missing must still
-  // get a usable context, so a merge failure falls back to the file plane.
+  // Fail-open, but not silent. The expected failure — a brain mid-migration
+  // whose config table does not exist yet — is already absorbed per key inside
+  // loadConfigWithEngine, so anything that escapes to here is unexpected (a
+  // contract violation such as a malformed listConfigKeys result). Falling
+  // back to the file plane keeps the command usable, but swallowing it without
+  // a word would turn "the DB plane silently did nothing" back into a mystery —
+  // which is the whole shape of #1475. Warn and continue.
   const fileConfig = loadConfig() || { engine: 'postgres' as const };
   let mergedConfig = MERGED_CONFIG_BY_ENGINE.get(engine) ?? fileConfig;
   if (!MERGED_CONFIG_BY_ENGINE.has(engine)) {
     try {
       mergedConfig = (await loadConfigWithEngine(engine, fileConfig)) ?? fileConfig;
-    } catch {
+    } catch (err) {
+      console.warn(
+        `[config] DB-plane merge failed; using file/env config only. ` +
+        `Values set via \`gbrain config set\` will not apply to this command: ` +
+        `${(err as Error).message}`,
+      );
       mergedConfig = fileConfig;
     }
   }

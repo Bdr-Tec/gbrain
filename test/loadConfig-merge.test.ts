@@ -369,6 +369,27 @@ describe('loadConfigWithEngine (Phase 4 / F3)', () => {
       expect(merged?.eval?.capture).toBeUndefined();
     });
 
+    test('an unrecognised boolean is treated as unset, not as false', async () => {
+      // The privacy-relevant case. `config set` stores whatever it is handed,
+      // and the shared dbBool helper maps every non-empty non-'true' value to
+      // FALSE — so `gbrain config set eval.scrub_pii TRUE` would arrive here
+      // as "scrubbing off". Before this merge branch existed those values were
+      // inert; adopting the loose helper would newly activate that footgun.
+      for (const bad of ['TRUE', 'True', '1', 'yes', 'tru', 'off', ' true']) {
+        const merged = await loadConfigWithEngine(
+          makeEngine({ 'eval.scrub_pii': bad, 'eval.capture': bad }),
+          { engine: 'pglite' },
+        );
+        expect(merged?.eval, `"${bad}" must not produce an eval container`).toBeUndefined();
+      }
+      // Control: the two values that ARE recognised still come through, so the
+      // strictness above cannot be satisfied by ignoring the keys entirely.
+      const on = await loadConfigWithEngine(makeEngine({ 'eval.scrub_pii': 'true' }), { engine: 'pglite' });
+      expect(on?.eval?.scrub_pii).toBe(true);
+      const off = await loadConfigWithEngine(makeEngine({ 'eval.scrub_pii': 'false' }), { engine: 'pglite' });
+      expect(off?.eval?.scrub_pii).toBe(false);
+    });
+
     test('no eval.* keys leaves cfg.eval undefined (no spurious container)', async () => {
       const base: GBrainConfig = { engine: 'pglite' };
       const merged = await loadConfigWithEngine(makeEngine({ embedding_multimodal: 'true' }), base);

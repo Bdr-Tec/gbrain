@@ -964,8 +964,32 @@ export async function loadConfigWithEngine(
   // documented opt-out for a brain that has CONTRIBUTOR_MODE exported, and
   // eval.scrub_pii=false is an explicit privacy decision. dbBool already
   // distinguishes them ('' / null / undefined → undefined).
-  const dbEvalCapture = await dbBool('eval.capture');
-  const dbEvalScrubPii = await dbBool('eval.scrub_pii');
+  // Strict, not `dbBool`. `dbBool` maps every non-empty value other than the
+  // exact string 'true' to FALSE, and `config set` stores whatever it is given
+  // — so `gbrain config set eval.scrub_pii TRUE` (or `1`, or a typo like
+  // `tru`) would arrive here as `false` and silently DISABLE PII scrubbing.
+  // Measured: 'true'→true, 'false'→false, and 'tru' / 'TRUE' / '1' / 'yes' all
+  // →false under dbBool. Before this merge existed those values were inert, so
+  // adopting dbBool here would newly activate that footgun on a privacy knob.
+  // An unrecognised value is treated as unset, which falls back to the
+  // documented default (scrub on, capture per CONTRIBUTOR_MODE) — fail-safe.
+  //
+  // Deliberately scoped to the two keys this change introduces. The same
+  // looseness applies to the other dbBool keys, but tightening those is a
+  // behavior change for existing brains and belongs in its own PR.
+  async function dbBoolStrict(key: string): Promise<boolean | undefined> {
+    try {
+      const v = await engine.getConfig(key);
+      if (v === 'true') return true;
+      if (v === 'false') return false;
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const dbEvalCapture = await dbBoolStrict('eval.capture');
+  const dbEvalScrubPii = await dbBoolStrict('eval.scrub_pii');
 
   const mergedEval: NonNullable<GBrainConfig['eval']> = { ...(merged.eval ?? {}) };
   if (mergedEval.capture === undefined && dbEvalCapture !== undefined) {
