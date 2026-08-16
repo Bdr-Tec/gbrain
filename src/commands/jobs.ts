@@ -4,6 +4,9 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
+// Leaf module (no flag surface of its own) — see that file for why this
+// isn't imported from extract-conversation-facts.ts directly (#4135).
+import { ALLOWED_TYPES, type AllowedType } from '../core/facts/conversation-types.ts';
 import { MinionQueue } from '../core/minions/queue.ts';
 import { MinionWorker } from '../core/minions/worker.ts';
 import {
@@ -2064,14 +2067,16 @@ export async function registerBuiltinHandlers(
       // SHOULD pin to one source per call (job_id is per-call).
       throw new Error('extract-conversation-facts Minion job requires data.sourceId');
     }
+    // ALLOWED_TYPES is the single source of truth for the conversation-facts
+    // type allowlist (see src/core/facts/conversation-types.ts).
     const types = Array.isArray(job.data.types)
-      ? (job.data.types as string[]).filter((t) =>
-          ['conversation', 'meeting', 'slack', 'email', 'imessage', 'imessage-daily'].includes(t),
+      ? (job.data.types as string[]).filter(
+          (t): t is AllowedType => (ALLOWED_TYPES as readonly string[]).includes(t),
         )
       : undefined;
     const result = await runExtractConversationFactsCore(engine, {
       sourceId,
-      types: types as ('conversation' | 'meeting' | 'slack' | 'email')[] | undefined,
+      types,
       slug: typeof job.data.slug === 'string' ? job.data.slug : undefined,
       dryRun: !!job.data.dryRun,
       limit: typeof job.data.limit === 'number' ? job.data.limit : undefined,
