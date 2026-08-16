@@ -1,0 +1,337 @@
+/**
+ * harness-bridge.ts — plan/apply core for the cathedral-7 skill bridge.
+ *
+ * Hermetic synthetic gbrain root (the skillpack-scaffold.test.ts fixture
+ * pattern): every path — persona filtering through the manifest universe,
+ * the frontmatter fail-loud gate (the codex session-brick guard), stub
+ * rendering with shared-dep closure, mode-conflict ground truth from the
+ * file marker, target confinement (traversal + symlinked parents),
+ * written-only ownership, and ledger-scoped remove.
+ */
+
+import { describe, expect, test, afterEach } from 'bun:test';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
+import { join, resolve } from 'path';
+import { tmpdir } from 'os';
+
+import {
+  BridgeError,
+  STUB_MARKER,
+  applyHarnessBridge,
+  assertDestNotSymlink,
+  assertTargetsConfined,
+  bridgeTargetPath,
+  planHarnessBridge,
+  removeHarnessBridge,
+  renderSkillStub,
+  sha256Hex,
+  verifySlugsServable,
+} from '../src/core/skillpack/harness-bridge.ts';
+import { loadBridgeState, findBridgeEntry } from '../src/core/skillpack/bridge-state.ts';
+import { STARTER_OPS } from '../src/mcp/surface.ts';
+import { getSkillDetail } from '../src/core/skill-catalog.ts';
+import type { OperationContext } from '../src/core/operations.ts';
+
+const REPO_ROOT = resolve(import.meta.dir, '..');
+const cleanups: string[] = [];
+afterEach(() => {
+  for (const d of cleanups.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+function tmp(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  cleanups.push(dir);
+  return dir;
+}
+
+const SKILL_MD = (name: string) =>
+  `---\nname: ${name}\ndescription: fixture skill ${name}\ntriggers:\n  - ${name} things\n---\n# ${name}\n\nBody of ${name}. See ../conventions/style.md.\n`;
+
+/** Synthetic gbrain root: lane = ({alpha, gamma} ∖ {gamma}) ∪ {beta}. */
+function fixtureRoot(): string {
+  const root = tmp('gb-bridge-root-');
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src', 'cli.ts'), '// stub (findGbrainRoot pairs this with openclaw.plugin.json)');
+  writeFileSync(
+    join(root, 'openclaw.plugin.json'),
+    JSON.stringify({
+      name: 'fixture',
+      version: '0.0.0.0',
+      skills: ['skills/alpha', 'skills/gamma'],
+      shared_deps: ['skills/conventions', 'skills/_rules.md'],
+    }),
+  );
+  for (const slug of ['alpha', 'beta', 'gamma']) {
+    mkdirSync(join(root, 'skills', slug), { recursive: true });
+    writeFileSync(join(root, 'skills', slug, 'SKILL.md'), SKILL_MD(slug));
+  }
+  writeFileSync(join(root, 'skills', 'alpha', 'aux.md'), 'aux content for alpha\n');
+  mkdirSync(join(root, 'skills', 'nofm'), { recursive: true });
+  writeFileSync(join(root, 'skills', 'nofm', 'SKILL.md'), '# no frontmatter here\n');
+  mkdirSync(join(root, 'skills', 'conventions'), { recursive: true });
+  writeFileSync(join(root, 'skills', 'conventions', 'style.md'), 'convention content\n');
+  writeFileSync(join(root, 'skills', '_rules.md'), 'shared rules\n');
+  writeFileSync(
+    join(root, 'skills', 'manifest.json'),
+    JSON.stringify({
+      skills: ['alpha', 'beta', 'gamma', 'nofm'].map(name => ({ name, path: `${name}/SKILL.md`, description: 'fixture' })),
+    }),
+  );
+  writeFileSync(
+    join(root, 'skills', 'plugin-lanes.json'),
+    JSON.stringify({
+      starter_policy: 'fixture',
+      additions: { beta: 'a fixture reason long enough to pass' },
+      base_exclusions: { gamma: 'a fixture exclusion reason long enough' },
+      not_added: {},
+      starter_gaps: {},
+    }),
+  );
+  return root;
+}
+
+const APPLY = (dest: string, statePath: string, overrides: Record<string, unknown> = {}) => ({
+  harness: 'claude-code',
+  scope: 'user' as const,
+  persona: 'tester',
+  gbrainVersion: '0.0.0-test',
+  statePath,
+  nowIso: '2026-08-16T00:00:00Z',
+  ...overrides,
+});
+
+describe('plan', () => {
+  test('manifest universe: a lane addition absent from openclaw#skills enumerates fine', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const plan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha', 'beta'], mode: 'full' });
+    const rels = plan.items.map(i => i.relTarget).sort();
+    expect(rels).toEqual(['_rules.md', 'alpha/SKILL.md', 'alpha/aux.md', 'beta/SKILL.md', 'conventions/style.md']);
+    expect(plan.modeConflicts).toEqual([]);
+  });
+
+  test('unknown slug fails naming skills/manifest.json', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    expect(() => planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['zzz'], mode: 'full' })).toThrow(
+      /skills\/manifest\.json/,
+    );
+  });
+
+  test('frontmatter fail-loud BEFORE any write (the codex session-brick guard)', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    try {
+      planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha', 'nofm'], mode: 'full' });
+      expect.unreachable();
+    } catch (err) {
+      expect(err).toBeInstanceOf(BridgeError);
+      expect((err as BridgeError).code).toBe('frontmatter_missing');
+      expect((err as Error).message).toContain('nofm');
+    }
+    expect(readdirSync(dest)).toEqual([]); // nothing written
+  });
+});
+
+describe('apply', () => {
+  test('full install → idempotent re-run → local edit preserved', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    const plan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha', 'beta'], mode: 'full' });
+    const r1 = applyHarnessBridge(plan, APPLY(dest, statePath));
+    expect(r1.summary.wroteNew).toBe(5);
+    expect(r1.summary.skippedExisting).toBe(0);
+
+    // Local edit, then re-run: never clobbered, counted as skipped.
+    const edited = join(dest, 'alpha', 'SKILL.md');
+    writeFileSync(edited, readFileSync(edited, 'utf-8') + '\nLOCAL EDIT\n');
+    const plan2 = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha', 'beta'], mode: 'full' });
+    const r2 = applyHarnessBridge(plan2, APPLY(dest, statePath));
+    expect(r2.summary.wroteNew).toBe(0);
+    expect(r2.summary.skippedExisting).toBe(5);
+    expect(readFileSync(edited, 'utf-8')).toContain('LOCAL EDIT');
+  });
+
+  test('dry-run writes nothing and records no state', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    const plan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'full' });
+    const r = applyHarnessBridge(plan, APPLY(dest, statePath, { dryRun: true }));
+    expect(r.summary.wroteNew).toBeGreaterThan(0);
+    expect(readdirSync(dest)).toEqual([]);
+    expect(existsSync(statePath)).toBe(false);
+  });
+
+  test('written-only ownership: a pre-existing user file is never recorded [CX7]', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    mkdirSync(join(dest, 'alpha'), { recursive: true });
+    writeFileSync(join(dest, 'alpha', 'SKILL.md'), SKILL_MD('alpha') + 'USER OWNED\n');
+    const plan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'full' });
+    applyHarnessBridge(plan, APPLY(dest, statePath));
+    const entry = findBridgeEntry(loadBridgeState({ statePath }), { harness: 'claude-code', dest })!;
+    expect(entry.written.alpha.files['alpha/SKILL.md']).toBeUndefined(); // skipped_existing ≠ owned
+    expect(entry.written.alpha.files['alpha/aux.md']).toBeDefined(); // the file we DID write
+  });
+
+  test('install-time sha256 is the hash of what landed [OV3]', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    const plan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['beta'], mode: 'full' });
+    applyHarnessBridge(plan, APPLY(dest, statePath));
+    const entry = findBridgeEntry(loadBridgeState({ statePath }), { harness: 'claude-code', dest })!;
+    const onDisk = readFileSync(join(dest, 'beta', 'SKILL.md'));
+    expect(entry.written.beta.files['beta/SKILL.md']).toBe(sha256Hex(onDisk));
+  });
+});
+
+describe('stub mode', () => {
+  test('marker + verbatim frontmatter + shared-dep closure shipped + aux skipped [CX4]', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    const plan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'stub' });
+    expect(plan.auxSkippedForStub).toBe(1); // alpha/aux.md
+    applyHarnessBridge(plan, APPLY(dest, statePath));
+
+    const stub = readFileSync(join(dest, 'alpha', 'SKILL.md'), 'utf-8');
+    expect(stub).toContain(STUB_MARKER);
+    expect(stub.startsWith('---\nname: alpha\n')).toBe(true); // frontmatter verbatim
+    expect(stub).toContain('get_skill');
+    expect(stub).toContain('gbrain skill alpha'); // CLI fallback (a real generated command)
+    expect(stub).not.toContain('Body of alpha'); // cold invariant: no source body
+    // Shared deps ship even in stub mode — 32 real skills reference them.
+    expect(existsSync(join(dest, 'conventions', 'style.md'))).toBe(true);
+    expect(existsSync(join(dest, '_rules.md'))).toBe(true);
+    expect(existsSync(join(dest, 'alpha', 'aux.md'))).toBe(false);
+  });
+
+  test('mode conflict judged from the FILE marker, both directions [CX8/CEO-F5]', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    // full install, then a stub plan → conflict.
+    applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'full' }), APPLY(dest, statePath));
+    const stubPlan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'stub' });
+    expect(stubPlan.modeConflicts).toEqual(['alpha']);
+    // stub install elsewhere, then a full plan → conflict (state absent —
+    // the marker alone is ground truth).
+    const dest2 = tmp('gb-bridge-dest2-');
+    applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest2, slugs: ['beta'], mode: 'stub' }), APPLY(dest2, statePath));
+    const fullPlan = planHarnessBridge({ gbrainRoot: root, destDir: dest2, slugs: ['beta'], mode: 'full' });
+    expect(fullPlan.modeConflicts).toEqual(['beta']);
+    // Conflicted files are skipped_existing on apply, never converted.
+    const r = applyHarnessBridge(fullPlan, APPLY(dest2, statePath));
+    expect(readFileSync(join(dest2, 'beta', 'SKILL.md'), 'utf-8')).toContain(STUB_MARKER);
+    expect(r.summary.modeConflicts).toEqual(['beta']);
+  });
+
+  test('renderSkillStub refuses a frontmatterless source', () => {
+    expect(() => renderSkillStub('# no fm\n', 'x')).toThrow(BridgeError);
+  });
+});
+
+describe('confinement', () => {
+  test('logical traversal out of dest is rejected', () => {
+    const dest = tmp('gb-bridge-dest-');
+    expect(() => assertTargetsConfined(dest, [join(dest, '..', 'escape.md')])).toThrow(BridgeError);
+  });
+
+  test('a symlinked parent pointing outside dest is rejected', () => {
+    const dest = tmp('gb-bridge-dest-');
+    const outside = tmp('gb-bridge-outside-');
+    symlinkSync(outside, join(dest, 'link'));
+    try {
+      assertTargetsConfined(dest, [join(dest, 'link', 'f.md')]);
+      expect.unreachable();
+    } catch (err) {
+      expect((err as BridgeError).code).toBe('target_escape');
+    }
+  });
+
+  test('a symlink AS the dest is refused', () => {
+    const real = tmp('gb-bridge-real-');
+    const holder = tmp('gb-bridge-holder-');
+    const link = join(holder, 'dest-link');
+    symlinkSync(real, link);
+    expect(() => assertDestNotSymlink(link)).toThrow(BridgeError);
+    expect(() => assertDestNotSymlink(real)).not.toThrow();
+  });
+});
+
+describe('remove', () => {
+  test('removes ledger-owned files only; user files and shared deps survive', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    // Pre-existing user file inside a slug dir the bridge also writes to.
+    mkdirSync(join(dest, 'alpha'), { recursive: true });
+    writeFileSync(join(dest, 'alpha', 'user-note.md'), 'mine\n');
+    applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha', 'beta'], mode: 'full' }), APPLY(dest, statePath));
+
+    const r = removeHarnessBridge({
+      harness: 'claude-code',
+      destDir: dest,
+      slugs: ['alpha', 'ghost'],
+      statePath,
+      nowIso: '2026-08-16T00:00:00Z',
+    });
+    expect(r.notOwned).toEqual(['ghost']);
+    expect(existsSync(join(dest, 'alpha', 'SKILL.md'))).toBe(false);
+    expect(existsSync(join(dest, 'alpha', 'aux.md'))).toBe(false);
+    expect(existsSync(join(dest, 'alpha', 'user-note.md'))).toBe(true); // never ours
+    expect(existsSync(join(dest, 'beta', 'SKILL.md'))).toBe(true); // not requested
+    expect(existsSync(join(dest, 'conventions', 'style.md'))).toBe(true); // shared, unowned by slugs
+    const entry = findBridgeEntry(loadBridgeState({ statePath }), { harness: 'claude-code', dest })!;
+    expect(Object.keys(entry.written)).toEqual(['beta']);
+  });
+});
+
+describe('surface + servability contracts', () => {
+  test('get_skill is NOT in STARTER_OPS (the stub preflight warning premise) — if this ever flips, update the harness CLI warn text', () => {
+    expect(STARTER_OPS.has('get_skill')).toBe(false);
+    expect(STARTER_OPS.has('list_skills')).toBe(false);
+    expect(STARTER_OPS.has('request_tools')).toBe(true);
+  });
+
+  test('verifySlugsServable names exactly the unservable slugs', () => {
+    const root = fixtureRoot();
+    expect(verifySlugsServable(join(root, 'skills'), ['alpha', 'zzz'])).toEqual(['zzz']);
+  });
+
+  test('invoke leg: getSkillDetail serves the FULL body for a stub-installed name', () => {
+    // Install a stub of the real repo's `query` skill, then ask the catalog
+    // (what the MCP get_skill op serves) for the same name: the full body
+    // comes back — install → discover → cold-invoke, complete.
+    const dest = tmp('gb-bridge-invoke-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    const plan = planHarnessBridge({ gbrainRoot: REPO_ROOT, destDir: dest, slugs: ['query'], mode: 'stub' });
+    applyHarnessBridge(plan, APPLY(dest, statePath));
+    expect(readFileSync(join(dest, 'query', 'SKILL.md'), 'utf-8')).toContain(STUB_MARKER);
+
+    const detail = getSkillDetail({ remote: false } as unknown as OperationContext, join(REPO_ROOT, 'skills'), 'query');
+    expect(detail.name).toBe('query');
+    expect(detail.body).not.toContain(STUB_MARKER);
+    expect(detail.body.length).toBeGreaterThan(500);
+  });
+});
+
+describe('bridgeTargetPath', () => {
+  test('strips the skills/ prefix without dirname arithmetic', () => {
+    expect(bridgeTargetPath('/x/dest', 'skills/alpha/SKILL.md')).toBe(resolve('/x/dest/alpha/SKILL.md'));
+    expect(bridgeTargetPath('/x/dest', 'skills/_rules.md')).toBe(resolve('/x/dest/_rules.md'));
+  });
+});
