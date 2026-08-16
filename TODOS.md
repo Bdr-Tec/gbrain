@@ -27,6 +27,16 @@
 - [ ] **P3 — Re-eval community #717 (graph-hop wikilink rerank, claimed +2.6/+2.8
   P@5/R@5) against the post-v0.46.8 ranker** — the concept intent + dedup scope fix
   may have absorbed part of its headroom.
+- [ ] **P2 — #1663 remainder (issue REOPENED at ship): query-shape routing,
+  structural exact-lookup tier, CRAG confidence escalation.** The issue was closed
+  with these three unbuilt; the wave shipped the adjacent pieces (concept intent,
+  autocut weak-top floor, evidence-on-cosine) but deliberately deferred these.
+- [ ] **P3 — Positive underfill-event coverage for searchVector escalation.** The
+  two NEGATIVE paths are pinned (no event on genuine short corpus / offset past
+  end); the positive fire-at-cap assertion needs a >1000-chunk fixture that pushes
+  `innerLimit` to `HNSW_EF_SEARCH_MAX` with the pre-DISTINCT pull full. Pair with
+  a >400-chunk second-escalation engine-parity case (both current fixtures stop at
+  one escalation). From the ship coverage audit (C5/T7 partials).
 - [ ] **P1 — Cat 13 conceptual recall: the concept tilt is NOT enough; the fusion
   itself is the suspect.** Pre-merge receipt (v0.46.8, voyage-4/1024 space, 500
   seeded probes, all adapters on the SAME gateway): bare vector 49.5 nDCG@5,
