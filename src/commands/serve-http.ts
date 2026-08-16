@@ -57,6 +57,7 @@ import { VERSION } from '../version.ts';
 import * as db from '../core/db.ts';
 import { sqlQueryForEngine, executeRawJsonb } from '../core/sql-query.ts';
 import { MinionQueue } from '../core/minions/queue.ts';
+import { registerScopedClient } from './auth.ts';
 import { isRetryableError } from '../core/retry-matcher.ts';
 import {
   computeContentHash,
@@ -1795,14 +1796,46 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         });
         return;
       }
-      const result = await oauthProvider.registerClientManual(
-        name, grants, scopeString, uris, sourceId, federatedReadIds, validatedAuthMethod,
-      );
-      // Set per-client TTL if specified
-      if (tokenTtl && Number(tokenTtl) > 0) {
-        await sql`UPDATE oauth_clients SET token_ttl = ${Number(tokenTtl)} WHERE client_id = ${result.clientId}`;
+      // cathedral-6: a WELL-FORMED but nonexistent source used to surface as
+      // a 500 (the source_id FK fires inside the INSERT). Check existence up
+      // front for a structured 400 — same contract as the malformed case.
+      {
+        const idsToCheck = [...new Set([sourceId, ...(federatedReadIds ?? [])])];
+        for (const id of idsToCheck) {
+          const found = await sql`SELECT id FROM sources WHERE id = ${id}`;
+          if (found.length === 0) {
+            res.status(400).json({
+              error: 'unknown_source',
+              message: `source "${id}" does not exist — create it first (gbrain sources add ${id})`,
+            });
+            return;
+          }
+        }
       }
-      res.json({ ...result, tokenTtl: tokenTtl ? Number(tokenTtl) : null });
+      // Compose the SAME core the CLI uses (registerScopedClient) instead of
+      // open-coding registerClientManual + a raw TTL UPDATE — the two paths
+      // had already drifted once (this route hardcoded 'default' pre-v0.41).
+      const ttlNum = tokenTtl && Number(tokenTtl) > 0 ? Number(tokenTtl) : undefined;
+      const registered = await registerScopedClient(sql, engine, name, {
+        grantTypes: grants,
+        scopes: scopeString,
+        sourceId,
+        federatedRead: federatedReadIds,
+        redirectUris: uris,
+        tokenEndpointAuthMethod: validatedAuthMethod,
+        boundTools: undefined,
+        boundSourceId: undefined,
+        boundBrainId: undefined,
+        boundSlugPrefixes: undefined,
+        boundMaxConcurrent: undefined,
+        budgetUsdPerDay: undefined,
+        tokenTtlSeconds: undefined,
+      }, { tokenTtlSeconds: ttlNum });
+      res.json({
+        clientId: registered.clientId,
+        ...(registered.clientSecret !== undefined ? { clientSecret: registered.clientSecret } : {}),
+        tokenTtl: registered.tokenTtl ?? null,
+      });
     } catch (e) {
       res.status(500).json({ error: e instanceof Error ? e.message : 'Registration failed' });
     }
