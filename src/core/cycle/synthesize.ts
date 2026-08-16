@@ -821,7 +821,15 @@ export async function runPhaseSynthesize(
       }
     }
 
+    // Admission-quota latch: once a submit is rejected, every later transcript
+    // this run would be rejected too — record one skip per remaining file
+    // without hammering the queue.
+    let quotaHit = false;
     for (const t of worthProcessing) {
+      if (quotaHit) {
+        skipReports.push({ filePath: t.filePath, reason: 'admission_quota: submission stopped this run' });
+        continue;
+      }
       const hash16 = t.contentHash.slice(0, 16);
       const hash6 = t.contentHash.slice(0, 6);
 
@@ -940,12 +948,26 @@ export async function runPhaseSynthesize(
           timeout_ms: config.subagentTimeoutMs,
           queue: childQueueName,
         };
-        let child = await queue.add(
-          'subagent',
-          childData as unknown as Record<string, unknown>,
-          submitOpts,
-          { allowProtectedSubmit: true },
-        );
+        let child: Awaited<ReturnType<typeof queue.add>>;
+        try {
+          child = await queue.add(
+            'subagent',
+            childData as unknown as Record<string, unknown>,
+            submitOpts,
+            { allowProtectedSubmit: true },
+          );
+        } catch (e) {
+          // Admission quota (minions.quota_max_waiting.subagent, config-only):
+          // a rejected submit is a recorded phase skip, never a phase crash —
+          // same posture as daily_cap_reached. The quota won't clear mid-run,
+          // so stop submitting for this run entirely.
+          if (e instanceof Error && e.name === 'QueueQuotaExceededError') {
+            skipReports.push({ filePath: t.filePath, reason: `admission_quota: ${e.message}` });
+            quotaHit = true;
+            break;
+          }
+          throw e;
+        }
         // Self-heal (#4152 C1): an idempotency-coalesced row still `waiting`
         // in a FOREIGN dream-inline-* queue was stranded by a previously
         // killed/timed-out run — no worker will ever claim it, and waiting on

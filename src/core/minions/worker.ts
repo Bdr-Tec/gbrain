@@ -191,6 +191,10 @@ export class MinionWorker extends EventEmitter {
   private pausedByMarkerAnnounced = false;
   private inFlight = new Map<number, InFlightJob>();
   private workerId = randomUUID();
+  /** Warn-before-act gate for the waiting-TTL sweep (true once the one-time
+   *  notice printed + minions.ttl_notice_shown persisted). Cached so the
+   *  maintenance tick doesn't re-read config forever. */
+  private ttlNoticeShown: boolean | null = null;
 
   /** Fires only on worker process SIGTERM/SIGINT. Handlers that need to run
    *  shutdown-specific cleanup (e.g. shell handler's SIGTERM→SIGKILL sequence on
@@ -437,6 +441,53 @@ export class MinionWorker extends EventEmitter {
       } catch (e) {
         console.error('Wall-clock timeout detection error:', e instanceof Error ? e.message : String(e));
         await recoverConnection('handleWallClockTimeouts', e);
+      }
+      // 4th sweep: waiting-TTL (admission control). Warn-before-act (user
+      // requirement D1A): the FIRST tick that would sweep instead counts the
+      // affected jobs, prints the notice, and sets minions.ttl_notice_shown —
+      // sweeping starts on the NEXT tick. This gate lives worker-side because
+      // the worker restarts via self-upgrade/systemd without ever running the
+      // CLI's runPostUpgrade banner; the notice must precede the cancellation
+      // on EVERY channel, and the worker log is the daemon channel.
+      try {
+        const { admissionKilled } = await import('./admission.ts');
+        if (!admissionKilled()) {
+          if (this.ttlNoticeShown !== true) {
+            const flag = await this.engine.getConfig('minions.ttl_notice_shown');
+            this.ttlNoticeShown = flag === 'true';
+          }
+          if (this.ttlNoticeShown) {
+            const { cancelled, by_name } = await this.queue.handleWaitingTTL();
+            if (cancelled > 0) {
+              const breakdown = Object.entries(by_name).map(([n, c]) => `${n}: ${c}`).join(', ');
+              console.log(
+                `Waiting-TTL: cancelled ${cancelled} job(s) that waited past their TTL (${breakdown}). ` +
+                `Tune: gbrain config set minions.ttl_waiting_hours.<name> <hours|0>. See 'gbrain jobs stats'.`,
+              );
+            }
+          } else {
+            const { resolveTtlNames } = await import('./admission.ts');
+            const ttlNames = await resolveTtlNames(this.engine);
+            let affected = 0;
+            for (const [name, hours] of ttlNames) {
+              const rows = await this.engine.executeRaw<{ count: string }>(
+                `SELECT count(*)::text AS count FROM minion_jobs
+                  WHERE name = $1 AND status = 'waiting' AND created_at < now() - ($2 * interval '1 hour')`,
+                [name, hours],
+              );
+              affected += parseInt(rows[0]?.count ?? '0', 10);
+            }
+            console.log(
+              `⚠ Waiting-TTL is now active: ${affected} queued job(s) currently exceed their TTL and will be ` +
+              `cancelled starting NEXT maintenance tick. Tune: gbrain config set minions.ttl_waiting_hours.<name> <hours|0>.`,
+            );
+            await this.engine.setConfig('minions.ttl_notice_shown', 'true');
+            this.ttlNoticeShown = true;
+          }
+        }
+      } catch (e) {
+        console.error('Waiting-TTL sweep error:', e instanceof Error ? e.message : String(e));
+        await recoverConnection('handleWaitingTTL', e);
       }
     }, this.opts.stalledInterval);
 
