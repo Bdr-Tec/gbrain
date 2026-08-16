@@ -1,5 +1,5 @@
 /**
- * BrainBench Claude Code adapter — seam: 'production' (v0.46.12, TODOS:556 P1).
+ * BrainBench Claude Code adapter — seam: 'production' (v0.46.15, TODOS:556 P1).
  *
  * Drives the REAL shipped integration end-to-end: the fixture turn becomes
  * `UserPromptSubmit` hook stdin JSON, `runHook(['user-prompt'], io)` executes

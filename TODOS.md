@@ -1,8 +1,8 @@
 # TODOS
 
-## v0.46.12.0 identity/retrieval wave follow-ups (filed at ship; decisions recorded at CEO review + outside voice)
+## v0.46.15.0 identity/retrieval wave follow-ups (filed at ship; decisions recorded at CEO review + outside voice)
 
-- [ ] **P2 — Codex adapter full production flip.** v0.46.12 integrated the REAL rollout
+- [ ] **P2 — Codex adapter full production flip.** v0.46.15 integrated the REAL rollout
   parser (`src/core/transcripts/codex.ts`) for turn selection, but fragment DELIVERY
   remains a harness-shaped contract (no shipped codex injection path exists yet). When
   one lands, flip the seam like the claude-code row (run-scoped infra via
@@ -19,7 +19,7 @@
   default flip, and include a per-model floor table, not one global number.
 - [ ] **P2 — Cat 3 undocumented-alias enrichment.** The gbrain-evals Cat 3 runner's
   undocumented class (initials, nicknames, typos) needs alias-TABLE growth
-  (enrichment writes page_aliases), not resolver changes — the v0.46.12 alias_exact
+  (enrichment writes page_aliases), not resolver changes — the v0.46.15 alias_exact
   arm only helps documented aliases. Pair with the evals-repo runner repair
   (seed page_aliases + route through resolveEntitySlug). Context: outside-voice F1.
 - [ ] **P3 — Lowercase bigram alias candidates.** v2 of the weak-candidate pass
@@ -30,7 +30,7 @@
   if reflex latency telemetry creeps on 10K+-page brains, build the token table
   and swap the arm to an indexed lookup.
 - [ ] **P3 — Re-eval community #717 (graph-hop wikilink rerank, claimed +2.6/+2.8
-  P@5/R@5) against the post-v0.46.12 ranker** — the concept intent + dedup scope fix
+  P@5/R@5) against the post-v0.46.15 ranker** — the concept intent + dedup scope fix
   may have absorbed part of its headroom.
 - [ ] **P2 — #1663 remainder (issue REOPENED at ship): query-shape routing,
   structural exact-lookup tier, CRAG confidence escalation.** The issue was closed
@@ -60,7 +60,7 @@
   deadline across the loop's attempts (ship-review F8). The loop only fires on
   dense-wall shapes, and per-op timeouts bound the blast radius — hence P3.
 - [ ] **P1 — Cat 13 conceptual recall: the concept tilt is NOT enough; the fusion
-  itself is the suspect.** Pre-merge receipt (v0.46.12, voyage-4/1024 space, 500
+  itself is the suspect.** Pre-merge receipt (v0.46.15, voyage-4/1024 space, 500
   seeded probes, all adapters on the SAME gateway): bare vector 49.5 nDCG@5,
   grep-only 46.2, vector+grep RRF fusion 40.5, gbrain hybrid 35.6 — and a master
   A/B at the merge-base scored gbrain BYTE-IDENTICAL (35.6, every template), so the
@@ -78,10 +78,10 @@
   49.1 OpenAI-space numbers cannot be reproduced keylessly; the voyage-space gap
   is WIDER — stronger embedders make hybrid's keyword noise relatively costlier.
 
-## LongMemEval temporal gap — date-proximity signal SPIKE-REJECTED (filed v0.46.12.0, identity/retrieval wave)
+## LongMemEval temporal gap — date-proximity signal SPIKE-REJECTED (filed v0.46.15.0, identity/retrieval wave)
 
 - **P2 — Reframe the temporal-reasoning gap (94.7% vs MemPal 96.2%, the only categorical
-  public-benchmark loss) around what the questions actually are.** The v0.46.12 wave
+  public-benchmark loss) around what the questions actually are.** The v0.46.15 wave
   pre-registered a spike gate before building a date-proximity ranking term
   (`COALESCE(effective_date, updated_at)` proximity to query-text-extracted since/until
   bounds, per the outside-voice-amended plan). The spike FIRED the stop condition:
@@ -95,7 +95,7 @@
   Next honest hypotheses, in order: (a) measure per-question retrieval recall on the
   temporal slice to locate WHERE the 1.5pt is lost (retrieval vs trajectory coverage
   vs answer extraction); (b) if retrieval: event-phrase recall (the event descriptions
-  are long noun phrases — expansion/paraphrase territory, adjacent to the v0.46.12
+  are long noun phrases — expansion/paraphrase territory, adjacent to the v0.46.15
   concept lane); (c) if trajectory: widen `extractCandidateEntities` coverage on
   event-shaped (non-person) anchors. Do NOT rebuild the date-proximity boost without
   new evidence — this entry is the receipt for why it doesn't exist.
@@ -886,7 +886,7 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
 
 - [ ] **`--live` agent-in-the-loop know-to-ask.** Replay fixtures with a real model deciding whether to issue retrieval calls; grade the agent, not just the deterministic reflex. Pre-registered in `docs/eval/BRAINBENCH.md` (the v1 metric grades the injection decision, which IS the shipped mechanism). Needs: seeded N-repeat methodology for model stochasticity + budget rails. Priority: P2.
 - [ ] **Intrusion-budget gating calibration.** `avg_injected_tokens` is reported, non-gating (decision 18) — a wrong threshold is worse than none. After a few weeks of scoreboard data across PRs, pick calibrated per-seam thresholds and promote it to a gated metric. Priority: P2.
-- [x] **Flip contract adapters to production — claude-code half DONE (v0.46.12 identity/retrieval wave).** `adapters/claude-code.ts` now drives the real `gbrain hook user-prompt` path (synthesized Claude Code JSONL transcripts, run-scoped resolve-IPC server with `turn_context` handler, `HookIo` seams) and the scoreboard row is `seam: 'production'`, banked with justification in the same commit. The codex half (real DELIVERY path, not just the parser) is re-filed as the P2 "Codex adapter full production flip" entry in the v0.46.12.0 wave section at the top of this file.
+- [x] **Flip contract adapters to production — claude-code half DONE (v0.46.15 identity/retrieval wave).** `adapters/claude-code.ts` now drives the real `gbrain hook user-prompt` path (synthesized Claude Code JSONL transcripts, run-scoped resolve-IPC server with `turn_context` handler, `HookIo` seams) and the scoreboard row is `seam: 'production'`, banked with justification in the same commit. The codex half (real DELIVERY path, not just the parser) is re-filed as the P2 "Codex adapter full production flip" entry in the v0.46.15.0 wave section at the top of this file.
 - [ ] **Cathedral 1 conformance-kit fixture import.** The memory-verbs conformance scenarios convert to BrainBench fixtures via the published `evals/brainbench/schema/fixture.schema.json` once `garrytan/cathedral-1` merges ("conformance tests double as BrainBench seed fixtures", decision log 2026-06-12). Free corpus growth from already-reviewed scenarios. Blocked by: cathedral-1 on master. Priority: P2.
 - [ ] **Live-embeddings fidelity mode (`--embeddings`).** Hermetic CI grades the keyword/alias arms only (disclosed); an opt-in mode seeding real embeddings would grade write-back/continuity retrieval through the vector path. Same budget rails as `--llm`. Priority: P3.
 - [ ] **Community fixture intake + competitor adapters.** The TD1 remainder after the generated corpus absorbed in-PR growth: an `external-authors/`-style intake path for contributed fixtures (validator + privacy guard already gate them) and adapters for non-gbrain memory systems against the published schemas, enabling true head-to-head rows in the gbrain-evals scorecard. Priority: P3.
@@ -1526,7 +1526,7 @@ is deterministic + precision-biased. See plan + GSTACK REVIEW REPORT at
   pronoun follow-ups whose antecedent was NAMED in the rolling window; true pronoun
   coreference for never-named antecedents remains with the LLM-pass idea.)*
 - [x] **P3 — recall knob: optional fuzzy/prefix-expansion resolution.** RESOLVED
-  differently by the v0.46.12 identity wave, with a receipt: trigram fuzzy in the
+  differently by the v0.46.15 identity wave, with a receipt: trigram fuzzy in the
   reflex is deliberately REJECTED — the BrainBench adversarial near-miss class
   (`"<Name>er"` for a real `<Name>` page) is gold-silent and any usable trigram
   threshold would false-fire on it. The recall gap the fuzzy arm targeted was
@@ -3163,7 +3163,7 @@ The original 3 items as filed (kept for traceability):
   hardenings list. Effort: human ~3 days / CC ~3 hours.
 
 - [x] **P0 — Wire nightly quality probe into autopilot scheduler.** DONE —
-  and this entry was STALE when the v0.46.12 wave audited it: autopilot's
+  and this entry was STALE when the v0.46.15 wave audited it: autopilot's
   tick body already invokes `runNightlyQualityProbe` behind the
   `autopilot.nightly_quality_probe.enabled` gate
   (`src/commands/autopilot.ts:1361-1386`, pinned by
@@ -3599,7 +3599,7 @@ contributor traps.
   /plan-eng-review (see `~/.claude/plans/system-instruction-you-are-working-whimsical-acorn.md`).
 
 - [x] **v0.41+: Wire the nightly quality probe into autopilot scheduling.**
-  DONE (stale entry swept by the v0.46.12 wave): autopilot's tick body
+  DONE (stale entry swept by the v0.46.15 wave): autopilot's tick body
   invokes `runNightlyQualityProbe` behind the
   `autopilot.nightly_quality_probe.enabled` gate
   (`src/commands/autopilot.ts:1361-1386`, pinned by

@@ -57,7 +57,7 @@ export async function resolveEntitySlug(
     if (exact) return exact;
   }
 
-  // 1.5. Alias-exact (v0.46.12 identity wave, #3730): an unambiguous
+  // 1.5. Alias-exact (v0.46.15 identity wave, #3730): an unambiguous
   //      page_aliases hit resolves BEFORE prefix expansion / fuzzy — the
   //      alias table is curated ground truth ("saoirse" → people/saoirse-x)
   //      while fuzzy is a guess. Live-page verified (page_aliases has no FK).
@@ -102,7 +102,7 @@ function fallbackSlugify(trimmed: string): string {
 }
 
 /**
- * Alias-exact arm (v0.46.12, #3730): unambiguous single-slug page_aliases hit,
+ * Alias-exact arm (v0.46.15, #3730): unambiguous single-slug page_aliases hit,
  * verified against LIVE pages — page_aliases has no FK to pages, so stale
  * alias rows for deleted/renamed pages linger (outside-voice R2-8).
  * Liveness is filtered BEFORE uniqueness (codex ship-review): a stale sibling

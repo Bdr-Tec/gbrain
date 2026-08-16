@@ -38,7 +38,7 @@ export type Evidence =
 export type CreateSafety = 'exists' | 'probable' | 'unknown';
 
 /**
- * Legacy pre-v0.46.12 floor — kept exported for back-compat, but
+ * Legacy pre-v0.46.15 floor — kept exported for back-compat, but
  * `high_vector_match` no longer keys off it: base_score is a blended
  * RRF/keyword/title/alias composite, NOT a cosine, so a generic
  * high-scoring page could read as a confident vector match (#3963,
@@ -48,7 +48,7 @@ export const HIGH_MATCH_FLOOR = 0.85;
 /** base_score at/above this is a solid (not weak) match. */
 export const SOLID_MATCH_FLOOR = 0.6;
 /**
- * v0.46.12 — `high_vector_match` fires ONLY on a real query↔chunk cosine at/
+ * v0.46.15 — `high_vector_match` fires ONLY on a real query↔chunk cosine at/
  * above this floor (SearchResult.cosine, hydrated from the active embedding
  * column). Config-overridable via `search.evidence_cosine_floor`; the default
  * is calibrated for the current default embedding columns — per-model

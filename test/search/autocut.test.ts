@@ -232,7 +232,7 @@ describe('resolveAutocut — precedence ladder', () => {
   });
 });
 
-describe('autocutFromConfig — search.autocut_min_top (v0.46.12)', () => {
+describe('autocutFromConfig — search.autocut_min_top (v0.46.15)', () => {
   test('parses valid [0,1] values (0 disables the weak-top floor)', () => {
     expect(autocutFromConfig({ search: { autocut_min_top: 0.5 } }).minTopScore).toBe(0.5);
     expect(autocutFromConfig({ search: { autocut_min_top: 0 } }).minTopScore).toBe(0);

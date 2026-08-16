@@ -39,7 +39,7 @@ export interface ResolveEntitiesOpts {
   maxPointers?: number;
   /** v0.43 (#2095): 'slug-only' under windowing — see ResolvePointersOpts. */
   suppression?: 'slug-and-title' | 'slug-only';
-  /** v0.46.12: lexical-arms kill switch — see ResolvePointersOpts.lexicalArms. */
+  /** v0.46.15: lexical-arms kill switch — see ResolvePointersOpts.lexicalArms. */
   lexicalArms?: boolean;
 }
 
@@ -109,7 +109,7 @@ export function reflexEnabled(cfg: GBrainConfig | null): boolean {
 }
 
 /**
- * v0.46.12 identity wave — kill switch for the lexical recall arms
+ * v0.46.15 identity wave — kill switch for the lexical recall arms
  * (weak-candidate alias arm + surname arm). Default ON; same env-direct
  * pattern as reflexEnabled/windowTurnCount so a config-less environment
  * still honors the escape hatch.

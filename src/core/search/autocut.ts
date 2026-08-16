@@ -34,7 +34,7 @@ export interface AutocutConfig {
   /** Failsafe: never return fewer than this when candidates exist (≥1). */
   minKeep: number;
   /**
-   * v0.46.12 (#1863) — weak-top floor. When the TOP rerank score is below this
+   * v0.46.15 (#1863) — weak-top floor. When the TOP rerank score is below this
    * absolute value, the whole list is low-confidence and gap normalization is
    * meaningless (a 0.317 top makes ordinary decay look like a confident
    * cliff → spurious 1-result collapse on rare cross-source queries). Below
@@ -177,7 +177,7 @@ export function applyAutocut<T>(
 
   const top = Math.max(...scores);
   if (!Number.isFinite(top) || top <= 0) return noOp(results);
-  // v0.46.12 (#1863): a weak top means the whole list is low-confidence — gap
+  // v0.46.15 (#1863): a weak top means the whole list is low-confidence — gap
   // normalization by a weak top manufactures spurious cliffs. Never collapse.
   if (top < cfg.minTopScore) return noOp(results);
 

@@ -2339,7 +2339,7 @@ export class PostgresEngine implements BrainEngine {
     // (Hoisted above innerLimit so the escalation cap can key off the
     // column's index eligibility.)
     const resolvedCol = normalizeEngineColumn(opts?.embeddingColumn);
-    // v0.46.12 (retrieval-cathedral P1): innerLimit counts CHUNKS before the
+    // v0.46.15 (retrieval-cathedral P1): innerLimit counts CHUNKS before the
     // best-per-page DISTINCT collapse — one dense page (150+ chunks near the
     // query) could consume the whole pool and underfill the PAGE result. The
     // execution below runs a bounded escalation loop (×4, ≤3 times) when the
@@ -2502,7 +2502,7 @@ export class PostgresEngine implements BrainEngine {
     // hnswEfSearchFor. Transaction-local (is_local=true); non-HNSW plans
     // (seq scan, or corpora without the index) ignore the GUC.
     //
-    // v0.46.12 bounded escalation (identical logic in pglite-engine —
+    // v0.46.15 bounded escalation (identical logic in pglite-engine —
     // engine-parity pinned): retry ×4 up to 3 times while the PAGE set is
     // short but the pre-collapse candidate pool was FULL. A short page with
     // a non-full pool is a genuine final page (corpus/filter exhausted) —

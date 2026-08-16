@@ -322,7 +322,7 @@ export function classifyQueryIntent(query: string): QueryIntent {
   if (matches(FULL_CONTEXT_PATTERNS, query)) return 'temporal';
   if (matches(TEMPORAL_PATTERNS, query)) return 'temporal';
   if (matches(EVENT_PATTERNS, query)) return 'event';
-  // v0.46.12 (Cat 13): concept BEFORE entity — definitional paraphrases
+  // v0.46.15 (Cat 13): concept BEFORE entity — definitional paraphrases
   // ("What is the ownership economy?") previously classified entity and got
   // the keyword tilt, making hybrid LOSE to its own vector arm on
   // paraphrase queries. Full-context/temporal/event keep their queries;
@@ -338,7 +338,7 @@ export function intentToDetail(intent: QueryIntent): 'low' | 'medium' | 'high' |
     case 'entity': return 'low';
     case 'temporal': return 'high';
     case 'event': return 'high';
-    // v0.46.12: concept queries keep the default detail — the vector-lean
+    // v0.46.15: concept queries keep the default detail — the vector-lean
     // weights (intent-weights.ts) are the mechanism, not source filtering.
     case 'concept': return undefined;
     case 'general': return undefined;
@@ -363,7 +363,7 @@ export function autoDetectDetail(query: string): 'low' | 'medium' | 'high' | und
 // `query` on these would fight their descriptions):
 //   - "who are the …"        → find_experts
 //   - bare "anything …"      → get_recent_salience / find_anomalies
-// v0.46.12 (Cat 13): the ONE shared concept cue bank — consumed by BOTH the
+// v0.46.15 (Cat 13): the ONE shared concept cue bank — consumed by BOTH the
 // intent classifier (ranking weights) and the CLI nudge below. Two drifting
 // concept definitions was the DRY failure the outside voice flagged (R2-11).
 //
@@ -377,7 +377,7 @@ export const CONCEPT_CUE_PATTERNS: RegExp[] = [
   /\bwhich\s+\w+[\w\s]*\b(do|does|are|have|use|work)\b/i,
 ];
 
-// Definitional-paraphrase cues (v0.46.12): the query asks what an IDEA means
+// Definitional-paraphrase cues (v0.46.15): the query asks what an IDEA means
 // — exactly where the vector arm wins and the keyword tilt hurt (Cat 13:
 // hybrid 47.0 nDCG@5 vs bare vector 49.1 on paraphrase probes).
 // DELIBERATELY DISJOINT from FULL_CONTEXT_PATTERNS ("everything about X",
@@ -415,7 +415,7 @@ const CONCEPT_ANTI_PATTERNS: RegExp[] = [
 ];
 
 /**
- * v1-conservative proper-noun anti-signal (v0.46.12): any capitalized token
+ * v1-conservative proper-noun anti-signal (v0.46.15): any capitalized token
  * that is NOT sentence-initial is treated as evidence the query names a
  * specific entity — the entity keyword tilt is correct there, not the
  * concept vector lean. Sentence-initial capitalization alone never blocks.
@@ -434,7 +434,7 @@ function hasMidSentenceCapital(q: string): boolean {
 }
 
 /**
- * v0.46.12 — concept-shape detection for the INTENT classifier. A query is
+ * v0.46.15 — concept-shape detection for the INTENT classifier. A query is
  * concept-shaped when it carries a landscape/quantifier OR definitional-
  * paraphrase cue, and NO exact-identifier or proper-noun anti-signal.
  * Precision-biased: quoted phrases, slugs, mid-sentence capitalized tokens,

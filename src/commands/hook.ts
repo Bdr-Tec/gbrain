@@ -159,21 +159,21 @@ export interface HookIo {
   /** TEST SEAM: user-prompt deadline override (wall-clock flake control). */
   userPromptDeadlineMs?: number;
   /**
-   * TEST SEAM (v0.46.12, BrainBench production seam): config override for
+   * TEST SEAM (v0.46.15, BrainBench production seam): config override for
    * hookUserPrompt — `undefined` = load the real file-plane config;
    * `null`/object = use as-is. Lets the bench point the hook at a throwaway
    * brain WITHOUT mutating process-global GBRAIN_HOME (parallel-test safe).
    */
   configOverride?: GBrainConfig | null;
   /**
-   * TEST SEAM (v0.46.12): suppress the pending-push failure banner. The
+   * TEST SEAM (v0.46.15): suppress the pending-push failure banner. The
    * banner reads the OPERATOR's real push-status files — on a bench run
    * that's environmental contamination (a locally-failing push would inject
    * a banner on stay-silent turns and read as a false fire).
    */
   disablePushBanner?: boolean;
   /**
-   * TEST SEAM (v0.46.12, codex ship-review): suppress hook telemetry WRITES
+   * TEST SEAM (v0.46.15, codex ship-review): suppress hook telemetry WRITES
    * (heartbeat JSONL). Telemetry paths resolve from GBRAIN_HOME/homedir —
    * NOT from configOverride — so a hermetic bench replay would otherwise
    * append every fixture turn to the operator's real hook-health history.

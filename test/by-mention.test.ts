@@ -648,7 +648,7 @@ describe('buildGazetteer — engine integration', () => {
     expect(g.get('apple')![0]!.slug).toBe('companies/apple');
   });
 
-  test('alias entries (v0.46.12, #3801): page_aliases become gazetteer entries', async () => {
+  test('alias entries (v0.46.15, #3801): page_aliases become gazetteer entries', async () => {
     await engine.putPage('people/saoirse-x', {
       type: 'person', title: 'Saoirse Example', compiled_truth: 'b', timeline: '', frontmatter: {},
     });
@@ -659,7 +659,7 @@ describe('buildGazetteer — engine integration', () => {
     expect(bucket!.some((e) => e.slug === 'people/saoirse-x')).toBe(true);
   });
 
-  test('REGRESSION (v0.46.12): ignore-list rejects ALIAS entries case-insensitively; CK12 title behavior unchanged', async () => {
+  test('REGRESSION (v0.46.15): ignore-list rejects ALIAS entries case-insensitively; CK12 title behavior unchanged', async () => {
     // Title side (unchanged CK12 policy): a real page titled "Apple" stays.
     await engine.putPage('companies/apple', {
       type: 'company', title: 'Apple', compiled_truth: 'b', timeline: '', frontmatter: {},

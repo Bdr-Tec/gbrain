@@ -150,7 +150,7 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pgResults[0]?.slug).toBe(pgliteResults[0]?.slug);
   });
 
-  test('v0.46.12 searchVector escalation parity: a dense page cannot starve the page result on either engine', async () => {
+  test('v0.46.15 searchVector escalation parity: a dense page cannot starve the page result on either engine', async () => {
     // One page with 120 chunks nearest the query + 8 sparse pages behind it.
     // Pre-fix, the 100-chunk inner pool was consumed entirely by the dense
     // page → 1 result page. The bounded escalation loop (identical in both

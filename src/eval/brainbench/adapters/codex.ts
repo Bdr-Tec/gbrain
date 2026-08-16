@@ -63,7 +63,7 @@ export class CodexAdapter implements HarnessAdapter {
     this.sourceId = fixture.active_source;
     this.firstTurn = true;
     this.preamble = await this.buildPreamble();
-    // v0.46.12 (F5, parser integration): the fixture conversation round-trips
+    // v0.46.15 (F5, parser integration): the fixture conversation round-trips
     // through the REAL codex rollout format + the REAL shipped parser
     // (src/core/transcripts/codex.ts) for structural TURN SELECTION — a
     // parser drift that loses user turns now tanks the row visibly. The

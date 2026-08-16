@@ -4095,7 +4095,7 @@ Kill switch: `GBRAIN_HOOKS=0`. Install/uninstall: `docs/guides/bootstrap.md`.
 | `retrieval_reflex_window_turns` | 4 | turns the ambient reflex extracts from; 1 = legacy current-turn-only (file/env plane: `GBRAIN_RETRIEVAL_REFLEX_WINDOW_TURNS`) |
 | `retrieval_reflex` | true | the ambient channel's master switch |
 | `retrieval_reflex_max_pointers` | 3 | pointer cap per turn |
-| `retrieval_reflex_lexical_arms` | true | the lowercase-alias + surname recall arms (env: `GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS`); off = pre-v0.46.12 arm set |
+| `retrieval_reflex_lexical_arms` | true | the lowercase-alias + surname recall arms (env: `GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS`); off = pre-v0.46.15 arm set |
 
 Per-call knobs: `max_pages` + `min_confidence` on both the op and `gbrain watch`
 (`--max-pages` / `--min-confidence`, plus `--window-turns` / `--source` on watch);

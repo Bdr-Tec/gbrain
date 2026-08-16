@@ -43,7 +43,7 @@ describe('extractCandidates', () => {
   });
 
   test('drops weekday/common words seen only at sentence start', () => {
-    // Re-pinned for the v0.46.12 identity wave: STRONG extraction still drops
+    // Re-pinned for the v0.46.15 identity wave: STRONG extraction still drops
     // these; the lowercase pass may emit weak candidates ("ship", "busy"),
     // which are alias-arm-restricted and cannot fabricate pointers.
     expect(queries('Monday we ship. Today is busy.')).toEqual([]);
@@ -85,7 +85,7 @@ describe('extractCandidates', () => {
   });
 
   test('lowercase names are now detected as WEAK candidates (v1 limit lifted at extraction)', () => {
-    // Re-pinned for the v0.46.12 identity wave (was: "lowercase names are NOT
+    // Re-pinned for the v0.46.15 identity wave (was: "lowercase names are NOT
     // detected"). The lowercase pass emits weak, alias-arm-restricted
     // candidates; strong extraction stays capitalization-biased.
     expect(queries('what about garry tan')).toEqual([]);
@@ -130,7 +130,7 @@ describe('extractCandidates', () => {
   });
 });
 
-describe('extractCandidatesFromWindow — weak threading (v0.46.12)', () => {
+describe('extractCandidatesFromWindow — weak threading (v0.46.15)', () => {
   test('weak flag survives the window merge', () => {
     const out = extractCandidatesFromWindow([
       { role: 'user', text: 'remind me what saoirse said' },
@@ -164,7 +164,7 @@ describe('extractCandidatesFromWindow — weak threading (v0.46.12)', () => {
   });
 });
 
-describe('v0.46.12 ship-review F10 — rejected strong candidates do not shadow weak probes', () => {
+describe('v0.46.15 ship-review F10 — rejected strong candidates do not shadow weak probes', () => {
   test('a name pushed past MAX_CANDIDATES still gets its lowercase weak probe', () => {
     // 12 strong names consume the strong cap; the 13th name appears ONLY
     // beyond the cap plus once lowercase. strongNorms built from the raw

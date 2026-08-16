@@ -325,7 +325,7 @@ describe('resolveEntitySlugWithSource — back-compat with resolveEntitySlug', (
   });
 });
 
-describe('alias_exact branch (v0.46.12 identity wave, #3730)', () => {
+describe('alias_exact branch (v0.46.15 identity wave, #3730)', () => {
   it('an unambiguous registered alias resolves before prefix expansion / fuzzy', async () => {
     await engine.setPageAliases('people/bob-rosenstein', 'default', ['rosey']);
     const a = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'rosey');
@@ -356,7 +356,7 @@ describe('alias_exact branch (v0.46.12 identity wave, #3730)', () => {
   });
 });
 
-describe('alias_exact — liveness before uniqueness (v0.46.12 codex ship-review)', () => {
+describe('alias_exact — liveness before uniqueness (v0.46.15 codex ship-review)', () => {
   it('a stale sibling alias row (deleted page) cannot veto the sole live target', async () => {
     await engine.putPage('people/nickname-live', {
       type: 'person', title: 'Nickname Live', compiled_truth: 'b', timeline: '', frontmatter: {},

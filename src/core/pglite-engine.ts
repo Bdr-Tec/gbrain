@@ -2567,7 +2567,7 @@ export class PGLiteEngine implements BrainEngine {
     const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', boostMap, opts?.detail, 'unverified_stub');
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
     const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
-    // v0.46.12 (retrieval-cathedral P1): bounded escalation — see
+    // v0.46.15 (retrieval-cathedral P1): bounded escalation — see
     // postgres-engine.ts searchVector for the full rationale; the logic here
     // is IDENTICAL (engine-parity pinned). Cap policy (R2-10 + codex ship
     // review): the ef_search ceiling applies only to HNSW-backed columns;
@@ -2702,7 +2702,7 @@ export class PGLiteEngine implements BrainEngine {
       );
     })).rows;
 
-    // v0.46.12 bounded escalation loop — IDENTICAL logic to postgres-engine
+    // v0.46.15 bounded escalation loop — IDENTICAL logic to postgres-engine
     // (parity-pinned): retry ×4 up to 3 times while the PAGE set is short
     // but the pre-collapse candidate pool was full; a short page with a
     // non-full pool is a genuine final page. Zero rows with offset>0

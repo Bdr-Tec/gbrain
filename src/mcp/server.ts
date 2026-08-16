@@ -177,7 +177,7 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
                 priorContextText: req.priorContextText,
                 maxPointers: req.maxPointers,
                 suppression: req.suppression,
-                // v0.46.12 kill switch: either side may disable — a client
+                // v0.46.15 kill switch: either side may disable — a client
                 // `false` wins, else the server's own file-config gate.
                 // Config is re-read PER REQUEST (adversarial F3): `gbrain
                 // serve` is long-running, and the switch's whole value is

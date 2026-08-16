@@ -1,5 +1,5 @@
 /**
- * v0.46.12 — EXECUTABLE pre-registered floors (outside-voice R2-14).
+ * v0.46.15 — EXECUTABLE pre-registered floors (outside-voice R2-14).
  *
  * The BrainBench CI gate is baseline-RELATIVE (HEAD run vs origin/master's
  * committed baseline) and a justified `--update-baseline` can bank any
@@ -8,7 +8,7 @@
  * justified bank that regresses below a floor now fails the unit suite,
  * not just a human reviewer's judgment.
  *
- * Floors are the v0.46.12 identity-wave pre-registrations (MINIMUMS — the
+ * Floors are the v0.46.15 identity-wave pre-registrations (MINIMUMS — the
  * banked numbers exceed several of them; do not ratchet the floors to the
  * observed values without a new pre-registration):
  *   know_to_ask_failure_rate ≤ 0.05      false_fire_rate ≤ 0.03
@@ -39,7 +39,7 @@ const PUSH_RECALL_FLOORS: Record<(typeof HARNESSES)[number], number> = {
   codex: 0.52,
 };
 
-describe('pre-registered absolute floors (v0.46.12) hold in the committed baseline', () => {
+describe('pre-registered absolute floors (v0.46.15) hold in the committed baseline', () => {
   for (const h of HARNESSES) {
     test(`${h}: know_to_ask_failure_rate ≤ 0.05 and false_fire_rate ≤ 0.03`, () => {
       const m = cell(h, 'know-to-ask');

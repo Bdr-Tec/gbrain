@@ -84,7 +84,7 @@ const volunteer_context: Operation = {
       priorContext: typeof p.prior_context === 'string' ? p.prior_context : undefined,
       maxPages: typeof p.max_pages === 'number' ? p.max_pages : undefined,
       minConfidence: typeof p.min_confidence === 'number' ? p.min_confidence : undefined,
-      // v0.46.12+ kill switch for the lexical recall arms (weak-alias +
+      // v0.46.15+ kill switch for the lexical recall arms (weak-alias +
       // surname) — file-plane gate, threaded per ResolvePointersOpts.
       lexicalArms: lexicalArmsEnabled(loadCfgForArms()),
     });

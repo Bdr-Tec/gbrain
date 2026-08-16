@@ -1,5 +1,5 @@
 /**
- * v0.46.12 — searchVector bounded pagination escalation (retrieval-cathedral
+ * v0.46.15 — searchVector bounded pagination escalation (retrieval-cathedral
  * P1, outside-voice R2-10).
  *
  * The bug: innerLimit counted CHUNKS before the best-per-page DISTINCT

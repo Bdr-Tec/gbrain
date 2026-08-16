@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.12.0] - 2026-08-16
+## [0.46.15.0] - 2026-08-16
 
 **The brain now recognizes people the way you actually mention them.**
 Lowercase first-name mentions ("remind me what alice said") and
@@ -67,7 +67,7 @@ numbers measure production behavior.
   so the first re-run of a cached query after upgrade is a one-time
   cache miss and repopulates automatically.
 
-To take advantage of v0.46.12.0:
+To take advantage of v0.46.15.0:
 - `gbrain upgrade` (or rebuild the binary). No migration required; the
   new recall arms and ranking are on by default.
 - Expect a one-time query-cache miss spike on first queries after
