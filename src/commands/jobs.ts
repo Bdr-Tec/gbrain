@@ -2011,6 +2011,15 @@ export async function registerBuiltinHandlers(
       // invocation whose whole point was to do neither.
       dryRun: !!job.data.dryRun,
       sourceId: typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined,
+      // Background parity (D7): the doc-recommended recovery
+      // `embed --stale --catch-up --include-null-signature --background`
+      // used to silently DEGRADE — the payload dropped these four, so the
+      // job ran as a plain 30-min-budget stale pass with the grandfather
+      // clause intact. Serialize + read them like every other embed knob.
+      catchUp: !!job.data.catchUp,
+      includeNullSignature: !!job.data.includeNullSignature,
+      batchSize: typeof job.data.batchSize === 'number' ? job.data.batchSize : undefined,
+      priority: job.data.priority === 'recent' ? 'recent' : undefined,
       // CX1+CX5: pace overrides ride in the job payload as explicit overrides
       // only; runEmbedCore re-resolves env > config > bundle at execution so
       // GBRAIN_PACE_* still wins during an incident.
@@ -2711,6 +2720,7 @@ export async function registerBuiltinHandlers(
       sourceId?: string;
       batchSize?: number;
       priority?: 'recent';
+      includeNullSignature?: boolean;
     };
     return await runEmbedCore(engine, {
       stale: true,
@@ -2718,6 +2728,9 @@ export async function registerBuiltinHandlers(
       batchSize: data.batchSize,
       priority: data.priority,
       sourceId: data.sourceId,
+      // D7/D12: submitters that detected a NULL-signature cohort thread the
+      // widening through; absent = grandfather clause stays (unchanged).
+      includeNullSignature: !!data.includeNullSignature,
     });
   });
 

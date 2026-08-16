@@ -911,7 +911,12 @@ export async function importFromContent(
       // as stale via embed --stale. The deferred/backfill + per-slug embed
       // paths stamp too; this covers the inline import/sync path.
       if (!opts.noEmbed) {
-        await tx.setPageEmbeddingSignature(slug, { sourceId, signature: currentEmbeddingSignature() });
+        // D9: signature is null when the gateway is unconfigured — skip the
+        // stamp (a wrong signature is worse than none).
+        const importSig = currentEmbeddingSignature();
+        if (importSig) {
+          await tx.setPageEmbeddingSignature(slug, { sourceId, signature: importSig });
+        }
       }
     } else {
       // Content is empty — delete stale chunks so they don't ghost in search results
@@ -1372,7 +1377,11 @@ export async function importCodeFile(
       // falsely marked current; `reindex --code --force` / `embed --stale`
       // handle the swap for those.
       if (!opts.noEmbed && needsEmbedIndexes.length === chunks.length) {
-        await tx.setPageEmbeddingSignature(slug, { sourceId, signature: currentEmbeddingSignature() });
+        // D9: no stamp without a gateway (wrong signature is worse than none).
+        const codeSig = currentEmbeddingSignature();
+        if (codeSig) {
+          await tx.setPageEmbeddingSignature(slug, { sourceId, signature: codeSig });
+        }
       }
     } else {
       await tx.deleteChunks(slug, txOpts);

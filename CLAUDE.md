@@ -105,6 +105,26 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
   (fail-closed vs warn-only vs null), not its own numbers. Pinned by `test/model-pricing.test.ts`
   (drift guard asserts each view equals canonical). Embeddings price separately in
   `embedding-pricing.ts` (different unit).
+- **Module-size ratchet.** `scripts/module-size-limits.tsv` pins per-file line ceilings
+  (`check:module-size` in verify): growth over a ceiling, >50 lines of stale slack after a
+  shrink, a row for a deleted file, and any UNLISTED src file over 1,500 lines all fail.
+  Raise a ceiling only via a reviewer-visible TSV edit in the same commit; lower it in the
+  same commit as any peel. migrate.ts is `region-exempt` (the MIGRATIONS array grows freely;
+  the runner logic around it is ratcheted).
+- **Peeled façades keep their surface.** operations.ts (`src/core/ops/*`), doctor.ts
+  (`src/commands/doctor/*`), sync.ts (`src/core/sync-*`), and both engines
+  (`src/core/{postgres,pglite}-engine/*`) are façades re-exporting everything they always
+  exported — import sites and published package exports never chase the peel. New code goes
+  in the module dirs, not back into the façades. Engine modules take narrow explicit deps
+  (never an engine-shaped bag); doctor source-text guards read `test/helpers/doctor-source.ts`,
+  and the flag-registry generator's `facadeExpansion` keeps peeled flag text in each command's
+  scan surface.
+- **Coverage is measured, honestly.** CI merges per-lane lcov (`scripts/merge-lcov.ts`) into
+  a PR-corpus report on every run (advisory until the diff gate graduates via
+  `COVERAGE_GATE_ENFORCE`) and a nightly fullCorpus number incl. the full e2e glob. bun
+  facts: unique `--coverage-dir` per process (reuse overwrites lcov.info), line records only
+  (JSC omits function names), no subprocess coverage (cli.ts is exempt as a documented
+  undercount), never-loaded files are a count+list, never fake all-files math.
 
 
 ## Reference map (load on demand)
