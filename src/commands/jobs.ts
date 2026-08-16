@@ -17,7 +17,7 @@ import type { PaceKeyOverrides } from '../core/pace-mode.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { parseNiceValue, applyNiceness, getEffectiveNiceness, formatNice } from '../core/minions/niceness.ts';
-import { defaultTimeoutMsFor } from '../core/minions/handler-timeouts.ts';
+import { defaultTimeoutMsFor, defaultLockDurationMsFor, clampLockDurationMs } from '../core/minions/handler-timeouts.ts';
 
 function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -242,7 +242,17 @@ function formatTimeoutLines(job: MinionJob): string[] {
     if (d != null) {
       lines.push(`  Timeout: (unset) — handler default ${d}ms stamps at claim`);
     } else {
-      lines.push(`  Timeout: (unset) — null-default wall-clock sweep applies (2 x lock-duration x max_stalled, ~5m at defaults)`);
+      lines.push(`  Timeout: (unset) — null-default wall-clock sweep applies (2 x lock lease x max_stalled, ~5m at 30s-lease defaults)`);
+    }
+  }
+  // #4145: the lock lease line mirrors the timeout line — row value when
+  // stamped, otherwise the handler-map default that WILL stamp at claim.
+  if (job.lock_duration_ms != null) {
+    lines.push(`  Lock lease: ${job.lock_duration_ms}ms (renewed at min(lease/2, 60s) cadence)`);
+  } else {
+    const lease = defaultLockDurationMsFor(job.name);
+    if (lease != null) {
+      lines.push(`  Lock lease: (unset) — handler default ${lease}ms stamps at claim`);
     }
   }
   return lines;
@@ -286,6 +296,7 @@ USAGE
                             [--max-waiting N]
                             [--backoff-type fixed|exponential] [--backoff-delay Nms]
                             [--backoff-jitter 0..1] [--timeout-ms Nms]
+                            [--lock-duration-ms Nms]
                             [--idempotency-key K] [--queue Q] [--dry-run]
                             [--redact-secrets]   (shell only; scrubs inherit
                                                   values from stdout/stderr)
@@ -455,6 +466,7 @@ USAGE
                             [--max-waiting N]
                             [--backoff-type fixed|exponential] [--backoff-delay Nms]
                             [--backoff-jitter 0..1] [--timeout-ms Nms]
+                            [--lock-duration-ms Nms]
                             [--idempotency-key K] [--queue Q] [--dry-run]
                             [--redact-secrets]
 
@@ -471,6 +483,10 @@ OPTIONS
                        source before coalescing new submissions ([1,100])
   --timeout-ms Nms     Per-job wall-clock budget. Long-lane handlers get a
                        default from HANDLER_DEFAULT_TIMEOUT_MS when omitted.
+  --lock-duration-ms N Per-job lock lease (#4145). Clamped to [5s, 1h].
+                       Long-lane handlers default to 300s via
+                       HANDLER_DEFAULT_LOCK_DURATION_MS; others use the
+                       worker default (30s).
   --idempotency-key K  At-most-one row per key (dead/cancelled free the key)
   --queue Q            Target queue (default: default)
   --dry-run            Print what would be submitted, submit nothing
@@ -580,6 +596,15 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         console.error('Error: --timeout-ms must be a positive integer (milliseconds)');
         process.exit(1);
       }
+      // #4145: per-job lock lease. Clamped to [5s,1h] in queue.add via
+      // clampLockDurationMs (shared with the MCP op); NULL falls to the
+      // handler map, then the worker default.
+      const lockDurationMsRaw = parseFlag(args, '--lock-duration-ms');
+      const lockDurationMs = lockDurationMsRaw !== undefined ? parseInt(lockDurationMsRaw, 10) : undefined;
+      if (lockDurationMsRaw !== undefined && (isNaN(lockDurationMs!) || lockDurationMs! <= 0)) {
+        console.error('Error: --lock-duration-ms must be a positive integer (milliseconds)');
+        process.exit(1);
+      }
       const idempotencyKey = parseFlag(args, '--idempotency-key');
       const queueName = parseFlag(args, '--queue') ?? 'default';
       const dryRun = hasFlag(args, '--dry-run');
@@ -603,6 +628,12 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         if (backoffDelay !== undefined) console.log(`  Backoff delay: ${backoffDelay}ms`);
         if (backoffJitter !== undefined) console.log(`  Backoff jitter: ${backoffJitter}`);
         if (timeoutMs !== undefined) console.log(`  Timeout: ${timeoutMs}ms`);
+        if (lockDurationMs !== undefined) {
+          // Echo what will actually be STORED (queue.add clamps to [5s,1h]);
+          // a dry-run that prints the raw out-of-range input lies.
+          const stored = clampLockDurationMs(lockDurationMs);
+          console.log(`  Lock lease: ${stored}ms${stored !== lockDurationMs ? ` (clamped from ${lockDurationMs}ms)` : ''}`);
+        }
         if (idempotencyKey) console.log(`  Idempotency key: ${idempotencyKey}`);
         if (delay > 0) console.log(`  Delay: ${delay}ms`);
         console.log(`  Data: ${JSON.stringify(data)}`);
@@ -648,6 +679,7 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         backoff_delay: backoffDelay,
         backoff_jitter: backoffJitter,
         timeout_ms: timeoutMs,
+        lock_duration_ms: lockDurationMs,
         idempotency_key: idempotencyKey,
         queue: queueName,
       }, trusted);

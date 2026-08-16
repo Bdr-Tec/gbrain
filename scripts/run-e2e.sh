@@ -111,6 +111,7 @@ for _e2e_var in $(env | grep -oE '^(CONDUCTOR_|MCP_|OPENCLAW_|HERMES_|GROK_|OPEN
     GBRAIN_HOME) ;;  # required for HOME isolation (set above) — keep
     GBRAIN_PGLITE_SNAPSHOT) ;;  # snapshot fast-path fixture (exported by ci-local.sh / runners) — keep
     GBRAIN_TEST_ALLOW_DATABASE_URL) ;;  # #3485 preload opt-in (set above) — keep
+    GBRAIN_E2E_FILE_TIMEOUT) ;;  # per-file cap override — read AFTER this scrub, so it must survive it
     GBRAIN_E2E_ALLOW_DB) ;;  # #3485 name-floor opt-in — the guard's own error
                              # message tells operators to set it; stripping it
                              # here would make that escape hatch a dead end
@@ -209,20 +210,35 @@ for f in "${files[@]}"; do
   if [ -n "${DATABASE_URL:-}" ]; then
     psql "$DATABASE_URL" -At -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid != pg_backend_pid() AND datname = current_database()" >/dev/null 2>&1 || true
   fi
-  # Hard outer timeout (180s per file). bun's --timeout covers tests AND
-  # hooks (measured on 1.3.14), but it's timer-based: a PGLite WASM call
-  # that blocks the event loop synchronously never lets the timer fire and
-  # the file wedges indefinitely. gtimeout/timeout SIGKILLs the file so the
-  # suite advances. gtimeout (macOS via coreutils) preferred; timeout (Linux)
-  # fallback; bare bun (no outer cap) if neither is installed.
-  # E2E_FILE_TIMEOUT_SECS: nightly coverage runs pay instrumentation overhead
-  # on every file — the cap is env-tunable there. Deliberately NOT
-  # GBRAIN_-prefixed so the hermetic env scrub above doesn't strip it.
-  FILE_TIMEOUT="${E2E_FILE_TIMEOUT_SECS:-180}"
+  # Hard outer timeout (default 180s per file; GBRAIN_E2E_FILE_TIMEOUT or
+  # E2E_FILE_TIMEOUT_SECS overrides — the GBRAIN_ name is kept in the scrub
+  # keep-list below, the non-GBRAIN name survives the scrub by construction;
+  # nightly coverage runs use it to absorb instrumentation overhead). bun's
+  # --timeout covers tests AND hooks (measured on 1.3.14), but it's
+  # timer-based: a PGLite WASM call that blocks the event loop synchronously
+  # never lets the timer fire and the file wedges indefinitely.
+  # gtimeout/timeout SIGKILLs the file so the suite advances. gtimeout (macOS
+  # via coreutils) preferred; timeout (Linux) fallback; bare bun (no outer
+  # cap) if neither is installed.
+  #
+  # LLM-bound Tier-2 files (real provider round-trips when .env.testing
+  # carries keys) legitimately run past 180s — the ingest skill alone has
+  # been observed at ~131s — and were being SIGKILLed mid-run with no
+  # assertion output, which reads like a mystery failure. CI runs those
+  # files in their own job WITHOUT this wrapper (see .github/workflows/
+  # e2e.yml tier2), so the cap only ever bit local runs: give them 4x.
+  file_timeout="${GBRAIN_E2E_FILE_TIMEOUT:-${E2E_FILE_TIMEOUT_SECS:-180}}"
+  # Digits-only validation (same strict positive-int posture as the TS env
+  # knobs): a malformed value falls back to the default instead of
+  # word-splitting into extra gtimeout arguments or breaking the 4x math.
+  case "$file_timeout" in ''|*[!0-9]*) file_timeout=180 ;; esac
+  case "$f" in
+    */skills.test.ts|*/zeroentropy-live.test.ts) file_timeout=$((file_timeout * 4)) ;;
+  esac
   if command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout $FILE_TIMEOUT"
+    TIMEOUT_CMD="gtimeout $file_timeout"
   elif command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout $FILE_TIMEOUT"
+    TIMEOUT_CMD="timeout $file_timeout"
   else
     TIMEOUT_CMD=""
   fi

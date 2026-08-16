@@ -70,11 +70,22 @@ describe('bootstrap harness lifecycle E2E (PGLite + real serve --http)', () => {
   // remapped HOME (it reads the password database), so HOME alone does NOT
   // sandbox user-scope writes — that leak is exactly why claudeUserSettingsPath
   // honors CLAUDE_CONFIG_DIR/HOME explicitly now.
+  //
+  // DATABASE_URL/GBRAIN_DATABASE_URL must be scrubbed for the IN-PROCESS
+  // runBootstrap lane too (the beforeAll already scrubs them for its
+  // subprocesses): since v0.31.3 (9c60b3a06, #801) an env DATABASE_URL
+  // deliberately overrides the file-backed PGLite engine in loadConfig().
+  // Under the DATABASE_URL-bearing e2e wrapper, a leaked URL retargets the
+  // mint at the shared Postgres test DB — no PGLite single-writer lock, so
+  // the mint-refusal contract under a live serve never fires and the
+  // fresh-minted token fails the bearer smoke against the PGLite serve.
   const envFor = () => ({
     GBRAIN_HOME: parent,
     HOME: sandboxHome,
     CLAUDE_CONFIG_DIR: join(sandboxHome, '.claude'),
     CODEX_HOME: codexHome,
+    DATABASE_URL: undefined,
+    GBRAIN_DATABASE_URL: undefined,
   });
 
   beforeAll(async () => {

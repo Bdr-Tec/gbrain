@@ -71,6 +71,8 @@ export interface MinionJob {
   max_children: number | null;
   timeout_ms: number | null;
   timeout_at: Date | null;
+  /** Per-job lock lease (ms, #4145). NULL = worker-global lockDuration default. */
+  lock_duration_ms: number | null;
   remove_on_complete: boolean;
   remove_on_fail: boolean;
   idempotency_key: string | null;
@@ -128,6 +130,8 @@ export interface MinionJobInput {
   max_children?: number;
   /** Wall-clock per-job deadline in ms. Set on claim → timeout_at. Terminal on expire (no retry). */
   timeout_ms?: number;
+  /** Per-job lock lease in ms (#4145). Clamped to [5s,1h]; NULL/undefined → handler map, then worker default. INSERT-only: an idempotency-key re-submit never mutates the first submitter's lease. */
+  lock_duration_ms?: number;
   /** DELETE row on successful completion (after token rollup + child_done insert). */
   remove_on_complete?: boolean;
   /** DELETE row on terminal failure (after parent failure hook). */
@@ -435,6 +439,7 @@ export function rowToMinionJob(row: Record<string, unknown>): MinionJob {
     depth: (row.depth as number) ?? 0,
     max_children: (row.max_children as number) ?? null,
     timeout_ms: (row.timeout_ms as number) ?? null,
+    lock_duration_ms: (row.lock_duration_ms as number) ?? null,
     timeout_at: row.timeout_at ? new Date(row.timeout_at as string) : null,
     remove_on_complete: row.remove_on_complete === true,
     remove_on_fail: row.remove_on_fail === true,
