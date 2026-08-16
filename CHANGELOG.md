@@ -2,6 +2,90 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.17.0] - 2026-08-16
+
+**Checkpoint compaction + compiled views (Cathedral 5).** Compaction is the
+worst moment in a long-lived agent's life: the harness summarizes the window
+and the un-extracted detail dies with it. The brain is now the durable side
+of that boundary — the pre-compaction window is banked to disk before the
+summary lands, facts are harvested from it moments later, and the
+post-compaction context carries `brain://` links the agent re-pulls on
+demand. And the hand-maintained warm files (the CLAUDE.md fragment, the
+AGENTS.md block) can now be *compiled from the brain* instead of drifting by
+hand.
+
+### Added
+- **Checkpoint compaction on Claude Code — zero new setup.** The
+  bootstrap-installed PreCompact hook now banks the since-last-compaction
+  window as a secret-scanned, content-addressed corpus segment *inside its
+  deadline, before anything else* — a crash after that point loses nothing
+  (the maintenance sweep extracts every segment as a backstop). The same IPC
+  round trip asks a running `gbrain serve` to harvest the segment promptly:
+  facts land with session provenance, and only links whose page actually
+  resolves are banked into the new per-session checkpoint manifest
+  (migration v131, one additive column). The post-compaction session start
+  renders those links as a `## Compaction checkpoints` section with honest
+  copy. Existing installs pick all of this up on upgrade with no re-install.
+- **Checkpoint compaction on OpenClaw — engine-internal.** `compact()` runs
+  a time-bounded, fail-open checkpoint step before delegating (spool-first;
+  serve IPC on PGLite, direct connection on Postgres), and `assemble()`
+  injects a deterministic checkpoint block from the banked manifest, keyed
+  to the exact segment it spooled so a stale manifest never masquerades as
+  the new checkpoint. Engine contract version 0.3.0 (additive; older hosts
+  unchanged).
+- **`gbrain compile-context --target claude-code|codex|openclaw`** — compile
+  a token-budgeted, sensitivity-scanned warm-file fragment straight from
+  brain pages: `.claude/gbrain-context.md` (one `@import` line and it loads
+  on every Claude Code session), a managed `AGENTS.md` block (serves codex
+  AND opencode), or the OpenClaw workspace file. Deterministic by
+  construction — an unchanged brain compiles to identical bytes, so
+  `--check` is a real staleness probe (exit 1 when the committed file is
+  stale). The budget caps the whole file; anything that trips the secret/PII
+  scan drops that page's entry with a report, and reviewed false positives
+  un-drop via the fingerprint allowlist. Pin any page into every compile
+  with the `compile-context` tag.
+- **Session-end corpus writes got smarter.** When every compaction window
+  was already segment-banked, session-end writes only the remainder —
+  coverage decided by exact content hashes, never counts, so a missed
+  compaction always falls back to the full transcript (at-least-once,
+  never loss). Corpus housekeeping now also reaps orphaned sidecar files and
+  aged ledgers that previously lived forever.
+- **Operational visibility for the whole lane.** Compact, session-end, and
+  serve-side harvest outcomes all ride the hooks heartbeat with typed reason
+  codes (counts only, never content) — `docs/guides/checkpoint-compaction.md`
+  is the guide and runbook.
+
+### Changed
+- Transcript parsing surfaces compaction-boundary *positions* (both the
+  Claude Code and OpenClaw formats), enabling precise boundary windows
+  everywhere; the OpenClaw line mapping is exported from the adapter so
+  every consumer shares the same dated format contract.
+- The facts pipeline reports which entity pages actually received
+  fence-written facts in a run — the truthful-links source for checkpoint
+  manifests — and `hook:compact` is a first-class provenance tag.
+- The PII scrubber's regex families are now an ordered, exported pattern
+  set (`findPii`) with byte-identical scrubbing behavior, composed with the
+  secret scanner, path/blocklist families, and the operator pattern file
+  into one sensitivity scan used by compiled views.
+
+### Fixed
+- Ship-stage review hardening across the new lane: manifest polls are
+  version-skew-safe against older serves and bounded per turn; session ids
+  are charset-sanitized before any filename use; the harvest queue is
+  bounded with typed skips and a shutdown grace so serve exit is never held
+  hostage; multiline page titles can no longer damage the AGENTS.md managed
+  block; a migration version-number collision across concurrent PRs now
+  fails the suite loudly instead of silently skipping the second migration.
+
+**To take advantage of v0.46.17.0:** upgrade and keep working — Claude Code
+installs bootstrapped with hooks gain checkpoint compaction automatically
+(run a session past a compaction and watch the `## Compaction checkpoints`
+section appear on re-entry). Then try
+`gbrain compile-context --target claude-code --budget 3000` and add the
+printed one-line `@import` to your CLAUDE.md; re-run it (or `--check` in CI)
+whenever the brain changes. Codex/opencode users: the AGENTS.md target works
+today; native codex hooks are a filed follow-up.
+
 ## [0.46.11.0] - 2026-08-16
 
 **Five operational failures from live production brains, fixed at the root.**
