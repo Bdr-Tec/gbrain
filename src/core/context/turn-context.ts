@@ -225,6 +225,9 @@ export async function assembleTurnContext(
           priorContext: opts.priorContextText,
           excludeSlugs,
           maxPages: MAX_VOLUNTEERED_PAGES,
+          // v0.46.8+ lexical-arms kill switch rides the same threading as the
+          // pointer arm above (ResolvePointersOpts.lexicalArms).
+          lexicalArms: opts.lexicalArms,
         });
       }
     } catch {

@@ -111,6 +111,9 @@ CHECKS=(
   # Revived registered-but-never-executed guards (this pass):
   "check:pagetype-exhaustive"
   "check:pg-url-redaction"
+  # Containment sprint: module-size ratchet + structural-suite freshness.
+  "check:module-size"
+  "check:structural-manifest"
 )
 
 if [ "${#CHECKS[@]}" -eq 0 ]; then
