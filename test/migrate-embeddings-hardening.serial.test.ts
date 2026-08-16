@@ -149,7 +149,7 @@ function writeFileConfig(model: string, dims: number): void {
 }
 
 beforeAll(async () => {
-  for (const k of ['GBRAIN_HOME', 'GBRAIN_EMBEDDING_MODEL', 'GBRAIN_EMBEDDING_DIMENSIONS', 'GBRAIN_EMBED_LOCK_HEARTBEAT_MS', 'OPENAI_API_KEY', 'ZEROENTROPY_API_KEY', 'DATABASE_URL']) {
+  for (const k of ['GBRAIN_HOME', 'GBRAIN_EMBEDDING_MODEL', 'GBRAIN_EMBEDDING_DIMENSIONS', 'GBRAIN_EMBED_LOCK_HEARTBEAT_MS', 'OPENAI_API_KEY', 'ZEROENTROPY_API_KEY', 'VOYAGE_API_KEY', 'DATABASE_URL']) {
     savedEnv[k] = process.env[k];
     delete process.env[k];
   }
@@ -438,6 +438,12 @@ describe('reranker companion (D8)', () => {
 
   test('explicit switch: live probe passes (stubbed wire) and the write lands model + enabled together', async () => {
     // Gateway needs a voyage key for the rerank call; the wire is stubbed.
+    // The key must ALSO live in process.env: the flow's mid-run
+    // persistEmbeddingFileConfig reconfigures the gateway from file+env, and
+    // the file plane deliberately carries no voyage key — without this the
+    // probe dies on the key check before ever reaching the stubbed wire
+    // (green-locally/red-on-CI when a real key sits in the dev env).
+    process.env.VOYAGE_API_KEY = 'pa-test-fake';
     resetGateway();
     configureGateway({
       embedding_model: 'openai:text-embedding-3-small',
@@ -464,12 +470,15 @@ describe('reranker companion (D8)', () => {
       expect(await engine.getConfig('search.reranker.enabled')).toBe('true');
     } finally {
       (globalThis as { fetch: typeof fetch }).fetch = origFetch;
+      delete process.env.VOYAGE_API_KEY;
     }
   }, 60000);
 
   test('probe failure keeps the previous reranker config and reports switch_failed', async () => {
-    // No wire stub + no reachable endpoint: the probe fails, the migration
-    // still completes, and the config stays where the previous test put it.
+    // Wire stub throws: the probe must fail on the WIRE (not on a missing
+    // key — hence the fake env key), the migration still completes, and the
+    // config stays where the previous test put it.
+    process.env.VOYAGE_API_KEY = 'pa-test-fake';
     const origFetch = globalThis.fetch;
     (globalThis as { fetch: typeof fetch }).fetch = (async (url: string | URL | Request) => {
       if (String(url).includes('/rerank')) throw new Error('stub: reranker endpoint down');
@@ -482,6 +491,7 @@ describe('reranker companion (D8)', () => {
       expect(await engine.getConfig('search.reranker.model')).toBe('voyage:rerank-2.5');
     } finally {
       (globalThis as { fetch: typeof fetch }).fetch = origFetch;
+      delete process.env.VOYAGE_API_KEY;
     }
   }, 60000);
 
