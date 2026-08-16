@@ -816,6 +816,15 @@ export interface SearchResult {
    */
   /** RRF + cosine score BEFORE any boost stage mutated it. */
   base_score?: number;
+  /**
+   * v0.46.8 — RAW query↔chunk cosine similarity from cosineReScore's
+   * hydration (the active embedding column's space). Absent on keyword-only
+   * / no-embedding paths. This is the ONLY calibrated semantic signal on the
+   * result — evidence's `high_vector_match` keys off it, never off the
+   * blended/boosted score (the #3963 class: a keyword+boost pile-up reading
+   * as a vector match).
+   */
+  cosine?: number;
   /** Multiplier applied by applyBacklinkBoost (1.0 = unchanged). */
   backlink_boost?: number;
   /** Multiplier applied by applySalienceBoost. */

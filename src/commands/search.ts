@@ -55,6 +55,7 @@ const KNOB_DESCRIPTIONS: Record<keyof ModeBundle, string> = {
   reranker_timeout_ms: 'HTTP timeout for the reranker call',
   floor_ratio: 'Floor-ratio gate for metadata boosts (0..1, undefined = off)',
   title_boost: 'Title-phrase boost multiplier (query is a title token-run; 1.0 = off)',
+  evidence_cosine_floor: 'Cosine floor for evidence high_vector_match (label-only; 0..1)',
   // v0.36 cross-modal knobs (D3 registry)
   cross_modal_both_text_weight: "D6 'both'-mode RRF weight for text branch (0.6 default)",
   cross_modal_both_image_weight: "D6 'both'-mode RRF weight for image branch (0.4 default)",
