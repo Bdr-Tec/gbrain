@@ -1,5 +1,33 @@
 # TODOS
 
+## v0.46.8.0 identity/retrieval wave follow-ups (filed at ship; decisions recorded at CEO review + outside voice)
+
+- [ ] **P2 — Codex adapter full production flip.** v0.46.8 integrated the REAL rollout
+  parser (`src/core/transcripts/codex.ts`) for turn selection, but fragment DELIVERY
+  remains a harness-shaped contract (no shipped codex injection path exists yet). When
+  one lands, flip the seam like the claude-code row (run-scoped infra via
+  setupRun/teardownRun; bank the baseline in the same commit). Context: outside-voice F5.
+- [ ] **P2 — Per-model calibration for `search.evidence_cosine_floor` (0.80) and
+  `search.autocut_min_top` (0.35).** Both are provider-scale-dependent; both are
+  config-overridable today. The September reranker default flip (zerank-2 →
+  voyage:rerank-2.5) MUST re-tune autocut_min_top — add that line to the v0.47
+  removal checklist when executing it. Context: outside-voice F16.
+- [ ] **P2 — Cat 3 undocumented-alias enrichment.** The gbrain-evals Cat 3 runner's
+  undocumented class (initials, nicknames, typos) needs alias-TABLE growth
+  (enrichment writes page_aliases), not resolver changes — the v0.46.8 alias_exact
+  arm only helps documented aliases. Pair with the evals-repo runner repair
+  (seed page_aliases + route through resolveEntitySlug). Context: outside-voice F1.
+- [ ] **P3 — Lowercase bigram alias candidates.** v2 of the weak-candidate pass
+  (`entity-salience.ts`): "sable finch" as a two-token weak alias probe. Unigram
+  covers the alias-table convention today; bigram needs its own ambiguity study.
+- [ ] **P3 — Precomputed name-token index at ingest.** The surname arm's
+  `lower(title) LIKE '% <token>'` scan is bounded by the reflex fail-open budgets;
+  if reflex latency telemetry creeps on 10K+-page brains, build the token table
+  and swap the arm to an indexed lookup.
+- [ ] **P3 — Re-eval community #717 (graph-hop wikilink rerank, claimed +2.6/+2.8
+  P@5/R@5) against the post-v0.46.8 ranker** — the concept intent + dedup scope fix
+  may have absorbed part of its headroom.
+
 ## LongMemEval temporal gap — date-proximity signal SPIKE-REJECTED (filed v0.46.8.0, identity/retrieval wave)
 
 - **P2 — Reframe the temporal-reasoning gap (94.7% vs MemPal 96.2%, the only categorical
@@ -1261,10 +1289,15 @@ is deterministic + precision-biased. See plan + GSTACK REVIEW REPORT at
   wave: `extractCandidatesFromWindow` now covers assistant-introduced entities and
   pronoun follow-ups whose antecedent was NAMED in the rolling window; true pronoun
   coreference for never-named antecedents remains with the LLM-pass idea.)*
-- [ ] **P3 — recall knob: optional fuzzy/prefix-expansion resolution.** The resolver
-  (`src/core/context/retrieval-reflex.ts`) is exact-only (alias + title + slug-suffix)
-  for precision. Revisit adding `resolveEntitySlug`'s trgm-fuzzy / prefix-expansion
-  arm, gated on an unambiguous single hit, if recall telemetry comes back weak.
+- [x] **P3 — recall knob: optional fuzzy/prefix-expansion resolution.** RESOLVED
+  differently by the v0.46.8 identity wave, with a receipt: trigram fuzzy in the
+  reflex is deliberately REJECTED — the BrainBench adversarial near-miss class
+  (`"<Name>er"` for a real `<Name>` page) is gold-silent and any usable trigram
+  threshold would false-fire on it. The recall gap the fuzzy arm targeted was
+  closed by exact NORMALIZED-LEXICAL arms instead: the lowercase weak-alias arm
+  + the surname arm (know_to_ask 0.15→0, push_recall +9.6pp, false_fire/precision
+  unmoved). Do not re-add trigram here without a fixture that defeats the
+  near-miss class first.
 
 ## gbrain#1972 job-layer follow-up (v0.43+)
 
