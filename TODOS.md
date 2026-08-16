@@ -1,5 +1,45 @@
 # TODOS
 
+## Dream-wave follow-ups (#4216 oneshot + #4194/#4217/#4088/#4087/#4155/#4201)
+
+- [ ] **P2 — gateway-loop truncation note for `length` WITH tool calls.**
+  **What:** the legacy Anthropic path injects a truncation note into the
+  tool-result turn when a `max_tokens` stop arrives mid-tool-round
+  (subagent.ts ~:835) so the model re-issues the dropped call; the gateway
+  toolLoop has no equivalent — #4088 fixed only the zero-tool-call honesty
+  arm. Add the same note-injection to `gateway.ts:toolLoop`. **Why:** a
+  capped tool turn on the gateway path silently drops the trailing calls.
+  **Effort:** S. **Priority:** P2.
+- [ ] **P2 — synthesis-quality eval lane (oneshot vs agentic).** **What:** a
+  `gbrain eval` suite scoring synthesis output (faithfulness/link quality/
+  self-containedness) on a synthetic fixture corpus, following the
+  takes-quality 3-judge template + the eval-chronicle deterministic-gold
+  pattern; wire `details.synthesis.fallback_reasons` into the receipt.
+  Adjacent: #4198 (synthesize-concepts evaluator stub). **Why:** the
+  oneshot default currently leans on the soak + fallback telemetry; CI
+  should catch a quality regression, not output review. **Effort:** L.
+  **Priority:** P2.
+- [ ] **P3 — `dream.patterns.max_turns` config.** patterns.ts hardcodes
+  `max_turns: 30`; make it a registered key mirroring
+  `dream.synthesize.max_turns`. **Effort:** S.
+- [ ] **P3 — doctor/advisor collector for oneshot fallback rate.** Surface
+  `details.synthesis.fallback_jobs / oneshot_jobs` over the last N cycles;
+  advise the agentic revert dial when the rate stays high. **Effort:** S.
+- [ ] **P3 — evaluate oneshot for the patterns phase.** One job per cycle so
+  the latency win is small, but the pattern-page output contract is just as
+  structured. **Effort:** M.
+- [ ] **P3 — shared collectPutPageSlugs (ENG-3, deferred at C9).** synthesize
+  and patterns keep private ledger collectors; they differ materially
+  (chunk-slug rewrite + jobRawSource threading vs the simple patterns copy),
+  so unification was deferred rather than forced late in the wave. Unify
+  when patterns gains chunking or the collectors next change together.
+  **Effort:** M.
+- [ ] **P3 — relax the handler-entry capability gate for oneshot jobs
+  (ENG-1).** The oneshot attempt needs no tools, so a tool-incapable model
+  could legitimately run it; today the gate refuses at entry
+  (behavior-preserving v1). Move the check to the fallback boundary for
+  `mode: 'oneshot'` jobs. **Effort:** S.
+
 ## Five-issue fix wave follow-ups (backlinks corruption / malformed paths / type warnings / getPage scoping / queue admission)
 
 - [ ] **P2 — migrate the remaining fs writers to core/atomic-write.** **What:**

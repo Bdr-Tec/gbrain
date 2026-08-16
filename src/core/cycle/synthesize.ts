@@ -894,7 +894,7 @@ export async function runPhaseSynthesize(
           }
         }
       } catch (e) {
-        process.stderr.write(`[dream] phase-end embed backfill failed (embed --stale will catch up): ${e instanceof Error ? e.message : String(e)}\n`);
+        process.stderr.write(`[dream] phase-end embed backfill failed (the stale-embed sweep will catch up): ${e instanceof Error ? e.message : String(e)}\n`);
       }
     }
 

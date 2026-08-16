@@ -588,7 +588,8 @@ export async function autoLinkWrittenPage(
 ): Promise<void> {
   try {
     if (!(await isAutoLinkEnabled(engine))) return;
-    const page = await engine.getPage(slug, opts?.sourceId ? { sourceId: opts.sourceId } : undefined);
+    // Scope the read to the write's source (mirrors putPage's schema default).
+    const page = await engine.getPage(slug, { sourceId: opts?.sourceId ?? 'default' });
     if (!page) return;
     await runAutoLink(engine, slug, {
       type: page.type,

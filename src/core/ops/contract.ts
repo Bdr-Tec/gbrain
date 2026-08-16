@@ -302,10 +302,12 @@ export interface OperationContext {
   /**
    * #4216 — defer chunk embeddings on put_page writes: importFromContent runs
    * noEmbed and the standing embed machinery (embed phase / phase-end
-   * backfill / `embed --stale`) picks the chunks up via the
+   * backfill / the stale-embed sweep) picks the chunks up via the
    * `embedding IS NULL` partial index. Set ONLY by server-side dispatchers
    * (the oneshot runner's programmatic writes); never hydrated from any wire
-   * payload, so remote callers cannot toggle it.
+   * payload, so remote callers cannot toggle it. (Flag spelled without dashes
+   * here on purpose — the flag-registry generator harvests bare dash-dash
+   * tokens from comments.)
    */
   deferEmbeds?: boolean;
   /**
