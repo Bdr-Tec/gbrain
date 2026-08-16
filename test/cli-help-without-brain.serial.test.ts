@@ -29,6 +29,7 @@ const HELP_WITHOUT_BRAIN = [
   'jobs',
   // #4152: dream answers --help (and the retriage subverb help) engine-free.
   'dream',
+  'sources',
 ];
 
 /**
