@@ -361,6 +361,12 @@ export function makeSubagentHandler(deps: SubagentDeps) {
 
     // v0.38 S1.5 — gateway path. Route here when the feature flag is on.
     if (useGatewayLoop) {
+      // OV-10: provider-derived lease key. Anthropic-family models keep the
+      // legacy 'anthropic:messages' bucket (one shared ceiling per API, not
+      // one per code path); everything else gets its own recipe bucket.
+      const recipeId = recipeIdFromModel(model);
+      const gatewayLeaseKey = deps.rateLeaseKey
+        ?? (recipeId === 'anthropic' ? DEFAULT_RATE_KEY : `${recipeId}:chat`);
       return await runSubagentViaGateway({
         engine,
         ctx,
@@ -370,6 +376,9 @@ export function makeSubagentHandler(deps: SubagentDeps) {
         toolDefs,
         maxTurns,
         maxOutputTokens,
+        leaseKey: gatewayLeaseKey,
+        maxConcurrent,
+        leaseTtlMs,
       });
     }
 
@@ -892,6 +901,17 @@ interface GatewayRunArgs {
   maxTurns: number;
   /** #2778: per-turn output-token cap (resolved by resolveMaxOutputTokens). */
   maxOutputTokens: number;
+  /**
+   * #4194/CDX-7 — per-turn rate-lease parameters. Pre-fix the gateway path
+   * made provider calls with no lease at all (the legacy loop's acquisition
+   * lives inside its own turn loop), so inline_concurrency > 1 could exceed
+   * the provider ceiling. Key is provider-derived (OV-10): Anthropic models
+   * share the legacy 'anthropic:messages' bucket; other providers get their
+   * own '<recipeId>:chat' bucket instead of contending for Anthropic slots.
+   */
+  leaseKey: string;
+  maxConcurrent: number;
+  leaseTtlMs: number;
 }
 
 /**
@@ -909,7 +929,7 @@ interface GatewayRunArgs {
  * reconciler sees both shapes uniformly.
  */
 async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResult> {
-  const { engine, ctx, data, model, systemPrompt, toolDefs, maxTurns, maxOutputTokens } = args;
+  const { engine, ctx, data, model, systemPrompt, toolDefs, maxTurns, maxOutputTokens, leaseKey, maxConcurrent, leaseTtlMs } = args;
 
   // Map ToolDef → ChatToolDef (gateway shape). The gateway's chat() bridges
   // this to provider-specific tool definitions via the Vercel AI SDK.
@@ -1036,6 +1056,17 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
     maxTokens: maxOutputTokens,
     abortSignal: ctx.signal,
     cacheSystem,
+    // #4194/CDX-7: every provider round-trip holds a rate-lease slot (worker
+    // parity with the legacy loop's per-turn acquisition). Lease-full throws
+    // RateLeaseUnavailableError out of the loop → worker/inline-drain requeue
+    // WITHOUT burning an attempt.
+    acquireTurnPermit: async () => {
+      const lease = await acquireLease(engine, leaseKey, ctx.id, maxConcurrent, { ttlMs: leaseTtlMs });
+      if (!lease.acquired) {
+        throw new RateLeaseUnavailableError(leaseKey, lease.activeCount, lease.maxConcurrent);
+      }
+      return () => releaseLease(engine, lease.leaseId!).catch(() => { /* best-effort */ });
+    },
     // ALWAYS pass replayState (even on fresh runs) so the gateway loop's
     // messageIdx counter starts at `nextMessageIdx` (1 on fresh, after the
     // seed user write above). Without this, the loop defaults to messageIdx=0

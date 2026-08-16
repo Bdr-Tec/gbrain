@@ -56,9 +56,12 @@ import { isQueueQuotaExceededError } from '../minions/admission.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
-import { makeSubagentHandler, RateLeaseUnavailableError } from '../minions/handlers/subagent.ts';
-import type { MinionJobInput, MinionJobContext, MinionHandler, SubagentHandlerData } from '../minions/types.ts';
-import { UnrecoverableError } from '../minions/types.ts';
+import type { MinionJobInput, SubagentHandlerData } from '../minions/types.ts';
+import { runSubagentsInline, runDrainRenewalTick, percentile, INLINE_LOCK_MS } from './inline-drain.ts';
+
+// Re-exports: the drain was peeled to inline-drain.ts (dream-wave C7);
+// patterns.ts and the __testing surface import from here unchanged.
+export { runSubagentsInline, runDrainRenewalTick };
 import { discoverTranscripts, DEFAULT_EXCLUDE_PATTERNS, type DiscoveredTranscript } from './transcript-discovery.ts';
 import { serializeMarkdown, serializePageToMarkdown } from '../markdown.ts';
 import type { Page, PageType } from '../types.ts';
@@ -289,55 +292,6 @@ export function rewriteChunkedSlug(slug: string, hash6: string, idx: number): st
 
 // ── Public entry ──────────────────────────────────────────────────────
 
-/**
- * One drain-loop lock-renewal tick, extracted for hermetic tests (worker.ts
- * parity is `runLockRenewalTick`; this is the deliberately simpler best-effort
- * variant — no audit channel, no reconnect, no time-based give-up).
- *
- * Fixes the issue #6 abandoned-racer class in the cycle drain: the previous
- * inline tick had no per-call timeout, so a hung renewLock stacked one
- * checked-out pool slot per interval firing forever. Now each call carries an
- * AbortSignal that is aborted when the timeout wins the race (the query is
- * cancelled and its slot released), and callers guard re-entrancy so at most
- * one renewal is in flight.
- *
- * Returns after the renewal settles or times out; a `false` renewal invokes
- * `onLost` (token fence lost — caller aborts the handler). Errors and
- * timeouts are swallowed: best-effort, the next tick retries.
- */
-export async function runDrainRenewalTick(
-  renewLock: (
-    id: number,
-    lockToken: string,
-    lockMs: number,
-    opts?: { signal?: AbortSignal },
-  ) => Promise<boolean>,
-  jobId: number,
-  lockToken: string,
-  lockMs: number,
-  onLost: () => void,
-  callTimeoutMs: number,
-): Promise<void> {
-  const callAbort = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  try {
-    const ok = await Promise.race([
-      renewLock(jobId, lockToken, lockMs, { signal: callAbort.signal }),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          callAbort.abort();
-          reject(new Error(`renewLock timed out after ${callTimeoutMs}ms`));
-        }, callTimeoutMs);
-      }),
-    ]);
-    if (!ok) onLost();
-  } catch {
-    /* best-effort; next tick retries */
-  } finally {
-    if (timer != null) clearTimeout(timer);
-  }
-}
-
 export interface SynthesizePhaseOpts {
   brainDir: string;
   dryRun: boolean;
@@ -373,260 +327,6 @@ export interface SynthesizePhaseOpts {
    * run without a corpus). Never reads or writes config.
    */
   once?: boolean;
-}
-
-const INLINE_LOCK_MS = 30_000;
-
-/**
- * Drain this phase's private child queue inline: drive the same claim → run →
- * complete/fail loop a worker would perform, from the parent's own slot.
- *
- * Why inline on BOTH engines:
- *   - PGLite: no separate Minions worker can run at all (the embedded
- *     data-dir holds an exclusive file lock), so children would sit in
- *     'waiting' until waitForCompletion times out.
- *   - Postgres (#2050): the parent phase itself runs as a job inside a
- *     `jobs work` process. A worker whose slots are all occupied by such
- *     parents (autopilot spawns its drain worker at the default
- *     concurrency=1) can never claim the child the parent is blocking on —
- *     a structural self-deadlock. Running children inline means a child
- *     never needs a worker slot, so the deadlock is impossible at ANY
- *     concurrency, and no extra DB-pool pressure is added: the child's work
- *     replaces the parent's idle waitForCompletion polling in the slot the
- *     parent already holds.
- *
- * `yieldDuringPhase` is ticked on a 60s interval while a child runs so the
- * 5-min cycle lock TTL keeps refreshing during long (up to 30-min) children.
- * The child's own claim lock is heartbeated at lockMs/3 (worker cadence
- * parity) — on Postgres a concurrent worker sweeps handleStalled() across
- * ALL queues, so without renewal any child running longer than lockMs would
- * be requeued mid-run and stall-churned to dead.
- */
-export async function runSubagentsInline(
-  engine: BrainEngine,
-  queue: MinionQueue,
-  queueName: string,
-  yieldDuringPhase?: () => Promise<void>,
-  handler: MinionHandler = makeSubagentHandler({ engine }),
-  lockMs: number = INLINE_LOCK_MS,
-): Promise<void> {
-  // #3555 interaction: the drain's queue ops used to be bare awaits, so a
-  // transient pooler reap mid-drain threw out of the loop and stranded the
-  // remaining children in this per-run private queue — which no worker will
-  // ever claim. Mirror the worker's recovery: on a retryable connection
-  // error, rebuild the pool (shared reconnectAfterConnectionError) and retry
-  // the loop; non-retryable errors still propagate (real bug → phase fails).
-  const MAX_CONN_ERROR_STREAK = 5;
-  let connErrorStreak = 0;
-  let sawConnError = false;
-  const recoverOrThrow = async (site: string, e: unknown): Promise<void> => {
-    if (!isRetryableConnError(e) || ++connErrorStreak > MAX_CONN_ERROR_STREAK) throw e;
-    sawConnError = true;
-    const msg = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`[dream] inline drain ${site} hit a connection error; reconnecting and retrying: ${msg}\n`);
-    await reconnectAfterConnectionError(engine, `inline-${site}`, e);
-    // Small cooperative backoff (setTimeout keeps the cycle-lock keepalive
-    // and any concurrent timers firing) before the loop retries.
-    await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(50, Math.floor(lockMs / 3)))));
-  };
-
-  while (true) {
-    const lockToken = randomUUID();
-    let job: Awaited<ReturnType<MinionQueue['claim']>>;
-    try {
-      // Housekeeping a worker would normally perform, so child rows can reach
-      // terminal states (delayed retries promoted, timeouts dead-lettered)
-      // before the synth parent enters waitForCompletion polling.
-      await queue.promoteDelayed();
-      await queue.handleStalled();
-      await queue.handleTimeouts();
-      await queue.handleWallClockTimeouts(lockMs);
-
-      job = await queue.claim(lockToken, lockMs, queueName, ['subagent']);
-    } catch (e) {
-      await recoverOrThrow('queue-ops', e);
-      continue;
-    }
-    connErrorStreak = 0;
-    if (!job) {
-      if (!sawConnError) return;
-      // A connection-error window may have left a child 'active' under a
-      // lock nobody renews (a claim that committed but whose row never
-      // reached us, or a lost outcome write below). handleStalled() at the
-      // loop top requeues it once the lock expires (≤ lockMs), so only exit
-      // once the queue is actually quiet.
-      let active = 0;
-      try {
-        const rows = await engine.executeRaw<{ n: number }>(
-          `SELECT count(*)::int AS n FROM minion_jobs WHERE queue = $1 AND status = 'active'`,
-          [queueName],
-        );
-        active = rows[0]?.n ?? 0;
-      } catch (e) {
-        await recoverOrThrow('active-check', e);
-        continue;
-      }
-      if (active === 0) return;
-      await new Promise((r) => setTimeout(r, 1000));
-      continue;
-    }
-
-    const abort = new AbortController();
-    const shutdown = new AbortController();
-    const context: MinionJobContext = {
-      id: job.id,
-      name: job.name,
-      data: job.data,
-      attempts_made: job.attempts_made,
-      signal: abort.signal,
-      deadlineAtMs: job.timeout_at != null ? job.timeout_at.getTime() : null,
-      shutdownSignal: shutdown.signal,
-      updateProgress: async (progress: unknown) => {
-        await queue.updateProgress(job.id, lockToken, progress);
-      },
-      updateTokens: async (tokens) => {
-        await queue.updateTokens(job.id, lockToken, tokens);
-      },
-      log: async (message) => {
-        const value = typeof message === 'string' ? message : JSON.stringify(message);
-        await engine.executeRaw(
-          `UPDATE minion_jobs SET stacktrace = COALESCE(stacktrace, '[]'::jsonb) || to_jsonb($1::text),
-            updated_at = now()
-           WHERE id = $2 AND status = 'active' AND lock_token = $3`,
-          [value, job.id, lockToken],
-        );
-      },
-      isActive: async () => {
-        const rows = await engine.executeRaw<{ id: number }>(
-          `SELECT id FROM minion_jobs WHERE id = $1 AND status = 'active' AND lock_token = $2`,
-          [job.id, lockToken],
-        );
-        return rows.length > 0;
-      },
-      readInbox: async () => queue.readInbox(job.id, lockToken),
-    };
-
-    // Per-job deadline enforcement (worker.ts parity). While the drain loop
-    // awaits the handler, the handleTimeouts sweep above can't run, so nothing
-    // else can stop a child that blows past timeout_ms — the handler only
-    // stops when ctx.signal fires. Derive the delay from the claim-time
-    // timeout_at stamp so timer, DB sweeper, and deadlineAtMs agree.
-    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
-    if (job.timeout_ms != null) {
-      const delayMs = job.timeout_at != null
-        ? Math.max(0, job.timeout_at.getTime() - Date.now())
-        : job.timeout_ms;
-      timeoutTimer = setTimeout(() => {
-        if (!abort.signal.aborted) abort.abort(new Error('timeout'));
-      }, delayMs);
-    }
-
-    // Cycle-lock keepalive while the child runs (best-effort, never throws).
-    const keepalive = yieldDuringPhase
-      ? setInterval(() => { yieldDuringPhase().catch(() => { /* best-effort */ }); }, 60_000)
-      : null;
-    // #2050: heartbeat the child's claim lock while the handler runs so a
-    // concurrent Postgres worker's handleStalled() sweep (all queues, not
-    // just its own) can't requeue a live child. A false return means the row
-    // was cancelled or reclaimed — abort the handler. Errors are swallowed
-    // (best-effort; the next tick retries), never an unhandledRejection.
-    // Re-entrancy guard + per-call cancellation via runDrainRenewalTick: a
-    // hung renewLock no longer stacks a fresh checked-out pool slot per
-    // interval firing (issue #6 abandoned-racer class).
-    let drainTickInFlight = false;
-    const renewTimer = setInterval(() => {
-      if (drainTickInFlight) return;
-      drainTickInFlight = true;
-      void runDrainRenewalTick(
-        (id, tok, ms, opts) => queue.renewLock(id, tok, ms, opts),
-        job.id,
-        lockToken,
-        lockMs,
-        () => {
-          if (!abort.signal.aborted) abort.abort(new Error('lock-renewal-failed'));
-        },
-        Math.max(1000, Math.floor(lockMs / 3)),
-      ).finally(() => {
-        drainTickInFlight = false;
-      });
-    }, Math.max(50, Math.floor(lockMs / 3)));
-    // Run, then record — separated so a completeJob connection error can't
-    // masquerade as a handler failure, and a failJob connection error can't
-    // escape the drain and strand the remaining children (worker.ts #1720
-    // parity: reconnect + retry the recording once; if it still fails, leave
-    // the row for the loop's own handleStalled to requeue after lock expiry).
-    let result: unknown;
-    let handlerErr: unknown;
-    let handlerRan = false;
-    try {
-      result = await handler(context);
-      handlerRan = true;
-    } catch (e) {
-      handlerErr = e;
-    }
-    const record = async (): Promise<void> => {
-      if (handlerRan) {
-        await queue.completeJob(
-          job.id,
-          lockToken,
-          result != null ? (typeof result === 'object' ? result as Record<string, unknown> : { value: result }) : undefined,
-        );
-        return;
-      }
-      // Worker-parity outcome routing (#4217 CDX-3 + #4194):
-      //   - RateLeaseUnavailableError → delayed requeue WITHOUT burning an
-      //     attempt (mirrors worker.ts's releaseLeaseFullJob path; matters
-      //     once the drain runs concurrent loops against a shared lease cap).
-      //   - UnrecoverableError → dead immediately (retry is provably futile —
-      //     e.g. all-writes-failed accounting; pre-fix the drain retried these
-      //     to exhaustion, exactly the incident-churn #4217 describes).
-      //   - Timeout stays terminal (handleTimeouts parity), never delayed.
-      if (handlerErr instanceof RateLeaseUnavailableError) {
-        const leaseBackoffMs = 1000 + Math.floor(Math.random() * 2000);
-        const released = await queue.releaseLeaseFullJob(
-          job.id, lockToken, handlerErr.message, leaseBackoffMs,
-        );
-        if (released) return;
-        // Lock-token mismatch (stall sweep won) — fall through to failJob,
-        // which no-ops under the same fence.
-      }
-      const timedOut = abort.signal.aborted;
-      const errorText = timedOut ? 'timeout exceeded' : (handlerErr instanceof Error ? handlerErr.message : String(handlerErr));
-      const isUnrecoverable = handlerErr instanceof UnrecoverableError;
-      const attemptsExhausted = job.attempts_made + 1 >= job.max_attempts;
-      await queue.failJob(
-        job.id,
-        lockToken,
-        errorText,
-        timedOut || isUnrecoverable || attemptsExhausted ? 'dead' : 'delayed',
-        0,
-      );
-    };
-    try {
-      try {
-        await record();
-      } catch (recordErr) {
-        if (!isRetryableConnError(recordErr)) throw recordErr;
-        sawConnError = true;
-        const msg = recordErr instanceof Error ? recordErr.message : String(recordErr);
-        process.stderr.write(`[dream] inline drain: recording job ${job.id} outcome hit a connection error; reconnecting and retrying once: ${msg}\n`);
-        await reconnectAfterConnectionError(engine, 'inline-record', recordErr);
-        try {
-          await record();
-        } catch (retryErr) {
-          // Leave the row to the loop's own handleStalled: the claim lock
-          // stops renewing (finally clears renewTimer), expires within
-          // lockMs, and the next iteration requeues it on a live pool.
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          process.stderr.write(`[dream] inline drain: outcome recording retry for job ${job.id} also failed (${retryMsg}); leaving the row for stall requeue\n`);
-        }
-      }
-    } finally {
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-      if (keepalive) clearInterval(keepalive);
-      clearInterval(renewTimer);
-    }
-  }
 }
 
 export async function runPhaseSynthesize(
@@ -1059,7 +759,21 @@ export async function runPhaseSynthesize(
     // terminal child states instead of polling waiters until
     // subagentWaitTimeoutMs expires. Runs on BOTH engines — on Postgres the
     // parent job otherwise deadlocks a fully-occupied worker (#2050).
-    await runSubagentsInline(engine, queue, childQueueName, opts.yieldDuringPhase);
+    // #4194: bounded concurrency on Postgres; PGLite is FORCED serial (the
+    // embedded engine is single-process/exclusive — concurrent loops would
+    // contend on one WASM instance for zero gain).
+    let effectiveConcurrency = Math.min(config.inlineConcurrency, childIds.length);
+    if (engine.kind === 'pglite' && effectiveConcurrency > 1) {
+      process.stderr.write(
+        `[dream] dream.synthesize.inline_concurrency=${config.inlineConcurrency} ignored on PGLite (exclusive engine); draining serially.\n`,
+      );
+      effectiveConcurrency = 1;
+    }
+    const drainStartedAt = Date.now();
+    await runSubagentsInline(
+      engine, queue, childQueueName, opts.yieldDuringPhase,
+      undefined, undefined, effectiveConcurrency,
+    );
 
     // Wait for every child to reach a terminal state. Tick yieldDuringPhase
     // every 5 min so the cycle lock TTL refreshes.
@@ -1122,8 +836,82 @@ export async function runPhaseSynthesize(
       await writeSummaryPage(engine, opts.brainDir, summarySlug, summaryDate, writtenSlugs, childOutcomes, cycleSourceId);
     }
 
-    // Write completion timestamp ON SUCCESS only.
-    await engine.setConfig('dream.synthesize.last_completion_ts', new Date().toISOString());
+    // #4194 telemetry: queue-wait + runtime percentiles from the children's
+    // own timestamps, so a slow-but-healthy cycle is observable while it
+    // drains and a concurrency change shows up as a queue-wait drop.
+    let queueWaitP50: number | null = null;
+    let queueWaitP95: number | null = null;
+    let runtimeP50: number | null = null;
+    let runtimeP95: number | null = null;
+    try {
+      const timing = await engine.executeRaw<{ created_at: Date | string; started_at: Date | string | null; finished_at: Date | string | null }>(
+        `SELECT created_at, started_at, finished_at FROM minion_jobs WHERE id = ANY($1::bigint[])`,
+        [childIds],
+      );
+      const ts = (v: Date | string | null): number | null => v == null ? null : (v instanceof Date ? v.getTime() : new Date(v).getTime());
+      const waits: number[] = [];
+      const runtimes: number[] = [];
+      for (const row of timing) {
+        const created = ts(row.created_at);
+        const started = ts(row.started_at);
+        const finished = ts(row.finished_at);
+        if (created != null && started != null && started >= created) waits.push(started - created);
+        if (started != null && finished != null && finished >= started) runtimes.push(finished - started);
+      }
+      queueWaitP50 = percentile(waits, 50);
+      queueWaitP95 = percentile(waits, 95);
+      runtimeP50 = percentile(runtimes, 50);
+      runtimeP95 = percentile(runtimes, 95);
+    } catch { /* telemetry is best-effort */ }
+
+    // CDX-4 phase outcome gate: dead children must not masquerade as a clean
+    // phase. Vocabulary discipline: 'dead'/'cancelled' are TERMINAL failures
+    // (nothing will ever be written for that key); 'timeout' means the PARENT
+    // stopped waiting — the child's real outcome is unknown and may still
+    // land, so it degrades the phase but is never grounds for the ALL-DEAD
+    // error. ALL children terminally failed → the phase itself failed (mirror
+    // patterns.ts's outcome gate — "22 dead jobs, zero pages, phase ok" was
+    // barely better than the #4217 incident). ANY child non-completed → the
+    // cooldown stamp is SKIPPED: dead jobs release their idempotency keys
+    // (queue.ts), so the next nightly run retries exactly the failed
+    // transcripts instead of being suppressed for cooldown_hours.
+    const deadChildren = childOutcomes.filter(o => o.status === 'dead' || o.status === 'cancelled');
+    const failedChildren = childOutcomes.filter(o => o.status !== 'completed');
+    if (childOutcomes.length > 0 && deadChildren.length === childOutcomes.length) {
+      return failed(makeError('InternalError', 'SYNTH_ALL_CHILDREN_DEAD',
+        `all ${childOutcomes.length} synthesis child job(s) ended '${deadChildren[0].status}' ` +
+        `(${deadChildren.map(o => `${o.jobId}:${o.status}`).slice(0, 5).join(', ')}${deadChildren.length > 5 ? ', …' : ''}); ` +
+        `nothing was written — see minion_jobs error_text for the cause`),
+        // Keep fan-out observability on the failure path: operators (and the
+        // fan-out-shape tests) still see what was submitted and how it died.
+        {
+          transcripts_discovered: transcripts.length,
+          children_submitted: childIds.length,
+          child_outcomes: childOutcomes,
+          skips: skipReports,
+          verdicts,
+          triage: triageDetails,
+          synthesis: {
+            jobs: childIds.length,
+            max_turns_config: config.maxTurns,
+            inline_concurrency_config: config.inlineConcurrency,
+            inline_concurrency_effective: effectiveConcurrency,
+            dead_jobs: deadChildren.length,
+            degraded: true,
+          },
+        });
+    }
+
+    // Write completion timestamp ON SUCCESS only — and only when every child
+    // completed (CDX-4: the cooldown must not suppress the retry of failed or
+    // still-unknown keys).
+    if (failedChildren.length === 0) {
+      await engine.setConfig('dream.synthesize.last_completion_ts', new Date().toISOString());
+    } else {
+      process.stderr.write(
+        `[dream] synthesize: ${failedChildren.length}/${childOutcomes.length} child job(s) did not complete — cooldown NOT stamped so the next run retries them.\n`,
+      );
+    }
 
     const ms = Date.now() - start;
     const submittedTranscripts = worthProcessing.length - skipReports.length;
@@ -1155,6 +943,17 @@ export async function runPhaseSynthesize(
         avg_turns: turnsSamples.length > 0
           ? Math.round((turnsSamples.reduce((a, o) => a + o.turns, 0) / turnsSamples.length) * 10) / 10
           : null,
+        // #4194 drain observability.
+        inline_concurrency_config: config.inlineConcurrency,
+        inline_concurrency_effective: effectiveConcurrency,
+        drain_ms: Date.now() - drainStartedAt,
+        queue_wait_ms_p50: queueWaitP50,
+        queue_wait_ms_p95: queueWaitP95,
+        child_runtime_ms_p50: runtimeP50,
+        child_runtime_ms_p95: runtimeP95,
+        // CDX-4: dead-child visibility (0 on a clean run).
+        dead_jobs: failedChildren.length,
+        degraded: failedChildren.length > 0,
       },
     });
   } catch (e) {
@@ -1216,6 +1015,14 @@ export interface SynthConfig {
   outputRoot: string;
   subagentTimeoutMs: number;
   subagentWaitTimeoutMs: number;
+  /**
+   * #4194: concurrent inline-drain loops for this phase's private child
+   * queue. Config `dream.synthesize.inline_concurrency`, default 1 (serial —
+   * the pre-#4194 behavior), clamped [1,8]. PGLite is FORCED serial at the
+   * callsite (exclusive-engine safety). Provider ceilings stay with the rate
+   * leases — this knob only parallelizes the drain machinery.
+   */
+  inlineConcurrency: number;
 }
 
 /** #2415: shared output-root resolution (synthesize + patterns phases). */
@@ -1292,6 +1099,10 @@ export async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig>
     'dream.synthesize.subagent_wait_timeout_ms',
     DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS,
   );
+  // #4194: clamp [1,8] — 8 stays under the default lease cap (32) so a
+  // misconfigured pool can never self-starve the provider bucket.
+  const inlineConcurrency = Math.max(1, Math.min(8,
+    Math.floor(await getNumberConfig(engine, 'dream.synthesize.inline_concurrency', 1)) || 1));
 
   let excludePatterns: string[] = [...DEFAULT_EXCLUDE_PATTERNS];
   if (excludeStr) {
@@ -1341,6 +1152,7 @@ export async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig>
     outputRoot: await loadOutputRoot(engine),
     subagentTimeoutMs,
     subagentWaitTimeoutMs,
+    inlineConcurrency,
   };
 }
 
@@ -2646,13 +2458,13 @@ function skipped(reason: string, summary: string): PhaseResult {
   };
 }
 
-function failed(error: PhaseError): PhaseResult {
+function failed(error: PhaseError, details: Record<string, unknown> = {}): PhaseResult {
   return {
     phase: 'synthesize',
     status: 'fail',
     duration_ms: 0,
     summary: 'synthesize phase failed',
-    details: {},
+    details,
     error,
   };
 }

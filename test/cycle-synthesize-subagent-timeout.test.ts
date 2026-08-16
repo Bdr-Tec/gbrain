@@ -73,7 +73,12 @@ describe('runPhaseSynthesize subagent timeout config', () => {
         dryRun: false,
       });
 
-      expect(result.status).toBe('ok');
+      // CDX-4 (#4217 family): the child dies in this keyless harness, and a
+      // run whose EVERY child died is now an honest phase failure instead of
+      // 'ok'. This test's subject — the timeout config flowing onto the job
+      // row — is asserted below regardless.
+      expect(result.status).toBe('fail');
+      expect(result.error?.code).toBe('SYNTH_ALL_CHILDREN_DEAD');
 
       const jobs = await engine.executeRaw<{ timeout_ms: string | number | null }>(
         `SELECT timeout_ms

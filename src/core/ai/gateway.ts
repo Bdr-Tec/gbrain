@@ -3660,6 +3660,15 @@ export interface ToolLoopOpts {
 
   /** Optional per-call heartbeat for observability. */
   onHeartbeat?: (event: string, data: Record<string, unknown>) => void;
+  /**
+   * #4194/CDX-7 — per-turn provider permit. Called before EVERY provider
+   * round-trip; the returned function releases the permit (invoked in a
+   * finally around the call). Throwing (e.g. RateLeaseUnavailableError when
+   * the provider bucket is full) aborts the turn WITHOUT consuming it — the
+   * job requeues under the caller's lease-full handling. Absent = unmetered
+   * (CLI one-shots, tests).
+   */
+  acquireTurnPermit?: () => Promise<() => Promise<void> | void>;
 }
 
 export type ToolLoopStopReason = 'end' | 'length' | 'max_turns' | 'refusal' | 'content_filter' | 'aborted' | 'unrecoverable';
@@ -3720,6 +3729,17 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
 
     opts.onHeartbeat?.('turn_start', { turn_idx: turnIdx });
 
+    // #4194/CDX-7: per-turn provider permit. Pre-hook, the gateway path made
+    // provider calls with NO rate lease at all — the legacy Anthropic loop
+    // acquired one per turn, so "leases are the API ceiling" was silently
+    // false for every gateway-routed job the moment the inline drain (or a
+    // worker fleet) ran concurrently. The hook acquires BEFORE the provider
+    // call and releases in finally; an acquire failure (lease full)
+    // propagates to the caller's requeue-without-attempt-burn handling.
+    let releaseTurnPermit: (() => Promise<void> | void) | null = null;
+    if (opts.acquireTurnPermit) {
+      releaseTurnPermit = await opts.acquireTurnPermit();
+    }
     let chatResult: ChatResult;
     try {
       chatResult = await chat({
@@ -3737,6 +3757,8 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
+    } finally {
+      if (releaseTurnPermit) await Promise.resolve(releaseTurnPermit()).catch(() => { /* best-effort */ });
     }
 
     totalUsage.input_tokens += chatResult.usage.input_tokens;
