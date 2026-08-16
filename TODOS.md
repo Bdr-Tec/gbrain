@@ -8,6 +8,38 @@
 - [ ] **Keyless cold-home auto-init (FIRST-LIGHT Act 1).** A plugin user with the binary but no brain gets an actionable "No brain configured. Run: gbrain init" fast-fail from the plugin's MCP server (pinned in the codex plugin door). A `serve --auto-init-pglite` opt-in (or manifest-level flag) could make the first session keyless-magic instead — weigh against the silent-DB-creation consent question. Start: src/cli.ts connectEngine + the plugin manifests' args. Priority: P2.
 - [ ] **Additional harness plugin lanes (E6).** The manifest + lockstep-test + coexistence-detector + real-binary-door pattern is established; candidate next lanes: Gemini CLI extensions, Cursor. Start: mirror .codex-plugin/ + the plugin-doors CI job. Priority: P3.
 - [ ] **Marketplace upgrade re-resolution probe (EV13 residue).** The slim `codex-plugin` branch is force-advanced per release (release.yml publish-codex-plugin). Whether `codex plugin marketplace upgrade` re-resolves a force-moved branch ref (vs needing remove+re-add) must be verified against the REAL remote after the first release ships, and docs/mcp/CODEX.md's upgrade section adjusted if sticky. Priority: P2 (post-first-release check).
+## #4145 lock-renewal wave follow-ups (filed 2026-08-15)
+
+- [ ] **P2 — Kill or reap the force-evicted handler process.** **What:** when the
+  grace-evict fires for a handler that ignores its AbortSignal, actually
+  terminate the handler's work (LLM loop cancellation vs shell child-tree
+  kill differ per handler class) or track it as a zombie instead of only
+  freeing the inFlight slot. **Why:** today the evicted handler keeps
+  burning CPU/spend on an already-saturated host while the worker claims
+  new work — the #4145 amplification loop — and the duplicate-external-
+  side-effect window during an asymmetric outage is bounded only by
+  handler cooperation, not by `hardEvictMs`. **Context:** deliberately
+  scoped out of the #4145 wave (grace-evict at
+  `src/core/minions/worker.ts` frees the slot; the alternative — retaining
+  the slot until handler exit — re-opens the wedged-slot class D8b closed).
+  Eviction frequency collapsed with verify-before-evict, so this is
+  hygiene, not the incident driver. Kill semantics need their own review.
+  **Effort:** M (human) / S (CC). **Priority:** P2.
+- [ ] **P3 — Worker-level `--lock-duration` flag on `jobs work` + supervisor
+  passthrough.** **What:** a CLI flag for the worker-global default lease,
+  threaded through `buildWorkerArgs` (`src/core/minions/supervisor.ts`).
+  **Why:** convenience only — per-job/per-type leases
+  (`HANDLER_DEFAULT_LOCK_DURATION_MS`, `--lock-duration-ms`) plus the
+  `GBRAIN_LOCK_RENEWAL_*` env knobs already cover every incident-tuning
+  case shipped in the #4145 wave. **Context:** requested shape existed in
+  the issue; deferred because no production caller overrides
+  `lockDuration` and env wins for incident response. **Effort:** S.
+  **Priority:** P3.
+- [ ] **Note for TODO-LR-2 (doctor `lock_renewal_health`, already filed
+  below):** the #4145 wave shipped exactly its inputs — audit events now
+  carry `cause`, `lateness_ms`, `overlap_skips`, `load1`/`cores`, `via`,
+  `deadline_deferred` — so the doctor check can classify starved-worker
+  vs DB-outage windows without new plumbing.
 ## v0.47 SEPTEMBER REMOVAL — ZeroEntropy (filed v0.46.3.0; TARGET: ship 2026-09-04..2026-09-08)
 
 ZeroEntropy's hosted API dies 2026-09-04. v0.46.3.0 deprecated it (split-default:

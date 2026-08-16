@@ -740,9 +740,20 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pgRow.updated_at).toBeInstanceOf(Date);
 
     // markPagesExtractedBatch: stamp one → count drops to 2 on both.
-    const stampAt = new Date().toISOString();
-    await pgEngine.markPagesExtractedBatch([{ slug: 'sp/1', source_id: SRC }], stampAt);
-    await pgliteEngine.markPagesExtractedBatch([{ slug: 'sp/1', source_id: SRC }], stampAt);
+    // Stamp with the row's OWN updated_at_iso (per-ref extractedAt — the
+    // #1768/D4 production semantics used by extractStaleFromDB), NOT client
+    // `new Date()`: the test client's clock and the DB server's clock are
+    // different clocks (docker VM drift under load), so a client-now stamp can
+    // land before the row's server-side `updated_at`, leaving sp/1 flagged
+    // `updated_at > links_extracted_at` and the count stuck at 3.
+    for (const eng of [pgEngine, pgliteEngine]) {
+      const sp1 = (await eng.listStalePagesForExtraction({ batchSize: 10, sourceId: SRC }))
+        .find((r) => r.slug === 'sp/1')!;
+      await eng.markPagesExtractedBatch(
+        [{ slug: 'sp/1', source_id: SRC, extractedAt: sp1.updated_at_iso }],
+        sp1.updated_at_iso,
+      );
+    }
     expect(await pgEngine.countStalePagesForExtraction({ sourceId: SRC })).toBe(2);
     expect(await pgliteEngine.countStalePagesForExtraction({ sourceId: SRC })).toBe(2);
 
