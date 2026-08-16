@@ -87,7 +87,13 @@ describe('v0.36.1.x #1077 — admin register-client supports PKCE public clients
     // UPDATE block (the regex deliberately asserts the post-insert UPDATE
     // is GONE).
     expect(src).toMatch(/validateTokenEndpointAuthMethod\(tokenEndpointAuthMethod\)/);
-    expect(src).toMatch(/registerClientManual\([^)]*validatedAuthMethod[^)]*\)/);
+    // cathedral-6: the route now composes registerScopedClient (the same core
+    // the CLI uses) instead of open-coding registerClientManual + a raw TTL
+    // UPDATE. The atomicity contract is unchanged — the validated method is
+    // threaded through the parsed args into registerClientManual's single
+    // INSERT inside the core; the no-post-insert-UPDATE guard below still
+    // pins the F4 regression.
+    expect(src).toMatch(/registerScopedClient\(sql,\s*engine,\s*name,\s*\{[\s\S]*?tokenEndpointAuthMethod:\s*validatedAuthMethod[\s\S]*?\}/);
     // Regression guard: post-insert UPDATE flipping client_secret_hash to
     // NULL based on a runtime check is exactly the non-atomic pattern T4
     // killed. Re-introducing it brings back codex F4.
