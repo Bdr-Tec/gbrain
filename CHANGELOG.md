@@ -2,6 +2,92 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.13.0] - 2026-08-16
+
+**Seven verified breakages from the live issue queue, fixed at the root.**
+A bun-global install that bricked itself on upgrade, a search process that
+could hang forever at exit, a valid embedding config that failed every save,
+budget caps that could not see a whole class of spend, dream jobs that did
+real work and then died on an id collision, a transcript parser that credited
+one speaker with another's words without telling anyone, and a cycle whose
+clean-completion path was mathematically unreachable. Two of the fixes absorb
+open community PRs by @Masashi-Ono0611 — thank you.
+
+### Fixed
+
+- **Bun-global installs survive upgrades.** `gbrain upgrade` on a
+  `bun add -g` install could leave every subsequent command failing with a
+  raw module-resolution error, because the PGLite runtime assets were only
+  looked up next to gbrain's own files and package managers hoist them
+  elsewhere. Asset lookup is now tiered: the embedded bundle first, then
+  real module resolution, then one actionable error. If you are already
+  stuck on a broken install, reinstall once: `bun add -g gbrain@latest` —
+  from this version on, upgrades stop breaking the install.
+- **Search processes exit cleanly instead of hanging.** A background
+  telemetry write racing process exit could deadlock the embedded database's
+  shutdown permanently (observed as a 10-minute CI kill; a workload that
+  took 19 seconds before the regression). Both engines now settle in-flight
+  background work before closing, the close itself is time-bounded
+  (override: `GBRAIN_PGLITE_CLOSE_TIMEOUT_MS`), and a clean CLI exit now
+  also flushes buffered search telemetry — short-lived CLI calls finally
+  show up in `gbrain search stats`.
+- **Mixed-case embedding model ids work.** `litellm:Qwen/Qwen3-Embedding-4B`
+  — the exact casing the provider requires — never matched the internal
+  dimension tables, so the provider returned native-width vectors and every
+  save failed with a dim mismatch. Model-id matching is now case-folded at
+  every lookup (dimensions, init-time validation, pricing), while wire
+  strings and error messages keep your original casing. Deliberate
+  consequence: a cased Voyage/ZeroEntropy/Perplexity config that was
+  silently producing wrong-width vectors now fails loudly at init with the
+  valid sizes, instead of corrupting quietly.
+- **Query-expansion and image-OCR spend now count against budget caps.**
+  Both paths previously called the model outside the budget boundary:
+  `--max-cost` ceilings under-counted on the default query path and audit
+  ledgers showed nothing for spend that really happened. Every expansion and
+  OCR call now records (including failed attempts, pessimistically), a
+  provider that mis-declares structured-output support stops being re-paid
+  for the same rejection on every query, and malformed usage numbers can no
+  longer poison a budget into never enforcing. Capped runs that previously
+  passed may now hit their ceiling — that is the fix working. (Absorbs
+  PR #4124 by @Masashi-Ono0611.)
+- **Dream and subagent jobs no longer die on tool-call id collisions.**
+  Models driven through the claude-cli provider structurally cannot mint
+  unique tool ids across turns, and a job-wide uniqueness constraint turned
+  the first repeat into a dead job after three doomed retries. gbrain now
+  mints its own ids (never trusting model-authored ones) and a migration
+  retires the constraint, with row identity carried by the per-turn ledger.
+  If you keep a long-running `gbrain jobs work` daemon, restart it after
+  upgrading — a pre-upgrade worker writing into a post-upgrade database
+  will error on tool persistence until it restarts. (Absorbs the rewritten
+  PR #4156 by @Masashi-Ono0611.)
+- **Transcript imports no longer silently misattribute speakers.** A
+  heading-style transcript whose assistant label is outside the recognized
+  set (`## Claude`, `## Assistant Bot`) used to fold that speaker's words
+  into the previous turn and extract facts under the wrong name, with no
+  signal anywhere. The parser now reports folded headings
+  (`unrecognized_headings` in `conversation-parser scan`), and fact
+  extraction declines such pages when attribution would be wrong — visibly,
+  retryably, and without permanently blacklisting the page. Facts extracted
+  before this fix are not auto-corrected: clear the page's extraction audit
+  rows (or edit the page) and re-run to re-extract.
+- **Autopilot cycles complete instead of dying at the deadline.** The
+  propose-takes phase's internal deadline was bit-identical to the job's
+  own kill timer, so the clean partial-completion path could never fire:
+  cycles died on wall-clock, `cycle_freshness` never advanced, and doctor
+  reported a failure that never healed. Phase deadlines now derive from the
+  real remaining job budget (with headroom for the phases that follow),
+  synthesize child jobs are clamped and deferred rather than submitted into
+  a budget they cannot finish in, and a cycle without enough budget says so
+  honestly and retries next tick.
+
+### Changed
+
+- Search-telemetry coverage semantics: clean CLI exits now record; hard
+  kills and over-bound drains still drop their buffer (the coverage note in
+  `gbrain search stats` reflects the new truth).
+- Deferred synthesize transcripts no longer start the 12-hour cooldown or
+  count as processed — they genuinely retry on the next cycle.
+
 ## [0.46.11.0] - 2026-08-16
 
 **Five operational failures from live production brains, fixed at the root.**
