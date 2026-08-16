@@ -41,6 +41,8 @@ test/cli.test.ts	CLI version	2	readFileSync
 test/cli.test.ts	ask alias	2	readFileSync
 test/codex-plugin-manifest.test.ts	codex mcp.json	3	readFileSync
 test/codex-plugin-manifest.test.ts	curated tree membership + scanner guard	5	readFileSync
+test/codex-plugin-manifest.test.ts	generator negative fixtures (a guard that cannot fail is not coverage)	8	readFileSync
+test/codex-plugin-manifest.test.ts	variant ${def.plugin_name} (persona ${personaName})	5	readFileSync
 test/config.test.ts	config source correctness	2	readFileSync
 test/connection-resilience.test.ts	Eng-review D3 — executeRaw has no per-call retry wrapper	3	readFileSync
 test/contextual-retrieval-service-pure.test.ts	inline import contextual synopsis containment	1	readFileSync
