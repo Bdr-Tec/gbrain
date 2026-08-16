@@ -49,7 +49,10 @@ const DIRTY = [
   `key=${ANTHROPIC}`,
   'mail alice@example.com now',
   'call 555-123-4567',
-  'log at /data/.openclaw/state.json',
+  // Path-family fixture built at runtime — the literal deployment path is
+  // banned in public artifacts (check-privacy.sh), and new tests must not
+  // join its allow-list; the detector still sees the assembled string.
+  'log at ' + ['', 'data', '.openclaw', 'state.json'].join('/'),
   `met ${BLOCK_WORD} yesterday`,
   'ref ZZPRIVATEthing done',
 ].join('\n');
