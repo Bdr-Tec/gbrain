@@ -331,4 +331,59 @@ describe('loadConfigWithEngine (Phase 4 / F3)', () => {
       expect(merged?.engine).toBe('pglite');
     });
   });
+
+  // #1475 — `eval.capture` and `eval.scrub_pii` are accepted by
+  // `gbrain config set` (KNOWN_CONFIG_KEYS) and read back by `gbrain config
+  // get` (which queries engine.getConfig directly), but had no DB-merge
+  // branch here. The runtime gate reads the MERGED config
+  // (isEvalCaptureEnabled(ctx.config) in operations.ts), so the write landed,
+  // read back as `true`, and changed nothing — capture stayed off unless
+  // GBRAIN_CONTRIBUTOR_MODE=1 was also exported.
+  describe('eval.* DB-plane merge (#1475)', () => {
+    test('DB eval.capture=true fills in when the file plane is silent', async () => {
+      const base: GBrainConfig = { engine: 'pglite' };
+      const engine = makeEngine({ 'eval.capture': 'true' });
+      const merged = await loadConfigWithEngine(engine, base);
+      expect(merged?.eval?.capture).toBe(true);
+    });
+
+    test('DB eval.capture=false fills in too — the opt-out has to reach the runtime as well', async () => {
+      const base: GBrainConfig = { engine: 'pglite' };
+      const engine = makeEngine({ 'eval.capture': 'false' });
+      const merged = await loadConfigWithEngine(engine, base);
+      expect(merged?.eval?.capture).toBe(false);
+    });
+
+    test('file plane wins over DB (precedence file > DB, same as every other key here)', async () => {
+      const base: GBrainConfig = { engine: 'pglite', eval: { capture: false } };
+      const engine = makeEngine({ 'eval.capture': 'true' });
+      const merged = await loadConfigWithEngine(engine, base);
+      expect(merged?.eval?.capture).toBe(false);
+    });
+
+    test('eval.scrub_pii merges independently of capture', async () => {
+      const base: GBrainConfig = { engine: 'pglite' };
+      const engine = makeEngine({ 'eval.scrub_pii': 'false' });
+      const merged = await loadConfigWithEngine(engine, base);
+      expect(merged?.eval?.scrub_pii).toBe(false);
+      expect(merged?.eval?.capture).toBeUndefined();
+    });
+
+    test('no eval.* keys leaves cfg.eval undefined (no spurious container)', async () => {
+      const base: GBrainConfig = { engine: 'pglite' };
+      const merged = await loadConfigWithEngine(makeEngine({ embedding_multimodal: 'true' }), base);
+      expect(merged?.eval).toBeUndefined();
+    });
+
+    test('engine.getConfig throwing leaves eval.* unset (non-fatal)', async () => {
+      const base: GBrainConfig = { engine: 'pglite' };
+      const engine: FakeEngine = {
+        async getConfig() {
+          throw new Error('config table missing');
+        },
+      };
+      const merged = await loadConfigWithEngine(engine, base);
+      expect(merged?.eval).toBeUndefined();
+    });
+  });
 });

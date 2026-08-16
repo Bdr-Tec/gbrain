@@ -1312,9 +1312,30 @@ export async function makeContext(engine: BrainEngine, params: Record<string, un
     // to the cross-source view (D16 back-compat path).
     sourceId = undefined;
   }
+  // #1475 — the operation context must carry the DB plane, not just file/env.
+  // `gbrain config set` writes DB-plane keys and `gbrain config get` reads
+  // them back, but every op-side gate reads `ctx.config` — so building this
+  // from the sync, file-only `loadConfig()` made those writes inert
+  // (`eval.capture` was the reported case: set, echoed back, still off).
+  // connectEngine already re-merges after connect, but it keeps the result to
+  // itself (env stashes + gateway reconfigure) and returns only the engine.
+  //
+  // Fail-open: a brain mid-migration whose config table is missing must still
+  // get a usable context, so a merge failure falls back to the file plane.
+  // This runs once per invocation (single call site) alongside the sourceId
+  // resolution that is already DB I/O, and adds point lookups on a live
+  // connection — the same reads connectEngine performs.
+  const fileConfig = loadConfig() || { engine: 'postgres' as const };
+  let mergedConfig = fileConfig;
+  try {
+    mergedConfig = (await loadConfigWithEngine(engine, fileConfig)) ?? fileConfig;
+  } catch {
+    mergedConfig = fileConfig;
+  }
+
   return {
     engine,
-    config: loadConfig() || { engine: 'postgres' },
+    config: mergedConfig,
     logger: { info: console.log, warn: console.warn, error: console.error },
     dryRun: (params.dry_run as boolean) || false,
     // Local CLI invocation — the user owns the machine; do not apply remote-caller
