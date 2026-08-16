@@ -646,9 +646,47 @@ const send_job_message: Operation = {
 };
 
 
+/**
+ * CLI→MCP gap-closure wave — `gbrain jobs stats` was the one jobs verb with
+ * no MCP equivalent (skills/minion-orchestrator documented the gap). Admin
+ * scope for jobs-family consistency (every op above is admin; HTTP callers
+ * need an admin-scope token). User story: an orchestrating agent checking
+ * queue health / catching the silent-halt wedge without shelling out.
+ */
+const get_job_stats: Operation = {
+  name: 'get_job_stats',
+  description:
+    'Job queue statistics. PER-BLOCK scoping: by_status and queue_health are GLOBAL ' +
+    '(unfiltered); by_type is windowed by since_hours; only the wedge block is scoped to ' +
+    'the queue param. wedged: true is the silent-halt signal (a worker is alive but claiming ' +
+    'nothing while work waits) — suggest restarting the jobs supervisor on the brain host. ' +
+    'Host-process diagnostics (renice, backpressure hints) stay on the gbrain jobs stats CLI.',
+  params: {
+    queue: { type: 'string', required: false, description: "Queue for the wedge signature (default 'default'). The other blocks stay global/windowed." },
+    since_hours: { type: 'number', required: false, description: 'Window for the by_type rollup in hours (default 24, clamped 1..720).' },
+  },
+  scope: 'admin',
+  area: 'jobs',
+  handler: async (ctx, p) => {
+    const { withRelationGuard } = await import('./contract.ts');
+    return withRelationGuard(async () => {
+      const { MinionQueue, deriveWedgeSignal } = await import('../minions/queue.ts');
+      const queue = new MinionQueue(ctx.engine);
+      const rawHours = typeof p.since_hours === 'number' && Number.isFinite(p.since_hours) ? p.since_hours : 24;
+      const hours = Math.max(1, Math.min(720, rawHours));
+      const stats = await queue.getStats({
+        since: new Date(Date.now() - hours * 3_600_000),
+        queue: typeof p.queue === 'string' && p.queue.length > 0 ? p.queue : 'default',
+      });
+      const { wedged, wedge_threshold_minutes } = deriveWedgeSignal(stats.wedge);
+      return { schema_version: 1, window_hours: hours, ...stats, wedged, wedge_threshold_minutes };
+    }, 'Job queue statistics (minions schema)');
+  },
+};
+
 // Ops in EXACTLY the canonical `operations` array order.
 export const jobsOperations: Operation[] = [
   submit_job, get_job, list_jobs, cancel_job, retry_job, get_job_progress,
   pause_job, resume_job, replay_job, send_job_message,
-  submit_agent, get_agent_job,
+  submit_agent, get_agent_job, get_job_stats,
 ];

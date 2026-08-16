@@ -65,6 +65,11 @@ export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgr
   // v0.42.58 (#2035 class, caught by the handleCliOnly reachability sweep):
   // full handler at `case 'notability-eval'` but never dispatchable.
   'notability-eval',
+  // #2035 class (wired the #3502 way): `case 'whoknows'` had a live handler
+  // (runWhoknows: ranked table, per-factor explain, thin-client routing) that
+  // was shadowed by find_experts' non-hidden cliHints. The op hint is now
+  // hidden (ops/insights.ts); this entry makes the richer handler dispatch.
+  'whoknows',
 // Agent-bootstrap family (ENG-2 three-touchpoint rule): `bootstrap` + `hook`
 // are ENGINE-FREE (dispatched in handleCliOnly before the connectEngine
 // terminator) and must NEVER enter THIN_CLIENT_REFUSED_COMMANDS. `sweep` is
@@ -75,6 +80,8 @@ export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgr
 // per-subcommand usage stays reachable.
 const CLI_ONLY_SELF_HELP = new Set([
   'upgrade', 'post-upgrade', 'check-update',
+  // whoknows honours --help first (runWhoknows HELP block, whoknows.ts).
+  'whoknows',
   // #3502 sweep: pages + bench print their own usage (pages.ts printHelp,
   // bench-publish.ts printHelp). Both were documented but undispatchable —
   // `pages` had a live handleCliOnly case but was missing from CLI_ONLY
@@ -397,6 +404,15 @@ async function main() {
   if (command === 'search' && ['modes', 'stats', 'tune', 'diagnose'].includes(subArgs[0] ?? '')) {
     const { withTimeout, OperationTimeoutError } = await import('./core/timeout.ts');
     const isDiagnose = subArgs[0] === 'diagnose';
+    // Gap-closure wave [OV6]: thin clients route the read-only dashboard
+    // forms via search_modes/search_stats/search_tune instead of fabricating
+    // a scratch PGLite; --reset/--apply/diagnose fall through to the refusal.
+    const cfgSearch = loadConfig();
+    if (isThinClient(cfgSearch)) {
+      const { routeThinClientCommand } = await import('./commands/thin-client-routing.ts');
+      if (await routeThinClientCommand(cfgSearch!, 'search', subArgs)) return;
+      refuseThinClient('search', cfgSearch!.remote_mcp!.mcp_url);
+    }
     const label = 'gbrain search';
     // diagnose runs real retrieval (keyword + vector + hybrid) so it gets a
     // longer deadline than the read-only dashboard.
@@ -1666,7 +1682,7 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   orphans: "orphans needs the host's brain. Run on the host or use the `find_orphans` MCP tool from your agent.",
   transcripts: 'transcripts is server-private (raw chat exports stay on the host). Read transcripts on the host machine.',
   storage: 'storage operates on the local repo on disk. Run on the host.',
-  takes: 'takes mutate subcommands edit local .md files; routing the read subcommands lands in v0.31.x. For now: use `takes_list` and `takes_search` MCP tools from your agent, or run on the host.',
+  takes: 'takes list/search/scorecard/calibration + add/update/resolve/supersede route to the brain host automatically (takes_* MCP ops). This subcommand (extract/revisit) is host-bound: run it on the host machine.',
   sources: 'sources commands manage local DB + config rows. Per-subcommand thin-client routing lands in v0.31.x. For now: use `sources_list` / `sources_status` MCP tools, or run on the host.',
   sweep: 'sweep runs the serve-resident maintenance passes against the LOCAL engine. Run it on the host (the serve process also runs it automatically).',
   // v0.32 audit additions
@@ -1679,7 +1695,12 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   'code-callees': '`code-callees` has no MCP op yet. Run on the host.',
   // scratch-DB audit additions
   config: "config reads/writes the host brain's config plane. Edit the host's .gbrain/config.json (file-plane keys) or run on the host with GBRAIN_HOME set.",
-  jobs: '`jobs list` and `jobs get <id>` are thin-client routable; this subcommand runs against the host queue. Use the submit_job / list_jobs / get_job MCP tools from your agent, or run on the host with GBRAIN_HOME set.',
+  jobs: '`jobs list`, `jobs get <id>`, and `jobs stats` are thin-client routable; this subcommand runs against the host queue. Use the submit_job / list_jobs / get_job / get_job_stats MCP tools from your agent, or run on the host with GBRAIN_HOME set.',
+  // Gap-closure wave [OV6]: routable subcommands are intercepted before this
+  // hint fires — these fire only for the host-bound remainder.
+  search: '`search modes|stats|tune` route to the brain host automatically (search_modes / search_stats / search_tune MCP ops). The modes reset form, modes with the source flag (the reset dry-run), and tune apply mutate or preview host config, and `diagnose` runs live retrieval — run those on the host.',
+  cache: '`cache stats` routes to the brain host automatically (cache_stats MCP op). clear/prune mutate the host cache — run those on the host.',
+  quarantine: '`quarantine list` routes to the brain host automatically (quarantine_list MCP op). scan/clear are host-bound (bulk re-import; the clear trust decision) — run those on the host.',
 };
 
 /**
@@ -1707,9 +1728,14 @@ async function handleCliOnly(command: string, args: string[]) {
   // hint instead of letting them fail later inside connectEngine or
   // mid-handler. v0.31.1 routes through `refuseThinClient` so every
   // refusal carries an actionable next-step hint (CDX-5 cherry-pick A).
-  if (THIN_CLIENT_REFUSED_COMMANDS.has(command)) {
+  // Gap-closure wave [OV6]: takes/cache/quarantine first try the
+  // per-subcommand MCP routing (engine-free); unhandled subcommands fall
+  // through to the refusal.
+  if (THIN_CLIENT_REFUSED_COMMANDS.has(command) || command === 'cache' || command === 'quarantine') {
     const cfg = loadConfig();
     if (isThinClient(cfg)) {
+      const { routeThinClientCommand } = await import('./commands/thin-client-routing.ts');
+      if (await routeThinClientCommand(cfg!, command, args)) return;
       refuseThinClient(command, cfg!.remote_mcp!.mcp_url);
     }
   }
@@ -2375,6 +2401,11 @@ async function handleCliOnly(command: string, args: string[]) {
         await runJobs(null, args);
         return;
       }
+      if (jobsSub === 'stats') {
+        // Gap-closure wave [OV6]: queue health routes via get_job_stats.
+        const { routeThinClientCommand } = await import('./commands/thin-client-routing.ts');
+        if (await routeThinClientCommand(cfgJobs!, 'jobs', args)) return;
+      }
       refuseThinClient('jobs', cfgJobs!.remote_mcp!.mcp_url);
     }
   }
@@ -2726,12 +2757,6 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'models': {
         const { runModels } = await import('./commands/models.ts');
         await runModels(engine, args);
-        break;
-      }
-      case 'search': {
-        // v0.32.3 search-lite — `gbrain search modes/stats/tune`.
-        const { runSearch } = await import('./commands/search.ts');
-        await runSearch(engine, args);
         break;
       }
       case 'takes': {
@@ -3151,10 +3176,6 @@ export function printOpHelp(op: Operation, invokedName?: string) {
 }
 
 function printHelp() {
-  // Gather shared operations grouped by category
-  const cliNames = Array.from(cliOps.entries())
-    .map(([name, op]) => ({ name, desc: op.description }));
-
   console.log(`gbrain ${VERSION} -- personal knowledge brain
 
 USAGE

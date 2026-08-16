@@ -370,5 +370,117 @@ const query: Operation = {
 };
 
 
+// ---------------------------------------------------------------------------
+// CLI→MCP gap-closure wave — search/cache introspection ops. Read-only views
+// shared with the `gbrain search modes|stats|tune` + `gbrain cache stats` CLI
+// (the builders live in core/search/). User story for each: a thin-client
+// user whose CLI routes these subcommands remotely, or an agent asked to
+// diagnose retrieval quality/cost. Telemetry ops are admin-scoped
+// (operational counters, the get_status_snapshot posture); search_modes is
+// read-scoped (resolved knob values only — agents budget their own calls
+// with it, no usage data).
+// ---------------------------------------------------------------------------
+
+const search_stats: Operation = {
+  name: 'search_stats',
+  description:
+    'Search observability over a window: cache hit rate, intent/mode mix, budget drops, ' +
+    'rank-1 score drift, graph-signals failure counts. Same payload as the search-stats ' +
+    'dashboard JSON. Coverage caveat: telemetry is best-effort (short-lived CLI calls may ' +
+    'not flush), so zero counts can reflect the coverage gap rather than zero usage.',
+  params: {
+    days: { type: 'number', required: false, description: 'Window in days (default 7, clamped 1..365).' },
+  },
+  scope: 'admin',
+  area: 'search',
+  handler: async (ctx, p) => {
+    const { withRelationGuard } = await import('./contract.ts');
+    return withRelationGuard(async () => {
+      const { readSearchStats, readGraphSignalsStats, telemetryCoverage } = await import('../search/telemetry.ts');
+      const rawDays = typeof p.days === 'number' && Number.isFinite(p.days) ? p.days : 7;
+      const days = Math.max(1, Math.min(365, rawDays));
+      const stats = await readSearchStats(ctx.engine, { days });
+      const graph_signals = await readGraphSignalsStats(ctx.engine, days);
+      return {
+        schema_version: 2,
+        ...stats,
+        coverage: telemetryCoverage(),
+        graph_signals,
+        _meta: {
+          metric_glossary: {
+            cache_hit_rate: 'cache_hits / (cache_hits + cache_misses) — fraction of searches that reused a recent answer instead of running fresh',
+            avg_results: 'mean number of result rows returned per search call',
+            avg_tokens: 'mean estimated tokens in the returned chunk text (char/4 heuristic)',
+            total_budget_dropped: 'sum of results dropped because the call exceeded its tokenBudget',
+            graph_signals_enabled: 'whether graph_signals is on for the active mode (or via search.graph_signals override)',
+            graph_signals_failures_count: 'count of fail-open events in the JSONL audit over the window',
+          },
+        },
+      };
+    }, 'Search telemetry');
+  },
+};
+
+const search_modes: Operation = {
+  name: 'search_modes',
+  description:
+    'Read-only search-mode dashboard: active mode, per-knob resolved value with attribution ' +
+    '(mode default vs config override), and the three frozen bundles. Never mutates; to ' +
+    'change modes, tell the user to set the search.mode config key on the brain host.',
+  params: {},
+  scope: 'read',
+  area: 'search',
+  handler: async (ctx) => {
+    const { buildModesReport } = await import('../search/modes-report.ts');
+    return buildModesReport(ctx.engine);
+  },
+};
+
+const search_tune: Operation = {
+  name: 'search_tune',
+  description:
+    'Read-only tuning recommendations derived from the last 7 days of search telemetry: ' +
+    'what should change, why, and the paste-ready config command per recommendation — relay ' +
+    'them to the user. Applying is CLI-only by design [CDX-21]: this op NEVER mutates config.',
+  params: {},
+  scope: 'admin',
+  area: 'search',
+  handler: async (ctx) => {
+    const { withRelationGuard } = await import('./contract.ts');
+    return withRelationGuard(async () => {
+      const { buildTuneRecommendations } = await import('../search/tune-recommendations.ts');
+      return buildTuneRecommendations(ctx.engine);
+    }, 'Search telemetry');
+  },
+};
+
+const cache_stats: Operation = {
+  name: 'cache_stats',
+  description:
+    'Semantic query-cache introspection: resolved knobs (enabled, similarity threshold, TTL) ' +
+    'plus row counts and total hits. Read-only; clearing/pruning the cache stays on the CLI.',
+  params: {},
+  scope: 'admin',
+  area: 'search',
+  handler: async (ctx) => {
+    const { withRelationGuard } = await import('./contract.ts');
+    return withRelationGuard(async () => {
+      const { SemanticQueryCache, loadCacheConfig } = await import('../search/query-cache.ts');
+      const config = await loadCacheConfig(ctx.engine);
+      const cache = new SemanticQueryCache(ctx.engine, config);
+      const stats = await cache.stats();
+      return {
+        schema_version: 1,
+        enabled: config.enabled ?? true,
+        similarity_threshold: config.similarityThreshold,
+        ttl_seconds: config.ttlSeconds,
+        ...stats,
+      };
+    }, 'Query-cache statistics');
+  },
+};
+
 // Ops in EXACTLY the canonical `operations` array order.
-export const searchOperations: Operation[] = [search, query];
+export const searchOperations: Operation[] = [
+  search, query, search_stats, search_modes, search_tune, cache_stats,
+];

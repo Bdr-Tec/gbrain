@@ -2102,3 +2102,25 @@ export class MinionQueue {
     return rows.length > 0;
   }
 }
+
+/**
+ * issue #1801 / CLI→MCP gap-closure wave (CEO-F7) — derive the wedged-queue
+ * boolean from getStats().wedge, shared by `gbrain jobs stats` and the
+ * get_job_stats op so the two surfaces can never disagree. A queue is wedged
+ * when a worker is alive but claiming nothing while work waits:
+ * zero live-lock active rows, waiting > 0, and the last completion is older
+ * than the threshold (or absent). Threshold matches the doctor wedged_queue
+ * check: GBRAIN_WEDGED_QUEUE_WARN_MINUTES (server-side env), default 15.
+ */
+export function deriveWedgeSignal(wedge: {
+  active_healthy: number;
+  waiting: number;
+  minutes_since_completion: number | null;
+}): { wedged: boolean; wedge_threshold_minutes: number } {
+  const raw = parseInt(process.env.GBRAIN_WEDGED_QUEUE_WARN_MINUTES ?? '', 10);
+  const wedge_threshold_minutes = Number.isFinite(raw) && raw > 0 ? raw : 15;
+  const mins = wedge.minutes_since_completion;
+  const wedged = wedge.active_healthy === 0 && wedge.waiting > 0
+    && (mins === null || mins > wedge_threshold_minutes);
+  return { wedged, wedge_threshold_minutes };
+}
