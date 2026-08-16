@@ -27,8 +27,8 @@ import {
 import {
   configureGateway,
   resetGateway,
-  __setEmbedTransportForTests,
   __unconfigureGatewayForTests,
+  __setEmbedTransportForTests,
 } from '../../src/core/ai/gateway.ts';
 import type { ResolvedColumn } from '../../src/core/types.ts';
 
@@ -262,9 +262,12 @@ describe('upsertChunks — model provenance uses gateway-resolved model, not com
   test('#3461: unconfigured gateway falls back to the brain config model, never the compiled default', async () => {
     await engine.setConfig('embedding_model', 'voyage:voyage-3-large');
     // The preload's beforeEach re-configures the gateway before every test,
-    // so the unconfigure must happen INSIDE the test body. resetGateway()
-    // re-applies env config since PR #3557, so it no longer simulates an
-    // unconfigured gateway — the dedicated seam does.
+    // so the unconfigure must happen INSIDE the test body. Since commit
+    // 3aa064bcc (#3554), `resetGateway()` RESTORES the preload's OpenAI/1536
+    // baseline instead of unconfiguring — this test needs genuine no-gateway
+    // behavior (getEmbeddingModel() must THROW), which is exactly what
+    // `__unconfigureGatewayForTests()` was added for. The preload's
+    // beforeEach restores the baseline before the next test.
     __unconfigureGatewayForTests();
 
     await engine.putPage('docs/provenance-throw-path', {

@@ -1,5 +1,37 @@
 # TODOS
 
+## #4145 lock-renewal wave follow-ups (filed 2026-08-15)
+
+- [ ] **P2 — Kill or reap the force-evicted handler process.** **What:** when the
+  grace-evict fires for a handler that ignores its AbortSignal, actually
+  terminate the handler's work (LLM loop cancellation vs shell child-tree
+  kill differ per handler class) or track it as a zombie instead of only
+  freeing the inFlight slot. **Why:** today the evicted handler keeps
+  burning CPU/spend on an already-saturated host while the worker claims
+  new work — the #4145 amplification loop — and the duplicate-external-
+  side-effect window during an asymmetric outage is bounded only by
+  handler cooperation, not by `hardEvictMs`. **Context:** deliberately
+  scoped out of the #4145 wave (grace-evict at
+  `src/core/minions/worker.ts` frees the slot; the alternative — retaining
+  the slot until handler exit — re-opens the wedged-slot class D8b closed).
+  Eviction frequency collapsed with verify-before-evict, so this is
+  hygiene, not the incident driver. Kill semantics need their own review.
+  **Effort:** M (human) / S (CC). **Priority:** P2.
+- [ ] **P3 — Worker-level `--lock-duration` flag on `jobs work` + supervisor
+  passthrough.** **What:** a CLI flag for the worker-global default lease,
+  threaded through `buildWorkerArgs` (`src/core/minions/supervisor.ts`).
+  **Why:** convenience only — per-job/per-type leases
+  (`HANDLER_DEFAULT_LOCK_DURATION_MS`, `--lock-duration-ms`) plus the
+  `GBRAIN_LOCK_RENEWAL_*` env knobs already cover every incident-tuning
+  case shipped in the #4145 wave. **Context:** requested shape existed in
+  the issue; deferred because no production caller overrides
+  `lockDuration` and env wins for incident response. **Effort:** S.
+  **Priority:** P3.
+- [ ] **Note for TODO-LR-2 (doctor `lock_renewal_health`, already filed
+  below):** the #4145 wave shipped exactly its inputs — audit events now
+  carry `cause`, `lateness_ms`, `overlap_skips`, `load1`/`cores`, `via`,
+  `deadline_deferred` — so the doctor check can classify starved-worker
+  vs DB-outage windows without new plumbing.
 ## v0.47 SEPTEMBER REMOVAL — ZeroEntropy (filed v0.46.3.0; TARGET: ship 2026-09-04..2026-09-08)
 
 ZeroEntropy's hosted API dies 2026-09-04. v0.46.3.0 deprecated it (split-default:

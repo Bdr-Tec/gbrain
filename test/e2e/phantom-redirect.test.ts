@@ -236,17 +236,32 @@ describeMaybe('phantom-redirect E2E (Postgres)', () => {
          ORDER BY id`,
       );
       // After migrateFactsToCanonical, the row is now under canonical with
-      // its embedding preserved (the migrate step is a pure UPDATE). Since
-      // the idempotent reconcile (#2932), a canonical whose DB fact rows
-      // already match the fence is SKIPPED — no wipe-then-insert — so the
-      // migrated row legitimately KEEPS its non-NULL embedding.
+      // every other column — including embedding — preserved (the UPDATE
+      // rewrites only the slug columns). The main reconcile then visits
+      // canonical (added via touched_canonicals); since 54a807064 (#2932,
+      // idempotent extract_facts) an in-sync page is a NO-OP instead of the
+      // old wipe-then-reinsert, so the migrated row and its embedding
+      // SURVIVE the pass. (Pre-#2932 the wipe dropped the embedding to
+      // NULL, which this test used to document.)
       //
-      // The pinning assertion: at NO point is the embedding column
-      // populated with a STRING (postgres-js's text shape leak — that
-      // bug class would produce a non-null text-shaped value here).
-      // facts.embedding is declared HALFVEC on pgvector >= 0.7 (migration
-      // v40) and VECTOR on older stacks; both are legitimate pgvector
-      // column types, so the predicate excludes both.
+      // The round-12 pinning assertions:
+      //   1. The embedding survived the migrate + reconcile round-trip
+      //      non-NULL at its original dimensionality — postgres-js did not
+      //      mangle it through its text representation.
+      //   2. At NO point is the embedding column populated with a
+      //      non-vector-typed value. Since v0.31.0 (89ae72095, migration
+      //      v40) the facts.embedding column is HALFVEC(1536) on pgvector
+      //      >= 0.7 (full-precision VECTOR fallback below that), so BOTH
+      //      real vector types are legitimate here.
+      const survived = await engine.executeRaw<{ ct: string; dims: number | null }>(
+        `SELECT COUNT(*)::text AS ct, MIN(vector_dims(embedding::vector)) AS dims
+         FROM facts
+         WHERE source_id='default'
+           AND source_markdown_slug='people/alice-example'
+           AND embedding IS NOT NULL`,
+      );
+      expect(parseInt(survived[0].ct, 10)).toBe(1);
+      expect(Number(survived[0].dims)).toBe(1536);
       const stringShaped = await engine.executeRaw<{ ct: string }>(
         `SELECT COUNT(*)::text AS ct FROM facts
          WHERE source_id='default'

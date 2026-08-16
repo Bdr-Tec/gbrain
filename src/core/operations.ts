@@ -3588,6 +3588,7 @@ const submit_job: Operation = {
     max_attempts: { type: 'number', description: 'Max retry attempts (default: 3)' },
     delay: { type: 'number', description: 'Delay in ms before eligible' },
     timeout_ms: { type: 'number', description: 'Per-job wall-clock timeout in ms; aborted job goes to dead' },
+    lock_duration_ms: { type: 'number', description: 'Per-job lock lease in ms (#4145). Out-of-range values are clamped to [5000, 3600000] — remote writers cannot pin an immortal lock. Omit to use the handler-type default (300s for long LLM handlers) or the worker default (30s).' },
   },
   mutating: true,
   scope: 'admin',
@@ -3635,6 +3636,10 @@ const submit_job: Operation = {
       max_attempts: (p.max_attempts as number) || 3,
       delay: (p.delay as number) || undefined,
       timeout_ms: (p.timeout_ms as number) || undefined,
+      // #4145 [CEO-F7/R2-6]: range enforcement lives in queue.add's
+      // clampLockDurationMs (ParamDef has no min/max support; wrong TYPE is
+      // rejected by the shared number validation upstream of this handler).
+      lock_duration_ms: (p.lock_duration_ms as number) || undefined,
     }, trusted);
 
     // v0.35.8.0: submit_job audit-log parity with the CLI path (codex F-CDX-4).

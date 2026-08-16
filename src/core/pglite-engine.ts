@@ -3913,8 +3913,14 @@ export class PGLiteEngine implements BrainEngine {
              COUNT(DISTINCT n.last_link_type) AS edge_count,
              array_agg(DISTINCT n.last_link_type)
                FILTER (WHERE n.last_link_type IS NOT NULL) AS via_link_types,
+             -- Final path tie-break (lexicographic) makes the pick deterministic
+             -- when a node is reachable at the same depth from multiple seeds;
+             -- without it the winner is plan/heap-order dependent and the two
+             -- engines (or two runs) can disagree. Relational retrieval is
+             -- documented deterministic; keep in lockstep with postgres-engine.ts.
              (array_agg(array_to_string(n.path, chr(9))
-               ORDER BY n.depth ASC, array_length(n.path, 1) ASC))[1] AS path_str,
+               ORDER BY n.depth ASC, array_length(n.path, 1) ASC,
+                        array_to_string(n.path, chr(9)) ASC))[1] AS path_str,
              (SELECT cc.id FROM content_chunks cc
                WHERE cc.page_id = n.id ORDER BY cc.chunk_index ASC LIMIT 1) AS canonical_chunk_id
       FROM walk n

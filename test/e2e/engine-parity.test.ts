@@ -740,18 +740,20 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pgRow.updated_at).toBeInstanceOf(Date);
 
     // markPagesExtractedBatch: stamp one → count drops to 2 on both.
-    // Stamp with each row's own updated_at_iso (the #1768/D4 production
-    // convention extract --stale uses) rather than client `new Date()`: the
-    // staleness predicate compares SERVER updated_at against the stamp, and a
-    // DB whose clock runs a few ms ahead of this process (Docker VM drift)
-    // makes a client-time stamp land BEFORE the row's insert time whenever
-    // the seed→stamp gap is shorter than the skew — sp/1 stays "stale" and
-    // the count never drops.
-    const stampAt = new Date().toISOString();
-    const sp1Pg = (await pgEngine.listStalePagesForExtraction({ batchSize: 10, sourceId: SRC })).find(r => r.slug === 'sp/1')!;
-    const sp1Pl = (await pgliteEngine.listStalePagesForExtraction({ batchSize: 10, sourceId: SRC })).find(r => r.slug === 'sp/1')!;
-    await pgEngine.markPagesExtractedBatch([{ slug: 'sp/1', source_id: SRC, extractedAt: sp1Pg.updated_at_iso }], stampAt);
-    await pgliteEngine.markPagesExtractedBatch([{ slug: 'sp/1', source_id: SRC, extractedAt: sp1Pl.updated_at_iso }], stampAt);
+    // Stamp with the row's OWN updated_at_iso (per-ref extractedAt — the
+    // #1768/D4 production semantics used by extractStaleFromDB), NOT client
+    // `new Date()`: the test client's clock and the DB server's clock are
+    // different clocks (docker VM drift under load), so a client-now stamp can
+    // land before the row's server-side `updated_at`, leaving sp/1 flagged
+    // `updated_at > links_extracted_at` and the count stuck at 3.
+    for (const eng of [pgEngine, pgliteEngine]) {
+      const sp1 = (await eng.listStalePagesForExtraction({ batchSize: 10, sourceId: SRC }))
+        .find((r) => r.slug === 'sp/1')!;
+      await eng.markPagesExtractedBatch(
+        [{ slug: 'sp/1', source_id: SRC, extractedAt: sp1.updated_at_iso }],
+        sp1.updated_at_iso,
+      );
+    }
     expect(await pgEngine.countStalePagesForExtraction({ sourceId: SRC })).toBe(2);
     expect(await pgliteEngine.countStalePagesForExtraction({ sourceId: SRC })).toBe(2);
 

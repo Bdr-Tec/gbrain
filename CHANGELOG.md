@@ -61,6 +61,84 @@ To take advantage of v0.46.8.0: `gbrain self-upgrade`, then `gbrain doctor`
 — no schema migration, no config changes. If you run tests locally,
 `bun run test` and `DATABASE_URL=<test-db> bun run test:e2e` should both
 exit 0 on a clean checkout; if they don't, the failure is real.
+## [0.46.6.0] - 2026-08-15
+
+**A busy machine can no longer make the job queue evict its own healthy
+work.** ([#4145](https://github.com/garrytan/gbrain/issues/4145)) Under
+sustained CPU load, a long-running background job (a subagent averaging
+~3 minutes) could miss one lock-renewal window and get force-evicted
+mid-inference — the queue would churn for hours while completions stayed
+near zero, and the logs read like an orphan leak. Lock renewal is now
+**verify-before-evict**: a slow or failed renewal is never treated as
+loss; the worker asks the database the one authoritative question (a
+fenced re-check) and keeps the job whenever the lease is still its own.
+
+### Added
+- **Per-job lock leases.** Long LLM handlers (subagent, autopilot-cycle,
+  embed-backfill, …) now hold a 300s lease by default instead of the
+  global 30s; single-call LLM handlers get 120s; short jobs keep 30s for
+  fast dead-worker recovery. Override per submission with
+  `gbrain jobs submit --lock-duration-ms N` (clamped to 5s–1h; also an
+  MCP `submit_job` param). Stored on the job row (migration v130), so it
+  survives worker restarts, and renewed at a `min(lease/2, 60s)` cadence.
+  The bound is enforced end-to-end — at submit, again on the resolved
+  lease at claim, and by a database range constraint — and
+  `--dry-run` echoes the clamped value that will actually be stored.
+- **Self-explaining eviction forensics.** Every renewal fault now logs and
+  audits WHY it failed (call-timeout vs refused vs fenced-lost), how late
+  the renewal timer fired vs its own cadence (the "was the worker starved
+  or was the database down?" discriminator), host load, and an
+  event-loop-delay sample scoped to the failing window. The ops runbook
+  gained a table for reading these plus the full env-knob reference
+  (`GBRAIN_LOCK_RENEWAL_*`, `GBRAIN_MINION_STALL_RECLAIM_GRACE_MS`).
+- **Stall-sweep reclaim grace.** A lease that lapsed within the last 15s
+  is not reclaimed — a just-recovered worker's own renewal wins the race
+  against the sweep instead of having its live job stolen (env-tunable,
+  capped at 10 minutes with a warn-once clamp; `0` restores the previous
+  behavior).
+
+### Changed
+- **Eviction requires evidence.** The renewal state machine aborts a job
+  only on a fenced miss (the row was genuinely reclaimed — requeued with
+  no attempt burned) or after a hard backstop (default 2× the lease)
+  during a total database outage. Wall-clock jumps can no longer distort
+  the decision (elapsed-time math runs on a monotonic clock), and a
+  renewal timeout now also cancels the in-flight query so it stops
+  holding a pool slot.
+- **`gbrain jobs get`** shows the job's lock lease alongside its
+  wall-clock budget, including the default that will stamp at claim.
+
+### Fixed
+- **The unit-suite's SIGTERM-semantics test no longer kills its own
+  shard.** A bare in-process signal broadcast could reach a leaked
+  cleanup handler from an earlier test file and exit the whole test
+  process mid-suite, misreading as an external kill; the test now fires
+  only the listeners it registered.
+- **`gbrain verify` no longer leaves probe tombstones in your brain.**
+  The end-of-run probe cleanup previously soft-deleted its two probe
+  pages; every verify run left residue visible to `include_deleted`
+  readers until the 72h purge. Cleanup now hard-deletes.
+- **Relational retrieval is deterministic on ties.** When a graph node is
+  reachable at the same depth from multiple seeds, the reported path was
+  plan/heap-order dependent (and could differ between engines); a
+  lexicographic tie-break restores the documented determinism.
+- **A worker slot can no longer lose track of a re-claimed job.** After a
+  force-evict, the stale execution's cleanup could delete the tracking
+  entry of the SAME job re-claimed by the same worker; both cleanup sites
+  now verify generation (lock token) before deleting.
+- **Developer e2e lane un-rotted.** 29 test failures across 13 files in
+  the developer-machine e2e lane (which CI does not run) were fixed:
+  ten rotted test files re-pinned to current intended behavior, plus the
+  wrapper's per-file timeout now accommodates the LLM-bound Tier-2 files
+  (`GBRAIN_E2E_FILE_TIMEOUT`).
+
+To take advantage of v0.46.6.0: upgrade and restart your worker
+(`gbrain jobs supervisor stop && gbrain jobs supervisor start --detach`).
+Existing queues need no migration steps — the new lease column defaults
+every existing row to its handler's lease at next claim. If you tuned
+around the old eviction behavior (e.g. very high `--max-stalled`), you can
+likely lower it now. Mixed fleets are safe: an old worker simply keeps the
+old 30s behavior until restarted.
 ## [0.46.5.0] - 2026-08-15
 
 **CI in half, evals actually gating.** The Test workflow ran 8–9.5 minutes on
