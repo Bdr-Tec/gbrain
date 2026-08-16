@@ -921,12 +921,42 @@ export function parseAuthClientsArgs(args: string[]): { usage: boolean; days: nu
   return out;
 }
 
-interface ClientRow {
+export interface ClientRow {
   client_id: string;
   client_name: string | null;
   scope: string | null;
   surface: string | null;
   surface_set_by: string | null;
+  source_id: string | null;
+  federated_read: string[] | null;
+}
+
+/**
+ * Projection-widened client listing with a degrade ladder for pre-migration
+ * brains: full shape (scope + surface + source-scoping columns) → source
+ * columns without surface → the bare original triple. Drops the NEWEST
+ * columns first and never errors; missing columns render as null. One round
+ * trip on a current brain (the widen adds columns, not queries). Exported
+ * for the unit suite.
+ */
+export async function listClientRows(engine: BrainEngine): Promise<ClientRow[]> {
+  try {
+    return await engine.executeRaw<ClientRow>(
+      `SELECT client_id, client_name, scope, surface, surface_set_by, source_id, federated_read
+         FROM oauth_clients ORDER BY client_name, client_id`,
+    );
+  } catch { /* brain predates the surface columns — fall through */ }
+  try {
+    const mid = await engine.executeRaw<Omit<ClientRow, 'surface' | 'surface_set_by'>>(
+      `SELECT client_id, client_name, scope, source_id, federated_read
+         FROM oauth_clients ORDER BY client_name, client_id`,
+    );
+    return mid.map(r => ({ ...r, surface: null, surface_set_by: null }));
+  } catch { /* brain predates the source-scoping columns — fall through */ }
+  const bare = await engine.executeRaw<Pick<ClientRow, 'client_id' | 'client_name' | 'scope'>>(
+    `SELECT client_id, client_name, scope FROM oauth_clients ORDER BY client_name, client_id`,
+  );
+  return bare.map(r => ({ ...r, surface: null, surface_set_by: null, source_id: null, federated_read: null }));
 }
 
 async function clientsCmd(args: string[]) {
@@ -941,20 +971,9 @@ async function clientsCmd(args: string[]) {
   }
   try {
     await withConfiguredSql(async (_sql, engine) => {
-      // Surface columns land in migration v127; a pre-migration brain still
-      // gets the listing (surface renders as unknown) instead of an error.
-      let clients: ClientRow[];
-      try {
-        clients = await engine.executeRaw<ClientRow>(
-          `SELECT client_id, client_name, scope, surface, surface_set_by
-             FROM oauth_clients ORDER BY client_name, client_id`,
-        );
-      } catch {
-        const bare = await engine.executeRaw<Omit<ClientRow, 'surface' | 'surface_set_by'>>(
-          `SELECT client_id, client_name, scope FROM oauth_clients ORDER BY client_name, client_id`,
-        );
-        clients = bare.map(r => ({ ...r, surface: null, surface_set_by: null }));
-      }
+      // Degrade ladder lives in listClientRows: a pre-migration brain still
+      // gets the listing (missing columns render as null) instead of an error.
+      const clients = await listClientRows(engine);
 
       const { readClientOpUsage } = await import('../core/mcp-usage.ts');
       const usage = parsed.usage ? await readClientOpUsage(engine, { days: parsed.days }) : [];
@@ -972,6 +991,8 @@ async function clientsCmd(args: string[]) {
             scopes: c.scope,
             surface: c.surface,
             surface_set_by: c.surface_set_by,
+            source_id: c.source_id,
+            federated_read: c.federated_read,
             usage: usageByToken.get(c.client_id) ?? null,
           })),
           // Legacy bearer tokens seen in the window (no oauth_clients row).
@@ -993,6 +1014,7 @@ async function clientsCmd(args: string[]) {
           ? `${c.surface}${c.surface_set_by ? ` (set by ${c.surface_set_by})` : ''}`
           : '<server/config resolution>';
         console.log(`  scopes: ${c.scope ?? '<none>'}    surface: ${surfaceStr}`);
+        console.log(`  write source: ${c.source_id ?? '<none>'}    federated reads: ${(c.federated_read ?? []).join(', ') || '<none>'}`);
         if (parsed.usage) {
           if (u) {
             const auto = u.likely_automation ? '    [automation-shaped: >90% context_pack/delta]' : '';
@@ -1147,7 +1169,8 @@ Usage:
                                                           request_tools cannot override; 'clear' removes the pin
                                                           so server/config resolution applies again). Always
                                                           bounded by the server's --surface ceiling.
-  gbrain auth clients [--usage] [--days N] [--json]       List OAuth clients with scopes + tool surface. --usage
+  gbrain auth clients [--usage] [--days N] [--json]       List OAuth clients with scopes, write source, federated
+                                                          reads + tool surface. --usage
                                                           joins per-client op-call counts, top ops, and last-seen
                                                           from mcp_request_log (default 30d window; HTTP clients
                                                           only — stdio use is not logged). Automation-shaped

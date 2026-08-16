@@ -193,6 +193,98 @@ export async function checkOauthConfidentialHealth(engine: BrainEngine): Promise
 }
 
 /**
+ * oauth_client_scope_health — scoped-client grant hygiene (cathedral-6).
+ *
+ * Two warn conditions, each a single query (no per-client N+1):
+ *
+ *  (a) DANGLING FEDERATED GRANTS — a federated read grant id with no
+ *      sources row. oauth_clients.federated_read is a TEXT[] with no FK
+ *      (only source_id carries ON DELETE RESTRICT), so removing a source
+ *      leaves grants pointing at nothing and the client's reads silently
+ *      return less than the operator believes was granted.
+ *
+ *  (b) ORPHANED EMPTY WORKSPACE SOURCES — an auto-created
+ *      '<name>-workspace' source (DB-only: no local_path, zero pages, not
+ *      archived) that no live client references by write source or read
+ *      grant. This is the post-failure / post-revoke residue heuristic for
+ *      `gbrain agent register` derived workspaces. A non-default source
+ *      WITH pages is normal on every local brain and is never flagged.
+ *
+ * Pre-OAuth / pre-migration schemas (missing table or missing column)
+ * short-circuit to ok — same posture as oauth_confidential_client_health.
+ */
+export async function checkOauthClientScopeHealth(engine: BrainEngine): Promise<Check> {
+  try {
+    const dangling = await engine.executeRaw<{ client_id: string; client_name: string | null; grant_id: string }>(
+      `SELECT c.client_id, c.client_name, g.grant_id
+         FROM oauth_clients c
+         CROSS JOIN LATERAL unnest(c.federated_read) AS g(grant_id)
+         LEFT JOIN sources s ON s.id = g.grant_id
+        WHERE s.id IS NULL AND c.deleted_at IS NULL
+        ORDER BY c.client_id, g.grant_id`,
+    );
+    const orphaned = await engine.executeRaw<{ id: string }>(
+      `SELECT s.id
+         FROM sources s
+        WHERE s.id LIKE '%-workspace'
+          AND s.local_path IS NULL
+          AND COALESCE(s.archived, false) = false
+          AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.source_id = s.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM oauth_clients c
+             WHERE c.deleted_at IS NULL
+               AND (c.source_id = s.id OR s.id = ANY(c.federated_read))
+          )
+        ORDER BY s.id`,
+    );
+    const problems: string[] = [];
+    if (dangling.length > 0) {
+      const byClient = new Map<string, { name: string | null; grants: string[] }>();
+      for (const d of dangling) {
+        const entry = byClient.get(d.client_id) ?? { name: d.client_name, grants: [] };
+        entry.grants.push(d.grant_id);
+        byClient.set(d.client_id, entry);
+      }
+      const shown = [...byClient.entries()].slice(0, 5)
+        .map(([id, e]) => `"${e.name ?? id}" (${id}) → ${e.grants.join(', ')}`);
+      problems.push(
+        `${dangling.length} federated read grant(s) point at missing sources: ${shown.join('; ')}` +
+        (byClient.size > 5 ? ` (+${byClient.size - 5} more clients)` : '') +
+        `. Fix each with \`gbrain auth rescope-client <client_id>\` (set a federated read list naming only existing sources), or recreate the source.`,
+      );
+    }
+    if (orphaned.length > 0) {
+      const shown = orphaned.slice(0, 5).map(o => o.id);
+      problems.push(
+        `${orphaned.length} empty auto-created workspace source(s) with no live client: ${shown.join(', ')}` +
+        (orphaned.length > 5 ? ` (+${orphaned.length - 5} more)` : '') +
+        `. Residue from a revoked or failed \`gbrain agent register\`; remove with \`gbrain sources remove <id>\`.`,
+      );
+    }
+    if (problems.length > 0) {
+      return {
+        name: 'oauth_client_scope_health',
+        status: 'warn',
+        message: problems.join('\n'),
+      };
+    }
+    return {
+      name: 'oauth_client_scope_health',
+      status: 'ok',
+      message: 'Scoped-client grants consistent (no dangling federated reads, no orphaned workspace sources)',
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Pre-OAuth schema (table missing) or pre-migration schema (column
+    // missing) → ok, matching the confidential-client check's posture.
+    if (/does not exist|no such table|no such column/i.test(msg)) {
+      return { name: 'oauth_client_scope_health', status: 'ok', message: 'OAuth scoping schema not present (skipping)' };
+    }
+    return { name: 'oauth_client_scope_health', status: 'warn', message: `Check failed: ${msg}` };
+  }
+}
+
+/**
  * v0.37.7.0 — Tier 5M autopilot_lock_scope (PID-safe hint per codex CF11).
  *
  * Detects stale autopilot lockfiles. When `GBRAIN_HOME` is set, the
