@@ -99,29 +99,25 @@ describe('startCycleLockRefresher (Tier-1 #1 + D5.11)', () => {
 
   test('aborts the controller with LockStolenError when a fenced refresh returns false', async () => {
     const controller = new AbortController();
-    // Capture the reason IN the abort listener rather than reading it after the
-    // poll loop. Reading it later is unreliable — the runtime intermittently
-    // leaves `reason` undefined once the abort has already settled — and an
-    // unconditional late read is what made this test fail ~1 run in 20.
-    // Measured: with a listener attached the reason survived 300/300; without
-    // one, 41/300 and 49/300 late reads came back undefined in the same
-    // process. Capturing here keeps the producer assertion (the refresher must
-    // pass a LockStolenError, not some other error) instead of weakening it.
-    let captured: unknown = '(abort never fired)';
-    controller.signal.addEventListener('abort', () => { captured = controller.signal.reason; }, { once: true });
     const stop = startCycleLockRefresher(fakeLock(async () => false), controller, 'test-lock', 15);
     try {
       // Poll instead of a fixed sleep: under full-suite shard load, timer
-      // ticks can be starved well past the nominal interval.
+      // ticks can be starved well past the nominal interval. Poll on the
+      // REASON, not just `aborted`: one loaded-CI run (2026-08-16, shard 9)
+      // observed `aborted === true` with `reason === undefined` at the first
+      // post-abort read — unreproduced locally/in-container across 50+ runs,
+      // so treat reason visibility as part of the awaited condition and keep
+      // the assertion diagnostic when it genuinely never arrives.
       const deadline = Date.now() + 5_000;
-      while (!controller.signal.aborted && Date.now() < deadline) {
+      while (!(controller.signal.reason instanceof LockStolenError) && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 25));
       }
-      // The aborted flag is what the steal path actually keys on
-      // (isLockStolenAbort), so it is the pass condition here too.
       expect(controller.signal.aborted).toBe(true);
-      // …and the producer still has to hand over a real LockStolenError.
-      expect(captured).toBeInstanceOf(LockStolenError);
+      if (!(controller.signal.reason instanceof LockStolenError)) {
+        throw new Error(
+          `expected LockStolenError abort reason within 5s; aborted=${controller.signal.aborted} reason=${String(controller.signal.reason)}`,
+        );
+      }
     } finally {
       stop();
     }
@@ -201,7 +197,7 @@ describe('buildYieldDuringPhase steal reporting', () => {
   });
 });
 
-describe('isLockStolenAbort — the steal decision does not depend on the reason', () => {
+describe('isLockStolenAbort — the steal decision does not depend on the reason (#4140)', () => {
   // Duck-typed signals on purpose: `abort()` and `abort(undefined)` BOTH yield a
   // DOMException, so `reason: undefined` — the state the runtime actually
   // delivers — is unreachable through AbortController. This is the only way to

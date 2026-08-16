@@ -209,11 +209,19 @@ describe('DRIFT GUARD — consumer sites derive from the leaf module (re-hardcod
     expect(countAllowedTypesImportsFrom(src, '\\.\\./facts/conversation-types\\.ts')).toBe(1);
   });
 
-  test('doctor.ts: imports ALLOWED_TYPES from the leaf exactly once (both sites reference the same binding)', () => {
+  test('doctor.ts: imports ALLOWED_TYPES from the leaf exactly once', () => {
+    // Post-peel (v0.46.9.1 containment sprint) doctor.ts keeps ONE call site
+    // (the buildChecks parser sample); the backlog check moved to
+    // doctor/checks/search-eval.ts and is guarded separately below.
     const src = readSrc('commands/doctor.ts');
     expect(countAllowedTypesImportsFrom(src, '\\.\\./core/facts/conversation-types\\.ts')).toBe(1);
-    // Both call sites reference the top-level import, not a re-import.
-    expect((src.match(/\bALLOWED_TYPES\b/g) ?? []).length).toBeGreaterThanOrEqual(3); // import + 2 usages
+    expect((src.match(/\bALLOWED_TYPES\b/g) ?? []).length).toBeGreaterThanOrEqual(2); // import + 1 usage
+  });
+
+  test('doctor/checks/search-eval.ts: the peeled backlog check derives from the leaf too', () => {
+    const src = readSrc('commands/doctor/checks/search-eval.ts');
+    expect(countAllowedTypesImportsFrom(src, '\\.\\./\\.\\./\\.\\./core/facts/conversation-types\\.ts')).toBe(1);
+    expect((src.match(/\bALLOWED_TYPES\b/g) ?? []).length).toBeGreaterThanOrEqual(2); // import + 1 usage
   });
 
   test('jobs.ts: the extract-conversation-facts handler filters job.data.types against ALLOWED_TYPES', () => {

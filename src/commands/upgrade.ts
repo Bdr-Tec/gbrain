@@ -496,8 +496,9 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
             try {
               const { readContentChunksEmbeddingDim } = await import('../core/embedding-dim-check.ts');
               colDims = (await readContentChunksEmbeddingDim(engine)).dims;
-            } catch { /* fresh brain — omit --dim */ }
-            const dimFlag = colDims ? ` --dim ${colDims}` : '';
+            } catch { /* fresh brain — canonical command carries its own --dim */ }
+            const { renderCanonicalMigrationCommands } = await import('../core/ai/defaults.ts');
+            const cmds = renderCanonicalMigrationCommands({ colDims });
             console.log('');
             console.log('═══════════════════════════════════════════════════════════════');
             console.log(`[gbrain] ACTION REQUIRED: ZeroEntropy hosted API sunsets ${ZEROENTROPY_SUNSET_DATE}.`);
@@ -522,11 +523,11 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
             console.log('    vector; NO re-embed. See docs/guides/embedding-migration.md.');
             console.log('');
             console.log('[2] Migrate to another provider (resumable; preview cost first):');
-            console.log(`      gbrain migrate embeddings --to <provider:model>${dimFlag} --dry-run`);
-            console.log(`      gbrain migrate embeddings --to <provider:model>${dimFlag}`);
-            if (colDims) {
-              console.log(`    (--dim ${colDims} is this brain's current index width — keep it to`);
-              console.log('    avoid a needless schema rebuild when the target supports it.)');
+            console.log(`      ${cmds.recommendedDryRun}`);
+            console.log(`      ${cmds.recommended}`);
+            if (cmds.note) console.log(`    ${cmds.note}`);
+            if (cmds.openaiAlternative) {
+              console.log(`    Keep-width alternative: ${cmds.openaiAlternative}`);
             }
             if (onZeReranker) {
               console.log('');
