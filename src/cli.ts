@@ -171,6 +171,9 @@ const CLI_ONLY_SELF_HELP = new Set([
   // webhook, harden, ...). That made the pointer circular and those
   // subcommands undiscoverable from the CLI in either direction.
   'sources',
+  // ZE interim cleanup: the retired ze-switch shim ships truthful help
+  // (sunset refusal + canonical migration command); the generic stub hid it.
+  'ze-switch',
 ]);
 
 /**
@@ -201,6 +204,9 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   // configured, matching the reader who runs `sources --help` because they
   // have no brain yet.
   sources: async () => (await import('./commands/sources.ts')).runSources as never,
+  // The retired ze-switch shim answers --help engine-free (arg-order adapter
+  // lives in ze-switch.ts because runZeSwitch takes (args, engine)).
+  'ze-switch': async () => (await import('./commands/ze-switch.ts')).runZeSwitchSelfHelp as never,
 };
 
 /** Returns true when the command's own help was printed. */
@@ -2029,10 +2035,31 @@ async function handleCliOnly(command: string, args: string[]) {
   }
 
   if (command === 'ze-switch') {
-    // v0.36.0.0 — manual ZE-default switch lever. Owns its own engine lifecycle
-    // to mirror the doctor pattern.
+    // Retired refusal/redirect shim. Only --undo reads the brain (one config
+    // row); every other invocation must refuse EVEN ON an unconfigured
+    // machine — connecting unconditionally turned the refusal into
+    // "No brain configured" and starved --json callers of the envelope.
     const { runZeSwitch } = await import('./commands/ze-switch.ts');
-    const eng = await connectEngine();
+    if (!args.includes('--undo')) {
+      await runZeSwitch(args, null);
+      return;
+    }
+    // --undo reads one config row. An unconfigured machine (or a failed
+    // connect) must still get the shim's truthful --json refusal envelope —
+    // connectEngine would print plain "No brain configured" and exit before
+    // the shim ran, so pre-check the config and degrade to a null engine
+    // (the shim words that as a read failure).
+    if (!loadConfig()) {
+      await runZeSwitch(args, null);
+      return;
+    }
+    let eng: BrainEngine | null = null;
+    try {
+      eng = await connectEngine();
+    } catch {
+      await runZeSwitch(args, null);
+      return;
+    }
     try {
       await runZeSwitch(args, eng);
     } finally {
