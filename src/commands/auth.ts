@@ -579,17 +579,21 @@ export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
  * outside, once.
  */
 export async function preflightOauthClientColumns(sql: SqlQuery): Promise<Set<string>> {
-  const rows = await sql<{ column_name: string }>`
+  const rows = await sql`
     SELECT column_name FROM information_schema.columns
     WHERE table_name = 'oauth_clients'
-      AND column_name IN ('token_ttl', 'surface', 'federated_read', 'source_id')
+      AND column_name IN ('token_ttl', 'surface', 'federated_read', 'source_id', 'deleted_at')
   `;
-  return new Set(rows.map(r => r.column_name));
+  return new Set(rows.map(r => String(r.column_name)));
 }
 
 export interface RegisterScopedClientOpts {
   /** Per-client access-token TTL to persist (oauth_clients.token_ttl). */
   tokenTtlSeconds?: number;
+  /** Per-client tool-surface tier, written via provider.rescopeClient — the
+   * ONLY surface-column writer (sets surface_set_by='operator', the lock
+   * request_tools cannot override). Never a raw column UPDATE. */
+  surface?: 'verbs' | 'starter' | 'full';
   /** Result of preflightOauthClientColumns — decides which optional-column
    * writes are attempted. Absent → attempt everything (caller owns errors). */
   columns?: Set<string>;
@@ -613,6 +617,9 @@ export interface RegisteredClient {
   tokenTtl?: number;
   tokenExpiresAt?: string;
   created: { source: boolean };
+  /** Previous surface row value when opts.surface was written (for the
+   * post-commit audit row — audit is fail-open and NEVER runs in the tx). */
+  surfaceOld?: string | null;
   /** Optional-column writes skipped by the pre-flight (pre-migration brain). */
   skipped?: { tokenTtl?: boolean; surface?: boolean };
 }
@@ -660,7 +667,7 @@ export async function registerScopedClient(
       // OUTSIDE any transaction — nothing here throws-and-continues.
       ttlSkipped = true;
     } else {
-      const updated = await sql<{ client_id: string }>`
+      const updated = await sql`
         UPDATE oauth_clients SET token_ttl = ${ttl}
         WHERE client_id = ${clientId}
         RETURNING client_id
@@ -669,6 +676,19 @@ export async function registerScopedClient(
         throw new Error(`token_ttl update matched no row for client ${clientId}`);
       }
       tokenTtl = ttl;
+    }
+  }
+
+  let surfaceApplied: 'verbs' | 'starter' | 'full' | undefined;
+  let surfaceOld: string | null | undefined;
+  let surfaceSkipped = false;
+  if (opts.surface !== undefined) {
+    if (opts.columns && !opts.columns.has('surface')) {
+      surfaceSkipped = true;
+    } else {
+      const rescoped = await provider.rescopeClient(clientId, { surface: opts.surface });
+      surfaceApplied = opts.surface;
+      surfaceOld = rescoped.surfaceOld ?? null;
     }
   }
 
@@ -682,8 +702,12 @@ export async function registerScopedClient(
     sourceId,
     federatedRead: federatedRead && federatedRead.length > 0 ? federatedRead : [sourceId],
     ...(tokenTtl !== undefined ? { tokenTtl } : {}),
+    ...(surfaceApplied !== undefined ? { surface: surfaceApplied } : {}),
+    ...(surfaceOld !== undefined ? { surfaceOld } : {}),
     created: { source: false },
-    ...(ttlSkipped ? { skipped: { tokenTtl: true } } : {}),
+    ...(ttlSkipped || surfaceSkipped
+      ? { skipped: { ...(ttlSkipped ? { tokenTtl: true } : {}), ...(surfaceSkipped ? { surface: true } : {}) } }
+      : {}),
   };
 }
 

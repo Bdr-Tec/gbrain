@@ -75,6 +75,12 @@ export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgr
 // per-subcommand usage stays reachable.
 const CLI_ONLY_SELF_HELP = new Set([
   'upgrade', 'post-upgrade', 'check-update',
+  // cathedral-6: agent ships per-subcommand help (run/logs/register) inside
+  // runAgent, answered before any engine or queue is touched. Paired with the
+  // SELF_HELP_WITHOUT_ENGINE entry below so a brainless machine gets real
+  // help, and with the `--`-aware help scan in main() so
+  // `agent run -- --help` submits the literal prompt instead.
+  'agent',
   // #3502 sweep: pages + bench print their own usage (pages.ts printHelp,
   // bench-publish.ts printHelp). Both were documented but undispatchable —
   // `pages` had a live handleCliOnly case but was missing from CLI_ONLY
@@ -187,6 +193,9 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   // runDream accepts BrainEngine | null; --help (and `retriage --help`) is
   // answered before any engine-bearing work per the dream.ts IRON RULE.
   dream: async () => (await import('./commands/dream.ts')).runDream as never,
+  // runAgent accepts BrainEngine | null; help (incl. `register --help`) is
+  // answered before any engine or job-queue work (cathedral-6).
+  agent: async () => (await import('./commands/agent.ts')).runAgent as never,
 };
 
 /** Returns true when the command's own help was printed. */
@@ -420,8 +429,13 @@ async function main() {
     return;
   }
 
-  // Per-command --help
-  if (hasHelpFlag(subArgs)) {
+  // Per-command --help. For `agent`, the scan STOPS at the `--` terminator:
+  // everything after it is literal prompt text, so `agent run -- --help`
+  // must submit the prompt, never print help (cathedral-6 eng review).
+  const helpScanArgs = command === 'agent' && subArgs.includes('--')
+    ? subArgs.slice(0, subArgs.indexOf('--'))
+    : subArgs;
+  if (hasHelpFlag(helpScanArgs)) {
     // `eval brainbench` ships a published foreign-runner flag surface — its
     // own usage() must win over the generic eval stub (codex P3). Fall
     // through to handleCliOnly's no-DB brainbench route, which prints it.
@@ -1705,6 +1719,36 @@ async function handleCliOnly(command: string, args: string[]) {
     const cfg = loadConfig();
     if (isThinClient(cfg)) {
       refuseThinClient(command, cfg!.remote_mcp!.mcp_url);
+    }
+  }
+
+  // cathedral-6: `agent register` guards run PRE-connectEngine. A thin client
+  // would otherwise build a scratch PGLite and mint dead credentials into it;
+  // a live PGLite serve holds the single-writer lock, so connectEngine would
+  // hang ~30s before any handler code could print guidance. (`agent` itself
+  // stays out of THIN_CLIENT_REFUSED_COMMANDS — run/logs work elsewhere.)
+  if (command === 'agent' && args[0] === 'register' && !hasHelpFlag(args)) {
+    const cfg = loadConfig();
+    const wantsJson = args.includes('--json');
+    const refuse = (reason: string, message: string) => {
+      if (wantsJson) {
+        console.log(JSON.stringify({ ok: false, reason, message }));
+      } else {
+        console.error(`Error: ${message}`);
+      }
+      process.exit(1);
+    };
+    if (isThinClient(cfg)) {
+      refuse('thin_client',
+        '`gbrain agent register` mints credentials into the HOST brain — run it on the brain host (the machine that runs `gbrain serve --http`), then wire this machine with the printed `gbrain init --mcp-only …` block.');
+    }
+    if (cfg && !cfg.database_url && cfg.database_path) {
+      const { probeLivePgliteHolder } = await import('./core/bootstrap/uninstall.ts');
+      const holder = probeLivePgliteHolder(cfg.database_path);
+      if (holder?.serve) {
+        refuse('pglite_live_serve',
+          `a live \`gbrain serve\` (pid ${holder.pid}) holds this PGLite brain's single-writer lock — stop the serve, run \`gbrain agent register\` again, then restart it. (Postgres brains register fine while the serve runs.)`);
+      }
     }
   }
 
