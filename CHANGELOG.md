@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.12.0] - 2026-08-16
+## [0.46.12.1] - 2026-08-16
 
 **Supply-chain hardening for how gbrain updates and how community code lands.**
 A security pass over the update path, the release build, and the contribution
