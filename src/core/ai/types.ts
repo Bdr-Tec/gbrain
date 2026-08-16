@@ -202,6 +202,14 @@ export interface ExpansionTouchpoint {
   models: string[];
   cost_per_1m_tokens_usd?: number;
   price_last_verified?: string;
+  /**
+   * Recipe-level timeout fallback for `gbrain models doctor`'s expansion
+   * reachability probe. Mirrors `RerankerTouchpoint.default_timeout_ms`: lets
+   * a slow-start provider (e.g. a subprocess-dispatched CLI with real cold-start
+   * latency) declare the headroom it needs instead of the probe's flat 5000ms
+   * default false-failing on every run.
+   */
+  default_timeout_ms?: number;
 }
 
 /**
@@ -289,6 +297,14 @@ export interface ChatTouchpoint {
   cost_per_1m_input_usd?: number;
   cost_per_1m_output_usd?: number;
   price_last_verified?: string;
+  /**
+   * Recipe-level timeout fallback for `gbrain models doctor`'s chat
+   * reachability probe. Mirrors `RerankerTouchpoint.default_timeout_ms`: lets
+   * a slow-start provider (e.g. a subprocess-dispatched CLI with real cold-start
+   * latency) declare the headroom it needs instead of the probe's flat 5000ms
+   * default false-failing on every run.
+   */
+  default_timeout_ms?: number;
 }
 
 export interface Recipe {
