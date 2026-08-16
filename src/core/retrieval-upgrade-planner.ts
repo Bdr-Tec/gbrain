@@ -69,6 +69,7 @@ import {
   runSchemaTransition,
   type EnvOverrideWarning,
 } from './embedding-migration.ts';
+import { readContentChunksEmbeddingDim } from './embedding-dim-check.ts';
 
 // Back-compat re-exports: these primitives moved to embedding-migration.ts
 // (the v0.47 survivor module) so the ZE removal wave can delete this file
@@ -407,10 +408,15 @@ export async function resumeRetrievalUpgrade(
 
   // requested=true, applied=false. Either schema is at target and config
   // still says source, or schema crashed mid-DDL. Re-run schema transition
-  // (idempotent via CREATE INDEX IF NOT EXISTS + ALTER COLUMN no-op semantics)
   // then write config + mark applied.
   try {
-    await runSchemaTransition(engine, targetDim);
+    // Width guard: the transition is DROP COLUMN + ADD COLUMN — a same-width
+    // re-run still DELETES every stored vector. Resume must only rebuild when
+    // the column genuinely isn't at the target width yet.
+    const col = await readContentChunksEmbeddingDim(engine);
+    if (col.dims !== targetDim) {
+      await runSchemaTransition(engine, targetDim);
+    }
     await engine.setConfig('embedding_model', ZE_TARGET_EMBEDDING_MODEL);
     await engine.setConfig('embedding_dimensions', String(targetDim));
     await engine.setConfig('search.reranker.enabled', 'true');
@@ -453,7 +459,12 @@ export async function undoRetrievalUpgrade(engine: BrainEngine): Promise<
   }
 
   try {
-    await runSchemaTransition(engine, snapshot.embedding_dimensions);
+    // Width guard (mirrors resume): a same-width DROP+ADD still deletes every
+    // vector — only rebuild when the column isn't at the snapshot width.
+    const col = await readContentChunksEmbeddingDim(engine);
+    if (col.dims !== snapshot.embedding_dimensions) {
+      await runSchemaTransition(engine, snapshot.embedding_dimensions);
+    }
     await engine.setConfig('embedding_model', snapshot.embedding_model);
     await engine.setConfig('embedding_dimensions', String(snapshot.embedding_dimensions));
     await engine.setConfig('search.reranker.enabled', snapshot.search_reranker_enabled ? 'true' : 'false');

@@ -148,9 +148,14 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
     await tx.executeRaw(`DROP INDEX IF EXISTS idx_chunks_embedding`);
     await tx.executeRaw(`ALTER TABLE content_chunks DROP COLUMN IF EXISTS embedding`);
     await tx.executeRaw(`ALTER TABLE content_chunks ADD COLUMN embedding vector(${targetDim})`);
-    await tx.executeRaw(
-      `CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops)`,
-    );
+    // HNSW cap policy lives in vector-index.ts (single home): pgvector caps
+    // `vector` HNSW at 2000 dims, so a valid 2048d target must skip the index
+    // (exact scans stay correct) instead of failing the whole DDL.
+    if (hnswIndexExpected('vector', targetDim)) {
+      await tx.executeRaw(
+        `CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops)`,
+      );
+    }
 
     // Image/multimodal embedding column — rebuild index but preserve
     // existing dimension. Only create it if it doesn't already exist
@@ -296,11 +301,45 @@ export const MIGRATION_STATE_KEY = 'embedding_migration.state';
 export const MIGRATION_COMPLETED_KEY = 'embedding_migration.completed';
 
 export interface MigrationState {
+  /** Marker schema version. Absent = v1 (pre-hardening). */
+  version?: 2;
   to_model: string;
   to_dims: number;
   from_model: string;
   from_dims: number;
+  /**
+   * Preserved across same-target re-applies (set-if-absent) so `--status` and
+   * doctor report the TRUE age of the migration, not the latest retry.
+   */
   started_at: string;
+  /** Set when the run used --force-sunset-target (resume command must too). */
+  force_sunset_target?: boolean;
+  /** Set when this marker replaced a live different-target marker. */
+  retargeted_at?: string;
+  /** History of abandoned targets (newest last) for --status forensics. */
+  superseded?: Array<{ to_model: string; to_dims: number; started_at: string }>;
+}
+
+/**
+ * Read + parse the live migration marker. Corrupt JSON returns
+ * `{ corrupt: true, raw }` instead of throwing — every consumer of this is a
+ * read-only/reporting surface that must never crash on a bad row.
+ */
+export async function readMigrationState(
+  engine: BrainEngine,
+): Promise<{ state: MigrationState | null; corrupt: boolean; raw: string | null }> {
+  let raw: string | null = null;
+  try {
+    raw = await engine.getConfig(MIGRATION_STATE_KEY);
+  } catch {
+    return { state: null, corrupt: false, raw: null };
+  }
+  if (!raw) return { state: null, corrupt: false, raw: null };
+  try {
+    return { state: JSON.parse(raw) as MigrationState, corrupt: false, raw };
+  } catch {
+    return { state: null, corrupt: true, raw };
+  }
 }
 
 export interface EmbeddingMigrationPlan {
@@ -328,12 +367,79 @@ export interface EmbeddingMigrationPlan {
   resuming: boolean;
   /** Set when the brain's reranker is also on the outgoing provider. */
   reranker_warning: string | null;
+  /**
+   * DB-reality corroboration of the From line: top signatures actually
+   * stamped on pages (env vars can lie about From; the census cannot).
+   * `signature: null` bucket = pages with no recorded signature.
+   */
+  signature_census: Array<{ signature: string | null; pages: number }>;
 }
 
 export type MigrationApplyResult =
-  | { status: 'applied'; invalidated: number; cache_cleared: number; schema_transitioned: boolean }
+  | {
+      status: 'applied';
+      invalidated: number;
+      cache_cleared: number;
+      schema_transitioned: boolean;
+      /** Dim-pinned columns repaired independently of a full rebuild. */
+      pinned_repaired: string[];
+    }
   | { status: 'refused'; reason: 'env_override'; warning: EnvOverrideWarning }
   | { status: 'failed'; reason: string };
+
+/**
+ * Env-presence probe (distinct from detectEnvOverride, which fires only on a
+ * MISMATCH): true when GBRAIN_EMBEDDING_* is set at all. env == target is not
+ * refused — it proceeds with a loud notice (env-first deployments are
+ * legitimate) — but every surface that reports config planes needs to know.
+ */
+export function detectEnvPresence(
+  env: NodeJS.ProcessEnv = process.env,
+): { present: boolean; model: string | null; dims: string | null } {
+  const model = env.GBRAIN_EMBEDDING_MODEL?.trim() || null;
+  const dims = env.GBRAIN_EMBEDDING_DIMENSIONS?.trim() || null;
+  return { present: Boolean(model || dims), model, dims };
+}
+
+/**
+ * ONE computation for "does the schema need a (re)build?" shared by plan
+ * (display) and apply (trigger) so they can never disagree. An absent or
+ * unparsable column (dims === null) NEEDS a build — the old plan-side
+ * `dims !== null && dims !== to` spelling showed no DESTRUCTIVE warning while
+ * apply ran the DDL anyway.
+ */
+export function schemaRebuildNeeded(colDims: number | null, toDims: number): boolean {
+  return colDims !== toDims;
+}
+
+/**
+ * Widths of the dim-pinned TEXT-embedding-space columns outside
+ * content_chunks. `null` dims = column exists but width unreadable; absent
+ * tables/columns are omitted entirely (nothing to repair).
+ */
+export async function readDimPinnedWidths(
+  engine: BrainEngine,
+): Promise<Array<{ table: string; dims: number | null }>> {
+  const out: Array<{ table: string; dims: number | null }> = [];
+  for (const t of TEXT_EMBEDDING_DIM_PINNED_TABLES) {
+    try {
+      const rows = await engine.executeRaw<{ dim: number | null }>(
+        `SELECT a.atttypmod AS dim
+           FROM pg_attribute a
+           JOIN pg_class c ON c.oid = a.attrelid
+          WHERE c.relname = $1 AND a.attname = 'embedding'
+            AND a.attnum > 0 AND NOT a.attisdropped`,
+        [t.table],
+      );
+      if (rows.length === 0) continue; // table/column absent
+      const dim = rows[0]?.dim;
+      out.push({ table: t.table, dims: typeof dim === 'number' && dim > 0 ? dim : null });
+    } catch {
+      // Probe failure = unknown, not broken; skip (transition no-ops there too).
+    }
+  }
+  return out;
+}
 
 /** `<provider:model>:<dims>` — must match currentEmbeddingSignature()'s shape. */
 export function migrationSignature(toModel: string, toDims: number): string {
@@ -404,24 +510,49 @@ export async function planEmbeddingMigration(
   const col = await readContentChunksEmbeddingDim(engine);
 
   const sig = migrationSignature(toModel, toDims);
-  const wide = await engine.countStaleChunks({ signature: sig, includeNullSignature: true });
-  const narrow = await engine.countStaleChunks({ signature: sig });
-  const totalChars = await engine.sumStaleChunkChars({ signature: sig, includeNullSignature: true });
+  let wide: number;
+  let narrow: number;
+  let totalChars: number;
+  if (col.exists) {
+    wide = await engine.countStaleChunks({ signature: sig, includeNullSignature: true });
+    narrow = await engine.countStaleChunks({ signature: sig });
+    totalChars = await engine.sumStaleChunkChars({ signature: sig, includeNullSignature: true });
+  } else {
+    // Column ABSENT: the stale predicates reference cc.embedding and would
+    // throw. Every chunk needs embedding once the column is (re)built.
+    const rows = await engine.executeRaw<{ n: number; chars: number }>(
+      `SELECT count(*)::int AS n, COALESCE(sum(length(chunk_text)), 0)::bigint AS chars FROM content_chunks`,
+    );
+    wide = Number(rows[0]?.n ?? 0);
+    narrow = wide;
+    totalChars = Number(rows[0]?.chars ?? 0);
+  }
 
   const price = lookupEmbeddingPrice(toModel);
   const estCostUsd = price.kind === 'known'
     ? estimateCostFromChars(totalChars, price.pricePerMTok)
     : 0;
 
-  let resuming = false;
+  const marker = await readMigrationState(engine);
+  const resuming = marker.state !== null
+    && marker.state.to_model === toModel
+    && marker.state.to_dims === toDims;
+
+  // DB-reality census: what the pages themselves say they were embedded with.
+  // Top 5 buckets; NULL = no recorded signature (pre-v108 or never stamped).
+  let signatureCensus: Array<{ signature: string | null; pages: number }> = [];
   try {
-    const stateStr = await engine.getConfig(MIGRATION_STATE_KEY);
-    if (stateStr) {
-      const state = JSON.parse(stateStr) as MigrationState;
-      resuming = state.to_model === toModel && state.to_dims === toDims;
-    }
+    const rows = await engine.executeRaw<{ signature: string | null; pages: number }>(
+      `SELECT embedding_signature AS signature, count(*)::int AS pages
+         FROM pages
+        WHERE deleted_at IS NULL
+        GROUP BY embedding_signature
+        ORDER BY count(*) DESC
+        LIMIT 5`,
+    );
+    signatureCensus = rows.map((r) => ({ signature: r.signature, pages: Number(r.pages) }));
   } catch {
-    // Corrupt state marker — treat as fresh.
+    // Census is informational; a probe failure never blocks planning.
   }
 
   // Sunset companion warning: migrating embeddings off a provider whose
@@ -447,7 +578,8 @@ export async function planEmbeddingMigration(
     column_dims: col.dims,
     to_model: toModel,
     to_dims: toDims,
-    dim_change: col.dims !== null && col.dims !== toDims,
+    // ONE computation shared with apply's trigger (absent column ⇒ build).
+    dim_change: schemaRebuildNeeded(col.dims, toDims),
     chunks_to_embed: wide,
     total_chars: totalChars,
     null_signature_chunks: wide - narrow,
@@ -455,6 +587,141 @@ export async function planEmbeddingMigration(
     price_known: price.kind === 'known',
     resuming,
     reranker_warning: rerankerWarning,
+    signature_census: signatureCensus,
+  };
+}
+
+/**
+ * DB-reality convergence check — the ONLY basis on which the command may say
+ * "nothing to migrate". Never trusts `from_model` (env vars poison it); every
+ * conjunct is probed from the database or the file plane the caller read
+ * WITHOUT env merge.
+ */
+export interface MigrationVerify {
+  complete: boolean;
+  blockers: string[];
+  details: {
+    column_dims: number | null;
+    pinned_widths: Array<{ table: string; dims: number | null }>;
+    stale_wide: number;
+    missing_embeddings: number;
+    chunkless_pages: number;
+    marker: 'none' | 'same_target' | 'different_target' | 'corrupt';
+    file_plane_ok: boolean;
+  };
+}
+
+export async function verifyMigrationComplete(
+  engine: BrainEngine,
+  target: { toModel: string; toDims: number },
+  opts: {
+    /** File-plane config read WITHOUT env merge (loadConfigFileOnly). */
+    filePlane?: { model?: string | null; dims?: number | null } | null;
+    /** True when GBRAIN_EMBEDDING_* env exactly matches the target. */
+    envMatchesTarget?: boolean;
+    /** True when GBRAIN_EMBEDDING_* env is set at all. */
+    envPresent?: boolean;
+  } = {},
+): Promise<MigrationVerify> {
+  const blockers: string[] = [];
+
+  // env≠target: the runtime would embed at a DIFFERENT model than the target
+  // no matter what the DB says — a converged-looking brain is one process
+  // restart away from re-poisoning. Never claim "nothing to migrate" here.
+  if (opts.envPresent === true && opts.envMatchesTarget !== true) {
+    blockers.push('GBRAIN_EMBEDDING_* env vars override the runtime AWAY from the target — unset them (or pass --ignore-env-override)');
+  }
+
+  const col = await readContentChunksEmbeddingDim(engine);
+  if (schemaRebuildNeeded(col.dims, target.toDims)) {
+    blockers.push(
+      col.dims === null
+        ? `embedding column is absent/unreadable — will be (re)built at ${target.toDims}d`
+        : `embedding column is ${col.dims}d, target is ${target.toDims}d`,
+    );
+  }
+
+  const pinned = await readDimPinnedWidths(engine);
+  for (const p of pinned) {
+    if (schemaRebuildNeeded(p.dims, target.toDims)) {
+      blockers.push(`${p.table}.embedding is ${p.dims === null ? 'unreadable' : `${p.dims}d`}, target is ${target.toDims}d`);
+    }
+  }
+
+  const sig = migrationSignature(target.toModel, target.toDims);
+  let staleWide = 0;
+  if (col.exists) {
+    staleWide = await engine.countStaleChunks({ signature: sig, includeNullSignature: true });
+  } else {
+    // Absent column: the stale predicate would throw; every chunk is pending.
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM content_chunks`,
+    );
+    staleWide = Number(rows[0]?.n ?? 0);
+  }
+  if (staleWide > 0) {
+    blockers.push(`${staleWide} chunk(s) not in the target embedding space`);
+  }
+
+  // Belt-and-braces raw NULL residue via the (post-truth-fix) health count —
+  // no pages JOIN divergence, embed_skip already excluded on both engines.
+  let missing = 0;
+  try {
+    missing = (await engine.getHealth()).missing_embeddings;
+  } catch {
+    // Health probe failure: report-only conjunct, don't block on it.
+  }
+  if (missing > 0 && staleWide === 0) {
+    blockers.push(`${missing} chunk(s) have NULL vectors outside the stale predicate`);
+  }
+
+  // Contentful pages with zero chunk rows: the embed drain heals these, so a
+  // brain with any is NOT converged (round-2 #6; same census the drain uses).
+  let chunkless = 0;
+  try {
+    chunkless = await engine.countChunklessPagesWithContent();
+  } catch {
+    // Optional census; older engines without the method just skip it.
+  }
+  if (chunkless > 0) {
+    blockers.push(`${chunkless} contentful page(s) have no chunks yet (the re-embed pass heals these)`);
+  }
+
+  const marker = await readMigrationState(engine);
+  let markerState: MigrationVerify['details']['marker'] = 'none';
+  if (marker.corrupt) {
+    markerState = 'corrupt';
+    blockers.push('migration state marker is corrupt (treated as in-flight; completing the run rewrites it)');
+  } else if (marker.state) {
+    const same = marker.state.to_model === target.toModel && marker.state.to_dims === target.toDims;
+    markerState = same ? 'same_target' : 'different_target';
+    if (same) {
+      blockers.push(`a migration to this target started ${marker.state.started_at} is still in flight — resuming it`);
+    }
+    // different_target is the caller's --retarget decision, not a convergence
+    // blocker for THIS target; readMigrationStatus surfaces it.
+  }
+
+  const fp = opts.filePlane;
+  const filePlaneOk = fp
+    ? fp.model === target.toModel && Number(fp.dims) === target.toDims
+    : opts.envMatchesTarget === true; // env-canonical mode: no file plane, env pins the target
+  if (!filePlaneOk) {
+    blockers.push('runtime config (file plane) does not point at the target yet');
+  }
+
+  return {
+    complete: blockers.length === 0,
+    blockers,
+    details: {
+      column_dims: col.dims,
+      pinned_widths: pinned,
+      stale_wide: staleWide,
+      missing_embeddings: missing,
+      chunkless_pages: chunkless,
+      marker: markerState,
+      file_plane_ok: filePlaneOk,
+    },
   };
 }
 
@@ -478,6 +745,8 @@ export async function applyEmbeddingMigration(
     ignoreEnvOverride?: boolean;
     /** Persist target model+dims to the file plane + reconfigure the gateway. */
     persistConfig?: (toModel: string, toDims: number) => void | Promise<void>;
+    /** Stamped into the marker so the printed resume command is complete. */
+    forceSunsetTarget?: boolean;
   } = {},
 ): Promise<MigrationApplyResult> {
   const envWarning = detectEnvOverride(plan.to_model, plan.to_dims);
@@ -487,22 +756,65 @@ export async function applyEmbeddingMigration(
 
   try {
     // 1. State marker FIRST — a crash after any later step is resumable.
+    //    Same-target re-apply PRESERVES the original started_at (set-if-
+    //    absent) so status/doctor report the migration's true age; a
+    //    different-target live marker is pushed into `superseded` (the caller
+    //    already gated the retarget decision).
+    const prior = await readMigrationState(engine);
+    const now = new Date().toISOString();
+    const sameTarget = prior.state !== null
+      && prior.state.to_model === plan.to_model
+      && prior.state.to_dims === plan.to_dims;
+
     const state: MigrationState = {
+      version: 2,
       to_model: plan.to_model,
       to_dims: plan.to_dims,
       from_model: plan.from_model,
       from_dims: plan.from_dims,
-      started_at: new Date().toISOString(),
+      started_at: now,
     };
+    if (opts.forceSunsetTarget) state.force_sunset_target = true;
+    if (sameTarget && prior.state) {
+      // Resume: keep the original run's identity.
+      state.from_model = prior.state.from_model;
+      state.from_dims = prior.state.from_dims;
+      state.started_at = prior.state.started_at;
+      if (prior.state.retargeted_at) state.retargeted_at = prior.state.retargeted_at;
+      if (prior.state.superseded) state.superseded = prior.state.superseded;
+    } else if (prior.state) {
+      // Retarget: record the abandoned target's identity.
+      state.retargeted_at = now;
+      state.superseded = [
+        ...(prior.state.superseded ?? []),
+        { to_model: prior.state.to_model, to_dims: prior.state.to_dims, started_at: prior.state.started_at },
+      ];
+    }
     await engine.setConfig(MIGRATION_STATE_KEY, JSON.stringify(state));
 
-    // 2. Schema transition when the ACTUAL column width differs from the
-    //    target (probe again — the plan may be stale after a resume).
+    // 2. Schema work — probe again (the plan may be stale after a resume) and
+    //    repair each dim-pinned column INDEPENDENTLY (round-2 #9): a brain
+    //    whose chunks column is already at target but whose facts/query_cache
+    //    stayed narrow gets those repaired without a full destructive rebuild.
     let schemaTransitioned = false;
+    const pinnedRepaired: string[] = [];
     const col = await readContentChunksEmbeddingDim(engine);
-    if (col.dims !== plan.to_dims) {
+    if (schemaRebuildNeeded(col.dims, plan.to_dims)) {
       await runSchemaTransition(engine, plan.to_dims);
       schemaTransitioned = true;
+    } else {
+      const pinned = await readDimPinnedWidths(engine);
+      const stalePinned = pinned.filter((p) => schemaRebuildNeeded(p.dims, plan.to_dims));
+      if (stalePinned.length > 0) {
+        await engine.transaction(async (tx) => {
+          for (const t of TEXT_EMBEDDING_DIM_PINNED_TABLES) {
+            if (stalePinned.some((p) => p.table === t.table)) {
+              await transitionDimPinnedColumn(tx, t.table, t.index, t.indexSql, plan.to_dims);
+              pinnedRepaired.push(t.table);
+            }
+          }
+        });
+      }
     }
 
     // 3. #3391: mark EVERYTHING not in the target space as stale, including
@@ -541,7 +853,13 @@ export async function applyEmbeddingMigration(
       // Table may not exist on old brains; a miss here is harmless.
     }
 
-    return { status: 'applied', invalidated, cache_cleared: cacheCleared, schema_transitioned: schemaTransitioned };
+    return {
+      status: 'applied',
+      invalidated,
+      cache_cleared: cacheCleared,
+      schema_transitioned: schemaTransitioned,
+      pinned_repaired: pinnedRepaired,
+    };
   } catch (err) {
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err) };
   }
@@ -594,19 +912,34 @@ export async function reconcilePageSignatures(
 /**
  * Finish bookkeeping after the re-embed drains: clear the in-flight marker,
  * stamp the completion record. Call ONLY when countStaleChunks() === 0.
+ *
+ * ONE transaction (round-2 #10): delete + insert as separate writes had a
+ * crash window that lost BOTH the resume state and the completion receipt —
+ * and the verified skip would then read the brain as trivially converged
+ * with no record of what happened.
+ *
+ * `extra` is merged into the completion record (e.g. verify_search from the
+ * completion smoke check). Keep it small and content-free — this row lands
+ * in config-table dumps and logs.
  */
 export async function completeEmbeddingMigration(
   engine: BrainEngine,
   plan: EmbeddingMigrationPlan,
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
-  await engine.unsetConfig(MIGRATION_STATE_KEY);
-  await engine.setConfig(
-    MIGRATION_COMPLETED_KEY,
-    JSON.stringify({
-      to_model: plan.to_model,
-      to_dims: plan.to_dims,
-      from_model: plan.from_model,
-      completed_at: new Date().toISOString(),
-    }),
-  );
+  const completed = JSON.stringify({
+    to_model: plan.to_model,
+    to_dims: plan.to_dims,
+    from_model: plan.from_model,
+    completed_at: new Date().toISOString(),
+    ...extra,
+  });
+  await engine.transaction(async (tx) => {
+    await tx.executeRaw(`DELETE FROM config WHERE key = $1`, [MIGRATION_STATE_KEY]);
+    await tx.executeRaw(
+      `INSERT INTO config (key, value) VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [MIGRATION_COMPLETED_KEY, completed],
+    );
+  });
 }

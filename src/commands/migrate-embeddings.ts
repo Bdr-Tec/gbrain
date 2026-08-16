@@ -29,11 +29,30 @@ import {
   applyEmbeddingMigration,
   completeEmbeddingMigration,
   reconcilePageSignatures,
+  verifyMigrationComplete,
+  readMigrationState,
+  detectEnvPresence,
+  detectEnvOverride,
+  migrationSignature,
+  formatEnvOverrideWarning,
   MIGRATION_STATE_KEY,
   type EmbeddingMigrationPlan,
+  type MigrationVerify,
+  type MigrationState,
+  type EnvOverrideWarning,
 } from '../core/embedding-migration.ts';
-import { formatEnvOverrideWarning } from '../core/retrieval-upgrade-planner.ts';
-import { parsePaceArgs, runEmbedCore } from './embed.ts';
+import { tryAcquireDbLock, type DbLockHandle } from '../core/db-lock.ts';
+import { embedBackfillLockId } from '../core/embed-backfill-lock.ts';
+import { redactPgUrl } from '../core/url-redact.ts';
+import { parsePaceArgs, runEmbedCore, type EmbedResult } from './embed.ts';
+
+/**
+ * Brain-wide migration lock (round-2 #4): serializes whole migrations so two
+ * concurrent runs can't race marker writes + DDL through the read-then-write
+ * window (per-source embed locks don't cover empty brains, which lock zero
+ * sources). Same DbLock machinery + TTL as the embed backfill locks.
+ */
+export const GLOBAL_MIGRATION_LOCK_ID = 'gbrain-embedding-migration';
 
 export interface MigrateEmbeddingsFlags {
   to?: string;
@@ -44,6 +63,7 @@ export interface MigrateEmbeddingsFlags {
   noEmbed: boolean;
   ignoreEnvOverride: boolean;
   forceSunsetTarget: boolean;
+  retarget: boolean;
   batchSize?: number;
   pace?: ReturnType<typeof parsePaceArgs>;
 }
@@ -64,6 +84,7 @@ export function parseMigrateEmbeddingsFlags(args: string[]): MigrateEmbeddingsFl
     noEmbed: args.includes('--no-embed'),
     ignoreEnvOverride: args.includes('--ignore-env-override'),
     forceSunsetTarget: args.includes('--force-sunset-target'),
+    retarget: args.includes('--retarget'),
     ...(batchSize !== undefined && { batchSize }),
     pace: parsePaceArgs(args),
   };
@@ -94,6 +115,9 @@ Flags:
   --force-sunset-target   Allow migrating ONTO a provider with an announced
                           shutdown (e.g. a self-hosted wire-compatible endpoint
                           behind a provider_base_urls override).
+  --retarget              Abandon a DIFFERENT in-flight migration target and
+                          start this one (the refusal message names both the
+                          resume and retarget commands).
   --help                  Show this help.
 
 A killed run is resumable: re-run the same command. Already-migrated chunks
@@ -101,18 +125,47 @@ are never re-embedded twice.
 `);
 }
 
-function renderPlan(plan: EmbeddingMigrationPlan): string {
+function renderPlan(ctx: MigrationPlanContext): string {
+  const { plan, verify, envPresence, envMatchesTarget, identity, concurrentWriters } = ctx;
   const lines: string[] = [];
   lines.push('Embedding migration plan');
+  // Wrong-brain visibility: which database this run is actually pointed at.
+  lines.push(`  Brain: ${identity.engine} (${identity.target}); scope: brain-wide (all sources)`);
   lines.push(`  From: ${plan.from_model} (${plan.from_dims}d${plan.column_dims !== null && plan.column_dims !== plan.from_dims ? `; column is actually ${plan.column_dims}d` : ''})`);
   lines.push(`  To:   ${plan.to_model} (${plan.to_dims}d)`);
+  // DB-reality census: what pages say they were embedded with (env can lie
+  // about From; the census cannot).
+  if (plan.signature_census.length > 0) {
+    const census = plan.signature_census
+      .map((c) => `${c.signature ?? '(none recorded)'}: ${c.pages}`)
+      .join(', ');
+    lines.push(`  Page signatures: ${census}`);
+  }
+  if (envPresence.present) {
+    if (envMatchesTarget) {
+      lines.push('  NOTICE: GBRAIN_EMBEDDING_* env vars pin this target and override the file');
+      lines.push('          plane at runtime. The migration also writes the file plane — keep the');
+      lines.push('          env in sync (or unset it) so every gbrain process agrees.');
+    } else {
+      lines.push('  WARNING: GBRAIN_EMBEDDING_* env vars are set and do NOT match the target —');
+      lines.push('          a live run will refuse (see the env-override box).');
+    }
+  }
   if (plan.dim_change) {
-    lines.push(`  DESTRUCTIVE: the embedding column is rebuilt at ${plan.to_dims}d, which DELETES`);
-    lines.push('          every stored embedding vector in this brain. They are not recoverable —');
-    lines.push('          going back to the old provider means paying for a second full re-embed.');
-    lines.push('          Until the re-embed finishes, semantic search is degraded to lexical-only.');
-    lines.push(`          The query cache and fact embeddings are rebuilt at ${plan.to_dims}d too`);
-    lines.push('          (cache refills on next query; facts re-embed on their next write).');
+    const hasVectors = plan.column_dims !== null;
+    if (hasVectors) {
+      lines.push(`  DESTRUCTIVE: the embedding column is rebuilt at ${plan.to_dims}d, which DELETES`);
+      lines.push('          every stored embedding vector in this brain. They are not recoverable —');
+      lines.push('          going back to the old provider means paying for a second full re-embed.');
+      lines.push('          Until the re-embed finishes, semantic search is degraded to lexical-only.');
+      lines.push(`          The query cache and fact embeddings are rebuilt at ${plan.to_dims}d too`);
+      lines.push('          (cache refills on next query; facts re-embed on their next write/extract).');
+    } else {
+      // Absent/unreadable column: nothing stored to lose, but the DDL still
+      // runs — say so instead of silently skipping the warning (dim-honesty).
+      lines.push(`  Schema: the embedding column will be (re)built at ${plan.to_dims}d (no stored`);
+      lines.push('          vectors were detected, so nothing is deleted).');
+    }
   }
   lines.push(`  Chunks to re-embed: ${plan.chunks_to_embed}${plan.null_signature_chunks > 0 ? ` (includes ${plan.null_signature_chunks} on pages with no recorded embedding signature)` : ''}`);
   lines.push(
@@ -123,8 +176,18 @@ function renderPlan(plan: EmbeddingMigrationPlan): string {
   if (plan.resuming) {
     lines.push('  Resuming: a prior migration to this target was interrupted; continuing it.');
   }
+  if (concurrentWriters.workers > 0 || concurrentWriters.embedJobs > 0) {
+    lines.push(`  WARNING: ${concurrentWriters.workers} live minion worker(s) and ${concurrentWriters.embedJobs} waiting/running`);
+    lines.push('          embed job(s) detected. Generic embed/cycle jobs do not take the migration');
+    lines.push('          locks — stop the worker (or let the queue drain) first, or their writes');
+    lines.push('          will be counted stale by the final census and re-embedded.');
+  }
   if (plan.reranker_warning) {
     lines.push(`  WARNING: ${plan.reranker_warning}`);
+  }
+  if (!verify.complete && verify.blockers.length > 0) {
+    lines.push('  Outstanding work:');
+    for (const b of verify.blockers) lines.push(`    - ${b}`);
   }
   return lines.join('\n');
 }
@@ -187,11 +250,28 @@ export async function persistEmbeddingFileConfig(
   toModel: string,
   toDims: number,
 ): Promise<void> {
-  const { loadConfig, saveConfig } = await import('../core/config.ts');
+  const { loadConfig, loadConfigFileOnly, saveConfig } = await import('../core/config.ts');
   const { configureGateway } = await import('../core/ai/gateway.ts');
   const { buildGatewayConfig } = await import('../core/ai/build-gateway-config.ts');
-  const cfg = loadConfig();
-  if (!cfg) {
+  // Round-2 #2: read the FILE plane, not env-merged loadConfig(). Persisting
+  // the merged view wrote env-sourced API keys/DB URLs into
+  // ~/.gbrain/config.json as a side effect of every migration.
+  const fileCfg = loadConfigFileOnly();
+  if (!fileCfg) {
+    // No file plane. Env-canonical deployments (containers/CI where
+    // GBRAIN_EMBEDDING_* IS the durable config, possibly with a read-only
+    // HOME) are legitimate: when env already pins the exact target, there is
+    // nothing to persist — proceed on env alone. The DB plane still gets the
+    // target (apply step 4) so doctor agrees.
+    const envPresence = detectEnvPresence();
+    const envPinsTarget = envPresence.present
+      && !detectEnvOverride(toModel, toDims).triggered;
+    if (envPinsTarget) {
+      serr('  [migrate] no ~/.gbrain/config.json — env-canonical mode: GBRAIN_EMBEDDING_* pins the target; keep it set for every gbrain process.');
+      const merged = loadConfig();
+      if (merged) configureGateway(buildGatewayConfig(merged));
+      return;
+    }
     // REFUSE rather than warn-and-proceed. Without a file plane to write, the
     // switch would not survive this process: the next `gbrain` invocation
     // reads file/env config, sees the OLD provider, and re-embeds the brain
@@ -207,10 +287,288 @@ export async function persistEmbeddingFileConfig(
       '  in the environment of every gbrain process) and re-run.',
     );
   }
-  cfg.embedding_model = toModel;
-  cfg.embedding_dimensions = toDims;
-  saveConfig(cfg);
-  configureGateway(buildGatewayConfig(cfg));
+  fileCfg.embedding_model = toModel;
+  fileCfg.embedding_dimensions = toDims;
+  saveConfig(fileCfg);
+  // Reconfigure the in-process gateway from the MERGED view (env still wins
+  // at runtime; when env is set it matches the target — the ≠ case was
+  // refused before apply).
+  const merged = loadConfig();
+  configureGateway(buildGatewayConfig(merged ?? fileCfg));
+}
+
+// ============================================================================
+// Shared orchestrator (round-2 #11): ONE flow consumed by BOTH the CLI
+// command and the `migrate_embeddings` op handler, so hardening (locks,
+// retarget, verified skip, heartbeat, completion bookkeeping) can never
+// exist on one surface and not the other.
+// ============================================================================
+
+export interface MigrationFlowOpts {
+  to: string;
+  dim?: number;
+  ignoreEnvOverride?: boolean;
+  forceSunsetTarget?: boolean;
+  retarget?: boolean;
+  noEmbed?: boolean;
+  batchSize?: number;
+  pace?: ReturnType<typeof parsePaceArgs>;
+  quiet?: boolean;
+  onProgress?: (done: number, total: number, embedded: number) => void;
+}
+
+export interface MigrationPlanContext {
+  plan: EmbeddingMigrationPlan;
+  verify: MigrationVerify;
+  envPresence: ReturnType<typeof detectEnvPresence>;
+  /** env is set AND exactly pins the target (the notice-and-proceed case). */
+  envMatchesTarget: boolean;
+  /** A live marker for a DIFFERENT target (the --retarget decision), if any. */
+  inflightOther: MigrationState | null;
+  /** Which brain/DB this run is actually pointed at (wrong-brain visibility). */
+  identity: { engine: string; target: string };
+  /** Quiesce-lite: live embed writers that are NOT under the migration locks. */
+  concurrentWriters: { workers: number; embedJobs: number };
+}
+
+export type MigrationFlowResult =
+  | { status: 'locked'; holder: 'migration' | 'embed_backfill'; detail: string }
+  | { status: 'refused_retarget'; inflight: MigrationState }
+  | { status: 'refused_env'; warning: EnvOverrideWarning }
+  | { status: 'probe_failed'; message: string }
+  | { status: 'apply_failed'; reason: string }
+  | {
+      status: 'applied_no_embed';
+      invalidated: number; cache_cleared: number;
+      schema_transitioned: boolean; pinned_repaired: string[];
+    }
+  | {
+      status: 'completed';
+      embedded: number; remaining: 0; signatures_reconciled: number;
+      invalidated: number; cache_cleared: number;
+      schema_transitioned: boolean; pinned_repaired: string[];
+    }
+  | {
+      status: 'incomplete';
+      embedded: number; remaining: number; signatures_reconciled: number;
+      invalidated: number; cache_cleared: number;
+      schema_transitioned: boolean; pinned_repaired: string[];
+      lock_skipped?: boolean; lock_lost?: boolean;
+    };
+
+/**
+ * Read-only planning context: the plan, the DB-reality convergence verdict,
+ * env/config-plane resolution, brain identity, and the concurrent-writer
+ * census. Never mutates anything.
+ */
+export async function planMigrationFlow(
+  engine: BrainEngine,
+  opts: Pick<MigrationFlowOpts, 'to' | 'dim' | 'forceSunsetTarget'>,
+): Promise<MigrationPlanContext> {
+  // From-state as the gateway resolved it (file/env config + defaults) —
+  // display only; nothing load-bearing trusts it (D2).
+  let fromModel: string | undefined;
+  let fromDims: number | undefined;
+  try {
+    const { getEmbeddingModel, getEmbeddingDimensions } = await import('../core/ai/gateway.ts');
+    fromModel = getEmbeddingModel();
+    fromDims = getEmbeddingDimensions();
+  } catch { /* gateway unconfigured — plan falls back to shipped defaults */ }
+
+  const plan = await planEmbeddingMigration(engine, {
+    to: opts.to,
+    ...(opts.dim !== undefined && { dim: opts.dim }),
+    ...(fromModel !== undefined && { fromModel }),
+    ...(fromDims !== undefined && { fromDims }),
+    ...(opts.forceSunsetTarget && { allowSunsetTarget: true }),
+  });
+
+  const envPresence = detectEnvPresence();
+  const envMatchesTarget = envPresence.present
+    && !detectEnvOverride(plan.to_model, plan.to_dims).triggered;
+
+  // File plane read WITHOUT env merge — verify must not be poisonable.
+  let filePlane: { model?: string | null; dims?: number | null } | null = null;
+  try {
+    const { loadConfigFileOnly } = await import('../core/config.ts');
+    const fileCfg = loadConfigFileOnly();
+    filePlane = fileCfg
+      ? { model: fileCfg.embedding_model ?? null, dims: fileCfg.embedding_dimensions ?? null }
+      : null;
+  } catch { /* unreadable file plane = absent */ }
+
+  const verify = await verifyMigrationComplete(engine, {
+    toModel: plan.to_model,
+    toDims: plan.to_dims,
+  }, { filePlane, envMatchesTarget, envPresent: envPresence.present });
+
+  // Live marker for a DIFFERENT target: the caller's --retarget decision.
+  const marker = await readMigrationState(engine);
+  const inflightOther = marker.state
+    && (marker.state.to_model !== plan.to_model || marker.state.to_dims !== plan.to_dims)
+    ? marker.state
+    : null;
+
+  // Brain/DB identity (round-1 C1): make wrong-brain routing visible in every
+  // transcript. Redacted — never print a raw connection string.
+  let identity = { engine: 'unknown', target: 'unknown' };
+  try {
+    const { loadConfig } = await import('../core/config.ts');
+    const cfg = loadConfig();
+    if (cfg?.database_url) identity = { engine: 'postgres', target: redactPgUrl(cfg.database_url) };
+    else if (cfg?.database_path) identity = { engine: 'pglite', target: cfg.database_path };
+    else identity = { engine: cfg?.engine ?? 'pglite', target: 'default path' };
+  } catch { /* identity is informational */ }
+
+  // Quiesce-lite census (round-1 C2 / round-2 #3): embed writers outside the
+  // migration locks. Report, don't block — the completion census is the
+  // correctness backstop; this is the operator's "stop the worker first" cue.
+  let concurrentWriters = { workers: 0, embedJobs: 0 };
+  try {
+    const { readWorkers } = await import('../core/minions/worker-registry.ts');
+    const workers = readWorkers().length;
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM minion_jobs
+        WHERE status IN ('waiting', 'running')
+          AND name IN ('embed', 'embed-catch-up', 'embed-backfill')`,
+    );
+    concurrentWriters = { workers, embedJobs: Number(rows[0]?.n ?? 0) };
+  } catch { /* census is informational */ }
+
+  return { plan, verify, envPresence, envMatchesTarget, inflightOther, identity, concurrentWriters };
+}
+
+/**
+ * The consented, destructive half. Callers run planMigrationFlow first, get
+ * user consent (CLI confirm / op yes:true), then call this. Lock ordering:
+ * global migration lock → all-source embed locks (sorted, archived included)
+ * → probe → apply → drain (heldLocks + heartbeat) → reconcile → complete.
+ */
+export async function executeMigrationFlow(
+  engine: BrainEngine,
+  ctx: MigrationPlanContext,
+  opts: MigrationFlowOpts,
+): Promise<MigrationFlowResult> {
+  const { plan } = ctx;
+
+  // Global migration lock FIRST (round-2 #4): two migrations must serialize
+  // even on empty brains (zero source locks) and across retarget decisions.
+  let globalLock: DbLockHandle | null = null;
+  try {
+    globalLock = await tryAcquireDbLock(engine, GLOBAL_MIGRATION_LOCK_ID, 60);
+  } catch {
+    globalLock = null; // lock subsystem down — treated as held (fail closed for a destructive op)
+  }
+  if (!globalLock) {
+    return {
+      status: 'locked',
+      holder: 'migration',
+      detail: 'another embedding migration holds the brain-wide migration lock (or the lock subsystem is unavailable)',
+    };
+  }
+
+  const heldLocks: DbLockHandle[] = [globalLock];
+  try {
+    // Retarget gate UNDER the global lock (no read-then-write race).
+    const marker = await readMigrationState(engine);
+    if (
+      marker.state
+      && (marker.state.to_model !== plan.to_model || marker.state.to_dims !== plan.to_dims)
+      && !opts.retarget
+    ) {
+      return { status: 'refused_retarget', inflight: marker.state };
+    }
+
+    // All-source embed locks, sorted, ARCHIVED INCLUDED (round-2 #4: the
+    // drain walks archived sources' chunks too — lock set must match).
+    let sourceIds: string[] = [];
+    try {
+      const rows = await engine.listAllSources({ includeArchived: true });
+      sourceIds = rows.map((r) => r.id).sort();
+    } catch { /* zero sources (empty brain) — global lock alone covers it */ }
+    for (const sid of sourceIds) {
+      let lock: DbLockHandle | null = null;
+      try {
+        lock = await tryAcquireDbLock(engine, embedBackfillLockId(sid), 60);
+      } catch {
+        lock = null;
+      }
+      if (!lock) {
+        return {
+          status: 'locked',
+          holder: 'embed_backfill',
+          detail: `an embed backfill holds the lock for source "${sid}" (check \`gbrain jobs list\`; a hard-killed run's lock expires within 60 minutes)`,
+        };
+      }
+      heldLocks.push(lock);
+    }
+
+    // Live probe BEFORE any mutation.
+    const probe = await probeTargetProvider(plan.to_model, plan.to_dims);
+    if (!probe.ok) return { status: 'probe_failed', message: probe.message };
+
+    const applied = await applyEmbeddingMigration(engine, plan, {
+      ignoreEnvOverride: opts.ignoreEnvOverride,
+      forceSunsetTarget: opts.forceSunsetTarget,
+      persistConfig: (m, d) => persistEmbeddingFileConfig(m, d),
+    });
+    if (applied.status === 'refused') return { status: 'refused_env', warning: applied.warning };
+    if (applied.status === 'failed') return { status: 'apply_failed', reason: applied.reason };
+
+    if (opts.noEmbed) {
+      return {
+        status: 'applied_no_embed',
+        invalidated: applied.invalidated,
+        cache_cleared: applied.cache_cleared,
+        schema_transitioned: applied.schema_transitioned,
+        pinned_repaired: applied.pinned_repaired,
+      };
+    }
+
+    // Re-embed drain. heldLocks: the drain must not re-acquire (and fail
+    // against) our own locks; it heartbeats them instead (lock-loss aborts).
+    const embedResult: EmbedResult = await runEmbedCore(engine, {
+      stale: true,
+      catchUp: true,
+      singleFlight: true,
+      includeNullSignature: true,
+      quiet: opts.quiet,
+      heldLocks,
+      ...(opts.batchSize !== undefined && { batchSize: opts.batchSize }),
+      ...(opts.pace && { pace: opts.pace }),
+      ...(opts.onProgress && { onProgress: opts.onProgress }),
+    });
+
+    const reconciled = await reconcilePageSignatures(engine, plan);
+    const remaining = await engine.countStaleChunks({
+      signature: migrationSignature(plan.to_model, plan.to_dims),
+      includeNullSignature: true,
+    });
+
+    const base = {
+      embedded: embedResult.embedded,
+      signatures_reconciled: reconciled,
+      invalidated: applied.invalidated,
+      cache_cleared: applied.cache_cleared,
+      schema_transitioned: applied.schema_transitioned,
+      pinned_repaired: applied.pinned_repaired,
+    };
+    if (remaining === 0 && !embedResult.lock_lost) {
+      await completeEmbeddingMigration(engine, plan);
+      return { status: 'completed', remaining: 0, ...base };
+    }
+    return {
+      status: 'incomplete',
+      remaining,
+      ...base,
+      ...(embedResult.lock_skipped && { lock_skipped: true }),
+      ...(embedResult.lock_lost && { lock_lost: true }),
+    };
+  } finally {
+    for (const h of heldLocks.reverse()) {
+      try { await h.release(); } catch { /* best-effort; TTL is the backstop */ }
+    }
+  }
 }
 
 export interface RunMigrateEmbeddingsOpts {
@@ -239,48 +597,51 @@ export async function runMigrateEmbeddings(
     exit(1);
   }
 
-  // From-state as the gateway resolved it (file/env config + defaults) —
-  // the truth for what embeds run under TODAY.
-  let fromModel: string | undefined;
-  let fromDims: number | undefined;
+  let ctx: MigrationPlanContext;
   try {
-    const { getEmbeddingModel, getEmbeddingDimensions } = await import('../core/ai/gateway.ts');
-    fromModel = getEmbeddingModel();
-    fromDims = getEmbeddingDimensions();
-  } catch {
-    // Gateway unconfigured — plan falls back to shipped defaults.
-  }
-
-  let plan: EmbeddingMigrationPlan;
-  try {
-    plan = await planEmbeddingMigration(engine, {
+    ctx = await planMigrationFlow(engine, {
       to: flags.to!,
       ...(flags.dim !== undefined && { dim: flags.dim }),
-      ...(fromModel !== undefined && { fromModel }),
-      ...(fromDims !== undefined && { fromDims }),
-      ...(flags.forceSunsetTarget && { allowSunsetTarget: true }),
+      ...(flags.forceSunsetTarget && { forceSunsetTarget: true }),
     });
   } catch (e) {
     serr(e instanceof Error ? e.message : String(e));
     exit(1);
     return; // unreachable; keeps TS happy for injected exit seams
   }
+  const plan = ctx.plan;
 
   if (flags.json) {
     // Human plan goes to stderr so stdout stays JSON-clean.
-    serr(renderPlan(plan));
+    serr(renderPlan(ctx));
   } else {
-    console.log(renderPlan(plan));
+    console.log(renderPlan(ctx));
   }
 
-  if (plan.chunks_to_embed === 0 && !plan.dim_change && plan.from_model === plan.to_model) {
-    if (flags.json) console.log(JSON.stringify({ status: 'skipped_no_work', plan }, null, 2));
-    else console.log('Nothing to migrate — brain is already on the target model.');
+  // Different-target in-flight marker: the --retarget decision comes BEFORE
+  // any skip — a converged brain with a live foreign marker still needs the
+  // user to resume it or explicitly abandon it.
+  if (ctx.inflightOther && !flags.retarget && !flags.dryRun) {
+    const s = ctx.inflightOther;
+    if (flags.json) console.log(JSON.stringify({ status: 'refused', reason: 'retarget_required', inflight: s, plan }, null, 2));
+    serr(`Refusing: a migration to ${s.to_model} (${s.to_dims}d) started ${s.started_at} is still in flight.`);
+    serr(`  Resume it:   gbrain migrate embeddings --to ${s.to_model} --dim ${s.to_dims}${s.force_sunset_target ? ' --force-sunset-target' : ''} --yes`);
+    serr(`  Abandon it:  re-run this command with --retarget (the abandoned target is recorded in the marker history)`);
+    exit(1);
+  }
+
+  // DB-reality skip (D2): "nothing to migrate" ONLY when every convergence
+  // conjunct verifies against the database + the un-merged file plane, and no
+  // foreign marker is pending a retarget decision. The old three-conjunct
+  // skip trusted `from_model`, which env vars poison.
+  if (ctx.verify.complete && !ctx.inflightOther) {
+    if (flags.json) console.log(JSON.stringify({ status: 'skipped_no_work', plan, verified: ctx.verify }, null, 2));
+    else console.log('Nothing to migrate — brain is verified on the target model (schema, vectors, signatures, config).');
     exit(0);
   }
 
   if (flags.dryRun) {
-    if (flags.json) console.log(JSON.stringify({ status: 'planned', plan }, null, 2));
+    if (flags.json) console.log(JSON.stringify({ status: 'planned', plan, verified: ctx.verify }, null, 2));
     exit(0);
   }
 
@@ -311,52 +672,19 @@ export async function runMigrateEmbeddings(
     }
   }
 
-  // ── Live probe BEFORE any mutation: one tiny embed against the TARGET
-  // provider validates API key, model id, and dimension support in one call.
-  const probe = await probeTargetProvider(plan.to_model, plan.to_dims);
-  if (!probe.ok) {
-    serr(probe.message);
-    exit(1);
-  }
-
-  // ── Apply: schema + config + invalidation + cache purge.
-  const applied = await applyEmbeddingMigration(engine, plan, {
-    ignoreEnvOverride: flags.ignoreEnvOverride,
-    persistConfig: (toModel, toDims) => persistEmbeddingFileConfig(toModel, toDims),
-  });
-
-  if (applied.status === 'refused') {
-    if (flags.json) console.log(JSON.stringify(applied, null, 2));
-    else serr(formatEnvOverrideWarning(applied.warning));
-    exit(1);
-  }
-  if (applied.status === 'failed') {
-    if (flags.json) console.log(JSON.stringify(applied, null, 2));
-    else serr(`Migration apply failed: ${applied.reason}`);
-    exit(1);
-  }
-
-  serr(`  [migrate] schema ${applied.schema_transitioned ? `rebuilt at ${plan.to_dims}d` : 'unchanged'}; ` +
-    `${applied.invalidated} chunk(s) invalidated; query cache purged (${applied.cache_cleared} row(s)).`);
-
-  if (flags.noEmbed) {
-    const msg = 'Config + schema migrated. Re-embed deferred — run: gbrain embed --stale --catch-up --include-null-signature';
-    if (flags.json) console.log(JSON.stringify({ ...applied, status: 'applied_no_embed', plan }, null, 2));
-    else console.log(msg);
-    exit(0);
-  }
-
-  // ── Re-embed. All the machinery (locks, pacing, backoff, progress,
-  // signature stamping) is the standard embed pipeline.
+  // ── Execute: locks → probe → apply → drain → reconcile → complete, all in
+  // the shared orchestrator (identical semantics on the op path).
   const { createProgress } = await import('../core/progress.ts');
   const { getCliOptions, cliOptsToProgressOptions } = await import('../core/cli-options.ts');
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
   let progressStarted = false;
-  const embedResult = await runEmbedCore(engine, {
-    stale: true,
-    catchUp: true,
-    singleFlight: true,
-    includeNullSignature: true,
+  const result = await executeMigrationFlow(engine, ctx, {
+    to: flags.to!,
+    ...(flags.dim !== undefined && { dim: flags.dim }),
+    ignoreEnvOverride: flags.ignoreEnvOverride,
+    forceSunsetTarget: flags.forceSunsetTarget,
+    retarget: flags.retarget,
+    noEmbed: flags.noEmbed,
     quiet: flags.json,
     ...(flags.batchSize !== undefined && { batchSize: flags.batchSize }),
     ...(flags.pace && { pace: flags.pace }),
@@ -370,50 +698,87 @@ export async function runMigrateEmbeddings(
   });
   if (progressStarted) progress.finish();
 
-  // Reconcile signatures BEFORE the completion probe: pages straddling a
-  // stale-batch boundary are embedded correctly but left unstamped by the
-  // embed loop's all-or-nothing stamp rule. Without this the probe would call
-  // a fully-migrated brain "incomplete" and the re-run would pay again.
-  const reconciled = await reconcilePageSignatures(engine, plan);
-  if (reconciled > 0) {
-    serr(`  [migrate] reconciled the embedding signature on ${reconciled} fully-embedded page(s) (batch-boundary pages).`);
+  if (flags.json && result.status !== 'refused_env') {
+    console.log(JSON.stringify({ ...result, plan }, null, 2));
   }
 
-  const remaining = await engine.countStaleChunks({
-    signature: `${plan.to_model}:${plan.to_dims}`,
-    includeNullSignature: true,
-  });
-
-  if (remaining === 0) {
-    await completeEmbeddingMigration(engine, plan);
-    if (flags.json) {
-      console.log(JSON.stringify({ status: 'completed', plan, embedded: embedResult.embedded, remaining: 0 }, null, 2));
-    } else {
-      slog(`Migration complete: ${embedResult.embedded} chunk(s) embedded on ${plan.to_model} (${plan.to_dims}d).`);
-      if (plan.reranker_warning) serr(`  [migrate] reminder: ${plan.reranker_warning}`);
+  switch (result.status) {
+    case 'locked': {
+      if (result.holder === 'migration') {
+        serr(`Migration refused: ${result.detail}.`);
+        serr('If a previous migration was killed hard, its lock expires within 60 minutes — re-run then.');
+      } else {
+        serr(`Migration paused before any change: ${result.detail}.`);
+        serr('Let the backfill finish (or stop the worker), then re-run the same command.');
+      }
+      exit(1);
+      break;
     }
-    exit(0);
-  } else {
-    if (flags.json) {
-      console.log(JSON.stringify({
-        status: 'incomplete', plan, embedded: embedResult.embedded, remaining,
-        ...(embedResult.lock_skipped && { lock_skipped: true }),
-      }, null, 2));
-    } else if (embedResult.lock_skipped) {
-      // E2E-observed failure mode: a hard-killed (SIGKILL/crash) migration
-      // leaves its single-flight embed lock behind, and every immediate
-      // re-run "resumes" without embedding anything. Say so — "re-run to
-      // resume" would be a lie until the lock expires.
-      const { EMBED_BACKFILL_LOCK_TTL_MIN } = await import('../core/embed-backfill-lock.ts');
-      serr(`Migration paused: ${remaining} chunk(s) still stale, and the re-embed was SKIPPED because`);
-      serr('another embed backfill holds the per-source lock. If that is a live run (check');
-      serr('`gbrain jobs list`), let it finish. If a previous migration was killed hard, its lock');
-      serr(`expires after at most ${EMBED_BACKFILL_LOCK_TTL_MIN} minutes — re-run the same command then.`);
-    } else {
-      serr(`Migration incomplete: ${remaining} chunk(s) still stale (embed failures or an interrupted run).`);
-      serr('Re-run the same command to resume — completed chunks are never re-embedded.');
+    case 'refused_retarget': {
+      const s = result.inflight;
+      serr(`Refusing: a migration to ${s.to_model} (${s.to_dims}d) started ${s.started_at} is still in flight.`);
+      serr(`  Resume it:   gbrain migrate embeddings --to ${s.to_model} --dim ${s.to_dims}${s.force_sunset_target ? ' --force-sunset-target' : ''} --yes`);
+      serr(`  Abandon it:  re-run this command with --retarget (the abandoned target is recorded in the marker history)`);
+      exit(1);
+      break;
     }
-    exit(1);
+    case 'refused_env': {
+      if (flags.json) console.log(JSON.stringify({ ...result, plan }, null, 2));
+      else serr(formatEnvOverrideWarning(result.warning));
+      exit(1);
+      break;
+    }
+    case 'probe_failed': {
+      serr(result.message);
+      exit(1);
+      break;
+    }
+    case 'apply_failed': {
+      serr(`Migration apply failed: ${result.reason}`);
+      exit(1);
+      break;
+    }
+    case 'applied_no_embed': {
+      serr(`  [migrate] schema ${result.schema_transitioned ? `rebuilt at ${plan.to_dims}d` : result.pinned_repaired.length > 0 ? `repaired (${result.pinned_repaired.join(', ')})` : 'unchanged'}; ` +
+        `${result.invalidated} chunk(s) invalidated; query cache purged (${result.cache_cleared} row(s)).`);
+      if (!flags.json) console.log('Config + schema migrated. Re-embed deferred — run: gbrain embed --stale --catch-up --include-null-signature');
+      exit(0);
+      break;
+    }
+    case 'completed': {
+      serr(`  [migrate] schema ${result.schema_transitioned ? `rebuilt at ${plan.to_dims}d` : result.pinned_repaired.length > 0 ? `repaired (${result.pinned_repaired.join(', ')})` : 'unchanged'}; ` +
+        `${result.invalidated} chunk(s) invalidated; query cache purged (${result.cache_cleared} row(s)).`);
+      if (result.signatures_reconciled > 0) {
+        serr(`  [migrate] reconciled the embedding signature on ${result.signatures_reconciled} fully-embedded page(s) (batch-boundary pages).`);
+      }
+      if (!flags.json) {
+        slog(`Migration complete: ${result.embedded} chunk(s) embedded on ${plan.to_model} (${plan.to_dims}d).`);
+        if (plan.reranker_warning) serr(`  [migrate] reminder: ${plan.reranker_warning}`);
+      }
+      exit(0);
+      break;
+    }
+    case 'incomplete': {
+      if (result.lock_lost) {
+        serr(`Migration aborted: the single-flight lock was lost mid-drain (stolen or the heartbeat kept failing).`);
+        serr(`${result.remaining} chunk(s) still stale; partial progress is banked. Re-run the same command once the other holder finishes.`);
+      } else if (result.lock_skipped) {
+        // E2E-observed failure mode: a hard-killed (SIGKILL/crash) migration
+        // leaves its single-flight embed lock behind, and every immediate
+        // re-run "resumes" without embedding anything. Say so — "re-run to
+        // resume" would be a lie until the lock expires.
+        const { EMBED_BACKFILL_LOCK_TTL_MIN } = await import('../core/embed-backfill-lock.ts');
+        serr(`Migration paused: ${result.remaining} chunk(s) still stale, and the re-embed was SKIPPED because`);
+        serr('another embed backfill holds the per-source lock. If that is a live run (check');
+        serr('`gbrain jobs list`), let it finish. If a previous migration was killed hard, its lock');
+        serr(`expires after at most ${EMBED_BACKFILL_LOCK_TTL_MIN} minutes — re-run the same command then.`);
+      } else {
+        serr(`Migration incomplete: ${result.remaining} chunk(s) still stale (embed failures or an interrupted run).`);
+        serr('Re-run the same command to resume — completed chunks are never re-embedded.');
+      }
+      exit(1);
+      break;
+    }
   }
 }
 

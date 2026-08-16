@@ -5770,6 +5770,8 @@ const migrate_embeddings: Operation = {
     dim: { type: 'number', description: "Target dimensions. Defaults to the provider recipe's declared width; required when the recipe declares none." },
     dry_run: { type: 'boolean', description: 'Plan + cost estimate only; change nothing.' },
     yes: { type: 'boolean', description: 'Confirm the re-embed spend + destructive schema change. Required for a live run.' },
+    force_sunset_target: { type: 'boolean', description: 'Allow migrating ONTO a provider with an announced shutdown (self-hosted wire-compatible endpoints).' },
+    retarget: { type: 'boolean', description: 'Abandon a DIFFERENT in-flight migration target and start this one (the abandoned target is recorded in the marker history).' },
   },
   mutating: true,
   scope: 'admin',
@@ -5782,64 +5784,54 @@ const migrate_embeddings: Operation = {
     if (ctx.remote !== false) {
       throw new Error('migrate_embeddings is local-only. Run `gbrain migrate embeddings` on the host.');
     }
-    const {
-      planEmbeddingMigration, applyEmbeddingMigration, completeEmbeddingMigration,
-      reconcilePageSignatures, migrationSignature,
-    } = await import('./embedding-migration.ts');
+    // ONE shared orchestrator with the CLI (round-2 #11): locks, retarget
+    // gate, DB-verified skip, heartbeat, and completion bookkeeping are
+    // identical on both surfaces by construction.
+    const { planMigrationFlow, executeMigrationFlow } = await import('../commands/migrate-embeddings.ts');
     const to = p.to as string;
     const dim = p.dim as number | undefined;
-    let fromModel: string | undefined;
-    let fromDims: number | undefined;
-    try {
-      const { getEmbeddingModel, getEmbeddingDimensions } = await import('./ai/gateway.ts');
-      fromModel = getEmbeddingModel();
-      fromDims = getEmbeddingDimensions();
-    } catch { /* gateway unconfigured — plan falls back to defaults */ }
-    const plan = await planEmbeddingMigration(ctx.engine, {
+    const planCtx = await planMigrationFlow(ctx.engine, {
       to,
       ...(dim !== undefined && { dim }),
-      ...(fromModel !== undefined && { fromModel }),
-      ...(fromDims !== undefined && { fromDims }),
+      ...(p.force_sunset_target === true && { forceSunsetTarget: true }),
     });
-    if (ctx.dryRun || p.dry_run === true || p.yes !== true) {
-      return { status: p.yes === true || p.dry_run === true ? 'planned' : 'needs_confirmation', plan };
+    const plan = planCtx.plan;
+    // Different-target in-flight marker: the retarget decision precedes any
+    // skip (mirrors the CLI ordering exactly — shared-orchestrator parity).
+    if (planCtx.inflightOther && p.retarget !== true && p.dry_run !== true && !ctx.dryRun) {
+      return { status: 'refused', reason: 'retarget_required', inflight: planCtx.inflightOther, plan };
     }
-    const { persistEmbeddingFileConfig, probeTargetProvider } = await import('../commands/migrate-embeddings.ts');
-    // Safety parity with the CLI path: probe the target provider BEFORE any
-    // mutation. Without this, `yes:true` would drop the embedding column and
-    // only then discover the key/model/dim is wrong.
-    const probe = await probeTargetProvider(plan.to_model, plan.to_dims);
-    if (!probe.ok) return { status: 'failed', reason: probe.message, plan };
-    const applied = await applyEmbeddingMigration(ctx.engine, plan, {
-      persistConfig: (m, d) => persistEmbeddingFileConfig(m, d),
+    if (planCtx.verify.complete && !planCtx.inflightOther) {
+      return { status: 'skipped_no_work', plan, verified: planCtx.verify };
+    }
+    if (ctx.dryRun || p.dry_run === true || p.yes !== true) {
+      return {
+        status: p.yes === true || p.dry_run === true ? 'planned' : 'needs_confirmation',
+        plan,
+        verified: planCtx.verify,
+      };
+    }
+    const result = await executeMigrationFlow(ctx.engine, planCtx, {
+      to,
+      ...(dim !== undefined && { dim }),
+      ...(p.force_sunset_target === true && { forceSunsetTarget: true }),
+      ...(p.retarget === true && { retarget: true }),
+      quiet: true,
     });
-    if (applied.status !== 'applied') return { ...applied, plan };
-    const { runEmbedCore } = await import('../commands/embed.ts');
-    // singleFlight parity with the CLI path: takes the same per-source
-    // embed-backfill lock so this can't race a queued embed-backfill job on
-    // the NULL→non-NULL upsert (the TODOS:2299 class).
-    const embedResult = await runEmbedCore(ctx.engine, {
-      stale: true, catchUp: true, singleFlight: true, includeNullSignature: true, quiet: true,
-    });
-    // Stamp batch-boundary pages before probing for completion (see
-    // reconcilePageSignatures — the embed loop's all-or-nothing stamp rule
-    // skips any page split across two stale batches).
-    const reconciled = await reconcilePageSignatures(ctx.engine, plan);
-    const remaining = await ctx.engine.countStaleChunks({
-      signature: migrationSignature(plan.to_model, plan.to_dims),
-      includeNullSignature: true,
-    });
-    if (remaining === 0) await completeEmbeddingMigration(ctx.engine, plan);
-    return {
-      status: remaining === 0 ? 'completed' : 'incomplete',
-      plan,
-      embedded: embedResult.embedded,
-      remaining,
-      signatures_reconciled: reconciled,
-      invalidated: applied.invalidated,
-      schema_transitioned: applied.schema_transitioned,
-      cache_cleared: applied.cache_cleared,
-    };
+    // Flatten the orchestrator's tagged union into the op's historical shape:
+    // failures carry a `reason`, everything else passes through.
+    if (result.status === 'probe_failed') return { status: 'failed', reason: result.message, plan };
+    if (result.status === 'apply_failed') return { status: 'failed', reason: result.reason, plan };
+    if (result.status === 'locked') return { status: 'failed', reason: `locked: ${result.detail}`, plan };
+    if (result.status === 'refused_retarget') {
+      return {
+        status: 'refused',
+        reason: 'retarget_required',
+        inflight: result.inflight,
+        plan,
+      };
+    }
+    return { ...result, plan };
   },
   cliHints: { name: 'migrate-embeddings', hidden: true },
 };
