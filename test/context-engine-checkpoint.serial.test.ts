@@ -164,4 +164,67 @@ describe('checkpoint compaction (cathedral 5)', () => {
     expect(engine.info.version).toBe('0.3.0');
     expect(engine.info.ownsCompaction).toBe(false);
   });
+
+  it('CK6 [plan-mandated]: hash-keyed poll — a stale manifest never settles; the matching seg settles and stops polling', async () => {
+    const { ensureIpcSecret, resolveSocketPath, startResolveIpcServer } =
+      await import('../src/core/context/resolve-ipc.ts');
+    const { readSegmentLedger } = await import('../src/core/context/corpus-segments.ts');
+    tmpDir = makeWorkspace();
+    const gbHome = join(home!, '.gbrain');
+    mkdirSync(gbHome, { recursive: true });
+    const dataDir = join(home!, 'pgdata');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(gbHome, 'config.json'), JSON.stringify({ engine: 'pglite', database_path: dataDir }));
+    const secret = ensureIpcSecret(dataDir);
+
+    let manifestPolls = 0;
+    let serveSeg = 'stale-seg-hash';
+    const server = await startResolveIpcServer(
+      resolveSocketPath(dataDir),
+      {
+        resolve: async () => null,
+        context_pack: async (req) => {
+          if (req.manifestOnly) {
+            manifestPolls++;
+            return {
+              text: '', pointers: [], factsCount: 0, mode: 'pack',
+              checkpointLinks: [{ slug: 'old/page', title: 'Old checkpoint', seg: serveSeg, n: 1, at: '2026-08-01T10:00:00Z' }],
+            };
+          }
+          return { text: '', pointers: [], factsCount: 0 }; // bankOnly ack
+        },
+      },
+      { secret },
+    );
+    expect(server).not.toBeNull();
+    servers.push(server!);
+
+    // compact() spools a segment (rung 2 banks over the same IPC) and arms
+    // the memo with the NEW segment's hash.
+    const sessionFile = join(home!, 'oc-poll.jsonl');
+    writeFileSync(sessionFile, [sessionLine, msg('window text for the poll pin')].join('\n') + '\n');
+    const engine = createGBrainContextEngine({ workspaceDir: tmpDir });
+    await engine.compact({ sessionId: 'oc-poll', sessionFile });
+    const corpus = join(home!, '.gbrain', 'transcripts', 'corpus');
+    const expectSeg = readSegmentLedger(corpus, 'oc-poll')[0]?.hash;
+    expect(expectSeg).toBeTruthy();
+
+    // Stale polls: links render (older links are still true) but the memo
+    // must NOT settle — each assemble keeps polling.
+    const a1 = await engine.assemble({ sessionId: 'oc-poll', messages: [] });
+    expect(a1.systemPromptAddition).toContain('Old checkpoint');
+    const pollsAfter1 = manifestPolls;
+    expect(pollsAfter1).toBeGreaterThanOrEqual(1);
+    await engine.assemble({ sessionId: 'oc-poll', messages: [] });
+    expect(manifestPolls).toBeGreaterThan(pollsAfter1); // still polling — stale seg did not settle
+
+    // Serve now carries the NEW segment's manifest entry: this poll SETTLES.
+    serveSeg = expectSeg!;
+    await engine.assemble({ sessionId: 'oc-poll', messages: [] });
+    const settledPolls = manifestPolls;
+    // Settled: further assembles never poll again.
+    await engine.assemble({ sessionId: 'oc-poll', messages: [] });
+    await engine.assemble({ sessionId: 'oc-poll', messages: [] });
+    expect(manifestPolls).toBe(settledPolls);
+  });
 });

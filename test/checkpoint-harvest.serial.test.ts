@@ -68,6 +68,7 @@ beforeEach(async () => {
   savedHome = process.env.GBRAIN_HOME;
   process.env.GBRAIN_HOME = homeDir;
   await engine.setConfig('dream.synthesize.session_corpus_dir', corpusDir);
+  await engine.executeRaw(`UPDATE sources SET local_path = NULL WHERE id = 'default'`).catch(() => {});
   await engine.executeRaw('DELETE FROM facts').catch(() => {});
   await engine.executeRaw('DELETE FROM pages').catch(() => {});
   await engine.executeRaw('DELETE FROM session_context_state').catch(() => {});
@@ -270,10 +271,15 @@ describe('context_pack handler arms', () => {
     const missing = await handler({ ...base, flushCorpusFile: 'sess-h.seg-nothere.txt' });
     expect(missing?.checkpointFlush).toEqual({ status: 'skipped', reason: 'not_found' });
 
+    // Stub the transport BEFORE scheduling: pump() starts the job
+    // synchronously, so a shutdown race cannot reliably beat it — with
+    // ambient provider keys that would be a REAL LLM call (pre-landing
+    // review, testing). The stub makes the drain fast and spend-free.
+    chatStub([]);
     const seg = bankSegment('sess-h', 'handler text\n');
     const ok = await handler({ ...base, flushCorpusFile: seg.file });
     expect(ok?.checkpointFlush?.status).toBe('scheduled');
-    await shutdownCheckpointHarvest(); // drop it before the (stubless) worker spends
+    await __drainCheckpointHarvestForTests();
   });
 
   test('manifestOnly returns links and is side-effect-free (no cursor advance, no banking) [REGRESSION PIN]', async () => {
@@ -348,4 +354,38 @@ describe('pack rendering (cathedral 5)', () => {
     expect(res?.text).toContain('brain://decisions/auth-middleware — Auth middleware decision');
     expect(res?.checkpointLinks?.[0]?.seg).toBe('h9');
   });
+});
+
+describe('queue discipline (cathedral 5 — plan-mandated pins)', () => {
+  test('queue_full overflow and already_queued dup are typed skips; sweep-shape segments remain', async () => {
+    // Hold job 1 in flight with a slow stubbed transport (never a real call).
+    __setChatTransportForTests(async (): Promise<ChatResult> => {
+      await new Promise((r) => setTimeout(r, 250));
+      return {
+        text: JSON.stringify({ facts: [] }), blocks: [], stopReason: 'end',
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'test:stub', providerId: 'test',
+      };
+    });
+    const segs = Array.from({ length: 10 }, (_, i) => bankSegment(`sess-q${i}`, `queued window ${i}\n`));
+    const acks = segs.map((seg, i) =>
+      scheduleCheckpointHarvest({
+        engine, sourceId: 'default', sessionId: `sess-q${i}`, corpusDir, file: seg.file, capabilities: KEYED,
+      }),
+    );
+    // Job 0 went in-flight synchronously; jobs 1..8 queued (cap 8); job 9 overflows.
+    expect(acks[0].status).toBe('scheduled');
+    for (let i = 1; i <= 8; i++) expect(acks[i].status).toBe('scheduled');
+    expect(acks[9]).toEqual({ status: 'skipped', reason: 'queue_full' });
+    // Duplicate of a QUEUED file is a typed skip too.
+    const dup = scheduleCheckpointHarvest({
+      engine, sourceId: 'default', sessionId: 'sess-q1', corpusDir, file: segs[1].file, capabilities: KEYED,
+    });
+    expect(dup).toEqual({ status: 'skipped', reason: 'already_queued' });
+    await __drainCheckpointHarvestForTests();
+    // The overflowed segment is still a plain .txt in the corpus dir — the
+    // sweep backstop extracts it later (no .ingested was written for it).
+    expect(existsSync(join(corpusDir, segs[9].file))).toBe(true);
+    expect(existsSync(join(corpusDir, segs[9].file + CORPUS_INGESTED_SUFFIX))).toBe(false);
+  }, 30_000);
 });

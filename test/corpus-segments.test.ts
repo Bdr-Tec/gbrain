@@ -5,11 +5,12 @@
  * fallback, GC of orphaned sidecars + aged ledgers.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   appendSegmentLedger,
+  readOpenclawBoundaryTail,
   bankCompactSegment,
   coverageComplete,
   decideCorpusMode,
@@ -177,5 +178,59 @@ describe('gcCorpusArtifacts', () => {
     expect(names).not.toContain('gone.txt.ingested');
     expect(names).not.toContain('gone.txt.in-progress');
     expect(names).not.toContain('old.ledger.json');
+  });
+});
+
+describe('pre-landing review pins', () => {
+  test('filename builders enforce the safe charset structurally (traversal-shaped ids cannot escape the dir)', () => {
+    const w = writeSegment(dir, '../../etc/evil', 'contained content');
+    // Separators are stripped, so the name can never traverse — the file
+    // lands INSIDE dir (a literal '..' SUBSTRING without separators is inert).
+    expect(w.file.startsWith(dir + '/')).toBe(true);
+    expect(w.file.slice(dir.length + 1)).not.toContain('/');
+    expect(existsSync(w.file)).toBe(true);
+    expect(ledgerFileName('../../x')).not.toContain('/');
+    const hostile = segmentFileName('a/b\\c', 'ff00ff00ff00');
+    expect(hostile).not.toContain('/');
+    expect(hostile).not.toContain('\\');
+  });
+
+  test('bankCompactSegment deadline_write: scan budget passes, write budget does not — nothing written', async () => {
+    const turns = [t('window that renders fine')];
+    let calls = 0;
+    // First check (minScanMs) sees plenty; second check (minWriteMs) sees a
+    // drained budget — the render happened, the write must not.
+    const remainingMs = () => (calls++ === 0 ? 5000 : 100);
+    const r = await bankCompactSegment(dir, 's-dw', turns, [], { remainingMs, minScanMs: 600, minWriteMs: 300 });
+    expect(r.segment).toBe('deadline_write');
+    expect(readdirSync(dir).filter((f) => f.startsWith('s-dw'))).toEqual([]);
+  });
+
+  test('readOpenclawBoundaryTail tail-reads over maxBytes: partial first line dropped, boundary positions window-relative', () => {
+    const sessionLine = JSON.stringify({ type: 'session', id: 's', cwd: '/w', timestamp: 't' });
+    const msgLine = (text: string) =>
+      JSON.stringify({ type: 'message', timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } });
+    const boundaryLine = JSON.stringify({ type: 'compaction', timestamp: 't' });
+    const pad = 'x'.repeat(400);
+    const lines = [sessionLine];
+    for (let i = 0; i < 20; i++) lines.push(msgLine(`early-${i}-${pad}`));
+    lines.push(boundaryLine);
+    lines.push(msgLine('tail-a'), msgLine('tail-b'));
+    const p = join(dir, 'oc-tail.jsonl');
+    writeFileSync(p, lines.join('\n') + '\n');
+    const full = statSync(p).size;
+    // Cap the read to roughly the last few lines: the cut lands mid-line and
+    // that partial first line must be silently dropped, not corrupt a turn.
+    const parsed = readOpenclawBoundaryTail(p, { maxBytes: 1200 });
+    expect(parsed).not.toBeNull();
+    expect(full).toBeGreaterThan(1200);
+    const texts = parsed!.turns.map((x) => x.text);
+    expect(texts).toContain('tail-a');
+    expect(texts).toContain('tail-b');
+    for (const x of texts) expect(x.startsWith('early-0')).toBe(false); // scrolled out
+    // Boundary position is relative to THIS window's turns array.
+    expect(parsed!.boundaryTurnIndexes.length).toBeGreaterThanOrEqual(1);
+    const b = parsed!.boundaryTurnIndexes.at(-1)!;
+    expect(parsed!.turns.slice(b).map((x) => x.text)).toEqual(['tail-a', 'tail-b']);
   });
 });

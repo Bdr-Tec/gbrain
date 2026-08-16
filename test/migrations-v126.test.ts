@@ -248,3 +248,16 @@ describe('migration v126 — session_context_state', () => {
     expect(v126?.sql).toContain('session_context_state_updated_idx');
   });
 });
+
+describe('MIGRATIONS registry integrity (pre-landing review guard)', () => {
+  test('versions are UNIQUE — a cross-PR number collision fails loudly instead of silently skipping', () => {
+    // Two migrations sharing a version is the silent-death shape: whichever
+    // lands second is skipped forever on brains already at that version
+    // (runMigrations gates on version > current). Historical array order is
+    // NOT ascending (early entries were reordered) — uniqueness is the
+    // load-bearing invariant.
+    const versions = MIGRATIONS.map((m) => m.version);
+    const unique = new Set(versions);
+    expect(unique.size).toBe(versions.length);
+  });
+});

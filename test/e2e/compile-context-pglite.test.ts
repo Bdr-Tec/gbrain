@@ -287,3 +287,23 @@ describe('compile-context e2e (PGLite)', () => {
     expect((await run(['--target', 'claude-code', '--budget', 'lots'])).code).toBe(2);
   });
 });
+
+describe('spliceCompiledBlock negatives (pre-landing review pins)', () => {
+  test('orphan begin, orphan end, and end-before-begin all throw; no-marker appends', async () => {
+    const { spliceCompiledBlock, COMPILED_BLOCK_BEGIN, COMPILED_BLOCK_END } =
+      await import('../../src/commands/compile-context.ts');
+    const block = `${COMPILED_BLOCK_BEGIN}\nnew\n${COMPILED_BLOCK_END}`;
+    // No markers: appended, surrounding content preserved.
+    const appended = spliceCompiledBlock('# Agents\n\nhand-written\n', block);
+    expect(appended).toContain('hand-written');
+    expect(appended).toContain('new');
+    // Orphan begin.
+    expect(() => spliceCompiledBlock(`x\n${COMPILED_BLOCK_BEGIN}\ny\n`, block)).toThrow();
+    // Orphan end.
+    expect(() => spliceCompiledBlock(`x\n${COMPILED_BLOCK_END}\ny\n`, block)).toThrow();
+    // End before begin (out of order).
+    expect(() =>
+      spliceCompiledBlock(`${COMPILED_BLOCK_END}\nmid\n${COMPILED_BLOCK_BEGIN}\n`, block),
+    ).toThrow(/out of order|markers/i);
+  });
+});

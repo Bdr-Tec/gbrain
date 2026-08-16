@@ -98,7 +98,7 @@ function input(engine: CompileViewEngine, over: Partial<CompileViewInput> = {}):
     sourceId: 'default',
     target: 'claude-code',
     budget: 4000,
-    scanConfig: scanConfig(),
+    scanConfig: over.scanConfig ?? scanConfig(),
     ...over,
   };
 }
@@ -130,6 +130,7 @@ describe('compileView — determinism', () => {
       'utf-8',
     );
     expect(src.includes('Date.now')).toBe(false);
+    expect(src).not.toMatch(/new Date\(\s*\)/); // argument-less construction is wall-clock too
   });
 
   test('empty brain compiles header-only, deterministically, without the no-fit comment', async () => {
