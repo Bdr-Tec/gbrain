@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runTakes } from '../src/commands/takes.ts';
-import type { BrainEngine, TakeBatchInput, TakesListOpts } from '../src/core/engine.ts';
+import type { BrainEngine, TakeBatchInput } from '../src/core/engine.ts';
 import { withEnv } from './helpers/with-env.ts';
 
 const tmpRoots: string[] = [];
@@ -151,11 +151,27 @@ describe('gbrain takes CLI source scoping', () => {
     expect(existsSync(join(brainDir, 'shared/page.md'))).toBe(false);
   });
 
-  test('supersede looks up the active row it is replacing (#2663)', async () => {
+  test('supersede inherits from the markdown fence row it is replacing (#2663, EV1 md-canonical)', async () => {
+    // v0.46.x (EV1): supersede is fence-first — the target row is looked up in
+    // the on-disk markdown (canonical), kind/holder inherit from that row, the
+    // fence assigns the new row number, and the DB mirror is addTakesBatch's
+    // upsert of both affected rows (the reconcile primitive). The pre-EV1
+    // shape (engine.listTakes lookup + engine.supersedeTake DB numbering)
+    // could disagree with a later md→DB reconcile.
     const brainDir = mkdtempSync(join(tmpdir(), 'gbrain-takes-supersede-'));
     const home = mkdtempSync(join(tmpdir(), 'gbrain-takes-home-'));
     tmpRoots.push(brainDir, home);
-    const listCalls: TakesListOpts[] = [];
+    const { renderTakesFence } = await import('../src/core/takes-fence.ts');
+    mkdirSync(join(brainDir, 'shared'), { recursive: true });
+    writeFileSync(
+      join(brainDir, 'shared/page.md'),
+      `# Shared page\n\n## Takes\n\n${renderTakesFence([{
+        rowNum: 3, claim: 'Current claim', kind: 'take', holder: 'self',
+        weight: 0.8, active: true,
+      }])}\n`,
+      'utf-8',
+    );
+    const batches: unknown[][] = [];
     const engine = {
       getConfig: async () => null,
       executeRaw: async (sql: string, params: unknown[] = []) => {
@@ -164,35 +180,40 @@ describe('gbrain takes CLI source scoping', () => {
         if (sql.includes('FROM pages WHERE slug = $1 AND source_id = $2')) return [{ id: 11 }];
         return [];
       },
-      listTakes: async (opts: TakesListOpts) => {
-        listCalls.push(opts);
-        return [{
-          page_id: 11,
-          row_num: 3,
-          claim: 'Current claim',
-          kind: 'take',
-          holder: 'self',
-          weight: 0.8,
-          active: true,
-        }];
-      },
-      supersedeTake: async () => ({ oldRow: 3, newRow: 4 }),
+      addTakesBatch: async (rows: unknown[]) => { batches.push(rows); return rows.length; },
     } as unknown as BrainEngine;
 
-    await withEnv({ GBRAIN_SOURCE: undefined, GBRAIN_HOME: home }, async () => {
-      await runTakes(engine, [
-        'supersede',
-        'shared/page',
-        '--row',
-        '3',
-        '--claim',
-        'Replacement claim',
-        '--dir',
-        brainDir,
-      ]);
-    });
+    const logs: string[] = [];
+    const logSpy = spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      await withEnv({ GBRAIN_SOURCE: undefined, GBRAIN_HOME: home }, async () => {
+        await runTakes(engine, [
+          'supersede',
+          'shared/page',
+          '--row',
+          '3',
+          '--claim',
+          'Replacement claim',
+          '--dir',
+          brainDir,
+        ]);
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
 
-    expect(listCalls).toEqual([{ page_id: 11, active: true, limit: 500 }]);
+    expect(logs.join('\n')).toContain('Superseded #3 → new #4 on shared/page.');
+    // One mirror batch carrying both affected rows exactly as the fence states.
+    expect(batches.length).toBe(1);
+    const rows = batches[0] as Array<{ row_num: number; active: boolean; superseded_by: number | null; kind: string; holder: string }>;
+    const oldRow = rows.find(r => r.row_num === 3);
+    const newRow = rows.find(r => r.row_num === 4);
+    expect(oldRow?.active).toBe(false);
+    expect(oldRow?.superseded_by).toBe(4);
+    // kind/holder inherited from the fence row.
+    expect(newRow?.active).toBe(true);
+    expect(newRow?.kind).toBe('take');
+    expect(newRow?.holder).toBe('self');
   });
 });
 
