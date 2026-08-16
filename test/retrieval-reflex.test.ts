@@ -54,12 +54,106 @@ describe('resolveEntitiesToPointers', () => {
     expect(block!.text).toContain('use get_page');
   });
 
-  test('lowercase WEAK candidates are inert in the resolver (activated by the weak-alias arm commit)', async () => {
+  test('weak-alias arm: a lowercase mention resolves via an exact unique alias (kta-pos variant 3)', async () => {
     await seed('people/saoirse-x', 'Saoirse X', 'A founder.');
     await engine.setPageAliases('people/saoirse-x', 'default', [normalizeAlias('saoirse')]);
     const candidates = extractCandidates('remind me what saoirse said about the round');
     expect(candidates.some((c) => c.weak)).toBe(true);
     const block = await resolveEntitiesToPointers(engine, 'default', candidates, {});
+    expect(block).not.toBeNull();
+    expect(block!.pointers).toHaveLength(1); // other lowercase words resolve nothing
+    expect(block!.pointers[0].slug).toBe('people/saoirse-x');
+    expect(block!.pointers[0].arm).toBe('alias');
+  });
+
+  test('kill switch: lexicalArms=false reproduces pre-wave resolution exactly', async () => {
+    await seed('people/saoirse-x', 'Saoirse X', 'A founder.');
+    await seed('people/ronan-galewright', 'Ronan Galewright', 'An investor.');
+    await engine.setPageAliases('people/saoirse-x', 'default', [normalizeAlias('saoirse')]);
+    const weakTurn = extractCandidates('remind me what saoirse said about the round');
+    const surnameTurn = extractCandidates('Did Galewright ever follow up on that intro?');
+    expect(await resolveEntitiesToPointers(engine, 'default', weakTurn, { lexicalArms: false })).toBeNull();
+    expect(await resolveEntitiesToPointers(engine, 'default', surnameTurn, { lexicalArms: false })).toBeNull();
+  });
+
+  test('surname arm: unique person page resolves from a surname-only reference (kta-pos variant 4)', async () => {
+    await seed('people/ronan-galewright', 'Ronan Galewright', 'An investor.');
+    const block = await resolveEntitiesToPointers(
+      engine,
+      'default',
+      extractCandidates('Did Galewright ever follow up on that intro?'),
+      {},
+    );
+    expect(block).not.toBeNull();
+    expect(block!.pointers[0].slug).toBe('people/ronan-galewright');
+    expect(block!.pointers[0].arm).toBe('title-surname');
+    expect(block!.pointers[0].confidence).toBeGreaterThanOrEqual(0.7); // survives the volunteer gate
+    expect(block!.pointers[0].matchedNorm).toBe(normalizeAlias('Galewright'));
+  });
+
+  test('surname arm: ambiguous surname (two people) injects nothing', async () => {
+    await seed('people/ronan-galewright', 'Ronan Galewright', 'An investor.');
+    await seed('people/mira-galewright', 'Mira Galewright', 'A founder.');
+    const block = await resolveEntitiesToPointers(
+      engine,
+      'default',
+      extractCandidates('Did Galewright ever follow up?'),
+      {},
+    );
+    expect(block).toBeNull();
+  });
+
+  test('surname arm: company tails are excluded by the person-type guard', async () => {
+    await engine.executeRaw(
+      `INSERT INTO pages (slug, source_id, type, title, compiled_truth, timeline)
+       VALUES ('companies/acme-labs', 'default', 'company', 'Acme Labs', 'A company.', '')`,
+      [],
+    );
+    const block = await resolveEntitiesToPointers(
+      engine,
+      'default',
+      extractCandidates('Did Labs ever ship it?'),
+      {},
+    );
+    expect(block).toBeNull();
+  });
+
+  test('surname arm: adversarial near-miss stays silent', async () => {
+    await seed('people/elias-marrowfield', 'Elias Marrowfield', 'A founder.');
+    const block = await resolveEntitiesToPointers(
+      engine,
+      'default',
+      extractCandidates('Did Marrowfielder ever reply?'),
+      {},
+    );
+    expect(block).toBeNull();
+  });
+
+  test('weak-alias arm: cross-source ambiguity injects nothing (global uniqueness)', async () => {
+    await engine.executeRaw(`INSERT INTO sources (id, name) VALUES ('other', 'Other') ON CONFLICT DO NOTHING`, []).catch(() => {});
+    await seed('people/saoirse-x', 'Saoirse X', 'A founder.');
+    await seed('people/saoirse-y', 'Saoirse Y', 'Another person.', 'other');
+    await engine.setPageAliases('people/saoirse-x', 'default', [normalizeAlias('saoirse')]);
+    await engine.setPageAliases('people/saoirse-y', 'other', [normalizeAlias('saoirse')]);
+    const block = await resolveEntitiesToPointers(
+      engine,
+      'default',
+      extractCandidates('remind me what saoirse said'),
+      { sourceIds: ['default', 'other'] },
+    );
+    expect(block).toBeNull();
+  });
+
+  test('weak-alias arm: a phantom alias (deleted page) resolves nothing', async () => {
+    await seed('people/ghost-page', 'Ghost Page', 'Gone.');
+    await engine.setPageAliases('people/ghost-page', 'default', [normalizeAlias('ghostly')]);
+    await engine.executeRaw(`UPDATE pages SET deleted_at = now() WHERE slug = 'people/ghost-page'`, []);
+    const block = await resolveEntitiesToPointers(
+      engine,
+      'default',
+      extractCandidates('any update from ghostly today?'),
+      {},
+    );
     expect(block).toBeNull();
   });
 

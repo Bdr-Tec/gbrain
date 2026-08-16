@@ -4344,11 +4344,14 @@ const volunteer_context: Operation = {
       );
     }
     const turns = parseWindow(p.window);
+    const { loadConfig: loadCfgForArms } = await import('./config.ts');
+    const { lexicalArmsEnabled } = await import('./context/reflex.ts');
     const pages = await volunteerContext(ctx.engine, turns, {
       sourceIds,
       priorContext: typeof p.prior_context === 'string' ? p.prior_context : undefined,
       maxPages: typeof p.max_pages === 'number' ? p.max_pages : undefined,
       minConfidence: typeof p.min_confidence === 'number' ? p.min_confidence : undefined,
+      lexicalArms: lexicalArmsEnabled(loadCfgForArms()),
     });
 
     // Feedback-loop logging: fire-and-forget batched INSERT through the

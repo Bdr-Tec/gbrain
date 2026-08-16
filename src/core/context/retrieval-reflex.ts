@@ -25,6 +25,7 @@
 
 import type { BrainEngine } from '../engine.ts';
 import { normalizeAlias } from '../search/alias-normalize.ts';
+import { escapeLikePattern } from '../search/sql-ranking.ts';
 import { slugify } from '../entities/resolve.ts';
 import { stripTakesFence } from '../takes-fence.ts';
 import { stripFactsFence } from '../facts-fence.ts';
@@ -35,17 +36,23 @@ export const DEFAULT_MAX_POINTERS = 3;
 const SYNOPSIS_MAX = 160;
 
 /** Which resolution arm produced a pointer (provenance → honest confidence). */
-export type ResolveArm = 'alias' | 'title' | 'slug-suffix';
+export type ResolveArm = 'alias' | 'title' | 'slug-suffix' | 'title-surname';
 
 /**
  * v0.43 (#2095) — arm → confidence. Lives HERE, next to the arm definitions,
  * so arm identity and its score can't drift apart (eng-review note). The
  * volunteer layer imports these; small deterministic boosts (multi-turn /
  * newest-turn mention) are added on top there.
+ *
+ * 'title-surname' (v0.46.8 identity wave) sits at 0.72 — deliberately ABOVE
+ * the volunteer layer's 0.70 default gate (a 0.6x score would be silently
+ * discarded there) and below 'title' (an exact-title hit is stronger
+ * evidence than a surname-tail match).
  */
 export const ARM_CONFIDENCE: Record<ResolveArm, number> = {
   alias: 0.9,
   title: 0.8,
+  'title-surname': 0.72,
   'slug-suffix': 0.6,
 };
 
@@ -104,6 +111,15 @@ export interface ResolvePointersOpts {
    * arm uses source_id = ANY(...) in one query.
    */
   sourceIds?: string[];
+  /**
+   * v0.46.8 identity wave — kill switch for the two new lexical arms (the
+   * weak-candidate alias arm and the surname arm). Default ON (undefined =
+   * enabled); `false` reproduces pre-wave resolution exactly. Threaded from
+   * the file-plane config `retrieval_reflex_lexical_arms` / env
+   * `GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS` by callers that own a loaded
+   * config — the resolver itself never touches config (sync hot path).
+   */
+  lexicalArms?: boolean;
 }
 
 export interface PageRow {
@@ -131,6 +147,10 @@ export async function resolveEntitiesToPointers(
   const maxPointers = opts.maxPointers ?? DEFAULT_MAX_POINTERS;
   const priorLc = (opts.priorContextText ?? '').toLowerCase();
 
+  // v0.46.8 identity wave: the two new lexical arms (weak-alias + surname)
+  // share one kill switch. Default ON; `false` reproduces pre-wave behavior.
+  const lexicalArms = opts.lexicalArms !== false;
+
   // display lookup keyed by normalized query, so resolved slugs can recover a
   // human surface form for the pointer label.
   const displayByNorm = new Map<string, string>();
@@ -138,15 +158,33 @@ export async function resolveEntitiesToPointers(
   const titlesLc: string[] = [];
   const exactSlugs: string[] = [];
   const slugSuffixes: string[] = [];
+  // Weak candidates resolve through the ALIAS arm only (exact, unique). Their
+  // norms are tracked so the alias fold can apply the stricter cross-source
+  // uniqueness rule to them.
+  const weakNorms = new Set<string>();
+  // Surname arm inputs: strong single-token capitalized candidates ≥3 chars.
+  const surnamePatterns: string[] = [];
+  const surnameTokens: string[] = []; // lower(token), parallel to patterns
+  const surnameTokenToNorm = new Map<string, string>();
   // Reverse maps for arm-2 provenance (which candidate produced a row) —
   // populated in this same pass so the derivations happen exactly once.
   const titleToNorm = new Map<string, string>();
   const slugToNorm = new Map<string, string>();
   for (const c of candidates) {
-    // Lowercase WEAK candidates (entity-salience step 2.5) are inert here
-    // until the weak-alias arm lands: they must never reach the title/slug/
-    // suffix arms, where ordinary lowercase words would fabricate pointers.
-    if (c.weak) continue;
+    // Lowercase WEAK candidates (entity-salience step 2.5) may probe the
+    // alias table ONLY — never the title/slug/suffix arms, where ordinary
+    // lowercase words would fabricate pointers. Gated by the kill switch.
+    if (c.weak) {
+      if (!lexicalArms) continue;
+      const wnorm = normalizeAlias(c.query);
+      if (!wnorm) continue;
+      if (!displayByNorm.has(wnorm)) displayByNorm.set(wnorm, c.display);
+      if (!weakNorms.has(wnorm)) {
+        weakNorms.add(wnorm);
+        aliasNorms.push(wnorm);
+      }
+      continue;
+    }
     const norm = normalizeAlias(c.query);
     if (!norm) continue;
     if (!displayByNorm.has(norm)) displayByNorm.set(norm, c.display);
@@ -159,6 +197,18 @@ export async function resolveEntitiesToPointers(
       exactSlugs.push(s);
       slugSuffixes.push(`%/${s}`);
       if (!slugToNorm.has(s)) slugToNorm.set(s, norm);
+    }
+    // Surname arm (v0.46.8, kta-pos variant 4): a strong single capitalized
+    // token ≥3 chars may be a surname-only reference ("Did Galewright ever…").
+    // Escaped for LIKE (backslash is Postgres' default escape char — no
+    // ESCAPE clause, which the `LIKE ANY(array)` form doesn't accept).
+    if (lexicalArms && !/\s/.test(c.query) && c.query.length >= 3 && /^\p{Lu}/u.test(c.query)) {
+      const tokenLc = c.query.toLowerCase();
+      if (!surnameTokenToNorm.has(tokenLc)) {
+        surnameTokenToNorm.set(tokenLc, norm);
+        surnameTokens.push(tokenLc);
+        surnamePatterns.push(`% ${escapeLikePattern(tokenLc)}`);
+      }
     }
   }
   if (!aliasNorms.length) return null;
@@ -196,8 +246,24 @@ export async function resolveEntitiesToPointers(
     const r = aliasResults[i];
     if (r.status !== 'fulfilled') continue;
     for (const norm of aliasNorms) {
+      if (weakNorms.has(norm)) continue; // weak norms fold below (stricter rule)
       const hits = r.value.get(norm);
       if (hits && hits.length === 1) push(hits[0].slug, sourceIds[i], 'alias', norm);
+    }
+  }
+  // Weak norms: GLOBAL uniqueness across all considered sources (v0.46.8,
+  // stricter than the strong per-source rule) — a lowercase word that is a
+  // registered alias in two sources injects nothing. Phantom-alias hits
+  // (page_aliases has no FK) are handled downstream: the pointer loop drops
+  // any resolved slug whose live-page hydration (deleted_at IS NULL) misses.
+  if (weakNorms.size) {
+    for (const norm of weakNorms) {
+      const all: Array<{ slug: string; source_id: string }> = [];
+      for (const r of aliasResults) {
+        if (r.status !== 'fulfilled') continue;
+        for (const h of r.value.get(norm) ?? []) all.push(h);
+      }
+      if (all.length === 1) push(all[0].slug, all[0].source_id, 'alias', norm);
     }
   }
 
@@ -205,17 +271,34 @@ export async function resolveEntitiesToPointers(
   // Example" slugifies to alice-example, but the real page is people/alice-example,
   // so a plain slug = ANY() misses. Match lower(title) exactly or the slug suffix.
   let rows: PageRow[] = [];
+  const useSurnameArm = surnamePatterns.length > 0;
   try {
-    rows = await engine.executeRaw<PageRow>(
-      `SELECT slug, source_id, title, type, frontmatter, compiled_truth
-         FROM pages
-        WHERE deleted_at IS NULL
-          AND source_id = ANY($1::text[])
-          AND ( lower(title) = ANY($2::text[])
+    // The surname predicate rides the SAME query when armed: person pages
+    // whose lower(title) ends with " <token>". Patterns are pre-escaped for
+    // LIKE (backslash default escape); type='person' kills the company-tail
+    // class ("Labs", "Systems" as pseudo-surnames).
+    rows = useSurnameArm
+      ? await engine.executeRaw<PageRow>(
+          `SELECT slug, source_id, title, type, frontmatter, compiled_truth
+             FROM pages
+            WHERE deleted_at IS NULL
+              AND source_id = ANY($1::text[])
+              AND ( lower(title) = ANY($2::text[])
+                 OR slug = ANY($3::text[])
+                 OR slug LIKE ANY($4::text[])
+                 OR (lower(title) LIKE ANY($5::text[]) AND type = 'person') )`,
+          [sourceIds, titlesLc, exactSlugs, slugSuffixes, surnamePatterns],
+        )
+      : await engine.executeRaw<PageRow>(
+          `SELECT slug, source_id, title, type, frontmatter, compiled_truth
+             FROM pages
+            WHERE deleted_at IS NULL
+              AND source_id = ANY($1::text[])
+              AND ( lower(title) = ANY($2::text[])
              OR slug = ANY($3::text[])
              OR slug LIKE ANY($4::text[]) )`,
-      [sourceIds, titlesLc, exactSlugs, slugSuffixes],
-    );
+          [sourceIds, titlesLc, exactSlugs, slugSuffixes],
+        );
   } catch {
     rows = [];
   }
@@ -238,17 +321,41 @@ export async function resolveEntitiesToPointers(
   }
   // Title/slug matches that weren't alias hits, appended after alias hits.
   // Arm provenance per row is classified in JS (codex D8) — the combined OR
-  // can't report which predicate matched: an exact lower(title) hit is the
-  // 'title' arm; anything else got in via slug / slug-suffix.
+  // can't report which predicate matched. Classification is per-(row,
+  // matching-set) with exact-arm precedence (eng review): a row can
+  // title-match candidate X AND surname-match candidate Y — the exact hit
+  // wins. Rows matched by NO exact set fall through to the surname check.
   const titleSet = new Set(titlesLc);
+  // token → surname-matched rows; pushed only when the token is UNAMBIGUOUS
+  // (exactly one page across the considered sources — mirror of the alias
+  // arm's posture; an ambiguous surname injects nothing).
+  const surnameHits = new Map<string, Array<{ slug: string; source_id: string }>>();
   for (const r of rows) {
     const titleLc = (r.title ?? '').toLowerCase();
     if (titleSet.has(titleLc)) {
       push(r.slug, r.source_id, 'title', titleToNorm.get(titleLc));
-    } else {
-      // Slug arm: exact slugified-candidate match, else suffix scan.
-      const tail = r.slug.includes('/') ? r.slug.slice(r.slug.lastIndexOf('/') + 1) : r.slug;
-      push(r.slug, r.source_id, 'slug-suffix', slugToNorm.get(r.slug) ?? slugToNorm.get(tail));
+      continue;
+    }
+    // Slug arm: exact slugified-candidate match, else suffix scan.
+    const tail = r.slug.includes('/') ? r.slug.slice(r.slug.lastIndexOf('/') + 1) : r.slug;
+    const slugNorm = slugToNorm.get(r.slug) ?? slugToNorm.get(tail);
+    if (slugNorm !== undefined) {
+      push(r.slug, r.source_id, 'slug-suffix', slugNorm);
+      continue;
+    }
+    // Surname arm (v0.46.8): this row got in via the surname predicate only.
+    if (useSurnameArm && r.type === 'person') {
+      const token = surnameTokens.find((t) => titleLc.endsWith(` ${t}`));
+      if (token) {
+        const list = surnameHits.get(token) ?? [];
+        list.push({ slug: r.slug, source_id: r.source_id });
+        surnameHits.set(token, list);
+      }
+    }
+  }
+  for (const [token, hits] of surnameHits) {
+    if (hits.length === 1) {
+      push(hits[0].slug, hits[0].source_id, 'title-surname', surnameTokenToNorm.get(token));
     }
   }
 

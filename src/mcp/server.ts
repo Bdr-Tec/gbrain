@@ -17,6 +17,7 @@ import {
   ensureIpcSecret,
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
+import { lexicalArmsEnabled } from '../core/context/reflex.ts';
 import { assembleTurnContext } from '../core/context/turn-context.ts';
 import { gcSessionContextState } from '../core/context/session-state.ts';
 import { makeContextPackIpcHandler } from './context-pack-handler.ts';
@@ -176,6 +177,9 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
                 priorContextText: req.priorContextText,
                 maxPointers: req.maxPointers,
                 suppression: req.suppression,
+                // v0.46.8 kill switch: either side may disable — a client
+                // `false` wins, else the server's own file-config gate.
+                lexicalArms: req.lexicalArms === false ? false : lexicalArmsEnabled(cfg),
               },
             ),
           // IPC v2 [ENG-3]: per-turn context assembly for the hook command.
@@ -189,6 +193,7 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
               priorContextText: req.priorContextText,
               sessionId: req.sessionId,
               maxBytes: req.maxBytes,
+              lexicalArms: lexicalArmsEnabled(cfg),
             }),
           // v0.45.7 ambient recall: boundary context pack. Extracted to
           // context-pack-handler.ts (directly testable against a real engine);
