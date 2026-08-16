@@ -2740,10 +2740,18 @@ export interface ChatToolDef {
  * non-Anthropic subagent users the gateway loop exists to serve.
  */
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
-const THINKING_MODEL_MAX_OUTPUT_TOKENS = 32000;
-const THINKING_BY_DEFAULT_MODEL_RE = /^anthropic[:/]claude-[a-z0-9]+-5(?:[.-]|$)/i;
+export const THINKING_MODEL_MAX_OUTPUT_TOKENS = 32000;
+// Matches Claude 5-family ids behind ANY provider-prefix chain
+// (`anthropic:claude-sonnet-5`, `openrouter:anthropic/claude-sonnet-5`,
+// `claude-cli:claude-fable-5`, bare `claude-sonnet-5`). The family segment is
+// letters-only so `claude-3-5-sonnet-*` (an 8192-capped 3.5-family id) can
+// never match — pushing 32k onto it would 400 on Anthropic.
+const THINKING_BY_DEFAULT_MODEL_RE = /(?:^|[:/])(?:anthropic[:/])?claude-[a-z]+-5(?:[.-]|$)/i;
+export function isThinkingByDefaultModel(modelStr: string | undefined): boolean {
+  return !!modelStr && THINKING_BY_DEFAULT_MODEL_RE.test(modelStr);
+}
 function defaultMaxOutputTokens(modelStr: string | undefined): number {
-  return modelStr && THINKING_BY_DEFAULT_MODEL_RE.test(modelStr)
+  return isThinkingByDefaultModel(modelStr)
     ? THINKING_MODEL_MAX_OUTPUT_TOKENS
     : DEFAULT_MAX_OUTPUT_TOKENS;
 }
