@@ -270,7 +270,22 @@ export async function runFactsBackstop(
 export async function runFactsPipeline(
   turnText: string,
   ctx: FactsBackstopCtx,
-): Promise<{ inserted: number; duplicate: number; superseded: number; fact_ids: number[] }> {
+): Promise<{
+  inserted: number;
+  duplicate: number;
+  superseded: number;
+  fact_ids: number[];
+  /**
+   * Cathedral 5 (additive): DISTINCT resolved entity slugs of facts that were
+   * INSERTED via the fence-write path this run — i.e. slugs whose entity page
+   * is known to exist with the new fact fenced onto it. Duplicates (old
+   * provenance), legacy DB-only inserts (no fenceable page), and
+   * stub-guard-blocked facts are EXCLUDED — a checkpoint manifest link built
+   * from this list is truthful by construction (link candidates only; the
+   * harvest re-verifies each via source-scoped getPage before banking).
+   */
+  entity_slugs: string[];
+}> {
   return runPipelineWithBody({
     turnText,
     isDreamGenerated: false,
@@ -290,7 +305,7 @@ async function runPipeline(
   parsedPage: ParsedPageInput,
   ctx: FactsBackstopCtx,
   abortSignal?: AbortSignal,
-): Promise<{ inserted: number; duplicate: number; superseded: number; fact_ids: number[] }> {
+): Promise<{ inserted: number; duplicate: number; superseded: number; fact_ids: number[]; entity_slugs: string[] }> {
   return runPipelineWithBody(
     {
       turnText: parsedPage.compiled_truth,
@@ -331,14 +346,14 @@ async function runPipelineWithBody(
   input: { turnText: string; isDreamGenerated: boolean },
   ctx: FactsBackstopCtx,
   abortSignal?: AbortSignal,
-): Promise<{ inserted: number; duplicate: number; superseded: number; fact_ids: number[] }> {
+): Promise<{ inserted: number; duplicate: number; superseded: number; fact_ids: number[]; entity_slugs: string[] }> {
   const { extractFactsFromTurn } = await import('./extract.ts');
   const { resolveEntitySlug } = await import('../entities/resolve.ts');
   const { cosineSimilarity } = await import('./classify.ts');
   const { writeFactsToFence, lookupSourceLocalPath } = await import('./fence-write.ts');
 
   if (abortSignal?.aborted) {
-    return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [] };
+    return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], entity_slugs: [] };
   }
 
   const facts = await extractFactsFromTurn({
@@ -362,6 +377,8 @@ async function runPipelineWithBody(
   let duplicate = 0;
   let superseded = 0;
   const fact_ids: number[] = [];
+  // Cathedral 5: slugs whose fence-write actually inserted a fact this run.
+  const fencedSlugs = new Set<string>();
 
   // Phase 1: per-fact filter + dedup. Surviving facts (no dedup hit)
   // get grouped by entity_slug for the fence-write phase below.
@@ -414,7 +431,7 @@ async function runPipelineWithBody(
   }
 
   if (survived.length === 0) {
-    return { inserted, duplicate, superseded, fact_ids };
+    return { inserted, duplicate, superseded, fact_ids, entity_slugs: [] };
   }
 
   // Phase 2: group survived facts by resolved entity_slug. Facts with
@@ -471,8 +488,9 @@ async function runPipelineWithBody(
   }
 
   if (localPath === null) {
-    // All went through legacy bucket; nothing left to fence.
-    return { inserted, duplicate, superseded, fact_ids };
+    // All went through legacy bucket; nothing left to fence — DB-only
+    // inserts have no fence-written page, so entity_slugs stays empty.
+    return { inserted, duplicate, superseded, fact_ids, entity_slugs: [] };
   }
 
   // Phase 5: fence-write per entity. writeFactsToFence handles the
@@ -546,7 +564,8 @@ async function runPipelineWithBody(
 
     inserted += result.inserted;
     fact_ids.push(...result.ids);
+    if (result.inserted > 0) fencedSlugs.add(slug);
   }
 
-  return { inserted, duplicate, superseded, fact_ids };
+  return { inserted, duplicate, superseded, fact_ids, entity_slugs: [...fencedSlugs] };
 }
