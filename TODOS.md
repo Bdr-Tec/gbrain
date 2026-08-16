@@ -1,5 +1,32 @@
 # TODOS
 
+## CLI→MCP gap-closure wave follow-ups (2026-08-16; plan: ~/.claude/plans/system-instruction-you-are-working-concurrent-lantern.md)
+
+- [ ] **P3 — `permissions.takes_write_holders`: split the takes read/write holder axes.**
+  **What:** a dedicated write-side holder allow-list config, consumed by the takes write
+  verbs' fence in `src/core/ops/takes.ts` (today the WRITE fence reuses the READ
+  allow-list `takesHoldersAllowList` — fail-closed and symmetric, but semantically
+  overloaded). **Why:** an operator may want an agent to READ private holders but WRITE
+  only world-held rows, or vice versa. **Context:** decided at the wave's CEO/OV review
+  ("reuse now, split when field use demands"); the fence is one shared function
+  (`takesWriteAllowList` + takes-write.ts's holder checks), so the split is a
+  resolution-chain change, not a redesign. **Effort:** S. **Depends on:** field demand.
+
+- [ ] **P3 — pack-aware takes kind validation, shared CLI + ops.**
+  **What:** `takes_add`/`takes_supersede` pin `kind` to the 4 base literals
+  (fact|take|bet|hunch) — same limitation as the CLI's `ensureKind` — while schema packs
+  can extend `takes_kinds` (engine.ts TakeKindLiteral). Validate against the ACTIVE
+  pack's kind set in ONE shared place (takes-write.ts) and widen the op enum note.
+  **Why:** pack-extended kinds (finding|hypothesis|…) can't be written through either
+  surface today. **Effort:** S.
+
+- [ ] **P3 — `mcp:capture` provenance channel label (mini trust review).**
+  **What:** capture delegates to put_page, so remote captures stamp `source_kind:
+  'mcp:put_page'` (honest CV6 delegation; the op result carries channel:'capture').
+  A distinct `mcp:capture` stamp needs a trusted internal channel label through the CV6
+  else-branch — its own small trust review, filed rather than rushed. **Why:** finer
+  provenance analytics on ingestion channels. **Effort:** S, review-bound.
+
 ## Containment-sprint follow-ups (coverage truth + module peels; plan: ~/.claude/plans/system-instruction-you-are-working-serialized-forest.md)
 
 - [ ] **P1 — Graduate the diff-coverage gate to blocking (time-boxed 2 weeks from merge).**
@@ -4109,6 +4136,16 @@ verify Voyage adapter integration in `src/core/ai/recipes/voyage.ts`).
 ### Token rotation: `gbrain auth rotate <name>` + `rotate_token` MCP op
 **Priority:** P2
 
+**Deferral note (CLI→MCP gap-closure wave, 2026-08-16, user decision D3A):**
+deliberately NOT bundled into the gap-closure wave — there is no CLI to
+mirror yet (this TODO is its own work item, not a CLI→MCP gap), and a token
+that can mint its own successor turns a leaked credential into persistence +
+operator lock-out, so it needs its own auth-plane design pass. Sketch agreed
+at review: admin scope, NOT localOnly (remote rotation is the point),
+SELF-rotation only (the calling token/client — never a name param), returns
+the new secret exactly once, rate-limited via the RateLimiter house pattern,
+and ships in the same PR as the `gbrain auth rotate` CLI.
+
 **What:** Atomic rotate for legacy + OAuth tokens. Issue a new token in the same TX as the revocation of the old, no overlap window. Refresh-token rotation already exists for OAuth; this is the unified user-facing surface (CLI + MCP).
 
 **Why:** Today rotation is `revoke + create`, with a window where neither token works. For long-lived bearer keys handed to agents, that's a reload outage every time the key gets rotated.
@@ -4119,7 +4156,15 @@ verify Voyage adapter integration in `src/core/ai/recipes/voyage.ts`).
 **Depends on:** Nothing.
 
 ### Migration introspection in `get_health`
-**Priority:** P3
+**Priority:** P3 — **DONE (CLI→MCP gap-closure wave, 2026-08-16).** The
+`get_health` OP now returns `migrations {pending, partial, wedged,
+skipped_future}` composed at the op layer from the new
+`src/core/migration-ledger.ts` (version strings only). Op-layer composition
+was chosen over this TODO's engine-method wording: the ledger is a
+filesystem JSONL, engine-agnostic — growing `BrainEngine.getHealth()` would
+have duplicated a file read in both engines. Pinned by
+`test/migration-ledger.test.ts` + `test/get-job-stats-op.test.ts`'s sibling
+patterns.
 
 **What:** Extend `BrainEngine.getHealth()` return shape with `migrations: { pending: [...], wedged: [...] }`. `gbrain doctor` already shows this; expose it via the MCP op so remote agents can detect partial-migration state without invoking `doctor` separately.
 
