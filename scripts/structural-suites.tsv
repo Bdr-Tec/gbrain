@@ -20,6 +20,7 @@ test/autopilot-supervisor-wiring.test.ts	autopilot.ts ↔ ChildWorkerSupervisor 
 test/backlinks-job-default.test.ts	backlinks Minion handler — empty payload defaults to check, not fix	3	readFileSync
 test/book-mirror.test.ts	gbrain book-mirror — source file invariants	7	readFileSync
 test/bootstrap-codex-door.test.ts	Codex door — rendered AGENTS.md pull protocol (Gate 3)	2	readFileSync
+test/bootstrap-opencode-door.serial.test.ts	opencode door — rendered AGENTS.md pull protocol	1	readFileSync
 test/brain-repo-durability.serial.test.ts	hardenBrainRepo	15	readFileSync
 test/brain-score-breakdown.test.ts	Bug 11 — BrainHealth type shape	1	bun-file
 test/brain-score-breakdown.test.ts	Bug 11 — doctor renders brain_score breakdown	1	doctor-source-helper
@@ -124,11 +125,12 @@ test/migrate.test.ts	migrate v66 — embed_stale_partial_index (D6)	4	readFileSy
 test/migrate.test.ts	migrate v89 — round-trip on PGLite	4	readFileSync
 test/migrate.test.ts	migrate — DROP INDEX CONCURRENTLY invalid-remnant cleanup (#1178, file-wide)	3	readFileSync
 test/migrate.test.ts	migrate — runner behavioral (v14 handler + v15 backfill)	2	readFileSync
-test/migrate.test.ts	migrate: v9 (timeline_dedup_index) regression — must be fast on 1K duplicate rows	1	readFileSync
+test/migrate.test.ts	migrate: v9 (timeline_dedup_index) regression — must be fast on 200 duplicate rows	1	readFileSync
 test/migrate.test.ts	migration v49 — eval_takes_quality_runs (v0.32)	6	readFileSync
 test/migrate.test.ts	resolvePoolSize — env var + explicit override	4	readFileSync
 test/migrate.test.ts	resolveSessionTimeouts — env var overrides	5	readFileSync
 test/migrate.test.ts	v117 — context_volunteer_events_table	5	readFileSync
+test/migration-orchestrator-v0_46_3.serial.test.ts	v0.46.3 orchestrator behavior	4	readFileSync
 test/migration-resume.test.ts	Bug 3 — orchestrator no longer writes the ledger directly	6	bun-file
 test/migrations-v0_11_0.test.ts	AGENTS.md marker injection	6	readFileSync
 test/migrations-v0_11_0.test.ts	cron manifest rewrite — gbrain builtins only	8	readFileSync
@@ -159,6 +161,8 @@ test/schema-cli-contract.test.ts	v0.39 T6 — schema CLI contract	7	readFileSync
 test/schema-pack-unify-types-handler.test.ts	#1575 unify-types worker dry-run default	1	readFileSync
 test/scripts/classify-tests.test.ts	classify-tests detectors	18	bun-file,doctor-source-helper,exec-scan,readFileSync
 test/scripts/coverage-diff-gate.test.ts	exemptions	3	readFileSync
+test/scripts/run-verify-parallel.test.ts	guard registration ⇒ execution coverage	1	readFileSync
+test/scripts/test-shard.slow.test.ts	test-shard.sh — LPT balance contract	5	readFileSync
 test/skillify-scaffold.test.ts	11-item scaffold contract (T9 + Phase 3 cross-modal eval)	1	readFileSync
 test/skillify-scaffold.test.ts	applyScaffold	3	readFileSync
 test/skillify-scaffold.test.ts	planScaffold	13	readFileSync

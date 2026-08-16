@@ -61,6 +61,175 @@ automatically via `bun run verify`; coverage numbers appear in each CI run's
 summary. If `check:module-size` fails on your branch, the message names the
 exact ceiling to raise (a conscious, reviewer-visible TSV edit) or — better —
 the sibling module dir to put the new code in.
+## [0.46.5.0] - 2026-08-15
+
+**CI in half, evals actually gating.** The Test workflow ran 8–9.5 minutes on
+every push; its long pole was a serial-test job that executed ~140 per-file bun
+processes strictly one-at-a-time even though the quarantine only ever required
+per-process isolation. This release pools that lane (8.5 min → ~4 min in CI,
+~2.5 min locally), wires the PGLite schema-snapshot fast-path into the CI test
+runners (it previously existed but only the local loop used it), and rebalances
+the 10-shard matrix on freshly mined weights (new files without a mined weight
+now fall back to the p75 file weight instead of the median) — a measured branch
+run landed the whole workflow at 255s. E2E stops spending real provider tokens on doc-only
+pushes (content-hash skip with nightly + manual-dispatch exemptions) and runs
+its tiers in parallel behind a fast broken-build spend gate.
+
+Retrieval quality now has a hermetic CLI canary: `gbrain eval gate` accepts a
+deterministic embedder option that drives the full hybrid/RRF pipeline with
+zero API keys, gated in CI on every run (`check:eval-canary`, alongside the new
+`check:eval-chronicle` gate) with its run ledger committed to
+`.gbrain-evals/eval-results.jsonl`. Two registered-but-never-executed guards
+came alive, a registration⇒execution coverage test closes that class for good,
+and 47 orphaned eval-harness tests joined the CI matrix behind a keyless
+allowlist. Test reliability hardening rounds it out: externally-killed serial
+files get a sequential rescue re-run (never a silent pass), machine-global
+files live on a growth-guarded exclusive lane, and the shard-balance test now
+asserts the matrix CI actually runs instead of recomputing its own inputs.
+
+**To take advantage of v0.46.5.0:** nothing to configure — CI and the local
+loops (`bun run test`, `bun run test:serial`, `bun run verify`) are just
+faster. New knobs if you need them: `GBRAIN_SERIAL_POOL=1` restores the old
+fully-sequential serial lane, `GBRAIN_VERIFY_MAX_PARALLEL` bounds verify's
+worker pool, `GBRAIN_NO_SNAPSHOT=1` opts any runner out of the snapshot
+fast-path. Run the retrieval canary yourself with
+`bun run scripts/run-eval-canary.ts` (add `--record` to append the committed
+ledger).
+## [0.46.4.0] - 2026-08-15
+
+**opencode joins the supported-client roster — at full parity from day one.**
+(opencode is opencode.ai, SST's terminal agent — not OpenClaw.) Unlike earlier
+clients that started with a manual recipe, opencode lands with every install
+lane gbrain has: the paste-in workspace bootstrap, machine-level harness
+wiring, `gbrain connect`, a claw-test runner, and a real-binary e2e door in
+CI. Every asserted flag, config shape, and quirk was observed against a
+pinned install (opencode 1.18.18), recorded in a machine-checked pin
+document, and exercised against the real binary — including the part that
+makes opencode special: its keyless anonymous free tier drives MCP tool
+calls, so the end-to-end proof needs zero secrets.
+
+### Added
+- **`gbrain bootstrap hooks --harness opencode`** — workspace-lane MCP
+  registration via direct, comment-preserving JSONC writes (never a CLI
+  exec, works offline). MCP scope is honored with a deliberately INVERTED
+  default: user-global, because opencode spawns project-config servers with
+  no trust prompt; project scope is an explicit opt-in that prints a sharing
+  warning. A structural ownership fingerprint refuses to touch entries
+  gbrain didn't write.
+- **`gbrain bootstrap harness --harness opencode`** — machine-level remote
+  MCP wiring with an inline bearer written 0600, token rotation across URL
+  changes, content-guarded rollback on failed smoke, `--status` and
+  `--remove`.
+- **`gbrain connect --agent opencode [--install]`** — env-interpolated
+  bearer (`{env:GBRAIN_REMOTE_TOKEN}`): the token never enters the config
+  file. `--force` replaces a registration whose endpoint moved.
+- **`gbrain claw-test --agent opencode`** and a split-gated real-binary e2e
+  door in CI: keyless tier (version pin, install + `mcp list` handshake,
+  spawn-gate canary, writer parity, MCP SMOKE on the free tier) plus a paid
+  Anthropic leg that model-gates before spending; npm supply-chain
+  provisioning verifies the actual downloaded tarball bytes against pinned
+  integrities; a schedule-only canary tracks the latest upstream release.
+- **Docs:** `docs/mcp/OPENCODE.md` install guide,
+  `docs/mcp/OPENCODE-CLI-PIN.md` observation pin (with a verify-time drift
+  guard and a pin-refresh cadence), roster updates across README / INSTALL /
+  bootstrap guides. opencode reads the rendered AGENTS.md pull-protocol
+  contract natively.
+
+### Changed
+- The bootstrap config writers (Claude hooks JSON, Codex TOML, opencode
+  JSONC) now share one atomic-write helper; symlinked configs — including
+  dangling dotfile-manager links — survive writes as links.
+- The door-test family (binary resolution, hermetic child envs, one-shot
+  spawns) extracted into shared factories; the hermes and grok runners were
+  ported onto them, hermes child envs gained the GitHub step-metadata scrub,
+  and the hermes installer pin was refreshed (its nightly door had gone red
+  on upstream installer drift).
+- A new pin-doc privacy guard asserts every agent pin document ships with
+  placeholder paths and no key material.
+
+### Fixed
+- Security and robustness hardening from the pre-landing cross-model review
+  pass: registration verification probes run isolated and time-bounded, and
+  a hung probe is killed instead of abandoned; global config writes
+  reconcile both opencode global filenames under the bootstrap lock; config
+  backups are unique per operation with content-guarded restore; error
+  paths never echo credentials; test-harness child processes drop CI
+  credentials before spawning third-party binaries.
+
+### To take advantage of v0.46.4.0
+opencode users: run `gbrain bootstrap hooks --harness opencode` in your
+brain workspace (or paste the standard bootstrap block into an opencode
+session). The keyless free tier is enough to verify the wiring end to end —
+`opencode mcp list` should show `✓ gbrain connected`. Existing installs:
+nothing changes; this release adds a client, it doesn't modify brain
+behavior.
+## [0.46.3.0] - 2026-08-15
+
+**ZeroEntropy is shutting down on 2026-09-04 — gbrain now gets you off it
+before that date costs you retrieval.** The provider that shipped as the
+default embedding + reranking stack from v0.36 through v0.46 is winding down
+its hosted API. This release makes the transition a guided, one-command move
+instead of a surprise outage:
+
+- **New default: Voyage.** Fresh installs land on `voyage:voyage-4` (1024d) —
+  the strongest hosted retrieval embedder on current benchmarks — and the same
+  `VOYAGE_API_KEY` powers the new `voyage:rerank-2.5` reranker (written as
+  explicit config whenever a Voyage key is present at init; keyed installs
+  without one get reranking explicitly disabled instead of inheriting a
+  fallback they can't use) and the multimodal model. One key, all three
+  touchpoints. The v4 family shares one embedding space, so you can later
+  point queries at `voyage-4-large` or `-lite` without re-indexing.
+- **Nothing changes out from under existing brains.** A brain configured for
+  ZeroEntropy (or riding the old default) keeps working exactly as before until
+  the shutdown date — this release only detects, warns, and hands you the
+  playbook. Every surface that used to steer you toward the dying provider
+  (init auto-pick, the interactive picker, `gbrain providers`, setup hints)
+  now steers you to the replacement instead, and using it prints a
+  once-per-process heads-up.
+- **The switch is one command:** `gbrain migrate embeddings --to voyage:voyage-4
+  --dim 1024 --dry-run` (cost preview), then `--yes`. Prefer OpenAI? It can
+  keep your existing column width: `--to openai:text-embedding-3-small
+  --dim 1280`. Reranker: `gbrain config set search.reranker.model
+  voyage:rerank-2.5`. Self-hosting the Apache-2.0 weights remains documented in
+  docs/guides/embedding-migration.md.
+- **Your agent gets told too.** A v0.46.3 migration checks whether your brain
+  still resolves to the sunsetting provider (embedding, reranker, or custom
+  columns), prints an ACTION REQUIRED notice with the blast radius and cost
+  estimate, and files a durable action item pointing at the agent playbook
+  (`skills/migrations/v0.46.3.0.md`). `gbrain doctor`'s provider check now
+  prints width-aware paste-ready commands, and its documented suppression
+  switch (`gbrain config set doctor.suppress_provider_sunset true`) actually
+  works now.
+- `gbrain ze-switch` no longer switches brains onto the sunsetting provider
+  (`--undo` still moves brains off it), and `gbrain migrate embeddings` refuses
+  a re-embed onto a provider with an announced shutdown — self-hosters with a
+  wire-compatible endpoint pass `--force-sunset-target`. Voyage's
+  `voyage-code-4` is available for code-heavy brains.
+- Setup fixes that ride along: init now detects provider keys stored in
+  `~/.gbrain/config.json` (file plane), not just env vars; a keyless brain
+  upgrades in place via `gbrain init --force --embedding-model voyage:voyage-4`
+  (the deferred-setup sentinel is cleared); and keyless fresh installs size the
+  embedding column at the new default width.
+
+### To take advantage of v0.46.3.0
+
+`gbrain upgrade` is enough — no schema migration.
+
+1. **Upgrade and check:**
+   ```bash
+   gbrain upgrade
+   gbrain doctor
+   ```
+2. **If the upgrade printed ACTION REQUIRED** (or doctor flags
+   `provider_sunset`): run the printed migrate command before 2026-09-04, or
+   hand your agent `skills/migrations/v0.46.3.0.md` — it walks the whole
+   switch, including the reranker and edge cases.
+3. **Things to watch:** existing brains see zero behavior change from this
+   release itself; fresh installs default to `voyage:voyage-4` at 1024
+   dimensions; reranking configured on the sunsetting provider dies with it on
+   2026-09-04 unless you set the voyage reranker (or disable reranking). If
+   anything looks wrong, file an issue with `gbrain doctor` output:
+   https://github.com/garrytan/gbrain/issues
 
 ## [0.46.2.0] - 2026-08-15
 

@@ -120,7 +120,9 @@ describe('doctor command', () => {
         } as any);
         expect(check.status).toBe('warn');
         expect(check.message).toContain('unknown');
-        expect(check.message).toContain('ZEROENTROPY_API_KEY');
+        // v0.46.3: the hint names the reranker provider's key generically
+        // (VOYAGE_API_KEY example) — ZE is sunsetting.
+        expect(check.message).toContain('VOYAGE_API_KEY');
       });
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

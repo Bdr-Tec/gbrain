@@ -56,6 +56,8 @@ fi
 
 cd "$(dirname "$0")/.."
 
+. scripts/lib/test-env.sh
+
 # Collect non-E2E, non-serial unit test files. Slow files INCLUDED — see
 # header comment. Local run-unit-shard.sh excludes slow files (different
 # policy by design).
@@ -72,7 +74,13 @@ cd "$(dirname "$0")/.."
 # total bounded. With 10 matrix shards the per-shard total drops to ~272s.
 # Dedicated jobs run in parallel so total CI wallclock = max(matrix ~4.5min,
 # slow-eval ~3.3min, slow-entity-resolve-perf ~2.6min) ≈ 4.5min.
-ALL_FILES=$(find test -name '*.test.ts' \
+# evals/ is included: its *.test.ts files (eval-harness unit tests) were
+# previously collected by NO runner — 45+ real tests never executed anywhere.
+# Every collected evals file must be KEYLESS (no API keys, no network) —
+# enforced by the allowlist guard in test/scripts/evals-collection.test.ts.
+# The local fast loop (run-unit-shard.sh) stays test-only by design (see
+# docs/TESTING.md "CI vs local: intentionally divergent file sets").
+ALL_FILES=$(find test evals -name '*.test.ts' \
   -not -name '*.serial.test.ts' \
   -not -name 'eval-longmemeval-e2e.slow.test.ts' \
   -not -name 'entity-resolve-perf.slow.test.ts' \
@@ -93,6 +101,12 @@ if [ "$DRY_RUN_LIST" = "1" ]; then
   [ -n "$SHARD_FILES" ] && echo ""  # trailing newline if non-empty
   exit 0
 fi
+
+# Snapshot fast-path (after the dry-run exit so list-only calls stay
+# instant): ~370 PGLite-booting matrix files pay ~3.1s cold init each
+# without it. The echo inside makes silent cold-init regressions visible
+# in CI logs.
+ensure_pglite_snapshot "test-shard"
 
 ALL_COUNT=$(printf '%s\n' "$ALL_FILES" | grep -c '^' || true)
 SHARD_COUNT=$(printf '%s\n' "$SHARD_FILES" | grep -c '^' || true)
@@ -126,8 +140,11 @@ if [ -n "${COVERAGE_DIR:-}" ]; then
   COVERAGE_ARGS=(--coverage --coverage-reporter=lcov --coverage-dir="$COVERAGE_DIR/shard")
   XARGS_FLAGS=(-n 100000 -x)
 fi
+# --max-concurrency mirrors the local runner: unbounded intra-process
+# concurrency under parallel PGLite boots produced real shard deaths (the
+# 22-minute matrix timeout in test.yml records 13 of them).
 rc=0
-printf '%s\n' "$SHARD_FILES" | xargs ${XARGS_FLAGS[@]+"${XARGS_FLAGS[@]}"} bun test --timeout=60000 ${COVERAGE_ARGS[@]+"${COVERAGE_ARGS[@]}"} || rc=$?
+printf '%s\n' "$SHARD_FILES" | xargs ${XARGS_FLAGS[@]+"${XARGS_FLAGS[@]}"} bun test --timeout=60000 --max-concurrency="${GBRAIN_TEST_MAX_CONCURRENCY:-4}" ${COVERAGE_ARGS[@]+"${COVERAGE_ARGS[@]}"} || rc=$?
 
 # Lane manifest: written ONLY on a fully green run (complete:true means the
 # lcov data represents the whole shard). The real exit code is preserved

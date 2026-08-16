@@ -138,11 +138,15 @@ export class MinionQueue {
           );
         }
         if (verdict === 'unknown') {
+          // v0.46.3: derive the provider list from the recipe registry instead
+          // of a hardcoded string (which drifted silently as recipes came and
+          // went — and would have needed editing again at the ZE removal).
+          const { listRecipes } = await import('../ai/recipes/index.ts');
+          const known = listRecipes().map((r) => r.id).join(', ');
           throw new Error(
             `subagent job rejected: data.model "${submittedModel}" references an unknown provider. ` +
             `Use format provider:model where provider matches a recipe in src/core/ai/recipes/. ` +
-            `Known providers: anthropic, openai, google, openrouter, litellm-proxy, ollama, llama-server, ` +
-            `together, azure-openai, deepseek, groq, dashscope, minimax, zhipu, voyage, zeroentropyai.`,
+            `Known providers: ${known}.`,
           );
         }
         // 'degraded:no_caching' and 'degraded:no_parallel' pass through — the

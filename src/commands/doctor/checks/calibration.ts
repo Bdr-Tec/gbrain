@@ -595,7 +595,7 @@ export async function checkRerankerHealth(engine: BrainEngine): Promise<Check> {
       return {
         name: 'reranker_health',
         status: 'warn',
-        message: `${authFails.length} reranker auth failure(s) in last 7 days. Fix: verify ZEROENTROPY_API_KEY and run \`gbrain models doctor\`.`,
+        message: `${authFails.length} reranker auth failure(s) in last 7 days. Fix: verify the reranker provider's API key (e.g. VOYAGE_API_KEY) and run \`gbrain models doctor\`.`,
       };
     }
 
@@ -635,9 +635,13 @@ export async function checkRerankerHealth(engine: BrainEngine): Promise<Check> {
     if (unknownFails.length >= 3) {
       const setupHint = unknownFails.some((f) => {
         const summary = String(f.error_summary ?? '');
-        return summary.includes('ZEROENTROPY_API_KEY') || summary.toLowerCase().includes('api key');
+        return (
+          summary.includes('ZEROENTROPY_API_KEY') ||
+          summary.includes('VOYAGE_API_KEY') ||
+          summary.toLowerCase().includes('api key')
+        );
       })
-        ? ' Fix: verify ZEROENTROPY_API_KEY and run `gbrain models doctor`.'
+        ? " Fix: verify the reranker provider's API key (e.g. VOYAGE_API_KEY) and run `gbrain models doctor`."
         : '';
       return {
         name: 'reranker_health',
