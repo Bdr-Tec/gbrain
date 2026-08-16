@@ -1227,8 +1227,14 @@ export class PostgresEngine implements BrainEngine {
                contextual_retrieval_mode
         FROM pages
         WHERE slug = ${slug} ${sourceCondition} ${deletedCondition}
+        ORDER BY (source_id = 'default') DESC, source_id ASC
         LIMIT 1
       `;
+      // Deterministic multi-source tiebreak: without an ORDER BY, LIMIT 1 on a
+      // slug that exists in several sources returned an ARBITRARY row.
+      // Default-source-first (then stable alpha) — plain alpha would prefer
+      // e.g. 'archive' over 'default'. Engine parity: pglite-engine.ts carries
+      // the identical clause.
       if (rows.length === 0) return null;
       return rowToPage(rows[0]);
     });

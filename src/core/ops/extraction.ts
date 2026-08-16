@@ -181,6 +181,9 @@ const extraction_review: Operation = {
     if (ctx.dryRun) return { dry_run: true, action: `extraction_review:${action}`, slugs };
     const results: Array<{ slug: string; status: string }> = [];
     for (const slug of slugs) {
+      // First-match read is safe here: BOTH writes below key on the RETURNED
+      // row's page.source_id, so read and write can never target different
+      // rows. gbrain-allow-unscoped-getpage: write follows the returned row
       const page = await ctx.engine.getPage(slug, ctx.sourceId ? { sourceId: ctx.sourceId } : undefined);
       if (!page) {
         results.push({ slug, status: 'not_found' });

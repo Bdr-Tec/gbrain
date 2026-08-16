@@ -328,12 +328,24 @@ const submit_agent: Operation = {
       );
     }
     if (delegatedSource) jobData.source_id = delegatedSource;
-    const job = await queue.add(
-      'subagent',
-      jobData,
-      { queue: (p.queue as string) || 'default' },
-      { allowProtectedSubmit: true },
-    );
+    let job;
+    try {
+      job = await queue.add(
+        'subagent',
+        jobData,
+        { queue: (p.queue as string) || 'default' },
+        { allowProtectedSubmit: true },
+      );
+    } catch (e) {
+      // Admission quota (minions.quota_max_waiting.subagent, config-only):
+      // surface as a structured retryable error, not an opaque internal one.
+      // The quota message already omits live cross-tenant queue depth.
+      const { isQueueQuotaExceededError } = await import('../minions/admission.ts');
+      if (isQueueQuotaExceededError(e)) {
+        throw new OperationError('rate_limited', e.message, 'Retry after the queue drains, or ask the operator to raise the quota.');
+      }
+      throw e;
+    }
 
     // Audit trail (D4) — best-effort JSONL.
     try {
@@ -360,6 +372,12 @@ const submit_agent: Operation = {
       id: job.id,
       name: 'subagent',
       client_id: clientId,
+      // Honest-dispatch: true when this submit was param-coalesced onto an
+      // existing WAITING job with identical params (same owner lane) instead
+      // of enqueuing a new one. Clients wanting N independent runs of one
+      // prompt should vary the params (adversarial-review finding — the flag
+      // makes the suppression detectable rather than silent).
+      ...(job.coalesced === true ? { coalesced: true } : {}),
       queue_state: await probeQueueStateSafe(ctx, job.queue, ['subagent']),
     };
   },
