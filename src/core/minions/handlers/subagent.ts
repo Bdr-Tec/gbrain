@@ -1344,8 +1344,14 @@ function adaptContentBlocksToChatBlocks(blocks: unknown): ChatBlock[] | string {
     if (!b || typeof b !== 'object') continue;
     const block = b as Record<string, unknown>;
     const t = block.type;
+    // #4201: per-part provider state (Gemini thoughtSignature) must survive
+    // crash-replay — this shim rebuilds blocks field-by-field, so an omitted
+    // field here is erased on resume even though the DB row kept it.
+    const meta = block.providerMetadata && typeof block.providerMetadata === 'object'
+      ? { providerMetadata: block.providerMetadata as Record<string, unknown> }
+      : {};
     if (t === 'text' && typeof block.text === 'string') {
-      out.push({ type: 'text', text: block.text });
+      out.push({ type: 'text', text: block.text, ...meta });
     } else if (t === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
       // v1 Anthropic shape
       out.push({
@@ -1361,6 +1367,7 @@ function adaptContentBlocksToChatBlocks(blocks: unknown): ChatBlock[] | string {
         toolCallId: block.toolCallId,
         toolName: block.toolName,
         input: block.input ?? {},
+        ...meta,
       });
     } else if (t === 'tool_result' && typeof block.tool_use_id === 'string') {
       // v1 Anthropic shape — tool result block (no toolName in v1; synthesize)
@@ -1378,6 +1385,7 @@ function adaptContentBlocksToChatBlocks(blocks: unknown): ChatBlock[] | string {
         toolName: typeof block.toolName === 'string' ? block.toolName : '__legacy__',
         output: block.output ?? null,
         isError: block.isError === true,
+        ...meta,
       });
     }
   }

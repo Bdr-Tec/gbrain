@@ -2698,10 +2698,20 @@ function estimateChatInputTokens(opts: { system?: string; messages?: Array<{ con
  */
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
+/**
+ * Provider-neutral content block. `providerMetadata` is the per-part opaque
+ * provider channel (#4201): some providers attach state to a part that MUST be
+ * echoed back verbatim on the next request (Gemini 3.x `thoughtSignature` on
+ * functionCall parts — dropped, the follow-up turn is refused). Captured from
+ * the SDK part's `providerMetadata` in chat(), re-attached as `providerOptions`
+ * on the rebuilt part in toModelMessages(), and carried through the replay shim
+ * (adaptContentBlocksToChatBlocks). Attached ONLY when the provider sent one —
+ * blocks from providers without per-part state stay byte-identical.
+ */
 export type ChatBlock =
-  | { type: 'text'; text: string }
-  | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
-  | { type: 'tool-result'; toolCallId: string; toolName: string; output: unknown; isError?: boolean };
+  | { type: 'text'; text: string; providerMetadata?: Record<string, unknown> }
+  | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown; providerMetadata?: Record<string, unknown> }
+  | { type: 'tool-result'; toolCallId: string; toolName: string; output: unknown; isError?: boolean; providerMetadata?: Record<string, unknown> };
 
 export interface ChatMessage {
   role: ChatRole;
@@ -2807,6 +2817,8 @@ export function toModelMessages(messages: ChatMessage[]): unknown[] {
               : (typeof b.output === 'string'
                 ? { type: 'text' as const, value: b.output }
                 : { type: 'json' as const, value: toJsonSafe(b.output) as never }),
+            // #4201: echo per-part provider state (outbound name is providerOptions).
+            ...(b.providerMetadata ? { providerOptions: b.providerMetadata } : {}),
           })),
       };
     }
@@ -2819,8 +2831,24 @@ export function toModelMessages(messages: ChatMessage[]): unknown[] {
       content: blocks
         .filter((b) => b.type !== 'text' || typeof b.text === 'string')
         .map((b) => {
-          if (b.type === 'text') return { type: 'text' as const, text: b.text };
-          if (b.type === 'tool-call') return { type: 'tool-call' as const, toolCallId: b.toolCallId, toolName: b.toolName, input: b.input };
+          // #4201: `providerOptions` echoes per-part provider state (e.g.
+          // Gemini 3.x thoughtSignature) — attached only when captured.
+          if (b.type === 'text') {
+            return {
+              type: 'text' as const,
+              text: b.text,
+              ...(b.providerMetadata ? { providerOptions: b.providerMetadata } : {}),
+            };
+          }
+          if (b.type === 'tool-call') {
+            return {
+              type: 'tool-call' as const,
+              toolCallId: b.toolCallId,
+              toolName: b.toolName,
+              input: b.input,
+              ...(b.providerMetadata ? { providerOptions: b.providerMetadata } : {}),
+            };
+          }
           return b;
         }),
     };
@@ -3472,13 +3500,21 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     const rawContent: any[] = (result as any).content ?? [];
     if (Array.isArray(rawContent) && rawContent.length > 0) {
       for (const part of rawContent) {
-        if (part.type === 'text') blocks.push({ type: 'text', text: part.text });
+        // #4201: capture per-part providerMetadata (Gemini 3.x thoughtSignature
+        // arrives on functionCall/text parts and must be echoed back next turn).
+        // `reasoning` parts stay deliberately dropped: the echo requirement is
+        // on functionCall parts; reasoning text never re-enters the transcript.
+        const partMeta = part.providerMetadata && typeof part.providerMetadata === 'object'
+          ? { providerMetadata: part.providerMetadata as Record<string, unknown> }
+          : {};
+        if (part.type === 'text') blocks.push({ type: 'text', text: part.text, ...partMeta });
         else if (part.type === 'tool-call') {
           blocks.push({
             type: 'tool-call',
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             input: part.input ?? part.args,
+            ...partMeta,
           });
         }
       }
