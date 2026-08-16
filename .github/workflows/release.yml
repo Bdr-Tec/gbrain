@@ -320,6 +320,9 @@ jobs:
           # rides GIT_ASKPASS at prompt time, never the push URL / argv (where
           # a same-user process could read it from the process table).
           ASKPASS="$RUNNER_TEMP/git-askpass-plugin.sh"
+          # shellcheck disable=SC2016  # $GH_TOKEN is literal on purpose — it
+          # must expand when /bin/sh runs the askpass script at prompt time,
+          # not now (same pattern as the publish-template job above).
           printf '#!/bin/sh\nexec echo "$GH_TOKEN"\n' > "$ASKPASS"
           chmod +x "$ASKPASS"
           GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
