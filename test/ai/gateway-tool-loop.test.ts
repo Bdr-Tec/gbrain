@@ -45,6 +45,27 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
     expect(result.totalUsage.input_tokens).toBe(5);
   });
 
+  it("propagates 'length' when a zero-tool-call turn hit the output cap (#4088)", async () => {
+    __setChatTransportForTests(async () => ({
+      text: 'truncated partial outp',
+      blocks: [{ type: 'text', text: 'truncated partial outp' }] as ChatBlock[],
+      stopReason: 'length',
+      usage: { input_tokens: 22000, output_tokens: 8192, cache_read_tokens: 0, cache_creation_tokens: 0 },
+      model: 'anthropic:claude-sonnet-4-6',
+      providerId: 'anthropic',
+    }));
+
+    const result = await toolLoop({
+      initialMessages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      toolHandlers: new Map(),
+    });
+
+    // NOT 'end' — an output-cap hit must stay distinguishable from a clean finish.
+    expect(result.stopReason).toBe('length');
+    expect(result.finalText).toBe('truncated partial outp');
+  });
+
   it('dispatches a single tool call and feeds the result back to the next turn', async () => {
     let turn = 0;
     __setChatTransportForTests(async () => {

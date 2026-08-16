@@ -3626,7 +3626,7 @@ export interface ToolLoopOpts {
   onHeartbeat?: (event: string, data: Record<string, unknown>) => void;
 }
 
-export type ToolLoopStopReason = 'end' | 'max_turns' | 'refusal' | 'content_filter' | 'aborted' | 'unrecoverable';
+export type ToolLoopStopReason = 'end' | 'length' | 'max_turns' | 'refusal' | 'content_filter' | 'aborted' | 'unrecoverable';
 
 export interface ToolLoopResult {
   finalText: string;
@@ -3731,7 +3731,11 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
     );
 
     if (toolCalls.length === 0) {
-      stopReason = 'end';
+      // #4088: an output-cap hit is NOT a clean finish. Folding 'length' into
+      // 'end' made truncated zero-tool-call runs indistinguishable from the
+      // model choosing to stop — the exact honesty bug #2778 fixed on the
+      // direct Anthropic path.
+      stopReason = chatResult.stopReason === 'length' ? 'length' : 'end';
       finalText = chatResult.text;
       break;
     }

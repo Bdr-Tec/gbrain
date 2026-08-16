@@ -1121,19 +1121,23 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
     onHeartbeat: heartbeat,
   });
 
-  // Map gateway stop reason to SubagentStopReason. SubagentStopReason has
-  // {end_turn, max_turns, refusal, error}; aborted maps to error.
+  // Map gateway stop reason to SubagentStopReason. 'length' (output-cap hit)
+  // maps to 'max_tokens' — the #2778 honesty vocabulary the direct Anthropic
+  // path already uses — NOT 'end_turn' (#4088: truncation is not a clean
+  // finish). aborted maps to error.
   const stopReason: SubagentStopReason = result.stopReason === 'end'
     ? 'end_turn'
-    : result.stopReason === 'max_turns'
-      ? 'max_turns'
-      : result.stopReason === 'refusal'
-        ? 'refusal'
-        : result.stopReason === 'content_filter'
+    : result.stopReason === 'length'
+      ? 'max_tokens'
+      : result.stopReason === 'max_turns'
+        ? 'max_turns'
+        : result.stopReason === 'refusal'
           ? 'refusal'
-          : result.stopReason === 'aborted'
-            ? 'error'
-            : 'end_turn';
+          : result.stopReason === 'content_filter'
+            ? 'refusal'
+            : result.stopReason === 'aborted'
+              ? 'error'
+              : 'end_turn';
 
   return {
     result: result.finalText,
