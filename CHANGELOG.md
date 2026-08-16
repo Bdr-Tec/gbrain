@@ -36,9 +36,10 @@ the same canonical, paste-ready command.
   `--status` reads it without re-spending.
 - **Doctor: `embedding_migration_state` check** — warns with the exact
   resume + status commands while a migration is in flight or was
-  interrupted; plus an informational note when env vars agree with the
-  file plane, and a carve-out note when the read path uses a custom
-  embedding column.
+  interrupted. Two companion notes land in existing checks: the
+  env-override check now notes when env vars agree with stored config
+  (they still override the file plane at runtime), and the embeddings
+  coverage check notes when the read path uses a custom embedding column.
 - **One canonical migration command.** Every surface that suggests
   migrating (upgrade banner, init, doctor, advisor, sunset notices,
   docs) renders through one shared helper, with a drift-guard test
