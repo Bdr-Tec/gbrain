@@ -1061,6 +1061,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.brainstorm.judge',
   'models.eval.longmemeval',
   'facts.extraction_model',
+  // Brain-wide kill switch for fact extraction, read by
+  // src/core/facts/extract.ts:isFactsExtractionEnabled and honored by
+  // sweep.ts, operations.ts and transcripts/ingest-facts.ts. That function's
+  // own docstring tells operators to flip it with
+  // `gbrain config set facts.extraction_enabled false` — which was rejected
+  // as an unknown key until this registration.
+  'facts.extraction_enabled',
   // #2113: output-token cap for the per-turn facts extractor (default 4000).
   'facts.extraction_max_tokens',
   // [ENG-8] Brain-level default visibility for facts writes when the caller
@@ -1221,6 +1228,7 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
   //   minions.ttl_notice_shown flag. Booleans via the canonical truthiness
   //   parser; numeric 0 disables.
   'minions.',
+  'pace.',              // pace.mode + PACE_MODE_CONFIG_KEYS (src/core/pace-mode.ts)
 ];
 
 /**
