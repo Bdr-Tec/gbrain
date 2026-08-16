@@ -23,10 +23,16 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
-import { runZeSwitch } from '../src/commands/ze-switch.ts';
+import { runZeSwitch, RETIRED_FLAGS } from '../src/commands/ze-switch.ts';
+import { CLI_FLAG_REGISTRY } from '../src/core/cli-flag-registry.generated.ts';
 import { KEY_APPLIED, KEY_REQUESTED, KEY_PREVIOUS_SNAPSHOT } from '../src/core/retrieval-upgrade-planner.ts';
+
+const REPO = new URL('..', import.meta.url).pathname;
 
 let engine: PGLiteEngine;
 
@@ -272,4 +278,46 @@ describe('--undo (redirect: prints the return-path command, never acts)', () => 
     // The retired action would have reverted config; the shim must not:
     expect(await engine.getConfig('embedding_model')).toBe('zeroentropyai:zembed-1');
   });
+
+  test('a failed --undo never points back at --undo (guidance-loop guard)', async () => {
+    const r = await captureExit(() => runZeSwitch(['--undo'], engine));
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).not.toContain('gbrain ze-switch --undo');
+  });
+});
+
+describe('registry + dispatch contract (the layer in-process calls bypass)', () => {
+  test('every retired flag is in the generated ze-switch registry row', () => {
+    // The refusal-instead-of-unknown-flag promise lives in the GENERATED row,
+    // not in the shim: a help-copy trim that dropped the quoted literals
+    // would regenerate the row without them and old scripts would die
+    // pre-dispatch. This pin makes that failure loud.
+    const row = CLI_FLAG_REGISTRY['ze-switch'] ?? [];
+    for (const f of RETIRED_FLAGS) {
+      expect(row).toContain(f);
+    }
+  });
+
+  test('spawned CLI: a retired flag reaches the refusal even with NO brain configured', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-zeswitch-nobrain-'));
+    const env: Record<string, string | undefined> = { ...process.env, GBRAIN_HOME: home };
+    delete env.GBRAIN_DATABASE_URL;
+    delete env.DATABASE_URL;
+    const proc = Bun.spawn(['bun', '--no-env-file', 'run', 'src/cli.ts', 'ze-switch', '--resume'], {
+      cwd: REPO,
+      env,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    const all = out + err;
+    expect(code).toBe(1);
+    expect(all).not.toContain('unknown flag');
+    expect(all).not.toContain('No brain configured');
+    expect(all).toContain('gbrain migrate embeddings --to voyage:voyage-4 --dim 1024');
+  }, 30_000);
 });

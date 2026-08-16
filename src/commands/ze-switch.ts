@@ -46,7 +46,7 @@ interface ZeSwitchSnapshot {
 // dispatch; the row is generated from these literals, and safety flags like
 // '--dry-run' need quoted consumption evidence to survive regeneration).
 // The shim never consults them — every non-help/undo invocation refuses.
-const RETIRED_FLAGS = [
+export const RETIRED_FLAGS = [
   '--dry-run',
   '--resume',
   '--force',
@@ -85,7 +85,10 @@ This command is deleted in the September (v0.47) removal release.
 `);
 }
 
-function refusalEnvelope(extraMessage?: string): {
+function refusalEnvelope(
+  extraMessage?: string,
+  opts: { omitUndoHint?: boolean } = {},
+): {
   status: 'refused';
   reason: 'provider_sunset';
   migrate: string;
@@ -96,8 +99,11 @@ function refusalEnvelope(extraMessage?: string): {
     (extraMessage ? `${extraMessage}\n` : '') +
     `ze-switch is retired: ZeroEntropy shuts down its hosted API on ${ZEROENTROPY_SUNSET_DATE}.\n` +
     `To LEAVE ZeroEntropy: ${cmds.recommendedDryRun}\n` +
-    `Playbook: skills/migrations/v0.46.3.0.md\n` +
-    `To see the command that returns this brain to its pre-switch provider: gbrain ze-switch --undo`;
+    `Playbook: skills/migrations/v0.46.3.0.md` +
+    // Never point a failed --undo back at --undo (guidance loop).
+    (opts.omitUndoHint
+      ? ''
+      : `\nTo see the command that returns this brain to its pre-switch provider: gbrain ze-switch --undo`);
   return { status: 'refused', reason: 'provider_sunset', migrate: cmds.recommendedDryRun, message };
 }
 
@@ -122,8 +128,16 @@ function emitAndExit(payload: { message: string } & Record<string, unknown>, jso
  *  snapshot row is data-plane content (writable via config set / direct DB /
  *  a mounted brain), and its fields land verbatim in a command the user or a
  *  downstream agent is told to RUN — so validate before interpolating, and
- *  degrade to the plain refusal on anything suspicious. */
-const MODEL_ID_RE = /^[A-Za-z0-9._:-]+$/;
+ *  degrade to the plain refusal on anything suspicious. The shape requires a
+ *  leading alphanumeric and a `provider:model` colon, so a value like
+ *  `--force-sunset-target` can never inject a flag into the printed command. */
+const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9._-]+$/;
+
+type SnapshotReadResult =
+  | { kind: 'ok'; snapshot: ZeSwitchSnapshot }
+  | { kind: 'missing' }
+  | { kind: 'invalid' }
+  | { kind: 'read_error' };
 
 function parseSnapshot(raw: string): ZeSwitchSnapshot | null {
   try {
@@ -140,7 +154,7 @@ function parseSnapshot(raw: string): ZeSwitchSnapshot | null {
       return p;
     }
   } catch {
-    /* corrupt JSON degrades to the refusal below */
+    /* corrupt JSON is `invalid` — the caller words the refusal */
   }
   return null;
 }
@@ -157,18 +171,24 @@ export async function runZeSwitch(args: string[], engine: BrainEngine | null): P
     // Read the pre-switch snapshot the old forward path stored. A missing,
     // corrupt, invalid-shape, or unreadable snapshot degrades to the plain
     // refusal (there is nothing to redirect to); `redirected` is reserved
-    // for a validated snapshot.
-    let snapshot: ZeSwitchSnapshot | null = null;
+    // for a validated snapshot. The three failure states word the refusal
+    // differently — telling the operator of a switched brain whose snapshot
+    // failed validation that "no switch was recorded" would be false.
+    let read: SnapshotReadResult = { kind: 'missing' };
     if (engine) {
       try {
         const raw = await engine.getConfig(KEY_PREVIOUS_SNAPSHOT);
-        if (raw) snapshot = parseSnapshot(raw);
+        if (raw) {
+          const parsed = parseSnapshot(raw);
+          read = parsed ? { kind: 'ok', snapshot: parsed } : { kind: 'invalid' };
+        }
       } catch {
-        snapshot = null;
+        read = { kind: 'read_error' };
       }
     }
 
-    if (snapshot) {
+    if (read.kind === 'ok') {
+      const snapshot = read.snapshot;
       // Fold the pre-switch reranker into the same run: `--reranker` takes a
       // model id or `off`; omitted means the migration's own default.
       // enabled===false WINS over a lingering model id — the pre-switch brain
@@ -190,7 +210,13 @@ export async function runZeSwitch(args: string[], engine: BrainEngine | null): P
       emitAndExit({ status: 'redirected', reason: 'provider_sunset', undo_command: undoCommand, message }, json);
     }
 
-    emitAndExit(refusalEnvelope('No prior switch snapshot recorded — nothing to undo.'), json);
+    const undoFailure =
+      read.kind === 'invalid'
+        ? 'A switch snapshot exists but is unreadable or failed validation — inspect the ze_switch_previous_snapshot config row before trusting any undo guidance.'
+        : read.kind === 'read_error'
+          ? 'Could not read the switch snapshot (config read failed) — check the brain connection and retry.'
+          : 'No prior switch snapshot recorded — nothing to undo.';
+    emitAndExit(refusalEnvelope(undoFailure, { omitUndoHint: true }), json);
   }
 
   // Every other invocation — bare, --dry-run, --resume, --non-interactive,

@@ -2,9 +2,8 @@
  * Provider-agnostic embedding migration (#3390).
  *
  * `gbrain migrate embeddings --to <provider:model>` re-embeds a brain onto
- * any configured provider — the forward path off a sunsetting provider that
- * `ze-switch` (ZE-only target) and `ze-switch --undo` (needs a snapshot fresh
- * installs don't have) cannot cover.
+ * any configured provider — the ONE forward path off a sunsetting provider
+ * (the retired ze-switch is a refusal/redirect shim that points here).
  *
  * This module is the v0.47 SURVIVOR: the migration primitives live HERE
  * (runSchemaTransition, transitionDimPinnedColumn, detectEnvOverride and the

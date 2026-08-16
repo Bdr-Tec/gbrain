@@ -2015,9 +2015,15 @@ async function handleCliOnly(command: string, args: string[]) {
   }
 
   if (command === 'ze-switch') {
-    // v0.36.0.0 — manual ZE-default switch lever. Owns its own engine lifecycle
-    // to mirror the doctor pattern.
+    // Retired refusal/redirect shim. Only --undo reads the brain (one config
+    // row); every other invocation must refuse EVEN ON an unconfigured
+    // machine — connecting unconditionally turned the refusal into
+    // "No brain configured" and starved --json callers of the envelope.
     const { runZeSwitch } = await import('./commands/ze-switch.ts');
+    if (!args.includes('--undo')) {
+      await runZeSwitch(args, null);
+      return;
+    }
     const eng = await connectEngine();
     try {
       await runZeSwitch(args, eng);
