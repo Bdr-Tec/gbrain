@@ -43,11 +43,20 @@ Subcommands:
                              overwrite. Third-party sources: owner/repo,
                              https://...git, ./local-dir, ./local.tgz.
   scaffold --all             Scaffold every bundled skill (gbrain only).
+  scaffold --harness <h>     Install a persona-curated set into a harness's
+                             native skills dir (claude-code | openclaw |
+                             codex | opencode). --persona/--skill curate;
+                             --stub installs cold-pull pointers (gated).
 
   reference <name>           Read-only: diff gbrain's bundle vs your local copy.
   reference --all            Sweep over every bundled skill.
   reference <n> --apply-clean-hunks
                              Two-way diff, auto-apply non-conflicting hunks.
+  reference --harness <h>    Diff a harness install (stub-aware; splits
+                             local_edit vs upstream_drift).
+
+  remove --harness <h>       Remove files the harness bridge wrote (ledger-
+                             owned only — never your own files).
 
   status                     Install currency (new/drifted/current) + which
                              installed skills declare preconditions.
@@ -162,6 +171,11 @@ export async function runSkillpack(args: string[]): Promise<void> {
     case 'endorse':
       await cmdEndorse(rest);
       return;
+    case 'remove': {
+      const { cmdRemove } = await import('./skillpack/harness.ts');
+      await cmdRemove(rest);
+      return;
+    }
     case 'install':
       console.error(
         "Error: 'gbrain skillpack install' was removed in v0.33. Use 'gbrain skillpack scaffold <name>' instead.\n" +
@@ -305,9 +319,10 @@ async function cmdStatus(args: string[]): Promise<void> {
   try {
     const currency = computeSkillCurrency({ gbrainRoot, targetWorkspace });
     const preconditions = collectDeclaredPreconditions(gbrainRoot);
+    const { collectBridgesStatus, printBridgesStatus } = await import('./skillpack/harness.ts');
 
     if (json) {
-      console.log(JSON.stringify({ currency, preconditions }, null, 2));
+      console.log(JSON.stringify({ currency, preconditions, bridges: collectBridgesStatus(gbrainRoot) }, null, 2));
       process.exit(0);
     }
 
@@ -329,6 +344,7 @@ async function cmdStatus(args: string[]): Promise<void> {
       console.log('\nSkills with declared preconditions (verify with `gbrain doctor`):');
       for (const p of preconditions) console.log(`  ${p.slug}: ${p.requires.join(', ')}`);
     }
+    printBridgesStatus(gbrainRoot);
     process.exit(0);
   } catch (err) {
     if (err instanceof BundleError) {

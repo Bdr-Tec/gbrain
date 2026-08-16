@@ -16,6 +16,13 @@ import {
 import { findGbrainOrDie, resolveWorkspace } from './shared.ts';
 
 export async function cmdReference(args: string[]): Promise<void> {
+  // Harness lane (cathedral-7): diff a harness install (stub-aware,
+  // three-way local_edit vs upstream_drift) instead of a workspace.
+  if (args.some(a => a === '--harness' || a.startsWith('--harness='))) {
+    const { cmdReferenceHarness } = await import('./harness.ts');
+    await cmdReferenceHarness(args);
+    return;
+  }
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
       'gbrain skillpack reference <name> | --all [--workspace PATH] [--apply-clean-hunks] [--since <version>] [--dry-run] [--json]\n\n' +

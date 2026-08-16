@@ -30,6 +30,13 @@ import { VERSION } from '../../version.ts';
 import { findGbrainOrDie, resolveWorkspace } from './shared.ts';
 
 export async function cmdScaffold(args: string[]): Promise<void> {
+  // Harness lane (cathedral-7): `--harness <h>` installs a persona-curated
+  // set into a harness's native skills dir instead of a workspace.
+  if (args.some(a => a === '--harness' || a.startsWith('--harness='))) {
+    const { cmdScaffoldHarness } = await import('./harness.ts');
+    await cmdScaffoldHarness(args);
+    return;
+  }
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
       'gbrain skillpack scaffold <name> | <source> | --all [--workspace PATH] [--dry-run] [--trust] [--no-cache] [--json]\n\n' +
