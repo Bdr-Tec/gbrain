@@ -53,6 +53,7 @@ import type { BrainEngine, DreamVerdict, TriageSegment } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { MinionQueue } from '../minions/queue.ts';
 import { clampSubagentBudgets, CYCLE_DEADLINE_RESERVE_MS, MIN_PATTERNS_SUBAGENT_BUDGET_MS } from './patterns.ts';
+import { isQueueQuotaExceededError } from '../minions/admission.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
@@ -864,18 +865,22 @@ export async function runPhaseSynthesize(
       }
     }
 
-    // #4168 red-team: transcripts deferred because the parent job budget ran out mid-fan-out.
-
+    // Admission-quota latch: once a submit is rejected, every later transcript
+    // this run would be rejected too — record one skip per remaining file
+    // without hammering the queue.
+    let quotaHit = false;
+    // #4168 red-team: transcripts deferred because the parent job budget ran
+    // out mid-fan-out (distinct from the quota latch: deferral is budget-time,
+    // quota is admission-space; both stop further submits this run).
     const budgetExhaustedDeferrals: string[] = [];
-
     for (const t of worthProcessing) {
-
+      if (quotaHit) {
+        skipReports.push({ filePath: t.filePath, reason: 'admission_quota: submission stopped this run' });
+        continue;
+      }
       if (budgetExhaustedDeferrals.length > 0) {
-
         budgetExhaustedDeferrals.push(basename(t.filePath));
-
         continue; // budget gone — defer the rest, don't submit more children
-
       }
       const hash16 = t.contentHash.slice(0, 16);
       const hash6 = t.contentHash.slice(0, 6);
@@ -966,6 +971,12 @@ export async function runPhaseSynthesize(
           ? `anthropic:${config.model}`
           : config.model;
       const triageVerdict = pass.byPath.get(t.filePath);
+      // Fresh (non-coalesced) chunk submissions for THIS transcript — rolled
+      // back if a later chunk hits the admission quota, so a transcript never
+      // half-synthesizes while its skip report claims it was skipped
+      // (adversarial finding). Coalesced rows are another run's bookkeeping
+      // and must not be cancelled.
+      const transcriptFreshIds: number[] = [];
       for (let i = 0; i < chunks.length; i++) {
         const childData: SubagentHandlerData = {
           prompt: buildSynthesisPrompt(
@@ -1010,12 +1021,36 @@ export async function runPhaseSynthesize(
           timeout_ms: perChild.timeoutMs,
           queue: childQueueName,
         };
-        let child = await queue.add(
-          'subagent',
-          childData as unknown as Record<string, unknown>,
-          submitOpts,
-          { allowProtectedSubmit: true },
-        );
+        let child: Awaited<ReturnType<typeof queue.add>>;
+        try {
+          child = await queue.add(
+            'subagent',
+            childData as unknown as Record<string, unknown>,
+            submitOpts,
+            { allowProtectedSubmit: true },
+          );
+        } catch (e) {
+          // Admission quota (minions.quota_max_waiting.subagent, config-only):
+          // a rejected submit is a recorded phase skip, never a phase crash —
+          // same posture as daily_cap_reached. The quota won't clear mid-run,
+          // so stop submitting for this run entirely. Roll back this
+          // transcript's already-submitted fresh chunks first: draining a
+          // partial chunk set would write partial pages for a transcript the
+          // skip report says was skipped.
+          if (isQueueQuotaExceededError(e)) {
+            for (const id of transcriptFreshIds) {
+              try { await queue.cancelJob(id); } catch { /* best-effort rollback */ }
+              const idx = childIds.indexOf(id);
+              if (idx >= 0) childIds.splice(idx, 1);
+              jobRawSource.delete(id);
+              chunkInfo.delete(id);
+            }
+            skipReports.push({ filePath: t.filePath, reason: `admission_quota: ${e.message}` });
+            quotaHit = true;
+            break;
+          }
+          throw e;
+        }
         // Self-heal (#4152 C1): an idempotency-coalesced row still `waiting`
         // in a FOREIGN dream-inline-* queue was stranded by a previously
         // killed/timed-out run — no worker will ever claim it, and waiting on
@@ -1041,7 +1076,10 @@ export async function runPhaseSynthesize(
             );
           }
         }
-        if (child.coalesced !== true) submittedToday++;
+        if (child.coalesced !== true) {
+          submittedToday++;
+          transcriptFreshIds.push(child.id);
+        }
         childIds.push(child.id);
         jobRawSource.set(child.id, t.filePath);
         if (isChunked) {

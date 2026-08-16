@@ -2,6 +2,102 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.11.0] - 2026-08-16
+
+**Five operational failures from live production brains, fixed at the root.**
+A backlink auto-fix that could corrupt a page's frontmatter, a job queue that
+grew a multi-thousand-job backlog with no admission control and no alarm,
+junk filenames that imported as plausible-looking pages and polluted search,
+a read/write source-scoping asymmetry that misrouted pages in multi-source
+brains, and frontmatter types that silently filed into unexpected
+directories. Each fix ships with its regression pinned and a discovery
+surface so the same failure can't build up silently again.
+
+### Added
+- **Queue admission control for background agents.** Identical parentless
+  `subagent` submits now coalesce onto the existing waiting job (same owner
+  lane, payload, and execution options — the response carries `coalesced:
+  true` so callers can tell); jobs still waiting after 48 hours are cancelled
+  with an auditable reason instead of queueing forever (`gbrain config set
+  minions.ttl_waiting_hours.<name> <hours|0>` to tune or disable); and an
+  optional per-type waiting quota (`minions.quota_max_waiting.<name>`,
+  off by default) rejects new submits with a structured, retryable error once
+  a backlog cap is hit — exact even under concurrent submitters. Everything
+  disables at once with `GBRAIN_MINIONS_ADMISSION=0`.
+- **Warn-before-act for the new waiting-TTL.** The first sweep never fires
+  cold: the worker (and `gbrain upgrade`) print a one-time notice with the
+  affected-job count, then hold a one-hour grace window before the first
+  cancellation so there's real time to tune or opt out.
+- **Divergent-queue alarms.** `gbrain jobs stats` gains Drained/Waiting
+  columns, a per-type `DIVERGENT QUEUE` scream when intake structurally
+  exceeds completions (with the exact config command to cap it), a
+  waiting-TTL 24h cancellation line, and a `--json` document; `gbrain
+  doctor`'s queue health check surfaces the same findings for cron
+  topologies. TTL cancellations are never counted as useful drain.
+- **Stored-type visibility.** Sync and import now warn once per run when
+  explicit frontmatter types are aliases or undeclared in the active schema
+  pack (aggregated counts ride the sync result and the `--json` envelope for
+  worker topologies; silence with `schema.type_warnings false`), and `gbrain
+  schema lint` gains two data-plane rules that catch the existing corpus,
+  scoped per source.
+- **`gbrain quarantine clear --source-id`** — clearing a slug that exists in
+  multiple sources now errors with the source list instead of picking one
+  arbitrarily.
+- **`malformed_path_pages` doctor check** — finds previously ingested pages
+  backed by junk filenames and says exactly which are sweepable versus which
+  need a rename.
+- A shared atomic file writer (`src/core/atomic-write.ts`): unique temp
+  sibling, full-write loop, fsync, on-disk verification callback, mode
+  preservation past the umask, and parent-directory fsync after the rename.
+
+### Fixed
+- **`check-backlinks fix` can no longer corrupt frontmatter.** The timeline
+  inserter now computes the body offset from the canonical frontmatter
+  parser (never matching headings inside YAML), validates the page before
+  and after the edit, writes atomically with an on-disk verify, takes the
+  per-page lock, and isolates per-file errors so one bad page can't poison a
+  batch. Pages with pre-existing broken frontmatter are skipped and reported
+  instead of made worse.
+- **Junk filenames no longer import.** Markdown paths containing brackets or
+  any path containing control characters are rejected at sync, import, and
+  the direct file-import defense (before any slug is minted), with the skip
+  visibly reported on every route — including dry runs, directory imports,
+  and syncs whose only changes were malformed files. Previously ingested
+  junk rows are swept by the next full sync; legitimately bracket-named
+  markdown from older releases is preserved (rename to re-import), and
+  code-strategy sources keep indexing framework layouts like `app/[id]/`.
+- **Source-scoped reads now mirror their writes.** The existence-check/write
+  asymmetry that misrouted pages in multi-source brains is closed across the
+  writer transaction (pages, links, raw data, validators, slug registry),
+  file import, image import, code reindex, and integrity repair — enforced
+  going forward by a CI guard, with unscoped reads made deterministic
+  (default source first) in both engines.
+- Waiting-TTL cancellations flow through the canonical cancel path so
+  aggregator parents always resolve, reasons stamp only the jobs that
+  actually expired, and a cancelled child frees its idempotency slot.
+- Interactive `gbrain agent run` prints `coalesced` (with the matched job id)
+  instead of a false `submitted` when admission coalescing matched an
+  existing waiting job; the remote submit surface returns the same signal and
+  maps quota rejections to a structured `rate_limited` error.
+- Job names and frontmatter-derived type strings are sanitized before
+  terminal output, and copy-pasteable remediation hints only embed values
+  that are shell-safe tokens.
+- Page-lock acquisition is now exclusive-create, so two processes reclaiming
+  a stale lock can no longer both proceed and lose one side's writes.
+- The advisor's stalled-jobs recommendation and the schema-lint retype hint
+  now point at commands that exist.
+
+### To take advantage of v0.46.11.0
+Upgrade and restart the worker (`bun install -g github:garrytan/gbrain#latest-stable
+&& gbrain upgrade`). The one-time waiting-TTL notice will print with your
+affected-job count and hold a one-hour grace window — tune with `gbrain
+config set minions.ttl_waiting_hours.subagent <hours|0>` before the first
+sweep if 48h isn't right for you. Then check `gbrain jobs stats`: if you see
+a `DIVERGENT QUEUE` scream, the printed `minions.quota_max_waiting.<name>`
+command is the opt-in cap. Existing junk-filename pages are removed by your
+next full `gbrain sync` (files stay on disk; rename a file to re-import its
+content), and `gbrain doctor` will name anything that needs a manual rename.
+
 ## [0.46.10.0] - 2026-08-16
 
 **Switching embedding and reranking providers is now one guess-free

@@ -44,7 +44,7 @@ mock.module('../../src/commands/backlinks.ts', () => ({
   hasBacklink: () => false,
   buildBacklinkEntry: () => '',
   findBacklinkGaps: () => [],
-  fixBacklinkGaps: () => 0,
+  fixBacklinkGaps: async () => ({ fixed: 0, skipped: [] }),
   runBacklinks: async () => {},
 }));
 
