@@ -15,6 +15,7 @@
 
 import type { BrainEngine } from './engine.ts';
 import { SOURCE_CONFIG_OBJECT_SQL } from './source-config-sql.ts';
+import { isUndefinedColumnError, isUndefinedTableError } from './utils.ts';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -25,8 +26,22 @@ export interface DestructiveImpact {
   chunkCount: number;
   embeddingCount: number;
   fileCount: number;
+  /**
+   * PR6 D5b: count of live (deleted_at IS NULL) OAuth clients whose
+   * source_id references this source. oauth_clients.source_id is
+   * ON DELETE RESTRICT, so a hard delete with referents raises a raw FK
+   * violation — the preview surfaces the block before the trigger is pulled.
+   * Optional so hand-built impact literals (tests, older callers) stay valid.
+   */
+  oauthClientCount?: number;
   /** Human-readable summary line */
   summary: string;
+}
+
+/** An OAuth client row that references a source via oauth_clients.source_id. */
+export interface SourceClientReferent {
+  clientId: string;
+  clientName: string;
 }
 
 export interface SoftDeletedSource {
@@ -44,6 +59,71 @@ export const SOFT_DELETE_TTL_HOURS = 72;
 
 /** Threshold: operations affecting this many pages or more require confirmation. */
 export const CONFIRM_THRESHOLD_PAGES = 1;
+
+// ── FK-RESTRICT lifecycle (PR6 D5b) ─────────────────────────
+
+/**
+ * Live OAuth clients referencing a source via oauth_clients.source_id
+ * (ON DELETE RESTRICT — these rows BLOCK a hard delete of the source).
+ * `deleted_at IS NULL` filters to clients the operator can still act on;
+ * pre-migration brains without the column fall back to all referents
+ * (same 42703-retry idiom as oauth-provider.ts), and brains without the
+ * oauth_clients table at all have no referents by construction.
+ */
+export async function clientsReferencingSource(
+  engine: BrainEngine,
+  sourceId: string,
+): Promise<SourceClientReferent[]> {
+  const map = (rows: Array<{ client_id: string; client_name: string }>): SourceClientReferent[] =>
+    rows.map((r) => ({ clientId: r.client_id, clientName: r.client_name }));
+  try {
+    const rows = await engine.executeRaw<{ client_id: string; client_name: string }>(
+      `SELECT client_id, client_name FROM oauth_clients
+       WHERE source_id = $1 AND deleted_at IS NULL
+       ORDER BY client_id`,
+      [sourceId],
+    );
+    return map(rows);
+  } catch (e) {
+    if (isUndefinedTableError(e)) return [];
+    if (!isUndefinedColumnError(e, 'deleted_at')) throw e;
+    const rows = await engine.executeRaw<{ client_id: string; client_name: string }>(
+      `SELECT client_id, client_name FROM oauth_clients
+       WHERE source_id = $1
+       ORDER BY client_id`,
+      [sourceId],
+    );
+    return map(rows);
+  }
+}
+
+/**
+ * Refusal message for `sources remove` / `sources purge <id>` when live OAuth
+ * clients still reference the source. Built here (not in sources.ts — that
+ * file is module-size-ratcheted) so both arms print identical guidance
+ * instead of letting the raw FK violation surface.
+ */
+export function formatClientReferentsBlock(
+  sourceId: string,
+  referents: SourceClientReferent[],
+): string {
+  const lines: string[] = [
+    ``,
+    `Cannot delete source "${sourceId}": ${referents.length} OAuth client(s) reference this source`,
+    `(oauth_clients.source_id is ON DELETE RESTRICT — the delete would fail at the database).`,
+    ``,
+  ];
+  for (const r of referents) {
+    lines.push(`  - ${r.clientName} (${r.clientId})`);
+  }
+  lines.push(``);
+  lines.push(`Revoke each client first, then retry:`);
+  for (const r of referents) {
+    lines.push(`  gbrain auth revoke-client "${r.clientId}"`);
+  }
+  lines.push(``);
+  return lines.join('\n');
+}
 
 // ── Impact Assessment ───────────────────────────────────────
 
@@ -106,6 +186,10 @@ export async function assessDestructiveImpact(
     fileCount = fileRows[0]?.n ?? 0;
   }
 
+  // PR6 D5b: fold the FK-RESTRICT referent count into the preview so the
+  // operator sees the block BEFORE pulling the trigger.
+  const oauthClientCount = (await clientsReferencingSource(engine, sourceId)).length;
+
   const parts: string[] = [];
   if (pageCount > 0) parts.push(`${pageCount.toLocaleString()} pages`);
   if (chunkCount > 0) parts.push(`${chunkCount.toLocaleString()} chunks`);
@@ -123,6 +207,7 @@ export async function assessDestructiveImpact(
     chunkCount,
     embeddingCount,
     fileCount,
+    oauthClientCount,
     summary,
   };
 }
@@ -282,17 +367,50 @@ export async function listArchivedSources(
  * v0.26.5: moved from JSONB-driven iteration to a single set-based DELETE
  * with `archived = true AND archive_expires_at <= now()`. Server-side
  * filter; one round-trip; cascade-friendly.
+ *
+ * PR6 D5b: sources still referenced by ANY oauth_clients row (including
+ * soft-deleted ones — the FK is physical, ON DELETE RESTRICT ignores
+ * deleted_at) are SKIPPED via NOT EXISTS instead of aborting the whole
+ * set-based DELETE with an FK violation. Skips surface as ONE stderr warn
+ * naming the skipped ids; the return contract stays string[] (purged ids
+ * only) for the cycle.ts + jobs.ts callers.
  */
 export async function purgeExpiredSources(
   engine: BrainEngine,
 ): Promise<string[]> {
-  const rows = await engine.executeRaw<{ id: string }>(
-    `DELETE FROM sources
-     WHERE archived = true
+  const expiredCond = `archived = true
        AND archive_expires_at IS NOT NULL
-       AND archive_expires_at <= now()
-     RETURNING id`,
+       AND archive_expires_at <= now()`;
+  const referencedCond = `EXISTS (SELECT 1 FROM oauth_clients c WHERE c.source_id = sources.id)`;
+
+  // Query the skip set FIRST so the warn can name ids even though the DELETE
+  // never touches them. Pre-oauth brains (no oauth_clients table) purge
+  // unconditionally — no table means no FK to violate.
+  let skipped: Array<{ id: string }> = [];
+  let hasOauthTable = true;
+  try {
+    skipped = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM sources WHERE ${expiredCond} AND ${referencedCond} ORDER BY id`,
+    );
+  } catch (e) {
+    if (!isUndefinedTableError(e)) throw e;
+    hasOauthTable = false;
+  }
+
+  const rows = await engine.executeRaw<{ id: string }>(
+    hasOauthTable
+      ? `DELETE FROM sources WHERE ${expiredCond} AND NOT ${referencedCond} RETURNING id`
+      : `DELETE FROM sources WHERE ${expiredCond} RETURNING id`,
   );
+
+  if (skipped.length > 0) {
+    const ids = skipped.map((s) => s.id).join(', ');
+    console.error(
+      `[gbrain] purge skipped ${skipped.length} expired source(s) still referenced by OAuth clients: ${ids}. ` +
+      `Revoke the referencing client(s) (gbrain auth revoke-client "<client-id>") and re-run the purge.`,
+    );
+  }
+
   return rows.map((r) => r.id);
 }
 
@@ -319,6 +437,13 @@ export function formatImpact(impact: DestructiveImpact): string {
     `╚══════════════════════════════════════════════════════════╝`,
     ``,
   ];
+  // PR6 D5b: surface the FK-RESTRICT block in the preview. Rendered outside
+  // the box (variable-width padding inside would misalign the frame).
+  if ((impact.oauthClientCount ?? 0) > 0) {
+    lines.push(`⚠️  ${impact.oauthClientCount} OAuth client(s) reference this source — a hard delete is`);
+    lines.push(`   blocked (FK RESTRICT) until they are revoked: gbrain auth revoke-client "<client-id>"`);
+    lines.push(``);
+  }
   return lines.join('\n');
 }
 

@@ -40,6 +40,8 @@ import {
   purgeExpiredSources,
   formatImpact,
   formatSoftDelete,
+  clientsReferencingSource,
+  formatClientReferentsBlock,
   SOFT_DELETE_TTL_HOURS,
 } from '../core/destructive-guard.ts';
 import {
@@ -535,6 +537,15 @@ async function runRemove(engine: BrainEngine, args: string[]): Promise<void> {
     }
   }
 
+  // PR6 D5b: FK-RESTRICT pre-check BEFORE any teardown — a referenced source
+  // would fail the DELETE below with a raw FK violation AFTER unharden already
+  // tore down durability scaffolding. Refuse with revoke guidance instead.
+  const referents = await clientsReferencingSource(engine, id);
+  if (referents.length > 0) {
+    console.error(formatClientReferentsBlock(id, referents));
+    process.exit(5);
+  }
+
   // v0.42.44 — tear down durability scaffolding BEFORE the row is deleted (we
   // need the path/label while it still exists). Best-effort; tolerates missing
   // repo/cron/credential independently.
@@ -721,6 +732,14 @@ async function runPurge(engine: BrainEngine, args: string[]): Promise<void> {
 
     if (!confirmDestructive) {
       console.error(`Pass --confirm-destructive to permanently delete source "${id}".`);
+      process.exit(5);
+    }
+
+    // PR6 D5b: FK-RESTRICT pre-check — refuse with revoke guidance instead of
+    // letting the raw FK violation surface from the DELETE.
+    const referents = await clientsReferencingSource(engine, id);
+    if (referents.length > 0) {
+      console.error(formatClientReferentsBlock(id, referents));
       process.exit(5);
     }
 

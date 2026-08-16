@@ -13,7 +13,7 @@
  * RLS) are covered separately by E2E tests.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import {
   assessDestructiveImpact,
@@ -24,6 +24,8 @@ import {
   purgeExpiredSources,
   formatImpact,
   formatSoftDelete,
+  clientsReferencingSource,
+  formatClientReferentsBlock,
   SOFT_DELETE_TTL_HOURS,
   type DestructiveImpact,
 } from '../src/core/destructive-guard.ts';
@@ -359,6 +361,152 @@ describe('soft-delete + restore lifecycle (column-based v0.26.5)', () => {
     );
     const purged = await purgeExpiredSources(engine);
     expect(purged).toEqual([]);
+  });
+});
+
+// ── PR6 D5b: FK-RESTRICT lifecycle ──────────────────────────
+// oauth_clients.source_id is ON DELETE RESTRICT; the guard must surface the
+// block BEFORE a hard delete instead of letting the raw FK violation escape.
+
+describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => {
+  // Own engine — the soft-delete describe's purge tests mutate every
+  // archived row's expiry; don't cross-pollute.
+  let engine: PGLiteEngine;
+
+  beforeAll(async () => {
+    engine = await setupBrain();
+  }, 30000);
+
+  afterAll(async () => {
+    await engine.disconnect();
+  });
+
+  async function seedClient(
+    clientId: string,
+    sourceId: string | null,
+    opts?: { deleted?: boolean },
+  ): Promise<void> {
+    await engine.executeRaw(
+      `INSERT INTO oauth_clients (client_id, client_name, source_id, deleted_at)
+       VALUES ($1, $2, $3, ${opts?.deleted ? 'now()' : 'NULL'})
+       ON CONFLICT (client_id) DO NOTHING`,
+      [clientId, `${clientId}-name`, sourceId],
+    );
+  }
+
+  test('clientsReferencingSource returns live referents only, scoped to the source', async () => {
+    await seedSource(engine, 'fk-ref-a');
+    await seedSource(engine, 'fk-ref-b');
+    await seedClient('cl-live-1', 'fk-ref-a');
+    await seedClient('cl-live-2', 'fk-ref-a');
+    await seedClient('cl-dead', 'fk-ref-a', { deleted: true });
+    await seedClient('cl-other-src', 'fk-ref-b');
+    await seedClient('cl-no-src', null);
+
+    const refs = await clientsReferencingSource(engine, 'fk-ref-a');
+    expect(refs).toEqual([
+      { clientId: 'cl-live-1', clientName: 'cl-live-1-name' },
+      { clientId: 'cl-live-2', clientName: 'cl-live-2-name' },
+    ]);
+    expect(await clientsReferencingSource(engine, 'fk-ref-none')).toEqual([]);
+  });
+
+  test('assessDestructiveImpact folds the referent count; formatImpact shows it', async () => {
+    await seedSource(engine, 'fk-impact', { withPages: 1 });
+    await seedClient('cl-impact', 'fk-impact');
+
+    const impact = await assessDestructiveImpact(engine, 'fk-impact');
+    expect(impact).not.toBeNull();
+    expect(impact!.oauthClientCount).toBe(1);
+
+    const out = formatImpact(impact!);
+    expect(out).toContain('1 OAuth client(s) reference this source');
+    expect(out).toContain('revoke-client');
+  });
+
+  test('assessDestructiveImpact reports zero referents for an unreferenced source', async () => {
+    await seedSource(engine, 'fk-unref', { withPages: 1 });
+    const impact = await assessDestructiveImpact(engine, 'fk-unref');
+    expect(impact!.oauthClientCount).toBe(0);
+    expect(formatImpact(impact!)).not.toContain('OAuth client');
+  });
+
+  test('purgeExpiredSources purges only the unreferenced expired source and warns naming the skipped id', async () => {
+    await seedSource(engine, 'fk-purge-ref', { withPages: 1 });
+    await seedSource(engine, 'fk-purge-free', { withPages: 1 });
+    await seedClient('cl-purge-ref', 'fk-purge-ref');
+    await softDeleteSource(engine, 'fk-purge-ref');
+    await softDeleteSource(engine, 'fk-purge-free');
+    await engine.executeRaw(
+      `UPDATE sources SET archive_expires_at = now() - INTERVAL '1 hour' WHERE id = ANY($1::text[])`,
+      [['fk-purge-ref', 'fk-purge-free']],
+    );
+
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    let purged: string[];
+    let errCalls: string[];
+    try {
+      purged = await purgeExpiredSources(engine);
+    } finally {
+      // Snapshot BEFORE restore — mockRestore() clears mock.calls.
+      errCalls = errSpy.mock.calls.map((c) => String(c[0]));
+      errSpy.mockRestore();
+    }
+
+    // Return contract preserved: string[] of purged ids ONLY — exactly the
+    // unreferenced one.
+    expect(purged).toEqual(['fk-purge-free']);
+
+    // Referenced source survives (skipped, not FK-crashed).
+    const remaining = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM sources WHERE id = ANY($1::text[])`,
+      [['fk-purge-ref', 'fk-purge-free']],
+    );
+    expect(remaining.map((r) => r.id)).toEqual(['fk-purge-ref']);
+
+    // ONE stderr warn naming the skipped id + revoke guidance.
+    const warns = errCalls.filter((m) => m.includes('purge skipped'));
+    expect(warns.length).toBe(1);
+    expect(warns[0]).toContain('fk-purge-ref');
+    expect(warns[0]).toContain('revoke-client');
+    expect(warns[0]).not.toContain('fk-purge-free');
+  });
+
+  test('purge skip is PHYSICAL: a soft-deleted client row still blocks (FK ignores deleted_at)', async () => {
+    await seedSource(engine, 'fk-purge-dead', { withPages: 1 });
+    await seedClient('cl-purge-dead', 'fk-purge-dead', { deleted: true });
+    await softDeleteSource(engine, 'fk-purge-dead');
+    await engine.executeRaw(
+      `UPDATE sources SET archive_expires_at = now() - INTERVAL '1 hour' WHERE id = $1`,
+      ['fk-purge-dead'],
+    );
+
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    let purged: string[];
+    try {
+      purged = await purgeExpiredSources(engine);
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(purged).not.toContain('fk-purge-dead');
+    const rows = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM sources WHERE id = $1`, ['fk-purge-dead'],
+    );
+    expect(rows.length).toBe(1);
+  });
+
+  test('formatClientReferentsBlock lists clients + per-client revoke commands', () => {
+    const block = formatClientReferentsBlock('acme-example', [
+      { clientId: 'client-1', clientName: 'Agent One' },
+      { clientId: 'client-2', clientName: 'Agent Two' },
+    ]);
+    expect(block).toContain('Cannot delete source "acme-example"');
+    expect(block).toContain('2 OAuth client(s) reference this source');
+    expect(block).toContain('Agent One (client-1)');
+    expect(block).toContain('Agent Two (client-2)');
+    expect(block).toContain('gbrain auth revoke-client "client-1"');
+    expect(block).toContain('gbrain auth revoke-client "client-2"');
   });
 });
 
