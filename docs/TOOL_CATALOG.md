@@ -4,7 +4,7 @@
 <!-- Regenerate: bun run scripts/generate-tool-catalog.ts -->
 <!-- Freshness-guarded by scripts/check-tool-catalog-fresh.sh (bun run verify). -->
 
-Every non-localOnly operation on the MCP surface: 110 tools across 22 areas. **Starter** marks membership in the ~26-op `starter` surface (`src/mcp/surface.ts`); **Gate** names the config key that must be true before remote callers see/call the op (`gbrain config set <key> true`). What a given token actually sees is further filtered per request by scope, bound-client fence, publish gates, and the per-client surface — see `docs/operations/mcp-surface-runbook.md`. Area names are non-contractual groupings.
+Every non-localOnly operation on the MCP surface: 114 tools across 22 areas. **Starter** marks membership in the ~26-op `starter` surface (`src/mcp/surface.ts`); **Gate** names the config key that must be true before remote callers see/call the op (`gbrain config set <key> true`). What a given token actually sees is further filtered per request by scope, bound-client fence, publish gates, and the per-client surface — see `docs/operations/mcp-surface-runbook.md`. Area names are non-contractual groupings.
 
 ## admin
 
@@ -213,10 +213,14 @@ Every non-localOnly operation on the MCP surface: 110 tools across 22 areas. **S
 
 | Tool | Description | Scope | Starter | Gate |
 |---|---|---|---|---|
+| `takes_add` | Record a take (typed claim) on a page: fact \| take \| bet \| hunch, with a holder (who holds the belief: world \| people/<slug> \| companies/<slug> \| brain), weight 0..1, and optional source/since date. | write |  |  |
 | `takes_calibration` | Calibration curve: resolved correct/incorrect bets binned by stated weight; observed vs predicted per bucket. | read |  |  |
 | `takes_list` | List takes (typed/weighted/attributed claims) filtered by holder/kind/active/etc. | read |  |  |
+| `takes_resolve` | Resolve a take: quality correct \| incorrect \| partial \| unresolvable, with optional evidence text and measured value/unit. | write |  |  |
 | `takes_scorecard` | Calibration scorecard for resolved bets: counts, accuracy, Brier (correct ∨ incorrect only), partial_rate. | read |  |  |
 | `takes_search` | Keyword search across takes (pg_trgm similarity over claim text) | read |  |  |
+| `takes_supersede` | Supersede a take with a replacement claim: the old row is struck through (kept for archaeology), the replacement appends at the next fence row number. | write |  |  |
+| `takes_update` | Update a take's mutable fields (weight, source, since date). | write |  |  |
 | `think` | Multi-hop synthesis across pages + takes + graph. | read |  |  |
 
 ## timeline
