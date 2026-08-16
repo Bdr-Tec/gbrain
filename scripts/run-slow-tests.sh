@@ -11,6 +11,9 @@ set -euo pipefail
 unset DATABASE_URL GBRAIN_DATABASE_URL
 cd "$(dirname "$0")/.."
 
+. scripts/lib/test-env.sh
+ensure_pglite_snapshot "run-slow-tests"
+
 slow_files=()
 while IFS= read -r f; do
   slow_files+=("$f")

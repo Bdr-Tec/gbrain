@@ -65,7 +65,7 @@ src/
     yaml-lite.ts          Lightweight YAML parser
     chunkers/             3-tier chunking (recursive, semantic, llm)
     search/               Hybrid search (vector, keyword, hybrid, expansion, dedup)
-    embedding.ts          Embedding service (provider-routed; ZeroEntropy default)
+    embedding.ts          Embedding service (provider-routed; Voyage default)
   mcp/
     server.ts             MCP stdio server (generated from operations)
     http-transport.ts     HTTP MCP transport (OAuth, body caps)
@@ -126,8 +126,6 @@ refusal message walks you through it; details in
 the database name must carry "test" as a word segment (like `gbrain_test`
 above) or destructive tests refuse to run — opt a differently-named database
 in one-shot with `GBRAIN_E2E_ALLOW_DB=<name>`.
-
-Use `bun run verify` before pushing. It runs 19+ guard checks in parallel
 
 Use `bun run verify` before pushing. It runs 40+ guard checks in parallel
 (`scripts/run-verify-parallel.sh`), including: banned fork-name leaks
