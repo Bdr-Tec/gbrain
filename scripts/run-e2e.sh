@@ -212,10 +212,14 @@ for f in "${files[@]}"; do
   # the file wedges indefinitely. gtimeout/timeout SIGKILLs the file so the
   # suite advances. gtimeout (macOS via coreutils) preferred; timeout (Linux)
   # fallback; bare bun (no outer cap) if neither is installed.
+  # E2E_FILE_TIMEOUT_SECS: nightly coverage runs pay instrumentation overhead
+  # on every file — the cap is env-tunable there. Deliberately NOT
+  # GBRAIN_-prefixed so the hermetic env scrub above doesn't strip it.
+  FILE_TIMEOUT="${E2E_FILE_TIMEOUT_SECS:-180}"
   if command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout 180"
+    TIMEOUT_CMD="gtimeout $FILE_TIMEOUT"
   elif command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout 180"
+    TIMEOUT_CMD="timeout $FILE_TIMEOUT"
   else
     TIMEOUT_CMD=""
   fi
