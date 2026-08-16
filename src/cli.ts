@@ -2,12 +2,7 @@
 
 import { installSigchldHandler } from './core/zombie-reap.ts';
 installSigchldHandler();
-// v0.41.6.0 D5: cleanup registry + signal handlers for SIGTERM/SIGHUP/SIGPIPE/
-// uncaughtException. NOT SIGINT (the existing AbortController path at :254
-// owns SIGINT). Installed at module load so locks acquired during boot
-// (e.g. during connectEngine's schema-probe path) are covered too.
 import { installSignalHandlers as installCleanupSignalHandlers } from './core/process-cleanup.ts';
-installCleanupSignalHandlers();
 
 import { readFileSync, existsSync, unlinkSync, fstatSync } from 'fs';
 import { spawn } from 'child_process';
@@ -1985,8 +1980,13 @@ async function handleCliOnly(command: string, args: string[]) {
       try {
         eng = await connectEngine();
         await runDoctor(eng, args);
-      } catch {
-        // DB unavailable — still run filesystem checks
+      } catch (e) {
+        // DB unavailable — still run filesystem checks. Say so on stderr:
+        // a silent fallback looks identical to a healthy DB-backed run
+        // (minus the DB checks), which has misread as "doctor is broken".
+        console.error(
+          `[doctor] DB connect failed (${e instanceof Error ? e.message : String(e)}) — running filesystem-only checks`,
+        );
         await runDoctor(null, args, getDbUrlSource());
       } finally {
         if (eng) await finishCliTeardown({ engine: eng });
@@ -3303,6 +3303,15 @@ Run gbrain <command> --help for command-specific help.
 // process alive. A fatal error still exits 1 for every command, daemons
 // included (matches the prior unconditional process.exit(1) on rejection).
 if (import.meta.main) {
+  // v0.41.6.0 D5: cleanup registry + signal handlers for SIGTERM/SIGHUP/SIGPIPE/
+  // uncaughtException. NOT SIGINT (the existing AbortController path owns SIGINT).
+  // Installed before main() so locks acquired during boot (e.g. connectEngine's
+  // schema-probe path) are covered. Gated on import.meta.main — nothing at module
+  // scope acquires locks, and installing at module load leaked a process-wide
+  // SIGTERM→exit(143) handler into any process that merely IMPORTS this module
+  // (bun test runners died mid-suite when a test emitted a synthetic SIGTERM).
+  // Spawned/compiled CLI processes are entrypoints, so they still install.
+  installCleanupSignalHandlers();
   main().then(
     () => {
       if (shouldForceExitAfterMain()) flushThenExit(currentExitCode());

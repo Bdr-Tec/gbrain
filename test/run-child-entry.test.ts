@@ -168,28 +168,40 @@ describe('runChildJobEntry', () => {
     const resultPath = join(dir, `sigterm-${job.id}.json`);
     let ctxSignalAbortedAtShutdown: boolean | null = null;
 
-    const entry = runChildJobEntry(
-      engine,
-      { jobId: job.id, lockToken: 'parent-tok-1', resultPath, parentPid: 0 },
-      handlers({
-        sync: (ctx) =>
-          new Promise((resolve) => {
-            ctx.shutdownSignal.addEventListener('abort', () => {
-              // The whole point: a cooperative handler gets the drain window
-              // with its per-job signal STILL LIVE, finishes, and reports.
-              ctxSignalAbortedAtShutdown = ctx.signal.aborted;
-              resolve('finished-during-drain');
-            });
-          }),
-      }),
-    );
-    await new Promise((r) => setTimeout(r, 100));
-    // Trigger the entry's process.on('SIGTERM') handler in-process without
-    // sending a real signal to the test runner.
-    (process as unknown as { emit: (event: string) => boolean }).emit('SIGTERM');
-    const code = await entry;
+    // The synthetic emit below invokes EVERY SIGTERM listener on `process`,
+    // not just the entry's. A listener leaked by an earlier test file in the
+    // same runner (e.g. process-cleanup's SIGTERM→exit(143), installed by
+    // anything that loaded the CLI entrypoint) would exit the whole bun
+    // process mid-suite. Detach foreign listeners for the emit; restore after.
+    const foreignSigterm = process.listeners('SIGTERM');
+    for (const l of foreignSigterm) process.off('SIGTERM', l as () => void);
+    try {
+      const entry = runChildJobEntry(
+        engine,
+        { jobId: job.id, lockToken: 'parent-tok-1', resultPath, parentPid: 0 },
+        handlers({
+          sync: (ctx) =>
+            new Promise((resolve) => {
+              ctx.shutdownSignal.addEventListener('abort', () => {
+                // The whole point: a cooperative handler gets the drain window
+                // with its per-job signal STILL LIVE, finishes, and reports.
+                ctxSignalAbortedAtShutdown = ctx.signal.aborted;
+                resolve('finished-during-drain');
+              });
+            }),
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 100));
+      // Trigger the entry's process.on('SIGTERM') handler in-process without
+      // sending a real signal to the test runner.
+      (process as unknown as { emit: (event: string) => boolean }).emit('SIGTERM');
+      const code = await entry;
 
-    expect(code).toBe(0);
+      expect(code).toBe(0);
+    } finally {
+      for (const l of foreignSigterm) process.on('SIGTERM', l as () => void);
+    }
+
     // TS control-flow can't see the closure write; compare explicitly.
     expect(ctxSignalAbortedAtShutdown === false).toBe(true);
     const outcome = decodeChildOutcomeFile(resultPath);

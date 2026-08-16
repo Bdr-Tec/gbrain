@@ -52,6 +52,16 @@ interface CleanupEntry {
 const registry = new Map<symbol, CleanupEntry>();
 let installed = false;
 let cleanupInFlight = false;
+/** Refs to every listener attached by installSignalHandlers, keyed by
+ *  target+event, so _resetForTests can DETACH them — without this, a test
+ *  that installs and "resets" leaves a live SIGTERM→exit(143) listener on
+ *  the shared bun test runner, and any later synthetic
+ *  `process.emit('SIGTERM')` kills the entire suite. */
+const installedListeners: Array<{
+  target: NodeJS.Process | NodeJS.WriteStream;
+  event: string;
+  fn: (...args: never[]) => void;
+}> = [];
 
 /**
  * Register a cleanup callback. Returns a deregister handle (idempotent
@@ -142,19 +152,28 @@ export function installSignalHandlers(): void {
     });
   };
 
-  process.on('SIGTERM', () => handleSignal('SIGTERM'));
-  process.on('SIGHUP', () => handleSignal('SIGHUP'));
+  const attach = (
+    target: NodeJS.Process | NodeJS.WriteStream,
+    event: string,
+    fn: (...args: never[]) => void,
+  ): void => {
+    (target as NodeJS.Process).on(event as 'exit', fn as () => void);
+    installedListeners.push({ target, event, fn });
+  };
+
+  attach(process, 'SIGTERM', () => handleSignal('SIGTERM'));
+  attach(process, 'SIGHUP', () => handleSignal('SIGHUP'));
   // SIGPIPE in Node is rarely raised directly (Node ignores it by default
   // and surfaces an EPIPE write error on the stream instead). Listen anyway
   // for environments where it does fire.
-  process.on('SIGPIPE', () => handleSignal('SIGPIPE'));
+  attach(process, 'SIGPIPE', () => handleSignal('SIGPIPE'));
 
-  process.on('uncaughtException', (err) => {
+  attach(process, 'uncaughtException', (err: unknown) => {
     try { process.stderr.write(`[uncaughtException] ${err instanceof Error ? err.stack ?? err.message : err}\n`); }
     catch { /* stderr might be broken */ }
     void runCleanupPass().finally(() => process.exit(1));
   });
-  process.on('unhandledRejection', (reason) => {
+  attach(process, 'unhandledRejection', (reason: unknown) => {
     try { process.stderr.write(`[unhandledRejection] ${reason instanceof Error ? reason.stack ?? reason.message : reason}\n`); }
     catch { /* stderr might be broken */ }
     void runCleanupPass().finally(() => process.exit(1));
@@ -162,14 +181,14 @@ export function installSignalHandlers(): void {
 
   // EPIPE on stdout — the canonical `gbrain sync | head -N` case. Route
   // through the cleanup pass so locks release BEFORE we exit.
-  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+  attach(process.stdout, 'error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EPIPE') {
       void triggerCleanupAndExit(0);
     }
   });
   // Same for stderr — less common but possible (e.g. `2>&1 | head` after
   // stderr was rerouted to stdout).
-  process.stderr.on('error', (err: NodeJS.ErrnoException) => {
+  attach(process.stderr, 'error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EPIPE') {
       // No stderr means no useful logs on the way out; still cleanup.
       void triggerCleanupAndExit(0);
@@ -185,6 +204,14 @@ export function installSignalHandlers(): void {
  */
 export function _resetForTests(): void {
   registry.clear();
+  // Detach every listener installSignalHandlers attached — clearing flags
+  // alone leaves a live SIGTERM→exit(143) listener on the shared test-runner
+  // process, which a later synthetic `process.emit('SIGTERM')` would trigger,
+  // killing the whole suite.
+  for (const { target, event, fn } of installedListeners) {
+    (target as NodeJS.Process).off(event as 'exit', fn as () => void);
+  }
+  installedListeners.length = 0;
   installed = false;
   cleanupInFlight = false;
 }
