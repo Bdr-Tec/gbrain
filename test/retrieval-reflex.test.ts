@@ -54,6 +54,15 @@ describe('resolveEntitiesToPointers', () => {
     expect(block!.text).toContain('use get_page');
   });
 
+  test('lowercase WEAK candidates are inert in the resolver (activated by the weak-alias arm commit)', async () => {
+    await seed('people/saoirse-x', 'Saoirse X', 'A founder.');
+    await engine.setPageAliases('people/saoirse-x', 'default', [normalizeAlias('saoirse')]);
+    const candidates = extractCandidates('remind me what saoirse said about the round');
+    expect(candidates.some((c) => c.weak)).toBe(true);
+    const block = await resolveEntitiesToPointers(engine, 'default', candidates, {});
+    expect(block).toBeNull();
+  });
+
   test('alias arm resolves an unambiguous single-slug hit', async () => {
     await seed('people/swami-x', 'Swami X', 'A close friend.');
     await engine.setPageAliases('people/swami-x', 'default', [normalizeAlias('Swami')]);
@@ -152,11 +161,34 @@ describe('context-engine assemble() — Retrieval Reflex integration', () => {
         workspaceDir: '/tmp/rr-test-ws-3',
         resolveEntities: async () => { called = true; return null; },
       });
+      // Re-pinned for the v0.46.8 identity wave: the turn must be GENUINELY
+      // candidate-free (stopwords / sub-3-char tokens only) — lowercase words
+      // like "help" are now WEAK candidates and legitimately reach the
+      // resolver's alias arm.
       const res = await ce.assemble({
         sessionId: 's3',
-        messages: [{ role: 'user', content: 'can you help me with this?' }],
+        messages: [{ role: 'user', content: 'can you do it?' }],
       });
       expect(called).toBe(false);
+      expect(res.systemPromptAddition).not.toContain('Brain pages mentioned this turn');
+    });
+  });
+
+  test('weak-only smalltalk reaches the resolver but yields no pointer block', async () => {
+    await withEnv(REFLEX_ON, async () => {
+      let called = false;
+      const ce = createGBrainContextEngine({
+        workspaceDir: '/tmp/rr-test-ws-3b',
+        resolveEntities: async (candidates) => {
+          called = true;
+          return resolveEntitiesToPointers(engine, 'default', candidates, {});
+        },
+      });
+      const res = await ce.assemble({
+        sessionId: 's3b',
+        messages: [{ role: 'user', content: 'can you help me with this?' }],
+      });
+      expect(called).toBe(true); // "help" is a weak candidate — alias-arm-restricted
       expect(res.systemPromptAddition).not.toContain('Brain pages mentioned this turn');
     });
   });

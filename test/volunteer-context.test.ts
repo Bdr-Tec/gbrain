@@ -490,7 +490,10 @@ describe('window-cap ordering — the newest user mention survives the cap', () 
       { role: 'assistant', text: `consider ${stale}.` },
       { role: 'user', text: 'actually ask Alice Example first' },
     ]);
-    expect(cands.length).toBeLessThanOrEqual(CAP);
+    // Re-pinned for the v0.46.8 identity wave: the STRONG cap is what this
+    // test pins; lowercase weak candidates ("consider", "ask", …) ride a
+    // separate alias-arm-restricted budget and never evict strong ones.
+    expect(cands.filter((c) => !c.weak).length).toBeLessThanOrEqual(CAP);
     const alice = cands.find((c) => normalizeAlias(c.query) === normalizeAlias('Alice Example'));
     expect(alice).toBeDefined();
     // Recency + user-role weighting puts the newest user mention FIRST.

@@ -143,6 +143,10 @@ export async function resolveEntitiesToPointers(
   const titleToNorm = new Map<string, string>();
   const slugToNorm = new Map<string, string>();
   for (const c of candidates) {
+    // Lowercase WEAK candidates (entity-salience step 2.5) are inert here
+    // until the weak-alias arm lands: they must never reach the title/slug/
+    // suffix arms, where ordinary lowercase words would fabricate pointers.
+    if (c.weak) continue;
     const norm = normalizeAlias(c.query);
     if (!norm) continue;
     if (!displayByNorm.has(norm)) displayByNorm.set(norm, c.display);
