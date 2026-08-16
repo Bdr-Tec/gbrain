@@ -495,8 +495,13 @@ export async function readSearchStats(
       rank1_distribution: { lt_solid: r1_lt, solid: r1_solid, high: r1_high },
       empty_results: { total: empty_total, by_cause: empty_by_cause },
     };
-  } catch {
-    // Table missing or query failed — return empty stats rather than throw.
+  } catch (err) {
+    // Relation-missing is actionable: re-throw so the wrapping withRelationGuard
+    // surfaces the 'unavailable' envelope (an un-migrated brain shows up as
+    // "run apply-migrations", not as healthy-but-empty telemetry). Other
+    // transient failures keep the best-effort empty-stats degrade.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/relation .* does not exist|no such table/i.test(msg)) throw err;
     return {
       total_calls: 0,
       cache_hits: 0,

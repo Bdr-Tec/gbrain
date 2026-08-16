@@ -2,6 +2,39 @@
 
 ## CLI→MCP gap-closure wave follow-ups (2026-08-16; plan: ~/.claude/plans/system-instruction-you-are-working-concurrent-lantern.md)
 
+- [ ] **P2 — publish-gate fail-open on a DB-config read failure.**
+  **What:** `readPublishGate` + `assertPublishEnabled` (publish-gate path) fall back to the
+  file plane when `engine.getConfig` throws, so a DB outage with file-plane=true but a
+  DB-override=false widens authorization instead of denying it. **Why:** an auth gate that
+  opens wider when its store is unreachable is fail-open — the wrong default for a
+  publish/authorization boundary. **Context:** pre-existing behavior, explicitly pinned by
+  `test/publish-gates.test.ts:71`; this needs a dedicated auth-plane decision (fail-closed
+  vs. the current fail-open), NOT a drive-by flip in a test-regression pass. **Effort:** M,
+  review-bound (one-way-door auth semantics).
+
+- [ ] **P2 — takes-fence parser drops pack-extended kinds (whole-page refusal is the interim guard).**
+  **What:** `parseTakesFence`'s `KIND_VALUES` is the closed `{fact,take,bet,hunch}` set, so a
+  schema-pack kind (`finding|hypothesis|…`) is skipped as malformed and surfaces a warning —
+  which is exactly why the F1 guard (`assertFenceRoundTrips`) has to refuse the WHOLE page to
+  avoid deleting the skipped row on a re-render. **Why:** a brain with pack-extended takes
+  kinds can't be mutated through the write verbs at all today (every mutate refuses
+  `fence_unparsed`). **Deeper fix:** widen the parser to accept any string kind (`TakeKind`
+  opened to `string` in v0.38) and/or make the fence editor splice-preserve raw unparsed
+  lines instead of a whole-fence re-render. **Effort:** M. (Related to the P3 pack-aware
+  kind-validation item below, but that one is write-side; this is the parser + editor.)
+
+- [ ] **P2 — `get_health` migration-ledger honesty.**
+  **What:** `loadCompletedMigrations` skips a malformed JSONL line with a `warn`, so a
+  truncated ledger entry silently mis-reports — a completed migration can look pending —
+  instead of surfacing a `ledger_unreadable` signal. **Why:** health/doctor output should
+  fail loud when its own audit trail is unreadable, not quietly under-count. **Effort:** S.
+
+- [ ] **P2 — `quarantine_list` SELECT projection pushdown.**
+  **What:** the quarantine scan pulls full page bodies (`SELECT p.*`) only to read two
+  frontmatter keys. Push the marker filter into SQL (`frontmatter ? 'quarantine'`) and
+  project just `slug`, `source_id`, `frontmatter`. **Why:** loading every page body to check
+  a frontmatter flag is O(corpus-bytes) for an O(matches) result. **Effort:** S.
+
 - [ ] **P3 — `permissions.takes_write_holders`: split the takes read/write holder axes.**
   **What:** a dedicated write-side holder allow-list config, consumed by the takes write
   verbs' fence in `src/core/ops/takes.ts` (today the WRITE fence reuses the READ

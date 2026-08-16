@@ -15,6 +15,13 @@ export interface CaptureFrontmatterOpts {
   type?: string;
   /** Ingestion channel override (CLI --source; ops never set it). */
   source?: string;
+  /**
+   * Channel label used as the `captured_via` DEFAULT when no user frontmatter
+   * or CLI `--source` override is present. Lets a remote MCP caller record
+   * `capture-mcp` provenance instead of the local-CLI-implying `capture-cli`.
+   * Ordered below `source` so the explicit CLI flag still wins.
+   */
+  capturedVia?: string;
   // v0.42.x — Life Chronicle (#2390) `--type event` sugar.
   who?: string;
   what?: string;
@@ -123,9 +130,10 @@ export function buildEventBlock(opts: CaptureFrontmatterOpts): Record<string, un
  * Precedence rules (user-wins by default):
  *   - `type`:         opts.type (CLI flag) > userFm.type > 'note'
  *   - `title`:        userFm.title > derived-from-body
- *   - `captured_via`: userFm.captured_via > opts.source > 'capture-cli'
- *                     (CV3/Phase 3c will narrow this to always 'capture-cli';
- *                     for Phase 2a we preserve current semantics)
+ *   - `captured_via`: userFm.captured_via > opts.source > opts.capturedVia > 'capture-cli'
+ *                     (opts.capturedVia is the per-channel default — remote MCP
+ *                     captures pass 'capture-mcp' so provenance isn't misreported
+ *                     as local CLI; the explicit CLI --source override still wins)
  *   - `captured_at`:  userFm.captured_at > now (user can pre-stamp for retroactive
  *                     captures; see CQ2 test case 4)
  *   - Any other user-declared keys (description, tags, slug, etc.) pass through verbatim.
@@ -149,7 +157,7 @@ export function mergeCaptureFrontmatter(rawBody: string, opts: CaptureFrontmatte
     const fm: Record<string, unknown> = {
       type: opts.type ?? 'note',
       title,
-      captured_via: opts.source ?? 'capture-cli',
+      captured_via: opts.source ?? opts.capturedVia ?? 'capture-cli',
       captured_at: nowIso,
     };
     const ev = buildEventBlock(opts);
@@ -178,7 +186,7 @@ export function mergeCaptureFrontmatter(rawBody: string, opts: CaptureFrontmatte
     // `captured_via`/`captured_at`) in one expression per key.
     type: opts.type ?? userFm.type ?? 'note',
     title: userFm.title ?? deriveTitle(parsed.content),
-    captured_via: userFm.captured_via ?? opts.source ?? 'capture-cli',
+    captured_via: userFm.captured_via ?? opts.source ?? opts.capturedVia ?? 'capture-cli',
     captured_at: userFm.captured_at ?? nowIso,
   };
   // v0.42.x — merge the event block (user-declared keys win per-key).

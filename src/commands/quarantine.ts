@@ -80,6 +80,23 @@ export interface CollectQuarantineResult {
  * quarantine_list op. Scan order is pinned to listPages' default
  * `updated_desc` (most recently updated pages first), so a bounded scan sees
  * the newest markers before older ones [OV13].
+ *
+ * [P2-6] Offset pagination over `updated_desc` is NOT a total order:
+ * `PAGE_SORT_SQL.updated_desc` is `p.updated_at DESC` with no unique
+ * tiebreaker (src/core/types.ts). A cluster of pages sharing an identical
+ * `updated_at` (bulk syncs stamp one now() across a transaction) that
+ * straddles a 1000-row batch boundary can have a row skipped or duplicated
+ * across batches. We accept this rather than switch sorts because the only
+ * tiebreaker'd enum option (`updated_asc`, `p.updated_at ASC, p.slug ASC`)
+ * reverses the [OV13] direction — a truncated scan (bounded by max_scan /
+ * limit) would then surface the OLDEST markers and MISS recent ones, a worse
+ * triage failure on large brains, and its slug tiebreaker is only a total
+ * order for a single-source scan anyway (the op can scope federated
+ * multi-source and the CLI scans unscoped, where slug is not unique). The
+ * exposure is bounded: the op caps the scan at max_scan, and only exact
+ * same-timestamp clusters landing on a batch boundary are affected. The full
+ * fix is a globally-unique page_id tiebreaker in PAGE_SORT_SQL (out of scope
+ * here — a filed follow-up), not a SELECT-projection pushdown.
  */
 export async function collectQuarantineRows(
   engine: BrainEngine,

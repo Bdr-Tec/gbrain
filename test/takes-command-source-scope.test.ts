@@ -84,7 +84,11 @@ describe('gbrain takes CLI source scoping', () => {
     expect(added).toHaveLength(1);
     expect(added[0]![0]!.page_id).toBe(22);
 
-    const written = join(brainDir, 'shared/page.md');
+    // P1-1 source isolation: a non-default source with no own local_path files
+    // its pages under `.sources/<id>/` in the shared repo (mirrors write-through
+    // topology), NOT the shared root — the old `<brainDir>/<slug>.md` clobbered a
+    // same-slug file in the wrong tree.
+    const written = join(brainDir, '.sources', 'dept', 'shared/page.md');
     expect(existsSync(written)).toBe(true);
     expect(readFileSync(written, 'utf-8')).toContain('Dept-scoped claim');
   });

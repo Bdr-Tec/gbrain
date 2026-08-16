@@ -21,12 +21,12 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
-import { parseTakesFence } from '../src/core/takes-fence.ts';
+import { parseTakesFence, TAKES_FENCE_BEGIN, TAKES_FENCE_END } from '../src/core/takes-fence.ts';
 
 let engine: PGLiteEngine;
 let repo: string;
@@ -331,6 +331,153 @@ describe('takes-write guards (invalid_input / row_inactive / md-absent / mcp_res
       ...STDIO_WORLD, sourceId: 'foreign-scope-src',
     }));
     expect(foreign.mcp_resolved).toBe(0);
+  });
+});
+
+// Adversarial-fix regression batch (garrytan/cli-mcp-parity-audit). Fresh
+// slugs + md fixtures written directly here — earlier describes are
+// order-sensitive on the shared fixtures, so nothing below touches them.
+describe('takes-write adversarial regressions (F1 cross-holder / P1-2 containment / P1-4 mirror-nonfatal / F2 strikethrough / P1-1 per-source)', () => {
+  const F1_SLUG = 'people/f1-crosshold';
+  const F2_SLUG = 'notes/f2-strike';
+  const P14_SLUG = 'notes/p1-4-mirror';
+  const P11_SLUG = 'notes/p1-1-persource';
+  const P12_SLUG = 'escape-link/pwned';
+
+  // Exact fence header/separator renderTakesFence emits, so the fixture round-
+  // trips through parseTakesFence identically to a real extract.
+  const FENCE_HEADER = '| # | claim | kind | who | weight | since | source |';
+  const FENCE_SEP = '|---|-------|------|-----|--------|-------|--------|';
+
+  beforeAll(async () => {
+    for (const slug of [F1_SLUG, F2_SLUG, P14_SLUG, P11_SLUG, P12_SLUG]) {
+      await engine.putPage(slug, { type: 'note', title: slug, compiled_truth: `about ${slug}` });
+      // P12's `escape-link/` dir is a symlink the P1-2 test plants itself — do
+      // NOT pre-create it as a real directory here (that would EEXIST the symlink).
+      if (slug !== P12_SLUG) mkdirSync(join(repo, slug.split('/')[0]), { recursive: true });
+    }
+    // F1 fixture: a VALID world row (row 1) + a row parseTakesFence SKIPS
+    // (kind 'finding' is outside {fact,take,bet,hunch}) held by an identity a
+    // world-fenced caller can't see. Written directly so the fence carries a
+    // parse warning the way a schema-pack-extended brain would.
+    writeFileSync(
+      join(repo, `${F1_SLUG}.md`),
+      [
+        `# ${F1_SLUG}`, '', 'Bio.', '', '## Takes', '',
+        TAKES_FENCE_BEGIN,
+        FENCE_HEADER,
+        FENCE_SEP,
+        '| 1 | Ships consensus fact | fact | world | 0.8 | 2026-01 | public |',
+        '| 2 | Private cross-holder finding | finding | people/garry-example | 0.6 | 2026-02 | owner note |',
+        TAKES_FENCE_END,
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    // F2 + P1-4 start as fence-less pages (add appends the fence).
+    for (const slug of [F2_SLUG, P14_SLUG]) {
+      writeFileSync(join(repo, `${slug}.md`), `# ${slug}\n\nabout ${slug}\n`, 'utf-8');
+    }
+  });
+
+  test('F1: a world takes_update on the valid row refuses (fence_unparsed→invalid_params) and the skipped cross-holder row survives on disk', async () => {
+    const res = await dispatchToolCall(engine, 'takes_update', {
+      slug: F1_SLUG, row_num: 1, weight: 0.3,
+    }, { ...STDIO_WORLD });
+    expect(res.isError).toBe(true);
+    expect(parsed(res).error).toBe('invalid_params');
+    // Load-bearing: the write was refused BEFORE any whole-fence re-render, so
+    // the row the parser skipped (a private, cross-holder finding) is still on
+    // disk. Without the F1 guard the re-render would have deleted it silently.
+    const onDisk = readFileSync(join(repo, `${F1_SLUG}.md`), 'utf-8');
+    expect(onDisk).toContain('Private cross-holder finding');
+    expect(onDisk).toContain('| finding |'); // the skipped row's kind cell intact
+    expect(onDisk).toContain('people/garry-example');
+    // And the valid row was NOT mutated (weight untouched).
+    expect(onDisk).toContain('| 1 | Ships consensus fact | fact | world | 0.8 |');
+  });
+
+  test('P1-2: a symlinked page dir that escapes the repo root is refused; nothing is written outside the tree', async () => {
+    const external = mkdtempSync(join(tmpdir(), 'gbrain-takes-external-'));
+    // repo/escape-link → external (a sibling tree outside the repo root).
+    symlinkSync(external, join(repo, 'escape-link'), 'dir');
+    const res = await dispatchToolCall(engine, 'takes_add', {
+      slug: P12_SLUG, claim: 'evil', kind: 'fact', holder: 'world',
+    }, { ...STDIO_WORLD });
+    expect(res.isError).toBe(true);
+    const body = parsed(res);
+    // isWriteTargetContained refuses; the op surfaces the mirror-unavailable envelope.
+    expect(body.error).toBe('unavailable');
+    expect(body.detail).toBe('takes_mirror_unavailable');
+    // The containment check fired BEFORE any write — the escaping target is empty.
+    expect(existsSync(join(external, 'pwned.md'))).toBe(false);
+  });
+
+  test('P1-4: a DB addTakesBatch failure is non-fatal — the row is durable in markdown and the result carries a mirror_warning', async () => {
+    const throwingEngine = new Proxy(engine, {
+      get(target, prop) {
+        if (prop === 'addTakesBatch') {
+          return async () => { throw new Error('simulated DB mirror failure'); };
+        }
+        const v = (target as unknown as Record<string | symbol, unknown>)[prop];
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const res = await dispatchToolCall(throwingEngine, 'takes_add', {
+      slug: P14_SLUG, claim: 'md wins even when the DB mirror fails', kind: 'fact', holder: 'world',
+    }, { ...STDIO_WORLD });
+    // No throw, no error envelope — md is canonical and it was written.
+    expect(res.isError ?? false).toBe(false);
+    const body = parsed(res);
+    expect(body.mirror_written).toBe(true);
+    expect(typeof body.mirror_warning).toBe('string');
+    expect(body.mirror_warning).toContain('simulated DB mirror failure');
+    // The durable row is on disk.
+    const fence = parseTakesFence(pageMd(P14_SLUG));
+    expect(fence.takes.some(t => t.claim === 'md wins even when the DB mirror fails')).toBe(true);
+  });
+
+  test('F2: a wholly-strikethrough claim (~~struck~~) is refused (invalid_params) — it would round-trip as inactive', async () => {
+    const res = await dispatchToolCall(engine, 'takes_add', {
+      slug: F2_SLUG, claim: '~~struck~~', kind: 'fact', holder: 'world',
+    }, { ...STDIO_WORLD });
+    expect(res.isError).toBe(true);
+    expect(parsed(res).error).toBe('invalid_params');
+    // Nothing landed — the guard fired before any I/O.
+    expect(parseTakesFence(pageMd(F2_SLUG)).takes.length).toBe(0);
+  });
+
+  test('P1-1: a source with its own local_path files the take under THAT root, not the global sync.repo_path root', async () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'gbrain-takes-source-root-'));
+    // Mock the per-source SELECT so the write resolves to sourceRoot; every
+    // other query (getPageId, the DB mirror) delegates to the real engine.
+    const perSourceEngine = new Proxy(engine, {
+      get(target, prop) {
+        if (prop === 'executeRaw') {
+          return async (sql: unknown, params: unknown) => {
+            if (typeof sql === 'string' && /SELECT local_path FROM sources/i.test(sql)) {
+              return [{ local_path: sourceRoot }];
+            }
+            return (target as unknown as { executeRaw: (s: unknown, p: unknown) => Promise<unknown> })
+              .executeRaw(sql, params);
+          };
+        }
+        const v = (target as unknown as Record<string | symbol, unknown>)[prop];
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const res = await dispatchToolCall(perSourceEngine, 'takes_add', {
+      slug: P11_SLUG, claim: 'lands under the source local_path', kind: 'fact', holder: 'world',
+    }, { ...STDIO_WORLD });
+    expect(res.isError ?? false).toBe(false);
+    // The take file is at the source's own working tree (default layout = root),
+    // NOT the global repo root.
+    const underSourceRoot = join(sourceRoot, `${P11_SLUG}.md`);
+    expect(existsSync(underSourceRoot)).toBe(true);
+    expect(existsSync(join(repo, `${P11_SLUG}.md`))).toBe(false);
+    expect(parseTakesFence(readFileSync(underSourceRoot, 'utf-8')).takes.some(
+      t => t.claim === 'lands under the source local_path',
+    )).toBe(true);
   });
 });
 

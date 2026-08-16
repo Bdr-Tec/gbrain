@@ -27,6 +27,8 @@ import {
   slugOutsideCallerFence,
   enforceClientSlugFence,
   federatedSearchScope,
+  normalizeSlugPrefix,
+  validatePageSlug,
 } from './context.ts';
 
 // --- Page CRUD ---
@@ -976,20 +978,31 @@ const capture: Operation = {
     }
     const type = typeof p.type === 'string' && p.type.length > 0 ? p.type : 'note';
     let slug = typeof p.slug === 'string' && p.slug.length > 0 ? p.slug : undefined;
-    if (!slug) {
+    if (slug) {
+      // Defense-in-depth on the caller-supplied slug (matches the takes ops);
+      // put_page validates again, but reject a malformed slug before we build
+      // provenance frontmatter around it.
+      validatePageSlug(slug);
+    } else {
       slug = defaultSlug(normalized, new Date(), type);
       // [EV7] A slug-bound client would 403 on the inbox/ default via the
       // inherited slug fence — the zero-config path must work for exactly
       // that audience, so the ENTIRE default slug (type prefix included —
       // diary/event prefixes are two segments) nests under the FIRST bound
-      // prefix.
+      // prefix. Normalize a stored `<prefix>/*` glob (submit_agent binding
+      // grammar) to `<prefix>/` first so the nested slug never carries a
+      // literal `*` segment.
       const bound = ctx.auth?.boundSlugPrefixes;
       if (bound && bound.length > 0) {
-        const prefix = bound[0].endsWith('/') ? bound[0] : `${bound[0]}/`;
+        const base = normalizeSlugPrefix(bound[0]);
+        const prefix = base.endsWith('/') ? base : `${base}/`;
         slug = `${prefix}${slug}`;
       }
     }
-    const fullContent = mergeCaptureFrontmatter(content, { type });
+    // Remote MCP captures record `capture-mcp` provenance; local CLI callers
+    // (ctx.remote === false) keep the neutral 'capture-cli' default.
+    const capturedVia = ctx.remote !== false ? 'capture-mcp' : undefined;
+    const fullContent = mergeCaptureFrontmatter(content, { type, capturedVia });
     if (ctx.dryRun) return { dry_run: true, action: 'capture', slug };
     // Delegate with the SAME ctx (the runCapture local-path precedent) —
     // put_page enforces the slug fence, validates the slug, dedupes, and

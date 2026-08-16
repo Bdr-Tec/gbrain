@@ -56,6 +56,28 @@ describe('search_modes op', () => {
   });
 });
 
+describe('search_stats relation-missing degrade [P2-7]', () => {
+  test('a bare engine whose telemetry query 42P01s returns the unavailable envelope, NOT zero-filled stats', async () => {
+    // A brain that predates the search_telemetry table: the backing query raw-
+    // errors with "relation ... does not exist". readSearchStats rethrows the
+    // 42P01 (it only best-effort-empties transient failures), and
+    // withRelationGuard maps it to the actionable 'unavailable' envelope — so a
+    // missing table can never masquerade as a healthy-but-empty dashboard.
+    const bareEngine = {
+      async executeRaw() {
+        throw new Error('relation "search_telemetry" does not exist');
+      },
+    } as unknown as PGLiteEngine;
+    const res = await dispatchToolCall(bareEngine, 'search_stats', { days: 30 }, { ...STDIO });
+    expect(res.isError).toBe(true);
+    const body = parsed(res);
+    expect(body.error).toBe('unavailable');
+    // Crucially NOT the zero-filled shape the healthy-empty path returns.
+    expect(body.total_calls).toBeUndefined();
+    expect(body.schema_version).toBeUndefined();
+  });
+});
+
 describe('search_tune op', () => {
   test('insufficient data on a fresh brain; NEVER mutates config', async () => {
     const before = await engine.listConfigKeys('search.');

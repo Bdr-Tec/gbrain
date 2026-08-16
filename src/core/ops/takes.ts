@@ -332,6 +332,7 @@ function mapTakesWriteError(err: unknown): never {
       }
       case 'already_resolved':
         throw new OperationError('invalid_params', err.message, err.hint ?? 'Resolved takes are immutable; supersede instead.');
+      case 'fence_unparsed':
       case 'row_inactive':
       case 'no_fields':
       case 'invalid_input':
@@ -339,6 +340,17 @@ function mapTakesWriteError(err: unknown): never {
     }
   }
   throw err;
+}
+
+/**
+ * P1-4/F4: the markdown write already succeeded; a non-empty `mirror_warning`
+ * means only the DB mirror deferred to the next reconcile. Surface it so the
+ * agent knows the durable row is on disk and MUST NOT retry.
+ */
+function mirrorWarnFields(mirror: { mirror_warning?: string }): Record<string, string> {
+  return mirror.mirror_warning
+    ? { mirror_warning: `row written to markdown; DB mirror deferred to reconcile: ${mirror.mirror_warning}` }
+    : {};
 }
 
 const takes_add: Operation = {
@@ -368,7 +380,7 @@ const takes_add: Operation = {
     if (ctx.dryRun) return { dry_run: true, action: 'takes_add', slug };
     const brainDir = await opBrainDir(ctx);
     try {
-      const { rowNum } = await addTakeToPage(
+      const { rowNum, mirror } = await addTakeToPage(
         { engine: ctx.engine, slug, brainDir, sourceId: ctx.sourceId, allowList: takesWriteAllowList(ctx), lockTimeoutMs: OP_LOCK_TIMEOUT_MS },
         {
           claim: p.claim as string,
@@ -379,7 +391,7 @@ const takes_add: Operation = {
           sinceDate: p.since as string | undefined,
         },
       );
-      return { slug, row_num: rowNum, holder: p.holder, mirror_written: true };
+      return { slug, row_num: rowNum, holder: p.holder, mirror_written: true, ...mirrorWarnFields(mirror) };
     } catch (err) {
       mapTakesWriteError(err);
     }
@@ -410,7 +422,7 @@ const takes_update: Operation = {
     if (ctx.dryRun) return { dry_run: true, action: 'takes_update', slug, row_num: p.row_num };
     const brainDir = await opBrainDir(ctx);
     try {
-      const { rowNum } = await updateTakeOnPage(
+      const { rowNum, mirror } = await updateTakeOnPage(
         { engine: ctx.engine, slug, brainDir, sourceId: ctx.sourceId, allowList: takesWriteAllowList(ctx), lockTimeoutMs: OP_LOCK_TIMEOUT_MS },
         p.row_num as number,
         {
@@ -419,7 +431,7 @@ const takes_update: Operation = {
           sinceDate: p.since as string | undefined,
         },
       );
-      return { slug, row_num: rowNum, updated: true };
+      return { slug, row_num: rowNum, updated: true, ...mirrorWarnFields(mirror) };
     } catch (err) {
       mapTakesWriteError(err);
     }
@@ -453,7 +465,7 @@ const takes_supersede: Operation = {
     if (ctx.dryRun) return { dry_run: true, action: 'takes_supersede', slug, row_num: p.row_num };
     const brainDir = await opBrainDir(ctx);
     try {
-      const { oldRow, newRow } = await supersedeTakeOnPage(
+      const { oldRow, newRow, mirror } = await supersedeTakeOnPage(
         { engine: ctx.engine, slug, brainDir, sourceId: ctx.sourceId, allowList: takesWriteAllowList(ctx), lockTimeoutMs: OP_LOCK_TIMEOUT_MS },
         p.row_num as number,
         {
@@ -465,7 +477,7 @@ const takes_supersede: Operation = {
           sinceDate: p.since as string | undefined,
         },
       );
-      return { slug, old_row: oldRow, new_row: newRow };
+      return { slug, old_row: oldRow, new_row: newRow, ...mirrorWarnFields(mirror) };
     } catch (err) {
       mapTakesWriteError(err);
     }
@@ -512,7 +524,7 @@ const takes_resolve: Operation = {
       resolvedBy = resolveOwnerHolder({ configValue: await ctx.engine.getConfig('emotional_weight.user_holder') });
     }
     try {
-      const { rowNum, quality } = await resolveTakeOnPage(
+      const { rowNum, quality, mirror } = await resolveTakeOnPage(
         { engine: ctx.engine, slug, brainDir, sourceId: ctx.sourceId, allowList: takesWriteAllowList(ctx), lockTimeoutMs: OP_LOCK_TIMEOUT_MS },
         p.row_num as number,
         {
@@ -523,7 +535,7 @@ const takes_resolve: Operation = {
           resolvedBy,
         },
       );
-      return { slug, row_num: rowNum, quality, resolved_by: resolvedBy };
+      return { slug, row_num: rowNum, quality, resolved_by: resolvedBy, ...mirrorWarnFields(mirror) };
     } catch (err) {
       mapTakesWriteError(err);
     }
