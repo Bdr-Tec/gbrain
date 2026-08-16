@@ -426,10 +426,11 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
  * v0.36.0.0 (A5): embedding_width_consistency doctor check.
  *
  * Cross-checks that `config.embedding_dimensions` matches the actual
- * `vector(N)` width on `content_chunks.embedding`. Drift here means the
- * ze-switch was interrupted mid-flight (schema changed but config write
- * crashed, or vice versa). Surfaces a paste-ready `gbrain ze-switch
- * --resume` hint.
+ * `vector(N)` width on `content_chunks.embedding`. Drift means a width
+ * transition was interrupted mid-flight (schema changed but config write
+ * crashed, or vice versa). Surfaces the engine-kind-branched recovery recipe
+ * from embeddingMismatchMessage — NOT a ze-switch hint; that command is a
+ * refusal shim now.
  */
 export async function checkEmbeddingWidthConsistency(engine: BrainEngine): Promise<Check> {
   try {

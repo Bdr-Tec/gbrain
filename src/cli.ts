@@ -162,6 +162,9 @@ const CLI_ONLY_SELF_HELP = new Set([
   // would hide both — `gbrain dream retriage --help` printed the one-line
   // dream stub instead of the retriage contract (outside-voice CX9).
   'dream',
+  // ZE interim cleanup: the retired ze-switch shim ships truthful help
+  // (sunset refusal + canonical migration command); the generic stub hid it.
+  'ze-switch',
 ]);
 
 /**
@@ -187,6 +190,9 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   // runDream accepts BrainEngine | null; --help (and `retriage --help`) is
   // answered before any engine-bearing work per the dream.ts IRON RULE.
   dream: async () => (await import('./commands/dream.ts')).runDream as never,
+  // The retired ze-switch shim answers --help engine-free (arg-order adapter
+  // lives in ze-switch.ts because runZeSwitch takes (args, engine)).
+  'ze-switch': async () => (await import('./commands/ze-switch.ts')).runZeSwitchSelfHelp as never,
 };
 
 /** Returns true when the command's own help was printed. */
