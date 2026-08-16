@@ -6,25 +6,34 @@
  * `ze-switch` (ZE-only target) and `ze-switch --undo` (needs a snapshot fresh
  * installs don't have) cannot cover.
  *
- * Deliberately thin: everything heavy is reused —
- *   - runSchemaTransition (retrieval-upgrade-planner.ts) for dimension changes
- *   - invalidateStaleSignatureEmbeddings + the NULL-embedding cursor for
- *     staleness + resume (the NULL column IS the checkpoint: a killed run
- *     re-runs the same command and continues where it stopped)
- *   - the embed pipeline (src/commands/embed.ts) for the actual re-embed,
- *     with pacing, backfill locks, rate-limit backoff, and progress
- *   - lookupEmbeddingPrice / estimateCostFromChars for the preflight estimate
- *   - detectEnvOverride (the #1421 damage-class gate) before any mutation
+ * This module is the v0.47 SURVIVOR: the migration primitives live HERE
+ * (runSchemaTransition, transitionDimPinnedColumn, detectEnvOverride and the
+ * env gates, marker read/write, verifyMigrationComplete, readMigrationStatus,
+ * verifySearchRoundTrip, reranker plan/apply, the canonical resume-command
+ * renderer); retrieval-upgrade-planner.ts re-imports them for back-compat and
+ * is deleted in the ZE removal wave.
  *
- * #3391 companion fix: the migration widens staleness with
- * `includeNullSignature: true` so pages that predate the v108 signature stamp
- * are re-embedded too, instead of silently staying in the old embedding space.
+ * What it owns:
+ *   - schema transition per dim-pinned column (content_chunks / facts /
+ *     query_cache repaired independently), HNSW policy via vector-index.ts
+ *   - staleness + resume: invalidateStaleSignatureEmbeddings widened with
+ *     `includeNullSignature: true` (#3391) + the NULL-embedding cursor (the
+ *     NULL column IS the checkpoint: a killed run re-runs the same command)
+ *   - migration marker v2 (started_at preserved on same-target resume,
+ *     retarget history, force_sunset_target) + transactional completion
+ *     bookkeeping; markers stay content-free (privacy)
+ *   - DB-reality convergence (verifyMigrationComplete) — never trusts config
+ *   - the env gates: refuse on env≠target, notice-and-proceed on env==target,
+ *     env-canonical persistence when no file plane exists (the #1421
+ *     damage-class, where env silently kept the old model active at embed
+ *     time while the schema had already moved)
+ *   - reranker companion switch (DB plane, one tx with the cache purge) +
+ *     the post-drain self-retrieval smoke check (warn-only)
  *
  * The command layer (src/commands/migrate-embeddings.ts) owns everything
- * process-shaped: confirm prompts, file-plane config persistence (the gateway
- * reads file/env, not the DB plane), gateway reconfiguration, and the embed
- * catch-up run. This module is engine-pure so both engines and the op handler
- * share one implementation.
+ * process-shaped: confirm prompts, locks + heartbeat, gateway
+ * reconfiguration, and the embed drain. This module is engine-pure so both
+ * engines, the op handler, doctor, and `--status` share one implementation.
  */
 
 import type { BrainEngine } from './engine.ts';
@@ -132,6 +141,13 @@ export function formatEnvOverrideWarning(w: EnvOverrideWarning): string {
  * `--resume`.
  */
 export async function runSchemaTransition(engine: BrainEngine, targetDim: number): Promise<void> {
+  // Sink-side guard: targetDim is interpolated into DDL below. Every current
+  // caller validates upstream, but a future programmatic caller passing an
+  // unvalidated value must fail HERE, not become SQL in an admin DDL path
+  // (NaN passes `<= 0` checks; strings pass truthiness).
+  if (!Number.isInteger(targetDim) || targetDim <= 0 || targetDim > 100_000) {
+    throw new Error(`runSchemaTransition: targetDim must be a positive integer, got ${String(targetDim)}`);
+  }
   // v0.41 fix: only transition the primary text embedding column.
   // The embedding_image (v0.27.1) and embedding_multimodal (v0.36 / migration
   // v78) columns use SEPARATE multimodal models (e.g. voyage-multimodal-3 at
@@ -209,13 +225,26 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
   // between batches (setTimeout(0), NOT setImmediate — Bun starves the timers
   // phase under a tight setImmediate loop) so lock heartbeats keep firing.
   try {
+    // Keyset cursor: a bare `WHERE embedded_at IS NOT NULL LIMIT 50000` loop
+    // re-scans past every already-cleared row each batch (O(N²/batch) page
+    // visits on big brains); advancing on id visits each heap page once. The
+    // cursor also caps the loop naturally (id is monotonic) — no livelock
+    // against concurrent stampers outside the migration locks.
+    let cursor = 0;
     for (;;) {
-      const res = await engine.executeRaw<{ n: number }>(
-        `WITH b AS (SELECT id FROM content_chunks WHERE embedded_at IS NOT NULL LIMIT 50000),
-              u AS (UPDATE content_chunks c SET embedded_at = NULL FROM b WHERE c.id = b.id RETURNING 1)
-         SELECT count(*)::int AS n FROM u`,
+      const res = await engine.executeRaw<{ n: number; max_id: number | null }>(
+        `WITH b AS (
+           SELECT id FROM content_chunks
+            WHERE id > $1 AND embedded_at IS NOT NULL
+            ORDER BY id LIMIT 50000
+         ),
+         u AS (UPDATE content_chunks c SET embedded_at = NULL FROM b WHERE c.id = b.id RETURNING b.id)
+         SELECT count(*)::int AS n, max(id)::int AS max_id FROM u`,
+        [cursor],
       );
-      if (!res[0] || Number(res[0].n) === 0) break;
+      const n = Number(res[0]?.n ?? 0);
+      if (n === 0) break;
+      cursor = Number(res[0]?.max_id ?? cursor);
       await new Promise((r) => setTimeout(r, 0));
     }
   } catch {
@@ -229,6 +258,12 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
  * `indexSql` is a factory because each table's index carries its own partial
  * WHERE clause + opclass, and the opclass must match the column TYPE
  * (vector_cosine_ops vs halfvec_cosine_ops).
+ *
+ * Deliberately OMITTED: `takes.embedding` — the live takes search path
+ * (`searchTakes`, both engines) is trigram-based, not vector, so that column
+ * has no read path this migration could break; its own stale lane
+ * (`active AND embedding IS NULL`) covers regeneration if a vector consumer
+ * lands later.
  */
 export const TEXT_EMBEDDING_DIM_PINNED_TABLES: ReadonlyArray<{
   table: string;
@@ -271,6 +306,11 @@ async function transitionDimPinnedColumn(
   indexSql: (opclass: string) => string,
   targetDim: number,
 ): Promise<void> {
+  // Same sink-side guard as runSchemaTransition (this runs standalone on the
+  // independent-repair path, not only under the guarded full transition).
+  if (!Number.isInteger(targetDim) || targetDim <= 0 || targetDim > 100_000) {
+    throw new Error(`transitionDimPinnedColumn: targetDim must be a positive integer, got ${String(targetDim)}`);
+  }
   const probe = await tx.executeRaw<{ udt_name: string | null }>(
     `SELECT udt_name FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'embedding'`,
@@ -322,6 +362,15 @@ export interface MigrationState {
 }
 
 /**
+ * ONE resume-command template for every surface that prints it (doctor,
+ * --status, both retarget refusals) — a flag that must survive resume has one
+ * home to gain, not four to miss.
+ */
+export function renderResumeCommand(state: MigrationState): string {
+  return `gbrain migrate embeddings --to ${state.to_model} --dim ${state.to_dims}${state.force_sunset_target ? ' --force-sunset-target' : ''} --yes`;
+}
+
+/**
  * Read + parse the live migration marker. Corrupt JSON returns
  * `{ corrupt: true, raw }` instead of throwing — every consumer of this is a
  * read-only/reporting surface that must never crash on a bad row.
@@ -337,7 +386,20 @@ export async function readMigrationState(
   }
   if (!raw) return { state: null, corrupt: false, raw: null };
   try {
-    return { state: JSON.parse(raw) as MigrationState, corrupt: false, raw };
+    const state = JSON.parse(raw) as MigrationState;
+    // Shape validation: marker fields are interpolated into paste-ready
+    // resume commands on doctor/--status/refusal surfaces, and anything with
+    // config-table write access can plant this row. A model id outside the
+    // provider:model charset or a non-integer dims is CORRUPT, not a command.
+    if (
+      typeof state.to_model !== 'string'
+      || !/^[A-Za-z0-9._/:-]+$/.test(state.to_model)
+      || !Number.isInteger(state.to_dims)
+      || state.to_dims <= 0
+    ) {
+      return { state: null, corrupt: true, raw };
+    }
+    return { state, corrupt: false, raw };
   } catch {
     return { state: null, corrupt: true, raw };
   }
@@ -410,6 +472,25 @@ export function detectEnvPresence(
 }
 
 /**
+ * Does the env FULLY pin the target? Requires GBRAIN_EMBEDDING_MODEL set and
+ * equal to the target (dims, when set, must match too — detectEnvOverride
+ * covers that). A dims-ONLY env var must NOT count: `present` would be true
+ * and no mismatch "triggers", but the MODEL is unpinned — an env-canonical
+ * migration would then persist the target nowhere the gateway reads, and the
+ * next process falls back to the legacy configless default (the #1421
+ * config-says-new/runtime-embeds-old damage class).
+ */
+export function envFullyPinsTarget(
+  targetModel: string,
+  targetDim: number,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const model = env.GBRAIN_EMBEDDING_MODEL?.trim();
+  if (!model || model !== targetModel) return false;
+  return !detectEnvOverride(targetModel, targetDim, env).triggered;
+}
+
+/**
  * ONE computation for "does the schema need a (re)build?" shared by plan
  * (display) and apply (trigger) so they can never disagree. An absent or
  * unparsable column (dims === null) NEEDS a build — the old plan-side
@@ -431,11 +512,17 @@ export async function readDimPinnedWidths(
   const out: Array<{ table: string; dims: number | null }> = [];
   for (const t of TEXT_EMBEDDING_DIM_PINNED_TABLES) {
     try {
+      // Schema-qualified (public) + relkind='r', matching the sibling probes
+      // (readContentChunksEmbeddingDim pins nspname; transitionDimPinnedColumn
+      // pins table_schema) — a same-named table in another schema on a shared
+      // database must not feed a wrong width into the repair DDL or verify.
       const rows = await engine.executeRaw<{ dim: number | null }>(
         `SELECT a.atttypmod AS dim
            FROM pg_attribute a
            JOIN pg_class c ON c.oid = a.attrelid
-          WHERE c.relname = $1 AND a.attname = 'embedding'
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind = 'r'
+            AND c.relname = $1 AND a.attname = 'embedding'
             AND a.attnum > 0 AND NOT a.attisdropped`,
         [t.table],
       );
@@ -795,11 +882,17 @@ export async function verifySearchRoundTrip(
           && results.some((r) => Number((r as { page_id?: unknown }).page_id) === Number(row.page_id));
         samples.push({ page_id: Number(row.page_id), status: hit ? 'hit' : 'miss' });
       } catch (e) {
-        samples.push({
-          page_id: Number(row.page_id),
-          status: 'error',
-          reason_code: e instanceof Error ? e.message.slice(0, 80) : 'unknown',
-        });
+        // The persisted record must stay content-free: raw provider error
+        // bodies can echo the query (page content) back — classify into a
+        // fixed enum for the marker; the free-text detail goes to stderr via
+        // the CLI's warn line, never into a config-table row.
+        const msg = e instanceof Error ? e.message : '';
+        const code = /timeout|timed out/i.test(msg)
+          ? 'timeout'
+          : /embed/i.test(msg)
+            ? 'embed_failed'
+            : 'search_failed';
+        samples.push({ page_id: Number(row.page_id), status: 'error', reason_code: code });
       }
     }
     const misses = samples.filter((s) => s.status !== 'hit');
@@ -1274,8 +1367,17 @@ export async function reconcilePageSignatures(
           SELECT 1 FROM content_chunks c
            WHERE c.page_id = p.id AND c.embedding IS NULL
         )
+        AND NOT EXISTS (
+          -- Model-truth conjunct: chunks carry the gateway-resolved
+          -- provider:model at write time. A page whose vectors were written by
+          -- a concurrent OUT-OF-LOCK embed worker still running the OLD model
+          -- must NOT be relabeled as target-space — the final census relies on
+          -- the old signature/model evidence this stamp would erase.
+          SELECT 1 FROM content_chunks c
+           WHERE c.page_id = p.id AND c.model IS DISTINCT FROM $2
+        )
       RETURNING p.slug`,
-    [sig],
+    [sig, plan.to_model],
   );
   return (rows as unknown[]).length;
 }

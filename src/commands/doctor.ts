@@ -3568,7 +3568,7 @@ async function checkEmbeddingEnvOverride(engine: BrainEngine): Promise<Check> {
  */
 export async function checkEmbeddingMigrationState(engine: BrainEngine): Promise<Check> {
   try {
-    const { readMigrationState, migrationSignature } = await import('../core/embedding-migration.ts');
+    const { readMigrationState, migrationSignature, renderResumeCommand } = await import('../core/embedding-migration.ts');
     const marker = await readMigrationState(engine);
     if (marker.corrupt) {
       return {
@@ -3594,7 +3594,7 @@ export async function checkEmbeddingMigrationState(engine: BrainEngine): Promise
       status: 'warn',
       message:
         `an embedding migration to ${s.to_model} (${s.to_dims}d) started ${s.started_at} is in flight or was interrupted${staleNote}. ` +
-        `Resume: gbrain migrate embeddings --to ${s.to_model} --dim ${s.to_dims}${s.force_sunset_target ? ' --force-sunset-target' : ''} --yes. ` +
+        `Resume: ${renderResumeCommand(s)}. ` +
         `Status: gbrain migrate embeddings --status`,
       details: { to_model: s.to_model, to_dims: s.to_dims, started_at: s.started_at },
     };

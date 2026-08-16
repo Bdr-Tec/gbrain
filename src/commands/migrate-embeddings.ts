@@ -6,20 +6,31 @@
  * Also reachable as `gbrain retrieval-upgrade` — the command README.md and
  * doctor.ts have promised since v0.36 but which never had a dispatch branch.
  *
- * Flow (everything heavy is reused, see src/core/embedding-migration.ts):
- *   1. plan     — chunk/char counts via the widened stale predicates,
- *                 cost estimate from embedding-pricing.ts
- *   2. preflight— print estimate; require --yes or interactive confirm
- *                 (non-TTY without --yes refuses with exit 2, mirroring the
- *                 reindex-code cost gate in docs/operations/spend-controls.md)
- *   3. probe    — one live embed against the TARGET provider BEFORE any
- *                 mutation (validates key + model + dims in one shot)
- *   4. apply    — schema transition (dim change), config (DB + file plane),
- *                 #3391 NULL-signature-inclusive invalidation, cache purge
- *   5. re-embed — runEmbedCore --stale --catch-up with single-flight locks,
- *                 pacing (--pace), progress reporting. Resumable: a killed
- *                 run re-runs the SAME command; the NULL-embedding cursor is
- *                 the checkpoint and steps 3-4 no-op on the second pass.
+ * This file is the orchestrator (planMigrationFlow + executeMigrationFlow);
+ * every heavy primitive lives in src/core/embedding-migration.ts and is
+ * shared with the `migrate_embeddings` op, doctor, and `--status`.
+ *
+ * Execute flow:
+ *   1. global migration lock (GLOBAL_MIGRATION_LOCK_ID) — serializes whole
+ *      migrations, including empty-brain runs that lock zero sources
+ *   2. retarget gate — a live marker for a DIFFERENT target refuses without
+ *      --retarget; same-target resumes (started_at preserved)
+ *   3. per-source embed-backfill locks, all sources sorted (includeArchived),
+ *      held across the drain via heldLocks + a heartbeat that aborts on loss
+ *   4. probe — one live embed against the TARGET provider BEFORE any mutation
+ *   5. apply — schema transition (per-column width repair), config (DB +
+ *      file plane; env-canonical when no file exists), NULL-signature-
+ *      inclusive invalidation, query-cache purge, marker v2 write
+ *   6. reranker companion — probe + one-tx config write + cache purge
+ *   7. re-embed drain — runEmbedCore --stale --catch-up under the held locks
+ *   8. reconcile signatures, then verifyMigrationComplete (DB reality, not
+ *      config), verifySearchRoundTrip smoke check, transactional completion
+ *      bookkeeping (live-marker delete + completed-marker write, one tx)
+ *
+ * Resumable: a killed run re-runs the SAME command; the NULL-embedding cursor
+ * is the checkpoint and already-converged steps no-op on the second pass.
+ * `--status` is a separate read-only branch (readMigrationStatus) that never
+ * embeds and never refuses on env.
  */
 
 import type { BrainEngine } from '../core/engine.ts';
@@ -33,7 +44,9 @@ import {
   readMigrationState,
   detectEnvPresence,
   detectEnvOverride,
+  envFullyPinsTarget,
   migrationSignature,
+  renderResumeCommand,
   formatEnvOverrideWarning,
   resolveRerankerPlan,
   applyRerankerAction,
@@ -48,7 +61,8 @@ import {
   type VerifySearchOutcome,
 } from '../core/embedding-migration.ts';
 import { tryAcquireDbLock, type DbLockHandle } from '../core/db-lock.ts';
-import { embedBackfillLockId } from '../core/embed-backfill-lock.ts';
+import { embedBackfillLockId, EMBED_BACKFILL_LOCK_TTL_MIN } from '../core/embed-backfill-lock.ts';
+import { PGVECTOR_HNSW_VECTOR_MAX_DIMS } from '../core/vector-index.ts';
 import { redactPgUrl } from '../core/url-redact.ts';
 import { parsePaceArgs, runEmbedCore, type EmbedResult } from './embed.ts';
 
@@ -169,8 +183,8 @@ function renderPlan(ctx: MigrationPlanContext): string {
       lines.push('          plane at runtime. The migration also writes the file plane — keep the');
       lines.push('          env in sync (or unset it) so every gbrain process agrees.');
     } else {
-      lines.push('  WARNING: GBRAIN_EMBEDDING_* env vars are set and do NOT match the target —');
-      lines.push('          a live run will refuse (see the env-override box).');
+      lines.push('  WARNING: GBRAIN_EMBEDDING_* env vars are set and do not fully pin the target —');
+      lines.push('          a live run refuses when they contradict it (see the env-override box).');
     }
   }
   if (plan.dim_change) {
@@ -188,6 +202,15 @@ function renderPlan(ctx: MigrationPlanContext): string {
       lines.push(`  Schema: the embedding column will be (re)built at ${plan.to_dims}d (no stored`);
       lines.push('          vectors were detected, so nothing is deleted).');
     }
+    if (plan.to_dims > PGVECTOR_HNSW_VECTOR_MAX_DIMS) {
+      lines.push(`  Note: pgvector HNSW indexes cap at ${PGVECTOR_HNSW_VECTOR_MAX_DIMS}d — at ${plan.to_dims}d no ANN index is`);
+      lines.push('          created and vector search runs as an exact scan (slower on large brains).');
+    }
+  }
+  if (ctx.customSearchColumn) {
+    lines.push(`  WARNING: search_embedding_column is '${ctx.customSearchColumn}', not 'embedding'. This migration`);
+    lines.push("          rebuilds the default 'embedding' column only — the read path keeps using");
+    lines.push(`          '${ctx.customSearchColumn}' (see doctor's embedding_column_registry check).`);
   }
   lines.push(`  Chunks to re-embed: ${plan.chunks_to_embed}${plan.null_signature_chunks > 0 ? ` (includes ${plan.null_signature_chunks} on pages with no recorded embedding signature)` : ''}`);
   if (plan.synopsis_tier_pages > 0) {
@@ -228,6 +251,26 @@ function renderPlan(ctx: MigrationPlanContext): string {
     for (const b of verify.blockers) lines.push(`    - ${b}`);
   }
   return lines.join('\n');
+}
+
+/** One home for the retarget-refusal copy (pre-plan gate + in-lock gate). */
+function printRetargetRefusal(state: MigrationState): void {
+  serr(`Refusing: a migration to ${state.to_model} (${state.to_dims}d) started ${state.started_at} is still in flight.`);
+  serr(`  Resume it:   ${renderResumeCommand(state)}`);
+  serr(`  Abandon it:  re-run this command with --retarget (the abandoned target is recorded in the marker history)`);
+}
+
+/** One home for the dense schema/invalidation/cache summary line. */
+function renderApplySummary(
+  result: { schema_transitioned: boolean; pinned_repaired: string[]; invalidated: number; cache_cleared: number },
+  plan: EmbeddingMigrationPlan,
+): string {
+  const schema = result.schema_transitioned
+    ? `rebuilt at ${plan.to_dims}d`
+    : result.pinned_repaired.length > 0
+      ? `repaired (${result.pinned_repaired.join(', ')})`
+      : 'unchanged';
+  return `  [migrate] schema ${schema}; ${result.invalidated} chunk(s) invalidated; query cache purged (${result.cache_cleared} row(s)).`;
 }
 
 function renderRerankerOutcome(outcome: RerankerOutcome): string[] {
@@ -354,9 +397,10 @@ export async function persistEmbeddingFileConfig(
     // HOME) are legitimate: when env already pins the exact target, there is
     // nothing to persist — proceed on env alone. The DB plane still gets the
     // target (apply step 4) so doctor agrees.
-    const envPresence = detectEnvPresence();
-    const envPinsTarget = envPresence.present
-      && !detectEnvOverride(toModel, toDims).triggered;
+    // Full pinning required: a dims-only env var must not count (the model
+    // would be unpinned and the next process falls back to the legacy
+    // default — the #1421 class). envFullyPinsTarget requires the MODEL var.
+    const envPinsTarget = envFullyPinsTarget(toModel, toDims);
     if (envPinsTarget) {
       serr('  [migrate] no ~/.gbrain/config.json — env-canonical mode: GBRAIN_EMBEDDING_* pins the target; keep it set for every gbrain process.');
       const merged = loadConfig();
@@ -432,6 +476,8 @@ export interface MigrationPlanContext {
   identity: { engine: string; target: string };
   /** Quiesce-lite: live embed writers that are NOT under the migration locks. */
   concurrentWriters: { workers: number; embedJobs: number };
+  /** Non-default search_embedding_column, if configured (read-path caveat). */
+  customSearchColumn: string | null;
 }
 
 export type MigrationFlowResult =
@@ -491,8 +537,10 @@ export async function planMigrationFlow(
   });
 
   const envPresence = detectEnvPresence();
-  const envMatchesTarget = envPresence.present
-    && !detectEnvOverride(plan.to_model, plan.to_dims).triggered;
+  // FULL pinning (model var required): feeds the env-canonical verify
+  // conjunct and the notice copy — a dims-only env var neither pins the
+  // target nor may fake convergence on a no-file-plane brain.
+  const envMatchesTarget = envFullyPinsTarget(plan.to_model, plan.to_dims);
 
   // File plane read WITHOUT env merge — verify must not be poisonable.
   let filePlane: { model?: string | null; dims?: number | null } | null = null;
@@ -546,7 +594,16 @@ export async function planMigrationFlow(
     concurrentWriters = { workers, embedJobs: Number(rows[0]?.n ?? 0) };
   } catch { /* census is informational */ }
 
-  return { plan, verify, envPresence, envMatchesTarget, inflightOther, rerankerPlan, identity, concurrentWriters };
+  // Custom read column (v2-deferred write side): the migration rebuilds the
+  // default `embedding` column; a brain reading from another column needs to
+  // know its read path is NOT what this run re-embeds.
+  let customSearchColumn: string | null = null;
+  try {
+    const col = await engine.getConfig('search_embedding_column');
+    if (col && col !== 'embedding') customSearchColumn = col;
+  } catch { /* informational */ }
+
+  return { plan, verify, envPresence, envMatchesTarget, inflightOther, rerankerPlan, identity, concurrentWriters, customSearchColumn };
 }
 
 /**
@@ -566,7 +623,7 @@ export async function executeMigrationFlow(
   // even on empty brains (zero source locks) and across retarget decisions.
   let globalLock: DbLockHandle | null = null;
   try {
-    globalLock = await tryAcquireDbLock(engine, GLOBAL_MIGRATION_LOCK_ID, 60);
+    globalLock = await tryAcquireDbLock(engine, GLOBAL_MIGRATION_LOCK_ID, EMBED_BACKFILL_LOCK_TTL_MIN);
   } catch {
     globalLock = null; // lock subsystem down — treated as held (fail closed for a destructive op)
   }
@@ -600,7 +657,7 @@ export async function executeMigrationFlow(
     for (const sid of sourceIds) {
       let lock: DbLockHandle | null = null;
       try {
-        lock = await tryAcquireDbLock(engine, embedBackfillLockId(sid), 60);
+        lock = await tryAcquireDbLock(engine, embedBackfillLockId(sid), EMBED_BACKFILL_LOCK_TTL_MIN);
       } catch {
         lock = null;
       }
@@ -608,7 +665,7 @@ export async function executeMigrationFlow(
         return {
           status: 'locked',
           holder: 'embed_backfill',
-          detail: `an embed backfill holds the lock for source "${sid}" (check \`gbrain jobs list\`; a hard-killed run's lock expires within 60 minutes)`,
+          detail: `an embed backfill holds the lock for source "${sid}" (check \`gbrain jobs list\`; a hard-killed run's lock expires within ${EMBED_BACKFILL_LOCK_TTL_MIN} minutes)`,
         };
       }
       heldLocks.push(lock);
@@ -760,7 +817,7 @@ export async function runMigrateEmbeddings(
     } catch { /* informational */ }
 
     const resumeCmd = report.marker.kind === 'live'
-      ? `gbrain migrate embeddings --to ${report.marker.state.to_model} --dim ${report.marker.state.to_dims}${report.marker.state.force_sunset_target ? ' --force-sunset-target' : ''} --yes`
+      ? renderResumeCommand(report.marker.state)
       : null;
 
     if (flags.json) {
@@ -850,9 +907,7 @@ export async function runMigrateEmbeddings(
   if (ctx.inflightOther && !flags.retarget && !flags.dryRun) {
     const s = ctx.inflightOther;
     if (flags.json) console.log(JSON.stringify({ status: 'refused', reason: 'retarget_required', inflight: s, plan }, null, 2));
-    serr(`Refusing: a migration to ${s.to_model} (${s.to_dims}d) started ${s.started_at} is still in flight.`);
-    serr(`  Resume it:   gbrain migrate embeddings --to ${s.to_model} --dim ${s.to_dims}${s.force_sunset_target ? ' --force-sunset-target' : ''} --yes`);
-    serr(`  Abandon it:  re-run this command with --retarget (the abandoned target is recorded in the marker history)`);
+    printRetargetRefusal(s);
     exit(1);
   }
 
@@ -927,7 +982,9 @@ export async function runMigrateEmbeddings(
   });
   if (progressStarted) progress.finish();
 
-  if (flags.json && result.status !== 'refused_env') {
+  // Refusals normalize to the op-envelope shape ({status:'refused', reason})
+  // in their own cases below; everything else gets the generic envelope.
+  if (flags.json && result.status !== 'refused_env' && result.status !== 'refused_retarget') {
     console.log(JSON.stringify({ ...result, plan }, null, 2));
   }
 
@@ -935,7 +992,7 @@ export async function runMigrateEmbeddings(
     case 'locked': {
       if (result.holder === 'migration') {
         serr(`Migration refused: ${result.detail}.`);
-        serr('If a previous migration was killed hard, its lock expires within 60 minutes — re-run then.');
+        serr(`If a previous migration was killed hard, its lock expires within ${EMBED_BACKFILL_LOCK_TTL_MIN} minutes — re-run then.`);
       } else {
         serr(`Migration paused before any change: ${result.detail}.`);
         serr('Let the backfill finish (or stop the worker), then re-run the same command.');
@@ -944,16 +1001,20 @@ export async function runMigrateEmbeddings(
       break;
     }
     case 'refused_retarget': {
-      const s = result.inflight;
-      serr(`Refusing: a migration to ${s.to_model} (${s.to_dims}d) started ${s.started_at} is still in flight.`);
-      serr(`  Resume it:   gbrain migrate embeddings --to ${s.to_model} --dim ${s.to_dims}${s.force_sunset_target ? ' --force-sunset-target' : ''} --yes`);
-      serr(`  Abandon it:  re-run this command with --retarget (the abandoned target is recorded in the marker history)`);
+      if (flags.json) {
+        console.log(JSON.stringify({ status: 'refused', reason: 'retarget_required', inflight: result.inflight, plan }, null, 2));
+      } else {
+        printRetargetRefusal(result.inflight);
+      }
       exit(1);
       break;
     }
     case 'refused_env': {
-      if (flags.json) console.log(JSON.stringify({ ...result, plan }, null, 2));
-      else serr(formatEnvOverrideWarning(result.warning));
+      if (flags.json) {
+        console.log(JSON.stringify({ status: 'refused', reason: 'env_override', warning: result.warning, plan }, null, 2));
+      } else {
+        serr(formatEnvOverrideWarning(result.warning));
+      }
       exit(1);
       break;
     }
@@ -968,16 +1029,14 @@ export async function runMigrateEmbeddings(
       break;
     }
     case 'applied_no_embed': {
-      serr(`  [migrate] schema ${result.schema_transitioned ? `rebuilt at ${plan.to_dims}d` : result.pinned_repaired.length > 0 ? `repaired (${result.pinned_repaired.join(', ')})` : 'unchanged'}; ` +
-        `${result.invalidated} chunk(s) invalidated; query cache purged (${result.cache_cleared} row(s)).`);
+      serr(renderApplySummary(result, plan));
       for (const line of renderRerankerOutcome(result.reranker)) serr(line);
       if (!flags.json) console.log('Config + schema migrated. Re-embed deferred — run: gbrain embed --stale --catch-up --include-null-signature');
       exit(0);
       break;
     }
     case 'completed': {
-      serr(`  [migrate] schema ${result.schema_transitioned ? `rebuilt at ${plan.to_dims}d` : result.pinned_repaired.length > 0 ? `repaired (${result.pinned_repaired.join(', ')})` : 'unchanged'}; ` +
-        `${result.invalidated} chunk(s) invalidated; query cache purged (${result.cache_cleared} row(s)).`);
+      serr(renderApplySummary(result, plan));
       if (result.signatures_reconciled > 0) {
         serr(`  [migrate] reconciled the embedding signature on ${result.signatures_reconciled} fully-embedded page(s) (batch-boundary pages).`);
       }
@@ -1012,7 +1071,6 @@ export async function runMigrateEmbeddings(
         // leaves its single-flight embed lock behind, and every immediate
         // re-run "resumes" without embedding anything. Say so — "re-run to
         // resume" would be a lie until the lock expires.
-        const { EMBED_BACKFILL_LOCK_TTL_MIN } = await import('../core/embed-backfill-lock.ts');
         serr(`Migration paused: ${result.remaining} chunk(s) still stale, and the re-embed was SKIPPED because`);
         serr('another embed backfill holds the per-source lock. If that is a live run (check');
         serr('`gbrain jobs list`), let it finish. If a previous migration was killed hard, its lock');

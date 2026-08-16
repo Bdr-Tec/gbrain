@@ -123,10 +123,6 @@ export function getEmbeddingDimensions(): number {
   return gatewayGetDims();
 }
 
-// Back-compat exports for tests that imported these from v0.13.
-export const EMBEDDING_MODEL = 'text-embedding-3-large';
-export const EMBEDDING_DIMENSIONS = 1536;
-
 /**
  * USD cost per 1k tokens for text-embedding-3-large. Retained for back-compat
  * with callers/tests that import it directly; new cost math resolves the

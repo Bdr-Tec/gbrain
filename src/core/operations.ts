@@ -5827,10 +5827,19 @@ const migrate_embeddings: Operation = {
       quiet: true,
     });
     // Flatten the orchestrator's tagged union into the op's historical shape:
-    // failures carry a `reason`, everything else passes through.
+    // failures carry a `reason`, refusals carry `status:'refused'` + a reason
+    // discriminator (the env refusal keeps its pre-orchestrator spelling so
+    // existing consumers keying on reason:'env_override' still match).
     if (result.status === 'probe_failed') return { status: 'failed', reason: result.message, plan };
     if (result.status === 'apply_failed') return { status: 'failed', reason: result.reason, plan };
-    if (result.status === 'locked') return { status: 'failed', reason: `locked: ${result.detail}`, plan };
+    // A held lock keeps its discriminator (holder: migration vs embed_backfill)
+    // — remote callers need it to pick the right remediation, same as the CLI.
+    if (result.status === 'locked') {
+      return { status: 'locked', holder: result.holder, detail: result.detail, plan };
+    }
+    if (result.status === 'refused_env') {
+      return { status: 'refused', reason: 'env_override', warning: result.warning, plan };
+    }
     if (result.status === 'refused_retarget') {
       return {
         status: 'refused',
