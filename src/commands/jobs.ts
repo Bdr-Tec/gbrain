@@ -961,13 +961,10 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       {
         const w = stats.wedge;
         const mins = w.minutes_since_completion;
-        // Same threshold the doctor `wedged_queue` check uses, so the two
-        // advisory surfaces agree (issue #1801).
-        const wedgeMins = (() => {
-          const raw = parseInt(process.env.GBRAIN_WEDGED_QUEUE_WARN_MINUTES ?? '', 10);
-          return Number.isFinite(raw) && raw > 0 ? raw : 15;
-        })();
-        const wedged = w.active_healthy === 0 && w.waiting > 0 && (mins === null || mins > wedgeMins);
+        // Shared derivation (queue.ts deriveWedgeSignal) so this line, the
+        // doctor wedged_queue check, and the get_job_stats op agree (#1801).
+        const { deriveWedgeSignal } = await import('../core/minions/queue.ts');
+        const { wedged, wedge_threshold_minutes: wedgeMins } = deriveWedgeSignal(w);
         if (wedged) {
           const since = mins === null ? 'no completions on record' : `${mins}m since last completion`;
           console.log(

@@ -4,15 +4,16 @@
 <!-- Regenerate: bun run scripts/generate-tool-catalog.ts -->
 <!-- Freshness-guarded by scripts/check-tool-catalog-fresh.sh (bun run verify). -->
 
-Every non-localOnly operation on the MCP surface: 104 tools across 22 areas. **Starter** marks membership in the ~26-op `starter` surface (`src/mcp/surface.ts`); **Gate** names the config key that must be true before remote callers see/call the op (`gbrain config set <key> true`). What a given token actually sees is further filtered per request by scope, bound-client fence, publish gates, and the per-client surface — see `docs/operations/mcp-surface-runbook.md`. Area names are non-contractual groupings.
+Every non-localOnly operation on the MCP surface: 110 tools across 22 areas. **Starter** marks membership in the ~26-op `starter` surface (`src/mcp/surface.ts`); **Gate** names the config key that must be true before remote callers see/call the op (`gbrain config set <key> true`). What a given token actually sees is further filtered per request by scope, bound-client fence, publish gates, and the per-client surface — see `docs/operations/mcp-surface-runbook.md`. Area names are non-contractual groupings.
 
 ## admin
 
 | Tool | Description | Scope | Starter | Gate |
 |---|---|---|---|---|
-| `get_health` | Brain health dashboard (embed coverage, stale pages, orphans) | admin |  |  |
+| `get_health` | Brain health dashboard (embed coverage, stale pages, orphans). | admin |  |  |
 | `get_stats` | Brain statistics (page count, chunk count, etc.) | admin |  |  |
 | `get_status_snapshot` | Snapshot for `gbrain status` thin-client mode: sync freshness + last cycle + queue depths + worker liveness. | admin |  |  |
+| `quarantine_list` | List quarantined (hidden) and optionally content-flagged pages by scanning page frontmatter, newest-updated first. | admin |  |  |
 | `run_doctor` | Run brain health checks and return a structured DoctorReport (thin-client doctor surface). | admin |  |  |
 | `run_onboard` | Probe brain health + optionally submit onboard remediations. | admin |  |  |
 | `run_skillopt` | Run SkillOpt against a single skill. | admin |  |  |
@@ -91,6 +92,7 @@ Every non-localOnly operation on the MCP surface: 104 tools across 22 areas. **S
 | `get_agent_job` | Poll an agent job submitted via submit_agent. | agent | yes |  |
 | `get_job` | Get job status and details by ID | admin |  |  |
 | `get_job_progress` | Get structured progress for a running job | admin |  |  |
+| `get_job_stats` | Job queue statistics. | admin |  |  |
 | `list_jobs` | List jobs with optional filters | admin |  |  |
 | `pause_job` | Pause a waiting, active, or delayed job | admin |  |  |
 | `replay_job` | Replay a completed/failed/dead job, optionally with modified data | admin |  |  |
@@ -174,9 +176,13 @@ Every non-localOnly operation on the MCP surface: 104 tools across 22 areas. **S
 
 | Tool | Description | Scope | Starter | Gate |
 |---|---|---|---|---|
+| `cache_stats` | Semantic query-cache introspection: resolved knobs (enabled, similarity threshold, TTL) plus row counts and total hits. | admin |  |  |
 | `query` | Hybrid search with vector + keyword + multi-query expansion. | read | yes |  |
 | `search` | Cheap hybrid search (vector + keyword + RRF) with no LLM expansion. | read | yes |  |
 | `search_by_image` | v0.36 cross-modal Phase 2: image-as-query retrieval. | read |  |  |
+| `search_modes` | Read-only search-mode dashboard: active mode, per-knob resolved value with attribution (mode default vs config override), and the three frozen bundles. | read |  |  |
+| `search_stats` | Search observability over a window: cache hit rate, intent/mode mix, budget drops, rank-1 score drift, graph-signals failure counts. | admin |  |  |
+| `search_tune` | Read-only tuning recommendations derived from the last 7 days of search telemetry: what should change, why, and the paste-ready config command per recommendation — relay them to the user. | admin |  |  |
 
 ## skills
 
