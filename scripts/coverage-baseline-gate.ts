@@ -19,6 +19,11 @@
  *     by scripts/update-coverage-baseline.ts from real runs).
  *   - Regression: global pct drop > 0.5pp, or > 1.0pp on any dirs entry
  *     present in both baseline and summary → fail.
+ *   - Shrinking-denominator defense: when the baseline corpus section has a
+ *     numeric neverLoadedCount, a run whose neverLoaded.count EXCEEDS it is
+ *     a regression too — deleting tests that load a module removes its files
+ *     from the pct denominator and RAISES total %, which the pct checks
+ *     alone cannot see. A null/absent baseline field skips the check.
  *   - Baseline "provisional": true OR summary degraded → report-only
  *     (verdict printed, exit 0) regardless of enforcement.
  *   - COVERAGE_GATE_ENFORCE: anything but '1' = report-only (WOULD
@@ -46,6 +51,8 @@ export interface CorpusSection {
   global: { lines: number; covered: number; pct: number };
   dirs: Record<string, { lines: number; covered: number; pct: number }>;
   files: Record<string, { lines: number; covered: number; pct: number }>;
+  /** neverLoaded.count at seeding time; null/absent skips the check. */
+  neverLoadedCount?: number | null;
 }
 
 export interface RegressionReport {
@@ -65,6 +72,7 @@ export function compareCorpus(
   baseline: CorpusSection,
   summaryTotal: { pct: number },
   summaryDirs: Record<string, { pct: number }>,
+  summaryNeverLoadedCount?: number | null,
 ): RegressionReport {
   const regressions: string[] = [];
   const globalDrop = baseline.global.pct - summaryTotal.pct;
@@ -80,6 +88,17 @@ export function compareCorpus(
     if (drop > DIR_THRESHOLD_PP + EPS) {
       regressions.push(`${dir}: ${baseline.dirs[dir]!.pct}% → ${sum.pct}% (-${drop.toFixed(2)}pp > ${DIR_THRESHOLD_PP}pp)`);
     }
+  }
+  // Shrinking-denominator defense: a growing never-loaded count means files
+  // dropped OUT of the coverage denominator (tests deleted), which raises
+  // pct for free — a regression the pct thresholds cannot see. Skipped when
+  // either side lacks a numeric count (older baseline/summary shapes).
+  const baseNL = baseline.neverLoadedCount;
+  if (typeof baseNL === "number" && typeof summaryNeverLoadedCount === "number" && summaryNeverLoadedCount > baseNL) {
+    regressions.push(
+      `neverLoaded: ${baseNL} → ${summaryNeverLoadedCount} src files never loaded by any test ` +
+        `(count may not grow — deleting tests shrinks the coverage denominator)`,
+    );
   }
   return { regressions, pass: regressions.length === 0 };
 }
@@ -129,6 +148,7 @@ interface SummaryJson {
   degraded?: boolean;
   total?: { lines: number; covered: number; pct: number };
   dirs?: Record<string, { lines: number; covered: number; pct: number }>;
+  neverLoaded?: { count?: number };
 }
 
 function main(): void {
@@ -189,10 +209,12 @@ function main(): void {
     process.exit(0);
   }
 
-  const report = compareCorpus(section, summary.total, summary.dirs ?? {});
+  const report = compareCorpus(section, summary.total, summary.dirs ?? {}, summary.neverLoaded?.count);
   console.log(`Baseline comparison (${corpus}): baseline global ${section.global.pct}% vs run ${summary.total.pct}%`);
   for (const r of report.regressions) console.log(`  REGRESSION: ${r}`);
-  if (report.pass) console.log("  no regressions beyond thresholds (global 0.5pp, per-dir 1.0pp)");
+  if (report.pass) {
+    console.log("  no regressions beyond thresholds (global 0.5pp, per-dir 1.0pp, never-loaded count non-increasing)");
+  }
 
   // Provisional baseline / degraded data: report-only regardless of enforcement.
   if (baseline.provisional === true) {

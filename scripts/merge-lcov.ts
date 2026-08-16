@@ -11,7 +11,10 @@
  * Behavior:
  *   - Recursively finds every lcov.info under the input dirs (a file input
  *     is used directly). Only LOADED files appear in bun's lcov output; a
- *     src file that never appears was never imported by any test.
+ *     src file that never appears was never imported by any test. Any
+ *     lcov.info under a `coverage-merged` path segment is skipped: report-
+ *     job re-runs download the prior run's merged artifact via the
+ *     `coverage-*` glob, and re-merging it would double every hit count.
  *   - Parses SF/DA/FN/FNDA/LF/LH/TN/end_of_record. Unknown record types
  *     (e.g. BRDA) warn to stderr and are SKIPPED — never passed through.
  *   - A malformed/truncated lcov.info warns, is skipped WHOLE, and marks
@@ -324,6 +327,17 @@ function usage(msg: string): never {
   process.exit(2);
 }
 
+/**
+ * Self-merge guard: the CI report job downloads coverage artifacts via the
+ * `coverage-*` glob, and on a re-run the PRIOR report job's own
+ * `coverage-merged` artifact matches that glob too. Re-merging our own merged
+ * output into itself would double every hit count, so any lcov.info whose
+ * path contains a `coverage-merged` segment is skipped.
+ */
+export function isMergedArtifactPath(p: string): boolean {
+  return p.split(/[\\/]/).includes("coverage-merged");
+}
+
 function walkForInputs(dirAbs: string, lcovFiles: string[], manifestFiles: string[]): void {
   for (const ent of readdirSync(dirAbs, { withFileTypes: true })) {
     const p = join(dirAbs, ent.name);
@@ -331,6 +345,11 @@ function walkForInputs(dirAbs: string, lcovFiles: string[], manifestFiles: strin
       if (ent.name === "node_modules") continue;
       walkForInputs(p, lcovFiles, manifestFiles);
     } else if (ent.name === "lcov.info") {
+      if (isMergedArtifactPath(p)) {
+        // Expected on report-job re-runs — skipped, NOT degraded.
+        warn(`skipping ${p}: under a coverage-merged path segment (self-merge guard)`);
+        continue;
+      }
       lcovFiles.push(p);
     } else if (ent.name === "lane-manifest.json") {
       manifestFiles.push(p);
@@ -369,8 +388,15 @@ function main(): void {
       continue;
     }
     const st = statSync(input);
-    if (st.isFile()) lcovFiles.push(input);
-    else walkForInputs(input, lcovFiles, manifestFiles);
+    if (st.isFile()) {
+      if (isMergedArtifactPath(input)) {
+        warn(`skipping ${input}: under a coverage-merged path segment (self-merge guard)`);
+        continue;
+      }
+      lcovFiles.push(input);
+    } else {
+      walkForInputs(input, lcovFiles, manifestFiles);
+    }
   }
 
   // --- lane manifests ---

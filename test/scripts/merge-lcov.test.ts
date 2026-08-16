@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { normalizeSf, parseLcovText } from "../../scripts/merge-lcov.ts";
+import { isMergedArtifactPath, normalizeSf, parseLcovText } from "../../scripts/merge-lcov.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 
@@ -326,6 +326,49 @@ describe("merge: JSON metrics scope + hand-computed totals", () => {
     const sorted = [...json.neverLoaded.files].sort();
     expect(json.neverLoaded.files).toEqual(sorted);
     expect(json.neverLoaded.files.every((f) => !f.endsWith(".test.ts") && !f.endsWith(".d.ts"))).toBe(true);
+  });
+});
+
+describe("merge: self-merge guard (coverage-merged exclusion)", () => {
+  it("skips lcov.info under a coverage-merged path segment without degrading", () => {
+    // CI report-job re-runs download the PRIOR run's own coverage-merged
+    // artifact via the coverage-* glob; re-merging it would double every hit
+    // count. The guard drops it while keeping real lanes.
+    laneDir("selfmerge/lane-a", LANE_A);
+    laneDir(
+      "selfmerge/coverage-merged",
+      ["SF:src/fixture-prior-merged.ts", "DA:1,100", "end_of_record", ""].join("\n"),
+    );
+    const out = outPaths("selfmerge");
+    const res = runMerge(["--out-lcov", out.lcov, "--out-json", out.json, join(tmp, "selfmerge")]);
+    expect(res.code).toBe(0);
+    expect(res.stderr).toContain("self-merge guard");
+    const json = readSummary(out.json);
+    expect(json.files["src/fixture-prior-merged.ts"]).toBeUndefined(); // prior artifact dropped
+    expect(json.files["src/fixture-cov-a.ts"]).toEqual({ lines: 3, covered: 2, pct: 66.67 }); // real lane kept
+    expect(json.degraded).toBe(false); // expected on re-runs, not data loss
+  });
+
+  it("skips a direct lcov.info FILE input under a coverage-merged segment", () => {
+    laneDir("selfmerge-direct/coverage-merged", LANE_A);
+    const a = laneDir("selfmerge-direct/lane-a", LANE_A);
+    const out = outPaths("selfmerge-direct");
+    const res = runMerge([
+      "--out-lcov", out.lcov, "--out-json", out.json,
+      join(tmp, "selfmerge-direct", "coverage-merged", "lcov.info"),
+      a,
+    ]);
+    expect(res.code).toBe(0);
+    expect(res.stderr).toContain("self-merge guard");
+    // Only the real lane merged: hits are lane-A's alone, not doubled.
+    expect(readSummary(out.json).lineHits["src/fixture-cov-a.ts"]).toEqual({ "1": 1, "2": 0, "3": 5 });
+  });
+
+  it("isMergedArtifactPath unit: matches a path SEGMENT, not a substring", () => {
+    expect(isMergedArtifactPath("/dl/coverage-merged/lcov.info")).toBe(true);
+    expect(isMergedArtifactPath("dl/coverage-merged/nested/lcov.info")).toBe(true);
+    expect(isMergedArtifactPath("/dl/coverage-merged-old/lcov.info")).toBe(false);
+    expect(isMergedArtifactPath("/dl/coverage-shard1/lcov.info")).toBe(false);
   });
 });
 

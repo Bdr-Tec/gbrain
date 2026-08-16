@@ -26,27 +26,27 @@ test/brain-score-breakdown.test.ts	Bug 11 — doctor renders brain_score breakdo
 test/brain-score-breakdown.test.ts	Bug 11 — orphan_pages is "no inbound links"	3	doctor-source-helper
 test/brain-score-breakdown.test.ts	linkable scope — archive pages do not drag the score	3	doctor-source-helper
 test/brainstorm-timeout.test.ts	orchestrator entry-point wrap (CV11 single-point classification)	2	bun-file
-test/build-llms.test.ts	build-llms generator	7	readFileSync
 test/build-llms.test.ts	CLAUDE.md restructure content contracts	5	readFileSync
+test/build-llms.test.ts	build-llms generator	7	readFileSync
 test/check-bootstrap-guards.test.ts	check-grok-pin.sh	10	readFileSync
 test/check-bootstrap-guards.test.ts	verify + workflow wiring	6	readFileSync
 test/check-update.test.ts	check-update CLI	3	bun-file
 test/child-worker-supervisor.test.ts	issue #1801 — restartCurrentChild + killChild liveness fix	3	readFileSync
 test/cli-force-exit-teardown-arming.test.ts	cli.ts — disconnect hard-deadline armed at teardown entry, not before the op body	1	readFileSync
-test/cli.test.ts	ask alias	2	readFileSync
 test/cli.test.ts	BigInt-safe output normalization (#2450)	5	readFileSync
 test/cli.test.ts	CLI structure	6	readFileSync
 test/cli.test.ts	CLI version	2	readFileSync
+test/cli.test.ts	ask alias	2	readFileSync
 test/config.test.ts	config source correctness	2	readFileSync
 test/connection-resilience.test.ts	Eng-review D3 — executeRaw has no per-call retry wrapper	3	readFileSync
 test/contextual-retrieval-service-pure.test.ts	inline import contextual synopsis containment	1	readFileSync
 test/cycle-abort.test.ts	#1972 — complete cooperative-abort coverage	3	readFileSync
-test/cycle-abort.test.ts	autopilot-cycle handler contract (v0.20.5)	3	readFileSync
 test/cycle-abort.test.ts	CycleOpts.signal contract (v0.20.5)	4	readFileSync
+test/cycle-abort.test.ts	autopilot-cycle handler contract (v0.20.5)	3	readFileSync
 test/cycle-drain-renewal.test.ts	db-lock heartbeat wiring (structural — issue #6 cancellation)	1	readFileSync
 test/cycle-drain-renewal.test.ts	drain-loop wiring (structural — the shape guard only covers worker.ts)	1	readFileSync
-test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: dispatch result envelope	2	readFileSync
 test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: NEEDS_LOCK_PHASES contract (source-shape)	2	readFileSync
+test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: dispatch result envelope	2	readFileSync
 test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: orchestrator dispatch wires the pack-gate	5	readFileSync
 test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: pre-existing 17 core phases always run	3	readFileSync
 test/cycle-patterns-deadline-budget.test.ts	deadline plumbing wiring (structural)	7	readFileSync
@@ -97,6 +97,7 @@ test/extract-workers.test.ts	extract.ts → workers wiring (T7)	10	readFileSync
 test/features.test.ts	CLI routing	2	bun-file
 test/filing-rules-resolution.serial.test.ts	per-source filing-rules resolution	3	readFileSync
 test/fix-wave-structural.test.ts	#2084 — cli.ts owns process-exit teardown via finishCliTeardown	4	readFileSync
+test/fix-wave-structural.test.ts	WAL-repair wave structural pins (#223/#2575)	4	readFileSync
 test/fix-wave-structural.test.ts	v0.36.1.x #1077 — admin register-client supports PKCE public clients	1	readFileSync
 test/fix-wave-structural.test.ts	v0.36.1.x #1090 — admin embed two-tier resolution	3	readFileSync
 test/fix-wave-structural.test.ts	v0.36.1.x #1124 — query --no-expand actually negates expand	1	readFileSync
@@ -105,14 +106,15 @@ test/fix-wave-structural.test.ts	v0.41.8.0 #1340 — PGLite WASM init classifier
 test/fix-wave-structural.test.ts	v0.42.20.0 — background-work registry drains every sink before disconnect	6	readFileSync
 test/fix-wave-structural.test.ts	v0.42.20.0 — search-cache drained via the background-work registry	1	readFileSync
 test/fix-wave-structural.test.ts	v0.42.43.0 #2095 — volunteer-events sink + cycle purge wiring (structural pins)	2	readFileSync
-test/fix-wave-structural.test.ts	WAL-repair wave structural pins (#223/#2575)	4	readFileSync
 test/hook-command.serial.test.ts	user-prompt	14	readFileSync
 test/integrations-install.test.ts	installRecipeIntoHostRepo — happy path	6	readFileSync
 test/integrations.test.ts	CLI integration	3	readFileSync
 test/jobs-thin-client-date-rehydration.test.ts	thin-client unpack sites route through rehydrateJobDates (source audit)	2	readFileSync
 test/migrate-stdout-clean.test.ts	migration output stays off stdout	2	readFileSync
-test/migrate.test.ts	migrate — DROP INDEX CONCURRENTLY invalid-remnant cleanup (#1178, file-wide)	3	readFileSync
-test/migrate.test.ts	migrate — runner behavioral (v14 handler + v15 backfill)	2	readFileSync
+test/migrate.test.ts	PR #356 + #363 — session timeouts applied via startup parameters	1	readFileSync
+test/migrate.test.ts	PR #356 — LATEST_VERSION is max(versions), not array[-1]	2	readFileSync
+test/migrate.test.ts	PR #356 — apply-migrations pre-flight schema-version warning	1	readFileSync
+test/migrate.test.ts	PR #356 — non-transactional DDL runs via reserved connection	1	readFileSync
 test/migrate.test.ts	migrate runner v67 — typed-claim columns materialized on PGLite	3	readFileSync
 test/migrate.test.ts	migrate v14 — pages_updated_at_index (handler-based, engine-aware)	2	readFileSync
 test/migrate.test.ts	migrate v20 — sources_table_additive	6	readFileSync
@@ -120,20 +122,18 @@ test/migrate.test.ts	migrate v23 — files_source_id_page_id_ledger	6	readFileSy
 test/migrate.test.ts	migrate v36 — subagent_provider_neutral_persistence_v0_27	7	readFileSync
 test/migrate.test.ts	migrate v66 — embed_stale_partial_index (D6)	4	readFileSync
 test/migrate.test.ts	migrate v89 — round-trip on PGLite	4	readFileSync
+test/migrate.test.ts	migrate — DROP INDEX CONCURRENTLY invalid-remnant cleanup (#1178, file-wide)	3	readFileSync
+test/migrate.test.ts	migrate — runner behavioral (v14 handler + v15 backfill)	2	readFileSync
 test/migrate.test.ts	migrate: v9 (timeline_dedup_index) regression — must be fast on 1K duplicate rows	1	readFileSync
 test/migrate.test.ts	migration v49 — eval_takes_quality_runs (v0.32)	6	readFileSync
-test/migrate.test.ts	PR #356 — apply-migrations pre-flight schema-version warning	1	readFileSync
-test/migrate.test.ts	PR #356 — LATEST_VERSION is max(versions), not array[-1]	2	readFileSync
-test/migrate.test.ts	PR #356 — non-transactional DDL runs via reserved connection	1	readFileSync
-test/migrate.test.ts	PR #356 + #363 — session timeouts applied via startup parameters	1	readFileSync
 test/migrate.test.ts	resolvePoolSize — env var + explicit override	4	readFileSync
 test/migrate.test.ts	resolveSessionTimeouts — env var overrides	5	readFileSync
 test/migrate.test.ts	v117 — context_volunteer_events_table	5	readFileSync
 test/migration-resume.test.ts	Bug 3 — orchestrator no longer writes the ledger directly	6	bun-file
 test/migrations-v0_11_0.test.ts	AGENTS.md marker injection	6	readFileSync
 test/migrations-v0_11_0.test.ts	cron manifest rewrite — gbrain builtins only	8	readFileSync
-test/migrations-v0_14_0.test.ts	Bug 5 — Phase B host-work entry dedup	2	readFileSync
 test/migrations-v0_14_0.test.ts	Bug 5 + Bug 8 — v0_14_0 module shape	3	bun-file
+test/migrations-v0_14_0.test.ts	Bug 5 — Phase B host-work entry dedup	2	readFileSync
 test/migrations-v0_14_0.test.ts	Bug 8 — max_stalled default bumped in schema files	3	bun-file
 test/migrations-v0_22_4.test.ts	v0.22.4 migration (B11)	9	readFileSync
 test/model-pricing.test.ts	no heavy import (cycle guard)	1	readFileSync
@@ -157,7 +157,8 @@ test/resolver.test.ts	RESOLVER.md trigger round-trip (D5/C)	2	readFileSync
 test/resolver.test.ts	Skill example-name validator (D13)	4	readFileSync
 test/schema-cli-contract.test.ts	v0.39 T6 — schema CLI contract	7	readFileSync
 test/schema-pack-unify-types-handler.test.ts	#1575 unify-types worker dry-run default	1	readFileSync
-test/scripts/classify-tests.test.ts	classify-tests detectors	16	bun-file,doctor-source-helper,exec-scan,readFileSync
+test/scripts/classify-tests.test.ts	classify-tests detectors	18	bun-file,doctor-source-helper,exec-scan,readFileSync
+test/scripts/coverage-diff-gate.test.ts	exemptions	3	readFileSync
 test/skillify-scaffold.test.ts	11-item scaffold contract (T9 + Phase 3 cross-modal eval)	1	readFileSync
 test/skillify-scaffold.test.ts	applyScaffold	3	readFileSync
 test/skillify-scaffold.test.ts	planScaffold	13	readFileSync
@@ -169,8 +170,8 @@ test/skillpack-init-pack.test.ts	runInitScaffold — cathedral default	6	readFil
 test/skillpack-install.test.ts	managed-block receipt + cumulative semantics (v0.19)	4	readFileSync
 test/skillpack-install.test.ts	planInstall + applyInstall	11	readFileSync
 test/skillpack-migrate-fence.test.ts	runMigrateFence	8	readFileSync
-test/skillpack-scaffold.test.ts	runScaffold — happy path	3	readFileSync
 test/skillpack-scaffold.test.ts	runScaffold — IRON-RULE regressions (R1, R2)	3	readFileSync
+test/skillpack-scaffold.test.ts	runScaffold — happy path	3	readFileSync
 test/skillpack-scrub-legacy.test.ts	runScrubLegacy	8	readFileSync
 test/sources-webhook.test.ts	Webhook sync job extraction contract	1	readFileSync
 test/spend-off-switch.test.ts	reindex / onboard off-switch dispatch (regression guards)	3	bun-file
@@ -190,12 +191,12 @@ test/timing-safe.test.ts	extraction contract	1	readFileSync
 test/tool-catalog.test.ts	freshness guard	2	readFileSync
 test/transcription-injection.test.ts	transcription — command injection (#245)	2	readFileSync
 test/upgrade.serial.test.ts	detectInstallMethod heuristic (source analysis)	13	readFileSync
-test/v0_37_fix_wave.serial.test.ts	v0.37 deferred TODO shipped — gbrain reinit-pglite	3	readFileSync
 test/v0_37_fix_wave.serial.test.ts	v0.37 Lane A — defaults sweep	8	readFileSync
 test/v0_37_fix_wave.serial.test.ts	v0.37 Lane B — init paths	3	readFileSync
 test/v0_37_fix_wave.serial.test.ts	v0.37 Lane C.3 — ZE key reaches buildGatewayConfig	3	readFileSync
 test/v0_37_fix_wave.serial.test.ts	v0.37 Lane D.2 — embed pre-flight dim mismatch	1	readFileSync
 test/v0_37_fix_wave.serial.test.ts	v0.37 Lane D.4 — sync --help dispatch	1	readFileSync
+test/v0_37_fix_wave.serial.test.ts	v0.37 deferred TODO shipped — gbrain reinit-pglite	3	readFileSync
 test/v0_37_gap_fill.serial.test.ts	Lane A.7 — chunk-row INSERT default tracks the gateway-resolved model	1	readFileSync
 test/v0_37_gap_fill.serial.test.ts	Lane B — init precedence chain (CLI > env > existing file > default)	1	readFileSync
 test/v0_37_gap_fill.serial.test.ts	Lane C.3 — env ZEROENTROPY_API_KEY merges into loadConfig	2	readFileSync

@@ -32,6 +32,20 @@ function makeTree(tsvRows: string[], files: Record<string, number>): string {
   return root;
 }
 
+/** Like makeTree but with verbatim file content (region-exempt fixtures). */
+function makeTreeWithContent(tsvRows: string[], files: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), 'gbrain-module-size-'));
+  tempDirs.push(root);
+  mkdirSync(join(root, 'scripts'), { recursive: true });
+  writeFileSync(join(root, 'scripts', 'module-size-limits.tsv'), tsvRows.join('\n') + '\n');
+  for (const [rel, content] of Object.entries(files)) {
+    const full = join(root, rel);
+    mkdirSync(join(full, '..'), { recursive: true });
+    writeFileSync(full, content);
+  }
+  return root;
+}
+
 function runGuard(root: string, env: Record<string, string> = {}) {
   const res = spawnSync('bash', [GUARD], {
     encoding: 'utf8',
@@ -79,6 +93,38 @@ describe('check-module-size.sh rule-by-rule failing sides', () => {
     const r = runGuard(root);
     expect(r.code).toBe(1);
     expect(r.out).toContain("unknown policy 'freeform'");
+  });
+
+  test('region-exempt: a spoof-named const (MIGRATIONS_ANYTHING) does not open the region', () => {
+    // 23 total lines; 21 sit inside a region opened by a SPOOF-named const.
+    // A loose prefix match would exempt them (measured 2 → pass); the
+    // tightened opener (`export const MIGRATIONS` + ':', ' ', or '=')
+    // measures all 23 lines → growth FAIL against the 5-line ceiling.
+    const content =
+      [
+        'export const MIGRATIONS_ANYTHING = [',
+        ...Array.from({ length: 20 }, (_, i) => `  { version: ${i} },`),
+        '];',
+        'export function runnerLogic() { return 1; }',
+      ].join('\n') + '\n';
+    const root = makeTreeWithContent(['src/spoof.ts\t5\tregion-exempt\tfixture'], { 'src/spoof.ts': content });
+    const r = runGuard(root);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('over its 5 ceiling');
+  });
+
+  test('region-exempt: an unclosed MIGRATIONS region fails loudly instead of exempting the file tail', () => {
+    // Region opens (the `= [` form) and never closes — EOF while in_region.
+    // Ceiling 100 is generous on purpose: only the unclosed-region check can
+    // produce this failure.
+    const content =
+      ['export const MIGRATIONS = [', '  { version: 1 },', '  { version: 2 },', '  { version: 3 },'].join('\n') + '\n';
+    const root = makeTreeWithContent(['src/unclosed.ts\t100\tregion-exempt\tfixture'], {
+      'src/unclosed.ts': content,
+    });
+    const r = runGuard(root);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('unclosed MIGRATIONS region');
   });
 
   test('all violations are accumulated, not first-fail', () => {

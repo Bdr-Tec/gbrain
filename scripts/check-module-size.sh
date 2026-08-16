@@ -44,12 +44,17 @@ fi
 fail=0
 
 measure_region_exempt() {
-  # Lines outside the MIGRATIONS array region.
+  # Lines outside the MIGRATIONS array region. The opener must be EXACTLY
+  # `export const MIGRATIONS` followed by ':', ' ', or '=' — a bare prefix
+  # match would let a spoof-named `export const MIGRATIONS_ANYTHING` open a
+  # free-growth region. An unclosed region (EOF while still inside) prints
+  # -1 so the caller fails loudly instead of silently exempting the rest of
+  # the file.
   awk '
-    /^export const MIGRATIONS/ { in_region = 1; next }
-    in_region && /^\];/        { in_region = 0; next }
-    !in_region                 { n++ }
-    END                        { print n + 0 }
+    /^export const MIGRATIONS[:= ]/ { in_region = 1; next }
+    in_region && /^\];/             { in_region = 0; next }
+    !in_region                      { n++ }
+    END                             { print (in_region ? -1 : n + 0) }
   ' "$1"
 }
 
@@ -72,6 +77,13 @@ while IFS=$'\t' read -r path max policy note; do
       ;;
     region-exempt)
       measured=$(measure_region_exempt "$path")
+      if [ "$measured" -eq -1 ]; then
+        echo "FAIL: $path — region-exempt file has an unclosed MIGRATIONS region (opened but never closed with '];')." >&2
+        echo "      An unclosed region would exempt the rest of the file from the size" >&2
+        echo "      ratchet; close the array or fix the file structure." >&2
+        fail=1
+        continue
+      fi
       label="lines outside the MIGRATIONS array"
       ;;
     *)

@@ -17,8 +17,13 @@
  *      code to *.ts minus *.test.ts / *.generated.ts / *.d.ts. (The in-code
  *      filter, not a 'src/**\/*.ts' pathspec, because git's default fnmatch
  *      for that pattern misses top-level files like src/cli.ts.) Paths in
- *      scripts/coverage-gate-exemptions.txt are excluded from the gate but
- *      still REPORTED with their tag.
+ *      scripts/coverage-gate-exemptions.txt AS IT EXISTS ON origin/master
+ *      (mirroring the baseline-gate's governance — a PR cannot add its own
+ *      files to the list and self-exempt; working-tree additions are inert
+ *      until merged) are excluded from the gate but still REPORTED with
+ *      their tag. If the file is absent on master (first landing) the
+ *      working-tree copy is used; if git itself fails, exit 2 infra unless
+ *      report-only (which warns and falls back to the working tree).
  *   c. Zero gate-scoped changed lines → PASS.
  *   d. Per changed file with a coverage record: added line present in DA
  *      with hits>0 → covered; present with 0 → uncovered; absent from DA →
@@ -42,6 +47,8 @@
  *   COVERAGE_GATE_CLASSIFY      literal EMPTY|DOC_ONLY|SRC (skips select-e2e)
  *   COVERAGE_GATE_DIFF_FILE     path to unified-diff text (skips git diff)
  *   COVERAGE_GATE_COMMITS_FILE  path to commit-message text (skips git log)
+ *   COVERAGE_GATE_EXEMPTIONS_OVERRIDE  literal exemptions-file CONTENT; wins
+ *                               over both origin/master and the working tree
  */
 
 import { spawnSync } from "node:child_process";
@@ -170,6 +177,52 @@ function runGit(args: string[]): string {
   return res.stdout;
 }
 
+const EXEMPTIONS_REPO_PATH = "scripts/coverage-gate-exemptions.txt";
+
+/**
+ * Resolve the exemption LIST from origin/master, never the working tree —
+ * mirroring coverage-baseline-gate.ts's governance. Otherwise a PR could add
+ * its own files to the list and self-exempt from the 80% gate the moment
+ * enforcement graduates. Working-tree additions are INERT until merged.
+ *
+ * Resolution order:
+ *   1. COVERAGE_GATE_EXEMPTIONS_OVERRIDE (test seam; literal file content).
+ *   2. `git show origin/master:scripts/coverage-gate-exemptions.txt`.
+ *   3. Path absent on master (first landing) → working-tree copy.
+ *   4. git itself failed (unresolvable ref, ...) → exit 2 infra when
+ *      enforcing; report-only warns and falls back to the working tree so
+ *      the report still prints.
+ */
+function resolveExemptionsText(enforcing: boolean): string {
+  const override = process.env.COVERAGE_GATE_EXEMPTIONS_OVERRIDE;
+  if (override !== undefined) return override;
+
+  const res = spawnSync("git", ["show", `origin/master:${EXEMPTIONS_REPO_PATH}`], {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (!res.error && res.status === 0) return res.stdout;
+
+  const stderr = res.error ? String(res.error) : res.stderr || "";
+  const worktreePath = join(import.meta.dir, "coverage-gate-exemptions.txt");
+  const readWorktree = (): string => {
+    if (!existsSync(worktreePath)) infraFail(`exemptions file missing: ${worktreePath}`);
+    return readFileSync(worktreePath, "utf8");
+  };
+
+  // Path errors mean the ref resolved but the file is not on master yet.
+  if (!res.error && /does not exist in|exists on disk, but not in/.test(stderr)) {
+    return readWorktree();
+  }
+  if (enforcing) {
+    infraFail(`cannot read ${EXEMPTIONS_REPO_PATH} from origin/master: ${stderr.trim()}`);
+  }
+  process.stderr.write(
+    `coverage-diff-gate: warning: cannot read ${EXEMPTIONS_REPO_PATH} from origin/master (${stderr.trim()}) — report-only run falls back to the working-tree copy\n`,
+  );
+  return readWorktree();
+}
+
 interface SummaryJson {
   degraded?: boolean;
   files?: Record<string, { lines: number; covered: number; pct: number }>;
@@ -188,6 +241,7 @@ function main(): void {
   }
   if (!summaryPath) infraFail("--summary <merged json> is required");
   if (!existsSync(summaryPath)) infraFail(`summary JSON not found: ${summaryPath}`);
+  const enforcing = process.env.COVERAGE_GATE_ENFORCE === "1";
   let summary: SummaryJson;
   try {
     summary = JSON.parse(readFileSync(summaryPath, "utf8")) as SummaryJson;
@@ -222,9 +276,7 @@ function main(): void {
   }
   const changed = parseUnifiedDiff(diffText);
 
-  const exemptionsPath = join(import.meta.dir, "coverage-gate-exemptions.txt");
-  if (!existsSync(exemptionsPath)) infraFail(`exemptions file missing: ${exemptionsPath}`);
-  const exemptions = parseExemptions(readFileSync(exemptionsPath, "utf8"));
+  const exemptions = parseExemptions(resolveExemptionsText(enforcing));
 
   const rows: FileRow[] = [];
   let covered = 0;
@@ -329,7 +381,6 @@ function main(): void {
   }
 
   // (h) enforcement.
-  const enforcing = process.env.COVERAGE_GATE_ENFORCE === "1";
   if (!enforcing) {
     console.log(`Report-only (COVERAGE_GATE_ENFORCE != '1'): ${pass ? "WOULD PASS" : "WOULD FAIL"}`);
     process.exit(0);

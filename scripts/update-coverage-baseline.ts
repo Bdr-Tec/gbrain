@@ -12,10 +12,13 @@
  *   - Reads the working-tree scripts/coverage-baseline.json (this is the
  *     WRITE side; the gate reads origin/master's copy, so an update only
  *     takes effect when it lands on master).
- *   - Replaces baseline[<corpus>] with {global, dirs, files} derived from
- *     the summary; `files` is limited to the watchlist paths listed in the
- *     baseline file itself (the 8 containment-sprint watchlist modules),
- *     never the full file map.
+ *   - Replaces baseline[<corpus>] with {global, dirs, files, neverLoadedCount}
+ *     derived from the summary; `files` is limited to the watchlist paths
+ *     listed in the baseline file itself (the 8 containment-sprint watchlist
+ *     modules), never the full file map. `neverLoadedCount` records the
+ *     summary's neverLoaded.count so the baseline gate can catch the
+ *     shrinking-denominator regression (deleting tests that load a module
+ *     removes its files from the pct denominator and RAISES total %).
  *   - --promote clears "provisional" (sets it to false), turning both
  *     gates from report-only into real gates once COVERAGE_GATE_ENFORCE=1.
  *
@@ -35,17 +38,23 @@ export interface SummaryForBaseline {
   total: CovTriple;
   dirs: Record<string, CovTriple>;
   files: Record<string, CovTriple>;
+  neverLoaded?: { count?: number };
 }
 
 export interface BaselineCorpusSection {
   global: CovTriple;
   dirs: Record<string, CovTriple>;
   files: Record<string, CovTriple>;
+  /** neverLoaded.count from the seeding run; null when the summary lacks it. */
+  neverLoadedCount: number | null;
 }
 
 /**
  * Pure section builder: global + dirs from the summary, files limited to
  * the watchlist entries that actually appear in the summary.
+ * neverLoadedCount carries merge-lcov's neverLoaded.count into the baseline
+ * so a later run that INCREASES it (tests deleted → files drop out of the
+ * denominator → pct rises for free) is gateable as a regression.
  */
 export function buildCorpusSection(summary: SummaryForBaseline, watchlist: string[]): BaselineCorpusSection {
   const files: Record<string, CovTriple> = {};
@@ -53,7 +62,8 @@ export function buildCorpusSection(summary: SummaryForBaseline, watchlist: strin
     const entry = summary.files[path];
     if (entry) files[path] = entry;
   }
-  return { global: summary.total, dirs: summary.dirs, files };
+  const neverLoadedCount = typeof summary.neverLoaded?.count === "number" ? summary.neverLoaded.count : null;
+  return { global: summary.total, dirs: summary.dirs, files, neverLoadedCount };
 }
 
 function fail(msg: string): never {
@@ -102,7 +112,8 @@ function main(): void {
   writeFileSync(baselinePath, JSON.stringify(baseline, null, 2) + "\n", "utf8");
   process.stderr.write(
     `update-coverage-baseline: wrote ${corpus} section (global ${summary.total.pct}%, ` +
-      `${Object.keys(summary.dirs).length} dirs, ${Object.keys(section.files).length} watchlist files)` +
+      `${Object.keys(summary.dirs).length} dirs, ${Object.keys(section.files).length} watchlist files, ` +
+      `neverLoaded ${section.neverLoadedCount ?? "n/a"})` +
       `${promote ? ", provisional cleared" : ""}\n`,
   );
 }

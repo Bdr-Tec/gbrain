@@ -24,7 +24,12 @@ afterAll(() => {
 });
 
 let fixtureSeq = 0;
-function writeSummary(total: { pct: number }, dirs: Record<string, { pct: number }>, degraded = false): string {
+function writeSummary(
+  total: { pct: number },
+  dirs: Record<string, { pct: number }>,
+  degraded = false,
+  neverLoadedCount?: number,
+): string {
   const p = join(tmp, `summary-${fixtureSeq++}.json`);
   const expand = (x: { pct: number }) => ({ lines: 1000, covered: Math.round(x.pct * 10), pct: x.pct });
   writeFileSync(
@@ -34,6 +39,7 @@ function writeSummary(total: { pct: number }, dirs: Record<string, { pct: number
       degraded,
       total: expand(total),
       dirs: Object.fromEntries(Object.entries(dirs).map(([k, v]) => [k, expand(v)])),
+      ...(neverLoadedCount === undefined ? {} : { neverLoaded: { count: neverLoadedCount, files: [] } }),
     }) + "\n",
     "utf8",
   );
@@ -132,6 +138,52 @@ describe("regression thresholds", () => {
   });
 });
 
+describe("never-loaded regression (shrinking-denominator defense)", () => {
+  const BASELINE_WITH_NL = {
+    ...BASELINE,
+    prCorpus: { ...BASELINE.prCorpus, neverLoadedCount: 5 },
+  };
+
+  it("run count EXCEEDS the baseline → WOULD FAIL report-only, FAIL enforcing (exit 1)", () => {
+    // pcts hold steady — only the never-loaded count regresses (tests were
+    // deleted, shrinking the denominator).
+    const summary = writeSummary({ pct: 80 }, { "src/core": { pct: 70 } }, false, 7);
+    const reportOnly = runGate({ summary, baseline: JSON.stringify(BASELINE_WITH_NL) });
+    expect(reportOnly.code).toBe(0);
+    expect(reportOnly.stdout).toContain("WOULD FAIL");
+    expect(reportOnly.stdout).toContain("REGRESSION: neverLoaded: 5 → 7");
+
+    const enforcing = runGate({ summary, baseline: JSON.stringify(BASELINE_WITH_NL), enforce: "1" });
+    expect(enforcing.code).toBe(1);
+    expect(enforcing.stdout).toContain("FAIL: coverage regression");
+  });
+
+  it("run count EQUAL to the baseline passes", () => {
+    const summary = writeSummary({ pct: 80 }, { "src/core": { pct: 70 } }, false, 5);
+    const res = runGate({ summary, baseline: JSON.stringify(BASELINE_WITH_NL), enforce: "1" });
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("PASS: no coverage regression");
+  });
+
+  it("null/absent baseline neverLoadedCount skips the check entirely", () => {
+    // BASELINE has no neverLoadedCount field: even a huge run count passes.
+    const absentField = writeSummary({ pct: 80 }, { "src/core": { pct: 70 } }, false, 999);
+    const resAbsent = runGate({ summary: absentField, enforce: "1" });
+    expect(resAbsent.code).toBe(0);
+
+    // Explicit null skips too.
+    const nullBaseline = { ...BASELINE, prCorpus: { ...BASELINE.prCorpus, neverLoadedCount: null } };
+    const resNull = runGate({ summary: absentField, baseline: JSON.stringify(nullBaseline), enforce: "1" });
+    expect(resNull.code).toBe(0);
+
+    // And a summary WITHOUT neverLoaded is skipped even when the baseline
+    // carries a count (older summary shapes stay comparable).
+    const noSummaryField = writeSummary({ pct: 80 }, { "src/core": { pct: 70 } });
+    const resNoSummary = runGate({ summary: noSummaryField, baseline: JSON.stringify(BASELINE_WITH_NL), enforce: "1" });
+    expect(resNoSummary.code).toBe(0);
+  });
+});
+
 describe("report-only downgrades", () => {
   it("provisional baseline → report-only even with a regression under enforcement", () => {
     const summary = writeSummary({ pct: 70 }, { "src/core": { pct: 60 } });
@@ -227,5 +279,19 @@ describe("buildCorpusSection (unit, update-coverage-baseline.ts)", () => {
     );
     expect(section.global.pct).toBe(50);
     expect(Object.keys(section.files)).toEqual(["src/cli.ts"]);
+    expect(section.neverLoadedCount).toBe(null); // summary lacks neverLoaded
+  });
+
+  it("records the summary's neverLoaded.count so the gate can catch shrinking denominators", () => {
+    const section = buildCorpusSection(
+      {
+        total: { lines: 10, covered: 5, pct: 50 },
+        dirs: {},
+        files: {},
+        neverLoaded: { count: 42 },
+      },
+      [],
+    );
+    expect(section.neverLoadedCount).toBe(42);
   });
 });

@@ -91,6 +91,22 @@ describe('classify-tests detectors', () => {
     expect(res.rows[0].cases).toBe(1);
   });
 
+  test('binding names with regex metachars ($) are escaped, not read as anchors', () => {
+    // `$SRC` interpolated unescaped becomes /\b$SRC\b/ — `$` reads as an
+    // end-anchor and the binding can never match, so attribution silently
+    // falls through to the (file-level) pseudo-suite.
+    const src = [
+      "const $SRC = readFileSync('src/core/operations.ts', 'utf-8');",
+      "describe('uses dollar binding', () => {",
+      "  test('pin', () => { expect($SRC).toContain('Operation'); });",
+      '});',
+    ].join('\n');
+    const res = classifyFile('test/fake.test.ts', src);
+    expect(res.rows).toHaveLength(1);
+    expect(res.rows[0].suite).toBe('uses dollar binding');
+    expect(res.rows[0].detector).toBe('readFileSync');
+  });
+
   test('comment lines never trigger detectors', () => {
     const src = [
       "// reads src/commands/doctor.ts via readFileSync at runtime",
