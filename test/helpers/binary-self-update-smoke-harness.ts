@@ -16,12 +16,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   defaultComputeDigest,
+  EXPECTED_BUILDER_IDS,
   parseAttestationBundle,
   verifyIntegrity,
   type ParsedAttestation,
 } from '../../src/core/binary-self-update.ts';
 
-const BUILDER = 'https://github.com/garrytan/gbrain/.github/workflows/release.yml@refs/heads/master';
+// Derived from the source constant so a workflow rename can't silently split
+// the harness from the real verify. (test/binary-self-update.test.ts keeps its
+// own literal deliberately, as a regression pin.)
+const BUILDER = EXPECTED_BUILDER_IDS[0]!;
 
 async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'gbrain-smoke-'));

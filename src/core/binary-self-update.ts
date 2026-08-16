@@ -8,7 +8,9 @@
  * it's the only place we can (and now do) guarantee atomicity:
  *
  *   resolve published asset → download to a temp sibling of the live binary →
- *   fsync + chmod +x → `--version` smoke test → renameSync over the live path.
+ *   verify attestation integrity → fsync + chmod +x → `--version` smoke test →
+ *   verify version matches the release tag (downgrade-replay guard) →
+ *   renameSync over the live path.
  *
  * rename(2) over a running binary is safe on darwin/linux (the running process
  * keeps the old inode; the next exec picks up the new file). Every failure
@@ -46,15 +48,19 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 /**
- * The attestation's builder id must start with this prefix — it binds the
- * provenance to THIS repo's release workflow, so a valid attestation for some
- * OTHER artifact (or a fork's workflow) can't be replayed. The `@<ref>` suffix
- * (e.g. `@refs/heads/master`) is intentionally not pinned: a future
- * tag-triggered release would carry a different ref but the same workflow
- * identity. Mirrors `expectedAssetName`'s coupling to release.yml.
+ * The attestation's builder id must be EXACTLY one of these — it binds the
+ * provenance to THIS repo's release workflow running on a trusted ref, so a
+ * valid attestation for some OTHER artifact, a fork's workflow, or a
+ * workflow_dispatch of release.yml from an arbitrary branch can't be replayed.
+ * If tag-triggered releases ever ship, add their ref form here in the same PR.
+ * Mirrors `expectedAssetName`'s coupling to release.yml; pinned by
+ * test/release-workflow.test.ts.
  */
-const EXPECTED_BUILDER_ID_PREFIX =
+export const EXPECTED_BUILDER_ID_PREFIX =
   'https://github.com/garrytan/gbrain/.github/workflows/release.yml@';
+export const EXPECTED_BUILDER_IDS: readonly string[] = [
+  `${EXPECTED_BUILDER_ID_PREFIX}refs/heads/master`,
+];
 
 /** Base for the GitHub attestation REST endpoint (per-subject-digest lookup). */
 const ATTESTATION_API_BASE =
@@ -72,6 +78,7 @@ export type BinarySelfUpdateReason =
   | 'download_failed'
   | 'integrity_unavailable'
   | 'integrity_failed'
+  | 'version_mismatch'
   | 'smoke_failed'
   | 'replace_failed';
 
@@ -122,6 +129,15 @@ export interface BinarySelfUpdateDeps {
   download?: (url: string, destPath: string) => Promise<void>;
   /** Smoke-test the staged binary; returns true if `<path> --version` looks like gbrain. */
   smoke?: (stagedPath: string) => boolean;
+  /**
+   * Confirm the staged binary actually IS the release it claims to be — its
+   * `--version` must contain `expectedVersion` (derived from the release tag).
+   * Defaults to a real `--version` exec. Blocks a downgrade-replay: an attacker
+   * who swaps the published asset for an OLDER, still-validly-attested binary
+   * passes the digest+builder check (the old digest has a real attestation) but
+   * reports the wrong version here. Injected in tests that stage non-binary bytes.
+   */
+  checkVersion?: (stagedPath: string, expectedVersion: string) => boolean;
   /** SHA-256 (hex) of the file at `path`. Default reads the file with node:crypto. */
   computeDigest?: (path: string) => string;
   /**
@@ -182,6 +198,18 @@ function defaultSmoke(stagedPath: string): boolean {
   }
 }
 
+function defaultCheckVersion(stagedPath: string, expectedVersion: string): boolean {
+  try {
+    const out = execFileSync(stagedPath, ['--version'], { encoding: 'utf-8', timeout: 10_000 });
+    // Substring, not equality: `--version` prints `gbrain <version>` (+ maybe a
+    // build suffix). The release workflow enforces binary-version == VERSION at
+    // build time, so the tag's numeric version must appear here.
+    return out.includes(expectedVersion);
+  } catch {
+    return false;
+  }
+}
+
 export function defaultComputeDigest(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
@@ -197,6 +225,12 @@ export function parseAttestationBundle(bundle: any): ParsedAttestation | null {
     const payloadB64 = bundle?.dsseEnvelope?.payload;
     if (typeof payloadB64 !== 'string' || payloadB64.length === 0) return null;
     const stmt = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf8'));
+    // Only accept SLSA build-provenance statements — don't let some other
+    // attestation type that happens to carry subject[]+builder.id be read as
+    // provenance.
+    if (typeof stmt?.predicateType === 'string' && !stmt.predicateType.includes('slsa.dev/provenance')) {
+      return null;
+    }
     const subjects: AttestedSubject[] = Array.isArray(stmt?.subject)
       ? stmt.subject
           .map((s: any) => ({ name: String(s?.name ?? ''), sha256: String(s?.digest?.sha256 ?? '') }))
@@ -210,7 +244,7 @@ export function parseAttestationBundle(bundle: any): ParsedAttestation | null {
   }
 }
 
-async function defaultFetchAttestation(digest: string): Promise<ParsedAttestation[] | null> {
+export async function defaultFetchAttestation(digest: string): Promise<ParsedAttestation[] | null> {
   try {
     const res = await fetch(`${ATTESTATION_API_BASE}${digest}`, {
       headers: { 'User-Agent': 'gbrain-self-upgrade', Accept: 'application/vnd.github+json' },
@@ -256,15 +290,24 @@ export async function verifyIntegrity(
   }
   if (!/^[0-9a-f]{64}$/.test(digest)) return 'integrity_unavailable';
 
-  const attestations = await fetchAttestation(digest);
+  // fetchAttestation is an injected seam; a throwing implementation must not
+  // escape runBinarySelfUpdate's never-throws contract (which would skip the
+  // staged-file cleanup). Any failure to obtain attestations is fail-closed.
+  let attestations: ParsedAttestation[] | null;
+  try {
+    attestations = await fetchAttestation(digest);
+  } catch {
+    return 'integrity_unavailable';
+  }
   if (!attestations || attestations.length === 0) return 'integrity_unavailable';
 
-  // A match requires: an attestation from OUR release workflow that names this
-  // asset with exactly this digest. Digest-match alone is insufficient — the
-  // builder id binds the provenance to a trusted producer.
+  // A match requires: an attestation from OUR release workflow ON A TRUSTED REF
+  // that names this asset with exactly this digest. Digest-match alone is
+  // insufficient (any artifact could carry it), and workflow-match alone is
+  // insufficient (a dispatch from an untrusted branch mints a real attestation).
   const verified = attestations.some(
     (att) =>
-      att.builderId.startsWith(EXPECTED_BUILDER_ID_PREFIX) &&
+      EXPECTED_BUILDER_IDS.includes(att.builderId) &&
       att.subjects.some((s) => s.name === assetName && s.sha256 === digest),
   );
   return verified ? null : 'integrity_failed';
@@ -286,6 +329,7 @@ export async function runBinarySelfUpdate(
   const fetchRelease = deps.fetchRelease ?? defaultFetchRelease;
   const download = deps.download ?? defaultDownload;
   const smoke = deps.smoke ?? defaultSmoke;
+  const checkVersion = deps.checkVersion ?? defaultCheckVersion;
   const computeDigest = deps.computeDigest ?? defaultComputeDigest;
   const fetchAttestation = deps.fetchAttestation ?? defaultFetchAttestation;
 
@@ -331,6 +375,15 @@ export async function runBinarySelfUpdate(
   if (!smoke(staged)) {
     safeUnlink(staged);
     return { ok: false, reason: 'smoke_failed', asset: assetName };
+  }
+
+  // Downgrade-replay guard: the staged binary must actually be the release it
+  // claims. A swapped asset serving an older, still-validly-attested binary
+  // clears digest+builder but reports the wrong version here.
+  const expectedVersion = release.tag.replace(/^v/, '').trim();
+  if (expectedVersion && !checkVersion(staged, expectedVersion)) {
+    safeUnlink(staged);
+    return { ok: false, reason: 'version_mismatch', asset: assetName };
   }
 
   try {
