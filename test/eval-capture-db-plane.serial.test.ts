@@ -26,7 +26,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
-import { makeContext, __testing } from '../src/cli.ts';
+import { makeContext } from '../src/cli.ts';
 import { isEvalCaptureEnabled, isEvalScrubEnabled } from '../src/core/eval-capture.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
@@ -103,6 +103,13 @@ describe('eval.capture set on the DB plane reaches the runtime gate (#1475)', ()
     // merges the DB plane once per command; makeContext consumes that result
     // instead of re-deriving it. If the publish in connectEngine is ever
     // dropped, this count goes from 0 to the full per-key read set.
+    // Imported here rather than at module scope on purpose: a static named
+    // import of `__testing` makes this whole FILE fail to link against a tree
+    // that lacks the export, which would collapse the other cases' signal to a
+    // single load error. Deferring it keeps each case independently
+    // meaningful when someone reverts half the fix to see what breaks.
+    const { __testing } = await import('../src/cli.ts');
+
     let keysRead: string[] = [];
     const counting = {
       kind: 'pglite',
