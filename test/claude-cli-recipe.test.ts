@@ -120,6 +120,54 @@ describe('claude-cli LanguageModel — text-only round trip', () => {
       expect(result.content[0]).toEqual({ type: 'text', text: 'hello world' });
       expect(result.usage.inputTokens).toBe(12);
       expect(result.usage.outputTokens).toBe(34);
+      // baseEnvelope's default cache_read_input_tokens is 0 (present, not
+      // omitted) — pins "present zero" as distinct from the omitted/undefined
+      // case covered below.
+      expect(result.usage.cachedInputTokens).toBe(0);
+    });
+  });
+
+  test('maps cache_read_input_tokens onto usage.cachedInputTokens', async () => {
+    await withStubEnv(async () => {
+      stageResponse(
+        baseEnvelope('hello world', {
+          usage: {
+            input_tokens: 12,
+            output_tokens: 34,
+            cache_read_input_tokens: 9001,
+            cache_creation_input_tokens: 0,
+          },
+        }),
+      );
+      const { ClaudeCliLanguageModel } = await import('../src/core/ai/providers/claude-cli-language-model.ts');
+      const model = new ClaudeCliLanguageModel('claude-sonnet-4-6');
+      const result = await model.doGenerate({
+        prompt: [userMessage('hi')],
+      } as LanguageModelV2CallOptions);
+
+      expect(result.usage.cachedInputTokens).toBe(9001);
+    });
+  });
+
+  test('leaves usage.cachedInputTokens undefined when the CLI omits cache_read_input_tokens', async () => {
+    await withStubEnv(async () => {
+      stageResponse({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'hello world',
+        stop_reason: 'end_turn',
+        session_id: 'test-session',
+        num_turns: 1,
+        usage: { input_tokens: 12, output_tokens: 34 },
+      });
+      const { ClaudeCliLanguageModel } = await import('../src/core/ai/providers/claude-cli-language-model.ts');
+      const model = new ClaudeCliLanguageModel('claude-sonnet-4-6');
+      const result = await model.doGenerate({
+        prompt: [userMessage('hi')],
+      } as LanguageModelV2CallOptions);
+
+      expect(result.usage.cachedInputTokens).toBeUndefined();
     });
   });
 

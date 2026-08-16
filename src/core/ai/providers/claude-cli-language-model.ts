@@ -392,7 +392,12 @@ export class ClaudeCliLanguageModel implements LanguageModelV2 {
   async doGenerate(options: LanguageModelV2CallOptions): Promise<{
     content: LanguageModelV2Content[];
     finishReason: 'stop' | 'length' | 'content-filter' | 'tool-calls' | 'error' | 'other' | 'unknown';
-    usage: { inputTokens: number | undefined; outputTokens: number | undefined; totalTokens: number | undefined };
+    usage: {
+      inputTokens: number | undefined;
+      outputTokens: number | undefined;
+      totalTokens: number | undefined;
+      cachedInputTokens: number | undefined;
+    };
     warnings: never[];
   }> {
     const { systemText, userPrompt } = renderPrompt(options.prompt);
@@ -422,6 +427,14 @@ export class ClaudeCliLanguageModel implements LanguageModelV2 {
     const inputTokens = result.usage?.input_tokens;
     const outputTokens = result.usage?.output_tokens;
     const totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0);
+    // `cache_creation_input_tokens` is deliberately NOT surfaced here — the AI
+    // SDK's LanguageModelV2Usage has no corresponding field, and folding it in
+    // would need a claude-cli-specific branch in the gateway's usage assembly
+    // (src/core/ai/gateway.ts). Out of scope for this fix.
+    const cachedInputTokens =
+      result.usage?.cache_read_input_tokens !== undefined
+        ? Number(result.usage.cache_read_input_tokens)
+        : undefined;
 
     return {
       content,
@@ -430,6 +443,7 @@ export class ClaudeCliLanguageModel implements LanguageModelV2 {
         inputTokens,
         outputTokens,
         totalTokens: inputTokens !== undefined && outputTokens !== undefined ? totalTokens : undefined,
+        cachedInputTokens,
       },
       warnings: [],
     };
