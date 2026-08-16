@@ -495,13 +495,15 @@ export async function readSearchStats(
       rank1_distribution: { lt_solid: r1_lt, solid: r1_solid, high: r1_high },
       empty_results: { total: empty_total, by_cause: empty_by_cause },
     };
-  } catch (err) {
-    // Relation-missing is actionable: re-throw so the wrapping withRelationGuard
-    // surfaces the 'unavailable' envelope (an un-migrated brain shows up as
-    // "run apply-migrations", not as healthy-but-empty telemetry). Other
-    // transient failures keep the best-effort empty-stats degrade.
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/relation .* does not exist|no such table/i.test(msg)) throw err;
+  } catch {
+    // Best-effort by design: a pre-v0.32.3 brain WITHOUT the search_telemetry
+    // table shows "0 searches" (with the coverage caveat explaining low/zero
+    // counts), NOT a crash — a long-standing contract pinned by
+    // test/search-telemetry.test.ts and relied on by the CLI dashboard. The
+    // search_stats op wraps this in withRelationGuard for OTHER unexpected
+    // relation errors, but the missing-telemetry-table case is intentionally
+    // graceful, not 'unavailable'. (Reverted an over-eager gap-closure rethrow
+    // that broke this contract for the CLI + dashboard to satisfy a P2 finding.)
     return {
       total_calls: 0,
       cache_hits: 0,

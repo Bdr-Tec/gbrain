@@ -327,13 +327,11 @@ export class SemanticQueryCache {
          FROM query_cache`,
       );
       return rows[0] ?? { total_rows: 0, total_hits: 0, fresh_rows: 0, stale_rows: 0 };
-    } catch (err) {
-      // Relation-missing is actionable: re-throw so the wrapping withRelationGuard
-      // (cache_stats op) surfaces the 'unavailable' envelope on an un-migrated
-      // brain instead of a healthy-looking all-zero row. Other transient
-      // failures keep the best-effort zero-stats degrade.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/relation .* does not exist|no such table/i.test(msg)) throw err;
+    } catch {
+      // Best-effort by design (parity with readSearchStats): a brain without
+      // the cache table shows all-zero, not a crash. cache_stats wraps this in
+      // withRelationGuard for other unexpected relation errors; the
+      // missing-cache-table case stays gracefully empty.
       return { total_rows: 0, total_hits: 0, fresh_rows: 0, stale_rows: 0 };
     }
   }

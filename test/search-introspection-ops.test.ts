@@ -56,25 +56,28 @@ describe('search_modes op', () => {
   });
 });
 
-describe('search_stats relation-missing degrade [P2-7]', () => {
-  test('a bare engine whose telemetry query 42P01s returns the unavailable envelope, NOT zero-filled stats', async () => {
-    // A brain that predates the search_telemetry table: the backing query raw-
-    // errors with "relation ... does not exist". readSearchStats rethrows the
-    // 42P01 (it only best-effort-empties transient failures), and
-    // withRelationGuard maps it to the actionable 'unavailable' envelope — so a
-    // missing table can never masquerade as a healthy-but-empty dashboard.
+describe('search_stats on a pre-telemetry brain degrades gracefully', () => {
+  test('a missing search_telemetry table yields zero-filled stats (the long-standing best-effort contract), not a crash', async () => {
+    // readSearchStats is intentionally graceful for a pre-v0.32.3 brain that
+    // has no telemetry table — it returns "0 searches" (the coverage caveat in
+    // the op description explains low/zero counts), a contract pinned by
+    // test/search-telemetry.test.ts and relied on by the CLI dashboard. The op
+    // wraps readSearchStats in withRelationGuard for OTHER unexpected relation
+    // errors, but the missing-telemetry-table case stays a healthy-empty
+    // dashboard (an earlier gap-closure rethrow that broke this was reverted).
     const bareEngine = {
       async executeRaw() {
         throw new Error('relation "search_telemetry" does not exist');
       },
+      // readGraphSignalsStats reads config (not the telemetry table); stub it
+      // so the op's graph-signals section resolves via the mode-default path.
+      async getConfig() { return null; },
     } as unknown as PGLiteEngine;
     const res = await dispatchToolCall(bareEngine, 'search_stats', { days: 30 }, { ...STDIO });
-    expect(res.isError).toBe(true);
+    expect(res.isError ?? false).toBe(false);
     const body = parsed(res);
-    expect(body.error).toBe('unavailable');
-    // Crucially NOT the zero-filled shape the healthy-empty path returns.
-    expect(body.total_calls).toBeUndefined();
-    expect(body.schema_version).toBeUndefined();
+    expect(body.total_calls).toBe(0);
+    expect(body.schema_version).toBe(2);
   });
 });
 
