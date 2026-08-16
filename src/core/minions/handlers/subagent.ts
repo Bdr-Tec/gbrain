@@ -54,6 +54,7 @@ import { buildSystemPrompt, DEFAULT_SUBAGENT_SYSTEM } from '../system-prompt.ts'
 import { toolLoop as gatewayToolLoop, isThinkingByDefaultModel, THINKING_MODEL_MAX_OUTPUT_TOKENS } from '../../ai/gateway.ts';
 import type { ChatToolDef, ChatMessage, ChatBlock, ChatResult, ToolHandler } from '../../ai/gateway.ts';
 import { classifyCapabilities } from '../../ai/capabilities.ts';
+import { runSubagentOneshot, type OneshotFallbackReason } from './subagent-oneshot.ts';
 import {
   loadPriorMessages,
   loadPriorTools,
@@ -164,6 +165,11 @@ export interface SubagentDeps {
    * the caller's subagentId at dispatch time.
    */
   toolRegistry?: ToolDef[];
+  /**
+   * #4216 test seam — chat transport for the oneshot runner (extract-atoms
+   * `_chat` pattern). Defaults to the gateway chat.
+   */
+  _chat?: typeof import('../../ai/gateway.ts').chat;
 }
 
 // ── Public handler factory ──────────────────────────────────
@@ -197,13 +203,32 @@ export function makeSubagentHandler(deps: SubagentDeps) {
     // its result; jobs submitted with require_writes (dream synthesize /
     // patterns fan-out) FAIL when every attempted put_page write failed —
     // "the turn finished" must never masquerade as "the work succeeded".
-    const inner = await subagentHandlerInner(ctx);
-    return finalizeWriteAccounting(engine, ctx.id, inner, {
+    const modeState: { fallbackReason?: OneshotFallbackReason } = {};
+    const inner = await subagentHandlerInner(ctx, modeState);
+    // #4216: stamp which execution path produced the result. Jobs with no
+    // `mode` field keep the legacy result shape (REGRESSION pin).
+    const stamped: SubagentResult = dataForAccounting.mode === 'oneshot' && inner.synth_mode_used !== 'oneshot'
+      ? {
+          ...inner,
+          synth_mode_used: 'agentic_fallback',
+          ...(modeState.fallbackReason ? { fallback_reason: modeState.fallbackReason } : {}),
+        }
+      : dataForAccounting.mode === 'agentic' && !inner.synth_mode_used
+        ? { ...inner, synth_mode_used: 'agentic' }
+        : inner;
+    return finalizeWriteAccounting(engine, ctx.id, stamped, {
       requireWrites: dataForAccounting.require_writes === true,
+      // OV-4: a successful oneshot job's verdict is scoped to its own
+      // invocation family; a fallback wrote through the loop (no oneshot
+      // rows exist — validation precedes all writes), so job-wide is exact.
+      ...(stamped.synth_mode_used === 'oneshot' ? { scopeToolUseIdPrefix: 'oneshot-' } : {}),
     });
   };
 
-  async function subagentHandlerInner(ctx: MinionJobContext): Promise<SubagentResult> {
+  async function subagentHandlerInner(
+    ctx: MinionJobContext,
+    modeState: { fallbackReason?: OneshotFallbackReason } = {},
+  ): Promise<SubagentResult> {
     const data = (ctx.data ?? {}) as unknown as SubagentHandlerData;
     if (!data.prompt || typeof data.prompt !== 'string') {
       throw new Error('subagent job data.prompt is required (string)');
@@ -359,14 +384,55 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       allowed_tools: toolDefs.map(t => t.name),
     });
 
+    // OV-10: provider-derived lease key. Anthropic-family models keep the
+    // legacy 'anthropic:messages' bucket (one shared ceiling per API, not
+    // one per code path); everything else gets its own recipe bucket.
+    const recipeId = recipeIdFromModel(model);
+    const gatewayLeaseKey = deps.rateLeaseKey
+      ?? (recipeId === 'anthropic' ? DEFAULT_RATE_KEY : `${recipeId}:chat`);
+
+    // ── #4216 oneshot dispatch ──────────────────────────────
+    // Runs ONLY on a fresh job (CDX-2: zero persisted messages — any prior
+    // rows mean a crash-replay that the path-specific replay logic below must
+    // own; the ledger-first recovery inside the runner covers post-write
+    // crashes because a successful attempt persists its transcript LAST).
+    if (data.mode === 'oneshot') {
+      const freshRows = await engine.executeRaw<{ n: number }>(
+        `SELECT count(*)::int AS n FROM subagent_messages WHERE job_id = $1`,
+        [ctx.id],
+      );
+      if ((freshRows[0]?.n ?? 0) === 0) {
+        // Rebuild put_page with deferEmbeds so the embed network call leaves
+        // the model path (the standing embed machinery backfills).
+        const oneshotTools = deps.toolRegistry ?? buildBrainTools({
+          subagentId: ctx.id,
+          engine,
+          config,
+          brainId: data.brain_id,
+          allowedSlugPrefixes: data.allowed_slug_prefixes,
+          sourceId: data.source_id,
+          deferEmbeds: true,
+        });
+        const outcome = await runSubagentOneshot({
+          engine,
+          ctx,
+          data,
+          model,
+          maxOutputTokens,
+          putPageTool: oneshotTools.find(t => t.name === 'brain_put_page'),
+          leaseKey: gatewayLeaseKey,
+          maxConcurrent,
+          leaseTtlMs,
+          _chat: deps._chat,
+        });
+        if (outcome.kind === 'done') return outcome.result;
+        modeState.fallbackReason = outcome.reason;
+        logSubagentHeartbeat({ job_id: ctx.id, event: 'oneshot_fallback', turn_idx: 0, reason: outcome.reason, mode: 'oneshot' });
+      }
+    }
+
     // v0.38 S1.5 — gateway path. Route here when the feature flag is on.
     if (useGatewayLoop) {
-      // OV-10: provider-derived lease key. Anthropic-family models keep the
-      // legacy 'anthropic:messages' bucket (one shared ceiling per API, not
-      // one per code path); everything else gets its own recipe bucket.
-      const recipeId = recipeIdFromModel(model);
-      const gatewayLeaseKey = deps.rateLeaseKey
-        ?? (recipeId === 'anthropic' ? DEFAULT_RATE_KEY : `${recipeId}:chat`);
       return await runSubagentViaGateway({
         engine,
         ctx,

@@ -677,6 +677,14 @@ export async function runPhaseSynthesize(
           model: subagentModel,
           max_turns: config.maxTurns,
           allowed_slug_prefixes: allowedSlugPrefixes,
+          // #4216: execution mode + the structural slug-suffix contract
+          // (CDX-9) + #4217 write requirement — a synthesis child whose every
+          // write failed must dead-letter, not report completed.
+          mode: config.mode,
+          oneshot_slug_suffix: chunks.length > 1
+            ? `${t.contentHash.slice(0, 6)}-c${i}`
+            : t.contentHash.slice(0, 6),
+          require_writes: true,
           // #1586: scope every child tool call to the cycle's resolved source
           // so put_page writes land there instead of the hardcoded 'default'.
           ...(opts.sourceId ? { source_id: opts.sourceId } : {}),
@@ -802,7 +810,7 @@ export async function runPhaseSynthesize(
 
     // Wait for every child to reach a terminal state. Tick yieldDuringPhase
     // every 5 min so the cycle lock TTL refreshes.
-    const childOutcomes: Array<{ jobId: number; status: string; turns?: number }> = [];
+    const childOutcomes: Array<{ jobId: number; status: string; turns?: number; synth_mode_used?: string; fallback_reason?: string }> = [];
     for (const jobId of childIds) {
       try {
         const job = await waitForCompletion(queue, jobId, {
@@ -810,12 +818,16 @@ export async function runPhaseSynthesize(
           pollMs: 5 * 1000,
         });
         // Turn telemetry: surfaces max_turns cap pressure in details.synthesis
-        // so the 30→16 default can be re-litigated on data.
-        const turns = (job.result as { turns_count?: unknown } | null | undefined)?.turns_count;
+        // so the 30→16 default can be re-litigated on data. #4216 adds the
+        // execution-path markers so operators see oneshot vs fallback mix.
+        const jr = job.result as { turns_count?: unknown; synth_mode_used?: unknown; fallback_reason?: unknown } | null | undefined;
+        const turns = jr?.turns_count;
         childOutcomes.push({
           jobId,
           status: job.status,
           ...(typeof turns === 'number' && Number.isFinite(turns) ? { turns } : {}),
+          ...(typeof jr?.synth_mode_used === 'string' ? { synth_mode_used: jr.synth_mode_used } : {}),
+          ...(typeof jr?.fallback_reason === 'string' ? { fallback_reason: jr.fallback_reason } : {}),
         });
       } catch (e) {
         if (e instanceof TimeoutError) {
@@ -859,6 +871,31 @@ export async function runPhaseSynthesize(
     const writtenSlugs = writtenRefs.map(r => r.slug);
     if (SUMMARY_SLUG_RE.test(summarySlug)) {
       await writeSummaryPage(engine, opts.brainDir, summarySlug, summaryDate, writtenSlugs, childOutcomes, cycleSourceId);
+    }
+
+    // CDX-8: deferred-embed closure. Oneshot children write chunks with
+    // `embedding IS NULL`; the global `embed` phase only runs on SOME
+    // invocation shapes (autopilot per-source cycles run NON_GLOBAL_PHASES,
+    // and `--phase synthesize` never reaches it), so close the freshness gap
+    // HERE with a bounded inline backfill. Works on PGLite + standalone;
+    // no-op when embeddings are unavailable; best-effort (a backfill error
+    // never fails a phase that already wrote its pages).
+    if (config.mode === 'oneshot' && writtenSlugs.length > 0) {
+      try {
+        const { isAvailable } = await import('../ai/gateway.ts');
+        if (isAvailable('embedding')) {
+          const { embedStaleForSource } = await import('../embed-stale.ts');
+          const embedRes = await embedStaleForSource(engine, cycleSourceId, {
+            batchSize: 500,
+            concurrency: 4,
+          });
+          if (embedRes.embedded > 0) {
+            process.stderr.write(`[dream] phase-end embed backfill: ${embedRes.embedded} chunk(s) embedded.\n`);
+          }
+        }
+      } catch (e) {
+        process.stderr.write(`[dream] phase-end embed backfill failed (embed --stale will catch up): ${e instanceof Error ? e.message : String(e)}\n`);
+      }
     }
 
     // #4194 telemetry: queue-wait + runtime percentiles from the children's
@@ -968,6 +1005,15 @@ export async function runPhaseSynthesize(
         avg_turns: turnsSamples.length > 0
           ? Math.round((turnsSamples.reduce((a, o) => a + o.turns, 0) / turnsSamples.length) * 10) / 10
           : null,
+        // #4216 execution-path mix.
+        mode: config.mode,
+        oneshot_jobs: childOutcomes.filter(o => o.synth_mode_used === 'oneshot').length,
+        fallback_jobs: childOutcomes.filter(o => o.synth_mode_used === 'agentic_fallback').length,
+        agentic_jobs: childOutcomes.filter(o => o.synth_mode_used === 'agentic').length,
+        fallback_reasons: childOutcomes.reduce<Record<string, number>>((acc, o) => {
+          if (o.fallback_reason) acc[o.fallback_reason] = (acc[o.fallback_reason] ?? 0) + 1;
+          return acc;
+        }, {}),
         // #4194 drain observability.
         inline_concurrency_config: config.inlineConcurrency,
         inline_concurrency_effective: effectiveConcurrency,
@@ -1055,6 +1101,14 @@ export interface SynthConfig {
    * it off restores the pre-wave "search for targets yourself" prompt.
    */
   linkManifest: boolean;
+  /**
+   * #4216: synthesis execution mode. 'oneshot' (DEFAULT) = one structured
+   * completion + programmatic validated writes with automatic per-transcript
+   * fallback to the agentic loop; 'agentic' = the classic multi-turn tool
+   * loop. Config `dream.synthesize.mode`; unknown values warn + default.
+   * Revert dial: `gbrain config set dream.synthesize.mode agentic`.
+   */
+  mode: 'agentic' | 'oneshot';
 }
 
 /** #2415: shared output-root resolution (synthesize + patterns phases). */
@@ -1138,6 +1192,14 @@ export async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig>
   // #4216: manifest default ON; only an explicit 'false'/'0'/'off' disables.
   const linkManifestRaw = await engine.getConfig('dream.synthesize.link_manifest');
   const linkManifest = !(linkManifestRaw === 'false' || linkManifestRaw === '0' || linkManifestRaw === 'off');
+  // #4216: mode default 'oneshot' (D1=A). loadOutputRoot pattern: unknown
+  // values warn to stderr and fall back to the default rather than failing.
+  const modeRaw = (await engine.getConfig('dream.synthesize.mode'))?.trim().toLowerCase();
+  let synthMode: 'agentic' | 'oneshot' = 'oneshot';
+  if (modeRaw === 'agentic') synthMode = 'agentic';
+  else if (modeRaw && modeRaw !== 'oneshot') {
+    process.stderr.write(`[dream] dream.synthesize.mode "${modeRaw}" is not 'oneshot' | 'agentic'; using 'oneshot'.\n`);
+  }
 
   let excludePatterns: string[] = [...DEFAULT_EXCLUDE_PATTERNS];
   if (excludeStr) {
@@ -1189,6 +1251,7 @@ export async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig>
     subagentWaitTimeoutMs,
     inlineConcurrency,
     linkManifest,
+    mode: synthMode,
   };
 }
 

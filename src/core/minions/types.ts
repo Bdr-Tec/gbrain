@@ -561,6 +561,14 @@ export interface SubagentHandlerData {
    */
   mode?: 'agentic' | 'oneshot';
   /**
+   * #4216/CDX-9 — the exact transcript hash suffix every oneshot page slug
+   * must end with (`<hash6>` or `<hash6>-c<idx>` for chunked transcripts).
+   * The suffix is the idempotency boundary between transcripts; oneshot
+   * validation enforces it structurally instead of trusting prompt
+   * discipline. Set by the dream fan-out alongside `mode`.
+   */
+  oneshot_slug_suffix?: string;
+  /**
    * v0.41 Approach C: opt out of the auto-generated tool-usage preamble
    * that `buildSystemPrompt()` splices into `system`. Default behavior
    * (omitted or false) prepends a deterministic preamble listing each

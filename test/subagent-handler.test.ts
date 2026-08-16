@@ -948,3 +948,84 @@ describe('resolveMaxOutputTokens model-aware default', () => {
     expect(resolveMaxOutputTokens(undefined, '9000', 'anthropic:claude-fable-5')).toBe(9000);
   });
 });
+
+// ── #4216 oneshot mode dispatch ─────────────────────────────
+
+describe('oneshot mode dispatch (#4216)', () => {
+  const PREFIXES = ['wiki/personal/reflections/*', 'wiki/originals/*'];
+  const SUFFIX = 'abc123';
+  const SLUG_A = `wiki/personal/reflections/2026-08-16-topic-${SUFFIX}`;
+  const SLUG_B = `wiki/originals/ideas/2026-08-16-idea-${SUFFIX}`;
+  const VALID = JSON.stringify({
+    pages: [
+      { slug: SLUG_A, body: `A. [[${SLUG_B}]]` },
+      { slug: SLUG_B, body: `B. [[${SLUG_A}]]` },
+    ],
+    skipped: false,
+  });
+  const chatStub = (text: string) => (async () => ({
+    text,
+    blocks: [{ type: 'text' as const, text }],
+    stopReason: 'end' as const,
+    usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 },
+    model: 'anthropic:claude-sonnet-4-6',
+    providerId: 'anthropic',
+  })) as any;
+
+  test('valid oneshot output: single call, pages written, synth_mode_used=oneshot, accounting scoped', async () => {
+    const client = new FakeMessagesClient([]); // legacy loop must never run
+    const handler = makeSubagentHandler({ engine, client, _chat: chatStub(VALID) });
+    const ctx = await makeCtx({
+      prompt: 'synthesize', mode: 'oneshot', require_writes: true,
+      allowed_slug_prefixes: PREFIXES, oneshot_slug_suffix: SUFFIX,
+    });
+    const result = await handler(ctx);
+    expect(result.synth_mode_used).toBe('oneshot');
+    expect(result.turns_count).toBe(1);
+    expect(result.pages_written).toBe(2);
+    expect(result.pages_failed).toBe(0);
+    expect(client.calls.length).toBe(0);
+    expect(await engine.getPage(SLUG_A)).not.toBeNull();
+  });
+
+  test('invalid oneshot output falls back to the agentic loop IN THE SAME JOB', async () => {
+    const client = new FakeMessagesClient([
+      { content: [{ type: 'text', text: 'agentic loop answered' }] as any, stop_reason: 'end_turn' },
+    ]);
+    const handler = makeSubagentHandler({ engine, client, _chat: chatStub('not json at all') });
+    const ctx = await makeCtx({
+      prompt: 'synthesize', mode: 'oneshot',
+      allowed_slug_prefixes: PREFIXES, oneshot_slug_suffix: SUFFIX,
+    });
+    const result = await handler(ctx);
+    expect(result.result).toBe('agentic loop answered');
+    expect(result.synth_mode_used).toBe('agentic_fallback');
+    expect(result.fallback_reason).toBe('unparseable');
+    expect(client.calls.length).toBe(1); // the loop really ran
+  });
+
+  test('REGRESSION pin: payload without mode keeps the legacy result shape (no synth fields)', async () => {
+    const client = new FakeMessagesClient([
+      { content: [{ type: 'text', text: 'plain job' }] as any, stop_reason: 'end_turn' },
+    ]);
+    const handler = makeSubagentHandler({ engine, client, _chat: chatStub(VALID) });
+    const ctx = await makeCtx({ prompt: 'plain' });
+    const result = await handler(ctx);
+    expect(result.result).toBe('plain job');
+    expect('synth_mode_used' in result).toBe(false);
+    expect('fallback_reason' in result).toBe(false);
+  });
+
+  test('mode=agentic stamps synth_mode_used=agentic and never calls the oneshot chat', async () => {
+    let oneshotCalls = 0;
+    const spy = (async (...args: any[]) => { oneshotCalls++; return chatStub(VALID)(...args); }) as any;
+    const client = new FakeMessagesClient([
+      { content: [{ type: 'text', text: 'agentic by request' }] as any, stop_reason: 'end_turn' },
+    ]);
+    const handler = makeSubagentHandler({ engine, client, _chat: spy });
+    const ctx = await makeCtx({ prompt: 'synthesize', mode: 'agentic' });
+    const result = await handler(ctx);
+    expect(result.synth_mode_used).toBe('agentic');
+    expect(oneshotCalls).toBe(0);
+  });
+});

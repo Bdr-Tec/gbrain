@@ -218,8 +218,11 @@ const put_page: Operation = {
     // Skip embedding when the AI gateway has no embedding provider configured.
     // Checks all auth env vars for the resolved provider, not just OPENAI_API_KEY,
     // so Gemini / Ollama / Voyage brains don't silently drop embeddings (Codex C2).
+    // #4216: ctx.deferEmbeds (server-side-only context field, set by the
+    // oneshot runner) also defers — chunks land `embedding IS NULL` and the
+    // standing embed machinery backfills them outside the model loop.
     const { isAvailable } = await import('../ai/gateway.ts');
-    const noEmbed = !isAvailable('embedding');
+    const noEmbed = ctx.deferEmbeds === true || !isAvailable('embedding');
     // v0.31.8 (D7 / codex OV-1): thread ctx.sourceId so put_page on a
     // multi-source brain lands in the intended source instead of the
     // default-source clobber path. importFromContent already accepts
@@ -564,6 +567,40 @@ const put_page: Operation = {
  * counted; the overall function never throws (catch in put_page handler covers
  * extraction errors).
  */
+/**
+ * #4216 post-batch auto-link reconciliation for the oneshot runner.
+ *
+ * Within one oneshot batch, page A can wikilink page B that is written LATER
+ * in the same batch: at A's put_page, runAutoLink's getAllSlugs filter
+ * silently drops the A→B edge (B doesn't exist yet). The content keeps the
+ * wikilink; only the links-table edge is missing. This wrapper re-runs the
+ * reconciliation for a written page AFTER the whole batch landed, so
+ * in-batch forward references materialize.
+ *
+ * Policy-preserving (CDX-11): gated on the same `auto_link` config as the
+ * put_page hook; best-effort (an error never fails the batch); re-fetches +
+ * re-shapes the page because runAutoLink needs the parsed shape (OV-m2).
+ */
+export async function autoLinkWrittenPage(
+  engine: BrainEngine,
+  slug: string,
+  opts?: { sourceId?: string },
+): Promise<void> {
+  try {
+    if (!(await isAutoLinkEnabled(engine))) return;
+    const page = await engine.getPage(slug, opts?.sourceId ? { sourceId: opts.sourceId } : undefined);
+    if (!page) return;
+    await runAutoLink(engine, slug, {
+      type: page.type,
+      compiled_truth: page.compiled_truth ?? '',
+      timeline: page.timeline ?? '',
+      frontmatter: (page.frontmatter ?? {}) as Record<string, unknown>,
+    }, opts?.sourceId ? { sourceId: opts.sourceId } : undefined);
+  } catch (e) {
+    process.stderr.write(`[oneshot] post-batch auto-link for ${slug} failed (best-effort): ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+}
+
 async function runAutoLink(
   engine: BrainEngine,
   slug: string,
