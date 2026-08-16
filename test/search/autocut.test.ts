@@ -231,3 +231,17 @@ describe('resolveAutocut — precedence ladder', () => {
     expect(cfg.enabled).toBe(false); // inherited from config (partial didn't set it)
   });
 });
+
+describe('autocutFromConfig — search.autocut_min_top (v0.46.8)', () => {
+  test('parses valid [0,1] values (0 disables the weak-top floor)', () => {
+    expect(autocutFromConfig({ search: { autocut_min_top: 0.5 } }).minTopScore).toBe(0.5);
+    expect(autocutFromConfig({ search: { autocut_min_top: 0 } }).minTopScore).toBe(0);
+    expect(autocutFromConfig({ search: { autocut_min_top: 1 } }).minTopScore).toBe(1);
+  });
+
+  test('out-of-range / non-numeric values fall through to the default', () => {
+    expect(autocutFromConfig({ search: { autocut_min_top: 1.5 } }).minTopScore).toBeUndefined();
+    expect(autocutFromConfig({ search: { autocut_min_top: -0.1 } }).minTopScore).toBeUndefined();
+    expect(autocutFromConfig({ search: { autocut_min_top: 'cheese' } }).minTopScore).toBeUndefined();
+  });
+});

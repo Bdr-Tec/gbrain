@@ -277,6 +277,21 @@ describe('gateVolunteeredPointers — direct unit (the pure gate step)', () => {
     });
     expect(pages).toEqual([]);
   });
+
+  test('title-surname arm clears the 0.70 gate unboosted and renders a surname rationale (R2-7)', () => {
+    const block: PointerBlock = {
+      pointers: [
+        { display: 'Galewright', slug: 'people/ronan-galewright', source_id: 'default', synopsis: 'z', arm: 'title-surname', confidence: 0.72 },
+      ],
+      text: 'B',
+    };
+    // Empty candidate map: no salience boost — the arm's base 0.72 alone must
+    // survive the 0.70 volunteer floor (the reason it isn't 0.65).
+    const pages = gateVolunteeredPointers(block, new Map(), { windowSize: 1 });
+    expect(pages).toHaveLength(1);
+    expect(pages[0].confidence).toBeCloseTo(0.72);
+    expect(pages[0].rationale).toContain('surname match "Galewright"');
+  });
 });
 
 describe('volunteerUsageStats', () => {

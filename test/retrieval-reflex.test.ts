@@ -14,7 +14,7 @@ import { normalizeAlias } from '../src/core/search/alias-normalize.ts';
 import { resolveEntitiesToPointers } from '../src/core/context/retrieval-reflex.ts';
 import { extractCandidates } from '../src/core/context/entity-salience.ts';
 import { createGBrainContextEngine } from '../src/core/context-engine.ts';
-import { disposeReflex } from '../src/core/context/reflex.ts';
+import { disposeReflex, lexicalArmsEnabled } from '../src/core/context/reflex.ts';
 import { TAKES_FENCE_BEGIN, TAKES_FENCE_END } from '../src/core/takes-fence.ts';
 
 let engine: PGLiteEngine;
@@ -560,6 +560,46 @@ describe('windowTurnCount — knob edge semantics', () => {
     await withEnv({ GBRAIN_RETRIEVAL_REFLEX_WINDOW_TURNS: 'not-a-number' }, async () => {
       // Garbage env falls through to config / default, not a crash.
       expect(windowTurnCount(null)).toBe(4);
+    });
+  });
+});
+
+describe('lexicalArmsEnabled — kill-switch resolution (env > config > default-ON)', () => {
+  const cfg = (o: object) => o as import('../src/core/config.ts').GBrainConfig;
+
+  test('defaults ON with no env and no config', async () => {
+    await withEnv({ GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS: undefined }, async () => {
+      expect(lexicalArmsEnabled(null)).toBe(true);
+      expect(lexicalArmsEnabled(cfg({}))).toBe(true);
+    });
+  });
+
+  test('config file-plane key disables and re-enables', async () => {
+    await withEnv({ GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS: undefined }, async () => {
+      expect(lexicalArmsEnabled(cfg({ retrieval_reflex_lexical_arms: false }))).toBe(false);
+      expect(lexicalArmsEnabled(cfg({ retrieval_reflex_lexical_arms: true }))).toBe(true);
+    });
+  });
+
+  test('env beats config in BOTH directions (incident escape hatch)', async () => {
+    await withEnv({ GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS: 'false' }, async () => {
+      expect(lexicalArmsEnabled(cfg({ retrieval_reflex_lexical_arms: true }))).toBe(false);
+    });
+    await withEnv({ GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS: '0' }, async () => {
+      expect(lexicalArmsEnabled(null)).toBe(false);
+    });
+    await withEnv({ GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS: 'true' }, async () => {
+      expect(lexicalArmsEnabled(cfg({ retrieval_reflex_lexical_arms: false }))).toBe(true);
+    });
+    await withEnv({ GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS: '1' }, async () => {
+      expect(lexicalArmsEnabled(cfg({ retrieval_reflex_lexical_arms: false }))).toBe(true);
+    });
+  });
+
+  test('empty-string env falls through to config (not treated as set)', async () => {
+    await withEnv({ GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS: '' }, async () => {
+      expect(lexicalArmsEnabled(cfg({ retrieval_reflex_lexical_arms: false }))).toBe(false);
+      expect(lexicalArmsEnabled(null)).toBe(true);
     });
   });
 });

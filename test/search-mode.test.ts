@@ -717,3 +717,36 @@ describe('v0.43 — relational recall knobs', () => {
     expect(on).not.toBe(off);
   });
 });
+
+describe('v0.46.8 — retrieval-wave knobs (evidence_cosine_floor + autocut_min_top)', () => {
+  test('loadOverridesFromConfig parses both new keys with [0,1] range guards', () => {
+    expect(loadOverridesFromConfig({ 'search.evidence_cosine_floor': '0.75' }).evidence_cosine_floor).toBe(0.75);
+    expect(loadOverridesFromConfig({ 'search.evidence_cosine_floor': '1.5' }).evidence_cosine_floor).toBeUndefined();
+    expect(loadOverridesFromConfig({ 'search.evidence_cosine_floor': '-0.1' }).evidence_cosine_floor).toBeUndefined();
+    expect(loadOverridesFromConfig({ 'search.evidence_cosine_floor': 'cheese' }).evidence_cosine_floor).toBeUndefined();
+    expect(loadOverridesFromConfig({ 'search.autocut_min_top': '0.5' }).autocut_min_top).toBe(0.5);
+    expect(loadOverridesFromConfig({ 'search.autocut_min_top': '0' }).autocut_min_top).toBe(0);
+    expect(loadOverridesFromConfig({ 'search.autocut_min_top': '2' }).autocut_min_top).toBeUndefined();
+    expect(loadOverridesFromConfig({ 'search.autocut_min_top': '-1' }).autocut_min_top).toBeUndefined();
+  });
+
+  test('SEARCH_MODE_CONFIG_KEYS includes both new keys', () => {
+    expect(SEARCH_MODE_CONFIG_KEYS).toContain('search.evidence_cosine_floor');
+    expect(SEARCH_MODE_CONFIG_KEYS).toContain('search.autocut_min_top');
+  });
+
+  test('autocut_min_top participates in knobsHash (acm=) — cache key bifurcates', () => {
+    const base = knobsHash(resolveSearchMode({ mode: 'balanced' }));
+    const tuned = knobsHash(resolveSearchMode({ mode: 'balanced', overrides: { autocut_min_top: 0.5 } }));
+    expect(base).not.toBe(tuned);
+  });
+
+  test('evidence_cosine_floor is label-only — deliberately NOT in knobsHash', () => {
+    // The floor relabels evidence strings on already-fetched results; it never
+    // changes WHICH rows come back, so folding it into the cache key would
+    // fragment the cache for zero isolation benefit.
+    const base = knobsHash(resolveSearchMode({ mode: 'balanced' }));
+    const relabeled = knobsHash(resolveSearchMode({ mode: 'balanced', overrides: { evidence_cosine_floor: 0.5 } }));
+    expect(relabeled).toBe(base);
+  });
+});
