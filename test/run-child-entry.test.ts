@@ -41,7 +41,23 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
-  rmSync(dir, { recursive: true, force: true });
+  // Best-effort tmpdir cleanup with one retry. Bun's recursive rmSync has
+  // EFAULT'd here on CI (bun 1.3.13, ubuntu-24.04) immediately after the
+  // WASM engine teardown — a runtime flake, not a test failure. bun treats
+  // a throwing afterAll as an "(unnamed)" failed test and reds the shard;
+  // the OS reaps tmpdir anyway, so cleanup must never fail the suite.
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (e) {
+      console.warn(
+        `[run-child-entry.test] tmpdir cleanup failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 });
 
 beforeEach(async () => {
