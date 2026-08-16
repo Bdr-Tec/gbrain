@@ -12,19 +12,39 @@
  * stateless pack, never an error.
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { BrainEngine } from '../core/engine.ts';
 import type { ContextPackHandler } from '../core/context/resolve-ipc.ts';
 import { CONTEXT_PACK_SERVER_BUDGET_MS } from '../core/context/resolve-ipc.ts';
 import { assembleContextPack } from '../core/context/turn-context.ts';
 import { extractCandidatesFromWindow } from '../core/context/entity-salience.ts';
 import {
+  getCheckpointManifest,
   getSessionContextState,
   upsertSessionContextState,
 } from '../core/context/session-state.ts';
+import { scheduleCheckpointHarvest, type HarvestAck } from '../core/context/checkpoint-harvest.ts';
 
 /** Tighter entity-card fan-out on the PUSH path (eng 4A): the server budget
  * can't absorb the pull path's 8-card ceiling on a cold cache. */
 export const PUSH_PACK_MAX_ENTITIES = 4;
+
+/** Segment basenames only: no separators, no traversal, `.txt` suffix. */
+const SAFE_CORPUS_BASENAME = /^[A-Za-z0-9._-]{1,240}\.txt$/;
+
+/** Corpus dir resolved the SERVE way (sweep.ts precedent) — the hook resolves
+ * its own from file config; under a misconfigured split a flushed basename
+ * may not exist here, answered with a typed not_found skip (the sweep
+ * backstop covers wherever the hook actually wrote). */
+async function serveCorpusDir(engine: BrainEngine): Promise<string> {
+  let dir = await engine.getConfig('dream.synthesize.session_corpus_dir');
+  if (!dir) {
+    const { configDir } = await import('../core/config.ts');
+    dir = join(configDir(), 'transcripts', 'corpus');
+  }
+  return dir;
+}
 
 export function makeContextPackIpcHandler(
   engine: BrainEngine,
@@ -33,6 +53,18 @@ export function makeContextPackIpcHandler(
   return async (req) => {
     const sessionId =
       typeof req.sessionId === 'string' && req.sessionId.trim() ? req.sessionId : null;
+
+    // Cathedral 5 — read-only manifest poll (OpenClaw assemble): no assembly,
+    // no cursor advance, no banking. One SELECT, fail-open [].
+    if (req.manifestOnly === true) {
+      const links = sessionId
+        ? await getCheckpointManifest(engine, defaultSource, null, sessionId)
+        : [];
+      return {
+        text: '', pointers: [], factsCount: 0, mode: 'pack' as const,
+        checkpointLinks: links,
+      };
+    }
     // Merge: fresh request entities first, then window-extracted candidates,
     // then the session row's banked standing set.
     const fromReq = Array.isArray(req.entities)
@@ -58,7 +90,32 @@ export function makeContextPackIpcHandler(
           standingEntities: entities.slice(0, PUSH_PACK_MAX_ENTITIES * 2),
         });
       }
-      return { text: '', pointers: [], factsCount: 0, mode: 'pack' as const };
+      // Cathedral 5 — flushCorpusFile companion: schedule a prompt harvest of
+      // the segment the hook just banked. Fire-and-forget (the ack never
+      // waits on the LLM); every failure is a typed skip — the sweep backstop
+      // extracts the segment later regardless.
+      let checkpointFlush: HarvestAck | undefined;
+      if (typeof req.flushCorpusFile === 'string' && req.flushCorpusFile) {
+        const base = req.flushCorpusFile;
+        if (!SAFE_CORPUS_BASENAME.test(base) || base.includes('..')) {
+          checkpointFlush = { status: 'skipped', reason: 'bad_basename' };
+        } else if (!sessionId) {
+          checkpointFlush = { status: 'skipped', reason: 'no_session' };
+        } else {
+          const dir = await serveCorpusDir(engine);
+          if (!existsSync(join(dir, base))) {
+            checkpointFlush = { status: 'skipped', reason: 'not_found' };
+          } else {
+            checkpointFlush = scheduleCheckpointHarvest({
+              engine, sourceId: defaultSource, sessionId, corpusDir: dir, file: base,
+            });
+          }
+        }
+      }
+      return {
+        text: '', pointers: [], factsCount: 0, mode: 'pack' as const,
+        ...(checkpointFlush ? { checkpointFlush } : {}),
+      };
     }
 
     const result = await assembleContextPack(engine, {

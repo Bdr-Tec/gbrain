@@ -70,6 +70,13 @@ import {
   decideCorpusMode,
   gcCorpusArtifacts,
 } from '../core/context/corpus-segments.ts';
+import {
+  heartbeatPath,
+  hookStatusPath,
+  readHeartbeatTail,
+  writeHeartbeat,
+  type HookHeartbeatEntry,
+} from '../core/context/hook-heartbeat.ts';
 import { CLAUDE_HOOK_OUTPUT_CAP_CHARS } from '../core/bootstrap/host-specs.ts';
 import { readManifest, readReceipt, type InstallReceipt } from '../core/bootstrap/format.ts';
 import { githubOwnerRepoString } from '../core/repo-visibility.ts';
@@ -108,8 +115,6 @@ export const CORPUS_RETENTION_DAYS_DEFAULT = 30;
  */
 export const CORPUS_INGESTED_SUFFIX = '.ingested';
 export const CORPUS_CLAIM_SUFFIX = '.in-progress';
-/** Heartbeat file line cap [S3#7]. */
-export const HEARTBEAT_MAX_LINES = 5000;
 /** Trailing-window size for the B3 failure-rate notice. */
 export const HEARTBEAT_FAILURE_WINDOW = 20;
 /**
@@ -388,114 +393,17 @@ function errorCode(e: unknown): string {
 }
 
 // ── Heartbeat [S3#7, B3] ────────────────────────────────────────────────────
+// Extracted to src/core/context/hook-heartbeat.ts (cathedral 5) so the
+// serve-side checkpoint harvest appends outcome events without importing this
+// command module. Re-exported here so every existing import site
+// (doctor/status/verify/tests) keeps working unchanged.
 
-export interface HookHeartbeatEntry {
-  ts: string;
-  event: string;
-  outcome: 'ok' | 'degraded' | 'error';
-  reason?: string;
-  duration_ms: number;
-  turns?: number;
-  bytes?: number;
-  /** Secret-scan redaction COUNT at the session-end corpus write (never content) [S3#2, S3#7]. */
-  redactions?: number;
-  /**
-   * Cathedral 5 — segment/corpus-mode status CODE for the compact and
-   * session-end lanes (segment_banked / segment_dup / empty_window /
-   * deadline_scan / remainder / skip_covered / …). Codes only, never
-   * slugs/fact text [S3#7].
-   */
-  segment?: string;
-}
-
-/** The FULL key allowlist — CI greps the fixture against this [S3#7]. */
-export const HEARTBEAT_ALLOWED_KEYS = [
-  'ts', 'event', 'outcome', 'reason', 'duration_ms', 'turns', 'bytes', 'redactions', 'segment',
-] as const;
-
-async function hooksTelemetryDir(): Promise<string> {
-  const home = await resolveHome();
-  ensureDir0700(join(home, 'integrations'));
-  return ensureDir0700(join(home, 'integrations', 'hooks'));
-}
-
-/** Heartbeat JSONL path (exported for doctor/status/tests). */
-export async function heartbeatPath(): Promise<string> {
-  return join(await hooksTelemetryDir(), 'heartbeat.jsonl');
-}
-
-/** Status file the session-end parser-drift check writes [G3]. */
-export async function hookStatusPath(): Promise<string> {
-  return join(await hooksTelemetryDir(), 'status.json');
-}
-
-/**
- * Compaction trigger: only read the file back when its byte size could hold
- * more than ~2x HEARTBEAT_MAX_LINES entries. 40B is below any real entry's
- * size (the ISO ts alone is 24 chars), so this check can never UNDER-trigger.
- */
-const HEARTBEAT_COMPACT_CHECK_BYTES = 2 * HEARTBEAT_MAX_LINES * 40;
-
-/**
- * Append a heartbeat entry with a single O_APPEND write (no read-modify-write
- * per event — readers already tolerate torn lines). Compaction (tail-trim to
- * HEARTBEAT_MAX_LINES via tmp+rename) runs only when a cheap size/line-count
- * check says the file exceeds ~2x the cap. Fields are copied EXPLICITLY — the
- * schema allowlist is enforced by construction, not by trust. Never throws.
- */
-async function writeHeartbeat(entry: HookHeartbeatEntry): Promise<void> {
-  try {
-    const p = await heartbeatPath();
-    const line = JSON.stringify({
-      ts: entry.ts,
-      event: entry.event,
-      outcome: entry.outcome,
-      ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
-      duration_ms: entry.duration_ms,
-      ...(entry.turns !== undefined ? { turns: entry.turns } : {}),
-      ...(entry.bytes !== undefined ? { bytes: entry.bytes } : {}),
-      ...(entry.redactions !== undefined ? { redactions: entry.redactions } : {}),
-      ...(entry.segment !== undefined ? { segment: entry.segment } : {}),
-    });
-    appendFileSync(p, line + '\n', { mode: 0o600 });
-    let size = 0;
-    try {
-      size = statSync(p).size;
-    } catch {
-      /* just appended — best effort */
-    }
-    if (size > HEARTBEAT_COMPACT_CHECK_BYTES) {
-      const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim().length > 0);
-      if (lines.length > 2 * HEARTBEAT_MAX_LINES) {
-        const tmp = `${p}.tmp-${process.pid}`;
-        writeFileSync(tmp, lines.slice(-HEARTBEAT_MAX_LINES).join('\n') + '\n', { mode: 0o600 });
-        renameSync(tmp, p);
-      }
-    }
-  } catch {
-    /* telemetry never breaks a hook */
-  }
-}
-
-/** Last `n` heartbeat entries (oldest → newest). Doctor/status read surface. */
-export async function readHeartbeatTail(n: number): Promise<HookHeartbeatEntry[]> {
-  try {
-    const p = await heartbeatPath();
-    const raw = readFileSync(p, 'utf8');
-    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-    const out: HookHeartbeatEntry[] = [];
-    for (const line of lines.slice(-Math.max(0, n))) {
-      try {
-        out.push(JSON.parse(line) as HookHeartbeatEntry);
-      } catch {
-        /* torn line — skip */
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
+export {
+  HEARTBEAT_ALLOWED_KEYS,
+  HEARTBEAT_MAX_LINES,
+} from '../core/context/hook-heartbeat.ts';
+export { heartbeatPath, hookStatusPath, readHeartbeatTail };
+export type { HookHeartbeatEntry };
 
 // ── session-start [A3, G4, B3, B4] ──────────────────────────────────────────
 

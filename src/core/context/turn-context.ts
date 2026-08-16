@@ -117,6 +117,19 @@ export interface TurnContextResult {
   facts?: TurnContextFact[];
   /** The mode this result was assembled in. */
   mode?: ContextMode;
+  /**
+   * Cathedral 5 (additive, wire back-compat like `volunteered`) — banked
+   * compaction-checkpoint links for the session (newest-first). Carried on
+   * the pack/manifestOnly responses so the post-compaction SessionStart and
+   * the OpenClaw assemble poll can render/match them. `seg` is the segment
+   * content hash the harvest banked from (the poll's completion key).
+   */
+  checkpointLinks?: Array<{ slug: string; title: string; at?: string; n?: number; seg?: string }>;
+  /**
+   * Cathedral 5 (additive) — typed ack for a bankOnly `flushCorpusFile`
+   * request: the harvest was scheduled, or skipped with a reason code.
+   */
+  checkpointFlush?: { status: 'scheduled' | 'skipped'; reason?: string };
 }
 
 export interface AssembleTurnContextOpts {

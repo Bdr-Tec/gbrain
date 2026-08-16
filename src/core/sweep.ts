@@ -597,9 +597,11 @@ async function runCorpusIngestPass(
  * Try to claim a corpus file for ingestion. O_EXCL (`wx`) create is the
  * atomic primitive; a live existing claim (< CORPUS_CLAIM_STALE_MS old)
  * means another sweep owns the file. Stale claims are removed and re-raced
- * (one contender wins the second `wx`). Never throws.
+ * (one contender wins the second `wx`). Never throws. EXPORTED (cathedral 5)
+ * so the serve-side checkpoint harvest shares the exact same fencing — a
+ * sweep and a harvest can never double-spend on one segment.
  */
-async function acquireCorpusClaim(claimPath: string): Promise<boolean> {
+export async function acquireCorpusClaim(claimPath: string): Promise<boolean> {
   const body = JSON.stringify({ claimed_at: new Date().toISOString(), pid: process.pid }) + '\n';
   const tryCreate = () =>
     writeFile(claimPath, body, { flag: 'wx', mode: 0o600 }).then(() => true, () => false);
