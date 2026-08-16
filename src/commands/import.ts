@@ -277,10 +277,22 @@ export async function runImport(
   const strategy: SyncStrategy = opts.strategy ?? 'markdown';
   const _walkT0 = Date.now();
   console.error(`[gbrain phase] import.collect_files start dir=${dir} strategy=${strategy}`);
-  let allFiles = collectSyncableFiles(dir, { strategy, includeGitignored });
+  const malformedExcluded: string[] = [];
+  let allFiles = collectSyncableFiles(dir, {
+    strategy, includeGitignored,
+    onExcluded: (rel) => { malformedExcluded.push(rel); },
+  });
   console.error(
     `[gbrain phase] import.collect_files done ${Date.now() - _walkT0}ms files=${allFiles.length}`,
   );
+  if (malformedExcluded.length > 0) {
+    console.error(
+      `[gbrain import] ${malformedExcluded.length} file(s) skipped: malformed filename ` +
+      `(brackets/control chars; rename to import): ` +
+      malformedExcluded.slice(0, 20).map(sanitizePathForDisplay).join(', ') +
+      (malformedExcluded.length > 20 ? `, … (+${malformedExcluded.length - 20} more)` : ''),
+    );
+  }
   const fileTypeLabel = strategy === 'code' ? 'code'
     : strategy === 'auto' ? 'syncable' : 'markdown';
   // #753/#774: apply --exclude glob patterns (threaded by performFullSync).
@@ -726,6 +738,13 @@ function resolveMaxWalkDepth(): number {
 interface CollectOpts {
   strategy?: SyncStrategy;
   includeGitignored?: boolean;
+  /**
+   * Invoked (with the repo-relative path) for each file dropped by the
+   * malformed-filename gate, on BOTH collection routes. Without this,
+   * directory imports and full syncs silently succeed while omitting the
+   * file — no rename guidance, no skipped count (structured-review finding).
+   */
+  onExcluded?: (relPath: string) => void;
 }
 
 /**
@@ -803,6 +822,7 @@ function gitListSyncableFiles(
   dir: string,
   strategy: SyncStrategy,
   multimodalOn: boolean,
+  onExcluded?: (relPath: string) => void,
 ): string[] | null {
   let stdout: string;
   try {
@@ -817,6 +837,10 @@ function gitListSyncableFiles(
   const files: string[] = [];
   for (const rel of stdout.split('\0')) {
     if (!rel) continue;
+    // Malformed check FIRST (separately from the collectible gate) so the
+    // exclusion is reportable — other filters (strategy, prune, metafile)
+    // are silent by design; this one hides renameable content.
+    if (hasMalformedPathSegment(rel)) { onExcluded?.(rel); continue; }
     if (!isCollectibleForWalker(rel, strategy, multimodalOn)) continue;
     const full = join(dir, rel);
     let st;
@@ -862,7 +886,7 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
   // PLUS untracked-not-ignored, so uncommitted source is still indexed. Non-git
   // dirs (or git unavailable) fall through to the FS walk below.
   if (!opts.includeGitignored) {
-    const gitFiles = gitListSyncableFiles(dir, strategy, multimodalOn);
+    const gitFiles = gitListSyncableFiles(dir, strategy, multimodalOn, opts.onExcluded);
     if (gitFiles) return gitFiles;
   }
 
@@ -887,13 +911,14 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
       // from it. Skips hidden dirs (`.git`, `.raw`, etc.), `node_modules`,
       // `vendor`, `dist`, `build`, `venv` (#2020), `ops`, and git submodules.
       if (!pruneDir(entry, d)) continue;
-      // Malformed SEGMENT check at descent time: isCollectibleForWalker below
-      // only ever sees the file's basename on this route, so a bracket-named
-      // DIRECTORY of clean-named files would otherwise pass the walker — and
-      // its rows would sit in the reconcile's currentFiles, unsweepable on
-      // non-git brains (adversarial-review finding). The git fast path gets
-      // full relative paths and is already covered.
-      if (hasMalformedPathSegment(entry)) continue;
+      // Control-char SEGMENT check at descent time (never legitimate). The
+      // bracket check moved to the per-file RELATIVE-path test below: a
+      // bracket-named DIRECTORY must still be descended for code strategies
+      // (`app/[id]/page.tsx` is ubiquitous framework layout), while markdown
+      // files under it are excluded per-file — mirroring classifySync so full
+      // and incremental sync agree (cross-model adversarial finding).
+      // eslint-disable-next-line no-control-regex
+      if (/[\x00-\x1f]/.test(entry)) continue;
 
       const full = join(d, entry);
       let stat;
@@ -918,6 +943,11 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
         visitedInodes.set(inodeKey, true);
         walk(full, depth + 1);
       } else if (stat.isFile()) {
+        // Malformed check on the RELATIVE path (this route's
+        // isCollectibleForWalker only sees the basename, which can't catch a
+        // bracket directory segment above a clean-named markdown file).
+        const rel = relative(dir, full);
+        if (hasMalformedPathSegment(rel)) { opts.onExcluded?.(rel); continue; }
         if (!isCollectibleForWalker(entry, strategy, multimodalOn)) continue;
         files.push(full);
       }

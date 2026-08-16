@@ -8,6 +8,7 @@ import { collectSyncableFiles } from './import.ts';
 import { createInterface } from 'readline';
 import {
   isSyncable,
+  isPoisonedPath,
   sanitizePathForDisplay,
   unsyncableReason,
   matchesAnyGlob,
@@ -2603,6 +2604,10 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     // pages every time their materialized file landed in a commit.
     const reason = unsyncableReason(path, syncOpts);
     if (reason === 'metafile' || reason === 'pruned-dir') continue;
+    // Bare-bracket markdown (pre-gate imports like `notes [draft].md`) keeps
+    // its row — only the poison signature (`](`/control chars) is sweepable.
+    // Deleting a legit page's row while its file sits on disk is data loss.
+    if (reason === 'malformed-path' && !isPoisonedPath(path)) continue;
     const slug = await resolveSlugByPathOrSourcePath(engine, path, opts.sourceId);
     try {
       const existing = await engine.getPage(slug, pageOpts);
@@ -2644,6 +2649,16 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     await writeChunkerVersion(engine, opts.sourceId, String(CHUNKER_VERSION));
     await clearOpCheckpoint(engine, ckpt.paths);
     await clearOpCheckpoint(engine, ckpt.target);
+    // A commit whose ONLY changes are malformed filenames lands here with
+    // totalChanges === 0 — the anchor advances past those files forever, so
+    // this early return must surface the skips too (structured-review P2).
+    if (malformedSkipped.length > 0) {
+      serr(
+        `  ${malformedSkipped.length} file(s) skipped: malformed filename ` +
+        `(brackets/control chars; rename to import): ` +
+        malformedSkipped.map(sanitizePathForDisplay).join(', '),
+      );
+    }
     return {
       status: 'up_to_date',
       fromCommit: lastCommit,
@@ -2652,6 +2667,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       chunksCreated: 0,
       embedded: 0,
       pagesAffected: [],
+      ...(malformedSkipped.length > 0 ? { malformedSkipped: malformedSkipped.length } : {}),
     };
   }
 
@@ -3925,9 +3941,11 @@ async function performFullSync(
   // code --dry-run` always reported zero files even when ~1500 code
   // files were waiting.
   if (opts.dryRun) {
+    const dryRunMalformed: string[] = [];
     let allFiles = collectSyncableFiles(syncScopeRoot, {
       strategy: opts.strategy ?? 'markdown',
       includeGitignored: opts.includeGitignored,
+      onExcluded: (rel) => { dryRunMalformed.push(rel); },
     });
     if (opts.exclude && opts.exclude.length > 0) {
       allFiles = allFiles.filter(abs => !matchesAnyGlob(relative(syncScopeRoot, abs), opts.exclude));
@@ -3937,6 +3955,14 @@ async function performFullSync(
       `${allFiles.length} file(s) would be imported ` +
       `from ${syncScopeRoot} @ ${headCommit.slice(0, 8)}.`,
     );
+    if (dryRunMalformed.length > 0) {
+      slog(
+        `  ${dryRunMalformed.length} file(s) would be skipped: malformed filename ` +
+        `(brackets/control chars; rename to import): ` +
+        dryRunMalformed.slice(0, 20).map(sanitizePathForDisplay).join(', ') +
+        (dryRunMalformed.length > 20 ? `, … (+${dryRunMalformed.length - 20} more)` : ''),
+      );
+    }
     return {
       status: 'dry_run',
       fromCommit: null,
@@ -4112,7 +4138,10 @@ async function performFullSync(
     // delete code pages. The #1433 metafile protection is likewise untouched.
     const reconcileEligible = (p: string): boolean =>
       isSyncable(p, reconcileSyncOpts) ||
-      unsyncableReason(p, reconcileSyncOpts) === 'malformed-path';
+      // Only the poison signature is sweepable; bare-bracket markdown rows
+      // from pre-gate releases survive reconcile (their file still exists —
+      // deleting the row would be silent data loss; cross-model finding).
+      (unsyncableReason(p, reconcileSyncOpts) === 'malformed-path' && isPoisonedPath(p));
     const plan = planReconcileDeletes(
       rows,
       currentFiles,

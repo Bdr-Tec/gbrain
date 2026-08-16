@@ -15,7 +15,7 @@
 import type { SchemaPackManifest } from './manifest-v1.ts';
 import type { BrainEngine } from '../engine.ts';
 import { readRecentMutations } from './mutate-audit.ts';
-import { classifyStoredType, sanitizeTypeForDisplay } from './type-usage.ts';
+import { classifyStoredType, sanitizeTypeForDisplay, safeCliToken } from './type-usage.ts';
 
 export type LintSeverity = 'error' | 'warning';
 
@@ -402,7 +402,7 @@ export const storedTypeUndeclared: LintRule = async (manifest, opts) => {
         message: `${r.n} page(s) store type '${t}' which is not declared in the active pack (not a page_type, not an alias)`,
         pack: manifest.name,
         type: r.type,
-        hint: `gbrain schema add-type '${t}' OR retype the pages to a canonical type`,
+        hint: `gbrain schema add-type '${safeCliToken(r.type) ?? '<type>'}' OR retype the pages to a canonical type`,
       });
     }
   }

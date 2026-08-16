@@ -77,7 +77,7 @@ import { probeLivePgliteHolder, resolveBrainDataDir } from '../core/bootstrap/un
 import { readRunbookStamp, hooksInstalled, listVerifyRuns } from '../core/bootstrap/status.ts';
 import { resolveGbrainHome } from '../core/gbrain-home.ts';
 import { VERSION as GBRAIN_BINARY_VERSION } from '../version.ts';
-import { TTL_REASON_PREFIX } from '../core/minions/admission.ts';
+import { TTL_REASON_PREFIX, safeConfigSegment } from '../core/minions/admission.ts';
 import { sanitizeTypeForDisplay } from '../core/schema-pack/type-usage.ts';
 import { execFileSync } from 'child_process';
 
@@ -2203,7 +2203,7 @@ export async function computeQueueHealthCheck(
           problems.push(
             `DIVERGENT queue type '${sanitizeTypeForDisplay(r.name)}': intake ${intake}/24h vs ${completed} completed/24h, ` +
             `${waiting} waiting — the backlog grows structurally. Reduce intake, raise drain, or cap ` +
-            `admission: \`gbrain config set minions.quota_max_waiting.${sanitizeTypeForDisplay(r.name)} <n>\`. See \`gbrain jobs stats\`.`
+            `admission: \`gbrain config set minions.quota_max_waiting.${safeConfigSegment(r.name) ?? '<job-name>'} <n>\`. See \`gbrain jobs stats\`.`
           );
         }
       }
@@ -2220,7 +2220,7 @@ export async function computeQueueHealthCheck(
         problems.push(
           `waiting-TTL cancelled ${r.count} '${sanitizeTypeForDisplay(r.name)}' job(s) in the last 24h (queued work expired ` +
           `unclaimed — intake still exceeds drain). Tune: \`gbrain config set ` +
-          `minions.ttl_waiting_hours.${sanitizeTypeForDisplay(r.name)} <hours|0>\`.`
+          `minions.ttl_waiting_hours.${safeConfigSegment(r.name) ?? '<job-name>'} <hours|0>\`.`
         );
       }
     } catch { /* best-effort — divergence probes never break doctor */ }

@@ -11,6 +11,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
   isSyncable,
+  isPoisonedPath,
   unsyncableReason,
   sanitizePathForDisplay,
   SYNC_SKIP_FILES,
@@ -35,8 +36,9 @@ describe('#1433 — isSyncable / unsyncableReason are duals of one classifier', 
     { path: 'node_modules/foo/README.md', expected: 'pruned-dir', note: 'node_modules pruned' },
     // Poisoned-path incident class: markdown-link syntax as a literal filename.
     { path: '[atoms/foo.md](https:/example).md', expected: 'malformed-path', note: 'markdown-link-shaped junk filename rejected' },
-    { path: 'notes/[wip] draft.md', expected: 'malformed-path', note: 'bare bracket in filename rejected' },
+    { path: 'notes/[wip] draft.md', expected: 'malformed-path', note: 'bare bracket in MARKDOWN filename rejected' },
     { path: 'notes/bell' + '\x07' + '.md', expected: 'malformed-path', note: 'control character in filename rejected' },
+    { path: 'docs/[locale]/guide.md', expected: 'malformed-path', note: 'bracket DIRECTORY segment above a markdown file rejected' },
     { path: 'notes/meeting (1).md', expected: null, note: 'parens are legitimate filename characters — deliberately allowed' },
     { path: 'people/alice.txt](x', expected: 'strategy', note: 'strategy check wins before malformed-path (classifier ordering keeps reconcile strategy-safe)' },
   ];
@@ -68,6 +70,26 @@ describe('#1433 — isSyncable / unsyncableReason are duals of one classifier', 
     for (const c of cases) {
       expect(isSyncable(c.path)).toBe(unsyncableReason(c.path) === null);
     }
+  });
+
+  test('brackets are markdown-scoped: code-strategy framework paths stay syncable', () => {
+    // Cross-model adversarial finding: a blanket bracket rejection would have
+    // rejected ubiquitous Next.js/Nuxt dynamic-route layouts in code lanes
+    // AND reconcile-deleted their previously indexed rows.
+    expect(unsyncableReason('app/[id]/page.tsx', { strategy: 'code' })).toBeNull();
+    expect(unsyncableReason('app/[...slug]/route.ts', { strategy: 'code' })).toBeNull();
+    // Same path under the default markdown strategy is a STRATEGY rejection
+    // (ordering: strategy classifies first), never malformed-path.
+    expect(unsyncableReason('app/[id]/page.tsx')).toBe('strategy');
+    // A markdown file under a bracket dir is malformed even in code/auto lanes.
+    expect(unsyncableReason('app/[id]/README.md', { strategy: 'auto' })).toBe('malformed-path');
+  });
+
+  test('isPoisonedPath: only the injection signature is sweepable', () => {
+    expect(isPoisonedPath('[atoms/foo.md](https:/example).md')).toBe(true); // `](`
+    expect(isPoisonedPath('notes/bell' + '\x07' + '.md')).toBe(true); // control char
+    expect(isPoisonedPath('notes [draft].md')).toBe(false); // bare brackets: rows survive
+    expect(isPoisonedPath('docs/[locale]/guide.md')).toBe(false);
   });
 
   test('sanitizePathForDisplay: control bytes → U+FFFD, DEL included, brackets kept, 200-char cap', () => {

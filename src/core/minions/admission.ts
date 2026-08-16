@@ -170,7 +170,23 @@ export function admissionKilled(): boolean {
 }
 
 function isOffValue(v: string): boolean {
-  return v === 'false' || v === '0' || v === 'off';
+  // Case-insensitive + trimmed: an operator typing 'FALSE' or 'Off' means
+  // OFF — an emergency off-switch that only matches exact lowercase tokens
+  // silently stays ON (structured-review finding).
+  const t = v.trim().toLowerCase();
+  return t === 'false' || t === '0' || t === 'off' || t === 'no';
+}
+
+/**
+ * Gate for embedding a job name into a COPY-PASTEABLE command hint
+ * (`gbrain config set minions.…<name> …`). Display sanitization strips
+ * control bytes but keeps shell metacharacters; a name like `x$(cmd)` must
+ * never ride into a hint an operator will paste into a shell. Returns the
+ * name when it is a safe config-key segment, else null (caller renders a
+ * placeholder).
+ */
+export function safeConfigSegment(name: string): string | null {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name) ? name : null;
 }
 
 function parsePositiveNumber(v: string | null): number | null {

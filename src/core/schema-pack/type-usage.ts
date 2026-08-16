@@ -61,6 +61,17 @@ export function sanitizeTypeForDisplay(type: string): string {
   return cleaned.length > 64 ? `${cleaned.slice(0, 61)}...` : cleaned;
 }
 
+/**
+ * Stricter gate for embedding a type into a COPY-PASTEABLE command hint
+ * (`gbrain schema add-type '<t>'`): display sanitization keeps quotes and
+ * shell metacharacters, so a type like `x'; touch pwn; #` would escape the
+ * quoting when an operator pastes the hint. Returns the value only when it
+ * is a plain slug-safe token; callers render a placeholder otherwise.
+ */
+export function safeCliToken(v: string): string | null {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(v) ? v : null;
+}
+
 /** One aggregated warning bucket per distinct non-canonical type. */
 export interface TypeWarningCount {
   kind: 'alias_of' | 'undeclared';

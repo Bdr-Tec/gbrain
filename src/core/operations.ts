@@ -3936,6 +3936,12 @@ const submit_agent: Operation = {
       id: job.id,
       name: 'subagent',
       client_id: clientId,
+      // Honest-dispatch: true when this submit was param-coalesced onto an
+      // existing WAITING job with identical params (same owner lane) instead
+      // of enqueuing a new one. Clients wanting N independent runs of one
+      // prompt should vary the params (adversarial-review finding — the flag
+      // makes the suppression detectable rather than silent).
+      ...(job.coalesced === true ? { coalesced: true } : {}),
       queue_state: await probeQueueStateSafe(ctx, job.queue, ['subagent']),
     };
   },

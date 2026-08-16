@@ -920,6 +920,12 @@ export async function runPhaseSynthesize(
           ? `anthropic:${config.model}`
           : config.model;
       const triageVerdict = pass.byPath.get(t.filePath);
+      // Fresh (non-coalesced) chunk submissions for THIS transcript — rolled
+      // back if a later chunk hits the admission quota, so a transcript never
+      // half-synthesizes while its skip report claims it was skipped
+      // (adversarial finding). Coalesced rows are another run's bookkeeping
+      // and must not be cancelled.
+      const transcriptFreshIds: number[] = [];
       for (let i = 0; i < chunks.length; i++) {
         const childData: SubagentHandlerData = {
           prompt: buildSynthesisPrompt(
@@ -961,8 +967,18 @@ export async function runPhaseSynthesize(
           // Admission quota (minions.quota_max_waiting.subagent, config-only):
           // a rejected submit is a recorded phase skip, never a phase crash —
           // same posture as daily_cap_reached. The quota won't clear mid-run,
-          // so stop submitting for this run entirely.
+          // so stop submitting for this run entirely. Roll back this
+          // transcript's already-submitted fresh chunks first: draining a
+          // partial chunk set would write partial pages for a transcript the
+          // skip report says was skipped.
           if (isQueueQuotaExceededError(e)) {
+            for (const id of transcriptFreshIds) {
+              try { await queue.cancelJob(id); } catch { /* best-effort rollback */ }
+              const idx = childIds.indexOf(id);
+              if (idx >= 0) childIds.splice(idx, 1);
+              jobRawSource.delete(id);
+              chunkInfo.delete(id);
+            }
             skipReports.push({ filePath: t.filePath, reason: `admission_quota: ${e.message}` });
             quotaHit = true;
             break;
@@ -994,7 +1010,10 @@ export async function runPhaseSynthesize(
             );
           }
         }
-        if (child.coalesced !== true) submittedToday++;
+        if (child.coalesced !== true) {
+          submittedToday++;
+          transcriptFreshIds.push(child.id);
+        }
         childIds.push(child.id);
         jobRawSource.set(child.id, t.filePath);
         if (isChunked) {

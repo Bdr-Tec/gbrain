@@ -340,11 +340,17 @@ export class MinionQueue {
       // fanout producers use per-run private queues (dream-inline-*), so a
       // queue-scoped count would reset per run and never bind. REJECTION,
       // not coalesce — quota-coalescing would hand result-consumers an
-      // unrelated row. Enforcement is approximate under concurrency (the
-      // advisory locks here are (name, queue[, ...])-scoped while this count
-      // is name-global, so concurrent different-queue submitters can
-      // overshoot by a few) — the quota is a backstop, not an exact limiter.
+      // unrelated row. The name-global advisory lock below serializes
+      // check+insert across concurrent submitters (adversarial finding:
+      // without it, N parallel distinct-payload submits each observed
+      // capacity and inserted, so overshoot was bounded only by attacker
+      // concurrency — defeating the DoS backstop). Serialization cost only
+      // applies to names with a quota configured, i.e. the runaway ones.
       if (policy.quotaMaxWaiting != null) {
+        await tx.executeRaw(
+          `SELECT pg_advisory_xact_lock(hashtext('minion_quota:' || $1))`,
+          [jobName]
+        );
         const quotaRows = await tx.executeRaw<{ count: string }>(
           `SELECT count(*)::text AS count FROM minion_jobs WHERE name = $1 AND status = 'waiting'`,
           [jobName]
@@ -726,7 +732,12 @@ export class MinionQueue {
           status = 'cancelled',
           lock_token = NULL,
           lock_until = NULL,
-          error_text = COALESCE($2, error_text),
+          -- Reason stamps ROOT ids only: a descendant is bookkeeping-cancelled
+          -- because its parent went away, not because IT hit the caller's
+          -- reason (e.g. a waiting-TTL child would otherwise carry a factually
+          -- false 'waited > Nh' text AND inflate the LIKE-prefix stats the
+          -- alerting surfaces count).
+          error_text = CASE WHEN id = ANY($1::int[]) THEN COALESCE($2, error_text) ELSE error_text END,
           finished_at = now(),
           updated_at = now()
          WHERE id IN (SELECT id FROM descendants)

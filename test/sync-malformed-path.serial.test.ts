@@ -174,6 +174,29 @@ describe('malformed-path sync semantics (poisoned-filename incident)', () => {
     expect(healthy).not.toBeNull();
   }, 60_000);
 
+  test('bare-bracket markdown row SURVIVES reconcile (only the poison signature is sweepable)', async () => {
+    // Cross-model adversarial finding: a pre-gate release imported
+    // `notes [draft].md` fine (brackets were slug-stripped). The file still
+    // exists on disk; hard-deleting its row on a routine post-upgrade full
+    // sync would be silent data loss. Only `](`/control-char paths sweep.
+    const { performSync } = await import('../src/commands/sync.ts');
+    const BARE = 'notes [draft].md';
+
+    writeFileSync(join(repoPath, BARE), '# legit draft\n');
+    execSync('git add -A && git commit -m "bare-bracket note"', { cwd: repoPath, stdio: 'pipe' });
+    await seedPoisonedRow('notes-draft', BARE);
+
+    const result = await performSync(engine, {
+      repoPath, full: true, noPull: true, noEmbed: true, sourceId: 'default',
+    });
+    expect(result.status).not.toBe('blocked_by_failures');
+
+    const survivor = await engine.executeRaw<{ slug: string }>(
+      `SELECT slug FROM pages WHERE source_path = $1 AND deleted_at IS NULL`, [BARE],
+    );
+    expect(survivor).toHaveLength(1);
+  }, 60_000);
+
   test('importFromFile defense: bracket filename → informational skip with skip_reason, brackets never stripped into a slug', async () => {
     const { importFromFile } = await import('../src/core/import-file.ts');
     const abs = join(repoPath, JUNK_NAME);

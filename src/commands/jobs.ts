@@ -951,8 +951,11 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       } catch { /* best-effort */ }
       // Job names originate from the MCP-exposed submit surface — strip
       // control/ANSI bytes + cap before echoing into the terminal screams
-      // (same hygiene as frontmatter-derived type names).
+      // (same hygiene as frontmatter-derived type names). Names embedded in
+      // COPY-PASTEABLE command hints get the stricter safeConfigSegment gate:
+      // display-sanitize keeps shell metacharacters.
       const { sanitizeTypeForDisplay: sanitizeName } = await import('../core/schema-pack/type-usage.ts');
+      const { safeConfigSegment } = await import('../core/minions/admission.ts');
 
       if (hasFlag(args, '--json')) {
         console.log(JSON.stringify({
@@ -999,7 +1002,7 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
           `\n  ⚠  DIVERGENT QUEUE type '${sanitizeName(t.name)}': intake ${t.total}/24h vs ${t.drained_completed} completed/24h, ` +
           `${t.waiting_now} waiting (${eta}).${ttlNote}\n` +
           `     Reduce intake, raise drain, or cap admission:\n` +
-          `       gbrain config set minions.quota_max_waiting.${sanitizeName(t.name)} <n>`,
+          `       gbrain config set minions.quota_max_waiting.${safeConfigSegment(t.name) ?? '<job-name>'} <n>`,
         );
       }
       if (ttlCancelled.length > 0) {

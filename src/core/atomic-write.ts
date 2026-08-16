@@ -29,6 +29,7 @@ import {
   writeSync,
 } from 'fs';
 import { randomBytes } from 'crypto';
+import { dirname } from 'path';
 
 export interface AtomicWriteOpts {
   /**
@@ -55,7 +56,17 @@ export function atomicWriteFileSync(filePath: string, content: string, opts?: At
   try {
     const fd = openSync(tmpPath, 'w', mode ?? 0o644);
     try {
-      writeSync(fd, content);
+      // Loop until every byte lands: writeSync may legally return a short
+      // count under disk pressure/quotas, and a silent short write that
+      // truncates AFTER valid frontmatter would pass a frontmatter-only
+      // verifier and atomically install truncated content.
+      const buf = Buffer.from(content, 'utf-8');
+      let off = 0;
+      while (off < buf.length) {
+        const n = writeSync(fd, buf, off, buf.length - off);
+        if (n <= 0) throw new Error(`atomic-write: short write at offset ${off}/${buf.length}`);
+        off += n;
+      }
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -69,6 +80,16 @@ export function atomicWriteFileSync(filePath: string, content: string, opts?: At
       opts.verify(readFileSync(tmpPath, 'utf-8'));
     }
     renameSync(tmpPath, filePath);
+    // Durability of the RENAME itself: fsync the parent directory so a power
+    // loss can't silently drop the new directory entry (the target is never
+    // corrupt either way — this closes the write-vanished window). Dir fsync
+    // is unsupported on some platforms; best-effort by design.
+    try {
+      const dfd = openSync(dirname(filePath), 'r');
+      try { fsyncSync(dfd); } finally { closeSync(dfd); }
+    } catch {
+      /* best-effort */
+    }
   } catch (err) {
     try {
       if (existsSync(tmpPath)) unlinkSync(tmpPath);
