@@ -61,6 +61,25 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   zerank-2) for users who want max rerank quality on a dedicated key. Wire shape
   differs from the ZE/voyage dialect — needs its own `top_param`/response mapping
   audit. Filed from the v0.46.3 CEO review (deferred cherry-pick).
+- [ ] **P3 — Standalone reranker config-set should purge the query cache.**
+  `gbrain config set search.reranker.model ...` (the playbook's manual path)
+  changes rank order but leaves cached result sets until the 3600s TTL expires.
+  The in-migration path (`migrate embeddings --reranker`) already purges in the
+  same transaction — mirror that on the bare config-set path (or fold the
+  reranker model into the knobs hash, the same contamination class as
+  graph_signals/relational). Filed from the migration-hardening wave review.
+- [ ] **P2 — Facts re-embed backfill command.** A dimension transition drops
+  `facts.embedding`; facts regenerate only on their next write/`gbrain extract`
+  pass. `migrate embeddings --status` + the completion output now report the
+  pending census, but there is no command to proactively re-embed the backlog.
+  Filed from the migration-hardening wave (outside-voice C5).
+- [ ] **P2 — Tier-preserving re-embed.** A bulk stale re-embed (embedding
+  migration included) lands per_chunk_synopsis pages at the TITLE context tier
+  (embedding-context.ts:211, embed.ts restamp) — a retrieval-quality downgrade
+  the migration now REPORTS (plan consent line + completion count) but cannot
+  avoid. A tier-preserving mode needs its own LLM-spend consent design (synopsis
+  regeneration costs per page). Filed from the migration-hardening wave
+  (outside-voice C6).
 
 ## Issues #5+#6 follow-ups (pool starvation + process isolation; plan: ~/.claude/plans/system-instruction-you-are-working-witty-moore.md)
 

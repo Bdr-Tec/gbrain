@@ -55,10 +55,13 @@ The doctor distinguishes two repair paths:
   gbrain init --force --pglite --embedding-model <provider>:<model> --embedding-dimensions <N>
   ```
 
-- **Non-empty brain** — migrate cleanly with the supported reindex path:
+- **Non-empty brain** — migrate cleanly with the supported migration path
+  (resumable; preview cost with `--dry-run` first):
   ```
-  gbrain retrieval-upgrade --to <provider>:<model> --reindex
+  gbrain migrate embeddings --to <provider>:<model> --dim <N>
   ```
+  Leaving ZeroEntropy specifically: `gbrain migrate embeddings --to voyage:voyage-4 --dim 1024`
+  (the full playbook is `skills/migrations/v0.46.3.0.md`).
 
 ## Decision tree
 
