@@ -419,7 +419,7 @@ async function revokeClient(clientId: string) {
  * and `--token-endpoint-auth-method` is recognized. Repeatable flags
  * accumulate into arrays. Unknown flags throw a usage error.
  */
-interface RegisterClientArgs {
+export interface RegisterClientArgs {
   grantTypes: string[];
   scopes: string;
   sourceId: string;
@@ -552,6 +552,115 @@ export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
   return out;
 }
 
+/**
+ * The data a scoped-client registration produces — everything a printer
+ * (auth register-client's byte-pinned block, agent register's summary,
+ * or the admin HTTP route) needs, with ZERO console output produced here.
+ */
+export interface RegisteredClient {
+  clientId: string;
+  clientSecret?: string;
+  grantTypes: string[];
+  scopes: string;
+  authMethod: string;
+  redirectUris: string[];
+  sourceId: string;
+  federatedRead: string[];
+  surface?: 'verbs' | 'starter' | 'full';
+  tokenTtl?: number;
+  tokenExpiresAt?: string;
+  created: { source: boolean };
+}
+
+/**
+ * Exit-free, print-free registration core (cathedral-6 seam). Named
+ * registerScopedClient — not run*Core — because unlike the other peels it
+ * returns data instead of printing. Takes INJECTED handles: callers on the
+ * engine-bound CLI lane pass the dispatcher's engine (a second
+ * withConfiguredSql engine self-deadlocks PGLite's single-writer lock);
+ * `registerClient` below keeps withConfiguredSql for the early-routed
+ * auth lane. Throws on failure — the thin callers own exit/print mapping.
+ */
+export async function registerScopedClient(
+  sql: SqlQuery,
+  _engine: BrainEngine,
+  name: string,
+  parsed: RegisterClientArgs,
+): Promise<RegisteredClient> {
+  const { grantTypes, scopes, sourceId, federatedRead, redirectUris, tokenEndpointAuthMethod } = parsed;
+  const agentBindings = parsed.boundTools || parsed.boundSourceId || parsed.boundBrainId ||
+    parsed.boundSlugPrefixes || parsed.boundMaxConcurrent !== undefined || parsed.budgetUsdPerDay !== undefined
+    ? {
+      boundTools: parsed.boundTools,
+      boundSourceId: parsed.boundSourceId,
+      boundBrainId: parsed.boundBrainId,
+      boundSlugPrefixes: parsed.boundSlugPrefixes,
+      boundMaxConcurrent: parsed.boundMaxConcurrent,
+      budgetUsdPerDay: parsed.budgetUsdPerDay,
+    }
+    : undefined;
+  const { GBrainOAuthProvider } = await import('../core/oauth-provider.ts');
+  const provider = new GBrainOAuthProvider({ sql });
+  const { clientId, clientSecret } = await provider.registerClientManual(
+    name, grantTypes, scopes, redirectUris, sourceId, federatedRead, tokenEndpointAuthMethod, agentBindings,
+  );
+  return {
+    clientId,
+    ...(clientSecret ? { clientSecret } : {}),
+    grantTypes,
+    scopes,
+    authMethod: tokenEndpointAuthMethod || 'client_secret_post',
+    redirectUris,
+    sourceId,
+    federatedRead: federatedRead && federatedRead.length > 0 ? federatedRead : [sourceId],
+    created: { source: false },
+  };
+}
+
+/**
+ * The exact lines `auth register-client` prints. BYTE-IDENTICAL contract:
+ * connect.ts:defaultRegisterOAuthClient regex-scrapes `Client ID:` /
+ * `Client Secret:` from this output in PRODUCTION, and 7+ e2e assertions pin
+ * it — pinned by test/auth-register-client-output-pin.test.ts. Each array
+ * element is one console.log call (embedded \n are intentional).
+ */
+export function formatRegisterClientOutput(name: string, r: RegisteredClient, parsed: RegisterClientArgs): string[] {
+  const hasBindings = parsed.boundTools || parsed.boundSourceId || parsed.boundBrainId ||
+    parsed.boundSlugPrefixes || parsed.boundMaxConcurrent !== undefined || parsed.budgetUsdPerDay !== undefined;
+  const lines: string[] = [];
+  lines.push(`OAuth client registered: "${name}"\n`);
+  lines.push(`  Client ID:           ${r.clientId}`);
+  if (r.clientSecret) {
+    lines.push(`  Client Secret:       ${r.clientSecret}\n`);
+  } else {
+    lines.push(`  Client Secret:       <public client — none issued>\n`);
+  }
+  lines.push(`  Grant types:         ${r.grantTypes.join(', ')}`);
+  lines.push(`  Scopes:              ${r.scopes}`);
+  lines.push(`  Token auth method:   ${r.authMethod}`);
+  if (r.redirectUris.length > 0) {
+    lines.push(`  Redirect URIs:       ${r.redirectUris.join(', ')}`);
+  }
+  lines.push(`  Write source:        ${r.sourceId}`);
+  lines.push(`  Federated reads:     ${r.federatedRead.join(', ')}`);
+  if (hasBindings) {
+    lines.push(`  Bound tools:         ${(parsed.boundTools ?? []).join(', ') || '<none>'}`);
+    lines.push(`  Bound source:        ${parsed.boundSourceId ?? '<none>'}`);
+    lines.push(`  Bound brain:         ${parsed.boundBrainId ?? '<none>'}`);
+    lines.push(`  Bound slug prefixes:${parsed.boundSlugPrefixes ? ' ' + parsed.boundSlugPrefixes.join(', ') : ' <none>'}`);
+    lines.push(`  Max concurrency:     ${parsed.boundMaxConcurrent ?? 1}`);
+    lines.push(`  Daily budget USD:    ${parsed.budgetUsdPerDay ?? '<none>'}`);
+  }
+  lines.push('');
+  if (r.clientSecret) {
+    lines.push('Save the client secret — it will not be shown again.');
+  } else {
+    lines.push('Public client (PKCE-only) — no secret needed.');
+  }
+  lines.push(`Revoke with: gbrain auth revoke-client "${r.clientId}"`);
+  return lines;
+}
+
 async function registerClient(name: string, args: string[]) {
   if (!name) {
     console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S] [--source SOURCE] [--federated-read SRC1,SRC2,...] [--redirect-uri URI ...] [--token-endpoint-auth-method client_secret_post|client_secret_basic|none] [--bound-tools T1,T2] [--bound-source SOURCE] [--bound-brain BRAIN] [--bound-slug-prefixes P1,P2] [--bound-max-concurrent N] [--budget-usd-per-day USD]');
@@ -565,58 +674,13 @@ async function registerClient(name: string, args: string[]) {
     console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S] [--source SOURCE] [--federated-read SRC1,SRC2,...] [--redirect-uri URI ...] [--token-endpoint-auth-method client_secret_post|client_secret_basic|none] [--bound-tools T1,T2] [--bound-source SOURCE] [--bound-brain BRAIN] [--bound-slug-prefixes P1,P2] [--bound-max-concurrent N] [--budget-usd-per-day USD]');
     process.exit(1);
   }
-  const { grantTypes, scopes, sourceId, federatedRead, redirectUris, tokenEndpointAuthMethod } = parsed;
-  const agentBindings = parsed.boundTools || parsed.boundSourceId || parsed.boundBrainId ||
-    parsed.boundSlugPrefixes || parsed.boundMaxConcurrent !== undefined || parsed.budgetUsdPerDay !== undefined
-    ? {
-      boundTools: parsed.boundTools,
-      boundSourceId: parsed.boundSourceId,
-      boundBrainId: parsed.boundBrainId,
-      boundSlugPrefixes: parsed.boundSlugPrefixes,
-      boundMaxConcurrent: parsed.boundMaxConcurrent,
-      budgetUsdPerDay: parsed.budgetUsdPerDay,
-    }
-    : undefined;
 
   try {
-    await withConfiguredSql(async (sql) => {
-      const { GBrainOAuthProvider } = await import('../core/oauth-provider.ts');
-      const provider = new GBrainOAuthProvider({ sql });
-      const { clientId, clientSecret } = await provider.registerClientManual(
-        name, grantTypes, scopes, redirectUris, sourceId, federatedRead, tokenEndpointAuthMethod, agentBindings,
-      );
-      const effectiveFederated = federatedRead && federatedRead.length > 0 ? federatedRead : [sourceId];
-      const effectiveAuthMethod = tokenEndpointAuthMethod || 'client_secret_post';
-      console.log(`OAuth client registered: "${name}"\n`);
-      console.log(`  Client ID:           ${clientId}`);
-      if (clientSecret) {
-        console.log(`  Client Secret:       ${clientSecret}\n`);
-      } else {
-        console.log(`  Client Secret:       <public client — none issued>\n`);
+    await withConfiguredSql(async (sql, engine) => {
+      const registered = await registerScopedClient(sql, engine, name, parsed);
+      for (const line of formatRegisterClientOutput(name, registered, parsed)) {
+        console.log(line);
       }
-      console.log(`  Grant types:         ${grantTypes.join(', ')}`);
-      console.log(`  Scopes:              ${scopes}`);
-      console.log(`  Token auth method:   ${effectiveAuthMethod}`);
-      if (redirectUris.length > 0) {
-        console.log(`  Redirect URIs:       ${redirectUris.join(', ')}`);
-      }
-      console.log(`  Write source:        ${sourceId}`);
-      console.log(`  Federated reads:     ${effectiveFederated.join(', ')}`);
-      if (agentBindings) {
-        console.log(`  Bound tools:         ${(parsed.boundTools ?? []).join(', ') || '<none>'}`);
-        console.log(`  Bound source:        ${parsed.boundSourceId ?? '<none>'}`);
-        console.log(`  Bound brain:         ${parsed.boundBrainId ?? '<none>'}`);
-        console.log(`  Bound slug prefixes:${parsed.boundSlugPrefixes ? ' ' + parsed.boundSlugPrefixes.join(', ') : ' <none>'}`);
-        console.log(`  Max concurrency:     ${parsed.boundMaxConcurrent ?? 1}`);
-        console.log(`  Daily budget USD:    ${parsed.budgetUsdPerDay ?? '<none>'}`);
-      }
-      console.log('');
-      if (clientSecret) {
-        console.log('Save the client secret — it will not be shown again.');
-      } else {
-        console.log('Public client (PKCE-only) — no secret needed.');
-      }
-      console.log(`Revoke with: gbrain auth revoke-client "${clientId}"`);
     });
   } catch (e: any) {
     console.error('Error:', e.message);
