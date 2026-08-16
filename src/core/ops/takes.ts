@@ -341,8 +341,8 @@ function mapTakesWriteError(err: unknown): never {
 const takes_add: Operation = {
   name: 'takes_add',
   description:
-    'Record a take (typed claim) on a page: fact | take | bet | hunch, with a holder (who ' +
-    'holds the belief: world | people/<slug> | companies/<slug> | brain), weight 0..1, and ' +
+    'Record a take (typed claim) on a page: fact / take / bet / hunch, with a holder (who ' +
+    'holds the belief: world, people/<slug>, companies/<slug>, or brain), weight 0..1, and ' +
     'optional source/since date. Writes the markdown takes fence first (markdown is ' +
     'canonical) and mirrors to the DB. Remote callers can only write holders in their ' +
     'allow-list (stdio default: world).',
@@ -469,7 +469,7 @@ const takes_supersede: Operation = {
 const takes_resolve: Operation = {
   name: 'takes_resolve',
   description:
-    'Resolve a take: quality correct | incorrect | partial | unresolvable, with optional ' +
+    'Resolve a take: quality correct / incorrect / partial / unresolvable, with optional ' +
     'evidence text and measured value/unit. Resolutions feed the calibration scorecard. ' +
     'Remote callers: resolved_by is SERVER-STAMPED as mcp:<client> (any passed value is ' +
     'ignored) so agent resolutions stay segregable from owner ground truth; the target row ' +

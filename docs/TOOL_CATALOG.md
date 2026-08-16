@@ -214,10 +214,10 @@ Every non-localOnly operation on the MCP surface: 115 tools across 22 areas. **S
 
 | Tool | Description | Scope | Starter | Gate |
 |---|---|---|---|---|
-| `takes_add` | Record a take (typed claim) on a page: fact \| take \| bet \| hunch, with a holder (who holds the belief: world \| people/<slug> \| companies/<slug> \| brain), weight 0..1, and optional source/since date. | write |  |  |
+| `takes_add` | Record a take (typed claim) on a page: fact / take / bet / hunch, with a holder (who holds the belief: world, people/<slug>, companies/<slug>, or brain), weight 0..1, and optional source/since date. | write |  |  |
 | `takes_calibration` | Calibration curve: resolved correct/incorrect bets binned by stated weight; observed vs predicted per bucket. | read |  |  |
 | `takes_list` | List takes (typed/weighted/attributed claims) filtered by holder/kind/active/etc. | read |  |  |
-| `takes_resolve` | Resolve a take: quality correct \| incorrect \| partial \| unresolvable, with optional evidence text and measured value/unit. | write |  |  |
+| `takes_resolve` | Resolve a take: quality correct / incorrect / partial / unresolvable, with optional evidence text and measured value/unit. | write |  |  |
 | `takes_scorecard` | Calibration scorecard for resolved bets: counts, accuracy, Brier (correct ∨ incorrect only), partial_rate. | read |  |  |
 | `takes_search` | Keyword search across takes (pg_trgm similarity over claim text) | read |  |  |
 | `takes_supersede` | Supersede a take with a replacement claim: the old row is struck through (kept for archaeology), the replacement appends at the next fence row number. | write |  |  |
