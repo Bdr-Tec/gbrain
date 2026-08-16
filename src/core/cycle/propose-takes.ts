@@ -38,7 +38,7 @@
  */
 
 import { randomUUID, createHash } from 'node:crypto';
-import { BaseCyclePhase, type ScopedReadOpts, type BasePhaseOpts } from './base-phase.ts';
+import { BaseCyclePhase, effectivePhaseDeadlineMs, type ScopedReadOpts, type BasePhaseOpts } from './base-phase.ts';
 import { chat as gatewayChat, getChatModel, probeChatModel } from '../ai/gateway.ts';
 import { normalizeModelId } from '../model-id.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
@@ -436,8 +436,18 @@ class ProposeTakesPhase extends BaseCyclePhase {
     const promptVersion = opts.promptVersion ?? PROPOSE_TAKES_PROMPT_VERSION;
     const pageLimit = opts.pageLimit ?? 100;
     const skipPagesWithFence = opts.skipPagesWithFence ?? false;
-    const deadlineMs = opts.deadlineMs ?? ProposeTakesPhase.PHASE_DEADLINE_MS;
     const phaseStartMs = Date.now();
+    // gbrain#4168: clamp the phase's relative deadline to the job's absolute
+    // deadline (minus reserve). At the default installed-daemon interval the
+    // job timeout floor EQUALS the old 30-min phase default, and since this
+    // phase starts after earlier phases, phase-elapsed always trailed
+    // job-elapsed — the clean partial-exit below was unreachable and cycles
+    // dead-lettered instead of banking work.
+    const deadlineMs = effectivePhaseDeadlineMs(
+      opts.deadlineMs ?? ProposeTakesPhase.PHASE_DEADLINE_MS,
+      opts.deadlineAtMs,
+      phaseStartMs,
+    );
     const proposalRunId = `propose-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}-${randomUUID().slice(0, 8)}`;
 
     const modelId = opts.model ?? getChatModel();
@@ -476,7 +486,21 @@ class ProposeTakesPhase extends BaseCyclePhase {
       tombstones_written: 0,
       budget_exhausted: false,
       warnings: [],
+      deadline_hit: false,
     };
+
+    // gbrain#4168: job budget already inside the reserve window — exit
+    // cleanly before ANY work (the in-loop `elapsed > deadline` check can't
+    // fire on the first iteration when the effective deadline is 0).
+    if (deadlineMs <= 0) {
+      result.warnings.push('phase skipped: job deadline already inside the reserve window');
+      result.deadline_hit = true;
+      return {
+        summary: `propose_takes: skipped — job deadline inside the reserve window (run ${proposalRunId})`,
+        details: { ...result, proposal_run_id: proposalRunId, prompt_version: promptVersion },
+        status: 'warn' as PhaseStatus,
+      };
+    }
 
     // Load pages eligible for proposal. Source-scoped per BaseCyclePhase.
     const pages = await listCandidatePages(engine, scope, pageLimit);

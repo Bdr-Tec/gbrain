@@ -508,7 +508,9 @@ New prose appended here.`;
     const extractor: ProposeTakesExtractor = async () => [];
     const result = await runPhaseProposeTakes(buildCtx(engine), { extractor });
     const details = result.details as Record<string, unknown>;
-    expect(details.deadline_hit).toBeUndefined();
+    // gbrain#4168: deadline_hit is now explicitly initialized false (was
+    // undefined-when-unhit); the behavior pinned here is unchanged.
+    expect(details.deadline_hit).toBe(false);
     expect(details.pages_scanned).toBe(1);
   });
 
