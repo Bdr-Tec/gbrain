@@ -704,8 +704,12 @@ async function embedPage(
     }
   }
 
-  // Embed chunks without embeddings
-  const toEmbed = chunks.filter(c => !c.embedded_at);
+  // Embed chunks without embeddings. embedding_is_null is the stored-vector
+  // truth: a schema rebuild NULLs vectors without touching embedded_at, so
+  // keying on embedded_at alone silently no-ops ("all chunks already
+  // embedded") on a rebuild-darkened page. Older callers that selected chunks
+  // without the boolean fall back to embedded_at.
+  const toEmbed = chunks.filter(c => !c.embedded_at || c.embedding_is_null === true);
   result.total_chunks += chunks.length;
   result.skipped += chunks.length - toEmbed.length;
 

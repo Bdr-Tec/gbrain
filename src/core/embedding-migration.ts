@@ -191,6 +191,31 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
       await transitionDimPinnedColumn(tx, t.table, t.index, t.indexSql, targetDim);
     }
   });
+
+  // Post-tx data hygiene: the column rebuild NULLed every vector but left
+  // embedded_at stamped — stale data that used to make coverage surfaces lie.
+  // All READ paths now key on the vector itself (getStats/getHealth/getChunks
+  // embedding_is_null), so this clear is belt-and-braces, DELIBERATELY outside
+  // the DDL transaction: a ~1M-row UPDATE inside the ACCESS EXCLUSIVE window
+  // would hold the exclusive lock through row churn (the pooler-contention
+  // class pace-mode exists for), and a crash mid-batch leaves only
+  // redundant-lie rows that nothing reads. Batched with an event-loop yield
+  // between batches (setTimeout(0), NOT setImmediate — Bun starves the timers
+  // phase under a tight setImmediate loop) so lock heartbeats keep firing.
+  try {
+    for (;;) {
+      const res = await engine.executeRaw<{ n: number }>(
+        `WITH b AS (SELECT id FROM content_chunks WHERE embedded_at IS NOT NULL LIMIT 50000),
+              u AS (UPDATE content_chunks c SET embedded_at = NULL FROM b WHERE c.id = b.id RETURNING 1)
+         SELECT count(*)::int AS n FROM u`,
+      );
+      if (!res[0] || Number(res[0].n) === 0) break;
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  } catch {
+    // Best-effort: the vector column is the source of truth; a failed clear
+    // must never fail the migration.
+  }
 }
 
 /**

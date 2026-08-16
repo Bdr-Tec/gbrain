@@ -2884,11 +2884,14 @@ export class PGLiteEngine implements BrainEngine {
     const source = sourceIds ?? opts?.sourceId ?? 'default';
     // #2544: explicit non-vector column list — rowToChunk discards embeddings
     // at this call site, so `cc.*` shipped every vector only to be thrown away.
+    // embedding_is_null: boolean truth of the stored vector (a schema rebuild
+    // NULLs vectors without touching embedded_at).
     const { rows } = await this.db.query(
       `SELECT cc.id, cc.page_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
               cc.model, cc.token_count, cc.embedded_at, cc.language,
               cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line,
-              cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified, cc.modality
+              cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified, cc.modality,
+              (cc.embedding IS NULL) AS embedding_is_null
        FROM content_chunks cc
        JOIN pages p ON p.id = cc.page_id
        WHERE p.slug = $1 AND ${sourceIds ? 'p.source_id = ANY($2::text[])' : 'p.source_id = $2'}
@@ -5877,7 +5880,10 @@ export class PGLiteEngine implements BrainEngine {
         -- v0.26.5: exclude soft-deleted from page_count (mirrors postgres-engine).
         (SELECT count(*) FROM pages WHERE deleted_at IS NULL) as page_count,
         (SELECT count(*) FROM content_chunks) as chunk_count,
-        (SELECT count(*) FROM content_chunks WHERE embedded_at IS NOT NULL) as embedded_count,
+        -- Keyed on the stored VECTOR, not embedded_at (parity with
+        -- postgres-engine): a schema rebuild NULLs every vector without
+        -- touching embedded_at.
+        (SELECT count(*) FROM content_chunks WHERE embedding IS NOT NULL) as embedded_count,
         (SELECT count(*) FROM links) as link_count,
         (SELECT count(DISTINCT tag) FROM tags) as tag_count,
         (SELECT count(*) FROM timeline_entries) as timeline_entry_count
@@ -5918,8 +5924,18 @@ export class PGLiteEngine implements BrainEngine {
       )
       SELECT
         (SELECT count(*) FROM pages WHERE deleted_at IS NULL) as page_count,
-        (SELECT count(*) FROM content_chunks WHERE embedded_at IS NOT NULL)::float /
-          GREATEST((SELECT count(*) FROM content_chunks), 1)::float as embed_coverage,
+        -- Parity with postgres-engine: stored-VECTOR truth over ELIGIBLE
+        -- chunks (embedding, not embedded_at; embed_skip excluded from BOTH
+        -- sides; zero eligible = vacuous 100%).
+        (SELECT CASE
+           WHEN count(*) FILTER (WHERE NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip')) = 0
+           THEN 1.0
+           ELSE count(*) FILTER (WHERE cc.embedding IS NOT NULL
+                                   AND NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip'))::float
+              / count(*) FILTER (WHERE NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip'))::float
+         END
+         FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id) as embed_coverage,
         0 as stale_pages,
         -- Bug 11 — orphan = islanded (no inbound AND no outbound). The raw
         -- list is filtered in TS using the shared orphan-reporting policy.
