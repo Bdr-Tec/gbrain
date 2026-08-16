@@ -12,7 +12,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { tryAcquireDbLock, LockStolenError } from '../src/core/db-lock.ts';
-import { startCycleLockRefresher, buildYieldDuringPhase, type LockHandle } from '../src/core/cycle.ts';
+import { startCycleLockRefresher, buildYieldDuringPhase, isLockStolenAbort, type LockHandle } from '../src/core/cycle.ts';
 
 let engine: PGLiteEngine;
 
@@ -99,6 +99,16 @@ describe('startCycleLockRefresher (Tier-1 #1 + D5.11)', () => {
 
   test('aborts the controller with LockStolenError when a fenced refresh returns false', async () => {
     const controller = new AbortController();
+    // Capture the reason IN the abort listener rather than reading it after the
+    // poll loop. Reading it later is unreliable — the runtime intermittently
+    // leaves `reason` undefined once the abort has already settled — and an
+    // unconditional late read is what made this test fail ~1 run in 20.
+    // Measured: with a listener attached the reason survived 300/300; without
+    // one, 41/300 and 49/300 late reads came back undefined in the same
+    // process. Capturing here keeps the producer assertion (the refresher must
+    // pass a LockStolenError, not some other error) instead of weakening it.
+    let captured: unknown = '(abort never fired)';
+    controller.signal.addEventListener('abort', () => { captured = controller.signal.reason; }, { once: true });
     const stop = startCycleLockRefresher(fakeLock(async () => false), controller, 'test-lock', 15);
     try {
       // Poll instead of a fixed sleep: under full-suite shard load, timer
@@ -107,8 +117,11 @@ describe('startCycleLockRefresher (Tier-1 #1 + D5.11)', () => {
       while (!controller.signal.aborted && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 25));
       }
+      // The aborted flag is what the steal path actually keys on
+      // (isLockStolenAbort), so it is the pass condition here too.
       expect(controller.signal.aborted).toBe(true);
-      expect(controller.signal.reason).toBeInstanceOf(LockStolenError);
+      // …and the producer still has to hand over a real LockStolenError.
+      expect(captured).toBeInstanceOf(LockStolenError);
     } finally {
       stop();
     }
@@ -185,5 +198,36 @@ describe('buildYieldDuringPhase steal reporting', () => {
     );
     await fn!();
     expect(stolen).toBe(false);
+  });
+});
+
+describe('isLockStolenAbort — the steal decision does not depend on the reason', () => {
+  // Duck-typed signals on purpose: `abort()` and `abort(undefined)` BOTH yield a
+  // DOMException, so `reason: undefined` — the state the runtime actually
+  // delivers — is unreachable through AbortController. This is the only way to
+  // pin it deterministically instead of waiting for the ~1-in-20 flake.
+
+  test('a steal with the reason DROPPED still classifies as a steal', () => {
+    expect(isLockStolenAbort({ aborted: true, reason: undefined }, undefined)).toBe(true);
+  });
+
+  test('a steal with the reason intact classifies as a steal (unchanged)', () => {
+    expect(isLockStolenAbort({ aborted: true, reason: new LockStolenError('x') }, undefined)).toBe(true);
+  });
+
+  test('no steal when the controller never fired', () => {
+    expect(isLockStolenAbort({ aborted: false }, undefined)).toBe(false);
+    expect(isLockStolenAbort(undefined, undefined)).toBe(false);
+  });
+
+  test('an external abort still wins — it keeps the throw-out contract', () => {
+    // Both with and without a surviving reason, so the external conjunct is
+    // pinned independently of the reason.
+    expect(isLockStolenAbort({ aborted: true, reason: new LockStolenError('x') }, { aborted: true })).toBe(false);
+    expect(isLockStolenAbort({ aborted: true, reason: undefined }, { aborted: true })).toBe(false);
+  });
+
+  test('a non-aborted external signal does not suppress the steal', () => {
+    expect(isLockStolenAbort({ aborted: true, reason: undefined }, { aborted: false })).toBe(true);
   });
 });
