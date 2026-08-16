@@ -1491,11 +1491,17 @@ export function formatResult(
         `Stale pages: ${h.stale_pages}`,
         `Orphan pages: ${h.orphan_pages}`,
       ];
-      if (h.link_coverage !== undefined) {
+      // gbrain#4147: null = below the small-N floor — say so instead of
+      // rendering a misleading hard 0%/100%.
+      if (h.link_coverage != null) {
         lines.push(`Link coverage (entities): ${(h.link_coverage * 100).toFixed(1)}%`);
+      } else if (h.entity_page_count !== undefined) {
+        lines.push(`Link coverage (entities): n/a (${h.entity_page_count} entity page(s) — too few to grade)`);
       }
-      if (h.timeline_coverage !== undefined) {
+      if (h.timeline_coverage != null) {
         lines.push(`Timeline coverage (entity pages): ${(h.timeline_coverage * 100).toFixed(1)}%`);
+      } else if (h.entity_page_count !== undefined) {
+        lines.push(`Timeline coverage (entity pages): n/a (${h.entity_page_count} entity page(s) — too few to grade)`);
       }
       if (h.timeline_coverage_score !== undefined) {
         lines.push(`Timeline density (all pages): ${h.timeline_coverage_score}/15 (whole-brain brain-score component)`);
