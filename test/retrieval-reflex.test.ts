@@ -200,15 +200,28 @@ describe('resolveEntitiesToPointers', () => {
   });
 
   test('pre-v110 brains: alias-table absence does not break the slug arm', async () => {
-    await seed('people/alice-example', 'Alice Example', 'A founder.');
-    // Simulate no page_aliases table.
-    await engine.executeRaw('DROP TABLE IF EXISTS page_aliases');
-    const block = await resolveEntitiesToPointers(engine, 'default', extractCandidates('about Alice Example'), {});
-    expect(block).not.toBeNull();
-    expect(block!.pointers[0].slug).toBe('people/alice-example');
-    // restore for other tests
-    await engine.initSchema();
-  });
+    // Own throwaway engine: dropping page_aliases on the SHARED engine and
+    // "restoring" via initSchema() is a trap under GBRAIN_PGLITE_SNAPSHOT —
+    // the snapshot fast-path short-circuits initSchema, the table never
+    // comes back, and every later alias test in the file fails with
+    // 42P01 (caught by the v0.46.11 ship-review test additions).
+    const e2 = new PGLiteEngine();
+    await e2.connect({});
+    await e2.initSchema();
+    try {
+      await e2.executeRaw(
+        `INSERT INTO pages (slug, source_id, type, title, compiled_truth, timeline)
+         VALUES ('people/alice-example', 'default', 'person', 'Alice Example', 'A founder.', '')`,
+        [],
+      );
+      await e2.executeRaw('DROP TABLE IF EXISTS page_aliases');
+      const block = await resolveEntitiesToPointers(e2, 'default', extractCandidates('about Alice Example'), {});
+      expect(block).not.toBeNull();
+      expect(block!.pointers[0].slug).toBe('people/alice-example');
+    } finally {
+      await e2.disconnect();
+    }
+  }, 60_000);
 });
 
 describe('context-engine assemble() — Retrieval Reflex integration', () => {
