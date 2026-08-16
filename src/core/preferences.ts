@@ -10,39 +10,24 @@
 
 import { readFileSync, writeFileSync, renameSync, chmodSync, mkdtempSync, rmSync, existsSync, mkdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
-
-function home(): string {
-  // `os.homedir()` in Bun caches its initial value and ignores later
-  // `process.env.HOME` mutations, which breaks test isolation and any
-  // workflow that needs to run against a specific $HOME (CI, scripted installs).
-  // Prefer the env var; fall back to the cached OS value. Matches the existing
-  // `src/commands/upgrade.ts` pattern.
-  //
-  // NOTE: prefsDir() and migrationsDir() route through gbrainPath() (which
-  // honors GBRAIN_HOME), so this fallback is only used by code paths that
-  // want $HOME directly (none in this file as of v0.30.3).
-  return process.env.HOME || homedir();
-}
+import { gbrainPath } from './config.ts';
 
 /**
- * GBRAIN_HOME-aware override for the .gbrain directory. When the env var
- * is set, this returns it directly (so the directory is GBRAIN_HOME itself,
- * matching the convention `src/core/config.ts:gbrainPath` enforces).
- * When unset, falls back to `<home>/.gbrain` so legacy callers and the
- * doctor's filesystem-only checks keep working.
+ * GBRAIN_HOME-aware resolution of the .gbrain directory — delegates to
+ * `src/core/config.ts:gbrainPath()` so preferences + the migration ledger
+ * follow the SAME convention as config resolution: GBRAIN_HOME is a PARENT
+ * dir and '.gbrain' is always appended (`GBRAIN_HOME=/tmp/x` →
+ * `/tmp/x/.gbrain`). The previous local implementation returned GBRAIN_HOME
+ * directly — while its own doc comment claimed to match gbrainPath — so
+ * with GBRAIN_HOME set, config lived at `$GBRAIN_HOME/.gbrain/config.json`
+ * but the migration ledger at `$GBRAIN_HOME/migrations/completed.jsonl`,
+ * splitting one logical home across two roots.
  *
- * Without this, `~/.gbrain/migrations/completed.jsonl` is the only path
- * doctor reads on filesystem checks — the test isolation contract that
- * `gbrainPath()` provides for everywhere else doesn't extend here.
+ * When unset, gbrainPath falls back to `<home>/.gbrain` so legacy callers
+ * and doctor's filesystem-only checks keep working.
  */
 function gbrainDir(): string {
-  const override = process.env.GBRAIN_HOME;
-  if (override) {
-    const trimmed = override.trim();
-    if (trimmed) return trimmed;
-  }
-  return join(home(), '.gbrain');
+  return gbrainPath();
 }
 
 export type MinionMode = 'always' | 'pain_triggered' | 'off';

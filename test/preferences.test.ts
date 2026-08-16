@@ -21,12 +21,14 @@ beforeEach(() => {
   origHome = process.env.HOME;
   origGbrainHome = process.env.GBRAIN_HOME;
   tmp = mkdtempSync(join(tmpdir(), 'gbrain-prefs-test-'));
-  // preferences.ts's gbrainDir() returns `$HOME/.gbrain` when GBRAIN_HOME
-  // is unset. Test fixtures write to `$tmp/.gbrain/...`, so set HOME only
-  // and clear GBRAIN_HOME — setting GBRAIN_HOME would route prefs to $tmp
-  // directly (no .gbrain suffix), which doesn't match the fixture layout.
+  // preferences.ts's gbrainDir() delegates to config.ts's gbrainPath():
+  // GBRAIN_HOME is a PARENT dir and '.gbrain' is appended, so
+  // GBRAIN_HOME=$tmp routes prefs + the migration ledger to
+  // `$tmp/.gbrain/...`, matching the fixture layout. (HOME alone doesn't
+  // isolate: the unset-GBRAIN_HOME fallback uses os.homedir(), which Bun
+  // caches at first call and ignores in-process HOME mutation.)
   process.env.HOME = tmp;
-  delete process.env.GBRAIN_HOME;
+  process.env.GBRAIN_HOME = tmp;
 });
 
 afterEach(() => {
