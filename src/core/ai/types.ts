@@ -283,6 +283,17 @@ export interface ChatTouchpoint {
    */
   supports_prompt_cache?: boolean | ((modelId: string) => boolean);
   /**
+   * Model reasons/thinks BY DEFAULT, spending output-token budget on internal
+   * reasoning before any answer text (DeepSeek v4's thinking mode bills
+   * reasoning as output and counts it against `max_tokens`). Consumers that
+   * size output caps (e.g. `think`'s `maxOutputTokensFor`) grant these models
+   * the same headroom as thinking-by-default Claude 5 / OpenAI reasoning
+   * models. Boolean for recipe-wide behavior; predicate when only some routed
+   * model ids think by default. Distinct from "can be asked to think" —
+   * default-off reasoning modes should NOT set this (gbrain#4172).
+   */
+  thinking_by_default?: boolean | ((modelId: string) => boolean);
+  /**
    * Backend honors OpenAI structured outputs (a strict `json_schema`
    * response_format). Threaded into `createOpenAICompatible`'s
    * `supportsStructuredOutputs` so query expansion's `generateObject` sends a
