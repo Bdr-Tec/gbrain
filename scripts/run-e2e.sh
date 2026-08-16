@@ -36,6 +36,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# COVERAGE_DIR (opt-in lcov coverage) must be an ABSOLUTE path: this script
+# redirects HOME (and E2E tests spawn CLI subprocesses with varying cwd), so
+# a relative --coverage-dir would scatter lcov output across working dirs.
+# Normalize it once against the repo root, before HOME moves. COVERAGE_DIR is
+# deliberately NOT GBRAIN-prefixed: the hermetic env scrub below drops
+# GBRAIN_*/operator prefixes, and this variable must survive that scrub.
+if [ -n "${COVERAGE_DIR:-}" ]; then
+  case "$COVERAGE_DIR" in
+    /*) ;;
+    *) COVERAGE_DIR="$PWD/$COVERAGE_DIR" ;;
+  esac
+fi
+
 # #3485: this wrapper IS the e2e boundary — opt in to running with a database
 # URL present. The bunfig test preload (database-url-guard-preload.ts) refuses
 # bare `bun test` runs while DATABASE_URL/GBRAIN_DATABASE_URL is ambient; the
@@ -168,9 +181,19 @@ fail_files=0
 fail_list=()
 total_pass=0
 total_fail=0
+file_idx=0
 
 for f in "${files[@]}"; do
   name=$(basename "$f")
+  file_idx=$((file_idx + 1))
+  # COVERAGE_DIR (opt-in): each E2E file runs in its OWN bun process, so each
+  # needs its OWN coverage dir — a second bun process reusing a coverage dir
+  # OVERWRITES lcov.info. Empty/unset COVERAGE_DIR leaves the exec line
+  # byte-identical to the pre-coverage behavior.
+  COVERAGE_ARGS=()
+  if [ -n "${COVERAGE_DIR:-}" ]; then
+    COVERAGE_ARGS=(--coverage --coverage-reporter=lcov --coverage-dir="$COVERAGE_DIR/e2e-$file_idx")
+  fi
   echo ""
   echo "=== $name ==="
   # Cross-file isolation: terminate any stale connections from the prior
@@ -196,7 +219,7 @@ for f in "${files[@]}"; do
   else
     TIMEOUT_CMD=""
   fi
-  if output=$($TIMEOUT_CMD bun test --timeout=60000 "$f" 2>&1); then
+  if output=$($TIMEOUT_CMD bun test --timeout=60000 ${COVERAGE_ARGS[@]+"${COVERAGE_ARGS[@]}"} "$f" 2>&1); then
     pass_files=$((pass_files + 1))
     # Extract pass/fail counts from bun's summary (e.g., "123 pass")
     p=$(echo "$output" | grep -oE '[0-9]+ pass' | tail -1 | grep -oE '[0-9]+' || echo 0)
@@ -262,4 +285,13 @@ if [ ${#fail_list[@]} -gt 0 ]; then
     echo "  - $f"
   done
   exit 1
+fi
+
+# Lane manifest: written ONLY on a fully green run (isolation breach exits 2
+# and failing files exit 1 above, both before reaching here), so
+# complete:true means the lcov data represents the whole E2E lane.
+if [ -n "${COVERAGE_DIR:-}" ]; then
+  LCOV_COUNT=$(find "$COVERAGE_DIR" -name 'lcov.info' 2>/dev/null | grep -c '^' || true)
+  printf '{"lane":"e2e","sha":"%s","lcovCount":%s,"complete":true}\n' \
+    "$(git rev-parse HEAD)" "${LCOV_COUNT:-0}" > "$COVERAGE_DIR/lane-manifest.json"
 fi

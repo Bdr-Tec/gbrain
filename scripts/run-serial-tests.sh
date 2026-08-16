@@ -40,12 +40,31 @@ echo "[serial-tests] running ${#files[@]} file(s), one bun process per file"
 # Per-file processes give true isolation; cost is ~100ms startup × N files.
 fail_count=0
 failed_files=()
+idx=0
 for f in "${files[@]}"; do
-  if ! bun test --max-concurrency=1 --timeout=60000 "$f"; then
+  idx=$((idx + 1))
+  # COVERAGE_DIR (opt-in): each serial file runs in its OWN bun process, so
+  # each process needs its OWN coverage dir — a second bun process reusing a
+  # coverage dir OVERWRITES lcov.info. Empty/unset COVERAGE_DIR leaves the
+  # exec line byte-identical to the pre-coverage behavior.
+  COVERAGE_ARGS=()
+  if [ -n "${COVERAGE_DIR:-}" ]; then
+    COVERAGE_ARGS=(--coverage --coverage-reporter=lcov --coverage-dir="$COVERAGE_DIR/serial-$idx")
+  fi
+  if ! bun test --max-concurrency=1 --timeout=60000 ${COVERAGE_ARGS[@]+"${COVERAGE_ARGS[@]}"} "$f"; then
     fail_count=$((fail_count + 1))
     failed_files+=("$f")
   fi
 done
+
+# Lane manifest: written ONLY on a fully green run (complete:true means the
+# lcov data represents every serial file). Failure exit codes below are
+# preserved unchanged.
+if [ -n "${COVERAGE_DIR:-}" ] && [ "$fail_count" -eq 0 ]; then
+  LCOV_COUNT=$(find "$COVERAGE_DIR" -name 'lcov.info' 2>/dev/null | grep -c '^' || true)
+  printf '{"lane":"serial","sha":"%s","lcovCount":%s,"complete":true}\n' \
+    "$(git rev-parse HEAD)" "${LCOV_COUNT:-0}" > "$COVERAGE_DIR/lane-manifest.json"
+fi
 
 if [ "$fail_count" -gt 0 ]; then
   echo "" >&2
