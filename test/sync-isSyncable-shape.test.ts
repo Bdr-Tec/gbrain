@@ -12,6 +12,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   isSyncable,
   unsyncableReason,
+  sanitizePathForDisplay,
   SYNC_SKIP_FILES,
   type SyncableReason,
 } from '../src/core/sync.ts';
@@ -67,5 +68,16 @@ describe('#1433 — isSyncable / unsyncableReason are duals of one classifier', 
     for (const c of cases) {
       expect(isSyncable(c.path)).toBe(unsyncableReason(c.path) === null);
     }
+  });
+
+  test('sanitizePathForDisplay: control bytes → U+FFFD, DEL included, brackets kept, 200-char cap', () => {
+    expect(sanitizePathForDisplay('notes/bell' + '\x07' + '.md')).toBe('notes/bell�.md');
+    expect(sanitizePathForDisplay('esc' + '\x1b' + '[31mred')).toBe('esc�[31mred'); // ANSI CSI neutered
+    expect(sanitizePathForDisplay('del' + '\x7f' + '.md')).toBe('del�.md');
+    expect(sanitizePathForDisplay('[foo.md](https-example).md')).toBe('[foo.md](https-example).md');
+    const long = 'a'.repeat(250);
+    const capped = sanitizePathForDisplay(long);
+    expect(capped.length).toBe(200);
+    expect(capped.endsWith('...')).toBe(true);
   });
 });

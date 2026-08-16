@@ -352,6 +352,38 @@ describe('fixBacklinkGaps safety pipeline', () => {
       cleanup();
     }
   });
+
+  test('two gaps from different source pages batch into one target write: fixed=2, both bullets under Timeline', async () => {
+    const { root, lockRoot, cleanup } = makeFixture();
+    try {
+      const original = `${fence}\ntype: person\ntitle: Alice\n${fence}\n# Alice\n\n## Timeline\n\n- old\n`;
+      writeFileSync(join(root, 'people/alice.md'), original);
+      const gaps: BacklinkGap[] = [
+        { sourcePage: 'meetings/standup.md', targetPage: 'people/alice.md', entityName: 'Alice', sourceTitle: 'Standup' },
+        { sourcePage: 'meetings/retro.md', targetPage: 'people/alice.md', entityName: 'Alice', sourceTitle: 'Retro' },
+      ];
+      const outcome = await fixBacklinkGaps(root, gaps, false, { lockRoot });
+      expect(outcome.fixed).toBe(2);
+      expect(outcome.skipped).toHaveLength(0);
+      const after = readFileSync(join(root, 'people/alice.md'), 'utf-8');
+      // Frontmatter byte-identical.
+      const bodyStart = frontmatterBodyOffset(original);
+      expect(after.slice(0, bodyStart)).toBe(original.slice(0, bodyStart));
+      // Both bullets present, and both land BELOW the Timeline heading.
+      const headingIdx = after.indexOf('## Timeline');
+      expect(headingIdx).toBeGreaterThan(bodyStart);
+      const standupIdx = after.indexOf('Referenced in [Standup](../meetings/standup.md)');
+      const retroIdx = after.indexOf('Referenced in [Retro](../meetings/retro.md)');
+      expect(standupIdx).toBeGreaterThan(headingIdx);
+      expect(retroIdx).toBeGreaterThan(headingIdx);
+      // Exactly one Timeline section — the second gap must not mint a new one.
+      expect(after.match(/^## Timeline$/gm)).toHaveLength(1);
+      // No tmp residue from the atomic-write pipeline.
+      expect(readdirSync(join(root, 'people')).filter(f => f.includes('.tmp.'))).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe('parseBacklinksArgs', () => {

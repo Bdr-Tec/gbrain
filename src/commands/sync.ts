@@ -4173,6 +4173,15 @@ async function performFullSync(
         );
       }
       const deleteScopedOpts = { sourceId: sid };
+      // Malformed-path rows get their own line: unlike genuinely-deleted
+      // files, THEIR backing file is usually still on disk (the walker
+      // excludes it), so "source file was removed" would be a lie and the
+      // rename-to-rescue path must be stated at the moment of removal, not
+      // only in a doctor check the operator may see later (red-team catch).
+      const malformedDeleted = deletableSlugs.filter(slug => {
+        const sp = pathBySlug.get(slug);
+        return sp != null && unsyncableReason(sp, reconcileSyncOpts) === 'malformed-path';
+      }).length;
       for (let i = 0; i < deletableSlugs.length; i += DELETE_BATCH_SIZE) {
         const batch = deletableSlugs.slice(i, i + DELETE_BATCH_SIZE);
         try {
@@ -4189,6 +4198,12 @@ async function performFullSync(
       }
       if (reconciledDeletes > 0) {
         slog(`  Reconciled ${reconciledDeletes} stale page(s) whose source file was removed.`);
+        if (malformedDeleted > 0) {
+          slog(
+            `  (${malformedDeleted} of them had malformed bracket/control-char filenames — ` +
+            `their files may still exist on disk; rename a file to re-import its content.)`,
+          );
+        }
       }
     }
   }

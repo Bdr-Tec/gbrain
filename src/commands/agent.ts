@@ -16,6 +16,7 @@
 import * as fs from 'node:fs';
 import type { BrainEngine } from '../core/engine.ts';
 import { MinionQueue } from '../core/minions/queue.ts';
+import { isQueueQuotaExceededError } from '../core/minions/admission.ts';
 import { waitForCompletion, TimeoutError } from '../core/minions/wait-for-completion.ts';
 import type { MinionJobInput, SubagentHandlerData, AggregatorHandlerData } from '../core/minions/types.ts';
 import { resolveSourceId, ALL_SOURCES } from '../core/source-resolver.ts';
@@ -404,7 +405,7 @@ async function runFanout(engine: BrainEngine, queue: MinionQueue, flags: RunFlag
       // children_ids never written) would leave the aggregator torn — cancel
       // the WHOLE tree (cascades to already-submitted children) and surface
       // the quota message. All-or-nothing beats a wedged aggregator.
-      if (e instanceof Error && e.name === 'QueueQuotaExceededError') {
+      if (isQueueQuotaExceededError(e)) {
         await queue.cancelJob(aggregator.id).catch(() => {});
         console.error(
           `fanout aborted at child ${childIds.length + 1}/${manifest.length}: ${e.message}\n` +

@@ -463,38 +463,32 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
           // Banner is cosmetic; never block the upgrade.
         }
 
-        // Waiting-TTL pre-notice (one-shot, warn-before-act). The worker also
-        // gates its first sweep behind the SAME minions.ttl_notice_shown flag
-        // (tick-1 counts + warns, tick-2 sweeps) because daemon restarts never
-        // run this CLI path — this banner is the interactive channel.
+        // Waiting-TTL pre-notice (one-shot, warn-before-act). The worker
+        // gates its first sweep behind the SAME flag via runWaitingTtlTick
+        // (notice → grace window → sweep) because daemon restarts never run
+        // this CLI path — this banner is the interactive channel. Stamping
+        // the ISO timestamp here starts the same grace clock, so an operator
+        // who sees this banner gets the full window to tune before anything
+        // is cancelled.
         try {
-          const { admissionKilled, resolveTtlNames } = await import('../core/minions/admission.ts');
-          const shown = await engine.getConfig('minions.ttl_notice_shown');
-          if (shown !== 'true' && !admissionKilled()) {
+          const { admissionKilled, resolveTtlNames, countTtlExpiredWaiting, ttlNoticeGraceMs, TTL_NOTICE_SHOWN_KEY } =
+            await import('../core/minions/admission.ts');
+          const shown = await engine.getConfig(TTL_NOTICE_SHOWN_KEY);
+          if ((shown == null || shown.trim() === '') && !admissionKilled()) {
             const ttlNames = await resolveTtlNames(engine);
-            let affected = 0;
-            const parts: string[] = [];
-            for (const [name, hours] of ttlNames) {
-              const rows = await engine.executeRaw<{ count: string }>(
-                `SELECT count(*)::text AS count FROM minion_jobs
-                  WHERE name = $1 AND status = 'waiting' AND updated_at < now() - ($2 * interval '1 hour')`,
-                [name, hours],
-              );
-              const n = parseInt(rows[0]?.count ?? '0', 10);
-              affected += n;
-              parts.push(`${name} > ${hours}h: ${n}`);
-            }
+            const { total: affected, by_name } = await countTtlExpiredWaiting(engine, ttlNames);
+            const parts = [...ttlNames].map(([name, hours]) => `${name} > ${hours}h: ${by_name[name] ?? 0}`);
             console.log('');
             console.log(`⚠ [gbrain] Waiting-TTL is now active: queued jobs that never get claimed are`);
             console.log(`  cancelled after their per-type TTL (${parts.join('; ') || 'defaults'}).`);
             if (affected > 0) {
               console.log(`  ${affected} currently-queued job(s) already exceed their TTL and will be`);
-              console.log(`  cancelled by the worker's next maintenance ticks (auditable error_text;`);
-              console.log(`  visible in 'gbrain jobs stats').`);
+              console.log(`  cancelled after a ${Math.round(ttlNoticeGraceMs() / 60_000)}min grace window`);
+              console.log(`  (auditable error_text; visible in 'gbrain jobs stats').`);
             }
             console.log(`  Tune or disable: gbrain config set minions.ttl_waiting_hours.<name> <hours|0>`);
             console.log('');
-            await engine.setConfig('minions.ttl_notice_shown', 'true');
+            await engine.setConfig(TTL_NOTICE_SHOWN_KEY, new Date().toISOString());
           }
         } catch {
           // Banner is cosmetic; never block the upgrade.

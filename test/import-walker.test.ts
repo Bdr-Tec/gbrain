@@ -112,6 +112,16 @@ describe('collectSyncableFiles — malformed-filename exclusion (both routes)', 
     expect(files).not.toContain(join(root, 'notes', '[wip] draft.md'));
   });
 
+  test('FS-walk route never DESCENDS into a bracket-named directory (clean children stay out)', () => {
+    // The descent-time check is a separate carve-out from the per-file check:
+    // a clean-named .md INSIDE a bracket-named dir still has a malformed PATH.
+    mkdirSync(join(root, '[archive] 2026'));
+    writeFileSync(join(root, '[archive] 2026', 'clean-name.md'), '# hidden by dir\n');
+    const files = collectSyncableFiles(root);
+    expect(files).toContain(join(root, 'legit.md'));
+    expect(files).not.toContain(join(root, '[archive] 2026', 'clean-name.md'));
+  });
+
   test('git fast-path route excludes bracket-named files', () => {
     execSync('git init', { cwd: root, stdio: 'pipe' });
     execSync('git config user.email "t@t.com" && git config user.name "T"', { cwd: root, stdio: 'pipe' });

@@ -374,7 +374,11 @@ export const storedTypeIsAlias: LintRule = async (manifest, opts) => {
         message: `${r.n} page(s) store type '${t}', an alias of '${cls.canonical}'${cls.directory ? ` (files under ${cls.directory})` : ''} — agents may route it inconsistently`,
         pack: manifest.name,
         type: r.type,
-        hint: `gbrain schema unify (retype '${t}' → '${cls.canonical}') OR declare '${t}' as its own page type`,
+        // Real retype surface is the PROTECTED unify-types job — there is no
+        // `schema unify` subcommand (dead-command class; red-team catch).
+        // Flags spelled dash-less: the flag-registry generator harvests bare
+        // dash-tokens from strings one import level deep.
+        hint: `retype via the unify-types job (gbrain jobs submit unify-types; supports dry-run) OR declare '${t}' as its own page type (gbrain schema add-type)`,
       });
     }
   }

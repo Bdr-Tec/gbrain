@@ -14,8 +14,10 @@
  * check-source-scope-onboard.sh): flag any non-test source file that contains
  * BOTH
  *   (a) a getPage/tx.getPage call whose balanced argument span has no second
- *       argument at all, OR a `X ? { sourceId... } : undefined` conditional
- *       second argument (any-source when unset — the read half of the bug),
+ *       argument at all, OR a conditional second argument whose false branch
+ *       is undefined/null/{} — shorthand (`x ? { sourceId } : undefined`) and
+ *       expanded (`x ? { sourceId: x } : undefined`) forms alike (any-source
+ *       when unset — the read half of the bug),
  *   AND
  *   (b) any write-path call: putPage( / importFromContent( / importFromFile(.
  *
@@ -101,9 +103,13 @@ function isUnscopedRead(span) {
   const args = topLevelArgs(span);
   if (args.length < 2) return true; // no opts at all → unscoped
   const opts = stripComments(args[1]).trim();
-  // `X ? { sourceId } : undefined` / `X ? {...} : undefined` — any-source when unset.
-  if (/\?[^:]*\bsourceId\b[^:]*:\s*undefined\s*$/.test(opts)) return true;
-  if (/^undefined$/.test(opts)) return true;
+  // Ternary opts whose false branch is undefined/null/{} — any-source when
+  // unset. Covers BOTH the shorthand (`x ? { sourceId } : undefined`) and the
+  // expanded form (`x ? { sourceId: x } : undefined`): the object-literal
+  // colon in the expanded form defeated a naive [^:]* regex, so this checks
+  // "mentions sourceId + ends in a bare-empty false branch" instead.
+  if (opts.includes('sourceId') && /\?[\s\S]*:\s*(undefined|null|\{\s*\})\s*$/.test(opts)) return true;
+  if (/^(undefined|null|\{\s*\})$/.test(opts)) return true;
   return false;
 }
 

@@ -24,7 +24,9 @@ describe('check-getpage-scoped-write guard', () => {
     const { code, out } = runGuard(join(FIXTURES, 'bad'));
     expect(code).toBe(1);
     expect(out).toContain('fixture.ts:3'); // no-opts read
-    expect(out).toContain('fixture.ts:8'); // conditional-undefined read
+    expect(out).toContain('fixture.ts:8'); // conditional-undefined read (shorthand)
+    expect(out).toContain('fixture.ts:14'); // EXPANDED ternary `{ sourceId: x } : undefined`
+    expect(out).toContain('fixture.ts:19'); // empty-object false branch `: {}`
     expect(out).toContain("sourceId: x ?? 'default'");
   });
 

@@ -18,6 +18,8 @@ import { MinionQueue } from '../src/core/minions/queue.ts';
 import {
   computeParamHash,
   QueueQuotaExceededError,
+  runWaitingTtlTick,
+  TTL_NOTICE_SHOWN_KEY,
   _resetAdmissionCacheForTest,
 } from '../src/core/minions/admission.ts';
 
@@ -330,5 +332,99 @@ describe('getStats drain/depth extensions', () => {
     expect(sub!.drained_cancelled).toBe(1);
     expect(sub!.waiting_now).toBe(1);
     expect(sub!.oldest_waiting_minutes).toBeGreaterThanOrEqual(170); // ~3h
+  });
+});
+
+describe('idempotency_key precedence over param-coalescing', () => {
+  test('a keyed submit never param-coalesces onto an unkeyed identical row', async () => {
+    // Producer-owned idempotency is the STRONGER contract: a param-coalesce
+    // hit would return a row the key was never registered against, so a
+    // later same-key submit would insert fresh and run the work twice.
+    const unkeyed = await queue.add('subagent', { prompt: 'same work' }, {}, SUB);
+    const keyed = await queue.add('subagent', { prompt: 'same work' }, { idempotency_key: 'key-precedence-1' }, SUB);
+    expect(keyed.id).not.toBe(unkeyed.id);
+    expect(keyed.coalesced).not.toBe(true);
+    // And the keyed row carries no param hash — coalescing was disabled, not deferred.
+    expect((keyed.data as Record<string, unknown>).__param_hash).toBeUndefined();
+  });
+});
+
+describe('cancelJobs reason + rootStatuses (direct)', () => {
+  test('reason sets error_text; no-reason cancel preserves pre-existing error_text', async () => {
+    const a = await queue.add('subagent', { prompt: 'reason target' }, {}, SUB);
+    const b = await queue.add('subagent', { prompt: 'prior-text holder' }, {}, SUB);
+    await engine.executeRaw(`UPDATE minion_jobs SET error_text = 'prior failure detail' WHERE id = $1`, [b.id]);
+
+    await queue.cancelJobs([a.id], { reason: 'explicit cancel reason' });
+    await queue.cancelJobs([b.id]); // no reason → COALESCE keeps what was there
+
+    const aRow = await queue.getJob(a.id);
+    const bRow = await queue.getJob(b.id);
+    expect(aRow?.status).toBe('cancelled');
+    expect(aRow?.error_text).toBe('explicit cancel reason');
+    expect(bRow?.status).toBe('cancelled');
+    expect(bRow?.error_text).toBe('prior failure detail');
+  });
+
+  test('rootStatuses re-check: an active row in the batch is left running', async () => {
+    const w = await queue.add('subagent', { prompt: 'still waiting' }, {}, SUB);
+    const act = await queue.add('subagent', { prompt: 'claimed meanwhile' }, {}, SUB);
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET status = 'active', lock_until = now() + interval '5 minutes' WHERE id = $1`,
+      [act.id],
+    );
+    const swept = await queue.cancelJobs([w.id, act.id], { reason: 'sweep', rootStatuses: ['waiting'] });
+    expect(swept.some(j => j.id === w.id)).toBe(true);
+    expect(swept.some(j => j.id === act.id)).toBe(false);
+    expect((await queue.getJob(w.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(act.id))?.status).toBe('active');
+  });
+});
+
+describe('runWaitingTtlTick warn-before-act gate (D1A)', () => {
+  test('tick 1 = notice (counts affected, stamps ISO flag, cancels NOTHING); grace holds; sweep after grace', async () => {
+    const victim = await queue.add('subagent', { prompt: 'expired long ago' }, {}, SUB);
+    await backdate(victim.id, 49);
+
+    // Tick 1: notice. Nothing cancelled, flag stamped with a timestamp.
+    const t1 = await runWaitingTtlTick(engine, queue);
+    expect(t1.phase).toBe('notice');
+    expect(t1.affected).toBe(1);
+    expect(t1.cancelled).toBe(0);
+    expect((await queue.getJob(victim.id))?.status).toBe('waiting');
+    const flag = await engine.getConfig(TTL_NOTICE_SHOWN_KEY);
+    expect(Number.isFinite(Date.parse(flag ?? ''))).toBe(true);
+
+    // Tick 2 inside the grace window: still nothing cancelled.
+    const t2 = await runWaitingTtlTick(engine, queue);
+    expect(t2.phase).toBe('grace');
+    expect((await queue.getJob(victim.id))?.status).toBe('waiting');
+
+    // Grace elapsed (env seam = 0ms): the sweep runs.
+    await withEnv({ GBRAIN_MINIONS_TTL_NOTICE_GRACE_MS: '0' }, async () => {
+      const t3 = await runWaitingTtlTick(engine, queue);
+      expect(t3.phase).toBe('swept');
+      expect(t3.cancelled).toBe(1);
+    });
+    const after = await queue.getJob(victim.id);
+    expect(after?.status).toBe('cancelled');
+    expect(after?.error_text).toStartWith('waiting_ttl_expired');
+  });
+
+  test("legacy flag value 'true' (pre-grace releases) sweeps immediately", async () => {
+    const victim = await queue.add('subagent', { prompt: 'legacy-flag victim' }, {}, SUB);
+    await backdate(victim.id, 49);
+    await engine.setConfig(TTL_NOTICE_SHOWN_KEY, 'true');
+    const tick = await runWaitingTtlTick(engine, queue);
+    expect(tick.phase).toBe('swept');
+    expect((await queue.getJob(victim.id))?.status).toBe('cancelled');
+  });
+
+  test('kill-switch: GBRAIN_MINIONS_ADMISSION=0 does nothing, not even the notice', async () => {
+    await withEnv({ GBRAIN_MINIONS_ADMISSION: '0' }, async () => {
+      const tick = await runWaitingTtlTick(engine, queue);
+      expect(tick.phase).toBe('killed');
+    });
+    expect(await engine.getConfig(TTL_NOTICE_SHOWN_KEY)).toBeNull();
   });
 });

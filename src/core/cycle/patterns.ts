@@ -24,6 +24,7 @@ import { randomUUID } from 'node:crypto';
 import type { BrainEngine } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { MinionQueue } from '../minions/queue.ts';
+import { isQueueQuotaExceededError } from '../minions/admission.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
 import type { MinionJobInput, MinionJobStatus, SubagentHandlerData } from '../minions/types.ts';
 import { serializeMarkdown } from '../markdown.ts';
@@ -220,7 +221,7 @@ export async function runPhasePatterns(
       // Admission quota (minions.quota_max_waiting.subagent, config-only): a
       // rejected submit is a recorded phase SKIP, never a phase crash — the
       // next cycle retries once the backlog drains.
-      if (e instanceof Error && e.name === 'QueueQuotaExceededError') {
+      if (isQueueQuotaExceededError(e)) {
         return skipped('admission_quota', e.message);
       }
       throw e;

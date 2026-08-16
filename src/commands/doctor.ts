@@ -77,6 +77,8 @@ import { probeLivePgliteHolder, resolveBrainDataDir } from '../core/bootstrap/un
 import { readRunbookStamp, hooksInstalled, listVerifyRuns } from '../core/bootstrap/status.ts';
 import { resolveGbrainHome } from '../core/gbrain-home.ts';
 import { VERSION as GBRAIN_BINARY_VERSION } from '../version.ts';
+import { TTL_REASON_PREFIX } from '../core/minions/admission.ts';
+import { sanitizeTypeForDisplay } from '../core/schema-pack/type-usage.ts';
 import { execFileSync } from 'child_process';
 
 export interface Check {
@@ -2196,10 +2198,12 @@ export async function computeQueueHealthCheck(
         const intake = parseInt(r.intake, 10);
         const completed = parseInt(r.completed, 10);
         if (waiting > divergenceMinWaiting && intake > divergenceRatio * Math.max(completed, 1)) {
+          // Job names originate from the MCP-exposed submit surface —
+          // sanitize before echoing into terminal/report output.
           problems.push(
-            `DIVERGENT queue type '${r.name}': intake ${intake}/24h vs ${completed} completed/24h, ` +
+            `DIVERGENT queue type '${sanitizeTypeForDisplay(r.name)}': intake ${intake}/24h vs ${completed} completed/24h, ` +
             `${waiting} waiting — the backlog grows structurally. Reduce intake, raise drain, or cap ` +
-            `admission: \`gbrain config set minions.quota_max_waiting.${r.name} <n>\`. See \`gbrain jobs stats\`.`
+            `admission: \`gbrain config set minions.quota_max_waiting.${sanitizeTypeForDisplay(r.name)} <n>\`. See \`gbrain jobs stats\`.`
           );
         }
       }
@@ -2207,15 +2211,16 @@ export async function computeQueueHealthCheck(
       // worked — that's operating as designed but the operator must know.
       const ttlRows = await engine.executeRaw<{ name: string; count: string }>(
         `SELECT name, count(*)::text AS count FROM minion_jobs
-          WHERE status = 'cancelled' AND error_text LIKE 'waiting_ttl_expired%'
+          WHERE status = 'cancelled' AND error_text LIKE $1
             AND finished_at > now() - interval '24 hours'
           GROUP BY name`,
+        [`${TTL_REASON_PREFIX}%`],
       );
       for (const r of ttlRows) {
         problems.push(
-          `waiting-TTL cancelled ${r.count} '${r.name}' job(s) in the last 24h (queued work expired ` +
+          `waiting-TTL cancelled ${r.count} '${sanitizeTypeForDisplay(r.name)}' job(s) in the last 24h (queued work expired ` +
           `unclaimed — intake still exceeds drain). Tune: \`gbrain config set ` +
-          `minions.ttl_waiting_hours.${r.name} <hours|0>\`.`
+          `minions.ttl_waiting_hours.${sanitizeTypeForDisplay(r.name)} <hours|0>\`.`
         );
       }
     } catch { /* best-effort — divergence probes never break doctor */ }

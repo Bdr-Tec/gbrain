@@ -939,14 +939,20 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       // derived from the reason prefix cancelJobs writes; no extra storage).
       let ttlCancelled: Array<{ name: string; count: number }> = [];
       try {
+        const { TTL_REASON_PREFIX } = await import('../core/minions/admission.ts');
         const ttlRows = await engine.executeRaw<{ name: string; count: string }>(
           `SELECT name, count(*)::text AS count FROM minion_jobs
-            WHERE status = 'cancelled' AND error_text LIKE 'waiting_ttl_expired%'
+            WHERE status = 'cancelled' AND error_text LIKE $1
               AND finished_at > now() - interval '24 hours'
             GROUP BY name ORDER BY count(*) DESC`,
+          [`${TTL_REASON_PREFIX}%`],
         );
         ttlCancelled = ttlRows.map(r => ({ name: r.name, count: parseInt(r.count, 10) }));
       } catch { /* best-effort */ }
+      // Job names originate from the MCP-exposed submit surface — strip
+      // control/ANSI bytes + cap before echoing into the terminal screams
+      // (same hygiene as frontmatter-derived type names).
+      const { sanitizeTypeForDisplay: sanitizeName } = await import('../core/schema-pack/type-usage.ts');
 
       if (hasFlag(args, '--json')) {
         console.log(JSON.stringify({
@@ -972,7 +978,7 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
           // Drained = terminal outflow in-window, completed-first with the
           // rest bracketed so TTL-cancel storms can't masquerade as work.
           const drained = `${t.drained_completed}${(t.drained_failed + t.drained_dead + t.drained_cancelled) > 0 ? `(+${t.drained_failed + t.drained_dead + t.drained_cancelled})` : ''}`;
-          console.log(`  ${t.name.padEnd(14)} ${String(t.total).padEnd(7)} ${String(t.completed).padEnd(7)} ${String(t.failed).padEnd(8)} ${String(t.dead).padEnd(6)} ${drained.padEnd(9)} ${String(t.waiting_now).padEnd(9)} ${avgTime}`);
+          console.log(`  ${sanitizeName(t.name).padEnd(14)} ${String(t.total).padEnd(7)} ${String(t.completed).padEnd(7)} ${String(t.failed).padEnd(8)} ${String(t.dead).padEnd(6)} ${drained.padEnd(9)} ${String(t.waiting_now).padEnd(9)} ${avgTime}`);
         }
         console.log(`  (Drained = completed in-window, +N = failed/dead/cancelled outflow; Waiting = now, all queues)`);
       } else {
@@ -990,14 +996,14 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         const ttl = ttlCancelled.find(c => c.name === t.name);
         const ttlNote = ttl ? ` Waiting-TTL is cancelling ~${ttl.count}/day of it.` : '';
         console.log(
-          `\n  ⚠  DIVERGENT QUEUE type '${t.name}': intake ${t.total}/24h vs ${t.drained_completed} completed/24h, ` +
+          `\n  ⚠  DIVERGENT QUEUE type '${sanitizeName(t.name)}': intake ${t.total}/24h vs ${t.drained_completed} completed/24h, ` +
           `${t.waiting_now} waiting (${eta}).${ttlNote}\n` +
           `     Reduce intake, raise drain, or cap admission:\n` +
-          `       gbrain config set minions.quota_max_waiting.${t.name} <n>`,
+          `       gbrain config set minions.quota_max_waiting.${sanitizeName(t.name)} <n>`,
         );
       }
       if (ttlCancelled.length > 0) {
-        const parts = ttlCancelled.map(c => `${c.name}: ${c.count}`).join(', ');
+        const parts = ttlCancelled.map(c => `${sanitizeName(c.name)}: ${c.count}`).join(', ');
         console.log(
           `\n  ⚠  Waiting-TTL cancelled ${ttlCancelled.reduce((a, c) => a + c.count, 0)} job(s) in the last 24h (${parts}).\n` +
           `     These waited past their TTL without ever being claimed. Tune:\n` +

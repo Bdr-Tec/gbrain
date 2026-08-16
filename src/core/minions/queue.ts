@@ -21,6 +21,8 @@ import {
   resolveAdmissionPolicy,
   resolveTtlNames,
   QueueQuotaExceededError,
+  PARAM_HASH_EXCLUDED_KEYS,
+  TTL_REASON_PREFIX,
 } from './admission.ts';
 import {
   defaultTimeoutMsFor, HANDLER_DEFAULT_TIMEOUT_MS,
@@ -242,7 +244,7 @@ export class MinionQueue {
     // maps to this exact row"), and a param-coalesce hit would return a row
     // the key was never registered against — a later same-key submit would
     // then insert fresh and run the work twice (adversarial-review finding).
-    const hashablePayload = Object.keys(data ?? {}).some(k => k !== '__param_hash');
+    const hashablePayload = Object.keys(data ?? {}).some(k => !PARAM_HASH_EXCLUDED_KEYS.has(k));
     const coalesceActive =
       (opts?.coalesce_params ?? policy.coalesceParams) &&
       !opts?.parent_job_id &&
@@ -830,7 +832,7 @@ export class MinionQueue {
       );
       if (stale.length === 0) continue;
       const reason =
-        `waiting_ttl_expired: waited > ${hours}h in queue ` +
+        `${TTL_REASON_PREFIX}: waited > ${hours}h in queue ` +
         `(minions.ttl_waiting_hours.${name}; set 0 to disable)`;
       // rootStatuses:['waiting'] re-checks atomically inside the cancel — a
       // job CLAIMED between the SELECT above and this UPDATE must not be

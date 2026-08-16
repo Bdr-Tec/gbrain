@@ -67,6 +67,34 @@ export const QUOTA_MAX_WAITING_DEFAULT: Readonly<Record<string, number>> = {};
  */
 export const PARAM_HASH_EXCLUDED_KEYS: ReadonlySet<string> = new Set(['__param_hash']);
 
+/**
+ * error_text prefix stamped by the waiting-TTL sweep. The 24h-cancellation
+ * surfaces (jobs stats, doctor) LIKE-match on this exact prefix — keep the
+ * sweep's reason string and the consumers' patterns derived from ONE constant
+ * so they can never drift apart.
+ */
+export const TTL_REASON_PREFIX = 'waiting_ttl_expired';
+
+/**
+ * Config flag recording WHEN the one-time waiting-TTL notice was shown
+ * (ISO timestamp; legacy value 'true' = shown at unknown time). Shared by
+ * the worker's warn-before-act gate and the runPostUpgrade banner.
+ */
+export const TTL_NOTICE_SHOWN_KEY = 'minions.ttl_notice_shown';
+
+/**
+ * Grace window between the one-time TTL notice and the first sweep (user
+ * requirement D1A: warn BEFORE acting, with enough time to actually react —
+ * one maintenance tick (~30s) is not a warning, it's a courtesy log line).
+ * Env override is a test seam / incident hatch.
+ */
+export const TTL_NOTICE_GRACE_MS_DEFAULT = 60 * 60 * 1000;
+
+export function ttlNoticeGraceMs(): number {
+  const v = Number(process.env.GBRAIN_MINIONS_TTL_NOTICE_GRACE_MS);
+  return Number.isFinite(v) && v >= 0 ? v : TTL_NOTICE_GRACE_MS_DEFAULT;
+}
+
 /** Typed admission rejection — submitters surface the message or record a skip. */
 export class QueueQuotaExceededError extends Error {
   readonly code = 'quota_exceeded';
@@ -87,6 +115,19 @@ export class QueueQuotaExceededError extends Error {
     );
     this.name = 'QueueQuotaExceededError';
   }
+}
+
+/**
+ * Canonical quota-rejection check for submitters (agent fanout, dream
+ * synthesize/patterns, ops). Checks the stable `code` field as well as
+ * instanceof/name so it survives dual-module instances and compiled-binary
+ * boundaries where instanceof can lie.
+ */
+export function isQueueQuotaExceededError(e: unknown): e is QueueQuotaExceededError {
+  if (e instanceof QueueQuotaExceededError) return true;
+  if (!(e instanceof Error)) return false;
+  return e.name === 'QueueQuotaExceededError' ||
+    (e as { code?: unknown }).code === 'quota_exceeded';
 }
 
 /** Stable stringify: recursively sorts object keys so hash(key order) is invariant. */
@@ -235,4 +276,86 @@ export async function resolveTtlNames(engine: BrainEngine): Promise<Map<string, 
     // Fail open to the defaults already in `out`.
   }
   return out;
+}
+
+/**
+ * Count currently-waiting jobs already past their per-name TTL. Shared by
+ * the worker's warn-before-act notice and the runPostUpgrade banner so the
+ * two channels can never disagree on what "affected" means.
+ */
+export async function countTtlExpiredWaiting(
+  engine: BrainEngine,
+  ttlNames: Map<string, number>,
+): Promise<{ total: number; by_name: Record<string, number> }> {
+  const by_name: Record<string, number> = {};
+  let total = 0;
+  for (const [name, hours] of ttlNames) {
+    const rows = await engine.executeRaw<{ count: string }>(
+      `SELECT count(*)::text AS count FROM minion_jobs
+        WHERE name = $1 AND status = 'waiting' AND updated_at < now() - ($2 * interval '1 hour')`,
+      [name, hours],
+    );
+    const n = parseInt(rows[0]?.count ?? '0', 10);
+    by_name[name] = n;
+    total += n;
+  }
+  return { total, by_name };
+}
+
+/** Minimal structural dep so this module never imports MinionQueue (which imports us). */
+export interface WaitingTtlSweeper {
+  handleWaitingTTL(opts?: { maxPerTick?: number }): Promise<{ cancelled: number; by_name: Record<string, number> }>;
+}
+
+export interface WaitingTtlTickResult {
+  /**
+   * killed  — GBRAIN_MINIONS_ADMISSION=0, nothing done.
+   * notice  — first tick: counted affected jobs, persisted the notice
+   *           timestamp; caller prints the warning. NOTHING cancelled.
+   * grace   — notice shown but the grace window hasn't elapsed; no sweep.
+   * swept   — sweep ran (cancelled may be 0).
+   */
+  phase: 'killed' | 'notice' | 'grace' | 'swept';
+  cancelled: number;
+  by_name: Record<string, number>;
+  /** Populated on phase 'notice': waiting jobs already past their TTL. */
+  affected?: number;
+}
+
+/**
+ * One warn-before-act TTL maintenance tick (user requirement D1A), extracted
+ * from the worker interval so it is directly testable (pattern:
+ * lock-renewal-tick.ts). Semantics:
+ *
+ *   flag unset            → count + stamp TTL_NOTICE_SHOWN_KEY with an ISO
+ *                           timestamp, return 'notice' (caller warns; no sweep)
+ *   flag = ISO timestamp  → sweep only after ttlNoticeGraceMs() has elapsed
+ *                           since the notice ('grace' until then)
+ *   flag = 'true' (legacy / pre-grace releases) → sweep immediately
+ *
+ * The upgrade banner stamps the SAME key with the same ISO form, so an
+ * interactive `gbrain upgrade` starts the clock too — whichever channel
+ * shows the notice first, the operator gets a full grace window to set
+ * `minions.ttl_waiting_hours.<name> 0` before anything is cancelled.
+ */
+export async function runWaitingTtlTick(
+  engine: BrainEngine,
+  sweeper: WaitingTtlSweeper,
+): Promise<WaitingTtlTickResult> {
+  if (admissionKilled()) return { phase: 'killed', cancelled: 0, by_name: {} };
+  const flag = (await engine.getConfig(TTL_NOTICE_SHOWN_KEY))?.trim() ?? '';
+  if (flag === '') {
+    const ttlNames = await resolveTtlNames(engine);
+    const { total } = await countTtlExpiredWaiting(engine, ttlNames);
+    await engine.setConfig(TTL_NOTICE_SHOWN_KEY, new Date().toISOString());
+    return { phase: 'notice', cancelled: 0, by_name: {}, affected: total };
+  }
+  if (flag !== 'true') {
+    const ts = Date.parse(flag);
+    if (Number.isFinite(ts) && Date.now() - ts < ttlNoticeGraceMs()) {
+      return { phase: 'grace', cancelled: 0, by_name: {} };
+    }
+  }
+  const res = await sweeper.handleWaitingTTL();
+  return { phase: 'swept', ...res };
 }

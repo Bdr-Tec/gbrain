@@ -39,6 +39,46 @@
   the DIVERGENT scream computes name-global (matches quota semantics); a
   `--queue`-scoped variant would help multi-queue operators localize the
   producer. **Effort:** S. **Priority:** P3.
+- [ ] **P2 — requeue surface for waiting-TTL-cancelled jobs.** **What:**
+  `jobs retry` targets failed/dead only; a TTL-cancelled row (error_text
+  prefix `waiting_ttl_expired`) that turns out to have been wanted needs a
+  `jobs requeue` (or a retry carve-out gated on that prefix) instead of
+  hand-resubmitting. The data survives (cancelled rows keep payloads +
+  free their idempotency keys), so this is purely a CLI surface. **Effort:**
+  S. **Priority:** P2. (Pre-landing data-migration review, five-issue wave.)
+- [ ] **P2 — dream-path quota-degradation integration tests.** **What:**
+  live-queue integration tests for the QueueQuotaExceededError consumers:
+  cycle patterns → `skipped('admission_quota')`, synthesize → quota latch
+  (one skip per remaining transcript, stop submitting), agent fanout →
+  whole-tree cancel + exit 1. Unit seams exist (isQueueQuotaExceededError
+  is pinned); what's missing is the end-to-end phase behavior under a
+  1-quota config. **Effort:** M. **Priority:** P2.
+- [ ] **P3 — coalesce advisory-lock concurrency e2e.** **What:** real-PG
+  e2e slamming N concurrent identical parentless submits → exactly one row
+  (the advisory lock serializes (name, queue, hash)); PGLite can't prove
+  this (single connection). Home: the DATABASE_URL-gated e2e lane.
+  **Effort:** S. **Priority:** P3.
+- [ ] **P3 — consolidate the stable-stringify triplets.** **What:**
+  `admission.ts` (param hash), plus the two earlier canonical-JSON copies
+  (op-checkpoint hashing, cli-options) each roll their own sorted-key
+  stringify; one `core/canonical-json.ts` would do. Hash-compat note: the
+  admission copy feeds persisted `__param_hash` values — a behavior-change
+  regression there just disables old-row coalescing (forward-safe), but
+  keep the sorted-key semantics bit-identical anyway. **Effort:** S.
+  **Priority:** P3.
+- [ ] **P3 — reconcile lane: quarantine-not-delete option for malformed-path
+  rows + doctor hint nuance.** **What:** full-sync reconcile hard-deletes
+  poisoned rows (consistent with 'strategy' semantics); a
+  `--quarantine-malformed` alternative would preserve rows for triage. Also
+  the malformed_path_pages doctor hint could distinguish rows whose FILE
+  still exists on disk (rename rescues content) from never-committed DB-only
+  rows (delete is the only option). **Effort:** S. **Priority:** P3.
+- [ ] **P3 — one-time cross-source clobber audit.** **What:** the
+  pre-guard unscoped-check/scoped-write class could have historically
+  written 'default'-source rows that shadow same-slug rows in other sources.
+  A one-shot integrity probe (`SELECT slug FROM pages GROUP BY slug HAVING
+  count(DISTINCT source_id) > 1` + updated_at ordering heuristics) would
+  surface survivors for review. **Effort:** S. **Priority:** P3.
 
 ## Codex/Claude plugin lane follow-ups (filed from the plugin packaging wave)
 

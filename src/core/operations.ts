@@ -3892,12 +3892,24 @@ const submit_agent: Operation = {
       );
     }
     if (delegatedSource) jobData.source_id = delegatedSource;
-    const job = await queue.add(
-      'subagent',
-      jobData,
-      { queue: (p.queue as string) || 'default' },
-      { allowProtectedSubmit: true },
-    );
+    let job;
+    try {
+      job = await queue.add(
+        'subagent',
+        jobData,
+        { queue: (p.queue as string) || 'default' },
+        { allowProtectedSubmit: true },
+      );
+    } catch (e) {
+      // Admission quota (minions.quota_max_waiting.subagent, config-only):
+      // surface as a structured retryable error, not an opaque internal one.
+      // The quota message already omits live cross-tenant queue depth.
+      const { isQueueQuotaExceededError } = await import('./minions/admission.ts');
+      if (isQueueQuotaExceededError(e)) {
+        throw new OperationError('rate_limited', e.message, 'Retry after the queue drains, or ask the operator to raise the quota.');
+      }
+      throw e;
+    }
 
     // Audit trail (D4) — best-effort JSONL.
     try {
@@ -6983,6 +6995,9 @@ const extraction_review: Operation = {
     if (ctx.dryRun) return { dry_run: true, action: `extraction_review:${action}`, slugs };
     const results: Array<{ slug: string; status: string }> = [];
     for (const slug of slugs) {
+      // First-match read is safe here: BOTH writes below key on the RETURNED
+      // row's page.source_id, so read and write can never target different
+      // rows. gbrain-allow-unscoped-getpage: write follows the returned row
       const page = await ctx.engine.getPage(slug, ctx.sourceId ? { sourceId: ctx.sourceId } : undefined);
       if (!page) {
         results.push({ slug, status: 'not_found' });

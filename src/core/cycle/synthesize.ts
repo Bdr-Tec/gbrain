@@ -52,6 +52,7 @@ import { parseLlmJson } from '../llm-json.ts';
 import type { BrainEngine, DreamVerdict, TriageSegment } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { MinionQueue } from '../minions/queue.ts';
+import { isQueueQuotaExceededError } from '../minions/admission.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
@@ -961,7 +962,7 @@ export async function runPhaseSynthesize(
           // a rejected submit is a recorded phase skip, never a phase crash —
           // same posture as daily_cap_reached. The quota won't clear mid-run,
           // so stop submitting for this run entirely.
-          if (e instanceof Error && e.name === 'QueueQuotaExceededError') {
+          if (isQueueQuotaExceededError(e)) {
             skipReports.push({ filePath: t.filePath, reason: `admission_quota: ${e.message}` });
             quotaHit = true;
             break;

@@ -181,14 +181,25 @@ function loadProgress(): Set<string> {
   if (!existsSync(getProgressFile())) return new Set();
   const seen = new Set<string>();
   const content = readFileSync(getProgressFile(), 'utf-8');
+  let legacy = 0;
   for (const line of content.split('\n')) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line) as ProgressEntry;
+      if (entry.source_id == null) legacy++;
       seen.add(progressKey(entry.source_id, entry.slug));
     } catch {
       /* skip malformed lines */
     }
+  }
+  if (legacy > 0) {
+    // Pre-(source_id, slug) ledger entries key as default-source only, so a
+    // resume re-scans non-default-source pages they may have covered. Say so
+    // once — a silent partial re-scan reads as "resume is broken".
+    console.error(
+      `integrity: ${legacy} resume-ledger entr${legacy === 1 ? 'y' : 'ies'} predate source tracking; ` +
+      `matching them to the default source only (non-default-source pages re-scan — idempotent, just slower).`,
+    );
   }
   return seen;
 }
