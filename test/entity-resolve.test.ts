@@ -324,3 +324,34 @@ describe('resolveEntitySlugWithSource — back-compat with resolveEntitySlug', (
     expect(b!.source).toBe<ResolutionSource>('fallback_slugify');
   });
 });
+
+describe('alias_exact branch (v0.46.8 identity wave, #3730)', () => {
+  it('an unambiguous registered alias resolves before prefix expansion / fuzzy', async () => {
+    await engine.setPageAliases('people/bob-rosenstein', 'default', ['rosey']);
+    const a = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'rosey');
+    expect(a).toBe('people/bob-rosenstein');
+    const b = await resolveEntitySlugWithSource(engine as unknown as BrainEngine, 'default', 'rosey');
+    expect(b!.slug).toBe('people/bob-rosenstein');
+    expect(b!.source).toBe<ResolutionSource>('alias_exact');
+  });
+
+  it('alias beats the ambiguous bare-name collision that prefix expansion refuses', async () => {
+    // "bob" prefix-expands ambiguously (bob-example vs bob-rosenstein) and
+    // previously fell to fallback_slugify('bob'). A registered alias resolves it.
+    await engine.setPageAliases('people/bob-example', 'default', ['bob']);
+    const r = await resolveEntitySlugWithSource(engine as unknown as BrainEngine, 'default', 'bob');
+    expect(r!.slug).toBe('people/bob-example');
+    expect(r!.source).toBe<ResolutionSource>('alias_exact');
+  });
+
+  it('a phantom alias (deleted page) is ignored — falls through to the old chain', async () => {
+    await engine.putPage('people/ghost-example', {
+      type: 'person', title: 'Ghost Example', compiled_truth: 'b', timeline: '', frontmatter: {},
+    } as never);
+    await engine.setPageAliases('people/ghost-example', 'default', ['spectre']);
+    await engine.softDeletePage('people/ghost-example');
+    const r = await resolveEntitySlugWithSource(engine as unknown as BrainEngine, 'default', 'spectre');
+    expect(r!.source).toBe<ResolutionSource>('fallback_slugify');
+    expect(r!.slug).toBe('spectre');
+  });
+});

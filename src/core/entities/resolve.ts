@@ -22,6 +22,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
+import { normalizeAlias } from '../search/alias-normalize.ts';
 
 /**
  * Canonicalize a free-form entity reference to a page slug.
@@ -54,6 +55,13 @@ export async function resolveEntitySlug(
     const exact = await tryExactSlug(engine, source_id, trimmed);
     if (exact) return exact;
   }
+
+  // 1.5. Alias-exact (v0.46.8 identity wave, #3730): an unambiguous
+  //      page_aliases hit resolves BEFORE prefix expansion / fuzzy — the
+  //      alias table is curated ground truth ("saoirse" → people/saoirse-x)
+  //      while fuzzy is a guess. Live-page verified (page_aliases has no FK).
+  const aliased = await tryAliasExact(engine, source_id, trimmed);
+  if (aliased) return aliased;
 
   // 2. Prefix-expansion match: when the input looks like a bare first name
   //    (no slash, no prefix, slugifies to a single short token), try
@@ -93,6 +101,28 @@ function fallbackSlugify(trimmed: string): string {
 }
 
 /**
+ * Alias-exact arm (v0.46.8, #3730): unambiguous single-slug page_aliases hit,
+ * verified against a LIVE page — page_aliases has no FK to pages, so a stale
+ * alias row could otherwise resolve to a deleted/phantom slug (outside-voice
+ * R2-8). Fail-open on any error (pre-v110 brains have no page_aliases table).
+ */
+async function tryAliasExact(engine: BrainEngine, source_id: string, raw: string): Promise<string | null> {
+  const norm = normalizeAlias(raw);
+  if (!norm) return null;
+  try {
+    const hits = (await engine.resolveAliases([norm], { sourceId: source_id })).get(norm) ?? [];
+    if (hits.length !== 1) return null;
+    const rows = await engine.executeRaw<{ slug: string }>(
+      `SELECT slug FROM pages WHERE deleted_at IS NULL AND source_id = $1 AND slug = $2 LIMIT 1`,
+      [source_id, hits[0].slug],
+    );
+    return rows.length ? hits[0].slug : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * "Bare name" detector — true when the input is a single word with no
  * slash, no embedded prefix marker, and slugifies to a non-empty token.
  * Multi-word inputs (e.g. "Alice Example") are handled by fuzzy match;
@@ -126,7 +156,7 @@ const PREFIX_EXPANSION_DIRS = ['people', 'companies'] as const;
  * The original `resolveEntitySlug` keeps its existing contract (returns
  * just the slug) for all pre-v0.40 call sites — no caller-side churn.
  */
-export type ResolutionSource = 'exact_page' | 'fuzzy_match' | 'fallback_slugify';
+export type ResolutionSource = 'exact_page' | 'alias_exact' | 'fuzzy_match' | 'fallback_slugify';
 
 export interface ResolveResult {
   slug: string;
@@ -147,6 +177,9 @@ export async function resolveEntitySlugWithSource(
     const exact = await tryExactSlug(engine, source_id, trimmed);
     if (exact) return { slug: exact, source: 'exact_page' };
   }
+
+  const aliased = await tryAliasExact(engine, source_id, trimmed);
+  if (aliased) return { slug: aliased, source: 'alias_exact' };
 
   if (isBareName(trimmed)) {
     const expanded = await tryUnambiguousPrefixExpansion(engine, source_id, slugify(trimmed));
