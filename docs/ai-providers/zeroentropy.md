@@ -6,7 +6,9 @@
 > recipe: `gbrain init` auto-pick and the interactive picker exclude it
 > (explicit `--embedding-model zeroentropyai:*` still works, with a loud
 > warning), every ZE embed/rerank call prints a once-per-process
-> deprecation warning, `gbrain providers` annotates it DEPRECATED, and
+> deprecation warning, `gbrain providers` annotates it DEPRECATED
+> (`gbrain providers env zeroentropyai` prints this off-ramp instead of a
+> signup link), and
 > `gbrain ze-switch` is a pure refusal/redirect shim (every invocation
 > refuses or redirects; `--undo` prints the exact migrate command that
 > returns a switched brain to its prior provider — it no longer acts).

@@ -31,8 +31,9 @@ that impossible.
   `{status:'refused', reason:'provider_sunset'}` with exit 1 instead of a
   machine-readable plan targeting the dying provider (`status:'planned'`,
   exit 0). JSON envelopes carry both `…_preview` (cost preview) and live
-  command fields, and every rendered command preserves an explicit `--brain`
-  selector so multi-brain setups are never pointed at the wrong database.
+  command fields, and every command those envelopes render preserves an
+  explicit `--brain` selector so multi-brain setups are never pointed at the
+  wrong database (the engine-free `--help` text shows the generic command).
 - **`gbrain providers env <sunsetting-provider>` replaces the signup funnel**
   (dashboard URL + get-a-key hint) with the deprecation notice, replacement
   models, and the migration command — key STATUS still renders for existing
