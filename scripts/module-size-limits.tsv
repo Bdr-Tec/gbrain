@@ -10,7 +10,7 @@ src/core/pglite-engine.ts	5609	ratchet	peel target: containment sprint C15
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4121	ratchet	peel target: containment sprint C13-C14
 src/core/ai/gateway.ts	4105	ratchet	watchlist
-src/cli.ts	3337	ratchet	watchlist
+src/cli.ts	3360	ratchet	watchlist; +23 gap-closure wave: thin-client routing call sites (logic in commands/thin-client-routing.ts)
 src/core/cycle.ts	2933	ratchet
 src/commands/serve-http.ts	2836	ratchet
 src/commands/jobs.ts	2826	ratchet
@@ -24,7 +24,7 @@ src/core/cycle/synthesize.ts	2616	ratchet
 src/commands/embed.ts	1859	ratchet
 src/core/types.ts	1822	ratchet
 src/commands/skillpack.ts	1763	ratchet
-src/core/minions/queue.ts	1824	ratchet
+src/core/minions/queue.ts	1848	ratchet	+24 gap-closure wave: deriveWedgeSignal shared by CLI/doctor/get_job_stats
 src/commands/init.ts	1923	ratchet
 src/commands/integrations.ts	1675	ratchet
 src/core/minions/handlers/subagent.ts	1643	ratchet
