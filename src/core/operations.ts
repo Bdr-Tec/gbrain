@@ -5772,6 +5772,7 @@ const migrate_embeddings: Operation = {
     yes: { type: 'boolean', description: 'Confirm the re-embed spend + destructive schema change. Required for a live run.' },
     force_sunset_target: { type: 'boolean', description: 'Allow migrating ONTO a provider with an announced shutdown (self-hosted wire-compatible endpoints).' },
     retarget: { type: 'boolean', description: 'Abandon a DIFFERENT in-flight migration target and start this one (the abandoned target is recorded in the marker history).' },
+    reranker: { type: 'string', description: 'Reranker companion action: auto (default), off, keep, or an explicit provider:model (e.g. voyage:rerank-2.5). Reranker config lives on the DB plane.' },
   },
   mutating: true,
   scope: 'admin',
@@ -5794,6 +5795,7 @@ const migrate_embeddings: Operation = {
       to,
       ...(dim !== undefined && { dim }),
       ...(p.force_sunset_target === true && { forceSunsetTarget: true }),
+      ...(typeof p.reranker === 'string' && { reranker: p.reranker }),
     });
     const plan = planCtx.plan;
     // Different-target in-flight marker: the retarget decision precedes any
@@ -5801,7 +5803,7 @@ const migrate_embeddings: Operation = {
     if (planCtx.inflightOther && p.retarget !== true && p.dry_run !== true && !ctx.dryRun) {
       return { status: 'refused', reason: 'retarget_required', inflight: planCtx.inflightOther, plan };
     }
-    if (planCtx.verify.complete && !planCtx.inflightOther) {
+    if (planCtx.verify.complete && !planCtx.inflightOther && planCtx.rerankerPlan.action.kind === 'none') {
       return { status: 'skipped_no_work', plan, verified: planCtx.verify };
     }
     if (ctx.dryRun || p.dry_run === true || p.yes !== true) {
@@ -5816,6 +5818,7 @@ const migrate_embeddings: Operation = {
       ...(dim !== undefined && { dim }),
       ...(p.force_sunset_target === true && { forceSunsetTarget: true }),
       ...(p.retarget === true && { retarget: true }),
+      ...(typeof p.reranker === 'string' && { reranker: p.reranker }),
       quiet: true,
     });
     // Flatten the orchestrator's tagged union into the op's historical shape:

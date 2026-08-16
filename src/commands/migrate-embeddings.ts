@@ -35,11 +35,14 @@ import {
   detectEnvOverride,
   migrationSignature,
   formatEnvOverrideWarning,
+  resolveRerankerPlan,
+  applyRerankerAction,
   MIGRATION_STATE_KEY,
   type EmbeddingMigrationPlan,
   type MigrationVerify,
   type MigrationState,
   type EnvOverrideWarning,
+  type RerankerPlan,
 } from '../core/embedding-migration.ts';
 import { tryAcquireDbLock, type DbLockHandle } from '../core/db-lock.ts';
 import { embedBackfillLockId } from '../core/embed-backfill-lock.ts';
@@ -64,6 +67,8 @@ export interface MigrateEmbeddingsFlags {
   ignoreEnvOverride: boolean;
   forceSunsetTarget: boolean;
   retarget: boolean;
+  /** auto (default) | off | keep | <provider:model> */
+  reranker?: string;
   batchSize?: number;
   pace?: ReturnType<typeof parsePaceArgs>;
 }
@@ -72,6 +77,8 @@ export function parseMigrateEmbeddingsFlags(args: string[]): MigrateEmbeddingsFl
   const toIdx = args.indexOf('--to');
   const dimIdx = args.indexOf('--dim');
   const dimRaw = dimIdx >= 0 ? parseInt(args[dimIdx + 1] ?? '', 10) : NaN;
+  const rrIdx = args.indexOf('--reranker');
+  const reranker = rrIdx >= 0 ? args[rrIdx + 1] : undefined;
   const bsIdx = args.indexOf('--batch-size');
   const bsRaw = bsIdx >= 0 ? parseInt(args[bsIdx + 1] ?? '', 10) : NaN;
   const batchSize = Number.isFinite(bsRaw) && bsRaw > 0 ? Math.min(10_000, bsRaw) : undefined;
@@ -85,6 +92,7 @@ export function parseMigrateEmbeddingsFlags(args: string[]): MigrateEmbeddingsFl
     ignoreEnvOverride: args.includes('--ignore-env-override'),
     forceSunsetTarget: args.includes('--force-sunset-target'),
     retarget: args.includes('--retarget'),
+    ...(reranker !== undefined && { reranker }),
     ...(batchSize !== undefined && { batchSize }),
     pace: parsePaceArgs(args),
   };
@@ -118,6 +126,13 @@ Flags:
   --retarget              Abandon a DIFFERENT in-flight migration target and
                           start this one (the refusal message names both the
                           resume and retarget commands).
+  --reranker <v>          Reranker companion action: auto (default; switch to
+                          the target provider's reranker when the current one
+                          is exposed by this migration), off (disable
+                          reranking), keep (leave it), or an explicit
+                          provider:model (e.g. voyage:rerank-2.5). Reranker
+                          config lives on the DB plane, unlike embedding
+                          config (file/env planes).
   --help                  Show this help.
 
 A killed run is resumable: re-run the same command. Already-migrated chunks
@@ -182,7 +197,18 @@ function renderPlan(ctx: MigrationPlanContext): string {
     lines.push('          locks — stop the worker (or let the queue drain) first, or their writes');
     lines.push('          will be counted stale by the final census and re-embedded.');
   }
-  if (plan.reranker_warning) {
+  const rr = ctx.rerankerPlan;
+  if (rr.action.kind === 'switch') {
+    lines.push(`  Also switching search.reranker.model -> ${rr.action.to} (DB plane — unlike`);
+    lines.push('          embedding config, which lives in the file plane). Probed live before the write.');
+  } else if (rr.action.kind === 'disable') {
+    lines.push('  Also disabling reranking (search.reranker.enabled false).');
+  } else if (rr.action.suggestion !== null) {
+    lines.push(`  ACTION: the target provider ships no reranker; the exposed reranker stays on`);
+    lines.push(`          ${rr.exposed?.model ?? 'the current model'}. Switch or disable it yourself:`);
+    lines.push(`            gbrain config set search.reranker.model ${rr.action.suggestion}`);
+    lines.push('            gbrain config set search.reranker.enabled false');
+  } else if (plan.reranker_warning) {
     lines.push(`  WARNING: ${plan.reranker_warning}`);
   }
   if (!verify.complete && verify.blockers.length > 0) {
@@ -190,6 +216,29 @@ function renderPlan(ctx: MigrationPlanContext): string {
     for (const b of verify.blockers) lines.push(`    - ${b}`);
   }
   return lines.join('\n');
+}
+
+function renderRerankerOutcome(outcome: RerankerOutcome): string[] {
+  switch (outcome.action) {
+    case 'switched':
+      return [`  [migrate] reranker switched to ${outcome.to} (DB plane; query cache purged with it).`];
+    case 'disabled':
+      return ['  [migrate] reranking disabled (search.reranker.enabled false).'];
+    case 'switch_failed':
+      return [
+        `  [migrate] reranker NOT switched — the live probe failed; the previous config was kept:`,
+        `            ${outcome.reason ?? 'unknown reason'}`,
+        `            Fix the key/model and re-run, or: gbrain config set search.reranker.model ${outcome.to}`,
+      ];
+    case 'suggested':
+      return [
+        '  [migrate] ACTION: the exposed reranker was NOT changed (target ships none). Switch or disable it:',
+        ...(outcome.suggestion ? [`            gbrain config set search.reranker.model ${outcome.suggestion}`] : []),
+        '            gbrain config set search.reranker.enabled false',
+      ];
+    default:
+      return [];
+  }
 }
 
 /** Single-keypress y/N confirm on stdin. Injectable for tests. */
@@ -236,6 +285,36 @@ export async function probeTargetProvider(
     return {
       ok: false,
       message: `Preflight embed against ${toModel} failed — nothing was changed:\n  ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+/**
+ * One tiny rerank call against the TARGET reranker BEFORE the config write
+ * (round-2 #11-adjacent C11): an embedding migration must not enable a
+ * reranker that can't answer — that would leave every search paying the
+ * fail-open timeout. Probe failure keeps the old config and is REPORTED,
+ * never silent.
+ */
+export async function probeTargetReranker(
+  model: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    const { rerank } = await import('../core/ai/gateway.ts');
+    const results = await rerank({
+      query: 'gbrain reranker migration probe',
+      documents: ['gbrain reranker migration probe document a', 'gbrain reranker migration probe document b'],
+      model,
+      timeoutMs: 8000,
+    });
+    if (!Array.isArray(results) || results.length === 0) {
+      return { ok: false, message: `Reranker probe against ${model} returned no results.` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      message: `Reranker probe against ${model} failed: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
 }
@@ -310,11 +389,21 @@ export interface MigrationFlowOpts {
   ignoreEnvOverride?: boolean;
   forceSunsetTarget?: boolean;
   retarget?: boolean;
+  /** auto (default) | off | keep | <provider:model> — see resolveRerankerPlan. */
+  reranker?: string;
   noEmbed?: boolean;
   batchSize?: number;
   pace?: ReturnType<typeof parsePaceArgs>;
   quiet?: boolean;
   onProgress?: (done: number, total: number, embedded: number) => void;
+}
+
+/** Outcome of the reranker companion step, reported never silent. */
+export interface RerankerOutcome {
+  action: 'switched' | 'disabled' | 'switch_failed' | 'suggested' | 'none';
+  to?: string;
+  reason?: string;
+  suggestion?: string | null;
 }
 
 export interface MigrationPlanContext {
@@ -325,6 +414,8 @@ export interface MigrationPlanContext {
   envMatchesTarget: boolean;
   /** A live marker for a DIFFERENT target (the --retarget decision), if any. */
   inflightOther: MigrationState | null;
+  /** The reranker companion decision (D8). */
+  rerankerPlan: RerankerPlan;
   /** Which brain/DB this run is actually pointed at (wrong-brain visibility). */
   identity: { engine: string; target: string };
   /** Quiesce-lite: live embed writers that are NOT under the migration locks. */
@@ -341,18 +432,21 @@ export type MigrationFlowResult =
       status: 'applied_no_embed';
       invalidated: number; cache_cleared: number;
       schema_transitioned: boolean; pinned_repaired: string[];
+      reranker: RerankerOutcome;
     }
   | {
       status: 'completed';
       embedded: number; remaining: 0; signatures_reconciled: number;
       invalidated: number; cache_cleared: number;
       schema_transitioned: boolean; pinned_repaired: string[];
+      reranker: RerankerOutcome;
     }
   | {
       status: 'incomplete';
       embedded: number; remaining: number; signatures_reconciled: number;
       invalidated: number; cache_cleared: number;
       schema_transitioned: boolean; pinned_repaired: string[];
+      reranker: RerankerOutcome;
       lock_skipped?: boolean; lock_lost?: boolean;
     };
 
@@ -363,7 +457,7 @@ export type MigrationFlowResult =
  */
 export async function planMigrationFlow(
   engine: BrainEngine,
-  opts: Pick<MigrationFlowOpts, 'to' | 'dim' | 'forceSunsetTarget'>,
+  opts: Pick<MigrationFlowOpts, 'to' | 'dim' | 'forceSunsetTarget' | 'reranker'>,
 ): Promise<MigrationPlanContext> {
   // From-state as the gateway resolved it (file/env config + defaults) —
   // display only; nothing load-bearing trusts it (D2).
@@ -409,6 +503,10 @@ export async function planMigrationFlow(
     ? marker.state
     : null;
 
+  // Reranker companion decision (D8) — throws a paste-ready message on an
+  // invalid explicit --reranker value BEFORE anything destructive can run.
+  const rerankerPlan = await resolveRerankerPlan(engine, plan.from_model, plan.to_model, opts.reranker);
+
   // Brain/DB identity (round-1 C1): make wrong-brain routing visible in every
   // transcript. Redacted — never print a raw connection string.
   let identity = { engine: 'unknown', target: 'unknown' };
@@ -435,7 +533,7 @@ export async function planMigrationFlow(
     concurrentWriters = { workers, embedJobs: Number(rows[0]?.n ?? 0) };
   } catch { /* census is informational */ }
 
-  return { plan, verify, envPresence, envMatchesTarget, inflightOther, identity, concurrentWriters };
+  return { plan, verify, envPresence, envMatchesTarget, inflightOther, rerankerPlan, identity, concurrentWriters };
 }
 
 /**
@@ -515,6 +613,28 @@ export async function executeMigrationFlow(
     if (applied.status === 'refused') return { status: 'refused_env', warning: applied.warning };
     if (applied.status === 'failed') return { status: 'apply_failed', reason: applied.reason };
 
+    // Reranker companion step (D8/C11): probe live, then config write +
+    // cache purge in one transaction. Probe failure keeps the old config and
+    // is reported — never fails the whole migration, never silent.
+    let reranker: RerankerOutcome = { action: 'none' };
+    const rrAction = ctx.rerankerPlan.action;
+    if (rrAction.kind === 'switch') {
+      const rrProbe = await probeTargetReranker(rrAction.to);
+      if (rrProbe.ok) {
+        await applyRerankerAction(engine, rrAction);
+        reranker = { action: 'switched', to: rrAction.to };
+      } else {
+        reranker = { action: 'switch_failed', to: rrAction.to, reason: rrProbe.message };
+      }
+    } else if (rrAction.kind === 'disable') {
+      await applyRerankerAction(engine, rrAction);
+      reranker = { action: 'disabled' };
+    } else if (rrAction.suggestion !== null) {
+      // auto found exposure but the target ships no reranker: never silently
+      // enable a third provider's paid service — surface the exact command.
+      reranker = { action: 'suggested', suggestion: rrAction.suggestion };
+    }
+
     if (opts.noEmbed) {
       return {
         status: 'applied_no_embed',
@@ -522,6 +642,7 @@ export async function executeMigrationFlow(
         cache_cleared: applied.cache_cleared,
         schema_transitioned: applied.schema_transitioned,
         pinned_repaired: applied.pinned_repaired,
+        reranker,
       };
     }
 
@@ -552,6 +673,7 @@ export async function executeMigrationFlow(
       cache_cleared: applied.cache_cleared,
       schema_transitioned: applied.schema_transitioned,
       pinned_repaired: applied.pinned_repaired,
+      reranker,
     };
     if (remaining === 0 && !embedResult.lock_lost) {
       await completeEmbeddingMigration(engine, plan);
@@ -603,6 +725,7 @@ export async function runMigrateEmbeddings(
       to: flags.to!,
       ...(flags.dim !== undefined && { dim: flags.dim }),
       ...(flags.forceSunsetTarget && { forceSunsetTarget: true }),
+      ...(flags.reranker !== undefined && { reranker: flags.reranker }),
     });
   } catch (e) {
     serr(e instanceof Error ? e.message : String(e));
@@ -631,10 +754,12 @@ export async function runMigrateEmbeddings(
   }
 
   // DB-reality skip (D2): "nothing to migrate" ONLY when every convergence
-  // conjunct verifies against the database + the un-merged file plane, and no
-  // foreign marker is pending a retarget decision. The old three-conjunct
-  // skip trusted `from_model`, which env vars poison.
-  if (ctx.verify.complete && !ctx.inflightOther) {
+  // conjunct verifies against the database + the un-merged file plane, no
+  // foreign marker is pending a retarget decision, AND no reranker companion
+  // action is pending (a resolved switch/disable executes as a config-only
+  // completion even on a converged brain — round-2 #6). The old
+  // three-conjunct skip trusted `from_model`, which env vars poison.
+  if (ctx.verify.complete && !ctx.inflightOther && ctx.rerankerPlan.action.kind === 'none') {
     if (flags.json) console.log(JSON.stringify({ status: 'skipped_no_work', plan, verified: ctx.verify }, null, 2));
     else console.log('Nothing to migrate — brain is verified on the target model (schema, vectors, signatures, config).');
     exit(0);
@@ -684,6 +809,7 @@ export async function runMigrateEmbeddings(
     ignoreEnvOverride: flags.ignoreEnvOverride,
     forceSunsetTarget: flags.forceSunsetTarget,
     retarget: flags.retarget,
+    ...(flags.reranker !== undefined && { reranker: flags.reranker }),
     noEmbed: flags.noEmbed,
     quiet: flags.json,
     ...(flags.batchSize !== undefined && { batchSize: flags.batchSize }),
@@ -741,6 +867,7 @@ export async function runMigrateEmbeddings(
     case 'applied_no_embed': {
       serr(`  [migrate] schema ${result.schema_transitioned ? `rebuilt at ${plan.to_dims}d` : result.pinned_repaired.length > 0 ? `repaired (${result.pinned_repaired.join(', ')})` : 'unchanged'}; ` +
         `${result.invalidated} chunk(s) invalidated; query cache purged (${result.cache_cleared} row(s)).`);
+      for (const line of renderRerankerOutcome(result.reranker)) serr(line);
       if (!flags.json) console.log('Config + schema migrated. Re-embed deferred — run: gbrain embed --stale --catch-up --include-null-signature');
       exit(0);
       break;
@@ -751,14 +878,15 @@ export async function runMigrateEmbeddings(
       if (result.signatures_reconciled > 0) {
         serr(`  [migrate] reconciled the embedding signature on ${result.signatures_reconciled} fully-embedded page(s) (batch-boundary pages).`);
       }
+      for (const line of renderRerankerOutcome(result.reranker)) serr(line);
       if (!flags.json) {
         slog(`Migration complete: ${result.embedded} chunk(s) embedded on ${plan.to_model} (${plan.to_dims}d).`);
-        if (plan.reranker_warning) serr(`  [migrate] reminder: ${plan.reranker_warning}`);
       }
       exit(0);
       break;
     }
     case 'incomplete': {
+      for (const line of renderRerankerOutcome(result.reranker)) serr(line);
       if (result.lock_lost) {
         serr(`Migration aborted: the single-flight lock was lost mid-drain (stolen or the heartbeat kept failing).`);
         serr(`${result.remaining} chunk(s) still stale; partial progress is banked. Re-run the same command once the other holder finishes.`);

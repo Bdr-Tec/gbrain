@@ -33,6 +33,8 @@ import {
   MIGRATION_STATE_KEY,
   runSchemaTransition,
   readMigrationState,
+  resolveRerankerPlan,
+  applyRerankerAction,
   type MigrationState,
 } from '../src/core/embedding-migration.ts';
 import type { DbLockHandle } from '../src/core/db-lock.ts';
@@ -312,4 +314,119 @@ describe('locks + schema honesty', () => {
       await runEmbedCore(engine, { stale: true, quiet: true });
     }
   }, 60000);
+});
+
+describe('reranker companion (D8)', () => {
+  test('bundle-default ZE reranker is exposed; auto switches to the target provider reranker', async () => {
+    // No explicit search.reranker.model row — the exposure must resolve
+    // THROUGH the mode-bundle default (zeroentropyai:zerank-2), the common
+    // ZE case the old explicit-key-only warning missed.
+    const plan = await resolveRerankerPlan(engine, 'zeroentropyai:zembed-1', 'voyage:voyage-4', undefined);
+    expect(plan.exposed).not.toBeNull();
+    expect(plan.exposed!.model).toBe('zeroentropyai:zerank-2');
+    expect(plan.exposed!.sunset_date).toBeTruthy();
+    expect(plan.action).toEqual({ kind: 'switch', to: 'voyage:rerank-2.5' });
+  });
+
+  test('auto with a reranker-less target suggests, never silently enables a third provider', async () => {
+    const plan = await resolveRerankerPlan(engine, 'zeroentropyai:zembed-1', 'openai:text-embedding-3-small', undefined);
+    expect(plan.exposed).not.toBeNull();
+    expect(plan.action.kind).toBe('none');
+    expect((plan.action as { suggestion: string | null }).suggestion).toBe('voyage:rerank-2.5');
+  });
+
+  test('off disables, keep leaves alone, invalid explicit values refuse with paste-ready messages', async () => {
+    const off = await resolveRerankerPlan(engine, 'zeroentropyai:zembed-1', 'voyage:voyage-4', 'off');
+    expect(off.action).toEqual({ kind: 'disable' });
+
+    const keep = await resolveRerankerPlan(engine, 'zeroentropyai:zembed-1', 'voyage:voyage-4', 'keep');
+    expect(keep.action).toEqual({ kind: 'none', suggestion: null });
+
+    // Provider exists but declares no reranker touchpoint.
+    await expect(
+      resolveRerankerPlan(engine, 'zeroentropyai:zembed-1', 'voyage:voyage-4', 'openai:text-embedding-3-small'),
+    ).rejects.toThrow(/declares no reranker/);
+
+    // Not provider:model shaped at all.
+    await expect(
+      resolveRerankerPlan(engine, 'zeroentropyai:zembed-1', 'voyage:voyage-4', 'garbage'),
+    ).rejects.toThrow(/--reranker must be/);
+  });
+
+  test('config-only completion: converged brain + --reranker off still flips the DB key (no skip swallow)', async () => {
+    // Brain is converged on openai 3-small @1536 from the suites above — the
+    // verified skip would fire, but a pending reranker action must execute
+    // as a config-only completion instead.
+    await engine.executeRaw(
+      `INSERT INTO query_cache (id, query_text, source_id) VALUES ('qc-rr', 'stale rank order', 'default')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    const code = await runMigrate(['--to', 'openai:text-embedding-3-small', '--dim', String(TO_DIMS), '--yes', '--reranker', 'off']);
+    expect(code).toBe(0);
+    expect(await engine.getConfig('search.reranker.enabled')).toBe('false');
+    // Rank order changed ⇒ cache purged in the same transaction.
+    const qc = await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM query_cache`);
+    expect(Number(qc[0]?.n)).toBe(0);
+  }, 60000);
+
+  test('explicit switch: live probe passes (stubbed wire) and the write lands model + enabled together', async () => {
+    // Gateway needs a voyage key for the rerank call; the wire is stubbed.
+    resetGateway();
+    configureGateway({
+      embedding_model: 'openai:text-embedding-3-small',
+      embedding_dimensions: TO_DIMS,
+      env: { OPENAI_API_KEY: 'sk-test-fake', VOYAGE_API_KEY: 'pa-test-fake' },
+    });
+    installTransport();
+    const origFetch = globalThis.fetch;
+    (globalThis as { fetch: typeof fetch }).fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/rerank')) {
+        // Voyage REST returns data[] (not results[]) — the shape the gateway
+        // must parse (live-key e2e pins the real wire; this pins the parse).
+        return new Response(JSON.stringify({
+          data: [{ index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: 0.2 }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return origFetch(url as never, init);
+    }) as typeof fetch;
+    try {
+      const code = await runMigrate(['--to', 'openai:text-embedding-3-small', '--dim', String(TO_DIMS), '--yes', '--reranker', 'voyage:rerank-2.5']);
+      expect(code).toBe(0);
+      expect(await engine.getConfig('search.reranker.model')).toBe('voyage:rerank-2.5');
+      expect(await engine.getConfig('search.reranker.enabled')).toBe('true');
+    } finally {
+      (globalThis as { fetch: typeof fetch }).fetch = origFetch;
+    }
+  }, 60000);
+
+  test('probe failure keeps the previous reranker config and reports switch_failed', async () => {
+    // No wire stub + no reachable endpoint: the probe fails, the migration
+    // still completes, and the config stays where the previous test put it.
+    const origFetch = globalThis.fetch;
+    (globalThis as { fetch: typeof fetch }).fetch = (async (url: string | URL | Request) => {
+      if (String(url).includes('/rerank')) throw new Error('stub: reranker endpoint down');
+      return origFetch(url as never);
+    }) as typeof fetch;
+    try {
+      const code = await runMigrate(['--to', 'openai:text-embedding-3-small', '--dim', String(TO_DIMS), '--yes', '--reranker', 'voyage:rerank-2.5-lite']);
+      expect(code).toBe(0); // embeddings converged; reranker failure is reported, not fatal
+      // Old config kept — NOT flipped to the unreachable model.
+      expect(await engine.getConfig('search.reranker.model')).toBe('voyage:rerank-2.5');
+    } finally {
+      (globalThis as { fetch: typeof fetch }).fetch = origFetch;
+    }
+  }, 60000);
+
+  test('applyRerankerAction is transactional: model + enabled + cache purge land together', async () => {
+    await engine.executeRaw(
+      `INSERT INTO query_cache (id, query_text, source_id) VALUES ('qc-rr2', 'stale again', 'default')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await applyRerankerAction(engine, { kind: 'switch', to: 'voyage:rerank-2.5-lite' });
+    expect(await engine.getConfig('search.reranker.model')).toBe('voyage:rerank-2.5-lite');
+    expect(await engine.getConfig('search.reranker.enabled')).toBe('true');
+    const qc = await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM query_cache`);
+    expect(Number(qc[0]?.n)).toBe(0);
+  });
 });

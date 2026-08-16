@@ -33,6 +33,7 @@ import { lookupEmbeddingPrice, estimateCostFromChars } from './embedding-pricing
 import { readContentChunksEmbeddingDim } from './embedding-dim-check.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
 import { hnswIndexExpected } from './vector-index.ts';
+import { loadSearchModeConfig, resolveSearchMode } from './search/mode.ts';
 
 // ============================================================================
 // Env-override safety gate (moved from retrieval-upgrade-planner.ts — this
@@ -556,17 +557,19 @@ export async function planEmbeddingMigration(
   }
 
   // Sunset companion warning: migrating embeddings off a provider whose
-  // reranker is still configured leaves rerank on the outgoing provider.
+  // reranker is still ACTIVE leaves rerank on the outgoing provider. Resolved
+  // THROUGH the mode bundles (not the bare DB key) — the common ZE case is an
+  // unset key riding the bundle default, which the old key-only read missed.
   let rerankerWarning: string | null = null;
   try {
-    const rr = await engine.getConfig('search.reranker.model');
-    const outgoingProvider = fromModel.split(':')[0];
-    const targetProvider = toModel.split(':')[0];
-    if (rr && outgoingProvider !== targetProvider && rr.startsWith(`${outgoingProvider}:`)) {
+    const exposure = await resolveRerankerExposure(engine, fromModel, toModel);
+    if (exposure) {
       rerankerWarning =
-        `search.reranker.model is still ${rr} (the outgoing provider). ` +
-        `If that provider is sunsetting, also update or disable the reranker: ` +
-        `gbrain config set search.reranker.enabled false`;
+        `the resolved reranker is ${exposure.model}` +
+        (exposure.sunset_date
+          ? ` and its provider shuts down ${exposure.sunset_date}`
+          : ' (the outgoing provider)') +
+        ` — pass --reranker to switch or disable it in the same run`;
     }
   } catch {
     // Reranker warning is cosmetic.
@@ -863,6 +866,153 @@ export async function applyEmbeddingMigration(
   } catch (err) {
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err) };
   }
+}
+
+// ============================================================================
+// Reranker companion switch (D8): embeddings + reranker are ONE flow.
+// ============================================================================
+
+/**
+ * Is the brain's ACTIVE reranker (resolved through mode bundles, not just the
+ * explicit DB key) exposed by this migration? Exposed = reranking is enabled
+ * AND the resolved model's provider is sunsetting OR is the outgoing
+ * embedding provider while the target is a different one.
+ */
+export async function resolveRerankerExposure(
+  engine: BrainEngine,
+  fromModel: string,
+  toModel: string,
+): Promise<{ model: string; sunset_date: string | null; replacement: string | null } | null> {
+  const knobs = resolveSearchMode(await loadSearchModeConfig(engine));
+  if (!knobs.reranker_enabled) return null;
+  const current = knobs.reranker_model;
+  const currentProvider = current.split(':')[0];
+  const outgoingProvider = fromModel.split(':')[0];
+  const targetProvider = toModel.split(':')[0];
+  let sunsetDate: string | null = null;
+  let replacement: string | null = null;
+  try {
+    const { recipe } = resolveRecipe(current);
+    sunsetDate = recipe.sunset?.date ?? null;
+    replacement = recipe.sunset?.replacement?.reranker ?? null;
+  } catch {
+    // Unknown reranker recipe: not classifiable as exposed — rerank already
+    // fails open at search time and doctor's provider checks own that case.
+  }
+  const exposed = sunsetDate !== null
+    || (currentProvider === outgoingProvider && currentProvider !== targetProvider);
+  return exposed ? { model: current, sunset_date: sunsetDate, replacement } : null;
+}
+
+export type RerankerAction =
+  | { kind: 'switch'; to: string }
+  | { kind: 'disable' }
+  | { kind: 'none'; suggestion: string | null };
+
+export interface RerankerPlan {
+  exposed: { model: string; sunset_date: string | null } | null;
+  action: RerankerAction;
+}
+
+/**
+ * Decide the reranker companion action for this migration.
+ *
+ * flag semantics (`--reranker`):
+ *   auto (default) — when the resolved reranker is exposed: switch to the
+ *     TARGET provider's default reranker when it ships one; otherwise NEVER
+ *     silently enable a third provider's paid service — return a suggestion
+ *     the caller prints as an ACTION line (and doctor keeps nagging).
+ *   keep — leave reranker config untouched (warning still shows).
+ *   off  — disable reranking (`search.reranker.enabled false`).
+ *   <provider:model> — switch to that model (validated: the recipe must
+ *     declare a reranker touchpoint; throws a paste-ready message otherwise).
+ */
+export async function resolveRerankerPlan(
+  engine: BrainEngine,
+  fromModel: string,
+  toModel: string,
+  flag: string | undefined,
+): Promise<RerankerPlan> {
+  const exposedFull = await resolveRerankerExposure(engine, fromModel, toModel);
+  const exposed = exposedFull
+    ? { model: exposedFull.model, sunset_date: exposedFull.sunset_date }
+    : null;
+  const mode = flag ?? 'auto';
+
+  if (mode === 'keep') return { exposed, action: { kind: 'none', suggestion: null } };
+  if (mode === 'off') return { exposed, action: { kind: 'disable' } };
+  if (mode !== 'auto') {
+    // Explicit provider:model — validate BEFORE anything destructive runs.
+    if (!mode.includes(':')) {
+      throw new Error(
+        `--reranker must be auto|off|keep|<provider:model>. Got: ${mode}. ` +
+        `Example: --reranker voyage:rerank-2.5`,
+      );
+    }
+    const { recipe } = resolveRecipe(mode); // throws with provider list on unknown
+    if (!recipe.touchpoints.reranker) {
+      throw new Error(
+        `Provider ${recipe.id} declares no reranker. Pick a reranker-capable model ` +
+        `(e.g. voyage:rerank-2.5) or pass --reranker off.`,
+      );
+    }
+    return { exposed, action: { kind: 'switch', to: mode } };
+  }
+
+  // auto
+  if (!exposedFull) return { exposed, action: { kind: 'none', suggestion: null } };
+  try {
+    const { recipe } = resolveRecipe(toModel);
+    const tp = recipe.touchpoints.reranker as { default_model?: string; models?: string[] } | undefined;
+    const defaultModel = tp?.default_model ?? tp?.models?.[0];
+    if (defaultModel) {
+      return { exposed, action: { kind: 'switch', to: `${recipe.id}:${defaultModel}` } };
+    }
+  } catch { /* fall through to suggestion */ }
+  // Target provider has no reranker: suggest, never silently enable a THIRD
+  // provider's paid service.
+  return { exposed, action: { kind: 'none', suggestion: exposedFull.replacement } };
+}
+
+/**
+ * Apply the reranker companion action: config write + query-cache purge in
+ * ONE transaction (a crash can't leave old-reranker cache rows serving a
+ * new-reranker config, in either order). DB plane deliberately — reranker
+ * config lives in the DB (resolveSearchMode), unlike embedding config
+ * (file/env planes).
+ */
+export async function applyRerankerAction(
+  engine: BrainEngine,
+  action: RerankerAction,
+): Promise<void> {
+  if (action.kind === 'none') return;
+  await engine.transaction(async (tx) => {
+    const upsert = async (key: string, value: string) => {
+      await tx.executeRaw(
+        `INSERT INTO config (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [key, value],
+      );
+    };
+    if (action.kind === 'switch') {
+      await upsert('search.reranker.model', action.to);
+      await upsert('search.reranker.enabled', 'true');
+    } else {
+      await upsert('search.reranker.enabled', 'false');
+    }
+    // Rank order changes with the reranker; cached result sets must not
+    // survive the flip. Table may be absent on very old brains — the tx
+    // would abort, so probe first.
+    const has = await tx.executeRaw<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = 'query_cache'
+       ) AS exists`,
+    );
+    if (has[0]?.exists) {
+      await tx.executeRaw(`DELETE FROM query_cache`);
+    }
+  });
 }
 
 /**
