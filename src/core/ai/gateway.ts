@@ -2537,9 +2537,16 @@ const OCR_IMAGE_INPUT_TOKEN_ESTIMATE = 1600;
  */
 function normalizeSdkUsage(usage: unknown): { inputTokens: number; outputTokens: number } {
   const u = (usage ?? {}) as Record<string, unknown>;
+  // finite-or-zero: some openai-compatible backends emit NaN for unknown
+  // usage, and `NaN ?? 0` keeps the NaN — one NaN record poisons the
+  // tracker's running total and every later `spent > cap` check fails OPEN.
+  const finite = (v: unknown): number => {
+    const n = Number(v ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  };
   return {
-    inputTokens: Number((u.inputTokens as number | undefined) ?? (u.promptTokens as number | undefined) ?? 0),
-    outputTokens: Number((u.outputTokens as number | undefined) ?? (u.completionTokens as number | undefined) ?? 0),
+    inputTokens: finite((u.inputTokens as number | undefined) ?? (u.promptTokens as number | undefined)),
+    outputTokens: finite((u.outputTokens as number | undefined) ?? (u.completionTokens as number | undefined)),
   };
 }
 

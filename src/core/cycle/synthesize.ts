@@ -52,7 +52,7 @@ import { parseLlmJson } from '../llm-json.ts';
 import type { BrainEngine, DreamVerdict, TriageSegment } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { MinionQueue } from '../minions/queue.ts';
-import { clampSubagentBudgets } from './patterns.ts';
+import { clampSubagentBudgets, CYCLE_DEADLINE_RESERVE_MS } from './patterns.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
@@ -847,7 +847,19 @@ export async function runPhaseSynthesize(
       }
     }
 
+    // #4168 red-team: transcripts deferred because the parent job budget ran out mid-fan-out.
+
+    const budgetExhaustedDeferrals: string[] = [];
+
     for (const t of worthProcessing) {
+
+      if (budgetExhaustedDeferrals.length > 0) {
+
+        budgetExhaustedDeferrals.push(basename(t.filePath));
+
+        continue; // budget gone — defer the rest, don't submit more children
+
+      }
       const hash16 = t.contentHash.slice(0, 16);
       const hash6 = t.contentHash.slice(0, 6);
 
@@ -959,11 +971,26 @@ export async function runPhaseSynthesize(
         const idempotency_key = isChunked
           ? `${synthesisKey}:c${i}of${chunks.length}`
           : synthesisKey;
+        // #4168 red-team: the phase is a FAN-OUT and children drain
+        // sequentially with claim-time-anchored kill switches, so a single
+        // phase-start clamp only bounds the FIRST child. Re-clamp against the
+        // live clock per submit; when the remaining parent budget drops under
+        // the minimum, stop submitting — deferred transcripts retry next
+        // cycle (partial > guaranteed-timeout children).
+        const perChild = clampSubagentBudgets(
+          { subagentTimeoutMs: config.subagentTimeoutMs, subagentWaitTimeoutMs: config.subagentWaitTimeoutMs },
+          opts.deadlineAtMs,
+          Date.now(),
+        );
+        if (perChild === null) {
+          budgetExhaustedDeferrals.push(basename(t.filePath));
+          break;
+        }
         const submitOpts: Partial<MinionJobInput> = {
           max_stalled: 3,
           on_child_fail: 'continue',
           idempotency_key,
-          timeout_ms: config.subagentTimeoutMs,
+          timeout_ms: perChild.timeoutMs,
           queue: childQueueName,
         };
         let child = await queue.add(
@@ -1033,8 +1060,14 @@ export async function runPhaseSynthesize(
     const childOutcomes: Array<{ jobId: number; status: string; turns?: number }> = [];
     for (const jobId of childIds) {
       try {
+        // #4168 red-team: bound each wait by the REMAINING parent budget
+        // (never negative-or-zero — floor at 1s so the fast path still
+        // observes an already-terminal child), not just the per-child config.
+        const remainingParentMs = opts.deadlineAtMs != null
+          ? Math.max(1000, opts.deadlineAtMs - CYCLE_DEADLINE_RESERVE_MS - Date.now())
+          : config.subagentWaitTimeoutMs;
         const job = await waitForCompletion(queue, jobId, {
-          timeoutMs: config.subagentWaitTimeoutMs,
+          timeoutMs: Math.min(config.subagentWaitTimeoutMs, remainingParentMs),
           pollMs: 5 * 1000,
         });
         // Turn telemetry: surfaces max_turns cap pressure in details.synthesis
@@ -1111,6 +1144,7 @@ export async function runPhaseSynthesize(
       // transcript for single-chunk). Differs from transcripts_processed
       // when chunking is in play.
       children_submitted: childIds.length,
+      budget_deferred_transcripts: budgetExhaustedDeferrals,
       // D5 cap hits + D8 legacy-key skips + daily_cap_reached. Empty when nothing skipped.
       skips: skipReports,
       summary_slug: summarySlug,

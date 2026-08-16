@@ -725,9 +725,12 @@ describe('resolveProposeTakesDeadlineMs — derived phase budget (#4168)', () =>
     expect(resolveProposeTakesDeadlineMs(generous, NOW)).toBe(PROPOSE_TAKES_FALLBACK_DEADLINE_MS);
   });
 
-  test('tight job deadline yields remaining-minus-reserve', () => {
+  test('tight job deadline yields the FRACTION of remaining-minus-reserve (headroom for the downstream calibration phases)', () => {
     const tight = NOW + 10 * 60 * 1000; // 10min left
-    expect(resolveProposeTakesDeadlineMs(tight, NOW)).toBe(10 * 60 * 1000 - CYCLE_DEADLINE_RESERVE_MS);
+    const remaining = 10 * 60 * 1000 - CYCLE_DEADLINE_RESERVE_MS;
+    // Red-team fix: un-fractioned, a small budget was consumed whole and
+    // grade_takes/calibration_profile started inside the reserve.
+    expect(resolveProposeTakesDeadlineMs(tight, NOW)).toBe(Math.floor(remaining * 0.8));
   });
 
   test('boundary: exactly at MIN is non-null; one ms under is null; already-expired is null', () => {
