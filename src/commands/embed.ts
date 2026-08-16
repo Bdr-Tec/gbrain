@@ -644,12 +644,21 @@ export async function runEmbed(engine: BrainEngine, args: string[]): Promise<Emb
       paramBuilder: (cleanArgs) => {
         const slugsI = cleanArgs.indexOf('--slugs');
         const srcI = cleanArgs.indexOf('--source');
+        const bsI = cleanArgs.indexOf('--batch-size');
+        const bsRaw = bsI >= 0 ? parseInt(cleanArgs[bsI + 1] ?? '', 10) : NaN;
+        const prI = cleanArgs.indexOf('--priority');
         return {
           all: cleanArgs.includes('--all'),
           stale: cleanArgs.includes('--stale'),
           dryRun: cleanArgs.includes('--dry-run'),
           slugs: slugsI >= 0 ? cleanArgs.slice(slugsI + 1).filter(a => !a.startsWith('--')) : undefined,
           sourceId: srcI >= 0 ? cleanArgs[srcI + 1] : undefined,
+          // Background parity (D7): these four used to be silently DROPPED,
+          // degrading the documented recovery command to a plain stale run.
+          catchUp: cleanArgs.includes('--catch-up'),
+          includeNullSignature: cleanArgs.includes('--include-null-signature'),
+          ...(Number.isFinite(bsRaw) && bsRaw > 0 && { batchSize: Math.min(10_000, bsRaw) }),
+          ...(prI >= 0 && cleanArgs[prI + 1] === 'recent' && { priority: 'recent' }),
           // CX1+CX5: carry explicit pace overrides into the `embed` job payload
           // (the job name CLI --background actually submits). The handler
           // re-resolves env > config > bundle at execution.
