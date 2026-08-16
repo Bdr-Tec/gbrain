@@ -94,6 +94,7 @@ CHECKS=(
   "check:doc-history"
   "check:fixture-privacy"
   "check:source-scope-onboard"
+  "check:getpage-scope"
   "check:no-double-retry"
   "check:batch-audit-site"
   "check:engine-dynamic-import"

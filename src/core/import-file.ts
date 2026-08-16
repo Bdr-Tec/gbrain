@@ -599,7 +599,11 @@ export async function importFromContent(
   // #1035: fetch the existing page BEFORE the hash compute so (a) the type
   // preservation below participates in the hash (a no-op re-put stays a
   // hash-match skip) and (b) the hash short-circuit below reuses this row.
-  const existing = await engine.getPage(slug, sourceId ? { sourceId } : undefined);
+  // Scoped to the exact (source_id, slug) row the writes below target —
+  // engine.putPage defaults to 'default' when sourceId is unset, so the read
+  // mirrors that default instead of matching the slug in ANY source (the
+  // unscoped-check/scoped-write bug class).
+  const existing = await engine.getPage(slug, { sourceId: sourceId ?? 'default' });
 
   // #2044: remote get_page intentionally strips private facts rows. A
   // documented get_page -> edit -> put_page round-trip can therefore arrive
@@ -721,7 +725,7 @@ export async function importFromContent(
     }
     if (dup && dup.slug !== slug) {
       // Look up the duplicate page so we can compare frontmatter.id.
-      const dupPage = await engine.getPage(dup.slug, sourceId ? { sourceId } : undefined);
+      const dupPage = await engine.getPage(dup.slug, { sourceId: sourceId ?? 'default' });
       const dupFmId = (dupPage?.frontmatter as Record<string, unknown> | undefined)?.id;
       const dupFmIdStr = typeof dupFmId === 'string' && dupFmId.length > 0 ? dupFmId : null;
       const sameExternalId = fmIdStr !== null && dupFmIdStr === fmIdStr;
@@ -852,7 +856,7 @@ export async function importFromContent(
   // caller's sourceId so writes target (sourceId, slug) rather than the
   // schema DEFAULT — required for multi-source brains; harmless ('default')
   // for single-source callers.
-  const txOpts = sourceId ? { sourceId } : undefined;
+  const txOpts = { sourceId: sourceId ?? 'default' };
   await engine.transaction(async (tx) => {
     if (existing) await tx.createVersion(slug, txOpts);
 
@@ -1049,7 +1053,7 @@ async function verifyPageReadable(
   sourceId: string | undefined,
   caller: string,
 ): Promise<void> {
-  const readBack = await engine.getPage(slug, sourceId ? { sourceId } : undefined);
+  const readBack = await engine.getPage(slug, { sourceId: sourceId ?? 'default' });
   if (!readBack) {
     // Log to ingest_log before throwing so the failure is durable and
     // agent-inspectable, not just a transient stderr message.
@@ -1292,7 +1296,7 @@ export async function importCodeFile(
   const lang = detectCodeLanguage(relativePath) || 'unknown';
   const title = `${relativePath} (${lang})`;
   const sourceId = opts.sourceId;
-  const txOpts = sourceId ? { sourceId } : undefined;
+  const txOpts = { sourceId: sourceId ?? 'default' };
   // PostgreSQL text columns reject U+0000 even though source files may
   // legitimately contain it inside string/regex fixtures. Preserve a visible,
   // searchable representation instead of dropping the entire code page.
@@ -1325,7 +1329,11 @@ export async function importCodeFile(
     .update(JSON.stringify({ title, type: 'code', content, lang, chunker_version: CHUNKER_VERSION }))
     .digest('hex');
 
-  const existing = await engine.getPage(slug, sourceId ? { sourceId } : undefined);
+  // Scoped to the exact (source_id, slug) row the writes below target —
+  // engine.putPage defaults to 'default' when sourceId is unset, so the read
+  // mirrors that default instead of matching the slug in ANY source (the
+  // unscoped-check/scoped-write bug class).
+  const existing = await engine.getPage(slug, { sourceId: sourceId ?? 'default' });
   if (!opts.force && existing?.content_hash === hash) {
     return { slug, status: 'skipped', chunks: 0 };
   }
@@ -1363,7 +1371,7 @@ export async function importCodeFile(
   // OpenAI API. Order matters: our chunk_index is semantic (tree-sitter
   // order), so a matching (chunk_index, text_hash) means a verbatim
   // preserved symbol.
-  const existingChunks = existing ? await engine.getChunks(slug, sourceId ? { sourceId } : undefined) : [];
+  const existingChunks = existing ? await engine.getChunks(slug, { sourceId: sourceId ?? 'default' }) : [];
   const existingByKey = new Map<string, typeof existingChunks[number]>();
   for (const ec of existingChunks) {
     existingByKey.set(`${ec.chunk_index}:${ec.chunk_text}`, ec);

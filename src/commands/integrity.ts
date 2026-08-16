@@ -161,8 +161,20 @@ export function findExternalLinks(compiledTruth: string, slug: string): External
 
 interface ProgressEntry {
   slug: string;
+  /**
+   * Source the row belongs to. Progress used to be keyed by slug alone, so a
+   * resume SKIPPED same-slug pages in every other source (the scan iterates
+   * (slug, source_id) pairs). Legacy entries without source_id are treated as
+   * default-source only.
+   */
+  source_id?: string;
   status: 'repaired' | 'reviewed' | 'skipped' | 'error';
   timestamp: string;
+}
+
+/** Composite progress key — (source, slug), tab-separated (tabs can't appear in either). */
+function progressKey(sourceId: string | undefined, slug: string): string {
+  return `${sourceId ?? 'default'}\t${slug}`;
 }
 
 function loadProgress(): Set<string> {
@@ -173,7 +185,7 @@ function loadProgress(): Set<string> {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line) as ProgressEntry;
-      seen.add(entry.slug);
+      seen.add(progressKey(entry.source_id, entry.slug));
     } catch {
       /* skip malformed lines */
     }
@@ -429,7 +441,18 @@ async function cmdAuto(args: string[]): Promise<void> {
   const engine = await connect();
   const registry = getDefaultRegistry();
   registerBuiltinResolvers(registry);
-  const writer = new BrainWriter(engine, { strictMode: 'off' });
+  // One writer PER SOURCE: BrainWriter scopes every read/write (and
+  // addTimelineEntry) to its sourceId — a single default-scoped writer used
+  // for every source's pages was the unscoped-check/scoped-write bug class.
+  const writersBySource = new Map<string, BrainWriter>();
+  const writerFor = (sourceId: string): BrainWriter => {
+    let w = writersBySource.get(sourceId);
+    if (!w) {
+      w = new BrainWriter(engine, { strictMode: 'off', sourceId });
+      writersBySource.set(sourceId, w);
+    }
+    return w;
+  };
 
   const ctx: ResolverContext = {
     engine,
@@ -463,11 +486,12 @@ async function cmdAuto(args: string[]): Promise<void> {
     const allRefs = (await engine.listAllPageRefs()).sort((a, b) =>
       a.slug.localeCompare(b.slug) || a.source_id.localeCompare(b.source_id)
     );
-    const toScan = allRefs.filter(r => !seen.has(r.slug));
+    const toScan = allRefs.filter(r => !seen.has(progressKey(r.source_id, r.slug)));
     progress.start('integrity.auto', toScan.length);
     for (const { slug, source_id } of allRefs) {
       if (pagesProcessed >= limit) break;
-      if (seen.has(slug)) continue;
+      if (seen.has(progressKey(source_id, slug))) continue;
+      const writer = writerFor(source_id);
 
       const page = await engine.getPage(slug, { sourceId: source_id });
       if (!page) continue;
@@ -498,26 +522,26 @@ async function cmdAuto(args: string[]): Promise<void> {
                 // Dry-run must NOT persist 'repaired' — the follow-on real
                 // run needs to revisit these slugs and actually write.
                 if (!dryRun) {
-                  appendProgress({ slug, status: 'repaired', timestamp: new Date().toISOString() });
+                  appendProgress({ slug, source_id, status: 'repaired', timestamp: new Date().toISOString() });
                 }
               } else if (result.confidence >= reviewLower) {
                 appendReview({ slug, hit, result, handle });
                 bucketReview++;
                 if (!dryRun) {
-                  appendProgress({ slug, status: 'reviewed', timestamp: new Date().toISOString() });
+                  appendProgress({ slug, source_id, status: 'reviewed', timestamp: new Date().toISOString() });
                 }
               } else {
                 logSkip({ slug, hit, reason: `confidence ${result.confidence.toFixed(2)} below threshold ${reviewLower}` });
                 bucketSkip++;
                 if (!dryRun) {
-                  appendProgress({ slug, status: 'skipped', timestamp: new Date().toISOString() });
+                  appendProgress({ slug, source_id, status: 'skipped', timestamp: new Date().toISOString() });
                 }
               }
             } catch (e) {
               bucketErr++;
               logSkip({ slug, hit, reason: `resolver error: ${e instanceof Error ? e.message : String(e)}` });
               if (!dryRun) {
-                appendProgress({ slug, status: 'error', timestamp: new Date().toISOString() });
+                appendProgress({ slug, source_id, status: 'error', timestamp: new Date().toISOString() });
               }
             }
           }
@@ -528,7 +552,7 @@ async function cmdAuto(args: string[]): Promise<void> {
           }
           bucketSkip += hits.length;
           if (!dryRun) {
-            appendProgress({ slug, status: 'skipped', timestamp: new Date().toISOString() });
+            appendProgress({ slug, source_id, status: 'skipped', timestamp: new Date().toISOString() });
           }
         }
       }
