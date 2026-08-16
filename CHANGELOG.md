@@ -2,6 +2,42 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.7.0] - 2026-08-15
+
+**gbrain is now a proper Codex plugin — and a Claude Code plugin — from one repo.**
+Until now, wiring gbrain into Codex meant hand-editing MCP config and skills
+arrived through a separate channel. This release makes the plugin marketplace
+the front door: two commands install the MCP server AND a curated 65-skill
+brain-first set, in either harness, with the whole chain proven against the
+real codex and claude binaries (install, curated snapshot, a live brain answer
+through the plugin-provided server).
+
+### Added
+- **gbrain is now a native Codex plugin — and a Claude Code plugin — from one repo.** Two commands install the MCP server plus a curated brain-first skill set: `codex plugin marketplace add garrytan/gbrain@codex-plugin` + `codex plugin add gbrain@gbrain` (Claude Code: `/plugin marketplace add garrytan/gbrain` + `/plugin install gbrain@gbrain`). The plugin serves the `starter` MCP surface (the seven memory verbs + the daily-driver ops) through a bundled launcher that resolves your installed gbrain binary and fails with the exact install one-liner when it's missing. Each release also publishes a slim `codex-plugin` dist branch so the plugin download is the plugin, not the development repo. Verified end-to-end against the real codex and claude binaries (install, skills, a live brain answer through the plugin-provided server).
+- **`gbrain serve --source-guard`** — fail-closed write routing for user-global serves (the plugin lanes pass it): when a brain has multiple sources to choose from and no explicit `GBRAIN_SOURCE` binding, write and admin operations return an actionable error instead of landing in whatever source ambient resolution fell through to. A sole real source is unambiguous and unaffected; reads always pass.
+- **Plugin-lane coexistence.** `gbrain bootstrap hooks` skips its own MCP registration when the plugin already provides the server (healthy skip, exit 0, hooks still install; override with `--mcp-even-if-plugin`), the harness lane warns on a two-layer name collision, and `gbrain doctor` gains a `plugin_lane_collision` check that warns only on a real double-registration.
+- **Curated plugin skill tree.** `skills/plugin-lanes.json` records one publication decision per skill for the plugin lanes (the openclaw bundle's curation is untouched); `scripts/generate-plugin-tree.ts` emits the committed `plugin/` tree and `scripts/check-plugin-tree.sh` gates drift. Skills newly published to plugin consumers got a portability/consent/privacy sweep (50 fixes across 10 skills — sanctioned install commands, synthetic example names, first-fire consent for ambient capture, host-only assumptions labeled).
+
+- **Hardening that rode the review army:** the plugin-tree generator now uses the canonical frontmatter parser (inline `tools:` lists count) with negative-fixture proof that its curation gate can fail; the source-guard probe is a bounded, memoized single-row query; `--source-guard` warns loudly when combined with `--http` (it is stdio-only); the plugin-doors CI job pins exact pass counts and the release publish job drops persisted credentials; `check-plugin-tree` runs in `bun run verify`.
+
+### Fixed
+- The deprecated frontmatterless `skills/install/` tombstone is gone — harness skill scanners error on frontmatterless SKILL.md files.
+- Skills newly published to plugin consumers no longer carry a wrong install command, real-name examples, raw-OAuth-token snippets, or host-container paths (the 50-fix sweep), and ambient-capture skills now announce themselves on first fire with a per-user off switch.
+
+### To take advantage of v0.46.7.0
+Install the gbrain CLI once (`bun install -g github:garrytan/gbrain#latest-stable`)
+and create a brain (`gbrain init` — zero-config local PGLite). Then, in Codex:
+`codex plugin marketplace add garrytan/gbrain@codex-plugin` and
+`codex plugin add gbrain@gbrain`. In Claude Code: `/plugin marketplace add
+garrytan/gbrain` and `/plugin install gbrain@gbrain`. New sessions get the
+brain's memory verbs + daily ops as MCP tools and the curated skill set; say
+"fill my brain" to run cold-start. Existing bootstrap installs change nothing —
+if you later add the plugin, `gbrain bootstrap hooks` steps aside automatically
+and `gbrain doctor` flags any double-registration. Brains with multiple sources: set `GBRAIN_SOURCE=<source-id>` in the
+environment that launches your harness (the plugin serve is user-global and
+binds the source from the env, not a flag;
+ambiguous writes are guarded until a source is bound — a sole-source brain
+needs nothing).
 ## [0.46.6.0] - 2026-08-15
 
 **A busy machine can no longer make the job queue evict its own healthy
