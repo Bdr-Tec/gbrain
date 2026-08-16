@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.12.0] - 2026-08-16
+## [0.46.14.0] - 2026-08-16
 
 **Your agent can now do over MCP what it could only do from the CLI.** An
 audit of the CLI-versus-MCP surface found the gap was never that MCP filtered
@@ -62,7 +62,7 @@ without leaving the MCP session.
   than losing the write — the same protections the main page writer already
   had, now covering the new remote write path.
 
-To take advantage of v0.46.12.0: reconnect your coding agent (or restart
+To take advantage of v0.46.14.0: reconnect your coding agent (or restart
 `gbrain serve`) so the new tools appear in its catalog. On the default `full`
 surface every new tool is available immediately; on `starter`, `capture` joins
 the daily-driver set. Nothing to configure — the tools are read-only or
