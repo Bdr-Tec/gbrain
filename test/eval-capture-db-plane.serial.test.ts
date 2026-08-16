@@ -148,6 +148,44 @@ describe('eval.capture set on the DB plane reaches the runtime gate (#1475)', ()
     );
   });
 
+  test('a mounted brain\'s engine never re-merges the DB plane', async () => {
+    // Adversarial-review fixup: the fallback merge above ran unconditionally
+    // for ANY unpublished engine, including mount engines — connectEngine
+    // only publishes for the host brain (MERGED_CONFIG_BY_ENGINE.set lives in
+    // its host-only branch), so every mounted-brain command paid the full
+    // per-key DB round-trip AND, worse, would have let the mount's DB-plane
+    // config leak into the caller's ctx.config, a leak connectMountEngine's
+    // gateway-scoped no-merge guarantee does not by itself prevent. This
+    // pins both: no config-merge reads, and the DB's eval.capture=true does
+    // not surface. Marks the engine object itself (not module-global brain
+    // state) — the same provenance-follows-the-engine binding
+    // MERGED_CONFIG_BY_ENGINE already uses, so this stays correct even if a
+    // process ever holds a host engine and a mount engine at once.
+    const { __testing } = await import('../src/cli.ts');
+    let keysRead: string[] = [];
+    const counting = {
+      kind: 'pglite',
+      executeRaw: async <T>(): Promise<T[]> => [],
+      getConfig: async (key: string) => {
+        keysRead.push(key);
+        return key === 'eval.capture' ? 'true' : null;
+      },
+    } as unknown as BrainEngine;
+    __testing.markEngineAsMountForTests(counting);
+
+    await withEnv(
+      { GBRAIN_HOME: scratchHome(), GBRAIN_CONTRIBUTOR_MODE: undefined, GBRAIN_SOURCE: undefined },
+      async () => {
+        const ctx = await makeContext(counting, {});
+        // Only the source resolver's read survives — the DB-plane merge
+        // branch is skipped entirely for a mount engine.
+        expect(keysRead).toEqual(['sources.default']);
+        expect(ctx.config?.eval?.capture).toBeUndefined();
+        expect(isEvalCaptureEnabled(ctx.config)).toBe(false);
+      },
+    );
+  });
+
   test('connectEngine still publishes its merge (the half the runtime test cannot reach)', async () => {
     // The test above primes the map directly, so it pins the CONSUMER. If the
     // publish in connectEngine were deleted, production would quietly fall
@@ -160,6 +198,23 @@ describe('eval.capture set on the DB plane reaches the runtime gate (#1475)', ()
     // Guard the guard: if the map is ever renamed, the assertion above must
     // not keep passing against a stale literal that no longer exists.
     expect(cli).toContain('const MERGED_CONFIG_BY_ENGINE = new WeakMap');
+  });
+
+  test('connectMountEngine still marks its engine as a mount engine', async () => {
+    // Mirrors the guard immediately above, for the mount-engine fixup
+    // (PR #4186): the test that exercises makeContext's mount branch marks
+    // the engine directly via __testing.markEngineAsMountForTests, so it
+    // pins the CONSUMER (makeContext honors MOUNT_ENGINES) but not the real
+    // wiring — if `MOUNT_ENGINES.add(handle.engine)` were ever deleted from
+    // connectMountEngine, that test would still pass while every real mount
+    // connection silently re-merged the mount's DB plane again.
+    // connectMountEngine is not exported and needs a live BrainRegistry, so
+    // this is a source-level guard, same shape as the one above.
+    const cli = await Bun.file(new URL('../src/cli.ts', import.meta.url).pathname).text();
+    expect(cli).toContain('MOUNT_ENGINES.add(handle.engine)');
+    // Guard the guard: if the set is ever renamed, the assertion above must
+    // not keep passing against a stale literal that no longer exists.
+    expect(cli).toContain('const MOUNT_ENGINES = new WeakSet');
   });
 
   test('a brain whose config table is missing still builds a context (fail-open)', async () => {
