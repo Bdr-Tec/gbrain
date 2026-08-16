@@ -1989,12 +1989,17 @@ async function handleCliOnly(command: string, args: string[]) {
         eng = await connectEngine();
         await runDoctor(eng, args);
       } catch (e) {
-        // DB unavailable — still run filesystem checks. Say so on stderr:
-        // a silent fallback looks identical to a healthy DB-backed run
-        // (minus the DB checks), which has misread as "doctor is broken".
-        console.error(
-          `[doctor] DB connect failed (${e instanceof Error ? e.message : String(e)}) — running filesystem-only checks`,
-        );
+        // DB unavailable OR the DB-backed run threw — still run filesystem
+        // checks. Say so on stderr: a silent fallback looks identical to a
+        // healthy DB-backed run (minus the DB checks), which has misread as
+        // "doctor is broken". Scrub the message through BOTH redactors —
+        // connection-info (hosts/IPs/users/quoted libpq passwords) and the
+        // URL-userinfo sweep — because doctor output is exactly what users
+        // paste into issues and CI logs.
+        const { redactUrlsInText } = await import('./core/url-redact.ts');
+        const { redactConnectionInfo } = await import('./core/audit/redact-connection-info.ts');
+        const safeMsg = redactConnectionInfo(redactUrlsInText(e instanceof Error ? e.message : String(e)));
+        console.error(`[doctor] DB-backed doctor run failed (${safeMsg}) — falling back to filesystem-only checks`);
         await runDoctor(null, args, getDbUrlSource());
       } finally {
         if (eng) await finishCliTeardown({ engine: eng });

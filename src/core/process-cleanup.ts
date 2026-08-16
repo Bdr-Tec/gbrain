@@ -17,7 +17,7 @@
  *
  *  - Signal scope: SIGTERM, SIGHUP, SIGPIPE, uncaughtException,
  *    unhandledRejection. **NOT SIGINT** — gbrain has an existing
- *    SIGINT-via-AbortController path at cli.ts:254 that propagates
+ *    SIGINT-via-AbortController path in cli.ts that propagates
  *    abort to in-flight operations (clean cancel). Installing cleanup
  *    on SIGINT here would preempt that flow. Lock release on user
  *    cancel belongs in the AbortController path, not in a parallel
@@ -132,10 +132,13 @@ async function runCleanupPass(): Promise<void> {
 
 /**
  * Install signal handlers + the EPIPE-on-stdout handler. Idempotent
- * (second call is NO-OP). MUST be called once at CLI module load AFTER
- * any existing signal handlers (so we don't preempt the SIGINT
- * AbortController at cli.ts:254 — we don't listen to SIGINT here, but
- * documenting the install order keeps future maintainers aware).
+ * (second call is NO-OP). MUST be called once from the CLI ENTRYPOINT —
+ * inside cli.ts's `import.meta.main` seam, before main() dispatches —
+ * and NOT at module load: a module-load install leaks a process-wide
+ * SIGTERM→exit(143) handler into any process that merely imports cli.ts
+ * (a bun test runner died mid-suite when a test emitted a synthetic
+ * SIGTERM). The SIGINT AbortController path in cli.ts stays untouched —
+ * we don't listen to SIGINT here.
  */
 export function installSignalHandlers(): void {
   if (installed) return;

@@ -39,10 +39,10 @@ describeE2E('gbrain doctor --progress-json (E2E)', () => {
   });
 
   test('stderr has JSONL progress events, stdout stays clean', () => {
-    // A transient DB-connect failure sends the CLI down its silent
-    // filesystem-only doctor fallback, which never starts a progress phase —
-    // zero events, but a healthy-looking stdout. Detect that via the
-    // 'connection' check in the --json payload and retry once before
+    // A transient DB-connect failure sends the CLI down its filesystem-only
+    // doctor fallback (announced on stderr by cli.ts, but it still emits
+    // zero progress events with a healthy-looking stdout). Detect that via
+    // the 'connection' check in the --json payload and retry once before
     // asserting, so a one-off connect blip doesn't fail the lane.
     const runOnce = () =>
       spawnSync('bun', [CLI, '--progress-json', 'doctor', '--json'], {

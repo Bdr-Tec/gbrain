@@ -242,6 +242,20 @@ The quarantine has grown to dozens of files — treat it as debt: every addition
 
 `bun test` runs all tests without a database. E2E tests skip gracefully when `DATABASE_URL` is not set.
 
+**GBRAIN_HOME isolation preload.** `test/helpers/gbrain-home-preload.ts` (bunfig
+`[test]` preload) points `GBRAIN_HOME` at a per-run scratch dir when it isn't
+already set, so unit tests never read — or clobber — the operator's real
+`~/.gbrain` config/brain. Without it, any config-honoring code path silently
+changes behavior with whatever the live `config.json` says (observed: 27
+cycle/autopilot/dream tests flipped red the moment a sibling workspace's run
+rewrote the real config, while the identical commit stayed green in CI). The
+canonical GBRAIN_HOME convention is `config.ts:configDir()`: GBRAIN_HOME is a
+PARENT dir and `.gbrain` is appended. Subprocess-spawning tests must set BOTH
+`HOME: tmp` and `GBRAIN_HOME: tmp` in the child env (HOME alone loses to the
+inherited preload value; in-process HOME mutation loses to Bun's cached
+`os.homedir()`). The e2e wrapper sets its own GBRAIN_HOME before bun starts,
+which this preload respects.
+
 **Database-URL run guard (#3485).** A `bun test` invocation REFUSES to start while
 `DATABASE_URL` or `GBRAIN_DATABASE_URL` is ambient in the environment, because some
 tests run destructive SQL against whatever those URLs point at (a bare `bun test`

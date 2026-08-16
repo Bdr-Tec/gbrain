@@ -213,3 +213,51 @@ describe('loadCompletedMigrations', () => {
     expect(entries[1].version).toBe('0.11.0');
   });
 });
+
+describe('legacy $GBRAIN_HOME-direct layout copy-forward', () => {
+  // Before gbrainDir() delegated to gbrainPath(), a GBRAIN_HOME install kept
+  // prefs at $GBRAIN_HOME/preferences.json and the ledger at
+  // $GBRAIN_HOME/migrations/completed.jsonl (no '.gbrain' segment). The shim
+  // copies them forward on first read so an upgrade can't silently re-run
+  // completed migrations or drop an explicit minion_mode opt-out.
+
+  test('legacy ledger is copied forward and read under the new convention', () => {
+    mkdirSync(join(tmp, 'migrations'), { recursive: true });
+    writeFileSync(
+      join(tmp, 'migrations', 'completed.jsonl'),
+      JSON.stringify({ version: '0.11.0', status: 'complete' }) + '\n',
+    );
+    const entries = loadCompletedMigrations();
+    expect(entries.some((e) => e.version === '0.11.0' && e.status === 'complete')).toBe(true);
+    // Copied to the new path; legacy file retained for binary rollback.
+    expect(existsSync(join(tmp, '.gbrain', 'migrations', 'completed.jsonl'))).toBe(true);
+    expect(existsSync(join(tmp, 'migrations', 'completed.jsonl'))).toBe(true);
+  });
+
+  test('legacy preferences.json is copied forward — minion_mode opt-out survives the upgrade', () => {
+    writeFileSync(join(tmp, 'preferences.json'), JSON.stringify({ minion_mode: 'off' }) + '\n');
+    const prefs = loadPreferences();
+    expect(prefs.minion_mode).toBe('off');
+    expect(existsSync(join(tmp, '.gbrain', 'preferences.json'))).toBe(true);
+    expect(existsSync(join(tmp, 'preferences.json'))).toBe(true);
+  });
+
+  test('an existing new-path file wins — legacy is never copied over it', () => {
+    mkdirSync(join(tmp, '.gbrain'), { recursive: true });
+    writeFileSync(join(tmp, '.gbrain', 'preferences.json'), JSON.stringify({ minion_mode: 'always' }) + '\n');
+    writeFileSync(join(tmp, 'preferences.json'), JSON.stringify({ minion_mode: 'off' }) + '\n');
+    expect(loadPreferences().minion_mode).toBe('always');
+  });
+
+  test('a partial append does not shadow un-migrated legacy history', () => {
+    mkdirSync(join(tmp, 'migrations'), { recursive: true });
+    writeFileSync(
+      join(tmp, 'migrations', 'completed.jsonl'),
+      JSON.stringify({ version: '0.10.0', status: 'complete' }) + '\n',
+    );
+    appendCompletedMigration({ version: '0.11.0', status: 'partial' });
+    const entries = loadCompletedMigrations();
+    expect(entries.some((e) => e.version === '0.10.0' && e.status === 'complete')).toBe(true);
+    expect(entries.some((e) => e.version === '0.11.0' && e.status === 'partial')).toBe(true);
+  });
+});

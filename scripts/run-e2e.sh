@@ -189,10 +189,20 @@ for f in "${files[@]}"; do
   # the file wedges indefinitely. gtimeout/timeout SIGKILLs the file so the
   # suite advances. gtimeout (macOS via coreutils) preferred; timeout (Linux)
   # fallback; bare bun (no outer cap) if neither is installed.
+  #
+  # Known-slow files get a larger cap: skills.test.ts runs the real ingest
+  # skill end-to-end (~140s for ingest ALONE at 124 migrations, plus query +
+  # maintain phases) and legitimately brushes 180s on a quiet dev box —
+  # every migration master adds pushes it further past the cap. The larger
+  # number is still a wedge backstop, not a per-test budget.
+  FILE_TIMEOUT=180
+  case "$f" in
+    */skills.test.ts) FILE_TIMEOUT=420 ;;
+  esac
   if command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout 180"
+    TIMEOUT_CMD="gtimeout $FILE_TIMEOUT"
   elif command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout 180"
+    TIMEOUT_CMD="timeout $FILE_TIMEOUT"
   else
     TIMEOUT_CMD=""
   fi
