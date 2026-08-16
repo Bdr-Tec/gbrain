@@ -2995,6 +2995,22 @@ function deriveStatus(phases: PhaseResult[], totals: CycleReport['totals']): Cyc
     // (resolve_symbol_edges). Without these, an edges-only cycle reports 'clean'
     // — indistinguishable from "nothing happened" even when N edges resolved.
     totals.edges_resolved > 0 ||
-    totals.edges_ambiguous > 0;
+    totals.edges_ambiguous > 0 ||
+    // `gbrain dream --input <file>` implies `--phase synthesize` (a
+    // synthesize-only cycle never touches sync/embed/etc, so those totals
+    // stay zero even on a genuinely productive run). Without these two, a
+    // real synthesize outcome — new pages written, or an already-completed
+    // transcript quietly reusing its prior job via the queue's
+    // idempotency_key dedupe — is indistinguishable from "nothing happened".
+    totals.transcripts_processed > 0 ||
+    totals.synth_pages_written > 0;
   return anyWork ? 'ok' : 'clean';
 }
+
+// ── Test-only export ───────────────────────────────────────
+// `__testing` re-exports otherwise-private helpers so unit tests can pin
+// behavior at function granularity without going through a full runCycle.
+// Not part of the runtime contract.
+export const __testing = {
+  deriveStatus,
+};
