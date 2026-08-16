@@ -80,6 +80,74 @@ every existing row to its handler's lease at next claim. If you tuned
 around the old eviction behavior (e.g. very high `--max-stalled`), you can
 likely lower it now. Mixed fleets are safe: an old worker simply keeps the
 old 30s behavior until restarted.
+## [0.46.4.0] - 2026-08-15
+
+**opencode joins the supported-client roster — at full parity from day one.**
+(opencode is opencode.ai, SST's terminal agent — not OpenClaw.) Unlike earlier
+clients that started with a manual recipe, opencode lands with every install
+lane gbrain has: the paste-in workspace bootstrap, machine-level harness
+wiring, `gbrain connect`, a claw-test runner, and a real-binary e2e door in
+CI. Every asserted flag, config shape, and quirk was observed against a
+pinned install (opencode 1.18.18), recorded in a machine-checked pin
+document, and exercised against the real binary — including the part that
+makes opencode special: its keyless anonymous free tier drives MCP tool
+calls, so the end-to-end proof needs zero secrets.
+
+### Added
+- **`gbrain bootstrap hooks --harness opencode`** — workspace-lane MCP
+  registration via direct, comment-preserving JSONC writes (never a CLI
+  exec, works offline). MCP scope is honored with a deliberately INVERTED
+  default: user-global, because opencode spawns project-config servers with
+  no trust prompt; project scope is an explicit opt-in that prints a sharing
+  warning. A structural ownership fingerprint refuses to touch entries
+  gbrain didn't write.
+- **`gbrain bootstrap harness --harness opencode`** — machine-level remote
+  MCP wiring with an inline bearer written 0600, token rotation across URL
+  changes, content-guarded rollback on failed smoke, `--status` and
+  `--remove`.
+- **`gbrain connect --agent opencode [--install]`** — env-interpolated
+  bearer (`{env:GBRAIN_REMOTE_TOKEN}`): the token never enters the config
+  file. `--force` replaces a registration whose endpoint moved.
+- **`gbrain claw-test --agent opencode`** and a split-gated real-binary e2e
+  door in CI: keyless tier (version pin, install + `mcp list` handshake,
+  spawn-gate canary, writer parity, MCP SMOKE on the free tier) plus a paid
+  Anthropic leg that model-gates before spending; npm supply-chain
+  provisioning verifies the actual downloaded tarball bytes against pinned
+  integrities; a schedule-only canary tracks the latest upstream release.
+- **Docs:** `docs/mcp/OPENCODE.md` install guide,
+  `docs/mcp/OPENCODE-CLI-PIN.md` observation pin (with a verify-time drift
+  guard and a pin-refresh cadence), roster updates across README / INSTALL /
+  bootstrap guides. opencode reads the rendered AGENTS.md pull-protocol
+  contract natively.
+
+### Changed
+- The bootstrap config writers (Claude hooks JSON, Codex TOML, opencode
+  JSONC) now share one atomic-write helper; symlinked configs — including
+  dangling dotfile-manager links — survive writes as links.
+- The door-test family (binary resolution, hermetic child envs, one-shot
+  spawns) extracted into shared factories; the hermes and grok runners were
+  ported onto them, hermes child envs gained the GitHub step-metadata scrub,
+  and the hermes installer pin was refreshed (its nightly door had gone red
+  on upstream installer drift).
+- A new pin-doc privacy guard asserts every agent pin document ships with
+  placeholder paths and no key material.
+
+### Fixed
+- Security and robustness hardening from the pre-landing cross-model review
+  pass: registration verification probes run isolated and time-bounded, and
+  a hung probe is killed instead of abandoned; global config writes
+  reconcile both opencode global filenames under the bootstrap lock; config
+  backups are unique per operation with content-guarded restore; error
+  paths never echo credentials; test-harness child processes drop CI
+  credentials before spawning third-party binaries.
+
+### To take advantage of v0.46.4.0
+opencode users: run `gbrain bootstrap hooks --harness opencode` in your
+brain workspace (or paste the standard bootstrap block into an opencode
+session). The keyless free tier is enough to verify the wiring end to end —
+`opencode mcp list` should show `✓ gbrain connected`. Existing installs:
+nothing changes; this release adds a client, it doesn't modify brain
+behavior.
 ## [0.46.3.0] - 2026-08-15
 
 **ZeroEntropy is shutting down on 2026-09-04 — gbrain now gets you off it

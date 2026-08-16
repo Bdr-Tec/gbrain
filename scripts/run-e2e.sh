@@ -87,11 +87,13 @@ mkdir -p "$E2E_TMP_HOME/.gbrain"
 # internals survive untouched. We keep GBRAIN_HOME (just set above for HOME
 # isolation); everything else GBRAIN_* is an operator override the suite must
 # not inherit — which also scrubs GBRAIN_REAL_HERMES_E2E and
-# GBRAIN_REAL_GROK_E2E, so the paid hermes/grok door suites structurally
+# GBRAIN_REAL_GROK_E2E / GBRAIN_REAL_OPENCODE_E2E, so the real-agent door
+# suites structurally
 # cannot fire under this runner (their venue is heavy-tests.yml's direct bun
-# test). GROK_ also drops an operator's GROK_BIN/GROK_HOME. Adapts GStack's
+# test). GROK_ also drops an operator's GROK_BIN/GROK_HOME; OPENCODE_ drops
+# OPENCODE_BIN and the OPENCODE_CONFIG* trio. Adapts GStack's
 # buildHermeticEnv() allowlist to gbrain's shell E2E runner.
-for _e2e_var in $(env | grep -oE '^(CONDUCTOR_|MCP_|OPENCLAW_|HERMES_|GROK_|GBRAIN_)[A-Za-z0-9_]*' | sort -u); do
+for _e2e_var in $(env | grep -oE '^(CONDUCTOR_|MCP_|OPENCLAW_|HERMES_|GROK_|OPENCODE_|GBRAIN_)[A-Za-z0-9_]*' | sort -u); do
   case "$_e2e_var" in
     GBRAIN_HOME) ;;  # required for HOME isolation (set above) — keep
     GBRAIN_TEST_ALLOW_DATABASE_URL) ;;  # #3485 preload opt-in (set above) — keep

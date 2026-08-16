@@ -28,6 +28,8 @@
  *                   so the interview completes unattended. Pays real API cost;
  *                   takes 10-25 min. Run in background and watch session/screen.txt.
  *   codex-install   Same for REAL `codex` (interactive TUI).
+ *   opencode-install Same for REAL `opencode` (bootstrap-supported; the keyless
+ *                    run rides the anonymous free tier and should COMPLETE).
  *   drive -- <cmd>  Manual mode: spawn ANY command under the PTY and steer it
  *                   across separate shell calls via a file control channel:
  *                     watch:  cat  <dir>/session/screen.txt
@@ -45,6 +47,7 @@
  *   bun run scripts/dx-explore.ts init
  *   bun run scripts/dx-explore.ts claude-install
  *   bun run scripts/dx-explore.ts codex-install
+ *   bun run scripts/dx-explore.ts opencode-install [--keyless]
  *   bun run scripts/dx-explore.ts drive [--no-hermetic-home] -- gbrain init
  *   Options: --dir <out>   transcript dir (default .context/dx-runs/<scenario>-<ts>)
  *            --gbrain <bin> use an existing gbrain binary (default: compile+cache)
@@ -833,6 +836,59 @@ async function scenarioGrokInstall(ctx: ScenarioCtx, args: CliArgs): Promise<voi
   });
 }
 
+// ── scenario: opencode-install ───────────────────────────────────────────────
+
+async function scenarioOpencodeInstall(ctx: ScenarioCtx, args: CliArgs): Promise<void> {
+  const home = tmp(ctx, 'gb-dx-home-');
+  const gbHome = tmp(ctx, 'gb-dx-gbhome-');
+  const ws = tmp(ctx, 'gb-dx-ws-');
+  const binDir = stageBinDir(ctx);
+
+  // Hermetic HOME + BOTH XDG dirs (config/auth/data all move — observed
+  // v1.18.18, OPENCODE-CLI-PIN.md §Path seams), seeded with the config half
+  // of the double autoupdate kill; the env half rides the session env below.
+  const xdgConfig = path.join(home, '.config');
+  const ocCfgDir = path.join(xdgConfig, 'opencode');
+  fs.mkdirSync(ocCfgDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(ocCfgDir, 'opencode.json'),
+    JSON.stringify({ $schema: 'https://opencode.ai/config.json', autoupdate: false }, null, 2) + '\n',
+  );
+  // Auth travels env-only for the anthropic leg; a login flow would persist
+  // auth.json — pre-register the known candidate for the scrub (rm of a file
+  // that never appears is a no-op).
+  ctx.secretPaths.push(path.join(home, '.local', 'share', 'opencode', 'auth.json'));
+  spawnSync('git', ['init', '-q', ws]);
+  spawnSync('git', ['-C', ws, 'config', 'user.email', 'dx@example.com']);
+  spawnSync('git', ['-C', ws, 'config', 'user.name', 'DX Explore']);
+
+  log('REAL interactive opencode running the paste-in bootstrap (opencode is a bootstrap-supported harness)');
+  log('keyless runs ride the anonymous free tier (observed) — the flow should COMPLETE keyless; a sign-in wall here is itself a pin-refresh signal');
+  await runInstallSession(ctx, {
+    argv: ['opencode'],
+    cwd: ws,
+    env: {
+      HOME: home,
+      XDG_CONFIG_HOME: xdgConfig,
+      XDG_DATA_HOME: path.join(home, '.local', 'share'),
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      GBRAIN_HOME: gbHome,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      // Never let a first-run bounce the OPERATOR's browser for sign-in.
+      BROWSER: '/usr/bin/false',
+    },
+    extraAllow: ['ANTHROPIC_API_KEY'],
+    // --keyless drops provider keys AFTER extraAllow re-admission — on
+    // opencode that measures the FREE-TIER path, not a wall (observed).
+    dropEnv: args.keyless ? PROVIDER_KEY_NAMES : undefined,
+    prompt: installPrompt(),
+    meta: {
+      promptDeviation: 'unattended persona appendix + local runbook path + preinstalled binary',
+      runbook: 'BOOTSTRAP_FOR_AGENTS.md (local — opencode is bootstrap-supported)',
+    },
+  });
+}
+
 // ── scenario: drive (manual control channel) ─────────────────────────────────
 
 async function scenarioDrive(ctx: ScenarioCtx, args: CliArgs): Promise<void> {
@@ -919,6 +975,7 @@ const SCENARIOS: Record<string, { needsGbrain: boolean; run: (ctx: ScenarioCtx, 
   'claude-install': { needsGbrain: true, run: scenarioClaudeInstall },
   'codex-install': { needsGbrain: true, run: scenarioCodexInstall },
   'grok-install': { needsGbrain: true, run: scenarioGrokInstall },
+  'opencode-install': { needsGbrain: true, run: scenarioOpencodeInstall },
   drive: { needsGbrain: true, run: scenarioDrive },
 };
 

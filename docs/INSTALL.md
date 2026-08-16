@@ -103,6 +103,7 @@ Per-client setup guides live in [`docs/mcp/`](mcp/):
 - [`docs/mcp/PERPLEXITY.md`](mcp/PERPLEXITY.md)
 - [`docs/mcp/HERMES.md`](mcp/HERMES.md) — Hermes (Nous Research CLI)
 - [`docs/mcp/GROK.md`](mcp/GROK.md) — Grok Build (xAI CLI)
+- [`docs/mcp/OPENCODE.md`](mcp/OPENCODE.md) — opencode (opencode.ai / SST terminal agent)
 - [`docs/mcp/OPENCLAW.md`](mcp/OPENCLAW.md) — OpenClaw (bundle plugin or stdio)
 - [`docs/mcp/CLAUDE_COWORK.md`](mcp/CLAUDE_COWORK.md) — Claude Cowork (team plan)
 - [`docs/mcp/DEPLOY.md`](mcp/DEPLOY.md) — production deploy patterns
