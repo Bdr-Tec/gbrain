@@ -463,6 +463,37 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
           // Banner is cosmetic; never block the upgrade.
         }
 
+        // Waiting-TTL pre-notice (one-shot, warn-before-act). The worker
+        // gates its first sweep behind the SAME flag via runWaitingTtlTick
+        // (notice → grace window → sweep) because daemon restarts never run
+        // this CLI path — this banner is the interactive channel. Stamping
+        // the ISO timestamp here starts the same grace clock, so an operator
+        // who sees this banner gets the full window to tune before anything
+        // is cancelled.
+        try {
+          const { admissionKilled, resolveTtlNames, countTtlExpiredWaiting, ttlNoticeGraceMs, TTL_NOTICE_SHOWN_KEY } =
+            await import('../core/minions/admission.ts');
+          const shown = await engine.getConfig(TTL_NOTICE_SHOWN_KEY);
+          if ((shown == null || shown.trim() === '') && !admissionKilled()) {
+            const ttlNames = await resolveTtlNames(engine);
+            const { total: affected, by_name } = await countTtlExpiredWaiting(engine, ttlNames);
+            const parts = [...ttlNames].map(([name, hours]) => `${name} > ${hours}h: ${by_name[name] ?? 0}`);
+            console.log('');
+            console.log(`⚠ [gbrain] Waiting-TTL is now active: queued jobs that never get claimed are`);
+            console.log(`  cancelled after their per-type TTL (${parts.join('; ') || 'defaults'}).`);
+            if (affected > 0) {
+              console.log(`  ${affected} currently-queued job(s) already exceed their TTL and will be`);
+              console.log(`  cancelled after a ${Math.round(ttlNoticeGraceMs() / 60_000)}min grace window`);
+              console.log(`  (auditable error_text; visible in 'gbrain jobs stats').`);
+            }
+            console.log(`  Tune or disable: gbrain config set minions.ttl_waiting_hours.<name> <hours|0>`);
+            console.log('');
+            await engine.setConfig(TTL_NOTICE_SHOWN_KEY, new Date().toISOString());
+          }
+        } catch {
+          // Banner is cosmetic; never block the upgrade.
+        }
+
         // #3390: ZeroEntropy sunset notice. ZE announced (2026-07-24) that
         // its hosted endpoints — including /models/embed and /models/rerank —
         // shut down on 2026-09-04. Any brain resolving to a zeroentropyai:*

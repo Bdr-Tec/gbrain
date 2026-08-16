@@ -428,7 +428,7 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // not survive a `reindex-search-vector` switch.
     // #3515: bumped 15→16 to fold the effective detail level (det=) — a
     // detail=low write must not be served to a detail=medium lookup.
-    // v0.46.11 (#1863): bumped 17→18 to fold the autocut weak-top floor (acm=).
+    // v0.46.12 (#1863): bumped 17→18 to fold the autocut weak-top floor (acm=).
     expect(KNOBS_HASH_VERSION).toBe(18);
   });
 
@@ -446,7 +446,7 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     expect(unset).toBe(medium);
     // WP2/T3: bumped 16→17 for the degradation-stamp epoch — cache rows now
     // carry degraded[]/retrieved_count; pre-stamp rows must not claim clean.
-    // v0.46.11 (#1863): 17→18 — autocut weak-top floor folds in (acm=).
+    // v0.46.12 (#1863): 17→18 — autocut weak-top floor folds in (acm=).
     expect(KNOBS_HASH_VERSION).toBe(18);
   });
 
@@ -718,7 +718,7 @@ describe('v0.43 — relational recall knobs', () => {
   });
 });
 
-describe('v0.46.11 — retrieval-wave knobs (evidence_cosine_floor + autocut_min_top)', () => {
+describe('v0.46.12 — retrieval-wave knobs (evidence_cosine_floor + autocut_min_top)', () => {
   test('loadOverridesFromConfig parses both new keys with [0,1] range guards', () => {
     expect(loadOverridesFromConfig({ 'search.evidence_cosine_floor': '0.75' }).evidence_cosine_floor).toBe(0.75);
     expect(loadOverridesFromConfig({ 'search.evidence_cosine_floor': '1.5' }).evidence_cosine_floor).toBeUndefined();

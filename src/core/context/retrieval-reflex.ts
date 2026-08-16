@@ -44,7 +44,7 @@ export type ResolveArm = 'alias' | 'title' | 'slug-suffix' | 'title-surname';
  * volunteer layer imports these; small deterministic boosts (multi-turn /
  * newest-turn mention) are added on top there.
  *
- * 'title-surname' (v0.46.11 identity wave) sits at 0.72 — deliberately ABOVE
+ * 'title-surname' (v0.46.12 identity wave) sits at 0.72 — deliberately ABOVE
  * the volunteer layer's 0.70 default gate (a 0.6x score would be silently
  * discarded there) and below 'title' (an exact-title hit is stronger
  * evidence than a surname-tail match).
@@ -112,7 +112,7 @@ export interface ResolvePointersOpts {
    */
   sourceIds?: string[];
   /**
-   * v0.46.11 identity wave — kill switch for the two new lexical arms (the
+   * v0.46.12 identity wave — kill switch for the two new lexical arms (the
    * weak-candidate alias arm and the surname arm). Default ON (undefined =
    * enabled); `false` reproduces pre-wave resolution exactly. Threaded from
    * the file-plane config `retrieval_reflex_lexical_arms` / env
@@ -147,7 +147,7 @@ export async function resolveEntitiesToPointers(
   const maxPointers = opts.maxPointers ?? DEFAULT_MAX_POINTERS;
   const priorLc = (opts.priorContextText ?? '').toLowerCase();
 
-  // v0.46.11 identity wave: the two new lexical arms (weak-alias + surname)
+  // v0.46.12 identity wave: the two new lexical arms (weak-alias + surname)
   // share one kill switch. Default ON; `false` reproduces pre-wave behavior.
   const lexicalArms = opts.lexicalArms !== false;
 
@@ -198,7 +198,7 @@ export async function resolveEntitiesToPointers(
       slugSuffixes.push(`%/${s}`);
       if (!slugToNorm.has(s)) slugToNorm.set(s, norm);
     }
-    // Surname arm (v0.46.11, kta-pos variant 4): a strong single capitalized
+    // Surname arm (v0.46.12, kta-pos variant 4): a strong single capitalized
     // token ≥3 chars may be a surname-only reference ("Did Galewright ever…").
     // Escaped for LIKE (backslash is Postgres' default escape char — no
     // ESCAPE clause, which the `LIKE ANY(array)` form doesn't accept).
@@ -292,7 +292,7 @@ export async function resolveEntitiesToPointers(
       if (hits.length === 1) push(hits[0].slug, sourceIds[i], 'alias', norm);
     }
   }
-  // Weak norms: GLOBAL uniqueness across all considered sources (v0.46.11,
+  // Weak norms: GLOBAL uniqueness across all considered sources (v0.46.12,
   // stricter than the strong per-source rule) — a lowercase word that is a
   // registered alias in two sources injects nothing. FAIL-CLOSED on partial
   // visibility (adversarial F2): if any source's alias lookup failed, or the
@@ -405,7 +405,7 @@ export async function resolveEntitiesToPointers(
       push(r.slug, r.source_id, 'slug-suffix', slugNorm);
       continue;
     }
-    // Surname arm (v0.46.11): this row got in via the surname predicate only.
+    // Surname arm (v0.46.12): this row got in via the surname predicate only.
     if (useSurnameArm && r.type === 'person') {
       const token = surnameTokens.find((t) => titleLc.endsWith(` ${t}`));
       if (token) {

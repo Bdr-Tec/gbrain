@@ -505,7 +505,7 @@ describe('window-cap ordering — the newest user mention survives the cap', () 
       { role: 'assistant', text: `consider ${stale}.` },
       { role: 'user', text: 'actually ask Alice Example first' },
     ]);
-    // Re-pinned for the v0.46.11 identity wave: the STRONG cap is what this
+    // Re-pinned for the v0.46.12 identity wave: the STRONG cap is what this
     // test pins; lowercase weak candidates ("consider", "ask", …) ride a
     // separate alias-arm-restricted budget and never evict strong ones.
     expect(cands.filter((c) => !c.weak).length).toBeLessThanOrEqual(CAP);

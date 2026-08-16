@@ -6,6 +6,8 @@ import { importFile } from '../core/import-file.ts';
 import { collectSyncableFiles } from './import.ts';
 import {
   isSyncable,
+  isPoisonedPath,
+  sanitizePathForDisplay,
   unsyncableReason,
   matchesAnyGlob,
   resolveSlugForPath,
@@ -220,6 +222,19 @@ export interface SyncResult {
   embedded: number;
   pagesAffected: string[];
   failedFiles?: number; // count of parse failures (Bug 9)
+  /**
+   * Files skipped because their FILENAME contains bracket/control characters
+   * (SyncableReason 'malformed-path'). Informational — these never gate
+   * bookmark advancement; rename the files to import them.
+   */
+  malformedSkipped?: number;
+  /**
+   * Aggregated alias/undeclared explicit-type warnings (schema.type_warnings,
+   * default on) — one entry per distinct non-canonical type this run.
+   * Carried on the RESULT (not just stderr) so worker-driven syncs surface it
+   * in job results where daemon stderr is invisible.
+   */
+  type_warnings?: Array<{ kind: 'alias_of' | 'undeclared'; type: string; canonical?: string; directory?: string; count: number }>;
   /**
    * v0.41.13.0 partial-sync fields (only set when status === 'partial').
    *
@@ -557,7 +572,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // importFile call below. Codex perf finding #7: per-file loadActivePack adds
   // disk/YAML/hash overhead × thousands of files. Best-effort: pack load
   // failure falls through to legacy inferType (parity preserved).
-  let syncActivePack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> } | undefined;
+  let syncActivePack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> } | undefined;
   try {
     // v0.41.37.0 #1569: --no-schema-pack escape hatch. Skip pack load entirely so
     // no user-supplied pack regex (markdown.ts subtype path_pattern) runs during
@@ -1119,17 +1134,42 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // old page's backing file is gone from this source's slice of the repo.
   const renamedToUnsyncable = manifest.renamed
     .filter(r => inScope(r.from) && isSyncable(r.from, syncOpts) &&
-      !(inScope(r.to) && isSyncable(r.to, syncOpts)))
+      !(inScope(r.to) && isSyncable(r.to, syncOpts)) &&
+      // A rename onto a NON-poison malformed destination (`foo.md` →
+      // `notes [draft].md`) keeps the old row: the content still exists on
+      // disk under the new name, it just can't re-import until renamed —
+      // deleting the row here would be the rename-lane variant of the
+      // reconcile data-loss class (codex re-review P1). Poisoned
+      // destinations (`](`/control chars) still sweep.
+      !(unsyncableReason(r.to, syncOpts) === 'malformed-path' && !isPoisonedPath(r.to)))
     .map(r => r.from);
   const filtered: SyncManifest = {
     added: manifest.added.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)),
     modified: manifest.modified.filter(p => inScope(p) && !excluded(p) && isSyncable(p, syncOpts)),
     deleted: unique([
-      ...manifest.deleted.filter(p => inScope(p) && isSyncable(p, syncOpts)),
+      // 'malformed-path' deletions MUST still process: the classifier makes
+      // junk filenames unsyncable, but their previously-ingested DB rows are
+      // exactly what a delete event is supposed to remove — filtering them
+      // out here would orphan those rows (searchable forever). Mirror of the
+      // metafile carve-out, in the opposite direction.
+      ...manifest.deleted.filter(p => inScope(p) &&
+        (isSyncable(p, syncOpts) || unsyncableReason(p, syncOpts) === 'malformed-path')),
       ...renamedToUnsyncable,
     ]),
     renamed: manifest.renamed.filter(r => inScope(r.to) && !excluded(r.to) && isSyncable(r.to, syncOpts)),
   };
+
+  // Surface malformed-filename skips: they were silently dropped from the
+  // `filtered` manifest above, and a skip nobody can see reads as "synced".
+  // Rename DESTINATIONS count too (the rename lane keeps the old row for
+  // non-poison destinations, but the new name still can't import).
+  const malformedSkipped = unique([
+    ...[...manifest.added, ...manifest.modified]
+      .filter(p => inScope(p) && unsyncableReason(p, syncOpts) === 'malformed-path'),
+    ...manifest.renamed
+      .filter(r => inScope(r.to) && unsyncableReason(r.to, syncOpts) === 'malformed-path')
+      .map(r => r.to),
+  ]);
 
   // NAV-4: warn when --exclude filtered out every candidate change — almost
   // always a mistyped pattern, and otherwise indistinguishable from
@@ -1155,9 +1195,13 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     if (filtered.modified.length) slog(`  Modified: ${filtered.modified.join(', ')}`);
     if (filtered.deleted.length) slog(`  Deleted: ${filtered.deleted.join(', ')}`);
     if (filtered.renamed.length) slog(`  Renamed: ${filtered.renamed.map(r => `${r.from} -> ${r.to}`).join(', ')}`);
+    if (malformedSkipped.length) {
+      slog(`  Skipped (malformed filename — brackets/control chars; rename to import): ${malformedSkipped.map(sanitizePathForDisplay).join(', ')}`);
+    }
     if (totalChanges === 0) slog(`  No syncable changes.`);
     return {
       status: 'dry_run',
+      malformedSkipped: malformedSkipped.length,
       fromCommit: lastCommit,
       toCommit: headCommit,
       added: filtered.added.length,
@@ -1207,6 +1251,10 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     // pages every time their materialized file landed in a commit.
     const reason = unsyncableReason(path, syncOpts);
     if (reason === 'metafile' || reason === 'pruned-dir') continue;
+    // Bare-bracket markdown (pre-gate imports like `notes [draft].md`) keeps
+    // its row — only the poison signature (`](`/control chars) is sweepable.
+    // Deleting a legit page's row while its file sits on disk is data loss.
+    if (reason === 'malformed-path' && !isPoisonedPath(path)) continue;
     const slug = await resolveSlugByPathOrSourcePath(engine, path, opts.sourceId);
     try {
       const existing = await engine.getPage(slug, pageOpts);
@@ -1248,6 +1296,16 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     await writeChunkerVersion(engine, opts.sourceId, String(CHUNKER_VERSION));
     await clearOpCheckpoint(engine, ckpt.paths);
     await clearOpCheckpoint(engine, ckpt.target);
+    // A commit whose ONLY changes are malformed filenames lands here with
+    // totalChanges === 0 — the anchor advances past those files forever, so
+    // this early return must surface the skips too (structured-review P2).
+    if (malformedSkipped.length > 0) {
+      serr(
+        `  ${malformedSkipped.length} file(s) skipped: malformed filename ` +
+        `(brackets/control chars; rename to import): ` +
+        malformedSkipped.map(sanitizePathForDisplay).join(', '),
+      );
+    }
     return {
       status: 'up_to_date',
       fromCommit: lastCommit,
@@ -1256,6 +1314,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       chunksCreated: 0,
       embedded: 0,
       pagesAffected: [],
+      ...(malformedSkipped.length > 0 ? { malformedSkipped: malformedSkipped.length } : {}),
     };
   }
 
@@ -1428,6 +1487,23 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // failures here too. Same canonical surface that gates `sync.last_commit`
   // advancement at the bottom of this function.
   const failedFiles: Array<{ path: string; error: string; line?: number }> = [];
+
+  // Alias-footgun visibility (schema.type_warnings, default on): aggregate
+  // per-file type_warning results ONCE per distinct type per run — an
+  // N-thousand-file sync must warn in O(distinct types) lines, not O(files).
+  const typeWarningCounts = new Map<string, import('../core/schema-pack/type-usage.ts').TypeWarningCount>();
+  const noteTypeWarning = (w: { kind: 'alias_of' | 'undeclared'; type: string; canonical?: string; directory?: string } | undefined): void => {
+    if (!w) return;
+    const key = `${w.kind}\t${w.type}`;
+    const cur = typeWarningCounts.get(key);
+    if (cur) cur.count++;
+    else typeWarningCounts.set(key, { ...w, count: 1 });
+  };
+  let typeWarningsEnabled = true;
+  try {
+    const v = await engine.getConfig('schema.type_warnings');
+    typeWarningsEnabled = !(v === 'false' || v === '0' || v === 'off');
+  } catch { /* config unavailable → default on */ }
 
   // v0.18.0+ multi-source: scope deletePage so we only delete the source-A
   // row, not every same-slug row across all sources.
@@ -1656,8 +1732,13 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         try {
           const result = await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack });
           importResult = result;
+          noteTypeWarning(result.type_warning);
           if (result.status === 'imported') chunksCreated += result.chunks;
-          else if (result.status === 'skipped' && (result as { error?: string }).error) {
+          else if (result.status === 'skipped' && result.skip_reason === 'malformed_path') {
+            // Informational skip — a bracket/control-char filename can never
+            // import; counting it as a failure would gate the bookmark forever.
+            serr(`  Skipped (malformed filename): ${sanitizePathForDisplay(to)}`);
+          } else if (result.status === 'skipped' && (result as { error?: string }).error) {
             failedFiles.push({ path: to, error: String((result as { error?: string }).error) });
           }
         } catch (e: unknown) {
@@ -1922,6 +2003,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         // duplicate rows that crashed bare-slug subqueries with Postgres 21000.
         const result = await observed(pacer, () =>
           importFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack }));
+        noteTypeWarning(result.type_warning);
         if (result.status === 'imported') {
           chunksCreated += result.chunks;
           pagesAffected.push(result.slug);
@@ -1934,6 +2016,12 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
           // much actually landed before --timeout fired.
           filesImported++;
           // v0.42.x (#1794): checkpoint this path so a kill banks it.
+          await markCompleted(path);
+        } else if (result.status === 'skipped' && result.skip_reason === 'malformed_path') {
+          // Informational skip (bracket/control-char filename): never a
+          // failure, and stable across runs — checkpoint it as done so a
+          // resumed sync doesn't re-attempt it forever.
+          serr(`  Skipped (malformed filename — rename to import): ${sanitizePathForDisplay(path)}`);
           await markCompleted(path);
         } else if (result.status === 'skipped' && (result as any).error) {
           failedFiles.push({ path, error: String((result as any).error) });
@@ -2444,6 +2532,20 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     slog(`Text imported. Run 'gbrain embed --stale' to generate embeddings.`);
   }
 
+  if (malformedSkipped.length > 0) {
+    serr(
+      `\n  ${malformedSkipped.length} file(s) skipped: malformed filename ` +
+      `(brackets/control chars) — rename to import. Not counted as failures.`,
+    );
+  }
+
+  const typeWarnings = [...typeWarningCounts.values()];
+  if (typeWarningsEnabled && typeWarnings.length > 0) {
+    const { renderTypeWarningSummary } = await import('../core/schema-pack/type-usage.ts');
+    for (const line of renderTypeWarningSummary(typeWarnings)) serr(`  ${line}`);
+    serr(`  (silence with: gbrain config set schema.type_warnings false)`);
+  }
+
   return {
     status: 'synced',
     fromCommit: lastCommit,
@@ -2455,6 +2557,8 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     chunksCreated,
     embedded,
     pagesAffected,
+    malformedSkipped: malformedSkipped.length,
+    ...(typeWarningsEnabled && typeWarnings.length > 0 ? { type_warnings: typeWarnings } : {}),
   };
 }
 
@@ -2484,9 +2588,11 @@ async function performFullSync(
   // code --dry-run` always reported zero files even when ~1500 code
   // files were waiting.
   if (opts.dryRun) {
+    const dryRunMalformed: string[] = [];
     let allFiles = collectSyncableFiles(syncScopeRoot, {
       strategy: opts.strategy ?? 'markdown',
       includeGitignored: opts.includeGitignored,
+      onExcluded: (rel) => { dryRunMalformed.push(rel); },
     });
     if (opts.exclude && opts.exclude.length > 0) {
       allFiles = allFiles.filter(abs => !matchesAnyGlob(relative(syncScopeRoot, abs), opts.exclude));
@@ -2496,6 +2602,14 @@ async function performFullSync(
       `${allFiles.length} file(s) would be imported ` +
       `from ${syncScopeRoot} @ ${headCommit.slice(0, 8)}.`,
     );
+    if (dryRunMalformed.length > 0) {
+      slog(
+        `  ${dryRunMalformed.length} file(s) would be skipped: malformed filename ` +
+        `(brackets/control chars; rename to import): ` +
+        dryRunMalformed.slice(0, 20).map(sanitizePathForDisplay).join(', ') +
+        (dryRunMalformed.length > 20 ? `, … (+${dryRunMalformed.length - 20} more)` : ''),
+      );
+    }
     return {
       status: 'dry_run',
       fromCommit: null,
@@ -2662,10 +2776,23 @@ async function performFullSync(
     // root-level sync of this source) are out of this walk's sight and must
     // not be treated as stale.
     const scopePrefix = slugRoot ? relative(gitContextRoot, syncScopeRoot) + '/' : '';
+    // 'malformed-path' rows ARE reconcile-eligible: junk filenames (bracket /
+    // control-char paths minted by misbehaving producers) can never be
+    // re-imported, so their rows are permanent search pollution unless the
+    // reconcile can sweep them. Strategy safety is preserved by classifier
+    // ordering — a path that fails the strategy check classifies as
+    // 'strategy', never 'malformed-path', so a markdown sync still can't
+    // delete code pages. The #1433 metafile protection is likewise untouched.
+    const reconcileEligible = (p: string): boolean =>
+      isSyncable(p, reconcileSyncOpts) ||
+      // Only the poison signature is sweepable; bare-bracket markdown rows
+      // from pre-gate releases survive reconcile (their file still exists —
+      // deleting the row would be silent data loss; cross-model finding).
+      (unsyncableReason(p, reconcileSyncOpts) === 'malformed-path' && isPoisonedPath(p));
     const plan = planReconcileDeletes(
       rows,
       currentFiles,
-      p => (scopePrefix === '' || p.startsWith(scopePrefix)) && isSyncable(p, reconcileSyncOpts),
+      p => (scopePrefix === '' || p.startsWith(scopePrefix)) && reconcileEligible(p),
     );
     if (plan.staleSlugs.length > 0 && plan.massDelete && !massReconcileAllowed()) {
       // #2828 mass-delete safety valve: a reconcile that would sweep more than
@@ -2722,6 +2849,15 @@ async function performFullSync(
         );
       }
       const deleteScopedOpts = { sourceId: sid };
+      // Malformed-path rows get their own line: unlike genuinely-deleted
+      // files, THEIR backing file is usually still on disk (the walker
+      // excludes it), so "source file was removed" would be a lie and the
+      // rename-to-rescue path must be stated at the moment of removal, not
+      // only in a doctor check the operator may see later (red-team catch).
+      const malformedDeleted = deletableSlugs.filter(slug => {
+        const sp = pathBySlug.get(slug);
+        return sp != null && unsyncableReason(sp, reconcileSyncOpts) === 'malformed-path';
+      }).length;
       for (let i = 0; i < deletableSlugs.length; i += DELETE_BATCH_SIZE) {
         const batch = deletableSlugs.slice(i, i + DELETE_BATCH_SIZE);
         try {
@@ -2738,6 +2874,12 @@ async function performFullSync(
       }
       if (reconciledDeletes > 0) {
         slog(`  Reconciled ${reconciledDeletes} stale page(s) whose source file was removed.`);
+        if (malformedDeleted > 0) {
+          slog(
+            `  (${malformedDeleted} of them had malformed bracket/control-char filenames — ` +
+            `their files may still exist on disk; rename a file to re-import its content.)`,
+          );
+        }
       }
     }
   }
@@ -2774,6 +2916,11 @@ async function performFullSync(
     chunksCreated: result.chunksCreated,
     embedded,
     pagesAffected: [],
+    // Warning aggregates ride the result for worker/JSON consumers — a full
+    // sync that only prints to a daemon's stderr hides them from cron
+    // topologies (codex re-review; same rationale as the incremental path).
+    ...(result.malformedSkipped ? { malformedSkipped: result.malformedSkipped } : {}),
+    ...(result.type_warnings ? { type_warnings: result.type_warnings } : {}),
   };
 }
 
@@ -3497,6 +3644,11 @@ See also:
             deleted: r.result.deleted,
             chunks_created: r.result.chunksCreated,
             embedded: r.result.embedded,
+            // Warning aggregates (malformed filenames, alias/undeclared
+            // types) — the whole point of the result-field plumbing is that
+            // JSON/worker consumers can see them (codex re-review).
+            ...(r.result.malformedSkipped ? { malformed_skipped: r.result.malformedSkipped } : {}),
+            ...(r.result.type_warnings ? { type_warnings: r.result.type_warnings } : {}),
           } : {}),
           ...(r.error ? { error: r.error } : {}),
         }));

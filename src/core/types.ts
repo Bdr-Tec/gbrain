@@ -824,7 +824,7 @@ export interface SearchResult {
   /** RRF + cosine score BEFORE any boost stage mutated it. */
   base_score?: number;
   /**
-   * v0.46.11 — RAW query↔chunk cosine similarity from cosineReScore's
+   * v0.46.12 — RAW query↔chunk cosine similarity from cosineReScore's
    * hydration (the active embedding column's space). Absent on keyword-only
    * / no-embedding paths. This is the ONLY calibrated semantic signal on the
    * result — evidence's `high_vector_match` keys off it, never off the
@@ -969,7 +969,7 @@ export interface SearchOpts {
   limit?: number;
   offset?: number;
   /**
-   * v0.46.11 — out-channel for searchVector's bounded pagination escalation
+   * v0.46.12 — out-channel for searchVector's bounded pagination escalation
    * (retrieval-cathedral P1: one dense page could consume the whole inner
    * candidate pool before the per-page DISTINCT collapse, underfilling the
    * result). Engines have no telemetry sink; the HYBRID layer passes a
@@ -1760,7 +1760,7 @@ export interface HybridSearchMeta {
    */
   adaptive_return?: import('./search/return-policy.ts').AdaptiveReturnDecision;
   /**
-   * v0.46.11 — searchVector's bounded pagination escalation ended at the HNSW
+   * v0.46.12 — searchVector's bounded pagination escalation ended at the HNSW
    * substrate cap with the page set still underfilled (dense-corpus signal:
    * the caller asked for more distinct pages than the candidate pool could
    * yield). Omitted on clean runs. Exhaustion is VISIBLE, not silent.

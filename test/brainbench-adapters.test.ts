@@ -112,7 +112,7 @@ describe('OpenClawAdapter (production seam)', () => {
   }, 30_000);
 });
 
-describe('ClaudeCodeAdapter (PRODUCTION seam: real hook + real IPC — v0.46.11 flip)', () => {
+describe('ClaudeCodeAdapter (PRODUCTION seam: real hook + real IPC — v0.46.12 flip)', () => {
   test('drives the shipped UserPromptSubmit hook end-to-end over the IPC socket', async () => {
     const a = new ClaudeCodeAdapter();
     await a.beginConversation(engine, {
@@ -127,7 +127,7 @@ describe('ClaudeCodeAdapter (PRODUCTION seam: real hook + real IPC — v0.46.11 
     await a.teardownRun?.();
   }, 30_000);
 
-  test('RE-PINNED (v0.46.11): the shipped budget governs, not the old 2-pointer contract cap', async () => {
+  test('RE-PINNED (v0.46.12): the shipped budget governs, not the old 2-pointer contract cap', async () => {
     // Was: <= 2 (the contract row's budget). The production row runs the
     // shipped hook -> turn_context path: DEFAULT_MAX_POINTERS (3) reflex
     // pointers + the volunteer layer's own cap. Bounded, but by production
@@ -167,7 +167,7 @@ describe('ClaudeCodeAdapter (PRODUCTION seam: real hook + real IPC — v0.46.11 
 describe('CodexAdapter (contract seam: static preamble + ≤1 fragment + REAL rollout parser turn selection)', () => {
   test('one fragment max; preamble slugs do NOT count as injections; preamble tokens land once', async () => {
     const a = new CodexAdapter();
-    // v0.46.11 (F5): the adapter round-trips the fixture through the shipped
+    // v0.46.12 (F5): the adapter round-trips the fixture through the shipped
     // rollout parser for turn selection — turns must exist in the view.
     await a.beginConversation(engine, {
       ...VIEW,

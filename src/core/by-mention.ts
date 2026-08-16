@@ -393,7 +393,7 @@ export async function buildGazetteer(
     if (!row.title) continue;
     if (!hasCJK(row.title) && row.title.length < MIN_NAME_LENGTH) continue;
     if (hasCJK(row.title) && cjkCharCount(row.title) < MIN_CJK_NAME_LENGTH) continue;
-    // NOTE (v0.46.11, deliberately preserved): for TITLES this condition is
+    // NOTE (v0.46.12, deliberately preserved): for TITLES this condition is
     // intentionally vacuous — every row here IS a real page, so an
     // ignore-listed name the user explicitly created a page for is always
     // allowed (documented CK12 policy). The ignore list bites only via
@@ -417,7 +417,7 @@ export async function buildGazetteer(
     else gazetteer.set(key, [entry]);
   }
 
-  // ── Alias entries (v0.46.11 identity wave, #3801) ────────────────────────
+  // ── Alias entries (v0.46.12 identity wave, #3801) ────────────────────────
   // page_aliases rows joined to LIVE entity-typed pages become additional
   // gazetteer entries, so a body mention of "saoirse" links to
   // people/saoirse-x. Guards (stricter than titles — aliases are not

@@ -1455,9 +1455,13 @@ export class PGLiteEngine implements BrainEngine {
               effective_date, effective_date_source,
               source_kind, source_uri, ingested_via, ingested_at,
               contextual_retrieval_mode
-       FROM pages WHERE ${where.join(' AND ')} LIMIT 1`,
+       FROM pages WHERE ${where.join(' AND ')}
+       ORDER BY (source_id = 'default') DESC, source_id ASC
+       LIMIT 1`,
       params
     );
+    // Deterministic multi-source tiebreak — default-source-first, then stable
+    // alpha. Engine parity: postgres-engine.ts carries the identical clause.
     if (rows.length === 0) return null;
     return rowToPage(rows[0] as Record<string, unknown>);
   }
@@ -2563,7 +2567,7 @@ export class PGLiteEngine implements BrainEngine {
     const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', boostMap, opts?.detail, 'unverified_stub');
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
     const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
-    // v0.46.11 (retrieval-cathedral P1): bounded escalation — see
+    // v0.46.12 (retrieval-cathedral P1): bounded escalation — see
     // postgres-engine.ts searchVector for the full rationale; the logic here
     // is IDENTICAL (engine-parity pinned). Cap policy (R2-10 + codex ship
     // review): the ef_search ceiling applies only to HNSW-backed columns;
@@ -2698,7 +2702,7 @@ export class PGLiteEngine implements BrainEngine {
       );
     })).rows;
 
-    // v0.46.11 bounded escalation loop — IDENTICAL logic to postgres-engine
+    // v0.46.12 bounded escalation loop — IDENTICAL logic to postgres-engine
     // (parity-pinned): retry ×4 up to 3 times while the PAGE set is short
     // but the pre-collapse candidate pool was full; a short page with a
     // non-full pool is a genuine final page. Zero rows with offset>0

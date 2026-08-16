@@ -69,7 +69,7 @@ export interface VolunteerOpts {
   excludeSlugs?: ReadonlySet<string>;
   maxPages?: number;
   minConfidence?: number;
-  /** v0.46.11: lexical-arms kill switch — see ResolvePointersOpts.lexicalArms. */
+  /** v0.46.12: lexical-arms kill switch — see ResolvePointersOpts.lexicalArms. */
   lexicalArms?: boolean;
 }
 

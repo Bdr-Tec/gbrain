@@ -78,7 +78,7 @@ function makeAdapter(name: HarnessName): HarnessAdapter {
 
 const SEAM: Record<HarnessName, 'production' | 'contract'> = {
   openclaw: 'production',
-  // v0.46.11 (TODOS:556 P1): the claude-code row now drives the REAL
+  // v0.46.12 (TODOS:556 P1): the claude-code row now drives the REAL
   // UserPromptSubmit hook over the real IPC socket — see the adapter header.
   'claude-code': 'production',
   codex: 'contract',
@@ -184,7 +184,7 @@ export async function runBrainBench(
   const turnRows: TurnRow[] = [];
   const seedFailures: Array<{ fixture_id: string; error: string }> = [];
 
-  // v0.46.11 (F4/R2-5): ONE adapter per harness per RUN, torn down in the
+  // v0.46.12 (F4/R2-5): ONE adapter per harness per RUN, torn down in the
   // finally — a production seam owns long-lived infrastructure (the
   // claude-code IPC server) across fixtures instead of paying per-fixture
   // setup (the ~15s gate stays fast). setupRun is LAZY on first replay

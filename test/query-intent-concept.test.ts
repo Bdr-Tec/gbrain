@@ -87,7 +87,7 @@ describe('#2416 — conceptNudge message', () => {
   });
 });
 
-describe('v0.46.11 — classifyQueryIntent concept-guard branches (Cat 13)', () => {
+describe('v0.46.12 — classifyQueryIntent concept-guard branches (Cat 13)', () => {
   test('mid-sentence capital blocks concept: "What is Stripe Atlas?" → entity', () => {
     // Sentence-initial capitalization alone does not block; a proper noun
     // AFTER the first token is v1-conservative evidence of an entity lookup.
@@ -108,7 +108,7 @@ describe('v0.46.11 — classifyQueryIntent concept-guard branches (Cat 13)', () 
   });
 });
 
-describe('v0.46.11 ship-review F5 — lowercase NAMES keep the entity tilt', () => {
+describe('v0.46.12 ship-review F5 — lowercase NAMES keep the entity tilt', () => {
   // The identity wave's own premise is that users type names lowercase; the
   // definitional concept cue must not cannibalize those lookups.
   test('status-verb queries about an entity are NOT concept', () => {

@@ -1,8 +1,8 @@
 # TODOS
 
-## v0.46.11.0 identity/retrieval wave follow-ups (filed at ship; decisions recorded at CEO review + outside voice)
+## v0.46.12.0 identity/retrieval wave follow-ups (filed at ship; decisions recorded at CEO review + outside voice)
 
-- [ ] **P2 — Codex adapter full production flip.** v0.46.11 integrated the REAL rollout
+- [ ] **P2 — Codex adapter full production flip.** v0.46.12 integrated the REAL rollout
   parser (`src/core/transcripts/codex.ts`) for turn selection, but fragment DELIVERY
   remains a harness-shaped contract (no shipped codex injection path exists yet). When
   one lands, flip the seam like the claude-code row (run-scoped infra via
@@ -19,7 +19,7 @@
   default flip, and include a per-model floor table, not one global number.
 - [ ] **P2 — Cat 3 undocumented-alias enrichment.** The gbrain-evals Cat 3 runner's
   undocumented class (initials, nicknames, typos) needs alias-TABLE growth
-  (enrichment writes page_aliases), not resolver changes — the v0.46.11 alias_exact
+  (enrichment writes page_aliases), not resolver changes — the v0.46.12 alias_exact
   arm only helps documented aliases. Pair with the evals-repo runner repair
   (seed page_aliases + route through resolveEntitySlug). Context: outside-voice F1.
 - [ ] **P3 — Lowercase bigram alias candidates.** v2 of the weak-candidate pass
@@ -30,7 +30,7 @@
   if reflex latency telemetry creeps on 10K+-page brains, build the token table
   and swap the arm to an indexed lookup.
 - [ ] **P3 — Re-eval community #717 (graph-hop wikilink rerank, claimed +2.6/+2.8
-  P@5/R@5) against the post-v0.46.11 ranker** — the concept intent + dedup scope fix
+  P@5/R@5) against the post-v0.46.12 ranker** — the concept intent + dedup scope fix
   may have absorbed part of its headroom.
 - [ ] **P2 — #1663 remainder (issue REOPENED at ship): query-shape routing,
   structural exact-lookup tier, CRAG confidence escalation.** The issue was closed
@@ -60,7 +60,7 @@
   deadline across the loop's attempts (ship-review F8). The loop only fires on
   dense-wall shapes, and per-op timeouts bound the blast radius — hence P3.
 - [ ] **P1 — Cat 13 conceptual recall: the concept tilt is NOT enough; the fusion
-  itself is the suspect.** Pre-merge receipt (v0.46.11, voyage-4/1024 space, 500
+  itself is the suspect.** Pre-merge receipt (v0.46.12, voyage-4/1024 space, 500
   seeded probes, all adapters on the SAME gateway): bare vector 49.5 nDCG@5,
   grep-only 46.2, vector+grep RRF fusion 40.5, gbrain hybrid 35.6 — and a master
   A/B at the merge-base scored gbrain BYTE-IDENTICAL (35.6, every template), so the
@@ -78,10 +78,10 @@
   49.1 OpenAI-space numbers cannot be reproduced keylessly; the voyage-space gap
   is WIDER — stronger embedders make hybrid's keyword noise relatively costlier.
 
-## LongMemEval temporal gap — date-proximity signal SPIKE-REJECTED (filed v0.46.11.0, identity/retrieval wave)
+## LongMemEval temporal gap — date-proximity signal SPIKE-REJECTED (filed v0.46.12.0, identity/retrieval wave)
 
 - **P2 — Reframe the temporal-reasoning gap (94.7% vs MemPal 96.2%, the only categorical
-  public-benchmark loss) around what the questions actually are.** The v0.46.11 wave
+  public-benchmark loss) around what the questions actually are.** The v0.46.12 wave
   pre-registered a spike gate before building a date-proximity ranking term
   (`COALESCE(effective_date, updated_at)` proximity to query-text-extracted since/until
   bounds, per the outside-voice-amended plan). The spike FIRED the stop condition:
@@ -95,10 +95,103 @@
   Next honest hypotheses, in order: (a) measure per-question retrieval recall on the
   temporal slice to locate WHERE the 1.5pt is lost (retrieval vs trajectory coverage
   vs answer extraction); (b) if retrieval: event-phrase recall (the event descriptions
-  are long noun phrases — expansion/paraphrase territory, adjacent to the v0.46.11
+  are long noun phrases — expansion/paraphrase territory, adjacent to the v0.46.12
   concept lane); (c) if trajectory: widen `extractCandidateEntities` coverage on
   event-shaped (non-person) anchors. Do NOT rebuild the date-proximity boost without
   new evidence — this entry is the receipt for why it doesn't exist.
+
+## Five-issue fix wave follow-ups (backlinks corruption / malformed paths / type warnings / getPage scoping / queue admission)
+
+- [ ] **P2 — migrate the remaining fs writers to core/atomic-write.** **What:**
+  `src/core/skillopt/apply-edits.ts` (atomicWrite, leaks tmp on write error),
+  `src/core/write-through.ts` (own tmp+rename), `src/commands/lint.ts:~526`
+  (bare writeFileSync in runLintCore) move onto `src/core/atomic-write.ts`
+  (unique tmp + fsync + mode preservation + optional on-disk verify). Include
+  page-lock unification: write-through's render does NOT take withPageLock, so
+  the backlinks-vs-render lost-update race is only half-closed (backlinks
+  locks; render doesn't). **Why:** four hand-rolled copies drift; the shared
+  helper is strictly stronger. **Effort:** M. **Priority:** P2.
+- [ ] **P3 — relocate/retire skillopt's splitFrontmatter.** **What:** either
+  move it to core/markdown.ts next to frontmatterBodyOffset or port its one
+  SKILL.md caller onto the canonical helper (skillopt's regex is LF-at-byte-0
+  only; the canonical one handles leading blanks + CRLF). **Effort:** S.
+  **Priority:** P3.
+- [ ] **P3 — admission/stats indexes if hot.** **What:** expression index on
+  `(name, (data->>'__param_hash')) WHERE status='waiting'` for the coalesce
+  probe + `(name, created_at)` for the per-type stats aggregates, when
+  minion_jobs exceeds ~100k rows. Same family as the buildQueueDepths perf
+  note (status.ts) and the completed-recency probe TODO below. **Effort:** S.
+  **Priority:** P3.
+- [ ] **P2 — getPage type-boundary redesign (the durable fix behind the
+  guard).** **What:** make source scope explicit at the TYPE level — required
+  scope param or an explicit ALL_SOURCES sentinel on `engine.getPage`, so an
+  unscoped read is unrepresentable instead of merely linted
+  (check-getpage-scoped-write.mjs is the interim guard; the default-first
+  ORDER BY makes today's unscoped reads deterministic). ~78 call sites.
+  **Effort:** L. **Priority:** P2.
+- [ ] **P2 — per-name claim fairness / lane isolation.** **What:** the
+  admission wave (coalescing/TTL/quota) is deliberately submit-side only;
+  claim order remains global FIFO per queue (`queue.ts` claim ORDER BY), so
+  one divergent type still starves same-queue siblings until TTL/quota bites.
+  A per-name claim budget or weighted claim is the drain-side primitive.
+  **Effort:** L. **Priority:** P2.
+- [ ] **P3 — jobs stats divergence: per-queue scoping option.** **What:**
+  the DIVERGENT scream computes name-global (matches quota semantics); a
+  `--queue`-scoped variant would help multi-queue operators localize the
+  producer. **Effort:** S. **Priority:** P3.
+- [ ] **P2 — requeue surface for waiting-TTL-cancelled jobs.** **What:**
+  `jobs retry` targets failed/dead only; a TTL-cancelled row (error_text
+  prefix `waiting_ttl_expired`) that turns out to have been wanted needs a
+  `jobs requeue` (or a retry carve-out gated on that prefix) instead of
+  hand-resubmitting. The data survives (cancelled rows keep payloads +
+  free their idempotency keys), so this is purely a CLI surface. **Effort:**
+  S. **Priority:** P2. (Pre-landing data-migration review, five-issue wave.)
+- [ ] **P2 — dream-path quota-degradation integration tests.** **What:**
+  live-queue integration tests for the QueueQuotaExceededError consumers:
+  cycle patterns → `skipped('admission_quota')`, synthesize → quota latch
+  (one skip per remaining transcript, stop submitting), agent fanout →
+  whole-tree cancel + exit 1. Unit seams exist (isQueueQuotaExceededError
+  is pinned); what's missing is the end-to-end phase behavior under a
+  1-quota config. **Effort:** M. **Priority:** P2.
+- [ ] **P3 — coalesce advisory-lock concurrency e2e.** **What:** real-PG
+  e2e slamming N concurrent identical parentless submits → exactly one row
+  (the advisory lock serializes (name, queue, hash)); PGLite can't prove
+  this (single connection). Home: the DATABASE_URL-gated e2e lane.
+  **Effort:** S. **Priority:** P3.
+- [ ] **P3 — consolidate the stable-stringify triplets.** **What:**
+  `admission.ts` (param hash), plus the two earlier canonical-JSON copies
+  (op-checkpoint hashing, cli-options) each roll their own sorted-key
+  stringify; one `core/canonical-json.ts` would do. Hash-compat note: the
+  admission copy feeds persisted `__param_hash` values — a behavior-change
+  regression there just disables old-row coalescing (forward-safe), but
+  keep the sorted-key semantics bit-identical anyway. **Effort:** S.
+  **Priority:** P3.
+- [ ] **P3 — reconcile lane: quarantine-not-delete option for malformed-path
+  rows + doctor hint nuance.** **What:** full-sync reconcile hard-deletes
+  poisoned rows (consistent with 'strategy' semantics); a
+  `--quarantine-malformed` alternative would preserve rows for triage. Also
+  the malformed_path_pages doctor hint could distinguish rows whose FILE
+  still exists on disk (rename rescues content) from never-committed DB-only
+  rows (delete is the only option). **Effort:** S. **Priority:** P3.
+- [ ] **P3 — thread source scope into `schema lint --with-db`.** **What:**
+  the stored-type data-plane rules accept `LintOpts.sourceId` (multi-source
+  brains can resolve different packs per source; comparing another source's
+  rows against this manifest yields false alias/undeclared warnings), but
+  neither `src/commands/schema.ts` (`runAllLintRules(pack, { engine })`) nor
+  MCP `schema_lint` passes it — the CLI runs a global scan. Add
+  `--source-id` / honor the worktree pin, and expose `[--json]` in the
+  `jobs stats` usage line while in the area (`src/commands/jobs.ts:309`
+  documents `--queue`/`--cluster-errors` but not the shipped `--json`).
+  Also: the interactive coalesce hint suggests "pass a fresh idempotency
+  key", which `gbrain agent run` has no flag for (raw `jobs submit` does).
+  Surfaced by the v0.46.11.0 post-ship doc review. **Effort:** S.
+  **Priority:** P3.
+- [ ] **P3 — one-time cross-source clobber audit.** **What:** the
+  pre-guard unscoped-check/scoped-write class could have historically
+  written 'default'-source rows that shadow same-slug rows in other sources.
+  A one-shot integrity probe (`SELECT slug FROM pages GROUP BY slug HAVING
+  count(DISTINCT source_id) > 1` + updated_at ordering heuristics) would
+  surface survivors for review. **Effort:** S. **Priority:** P3.
 
 ## Containment-sprint follow-ups (coverage truth + module peels; plan: ~/.claude/plans/system-instruction-you-are-working-serialized-forest.md)
 
@@ -481,10 +574,15 @@ Each was explicitly deferred in the pass's CEO/eng/outside-voice reviews.
 - [ ] **P2 — `jobs submit --max-pending` public flag.** maxPending stays an
   internal submit option this wave (Codex C4): its semantics exclude
   delayed/paused/waiting-children rows, and identity is (name, queue, source)
-  so distinct payloads collapse. Decide the public contract (include delayed?
-  explicit scope key?) after the primitive soaks in autopilot, then mirror
-  parseMaxWaitingFlag (clamp [1,100]) + help + flag-registry regen + optional
-  submit_job MCP param. Where: src/commands/jobs.ts, src/core/operations.ts.
+  so distinct payloads collapse. NOTE (five-issue fix wave): the
+  payload-DISTINCT dedupe primitive now exists — admission param-coalescing
+  (`coalesce_params` / minions.coalesce_params.<name>, hash of the full
+  payload incl. owner lane) covers the "identical submits collapse, distinct
+  ones don't" case; --max-pending remains the single-flight-per-scope story.
+  Decide the public contract (include delayed? explicit scope key?) after the
+  primitive soaks in autopilot, then mirror parseMaxWaitingFlag (clamp
+  [1,100]) + help + flag-registry regen + optional submit_job MCP param.
+  Where: src/commands/jobs.ts, src/core/operations.ts.
 - [ ] **P2 — maxPending at the other single-flight dispatch sites.** The
   freshness sync submit (src/commands/autopilot.ts freshness loop) and the
   targeted remediation steps (autopilot.ts targeted-submit loop) still use
@@ -788,7 +886,7 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
 
 - [ ] **`--live` agent-in-the-loop know-to-ask.** Replay fixtures with a real model deciding whether to issue retrieval calls; grade the agent, not just the deterministic reflex. Pre-registered in `docs/eval/BRAINBENCH.md` (the v1 metric grades the injection decision, which IS the shipped mechanism). Needs: seeded N-repeat methodology for model stochasticity + budget rails. Priority: P2.
 - [ ] **Intrusion-budget gating calibration.** `avg_injected_tokens` is reported, non-gating (decision 18) — a wrong threshold is worse than none. After a few weeks of scoreboard data across PRs, pick calibrated per-seam thresholds and promote it to a gated metric. Priority: P2.
-- [x] **Flip contract adapters to production — claude-code half DONE (v0.46.11 identity/retrieval wave).** `adapters/claude-code.ts` now drives the real `gbrain hook user-prompt` path (synthesized Claude Code JSONL transcripts, run-scoped resolve-IPC server with `turn_context` handler, `HookIo` seams) and the scoreboard row is `seam: 'production'`, banked with justification in the same commit. The codex half (real DELIVERY path, not just the parser) is re-filed as the P2 "Codex adapter full production flip" entry in the v0.46.11.0 wave section at the top of this file.
+- [x] **Flip contract adapters to production — claude-code half DONE (v0.46.12 identity/retrieval wave).** `adapters/claude-code.ts` now drives the real `gbrain hook user-prompt` path (synthesized Claude Code JSONL transcripts, run-scoped resolve-IPC server with `turn_context` handler, `HookIo` seams) and the scoreboard row is `seam: 'production'`, banked with justification in the same commit. The codex half (real DELIVERY path, not just the parser) is re-filed as the P2 "Codex adapter full production flip" entry in the v0.46.12.0 wave section at the top of this file.
 - [ ] **Cathedral 1 conformance-kit fixture import.** The memory-verbs conformance scenarios convert to BrainBench fixtures via the published `evals/brainbench/schema/fixture.schema.json` once `garrytan/cathedral-1` merges ("conformance tests double as BrainBench seed fixtures", decision log 2026-06-12). Free corpus growth from already-reviewed scenarios. Blocked by: cathedral-1 on master. Priority: P2.
 - [ ] **Live-embeddings fidelity mode (`--embeddings`).** Hermetic CI grades the keyword/alias arms only (disclosed); an opt-in mode seeding real embeddings would grade write-back/continuity retrieval through the vector path. Same budget rails as `--llm`. Priority: P3.
 - [ ] **Community fixture intake + competitor adapters.** The TD1 remainder after the generated corpus absorbed in-PR growth: an `external-authors/`-style intake path for contributed fixtures (validator + privacy guard already gate them) and adapters for non-gbrain memory systems against the published schemas, enabling true head-to-head rows in the gbrain-evals scorecard. Priority: P3.
@@ -1428,7 +1526,7 @@ is deterministic + precision-biased. See plan + GSTACK REVIEW REPORT at
   pronoun follow-ups whose antecedent was NAMED in the rolling window; true pronoun
   coreference for never-named antecedents remains with the LLM-pass idea.)*
 - [x] **P3 — recall knob: optional fuzzy/prefix-expansion resolution.** RESOLVED
-  differently by the v0.46.11 identity wave, with a receipt: trigram fuzzy in the
+  differently by the v0.46.12 identity wave, with a receipt: trigram fuzzy in the
   reflex is deliberately REJECTED — the BrainBench adversarial near-miss class
   (`"<Name>er"` for a real `<Name>` page) is gold-silent and any usable trigram
   threshold would false-fire on it. The recall gap the fuzzy arm targeted was
@@ -3065,7 +3163,7 @@ The original 3 items as filed (kept for traceability):
   hardenings list. Effort: human ~3 days / CC ~3 hours.
 
 - [x] **P0 — Wire nightly quality probe into autopilot scheduler.** DONE —
-  and this entry was STALE when the v0.46.11 wave audited it: autopilot's
+  and this entry was STALE when the v0.46.12 wave audited it: autopilot's
   tick body already invokes `runNightlyQualityProbe` behind the
   `autopilot.nightly_quality_probe.enabled` gate
   (`src/commands/autopilot.ts:1361-1386`, pinned by
@@ -3501,7 +3599,7 @@ contributor traps.
   /plan-eng-review (see `~/.claude/plans/system-instruction-you-are-working-whimsical-acorn.md`).
 
 - [x] **v0.41+: Wire the nightly quality probe into autopilot scheduling.**
-  DONE (stale entry swept by the v0.46.11 wave): autopilot's tick body
+  DONE (stale entry swept by the v0.46.12 wave): autopilot's tick body
   invokes `runNightlyQualityProbe` behind the
   `autopilot.nightly_quality_probe.enabled` gate
   (`src/commands/autopilot.ts:1361-1386`, pinned by

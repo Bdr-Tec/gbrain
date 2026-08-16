@@ -97,7 +97,7 @@ function dedupBySource(results: SearchResult[]): SearchResult[] {
  * FROM THE SAME PAGE. Uses Jaccard similarity on word sets as a proxy for
  * cosine similarity.
  *
- * v0.46.11 (#3983): the comparison is scoped to the same pageKey. The
+ * v0.46.12 (#3983): the comparison is scoped to the same pageKey. The
  * unscoped version dropped a chunk because a DIFFERENT page's chunk was
  * textually similar — on near-duplicate-record corpora (many similar deal
  * memos, weekly reports, boilerplate-heavy notes) that silently deleted

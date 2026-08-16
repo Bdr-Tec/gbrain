@@ -205,7 +205,7 @@ export interface HarnessAdapter {
   readonly name: HarnessName;
   readonly seam: SeamKind;
   /**
-   * v0.46.11 — optional RUN-scoped lifecycle (outside-voice F4/R2-5). The
+   * v0.46.12 — optional RUN-scoped lifecycle (outside-voice F4/R2-5). The
    * harness constructs ONE adapter per harness per run and calls setupRun
    * before the first fixture / teardownRun after the last, so a production
    * seam can own long-lived infrastructure (the claude-code adapter's

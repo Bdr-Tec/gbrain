@@ -19,7 +19,7 @@ describe('classifyEvidence precedence', () => {
   test('exact_title_match when title boost fired', () => {
     expect(classifyEvidence(r({ title_match_boost: 1.25, base_score: 0.2 }))).toBe('exact_title_match');
   });
-  test('RE-PINNED (v0.46.11, #3963): a high BLENDED score without a real cosine is NOT a vector match', () => {
+  test('RE-PINNED (v0.46.12, #3963): a high BLENDED score without a real cosine is NOT a vector match', () => {
     // Was: base_score >= HIGH_MATCH_FLOOR → high_vector_match. That let a
     // keyword+boost pile-up read as confident semantic evidence (the exact
     // bug class this wave fixes). Without a cosine, the ceiling is
@@ -43,7 +43,7 @@ describe('classifyEvidence precedence', () => {
   test('weak_semantic below the solid floor (the incident: 0.64 body chunk... 0.5 here)', () => {
     expect(classifyEvidence(r({ base_score: 0.4 }))).toBe('weak_semantic');
   });
-  test('RE-PINNED (v0.46.11): score fallback without cosine caps at keyword_exact', () => {
+  test('RE-PINNED (v0.46.12): score fallback without cosine caps at keyword_exact', () => {
     expect(classifyEvidence(r({ score: 0.95, base_score: undefined }))).toBe('keyword_exact');
   });
   test('keyless fall-through: no cosine anywhere → create_safety never claims exists via vector', () => {

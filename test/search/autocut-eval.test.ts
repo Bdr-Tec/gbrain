@@ -196,7 +196,7 @@ describe('autocut eval gate (D2 — precision lift without recall regression)', 
   });
 });
 
-describe('v0.46.11 (#1863) — weak-top floor', () => {
+describe('v0.46.12 (#1863) — weak-top floor', () => {
   const scoreOfR = (r: { rerank_score?: number }) => r.rerank_score;
   const mkScores = (scores: number[]) => scores.map((s, i) => ({ id: i, rerank_score: s }));
 

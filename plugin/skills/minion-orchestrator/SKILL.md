@@ -236,6 +236,18 @@ Queue/priority/retry tuning is not exposed by `gbrain agent run`; submit the
 raw `subagent` handler via `gbrain jobs submit` (requires CLI trust) if you
 need those knobs.
 
+**Admission control (v0.46.11.0).** Identical parentless `subagent` submits
+(same owner lane, payload, and execution options) coalesce onto the existing
+waiting job: `gbrain agent run` prints `coalesced` with the matched job id,
+and the `submit_agent` MCP response carries `coalesced: true`. Treat that as
+success — monitor the matched id, do NOT resubmit. Jobs still waiting after
+the TTL (48h default for `subagent`; `minions.ttl_waiting_hours.<name>`)
+are cancelled with reason prefix `waiting_ttl_expired`. If an operator has
+configured a waiting quota (`minions.quota_max_waiting.<name>`), a submit
+past the cap returns a structured, retryable `rate_limited` error — back
+off and check `gbrain jobs stats` for a `DIVERGENT QUEUE` line before
+retrying.
+
 ## Phase 2: Monitor
 
 ```
@@ -488,6 +500,7 @@ Total tokens so far: 4.3k
 - Don't spawn a Minion for a single search query (use search tool directly)
 - Don't fire-and-forget without checking results
 - Don't spawn > 5 concurrent agents without checking `gbrain jobs stats` first
+- Don't resubmit when a submit reports `coalesced` — the work is already queued; monitor the matched job id instead
 - For subagent work, don't use `sessions_spawn` with `runtime: "subagent"` when Minions is available (use `gbrain agent run` instead)
 - Don't poll `get_job` in a tight loop (use `get_job_progress` for lightweight checks)
 - Don't run an operation expected to exceed ~2 minutes as a bare background shell — it dies with the session; route through the Durable execution ladder

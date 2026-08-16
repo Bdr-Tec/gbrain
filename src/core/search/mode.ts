@@ -157,7 +157,7 @@ export interface ModeBundle {
   title_boost: number | undefined;
 
   /**
-   * v0.46.11 — cosine floor for evidence's `high_vector_match` (see
+   * v0.46.12 — cosine floor for evidence's `high_vector_match` (see
    * evidence.ts DEFAULT_HIGH_COSINE_FLOOR). Config `search.evidence_cosine_floor`.
    * Deliberately EXCLUDED from knobsHash: it shapes the evidence LABEL, not
    * the result set — a floor change serves TTL-bounded stale labels on cached
@@ -277,7 +277,7 @@ export interface ModeBundle {
    */
   autocut_jump: number;
   /**
-   * v0.46.11 (#1863) — weak-top floor: when the TOP rerank score is below
+   * v0.46.12 (#1863) — weak-top floor: when the TOP rerank score is below
    * this, autocut no-ops (gap normalization by a weak top manufactures
    * spurious cliffs). Scale-dependent on the reranker — the September
    * reranker default flip must re-tune it. Config: `search.autocut_min_top`.
@@ -498,7 +498,7 @@ export interface SearchKeyOverrides {
   floor_ratio?: number;
   // T2 — title-phrase boost override.
   title_boost?: number;
-  // v0.46.11 — evidence cosine-floor override (label-only; not in knobsHash).
+  // v0.46.12 — evidence cosine-floor override (label-only; not in knobsHash).
   evidence_cosine_floor?: number;
   // v0.36 cross-modal overrides
   cross_modal_both_text_weight?: number;
@@ -547,7 +547,7 @@ export interface SearchPerCallOpts {
   floor_ratio?: number;
   // T2 — title-phrase boost per-call override.
   title_boost?: number;
-  // v0.46.11 — evidence cosine-floor per-call override.
+  // v0.46.12 — evidence cosine-floor per-call override.
   evidence_cosine_floor?: number;
   // v0.36 cross-modal per-call overrides
   cross_modal_both_text_weight?: number;
@@ -964,7 +964,7 @@ export function knobsHash(
     // etc.) so a partial-knobs caller (tests passing a minimal literal) can't
     // crash the hash. Typed callers always carry the field.
     `acj=${(knobs.autocut_jump ?? 0.2).toFixed(2)}`,
-    // v=18 addition (v0.46.11 #1863, append-only): weak-top floor. A floored
+    // v=18 addition (v0.46.12 #1863, append-only): weak-top floor. A floored
     // write (full cluster kept on a weak top) must not be served to an
     // unfloored lookup and vice versa — the kept set differs.
     `acm=${(knobs.autocut_min_top ?? 0.35).toFixed(2)}`,
@@ -1102,7 +1102,7 @@ export function loadOverridesFromConfig(
     if (Number.isFinite(n) && n >= 1.0 && n <= 5.0) out.title_boost = n;
   }
 
-  // v0.46.11 — evidence cosine floor (label-only knob; deliberately not in
+  // v0.46.12 — evidence cosine floor (label-only knob; deliberately not in
   // knobsHash). [0, 1] sanity-bounded.
   const ecf = get('search.evidence_cosine_floor');
   if (ecf !== undefined) {
@@ -1171,7 +1171,7 @@ export function loadOverridesFromConfig(
     const n = parseFloat(acj);
     if (Number.isFinite(n) && n > 0 && n <= 1) out.autocut_jump = n;
   }
-  // v0.46.11 (#1863) — weak-top floor. [0, 1]; 0 disables the floor.
+  // v0.46.12 (#1863) — weak-top floor. [0, 1]; 0 disables the floor.
   const acm = get('search.autocut_min_top');
   if (acm !== undefined) {
     const n = parseFloat(acm);

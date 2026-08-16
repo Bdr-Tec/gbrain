@@ -250,7 +250,7 @@ describe('context-engine assemble() — Retrieval Reflex integration', () => {
         workspaceDir: '/tmp/rr-test-ws-3',
         resolveEntities: async () => { called = true; return null; },
       });
-      // Re-pinned for the v0.46.11 identity wave: the turn must be GENUINELY
+      // Re-pinned for the v0.46.12 identity wave: the turn must be GENUINELY
       // candidate-free (stopwords / sub-3-char tokens only) — lowercase words
       // like "help" are now WEAK candidates and legitimately reach the
       // resolver's alias arm.
@@ -610,7 +610,7 @@ describe('lexicalArmsEnabled — kill-switch resolution (env > config > default-
   });
 });
 
-describe('v0.46.11 ship-review hardening (adversarial F1/F2 + stale-alias veto)', () => {
+describe('v0.46.12 ship-review hardening (adversarial F1/F2 + stale-alias veto)', () => {
   test('F1: a title-claimed namesake still makes the bare surname AMBIGUOUS', async () => {
     // Jane resolves via title; the bare "Galewright" must count BOTH holders
     // and stay silent — classification precedence must not hand John the

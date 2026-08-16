@@ -36,7 +36,7 @@ describe('dedupResults', () => {
     expect(aChunks.length).toBeLessThanOrEqual(2);
   });
 
-  test('removes text-similar chunks WITHIN a page (v0.46.11 #3983 scope)', () => {
+  test('removes text-similar chunks WITHIN a page (v0.46.12 #3983 scope)', () => {
     const base = 'the quick brown fox jumps over the lazy dog while seventeen other animals watch from a nearby grassy hill in silence';
     const results = [
       makeResult({ slug: 'a', chunk_id: 1, score: 0.9, chunk_text: `${base} today` }),
