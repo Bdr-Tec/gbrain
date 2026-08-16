@@ -120,7 +120,7 @@ export async function buildSyncStatusReport(
 
   // Per-source page + chunk + unembedded-chunk counts in a single
   // round-trip. Canonical SQL (verified against
-  // src/commands/doctor.ts:2740): content_chunks joined on page_id
+  // src/commands/doctor/checks/extraction-sync.ts: content_chunks joined on page_id
   // (NOT page_slug — Codex P0 #1), filtered for non-soft-deleted pages
   // (NOT NULL — soft-delete shipped v0.26.5), unembedded counted
   // against the resolved active embedding column (D16 → A).

@@ -1,6 +1,8 @@
 /**
  * Schema-pack operation cluster — pure move from operations.ts (v0.46.x
- * tranche 3): the v0.40.6.0 Schema Cathedral v3 ops (7 read + 2 admin). Op
+ * tranche 3): the v0.40.6.0 Schema Cathedral v3 ops (7 read + 2 admin —
+ * the admin pair is deliberately NOT localOnly per D2, so remote agents
+ * (your OpenClaw, etc.) can author packs behind admin OAuth scope). Op
  * consts stay module-private; `schemaPacksOperations` below lists them in
  * EXACTLY the order they appear in the canonical `operations` array in
  * ../operations.ts. Never import from '../operations.ts' here (cycle).

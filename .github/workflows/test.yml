@@ -400,10 +400,15 @@ jobs:
       - name: Coverage summary → step summary
         run: bun scripts/render-coverage-summary.ts --summary "$RUNNER_TEMP/coverage-merged/summary.json" --structural scripts/structural-suites.tsv >> "$GITHUB_STEP_SUMMARY"
       - name: Diff coverage gate (report-only until graduation)
+        # shell: bash is load-bearing: the default `bash -e {0}` has NO
+        # pipefail, so the tee pipe would mask the gate's exit code — the
+        # graduated gate could never fail the job.
+        shell: bash
         env:
           COVERAGE_GATE_ENFORCE: '0'
         run: bun scripts/coverage-diff-gate.ts --summary "$RUNNER_TEMP/coverage-merged/summary.json" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Baseline gate (prCorpus, like-for-like)
+        shell: bash
         env:
           COVERAGE_GATE_ENFORCE: '0'
         run: bun scripts/coverage-baseline-gate.ts --summary "$RUNNER_TEMP/coverage-merged/summary.json" --corpus prCorpus | tee -a "$GITHUB_STEP_SUMMARY"

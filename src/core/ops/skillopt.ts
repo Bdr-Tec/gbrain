@@ -118,10 +118,11 @@ const run_onboard: Operation = {
 };
 
 // v0.41.20.0 SkillOpt — MCP exposure (admin scope + per-skill allowlist
-// via the resolver inside the handler). Designed for trusted admin tokens
-// that want to drive optimization remotely; the same trust gates as the
-// CLI fire (working tree, install path, lock acquisition, bundled-skill
-// guard). NOT localOnly so admin HTTP MCP clients can invoke.
+// via `skillopt.allowed_skills` config, DEFAULT DENY-ALL for remote
+// callers; CLI bypasses via ctx.remote === false). Designed for trusted
+// admin tokens that want to drive optimization remotely; the same trust
+// gates as the CLI fire (working tree, install path, lock acquisition,
+// bundled-skill guard). NOT localOnly so admin HTTP MCP clients can invoke.
 const run_skillopt: Operation = {
   name: 'run_skillopt',
   description: 'Run SkillOpt against a single skill. Admin scope; mutating; rate-limited per-skill via DB lock. See gbrain skillopt CLI for the full flag surface.',

@@ -1,5 +1,4 @@
 import { existsSync, readFileSync, writeFileSync, statSync, realpathSync } from 'fs';
-import { execFileSync } from 'child_process';
 import { join, relative } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
 import { DELETE_BATCH_SIZE } from '../core/engine-constants.ts';
