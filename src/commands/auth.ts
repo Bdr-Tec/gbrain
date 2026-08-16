@@ -432,7 +432,14 @@ export interface RegisterClientArgs {
   boundSlugPrefixes: string[] | undefined;
   boundMaxConcurrent: number | undefined;
   budgetUsdPerDay: string | undefined;
+  tokenTtlSeconds: number | undefined;
 }
+
+/** --token-ttl bounds: 1 minute .. 90 days. The SERVER default for CLI-minted
+ * access tokens is 3600s (oauth-provider.ts tokenTtl) — NOT 30 days; callers
+ * that promise long-lived tokens must write oauth_clients.token_ttl. */
+export const TOKEN_TTL_MIN_SECONDS = 60;
+export const TOKEN_TTL_MAX_SECONDS = 7_776_000;
 
 export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
   const out: RegisterClientArgs = {
@@ -448,6 +455,7 @@ export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
     boundSlugPrefixes: undefined,
     boundMaxConcurrent: undefined,
     budgetUsdPerDay: undefined,
+    tokenTtlSeconds: undefined,
   };
   let i = 0;
   let grantTypesSet = false;
@@ -538,6 +546,17 @@ export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
         out.budgetUsdPerDay = v;
         i += 2; break;
       }
+      case '--token-ttl': {
+        const raw = requireValue();
+        const v = Number(raw);
+        if (!Number.isInteger(v) || v < TOKEN_TTL_MIN_SECONDS || v > TOKEN_TTL_MAX_SECONDS) {
+          throw new Error(
+            `--token-ttl must be an integer number of seconds between ${TOKEN_TTL_MIN_SECONDS} and ${TOKEN_TTL_MAX_SECONDS} (90 days); got ${JSON.stringify(raw)}. Omit the flag to keep the server default.`,
+          );
+        }
+        out.tokenTtlSeconds = v;
+        i += 2; break;
+      }
       default:
         throw new Error(`Unknown flag: ${flag}`);
     }
@@ -550,6 +569,30 @@ export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
     out.grantTypes = ['authorization_code', 'refresh_token'];
   }
   return out;
+}
+
+/**
+ * Column pre-flight (cathedral-6): decide statement shapes BEFORE any
+ * transaction. Postgres/PGLite abort the whole tx on any statement error
+ * (25P02) and SqlQuery has no savepoint seam, so "catch 42703 and continue"
+ * is impossible inside a tx — optional-column degrades must be decided here,
+ * outside, once.
+ */
+export async function preflightOauthClientColumns(sql: SqlQuery): Promise<Set<string>> {
+  const rows = await sql<{ column_name: string }>`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'oauth_clients'
+      AND column_name IN ('token_ttl', 'surface', 'federated_read', 'source_id')
+  `;
+  return new Set(rows.map(r => r.column_name));
+}
+
+export interface RegisterScopedClientOpts {
+  /** Per-client access-token TTL to persist (oauth_clients.token_ttl). */
+  tokenTtlSeconds?: number;
+  /** Result of preflightOauthClientColumns — decides which optional-column
+   * writes are attempted. Absent → attempt everything (caller owns errors). */
+  columns?: Set<string>;
 }
 
 /**
@@ -570,6 +613,8 @@ export interface RegisteredClient {
   tokenTtl?: number;
   tokenExpiresAt?: string;
   created: { source: boolean };
+  /** Optional-column writes skipped by the pre-flight (pre-migration brain). */
+  skipped?: { tokenTtl?: boolean; surface?: boolean };
 }
 
 /**
@@ -586,6 +631,7 @@ export async function registerScopedClient(
   _engine: BrainEngine,
   name: string,
   parsed: RegisterClientArgs,
+  opts: RegisterScopedClientOpts = {},
 ): Promise<RegisteredClient> {
   const { grantTypes, scopes, sourceId, federatedRead, redirectUris, tokenEndpointAuthMethod } = parsed;
   const agentBindings = parsed.boundTools || parsed.boundSourceId || parsed.boundBrainId ||
@@ -604,6 +650,28 @@ export async function registerScopedClient(
   const { clientId, clientSecret } = await provider.registerClientManual(
     name, grantTypes, scopes, redirectUris, sourceId, federatedRead, tokenEndpointAuthMethod, agentBindings,
   );
+
+  const ttl = parsed.tokenTtlSeconds ?? opts.tokenTtlSeconds;
+  let tokenTtl: number | undefined;
+  let ttlSkipped = false;
+  if (ttl !== undefined) {
+    if (opts.columns && !opts.columns.has('token_ttl')) {
+      // Pre-migration brain: the degrade was decided by the pre-flight,
+      // OUTSIDE any transaction — nothing here throws-and-continues.
+      ttlSkipped = true;
+    } else {
+      const updated = await sql<{ client_id: string }>`
+        UPDATE oauth_clients SET token_ttl = ${ttl}
+        WHERE client_id = ${clientId}
+        RETURNING client_id
+      `;
+      if (updated.length === 0) {
+        throw new Error(`token_ttl update matched no row for client ${clientId}`);
+      }
+      tokenTtl = ttl;
+    }
+  }
+
   return {
     clientId,
     ...(clientSecret ? { clientSecret } : {}),
@@ -613,7 +681,9 @@ export async function registerScopedClient(
     redirectUris,
     sourceId,
     federatedRead: federatedRead && federatedRead.length > 0 ? federatedRead : [sourceId],
+    ...(tokenTtl !== undefined ? { tokenTtl } : {}),
     created: { source: false },
+    ...(ttlSkipped ? { skipped: { tokenTtl: true } } : {}),
   };
 }
 
@@ -663,7 +733,7 @@ export function formatRegisterClientOutput(name: string, r: RegisteredClient, pa
 
 async function registerClient(name: string, args: string[]) {
   if (!name) {
-    console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S] [--source SOURCE] [--federated-read SRC1,SRC2,...] [--redirect-uri URI ...] [--token-endpoint-auth-method client_secret_post|client_secret_basic|none] [--bound-tools T1,T2] [--bound-source SOURCE] [--bound-brain BRAIN] [--bound-slug-prefixes P1,P2] [--bound-max-concurrent N] [--budget-usd-per-day USD]');
+    console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S] [--source SOURCE] [--federated-read SRC1,SRC2,...] [--redirect-uri URI ...] [--token-endpoint-auth-method client_secret_post|client_secret_basic|none] [--bound-tools T1,T2] [--bound-source SOURCE] [--bound-brain BRAIN] [--bound-slug-prefixes P1,P2] [--bound-max-concurrent N] [--budget-usd-per-day USD] [--token-ttl SECONDS]');
     process.exit(1);
   }
   let parsed: RegisterClientArgs;
@@ -671,13 +741,19 @@ async function registerClient(name: string, args: string[]) {
     parsed = parseRegisterClientArgs(args);
   } catch (e: any) {
     console.error(`Error: ${e.message}`);
-    console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S] [--source SOURCE] [--federated-read SRC1,SRC2,...] [--redirect-uri URI ...] [--token-endpoint-auth-method client_secret_post|client_secret_basic|none] [--bound-tools T1,T2] [--bound-source SOURCE] [--bound-brain BRAIN] [--bound-slug-prefixes P1,P2] [--bound-max-concurrent N] [--budget-usd-per-day USD]');
+    console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S] [--source SOURCE] [--federated-read SRC1,SRC2,...] [--redirect-uri URI ...] [--token-endpoint-auth-method client_secret_post|client_secret_basic|none] [--bound-tools T1,T2] [--bound-source SOURCE] [--bound-brain BRAIN] [--bound-slug-prefixes P1,P2] [--bound-max-concurrent N] [--budget-usd-per-day USD] [--token-ttl SECONDS]');
     process.exit(1);
   }
 
   try {
     await withConfiguredSql(async (sql, engine) => {
-      const registered = await registerScopedClient(sql, engine, name, parsed);
+      const columns = parsed.tokenTtlSeconds !== undefined
+        ? await preflightOauthClientColumns(sql)
+        : undefined;
+      const registered = await registerScopedClient(sql, engine, name, parsed, { columns });
+      if (registered.skipped?.tokenTtl) {
+        console.error('Note: this brain predates the token_ttl column; run `gbrain apply-migrations --yes`, then rescope. The server default TTL applies.');
+      }
       for (const line of formatRegisterClientOutput(name, registered, parsed)) {
         console.log(line);
       }
