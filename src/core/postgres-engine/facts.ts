@@ -57,6 +57,7 @@ export async function insertFact(
       const supersedeId = ctx.supersedeId;
       const newId = await sql.begin(async (tx) => {
         if (entitySlug) {
+          // Lock-census (PR6 D5): COMPLIANT — key is already source-scoped (source_id || ':' || entity_slug).
           await tx`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.source_id} || ':' || ${entitySlug}, 0))`;
         }
         const ins = await tx<Array<{ id: number }>>`
@@ -83,6 +84,7 @@ export async function insertFact(
     // Plain insert path with optional advisory lock for the dedup window.
     const id = await sql.begin(async (tx) => {
       if (entitySlug) {
+        // Lock-census (PR6 D5): COMPLIANT — key is already source-scoped (source_id || ':' || entity_slug).
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.source_id} || ':' || ${entitySlug}, 0))`;
       }
       const ins = await tx<Array<{ id: number }>>`

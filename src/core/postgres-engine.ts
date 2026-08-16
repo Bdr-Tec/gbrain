@@ -440,6 +440,7 @@ export class PostgresEngine implements BrainEngine {
       op: 'acquire',
       caller: 'PostgresEngine.initSchema',
     });
+    // Lock-census (PR6 D5): INTENTIONALLY brain-global (session lock, fixed key 42) — initSchema DDL mutates the whole database; a per-source key would let two initSchema calls deadlock on shared DDL.
     await conn`SELECT pg_advisory_lock(42)`;
     try {
       // Pre-schema bootstrap: add forward-referenced state the embedded schema
