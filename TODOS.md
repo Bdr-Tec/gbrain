@@ -2,6 +2,30 @@
 
 ## chennai fix-wave follow-ups (filed 2026-08-16)
 
+- [ ] **P1 — read_latency_under_sync hangs from 6a905a1e (#4143); 6a905a1e's
+  read-path hunks are the revert candidate.** **What:** phase B of
+  `tests/heavy/read_latency_under_sync.sh` never returns; the workload's own
+  600s timeout kills it (exit 124). **Investigation so far (chennai wave,
+  timeboxed):** reproduced 2/2 on darwin at wave HEAD with default params
+  (500/200/4); a stderr-instrumented copy of the SAME workload at the SAME
+  params passes cleanly (writers finish by query ~11), and small params
+  (50/20/4) pass — the per-iteration stderr writes act as load-bearing yield
+  points, consistent with the repo's known Bun timers-phase starvation class
+  (cf. GBRAIN_SYNC_YIELD_EVERY: `setTimeout(0)`, NOT `setImmediate` — "Bun
+  starves the timers phase under a tight loop"). Suspect surface: #4096's
+  hybrid.ts read-path rework (embedQueryBounded's AbortSignal.timeout pairs +
+  query-cache/mode changes) turning phase B into a microtask-dominated spin
+  that starves timers. Reporter's Linux bisect (100% reproducible, first bad
+  6a905a1e) is in #4143. **Next:** either root-cause the starvation (try a
+  setTimeout(0) yield in the phase-B loop to confirm the class, then find
+  which #4096 await lost its macrotask boundary) or revert 6a905a1e's
+  hybrid.ts hunks and re-run the lane. Harness hardening also owed: count
+  swallowed query errors (all-fail should not read as latency data), bound
+  the `Promise.allSettled(writers)` wait, per #4143's own notes. **Also:**
+  the Heavy Tests lane comes back `skipped` on in-repo branches, so this
+  gates nothing upstream — fix the lane gating or this class stays invisible.
+  **Effort:** M. **Priority:** P1.
+
 - [ ] **P2 — Cache-MODE enum: implicit vs Anthropic-explicit prompt caching.**
   **What:** replace `supports_prompt_cache`'s boolean/predicate with a mode
   (`explicit-anthropic` | `implicit` | `none`) so the gateway's cache-marker
