@@ -26,7 +26,9 @@
   "test/ai/rerank.test.ts": 16,
   "test/ai/schema-templating.test.ts": 4,
   "test/ai/silent-drop-regression.test.ts": 9,
+  "test/ai/sunset-warn.test.ts": 10,
   "test/ai/voyage-code-3-recipe.test.ts": 3,
+  "test/ai/voyage-reranker-recipe.test.ts": 3,
   "test/ai/zeroentropy-compat-fetch.test.ts": 16,
   "test/ai/zeroentropy-recipe.test.ts": 1,
   "test/anomalies.test.ts": 1,
@@ -189,6 +191,7 @@
   "test/dream.test.ts": 26718,
   "test/drift-watch.test.ts": 255,
   "test/dry-fix.test.ts": 442,
+  "test/e2e/voyage-rerank-live.test.ts": 1,
   "test/edge-extractor.test.ts": 252,
   "test/effective-date.test.ts": 6,
   "test/embed-backfill-submit.test.ts": 3099,
@@ -397,6 +400,7 @@
   "test/migrate.test.ts": 102260,
   "test/migration-orchestrator-v0_21_0.test.ts": 7,
   "test/migration-orchestrator-v0_31_0.test.ts": 12960,
+  "test/migration-orchestrator-v0_46_3.serial.test.ts": 8000,
   "test/migration-resume.test.ts": 9,
   "test/migration-v0-29-1.serial.test.ts": 3273,
   "test/migrations-cjk-wave.test.ts": 3280,
@@ -708,6 +712,7 @@
   "test/worker-shutdown-disconnect.test.ts": 3260,
   "test/writer.test.ts": 37365,
   "test/yaml-lite.test.ts": 9,
+  "test/ze-exposure.test.ts": 9000,
   "test/ze-switch-cli.test.ts": 4227,
   "test/zombie-reap.test.ts": 3
 }

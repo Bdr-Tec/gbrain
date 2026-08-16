@@ -70,6 +70,74 @@ session). The keyless free tier is enough to verify the wiring end to end —
 `opencode mcp list` should show `✓ gbrain connected`. Existing installs:
 nothing changes; this release adds a client, it doesn't modify brain
 behavior.
+## [0.46.3.0] - 2026-08-15
+
+**ZeroEntropy is shutting down on 2026-09-04 — gbrain now gets you off it
+before that date costs you retrieval.** The provider that shipped as the
+default embedding + reranking stack from v0.36 through v0.46 is winding down
+its hosted API. This release makes the transition a guided, one-command move
+instead of a surprise outage:
+
+- **New default: Voyage.** Fresh installs land on `voyage:voyage-4` (1024d) —
+  the strongest hosted retrieval embedder on current benchmarks — and the same
+  `VOYAGE_API_KEY` powers the new `voyage:rerank-2.5` reranker (written as
+  explicit config whenever a Voyage key is present at init; keyed installs
+  without one get reranking explicitly disabled instead of inheriting a
+  fallback they can't use) and the multimodal model. One key, all three
+  touchpoints. The v4 family shares one embedding space, so you can later
+  point queries at `voyage-4-large` or `-lite` without re-indexing.
+- **Nothing changes out from under existing brains.** A brain configured for
+  ZeroEntropy (or riding the old default) keeps working exactly as before until
+  the shutdown date — this release only detects, warns, and hands you the
+  playbook. Every surface that used to steer you toward the dying provider
+  (init auto-pick, the interactive picker, `gbrain providers`, setup hints)
+  now steers you to the replacement instead, and using it prints a
+  once-per-process heads-up.
+- **The switch is one command:** `gbrain migrate embeddings --to voyage:voyage-4
+  --dim 1024 --dry-run` (cost preview), then `--yes`. Prefer OpenAI? It can
+  keep your existing column width: `--to openai:text-embedding-3-small
+  --dim 1280`. Reranker: `gbrain config set search.reranker.model
+  voyage:rerank-2.5`. Self-hosting the Apache-2.0 weights remains documented in
+  docs/guides/embedding-migration.md.
+- **Your agent gets told too.** A v0.46.3 migration checks whether your brain
+  still resolves to the sunsetting provider (embedding, reranker, or custom
+  columns), prints an ACTION REQUIRED notice with the blast radius and cost
+  estimate, and files a durable action item pointing at the agent playbook
+  (`skills/migrations/v0.46.3.0.md`). `gbrain doctor`'s provider check now
+  prints width-aware paste-ready commands, and its documented suppression
+  switch (`gbrain config set doctor.suppress_provider_sunset true`) actually
+  works now.
+- `gbrain ze-switch` no longer switches brains onto the sunsetting provider
+  (`--undo` still moves brains off it), and `gbrain migrate embeddings` refuses
+  a re-embed onto a provider with an announced shutdown — self-hosters with a
+  wire-compatible endpoint pass `--force-sunset-target`. Voyage's
+  `voyage-code-4` is available for code-heavy brains.
+- Setup fixes that ride along: init now detects provider keys stored in
+  `~/.gbrain/config.json` (file plane), not just env vars; a keyless brain
+  upgrades in place via `gbrain init --force --embedding-model voyage:voyage-4`
+  (the deferred-setup sentinel is cleared); and keyless fresh installs size the
+  embedding column at the new default width.
+
+### To take advantage of v0.46.3.0
+
+`gbrain upgrade` is enough — no schema migration.
+
+1. **Upgrade and check:**
+   ```bash
+   gbrain upgrade
+   gbrain doctor
+   ```
+2. **If the upgrade printed ACTION REQUIRED** (or doctor flags
+   `provider_sunset`): run the printed migrate command before 2026-09-04, or
+   hand your agent `skills/migrations/v0.46.3.0.md` — it walks the whole
+   switch, including the reranker and edge cases.
+3. **Things to watch:** existing brains see zero behavior change from this
+   release itself; fresh installs default to `voyage:voyage-4` at 1024
+   dimensions; reranking configured on the sunsetting provider dies with it on
+   2026-09-04 unless you set the voyage reranker (or disable reranking). If
+   anything looks wrong, file an issue with `gbrain doctor` output:
+   https://github.com/garrytan/gbrain/issues
+
 ## [0.46.2.0] - 2026-08-15
 
 **Dream synthesis now triages before it spends.**

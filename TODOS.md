@@ -1,5 +1,67 @@
 # TODOS
 
+## v0.47 SEPTEMBER REMOVAL — ZeroEntropy (filed v0.46.3.0; TARGET: ship 2026-09-04..2026-09-08)
+
+ZeroEntropy's hosted API dies 2026-09-04. v0.46.3.0 deprecated it (split-default:
+new installs → voyage; legacy runtime fallbacks stay ZE; detect-and-notify
+migration). The removal wave deletes the provider and performs the hard cutover.
+Staged-deletion discipline (ship replacements → migrate call sites → update tests
+→ THEN delete; see the skills/_brain-filing-rules precedent below):
+
+- [ ] **P1 — HARD CUTOVER: retire the legacy configless runtime fallbacks.**
+  `DEFAULT_EMBEDDING_MODEL`/`DEFAULT_EMBEDDING_DIMENSIONS` (src/core/ai/defaults.ts)
+  stop resolving to `zeroentropyai:*`; unmigrated configless brains get a HARD,
+  actionable error naming `gbrain migrate embeddings --to voyage:voyage-4 --dim 1024`.
+  Also flip `DEFAULT_RERANKER_MODEL` (gateway.ts) + the three mode-bundle
+  `reranker_model` values (mode.ts:298,348,403) to `voyage:rerank-2.5` — one-time
+  knobs-hash query-cache miss for ALL modes incl. conservative (reranker_model is
+  hashed unconditionally; document in that release's CHANGELOG). Verify the schema
+  generators' legacy-constant consumers (pglite-schema, postgres-engine,
+  embedding-column.ts registry fallback) get a deliberate post-ZE story.
+- [ ] **P1 — PREREQ before recipe deletion: move gateway.ts's `'/models/rerank'`
+  default path onto explicit per-recipe `path` fields.** llama-server-reranker and
+  dashscope-rerank may ride the implicit ZE-shaped fallback — audit + pin with tests
+  FIRST or their rerank calls 404 the day the fallback goes.
+- [ ] **P1 — Delete the provider surface.** `src/core/ai/recipes/zeroentropyai.ts` +
+  registry entries (recipes/index.ts); `zeroEntropyCompatFetch`,
+  `MAX_ZEROENTROPY_RESPONSE_BYTES`, `ZeroEntropyResponseTooLargeError` + the
+  fetch-ternary arm (gateway.ts); ZE sets in dims.ts; `ze-switch.ts` +
+  `retrieval-upgrade-planner.ts` + `retrieval-upgrade-prompt.ts` (~1200 lines) +
+  cli.ts dispatch/CLI_ONLY/flag-registry rows; `checkZeEmbeddingHealth` in doctor
+  (`provider_sunset` STAYS and goes generic — read `recipe.sunset` instead of the
+  hardcoded ZE constants); pricing rows LAST (budget-tracker rerank metering reads
+  them for historical audit rows). NOTE: test/ai/zeroentropy-compat-fetch.test.ts
+  greps gateway.ts SOURCE TEXT — delete the test with the code, in the same commit.
+- [ ] **P1 — Self-host continuity decision.** The v0.46.3 playbook's zero-re-embed
+  path keeps the `zeroentropyai:zembed-1` id behind a base-URL override to a
+  ZE-wire-compatible endpoint. Recipe deletion breaks it. Decide: keep a minimal
+  local-only recipe shell (no picker/auto-pick, no hosted default URL), ship a
+  signature-migration tool (rewrite pages.embedding_signature provider ids without
+  re-embedding), or explicitly end the promise with a loud migration note. The
+  playbook (skills/migrations/v0.46.3.0.md) links here — honor it.
+- [ ] **P2 — Tests + CI.** Delete the 8 ZE-dedicated test files
+  (zeroentropy-recipe, zeroentropy-compat-fetch, dims-zeroentropy,
+  e2e/zeroentropy-live, ze-switch-cli, ze-switch-env-override, doctor-ze-checks,
+  provider-sunset-doctor.serial gets REWRITTEN generic not deleted) + update ~40
+  coupled files; drop the zeroentropy-live job + ZEROENTROPY_API_KEY secret from
+  .github/workflows/e2e.yml:168,179 (already date-skip-gated since v0.46.3);
+  scripts/test-weights.json rows.
+- [ ] **P2 — Config + docs.** `zeroentropy_api_key` config key: keep
+  parseable-but-warned (removing it would make old config.json files fail to
+  load); delete docs/ai-providers/zeroentropy.md + its scripts/llms-config.ts
+  entry (+ `bun run build:llms`); v0.46.3 migration stays registered and must
+  degrade gracefully once the recipe is gone (notice-only — verify its copy).
+- [ ] **P2 — Custom-column off-ramp (not removal-gated, but September makes it
+  urgent for affected users).** Write-side custom-column migration
+  (`gbrain embed --column X --model Y`, embedding-column.ts:60-62 v2 deferral) so
+  ZE-backed `embedding_columns` entries get an executable migration instead of
+  drop-and-re-embed guidance.
+- [ ] **P3 — Optional `cohere-rerank` recipe.** Cohere rerank-4.0-pro is the
+  strongest surviving hosted reranker (Agentset ELO 1629, behind only the dying
+  zerank-2) for users who want max rerank quality on a dedicated key. Wire shape
+  differs from the ZE/voyage dialect — needs its own `top_param`/response mapping
+  audit. Filed from the v0.46.3 CEO review (deferred cherry-pick).
+
 ## Issues #5+#6 follow-ups (pool starvation + process isolation; plan: ~/.claude/plans/system-instruction-you-are-working-witty-moore.md)
 
 - [ ] **P1-companion — nested-checkout audit + dev-mode detection.** **What:**
@@ -743,9 +805,10 @@ The eng-review + Codex outside-voice narrowed the wave to these deferrals:
   covers anthropic + openai; Google was deferred because Gemini's native suffix is unproven
   (its OpenAI-compat route is `/v1beta/openai`). Verify the correct `@ai-sdk/google` suffix,
   then add `google` to the helper. Where: `src/core/ai/gateway.ts:resolveNativeBaseUrl`.
-- [ ] **P3 — Fold Voyage/Google/LiteLLM/OpenRouter API keys into `buildGatewayConfig`.**
-  It folds only OPENAI/ANTHROPIC/ZEROENTROPY file-plane keys today, so `config.json`-set keys
-  for other providers only work if also in `process.env`. Extend the mapping. Where:
+- [ ] **P3 — Fold Google/LiteLLM/OpenRouter API keys into `buildGatewayConfig`.**
+  Voyage + Dashscope + Google were folded by #2662 (`build-gateway-config.ts:33-60`);
+  remaining gaps are the aggregator keys (litellm, openrouter) whose `config.json`-set
+  keys only work if also in `process.env`. Extend the mapping. Where:
   `src/core/ai/build-gateway-config.ts`.
 - [ ] **P3 — OpenRouter per-model custom-dim handling.** OpenRouter declares recipe-wide
   `dims_options` and mixes fixed-dim + arbitrary models, so it's excluded from `trust_custom_dims`.
