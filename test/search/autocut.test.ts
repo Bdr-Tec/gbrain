@@ -18,7 +18,7 @@ import {
 // items survived the cut.
 type R = { id: string; rs?: number };
 const scoreOf = (r: R) => r.rs;
-const ON: AutocutConfig = { enabled: true, jumpRatio: 0.2, minKeep: 1 };
+const ON: AutocutConfig = { enabled: true, jumpRatio: 0.2, minKeep: 1, minTopScore: 0.35 };
 
 function mk(scores: Array<number | undefined>): R[] {
   return scores.map((rs, i) => ({ id: `r${i}`, rs }));
@@ -29,6 +29,7 @@ describe('DEFAULT_AUTOCUT', () => {
     expect(DEFAULT_AUTOCUT.enabled).toBe(true);
     expect(DEFAULT_AUTOCUT.jumpRatio).toBe(0.2);
     expect(DEFAULT_AUTOCUT.minKeep).toBe(1);
+    expect(DEFAULT_AUTOCUT.minTopScore).toBe(0.35);
   });
   test('is frozen', () => {
     expect(Object.isFrozen(DEFAULT_AUTOCUT)).toBe(true);

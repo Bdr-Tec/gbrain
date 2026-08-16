@@ -1900,7 +1900,9 @@ export async function hybridSearch(
     const r = applyAutocut(
       returnPool,
       (x) => x.rerank_score,
-      { enabled: true, jumpRatio: resolvedMode.autocut_jump, minKeep: 1 },
+      // v0.46.8 (#1863): minTopScore is the weak-top floor — below it the
+      // cliff signal is untrustworthy and autocut no-ops.
+      { enabled: true, jumpRatio: resolvedMode.autocut_jump, minKeep: 1, minTopScore: resolvedMode.autocut_min_top },
       // Preserve alias-hop exact matches: applyAliasHop injects the canonical
       // page AFTER reranking, so it has no rerank_score. Without this it would
       // be dropped whenever autocut cuts on the scored set (Codex P1).

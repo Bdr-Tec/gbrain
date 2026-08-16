@@ -78,6 +78,7 @@ describe('SEARCH_MODES + MODE_BUNDLES canonical shape', () => {
       // v0.42.3.0 — autocut OFF for conservative (no reranker).
       autocut: false,
       autocut_jump: 0.2,
+      autocut_min_top: 0.35,
       // v0.43 — relational recall OFF for conservative.
       relationalRetrieval: false,
       relational_retrieval_depth: 2,
@@ -111,6 +112,7 @@ describe('SEARCH_MODES + MODE_BUNDLES canonical shape', () => {
       // v0.42.3.0 — autocut ON.
       autocut: true,
       autocut_jump: 0.2,
+      autocut_min_top: 0.35,
       // v0.43 — relational recall ON for balanced.
       relationalRetrieval: true,
       relational_retrieval_depth: 2,
@@ -142,6 +144,7 @@ describe('SEARCH_MODES + MODE_BUNDLES canonical shape', () => {
       // v0.42.3.0 — autocut ON.
       autocut: true,
       autocut_jump: 0.2,
+      autocut_min_top: 0.35,
       // v0.43 — relational recall ON for tokenmax.
       relationalRetrieval: true,
       relational_retrieval_depth: 2,
@@ -425,7 +428,8 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // not survive a `reindex-search-vector` switch.
     // #3515: bumped 15→16 to fold the effective detail level (det=) — a
     // detail=low write must not be served to a detail=medium lookup.
-    expect(KNOBS_HASH_VERSION).toBe(17);
+    // v0.46.8 (#1863): bumped 17→18 to fold the autocut weak-top floor (acm=).
+    expect(KNOBS_HASH_VERSION).toBe(18);
   });
 
   test('#3515: detail set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -442,7 +446,8 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     expect(unset).toBe(medium);
     // WP2/T3: bumped 16→17 for the degradation-stamp epoch — cache rows now
     // carry degraded[]/retrieved_count; pre-stamp rows must not claim clean.
-    expect(KNOBS_HASH_VERSION).toBe(17);
+    // v0.46.8 (#1863): 17→18 — autocut weak-top floor folds in (acm=).
+    expect(KNOBS_HASH_VERSION).toBe(18);
   });
 
   test('T1 (codex): floor_ratio set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -607,8 +612,8 @@ describe('v0.40.4 — graph_signals knob', () => {
 });
 
 describe('v0.42.3.0 — autocut knobs', () => {
-  test('KNOBS_HASH_VERSION is 17 (15→16 detail fold #3515; 16→17 degradation-stamp epoch)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(17);
+  test('KNOBS_HASH_VERSION is 18 (16→17 degradation-stamp epoch; 17→18 autocut weak-top floor #1863)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(18);
   });
 
   test('bundle defaults: conservative off, balanced/tokenmax on @0.20', () => {
