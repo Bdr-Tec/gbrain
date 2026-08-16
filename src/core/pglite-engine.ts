@@ -1455,9 +1455,13 @@ export class PGLiteEngine implements BrainEngine {
               effective_date, effective_date_source,
               source_kind, source_uri, ingested_via, ingested_at,
               contextual_retrieval_mode
-       FROM pages WHERE ${where.join(' AND ')} LIMIT 1`,
+       FROM pages WHERE ${where.join(' AND ')}
+       ORDER BY (source_id = 'default') DESC, source_id ASC
+       LIMIT 1`,
       params
     );
+    // Deterministic multi-source tiebreak — default-source-first, then stable
+    // alpha. Engine parity: postgres-engine.ts carries the identical clause.
     if (rows.length === 0) return null;
     return rowToPage(rows[0] as Record<string, unknown>);
   }

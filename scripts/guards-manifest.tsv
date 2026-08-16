@@ -66,3 +66,4 @@ check-module-size.sh	scanner	yes	committed per-file line ceilings (module-size-l
 check-structural-manifest.sh	buildfresh	exempt	regenerate+diff of structural-suites.tsv (classify-tests.ts); the diff IS the self-test
 check-opencode-pin.sh	repostate	exempt	pin-stamp drift check (OPENCODE-CLI-PIN.md stamps vs heavy-tests opencode-door env); own bun guard tests in test/check-bootstrap-guards.test.ts
 check-pin-doc-privacy.sh	repostate	exempt	PIN-doc placeholder discipline (no operator paths/key material/emails in docs/mcp/*-CLI-PIN.md); own bun guard tests in test/check-bootstrap-guards.test.ts
+check-getpage-scoped-write.mjs	scanner	yes	unscoped-getPage + write co-occurrence scanner (source-isolation bug class); argv root override; fixtures under test/fixtures/guards/; also in verify CHECKS
