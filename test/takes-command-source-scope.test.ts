@@ -217,6 +217,117 @@ describe('gbrain takes CLI source scoping', () => {
   });
 });
 
+describe('gbrain takes update/resolve — md-canonical CLI lanes (EV1)', () => {
+  test('update on a row missing from the md fence exits 1 with row-not-found; no DB write attempted', async () => {
+    const brainDir = mkdtempSync(join(tmpdir(), 'gbrain-takes-update-miss-'));
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-takes-home-'));
+    tmpRoots.push(brainDir, home);
+    const { renderTakesFence } = await import('../src/core/takes-fence.ts');
+    mkdirSync(join(brainDir, 'shared'), { recursive: true });
+    writeFileSync(
+      join(brainDir, 'shared/page.md'),
+      `# Shared page\n\n## Takes\n\n${renderTakesFence([{
+        rowNum: 3, claim: 'Current claim', kind: 'take', holder: 'self',
+        weight: 0.8, active: true,
+      }])}\n`,
+      'utf-8',
+    );
+    const batches: unknown[][] = [];
+    const updates: unknown[] = [];
+    const engine = {
+      getConfig: async () => null,
+      executeRaw: async (sql: string, params: unknown[] = []) => {
+        if (sql.includes('FROM sources WHERE id = $1')) return [{ id: params[0] as string }];
+        if (sql.includes('FROM sources WHERE local_path IS NOT NULL')) return [];
+        if (sql.includes('FROM pages WHERE slug = $1 AND source_id = $2')) return [{ id: 11 }];
+        return [];
+      },
+      addTakesBatch: async (rows: unknown[]) => { batches.push(rows); return rows.length; },
+      updateTake: async (...args: unknown[]) => { updates.push(args); return true; },
+    } as unknown as BrainEngine;
+
+    const errs: string[] = [];
+    const errSpy = spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errs.push(a.join(' ')); });
+    const exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`EXIT:${code}`);
+    }) as never);
+
+    let exited: string | null = null;
+    try {
+      await withEnv({ GBRAIN_SOURCE: undefined, GBRAIN_HOME: home }, async () => {
+        // Row 5 does not exist in the fence (only row 3 does).
+        await runTakes(engine, ['update', 'shared/page', '--row', '5', '--weight', '0.9', '--dir', brainDir]);
+      });
+    } catch (e) {
+      if (!(e as Error).message.startsWith('EXIT:')) throw e;
+      exited = (e as Error).message;
+    } finally {
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    expect(exited).toBe('EXIT:1');
+    expect(errs.join('\n')).toContain('Row #5 not found on shared/page');
+    // EV1 refusal is refusal — no DB write of any kind was attempted.
+    expect(batches).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+    // And the on-disk fence is untouched.
+    expect(readFileSync(join(brainDir, 'shared/page.md'), 'utf-8')).toContain('Current claim');
+  });
+
+  test('resolve --outcome true maps to quality=correct (back-compat alias lane)', async () => {
+    const brainDir = mkdtempSync(join(tmpdir(), 'gbrain-takes-resolve-outcome-'));
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-takes-home-'));
+    tmpRoots.push(brainDir, home);
+    const { renderTakesFence } = await import('../src/core/takes-fence.ts');
+    mkdirSync(join(brainDir, 'shared'), { recursive: true });
+    writeFileSync(
+      join(brainDir, 'shared/page.md'),
+      `# Shared page\n\n## Takes\n\n${renderTakesFence([{
+        rowNum: 3, claim: 'Bet claim', kind: 'bet', holder: 'self',
+        weight: 0.8, active: true,
+      }])}\n`,
+      'utf-8',
+    );
+    const resolves: Array<{ pageId: number; rowNum: number; args: Record<string, unknown> }> = [];
+    const engine = {
+      getConfig: async () => null,
+      executeRaw: async (sql: string, params: unknown[] = []) => {
+        if (sql.includes('FROM sources WHERE id = $1')) return [{ id: params[0] as string }];
+        if (sql.includes('FROM sources WHERE local_path IS NOT NULL')) return [];
+        if (sql.includes('FROM pages WHERE slug = $1 AND source_id = $2')) return [{ id: 11 }];
+        return [];
+      },
+      addTakesBatch: async (rows: unknown[]) => rows.length,
+      resolveTake: async (pageId: number, rowNum: number, args: Record<string, unknown>) => {
+        resolves.push({ pageId, rowNum, args });
+        return true;
+      },
+    } as unknown as BrainEngine;
+
+    const logs: string[] = [];
+    const logSpy = spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {}); // swallow the [deprecated] alias warn
+    try {
+      await withEnv({ GBRAIN_SOURCE: undefined, GBRAIN_HOME: home }, async () => {
+        await runTakes(engine, ['resolve', 'shared/page', '--row', '3', '--outcome', 'true', '--dir', brainDir]);
+      });
+    } finally {
+      logSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+
+    // The success line names the MAPPED quality, not the raw outcome flag.
+    expect(logs.join('\n')).toContain('Resolved take #3 on shared/page: quality=correct');
+    // And the DB mirror got quality 'correct' / outcome true.
+    expect(resolves).toHaveLength(1);
+    expect(resolves[0]!.args.quality).toBe('correct');
+    expect(resolves[0]!.args.outcome).toBe(true);
+    // Markdown mirror carries the resolution (md-first).
+    expect(readFileSync(join(brainDir, 'shared/page.md'), 'utf-8')).toContain('correct');
+  });
+});
+
 describe('gbrain takes add — page validated before markdown is written', () => {
   test('missing page leaves no orphaned .md on disk', async () => {
     const brainDir = mkdtempSync(join(tmpdir(), 'gbrain-takes-orphan-'));

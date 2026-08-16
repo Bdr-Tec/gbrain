@@ -4,8 +4,8 @@
  *
  * MARKDOWN IS CANONICAL (the extract-takes contract, src/core/cycle/
  * extract-takes.ts): the md→DB reconcile upserts ON CONFLICT(page_id,row_num)
- * and `--rebuild` deletes+reinserts from md, so any writer that creates
- * DB-only rows gets silently clobbered by the next sync/extract. Every
+ * and the extract rebuild lane deletes+reinserts from md, so any writer that
+ * creates DB-only rows gets silently clobbered by the next sync/extract. Every
  * mutation here is therefore md-FIRST — row numbers derive from the fence
  * (takes-fence.ts), the .md file is written before the DB — and the markdown
  * write is REQUIRED: when the page file can't be located the write REFUSES
@@ -59,7 +59,8 @@ export type TakesWriteErrorCode =
   | 'holder_denied'       // add with a holder outside the allow-list
   | 'no_fields'           // update with zero mutable fields
   | 'mirror_unavailable'  // sync.repo_path unset or page file absent
-  | 'page_locked';        // lock contention within the timeout (retryable)
+  | 'page_locked'         // lock contention within the timeout (retryable)
+  | 'invalid_input';      // free-text field carries control chars, fence markers, or out-of-range values
 
 export class TakesWriteError extends Error {
   code: TakesWriteErrorCode;
@@ -131,6 +132,55 @@ function assertHolderAllowed(holder: string, allowList: HolderAllowList): void {
       'holder_denied',
       `holder '${holder}' is not in this caller's takes-holder allow-list.`,
       'holder_not_in_allowlist',
+    );
+  }
+}
+
+/**
+ * Fence-injection guard for free-text cells. Every user-supplied string that
+ * lands in a fence cell must be single-line (control chars — newlines
+ * included — would let one cell mint extra table rows) and must not carry the
+ * fence-marker text: 'gbrain:takes' is the tightest common substring of
+ * TAKES_FENCE_BEGIN/TAKES_FENCE_END, so a cell containing it could terminate
+ * the fence early or open a second one, rewriting rows the caller doesn't own.
+ */
+const CELL_CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\n\r\t]/;
+const FENCE_MARKER_SUBSTRING = 'gbrain:takes';
+function assertSafeCellText(field: string, value: string | undefined): void {
+  if (typeof value !== 'string') return;
+  if (CELL_CONTROL_CHARS.test(value)) {
+    throw new TakesWriteError(
+      'invalid_input',
+      `${field} contains control characters (newlines included) — takes fence cells are single-line.`,
+    );
+  }
+  if (value.includes(FENCE_MARKER_SUBSTRING)) {
+    throw new TakesWriteError(
+      'invalid_input',
+      `${field} contains the takes fence marker text ('${FENCE_MARKER_SUBSTRING}') — refusing a fence-injection write.`,
+    );
+  }
+}
+
+/**
+ * The param docs promise weight 0..1 and the DB clamps out-of-range values
+ * (normalizeWeightForStorage) — writing the raw value to md would diverge the
+ * markdown from the DB mirror, so out-of-range is refused up front.
+ */
+function assertValidWeight(weight: number | undefined): void {
+  if (weight === undefined) return;
+  if (!Number.isFinite(weight) || weight < 0 || weight > 1) {
+    throw new TakesWriteError('invalid_input', `weight must be a number in [0, 1] (got ${weight}).`);
+  }
+}
+
+const SINCE_DATE_RE = /^\d{4}-\d{2}(-\d{2})?$/;
+function assertValidSinceDate(value: string | undefined): void {
+  if (value === undefined) return;
+  if (!SINCE_DATE_RE.test(value)) {
+    throw new TakesWriteError(
+      'invalid_input',
+      `since date must be 'YYYY-MM' or 'YYYY-MM-DD' (got '${value}').`,
     );
   }
 }
@@ -222,6 +272,14 @@ export async function addTakeToPage(
   input: AddTakeInput,
 ): Promise<{ rowNum: number; mirror: TakeMirror }> {
   assertHolderAllowed(input.holder, target.allowList);
+  // Fence-injection + range guards run before any I/O (invalid input must
+  // never acquire the lock or touch the page).
+  assertSafeCellText('claim', input.claim);
+  assertSafeCellText('kind', input.kind);
+  assertSafeCellText('holder', input.holder);
+  assertSafeCellText('source', input.source);
+  assertValidWeight(input.weight);
+  assertValidSinceDate(input.sinceDate);
   return withTakesLock(target, async () => {
     // Resolve the page BEFORE touching the markdown (the historical CLI
     // ordering): failing after a fence write would leave a take on disk the
@@ -266,6 +324,9 @@ export async function updateTakeOnPage(
   if (fields.weight === undefined && fields.source === undefined && fields.sinceDate === undefined) {
     throw new TakesWriteError('no_fields', 'No mutable fields given (weight, source, since date).');
   }
+  assertSafeCellText('source', fields.source);
+  assertValidWeight(fields.weight);
+  assertValidSinceDate(fields.sinceDate);
   return withTakesLock(target, async () => {
     const pageId = await getPageId(target.engine, target.slug, target.sourceId);
     const { path, body } = readPageBody(target.brainDir, target.slug);
@@ -273,6 +334,11 @@ export async function updateTakeOnPage(
     const targetRow = findFenceRow(parsed.takes, rowNum, target.allowList, target.slug);
     if (targetRow.resolvedAt) {
       throw new TakesWriteError('already_resolved', `Row #${rowNum} on ${target.slug} is resolved — resolved takes are immutable.`, 'Supersede instead.');
+    }
+    if (!targetRow.active) {
+      // A superseded row's mirror upsert would also wipe its superseded_by
+      // pointer — refuse, matching supersedeTakeOnPage's guard.
+      throw new TakesWriteError('row_inactive', `Row #${rowNum} on ${target.slug} is already superseded.`);
     }
     const updated: ParsedTake = {
       ...targetRow,
@@ -303,6 +369,12 @@ export async function supersedeTakeOnPage(
   rowNum: number,
   input: SupersedeTakeInput,
 ): Promise<{ oldRow: number; newRow: number; mirror: TakeMirror }> {
+  assertSafeCellText('claim', input.claim);
+  assertSafeCellText('kind', input.kind);
+  assertSafeCellText('holder', input.holder);
+  assertSafeCellText('source', input.source);
+  assertValidWeight(input.weight);
+  assertValidSinceDate(input.sinceDate);
   return withTakesLock(target, async () => {
     const pageId = await getPageId(target.engine, target.slug, target.sourceId);
     const { path, body } = readPageBody(target.brainDir, target.slug);
@@ -358,6 +430,9 @@ export async function resolveTakeOnPage(
   rowNum: number,
   input: ResolveTakeInput,
 ): Promise<{ rowNum: number; quality: ResolveQuality; mirror: TakeMirror }> {
+  assertSafeCellText('evidence', input.evidence);
+  assertSafeCellText('unit', input.unit);
+  assertSafeCellText('resolved_by', input.resolvedBy);
   return withTakesLock(target, async () => {
     const pageId = await getPageId(target.engine, target.slug, target.sourceId);
     const { path, body } = readPageBody(target.brainDir, target.slug);
@@ -365,6 +440,11 @@ export async function resolveTakeOnPage(
     const targetRow = findFenceRow(parsed.takes, rowNum, target.allowList, target.slug);
     if (targetRow.resolvedAt) {
       throw new TakesWriteError('already_resolved', `Row #${rowNum} on ${target.slug} is already resolved.`);
+    }
+    if (!targetRow.active) {
+      // Resolving a superseded row would feed calibration with an already-
+      // revised claim — resolve the replacement row instead.
+      throw new TakesWriteError('row_inactive', `Row #${rowNum} on ${target.slug} is already superseded.`, 'Resolve the replacement row instead.');
     }
     // quality → outcome per the schema CHECK (v74): correct↔true,
     // incorrect↔false, partial/unresolvable↔NULL.
@@ -385,26 +465,22 @@ export async function resolveTakeOnPage(
     // Resolution fields aren't in TakeBatchInput — mirror via resolveTake.
     // A drifted DB missing the row is self-healed md→DB (upsert the base row,
     // then resolve): the markdown is the truth being propagated.
+    // One shared argument object so the self-heal retry can never silently
+    // diverge from the primary call.
+    const resolveArgs = {
+      quality: input.quality,
+      outcome,
+      value: input.value,
+      unit: input.unit,
+      source: input.evidence,
+      resolvedBy: input.resolvedBy,
+    };
     try {
-      await target.engine.resolveTake(pageId, rowNum, {
-        quality: input.quality,
-        outcome,
-        value: input.value,
-        unit: input.unit,
-        source: input.evidence,
-        resolvedBy: input.resolvedBy,
-      });
+      await target.engine.resolveTake(pageId, rowNum, resolveArgs);
     } catch (err) {
       if (err instanceof Error && err.message.includes('TAKE_ROW_NOT_FOUND')) {
         await target.engine.addTakesBatch([toBatchInput(pageId, targetRow)]);
-        await target.engine.resolveTake(pageId, rowNum, {
-          quality: input.quality,
-          outcome,
-          value: input.value,
-          unit: input.unit,
-          source: input.evidence,
-          resolvedBy: input.resolvedBy,
-        });
+        await target.engine.resolveTake(pageId, rowNum, resolveArgs);
       } else {
         throw err;
       }

@@ -50,6 +50,7 @@ import {
 } from '../core/search/modes-report.ts';
 import {
   buildTuneRecommendations,
+  TUNE_MIN_CALLS,
   type TuneRecommendation,
 } from '../core/search/tune-recommendations.ts';
 
@@ -247,7 +248,7 @@ async function runTuneSubcommand(engine: BrainEngine, args: string[]): Promise<v
       return;
     }
     console.log('Not enough search activity in the last 7 days to tune.');
-    console.log(`Total searches: ${report.total_calls} (need >= 20 for confident recommendations).`);
+    console.log(`Total searches: ${report.total_calls} (need >= ${TUNE_MIN_CALLS} for confident recommendations).`);
     console.log(`(${TELEMETRY_COVERAGE_CAVEAT} Low counts can reflect this gap, not just low usage.)`);
     console.log('Use `gbrain serve` or an MCP session for a while, then re-run `gbrain search tune`.');
     return;

@@ -101,7 +101,12 @@ export interface MigrationLedgerSummary {
   partial: string[];
   /** Hit the consecutive-partial cap — needs an explicit forced retry. */
   wedged: string[];
-  /** Migrations newer than the installed binary (count only). */
+  /**
+   * Migrations newer than the installed binary (count only). Future-versioned
+   * migrations are excluded from ALL status buckets regardless of ledger
+   * state (matches the apply-migrations list view); after a binary downgrade
+   * a wedged future migration appears only in this count.
+   */
   skipped_future: number;
 }
 

@@ -56,6 +56,13 @@ describe('#2185 sweep — every command rejects a nonsense flag', () => {
     // And --migrate-only alone stays legal.
     expect(validateCommandFlags('init', ['--migrate-only'])).toBeNull();
   });
+
+  test('whoknows stays a CLI_ONLY member (reachability pin)', () => {
+    // The #2035 class: `case 'whoknows'` has a live handler (runWhoknows) that
+    // is shadowed by find_experts' hidden op hint — dropping this CLI_ONLY
+    // entry makes whoknows unreachable because its op hint is hidden.
+    expect(CLI_ONLY.has('whoknows')).toBe(true);
+  });
 });
 
 describe('#2185 acceptance — real usage stays legal', () => {

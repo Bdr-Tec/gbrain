@@ -66,7 +66,6 @@ function exitTakesError(err: unknown): never {
       case 'page_not_found':
         console.error(`${err.message} Run \`gbrain sync\` first.`);
         process.exit(1);
-        break;
       default:
         console.error(err.hint && err.code !== 'holder_denied' ? `${err.message} ${err.hint}` : err.message);
         process.exit(1);

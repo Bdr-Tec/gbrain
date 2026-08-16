@@ -4,7 +4,7 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
-import { MinionQueue } from '../core/minions/queue.ts';
+import { MinionQueue, deriveWedgeSignal } from '../core/minions/queue.ts';
 import { MinionWorker } from '../core/minions/worker.ts';
 import {
   WORKER_EXIT_RSS_WATCHDOG,
@@ -1046,7 +1046,6 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         const mins = w.minutes_since_completion;
         // Shared derivation (queue.ts deriveWedgeSignal) so this line, the
         // doctor wedged_queue check, and the get_job_stats op agree (#1801).
-        const { deriveWedgeSignal } = await import('../core/minions/queue.ts');
         const { wedged, wedge_threshold_minutes: wedgeMins } = deriveWedgeSignal(w);
         if (wedged) {
           const since = mins === null ? 'no completions on record' : `${mins}m since last completion`;

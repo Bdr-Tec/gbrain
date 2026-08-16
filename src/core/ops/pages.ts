@@ -960,7 +960,7 @@ const capture: Operation = {
   handler: async (ctx, p) => {
     const {
       detectBinaryNullByte, normalizeForHash, mergeCaptureFrontmatter,
-      defaultSlug, slugPrefixForType,
+      defaultSlug,
     } = await import('../capture-content.ts');
     const { computeContentHash } = await import('../ingestion/types.ts');
     const content = p.content as string;
@@ -980,11 +980,13 @@ const capture: Operation = {
       slug = defaultSlug(normalized, new Date(), type);
       // [EV7] A slug-bound client would 403 on the inbox/ default via the
       // inherited slug fence — the zero-config path must work for exactly
-      // that audience, so the default nests under the FIRST bound prefix.
+      // that audience, so the ENTIRE default slug (type prefix included —
+      // diary/event prefixes are two segments) nests under the FIRST bound
+      // prefix.
       const bound = ctx.auth?.boundSlugPrefixes;
       if (bound && bound.length > 0) {
         const prefix = bound[0].endsWith('/') ? bound[0] : `${bound[0]}/`;
-        slug = `${prefix}${slugPrefixForType(type)}/${slug.split('/').slice(1).join('/')}`;
+        slug = `${prefix}${slug}`;
       }
     }
     const fullContent = mergeCaptureFrontmatter(content, { type });

@@ -5,12 +5,15 @@
  *     module carries version strings only, so drift must fail the suite).
  *   - statusForVersion semantics (complete-wins, trailing-retry override,
  *     consecutive-partial wedge cap) — shared with apply-migrations.
- *   - migrationLedgerSummary fixtures incl. skipped_future + the get_health
- *     op's ledger-unreadable degradation.
+ *   - migrationLedgerSummary fixtures incl. skipped_future;
+ *   - the get_health OP layer over dispatchToolCall (real PGLiteEngine): the
+ *     migrations block carries the four keys, and an unreadable ledger
+ *     degrades to {error: 'ledger_unreadable'} without dropping the health
+ *     payload itself.
  */
 
-import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -99,6 +102,70 @@ describe('migrationLedgerSummary', () => {
       const summary = migrationLedgerSummary('99.0.0');
       expect(summary.pending.length).toBe(MIGRATION_VERSIONS.length);
       expect(summary.skipped_future).toBe(0);
+    });
+  });
+});
+
+describe('get_health op layer (dispatchToolCall, real PGLiteEngine)', () => {
+  let engine: import('../src/core/pglite-engine.ts').PGLiteEngine;
+  const tmpHomes: string[] = [];
+
+  beforeAll(async () => {
+    const { PGLiteEngine } = await import('../src/core/pglite-engine.ts');
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+    for (const home of tmpHomes.splice(0)) {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  const STDIO = { remote: true, transport: 'stdio' as const, sourceId: 'default' };
+
+  test('migrations block carries the four ledger keys', async () => {
+    const { dispatchToolCall } = await import('../src/mcp/dispatch.ts');
+    // GBRAIN_HOME is a PARENT dir — configDir() appends '.gbrain' itself.
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-ledger-op-'));
+    tmpHomes.push(home);
+    await withEnv({ GBRAIN_HOME: home }, async () => {
+      const res = await dispatchToolCall(engine, 'get_health', {}, { ...STDIO });
+      expect(res.isError ?? false).toBe(false);
+      const body = JSON.parse(res.content[0].text) as {
+        page_count: number;
+        migrations: { pending: string[]; partial: string[]; wedged: string[]; skipped_future: number };
+      };
+      expect(Object.keys(body.migrations).sort()).toEqual(['partial', 'pending', 'skipped_future', 'wedged'].sort());
+      expect(Array.isArray(body.migrations.pending)).toBe(true);
+      expect(Array.isArray(body.migrations.partial)).toBe(true);
+      expect(Array.isArray(body.migrations.wedged)).toBe(true);
+      expect(typeof body.migrations.skipped_future).toBe('number');
+      expect(typeof body.page_count).toBe('number');
+    });
+  });
+
+  test('unreadable ledger degrades migrations to {error: ledger_unreadable}; health payload survives', async () => {
+    const { dispatchToolCall } = await import('../src/mcp/dispatch.ts');
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-ledger-op-bad-'));
+    tmpHomes.push(home);
+    // completed.jsonl as a DIRECTORY: existsSync passes, readFileSync throws
+    // EISDIR — the op's best-effort catch must degrade the field only.
+    mkdirSync(join(home, '.gbrain', 'migrations', 'completed.jsonl'), { recursive: true });
+    await withEnv({ GBRAIN_HOME: home }, async () => {
+      const res = await dispatchToolCall(engine, 'get_health', {}, { ...STDIO });
+      expect(res.isError ?? false).toBe(false);
+      const body = JSON.parse(res.content[0].text) as {
+        page_count: number;
+        linkable_page_count: number;
+        migrations: unknown;
+      };
+      expect(body.migrations).toEqual({ error: 'ledger_unreadable' });
+      // Page-count fields still exist — the degradation never eats the dashboard.
+      expect(typeof body.page_count).toBe('number');
+      expect(typeof body.linkable_page_count).toBe('number');
     });
   });
 });

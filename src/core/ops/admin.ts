@@ -201,13 +201,17 @@ const quarantine_list: Operation = {
   scope: 'admin',
   area: 'admin',
   handler: async (ctx, p) => {
-    const { collectQuarantineRows } = await import('../../commands/quarantine.ts');
-    const rawLimit = typeof p.limit === 'number' && Number.isFinite(p.limit) ? p.limit : 200;
-    const rawScan = typeof p.max_scan === 'number' && Number.isFinite(p.max_scan) ? p.max_scan : 20000;
+    const {
+      collectQuarantineRows,
+      QUARANTINE_LIST_DEFAULT_LIMIT, QUARANTINE_LIST_MAX_LIMIT,
+      QUARANTINE_SCAN_DEFAULT, QUARANTINE_SCAN_MAX,
+    } = await import('../../commands/quarantine.ts');
+    const rawLimit = typeof p.limit === 'number' && Number.isFinite(p.limit) ? p.limit : QUARANTINE_LIST_DEFAULT_LIMIT;
+    const rawScan = typeof p.max_scan === 'number' && Number.isFinite(p.max_scan) ? p.max_scan : QUARANTINE_SCAN_DEFAULT;
     const { rows, scanned, truncated } = await collectQuarantineRows(ctx.engine, {
       includeFlagged: p.include_flagged === true,
-      limit: Math.max(1, Math.min(1000, rawLimit)),
-      maxScan: Math.max(1, Math.min(100000, rawScan)),
+      limit: Math.max(1, Math.min(QUARANTINE_LIST_MAX_LIMIT, rawLimit)),
+      maxScan: Math.max(1, Math.min(QUARANTINE_SCAN_MAX, rawScan)),
       ...sourceScopeOpts(ctx),
     });
     return { schema_version: 1, count: rows.length, truncated, scanned, rows };

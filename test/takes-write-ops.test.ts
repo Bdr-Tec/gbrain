@@ -254,6 +254,86 @@ describe('takes_supersede', () => {
   });
 });
 
+// Guard-coverage batch — fresh slugs only (earlier describes create takes on
+// the shared fixtures, so row numbers there are order-dependent; these pages
+// are created here and touched by no other describe).
+describe('takes-write guards (invalid_input / row_inactive / md-absent / mcp_resolved scoping)', () => {
+  beforeAll(async () => {
+    for (const slug of ['notes/guards-input', 'notes/guards-inactive']) {
+      await engine.putPage(slug, { type: 'note', title: slug, compiled_truth: `about ${slug}` });
+      mkdirSync(join(repo, slug.split('/')[0]), { recursive: true });
+      writeFileSync(join(repo, `${slug}.md`), `# ${slug}\n\nabout ${slug}\n`, 'utf-8');
+    }
+    // DB row but NO .md file — the md-file-absent refusal fixture.
+    await engine.putPage('notes/md-absent', { type: 'note', title: 'md-absent', compiled_truth: 'db only' });
+  });
+
+  test('invalid_input guards over dispatchToolCall → invalid_params', async () => {
+    const cases: Array<Record<string, unknown>> = [
+      // Newline in the claim: fence cells are single-line.
+      { slug: 'notes/guards-input', claim: 'line one\nline two', kind: 'fact', holder: 'world' },
+      // Fence-marker text in the claim: fence-injection refusal.
+      { slug: 'notes/guards-input', claim: 'contains gbrain:takes marker', kind: 'fact', holder: 'world' },
+      // Out-of-range weight (docs promise 0..1; DB would clamp → md/DB divergence).
+      { slug: 'notes/guards-input', claim: 'ok claim', kind: 'fact', holder: 'world', weight: 7 },
+      // Malformed since date (must be YYYY-MM or YYYY-MM-DD).
+      { slug: 'notes/guards-input', claim: 'ok claim', kind: 'fact', holder: 'world', since: '2026/01/01' },
+    ];
+    for (const args of cases) {
+      const res = await dispatchToolCall(engine, 'takes_add', args, { ...STDIO_WORLD });
+      expect(res.isError).toBe(true);
+      expect(parsed(res).error).toBe('invalid_params');
+    }
+    // None of the refused adds touched the fence.
+    const fence = parseTakesFence(pageMd('notes/guards-input'));
+    expect(fence.takes.length).toBe(0);
+  });
+
+  test('row_inactive: update and resolve on a superseded row both refuse, naming the supersession', async () => {
+    const add = parsed(await dispatchToolCall(engine, 'takes_add', {
+      slug: 'notes/guards-inactive', claim: 'Original claim', kind: 'take', holder: 'world', weight: 0.6,
+    }, { ...STDIO_WORLD }));
+    const sup = parsed(await dispatchToolCall(engine, 'takes_supersede', {
+      slug: 'notes/guards-inactive', row_num: add.row_num, claim: 'Replacement claim',
+    }, { ...STDIO_WORLD }));
+    expect(sup.old_row).toBe(add.row_num);
+
+    const upd = parsed(await dispatchToolCall(engine, 'takes_update', {
+      slug: 'notes/guards-inactive', row_num: add.row_num, weight: 0.1,
+    }, { ...STDIO_WORLD }));
+    expect(upd.error).toBe('invalid_params');
+    expect(upd.message).toContain('superseded');
+
+    const resv = parsed(await dispatchToolCall(engine, 'takes_resolve', {
+      slug: 'notes/guards-inactive', row_num: add.row_num, quality: 'correct',
+    }, { ...STDIO_WORLD }));
+    expect(resv.error).toBe('invalid_params');
+    expect(resv.message).toContain('superseded');
+  });
+
+  test('md-file-absent: DB row without a page file refuses with takes_mirror_unavailable', async () => {
+    const res = await dispatchToolCall(engine, 'takes_update', {
+      slug: 'notes/md-absent', row_num: 1, weight: 0.5,
+    }, { ...STDIO_WORLD });
+    expect(res.isError).toBe(true);
+    const body = parsed(res);
+    expect(body.error).toBe('unavailable');
+    expect(body.detail).toBe('takes_mirror_unavailable');
+  });
+
+  test('countMcpResolved is source-scoped: a foreign sourceId sees mcp_resolved 0', async () => {
+    // Control: the default source carries at least one mcp:stdio resolution
+    // (the takes_resolve describe above), so a zero under a foreign scope is
+    // the scoping working — not a dead counter.
+    const home = parsed(await dispatchToolCall(engine, 'takes_scorecard', {}, { ...STDIO_WORLD }));
+    expect(home.mcp_resolved).toBeGreaterThanOrEqual(1);
+    const foreign = parsed(await dispatchToolCall(engine, 'takes_scorecard', {}, {
+      ...STDIO_WORLD, sourceId: 'foreign-scope-src',
+    }));
+    expect(foreign.mcp_resolved).toBe(0);
+  });
+});
+
 describe('concurrency [ENG-E4/EV11]', () => {
   test('concurrent adds to one page: both eventually land with sequential rows, no silent overwrite', async () => {
     const call = () => dispatchToolCall(engine, 'takes_add', {

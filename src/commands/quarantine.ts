@@ -49,6 +49,14 @@ export function rowFor(page: { slug: string; source_id?: string; frontmatter?: R
   return null;
 }
 
+// Bounds for the quarantine_list op's clamps (src/core/ops/admin.ts); the CLI
+// list stays unbounded. One canonical home so the op clamps and the param
+// descriptions can't drift apart silently.
+export const QUARANTINE_LIST_DEFAULT_LIMIT = 200;
+export const QUARANTINE_LIST_MAX_LIMIT = 1000;
+export const QUARANTINE_SCAN_DEFAULT = 20000;
+export const QUARANTINE_SCAN_MAX = 100000;
+
 export interface CollectQuarantineOpts {
   includeFlagged?: boolean;
   /** Max ROWS returned (op default 200, cap 1000). Undefined = unbounded (CLI). */

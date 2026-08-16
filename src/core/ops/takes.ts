@@ -5,8 +5,21 @@
  * in ../operations.ts. Never import from '../operations.ts' here (cycle).
  */
 
-import type { Operation } from './contract.ts';
-import { sourceScopeOpts, thinkSourceScopeOpts } from './context.ts';
+import { OperationError, type Operation, type OperationContext } from './contract.ts';
+import {
+  sourceScopeOpts,
+  thinkSourceScopeOpts,
+  enforceClientSlugFence,
+  validatePageSlug,
+} from './context.ts';
+import {
+  addTakeToPage,
+  updateTakeOnPage,
+  supersedeTakeOnPage,
+  resolveTakeOnPage,
+  resolveTakesRepoDir,
+  TakesWriteError,
+} from '../takes-write.ts';
 
 // --- v0.28: Takes ---
 
@@ -268,17 +281,6 @@ const think: Operation = {
 //     axes if field use demands it.
 // ---------------------------------------------------------------------------
 
-import {
-  addTakeToPage,
-  updateTakeOnPage,
-  supersedeTakeOnPage,
-  resolveTakeOnPage,
-  resolveTakesRepoDir,
-  TakesWriteError,
-} from '../takes-write.ts';
-import { enforceClientSlugFence } from './context.ts';
-import { OperationError, type OperationContext } from './contract.ts';
-
 const TAKE_KINDS = ['fact', 'take', 'bet', 'hunch'] as const;
 /** Ops hold the MCP request at most this long waiting for the page lock. */
 const OP_LOCK_TIMEOUT_MS = 2000;
@@ -332,6 +334,7 @@ function mapTakesWriteError(err: unknown): never {
         throw new OperationError('invalid_params', err.message, err.hint ?? 'Resolved takes are immutable; supersede instead.');
       case 'row_inactive':
       case 'no_fields':
+      case 'invalid_input':
         throw new OperationError('invalid_params', err.message, err.hint);
     }
   }
@@ -361,6 +364,7 @@ const takes_add: Operation = {
   handler: async (ctx, p) => {
     const slug = p.slug as string;
     enforceClientSlugFence(ctx, slug, 'takes_add');
+    validatePageSlug(slug); // defense-in-depth, matching put_page
     if (ctx.dryRun) return { dry_run: true, action: 'takes_add', slug };
     const brainDir = await opBrainDir(ctx);
     try {
@@ -402,6 +406,7 @@ const takes_update: Operation = {
   handler: async (ctx, p) => {
     const slug = p.slug as string;
     enforceClientSlugFence(ctx, slug, 'takes_update');
+    validatePageSlug(slug); // defense-in-depth, matching put_page
     if (ctx.dryRun) return { dry_run: true, action: 'takes_update', slug, row_num: p.row_num };
     const brainDir = await opBrainDir(ctx);
     try {
@@ -444,6 +449,7 @@ const takes_supersede: Operation = {
   handler: async (ctx, p) => {
     const slug = p.slug as string;
     enforceClientSlugFence(ctx, slug, 'takes_supersede');
+    validatePageSlug(slug); // defense-in-depth, matching put_page
     if (ctx.dryRun) return { dry_run: true, action: 'takes_supersede', slug, row_num: p.row_num };
     const brainDir = await opBrainDir(ctx);
     try {
@@ -489,13 +495,15 @@ const takes_resolve: Operation = {
   handler: async (ctx, p) => {
     const slug = p.slug as string;
     enforceClientSlugFence(ctx, slug, 'takes_resolve');
+    validatePageSlug(slug); // defense-in-depth, matching put_page
     if (ctx.dryRun) return { dry_run: true, action: 'takes_resolve', slug, row_num: p.row_num };
     const brainDir = await opBrainDir(ctx);
     // CV6 posture: remote resolutions are provenance-stamped server-side —
-    // clamp the client id so a hostile DCR name can't bloat the column.
+    // clamp + sanitize the client id: hostile DCR client names must not carry
+    // newlines/pipes into the markdown fence, and must not bloat the column.
     let resolvedBy: string;
     if (ctx.remote !== false) {
-      const id = (ctx.auth?.clientId ?? ctx.transport ?? 'remote').slice(0, 64);
+      const id = (ctx.auth?.clientId ?? ctx.transport ?? 'remote').replace(/[^\w.:-]/g, '_').slice(0, 64);
       resolvedBy = `mcp:${id}`;
     } else if (typeof p.resolved_by === 'string' && p.resolved_by.length > 0) {
       resolvedBy = p.resolved_by;

@@ -11,6 +11,7 @@ import { dispatchToolCall } from '../src/mcp/dispatch.ts';
 import { deriveWedgeSignal } from '../src/core/minions/queue.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operationsByName } from '../src/core/operations.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 
@@ -73,18 +74,27 @@ describe('get_job_stats op', () => {
 });
 
 describe('deriveWedgeSignal (shared with the CLI line + doctor check)', () => {
-  test('wedged: no healthy actives, work waiting, stale completion', () => {
-    const { wedged } = deriveWedgeSignal({ active_healthy: 0, waiting: 3, minutes_since_completion: 60 });
-    expect(wedged).toBe(true);
+  // deriveWedgeSignal reads GBRAIN_WEDGED_QUEUE_WARN_MINUTES per call — pin
+  // it to unset so a tuned dev/CI host (e.g. =120) can't flip the 60-minute
+  // fixtures below. The default threshold (15) is what these assertions pin.
+  test('wedged: no healthy actives, work waiting, stale completion', async () => {
+    await withEnv({ GBRAIN_WEDGED_QUEUE_WARN_MINUTES: undefined }, async () => {
+      const { wedged } = deriveWedgeSignal({ active_healthy: 0, waiting: 3, minutes_since_completion: 60 });
+      expect(wedged).toBe(true);
+    });
   });
 
-  test('wedged: no completions on record counts as stale', () => {
-    expect(deriveWedgeSignal({ active_healthy: 0, waiting: 1, minutes_since_completion: null }).wedged).toBe(true);
+  test('wedged: no completions on record counts as stale', async () => {
+    await withEnv({ GBRAIN_WEDGED_QUEUE_WARN_MINUTES: undefined }, async () => {
+      expect(deriveWedgeSignal({ active_healthy: 0, waiting: 1, minutes_since_completion: null }).wedged).toBe(true);
+    });
   });
 
-  test('not wedged: live active row masks nothing, recent completion clears', () => {
-    expect(deriveWedgeSignal({ active_healthy: 1, waiting: 5, minutes_since_completion: 60 }).wedged).toBe(false);
-    expect(deriveWedgeSignal({ active_healthy: 0, waiting: 5, minutes_since_completion: 2 }).wedged).toBe(false);
-    expect(deriveWedgeSignal({ active_healthy: 0, waiting: 0, minutes_since_completion: null }).wedged).toBe(false);
+  test('not wedged: live active row masks nothing, recent completion clears', async () => {
+    await withEnv({ GBRAIN_WEDGED_QUEUE_WARN_MINUTES: undefined }, async () => {
+      expect(deriveWedgeSignal({ active_healthy: 1, waiting: 5, minutes_since_completion: 60 }).wedged).toBe(false);
+      expect(deriveWedgeSignal({ active_healthy: 0, waiting: 5, minutes_since_completion: 2 }).wedged).toBe(false);
+      expect(deriveWedgeSignal({ active_healthy: 0, waiting: 0, minutes_since_completion: null }).wedged).toBe(false);
+    });
   });
 });
