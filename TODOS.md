@@ -1,5 +1,27 @@
 # TODOS
 
+## LongMemEval temporal gap — date-proximity signal SPIKE-REJECTED (filed v0.46.8.0, identity/retrieval wave)
+
+- **P2 — Reframe the temporal-reasoning gap (94.7% vs MemPal 96.2%, the only categorical
+  public-benchmark loss) around what the questions actually are.** The v0.46.8 wave
+  pre-registered a spike gate before building a date-proximity ranking term
+  (`COALESCE(effective_date, updated_at)` proximity to query-text-extracted since/until
+  bounds, per the outside-voice-amended plan). The spike FIRED the stop condition:
+  a 12-question sample of the 133 `temporal-reasoning` questions in `longmemeval_s`
+  contained ZERO extractable absolute bounds — they are duration-arithmetic
+  ("How many days passed between X and Y?", "how many weeks ago did I …") and
+  pairwise-ordering ("which happened first …") questions. A scalar date-proximity
+  boost fires on none of them; retrieval for these is EVENT-DESCRIPTION recall
+  (find the sessions naming the events), and the date math belongs to the answer
+  layer — which is what the existing `findTrajectory` routing already does.
+  Next honest hypotheses, in order: (a) measure per-question retrieval recall on the
+  temporal slice to locate WHERE the 1.5pt is lost (retrieval vs trajectory coverage
+  vs answer extraction); (b) if retrieval: event-phrase recall (the event descriptions
+  are long noun phrases — expansion/paraphrase territory, adjacent to the v0.46.8
+  concept lane); (c) if trajectory: widen `extractCandidateEntities` coverage on
+  event-shaped (non-person) anchors. Do NOT rebuild the date-proximity boost without
+  new evidence — this entry is the receipt for why it doesn't exist.
+
 ## Codex/Claude plugin lane follow-ups (filed from the plugin packaging wave)
 
 - [ ] **Plugin-lane receipt provenance: re-run bootstrap after plugin install can strand a hand-wired registration.** `appendReceiptRegistration` dedups by (host, scope), so wiring via bootstrap (detail:`mcp`) → enabling the plugin → re-running `bootstrap hooks` overwrites the record with `plugin-mcp`; the plugin-owned uninstall guard then skips `mcp remove` forever, stranding the registration bootstrap itself created. Narrow sequence (plugin enabled AFTER a hand-wired bootstrap). Fix: on the plugin-owned skip, don't downgrade an existing `mcp`-detail record for the same (host,scope), or offer to remove the stale hand-wired entry. Priority: P3. Surfaced by the ship-stage red-team review of the codex-plugin wave.
