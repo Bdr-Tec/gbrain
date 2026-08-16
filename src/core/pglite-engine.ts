@@ -10,6 +10,18 @@ import { join as joinPath, resolve as resolvePath, sep as pathSep } from 'node:p
 // so a `bun build --compile` binary can serve a PGLite brain (Bun vfs #1340).
 // The embedded `extensions` REPLACE the stock `{ vector, pg_trgm }` imports.
 import { getEmbeddedPgliteOptions } from './pglite-embedded-assets.ts';
+import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
+
+/**
+ * #4143 — bound for PGlite.close() inside disconnect(). close() deadlocks
+ * permanently when a statement is in flight; the drain above close() removes
+ * the known trigger, this bound converts any residual instance into a 5s warn
+ * instead of a wedged process. Env-overridable for incident response.
+ */
+const PGLITE_CLOSE_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.GBRAIN_PGLITE_CLOSE_TIMEOUT_MS ?? '') || 5000,
+);
 import type {
   BrainEngine,
   BatchOpts,
@@ -769,6 +781,18 @@ export class PGLiteEngine implements BrainEngine {
     this._db = null;
     const lock = this._lock;
     this._lock = null;
+    if (!db && !lock) return; // already disconnected — nothing to drain or close
+
+    // #4143: drain in-flight background work AFTER the early-null and BEFORE
+    // close(). PGLite's close() deadlocks PERMANENTLY — close's promise AND
+    // the in-flight query's promise never settle — when any statement is in
+    // flight (the trigger was the telemetry flush issuing two sequential
+    // INSERTs). Ordering is load-bearing: the early-null means no NEW
+    // statement can reach the raw handle (drainer writes fail fast with
+    // 'PGLite not connected' and are swallowed — that is intended), while
+    // statements ALREADY in flight settle against the still-open handle.
+    // Reordering the drain above the null would reopen the #1337 race.
+    await drainBackgroundWorkBeforeDisconnect();
     try {
       if (db) {
         // Deliberately NOT wrapped in preservingProcessExitCode: close's
@@ -777,7 +801,36 @@ export class PGLiteEngine implements BrainEngine {
         // #2084 implementation note), and the CLI's exit verdict doesn't read
         // process.exitCode at all — it lives in the gbrain-owned channel
         // (setCliExitVerdict/currentExitCode in cli-force-exit.ts).
-        await db.close();
+        //
+        // #4143 backstop: bound close() so any residual instance of the
+        // in-flight-statement deadlock degrades to a loud warning instead of
+        // wedging the process until an outer 600s CI kill. A close-throw
+        // still propagates (lock releases in finally, same as before). Note
+        // for reconnect(): a timed-out close leaves a zombie instance briefly
+        // coexisting with a re-opened dataDir — the WAL-repair path covers
+        // the consequence on next open.
+        const closePromise = db.close();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const timedOut = await Promise.race([
+            closePromise.then(() => false),
+            new Promise<boolean>((resolve) => {
+              timer = setTimeout(() => resolve(true), PGLITE_CLOSE_TIMEOUT_MS);
+              timer.unref?.();
+            }),
+          ]);
+          if (timedOut) {
+            warnOncePerProcess(
+              'pglite-close-timeout',
+              `[pglite] db.close() did not settle within ${PGLITE_CLOSE_TIMEOUT_MS}ms — proceeding with teardown (a statement may still be in flight; #4143). Override with GBRAIN_PGLITE_CLOSE_TIMEOUT_MS.`,
+            );
+            // Abandoned close may reject later — never let it become an
+            // unhandled rejection.
+            closePromise.catch(() => { /* abandoned after timeout */ });
+          }
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       }
     } finally {
       if (lock?.acquired) {

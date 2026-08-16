@@ -78,6 +78,7 @@ import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import * as db from './db.ts';
 import { ConnectionManager, DEFAULT_DIRECT_POOL_SIZE } from './connection-manager.ts';
 import { logConnectionEvent } from './connection-audit.ts';
+import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
 import { validateSlug, contentHash, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery } from './search/sql-ranking.ts';
@@ -368,6 +369,14 @@ export class PostgresEngine implements BrainEngine {
     try {
       logDbDisconnect('postgres', this._connectionStyle ?? 'unknown');
     } catch { /* best-effort; never block disconnect on audit failure */ }
+    // #4143 engine parity with PGLiteEngine.disconnect(): settle in-flight
+    // background-work statements before pool teardown. Mode 'disconnect' —
+    // residual telemetry buffers are dropped on BOTH engines (symmetric lossy
+    // semantics; the CLI-exit drain is where residuals flush). Guarded so a
+    // no-op disconnect (never connected / already torn down) skips the drain.
+    if (this.connectionManager || this._sql || this._connectionStyle === 'module') {
+      await drainBackgroundWorkBeforeDisconnect();
+    }
     // v0.30.1: tear down the direct pool first if the manager owns one.
     if (this.connectionManager) {
       await this.connectionManager.disconnect();
