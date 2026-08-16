@@ -2,6 +2,118 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.6.0] - 2026-08-15
+
+**A busy machine can no longer make the job queue evict its own healthy
+work.** ([#4145](https://github.com/garrytan/gbrain/issues/4145)) Under
+sustained CPU load, a long-running background job (a subagent averaging
+~3 minutes) could miss one lock-renewal window and get force-evicted
+mid-inference — the queue would churn for hours while completions stayed
+near zero, and the logs read like an orphan leak. Lock renewal is now
+**verify-before-evict**: a slow or failed renewal is never treated as
+loss; the worker asks the database the one authoritative question (a
+fenced re-check) and keeps the job whenever the lease is still its own.
+
+### Added
+- **Per-job lock leases.** Long LLM handlers (subagent, autopilot-cycle,
+  embed-backfill, …) now hold a 300s lease by default instead of the
+  global 30s; single-call LLM handlers get 120s; short jobs keep 30s for
+  fast dead-worker recovery. Override per submission with
+  `gbrain jobs submit --lock-duration-ms N` (clamped to 5s–1h; also an
+  MCP `submit_job` param). Stored on the job row (migration v130), so it
+  survives worker restarts, and renewed at a `min(lease/2, 60s)` cadence.
+  The bound is enforced end-to-end — at submit, again on the resolved
+  lease at claim, and by a database range constraint — and
+  `--dry-run` echoes the clamped value that will actually be stored.
+- **Self-explaining eviction forensics.** Every renewal fault now logs and
+  audits WHY it failed (call-timeout vs refused vs fenced-lost), how late
+  the renewal timer fired vs its own cadence (the "was the worker starved
+  or was the database down?" discriminator), host load, and an
+  event-loop-delay sample scoped to the failing window. The ops runbook
+  gained a table for reading these plus the full env-knob reference
+  (`GBRAIN_LOCK_RENEWAL_*`, `GBRAIN_MINION_STALL_RECLAIM_GRACE_MS`).
+- **Stall-sweep reclaim grace.** A lease that lapsed within the last 15s
+  is not reclaimed — a just-recovered worker's own renewal wins the race
+  against the sweep instead of having its live job stolen (env-tunable,
+  capped at 10 minutes with a warn-once clamp; `0` restores the previous
+  behavior).
+
+### Changed
+- **Eviction requires evidence.** The renewal state machine aborts a job
+  only on a fenced miss (the row was genuinely reclaimed — requeued with
+  no attempt burned) or after a hard backstop (default 2× the lease)
+  during a total database outage. Wall-clock jumps can no longer distort
+  the decision (elapsed-time math runs on a monotonic clock), and a
+  renewal timeout now also cancels the in-flight query so it stops
+  holding a pool slot.
+- **`gbrain jobs get`** shows the job's lock lease alongside its
+  wall-clock budget, including the default that will stamp at claim.
+
+### Fixed
+- **The unit-suite's SIGTERM-semantics test no longer kills its own
+  shard.** A bare in-process signal broadcast could reach a leaked
+  cleanup handler from an earlier test file and exit the whole test
+  process mid-suite, misreading as an external kill; the test now fires
+  only the listeners it registered.
+- **`gbrain verify` no longer leaves probe tombstones in your brain.**
+  The end-of-run probe cleanup previously soft-deleted its two probe
+  pages; every verify run left residue visible to `include_deleted`
+  readers until the 72h purge. Cleanup now hard-deletes.
+- **Relational retrieval is deterministic on ties.** When a graph node is
+  reachable at the same depth from multiple seeds, the reported path was
+  plan/heap-order dependent (and could differ between engines); a
+  lexicographic tie-break restores the documented determinism.
+- **A worker slot can no longer lose track of a re-claimed job.** After a
+  force-evict, the stale execution's cleanup could delete the tracking
+  entry of the SAME job re-claimed by the same worker; both cleanup sites
+  now verify generation (lock token) before deleting.
+- **Developer e2e lane un-rotted.** 29 test failures across 13 files in
+  the developer-machine e2e lane (which CI does not run) were fixed:
+  ten rotted test files re-pinned to current intended behavior, plus the
+  wrapper's per-file timeout now accommodates the LLM-bound Tier-2 files
+  (`GBRAIN_E2E_FILE_TIMEOUT`).
+
+To take advantage of v0.46.6.0: upgrade and restart your worker
+(`gbrain jobs supervisor stop && gbrain jobs supervisor start --detach`).
+Existing queues need no migration steps — the new lease column defaults
+every existing row to its handler's lease at next claim. If you tuned
+around the old eviction behavior (e.g. very high `--max-stalled`), you can
+likely lower it now. Mixed fleets are safe: an old worker simply keeps the
+old 30s behavior until restarted.
+## [0.46.5.0] - 2026-08-15
+
+**CI in half, evals actually gating.** The Test workflow ran 8–9.5 minutes on
+every push; its long pole was a serial-test job that executed ~140 per-file bun
+processes strictly one-at-a-time even though the quarantine only ever required
+per-process isolation. This release pools that lane (8.5 min → ~4 min in CI,
+~2.5 min locally), wires the PGLite schema-snapshot fast-path into the CI test
+runners (it previously existed but only the local loop used it), and rebalances
+the 10-shard matrix on freshly mined weights (new files without a mined weight
+now fall back to the p75 file weight instead of the median) — a measured branch
+run landed the whole workflow at 255s. E2E stops spending real provider tokens on doc-only
+pushes (content-hash skip with nightly + manual-dispatch exemptions) and runs
+its tiers in parallel behind a fast broken-build spend gate.
+
+Retrieval quality now has a hermetic CLI canary: `gbrain eval gate` accepts a
+deterministic embedder option that drives the full hybrid/RRF pipeline with
+zero API keys, gated in CI on every run (`check:eval-canary`, alongside the new
+`check:eval-chronicle` gate) with its run ledger committed to
+`.gbrain-evals/eval-results.jsonl`. Two registered-but-never-executed guards
+came alive, a registration⇒execution coverage test closes that class for good,
+and 47 orphaned eval-harness tests joined the CI matrix behind a keyless
+allowlist. Test reliability hardening rounds it out: externally-killed serial
+files get a sequential rescue re-run (never a silent pass), machine-global
+files live on a growth-guarded exclusive lane, and the shard-balance test now
+asserts the matrix CI actually runs instead of recomputing its own inputs.
+
+**To take advantage of v0.46.5.0:** nothing to configure — CI and the local
+loops (`bun run test`, `bun run test:serial`, `bun run verify`) are just
+faster. New knobs if you need them: `GBRAIN_SERIAL_POOL=1` restores the old
+fully-sequential serial lane, `GBRAIN_VERIFY_MAX_PARALLEL` bounds verify's
+worker pool, `GBRAIN_NO_SNAPSHOT=1` opts any runner out of the snapshot
+fast-path. Run the retrieval canary yourself with
+`bun run scripts/run-eval-canary.ts` (add `--record` to append the committed
+ledger).
 ## [0.46.4.0] - 2026-08-15
 
 **opencode joins the supported-client roster — at full parity from day one.**

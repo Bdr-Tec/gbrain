@@ -64,6 +64,21 @@ CI. Production retrieval differs via the query cache, salience freshness,
 expansion, etc. The gate measures retrieval quality with a fixed pipeline;
 your users may see different results when the cache is warm.
 
+For a fully hermetic run (CI canaries, keyless environments), add
+`--embedder deterministic` to the correctness gate: query embeddings come
+from the qrels fixture's basis-vector dims (`src/eval/deterministic-embed.ts`)
+instead of the gateway, so the gate runs with no API keys and no network.
+Correctness-gate-only — it is rejected together with `--baseline` (replay
+re-embeds captured queries via the gateway) and requires `--qrels`. Bare
+`hybridSearch` never reads or writes the semantic query cache, so a
+deterministic run cannot poison cached production results. This is what CI's
+`check:eval-canary` gate runs via `scripts/run-eval-canary.ts`: a throwaway
+PGLite brain seeded from the qrels fixture, gating the hybrid ranking
+pipeline (keyword/title/alias arms + RRF) with synthetic vectors. Honest
+scope: semantic-embedding regressions remain the keyed eval suites' job.
+Reproduce locally with `bun run scripts/run-eval-canary.ts` (`--record`
+appends to the `.gbrain-evals/eval-results.jsonl` ledger).
+
 ### `.qrels.json` shape
 
 Two equivalent representations per entry:
