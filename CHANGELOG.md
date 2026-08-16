@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.13.1] - 2026-08-16
+## [0.46.14.0] - 2026-08-16
 
 Fix wave: 13 verified issues fixed + 14 community PRs adopted with credit, from a
 triage of everything filed since the 2026-08-14 audit (42 new items, each verified
@@ -68,7 +68,7 @@ against HEAD with an adversarial second pass before entering scope).
 - **cli:** `sources --help` shows real usage instead of the circular stub
   (PR #4133 by @Masashi-Ono0611).
 
-### To take advantage of v0.46.13.1
+### To take advantage of v0.46.14.0
 - `gbrain upgrade` picks everything up; migration v131 runs automatically.
   Multi-worker Postgres deployments: stop running `gbrain jobs work` daemons
   BEFORE upgrading and restart them on the new binary — an old binary writing
@@ -80,6 +80,71 @@ against HEAD with an adversarial second pass before entering scope).
 - If you intentionally route claude-cli through a cloud backend, switch that
   workload to the `anthropic` recipe with cloud credentials — claude-cli children
   now always use subscription auth.
+## [0.46.12.2] - 2026-08-16
+
+**Your agent can now do over MCP what it could only do from the CLI.** An
+audit of the CLI-versus-MCP surface found the gap was never that MCP filtered
+tools out — it was CLI commands that never got an operation entry, so a
+connected agent hit "unknown tool" and fell back to shelling out. This wave
+closes that: eleven new tools, so an agent can record and resolve predictions,
+capture a quick note, check queue health, and read search/cache diagnostics
+without leaving the MCP session.
+
+### Added
+- **Record predictions from your agent.** `takes_add`, `takes_update`,
+  `takes_resolve`, and `takes_supersede` let a connected agent write to the
+  predictions ledger, not just read it — record a bet, refine its weight,
+  resolve it with evidence, or supersede a stale claim. Resolutions an agent
+  makes are tagged distinctly from your own, so the calibration scorecard keeps
+  agent-made and owner-made verdicts separable (`takes_scorecard` shows the
+  count).
+- **`capture` over MCP.** The "just remember this" write is now an MCP tool,
+  not CLI-only: it auto-derives a stable inbox slug, dedupes identical content,
+  and is on the daily-driver (`starter`) surface so bundled connect flows can
+  reach it. Prefer it for quick notes; `put_page` still handles full-control
+  writes.
+- **Queue health from your agent.** `get_job_stats` surfaces the job queue's
+  per-type rollup and health counts over MCP, including the "wedged queue"
+  signal (a worker alive but claiming nothing while work waits) — the one jobs
+  command that had no MCP equivalent.
+- **Retrieval + cache diagnostics over MCP.** `search_stats`, `search_modes`,
+  `search_tune`, and `cache_stats` expose the same read-only dashboards as
+  `gbrain search` / `gbrain cache stats`, so an agent asked to diagnose
+  retrieval quality or cost no longer has to shell out. Tuning recommendations
+  come back as paste-ready commands; applying them stays a deliberate local
+  step.
+- **Content-quality triage over MCP.** `quarantine_list` shows hidden and
+  flagged pages for review; scanning and clearing stay local.
+- **Migration state in `get_health`.** The health dashboard now reports
+  pending, partial, and wedged host migrations, so a remote operator can spot
+  a stuck migration without opening a shell on the host.
+- **Thin-client installs route the new tools automatically.** On a
+  connect-to-a-remote-brain install, `gbrain takes …`, `gbrain search
+  stats|modes|tune`, `gbrain jobs stats`, `gbrain cache stats`, and `gbrain
+  quarantine list` now run against the brain host instead of failing.
+
+### Changed
+- **`gbrain whoknows` now shows its full ranked view.** The expertise-routing
+  command was reachable but rendered generic output; it now renders the ranked
+  table with per-factor explanations it was always meant to show.
+- **The agent tool catalog is honest on every transport.** On a local
+  (stdio) connection, tools gated off by the brain owner no longer appear in
+  the tool list only to be refused when called — they're hidden until enabled,
+  matching how remote connections already behaved.
+
+### Fixed
+- **Predictions written over MCP are safe by construction.** The
+  markdown-canonical takes store keeps its file writes contained to the right
+  source's working tree, writes atomically, refuses input that could corrupt
+  the on-page table, and treats a database mirror hiccup as recoverable rather
+  than losing the write — the same protections the main page writer already
+  had, now covering the new remote write path.
+
+To take advantage of v0.46.12.2: reconnect your coding agent (or restart
+`gbrain serve`) so the new tools appear in its catalog. On the default `full`
+surface every new tool is available immediately; on `starter`, `capture` joins
+the daily-driver set. Nothing to configure — the tools are read-only or
+scope-and-fence-protected exactly like the operations they mirror.
 ## [0.46.12.0] - 2026-08-16
 
 **Every surface that could still steer you toward the retiring embedding

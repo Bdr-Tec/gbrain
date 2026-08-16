@@ -5875,7 +5875,7 @@ export const MIGRATIONS: Migration[] = [
     // ON CONFLICT target errors (SQLSTATE 42P10) on every tool persist once
     // the drop runs — fail-loud, not corrupting. Multi-worker Postgres
     // deployments should stop `jobs work` daemons before upgrading and
-    // restart them on the new binary (release-noted in v0.46.13.1).
+    // restart them on the new binary (release-noted in v0.46.14.0).
     idempotent: true,
     sql: `
       ALTER TABLE subagent_tool_executions

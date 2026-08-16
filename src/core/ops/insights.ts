@@ -155,7 +155,12 @@ const find_experts: Operation = {
       ...sourceScopeOpts(ctx),
     });
   },
-  cliHints: { name: 'whoknows', positional: ['topic'] },
+  // hidden: 'whoknows' is in CLI_ONLY (src/cli.ts) — runWhoknows owns the CLI
+  // surface (ranked table + per-factor explain + thin-client routing) and was
+  // unreachable while this non-hidden hint dispatched the generic op formatter
+  // (the #2035 calibration bug class, resolved the #3502 way: wire the richer
+  // handler, hide the hint).
+  cliHints: { name: 'whoknows', positional: ['topic'], hidden: true },
 };
 
 // v0.32.6: contradiction probe MCP surface (M3)
