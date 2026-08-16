@@ -39,12 +39,13 @@ interface ZeSwitchSnapshot {
   search_reranker_model?: string | null;
 }
 
-// Retired forward-switch flags — parsed only so the generated
-// CLI_FLAG_REGISTRY row keeps accepting them and old scripts reach the
-// refusal message naming the migration instead of dying pre-dispatch with an
-// unknown-flag error (cli.ts validates against the row BEFORE dispatch; the
-// row is generated from these quoted literals, and safety flags like
-// '--dry-run' need consumption evidence to survive regeneration).
+// Retired forward-switch flags — kept as quoted literals ONLY so the
+// generated CLI_FLAG_REGISTRY row keeps accepting them and old scripts reach
+// the refusal message naming the migration instead of dying pre-dispatch
+// with an unknown-flag error (cli.ts validates against the row BEFORE
+// dispatch; the row is generated from these literals, and safety flags like
+// '--dry-run' need quoted consumption evidence to survive regeneration).
+// The shim never consults them — every non-help/undo invocation refuses.
 const RETIRED_FLAGS = [
   '--dry-run',
   '--resume',
@@ -77,8 +78,8 @@ To LEAVE ZeroEntropy (the maintained path):
   ${cmds.recommended}
   Playbook: skills/migrations/v0.46.3.0.md
 
-Retired flags — still parsed so old scripts get the refusal above instead of
-an unknown-flag error: ${RETIRED_FLAGS.join(' ')}
+Retired flags — still accepted so old scripts get the refusal above instead
+of an unknown-flag error: ${RETIRED_FLAGS.join(' ')}
 
 This command is deleted in the September (v0.47) removal release.
 `);
@@ -107,6 +108,43 @@ export function runZeSwitchSelfHelp(_engine: never, args: string[]): Promise<voi
   return runZeSwitch(args, null);
 }
 
+/** Emit the envelope (stdout JSON or stderr message) and exit 1. */
+function emitAndExit(payload: { message: string } & Record<string, unknown>, json: boolean): never {
+  if (json) {
+    console.log(JSON.stringify(payload));
+  } else {
+    console.error(payload.message);
+  }
+  process.exit(1);
+}
+
+/** Model ids and reranker ids are `provider:model` tokens — nothing else. The
+ *  snapshot row is data-plane content (writable via config set / direct DB /
+ *  a mounted brain), and its fields land verbatim in a command the user or a
+ *  downstream agent is told to RUN — so validate before interpolating, and
+ *  degrade to the plain refusal on anything suspicious. */
+const MODEL_ID_RE = /^[A-Za-z0-9._:-]+$/;
+
+function parseSnapshot(raw: string): ZeSwitchSnapshot | null {
+  try {
+    const p = JSON.parse(raw) as ZeSwitchSnapshot;
+    if (
+      p &&
+      typeof p.embedding_model === 'string' &&
+      MODEL_ID_RE.test(p.embedding_model) &&
+      Number.isInteger(p.embedding_dimensions) &&
+      p.embedding_dimensions > 0 &&
+      (p.search_reranker_model == null ||
+        (typeof p.search_reranker_model === 'string' && MODEL_ID_RE.test(p.search_reranker_model)))
+    ) {
+      return p;
+    }
+  } catch {
+    /* corrupt JSON degrades to the refusal below */
+  }
+  return null;
+}
+
 export async function runZeSwitch(args: string[], engine: BrainEngine | null): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     printHelp();
@@ -116,32 +154,32 @@ export async function runZeSwitch(args: string[], engine: BrainEngine | null): P
   const json = args.includes('--json');
 
   if (args.includes('--undo')) {
-    // Read the pre-switch snapshot the old forward path stored. A missing or
-    // corrupt snapshot degrades to the plain refusal (there is nothing to
-    // redirect to); `redirected` is reserved for snapshot-present.
+    // Read the pre-switch snapshot the old forward path stored. A missing,
+    // corrupt, invalid-shape, or unreadable snapshot degrades to the plain
+    // refusal (there is nothing to redirect to); `redirected` is reserved
+    // for a validated snapshot.
     let snapshot: ZeSwitchSnapshot | null = null;
     if (engine) {
-      const raw = await engine.getConfig(KEY_PREVIOUS_SNAPSHOT);
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw) as ZeSwitchSnapshot;
-          if (parsed && parsed.embedding_model && parsed.embedding_dimensions) {
-            snapshot = parsed;
-          }
-        } catch {
-          snapshot = null;
-        }
+      try {
+        const raw = await engine.getConfig(KEY_PREVIOUS_SNAPSHOT);
+        if (raw) snapshot = parseSnapshot(raw);
+      } catch {
+        snapshot = null;
       }
     }
 
     if (snapshot) {
       // Fold the pre-switch reranker into the same run: `--reranker` takes a
       // model id or `off`; omitted means the migration's own default.
-      const rerankerArg = snapshot.search_reranker_model
-        ? ` --reranker ${snapshot.search_reranker_model}`
-        : snapshot.search_reranker_enabled === false
+      // enabled===false WINS over a lingering model id — the pre-switch brain
+      // had reranking off, and `migrate embeddings --reranker <model>` would
+      // re-enable it (the retired undo restored `enabled` independently).
+      const rerankerArg =
+        snapshot.search_reranker_enabled === false
           ? ' --reranker off'
-          : '';
+          : snapshot.search_reranker_model
+            ? ` --reranker ${snapshot.search_reranker_model}`
+            : '';
       const base = `gbrain migrate embeddings --to ${snapshot.embedding_model} --dim ${snapshot.embedding_dimensions}${rerankerArg}`;
       const undoCommand = `${base} --dry-run`;
       const message =
@@ -149,32 +187,13 @@ export async function runZeSwitch(args: string[], engine: BrainEngine | null): P
         `To return this brain to its pre-switch provider, run:\n` +
         `  ${undoCommand}   # cost preview\n` +
         `  ${base}`;
-      if (json) {
-        console.log(
-          JSON.stringify({ status: 'redirected', reason: 'provider_sunset', undo_command: undoCommand, message }),
-        );
-      } else {
-        console.error(message);
-      }
-      process.exit(1);
+      emitAndExit({ status: 'redirected', reason: 'provider_sunset', undo_command: undoCommand, message }, json);
     }
 
-    const env = refusalEnvelope('No prior switch snapshot recorded — nothing to undo.');
-    if (json) {
-      console.log(JSON.stringify(env));
-    } else {
-      console.error(env.message);
-    }
-    process.exit(1);
+    emitAndExit(refusalEnvelope('No prior switch snapshot recorded — nothing to undo.'), json);
   }
 
   // Every other invocation — bare, --dry-run, --resume, --non-interactive,
   // --force, any combination — refuses.
-  const env = refusalEnvelope();
-  if (json) {
-    console.log(JSON.stringify(env));
-  } else {
-    console.error(env.message);
-  }
-  process.exit(1);
+  emitAndExit(refusalEnvelope(), json);
 }

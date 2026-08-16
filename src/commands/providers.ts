@@ -61,16 +61,18 @@ export function envReady(recipe: Recipe, env: NodeJS.ProcessEnv = process.env): 
 }
 
 /**
- * ONE shared sunset marker for every human-facing providers surface (list
- * status cell, explain table rows, env block header) so the renderings can't
- * drift. Returns null for recipes without an announced shutdown.
+ * ONE shared sunset-marker primitive for every human-facing providers surface
+ * (list status cell, explain table rows, env block header) so the renderings
+ * can't drift. `sunsetMarkerText` is the string; `sunsetMarker` is the
+ * recipe-shaped convenience (null for recipes without an announced shutdown).
  */
+export function sunsetMarkerText(date: string, replacementEmbedding?: string | null): string {
+  return `⚠ DEPRECATED — hosted API ends ${date}` + (replacementEmbedding ? `; use ${replacementEmbedding}` : '');
+}
+
 export function sunsetMarker(recipe: Pick<Recipe, 'sunset'>): string | null {
   if (!recipe.sunset) return null;
-  return (
-    `⚠ DEPRECATED — hosted API ends ${recipe.sunset.date}` +
-    (recipe.sunset.replacement?.embedding ? `; use ${recipe.sunset.replacement.embedding}` : '')
-  );
+  return sunsetMarkerText(recipe.sunset.date, recipe.sunset.replacement?.embedding);
 }
 
 /**
@@ -475,7 +477,8 @@ async function runExplain(args: string[]): Promise<void> {
     const dims = o.dims ? `${o.dims}d` : '—';
     // A sunsetting provider must not read as a green-check cheap option in
     // the HUMAN table (the deprecation used to live only in cons/JSON).
-    const dep = o.deprecated ? `  ⚠ DEPRECATED — hosted API ends ${o.deprecated.date}` : '';
+    // Rendered via the shared primitive so list/env/explain can't drift.
+    const dep = o.deprecated ? `  ${sunsetMarkerText(o.deprecated.date, o.deprecated.replacement)}` : '';
     console.log(`  ${o.env_ready ? '✓' : '✗'} ${o.id.padEnd(44)} ${dims.padEnd(8)} ${cost.padEnd(10)} ${o.tier}${dep}`);
   }
   console.log('');

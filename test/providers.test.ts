@@ -7,7 +7,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { formatRecipeTable, formatEnvOutput, sunsetMarker, envReady } from '../src/commands/providers.ts';
+import { formatRecipeTable, formatEnvOutput, sunsetMarker, sunsetMarkerText, envReady } from '../src/commands/providers.ts';
 import { listRecipes, getRecipe } from '../src/core/ai/recipes/index.ts';
 import type { Recipe } from '../src/core/ai/types.ts';
 
@@ -118,6 +118,14 @@ describe('sunsetMarker (the one shared deprecation string)', () => {
     expect(m).toContain('2027-01-01');
     expect(m).not.toContain('undefined');
   });
+
+  test('sunsetMarkerText primitive (explain-row consumer): with and without replacement', () => {
+    expect(sunsetMarkerText('2026-09-04', 'voyage:voyage-4')).toBe(
+      '⚠ DEPRECATED — hosted API ends 2026-09-04; use voyage:voyage-4',
+    );
+    expect(sunsetMarkerText('2026-09-04')).toBe('⚠ DEPRECATED — hosted API ends 2026-09-04');
+    expect(sunsetMarkerText('2026-09-04', null)).not.toContain('undefined');
+  });
 });
 
 describe('formatEnvOutput (providers env <id>)', () => {
@@ -163,5 +171,36 @@ describe('formatEnvOutput (providers env <id>)', () => {
     expect(out).not.toContain('undefined');
     expect(out).not.toContain('Replacement:');
     expect(out).toContain('migrate embeddings');
+  });
+
+  test('sunset block positively asserts message + Replacement line (ZE fixture)', () => {
+    const out = formatEnvOutput(getRecipe('zeroentropyai')!, {});
+    expect(out).toContain('ZeroEntropy is shutting down its hosted API.');
+    expect(out).toContain('Replacement: voyage:voyage-4 (embedding), voyage:rerank-2.5 (reranker)');
+  });
+
+  test('keyless recipe (ollama): Required: (none) arm renders', () => {
+    const ollama = getRecipe('ollama')!;
+    const out = formatEnvOutput(ollama, {});
+    expect(out).toContain('Required: (none)');
+    expect(out).not.toContain('DEPRECATED');
+  });
+
+  test('optional-env arm renders when a recipe declares optional vars', () => {
+    const fake = {
+      id: 'fake-optional',
+      name: 'Fake Optional',
+      tier: 'native',
+      touchpoints: {},
+      auth_env: { required: ['FAKE_KEY'], optional: ['FAKE_ORG'], setup_url: 'https://example.com' },
+      setup_hint: 'Get a key at example.com.',
+    } as unknown as Recipe;
+    const out = formatEnvOutput(fake, { FAKE_ORG: 'org-1' });
+    expect(out).toContain('Optional:');
+    expect(out).toContain('FAKE_ORG');
+    expect(out).toContain('✓ set');
+    // Living provider keeps its funnel:
+    expect(out).toContain('Setup: https://example.com');
+    expect(out).toContain('Get a key at example.com.');
   });
 });
