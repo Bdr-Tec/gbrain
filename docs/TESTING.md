@@ -7,7 +7,7 @@ only.
 
 ### Test command tiers
 
-Six test command tiers, each with a clear scope:
+Seven test command tiers, each with a clear scope:
 
 | Command | What it runs | Wallclock | When to use |
 |---|---|---|---|
