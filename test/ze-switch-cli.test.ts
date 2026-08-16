@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
-import { runZeSwitch, RETIRED_FLAGS } from '../src/commands/ze-switch.ts';
+import { runZeSwitch, RETIRED_FLAGS, buildUndoCommands } from '../src/commands/ze-switch.ts';
 import { CLI_FLAG_REGISTRY } from '../src/core/cli-flag-registry.generated.ts';
 import { KEY_APPLIED, KEY_REQUESTED, KEY_PREVIOUS_SNAPSHOT } from '../src/core/retrieval-upgrade-planner.ts';
 
@@ -241,15 +241,43 @@ describe('--undo (redirect: prints the return-path command, never acts)', () => 
     expect(env.reason).toBe('provider_sunset');
   });
 
-  test('--undo --json emits the redirected envelope with undo_command', async () => {
+  test('--undo --json emits the redirected envelope with live + preview commands', async () => {
     await seedAppliedSwitch();
     const r = await captureExit(() => runZeSwitch(['--undo', '--json'], engine));
     expect(r.exitCode).toBe(1);
     const env = JSON.parse(r.stdout);
     expect(env.status).toBe('redirected');
     expect(env.reason).toBe('provider_sunset');
+    // undo_command is the LIVE command (an agent executing it must actually
+    // migrate, not exit-0 on a preview); undo_preview carries --dry-run.
     expect(env.undo_command).toContain('gbrain migrate embeddings --to openai:text-embedding-3-large --dim 1536');
-    expect(env.undo_command).toContain('--dry-run');
+    expect(env.undo_command).not.toContain('--dry-run');
+    expect(env.undo_preview).toContain('--dry-run');
+  });
+
+  test('nested model ids (ollama tag / openrouter path) validate and redirect', async () => {
+    await seedAppliedSwitch({ embedding_model: 'ollama:nomic-embed-text:v1.5' });
+    let r = await captureExit(() => runZeSwitch(['--undo'], engine));
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('--to ollama:nomic-embed-text:v1.5');
+
+    await seedAppliedSwitch({ embedding_model: 'openrouter:google/gemma-2-9b' });
+    r = await captureExit(() => runZeSwitch(['--undo'], engine));
+    expect(r.stderr).toContain('--to openrouter:google/gemma-2-9b');
+  });
+
+  test('string "false" reranker-enabled fails validation (would re-enable a paid reranker)', async () => {
+    await seedAppliedSwitch({ search_reranker_enabled: 'false' as unknown as boolean, search_reranker_model: 'voyage:rerank-2.5' });
+    const r = await captureExit(() => runZeSwitch(['--undo', '--json'], engine));
+    expect(r.exitCode).toBe(1);
+    expect(JSON.parse(r.stdout).status).toBe('refused');
+  });
+
+  test('--json=true spelling is honored (mirrors cli.ts convention)', async () => {
+    const r = await captureExit(() => runZeSwitch(['--dry-run', '--json=true'], engine));
+    expect(r.exitCode).toBe(1);
+    const env = JSON.parse(r.stdout);
+    expect(env.status).toBe('refused');
   });
 
   test('without a snapshot: refuses with the canonical migration', async () => {
@@ -286,6 +314,31 @@ describe('--undo (redirect: prints the return-path command, never acts)', () => 
   });
 });
 
+describe('buildUndoCommands (pure builder)', () => {
+  const snap = {
+    embedding_model: 'openai:text-embedding-3-large',
+    embedding_dimensions: 1536,
+    search_reranker_enabled: false,
+    search_reranker_model: null,
+  };
+
+  test('carries the explicit --brain selector into BOTH commands', () => {
+    // --brain is stripped pre-dispatch by the global option layer; without
+    // this, `ze-switch --brain team-x --undo` reads team-x's snapshot but the
+    // printed command re-embeds the DEFAULT brain (paid work, wrong corpus).
+    const { live, preview } = buildUndoCommands(snap, ' --brain team-x');
+    expect(live).toContain('--brain team-x');
+    expect(preview).toContain('--brain team-x');
+    expect(preview).toContain('--dry-run');
+    expect(live).not.toContain('--dry-run');
+  });
+
+  test('no brain selector → no --brain token', () => {
+    const { live } = buildUndoCommands(snap, '');
+    expect(live).not.toContain('--brain');
+  });
+});
+
 describe('registry + dispatch contract (the layer in-process calls bypass)', () => {
   test('every retired flag is in the generated ze-switch registry row', () => {
     // The refusal-instead-of-unknown-flag promise lives in the GENERATED row,
@@ -319,5 +372,27 @@ describe('registry + dispatch contract (the layer in-process calls bypass)', () 
     expect(all).not.toContain('unknown flag');
     expect(all).not.toContain('No brain configured');
     expect(all).toContain('gbrain migrate embeddings --to voyage:voyage-4 --dim 1024');
+  }, 30_000);
+
+  test('spawned CLI: --undo --json on a brainless machine still gets the envelope', async () => {
+    // connectEngine would print plain "No brain configured" and exit before
+    // the shim ran — the dispatch pre-checks config and degrades to a null
+    // engine so --json callers always get machine-readable truth.
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-zeswitch-undo-'));
+    const env: Record<string, string | undefined> = { ...process.env, GBRAIN_HOME: home };
+    delete env.GBRAIN_DATABASE_URL;
+    delete env.DATABASE_URL;
+    const proc = Bun.spawn(['bun', '--no-env-file', 'run', 'src/cli.ts', 'ze-switch', '--undo', '--json'], {
+      cwd: REPO,
+      env,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [out] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    const code = await proc.exited;
+    expect(code).toBe(1);
+    const envlp = JSON.parse(out.trim().split('\n').pop()!);
+    expect(envlp.status).toBe('refused');
+    expect(envlp.reason).toBe('provider_sunset');
   }, 30_000);
 });

@@ -477,9 +477,12 @@ async function runExplain(args: string[]): Promise<void> {
     const dims = o.dims ? `${o.dims}d` : '—';
     // A sunsetting provider must not read as a green-check cheap option in
     // the HUMAN table (the deprecation used to live only in cons/JSON).
-    // Rendered via the shared primitive so list/env/explain can't drift.
+    // Rendered via the shared primitive so list/env/explain can't drift, and
+    // the lead marker is ⚠ regardless of key readiness — "ready" on a dying
+    // API is not a state to advertise (mirrors formatRecipeTable's status).
     const dep = o.deprecated ? `  ${sunsetMarkerText(o.deprecated.date, o.deprecated.replacement)}` : '';
-    console.log(`  ${o.env_ready ? '✓' : '✗'} ${o.id.padEnd(44)} ${dims.padEnd(8)} ${cost.padEnd(10)} ${o.tier}${dep}`);
+    const lead = o.deprecated ? '⚠' : o.env_ready ? '✓' : '✗';
+    console.log(`  ${lead} ${o.id.padEnd(44)} ${dims.padEnd(8)} ${cost.padEnd(10)} ${o.tier}${dep}`);
   }
   console.log('');
   console.log('Expansion options:');
