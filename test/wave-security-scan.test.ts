@@ -45,6 +45,7 @@ function fixtureRepo(): string {
   git('init -q');
   git('config user.email t@example.invalid');
   git('config user.name t');
+  git('config commit.gpgsign false'); // don't inherit the machine's signing config under load
   writeFileSync(join(dir, 'README.md'), '# fixture\n');
   git('add README.md');
   git('commit -qm base');
