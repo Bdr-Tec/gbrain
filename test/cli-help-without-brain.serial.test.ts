@@ -29,6 +29,10 @@ const HELP_WITHOUT_BRAIN = [
   'jobs',
   // #4152: dream answers --help (and the retriage subverb help) engine-free.
   'dream',
+  // cathedral-5: compile-context is NOT in CLI_ONLY_SELF_HELP, so the
+  // dispatcher's generic usage stub answers its help engine-free; the
+  // handler's own detailed help is reached once a brain exists.
+  'compile-context',
 ];
 
 /**
