@@ -36,10 +36,14 @@ pure win. See the per-verb latency table in
   for Postgres brains (which have no local IPC socket).
 - **Push (PGLite + Claude Code):** the bundled hook framework fires
   automatically at `SessionStart` (injects a warm pack — including the
-  post-compaction re-entry, `source=compact`) and `PreCompact` (banks the
-  window's standing entities for that rehydration pack). Heartbeat deltas are
-  the PULL path — there is deliberately no push heartbeat; call `delta` per
-  the HEARTBEAT cadence table.
+  post-compaction re-entry, `source=compact`, which also carries the banked
+  `## Compaction checkpoints` links) and `PreCompact` (banks the window's
+  standing entities for that rehydration pack AND spools the
+  since-last-boundary window as a durable corpus segment that serve harvests
+  into facts + `brain://` links — see
+  [`checkpoint-compaction.md`](./checkpoint-compaction.md)). Heartbeat deltas
+  are the PULL path — there is deliberately no push heartbeat; call `delta`
+  per the HEARTBEAT cadence table.
 
 ## Visibility — world-only by default
 

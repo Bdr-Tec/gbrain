@@ -1,5 +1,65 @@
 # TODOS
 
+## Cathedral 5 follow-ups (checkpoint compaction + compiled views)
+
+- [ ] **P2 — `gbrain transcripts checkpoint` manual CLI.** **What:** a thin
+  subcommand that runs the checkpoint harvest over an explicit session file
+  (tail-read → segment → extract → manifest), direct-engine when no serve is
+  running (map LiveServeLockError to a typed skipped status). **Why:** the
+  hook + IPC lane covers production; a manual/e2e surface helps debugging and
+  non-hook harnesses. **Context:** shipping as a `transcripts` subcommand
+  inherits CLI_ONLY + CLI_ONLY_SELF_HELP + SELF_HELP_WITHOUT_ENGINE +
+  THIN_CLIENT_REFUSED wiring, the registry entry, and the format flag surface
+  for free (cathedral-5 review decision — deferred, not rejected). Start:
+  `src/commands/transcripts.ts` + `src/core/context/checkpoint-harvest.ts`.
+  Effort: S (CC). Priority: P2.
+- [ ] **P2 — opencode transcript adapter + dated SPEC_TARGET.** **What:** an
+  opencode session-log adapter in `src/core/transcripts/` (registry entry,
+  live-captured fixture, drift alarm) — the prerequisite for ANY opencode
+  boundary lane (checkpoint segments, transcripts ingest). **Why:** opencode
+  is a full-parity client (v0.46.4.0) with no transcript format; its sessions
+  are invisible to the import + checkpoint lanes. **Context:** needs its own
+  dated spec verification against a real opencode install before any parser
+  lands (cathedral-4 discipline; `OPENCODE_HAS_HOOKS=false` at
+  host-specs.ts:365 also blocks the hook lane until verified). Effort: M
+  (CC). Priority: P2. Blocked by: access to a live opencode session log.
+- [ ] **P3 — compile-context auto-refresh.** **What:** regenerate compiled
+  views on the autopilot cycle (or a documented cron recipe) so warm files
+  stay living build artifacts instead of manual runs. **Why:** the spec's
+  promise is "CLAUDE.md stopped drifting — the fragment is regenerated, not
+  hand-edited"; v1 ships the deterministic command only. **Context:** wire
+  `runCompileContext` as a cycle phase behind a config gate once the command
+  has proven byte-stability in the wild; `--check` is the CI-side staleness
+  probe. Start: `src/commands/autopilot.ts` phases + `src/commands/compile-context.ts`.
+  Effort: M (CC). Priority: P3.
+- [ ] **P3 — thin-client `compile-context`.** **What:** let a thin client
+  compile warm files from a REMOTE brain (today the command is
+  THIN_CLIENT_REFUSED with a "run on the host install" hint). **Why:**
+  remote-brain topologies are exactly the installs that want local compiled
+  files with no local DB. **Context:** needs remote read ops for the
+  selection arms (list_pages with source scoping exists; salience does not)
+  and a stance on scan allowlist location. Cathedral-5 review deferral.
+  Effort: M (CC). Priority: P3.
+- [ ] **P3 — `asOf`-parameterized, totally-ordered `getRecentSalience`.**
+  **What:** add `asOf?: string` to SalienceOpts, replace the SQL `NOW()`
+  decay term with the param, and add a slug tie-breaker to the ORDER BY so
+  the method becomes deterministic for byte-stable consumers; then restore
+  take-signal salience to compile-context selection (v1 dropped it — codex
+  round-2 finding: Date.now window + NOW() decay + no total order can
+  nondeterministically omit rows at the 100-row cutoff). **Context:** engine
+  change + parity work in BOTH engines (`src/core/{pglite,postgres}-engine/salience.ts`,
+  `src/core/search/sql-ranking.ts:323`). Effort: M (CC). Priority: P3.
+- [ ] **P3 — source-tagged corpus files.** **What:** carry an authenticated
+  source id on corpus/segment files so the sweep fallback routes facts to the
+  right source instead of the sweep's current source. **Why:** the sweep
+  corpus pass ingests every `.txt` in one global dir into ONE sourceId — a
+  pre-existing class shared with session-end corpus files (the checkpoint's
+  primary IPC lane is already source-correct via boundSourceId). **Context:**
+  cathedral-5 codex round-2 finding #5, dispositioned as documented
+  limitation + this TODO. Start: `src/core/sweep.ts:466` +
+  `src/commands/hook.ts` corpus writers. Effort: M (CC). Priority: P3.
+
+
 ## Five-issue fix wave follow-ups (backlinks corruption / malformed paths / type warnings / getPage scoping / queue admission)
 
 - [ ] **P2 — migrate the remaining fs writers to core/atomic-write.** **What:**
