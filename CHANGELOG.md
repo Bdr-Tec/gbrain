@@ -110,6 +110,65 @@ regression. The fix is one command: `gbrain embed --stale` (add
 mid-migration off a sunsetting provider, `gbrain migrate embeddings
 --status` shows exactly where you are and the exact resume command.
 
+## [0.46.8.0] - 2026-08-15
+
+**The full local test suite is trustworthy again.** `bun run test` and
+`bun run test:e2e` now pass on developer machines the same way they pass in
+CI — the two failure classes that made local runs lie are fixed at the root.
+
+### Fixed
+
+- **Test runs no longer die mid-suite with phantom "externally killed" shards.**
+  The CLI installed its shutdown signal handler at module load, so any test
+  that imported the CLI armed a process-wide SIGTERM handler inside the test
+  runner; one test's synthetic signal emission then killed the entire shard.
+  The handler now installs only in real CLI entrypoints (compiled binary,
+  spawned CLIs), never in importers — pinned by spawn-based regression tests.
+- **Unit tests are isolated from your real brain.** A new test preload points
+  `GBRAIN_HOME` at per-run scratch, so config-honoring code paths no longer
+  change behavior with whatever your live `~/.gbrain/config.json` says (27
+  cycle/dream tests flipped red whenever another workspace rewrote it), and
+  tests can no longer clobber real config, audit logs, or lock files. The
+  unit/slow wrappers also strip an ambient `GBRAIN_HOME` at their boundary,
+  matching the existing `DATABASE_URL` discipline.
+- **One canonical `GBRAIN_HOME` convention.** Preferences and the migration
+  ledger now resolve through the same path convention as engine config
+  (`GBRAIN_HOME` is a parent directory; `.gbrain` is appended) instead of a
+  divergent local rule that split one logical home across two roots. Installs
+  that run with `GBRAIN_HOME` set get a one-time, atomic, rollback-safe
+  copy-forward of their existing preferences and migration history — an
+  explicit `minion_mode: off` opt-out survives the upgrade, and completed
+  migrations are never silently re-run. Read-only homes degrade to reading
+  the legacy file in place.
+- **13 end-to-end test files repaired** after drifting from behavior that
+  changed in earlier releases (transport-scoped local-only ops, soft-delete
+  semantics, pack-manifest extractable types, halfvec embedding columns,
+  multi-asset compiled builds, environment leakage into hermetic fixtures,
+  a clock-skew-sensitive staleness assertion, and a driver array-binding
+  quirk). All were test-side fixes — no product behavior had regressed.
+- **`gbrain doctor` announces its filesystem-only fallback.** When the DB
+  connect (or the DB-backed check run) fails, doctor now says so on stderr
+  instead of silently degrading — with connection errors scrubbed through
+  the credential redactor (URL userinfo, libpq `password=` forms including
+  quoted values, hostnames/IPs) so pasted output doesn't leak credentials
+  into issues and CI logs.
+- **The e2e runner no longer false-kills its known-slow file.** `run-e2e.sh`'s
+  per-file wedge timeout (the hard-timeout backstop against wedged files, 180s) is
+  now overridable per file; the full ingest-skill e2e gets 420s — its runtime
+  grows with every migration master adds, and the flat cap had started killing
+  legitimately-passing runs on quiet machines.
+
+### Added
+
+- Regression pins for the new harness contracts: importing the CLI installs
+  no termination/cleanup signal handlers; the test-home preload sets-when-unset and respects
+  pre-set values; `_resetForTests` fully detaches listeners; free-text
+  credential redaction (`redactUrlsInText`).
+
+To take advantage of v0.46.8.0: `gbrain self-upgrade`, then `gbrain doctor`
+— no schema migration, no config changes. If you run tests locally,
+`bun run test` and `DATABASE_URL=<test-db> bun run test:e2e` should both
+exit 0 on a clean checkout; if they don't, the failure is real.
 ## [0.46.7.0] - 2026-08-15
 
 **gbrain is now a proper Codex plugin — and a Claude Code plugin — from one repo.**
