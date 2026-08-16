@@ -1281,6 +1281,32 @@ export function findUnknownOpFlag(op: Operation, args: string[]): string | null 
   return null;
 }
 
+/**
+ * #1475 — the DB-plane merge `connectEngine` performs after connect, published
+ * for `makeContext` so the operation context carries it too.
+ *
+ * Why a map rather than a module-level variable: a process can hold more than
+ * one engine (`--brain <mount>` connects a second one), and the host brain's
+ * merged config must never be served for a mounted brain's context. Weak so a
+ * disconnected engine does not pin its config for the life of the process.
+ */
+const MERGED_CONFIG_BY_ENGINE = new WeakMap<BrainEngine, GBrainConfig>();
+
+/**
+ * @internal Exported for test/eval-capture-db-plane.serial.test.ts.
+ *
+ * Publishing the merge is the whole point of the map — if the `set` in
+ * connectEngine is ever dropped, makeContext silently falls back to
+ * re-merging and every command pays the per-key reads twice with no test
+ * going red. The seam lets a test prime the map the way connectEngine does
+ * and observe that no further reads happen.
+ */
+export const __testing = {
+  publishMergedConfig(engine: BrainEngine, config: GBrainConfig): void {
+    MERGED_CONFIG_BY_ENGINE.set(engine, config);
+  },
+};
+
 export async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {
   // v0.31.8 (D11): resolve sourceId via the canonical 6-tier chain. Honors
   // --source / GBRAIN_SOURCE / .gbrain-source / path-match / brain default /
@@ -1317,20 +1343,24 @@ export async function makeContext(engine: BrainEngine, params: Record<string, un
   // them back, but every op-side gate reads `ctx.config` — so building this
   // from the sync, file-only `loadConfig()` made those writes inert
   // (`eval.capture` was the reported case: set, echoed back, still off).
-  // connectEngine already re-merges after connect, but it keeps the result to
-  // itself (env stashes + gateway reconfigure) and returns only the engine.
+  //
+  // connectEngine already performs exactly this merge after connect; it now
+  // publishes the result, so the normal CLI path costs ZERO additional config
+  // reads. The fallback merge below only runs for callers that reach
+  // makeContext with an engine connectEngine never saw (tests with a stub
+  // engine) — re-merging unconditionally would double the per-key reads that
+  // #3980 measures at ~1.5s per command on a hosted brain.
   //
   // Fail-open: a brain mid-migration whose config table is missing must still
   // get a usable context, so a merge failure falls back to the file plane.
-  // This runs once per invocation (single call site) alongside the sourceId
-  // resolution that is already DB I/O, and adds point lookups on a live
-  // connection — the same reads connectEngine performs.
   const fileConfig = loadConfig() || { engine: 'postgres' as const };
-  let mergedConfig = fileConfig;
-  try {
-    mergedConfig = (await loadConfigWithEngine(engine, fileConfig)) ?? fileConfig;
-  } catch {
-    mergedConfig = fileConfig;
+  let mergedConfig = MERGED_CONFIG_BY_ENGINE.get(engine) ?? fileConfig;
+  if (!MERGED_CONFIG_BY_ENGINE.has(engine)) {
+    try {
+      mergedConfig = (await loadConfigWithEngine(engine, fileConfig)) ?? fileConfig;
+    } catch {
+      mergedConfig = fileConfig;
+    }
   }
 
   return {
@@ -3087,6 +3117,13 @@ async function connectEngine(opts?: { probeOnly?: boolean }): Promise<BrainEngin
   try {
     const merged = await loadConfigWithEngine(engine, config);
     if (merged) {
+      // #1475 — hand the merged config to makeContext instead of letting it
+      // re-derive one. See MERGED_CONFIG_BY_ENGINE: the op-side gates read
+      // ctx.config, and re-running the merge there would double this
+      // function's per-key config reads on every command (the cost #3980 is
+      // about). Keyed on the engine so a mounted brain cannot be served the
+      // host brain's merge.
+      MERGED_CONFIG_BY_ENGINE.set(engine, merged);
       // Stash gate flags on process.env for downstream readers (import-file.ts
       // dispatches on GBRAIN_EMBEDDING_MULTIMODAL, OCR consumer reads
       // GBRAIN_EMBEDDING_IMAGE_OCR_*). The gateway itself doesn't read these

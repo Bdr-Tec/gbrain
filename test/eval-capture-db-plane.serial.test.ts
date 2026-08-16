@@ -26,7 +26,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
-import { makeContext } from '../src/cli.ts';
+import { makeContext, __testing } from '../src/cli.ts';
 import { isEvalCaptureEnabled, isEvalScrubEnabled } from '../src/core/eval-capture.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
@@ -96,6 +96,63 @@ describe('eval.capture set on the DB plane reaches the runtime gate (#1475)', ()
         expect(isEvalScrubEnabled(ctx.config)).toBe(false);
       },
     );
+  });
+
+  test('reuses the merge connectEngine already did — zero extra config reads', async () => {
+    // The reason this fix does not make #3980 worse. connectEngine already
+    // merges the DB plane once per command; makeContext consumes that result
+    // instead of re-deriving it. If the publish in connectEngine is ever
+    // dropped, this count goes from 0 to the full per-key read set.
+    let keysRead: string[] = [];
+    const counting = {
+      kind: 'pglite',
+      executeRaw: async <T>(): Promise<T[]> => [],
+      getConfig: async (key: string) => {
+        keysRead.push(key);
+        return key === 'eval.capture' ? 'true' : null;
+      },
+    } as unknown as BrainEngine;
+
+    await withEnv(
+      { GBRAIN_HOME: scratchHome(), GBRAIN_CONTRIBUTOR_MODE: undefined, GBRAIN_SOURCE: undefined },
+      async () => {
+        // Uncached: makeContext falls back to merging itself, so it walks the
+        // whole DB-plane key set. Measured at 25 reads on this tree — one for
+        // the source resolver plus the merge's 24 keys.
+        await makeContext(counting, {});
+        const uncached = keysRead;
+        expect(uncached).toContain('eval.capture');
+        expect(uncached.length).toBeGreaterThan(10);
+
+        // Primed exactly as connectEngine primes it.
+        keysRead = [];
+        __testing.publishMergedConfig(counting, { engine: 'pglite', eval: { capture: true } });
+        const ctx = await makeContext(counting, {});
+
+        // The only surviving read is the source resolver's, which is not
+        // config-merge work and predates this change. Asserting the key set
+        // rather than a bare count says WHICH read is allowed to remain, so a
+        // future reader can tell an intentional addition from a regression.
+        expect(keysRead).toEqual(['sources.default']);
+        // …and the published value is what the gate sees, so "cheap" did not
+        // come at the cost of "correct".
+        expect(isEvalCaptureEnabled(ctx.config)).toBe(true);
+      },
+    );
+  });
+
+  test('connectEngine still publishes its merge (the half the runtime test cannot reach)', async () => {
+    // The test above primes the map directly, so it pins the CONSUMER. If the
+    // publish in connectEngine were deleted, production would quietly fall
+    // back to re-merging — correct output, 24 extra config reads per command,
+    // and nothing red. connectEngine is not exported and needs a live brain,
+    // so this is a source-level guard, the same shape test/cycle-abort.test.ts
+    // uses for its own hard-to-exercise seam.
+    const cli = await Bun.file(new URL('../src/cli.ts', import.meta.url).pathname).text();
+    expect(cli).toContain('MERGED_CONFIG_BY_ENGINE.set(engine, merged)');
+    // Guard the guard: if the map is ever renamed, the assertion above must
+    // not keep passing against a stale literal that no longer exists.
+    expect(cli).toContain('const MERGED_CONFIG_BY_ENGINE = new WeakMap');
   });
 
   test('a brain whose config table is missing still builds a context (fail-open)', async () => {
