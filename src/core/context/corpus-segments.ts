@@ -30,13 +30,20 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { WindowTurn } from './entity-salience.ts';
 import { toCorpusText } from '../transcripts/claude-code-jsonl.ts';
+import { mapOpenclawLine } from '../transcripts/openclaw.ts';
 
 /** Length of the hex content-hash slice in segment filenames. */
 const SEGMENT_HASH_LEN = 12;
+
+/** Sidecar suffixes, DUPLICATED from sweep.ts on purpose (hook.ts precedent:
+ * the engine-free/lazy consumers must not drag sweep's eager capability
+ * import). Keep in sync with sweep.ts's CORPUS_* constants. */
+export const SEGMENT_INGESTED_SUFFIX = '.ingested';
+export const SEGMENT_CLAIM_SUFFIX = '.in-progress';
 
 export interface SegmentLedgerEntry {
   hash: string;
@@ -185,6 +192,65 @@ export async function coverageComplete(
     if (!ledger.has(segmentHash(rendered.text))) return false;
   }
   return true;
+}
+
+/**
+ * Tail-capable openclaw boundary reader (cathedral 5): the import adapter
+ * REJECTS over-cap files and whole-file-reads under the cap — too heavy for
+ * a compaction boundary — so this reads the newest `maxBytes`, drops the
+ * partial first line on tail reads, and delegates line→message mapping to
+ * the mapper EXPORTED from the adapter (the dated SPEC_TARGET stays the
+ * single source of truth). Boundary positions in turns-index space, exactly
+ * like the claude-code parser. Returns null when nothing maps (not an
+ * openclaw session file) or on fs errors — callers fail open.
+ */
+export function readOpenclawBoundaryTail(
+  path: string,
+  opts: { maxBytes?: number } = {},
+): { turns: WindowTurn[]; boundaryTurnIndexes: number[] } | null {
+  const maxBytes = Math.max(1, Math.floor(opts.maxBytes ?? 2 * 1024 * 1024));
+  let raw: string;
+  try {
+    const size = statSync(path).size;
+    if (size <= maxBytes) {
+      raw = readFileSync(path, 'utf8');
+    } else {
+      const fd = openSync(path, 'r');
+      try {
+        const buf = Buffer.alloc(maxBytes);
+        const n = readSync(fd, buf, 0, maxBytes, size - maxBytes);
+        raw = buf.subarray(0, n).toString('utf8');
+      } finally {
+        closeSync(fd);
+      }
+    }
+  } catch {
+    return null;
+  }
+  const turns: WindowTurn[] = [];
+  const boundaryTurnIndexes: number[] = [];
+  let mappedAnything = false;
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(t);
+    } catch {
+      continue; // includes a tail read's partial first line
+    }
+    const mapped = mapOpenclawLine(entry);
+    if (mapped.kind === 'session') {
+      mappedAnything = true;
+    } else if (mapped.kind === 'boundary') {
+      mappedAnything = true;
+      boundaryTurnIndexes.push(turns.length);
+    } else if (mapped.kind === 'message') {
+      mappedAnything = true;
+      turns.push({ role: mapped.message.role, text: mapped.message.text });
+    }
+  }
+  return mappedAnything ? { turns, boundaryTurnIndexes } : null;
 }
 
 /**
