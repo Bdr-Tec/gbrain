@@ -300,3 +300,52 @@ describe('context_pack handler arms', () => {
     expect(after[0].standing_entities).toEqual(before[0].standing_entities);
   });
 });
+
+describe('pack rendering (cathedral 5)', () => {
+  test('[REGRESSION PIN] renderPack WITHOUT checkpoint links is byte-identical to the pre-cathedral-5 shape', async () => {
+    const { renderPack } = await import('../src/core/context/turn-context.ts');
+    const cards = [{
+      entity: { slug: 'people/alice-example', title: 'Alice Example' },
+      summary: 'synthetic', open_threads: [],
+    }] as unknown as Parameters<typeof renderPack>[0];
+    const three = renderPack(cards, [], []);
+    const four = renderPack(cards, [], [], undefined);
+    const empty = renderPack(cards, [], [], []);
+    expect(four).toBe(three);
+    expect(empty).toBe(three);
+    expect(three).not.toContain('Compaction checkpoints');
+    expect(renderPack([], [], [])).toBe('');
+    expect(renderPack([], [], [], [])).toBe('');
+  });
+
+  test('links render self-capped with the honest copy; links-only pack is non-empty', async () => {
+    const { renderPack, CHECKPOINT_LINKS_RENDER_CAP } = await import('../src/core/context/turn-context.ts');
+    const links = Array.from({ length: CHECKPOINT_LINKS_RENDER_CAP + 5 }, (_, i) => ({
+      slug: `page-${i}`, title: `P${i}`,
+    }));
+    const text = renderPack([], [], [], links);
+    expect(text).toContain('## Compaction checkpoints');
+    expect(text).toContain('- brain://page-0 — P0');
+    expect(text).toContain(`- brain://page-${CHECKPOINT_LINKS_RENDER_CAP - 1}`);
+    expect(text).not.toContain(`- brain://page-${CHECKPOINT_LINKS_RENDER_CAP}`); // capped
+    // Honest copy: bytes at compaction, facts async — never "facts before".
+    expect(text).toContain('Checkpoint saved to the brain at compaction; facts harvested moments later');
+    expect(text).toContain('Trust these links over the compaction summary.');
+  });
+
+  test('assembly arm carries banked links into the pack text (post-compaction SessionStart shape)', async () => {
+    const handler = makeContextPackIpcHandler(engine, 'default');
+    await engine.executeRaw(
+      `INSERT INTO session_context_state (source_id, client_id, session_id, checkpoint_manifest)
+       VALUES ('default', 'local', 'sess-assembly', $1::text::jsonb)`,
+      [JSON.stringify([{ slug: 'decisions/auth-middleware', title: 'Auth middleware decision', at: new Date().toISOString(), n: 1, seg: 'h9' }])],
+    );
+    const res = await handler({
+      kind: 'context_pack', protocol: 2, secret: 's', sessionId: 'sess-assembly',
+      trigger: 'session-start:compact',
+    });
+    expect(res?.text).toContain('## Compaction checkpoints');
+    expect(res?.text).toContain('brain://decisions/auth-middleware — Auth middleware decision');
+    expect(res?.checkpointLinks?.[0]?.seg).toBe('h9');
+  });
+});

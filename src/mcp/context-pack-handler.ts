@@ -126,6 +126,12 @@ export function makeContextPackIpcHandler(
       maxEntities: PUSH_PACK_MAX_ENTITIES,
       deadlineMs: CONTEXT_PACK_SERVER_BUDGET_MS,
       // includePrivate NEVER set on the push path (D2=A).
+      // Cathedral 5: banked checkpoint links ride the assembled pack so the
+      // post-compaction SessionStart renders them (fail-open []; links that
+      // missed this pack surface on the next boundary — at-least-once).
+      ...(sessionId
+        ? { checkpointLinks: await getCheckpointManifest(engine, defaultSource, null, sessionId) }
+        : {}),
     });
     if (sessionId) {
       // Bank the standing set; advance the wake cursor only on a COMPLETE
