@@ -123,8 +123,8 @@ ingestion — not just new content.
    census, the un-merged file plane), so a pre-set env var cannot fake a
    completed migration.
 5. **Apply.** When the target width differs from the actual column width,
-   runs the same atomic schema transition `ze-switch` uses, in one
-   transaction. It rebuilds **all three dim-pinned text-embedding-space
+   runs the atomic schema transition owned by `embedding-migration.ts`
+   (the survivor module), in one transaction. It rebuilds **all three dim-pinned text-embedding-space
    columns** — `content_chunks.embedding`, `query_cache.embedding`, and
    `facts.embedding` — at the new width, preserving each column's type
    (`vector` vs `halfvec`) and recreating its HNSW index. Missing any of the

@@ -2,7 +2,7 @@
 
 ## Security-sweep mitigation follow-ups (filed 2026-08-16)
 
-- [ ] **P1 — `gbrain upgrade` binary lane returns success exit status on failure (autopilot false-success).** **What:** `runUpgrade`'s `binary` case logs every failure reason (`smoke_failed`, `download_failed`, `integrity_failed`, `integrity_unavailable`, `version_mismatch`, `replace_failed`) but never sets a non-zero CLI exit verdict, so callers see exit 0. **Why:** autopilot (`src/commands/autopilot.ts`) can read a false success, record "applied," relaunch, and then mark a transiently-unavailable version permanently bad — an amplification loop, now more reachable because `integrity_unavailable` fires on ordinary GitHub API rate limits. **Context:** PRE-EXISTING for the whole binary lane (not introduced by the v0.46.12.1 integrity work); surfaced by that PR's adversarial review with 2-model consensus. Fix needs care: distinguish hard-fail (`integrity_failed`/`version_mismatch` → exit non-zero, autopilot should NOT mark-bad on a security rejection) from transient (`integrity_unavailable` → retry, not a version fault), with autopilot-loop tests — hence its own PR, not a rushed rider. **Start:** `src/commands/upgrade.ts` binary case + `setCliExitVerdict` + `src/commands/autopilot.ts` upgrade handling.
+- [ ] **P1 — `gbrain upgrade` binary lane returns success exit status on failure (autopilot false-success).** **What:** `runUpgrade`'s `binary` case logs every failure reason (`smoke_failed`, `download_failed`, `integrity_failed`, `integrity_unavailable`, `version_mismatch`, `replace_failed`) but never sets a non-zero CLI exit verdict, so callers see exit 0. **Why:** autopilot (`src/commands/autopilot.ts`) can read a false success, record "applied," relaunch, and then mark a transiently-unavailable version permanently bad — an amplification loop, now more reachable because `integrity_unavailable` fires on ordinary GitHub API rate limits. **Context:** PRE-EXISTING for the whole binary lane (not introduced by the v0.46.12.3 integrity work); surfaced by that PR's adversarial review with 2-model consensus. Fix needs care: distinguish hard-fail (`integrity_failed`/`version_mismatch` → exit non-zero, autopilot should NOT mark-bad on a security rejection) from transient (`integrity_unavailable` → retry, not a version fault), with autopilot-loop tests — hence its own PR, not a rushed rider. **Start:** `src/commands/upgrade.ts` binary case + `setCliExitVerdict` + `src/commands/autopilot.ts` upgrade handling.
 - [ ] **P3 — Self-update GitHub API rate-limit resilience.** **What:** each `gbrain upgrade` makes 2 unauthenticated `api.github.com` calls (releases/latest + attestations), 60/hr/IP; corporate NAT / CI fleets hit 403 → `integrity_unavailable` → fail-closed. **Why:** a hard availability regression for shared-egress fleets vs the pre-integrity path. **Options:** honor an ambient `GH_TOKEN`/`GITHUB_TOKEN` when present (weigh against widening what a leaked env token authorizes), or a small bounded retry with backoff, and align the attestation fetch timeout (10s) with the download budget so a slow-but-working link doesn't spuriously fail. **Start:** `defaultFetchRelease`/`defaultFetchAttestation` in `src/core/binary-self-update.ts`.
 
 
@@ -246,12 +246,19 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   registry entries (recipes/index.ts); `zeroEntropyCompatFetch`,
   `MAX_ZEROENTROPY_RESPONSE_BYTES`, `ZeroEntropyResponseTooLargeError` + the
   fetch-ternary arm (gateway.ts); ZE sets in dims.ts; `ze-switch.ts` +
-  `retrieval-upgrade-planner.ts` + `retrieval-upgrade-prompt.ts` (~1200 lines) +
-  cli.ts dispatch/CLI_ONLY/flag-registry rows; `checkZeEmbeddingHealth` in doctor
+  `retrieval-upgrade-planner.ts` + cli.ts dispatch/CLI_ONLY/CLI_ONLY_SELF_HELP/
+  SELF_HELP_WITHOUT_ENGINE/flag-registry rows; `checkZeEmbeddingHealth` in doctor
   (`provider_sunset` STAYS and goes generic — read `recipe.sunset` instead of the
   hardcoded ZE constants); pricing rows LAST (budget-tracker rerank metering reads
   them for historical audit rows). NOTE: test/ai/zeroentropy-compat-fetch.test.ts
   greps gateway.ts SOURCE TEXT — delete the test with the code, in the same commit.
+  ALREADY DONE by the interim ZE cleanup wave (pre-Sept): `retrieval-upgrade-prompt.ts`
+  deleted (banner/marketing copy gone); `ze-switch.ts` is now a ~170-line pure
+  refusal/redirect shim (undo/dry-run ACTIONS retired — apply/undo wrote DB-plane
+  config the file-plane-canonical runtime never read); `providers env`/`explain` are
+  sunset-aware via the shared `sunsetMarker` in providers.ts (generic on
+  `recipe.sunset` — the removal wave inherits it); `ze_embedding_health`'s missing-key
+  copy is migration-first (the check itself still gets deleted here).
 - [ ] **P1 — Self-host continuity decision.** The v0.46.3 playbook's zero-re-embed
   path keeps the `zeroentropyai:zembed-1` id behind a base-URL override to a
   ZE-wire-compatible endpoint. Recipe deletion breaks it. Decide: keep a minimal
@@ -261,11 +268,14 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   playbook (skills/migrations/v0.46.3.0.md) links here — honor it.
 - [ ] **P2 — Tests + CI.** Delete the 8 ZE-dedicated test files
   (zeroentropy-recipe, zeroentropy-compat-fetch, dims-zeroentropy,
-  e2e/zeroentropy-live, ze-switch-cli, ze-switch-env-override, doctor-ze-checks,
-  provider-sunset-doctor.serial gets REWRITTEN generic not deleted) + update ~40
-  coupled files; drop the zeroentropy-live job + ZEROENTROPY_API_KEY secret from
-  .github/workflows/e2e.yml:168,179 (already date-skip-gated since v0.46.3);
-  scripts/test-weights.json rows.
+  e2e/zeroentropy-live, ze-switch-cli [now pins the shim contract — dies with the
+  shim], ze-switch-env-override [pins the planner's test-only functions],
+  doctor-ze-checks, provider-sunset-doctor.serial gets REWRITTEN generic not
+  deleted) + update ~40 coupled files; drop the zeroentropy-live job +
+  ZEROENTROPY_API_KEY secret from .github/workflows/e2e.yml:239,250,377 (line refs
+  refreshed by the interim cleanup wave; already date-skip-gated since v0.46.3);
+  scripts/test-weights.json rows. Also remove 'ze-switch' from the
+  cli-help-without-brain HELP_WITHOUT_BRAIN list when the shim dies.
 - [ ] **P2 — Config + docs.** `zeroentropy_api_key` config key: keep
   parseable-but-warned (removing it would make old config.json files fail to
   load); delete docs/ai-providers/zeroentropy.md + its scripts/llms-config.ts
@@ -1800,7 +1810,7 @@ Filed from the self-upgrading-gbrain wave. All deliberately scoped OUT (D7a/D7b
 `~/.claude/plans/system-instruction-you-are-working-nifty-badger.md`.
 
 - [x] **P2 — Signature/checksum verification before applying an auto-upgrade
-  (D7a).** **Completed:** v0.46.12.1 (2026-08-16). `verifyIntegrity` in
+  (D7a).** **Completed:** v0.46.12.3 (2026-08-16). `verifyIntegrity` in
   `src/core/binary-self-update.ts` now checks the downloaded asset's SHA-256 +
   builder identity against the GitHub build-provenance attestation (already
   published by release.yml's `attest-build-provenance`) BEFORE chmod/exec/rename
