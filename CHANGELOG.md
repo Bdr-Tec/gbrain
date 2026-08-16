@@ -2,6 +2,85 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.12.0] - 2026-08-16
+
+Fix wave: 13 verified issues fixed + 14 community PRs adopted with credit, from a
+triage of everything filed since the 2026-08-14 audit (42 new items, each verified
+against HEAD with an adversarial second pass before entering scope).
+
+### Fixed
+- **dream/cycle:** calibration-trio phases (propose_takes, grade_takes,
+  calibration_profile) now clamp their deadlines to the owning job's claim-time
+  timeout via shared `BasePhaseOpts.deadlineAtMs`, so long cycles bank partial
+  work and exit cleanly instead of dead-lettering at the worker kill switch (#4168).
+  extract_atoms distinguishes malformed model output from a real zero-yield
+  extraction (typed parse outcomes), writes atoms with a completion receipt so a
+  partial persist is retried instead of silently skipped forever, and tombstones a
+  page only after 3 consecutive same-content deterministic failures (#4148). The
+  nightly purge survives a RESTRICT-FK-held source (revoked oauth client) with a
+  structured `{purged, blocked}` report instead of aborting the whole sweep (#4115).
+  Dream `--input` on an already-synthesized transcript says why it skipped
+  (PR #4122 by @Masashi-Ono0611). The cycle lock-steal decision keys on the aborted
+  flag, not the droppable abort reason (#4140, PR #4141 by @Masashi-Ono0611).
+- **takes:** `eval suspected-contradictions` resolution commands are now
+  addressable and truthful — `--row` carries the per-page row number, commands
+  that need operator judgment say so instead of failing, and the unimplemented
+  mark-debate action is no longer minted (#4169).
+- **minions/claude-cli:** multi-turn claude-cli subagent jobs no longer
+  dead-letter when the provider reuses a tool_use_id — execution rows key on
+  (message_idx, tool_use_id) with migration v131 (#4155, PR #4156 by
+  @Masashi-Ono0611). claude-cli reports cachedInputTokens (PR #4120) and scrubs
+  ALL cloud-auth routing env vars so children always use the subscription auth the
+  recipe documents — intentional cloud routing belongs on the `anthropic` recipe
+  (PR #4111, both by @Masashi-Ono0611). `models doctor` honors slow-start
+  providers instead of a flat 5s probe abort (PR #4112 by @Masashi-Ono0611).
+- **recipes:** Google `supports_prompt_cache` is a per-model predicate — Gemini
+  2.5+ caches implicitly and no longer reads as cache-less (#4158, PR #4159 by
+  @dovstern). OpenRouter embedding models carry verified per-model dims and
+  unlisted ids require explicit dims instead of inheriting a plausible-wrong 1536
+  (#4114). Qwen embedding ids match case-insensitively so correctly-cased provider
+  ids get their dimensions pinned (#4123). Recipe-declared thinking-by-default
+  models (DeepSeek v4) get reasoning-token headroom in `think` via the capability
+  layer (reimplements stale-fork PR #4172; thanks @Tonyli1010).
+- **doctor/health:** `get_health`'s islanded check applies endpoint liveness in
+  both directions so it agrees with `gbrain orphans` (#4153), and entity coverage
+  ratios report "too few to grade" below a small-N floor instead of a misleading
+  hard 0%/100% (#4147, also closing the #3945 class). JSON/MCP consumers:
+  `link_coverage` and `timeline_coverage` are now `number | null` — `null` means
+  "too few entity pages to grade" — and the payload adds `entity_page_count` so
+  you can render the floor yourself.
+- **transcripts:** sparse multiline sessions parse (PR #4163 by @richtheworld);
+  `--max-bytes` gives oversized stores a validated escape hatch while per-format
+  safety defaults stay in charge, with the cap folded into the `--since last`
+  checkpoint fingerprint (#4149; thanks @justemu).
+- **search/budget:** query-expansion LLM spend records to the budget tracker and
+  audit (#4121, PR #4124 by @Masashi-Ono0611).
+- **serve --http:** no-grant legacy bearer tokens get #3242's federated read
+  parity via a shared, fail-closed widening decision (PR #4132 by @kyle944).
+  Behavior change: SDK-transport sessions authenticated with such a token now
+  see the same federated read scope as the HTTP dispatch path — reads that
+  previously came back empty on one transport are consistent on both.
+- **Windows:** path containment uses the OS separator (PR #4103 by
+  @MohammedAlkindi, with CI-runnable win32 shape tests), and sync accepts Windows
+  path casing + indexes .astro/.svelte files (#4044, PR #4144 by @javieraldape).
+- **facts:** the conversation-type allowlist derives from one frozen module
+  instead of five hand-copied lists (PR #4135 by @Masashi-Ono0611).
+- **cli:** `sources --help` shows real usage instead of the circular stub
+  (PR #4133 by @Masashi-Ono0611).
+
+### To take advantage of v0.46.12.0
+- `gbrain upgrade` picks everything up; migration v131 runs automatically.
+  Multi-worker Postgres deployments: stop running `gbrain jobs work` daemons
+  BEFORE upgrading and restart them on the new binary — an old binary writing
+  tool executions against a migrated database errors on every persist until
+  restarted. Single-binary PGLite installs need nothing.
+- If claude-cli subagent jobs previously dead-lettered on
+  `uniq_subagent_tools_use_id`, re-run them — the class is fixed.
+- Hermes stores over the default cap: `gbrain transcripts ingest --max-bytes 4gb <store>`.
+- If you intentionally route claude-cli through a cloud backend, switch that
+  workload to the `anthropic` recipe with cloud credentials — claude-cli children
+  now always use subscription auth.
+
 ## [0.46.11.0] - 2026-08-16
 
 **Five operational failures from live production brains, fixed at the root.**

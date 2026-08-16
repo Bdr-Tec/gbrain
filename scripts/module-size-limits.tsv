@@ -9,10 +9,10 @@ src/core/postgres-engine.ts	5770	ratchet	peel target: containment sprint C15; gr
 src/core/pglite-engine.ts	5660	ratchet	peel target: containment sprint C15; grown v0.46.11.0 five-issue wave
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4300	ratchet	peel target: containment sprint C13-C14; grown v0.46.11.0 five-issue wave
-src/core/ai/gateway.ts	4116	ratchet	watchlist
-src/cli.ts	3337	ratchet	watchlist
-src/core/cycle.ts	2933	ratchet
-src/commands/serve-http.ts	2836	ratchet
+src/core/ai/gateway.ts	4162	ratchet	watchlist
+src/cli.ts	3357	ratchet	watchlist
+src/core/cycle.ts	3024	ratchet
+src/commands/serve-http.ts	2852	ratchet
 src/commands/jobs.ts	2950	ratchet	grown v0.46.11.0 five-issue wave
 src/core/search/hybrid.ts	2479	ratchet
 src/core/engine.ts	2343	ratchet
@@ -22,14 +22,14 @@ src/commands/extract-conversation-facts.ts	1968	ratchet
 src/core/import-file.ts	2000	ratchet	grown v0.46.11.0 five-issue wave
 src/core/cycle/synthesize.ts	2685	ratchet	grown v0.46.11.0 five-issue wave
 src/commands/embed.ts	1963	ratchet
-src/core/types.ts	1829	ratchet
+src/core/types.ts	1851	ratchet
 src/commands/skillpack.ts	1763	ratchet
 src/core/minions/queue.ts	2130	ratchet	grown v0.46.11.0 five-issue wave
 src/commands/init.ts	1932	ratchet
 src/commands/integrations.ts	1675	ratchet
-src/core/minions/handlers/subagent.ts	1643	ratchet
+src/core/minions/handlers/subagent.ts	1761	ratchet
 src/commands/bootstrap.ts	1923	ratchet	grandfathered at merge (grew past the 1500 cap on master)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
-src/commands/sources.ts	1586	ratchet
+src/commands/sources.ts	1620	ratchet
 src/core/bootstrap/harness.ts	1947	ratchet
 src/commands/hook.ts	1525	ratchet
