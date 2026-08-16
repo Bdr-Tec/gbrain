@@ -1746,7 +1746,7 @@ export interface HybridSearchMeta {
    * command can show "intent: temporal" alongside results to make the
    * weighting decision auditable.
    */
-  intent?: 'entity' | 'temporal' | 'event' | 'general';
+  intent?: 'entity' | 'temporal' | 'event' | 'concept' | 'general';
   /**
    * v0.42 — adaptive return-sizing decision (intent, cap, kept, total).
    * Omitted when the gate is off. Surfaced for `gbrain search --explain`.

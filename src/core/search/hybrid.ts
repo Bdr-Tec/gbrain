@@ -1879,7 +1879,12 @@ export async function hybridSearch(
   let returnPool = aliasHopped;
   let adaptiveDecision: AdaptiveReturnDecision | undefined;
   if (adaptiveCfg.enabled && offset === 0) {
-    const r = applyAdaptiveReturn(aliasHopped, suggestions.intent, adaptiveCfg);
+    // v0.46.8: 'concept' maps to the recall-preserving 'general' cap for
+    // adaptive return — the narrower AdaptiveQueryIntent union predates the
+    // concept intent, and concept queries are exactly the ones that want
+    // breadth (widening the union is the adaptive-ablation wave's call).
+    const adaptiveIntent = suggestions.intent === 'concept' ? 'general' : suggestions.intent;
+    const r = applyAdaptiveReturn(aliasHopped, adaptiveIntent, adaptiveCfg);
     returnPool = r.kept;
     adaptiveDecision = r.decision;
   }
