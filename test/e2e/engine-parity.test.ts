@@ -689,9 +689,18 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pgRow.updated_at).toBeInstanceOf(Date);
 
     // markPagesExtractedBatch: stamp one → count drops to 2 on both.
+    // Stamp with each row's own updated_at_iso (the #1768/D4 production
+    // convention extract --stale uses) rather than client `new Date()`: the
+    // staleness predicate compares SERVER updated_at against the stamp, and a
+    // DB whose clock runs a few ms ahead of this process (Docker VM drift)
+    // makes a client-time stamp land BEFORE the row's insert time whenever
+    // the seed→stamp gap is shorter than the skew — sp/1 stays "stale" and
+    // the count never drops.
     const stampAt = new Date().toISOString();
-    await pgEngine.markPagesExtractedBatch([{ slug: 'sp/1', source_id: SRC }], stampAt);
-    await pgliteEngine.markPagesExtractedBatch([{ slug: 'sp/1', source_id: SRC }], stampAt);
+    const sp1Pg = (await pgEngine.listStalePagesForExtraction({ batchSize: 10, sourceId: SRC })).find(r => r.slug === 'sp/1')!;
+    const sp1Pl = (await pgliteEngine.listStalePagesForExtraction({ batchSize: 10, sourceId: SRC })).find(r => r.slug === 'sp/1')!;
+    await pgEngine.markPagesExtractedBatch([{ slug: 'sp/1', source_id: SRC, extractedAt: sp1Pg.updated_at_iso }], stampAt);
+    await pgliteEngine.markPagesExtractedBatch([{ slug: 'sp/1', source_id: SRC, extractedAt: sp1Pl.updated_at_iso }], stampAt);
     expect(await pgEngine.countStalePagesForExtraction({ sourceId: SRC })).toBe(2);
     expect(await pgliteEngine.countStalePagesForExtraction({ sourceId: SRC })).toBe(2);
 

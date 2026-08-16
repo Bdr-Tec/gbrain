@@ -121,17 +121,23 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
       readFileSync(join(fixtureTemplate, 'openclaw.plugin.json.template'), 'utf8'),
     );
 
-    // Build our real entry to a single JS bundle. This is the same source
+    // Build our real entry. This is the same source
     // (`src/openclaw-context-engine.ts`) that the release ships; only the
     // packaging layer (test fixture's package.json) is test-specific.
+    // --outdir (not --outfile): since v0.45.0.0, pglite-embedded-assets.ts
+    // imports five PGLite runtime assets `with { type: 'file' }`, each an
+    // extra output file — bun refuses multi-output builds with --outfile.
+    // --entry-naming keeps the bundle at entry.js beside the assets.
     const buildResult = spawnSync(
       'bun',
       [
         'build',
         join(repoRoot, 'src', 'openclaw-context-engine.ts'),
         '--target=bun',
-        '--outfile',
-        join(fixtureDir, 'entry.js'),
+        '--outdir',
+        fixtureDir,
+        '--entry-naming',
+        'entry.[ext]',
       ],
       { encoding: 'utf8', timeout: 60_000 },
     );
@@ -168,11 +174,15 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
   it.skipIf(SKIP)(
     'openclaw imports the entry file and reports status=loaded',
     () => {
-      const r = runOpenclaw(['plugins', 'inspect', PLUGIN_ID, '--runtime', '--json'], { timeoutMs: 30_000 });
+      const r = runOpenclaw(['plugins', 'inspect', PLUGIN_ID, '--json'], { timeoutMs: 30_000 });
       expect(r.exitCode).toBe(0);
 
       const inspect = JSON.parse(r.stdout);
       expect(inspect.plugin).toBeDefined();
+      // No --runtime flag: OpenClaw 2026.4.x's `plugins inspect --json`
+      // imports the plugin and reports runtime state directly (the separate
+      // --runtime flag was dropped upstream; the JSON carries the same
+      // plugin.imported/status/activated + top-level diagnostics fields).
       // status=loaded means: openclaw imported the entry.js module, read the
       // default export, and called register(api) without throwing.
       expect(inspect.plugin.status).toBe('loaded');
@@ -184,7 +194,7 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
   it.skipIf(SKIP)(
     'default export carries the expected id / name / description metadata',
     () => {
-      const r = runOpenclaw(['plugins', 'inspect', PLUGIN_ID, '--runtime', '--json'], { timeoutMs: 30_000 });
+      const r = runOpenclaw(['plugins', 'inspect', PLUGIN_ID, '--json'], { timeoutMs: 30_000 });
       expect(r.exitCode).toBe(0);
       const inspect = JSON.parse(r.stdout);
 
@@ -199,7 +209,7 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
   it.skipIf(SKIP)(
     'register(api) ran without producing error-level diagnostics',
     () => {
-      const r = runOpenclaw(['plugins', 'inspect', PLUGIN_ID, '--runtime', '--json'], { timeoutMs: 30_000 });
+      const r = runOpenclaw(['plugins', 'inspect', PLUGIN_ID, '--json'], { timeoutMs: 30_000 });
       expect(r.exitCode).toBe(0);
       const inspect = JSON.parse(r.stdout);
 

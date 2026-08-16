@@ -74,13 +74,17 @@ describeIfDB('v0.41.2.1 D10 — discoverExtractablePages on real Postgres', () =
   test('returns extractable rows when seeded', async () => {
     await seedPage({ slug: 'meeting/a', type: 'meeting', content_hash: 'hash-A-1234567890abc' });
     await seedPage({ slug: 'source/b', type: 'source', content_hash: 'hash-B-1234567890abc' });
-    await seedPage({ slug: 'notes/skip', type: 'note', content_hash: 'hash-N-1234567890abc' });
+    // Sentinel uses type 'concept': synthesis-output types are excluded from
+    // discovery UNCONDITIONALLY (SYNTHESIS_OUTPUT_TYPES), so the assertion
+    // holds regardless of which pack manifest widens the extractable list
+    // (PR #2615 made 'note' pack-dependent, which broke the old sentinel).
+    await seedPage({ slug: 'concepts/skip', type: 'concept', content_hash: 'hash-N-1234567890abc' });
 
     const discovered = await discoverExtractablePages(engine, 'default');
     const slugs = discovered.map((d) => d.slug).sort();
     expect(slugs).toContain('meeting/a');
     expect(slugs).toContain('source/b');
-    expect(slugs).not.toContain('notes/skip');
+    expect(slugs).not.toContain('concepts/skip');
   });
 
   test('ANY($::text[]) bind works through postgres.unsafe (PGLite parity proof)', async () => {
@@ -90,7 +94,7 @@ describeIfDB('v0.41.2.1 D10 — discoverExtractablePages on real Postgres', () =
     for (const type of ['meeting', 'source', 'article', 'video', 'book', 'original']) {
       await seedPage({ slug: `${type}/x`, type, content_hash: `hash-${type}-1234567890ab` });
     }
-    await seedPage({ slug: 'note/skip', type: 'note', content_hash: 'hash-note-1234567890' });
+    await seedPage({ slug: 'concept/skip', type: 'concept', content_hash: 'hash-note-1234567890' });
 
     const discovered = await discoverExtractablePages(engine, 'default');
     const slugs = discovered.map((d) => d.slug).sort();

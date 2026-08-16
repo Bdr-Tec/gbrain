@@ -113,9 +113,13 @@ describe('v0.29 E2E — dispatchToolCall for the three new ops', () => {
     // out of the MCP tool list, the in-handler ctx.remote check is the
     // last line. dispatchToolCall defaults remote=true, which is what
     // every MCP transport sets, so the reject must fire here.
+    // transport: 'stdio' gets past the v0.45.13.0 dispatch-layer localOnly
+    // backstop (non-stdio transports get the unknown_tool envelope before
+    // the handler — that layer is pinned by test/dispatch-localonly.test.ts)
+    // so this test still exercises the IN-HANDLER ctx.remote gate.
     const result = await dispatchToolCall(engine, 'get_recent_transcripts', {
       days: 7,
-    }, { remote: true, sourceId: 'default' });
+    }, { remote: true, sourceId: 'default', transport: 'stdio' });
 
     expect(result.isError).toBe(true);
     const err = JSON.parse(result.content[0].text);
@@ -130,7 +134,7 @@ describe('v0.29 E2E — dispatchToolCall for the three new ops', () => {
     // fixture; the test just asserts the trust gate didn't reject).
     const result = await dispatchToolCall(engine, 'get_recent_transcripts', {
       days: 7,
-    }, { remote: false });
+    }, { remote: false, transport: 'stdio' });
 
     expect(result.isError).toBeFalsy();
     const rows = JSON.parse(result.content[0].text);

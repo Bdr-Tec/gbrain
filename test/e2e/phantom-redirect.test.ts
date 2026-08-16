@@ -235,27 +235,23 @@ describeMaybe('phantom-redirect E2E (Postgres)', () => {
          FROM facts WHERE source_id='default'
          ORDER BY id`,
       );
-      // After migrateFactsToCanonical, the row is now under canonical.
-      // The migrate step preserves embedding. Then the main reconcile
-      // visits canonical (added via touched_canonicals) and does
-      // wipe-then-insert from fence — which DROPS embedding because
-      // the fence doesn't carry it. So embedding ends up NULL.
-      //
-      // This test EXISTS to document this baseline behavior: the migrate
-      // step itself does NOT corrupt the embedding column on Postgres
-      // (the round-12 concern), but the subsequent fence reconcile
-      // intentionally re-derives from fence and embedding is regenerated
-      // by the embed phase.
+      // After migrateFactsToCanonical, the row is now under canonical with
+      // its embedding preserved (the migrate step is a pure UPDATE). Since
+      // the idempotent reconcile (#2932), a canonical whose DB fact rows
+      // already match the fence is SKIPPED — no wipe-then-insert — so the
+      // migrated row legitimately KEEPS its non-NULL embedding.
       //
       // The pinning assertion: at NO point is the embedding column
       // populated with a STRING (postgres-js's text shape leak — that
-      // bug class would produce a non-null text-shaped value here, not
-      // a clean NULL).
+      // bug class would produce a non-null text-shaped value here).
+      // facts.embedding is declared HALFVEC on pgvector >= 0.7 (migration
+      // v40) and VECTOR on older stacks; both are legitimate pgvector
+      // column types, so the predicate excludes both.
       const stringShaped = await engine.executeRaw<{ ct: string }>(
         `SELECT COUNT(*)::text AS ct FROM facts
          WHERE source_id='default'
            AND embedding IS NOT NULL
-           AND pg_typeof(embedding)::text != 'vector'`,
+           AND pg_typeof(embedding)::text NOT IN ('vector', 'halfvec')`,
       );
       expect(parseInt(stringShaped[0].ct, 10)).toBe(0);
       expect(rows.length).toBeGreaterThan(0);
