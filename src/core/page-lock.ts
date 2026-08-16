@@ -3,7 +3,7 @@
  *
  * Eng-review fold: reuses the v0.17 `~/.gbrain/cycle.lock` PID-liveness
  * pattern (src/core/cycle.ts:acquireFileLock) but scoped per page so two
- * parallel `gbrain takes add` calls + a `takes seed --refresh` running in
+ * parallel `gbrain takes add` calls + a refresh-mode `takes seed` running in
  * autopilot can't race on the same `<slug>.md` file.
  *
  * Lock file path: `~/.gbrain/page-locks/<sha256-of-slug>.lock`. SHA-256

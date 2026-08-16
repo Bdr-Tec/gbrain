@@ -1,5 +1,45 @@
 # TODOS
 
+## Five-issue fix wave follow-ups (backlinks corruption / malformed paths / type warnings / getPage scoping / queue admission)
+
+- [ ] **P2 — migrate the remaining fs writers to core/atomic-write.** **What:**
+  `src/core/skillopt/apply-edits.ts` (atomicWrite, leaks tmp on write error),
+  `src/core/write-through.ts` (own tmp+rename), `src/commands/lint.ts:~526`
+  (bare writeFileSync in runLintCore) move onto `src/core/atomic-write.ts`
+  (unique tmp + fsync + mode preservation + optional on-disk verify). Include
+  page-lock unification: write-through's render does NOT take withPageLock, so
+  the backlinks-vs-render lost-update race is only half-closed (backlinks
+  locks; render doesn't). **Why:** four hand-rolled copies drift; the shared
+  helper is strictly stronger. **Effort:** M. **Priority:** P2.
+- [ ] **P3 — relocate/retire skillopt's splitFrontmatter.** **What:** either
+  move it to core/markdown.ts next to frontmatterBodyOffset or port its one
+  SKILL.md caller onto the canonical helper (skillopt's regex is LF-at-byte-0
+  only; the canonical one handles leading blanks + CRLF). **Effort:** S.
+  **Priority:** P3.
+- [ ] **P3 — admission/stats indexes if hot.** **What:** expression index on
+  `(name, (data->>'__param_hash')) WHERE status='waiting'` for the coalesce
+  probe + `(name, created_at)` for the per-type stats aggregates, when
+  minion_jobs exceeds ~100k rows. Same family as the buildQueueDepths perf
+  note (status.ts) and the completed-recency probe TODO below. **Effort:** S.
+  **Priority:** P3.
+- [ ] **P2 — getPage type-boundary redesign (the durable fix behind the
+  guard).** **What:** make source scope explicit at the TYPE level — required
+  scope param or an explicit ALL_SOURCES sentinel on `engine.getPage`, so an
+  unscoped read is unrepresentable instead of merely linted
+  (check-getpage-scoped-write.mjs is the interim guard; the default-first
+  ORDER BY makes today's unscoped reads deterministic). ~78 call sites.
+  **Effort:** L. **Priority:** P2.
+- [ ] **P2 — per-name claim fairness / lane isolation.** **What:** the
+  admission wave (coalescing/TTL/quota) is deliberately submit-side only;
+  claim order remains global FIFO per queue (`queue.ts` claim ORDER BY), so
+  one divergent type still starves same-queue siblings until TTL/quota bites.
+  A per-name claim budget or weighted claim is the drain-side primitive.
+  **Effort:** L. **Priority:** P2.
+- [ ] **P3 — jobs stats divergence: per-queue scoping option.** **What:**
+  the DIVERGENT scream computes name-global (matches quota semantics); a
+  `--queue`-scoped variant would help multi-queue operators localize the
+  producer. **Effort:** S. **Priority:** P3.
+
 ## #4145 lock-renewal wave follow-ups (filed 2026-08-15)
 
 - [ ] **P2 — Kill or reap the force-evicted handler process.** **What:** when the
@@ -285,10 +325,15 @@ Each was explicitly deferred in the pass's CEO/eng/outside-voice reviews.
 - [ ] **P2 — `jobs submit --max-pending` public flag.** maxPending stays an
   internal submit option this wave (Codex C4): its semantics exclude
   delayed/paused/waiting-children rows, and identity is (name, queue, source)
-  so distinct payloads collapse. Decide the public contract (include delayed?
-  explicit scope key?) after the primitive soaks in autopilot, then mirror
-  parseMaxWaitingFlag (clamp [1,100]) + help + flag-registry regen + optional
-  submit_job MCP param. Where: src/commands/jobs.ts, src/core/operations.ts.
+  so distinct payloads collapse. NOTE (five-issue fix wave): the
+  payload-DISTINCT dedupe primitive now exists — admission param-coalescing
+  (`coalesce_params` / minions.coalesce_params.<name>, hash of the full
+  payload incl. owner lane) covers the "identical submits collapse, distinct
+  ones don't" case; --max-pending remains the single-flight-per-scope story.
+  Decide the public contract (include delayed? explicit scope key?) after the
+  primitive soaks in autopilot, then mirror parseMaxWaitingFlag (clamp
+  [1,100]) + help + flag-registry regen + optional submit_job MCP param.
+  Where: src/commands/jobs.ts, src/core/operations.ts.
 - [ ] **P2 — maxPending at the other single-flight dispatch sites.** The
   freshness sync submit (src/commands/autopilot.ts freshness loop) and the
   targeted remediation steps (autopilot.ts targeted-submit loop) still use

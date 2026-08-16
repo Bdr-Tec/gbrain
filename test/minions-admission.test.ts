@@ -13,6 +13,7 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { withEnv } from './helpers/with-env.ts';
 import { MinionQueue } from '../src/core/minions/queue.ts';
 import {
   computeParamHash,
@@ -44,7 +45,6 @@ beforeEach(async () => {
   await engine.executeRaw(`DELETE FROM minion_jobs`, []);
   await engine.executeRaw(`DELETE FROM config WHERE key LIKE 'minions.%'`, []);
   _resetAdmissionCacheForTest();
-  delete process.env.GBRAIN_MINIONS_ADMISSION;
 });
 
 async function backdate(id: number, hours: number): Promise<void> {
@@ -123,11 +123,13 @@ describe('param-coalescing (subagent default-on)', () => {
   });
 
   test('kill-switch GBRAIN_MINIONS_ADMISSION=0 disables coalescing', async () => {
-    process.env.GBRAIN_MINIONS_ADMISSION = '0';
-    _resetAdmissionCacheForTest();
-    const a = await queue.add('subagent', { prompt: 'killed' }, {}, SUB);
-    const b = await queue.add('subagent', { prompt: 'killed' }, {}, SUB);
-    expect(b.id).not.toBe(a.id);
+    await withEnv({ GBRAIN_MINIONS_ADMISSION: '0' }, async () => {
+      _resetAdmissionCacheForTest();
+      const a = await queue.add('subagent', { prompt: 'killed' }, {}, SUB);
+      const b = await queue.add('subagent', { prompt: 'killed' }, {}, SUB);
+      expect(b.id).not.toBe(a.id);
+    });
+    _resetAdmissionCacheForTest(); // don't leak the killed-policy cache to later tests
   });
 
   test('config off-switch minions.coalesce_params.subagent=false disables it', async () => {
