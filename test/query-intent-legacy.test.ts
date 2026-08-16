@@ -19,7 +19,7 @@ describe('classifyQueryIntent', () => {
       expect(classifyQueryIntent('Tell me about Brex')).toBe('entity');
     });
 
-    test('"What is the ownership economy?" → concept (RE-PINNED v0.46.8, Cat 13)', () => {
+    test('"What is the ownership economy?" → concept (RE-PINNED v0.46.11, Cat 13)', () => {
       // Was: → entity. That keyword tilt (kw×1.15 + exactMatch 1.25) on
       // definitional PARAPHRASES made hybrid lose to its own vector arm
       // (Cat 13: 47.0 vs 49.1 nDCG@5 on 500 paraphrase probes). Lowercase

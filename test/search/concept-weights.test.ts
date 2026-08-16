@@ -1,5 +1,5 @@
 /**
- * v0.46.8 (Cat 13) — concept-intent vector-lean weights, DELTA-asserted.
+ * v0.46.11 (Cat 13) — concept-intent vector-lean weights, DELTA-asserted.
  *
  * The measured defect: definitional paraphrases classified `entity` and got
  * the keyword tilt, making hybrid LOSE to its own vector arm (47.0 vs 49.1

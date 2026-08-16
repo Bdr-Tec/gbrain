@@ -88,7 +88,7 @@ const INTENT_WEIGHTS: Record<QueryIntent, IntentWeights> = {
     exactMatchBoost: 1.10,
   },
   concept: {
-    // v0.46.8 (Cat 13): definitional/landscape paraphrases — the user asks
+    // v0.46.11 (Cat 13): definitional/landscape paraphrases — the user asks
     // what an IDEA means, in their own words. The vector arm wins here; the
     // entity keyword tilt made hybrid LOSE to its own vector component
     // (47.0 vs 49.1 nDCG@5 on 500 paraphrase probes). Inverse of the

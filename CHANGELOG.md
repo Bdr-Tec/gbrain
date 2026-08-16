@@ -2,6 +2,82 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.11.0] - 2026-08-16
+
+**The brain now recognizes people the way you actually mention them.**
+Lowercase first-name mentions ("remind me what alice said") and
+surname-only references ("Did Galewright follow up?") now resolve to the
+right page and surface a pointer before your agent answers. On the
+BrainBench identity suite this took the know-to-ask failure rate from
+0.15 to 0.00 across all three harnesses, with push precision held at
+1.0 and zero false fires — and the claude-code benchmark row now
+exercises the real shipped hook instead of a test contract, so those
+numbers measure production behavior.
+
+### Added
+- **Lowercase + surname recall arms in the retrieval reflex.** A
+  lowercase mention resolves through your documented aliases when the
+  match is unique across every source in play; a surname-only reference
+  resolves when exactly one person page carries that surname. Ambiguity
+  in either arm injects nothing — silence beats a wrong pointer. Kill
+  switch: `retrieval_reflex_lexical_arms: false` in config or
+  `GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS=false` (default on).
+- **Aliases now count everywhere identity resolves.** Entity operations
+  (`gbrain entity`, trajectory lookups) match documented aliases exactly
+  before falling back to fuzzy matching, and wikilink inference
+  recognizes alias mentions in page bodies — both verified against live
+  pages so a stale alias can never point at a deleted page.
+- **Concept-shaped queries get concept-shaped ranking.** Definitional
+  paraphrases ("what is the ownership economy?") are classified as a new
+  `concept` intent and ranked vector-lean, so keyword-decoy pages stop
+  outranking the page that actually explains the idea. Entity lookups
+  keep their existing ranking — a proper noun in the query routes as
+  before.
+- **`--explain` now prints each result's real cosine similarity** next
+  to its blended score.
+
+### Fixed
+- **Evidence labels are grounded in real vector similarity.** A result
+  is labeled `high_vector_match` only when its actual cosine similarity
+  clears the floor (config: `search.evidence_cosine_floor`, default
+  0.80) — previously a keyword-heavy blended score could earn the label
+  with no semantic support. Keyless runs degrade to honest
+  keyword-based labels.
+- **A single dense page can no longer starve vector search.** When one
+  page's chunks fill the candidate pool, the engines escalate the pool
+  (bounded by the vector index's hard ceiling) until the page count is
+  honest; genuine exhaustion is reported in search metadata instead of
+  silently returning a short page.
+- **Near-duplicate filtering no longer deletes other pages' results.**
+  The text-similarity dedup now only collapses chunks within the same
+  page, so two legitimately similar pages both survive.
+- **Weak-confidence result lists no longer collapse to one result.**
+  Autocut skips score-cliff trimming entirely when the top score is
+  below a floor (config: `search.autocut_min_top`, default 0.35) —
+  low-confidence lists return the full cluster for you to judge.
+
+### Changed
+- **BrainBench's claude-code row measures the shipped hook.** The
+  adapter drives the production `user-prompt` hook end-to-end (real
+  transcript parsing, real IPC resolve path, real injection budget)
+  instead of a harness-shaped contract, and the suite's pre-registered
+  quality floors are now an executable test — a baseline update can no
+  longer bank a threshold violation.
+- The query cache key version advanced (new ranking knobs participate),
+  so the first re-run of a cached query after upgrade is a one-time
+  cache miss and repopulates automatically.
+
+To take advantage of v0.46.11.0:
+- `gbrain upgrade` (or rebuild the binary). No migration required; the
+  new recall arms and ranking are on by default.
+- Expect a one-time query-cache miss spike on first queries after
+  upgrade (cache key version bump); the cache rewarms itself.
+- If you need to compare against pre-wave identity behavior, set
+  `GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS=false` — no redeploy needed.
+- Add aliases to your people pages (`gbrain alias`) to widen what the
+  lowercase arm can catch; it only fires on documented, globally unique
+  aliases.
+
 ## [0.46.10.0] - 2026-08-16
 
 **Switching embedding and reranking providers is now one guess-free
