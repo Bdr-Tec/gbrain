@@ -1,5 +1,28 @@
 # TODOS
 
+## Security-sweep mitigation follow-ups (filed 2026-08-16)
+
+- [ ] **P3 — Integrity for the from-source / `latest-stable` install paths.** **What:** the
+  compiled-binary self-update now verifies the GitHub build-provenance attestation before
+  installing (`src/core/binary-self-update.ts`), but the primary documented install
+  (`bun install -g github:garrytan/gbrain#latest-stable`, a force-moved tag) and the
+  force-published `codex-plugin` branch / template repo remain TLS+GitHub trust-on-first-use.
+  **Why:** those paths are how most users actually install; a compromised GitHub account could
+  serve an unverified tree. **Context:** documented as a residual in SECURITY.md
+  ("Install-path trust model"). A postinstall attestation check (or a documented
+  `gh attestation verify` step for tag installs) would close it, but a from-source tree has no
+  single binary to attest — needs design. **Start:** `scripts/postinstall.ts` +
+  SECURITY.md residual note. **Depends on:** the WS2 self-update integrity that just landed.
+- [ ] **P3 — Make `check:admin-embedded` deterministic so it can gate.** **What:**
+  `scripts/build-admin-embedded.ts` stamps today's date into a comment in
+  `src/admin-embedded.ts`, so `check-admin-embedded.sh`'s `git diff --exit-code` fails on any
+  day after commit — which is why it's `EXECUTION_EXEMPT` and unwired. **Why:** if the date
+  stamp were dropped (or the check ignored it), the embedded-manifest freshness guard could
+  actually run in CI. **Context:** correctness guard (catches a forgotten manifest regen), not
+  a security control — a backdoored dist regenerates the manifest and passes. The real dist
+  trust anchor is build-fresh-in-release (WS1, landed). **Start:** the date-comment line in
+  `scripts/build-admin-embedded.ts` + `guards-manifest.tsv:50`.
+
 ## Codex/Claude plugin lane follow-ups (filed from the plugin packaging wave)
 
 - [ ] **Plugin-lane receipt provenance: re-run bootstrap after plugin install can strand a hand-wired registration.** `appendReceiptRegistration` dedups by (host, scope), so wiring via bootstrap (detail:`mcp`) → enabling the plugin → re-running `bootstrap hooks` overwrites the record with `plugin-mcp`; the plugin-owned uninstall guard then skips `mcp remove` forever, stranding the registration bootstrap itself created. Narrow sequence (plugin enabled AFTER a hand-wired bootstrap). Fix: on the plugin-owned skip, don't downgrade an existing `mcp`-detail record for the same (host,scope), or offer to remove the stale hand-wired entry. Priority: P3. Surfaced by the ship-stage red-team review of the codex-plugin wave.
