@@ -6,10 +6,13 @@
 > recipe: `gbrain init` auto-pick and the interactive picker exclude it
 > (explicit `--embedding-model zeroentropyai:*` still works, with a loud
 > warning), every ZE embed/rerank call prints a once-per-process
-> deprecation warning, `gbrain providers` annotates it DEPRECATED, and
-> `gbrain ze-switch` refuses to switch a brain ONTO ZeroEntropy (`--undo`
-> and `--dry-run` still work). The September release removes the recipe
-> entirely. A brain still embedding through the hosted API loses semantic
+> deprecation warning, `gbrain providers` annotates it DEPRECATED
+> (`gbrain providers env zeroentropyai` prints this off-ramp instead of a
+> signup link), and
+> `gbrain ze-switch` is a pure refusal/redirect shim (every invocation
+> refuses or redirects; `--undo` prints the exact migrate command that
+> returns a switched brain to its prior provider — it no longer acts).
+> The September release removes the recipe entirely. A brain still embedding through the hosted API loses semantic
 > retrieval entirely on the shutdown date: query embedding uses the same
 > endpoint, so **existing vectors become unqueryable**, not just new
 > content. Two fixes, either works:
@@ -42,28 +45,29 @@
 >
 > The hosted setup below remains accurate until the shutdown date.
 
-[ZeroEntropy](https://zeroentropy.dev) ships two specialized small models
-for retrieval pipelines:
+[ZeroEntropy](https://zeroentropy.dev) shipped two specialized small
+models for retrieval pipelines (factual specs kept for existing users and
+self-hosters — this is not a recommendation):
 
 - **`zembed-1`** — multilingual embedding distilled from zerank-2.
   Flexible Matryoshka dims (2560/1280/640/320/160/80/40), 32K context,
-  asymmetric `input_type: query|document` encoding. $0.025/1M tokens
-  (sale) / $0.05 regular.
-- **`zerank-2`** — SOTA multilingual cross-encoder reranker.
-  $0.025/1M tokens (~50% cheaper than Cohere/Voyage rerankers).
-  Plus `zerank-1` and `zerank-1-small` for legacy / open-source needs.
+  asymmetric `input_type: query|document` encoding.
+- **`zerank-2`** — multilingual cross-encoder reranker. Plus `zerank-1`
+  and `zerank-1-small` (open-source weights).
 
-Both land in gbrain v0.35.0.0 behind the openai-compatible recipe path,
+Both landed in gbrain v0.35.0.0 behind the openai-compatible recipe path,
 alongside OpenAI and Voyage.
 
-## Setup
+## Setup (existing brains and self-hosters only — do not onboard)
 
-1. Get an API key at
-   [dashboard.zeroentropy.dev](https://dashboard.zeroentropy.dev).
-2. Export it:
-   ```bash
-   export ZEROENTROPY_API_KEY=<your-key>
-   ```
+New installs use Voyage (`gbrain init` handles it); do not create a new
+ZeroEntropy account for a provider that shuts down on 2026-09-04. A brain
+that already has a key exports it as before for the remaining hosted
+window:
+
+```bash
+export ZEROENTROPY_API_KEY=<your-existing-key>
+```
 
 ## Leaving ZeroEntropy (the off-ramp)
 
@@ -124,19 +128,12 @@ the key, every rerank call fails-open (audit-logged) and search returns
 RRF order — same UX as before, just with an observable failure surfaced
 via `gbrain doctor`.
 
-### Opt-in on `conservative` mode
+### Enabling reranking today
 
-```bash
-gbrain config set search.reranker.enabled true
-```
-
-The override sits above the mode-bundle default; opt-out is one flip.
-
-### Cost anchor
-
-At 30 candidates × ~400 tokens/chunk × $0.025/1M = **~$0.0003/query**.
-Rounding error against the `tokenmax + Opus` pairing's ~$700/mo at
-single-user volume per the CLAUDE.md cost matrix.
+Set the surviving reranker FIRST, then enable — enabling on a brain that
+never set `search.reranker.model` falls back to the dying `zerank-2`:
+`gbrain config set search.reranker.model voyage:rerank-2.5`, then
+`gbrain config set search.reranker.enabled true`.
 
 ### Verify
 
