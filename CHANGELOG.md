@@ -2,6 +2,35 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.12.0] - 2026-08-16
+
+**Supply-chain hardening for how gbrain updates and how community code lands.**
+A security pass over the update path, the release build, and the contribution
+workflow. Nothing here fixes an active exposure; it raises the floor so a
+future compromised release channel or a slipped contribution can't turn into a
+silent problem.
+
+### Added
+- `gbrain upgrade` (compiled-binary self-update) now confirms the download's
+  integrity before it installs anything. It checks the downloaded binary against
+  the build-provenance attestation GitHub publishes for each release, and confirms
+  the binary really is the release it was fetched for. If the check can't be
+  satisfied, the update is refused and your existing binary is left untouched.
+- `wave-security-scan` (`bun run wave-security-scan <base>..<head>`): a repeatable
+  security sweep for reviewing batches of community contributions before they
+  ship. It surfaces newly introduced obfuscation, secrets (scanned without the
+  usual test/skills exclusions), and changes to the bundled admin UI, with
+  everything else as context.
+
+### Changed
+- Release binaries now build the admin UI fresh from source at release time, so
+  the shipped bundle always corresponds to reviewable source.
+- Static analysis (Semgrep) now blocks a pull request on issues that PR
+  introduces, while never blocking on pre-existing findings.
+- `SECURITY.md` documents which install paths verify update integrity and which
+  remain trust-on-first-use, and `docs/RELEASING.md` adds a security-review step
+  to the community-contribution process.
+
 ## [0.46.11.0] - 2026-08-16
 
 **Five operational failures from live production brains, fixed at the root.**
