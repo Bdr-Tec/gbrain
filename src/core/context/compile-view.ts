@@ -182,27 +182,26 @@ async function fetchCandidates(
     }
   };
 
-  // Prefix arms — slug sort is a total order, so the limit cutoff is stable.
+  // Prefix arms + tag arm + anchor probe are independent — fetched in
+  // PARALLEL (pre-landing review, perf: a remote-Postgres brain pays a full
+  // RTT per serial arm). Determinism is unaffected: candidates land in a
+  // slug-keyed map processed in a fixed arm order below, and the final
+  // ordering is the (score desc, slug asc) total sort.
   const prefixes = [...DURABLE_PREFIXES, ...(input.includePrefixes ?? [])];
-  for (const slugPrefix of prefixes) {
-    add(
-      await engine.listPages({
-        slugPrefix,
-        sourceId,
-        sort: 'slug',
-        limit: PREFIX_CANDIDATE_LIMIT,
-      }),
-      false,
-    );
-  }
-
-  // Tag arm — explicit pins (few by construction; slug sort for stable order).
-  add(await engine.listPages({ tag: COMPILE_CONTEXT_TAG, sourceId, sort: 'slug' }), true);
-
-  // Recency arm. The window bound needs an anchor BEFORE candidates exist, so
-  // probe the newest updated_at in the source (one cheap sorted query; ties
-  // share the timestamp, so tie order cannot change the probed VALUE).
-  const probe = await engine.listPages({ sourceId, sort: 'updated_desc', limit: 1 });
+  const [prefixResults, tagPages, probe] = await Promise.all([
+    Promise.all(
+      prefixes.map((slugPrefix) =>
+        engine.listPages({ slugPrefix, sourceId, sort: 'slug', limit: PREFIX_CANDIDATE_LIMIT }),
+      ),
+    ),
+    // Tag arm — explicit pins (few by construction; slug sort for stable order).
+    engine.listPages({ tag: COMPILE_CONTEXT_TAG, sourceId, sort: 'slug' }),
+    // Recency-anchor probe: the newest updated_at in the source (ties share
+    // the timestamp, so tie order cannot change the probed VALUE).
+    engine.listPages({ sourceId, sort: 'updated_desc', limit: 1 }),
+  ]);
+  for (const pages of prefixResults) add(pages, false);
+  add(tagPages, true);
   if (probe.length > 0) {
     const windowStart = new Date(
       new Date(probe[0].updated_at).getTime() - RECENCY_WINDOW_MS,
@@ -252,7 +251,12 @@ function renderEntry(page: Page): RenderedEntry {
     },
     { keepVisibility: ['world'], maxLen: EXCERPT_MAX_LEN },
   );
-  const lines = [`## ${page.title} (brain://${page.slug})`, `updated: ${date}`];
+  // Title whitespace is COLLAPSED (pre-landing review, security): a multiline
+  // title from untrusted ingested content could otherwise emit a line equal to
+  // the managed-block end marker — closing the AGENTS.md region early and
+  // wedging every later codex-target run on the damaged-markers throw.
+  const title = page.title.replace(/\s+/g, ' ').trim();
+  const lines = [`## ${title} (brain://${page.slug})`, `updated: ${date}`];
   if (excerpt) lines.push('', excerpt);
   const block = lines.join('\n');
   return { slug: page.slug, date, block, rendered: `\n\n${block}` };

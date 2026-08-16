@@ -54,8 +54,9 @@ export interface FactsBackstopCtx {
    *   - 'mcp:extract_facts'  — explicit MCP op (inline mode)
    *   - 'file_upload'        — file_upload import path
    *   - 'code_import'        — code import path
+   *   - 'hook:compact'       — compaction-boundary checkpoint harvest (cathedral 5)
    */
-  source: 'sync:import' | 'mcp:put_page' | 'mcp:extract_facts' | 'file_upload' | 'code_import';
+  source: 'sync:import' | 'mcp:put_page' | 'mcp:extract_facts' | 'file_upload' | 'code_import' | 'hook:compact';
   /** Execution mode — D8. Default 'queue' (fire-and-forget). */
   mode?: 'queue' | 'inline';
   /** Notability filter — D4. Default 'all'; sync uses 'high-only'. */

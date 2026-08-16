@@ -13,7 +13,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { BrainEngine } from '../core/engine.ts';
 import type { ContextPackHandler } from '../core/context/resolve-ipc.ts';
 import { CONTEXT_PACK_SERVER_BUDGET_MS } from '../core/context/resolve-ipc.ts';
@@ -38,12 +38,12 @@ const SAFE_CORPUS_BASENAME = /^[A-Za-z0-9._-]{1,240}\.txt$/;
  * may not exist here, answered with a typed not_found skip (the sweep
  * backstop covers wherever the hook actually wrote). */
 async function serveCorpusDir(engine: BrainEngine): Promise<string> {
-  let dir = await engine.getConfig('dream.synthesize.session_corpus_dir');
-  if (!dir) {
-    const { configDir } = await import('../core/config.ts');
-    dir = join(configDir(), 'transcripts', 'corpus');
-  }
-  return dir;
+  const configured = await engine.getConfig('dream.synthesize.session_corpus_dir');
+  // isAbsolute parity with the hook/engine resolvers (pre-landing review):
+  // a relative config value must never resolve against the serve cwd.
+  if (configured && isAbsolute(configured)) return configured;
+  const { configDir } = await import('../core/config.ts');
+  return join(configDir(), 'transcripts', 'corpus');
 }
 
 export function makeContextPackIpcHandler(

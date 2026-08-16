@@ -28,16 +28,14 @@
  * counts + reason codes ONLY, never slugs/fact text [S3#7].
  */
 
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
-import type { FactsBackstopCtx } from '../facts/backstop.ts';
 import type { CapabilityReport } from '../capability.ts';
 import { acquireCorpusClaim, CORPUS_CLAIM_SUFFIX, CORPUS_INGESTED_SUFFIX } from '../sweep.ts';
 import { appendCheckpointManifest } from './session-state.ts';
 import { readSegmentLedger } from './corpus-segments.ts';
 import { writeHeartbeat } from './hook-heartbeat.ts';
-import { rm } from 'node:fs/promises';
 
 /** Bounded queue — overflow is a typed skip; the sweep backstop extracts later. */
 export const HARVEST_QUEUE_CAP = 8;
@@ -92,9 +90,15 @@ export function scheduleCheckpointHarvest(job: HarvestJob): HarvestAck {
   return { status: 'scheduled' };
 }
 
+/** Shutdown grace: don't let a transport that ignores the abort signal hold
+ * serve's exit — the claim's staleness window + the sweep backstop make an
+ * abandoned in-flight job safe to orphan (pre-landing review, perf). */
+export const HARVEST_SHUTDOWN_GRACE_MS = 5000;
+
 /**
  * Abort the in-flight harvest, drop the queue, and wait for the pump to go
- * idle. Serve's shutdown path calls this BEFORE engine.disconnect().
+ * idle — bounded by HARVEST_SHUTDOWN_GRACE_MS. Serve's shutdown path calls
+ * this BEFORE engine.disconnect().
  */
 export async function shutdownCheckpointHarvest(): Promise<void> {
   shuttingDown = true;
@@ -107,6 +111,10 @@ export async function shutdownCheckpointHarvest(): Promise<void> {
   if (inFlight) {
     await new Promise<void>((resolve) => {
       idleResolve = resolve;
+      const t = setTimeout(resolve, HARVEST_SHUTDOWN_GRACE_MS);
+      if (typeof (t as { unref?: () => void }).unref === 'function') {
+        (t as unknown as { unref: () => void }).unref();
+      }
     });
   }
 }
@@ -217,6 +225,7 @@ async function runOne(job: HarvestJob): Promise<{
 
       const raw = await readFile(full, 'utf-8');
       const { isDreamOutput } = await import('../cycle/transcript-discovery.ts');
+      const { runFactsPipeline } = await import('../facts/backstop.ts');
       if (isDreamOutput(raw)) {
         await writeFile(
           ingestedPath,
@@ -228,16 +237,13 @@ async function runOne(job: HarvestJob): Promise<{
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(), job.timeoutMs ?? HARVEST_JOB_TIMEOUT_MS);
       currentAbort = abort;
-      let r: Awaited<ReturnType<typeof import('../facts/backstop.ts')['runFactsPipeline']>>;
+      let r: Awaited<ReturnType<typeof runFactsPipeline>>;
       try {
-        const { runFactsPipeline } = await import('../facts/backstop.ts');
         r = await runFactsPipeline(raw, {
           engine: job.engine,
           sourceId: job.sourceId,
           sessionId: job.sessionId,
-          // Provenance tag outside FactsBackstopCtx's enumerated writers —
-          // facts.source is free text at the DB layer (sweep.ts precedent).
-          source: 'hook:compact' as FactsBackstopCtx['source'],
+          source: 'hook:compact',
           mode: 'inline',
           remote: false,
           abortSignal: abort.signal,

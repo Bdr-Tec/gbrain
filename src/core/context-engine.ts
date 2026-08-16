@@ -711,6 +711,17 @@ export function createGBrainContextEngine(ctx: {
   // IPC/direct polls only chase the async harvest result or rehydrate after
   // a host restart). Envelope string is lazily cached (one turn-context load).
   const checkpointMemo = new Map<string, CheckpointMemo>();
+  /** In-process memo cap (pre-landing review): a long-lived gateway process
+   * must not accrue one memo per session forever — evict oldest-inserted.
+   * The DB-side session_context_state has its own 7-day/LRU GC. */
+  const CHECKPOINT_MEMO_CAP = 50;
+  function memoSet(sessionId: string, memo: CheckpointMemo): void {
+    if (!checkpointMemo.has(sessionId) && checkpointMemo.size >= CHECKPOINT_MEMO_CAP) {
+      const oldest = checkpointMemo.keys().next().value;
+      if (oldest !== undefined) checkpointMemo.delete(oldest);
+    }
+    checkpointMemo.set(sessionId, memo);
+  }
   let _envelope: string | null = null;
   async function envelope(): Promise<string> {
     if (_envelope !== null) return _envelope;
@@ -723,31 +734,60 @@ export function createGBrainContextEngine(ctx: {
     return _envelope;
   }
 
+  /** Per-turn ceiling on a manifest poll (pre-landing review, perf): assemble
+   * runs EVERY turn — the reflex ladder's timeout discipline applies here too.
+   * On timeout the poll counts as null (counter still advances; the memo
+   * settles at CHECKPOINT_POLL_LIMIT regardless). */
+  const CHECKPOINT_POLL_TIMEOUT_MS = 600;
+
   /** Poll the banked manifest over the ladder (rung 2 IPC / rung 3 direct). */
   async function pollManifest(sessionId: string): Promise<CheckpointLinkLite[] | null> {
-    try {
-      const { loadConfig } = await import('./config.ts');
-      const cfg = loadConfig();
-      if (cfg?.engine === 'pglite' && cfg.database_path) {
-        const ipc = await import('./context/resolve-ipc.ts');
-        const secret = ipc.readIpcSecret(cfg.database_path);
-        if (!secret) return null;
-        const res = await ipc.requestContextPack(ipc.resolveSocketPath(cfg.database_path), {
-          secret, sessionId, manifestOnly: true,
-        });
-        if (res === ipc.IPC_UNAVAILABLE || !('ok' in res) || !res.ok || !res.block) return null;
-        return (res.block.checkpointLinks ?? []) as CheckpointLinkLite[];
+    const work = (async (): Promise<CheckpointLinkLite[] | null> => {
+      try {
+        const { loadConfig } = await import('./config.ts');
+        const cfg = loadConfig();
+        if (cfg?.engine === 'pglite' && cfg.database_path) {
+          const ipc = await import('./context/resolve-ipc.ts');
+          const secret = ipc.readIpcSecret(cfg.database_path);
+          if (!secret) return null;
+          // bankOnly rides along DELIBERATELY (version-skew fix, pre-landing
+          // review): a NEW serve checks manifestOnly FIRST (read-only arm);
+          // an OLD serve has no manifestOnly branch and would otherwise fall
+          // through to full pack assembly — which advances last_wake_at and
+          // silently eats that session's next delta window. With bankOnly the
+          // old serve takes the banking arm (no assembly, no cursor advance,
+          // and with no window/entities in this request, no banking either).
+          const res = await ipc.requestContextPack(ipc.resolveSocketPath(cfg.database_path), {
+            secret, sessionId, manifestOnly: true, bankOnly: true,
+          });
+          if (res === ipc.IPC_UNAVAILABLE || !('ok' in res) || !res.ok || !res.block) return null;
+          // Old-serve capability probe: a response WITHOUT the checkpointLinks
+          // field is a pre-cathedral-5 serve — treat as unavailable (null) so
+          // polls stop at the limit instead of chasing a field that will
+          // never appear.
+          if (!('checkpointLinks' in res.block)) return null;
+          return (res.block.checkpointLinks ?? []) as CheckpointLinkLite[];
+        }
+        const { getDirectPostgresEngine } = await import('./context/reflex.ts');
+        const pg = await getDirectPostgresEngine(cfg);
+        if (!pg) return null;
+        const { resolveSourceId } = await import('./source-resolver.ts');
+        const sourceId = await resolveSourceId(pg, null, workspaceDir);
+        const ss = await import('./context/session-state.ts');
+        return await ss.getCheckpointManifest(pg, sourceId, null, sessionId);
+      } catch {
+        return null;
       }
-      const { getDirectPostgresEngine } = await import('./context/reflex.ts');
-      const pg = await getDirectPostgresEngine(cfg);
-      if (!pg) return null;
-      const { resolveSourceId } = await import('./source-resolver.ts');
-      const sourceId = await resolveSourceId(pg, null, workspaceDir);
-      const ss = await import('./context/session-state.ts');
-      return await ss.getCheckpointManifest(pg, sourceId, null, sessionId);
-    } catch {
-      return null;
-    }
+    })();
+    return Promise.race([
+      work,
+      new Promise<null>((resolve) => {
+        const t = setTimeout(() => resolve(null), CHECKPOINT_POLL_TIMEOUT_MS);
+        if (typeof (t as { unref?: () => void }).unref === 'function') {
+          (t as unknown as { unref: () => void }).unref();
+        }
+      }),
+    ]);
   }
 
   /** assemble()-side: memo-first, hash-keyed polls, settle-and-render. */
@@ -757,7 +797,7 @@ export function createGBrainContextEngine(ctx: {
       // First sight of this session (incl. host restart): one rehydration
       // poll, no hash requirement.
       memo = { links: [], polls: 0, expectSeg: null, settled: false };
-      checkpointMemo.set(sessionId, memo);
+      memoSet(sessionId, memo);
       const links = await pollManifest(sessionId);
       if (links) memo.links = links;
       memo.settled = true;
@@ -778,7 +818,18 @@ export function createGBrainContextEngine(ctx: {
   async function runCompactCheckpoint(params: {
     sessionId?: unknown; sessionFile?: unknown;
   }): Promise<Record<string, unknown>> {
-    const sessionId = typeof params.sessionId === 'string' && params.sessionId ? params.sessionId : null;
+    // Host-supplied id, sanitized to the hook lane's charset before ANY
+    // filename/key use (pre-landing review, security: OpenClaw session keys
+    // can embed path-shaped components; corpus-segments also enforces this
+    // structurally — this keeps the DB manifest key consistent with the
+    // filenames actually written).
+    const rawSid = typeof params.sessionId === 'string' && params.sessionId ? params.sessionId : null;
+    const sessionId = rawSid
+      ? (() => {
+          const s = rawSid.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 120);
+          return s && !/^\.+$/.test(s) ? s : null;
+        })()
+      : null;
     const sessionFile = typeof params.sessionFile === 'string' && params.sessionFile ? params.sessionFile : null;
     if (!sessionId || !sessionFile) return { status: 'skipped', reason: 'no_session' };
 
@@ -803,7 +854,7 @@ export function createGBrainContextEngine(ctx: {
     memo.expectSeg = w.hash;
     memo.polls = 0;
     memo.settled = false;
-    checkpointMemo.set(sessionId, memo);
+    memoSet(sessionId, memo);
 
     // Rung 2 — PGLite: serve owns the lock; one bankOnly+flush round trip.
     if (cfg?.engine === 'pglite' && cfg.database_path) {
@@ -839,7 +890,6 @@ export function createGBrainContextEngine(ctx: {
       const { resolveSourceId } = await import('./source-resolver.ts');
       const sourceId = await resolveSourceId(pg, null, workspaceDir);
       const { runFactsPipeline } = await import('./facts/backstop.ts');
-      type FactsSource = Parameters<typeof runFactsPipeline>[1]['source'];
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(), CHECKPOINT_COMPACT_BUDGET_MS);
       let r: Awaited<ReturnType<typeof runFactsPipeline>>;
@@ -848,7 +898,7 @@ export function createGBrainContextEngine(ctx: {
           engine: pg,
           sourceId,
           sessionId,
-          source: 'hook:compact' as FactsSource,
+          source: 'hook:compact',
           mode: 'inline',
           remote: false,
           abortSignal: abort.signal,

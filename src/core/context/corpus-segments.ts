@@ -39,11 +39,17 @@ import { mapOpenclawLine } from '../transcripts/openclaw.ts';
 /** Length of the hex content-hash slice in segment filenames. */
 const SEGMENT_HASH_LEN = 12;
 
-/** Sidecar suffixes, DUPLICATED from sweep.ts on purpose (hook.ts precedent:
- * the engine-free/lazy consumers must not drag sweep's eager capability
- * import). Keep in sync with sweep.ts's CORPUS_* constants. */
-export const SEGMENT_INGESTED_SUFFIX = '.ingested';
-export const SEGMENT_CLAIM_SUFFIX = '.in-progress';
+/**
+ * Filename-component sanitizer (pre-landing review, security): session ids
+ * reach the filename builders from MULTIPLE trust planes (the hook sanitizes
+ * its own, but the OpenClaw engine's params.sessionId and IPC-supplied ids
+ * are host-shaped) — enforce the safe charset HERE so every caller is
+ * covered structurally. Matches hook.ts's sanitizeSessionId charset.
+ */
+function safeIdComponent(id: string): string {
+  const s = String(id).replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 120);
+  return s && !/^\.+$/.test(s) ? s : 'unknown';
+}
 
 export interface SegmentLedgerEntry {
   hash: string;
@@ -55,11 +61,11 @@ export function segmentHash(text: string): string {
 }
 
 export function segmentFileName(sessionId: string, hash: string): string {
-  return `${sessionId}.seg-${hash}.txt`;
+  return `${safeIdComponent(sessionId)}.seg-${hash.replace(/[^0-9a-f]/g, '')}.txt`;
 }
 
 export function ledgerFileName(sessionId: string): string {
-  return `${sessionId}.ledger.json`;
+  return `${safeIdComponent(sessionId)}.ledger.json`;
 }
 
 /**

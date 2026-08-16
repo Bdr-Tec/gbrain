@@ -1145,6 +1145,10 @@ export const COMPACT_DEADLINE_MS = 3000;
 const COMPACT_WINDOW_TURNS = 20;
 /** Minimum remaining budget to START the segment scan+write (cathedral 5). */
 const SEGMENT_MIN_BUDGET_MS = 600;
+/** Minimum remaining budget for the durability WRITE itself (segment file +
+ * ledger). Named separately from the IPC threshold on purpose (pre-landing
+ * review): tuning one must not silently retune the other. */
+const SEGMENT_WRITE_MIN_BUDGET_MS = 300;
 /** Minimum remaining budget to fire the banking IPC call (cathedral 5). */
 const COMPACT_IPC_MIN_BUDGET_MS = 300;
 
@@ -1212,7 +1216,7 @@ async function hookCompact(io: HookIo): Promise<number> {
     const banked = await bankCompactSegment(await corpusDir(cfg), sessionId, allTurns, boundaryTurnIndexes, {
       remainingMs: remaining,
       minScanMs: SEGMENT_MIN_BUDGET_MS,
-      minWriteMs: COMPACT_IPC_MIN_BUDGET_MS,
+      minWriteMs: SEGMENT_WRITE_MIN_BUDGET_MS,
     });
     segment = banked.segment;
     const flushCorpusFile = banked.flushCorpusFile;
@@ -1401,48 +1405,47 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
         const decided = await decideCorpusMode(dir, sessionId, parsed.turns, parsed.boundaryTurnIndexes);
         const corpusTurns = decided.turns;
         if (decided.mode !== 'full') segmentMode = decided.mode;
-        if (segmentMode === 'skip_covered') {
-          // Everything already segment-banked; nothing new to write. Existing
-          // corpus file + sidecars stay untouched.
-          gcOldFiles(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000); // [G15]
-          gcCorpusArtifacts(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000, [CORPUS_INGESTED_SUFFIX, CORPUS_CLAIM_SUFFIX]);
-        } else {
-        // [S3#2] Secret-scan AT WRITE TIME. Scanner absent → still write
-        // (the corpus is 0700-local), but say so in the heartbeat.
-        let text = toCorpusText(corpusTurns);
-        try {
-          const scan = await import('../core/secret-scan.ts');
-          const redacted = scan.redactFindings(text);
-          text = redacted.text;
-          // COUNT only — the findings themselves never land in telemetry [S3#7].
-          redactionsN = redacted.redactions.length;
-        } catch {
-          degrade('scan_unavailable');
+        if (segmentMode !== 'skip_covered') {
+          // (skip_covered: everything already segment-banked; nothing new to
+          // write — existing corpus file + sidecars stay untouched.)
+          //
+          // [S3#2] Secret-scan AT WRITE TIME. Scanner absent → still write
+          // (the corpus is 0700-local), but say so in the heartbeat.
+          let text = toCorpusText(corpusTurns);
+          try {
+            const scan = await import('../core/secret-scan.ts');
+            const redacted = scan.redactFindings(text);
+            text = redacted.text;
+            // COUNT only — the findings themselves never land in telemetry [S3#7].
+            redactionsN = redacted.redactions.length;
+          } catch {
+            degrade('scan_unavailable');
+          }
+          // Session-id-keyed filename: a resumed session OVERWRITES its own
+          // corpus file — dedup by construction [A6]. The write is ATOMIC
+          // (tmp+rename) so a concurrent sweep never reads a torn half-write,
+          // and the stale `.ingested`/`.in-progress` sidecars are dropped AFTER
+          // the rename so the sweep re-processes the appended transcript (a
+          // resumed session's new turns were being permanently skipped when the
+          // completion sidecar survived the overwrite).
+          const corpusFile = join(dir, `${sessionId}.txt`);
+          const tmpCorpus = `${corpusFile}.tmp-${process.pid}`;
+          writeFileSync(tmpCorpus, text, { mode: 0o600 });
+          renameSync(tmpCorpus, corpusFile);
+          try {
+            rmSync(corpusFile + CORPUS_INGESTED_SUFFIX, { force: true });
+          } catch {
+            /* best effort — sidecar invalidation never fails the hook */
+          }
+          try {
+            rmSync(corpusFile + CORPUS_CLAIM_SUFFIX, { force: true });
+          } catch {
+            /* best effort */
+          }
         }
-        // Session-id-keyed filename: a resumed session OVERWRITES its own
-        // corpus file — dedup by construction [A6]. The write is ATOMIC
-        // (tmp+rename) so a concurrent sweep never reads a torn half-write,
-        // and the stale `.ingested`/`.in-progress` sidecars are dropped AFTER
-        // the rename so the sweep re-processes the appended transcript (a
-        // resumed session's new turns were being permanently skipped when the
-        // completion sidecar survived the overwrite).
-        const corpusFile = join(dir, `${sessionId}.txt`);
-        const tmpCorpus = `${corpusFile}.tmp-${process.pid}`;
-        writeFileSync(tmpCorpus, text, { mode: 0o600 });
-        renameSync(tmpCorpus, corpusFile);
-        try {
-          rmSync(corpusFile + CORPUS_INGESTED_SUFFIX, { force: true });
-        } catch {
-          /* best effort — sidecar invalidation never fails the hook */
-        }
-        try {
-          rmSync(corpusFile + CORPUS_CLAIM_SUFFIX, { force: true });
-        } catch {
-          /* best effort */
-        }
-        gcOldFiles(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000); // [G15]
-        gcCorpusArtifacts(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000, [CORPUS_INGESTED_SUFFIX, CORPUS_CLAIM_SUFFIX]);
-        }
+        const retentionMs = corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000;
+        gcOldFiles(dir, retentionMs); // [G15]
+        gcCorpusArtifacts(dir, retentionMs, [CORPUS_INGESTED_SUFFIX, CORPUS_CLAIM_SUFFIX]);
       }
     }
   } catch (e) {
