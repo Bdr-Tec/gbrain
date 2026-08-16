@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.13.0] - 2026-08-16
+## [0.46.16.0] - 2026-08-16
 
 **Seven verified breakages from the live issue queue, fixed at the root.**
 A bun-global install that bricked itself on upgrade, a search process that
@@ -90,7 +90,7 @@ open community PRs by @Masashi-Ono0611 — thank you.
 - Deferred synthesize transcripts no longer start the 12-hour cooldown or
   count as processed — they genuinely retry on the next cycle.
 
-### To take advantage of v0.46.13.0
+### To take advantage of v0.46.16.0
 
 Upgrade normally — the schema migration applies automatically on the first
 command. Two things to know:
