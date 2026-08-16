@@ -28,10 +28,24 @@ const get_stats: Operation = {
 
 const get_health: Operation = {
   name: 'get_health',
-  description: 'Brain health dashboard (embed coverage, stale pages, orphans)',
+  description: 'Brain health dashboard (embed coverage, stale pages, orphans). Includes a `migrations {pending, partial, wedged, skipped_future}` block from the host migration ledger so remote agents can detect wedged/outstanding host migrations without shelling into the brain host.',
   params: {},
   handler: async (ctx) => {
-    return ctx.engine.getHealth();
+    const health = await ctx.engine.getHealth();
+    // TODOS:4063 — composed at the OP layer (not BrainEngine.getHealth):
+    // the ledger is a filesystem JSONL, engine-agnostic; growing the engine
+    // interface would force both engines to duplicate a file read.
+    // Best-effort like the doctor's ledger read: a corrupt/unreadable ledger
+    // degrades the field, never the health call.
+    let migrations: unknown;
+    try {
+      const { migrationLedgerSummary } = await import('../migration-ledger.ts');
+      const { VERSION } = await import('../../version.ts');
+      migrations = migrationLedgerSummary(VERSION);
+    } catch {
+      migrations = { error: 'ledger_unreadable' };
+    }
+    return { ...health, migrations };
   },
   scope: 'admin',
   cliHints: { name: 'health' },
@@ -164,8 +178,48 @@ const revert_version: Operation = {
 };
 
 
+/**
+ * CLI→MCP gap-closure wave — read-only view of the content-quality gate
+ * (issue #1699). User story: an operator/agent reviewing what the gate hid or
+ * flagged, remotely or via a thin-client CLI. Admin scope: enumerates
+ * deliberately-hidden page slugs (the run_doctor posture). `quarantine scan`
+ * (bulk re-import + re-embed) and `quarantine clear` (the trust decision —
+ * same class as extraction_review) stay CLI-only.
+ */
+const quarantine_list: Operation = {
+  name: 'quarantine_list',
+  description:
+    'List quarantined (hidden) and optionally content-flagged pages by scanning page ' +
+    'frontmatter, newest-updated first. When truncated is true, count is a LOWER BOUND — ' +
+    'raise max_scan/limit or run the quarantine list command on the brain host for the full ' +
+    'set. Clearing a marker is a local-only trust decision (CLI).',
+  params: {
+    include_flagged: { type: 'boolean', required: false, description: 'Also list content_flag pages (searchable-but-warned). Default false.' },
+    limit: { type: 'number', required: false, description: 'Max rows returned (default 200, cap 1000).' },
+    max_scan: { type: 'number', required: false, description: 'Max pages scanned (default 20000, cap 100000).' },
+  },
+  scope: 'admin',
+  area: 'admin',
+  handler: async (ctx, p) => {
+    const {
+      collectQuarantineRows,
+      QUARANTINE_LIST_DEFAULT_LIMIT, QUARANTINE_LIST_MAX_LIMIT,
+      QUARANTINE_SCAN_DEFAULT, QUARANTINE_SCAN_MAX,
+    } = await import('../../commands/quarantine.ts');
+    const rawLimit = typeof p.limit === 'number' && Number.isFinite(p.limit) ? p.limit : QUARANTINE_LIST_DEFAULT_LIMIT;
+    const rawScan = typeof p.max_scan === 'number' && Number.isFinite(p.max_scan) ? p.max_scan : QUARANTINE_SCAN_DEFAULT;
+    const { rows, scanned, truncated } = await collectQuarantineRows(ctx.engine, {
+      includeFlagged: p.include_flagged === true,
+      limit: Math.max(1, Math.min(QUARANTINE_LIST_MAX_LIMIT, rawLimit)),
+      maxScan: Math.max(1, Math.min(QUARANTINE_SCAN_MAX, rawScan)),
+      ...sourceScopeOpts(ctx),
+    });
+    return { schema_version: 1, count: rows.length, truncated, scanned, rows };
+  },
+};
+
 // Ops in EXACTLY the canonical `operations` array order.
 export const adminOperations: Operation[] = [
   get_stats, get_health, run_doctor, get_versions, revert_version,
-  get_brain_identity,
+  get_brain_identity, quarantine_list,
 ];
