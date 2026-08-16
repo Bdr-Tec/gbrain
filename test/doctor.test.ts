@@ -635,15 +635,18 @@ describe('v0.31.8 — wedge migration force-retry hint (D19)', () => {
   });
 
   test('remote doctor (doctorReportRemote) also emits the force-retry hint (D14)', async () => {
-    const source = doctorFileSource('doctor.ts');
+    // doctorReportRemote was peeled into its own module (containment
+    // sprint); the positional guard follows the code to its new file per
+    // the doctorFileSource contract.
+    const source = doctorFileSource('doctor/report-remote.ts');
     // Check that the wedge detection is duplicated in the remote doctor
     // path so thin-client operators see it. Find the doctorReportRemote
-    // function span and verify the wedge-hint code lives inside it.
+    // function span and verify the wedge-hint code lives inside it
+    // (doctorReportRemote is the last declaration in its file, so
+    // slice-to-end covers exactly the function span).
     const remoteStart = source.indexOf('export async function doctorReportRemote(');
     expect(remoteStart).toBeGreaterThan(0);
-    const remoteEnd = source.indexOf('\nexport async function runDoctor(', remoteStart);
-    expect(remoteEnd).toBeGreaterThan(remoteStart);
-    const remoteBlock = source.slice(remoteStart, remoteEnd);
+    const remoteBlock = source.slice(remoteStart);
     expect(remoteBlock).toContain('--force-retry');
     expect(remoteBlock).toContain('partialCount >= 3');
     expect(remoteBlock).toMatch(/WEDGED MIGRATION\(s\) on brain host/);

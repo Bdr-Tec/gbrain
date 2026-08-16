@@ -3,7 +3,7 @@
 # Raising a ceiling is a conscious, reviewer-visible act. Lower ceilings in
 # the same commit as any peel (the guard fails on >50 lines of stale slack).
 # Columns: path	max_lines	policy	note
-src/commands/doctor.ts	10057	ratchet	peel target: containment sprint C8-C12
+src/commands/doctor.ts	8847	ratchet	peel target: containment sprint C8-C12
 src/core/operations.ts	312	ratchet	peel target: containment sprint C4-C7
 src/core/postgres-engine.ts	6963	ratchet	peel target: containment sprint C15
 src/core/pglite-engine.ts	6897	ratchet	peel target: containment sprint C15
