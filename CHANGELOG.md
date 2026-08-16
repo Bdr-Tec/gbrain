@@ -89,6 +89,10 @@ open community PRs by @Masashi-Ono0611 — thank you.
   `gbrain search stats` reflects the new truth).
 - Deferred synthesize transcripts no longer start the 12-hour cooldown or
   count as processed — they genuinely retry on the next cycle.
+- Test suite: git commits in test-created repos no longer route through the
+  host's gpg signing config (a new preload injects `commit.gpgsign=false`
+  via git's env-config mechanism), eliminating an intermittent dev-box lane
+  failure under full-suite load.
 
 ### To take advantage of v0.46.16.0
 
