@@ -5,8 +5,8 @@
 # Columns: path	max_lines	policy	note
 src/commands/doctor.ts	4177	ratchet	peel target: containment sprint C8-C13
 src/core/operations.ts	312	ratchet	peel target: containment sprint C4-C7
-src/core/postgres-engine.ts	6963	ratchet	peel target: containment sprint C15
-src/core/pglite-engine.ts	6897	ratchet	peel target: containment sprint C15
+src/core/postgres-engine.ts	5682	ratchet	peel target: containment sprint C15
+src/core/pglite-engine.ts	5522	ratchet	peel target: containment sprint C15
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4121	ratchet	peel target: containment sprint C13-C14
 src/core/ai/gateway.ts	4049	ratchet	watchlist
