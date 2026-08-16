@@ -8,6 +8,7 @@ import { collectSyncableFiles } from './import.ts';
 import { createInterface } from 'readline';
 import {
   isSyncable,
+  sanitizePathForDisplay,
   unsyncableReason,
   matchesAnyGlob,
   resolveSlugForPath,
@@ -2547,7 +2548,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     if (filtered.deleted.length) slog(`  Deleted: ${filtered.deleted.join(', ')}`);
     if (filtered.renamed.length) slog(`  Renamed: ${filtered.renamed.map(r => `${r.from} -> ${r.to}`).join(', ')}`);
     if (malformedSkipped.length) {
-      slog(`  Skipped (malformed filename — brackets/control chars; rename to import): ${malformedSkipped.join(', ')}`);
+      slog(`  Skipped (malformed filename — brackets/control chars; rename to import): ${malformedSkipped.map(sanitizePathForDisplay).join(', ')}`);
     }
     if (totalChanges === 0) slog(`  No syncable changes.`);
     return {
@@ -3073,7 +3074,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
           else if (result.status === 'skipped' && result.skip_reason === 'malformed_path') {
             // Informational skip — a bracket/control-char filename can never
             // import; counting it as a failure would gate the bookmark forever.
-            serr(`  Skipped (malformed filename): ${to}`);
+            serr(`  Skipped (malformed filename): ${sanitizePathForDisplay(to)}`);
           } else if (result.status === 'skipped' && (result as { error?: string }).error) {
             failedFiles.push({ path: to, error: String((result as { error?: string }).error) });
           }
@@ -3357,7 +3358,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
           // Informational skip (bracket/control-char filename): never a
           // failure, and stable across runs — checkpoint it as done so a
           // resumed sync doesn't re-attempt it forever.
-          serr(`  Skipped (malformed filename — rename to import): ${path}`);
+          serr(`  Skipped (malformed filename — rename to import): ${sanitizePathForDisplay(path)}`);
           await markCompleted(path);
         } else if (result.status === 'skipped' && (result as any).error) {
           failedFiles.push({ path, error: String((result as any).error) });

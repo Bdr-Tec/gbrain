@@ -426,6 +426,18 @@ export function hasMalformedPathSegment(path: string): boolean {
 }
 
 /**
+ * Strip control characters (and cap length) before echoing a malformed path
+ * to a terminal — these paths contain control bytes BY DEFINITION, and a
+ * crafted filename must not be able to inject ANSI escapes into sync output.
+ * Brackets stay: they're printable and the informative part of the name.
+ */
+export function sanitizePathForDisplay(path: string): string {
+  // eslint-disable-next-line no-control-regex
+  const cleaned = path.replace(/[\x00-\x1f\x7f]/g, '\ufffd');
+  return cleaned.length > 200 ? `${cleaned.slice(0, 197)}...` : cleaned;
+}
+
+/**
  * Canonical metafile basenames the markdown sync strategy intentionally
  * skips. Exported so the cleanup-loop guard in `commands/sync.ts` can
  * surface them in user-facing logs / docs without re-declaring the list.

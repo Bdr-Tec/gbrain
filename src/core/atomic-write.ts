@@ -17,6 +17,7 @@
  */
 
 import {
+  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -59,6 +60,11 @@ export function atomicWriteFileSync(filePath: string, content: string, opts?: At
     } finally {
       closeSync(fd);
     }
+    // open(2)'s mode argument is masked by the process umask (0664 & ~022 →
+    // 0644), so an explicit chmod is required to actually PRESERVE the
+    // target's mode across the rename — the pre-wave in-place write kept the
+    // inode's mode exactly; this keeps that property.
+    if (mode !== null) chmodSync(tmpPath, mode);
     if (opts?.verify) {
       opts.verify(readFileSync(tmpPath, 'utf-8'));
     }

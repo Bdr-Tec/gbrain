@@ -48,8 +48,11 @@ beforeEach(async () => {
 });
 
 async function backdate(id: number, hours: number): Promise<void> {
+  // Both timestamps: the TTL sweep + coalesce age-bound key on updated_at
+  // (a requeue refreshes the TTL window); getStats oldest-wait uses created_at.
   await engine.executeRaw(
-    `UPDATE minion_jobs SET created_at = now() - ($2 * interval '1 hour') WHERE id = $1`,
+    `UPDATE minion_jobs SET created_at = now() - ($2 * interval '1 hour'),
+                            updated_at = now() - ($2 * interval '1 hour') WHERE id = $1`,
     [id, hours],
   );
 }

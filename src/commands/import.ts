@@ -9,6 +9,7 @@ import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import {
   hasMalformedPathSegment,
+  sanitizePathForDisplay,
   isCodeFilePath,
   isMarkdownFilePath,
   isImageFilePath as isImageFilePathFromSync,
@@ -401,7 +402,7 @@ export async function runImport(
         if (result.skip_reason === 'malformed_path') {
           // Informational skip (bracket/control-char filename): never a
           // failure-ledger row, and stable across runs — checkpoint as done.
-          console.error(`  Skipped (malformed filename — rename to import): ${relativePath}`);
+          console.error(`  Skipped (malformed filename — rename to import): ${sanitizePathForDisplay(relativePath)}`);
           completed.add(relativePath);
         } else if (result.error && result.error !== 'unchanged') {
           console.error(`  Skipped ${relativePath}: ${result.error}`);
@@ -886,6 +887,13 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
       // from it. Skips hidden dirs (`.git`, `.raw`, etc.), `node_modules`,
       // `vendor`, `dist`, `build`, `venv` (#2020), `ops`, and git submodules.
       if (!pruneDir(entry, d)) continue;
+      // Malformed SEGMENT check at descent time: isCollectibleForWalker below
+      // only ever sees the file's basename on this route, so a bracket-named
+      // DIRECTORY of clean-named files would otherwise pass the walker — and
+      // its rows would sit in the reconcile's currentFiles, unsweepable on
+      // non-git brains (adversarial-review finding). The git fast path gets
+      // full relative paths and is already covered.
+      if (hasMalformedPathSegment(entry)) continue;
 
       const full = join(d, entry);
       let stat;

@@ -477,7 +477,7 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
             for (const [name, hours] of ttlNames) {
               const rows = await engine.executeRaw<{ count: string }>(
                 `SELECT count(*)::text AS count FROM minion_jobs
-                  WHERE name = $1 AND status = 'waiting' AND created_at < now() - ($2 * interval '1 hour')`,
+                  WHERE name = $1 AND status = 'waiting' AND updated_at < now() - ($2 * interval '1 hour')`,
                 [name, hours],
               );
               const n = parseInt(rows[0]?.count ?? '0', 10);

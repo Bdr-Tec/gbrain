@@ -176,13 +176,23 @@ describe('frontmatterBodyOffset', () => {
 
 describe('insertTimelineEntry', () => {
   test('never anchors on a "## Timeline" string inside frontmatter', () => {
-    const content = `${fence}\ndescription: "## Timeline"\n${fence}\n# Alice\n\n## Timeline\n\n- old entry\n`;
+    // GUARD-DISTINGUISHING fixture (adversarial-review finding: a quoted
+    // `description: "## Timeline"` is never at line start, so the ^-anchored
+    // regex ignores it even WITHOUT the bodyStart slice — the old fixture
+    // couldn't detect a broken guard). A line-start `## Timeline` INSIDE the
+    // fence is valid YAML (a comment line) and matches the heading regex at
+    // offset 0 — only the bodyStart slice keeps the insertion out of the
+    // frontmatter.
+    const content = `${fence}\ntype: person\n## Timeline\ntitle: Alice\n${fence}\n# Alice\n\nBody text.\n`;
     const bodyStart = frontmatterBodyOffset(content);
+    expect(bodyStart).toBeGreaterThan(0);
     const out = insertTimelineEntry(content, bodyStart, '- new entry');
-    // Frontmatter bytes untouched, entry landed in the real body section.
+    // Frontmatter bytes untouched — a broken guard would have inserted the
+    // entry into the YAML block right under the comment line.
     expect(out.slice(0, bodyStart)).toBe(content.slice(0, bodyStart));
-    expect(out).toContain('- old entry');
+    // No real body heading exists → a fresh section is appended at EOF.
     expect(out.trimEnd().endsWith('- new entry')).toBe(true);
+    expect(out.indexOf('- new entry')).toBeGreaterThan(bodyStart);
   });
 
   test('### Timeline and ## Timeline (2026) near-misses do not match; fresh section appended', () => {
@@ -268,9 +278,11 @@ describe('fixBacklinkGaps safety pipeline', () => {
   test('incident regression: bullet can never land above the frontmatter fence', async () => {
     const { root, lockRoot, cleanup } = makeFixture();
     try {
-      // The incident shape: an entity page whose frontmatter mentions Timeline
-      // and whose body has no Timeline section yet.
-      const original = `${fence}\ntype: person\ntitle: Y Combinator\nnotes: "see ## Timeline for history"\n${fence}\n# Y Combinator\n\nBody text.\n`;
+      // The incident shape: an entity page whose frontmatter carries a
+      // LINE-START `## Timeline` (a valid YAML comment — the
+      // guard-distinguishing form; a quoted mid-line mention can't detect a
+      // broken bodyStart guard) and whose body has no Timeline section yet.
+      const original = `${fence}\ntype: person\ntitle: Y Combinator\n## Timeline\nnotes: history below\n${fence}\n# Y Combinator\n\nBody text.\n`;
       writeFileSync(join(root, 'people/alice.md'), original);
       const outcome = await fixBacklinkGaps(root, [gapFor('people/alice.md')], false, { lockRoot });
       expect(outcome.fixed).toBe(1);

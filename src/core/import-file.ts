@@ -1825,7 +1825,11 @@ export async function importImageFile(
   // and slugifyPath would already preserve it). Recompute with the file
   // extension preserved so the page slug is stable + collision-free.
   const imageSlug = relativePath.replace(/[\\\/]/g, '/').toLowerCase();
-  const sourceOpts = opts.sourceId ? { sourceId: opts.sourceId } : undefined;
+  // Scoped to the exact (source_id, slug) row the write targets — same
+  // unscoped-check/scoped-write fix as importFromContent/importCodeFile
+  // above (the variable-bound ternary shape evaded the CI guard's inline
+  // heuristic; caught by adversarial review).
+  const sourceOpts = { sourceId: opts.sourceId ?? 'default' };
   const linkOpts = opts.sourceId
     ? { fromSourceId: opts.sourceId, toSourceId: opts.sourceId, originSourceId: opts.sourceId }
     : undefined;

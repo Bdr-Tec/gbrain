@@ -472,7 +472,7 @@ export class MinionWorker extends EventEmitter {
             for (const [name, hours] of ttlNames) {
               const rows = await this.engine.executeRaw<{ count: string }>(
                 `SELECT count(*)::text AS count FROM minion_jobs
-                  WHERE name = $1 AND status = 'waiting' AND created_at < now() - ($2 * interval '1 hour')`,
+                  WHERE name = $1 AND status = 'waiting' AND updated_at < now() - ($2 * interval '1 hour')`,
                 [name, hours],
               );
               affected += parseInt(rows[0]?.count ?? '0', 10);

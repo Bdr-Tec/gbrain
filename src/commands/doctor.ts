@@ -6265,7 +6265,8 @@ export async function buildChecks(
       const candidates = await engine.executeRaw<{ slug: string; source_id: string; source_path: string }>(
         `SELECT slug, source_id, source_path FROM pages
           WHERE source_path IS NOT NULL AND deleted_at IS NULL
-            AND (source_path LIKE '%[%' OR source_path LIKE '%]%')`,
+            AND (source_path LIKE '%[%' OR source_path LIKE '%]%'
+                 OR source_path ~ '[[:cntrl:]]')`,
         [],
       );
       const malformed = candidates.filter(r => hasMalformedPathSegment(r.source_path));

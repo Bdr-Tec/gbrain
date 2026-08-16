@@ -88,9 +88,13 @@ describe('jobs stats — DIVERGENT QUEUE + waiting-TTL screams', () => {
   });
 
   test('TTL cancellations do NOT count as drain (the shredder cannot look healthy)', async () => {
-    // 20 intake, 0 completed, 15 TTL-cancelled: naive drain (15) would look
-    // fine at ratio 2 — completed-based divergence must still scream.
-    await seedJobs({ waiting: 20, completed: 0, ttlCancelled: 15 });
+    // GUARD-DISTINGUISHING seed (adversarial-review finding: the old
+    // 20/0/15 seed screamed under BOTH metrics, so the test couldn't detect
+    // a naive-drain regression). Here: intake = 20 waiting + 30 cancelled =
+    // 50 created-in-window; a NAIVE drain metric (completed+cancelled = 30)
+    // gives 50 <= 2×30 → silent; the completed-based metric (0 completed)
+    // gives 50 > 2×1 → screams. Only the correct metric fires.
+    await seedJobs({ waiting: 20, completed: 0, ttlCancelled: 30 });
     const out = await captureStats(['stats']);
     expect(out).toContain('DIVERGENT QUEUE');
     expect(out).toContain('backlog never drains at current rate');

@@ -237,10 +237,16 @@ export class MinionQueue {
     // dedupe signal — two no-param submits are more likely distinct
     // placeholder/scaffolding jobs than a runaway producer (which always
     // carries a prompt). Never coalesce those.
+    // A caller-supplied idempotency_key also disables param-coalescing:
+    // producer-owned idempotency is the STRONGER contract ("this exact key
+    // maps to this exact row"), and a param-coalesce hit would return a row
+    // the key was never registered against — a later same-key submit would
+    // then insert fresh and run the work twice (adversarial-review finding).
     const hashablePayload = Object.keys(data ?? {}).some(k => k !== '__param_hash');
     const coalesceActive =
       (opts?.coalesce_params ?? policy.coalesceParams) &&
       !opts?.parent_job_id &&
+      !opts?.idempotency_key &&
       hashablePayload &&
       childStatus === 'waiting';
     let paramHash: string | null = null;
@@ -301,8 +307,10 @@ export class MinionQueue {
           [jobName, admissionQueue, paramHash]
         );
         const ttlHours = policy.ttlWaitingHours;
+        // updated_at, matching the TTL sweep's key: a requeued row has a
+        // fresh TTL window and is a legitimate coalesce target again.
         const ageCond = ttlHours != null
-          ? `AND created_at > now() - ($4 * interval '1 hour')`
+          ? `AND updated_at > now() - ($4 * interval '1 hour')`
           : '';
         const matchParams: unknown[] = [jobName, admissionQueue, paramHash];
         if (ttlHours != null) matchParams.push(ttlHours / 2);
@@ -690,12 +698,22 @@ export class MinionQueue {
    * every surface keyed on a reason prefix (jobs stats, doctor) would
    * silently report zero without this parameter.
    */
-  async cancelJobs(ids: number[], opts?: { reason?: string }): Promise<MinionJob[]> {
+  async cancelJobs(ids: number[], opts?: { reason?: string; rootStatuses?: MinionJobStatus[] }): Promise<MinionJob[]> {
     if (ids.length === 0) return [];
+    // opts.rootStatuses re-checks each ROOT id's status ATOMICALLY inside the
+    // cancel UPDATE's CTE seed. The waiting-TTL sweep passes ['waiting'] to
+    // close its SELECT→cancel race: claim() and the sweep both target the
+    // oldest waiting rows, so without this a job claimed between the sweep's
+    // SELECT and this UPDATE would be cancelled while ACTIVE (lock_token
+    // NULLed under the running handler). Operator cancels omit it — killing
+    // an active job is exactly what `jobs cancel` means.
+    const rootStatuses = opts?.rootStatuses ?? null;
     return this.engine.transaction(async (tx) => {
       const rows = await tx.executeRaw<Record<string, unknown>>(
         `WITH RECURSIVE descendants AS (
-          SELECT id, 0 AS d FROM minion_jobs WHERE id = ANY($1::int[])
+          SELECT id, 0 AS d FROM minion_jobs
+           WHERE id = ANY($1::int[])
+             AND ($3::text[] IS NULL OR status = ANY($3::text[]))
           UNION ALL
           SELECT m.id, descendants.d + 1
             FROM minion_jobs m
@@ -712,7 +730,7 @@ export class MinionQueue {
          WHERE id IN (SELECT id FROM descendants)
            AND status IN ('waiting','active','delayed','waiting-children','paused')
          RETURNING *`,
-        [ids, opts?.reason ?? null]
+        [ids, opts?.reason ?? null, rootStatuses]
       );
       if (rows.length === 0) return [];
 
@@ -794,11 +812,19 @@ export class MinionQueue {
     for (const [name, hours] of ttlNames) {
       if (cancelled >= maxPerTick) break;
       const budget = maxPerTick - cancelled;
+      // Keyed on updated_at (last state transition), NOT created_at: every
+      // path that RETURNS a row to 'waiting' — handleStalled's requeue (sweep
+      // #1 of the SAME maintenance tick), retryJob, promoteDelayed, the
+      // parent-unblock flips — bumps updated_at but not created_at. Keying on
+      // created_at would cancel a job the same tick just requeued it, with a
+      // "waited > Nh" reason that is factually false. For rows that sat
+      // untouched in 'waiting' the two timestamps are equivalent, so the
+      // backlog-drain semantics are unchanged.
       const stale = await this.engine.executeRaw<{ id: number }>(
         `SELECT id FROM minion_jobs
           WHERE name = $1 AND status = 'waiting'
-            AND created_at < now() - ($2 * interval '1 hour')
-          ORDER BY created_at ASC
+            AND updated_at < now() - ($2 * interval '1 hour')
+          ORDER BY updated_at ASC
           LIMIT $3`,
         [name, hours, budget]
       );
@@ -806,7 +832,11 @@ export class MinionQueue {
       const reason =
         `waiting_ttl_expired: waited > ${hours}h in queue ` +
         `(minions.ttl_waiting_hours.${name}; set 0 to disable)`;
-      const swept = await this.cancelJobs(stale.map(r => r.id), { reason });
+      // rootStatuses:['waiting'] re-checks atomically inside the cancel — a
+      // job CLAIMED between the SELECT above and this UPDATE must not be
+      // cancelled mid-run (both the claimer and this sweep target the oldest
+      // waiting rows, so the race is systematic, not incidental).
+      const swept = await this.cancelJobs(stale.map(r => r.id), { reason, rootStatuses: ['waiting'] });
       // Count only the requested roots — descendants of a swept parent are
       // bookkeeping, not TTL victims of their own.
       const rootIds = new Set(stale.map(r => r.id));

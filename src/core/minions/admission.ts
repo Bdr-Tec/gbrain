@@ -75,8 +75,13 @@ export class QueueQuotaExceededError extends Error {
     public readonly waiting: number,
     public readonly quota: number,
   ) {
+    // The message travels to REMOTE MCP clients via submit_agent — it names
+    // the quota (the caller's admission contract) but NOT the live global
+    // waiting count, which would leak cross-tenant queue depth. Operators get
+    // exact counts locally from 'gbrain jobs stats'; the count stays on the
+    // error object for local consumers/tests.
     super(
-      `queue admission: ${waiting} '${jobName}' job(s) already waiting (quota ${quota}, all queues). ` +
+      `queue admission: '${jobName}' is at its waiting quota (${quota}, all queues). ` +
       `Drain or cancel backlog first — see 'gbrain jobs stats'. ` +
       `Tune: gbrain config set minions.quota_max_waiting.${jobName} <n> (raise) or remove the key (disable).`,
     );

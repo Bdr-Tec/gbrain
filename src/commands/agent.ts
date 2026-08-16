@@ -394,9 +394,26 @@ async function runFanout(engine: BrainEngine, queue: MinionQueue, flags: RunFlag
       max_stalled: 3,
     };
     if (flags.timeoutMs) submitOpts.timeout_ms = flags.timeoutMs;
-    const child = await queue.add('subagent', data as unknown as Record<string, unknown>, submitOpts, {
-      allowProtectedSubmit: true,
-    });
+    let child;
+    try {
+      child = await queue.add('subagent', data as unknown as Record<string, unknown>, submitOpts, {
+        allowProtectedSubmit: true,
+      });
+    } catch (e) {
+      // Admission quota mid-fanout: a partial tree (some children submitted,
+      // children_ids never written) would leave the aggregator torn — cancel
+      // the WHOLE tree (cascades to already-submitted children) and surface
+      // the quota message. All-or-nothing beats a wedged aggregator.
+      if (e instanceof Error && e.name === 'QueueQuotaExceededError') {
+        await queue.cancelJob(aggregator.id).catch(() => {});
+        console.error(
+          `fanout aborted at child ${childIds.length + 1}/${manifest.length}: ${e.message}\n` +
+          `Aggregator ${aggregator.id} and its ${childIds.length} submitted child(ren) were cancelled.`,
+        );
+        process.exit(1);
+      }
+      throw e;
+    }
     childIds.push(child.id);
   }
 
