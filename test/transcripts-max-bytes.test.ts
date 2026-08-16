@@ -8,12 +8,12 @@
  * an unknown flag; and a --since last checkpoint carried no cap dimension.
  */
 
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, afterEach } from 'bun:test';
 import { parseIngestArgs, ingestCheckpointFingerprintInput } from '../src/commands/transcripts.ts';
 import { runTranscriptsIngest } from '../src/core/transcripts/ingest.ts';
 import { fingerprint } from '../src/core/op-checkpoint.ts';
 import type { TranscriptAdapter, ParseSessionsOpts } from '../src/core/transcripts/types.ts';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -51,8 +51,14 @@ describe('cap threading to adapters (gbrain#4149)', () => {
     };
   }
 
+  const scratchDirs: string[] = [];
+  afterEach(() => {
+    for (const d of scratchDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
   async function runWith(maxBytes: number | undefined, seen: Array<ParseSessionsOpts | undefined>): Promise<void> {
     const dir = mkdtempSync(join(tmpdir(), 'gb4149-'));
+    scratchDirs.push(dir);
     const f = join(dir, 's.jsonl');
     writeFileSync(f, '{"x":1}\n');
     await runTranscriptsIngest({} as never, {
@@ -88,6 +94,20 @@ describe('checkpoint fingerprint carries the cap (gbrain#4149)', () => {
     const cappedOther = fingerprint(ingestCheckpointFingerprintInput({ ...base, maxBytes: 512 * 1024 ** 2 }));
     expect(auto).not.toBe(capped);
     expect(capped).not.toBe(cappedOther);
+  });
+
+  test('the default (no-cap) path keeps the LEGACY 4-key fingerprint — existing watermarks stay valid at upgrade', () => {
+    // Review finding (multi-specialist confirmed): an unconditional
+    // maxBytes:'auto' key would orphan every pre-#4149 checkpoint and force
+    // a silent one-time full rescan on the first post-upgrade --since last.
+    const auto = fingerprint(ingestCheckpointFingerprintInput(base));
+    const legacy = fingerprint({
+      sourceId: base.sourceId,
+      pathspec: base.pathspec,
+      format: base.format,
+      version: base.version,
+    });
+    expect(auto).toBe(legacy);
   });
 
   test('the same cap is stable (checkpoint resume still works within one cap)', () => {

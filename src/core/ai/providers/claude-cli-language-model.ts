@@ -230,11 +230,13 @@ function runClaude(
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
-    delete env.CLAUDE_CODE_USE_BEDROCK;
-    delete env.CLAUDE_CODE_USE_VERTEX;
-    delete env.CLAUDE_CODE_USE_MANTLE;
-    delete env.CLAUDE_CODE_USE_FOUNDRY;
-    delete env.CLAUDE_CODE_USE_ANTHROPIC_AWS;
+    // Prefix wipe, not a denylist (review hardening): the backend-switch
+    // family grows one CLAUDE_CODE_USE_* flag per new cloud backend, and any
+    // future switch inherited from gbrain's env would silently re-route the
+    // child's billing. Subscription-only is the recipe's contract.
+    for (const k of Object.keys(env)) {
+      if (k.startsWith('CLAUDE_CODE_USE_')) delete env[k];
+    }
     const child = spawn(claudeBin(), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: ensureCleanCwd(),

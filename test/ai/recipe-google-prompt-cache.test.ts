@@ -42,6 +42,10 @@ describe('recipe: google prompt cache', () => {
     expect(googleSupportsPromptCache('gemini-1.5-pro')).toBe(false);
     expect(googleSupportsPromptCache('gemini-embedding-001')).toBe(false);
     expect(googleSupportsPromptCache('gemma-3-27b-it')).toBe(false);
+    // Date/experiment suffixes are NOT versions: parseFloat('1206') >= 2.5
+    // must never promise a discount a 1.x-era experimental model lacked.
+    expect(googleSupportsPromptCache('gemini-exp-1206')).toBe(false);
+    expect(googleSupportsPromptCache('gemini-exp-0827')).toBe(false);
   });
 
   test('off-list passthrough ids resolve through the capability layer', () => {

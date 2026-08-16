@@ -92,7 +92,12 @@ export function ingestCheckpointFingerprintInput(args: {
     pathspec: args.pathspec,
     format: args.format,
     version: args.version,
-    maxBytes: args.maxBytes ?? 'auto',
+    // Key present ONLY for an explicit cap (review finding, multi-specialist
+    // confirmed): an unconditional `maxBytes: 'auto'` would re-hash EVERY
+    // pre-existing watermark at upgrade and silently force a one-time full
+    // rescan. Omitting the key keeps the default path on the legacy
+    // fingerprint; every explicit cap still gets its own scope.
+    ...(args.maxBytes != null ? { maxBytes: args.maxBytes } : {}),
   };
 }
 

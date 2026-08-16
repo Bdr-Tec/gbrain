@@ -404,28 +404,6 @@ export async function resolveSourceWithTier(
 }
 
 /**
- * #2561 — compute the federated read scope for an UNQUALIFIED local CLI call.
- *
- * `sources add --federated` promises that a `config.federated = true` source
- * "participates in unqualified `gbrain search` results"
- * (docs/guides/multi-source-brains.md). This helper turns that promise into a
- * scope: given the resolved source and WHICH tier resolved it, return
- * `[resolvedSource, ...other federated source ids]` — or `undefined` when the
- * expansion must not apply:
- *
- *   - explicit tiers (`flag` / `env` / `dotfile`): the user named a source;
- *     scalar scope stands (that IS the qualified case);
- *   - no other federated source exists: keep the scalar fast path unchanged;
- *   - #2928: the resolved source is explicitly isolated (config.federated =
- *     false): it must not be mixed into a cross-source read in EITHER
- *     direction, so the scalar scope stands.
- *
- * Archived sources are excluded (same rationale as pickSoleNonDefaultSource);
- * the archived column is v34+, so fall back to the un-archived query on older
- * brains. Callers put the result on `OperationContext.localFederatedSourceIds`
- * — consumed only by `federatedSearchScope` and only when `remote === false`.
- */
-/**
  * #3242 parity: the widening set a TRANSPORT should attach for a caller that
  * carries no operator source grant, or `undefined` when the caller must keep
  * its scalar scope.
@@ -454,6 +432,28 @@ export async function noGrantFederatedScope(
   }
 }
 
+/**
+ * #2561 — compute the federated read scope for an UNQUALIFIED local CLI call.
+ *
+ * `sources add --federated` promises that a `config.federated = true` source
+ * "participates in unqualified `gbrain search` results"
+ * (docs/guides/multi-source-brains.md). This helper turns that promise into a
+ * scope: given the resolved source and WHICH tier resolved it, return
+ * `[resolvedSource, ...other federated source ids]` — or `undefined` when the
+ * expansion must not apply:
+ *
+ *   - explicit tiers (`flag` / `env` / `dotfile`): the user named a source;
+ *     scalar scope stands (that IS the qualified case);
+ *   - no other federated source exists: keep the scalar fast path unchanged;
+ *   - #2928: the resolved source is explicitly isolated (config.federated =
+ *     false): it must not be mixed into a cross-source read in EITHER
+ *     direction, so the scalar scope stands.
+ *
+ * Archived sources are excluded (same rationale as pickSoleNonDefaultSource);
+ * the archived column is v34+, so fall back to the un-archived query on older
+ * brains. Callers put the result on `OperationContext.localFederatedSourceIds`
+ * — consumed only by `federatedSearchScope` and only when `remote === false`.
+ */
 export async function localFederatedSourceIds(
   engine: BrainEngine,
   sourceId: string,

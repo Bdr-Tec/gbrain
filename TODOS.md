@@ -69,6 +69,26 @@
   Per-family prefix shape (reflections/originals prefixes derived into prompts
   AND the fail-closed allow-list; default preserves wiki/). No config-registry
   drift to fix (`dream.` prefix already accepted). **Effort:** M. **P3.**
+- [ ] **P2 — test debt from the chennai wave's pre-landing review (deferred
+  with rationale, not skipped).** (a) `/mcp` SDK-transport integration test:
+  spin the serve-http surface with a legacy no-grant token end-to-end and
+  assert the federated source list matches `localFederatedSourceIds` — the
+  unit precedence test pins the resolver but not the transport wiring; also
+  pin `AuthInfo.hasSourceGrant` at the oauth-provider construction site.
+  (b) postgres `getHealth` parity e2e for the islanded/coverage changes —
+  unit coverage is PGLite-only; the DATABASE_URL-gated parity lane should
+  assert entity_page_count + null-coverage-below-floor on real Postgres.
+  (c) transcripts replay-reconcile tests for WITHIN-TURN duplicate
+  tool_use_id after migration v131 (same id, same message_idx — provider
+  emits the dup inside one message). **Effort:** M spread. **P2.**
+- [ ] **P3 — DRY refactors flagged by the review army (correct today,
+  duplicated shape).** (a) hoist the settlement-status subquery duplicated
+  across grade-takes call sites into one helper; (b) extract the three-tier
+  resolution (per-call > config > default) repeated in pace-mode/search-mode/
+  probe-timeout into a shared `resolveTiered` helper; (c) `renderBlock`-style
+  functions taking 6+ positional args → params object; (d) the deadline-skip
+  preamble repeated at the top of each cycle phase → shared guard in
+  base-phase.ts. **Effort:** S each. **P3.**
 
 ## Containment-sprint follow-ups (coverage truth + module peels; plan: ~/.claude/plans/system-instruction-you-are-working-serialized-forest.md)
 

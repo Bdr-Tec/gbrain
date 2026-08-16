@@ -74,14 +74,14 @@ describe('renderResolutionCommand', () => {
     // has no unambiguous winner claim, so an explicit placeholder renders.
     const pair = mkIntraPagePair('people/alice', 7, 2);
     const cmd = renderResolutionCommand(pair, 'takes_supersede');
-    expect(cmd).toBe(`gbrain takes supersede people/alice --row 2 --claim '<replacement claim — see contradiction report>'`);
+    expect(cmd).toBe(`gbrain takes supersede 'people/alice' --row 2 --claim '<replacement claim — see contradiction report>'`);
     expect(cmd).not.toContain('--row 7');
   });
 
   test('dream_synthesize targets the curated entity side', () => {
     const pair = mkCrossSlugPair('openclaw/chat/x', 'companies/acme');
     const cmd = renderResolutionCommand(pair, 'dream_synthesize');
-    expect(cmd).toBe('gbrain dream --phase synthesize --slug companies/acme');
+    expect(cmd).toBe(`gbrain dream --phase synthesize --slug 'companies/acme'`);
   });
 
   test('gbrain#4169 — legacy takes_mark_debate rows render a truthful manual-review hint (subcommand does not exist)', () => {
@@ -103,7 +103,7 @@ describe('renderResolutionCommand', () => {
     const cmd = renderResolutionCommand(pair, 'temporal_supersede');
     // Older side (row 1) superseded; the newer take's claim is the winner —
     // single-quoted with embedded apostrophes spliced ('\'').
-    expect(cmd).toContain('gbrain takes supersede people/alice --row 1 --claim ');
+    expect(cmd).toContain(`gbrain takes supersede 'people/alice' --row 1 --claim `);
     expect(cmd).toContain('--since 2026-02-02');
     expect(cmd).toContain(`newer take: it'\\''s the CEO'\\''s call`);
   });
@@ -141,14 +141,14 @@ describe('proposeResolution (classify + render combined)', () => {
     const pair = mkIntraPagePair('people/alice', 42, 5);
     const p = proposeResolution(pair, null);
     expect(p.resolution_kind).toBe('takes_supersede');
-    expect(p.resolution_command).toBe(`gbrain takes supersede people/alice --row 5 --claim '<replacement claim — see contradiction report>'`);
+    expect(p.resolution_command).toBe(`gbrain takes supersede 'people/alice' --row 5 --claim '<replacement claim — see contradiction report>'`);
   });
 
   test('cross_slug curated → dream_synthesize on curated slug', () => {
     const pair = mkCrossSlugPair('openclaw/chat/foo', 'companies/acme');
     const p = proposeResolution(pair, null);
     expect(p.resolution_kind).toBe('dream_synthesize');
-    expect(p.resolution_command).toBe('gbrain dream --phase synthesize --slug companies/acme');
+    expect(p.resolution_command).toBe(`gbrain dream --phase synthesize --slug 'companies/acme'`);
   });
 });
 

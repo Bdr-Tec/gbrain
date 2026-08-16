@@ -594,13 +594,16 @@ export async function probeEmbeddingReachability(deps: ProbeDeps = {}): Promise<
  * override for chat/expansion timeouts, so the chain is just per-call
  * default (5000) unless the recipe overrides it.
  */
+/** Historical flat probe timeout — right for fast HTTP providers; recipes override via default_timeout_ms. */
+const DEFAULT_PROBE_TIMEOUT_MS = 5000;
+
 export async function resolveChatProbeTimeoutMs(modelStr: string, touchpoint: 'chat' | 'expansion'): Promise<number> {
   try {
     const { resolveRecipe } = await import('../core/ai/model-resolver.ts');
     const { recipe } = resolveRecipe(modelStr);
-    return recipe.touchpoints[touchpoint]?.default_timeout_ms ?? 5000;
+    return recipe.touchpoints[touchpoint]?.default_timeout_ms ?? DEFAULT_PROBE_TIMEOUT_MS;
   } catch {
-    return 5000;
+    return DEFAULT_PROBE_TIMEOUT_MS;
   }
 }
 

@@ -141,6 +141,38 @@ describe('phases consume deadlineAtMs (red on master: option was ignored)', () =
     expect(details.profile_written).toBe(false);
   });
 
+  test('grade_takes breaks MID-LOOP on the deadline: partial banked, warn status (review gap G5)', async () => {
+    let judgeCalls = 0;
+    const inserts: string[] = [];
+    const engine = {
+      kind: 'pglite',
+      async listTakes() {
+        return [1, 2, 3].map(i => ({ id: i, row_num: i, page_slug: `p/${i}`, claim: `c${i}`, holder: 'h', weight: 0.5, since_date: '2020-01-01' }));
+      },
+      async executeRaw<T>(sql: string): Promise<T[]> {
+        if (sql.includes('INSERT')) inserts.push(sql);
+        return [] as T[];
+      },
+      async getConfig() { return null; },
+    } as unknown as BrainEngine;
+    const result = await runPhaseGradeTakes(buildCtx(engine), {
+      judge: (async () => {
+        judgeCalls++;
+        await new Promise(r => setTimeout(r, 40));
+        return { verdict: 'right', confidence: 0.9, rationale: 'r' };
+      }) as never,
+      evidenceRetriever: (async () => 'some evidence') as never,
+      deadlineMs: 15, // fires after the first (slow) take, before the second
+    });
+    const details = result.details as Record<string, unknown>;
+    expect(details.deadline_hit).toBe(true);
+    expect(Number(details.takes_scanned)).toBeLessThan(3);
+    expect(judgeCalls).toBeLessThan(3); // did NOT run the full list
+    expect(judgeCalls).toBeGreaterThan(0); // …but banked real work first
+    expect(result.status).toBe('warn');
+    expect(result.summary).toContain('[deadline hit — partial]');
+  });
+
   test('no deadlineAtMs → phases run normally (interactive CLI unaffected)', async () => {
     const extractor: ProposeTakesExtractor = async () => [];
     const result = await runPhaseProposeTakes(buildCtx(proposeEngine(2)), { extractor });

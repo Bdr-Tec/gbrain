@@ -923,11 +923,6 @@ export async function runPhaseExtractAtoms(
 }
 
 /**
- * Parse the Haiku JSON response into ExtractedAtom[]. Tolerant of
- * common LLM mistakes: extra prose around the JSON, missing fields,
- * invalid atom_type values. Rejects (returns empty) on hard parse fail.
- */
-/**
  * gbrain#4148 — typed parse outcome. Malformed model output and a legitimate
  * zero-yield extraction both used to collapse into `[]`, so malformed output
  * was tombstoned as success (the page never retried, its atoms silently
@@ -969,7 +964,11 @@ export function parseAtomsOutcome(raw: string): AtomsParseOutcome {
   return { ok: true, atoms: atomsFromParsedArray(parsed) };
 }
 
-/** Back-compat wrapper: [] for both malformed and zero-yield (legacy callers/tests). */
+/**
+ * Back-compat wrapper: parse the response into ExtractedAtom[], returning []
+ * for BOTH malformed output and a legitimate zero-yield (legacy callers/tests
+ * that don't need the typed distinction — new code uses parseAtomsOutcome).
+ */
 export function parseAtomsResponse(raw: string): ExtractedAtom[] {
   const outcome = parseAtomsOutcome(raw);
   return outcome.ok ? outcome.atoms : [];

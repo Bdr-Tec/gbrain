@@ -21,7 +21,10 @@ export function googleSupportsPromptCache(modelId: string): boolean {
   const normalized = modelId.trim().toLowerCase();
   if (!normalized.startsWith('gemini-')) return false;
   if (normalized.endsWith('-latest')) return true;
-  const version = normalized.match(/\d+(?:\.\d+)?/);
+  // Version tokens are 1-2 digits (2, 2.5, 3, 3.6, 10…); a longer numeric run
+  // is a DATE/experiment suffix, not a version — `gemini-exp-1206` must not
+  // parse as version 1206 and read as caching (review hardening on #4159).
+  const version = normalized.match(/(?<!\d)\d{1,2}(?:\.\d+)?(?!\d)/);
   return version !== null && Number.parseFloat(version[0]) >= 2.5;
 }
 

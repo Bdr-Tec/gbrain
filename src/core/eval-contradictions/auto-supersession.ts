@@ -110,19 +110,21 @@ export function classifyResolution(
 }
 
 /**
- * Render the paste-ready CLI command for the chosen resolution. Operator
- * runs this verbatim; the command may itself prompt for confirmation.
- */
-/**
- * POSIX single-quote escaping for claim text rendered into a paste-ready
- * command (gbrain#4169): wrap in single quotes; embedded single quotes become
- * the `'\''` splice. Newlines collapse to spaces — a resolution command is
- * one line by contract.
+ * POSIX single-quote escaping for untrusted text (claim text AND slugs)
+ * rendered into a paste-ready command (gbrain#4169): wrap in single quotes;
+ * embedded single quotes become the `'\''` splice. Newlines collapse to
+ * spaces — a resolution command is one line by contract. Slugs are quoted
+ * too: validateSlug leaves shell metacharacters unblocked and remote MCP
+ * writers can mint slugs, so an unquoted slug reaches the operator's shell.
  */
 function shellQuote(s: string): string {
   return `'${s.replace(/\s+/g, ' ').trim().replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * Render the paste-ready CLI command for the chosen resolution. Operator
+ * runs this verbatim; the command may itself prompt for confirmation.
+ */
 export function renderResolutionCommand(
   pair: ContradictionPair,
   kind: ResolutionKind,
@@ -138,13 +140,13 @@ export function renderResolutionCommand(
       // operator fills in.
       const takeSide = pair.b.take_id !== null ? pair.b : (pair.a.take_id !== null ? pair.a : pair.a);
       const rowNum = takeSide.take_row_num ?? '<row>';
-      return `gbrain takes supersede ${takeSide.slug} --row ${rowNum} --claim '<replacement claim — see contradiction report>'`;
+      return `gbrain takes supersede ${shellQuote(takeSide.slug)} --row ${rowNum} --claim '<replacement claim — see contradiction report>'`;
     }
     case 'dream_synthesize': {
       const curatedSide = isCuratedEntitySlug(pair.a.slug)
         ? pair.a
         : (isCuratedEntitySlug(pair.b.slug) ? pair.b : pair.a);
-      return `gbrain dream --phase synthesize --slug ${curatedSide.slug}`;
+      return `gbrain dream --phase synthesize --slug ${shellQuote(curatedSide.slug)}`;
     }
     case 'takes_mark_debate': {
       // gbrain#4169: this subcommand does not exist (tracked with #4102) —
@@ -174,7 +176,7 @@ export function renderResolutionCommand(
           const claim = newerSide.take_id !== null
             ? shellQuote(newerSide.text)
             : `'<replacement claim — see contradiction report>'`;
-          return `gbrain takes supersede ${olderSide.slug} --row ${olderSide.take_row_num} --claim ${claim} --since ${newerDate}`;
+          return `gbrain takes supersede ${shellQuote(olderSide.slug)} --row ${olderSide.take_row_num} --claim ${claim} --since ${newerDate}`;
         }
         return `# temporal_supersession: ${olderSide.slug} (${aDate < bDate ? aDate : bDate}) superseded by ${newerDate}`;
       }
