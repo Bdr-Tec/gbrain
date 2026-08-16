@@ -91,6 +91,21 @@ describe('recall federated grants (D1b)', () => {
     expect(facts.some((f: string) => f.includes('QQF3'))).toBe(false); // never widened
   });
 
+  it('the since arm fans out across the federated grant too (not just the no-filter arm)', async () => {
+    const res: any = await recall().handler(
+      ctx({
+        remote: true,
+        sourceId: 'aurora-workspace',
+        auth: { allowedSources: ['aurora-workspace', 'proj-widget'] },
+      }),
+      { since: '2000-01-01' },
+    );
+    const facts = (res.facts ?? []).map((f: any) => String(f.fact));
+    expect(facts.some((f: string) => f.includes('QQF1'))).toBe(true);  // granted foreign source
+    expect(facts.some((f: string) => f.includes('QQF3'))).toBe(false); // ungranted source
+    expect(facts.some((f: string) => f.includes('QQF2'))).toBe(false); // private stays hidden
+  });
+
   it('local trusted caller still reads private facts (visibility unchanged)', async () => {
     const res: any = await recall().handler(
       ctx({ remote: false, sourceId: 'proj-widget' }),

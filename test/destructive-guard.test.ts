@@ -508,6 +508,38 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
     expect(block).toContain('gbrain auth revoke-client "client-1"');
     expect(block).toContain('gbrain auth revoke-client "client-2"');
   });
+
+  test('degrade ladder: missing oauth_clients table → [], missing deleted_at → all referents, other errors propagate', async () => {
+    // Pre-oauth brain: no oauth_clients table at all → no referents by
+    // construction (isUndefinedTableError arm).
+    const noTable = {
+      executeRaw: async () => {
+        throw Object.assign(new Error('relation "oauth_clients" does not exist'), { code: '42P01' });
+      },
+    } as any;
+    expect(await clientsReferencingSource(noTable, 'x')).toEqual([]);
+
+    // Pre-migration brain: deleted_at column missing → falls back to ALL
+    // referents (the 42703-retry idiom).
+    const noColumn = {
+      executeRaw: async (sql: string) => {
+        if (sql.includes('deleted_at')) {
+          throw Object.assign(new Error('column "deleted_at" does not exist'), { code: '42703' });
+        }
+        return [{ client_id: 'c1', client_name: 'n1' }];
+      },
+    } as any;
+    expect(await clientsReferencingSource(noColumn, 'x')).toEqual([
+      { clientId: 'c1', clientName: 'n1' },
+    ]);
+
+    // Anything else (e.g. a dropped connection) must PROPAGATE — a swallowed
+    // error here would let a hard delete proceed past live referents.
+    const broken = {
+      executeRaw: async () => { throw new Error('connection reset'); },
+    } as any;
+    await expect(clientsReferencingSource(broken, 'x')).rejects.toThrow('connection reset');
+  });
 });
 
 describe('formatters (display helpers)', () => {
