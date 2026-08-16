@@ -1062,6 +1062,14 @@ CREATE INDEX IF NOT EXISTS idx_subagent_messages_provider ON subagent_messages (
 -- Two-phase tool execution ledger. Before tool call: INSERT status='pending'.
 -- After success: UPDATE to 'complete' + output. On failure: 'failed' + error.
 -- Replay re-runs 'pending' rows only if the tool is idempotent.
+--
+-- tool_use_id holds the RAW provider id and is deliberately NOT unique per
+-- job (#4155): replay-style providers (claude-cli spawns a fresh subprocess
+-- per turn from an id-stripped transcript) reuse the same short id on every
+-- turn. Row identity is (job_id, message_idx, ordinal); readers that resolve
+-- a tool_use block to its execution row must key by (message_idx, tool_use_id),
+-- never by tool_use_id alone. The former job-wide unique constraint
+-- uniq_subagent_tools_use_id was dropped in migration v131.
 CREATE TABLE IF NOT EXISTS subagent_tool_executions (
   id                  BIGSERIAL PRIMARY KEY,
   job_id              BIGINT      NOT NULL REFERENCES minion_jobs(id) ON DELETE CASCADE,
@@ -1084,7 +1092,6 @@ CREATE TABLE IF NOT EXISTS subagent_tool_executions (
   gbrain_tool_use_id  UUID,
   started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at            TIMESTAMPTZ,
-  CONSTRAINT uniq_subagent_tools_use_id UNIQUE (job_id, tool_use_id),
   CONSTRAINT subagent_tool_executions_stable_id UNIQUE (job_id, message_idx, ordinal),
   CONSTRAINT chk_subagent_tools_status CHECK (status IN ('pending','complete','failed'))
 );
