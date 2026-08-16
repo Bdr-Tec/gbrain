@@ -4144,7 +4144,7 @@ No server, no tunnel, no token needed. Works on both PGLite and Postgres engines
 `--surface verbs` exposes exactly the seven-verb memory protocol (`recall`,
 `remember`, `entity`, `synthesize`, `forget`, `context_pack`, `delta` —
 [MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)) instead of the full catalog;
-`--surface starter` sits between (~26 ops: the verbs plus the daily-driver set);
+`--surface starter` sits between (~27 ops: the verbs plus the daily-driver set);
 omit the flag (default `full`) for every operation.
 
 ### Remote over OAuth 2.1 (recommended)
@@ -4571,8 +4571,8 @@ each client.
 **Surface modes:** `--surface verbs` exposes EXACTLY the seven verbs —
 advertised list AND dispatch are filtered fail-closed (a hidden op returns
 `unknown_tool` even when called by name). `--surface starter` exposes the
-~26-op daily-driver set (`STARTER_OPS` in `src/mcp/surface.ts`): the seven
-verbs plus the daily brain-tool slice, the agent lane, `whoami`, and the
+~27-op daily-driver set (`STARTER_OPS` in `src/mcp/surface.ts`): the seven
+verbs plus the daily brain-tool slice, the agent lane, `whoami`, `capture`, and the
 `request_tools` discovery meta-op (re-derivable from production usage via
 `scripts/derive-starter-ops.ts`). Monotonic by construction: verbs ⊆ starter ⊆ full
 (pinned by test) — starter extends the ladder ABOVE verbs and never changes

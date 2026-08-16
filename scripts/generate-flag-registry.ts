@@ -36,6 +36,19 @@ const EXTRA_FLAGS: Record<string, string[]> = {
   sync: ['--pace', '--pace-max-concurrency'],
 };
 
+/**
+ * Modules the import scan must SKIP. thin-client-routing.ts is a pure router —
+ * its flag literals belong to the commands it routes (takes/search/jobs/cache/
+ * quarantine), and each of those declares its own flags in its own case block;
+ * scanning the router bleeds takes/quarantine flags into jobs (whose case
+ * block imports it for the `jobs stats` thin-client route).
+ */
+const EXCLUDED_MODULES = ['thin-client-routing.ts'];
+
+function isExcludedModule(p: string): boolean {
+  return EXCLUDED_MODULES.some(m => p.endsWith(`/${m}`));
+}
+
 /** Universal helper flags every command may see (parsed or short-circuited upstream). */
 const UNIVERSAL_FLAGS = ['--help', '--json', '--brain', '--source'];
 
@@ -59,7 +72,7 @@ function relativeImports(src: string, fromDir: string): string[] {
   for (const m of src.matchAll(/import\('(\.\.?\/[^']+\.ts)'\)/g)) paths.add(m[1]);
   return [...paths]
     .map(p => resolvePath(fromDir, p))
-    .filter(p => existsSync(p))
+    .filter(p => existsSync(p) && !isExcludedModule(p))
     .flatMap(p => [p, ...facadeExpansion(p)]);
 }
 
@@ -166,7 +179,7 @@ export function buildFlagRegistry(): Record<string, string[]> {
     // own ./relative imports.
     const commandModules = [...block.matchAll(/import\('(\.\/[^']+\.ts)'\)/g)]
       .map(mm => resolvePath(join(ROOT, 'src'), mm[1]))
-      .filter(p => existsSync(p));
+      .filter(p => existsSync(p) && !isExcludedModule(p));
     for (const modPath of commandModules) {
       // A command module that IS a peeled façade counts its module files as
       // part of itself: their text scans at module depth and THEIR relative

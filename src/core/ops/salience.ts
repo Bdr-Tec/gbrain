@@ -51,7 +51,9 @@ const get_recent_salience: Operation = {
       recency_bias: recencyBias,
     });
   },
-  cliHints: { name: 'salience' },
+  // hidden: 'salience' is in CLI_ONLY (src/cli.ts) — runSalience owns the CLI
+  // surface; the non-hidden hint was dead (CLI_ONLY wins at dispatch).
+  cliHints: { name: 'salience', hidden: true },
 };
 
 const find_anomalies: Operation = {
@@ -79,7 +81,9 @@ const find_anomalies: Operation = {
       sigma: typeof p.sigma === 'number' ? p.sigma : undefined,
     });
   },
-  cliHints: { name: 'anomalies' },
+  // hidden: 'anomalies' is in CLI_ONLY (src/cli.ts) — runAnomalies owns the
+  // CLI surface; the non-hidden hint was dead (CLI_ONLY wins at dispatch).
+  cliHints: { name: 'anomalies', hidden: true },
 };
 
 
