@@ -30,9 +30,14 @@ after; links at the next boundary**:
   `session_context_state.checkpoint_manifest`.
 - The post-compaction SessionStart (`source=compact`) pack renders the banked
   links as a `## Compaction checkpoints` section. Links that miss the
-  immediate pack (harvest still running) surface on the next session start —
-  at-least-once, never lost, and the facts themselves are recallable the
-  moment the harvest commits regardless of link delivery.
+  immediate pack (harvest still running) surface on the next session start.
+  Link-delivery guarantees differ by lane: the harvest FIFO is
+  receipt-guaranteed (a failed manifest publish keeps the receipt and
+  retries without re-extracting); the sweep backstop and the OpenClaw
+  direct-Postgres rung publish links best-effort (facts are always
+  at-least-once — re-extracting a whole segment to retry a link append is
+  the worse trade). The facts themselves are recallable the moment any lane
+  commits them, regardless of link delivery.
 
 ## The three extraction lanes and the dedup contract
 
@@ -58,7 +63,10 @@ makes this the exception path.
 
 - **Claude Code** — zero setup beyond `gbrain bootstrap` (the PreCompact +
   SessionStart hooks are already installed; existing installs pick the
-  checkpoint behavior up on upgrade with no re-install).
+  checkpoint behavior up on upgrade with no re-install). Prompt link
+  delivery needs PGLite + a live serve (the IPC flush lane); on a Postgres
+  brain the hook still banks the segment and the next sweep pass extracts
+  it and publishes the links — delayed to sweep cadence, not lost.
 - **OpenClaw** — engine-internal: `compact()` runs the checkpoint step before
   delegating (spool-first; serve IPC on PGLite, direct connection on
   Postgres) and `assemble()` injects the checkpoint block from the banked
@@ -76,13 +84,17 @@ Hook + harvest telemetry rides the hooks heartbeat JSONL
 - `compact` events carry a `segment` code: `segment_banked` / `segment_dup`
   (idempotent retry) / `empty_window` / `deadline_scan` (budget too tight to
   scan — a window is NEVER written unscanned) / `deadline_write` /
-  `scan_unavailable`.
+  `scan_unavailable` — plus a `flush` code echoing serve's schedule ack:
+  `scheduled` / `skip_queue_full` / `skip_not_found` / `skip_bad_basename` /
+  `skip_no_session` / `skip_shutting_down` / `skip_already_queued` (absent
+  when the IPC round trip never happened).
 - `session-end` events carry the corpus mode: `remainder` / `skip_covered` /
   `full_fallback`.
-- `checkpoint-harvest` events (serve-side) carry `inserted`/`duplicate`/
-  `links` counters and skip reasons: `keyless` / `extraction_disabled` /
-  `already_ingested` / `claimed_elsewhere` / `queue_full` (sweep remains the
-  backstop) / `aborted` (retryable — nothing was written) / `not_found`.
+- `checkpoint-harvest` events (serve-side pump outcomes) carry
+  `inserted`/`duplicate`/`links` counters and skip reasons: `keyless` /
+  `extraction_disabled` / `already_ingested` / `claimed_elsewhere` /
+  `aborted` (retryable — nothing was written) / `manifest_failed` (receipt
+  kept; the retry re-publishes without re-extracting).
 
 **Single-corpus-dir invariant:** the hook resolves the corpus dir from file
 config while serve resolves it from DB config. Keep

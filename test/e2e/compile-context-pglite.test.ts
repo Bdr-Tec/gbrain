@@ -306,4 +306,24 @@ describe('spliceCompiledBlock negatives (pre-landing review pins)', () => {
       spliceCompiledBlock(`${COMPILED_BLOCK_END}\nmid\n${COMPILED_BLOCK_BEGIN}\n`, block),
     ).toThrow(/out of order|markers/i);
   });
+
+  test('marker-equal lines INSIDE the compiled body are neutralized (no self-wedge)', async () => {
+    const { spliceCompiledBlock, COMPILED_BLOCK_BEGIN, COMPILED_BLOCK_END } =
+      await import('../../src/commands/compile-context.ts');
+    // A page excerpt that is exactly a marker string (adversarial review):
+    // unneutralized, the first splice writes a file with 1 begin / 2 end
+    // markers and every later run throws until AGENTS.md is hand-edited.
+    const poisoned = `header line\n${COMPILED_BLOCK_END}\n${COMPILED_BLOCK_BEGIN}\ntail line`;
+    const first = spliceCompiledBlock('# Agents\n', poisoned);
+    // The managed block still has exactly one of each marker at line level...
+    const lines = first.split('\n');
+    expect(lines.filter((l) => l === COMPILED_BLOCK_BEGIN)).toHaveLength(1);
+    expect(lines.filter((l) => l === COMPILED_BLOCK_END)).toHaveLength(1);
+    // ...the poisoned text is still visible (leading space, not deleted)...
+    expect(first).toContain(` ${COMPILED_BLOCK_END}`);
+    expect(first).toContain(` ${COMPILED_BLOCK_BEGIN}`);
+    // ...and a SECOND splice over the written file succeeds (idempotent, no wedge).
+    const second = spliceCompiledBlock(first, poisoned);
+    expect(second).toBe(first);
+  });
 });

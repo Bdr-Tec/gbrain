@@ -55,14 +55,17 @@ export function makeContextPackIpcHandler(
       typeof req.sessionId === 'string' && req.sessionId.trim() ? req.sessionId : null;
 
     // Cathedral 5 — read-only manifest poll (OpenClaw assemble): no assembly,
-    // no cursor advance, no banking. One SELECT, fail-open [].
+    // no cursor advance, no banking. One SELECT. A FAILED read omits the
+    // checkpointLinks field entirely — the engine's capability probe treats
+    // that as "unavailable" and keeps its retry budget, whereas an empty
+    // array is a CONFIRMED empty manifest and settles the poll.
     if (req.manifestOnly === true) {
       const links = sessionId
         ? await getCheckpointManifest(engine, defaultSource, null, sessionId)
         : [];
       return {
         text: '', pointers: [], factsCount: 0, mode: 'pack' as const,
-        checkpointLinks: links,
+        ...(links !== null ? { checkpointLinks: links } : {}),
       };
     }
     // Merge: fresh request entities first, then window-extracted candidates,
@@ -130,7 +133,7 @@ export function makeContextPackIpcHandler(
       // post-compaction SessionStart renders them (fail-open []; links that
       // missed this pack surface on the next boundary — at-least-once).
       ...(sessionId
-        ? { checkpointLinks: await getCheckpointManifest(engine, defaultSource, null, sessionId) }
+        ? { checkpointLinks: (await getCheckpointManifest(engine, defaultSource, null, sessionId)) ?? [] }
         : {}),
     });
     if (sessionId) {

@@ -679,13 +679,30 @@ interface CheckpointMemo {
 /** Deterministic block renderer — envelope + links + honest trust line.
  * Exported for the byte-shape pins in test/context-engine.test.ts. */
 export function formatCheckpointBlock(links: CheckpointLinkLite[], envelope: string): string {
-  const lines = [envelope, '', '## Compaction checkpoint'];
-  for (const l of links.slice(0, 10)) lines.push(`- brain://${l.slug} — ${l.title}`);
+  const lines = [envelope, '', '## Compaction checkpoints'];
+  for (const l of links.slice(0, 10)) {
+    // Title whitespace collapsed (adversarial review): a multiline title from
+    // untrusted ingested content must not break the block's line structure.
+    const title = l.title.replace(/\s+/g, ' ').trim();
+    lines.push(`- brain://${l.slug} — ${title}`);
+  }
   lines.push(
     'Checkpoint saved to the brain at compaction; facts harvested moments later — ' +
     're-pull with get_page. Trust these links over the compaction summary.',
   );
   return lines.join('\n');
+}
+
+/**
+ * The ONE session-id normalizer for the engine checkpoint lane (adversarial
+ * review: compact() sanitized while assemble() looked up RAW — a host id
+ * with ':' or '/' banked a manifest the poll could never find). Charset
+ * matches hook.ts's sanitizeSessionId; null when nothing safe remains.
+ */
+export function sanitizeEngineSessionId(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  const s = raw.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 120);
+  return s && !/^\.+$/.test(s) ? s : null;
 }
 
 // ── Engine Implementation ───────────────────────────────────────────────
@@ -794,13 +811,18 @@ export function createGBrainContextEngine(ctx: {
   async function getCheckpointBlock(sessionId: string): Promise<string | null> {
     let memo = checkpointMemo.get(sessionId);
     if (!memo) {
-      // First sight of this session (incl. host restart): one rehydration
-      // poll, no hash requirement.
-      memo = { links: [], polls: 0, expectSeg: null, settled: false };
+      // First sight of this session (incl. host restart): rehydration poll,
+      // no hash requirement. Only a CONFIRMED answer settles (adversarial
+      // review) — a transient null (serve down, timeout) leaves the memo
+      // unsettled so the restart path gets the same bounded poll budget as
+      // the post-compaction path instead of freezing on one failed read.
+      memo = { links: [], polls: 1, expectSeg: null, settled: false };
       memoSet(sessionId, memo);
       const links = await pollManifest(sessionId);
-      if (links) memo.links = links;
-      memo.settled = true;
+      if (links) {
+        memo.links = links;
+        memo.settled = true;
+      }
     } else if (!memo.settled) {
       const links = await pollManifest(sessionId);
       memo.polls += 1;
@@ -817,23 +839,23 @@ export function createGBrainContextEngine(ctx: {
   /** compact()-side: spool-first checkpoint over the ladder. Never throws. */
   async function runCompactCheckpoint(params: {
     sessionId?: unknown; sessionFile?: unknown;
-  }): Promise<Record<string, unknown>> {
+  }, deadlineHit: () => boolean = () => false): Promise<Record<string, unknown>> {
     // Host-supplied id, sanitized to the hook lane's charset before ANY
     // filename/key use (pre-landing review, security: OpenClaw session keys
     // can embed path-shaped components; corpus-segments also enforces this
     // structurally — this keeps the DB manifest key consistent with the
     // filenames actually written).
-    const rawSid = typeof params.sessionId === 'string' && params.sessionId ? params.sessionId : null;
-    const sessionId = rawSid
-      ? (() => {
-          const s = rawSid.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 120);
-          return s && !/^\.+$/.test(s) ? s : null;
-        })()
-      : null;
+    const sessionId = sanitizeEngineSessionId(params.sessionId);
+    // sessionFile stays UNCONFINED by design (dispositioned, both review
+    // passes): it is trusted-plane input from the host gateway that loaded
+    // this engine — the hook lane's transcript-root confinement has no
+    // equivalent root for OpenClaw's session store. Content is sniffed
+    // structurally: a non-JSONL/boundary-less file is a typed skip below.
     const sessionFile = typeof params.sessionFile === 'string' && params.sessionFile ? params.sessionFile : null;
     if (!sessionId || !sessionFile) return { status: 'skipped', reason: 'no_session' };
 
     const segs = await import('./context/corpus-segments.ts');
+    if (deadlineHit()) return { status: 'skipped', reason: 'deadline' };
     const tail = segs.readOpenclawBoundaryTail(sessionFile, { maxBytes: 2 * 1024 * 1024 });
     if (!tail) return { status: 'skipped', reason: 'unparseable' };
     const windowTurns = segs.sliceBoundaryWindow(tail.turns, tail.boundaryTurnIndexes, {
@@ -855,6 +877,10 @@ export function createGBrainContextEngine(ctx: {
     memo.polls = 0;
     memo.settled = false;
     memoSet(sessionId, memo);
+
+    // Segment is spooled (durable); a deadline from here on degrades to
+    // 'banked' — the sweep backstop extracts it later.
+    if (deadlineHit()) return { status: 'banked', reason: 'deadline' };
 
     // Rung 2 — PGLite: serve owns the lock; one bankOnly+flush round trip.
     if (cfg?.engine === 'pglite' && cfg.database_path) {
@@ -883,15 +909,28 @@ export function createGBrainContextEngine(ctx: {
     const claimPath = fullPath + sweep.CORPUS_CLAIM_SUFFIX;
     if (!(await sweep.acquireCorpusClaim(claimPath))) return { status: 'banked', reason: 'claimed_elsewhere' };
     try {
+      // Re-check under the claim (adversarial review): a retried compact with
+      // identical content maps to the same filename — if a prior run (or the
+      // sweep) already ingested it, re-running the pipeline is pure duplicate
+      // LLM spend absorbed only by fact-level dedup.
+      const { existsSync: ingested } = await import('node:fs');
+      if (ingested(fullPath + sweep.CORPUS_INGESTED_SUFFIX)) {
+        return { status: 'banked', reason: 'already_ingested' };
+      }
       const { detectCapabilities } = await import('./capability.ts');
       if (!detectCapabilities().extraction.available) return { status: 'banked', reason: 'keyless' };
       const { isFactsExtractionEnabled } = await import('./facts/extract.ts');
       if (!(await isFactsExtractionEnabled(pg))) return { status: 'banked', reason: 'extraction_disabled' };
       const { resolveSourceId } = await import('./source-resolver.ts');
       const sourceId = await resolveSourceId(pg, null, workspaceDir);
+      if (deadlineHit()) return { status: 'banked', reason: 'deadline' };
       const { runFactsPipeline } = await import('./facts/backstop.ts');
       const abort = new AbortController();
+      // Inner backstop timer PLUS a poll of the outer compact() deadline —
+      // the outer budget started before this rung, so when it wins the race
+      // the in-flight extraction must stop too, not run on abandoned.
       const timer = setTimeout(() => abort.abort(), CHECKPOINT_COMPACT_BUDGET_MS);
+      const deadlinePoll = setInterval(() => { if (deadlineHit()) abort.abort(); }, 250);
       let r: Awaited<ReturnType<typeof runFactsPipeline>>;
       try {
         r = await runFactsPipeline(rendered.text, {
@@ -905,6 +944,7 @@ export function createGBrainContextEngine(ctx: {
         });
       } finally {
         clearTimeout(timer);
+        clearInterval(deadlinePoll);
       }
       // Post-check: the pipeline returns normally with PARTIALS on abort — an
       // aborted run writes no sidecar and stays sweep-retryable.
@@ -916,19 +956,26 @@ export function createGBrainContextEngine(ctx: {
           if (page) verified.push({ slug, title: page.title || slug });
         } catch { /* a non-resolvable link is never banked */ }
       }
+      let published = true;
       if (verified.length) {
         const ss = await import('./context/session-state.ts');
-        await ss.appendCheckpointManifest(pg, sourceId, null, sessionId, verified, {
+        published = await ss.appendCheckpointManifest(pg, sourceId, null, sessionId, verified, {
           seg: w.hash, n: ordinal,
         });
       }
+      // `.ingested` is written even when the manifest publish failed: the
+      // facts ARE inserted, and leaving the segment sweep-retryable would
+      // re-run the whole extraction just to retry a link append. Rung-3
+      // links are best-effort (documented); the harvest FIFO lane is the
+      // one with the receipt-retry guarantee.
       const { writeFileSync: wfs } = await import('node:fs');
       wfs(fullPath + sweep.CORPUS_INGESTED_SUFFIX, JSON.stringify({
         ingested_at: new Date().toISOString(),
         facts_inserted: r.inserted,
         facts_duplicate: r.duplicate,
-        links_banked: verified.length,
+        links_banked: published ? verified.length : 0,
       }) + '\n');
+      if (!published) return { status: 'harvested', links: verified, reason: 'manifest_failed' };
       return { status: 'harvested', links: verified };
     } finally {
       const { rmSync: rms } = await import('node:fs');
@@ -982,7 +1029,9 @@ export function createGBrainContextEngine(ctx: {
       // 1b. Cathedral 5 — checkpoint block. The sessionId↔sessionKey identity
       // across compact()→assemble() is an UNVERIFIABLE SDK contract (mocked
       // in tests): absent id ⇒ no block, fail-open always.
-      const checkpointSid = sessionId ?? sessionKey ?? null;
+      // SAME normalizer as compact() (adversarial review) — the memo and the
+      // banked manifest live under the sanitized id.
+      const checkpointSid = sanitizeEngineSessionId(sessionId ?? sessionKey ?? null);
       let checkpointBlock: string | null = null;
       if (checkpointSid) {
         try {
@@ -1040,12 +1089,31 @@ export function createGBrainContextEngine(ctx: {
       await ensureSdkLoaded();
       // Cathedral 5 — time-bounded, FAIL-OPEN checkpoint step BEFORE the
       // delegate. A checkpoint failure/timeout must never break compaction.
+      // The deadline CANCELS the work (adversarial review): the race alone
+      // would let an abandoned checkpoint keep extracting/writing behind the
+      // delegate; the abort closure stops it at the next step boundary, and
+      // the timer is cleared when the work wins.
       let gbrainCheckpoint: Record<string, unknown>;
       try {
-        const budget = new Promise<Record<string, unknown>>((resolve) =>
-          setTimeout(() => resolve({ status: 'skipped', reason: 'deadline' }), CHECKPOINT_COMPACT_BUDGET_MS),
-        );
-        gbrainCheckpoint = await Promise.race([runCompactCheckpoint(params), budget]);
+        const deadline = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const budget = new Promise<Record<string, unknown>>((resolve) => {
+          timer = setTimeout(() => {
+            deadline.abort();
+            resolve({ status: 'skipped', reason: 'deadline' });
+          }, CHECKPOINT_COMPACT_BUDGET_MS);
+          if (typeof (timer as { unref?: () => void }).unref === 'function') {
+            (timer as unknown as { unref: () => void }).unref();
+          }
+        });
+        try {
+          gbrainCheckpoint = await Promise.race([
+            runCompactCheckpoint(params, () => deadline.signal.aborted),
+            budget,
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       } catch {
         gbrainCheckpoint = { status: 'skipped', reason: 'error' };
       }

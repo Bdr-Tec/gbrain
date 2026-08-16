@@ -136,7 +136,7 @@ describe('post-compaction recall (the done criterion)', () => {
     expect(rows[0].source_session).toBe('sess-recall');
 
     // Manifest banked: ONLY the resolvable fence-written link, seg-hash keyed.
-    const links = await getCheckpointManifest(engine, 'default', null, 'sess-recall');
+    const links = (await getCheckpointManifest(engine, 'default', null, 'sess-recall'))!;
     expect(links).toHaveLength(1);
     expect(links[0].slug).toBe('people/alice-example');
     expect(links[0].title).toBe('Alice Example');
@@ -189,11 +189,52 @@ describe('post-compaction recall (the done criterion)', () => {
     });
     await __drainCheckpointHarvestForTests();
 
-    const links = await getCheckpointManifest(engine, 'default', null, 'sess-receipt');
+    const links = (await getCheckpointManifest(engine, 'default', null, 'sess-receipt'))!;
     expect(links.map((l) => l.slug)).toEqual(['people/charlie-example']);
     const ingested = JSON.parse(readFileSync(full + CORPUS_INGESTED_SUFFIX, 'utf8')) as { from_receipt?: boolean };
     expect(ingested.from_receipt).toBe(true);
     expect(existsSync(full + HARVEST_RECEIPT_SUFFIX)).toBe(false);
+  });
+
+  test('manifest publish failure keeps the receipt, skips .ingested, and the retry recovers (adversarial review)', async () => {
+    await engine.putPage('people/dora-example', {
+      type: 'person', title: 'Dora Example', compiled_truth: 'Synthetic fixture.',
+    }, { sourceId: 'default' });
+    const seg = bankSegment('sess-mfail', 'window text extracted; publish will fail\n');
+    const full = join(corpusDir, seg.file);
+    writeFileSync(full + HARVEST_RECEIPT_SUFFIX, JSON.stringify({
+      session_id: 'sess-mfail', seg: seg.hash, links: ['people/dora-example'], ts: new Date().toISOString(),
+    }) + '\n');
+
+    // Force the publish to fail: pre-v131 shape (column missing).
+    await engine.executeRaw('ALTER TABLE session_context_state DROP COLUMN checkpoint_manifest');
+    try {
+      scheduleCheckpointHarvest({
+        engine, sourceId: 'default', sessionId: 'sess-mfail', corpusDir, file: seg.file, capabilities: KEYED,
+      });
+      await __drainCheckpointHarvestForTests();
+      // Receipt kept (the only durable copy of the links), no .ingested —
+      // deleting either here would lose the links forever.
+      expect(existsSync(full + HARVEST_RECEIPT_SUFFIX)).toBe(true);
+      expect(existsSync(full + CORPUS_INGESTED_SUFFIX)).toBe(false);
+      const hb = (await readHeartbeatTail(5)).find((e) => e.event === 'checkpoint-harvest');
+      expect(hb?.outcome).toBe('degraded');
+      expect(hb?.reason).toBe('manifest_failed');
+    } finally {
+      await engine.executeRaw(
+        `ALTER TABLE session_context_state ADD COLUMN checkpoint_manifest JSONB NOT NULL DEFAULT '[]'::jsonb`,
+      );
+    }
+
+    // Retry after recovery: publishes from the receipt (no extraction), cleans up.
+    scheduleCheckpointHarvest({
+      engine, sourceId: 'default', sessionId: 'sess-mfail', corpusDir, file: seg.file, capabilities: KEYED,
+    });
+    await __drainCheckpointHarvestForTests();
+    const links = (await getCheckpointManifest(engine, 'default', null, 'sess-mfail'))!;
+    expect(links.map((l) => l.slug)).toEqual(['people/dora-example']);
+    expect(existsSync(full + HARVEST_RECEIPT_SUFFIX)).toBe(false);
+    expect(existsSync(full + CORPUS_INGESTED_SUFFIX)).toBe(true);
   });
 
   test('non-resolvable link candidates are never banked (truthful links)', async () => {

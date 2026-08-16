@@ -38,6 +38,14 @@ export interface HookHeartbeatEntry {
   /** Cathedral 5 — checkpoint-harvest fact counters (counts only) [S3#7]. */
   inserted?: number;
   duplicate?: number;
+  /**
+   * Cathedral 5 — the compact hook's harvest-schedule ACK code
+   * (`scheduled` / `skip_queue_full` / `skip_not_found` / `skip_bad_basename`
+   * / `skip_no_session` / `skip_shutting_down` / `skip_already_queued`).
+   * Without it a persistently misconfigured split corpus dir or a full queue
+   * is observable nowhere. Codes only [S3#7].
+   */
+  flush?: string;
   /** Cathedral 5 — checkpoint-harvest verified-link COUNT (never slugs) [S3#7]. */
   links?: number;
 }
@@ -45,7 +53,7 @@ export interface HookHeartbeatEntry {
 /** The FULL key allowlist — CI greps the fixture against this [S3#7]. */
 export const HEARTBEAT_ALLOWED_KEYS = [
   'ts', 'event', 'outcome', 'reason', 'duration_ms', 'turns', 'bytes', 'redactions',
-  'segment', 'inserted', 'duplicate', 'links',
+  'segment', 'inserted', 'duplicate', 'links', 'flush',
 ] as const;
 
 /** Gbrain home resolver: the S3#10 choke point (create-or-resolve, fail-open). */
@@ -96,7 +104,19 @@ const HEARTBEAT_COMPACT_CHECK_BYTES = 2 * HEARTBEAT_MAX_LINES * 40;
  * HEARTBEAT_MAX_LINES via tmp+rename) runs only when a cheap size/line-count
  * check says the file exceeds ~2x the cap. Never throws.
  */
-export async function writeHeartbeat(entry: HookHeartbeatEntry): Promise<void> {
+export async function writeHeartbeat(
+  entry: HookHeartbeatEntry,
+  opts?: {
+    /**
+     * Skip the tail-trim compaction. The trim is read→tmp→rename with no
+     * lock; a LONG-LIVED high-frequency writer (the serve harvest pump)
+     * trimming concurrently with short-lived hook appends would silently
+     * drop the other process's O_APPEND lines. Serve passes trim:false so
+     * only short-lived hooks trim (the pre-existing narrow race window).
+     */
+    trim?: boolean;
+  },
+): Promise<void> {
   try {
     const p = await heartbeatPath();
     const line = JSON.stringify({
@@ -112,8 +132,10 @@ export async function writeHeartbeat(entry: HookHeartbeatEntry): Promise<void> {
       ...(entry.inserted !== undefined ? { inserted: entry.inserted } : {}),
       ...(entry.duplicate !== undefined ? { duplicate: entry.duplicate } : {}),
       ...(entry.links !== undefined ? { links: entry.links } : {}),
+      ...(entry.flush !== undefined ? { flush: entry.flush } : {}),
     });
     appendFileSync(p, line + '\n', { mode: 0o600 });
+    if (opts?.trim === false) return;
     let size = 0;
     try {
       size = statSync(p).size;

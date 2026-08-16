@@ -34,15 +34,16 @@ import type { BrainEngine } from '../engine.ts';
 import type { CapabilityReport } from '../capability.ts';
 import { acquireCorpusClaim, CORPUS_CLAIM_SUFFIX, CORPUS_INGESTED_SUFFIX } from '../sweep.ts';
 import { appendCheckpointManifest } from './session-state.ts';
-import { readSegmentLedger } from './corpus-segments.ts';
+import { readSegmentLedger, HARVEST_RECEIPT_SUFFIX } from './corpus-segments.ts';
 import { writeHeartbeat } from './hook-heartbeat.ts';
 
 /** Bounded queue — overflow is a typed skip; the sweep backstop extracts later. */
 export const HARVEST_QUEUE_CAP = 8;
 /** Per-file abort so a hung provider can't wedge the FIFO. */
 export const HARVEST_JOB_TIMEOUT_MS = 60_000;
-/** Receipt sidecar suffix (link candidates persisted before manifest publish). */
-export const HARVEST_RECEIPT_SUFFIX = '.receipt.json';
+/** Receipt sidecar suffix — canonical home is corpus-segments (engine-free,
+ * so the hook's GC can reap orphaned receipts); re-exported for callers. */
+export { HARVEST_RECEIPT_SUFFIX };
 
 export interface HarvestJob {
   engine: BrainEngine;
@@ -171,7 +172,9 @@ async function pump(): Promise<void> {
       ...(inserted !== undefined ? { inserted } : {}),
       ...(duplicate !== undefined ? { duplicate } : {}),
       ...(links !== undefined ? { links } : {}),
-    });
+      // trim:false — serve is a long-lived high-frequency writer; its
+      // read→tmp→rename trim would clobber concurrent hook appends.
+    }, { trim: false });
     if (!shuttingDown) void pump();
     else {
       idleResolve?.();
@@ -283,10 +286,17 @@ async function runOne(job: HarvestJob): Promise<{
     if (verified.length) {
       const ledger = readSegmentLedger(job.corpusDir, receipt.session_id);
       const n = Math.max(1, ledger.findIndex((e) => e.hash === receipt.seg) + 1);
-      await appendCheckpointManifest(
+      const published = await appendCheckpointManifest(
         job.engine, job.sourceId, null, receipt.session_id, verified,
         { seg: receipt.seg, n },
       );
+      if (!published) {
+        // Publish failed (returns false, never throws): keep the receipt —
+        // the ONLY durable copy of the links — write NO `.ingested`, release
+        // the claim. The retry re-publishes from the receipt without
+        // re-extracting. Writing `.ingested` here would delete the links.
+        return { outcome: 'degraded', reason: 'manifest_failed' };
+      }
     }
 
     // `.ingested` LAST — the sweep now skips this segment; the receipt has

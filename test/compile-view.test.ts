@@ -13,6 +13,7 @@ import { tmpdir } from 'os';
 import {
   compileView,
   COMPILED_CONTEXT_ENVELOPE,
+  RECENCY_CANDIDATE_LIMIT,
   type CompileViewEngine,
   type CompileViewInput,
 } from '../src/core/context/compile-view.ts';
@@ -237,6 +238,36 @@ describe('compileView — sensitivity scan integration', () => {
     expect(meta.scan_drops[0].fingerprint).toMatch(/^sha256:[0-9a-f]{16}$/);
     // Clean entries still compiled.
     expect(text).toContain('concepts/alpha');
+  });
+});
+
+describe('compileView — recency arm (adversarial review: newest-first + tie-drop)', () => {
+  test('a truncated recency window keeps the NEWEST pages; boundary-timestamp rows drop deterministically', async () => {
+    // Non-durable-prefix, untagged pages: ONLY the recency arm can select
+    // them. More pages than the limit forces truncation — the inverted
+    // updated_asc fetch would have kept the OLDEST 500 and dropped the
+    // newest pages entirely.
+    const base = new Date('2026-07-01T00:00:00.000Z').getTime();
+    const N = RECENCY_CANDIDATE_LIMIT + 10;
+    const pages: ReturnType<typeof page>[] = [];
+    for (let i = 0; i < N; i++) {
+      pages.push(
+        page(`notes/n-${String(i).padStart(4, '0')}`, {
+          updated_at: new Date(base + i * 60_000),
+        }),
+      );
+    }
+    const { text } = await compileView(input(makeEngine(pages), { budget: 60_000 }));
+    const pad = (i: number) => `notes/n-${String(i).padStart(4, '0')}`;
+    // Newest page present; the 10 oldest fall outside the newest-first cut.
+    expect(text).toContain(`brain://${pad(N - 1)}`);
+    expect(text).not.toContain(`brain://${pad(0)}`);
+    expect(text).not.toContain(`brain://${pad(9)}`);
+    // The truncation-boundary timestamp row is dropped (tie-drop keeps the
+    // survivor set well-defined regardless of DB tie order)...
+    expect(text).not.toContain(`brain://${pad(10)}`);
+    // ...and the first strictly-newer row survives.
+    expect(text).toContain(`brain://${pad(11)}`);
   });
 });
 

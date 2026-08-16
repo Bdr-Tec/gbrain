@@ -37,7 +37,7 @@ describe('checkpoint_manifest append/read', () => {
       [{ slug: 'people/alice-example', title: 'Alice Example' }],
       { seg: 'abc123def456', n: 1 },
     );
-    const links = await getCheckpointManifest(engine, 'default', null, 'sess-a');
+    const links = (await getCheckpointManifest(engine, 'default', null, 'sess-a'))!;
     expect(links).toHaveLength(1);
     expect(links[0].slug).toBe('people/alice-example');
     expect(links[0].title).toBe('Alice Example');
@@ -49,7 +49,7 @@ describe('checkpoint_manifest append/read', () => {
   test('second append prepends (newest-first) and preserves older entries', async () => {
     await appendCheckpointManifest(engine, 'default', null, 's', [{ slug: 'a', title: 'A' }], { seg: 's1', n: 1 });
     await appendCheckpointManifest(engine, 'default', null, 's', [{ slug: 'b', title: 'B' }], { seg: 's2', n: 2 });
-    const links = await getCheckpointManifest(engine, 'default', null, 's');
+    const links = (await getCheckpointManifest(engine, 'default', null, 's'))!;
     expect(links.map((l) => l.slug)).toEqual(['b', 'a']);
     expect(links[0].seg).toBe('s2');
     expect(links[1].seg).toBe('s1');
@@ -59,7 +59,7 @@ describe('checkpoint_manifest append/read', () => {
     await appendCheckpointManifest(engine, 'default', null, 's', [{ slug: 'a', title: 'A' }], { seg: 's1', n: 1 });
     await appendCheckpointManifest(engine, 'default', null, 's', [{ slug: 'b', title: 'B' }], { seg: 's2', n: 2 });
     await appendCheckpointManifest(engine, 'default', null, 's', [{ slug: 'a', title: 'A v2' }], { seg: 's3', n: 3 });
-    const links = await getCheckpointManifest(engine, 'default', null, 's');
+    const links = (await getCheckpointManifest(engine, 'default', null, 's'))!;
     expect(links.map((l) => l.slug)).toEqual(['a', 'b']);
     expect(links[0].title).toBe('A v2');
     expect(links[0].seg).toBe('s3');
@@ -74,7 +74,7 @@ describe('checkpoint_manifest append/read', () => {
         { seg: `seg-${i}`, n: i },
       );
     }
-    const links = await getCheckpointManifest(engine, 'default', null, 's');
+    const links = (await getCheckpointManifest(engine, 'default', null, 's'))!;
     expect(links).toHaveLength(CHECKPOINT_MANIFEST_CAP);
     expect(links[0].slug).toBe(`page-${CHECKPOINT_MANIFEST_CAP + 5}`);
     expect(links.at(-1)!.slug).toBe('page-6'); // 1..5 evicted
@@ -89,8 +89,8 @@ describe('checkpoint_manifest append/read', () => {
   test('client lanes are isolated: local vs remote client id never cross-read', async () => {
     await appendCheckpointManifest(engine, 'default', null, 's', [{ slug: 'local-page', title: 'L' }], { seg: 'l', n: 1 });
     await appendCheckpointManifest(engine, 'default', 'remote-client', 's', [{ slug: 'remote-page', title: 'R' }], { seg: 'r', n: 1 });
-    expect((await getCheckpointManifest(engine, 'default', null, 's')).map((l) => l.slug)).toEqual(['local-page']);
-    expect((await getCheckpointManifest(engine, 'default', 'remote-client', 's')).map((l) => l.slug)).toEqual(['remote-page']);
+    expect((await getCheckpointManifest(engine, 'default', null, 's'))!.map((l) => l.slug)).toEqual(['local-page']);
+    expect((await getCheckpointManifest(engine, 'default', 'remote-client', 's'))!.map((l) => l.slug)).toEqual(['remote-page']);
   });
 
   test('append does not clobber banked entities or the cursor (column independence)', async () => {
@@ -104,13 +104,17 @@ describe('checkpoint_manifest append/read', () => {
     expect(state?.surfaced_slugs).toEqual(['cursor-slug']);
   });
 
-  test('fail-open: pre-v131 schema (column missing) reads [] and append never throws', async () => {
+  test('pre-v131 schema (column missing): read reports null (error, not confirmed-empty), append returns false and never throws', async () => {
     await engine.executeRaw('ALTER TABLE session_context_state DROP COLUMN checkpoint_manifest');
     try {
-      expect(await getCheckpointManifest(engine, 'default', null, 's-old')).toEqual([]);
-      // Must not throw (fail-open write).
-      await appendCheckpointManifest(engine, 'default', null, 's-old', [{ slug: 'a', title: 'A' }], { seg: 'x', n: 1 });
-      expect(await getCheckpointManifest(engine, 'default', null, 's-old')).toEqual([]);
+      // null (failed read) — NOT [] — so the assemble poll keeps its retry
+      // budget instead of settling on a transient error.
+      expect(await getCheckpointManifest(engine, 'default', null, 's-old')).toBeNull();
+      // Must not throw; reports the failed publish so the harvest keeps its
+      // receipt instead of deleting the only durable copy of the links.
+      const published = await appendCheckpointManifest(engine, 'default', null, 's-old', [{ slug: 'a', title: 'A' }], { seg: 'x', n: 1 });
+      expect(published).toBe(false);
+      expect(await getCheckpointManifest(engine, 'default', null, 's-old')).toBeNull();
     } finally {
       await engine.executeRaw(
         `ALTER TABLE session_context_state ADD COLUMN checkpoint_manifest JSONB NOT NULL DEFAULT '[]'::jsonb`,

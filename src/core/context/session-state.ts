@@ -209,16 +209,20 @@ function toCheckpointLinks(v: unknown): CheckpointLink[] {
 }
 
 /**
- * Read the session's checkpoint manifest. FAIL-OPEN: absent row, pre-v131
- * schema (missing column), or any error returns [] — the manifest is an
- * optimization, never a blocker on the pack/assemble read path.
+ * Read the session's checkpoint manifest. Distinguishes a CONFIRMED answer
+ * from a failed read (adversarial review): `[]` means the row/manifest is
+ * genuinely absent or empty; `null` means the read errored (engine down,
+ * pre-v131 schema). Callers on the render path treat null as [] (fail-open);
+ * `appendCheckpointManifest` treats null as abort (a merge seeded from a
+ * failed read would overwrite-truncate the standing manifest), and the
+ * assemble poll only SETTLES on a confirmed answer.
  */
 export async function getCheckpointManifest(
   engine: BrainEngine,
   sourceId: string,
   clientId: string | null | undefined,
   sessionId: string,
-): Promise<CheckpointLink[]> {
+): Promise<CheckpointLink[] | null> {
   try {
     const rows = await engine.executeRaw<{ checkpoint_manifest: unknown }>(
       `SELECT checkpoint_manifest
@@ -229,7 +233,7 @@ export async function getCheckpointManifest(
     if (!rows.length) return [];
     return toCheckpointLinks(rows[0].checkpoint_manifest);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -240,7 +244,13 @@ export async function getCheckpointManifest(
  * harvest FIFO is single-in-flight and the OpenClaw rung-3 writer only runs
  * when serve is unreachable; a benign race loses at most one append (the
  * manifest is an optimization like the rest of this table). jsonb binds via
- * `$N::text::jsonb`. FAIL-OPEN.
+ * `$N::text::jsonb`.
+ *
+ * Returns true only on a CONFIRMED publish (adversarial review): a failed
+ * READ aborts without writing — merging into `[]` from a transient read error
+ * would overwrite-truncate up to CAP−1 standing links — and a failed write
+ * returns false so the harvest keeps its receipt (and skips `.ingested`)
+ * instead of deleting the only durable copy of the links. Never throws.
  */
 export async function appendCheckpointManifest(
   engine: BrainEngine,
@@ -249,14 +259,18 @@ export async function appendCheckpointManifest(
   sessionId: string,
   links: Array<{ slug: string; title: string }>,
   meta: { seg: string; n: number; at?: string },
-): Promise<void> {
-  if (!links.length) return;
+): Promise<boolean> {
+  if (!links.length) return true;
   try {
     const existing = await getCheckpointManifest(engine, sourceId, clientId, sessionId);
+    if (existing === null) return false;
     const at = meta.at ?? new Date().toISOString();
     const fresh: CheckpointLink[] = links.map((l) => ({
       slug: l.slug.slice(0, ID_MAX_LEN),
-      title: l.title.slice(0, 300),
+      // Collapse whitespace: titles render as single lines in the pack /
+      // assemble block — an embedded newline from ingested content must not
+      // inject extra lines into model context.
+      title: l.title.replace(/\s+/g, ' ').trim().slice(0, 300),
       at,
       n: meta.n,
       seg: meta.seg.slice(0, ID_MAX_LEN),
@@ -275,8 +289,10 @@ export async function appendCheckpointManifest(
          updated_at          = now()`,
       [sourceId, resolveClientId(clientId), normSession(sessionId), JSON.stringify(merged)],
     );
+    return true;
   } catch {
-    /* fail-open: a manifest-write failure must never block the harvest */
+    /* fail-open: a manifest-write failure must never THROW into the harvest */
+    return false;
   }
 }
 

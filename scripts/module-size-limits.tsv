@@ -32,4 +32,4 @@ src/commands/bootstrap.ts	1923	ratchet	grandfathered at merge (grew past the 150
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
 src/commands/sources.ts	1586	ratchet
 src/core/bootstrap/harness.ts	1947	ratchet
-src/commands/hook.ts	1499	ratchet
+src/commands/hook.ts	1517	ratchet

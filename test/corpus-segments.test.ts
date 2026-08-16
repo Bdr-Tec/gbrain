@@ -16,6 +16,7 @@ import {
   decideCorpusMode,
   gcCorpusArtifacts,
   ledgerFileName,
+  parseSegmentFileName,
   readSegmentLedger,
   renderSegmentText,
   segmentFileName,
@@ -178,6 +179,43 @@ describe('gcCorpusArtifacts', () => {
     expect(names).not.toContain('gone.txt.ingested');
     expect(names).not.toContain('gone.txt.in-progress');
     expect(names).not.toContain('old.ledger.json');
+  });
+
+  test('reaps orphaned receipts and aged tmp files from crashed writers (adversarial review)', () => {
+    // Orphaned receipt (base .txt gone) — previously lived forever.
+    writeFileSync(join(dir, 'gone.txt.receipt.json'), '{}');
+    // Live receipt (base present, harvest mid-retry) stays.
+    writeFileSync(join(dir, 'live.txt'), 'x');
+    writeFileSync(join(dir, 'live.txt.receipt.json'), '{}');
+    // Aged tmp from a crashed atomic writer goes; fresh tmp stays.
+    writeFileSync(join(dir, 's.ledger.json.tmp-12345'), '[]');
+    const past = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    utimesSync(join(dir, 's.ledger.json.tmp-12345'), past, past);
+    writeFileSync(join(dir, 's.txt.tmp-99999'), 'x');
+
+    gcCorpusArtifacts(dir, 30 * 24 * 60 * 60 * 1000, ['.ingested', '.in-progress', '.receipt.json']);
+
+    const names = readdirSync(dir).sort();
+    expect(names).not.toContain('gone.txt.receipt.json');
+    expect(names).toContain('live.txt.receipt.json');
+    expect(names).not.toContain('s.ledger.json.tmp-12345');
+    expect(names).toContain('s.txt.tmp-99999');
+  });
+});
+
+describe('parseSegmentFileName (sweep-lane link publish)', () => {
+  test('round-trips segmentFileName, accepts legacy 12-hex, rejects non-segments', () => {
+    const hash = segmentHash('some window text');
+    expect(hash).toHaveLength(24); // 96-bit width (adversarial review)
+    const name = segmentFileName('sess-a', hash);
+    expect(parseSegmentFileName(name)).toEqual({ sessionId: 'sess-a', hash });
+    // Pre-widening 12-hex segments still parse during upgrade.
+    expect(parseSegmentFileName('s.seg-abc123def456.txt')).toEqual({
+      sessionId: 's', hash: 'abc123def456',
+    });
+    expect(parseSegmentFileName('plain-corpus-file.txt')).toBeNull();
+    expect(parseSegmentFileName('s.ledger.json')).toBeNull();
+    expect(parseSegmentFileName('s.seg-XYZ.txt')).toBeNull();
   });
 });
 

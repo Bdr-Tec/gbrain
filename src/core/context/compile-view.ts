@@ -206,13 +206,23 @@ async function fetchCandidates(
     const windowStart = new Date(
       new Date(probe[0].updated_at).getTime() - RECENCY_WINDOW_MS,
     ).toISOString();
+    // NEWEST-first (adversarial review: updated_asc + LIMIT selected the 500
+    // OLDEST pages of the window — the recency arm inverted). updated_desc
+    // has no slug tiebreaker, so when the fetch is TRUNCATED at the limit the
+    // rows sharing the boundary timestamp were cut arbitrarily — drop ALL
+    // rows at that timestamp: the survivors (strictly newer than the
+    // boundary) are a well-defined set regardless of tie order, preserving
+    // byte-stability. Untruncated fetches keep everything.
+    const recent = await engine.listPages({
+      updated_after: windowStart,
+      sourceId,
+      sort: 'updated_desc',
+      limit: RECENCY_CANDIDATE_LIMIT,
+    });
+    const truncated = recent.length >= RECENCY_CANDIDATE_LIMIT;
+    const boundary = truncated ? recent[recent.length - 1].updated_at : null;
     add(
-      await engine.listPages({
-        updated_after: windowStart,
-        sourceId,
-        sort: 'updated_asc', // carries a slug tiebreaker — a TOTAL order
-        limit: RECENCY_CANDIDATE_LIMIT,
-      }),
+      truncated ? recent.filter((p) => p.updated_at !== boundary) : recent,
       false,
     );
   }

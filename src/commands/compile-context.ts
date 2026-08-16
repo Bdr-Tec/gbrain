@@ -130,7 +130,17 @@ export function spliceCompiledBlock(existing: string, compiled: string): string 
     if (line === COMPILED_BLOCK_BEGIN) begins.push(i);
     if (line === COMPILED_BLOCK_END) ends.push(i);
   });
-  const body = compiled.endsWith('\n') ? compiled.slice(0, -1) : compiled;
+  // Neutralize marker-equal lines INSIDE the compiled body (adversarial
+  // review): a page excerpt that is exactly a marker string would land as a
+  // real marker line — the first splice succeeds, and every run after that
+  // sees damaged markers (self-wedge until hand-edit). A leading space keeps
+  // the text visible but fails the exact-line match. Deterministic, so the
+  // check recompile compares like-for-like.
+  const neutralized = compiled
+    .split('\n')
+    .map((l) => (l === COMPILED_BLOCK_BEGIN || l === COMPILED_BLOCK_END ? ` ${l}` : l))
+    .join('\n');
+  const body = neutralized.endsWith('\n') ? neutralized.slice(0, -1) : neutralized;
   if (begins.length === 0 && ends.length === 0) {
     const head =
       existing.length === 0 ? '' : existing.endsWith('\n') ? existing : `${existing}\n`;

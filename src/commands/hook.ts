@@ -69,6 +69,7 @@ import {
   bankCompactSegment,
   decideCorpusMode,
   gcCorpusArtifacts,
+  HARVEST_RECEIPT_SUFFIX,
 } from '../core/context/corpus-segments.ts';
 import {
   heartbeatPath,
@@ -1173,6 +1174,7 @@ async function hookCompact(io: HookIo): Promise<number> {
   let outcome: HookHeartbeatEntry['outcome'] = 'ok';
   let reason: string | undefined;
   let segment: string | undefined;
+  let flushAck: string | undefined;
 
   const work = (async () => {
     const j = await readStdinJson(io, 300);
@@ -1241,7 +1243,15 @@ async function hookCompact(io: HookIo): Promise<number> {
     if (res === IPC_UNAVAILABLE) { outcome = 'degraded'; reason = 'ipc_unavailable'; return; }
     if ('degraded' in res && res.degraded === 'stale_serve') { outcome = 'degraded'; reason = 'stale_serve'; return; }
     const resp = res as ContextPackResponse;
-    if (!resp.ok) { outcome = 'degraded'; reason = reasonCode(resp.error ?? 'server_error'); }
+    if (!resp.ok) { outcome = 'degraded'; reason = reasonCode(resp.error ?? 'server_error'); return; }
+    // Fold the harvest-schedule ack into the heartbeat (adversarial review):
+    // a persistently full queue, bad basename, or split-corpus-dir not_found
+    // was previously observable NOWHERE — the ack was dropped on the floor
+    // and serve only heartbeats pump outcomes. Codes only, never content.
+    const cf = (resp.block as { checkpointFlush?: { status?: string; reason?: string } } | null | undefined)
+      ?.checkpointFlush;
+    if (cf?.status === 'scheduled') flushAck = 'scheduled';
+    else if (cf) flushAck = `skip_${cf.reason ?? 'unknown'}`;
   })();
 
   try {
@@ -1258,6 +1268,7 @@ async function hookCompact(io: HookIo): Promise<number> {
     ...(reason ? { reason } : {}),
     duration_ms: Date.now() - t0,
     ...(segment ? { segment } : {}),
+    ...(flushAck ? { flush: flushAck } : {}),
   });
   return 0;
 }
@@ -1445,7 +1456,11 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
         }
         const retentionMs = corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000;
         gcOldFiles(dir, retentionMs); // [G15]
-        gcCorpusArtifacts(dir, retentionMs, [CORPUS_INGESTED_SUFFIX, CORPUS_CLAIM_SUFFIX]);
+        gcCorpusArtifacts(dir, retentionMs, [
+          CORPUS_INGESTED_SUFFIX,
+          CORPUS_CLAIM_SUFFIX,
+          HARVEST_RECEIPT_SUFFIX,
+        ]);
       }
     }
   } catch (e) {

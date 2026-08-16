@@ -7,7 +7,7 @@
  * command AND (lazily) from the OpenClaw context engine's compact() step.
  *
  * Identity model (codex round 2):
- *   - Segment filename = `<sessionId>.seg-<sha256_12(redactedText)>.txt` —
+ *   - Segment filename = `<sessionId>.seg-<sha256_24(redactedText)>.txt` —
  *     PURELY content-addressed, no ordinal. A retry of identical content maps
  *     to the same name (idempotent; a stale `.ingested` sidecar on that name
  *     means the same bytes were already extracted — a correct skip, never a
@@ -37,7 +37,15 @@ import { toCorpusText } from '../transcripts/claude-code-jsonl.ts';
 import { mapOpenclawLine } from '../transcripts/openclaw.ts';
 
 /** Length of the hex content-hash slice in segment filenames. */
-const SEGMENT_HASH_LEN = 12;
+/**
+ * 24 hex chars = 96 bits (adversarial review: the original 48-bit truncation
+ * let an attacker who influences conversation content birthday-collide two
+ * windows offline in ~2^24 hashes — the second window would map to an
+ * existing filename and silently never be banked. 96 bits puts the collision
+ * work at ~2^48 hashes; filenames stay well under SAFE_CORPUS_BASENAME's 240
+ * cap). Parsers accept 12–64 hex so pre-widening segments still match.
+ */
+const SEGMENT_HASH_LEN = 24;
 
 /**
  * Filename-component sanitizer (pre-landing review, security): session ids
@@ -66,6 +74,24 @@ export function segmentFileName(sessionId: string, hash: string): string {
 
 export function ledgerFileName(sessionId: string): string {
   return `${safeIdComponent(sessionId)}.ledger.json`;
+}
+
+/** Receipt sidecar suffix (harvest link candidates persisted before manifest
+ * publish). Lives HERE so the engine-free hook lane can GC orphaned receipts
+ * without importing the engine-typed harvest module. */
+export const HARVEST_RECEIPT_SUFFIX = '.receipt.json';
+
+/**
+ * Inverse of `segmentFileName`: `{sessionId, hash}` when `name` is a corpus
+ * checkpoint segment, null for any other corpus file. The returned sessionId
+ * is the SANITIZED filename component — exactly the key the compact lanes
+ * bank the manifest under. Accepts 12–64 hex (pre-widening segments parse).
+ */
+export function parseSegmentFileName(
+  name: string,
+): { sessionId: string; hash: string } | null {
+  const m = /^(.+)\.seg-([0-9a-f]{12,64})\.txt$/.exec(name);
+  return m ? { sessionId: m[1], hash: m[2] } : null;
 }
 
 /**
@@ -343,6 +369,12 @@ export function gcCorpusArtifacts(
       const p = join(dir, name);
       try {
         if (name.endsWith('.ledger.json')) {
+          if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true });
+          continue;
+        }
+        // Crashed atomic writers strand `*.tmp-<pid>` files nothing else
+        // reaps (adversarial review) — age them out with the ledgers.
+        if (/\.tmp-\d+$/.test(name)) {
           if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true });
           continue;
         }
