@@ -1259,9 +1259,24 @@ grok mcp add gbrain -e "GBRAIN_HOME=$HOME" -- gbrain serve --surface verbs
 The add is lazy (exit 0 without connecting) — verify with
 `grok mcp doctor gbrain`, which spawns the server and must report
 `7 tools discovered`. This is the brain-only install; the `gbrain bootstrap`
-personal-agent path does not support Grok yet (Claude Code/Codex only).
+personal-agent path does not support Grok yet (Claude Code, Codex, and opencode only).
 Verified against Grok Build v1.0.4. Full reference:
 [docs/mcp/GROK.md](docs/mcp/GROK.md).
+
+**If you are opencode** (the SST terminal agent, opencode.ai — not OpenClaw):
+you are a bootstrap-supported harness — for the full persistent-personal-agent
+install, follow `BOOTSTRAP_FOR_AGENTS.md` instead of this page. For the
+brain-only MCP registration:
+
+```bash
+opencode mcp add gbrain --env GBRAIN_HOME=$HOME -- gbrain serve --surface verbs
+```
+
+The add is lazy (exit 0 without connecting) — verify with `opencode mcp list`,
+which spawns the server and must show `✓ gbrain connected` (the exit code is 0
+even on failure; read the output). Restart opencode afterwards — it reads
+config at session start. Verified against opencode v1.18.18. Full reference:
+[docs/mcp/OPENCODE.md](docs/mcp/OPENCODE.md).
 
 Whether you scaffolded or not, read `skills/RESOLVER.md` (in your workspace, or the
 bundled copy at `~/gbrain/skills/RESOLVER.md` when running from the cloned repo). It's
@@ -1787,6 +1802,7 @@ GBrain exposes nearly all of its 100+ operations as MCP tools (stdio and HTTP; a
 - **[Cursor / Windsurf / any stdio MCP client](docs/mcp/CLAUDE_CODE.md)** — same shape, add `{"command": "gbrain", "args": ["serve"]}` to your MCP config.
 - **[Hermes](docs/mcp/HERMES.md)** — `printf 'Y\n' | hermes mcp add gbrain --env GBRAIN_HOME=$HOME --connect-timeout 60 --command $(which gbrain) --args serve`. Keep `--args` last, and verify with `hermes mcp test gbrain` (the add exits 0 even on failure).
 - **[Grok Build](docs/mcp/GROK.md)** — `grok mcp add gbrain -e "GBRAIN_HOME=$HOME" -- gbrain serve --surface verbs`. The add is lazy (exit 0 without connecting) — verify with `grok mcp doctor gbrain`, which spawns the server and reports `7 tools discovered`. Verified against Grok Build v1.0.4.
+- **[opencode](docs/mcp/OPENCODE.md)** (opencode.ai / SST — not OpenClaw) — `opencode mcp add gbrain --env GBRAIN_HOME=$HOME -- gbrain serve --surface verbs`, or let `gbrain bootstrap hooks --harness opencode` write the config for you (opencode is a bootstrap-supported harness — it reads AGENTS.md natively). The add is lazy — verify with `opencode mcp list`, which spawns the server (`✓ gbrain connected`). Remote: `gbrain connect https://your-host/mcp --token gbrain_xxx --agent opencode [--install]` — the config stores only the `{env:GBRAIN_REMOTE_TOKEN}` interpolation. Verified against opencode v1.18.18.
 - **[OpenClaw](docs/mcp/OPENCLAW.md)** — the ClawHub bundle plugin registers gbrain automatically (`openclaw.plugin.json` ships in this repo), or add `{"command": "gbrain", "args": ["serve"]}` to `~/.openclaw/config.json`'s `mcpServers`.
 - **[Claude Desktop (Cowork)](docs/mcp/CLAUDE_DESKTOP.md)** — Settings → Integrations → add the URL of your HTTP server. Remote only; the local `claude_desktop_config.json` does not work for remote servers.
 - **[Claude Cowork (team plan)](docs/mcp/CLAUDE_COWORK.md)** — org Owner adds the connector under Organization Settings → Connectors.
@@ -3946,7 +3962,7 @@ The push channels share one zero-LLM core (`src/core/context/volunteer.ts`):
 | `reflex` | automatic, inside the context engine | default-on for plugin hosts; nothing to call |
 | `op` | `gbrain volunteer-context` / MCP `volunteer_context` | agents without the plugin; one call per turn |
 | `watch` | `gbrain watch` | stream a transcript in, volunteered pages stream out |
-| `claude-code` / `codex` | `gbrain hook user-prompt` (registered by `gbrain bootstrap`) | per-prompt injection inside a harness; see "Harness hooks" below |
+| `claude-code` / `codex` / `opencode` | `gbrain hook user-prompt` (registered by `gbrain bootstrap`) | per-prompt injection inside a harness; see "Harness hooks" below |
 
 ## How it decides
 
@@ -4008,7 +4024,7 @@ this channel production-grade rather than spammy-and-invisible:
 - **The feedback loop.** The serve logs each DELIVERED block's volunteered
   pages and pointers to `context_volunteer_events` under the hook's channel
   (`claude-code` by default; a codex hook registration passes
-  `--harness codex`). `gbrain volunteer-context --stats` then shows
+  `--harness codex` / `--harness opencode`). `gbrain volunteer-context --stats` then shows
   per-harness precision, and `gbrain doctor`'s `volunteer_channels` check
   shows which channels actually fire, with guidance for the two quiet cases:
   "hook installed but never registered (restart the session)" and "registered
@@ -4498,6 +4514,11 @@ codex mcp add gbrain -- gbrain serve --surface verbs
 **Grok Build** (verify with `grok mcp doctor gbrain` — the add is lazy)
 ```bash
 grok mcp add gbrain -e "GBRAIN_HOME=$HOME" -- gbrain serve --surface verbs
+```
+
+**opencode** (verify with `opencode mcp list` — the add is lazy, and list SPAWNS the server)
+```bash
+opencode mcp add gbrain --env GBRAIN_HOME=$HOME -- gbrain serve --surface verbs
 ```
 
 **OpenClaw / any stdio MCP host** — register the server command
