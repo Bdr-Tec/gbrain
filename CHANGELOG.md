@@ -21,8 +21,10 @@ open community PRs by @Masashi-Ono0611 — thank you.
   looked up next to gbrain's own files and package managers hoist them
   elsewhere. Asset lookup is now tiered: the embedded bundle first, then
   real module resolution, then one actionable error. If you are already
-  stuck on a broken install, reinstall once: `bun add -g gbrain@latest` —
-  from this version on, upgrades stop breaking the install.
+  stuck on a broken install, reinstall once from the canonical source:
+  `bun install -g github:garrytan/gbrain` (never from the npm registry —
+  the npm package named `gbrain` is unrelated; see the install warning in
+  the README) — from this version on, upgrades stop breaking the install.
 - **Search processes exit cleanly instead of hanging.** A background
   telemetry write racing process exit could deadlock the embedded database's
   shutdown permanently (observed as a 10-minute CI kill; a workload that
@@ -87,6 +89,24 @@ open community PRs by @Masashi-Ono0611 — thank you.
   `gbrain search stats` reflects the new truth).
 - Deferred synthesize transcripts no longer start the 12-hour cooldown or
   count as processed — they genuinely retry on the next cycle.
+
+### To take advantage of v0.46.13.0
+
+Upgrade normally — the schema migration applies automatically on the first
+command. Two things to know:
+
+- **Restart any long-running `gbrain jobs work` daemon after upgrading.** A
+  pre-upgrade worker writing into a post-upgrade database errors on tool
+  persistence until it restarts.
+- **If a bun-global install is already broken** (every command fails with a
+  module-resolution error after an upgrade), reinstall once from the
+  canonical source: `bun install -g github:garrytan/gbrain`. From this
+  version on, upgrades stop breaking the install.
+
+Everything else is automatic. Capped runs that previously under-counted
+expansion/OCR spend may now hit their ceiling — that is the fix working;
+raise the cap if the new accounting says you were spending more than you
+budgeted.
 
 ## [0.46.11.0] - 2026-08-16
 

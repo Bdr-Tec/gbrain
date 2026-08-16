@@ -141,7 +141,9 @@ export async function resolvePgliteAssetPaths(): Promise<{ paths: PgliteAssetPat
     `Tried the embedded bundle (${embeddedTried}) and module resolution of ` +
     `@electric-sql/pglite (${dist ? `dist dir ${dist} is incomplete` : 'package not resolvable from gbrain'}). ` +
     'This usually means the install is missing or hoisted in a way gbrain cannot reach. ' +
-    'Reinstall: bun add -g gbrain@latest (or bun install in a source checkout).',
+    'Reinstall from the canonical source: bun install -g github:garrytan/gbrain ' +
+    '(or bun install in a source checkout). Never install from the npm registry: ' +
+    'the npm package named gbrain is unrelated (see gbrain doctor).',
   );
 }
 
