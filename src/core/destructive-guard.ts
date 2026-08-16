@@ -275,25 +275,74 @@ export async function listArchivedSources(
   }));
 }
 
+/** Result of a purge sweep: what deleted, and what an FK deliberately held. */
+export interface PurgeExpiredResult {
+  /** Source ids permanently deleted this sweep. */
+  purged: string[];
+  /**
+   * Sources past TTL that could NOT be deleted because a RESTRICT FK still
+   * references them — today that is migration v64's oauth_clients.source_id
+   * ON DELETE RESTRICT, which intentionally refuses source deletion until
+   * every client is revoked-and-purged or re-scoped. Blocked is a policy
+   * outcome, not an error: the sweep reports it and moves on.
+   */
+  blocked: Array<{ id: string; reason: string }>;
+}
+
 /**
  * Permanently purge sources whose 72h TTL has expired. Cascades to pages
- * (and content_chunks via existing FKs). Returns the ids of purged sources.
+ * (and content_chunks via existing FKs).
  *
- * v0.26.5: moved from JSONB-driven iteration to a single set-based DELETE
- * with `archived = true AND archive_expires_at <= now()`. Server-side
- * filter; one round-trip; cascade-friendly.
+ * v0.26.5 used a single set-based DELETE; gbrain#4115 showed one FK-blocked
+ * source (a revoked-but-retained oauth_client under v64's ON DELETE RESTRICT)
+ * aborted the whole statement, wedging the nightly purge forever. The sweep is
+ * now per-source: each DELETE re-checks the expiry predicate (no
+ * select-then-delete race with a concurrent restore), ONLY the FK-restriction
+ * error class (SQLSTATE 23503) is treated as blocked-and-reported, and every
+ * other error re-raises.
  */
 export async function purgeExpiredSources(
   engine: BrainEngine,
-): Promise<string[]> {
-  const rows = await engine.executeRaw<{ id: string }>(
-    `DELETE FROM sources
+): Promise<PurgeExpiredResult> {
+  const candidates = await engine.executeRaw<{ id: string }>(
+    `SELECT id FROM sources
      WHERE archived = true
        AND archive_expires_at IS NOT NULL
        AND archive_expires_at <= now()
-     RETURNING id`,
+     ORDER BY id`,
   );
-  return rows.map((r) => r.id);
+  const purged: string[] = [];
+  const blocked: PurgeExpiredResult['blocked'] = [];
+  for (const { id } of candidates) {
+    try {
+      const rows = await engine.executeRaw<{ id: string }>(
+        `DELETE FROM sources
+         WHERE id = $1
+           AND archived = true
+           AND archive_expires_at IS NOT NULL
+           AND archive_expires_at <= now()
+         RETURNING id`,
+        [id],
+      );
+      if (rows.length > 0) purged.push(id);
+      // 0 rows = restored/already gone between SELECT and DELETE; neither
+      // purged nor blocked.
+    } catch (err) {
+      // SQLSTATE 23503 foreign_key_violation — same detection idiom as
+      // oauth-provider.ts's delete path for this exact FK.
+      if ((err as { code?: string })?.code === '23503') {
+        blocked.push({
+          id,
+          reason:
+            'still referenced by a RESTRICT foreign key (revoked oauth_client not yet purged?) — ' +
+            'run `gbrain auth clients` to review, then retry',
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
+  return { purged, blocked };
 }
 
 // ── Display Helpers ─────────────────────────────────────────

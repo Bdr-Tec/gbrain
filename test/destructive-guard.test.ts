@@ -339,14 +339,50 @@ describe('soft-delete + restore lifecycle (column-based v0.26.5)', () => {
       `UPDATE sources SET archive_expires_at = now() - INTERVAL '1 hour' WHERE id = $1`,
       [expiredId],
     );
-    const purged = await purgeExpiredSources(engine);
+    const { purged, blocked } = await purgeExpiredSources(engine);
     expect(purged).toContain(expiredId);
     expect(purged).not.toContain(recoverableId);
+    expect(blocked).toEqual([]);
     const remainingPages = await engine.executeRaw<{ n: number }>(
       `SELECT COUNT(*)::int AS n FROM pages WHERE source_id = $1`,
       [expiredId],
     );
     expect(remainingPages[0].n).toBe(0);
+  });
+
+  test('gbrain#4115 — an FK-blocked source is reported and skipped; the deletable one still purges', async () => {
+    const blockedId = 'pe-fk-blocked';
+    const deletableId = 'pe-fk-deletable';
+    await seedSource(engine, blockedId, { withPages: 1 });
+    await seedSource(engine, deletableId, { withPages: 1 });
+    await softDeleteSource(engine, blockedId);
+    await softDeleteSource(engine, deletableId);
+    await engine.executeRaw(
+      `UPDATE sources SET archive_expires_at = now() - INTERVAL '1 hour' WHERE id IN ($1, $2)`,
+      [blockedId, deletableId],
+    );
+    // A revoked-but-retained oauth client (soft-deleted via deleted_at) under
+    // v64's ON DELETE RESTRICT — the exact production shape from the report.
+    await engine.executeRaw(
+      `INSERT INTO oauth_clients (client_id, client_name, source_id, deleted_at)
+       VALUES ('cl-4115-test', 'test client', $1, now())`,
+      [blockedId],
+    );
+    const { purged, blocked } = await purgeExpiredSources(engine);
+    expect(purged).toContain(deletableId);
+    expect(purged).not.toContain(blockedId);
+    expect(blocked.map((b) => b.id)).toEqual([blockedId]);
+    expect(blocked[0].reason).toContain('RESTRICT');
+    // The blocked source is untouched (still archived, still expired) — the
+    // next sweep retries it after the operator clears the client.
+    const still = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM sources WHERE id = $1 AND archived = true`,
+      [blockedId],
+    );
+    expect(still[0].n).toBe(1);
+    // Cleanup so later tests are unaffected.
+    await engine.executeRaw(`DELETE FROM oauth_clients WHERE client_id = 'cl-4115-test'`);
+    await engine.executeRaw(`DELETE FROM sources WHERE id = $1`, [blockedId]);
   });
 
   test('purgeExpiredSources is no-op when nothing is past TTL', async () => {
@@ -357,8 +393,9 @@ describe('soft-delete + restore lifecycle (column-based v0.26.5)', () => {
     await engine.executeRaw(
       `UPDATE sources SET archive_expires_at = now() + INTERVAL '72 hours' WHERE archived = true`,
     );
-    const purged = await purgeExpiredSources(engine);
-    expect(purged).toEqual([]);
+    const result = await purgeExpiredSources(engine);
+    expect(result.purged).toEqual([]);
+    expect(result.blocked).toEqual([]);
   });
 });
 

@@ -730,11 +730,16 @@ async function runPurge(engine: BrainEngine, args: string[]): Promise<void> {
   }
 
   // No id: purge all expired archives
-  const purged = await purgeExpiredSources(engine);
-  if (purged.length === 0) {
+  const { purged, blocked } = await purgeExpiredSources(engine);
+  if (purged.length === 0 && blocked.length === 0) {
     console.log('No expired archives to purge.');
   } else {
-    console.log(`Purged ${purged.length} expired archive(s): ${purged.join(', ')}`);
+    if (purged.length > 0) {
+      console.log(`Purged ${purged.length} expired archive(s): ${purged.join(', ')}`);
+    }
+    for (const b of blocked) {
+      console.log(`Blocked: ${b.id} — ${b.reason}`);
+    }
   }
 }
 

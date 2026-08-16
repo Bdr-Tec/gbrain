@@ -2565,14 +2565,17 @@ export async function registerBuiltinHandlers(
       const result = await engine.purgeDeletedPages(olderThanHours);
       pagesPurged = result.count;
     }
+    let sourcesBlocked: Array<{ id: string; reason: string }> = [];
     if (scope === 'sources' || scope === 'all') {
       const { purgeExpiredSources } = await import('../core/destructive-guard.ts');
-      sourcesPurged = await purgeExpiredSources(engine);
+      const purgeResult = await purgeExpiredSources(engine);
+      sourcesPurged = purgeResult.purged;
+      sourcesBlocked = purgeResult.blocked;
     }
     // GC stale op_checkpoints rows (folded scope item +C from review).
     const { purgeStaleCheckpoints } = await import('../core/op-checkpoint.ts');
     const checkpointsPurged = await purgeStaleCheckpoints(engine, 7);
-    return { pagesPurged, sourcesPurged, checkpointsPurged, dryRun };
+    return { pagesPurged, sourcesPurged, sourcesBlocked, checkpointsPurged, dryRun };
   });
 
   // Phase-wrapper handlers — each delegates to runCycle({ phases: [name] }).

@@ -1615,7 +1615,10 @@ async function runPhasePurge(engine: BrainEngine, dryRun: boolean): Promise<Phas
       };
     }
     const { purgeExpiredSources } = await import('./destructive-guard.ts');
-    const purgedSources = await purgeExpiredSources(engine);
+    // gbrain#4115: {purged, blocked} — a RESTRICT-FK-held source (revoked
+    // oauth_client, v64) is reported and skipped instead of aborting the sweep.
+    const purgeResult = await purgeExpiredSources(engine);
+    const purgedSources = purgeResult.purged;
     const purgedPages = await engine.purgeDeletedPages(SOFT_DELETE_TTL_HOURS_FOR_PURGE);
     const purgedClones = await purgeOrphanClones(SOFT_DELETE_TTL_HOURS_FOR_PURGE);
     // v0.36+ folded scope item +C: GC stale op_checkpoints rows.
@@ -1664,13 +1667,16 @@ async function runPhasePurge(engine: BrainEngine, dryRun: boolean): Promise<Phas
       status: 'ok',
       duration_ms: 0,
       summary:
-        `purged ${purgedSources.length} source(s), ${purgedPages.count} page(s), ` +
+        `purged ${purgedSources.length} source(s)` +
+        (purgeResult.blocked.length > 0 ? ` (${purgeResult.blocked.length} FK-blocked, see details)` : '') +
+        `, ${purgedPages.count} page(s), ` +
         `${purgedClones.count} orphan clone temp dir(s), ${purgedCheckpoints} stale op_checkpoint(s), ` +
         `${purgedBrainstormCheckpoints} stale brainstorm checkpoint(s), ` +
         `${purgedBatchRetryAuditFiles} stale batch-retry audit file(s), ` +
         `and ${purgedVolunteerEvents} stale volunteer event(s)`,
       details: {
         purged_sources_count: purgedSources.length,
+        purged_sources_blocked: purgeResult.blocked,
         purged_pages_count: purgedPages.count,
         purged_orphan_clones_count: purgedClones.count,
         purged_orphan_clone_names: purgedClones.names,
