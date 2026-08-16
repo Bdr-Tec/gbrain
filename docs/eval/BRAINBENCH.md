@@ -21,7 +21,7 @@ Every scoreboard row carries a `seam` column:
 | Harness | Seam | What the row actually measures |
 |---|---|---|
 | `openclaw` | **production** | The shipped OpenClaw context-engine pipeline, byte-for-byte (`extractCandidates` → `resolveEntitiesToPointers`, 3-pointer budget, prior-context suppression, markdown pointer block). |
-| `claude-code` | **production** (v0.46.12) | The shipped Claude Code integration end-to-end: fixture turns become `UserPromptSubmit` stdin JSON; `gbrain hook user-prompt` executes for real (stdin parse → synthesized-transcript window parse → cross-turn dedupe via `hook_additional_context` attachments → IPC `turn_context` over a real unix socket with the real shared secret → `additionalContext`). The row now measures the shipped pointer budget, the volunteer layer, and the transcript dedupe — not a memoryless contract sim. Bench-pinned deviations (disclosed): generous `userPromptDeadlineMs` (10s vs 800ms — CI-load flake control; deadline behavior is hook-suite territory) and the push-failure banner suppressed (operator-environment isolation). |
+| `claude-code` | **production** (v0.46.12) | The shipped Claude Code integration end-to-end: fixture turns become `UserPromptSubmit` stdin JSON; `gbrain hook user-prompt` executes for real (stdin parse → synthesized-transcript window parse → cross-turn dedupe via `hook_additional_context` attachments → IPC `turn_context` over a real unix socket with the real shared secret → `additionalContext`). The row now measures the shipped pointer budget, the volunteer layer, and the transcript dedupe — not a memoryless contract sim. Bench-pinned deviations (disclosed): generous `userPromptDeadlineMs` (10s vs 800ms — CI-load flake control; deadline behavior is hook-suite territory), the push-failure banner suppressed, heartbeat telemetry writes disabled, and the hook's config pointed at the run-scoped bench brain (operator-environment isolation; parallel-test safe). |
 | `codex` | **contract** | The fragments model: a static entity-index preamble (computed once, slugs not counted as injections) + at most ONE per-turn fragment. v0.46.12: fixture conversations round-trip through the REAL rollout format + the shipped parser (`src/core/transcripts/codex.ts`) for turn selection — parser drift now tanks the row visibly. Fragment DELIVERY remains a harness-shaped assumption (no shipped codex injection path yet); the full production flip is a filed follow-up. |
 
 **Contract rows do NOT measure third-party harness behavior.** They measure
@@ -78,6 +78,14 @@ arms): the rate is 0.00 on all three harnesses, with `false_fire_rate` and
 3. `write_back_fidelity` = 1.0 and `provenance_accuracy` = 1.0 in deterministic mode — the production pipeline must not lose or mis-attribute gold facts it was handed. Anything below 1.0 is a pipeline bug, not benchmark noise.
 4. `source_isolation_violations` = 0 everywhere.
 5. `push_precision` = 1.0 at v1 (exact-match resolution arms cannot inject an irrelevant page on this corpus); expected to dip below 1.0 when fuzzy/semantic resolution lands — that dip is the precision/recall trade made visible.
+
+The quality floors derived from these expectations are an **executable test**
+(`test/brainbench-floors.test.ts`), asserted against the committed baseline on
+every suite run: `know_to_ask_failure_rate` ≤ 0.05, `false_fire_rate` ≤ 0.03,
+`push_precision` ≥ 0.95, `push_recall` ≥ 0.88 / 0.72 / 0.52
+(openclaw / claude-code / codex), `source_isolation_violations` = 0 in every
+cell. A baseline update that violates a floor fails the suite — a threshold
+violation can no longer be banked by blessing a new baseline.
 
 ## Determinism & statistical posture
 
