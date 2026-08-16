@@ -173,7 +173,11 @@ describe('v0.42.20.0 — background-work registry drains every sink before disco
     const src = readFileSync('src/core/background-work.ts', 'utf8');
     expect(src).toMatch(/new\s+Map<string,\s*BackgroundWorkDrainer>/);
     expect(src).toMatch(/sort\(\s*\(a,\s*b\)\s*=>\s*a\.order\s*-\s*b\.order/);
-    expect(src).toMatch(/if\s*\(unfinished\s*>\s*0\s*&&\s*d\.abort\)\s*\{[\s\S]*?await\s+d\.abort\(\)/);
+    // #4143 widened the abort gate: still awaited, but only on the CLI-exit
+    // path (allowAbort) — the disconnect drain must never fire a permanent
+    // process-level abort from a long-lived process.
+    expect(src).toMatch(/if\s*\(unfinished\s*>\s*0\s*&&\s*d\.abort\s*&&\s*opts\.allowAbort\)\s*\{[\s\S]*?await\s+d\.abort\(\)/);
+    expect(src).toMatch(/export async function drainBackgroundWorkBeforeDisconnect/);
     expect(src).toMatch(/export function __registerDrainerForTest/);
   });
 
