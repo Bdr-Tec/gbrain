@@ -49,7 +49,7 @@ import { sanitizeForJsonb, buildLinkRows, buildTimelineRows, buildTakeRows } fro
 import { runMigrations } from './migrate.ts';
 import { SCHEMA_SQL } from './schema-embedded.ts';
 import { verifySchema } from './schema-verify.ts';
-import { applyChunkEmbeddingIndexPolicy, dropZombieIndexes, hnswEfSearchFor } from './vector-index.ts';
+import { applyChunkEmbeddingIndexPolicy, dropZombieIndexes, hnswEfSearchFor, HNSW_EF_SEARCH_MAX } from './vector-index.ts';
 import {
   normalizeEngineColumn,
   buildVectorCastFragment,
@@ -2325,7 +2325,15 @@ export class PostgresEngine implements BrainEngine {
     const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', boostMap, opts?.detail, 'unverified_stub');
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
     const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
-    const innerLimit = offset + Math.max(limit * 5, 100);
+    // v0.46.8 (retrieval-cathedral P1): innerLimit counts CHUNKS before the
+    // best-per-page DISTINCT collapse — one dense page (150+ chunks near the
+    // query) could consume the whole pool and underfill the PAGE result. The
+    // execution below runs a bounded escalation loop (×4, ≤3 times) when the
+    // page set comes back short while the candidate pool was FULL (more
+    // candidates existed). Hard-capped at the HNSW substrate bound: an HNSW
+    // scan returns at most ef_search rows and the GUC ceilings at 1000, so
+    // inner limits beyond that are fictitious (outside-voice R2-10).
+    const innerLimit = Math.min(offset + Math.max(limit * 5, 100), HNSW_EF_SEARCH_MAX);
 
     const params: unknown[] = [vecStr];
     let typeClause = '';
@@ -2380,6 +2388,7 @@ export class PostgresEngine implements BrainEngine {
       sourceClause = `AND p.source_id = $${params.length}`;
     }
     params.push(innerLimit);
+    const innerLimitIdx = params.length - 1; // mutated by the escalation loop
     const innerLimitParam = `$${params.length}`;
     params.push(limit);
     const limitParam = `$${params.length}`;
@@ -2459,7 +2468,8 @@ export class PostgresEngine implements BrainEngine {
         message_id, thread_id, source_subject,
         chunk_id, chunk_index, chunk_text, chunk_source,
         score,
-        false AS stale
+        false AS stale,
+        (SELECT count(*) FROM hnsw_candidates)::int AS candidate_pool
       FROM best_per_page
       -- v0.41.13: stable tiebreaker for tied scores. See pglite-engine for
       -- rationale (basis-vector test fixtures, planner-dependent ordering).
@@ -2476,11 +2486,37 @@ export class PostgresEngine implements BrainEngine {
     // 40), so the inner CTE's LIMIT past 40 was silently unreachable — see
     // hnswEfSearchFor. Transaction-local (is_local=true); non-HNSW plans
     // (seq scan, or corpora without the index) ignore the GUC.
-    const rows = await this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, async (tx) => {
-      await tx`SET LOCAL statement_timeout = '8s'`;
-      await tx`SELECT set_config('hnsw.ef_search', ${String(hnswEfSearchFor(innerLimit))}, true)`;
-      return await tx.unsafe(rawQuery, params as Parameters<typeof tx.unsafe>[1]);
-    }, { alwaysTransaction: true });
+    //
+    // v0.46.8 bounded escalation (identical logic in pglite-engine —
+    // engine-parity pinned): retry ×4 up to 3 times while the PAGE set is
+    // short but the pre-collapse candidate pool was FULL. A short page with
+    // a non-full pool is a genuine final page (corpus/filter exhausted) —
+    // no retry, no event. Zero rows with offset>0 escalates (deep
+    // pagination) but never emits: pool state is unknowable there.
+    const runOnce = async (il: number) =>
+      await this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, async (tx) => {
+        await tx`SET LOCAL statement_timeout = '8s'`;
+        await tx`SELECT set_config('hnsw.ef_search', ${String(hnswEfSearchFor(il))}, true)`;
+        return await tx.unsafe(rawQuery, params as Parameters<typeof tx.unsafe>[1]);
+      }, { alwaysTransaction: true });
+    let escalations = 0;
+    let rows = await runOnce(innerLimit);
+    for (;;) {
+      const il = params[innerLimitIdx] as number;
+      if (rows.length >= limit) break;
+      const pool = rows.length > 0 ? Number((rows[0] as { candidate_pool?: number }).candidate_pool ?? 0) : null;
+      const shouldEscalate = pool !== null ? pool >= il : offset > 0;
+      if (!shouldEscalate) break;
+      if (il >= HNSW_EF_SEARCH_MAX || escalations >= 3) {
+        if (pool !== null && pool >= il) {
+          opts?.onVectorPoolMeta?.({ underfilled: true, escalations, innerLimit: il });
+        }
+        break;
+      }
+      params[innerLimitIdx] = Math.min(il * 4, HNSW_EF_SEARCH_MAX);
+      escalations++;
+      rows = await runOnce(params[innerLimitIdx] as number);
+    }
     return rows.map(rowToSearchResult);
   }
 

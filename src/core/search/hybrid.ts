@@ -1096,7 +1096,13 @@ export async function hybridSearch(
     // Direct searchKeyword consumers (countMentions, link-extraction, eval)
     // do NOT set this and keep the strict-AND contract.
     orFallback: true,
+    // v0.46.8: collect searchVector's bounded-escalation exhaustion signal —
+    // engines have no telemetry sink (R2-10); hybrid owns the meta emit.
+    onVectorPoolMeta: (m) => {
+      vectorPoolUnderfill = { escalations: m.escalations, innerLimit: m.innerLimit };
+    },
   };
+  let vectorPoolUnderfill: { escalations: number; innerLimit: number } | undefined;
   // Track what actually ran for the optional onMeta callback (v0.25.0).
   // Caller leaves onMeta undefined → these flags are computed but never
   // surfaced. Capture wrapper passes a closure to receive the meta and
@@ -1926,6 +1932,7 @@ export async function hybridSearch(
     ...(resolvedMode.tokenBudget && resolvedMode.tokenBudget > 0
       ? { token_budget: budgetMeta }
       : {}),
+    ...(vectorPoolUnderfill ? { vector_pool_underfilled: vectorPoolUnderfill } : {}),
     ...(adaptiveDecision ? { adaptive_return: adaptiveDecision } : {}),
     ...(autocutDecision ? { autocut: autocutDecision } : {}),
   });
