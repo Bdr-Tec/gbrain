@@ -5177,7 +5177,7 @@ iteration's residuals.
 ### Fix `bun build --compile` WASM embedding for PGLite
 **What:** Submit PR to oven-sh/bun fixing WASM file embedding in `bun build --compile` (issue oven-sh/bun#15032).
 
-**Why:** PGLite's WASM files (~3MB) can't be embedded in the compiled binary. Users who install via `bun install -g gbrain` are fine (WASM resolves from node_modules), but the compiled binary can't use PGLite. Jarred Sumner (Bun founder, YC W22) would likely be receptive.
+**Why:** Historically PGLite's WASM files couldn't be embedded in the compiled binary. STALE-PREMISE NOTE (#4116): "users who install via bun-global are fine (WASM resolves from node_modules)" turned out to be false — a bun-global UPGRADE hoists `@electric-sql/pglite` out of gbrain's node_modules and the repo-relative asset imports broke every command; fixed by `resolvePgliteAssetPaths()`'s tiered lookup. The compiled-binary half was separately fixed by the embedded-assets work (see the FIXED ledger entry guarded by `scripts/check-pglite-embedded.sh`). An upstream Bun fix would still simplify both lanes. Jarred Sumner (Bun founder, YC W22) would likely be receptive.
 
 **Pros:** Single-binary distribution includes PGLite. No sidecar files needed.
 
@@ -6011,7 +6011,13 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   because `createReadStream` — unlike `readFileSync` — can't read `/$bunfs`
   paths). `src/core/pglite-engine.ts` spreads `getEmbeddedPgliteOptions()` at
   both `PGlite.create()` sites, so the Bun-vfs #1340 ENOENT no longer fires for
-  a correctly-built binary. Guarded by `scripts/check-pglite-embedded.sh`
+  a correctly-built binary. #4116 follow-up: the file-typed imports moved into
+  the `pglite-embedded-asset-paths.ts` bundler anchor behind
+  `resolvePgliteAssetPaths()`'s tiered lookup, because bun-global installs
+  hoist pglite out of gbrain's node_modules on upgrade and the eager
+  repo-relative imports crashed every command at module load; tier 2 derives
+  the dist dir via module resolution (pinned by
+  `test/pglite-hoisted-install.serial.test.ts`). Guarded by `scripts/check-pglite-embedded.sh`
   (compiles a smoketest and asserts a real PGLite query round-trips), wired into
   `bun run verify` + `check:all` + `check:pglite-embedded`. The real-agent e2e
   harness (`test/helpers/agent-harness.ts`) now resolves to the fast compiled
