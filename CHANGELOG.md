@@ -42,13 +42,18 @@ CI — the two failure classes that made local runs lie are fixed at the root.
   connect (or the DB-backed check run) fails, doctor now says so on stderr
   instead of silently degrading — with connection errors scrubbed through
   the credential redactor (URL userinfo, libpq `password=` forms including
-  quoted values, hostnames/IPs) so the output stays safe to paste into
-  issues and CI logs.
+  quoted values, hostnames/IPs) so pasted output doesn't leak credentials
+  into issues and CI logs.
+- **The e2e runner no longer false-kills its known-slow file.** `run-e2e.sh`'s
+  per-file wedge timeout (the hard-timeout backstop against wedged files, 180s) is
+  now overridable per file; the full ingest-skill e2e gets 420s — its runtime
+  grows with every migration master adds, and the flat cap had started killing
+  legitimately-passing runs on quiet machines.
 
 ### Added
 
 - Regression pins for the new harness contracts: importing the CLI installs
-  no signal handlers; the test-home preload sets-when-unset and respects
+  no termination/cleanup signal handlers; the test-home preload sets-when-unset and respects
   pre-set values; `_resetForTests` fully detaches listeners; free-text
   credential redaction (`redactUrlsInText`).
 

@@ -254,7 +254,12 @@ PARENT dir and `.gbrain` is appended. Subprocess-spawning tests must set BOTH
 `HOME: tmp` and `GBRAIN_HOME: tmp` in the child env (HOME alone loses to the
 inherited preload value; in-process HOME mutation loses to Bun's cached
 `os.homedir()`). The e2e wrapper sets its own GBRAIN_HOME before bun starts,
-which this preload respects.
+which this preload respects. Because the preload respects a pre-set value, the
+unit/slow wrappers (`run-unit-parallel.sh` / `run-unit-shard.sh` /
+`run-slow-tests.sh`) strip an ambient `GBRAIN_HOME` at their boundary — same
+discipline as the database-URL vars — so a dev shell configured for a real
+brain can't ride through. `GBRAIN_DEBUG_PRELOAD=1` prints the allocated
+scratch home for debugging.
 
 **Database-URL run guard (#3485).** A `bun test` invocation REFUSES to start while
 `DATABASE_URL` or `GBRAIN_DATABASE_URL` is ambient in the environment, because some
