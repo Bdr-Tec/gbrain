@@ -288,7 +288,11 @@ export function dimsProviderOptions(
       // configured for a smaller width (e.g. 1536) hard-fail at first embed.
       // Azure/OpenAI-compat embeddings are symmetric — inputType ignored.
       // v0.36.0.0 (D13): same range validation as native-openai path.
-      const bareModelId = modelId.includes('/') ? modelId.split('/').pop()! : modelId;
+      // Lowercased for matching only — providers' model ids are case-sensitive
+      // (SiliconFlow serves `Qwen/Qwen3-Embedding-4B` and 500s on the
+      // lowercase form), so the ORIGINAL id goes on the wire while every
+      // literal compared here is already lowercase (gbrain#4123).
+      const bareModelId = (modelId.includes('/') ? modelId.split('/').pop()! : modelId).toLowerCase();
       if (bareModelId.startsWith('text-embedding-3')) {
         if (isOpenAITextEmbedding3Model(bareModelId) && !isValidOpenAITextEmbedding3Dim(bareModelId, dims)) {
           const max = maxOpenAITextEmbedding3Dim(bareModelId)!;

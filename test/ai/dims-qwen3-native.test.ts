@@ -63,3 +63,24 @@ describe('qwen3-embedding hyphenated hub-form ids (OpenRouter et al.)', () => {
       .toEqual({ openaiCompatible: { dimensions: 1024 } });
   });
 });
+
+describe('gbrain#4123 — correctly-cased provider ids must match (providers are case-sensitive, our matching must not be)', () => {
+  test('HF/SiliconFlow-cased org-prefixed id pins dimensions at non-native dim', () => {
+    // The provider REQUIRES this exact casing (lowercase gets HTTP 500), so
+    // lowercasing the config is not a workaround — matching must normalize.
+    expect(dimsProviderOptions('openai-compatible', 'Qwen/Qwen3-Embedding-4B', 1536))
+      .toEqual({ openaiCompatible: { dimensions: 1536 } });
+    expect(dimsProviderOptions('openai-compatible', 'Qwen/Qwen3-Embedding-8B', 1536))
+      .toEqual({ openaiCompatible: { dimensions: 1536 } });
+  });
+
+  test('correctly-cased id at native width still suppresses the dimensions param', () => {
+    expect(dimsProviderOptions('openai-compatible', 'Qwen/Qwen3-Embedding-4B', 2560)).toBeUndefined();
+    expect(dimsProviderOptions('openai-compatible', 'Qwen/Qwen3-Embedding-0.6B', 1024)).toBeUndefined();
+  });
+
+  test('mixed-case ollama tag form also matches', () => {
+    expect(dimsProviderOptions('openai-compatible', 'Qwen3-Embedding:4B', 1024))
+      .toEqual({ openaiCompatible: { dimensions: 1024 } });
+  });
+});
