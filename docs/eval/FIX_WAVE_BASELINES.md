@@ -23,7 +23,7 @@ touch `~/.gbrain` per the eval discipline — results land in
 `<repo>/.gbrain-evals/eval-results.jsonl`). Record the gate verdict + headline
 metrics here per run.
 
-## Containment sprint (2026-08-15, v0.47.0.0, branch garrytan/containment-sprint-coverage-modularity)
+## Containment sprint (2026-08-15, v0.46.9.1, branch garrytan/containment-sprint-coverage-modularity)
 
 God-file line counts AFTER the façade peels. Five of the six giants (all but
 migrate.ts) were peeled into focused module dirs; the peeled lines live in the sibling dirs

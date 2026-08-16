@@ -1,4 +1,4 @@
-<!-- gbrain-runbook-stamp: 0.47.0.0 -->
+<!-- gbrain-runbook-stamp: 0.46.9.1 -->
 <!-- This stamp must equal the VERSION file at every release; CI enforces it
      (scripts/check-bootstrap-tag.sh). `gbrain bootstrap status` compares it to
      the installed binary and warns on skew. -->

@@ -6479,3 +6479,36 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   are heavy machinery for a benign-cost race; the retriage help documents
   the behavior. Context: outside-voice CX5 on the #4152 ship review.
   Effort: M.
+
+## Local-lane green wave follow-ups (filed at build time)
+
+- [ ] **P2 — Gate `installSigchldHandler()` on `import.meta.main` too.** Same
+  class as the process-cleanup SIGTERM leak fixed in this wave (cli.ts:3-4):
+  a process-wide SIGCHLD reaper installs into any process that merely imports
+  cli.ts — in a bun test runner it could race Bun's own child reaping and
+  steal spawn exit statuses. No observed failure yet; move it inside the
+  import.meta.main seam with a soak run of the full suite before landing.
+  Effort: S.
+- [ ] **P2 — CI e2e lane runs only 8 of ~187 e2e files.** The other ~179 run
+  only via local `bun run test:e2e`, which is how 13 files rotted undetected
+  across v0.42–v0.46 waves (this wave's fix list). Options: a nightly
+  heavy-tests job running the full run-e2e.sh list against the compose
+  postgres, or fold the full lane into ci-local + a required weekly schedule.
+  Decide venue, then wire `scripts/e2e-test-map.ts` coverage accordingly.
+  Effort: M.
+- [ ] **P3 — run-unit-parallel external-kill reporting contradicts itself.**
+  A shard killed by an in-suite exit(143) prints `pass=N fail=0` +
+  `oom_rescue_failed=0real` in the final banner yet exits 1, and the
+  oom-rescue summary line says "real failures confirmed" with fail=0. Make
+  the banner name the killed shard + rescue outcome explicitly so the next
+  mystery kill is a 1-minute diagnosis instead of a bisect. Effort: S.
+- [ ] **P2 — skills.test.ts e2e leaks a git commit into the HOST repo.** During
+  the v0.46.8.0 ship gate, the e2e ingest-skill run created a real commit
+  ("ingest NovaMind board update transcript") with fixture pages
+  (companies/, people/, meetings/) at the WORKSPACE repo root — the test's
+  write-through/commit path resolved the host cwd instead of its tmp fixture
+  repo, despite run-e2e.sh's HOME isolation. Caught only because a soft reset
+  surfaced the staged files. Find the cwd-resolving path in the ingest skill
+  lane (likely repo-root fallback when the source local_path isn't threaded),
+  fix it to fail closed, and add a run-e2e.sh post-run guard that fails the
+  lane if `git status` at the host root gained tracked-file changes. Effort: M.
