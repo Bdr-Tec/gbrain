@@ -58,6 +58,7 @@ import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
 import type { MinionJobInput, SubagentHandlerData } from '../minions/types.ts';
 import { runSubagentsInline, runDrainRenewalTick, percentile, INLINE_LOCK_MS } from './inline-drain.ts';
+import { buildManifestContext, buildLinkManifest, type ManifestContext } from './link-manifest.ts';
 
 // Re-exports: the drain was peeled to inline-drain.ts (dream-wave C7);
 // patterns.ts and the __testing surface import from here unchanged.
@@ -497,6 +498,18 @@ export async function runPhaseSynthesize(
         'skills/_brain-filing-rules.json missing dream_synthesize_paths.globs'));
     }
 
+    // #4216: pre-retrieval manifest context — one slug snapshot + basename
+    // index per phase, reused across every transcript's LINK CANDIDATES
+    // block. Best-effort: a failure here degrades to the manifest-less prompt.
+    let manifestCtx: ManifestContext | null = null;
+    if (config.linkManifest) {
+      try {
+        manifestCtx = await buildManifestContext(engine, opts.sourceId);
+      } catch (e) {
+        process.stderr.write(`[dream] manifest context build failed (continuing without manifests): ${e instanceof Error ? e.message : String(e)}\n`);
+      }
+    }
+
     const queue = new MinionQueue(engine);
     // #2050: children drain inline on BOTH engines (see runSubagentsInline),
     // so give them a private per-run queue: the inline drain must never claim
@@ -637,6 +650,16 @@ export async function runPhaseSynthesize(
           ? `anthropic:${config.model}`
           : config.model;
       const triageVerdict = pass.byPath.get(t.filePath);
+      // #4216: per-transcript LINK CANDIDATES manifest (zero-embed; entities/
+      // segment notes come from the cached triage verdict).
+      let manifestBlock = '';
+      if (manifestCtx) {
+        const manifest = await buildLinkManifest(
+          engine, manifestCtx, triageVerdict, t.basename,
+          { outputRoot: config.outputRoot, sourceId: opts.sourceId },
+        );
+        manifestBlock = manifest.block;
+      }
       // Fresh (non-coalesced) chunk submissions for THIS transcript — rolled
       // back if a later chunk hits the admission quota, so a transcript never
       // half-synthesizes while its skip report claims it was skipped
@@ -648,6 +671,8 @@ export async function runPhaseSynthesize(
           prompt: buildSynthesisPrompt(
             t, chunks[i], i, chunks.length, priorContradictionsBlock, config.outputRoot,
             buildTriageMapBlock(triageVerdict, chunks[i], chunks.length),
+            manifestBlock,
+            allowedSlugPrefixes,
           ),
           model: subagentModel,
           max_turns: config.maxTurns,
@@ -1023,6 +1048,13 @@ export interface SynthConfig {
    * leases — this knob only parallelizes the drain machinery.
    */
   inlineConcurrency: number;
+  /**
+   * #4216: inject the pre-retrieval LINK CANDIDATES manifest into the
+   * synthesis prompt (both modes). Config `dream.synthesize.link_manifest`,
+   * default true. Zero-embed retrieval from triage entities/segments; turning
+   * it off restores the pre-wave "search for targets yourself" prompt.
+   */
+  linkManifest: boolean;
 }
 
 /** #2415: shared output-root resolution (synthesize + patterns phases). */
@@ -1103,6 +1135,9 @@ export async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig>
   // misconfigured pool can never self-starve the provider bucket.
   const inlineConcurrency = Math.max(1, Math.min(8,
     Math.floor(await getNumberConfig(engine, 'dream.synthesize.inline_concurrency', 1)) || 1));
+  // #4216: manifest default ON; only an explicit 'false'/'0'/'off' disables.
+  const linkManifestRaw = await engine.getConfig('dream.synthesize.link_manifest');
+  const linkManifest = !(linkManifestRaw === 'false' || linkManifestRaw === '0' || linkManifestRaw === 'off');
 
   let excludePatterns: string[] = [...DEFAULT_EXCLUDE_PATTERNS];
   if (excludeStr) {
@@ -1153,6 +1188,7 @@ export async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig>
     subagentTimeoutMs,
     subagentWaitTimeoutMs,
     inlineConcurrency,
+    linkManifest,
   };
 }
 
@@ -2059,6 +2095,8 @@ function buildSynthesisPrompt(
   priorContradictionsBlock = '',
   outputRoot = 'wiki',
   triageMapBlock = '',
+  linkManifestBlock = '',
+  allowedSlugPrefixes: string[] = [],
 ): string {
   const dateHint = t.inferredDate ?? today();
   const baseSlugSegment = sanitizeForSlug(t.basename) || `session-${dateHint}`;
@@ -2072,17 +2110,29 @@ function buildSynthesisPrompt(
   const transcriptHeader = isChunked
     ? `${t.filePath} (chunk ${chunkIdx + 1}/${chunkTotal})`
     : t.filePath;
+  // #4216 rule-2 wording: with a manifest present, the model is pointed at the
+  // pre-resolved candidates FIRST (the search tool stays available on the
+  // agentic path; the oneshot path has no tools, and this same prompt must be
+  // byte-identical across a oneshot attempt and its agentic fallback).
+  const crossRefRule = linkManifestBlock
+    ? 'Cross-reference compulsively: every new page MUST contain at least one wikilink (e.g., `[ref](people/jane-doe)` or `[[people/jane-doe]]`) to existing brain content. Pick targets from the LINK CANDIDATES above (or another page you write in this response); use the search tool, if available, only when no candidate fits.'
+    : 'Cross-reference compulsively: every new page MUST contain at least one wikilink (e.g., `[ref](people/jane-doe)` or `[[people/jane-doe]]`) to existing brain content. Use the search tool to find existing pages first.';
+  // OV-7: the write allow-list must live in the PROMPT, not only in the
+  // put_page tool schema — the oneshot path never sees a tool schema.
+  const allowedPathsBlock = allowedSlugPrefixes.length > 0
+    ? `\n\nALLOWED WRITE PATHS (writes outside these are rejected)\n${allowedSlugPrefixes.map(p => `- ${p}`).join('\n')}`
+    : '';
   return `You are synthesizing a conversation transcript into the user's personal knowledge brain.
 
 CONTEXT
 - Today's date: ${dateHint}
 - Transcript hash suffix (USE THIS in slugs): ${hashSuffix}
-- Source file basename: ${baseSlugSegment}${chunkBanner}${priorContradictionsBlock}${triageMapBlock}
+- Source file basename: ${baseSlugSegment}${chunkBanner}${priorContradictionsBlock}${triageMapBlock}${linkManifestBlock}${allowedPathsBlock}
 
 OUTPUT POLICY (ALL of these are required)
 1. Quote the user verbatim. Do not paraphrase memorable phrasings.
-2. Cross-reference compulsively: every new page MUST contain at least one wikilink (e.g., \`[ref](people/jane-doe)\` or \`[[people/jane-doe]]\`) to existing brain content. Use the search tool to find existing pages first.
-3. Do NOT write to any path outside the allow-list shown in the put_page schema.
+2. ${crossRefRule}
+3. Do NOT write to any path outside the ALLOWED WRITE PATHS above${allowedSlugPrefixes.length > 0 ? '' : ' (shown in the put_page schema)'}.
 4. Slug discipline: lowercase alphanumeric and hyphens only, slash-separated segments. NO underscores, NO file extensions.
 5. Self-contained opening: begin every new page's body with a 2-3 sentence summary that a reader unfamiliar with this transcript could understand on its own, before any quotes or detail. Do not assume the reader has the source conversation for context.
 
