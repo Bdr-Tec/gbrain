@@ -259,6 +259,62 @@ describe('runSubagentViaGateway (v0.38 Slice 1 — full handler path through gat
     expect(result.tokens.out).toBe(12); // 8 + 4
   });
 
+  it('duplicate provider tool_use_id across turns persists both rows and completes (#4155 backstop)', async () => {
+    // The uniq_subagent_tools_use_id constraint is (job_id, tool_use_id) but
+    // the pending-INSERT's ON CONFLICT arbiter is (job_id, message_idx,
+    // ordinal) — a provider repeating an id across turns used to raise the
+    // uniq violation and dead-letter the job after 3 attempts. The backstop
+    // persists the second row under a disambiguated id; the conversation keeps
+    // the original id and the job finishes.
+    let turn = 0;
+    __setChatTransportForTests(async () => {
+      turn++;
+      if (turn <= 2) {
+        return {
+          text: '',
+          blocks: [
+            { type: 'tool-call', toolCallId: 'toolu_01', toolName: 'search', input: { q: `turn${turn}` } },
+          ] as ChatBlock[],
+          stopReason: 'tool_calls',
+          usage: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_creation_tokens: 0 },
+          model: 'claude-cli:claude-fable-5',
+          providerId: 'claude-cli',
+        } satisfies ChatResult;
+      }
+      return {
+        text: 'done after two identical ids',
+        blocks: [{ type: 'text', text: 'done after two identical ids' }] as ChatBlock[],
+        stopReason: 'end',
+        usage: { input_tokens: 12, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'claude-cli:claude-fable-5',
+        providerId: 'claude-cli',
+      } satisfies ChatResult;
+    });
+
+    const executions: Array<{ name: string; input: unknown; ts: number }> = [];
+    const tools = makeStubTools(executions);
+    const handler = buildHandler(tools);
+    const { jobId, ctx } = await makeFakeJob({
+      prompt: 'repeat ids',
+      model: 'anthropic:claude-sonnet-4-6',
+      allowed_tools: ['search'],
+    });
+
+    const result = await handler(ctx);
+    expect(result.result).toBe('done after two identical ids');
+    expect(executions.length).toBe(2); // both dispatches really ran
+
+    const toolRows = await engine.executeRaw<Record<string, unknown>>(
+      `SELECT tool_use_id, status FROM subagent_tool_executions
+        WHERE job_id = $1 ORDER BY message_idx ASC`,
+      [jobId],
+    );
+    expect(toolRows.length).toBe(2);
+    expect(toolRows.every(r => r.status === 'complete')).toBe(true);
+    expect(toolRows[0].tool_use_id).toBe('toolu_01'); // first keeps original
+    expect(String(toolRows[1].tool_use_id)).toStartWith('toolu_01#m'); // second disambiguated
+  });
+
   it('tool error path: handler persists status=failed, loop continues with error feedback', async () => {
     let turn = 0;
     __setChatTransportForTests(async () => {

@@ -1073,15 +1073,44 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       // circuit silently breaks and the tool re-executes. Pinned by
       // test/e2e/subagent-crash-replay-multi-provider.test.ts.
       const candidateId = randomUUIDv7();
-      const rows = await engine.executeRaw<{ gbrain_tool_use_id: string }>(
+      const insertPending = async (toolUseId: string) => engine.executeRaw<{ gbrain_tool_use_id: string }>(
         `INSERT INTO subagent_tool_executions
            (job_id, message_idx, tool_use_id, tool_name, input, status, schema_version, ordinal, gbrain_tool_use_id, provider_id)
          VALUES ($1, $2, $3, $4, $5::text::jsonb, 'pending', 2, $6, $7, $8)
          ON CONFLICT (job_id, message_idx, ordinal) DO UPDATE
            SET status = subagent_tool_executions.status
          RETURNING gbrain_tool_use_id::text AS gbrain_tool_use_id`,
-        [ctx.id, messageIdx, providerToolCallId, toolName, JSON.stringify(input ?? null), ordinal, candidateId, recipeIdFromModel(model)],
+        [ctx.id, messageIdx, toolUseId, toolName, JSON.stringify(input ?? null), ordinal, candidateId, recipeIdFromModel(model)],
       );
+      let rows: Array<{ gbrain_tool_use_id: string }>;
+      try {
+        rows = await insertPending(providerToolCallId);
+      } catch (e) {
+        // #4155 backstop: providers can mint the SAME tool_use_id across turns
+        // (claude-cli's fresh-subprocess turns, or any future provider). The
+        // ON CONFLICT arbiter above is (job_id, message_idx, ordinal), so a
+        // (job_id, tool_use_id) collision surfaces as a raised uniq violation
+        // that used to dead-letter the whole job. tool_use_id is a debug-only
+        // side channel (the settle path keys on gbrain_tool_use_id, and the
+        // conversation blocks keep the original id), so persist under a
+        // disambiguated value instead of dying.
+        if (!/uniq_subagent_tools_use_id/.test(e instanceof Error ? e.message : String(e))) throw e;
+        const suffixed = `${providerToolCallId}#m${messageIdx}o${ordinal}`;
+        try {
+          rows = await insertPending(suffixed);
+        } catch (e2) {
+          // Second violation = replay of the same (message_idx, ordinal) slot
+          // whose row already carries the suffixed id — reuse its canonical
+          // gbrain_tool_use_id (correct replay semantics, mirrors RETURNING).
+          if (!/uniq_subagent_tools_use_id/.test(e2 instanceof Error ? e2.message : String(e2))) throw e2;
+          rows = await engine.executeRaw<{ gbrain_tool_use_id: string }>(
+            `SELECT gbrain_tool_use_id::text AS gbrain_tool_use_id
+               FROM subagent_tool_executions
+              WHERE job_id = $1 AND tool_use_id = $2`,
+            [ctx.id, suffixed],
+          );
+        }
+      }
       const gbrainToolUseId = rows[0]?.gbrain_tool_use_id ?? candidateId;
       heartbeat('tool_called', { turn_idx: turnIdx, tool_name: toolName });
       return { gbrainToolUseId };

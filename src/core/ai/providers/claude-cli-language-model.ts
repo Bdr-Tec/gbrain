@@ -110,7 +110,7 @@ function buildToolUseInstructions(
     '',
     '<use_tools>',
     '[',
-    '  {"id": "<unique tool call id, like toolu_01ABC>", "name": "<tool name>", "input": <input object matching the tool\'s input_schema>}',
+    '  {"id": "<any id distinguishing calls within THIS response, like call_1>", "name": "<tool name>", "input": <input object matching the tool\'s input_schema>}',
     ']',
     '</use_tools>',
     '',
@@ -358,14 +358,30 @@ function extractToolCalls(raw: string): {
     const e = entry as Record<string, unknown>;
     const name = typeof e.name === 'string' ? e.name : null;
     if (!name) continue;
-    const id = typeof e.id === 'string' && e.id.length > 0
-      ? e.id
-      : `toolu_claude_cli_${Math.random().toString(36).slice(2, 12)}`;
+    // #4155: NEVER trust the model-supplied id for uniqueness. `claude --print`
+    // is a fresh subprocess per turn with no memory of prior ids, and
+    // renderPrompt strips ids from the replayed transcript — so the model
+    // mints short repeating ids (`toolu_01`) that violate the DB's per-job
+    // uniq_subagent_tools_use_id across turns. Nothing downstream ever echoes
+    // the original id back to the subprocess, so a locally-minted id is fully
+    // transparent; the tool-result pairing uses the minted id from the
+    // in-memory call object. Mint is module-scoped (fresh model instance per
+    // doGenerate) — a counter plus random suffix keeps ids unique across
+    // turns, processes, and duplicate entries within one <use_tools> block.
+    const id = mintToolCallId();
     const inputJson = JSON.stringify(e.input ?? {});
     toolCalls.push({ id, name, input: inputJson });
   }
 
   return { toolCalls, beforeText, afterText };
+}
+
+// Module-scoped so the counter survives the fresh ClaudeCliLanguageModel
+// instance created for every doGenerate call (gateway resolves the provider
+// per-call). Keeps the historical `toolu_claude_cli_` prefix — one grep target.
+let __toolCallIdCounter = 0;
+function mintToolCallId(): string {
+  return `toolu_claude_cli_${(++__toolCallIdCounter).toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /**
