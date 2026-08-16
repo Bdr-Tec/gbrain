@@ -56,8 +56,9 @@ import { isQueueQuotaExceededError } from '../minions/admission.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
-import { makeSubagentHandler } from '../minions/handlers/subagent.ts';
+import { makeSubagentHandler, RateLeaseUnavailableError } from '../minions/handlers/subagent.ts';
 import type { MinionJobInput, MinionJobContext, MinionHandler, SubagentHandlerData } from '../minions/types.ts';
+import { UnrecoverableError } from '../minions/types.ts';
 import { discoverTranscripts, DEFAULT_EXCLUDE_PATTERNS, type DiscoveredTranscript } from './transcript-discovery.ts';
 import { serializeMarkdown, serializePageToMarkdown } from '../markdown.ts';
 import type { Page, PageType } from '../types.ts';
@@ -572,16 +573,32 @@ export async function runSubagentsInline(
         );
         return;
       }
-      // Timeout is terminal (handleTimeouts parity: stall → retry,
-      // timeout → dead), never a delayed retry.
+      // Worker-parity outcome routing (#4217 CDX-3 + #4194):
+      //   - RateLeaseUnavailableError → delayed requeue WITHOUT burning an
+      //     attempt (mirrors worker.ts's releaseLeaseFullJob path; matters
+      //     once the drain runs concurrent loops against a shared lease cap).
+      //   - UnrecoverableError → dead immediately (retry is provably futile —
+      //     e.g. all-writes-failed accounting; pre-fix the drain retried these
+      //     to exhaustion, exactly the incident-churn #4217 describes).
+      //   - Timeout stays terminal (handleTimeouts parity), never delayed.
+      if (handlerErr instanceof RateLeaseUnavailableError) {
+        const leaseBackoffMs = 1000 + Math.floor(Math.random() * 2000);
+        const released = await queue.releaseLeaseFullJob(
+          job.id, lockToken, handlerErr.message, leaseBackoffMs,
+        );
+        if (released) return;
+        // Lock-token mismatch (stall sweep won) — fall through to failJob,
+        // which no-ops under the same fence.
+      }
       const timedOut = abort.signal.aborted;
       const errorText = timedOut ? 'timeout exceeded' : (handlerErr instanceof Error ? handlerErr.message : String(handlerErr));
+      const isUnrecoverable = handlerErr instanceof UnrecoverableError;
       const attemptsExhausted = job.attempts_made + 1 >= job.max_attempts;
       await queue.failJob(
         job.id,
         lockToken,
         errorText,
-        timedOut || attemptsExhausted ? 'dead' : 'delayed',
+        timedOut || isUnrecoverable || attemptsExhausted ? 'dead' : 'delayed',
         0,
       );
     };

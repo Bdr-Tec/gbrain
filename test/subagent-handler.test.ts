@@ -841,3 +841,110 @@ describe('handler-entry capability gate on the config-resolved model', () => {
     }
   });
 });
+
+// ── #4217 structural write accounting ───────────────────────
+
+describe('write accounting (#4217)', () => {
+  function makePutPageTool(behavior: 'ok' | 'fail' | ((input: unknown) => 'ok' | 'fail')): ToolDef {
+    return {
+      name: 'brain_put_page',
+      description: 'write a page',
+      input_schema: { type: 'object', properties: { slug: { type: 'string' } }, required: [] },
+      idempotent: true,
+      async execute(input) {
+        const mode = typeof behavior === 'function' ? behavior(input) : behavior;
+        if (mode === 'fail') throw new Error('expected 1024 dimensions, not 1280');
+        return { slug: (input as { slug?: string }).slug ?? 'wiki/x', status: 'created' };
+      },
+    };
+  }
+
+  const putPageTurn = (slug: string, id: string) => ({
+    content: [{ type: 'tool_use', id, name: 'brain_put_page', input: { slug } }] as any,
+    stop_reason: 'tool_use' as const,
+  });
+  const endTurn = { content: [{ type: 'text', text: 'done' }] as any, stop_reason: 'end_turn' as const };
+
+  test('require_writes + ALL writes failed → UnrecoverableError with first error', async () => {
+    const client = new FakeMessagesClient([putPageTurn('wiki/a', 'tu_1'), endTurn]);
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [makePutPageTool('fail')] });
+    const ctx = await makeCtx({ prompt: 'write pages', require_writes: true });
+    await expect(handler(ctx)).rejects.toThrow(/all 1 put_page write\(s\) failed.*1024 dimensions/);
+  });
+
+  test('all writes failed WITHOUT require_writes → completed, truthful counts', async () => {
+    // CDX-12: open-ended agent runs keep the generic contract — a failed write
+    // plus a useful text answer is still a completion, but the counts tell the truth.
+    const client = new FakeMessagesClient([putPageTurn('wiki/a', 'tu_1'), endTurn]);
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [makePutPageTool('fail')] });
+    const ctx = await makeCtx({ prompt: 'write pages' });
+    const result = await handler(ctx);
+    expect(result.stop_reason).toBe('end_turn');
+    expect(result.pages_attempted).toBe(1);
+    expect(result.pages_written).toBe(0);
+    expect(result.pages_failed).toBe(1);
+  });
+
+  test('partial failure with require_writes → completed with counts', async () => {
+    const client = new FakeMessagesClient([
+      {
+        content: [
+          { type: 'tool_use', id: 'tu_ok', name: 'brain_put_page', input: { slug: 'wiki/ok' } },
+          { type: 'tool_use', id: 'tu_bad', name: 'brain_put_page', input: { slug: 'FAIL' } },
+        ] as any,
+        stop_reason: 'tool_use',
+      },
+      endTurn,
+    ]);
+    const tool = makePutPageTool((input) => ((input as { slug?: string }).slug === 'FAIL' ? 'fail' : 'ok'));
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [tool] });
+    const ctx = await makeCtx({ prompt: 'write pages', require_writes: true });
+    const result = await handler(ctx);
+    expect(result.pages_attempted).toBe(2);
+    expect(result.pages_written).toBe(1);
+    expect(result.pages_failed).toBe(1);
+  });
+
+  test('zero attempts (Task-D skip) stays completed even with require_writes', async () => {
+    const client = new FakeMessagesClient([
+      { content: [{ type: 'text', text: 'nothing met the bar' }] as any, stop_reason: 'end_turn' },
+    ]);
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [makePutPageTool('ok')] });
+    const ctx = await makeCtx({ prompt: 'write pages', require_writes: true });
+    const result = await handler(ctx);
+    expect(result.result).toBe('nothing met the bar');
+    expect(result.pages_attempted).toBe(0);
+    expect(result.pages_written).toBe(0);
+    expect(result.pages_failed).toBe(0);
+  });
+
+  test('non-put_page tool failures do not count toward write accounting', async () => {
+    const client = new FakeMessagesClient([
+      { content: [{ type: 'tool_use', id: 'tu_b', name: 'broken', input: {} }] as any, stop_reason: 'tool_use' },
+      endTurn,
+    ]);
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [makeThrowingTool('broken')] });
+    const ctx = await makeCtx({ prompt: 'do stuff', require_writes: true });
+    const result = await handler(ctx);
+    expect(result.pages_attempted).toBe(0);
+  });
+});
+
+// ── #4087/CDX-6 model-aware output-cap default ──────────────
+
+describe('resolveMaxOutputTokens model-aware default', () => {
+  const { resolveMaxOutputTokens } = require('../src/core/minions/handlers/subagent.ts');
+  test('thinking-by-default Claude 5 model gets 32000 when nothing is configured', () => {
+    expect(resolveMaxOutputTokens(undefined, null, 'openrouter:anthropic/claude-sonnet-5')).toBe(32000);
+    expect(resolveMaxOutputTokens(undefined, null, 'anthropic:claude-fable-5')).toBe(32000);
+  });
+  test('non-thinking models keep 8192', () => {
+    expect(resolveMaxOutputTokens(undefined, null, 'anthropic:claude-sonnet-4-6')).toBe(8192);
+    expect(resolveMaxOutputTokens(undefined, null, 'anthropic:claude-3-5-sonnet-20241022')).toBe(8192);
+    expect(resolveMaxOutputTokens(undefined, null, undefined)).toBe(8192);
+  });
+  test('per-job and config overrides still win over the thinking default', () => {
+    expect(resolveMaxOutputTokens(12000, null, 'anthropic:claude-fable-5')).toBe(12000);
+    expect(resolveMaxOutputTokens(undefined, '9000', 'anthropic:claude-fable-5')).toBe(9000);
+  });
+});

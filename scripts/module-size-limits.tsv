@@ -20,14 +20,14 @@ src/commands/autopilot.ts	2301	ratchet
 src/commands/extract.ts	2161	ratchet
 src/commands/extract-conversation-facts.ts	1968	ratchet
 src/core/import-file.ts	2000	ratchet	grown v0.46.11.0 five-issue wave
-src/core/cycle/synthesize.ts	2685	ratchet	grown v0.46.11.0 five-issue wave
+src/core/cycle/synthesize.ts	2685	ratchet	grown v0.46.11.0 five-issue wave; dream-wave C6 drain routing
 src/commands/embed.ts	1963	ratchet
 src/core/types.ts	1829	ratchet
 src/commands/skillpack.ts	1763	ratchet
 src/core/minions/queue.ts	2130	ratchet	grown v0.46.11.0 five-issue wave
 src/commands/init.ts	1932	ratchet
 src/commands/integrations.ts	1675	ratchet
-src/core/minions/handlers/subagent.ts	1506	ratchet	dream-wave C5 peel (persistence -> subagent-persistence.ts)
+src/core/minions/handlers/subagent.ts	1527	ratchet	dream-wave C5 peel + C6 accounting
 src/commands/bootstrap.ts	1923	ratchet	grandfathered at merge (grew past the 1500 cap on master)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
 src/commands/sources.ts	1586	ratchet

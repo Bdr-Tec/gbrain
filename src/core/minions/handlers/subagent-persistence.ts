@@ -9,7 +9,8 @@
  */
 
 import type { BrainEngine } from '../../engine.ts';
-import type { ContentBlock } from '../types.ts';
+import type { ContentBlock, SubagentResult } from '../types.ts';
+import { UnrecoverableError } from '../types.ts';
 
 export interface PersistedMessage {
   message_idx: number;
@@ -174,6 +175,68 @@ export async function persistToolExecComplete(
       WHERE job_id = $1 AND tool_use_id = $2`,
     [jobId, toolUseId, typeof output === 'string' ? output : JSON.stringify(output)],
   );
+}
+
+/**
+ * #4217 — structural write accounting. A subagent job's status used to reflect
+ * only "the agent turn finished"; 22 consecutive jobs once reported
+ * `completed` while every put_page failed (embedding-dimension mismatch) and
+ * the dream cycle silently produced nothing for 9 hours.
+ *
+ * Counts are derived from the job's own tool-execution ledger and merged into
+ * the result for EVERY subagent job. Predicate discipline (OV-2): `attempted`
+ * counts settled rows only — complete + failed; pending rows (crash-orphaned
+ * dispatches that never settled) count toward NEITHER side.
+ *
+ * When the submitter set `require_writes` (dream synthesize / patterns
+ * fan-out — jobs whose entire purpose is writing pages), attempted > 0 with
+ * zero successes throws UnrecoverableError: retrying is provably futile (the
+ * replay path short-circuits to the persisted terminal turn and can never
+ * re-run the failed tools), so the job routes straight to dead and the
+ * idempotency key releases for the next cycle.
+ *
+ * `scopeToolUseIdPrefix` narrows the ledger scan (the oneshot runner scopes to
+ * its own invocation's rows so a prior invocation's outcome can't distort the
+ * verdict); agentic jobs scan job-wide.
+ */
+export async function finalizeWriteAccounting(
+  engine: BrainEngine,
+  jobId: number,
+  result: SubagentResult,
+  opts: { requireWrites: boolean; scopeToolUseIdPrefix?: string },
+): Promise<SubagentResult> {
+  let rows: Array<{ status: string; error: string | null }>;
+  try {
+    rows = await engine.executeRaw<{ status: string; error: string | null }>(
+      opts.scopeToolUseIdPrefix
+        ? `SELECT status, error FROM subagent_tool_executions
+            WHERE job_id = $1 AND tool_name = 'brain_put_page' AND tool_use_id LIKE $2`
+        : `SELECT status, error FROM subagent_tool_executions
+            WHERE job_id = $1 AND tool_name = 'brain_put_page'`,
+      opts.scopeToolUseIdPrefix ? [jobId, `${opts.scopeToolUseIdPrefix}%`] : [jobId],
+    );
+  } catch (e) {
+    // Accounting must never turn a finished job into a crash on a transient
+    // read error — surface zeroed counts and keep the handler result.
+    process.stderr.write(`[subagent] write accounting read failed for job ${jobId}: ${e instanceof Error ? e.message : String(e)}\n`);
+    return result;
+  }
+  const written = rows.filter(r => r.status === 'complete').length;
+  const failed = rows.filter(r => r.status === 'failed').length;
+  const attempted = written + failed;
+  const accounted: SubagentResult = {
+    ...result,
+    pages_attempted: attempted,
+    pages_written: written,
+    pages_failed: failed,
+  };
+  if (opts.requireWrites && attempted > 0 && written === 0) {
+    const firstError = rows.find(r => r.status === 'failed' && r.error)?.error ?? 'unknown write error';
+    throw new UnrecoverableError(
+      `all ${failed} put_page write(s) failed — job produced zero pages (first error: ${firstError})`,
+    );
+  }
+  return accounted;
 }
 
 export async function persistToolExecFailed(

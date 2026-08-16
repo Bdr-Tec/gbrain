@@ -51,7 +51,7 @@ import { resolveModel, isAnthropicProvider, TIER_DEFAULTS } from '../../model-co
 import { splitProviderModelId, normalizeModelId } from '../../model-id.ts';
 import { resolveAnthropicKey } from '../../ai/anthropic-key.ts';
 import { buildSystemPrompt, DEFAULT_SUBAGENT_SYSTEM } from '../system-prompt.ts';
-import { toolLoop as gatewayToolLoop } from '../../ai/gateway.ts';
+import { toolLoop as gatewayToolLoop, isThinkingByDefaultModel, THINKING_MODEL_MAX_OUTPUT_TOKENS } from '../../ai/gateway.ts';
 import type { ChatToolDef, ChatMessage, ChatBlock, ChatResult, ToolHandler } from '../../ai/gateway.ts';
 import { classifyCapabilities } from '../../ai/capabilities.ts';
 import {
@@ -62,6 +62,7 @@ import {
   persistToolExecPending,
   persistToolExecComplete,
   persistToolExecFailed,
+  finalizeWriteAccounting,
   type PersistedMessage,
   type PersistedToolExec,
 } from './subagent-persistence.ts';
@@ -76,13 +77,17 @@ const DEFAULT_RATE_KEY = 'anthropic:messages';
 
 /**
  * Resolve the per-turn output-token cap (#2778). Per-job data wins, then the
- * `agent.max_output_tokens` config row, then the 8192 default (was a
- * hardcoded 4096 that made pages >~12KB unwritable via put_page). Invalid
- * values (NaN / zero / negative) fall through to the next tier.
+ * `agent.max_output_tokens` config row, then a model-aware default: 32000 for
+ * thinking-by-default Claude 5 models (#4087 — they burn most of the budget on
+ * internal reasoning; the flat 8192 default produced zero-tool-call truncated
+ * runs even after the gateway learned to detect them), 8192 for everything
+ * else (was a hardcoded 4096 that made pages >~12KB unwritable via put_page).
+ * Invalid values (NaN / zero / negative) fall through to the next tier.
  */
 export function resolveMaxOutputTokens(
   perJob: number | undefined,
   configRaw: string | null | undefined,
+  model?: string,
 ): number {
   if (typeof perJob === 'number' && Number.isFinite(perJob) && perJob > 0) {
     return Math.floor(perJob);
@@ -91,7 +96,7 @@ export function resolveMaxOutputTokens(
     const n = Number(configRaw);
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
   }
-  return DEFAULT_MAX_OUTPUT_TOKENS;
+  return isThinkingByDefaultModel(model) ? THINKING_MODEL_MAX_OUTPUT_TOKENS : DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
 /**
@@ -187,6 +192,18 @@ export function makeSubagentHandler(deps: SubagentDeps) {
   const leaseTtlMs = deps.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
 
   return async function subagentHandler(ctx: MinionJobContext): Promise<SubagentResult> {
+    const dataForAccounting = (ctx.data ?? {}) as unknown as SubagentHandlerData;
+    // #4217: every subagent job gets structural write accounting merged into
+    // its result; jobs submitted with require_writes (dream synthesize /
+    // patterns fan-out) FAIL when every attempted put_page write failed —
+    // "the turn finished" must never masquerade as "the work succeeded".
+    const inner = await subagentHandlerInner(ctx);
+    return finalizeWriteAccounting(engine, ctx.id, inner, {
+      requireWrites: dataForAccounting.require_writes === true,
+    });
+  };
+
+  async function subagentHandlerInner(ctx: MinionJobContext): Promise<SubagentResult> {
     const data = (ctx.data ?? {}) as unknown as SubagentHandlerData;
     if (!data.prompt || typeof data.prompt !== 'string') {
       throw new Error('subagent job data.prompt is required (string)');
@@ -274,10 +291,14 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       }
     }
     const maxTurns = data.max_turns ?? DEFAULT_MAX_TURNS;
-    // #2778: per-turn output cap — data.max_tokens → config → 8192 default.
+    // #2778: per-turn output cap — data.max_tokens → config → model-aware
+    // default (#4087/CDX-6: thinking-by-default Claude 5 models get 32k so the
+    // 8192 handler default stops masking the gateway's own headroom; explicit
+    // per-job/config values always win).
     const maxOutputTokens = resolveMaxOutputTokens(
       data.max_tokens,
       await engine.getConfig('agent.max_output_tokens').catch(() => null),
+      model,
     );
     // v0.41 Approach C: systemPrompt is now built AFTER toolDefs (a few
     // lines below) so the renderer can splice a tool-usage preamble
