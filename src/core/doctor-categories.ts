@@ -171,6 +171,7 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'pglite_data_dir',
   'pglite_leftovers',
   'pgvector',
+  'plugin_lane_collision',
   'pool_budget',
   'progressive_batch_audit_health',
   'provider_sunset',

@@ -2277,7 +2277,12 @@ export async function buildChecks(
   try {
     const health = await engine.getHealth();
     const entityCount = (await engine.executeRaw<{ count: number }>(
-      "SELECT COUNT(*)::int AS count FROM pages WHERE type IN ('entity', 'person', 'company', 'organization')",
+      // deleted_at IS NULL: a brain whose only entity pages are soft-deleted has
+      // zero LIVE entities, and must take the short-circuit below rather than
+      // warn about coverage on pages the rest of the system treats as gone.
+      // buildGazetteer (src/core/by-mention.ts) already filters this way, so
+      // without it the two disagree about whether entity pages exist at all.
+      "SELECT COUNT(*)::int AS count FROM pages WHERE deleted_at IS NULL AND type IN ('entity', 'person', 'company', 'organization')",
     ))[0]?.count ?? 0;
 
     // Compute coverage against eligible entities only — exclude test fixtures
@@ -2288,7 +2293,8 @@ export async function buildChecks(
     const eligibleStats = (await engine.executeRaw<{ entities: number; linked_from: number; timeline: number }>(
       `WITH eligible AS (
         SELECT id FROM pages
-        WHERE type IN ('entity','person','company','organization')
+        WHERE deleted_at IS NULL
+          AND type IN ('entity','person','company','organization')
           AND slug NOT LIKE 'tools/gbrain/test/%'
           AND slug <> 'templates/new-person'
       )

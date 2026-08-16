@@ -38,6 +38,8 @@ test/cli.test.ts	BigInt-safe output normalization (#2450)	5	readFileSync
 test/cli.test.ts	CLI structure	6	readFileSync
 test/cli.test.ts	CLI version	2	readFileSync
 test/cli.test.ts	ask alias	2	readFileSync
+test/codex-plugin-manifest.test.ts	codex mcp.json	3	readFileSync
+test/codex-plugin-manifest.test.ts	curated tree membership + scanner guard	5	readFileSync
 test/config.test.ts	config source correctness	2	readFileSync
 test/connection-resilience.test.ts	Eng-review D3 — executeRaw has no per-call retry wrapper	3	readFileSync
 test/contextual-retrieval-service-pure.test.ts	inline import contextual synopsis containment	1	readFileSync
@@ -82,6 +84,7 @@ test/dream-cli-flags.test.ts	--source / --source-id wiring (v0.41.13)	9	readFile
 test/dream-cli-flags.test.ts	dream CLI flag wiring	9	readFileSync
 test/dry-fix.test.ts	autoFixDryViolations	12	readFileSync
 test/e2e/bootstrap-real-codex.serial.test.ts	bootstrap rendered protocol — ambient boundaries (always runs)	4	readFileSync
+test/e2e/codex-plugin-install-real.serial.test.ts	(file-level)	2	readFileSync
 test/e2e/migration-flow.test.ts	(file-level)	4	readFileSync
 test/e2e/openclaw-reference-compat.test.ts	OpenClaw reference workspace compat (W1 + W2 + W3)	8	readFileSync
 test/e2e/skillpack-flow.test.ts	skillpack flow (E2E)	17	readFileSync
