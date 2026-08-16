@@ -65,6 +65,11 @@ import {
   parseTranscript,
   toCorpusText,
 } from '../core/transcripts/claude-code-jsonl.ts';
+import {
+  bankCompactSegment,
+  decideCorpusMode,
+  gcCorpusArtifacts,
+} from '../core/context/corpus-segments.ts';
 import { CLAUDE_HOOK_OUTPUT_CAP_CHARS } from '../core/bootstrap/host-specs.ts';
 import { readManifest, readReceipt, type InstallReceipt } from '../core/bootstrap/format.ts';
 import { githubOwnerRepoString } from '../core/repo-visibility.ts';
@@ -158,6 +163,8 @@ export interface HookIo {
   spawnPush?: (root: string) => void;
   /** TEST SEAM: user-prompt deadline override (wall-clock flake control). */
   userPromptDeadlineMs?: number;
+  /** TEST SEAM: compact deadline override (drives the per-step degrade paths). */
+  compactDeadlineMs?: number;
   /**
    * Feedback-loop attribution channel (`--harness <claude-code|codex|opencode>`).
    * Default 'claude-code' — the only harness bootstrap registers hooks for
@@ -392,11 +399,18 @@ export interface HookHeartbeatEntry {
   bytes?: number;
   /** Secret-scan redaction COUNT at the session-end corpus write (never content) [S3#2, S3#7]. */
   redactions?: number;
+  /**
+   * Cathedral 5 — segment/corpus-mode status CODE for the compact and
+   * session-end lanes (segment_banked / segment_dup / empty_window /
+   * deadline_scan / remainder / skip_covered / …). Codes only, never
+   * slugs/fact text [S3#7].
+   */
+  segment?: string;
 }
 
 /** The FULL key allowlist — CI greps the fixture against this [S3#7]. */
 export const HEARTBEAT_ALLOWED_KEYS = [
-  'ts', 'event', 'outcome', 'reason', 'duration_ms', 'turns', 'bytes', 'redactions',
+  'ts', 'event', 'outcome', 'reason', 'duration_ms', 'turns', 'bytes', 'redactions', 'segment',
 ] as const;
 
 async function hooksTelemetryDir(): Promise<string> {
@@ -441,6 +455,7 @@ async function writeHeartbeat(entry: HookHeartbeatEntry): Promise<void> {
       ...(entry.turns !== undefined ? { turns: entry.turns } : {}),
       ...(entry.bytes !== undefined ? { bytes: entry.bytes } : {}),
       ...(entry.redactions !== undefined ? { redactions: entry.redactions } : {}),
+      ...(entry.segment !== undefined ? { segment: entry.segment } : {}),
     });
     appendFileSync(p, line + '\n', { mode: 0o600 });
     let size = 0;
@@ -1220,18 +1235,32 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
 export const COMPACT_DEADLINE_MS = 3000;
 /** Banking wants breadth, not the 4-turn prompt window. */
 const COMPACT_WINDOW_TURNS = 20;
+/** Minimum remaining budget to START the segment scan+write (cathedral 5). */
+const SEGMENT_MIN_BUDGET_MS = 600;
+/** Minimum remaining budget to fire the banking IPC call (cathedral 5). */
+const COMPACT_IPC_MIN_BUDGET_MS = 300;
 
 /**
  * PreCompact fires BEFORE Claude Code compacts the transcript. Its stdout is
- * NOT context-injected — the useful work is the WRITE: extract the window's
- * standing entities (server-side) and bank them into the session cursor so the
- * post-compaction SessionStart (source=compact) serves a warm rehydration
- * pack. Engine-free: transcript parse + one IPC round trip. Fail-open always.
+ * NOT context-injected — the useful work is the WRITEs (cathedral 5 order,
+ * durability first):
+ *   1. bank the since-last-boundary window DURABLY as a content-addressed
+ *      corpus segment + ledger entry (secret-scanned; never written unscanned;
+ *      per-step deadline degrades with typed codes) — the serve sweep is the
+ *      extraction backstop even if everything after this fails;
+ *   2. ONE IPC round trip that banks the window's standing entities into the
+ *      session cursor (and, when a segment was banked, asks serve to harvest
+ *      it promptly) so the post-compaction SessionStart (source=compact)
+ *      serves a warm rehydration pack.
+ * Engine-free: transcript parse + fs + one IPC round trip. Fail-open always.
  */
 async function hookCompact(io: HookIo): Promise<number> {
   const t0 = Date.now();
+  const deadlineMs = io.compactDeadlineMs ?? COMPACT_DEADLINE_MS;
+  const remaining = () => deadlineMs - (Date.now() - t0);
   let outcome: HookHeartbeatEntry['outcome'] = 'ok';
   let reason: string | undefined;
+  let segment: string | undefined;
 
   const work = (async () => {
     const j = await readStdinJson(io, 300);
@@ -1239,6 +1268,8 @@ async function hookCompact(io: HookIo): Promise<number> {
 
     // S3#8 posture matches user-prompt: an unconfined transcript path aborts.
     let turns: WindowTurn[] = [];
+    let boundaryTurnIndexes: number[] = [];
+    let allTurns: WindowTurn[] = [];
     if (j.transcript_path !== undefined && j.transcript_path !== null) {
       const conf = confineTranscriptPath(j.transcript_path, {
         ...(io.transcriptRoot ? { root: io.transcriptRoot } : {}),
@@ -1246,6 +1277,8 @@ async function hookCompact(io: HookIo): Promise<number> {
       if (!conf.ok) { outcome = 'degraded'; reason = `transcript_${conf.reason}`; return; }
       try {
         const parsed = parseTranscript(conf.path, { maxBytes: USER_PROMPT_TRANSCRIPT_MAX_BYTES });
+        allTurns = parsed.turns;
+        boundaryTurnIndexes = parsed.boundaryTurnIndexes;
         turns = parsed.turns.slice(-COMPACT_WINDOW_TURNS);
       } catch {
         turns = [];
@@ -1263,12 +1296,26 @@ async function hookCompact(io: HookIo): Promise<number> {
     }
 
     const cfg = loadConfig();
+
+    // Cathedral 5, durability FIRST: content-addressed segment + ledger before
+    // any IPC. Written for EVERY engine config (the sweep backstop harvests it
+    // when serve/IPC is unavailable). Per-step deadline degrades — a scan that
+    // can't finish skips the segment ENTIRELY (never write unscanned content).
+    const banked = await bankCompactSegment(await corpusDir(cfg), sessionId, allTurns, boundaryTurnIndexes, {
+      remainingMs: remaining,
+      minScanMs: SEGMENT_MIN_BUDGET_MS,
+      minWriteMs: COMPACT_IPC_MIN_BUDGET_MS,
+    });
+    segment = banked.segment;
+    const flushCorpusFile = banked.flushCorpusFile;
+
     // Same engine gate as the session-start pack arm (v0.45.7 symmetry): a
     // Postgres config carrying a leftover database_path must not probe the
     // PGLite socket — there is no serve behind it for this brain.
     if (cfg?.engine !== 'pglite' || !cfg.database_path) { outcome = 'degraded'; reason = 'no_pglite_path'; return; }
     const secret = readIpcSecret(cfg.database_path);
     if (!secret) { outcome = 'degraded'; reason = 'no_serve'; return; }
+    if (remaining() < COMPACT_IPC_MIN_BUDGET_MS) { outcome = 'degraded'; reason = 'deadline'; return; }
 
     const res = await requestContextPack(resolveSocketPath(cfg.database_path), {
       secret,
@@ -1276,6 +1323,7 @@ async function hookCompact(io: HookIo): Promise<number> {
       window: turns,
       bankOnly: true,
       trigger: 'compact-bank',
+      ...(flushCorpusFile ? { flushCorpusFile } : {}),
       ...(process.env.GBRAIN_SOURCE ? { sourceId: process.env.GBRAIN_SOURCE } : {}),
     });
     if (res === IPC_UNAVAILABLE) { outcome = 'degraded'; reason = 'ipc_unavailable'; return; }
@@ -1285,7 +1333,7 @@ async function hookCompact(io: HookIo): Promise<number> {
   })();
 
   try {
-    const raced = await withDeadline(COMPACT_DEADLINE_MS, work);
+    const raced = await withDeadline(deadlineMs, work);
     if (raced === DEADLINE && outcome === 'ok') { outcome = 'degraded'; reason = 'deadline'; }
   } catch (e) {
     outcome = 'error';
@@ -1297,6 +1345,7 @@ async function hookCompact(io: HookIo): Promise<number> {
     outcome,
     ...(reason ? { reason } : {}),
     duration_ms: Date.now() - t0,
+    ...(segment ? { segment } : {}),
   });
   return 0;
 }
@@ -1404,6 +1453,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
 
   let sessionId = 'unknown';
   let ws: string | undefined;
+  let segmentMode: string | undefined;
   try {
     const j = await readStdinJson(io, 500);
     sessionId = sanitizeSessionId(j?.session_id);
@@ -1435,9 +1485,23 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           /* status telemetry best-effort */
         }
       } else if (turnsN > 0) {
+        const dir = await corpusDir(cfg);
+        // Cathedral 5 dedup contract: when EVERY non-empty boundary window's
+        // redacted hash is banked in the segment ledger (exact-set), write
+        // only the post-last-boundary REMAINDER; any mismatch ⇒ full
+        // transcript exactly as before (at-least-once).
+        const decided = await decideCorpusMode(dir, sessionId, parsed.turns, parsed.boundaryTurnIndexes);
+        const corpusTurns = decided.turns;
+        if (decided.mode !== 'full') segmentMode = decided.mode;
+        if (segmentMode === 'skip_covered') {
+          // Everything already segment-banked; nothing new to write. Existing
+          // corpus file + sidecars stay untouched.
+          gcOldFiles(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000); // [G15]
+          gcCorpusArtifacts(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000, [CORPUS_INGESTED_SUFFIX, CORPUS_CLAIM_SUFFIX]);
+        } else {
         // [S3#2] Secret-scan AT WRITE TIME. Scanner absent → still write
         // (the corpus is 0700-local), but say so in the heartbeat.
-        let text = toCorpusText(parsed.turns);
+        let text = toCorpusText(corpusTurns);
         try {
           const scan = await import('../core/secret-scan.ts');
           const redacted = scan.redactFindings(text);
@@ -1447,7 +1511,6 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
         } catch {
           degrade('scan_unavailable');
         }
-        const dir = await corpusDir(cfg);
         // Session-id-keyed filename: a resumed session OVERWRITES its own
         // corpus file — dedup by construction [A6]. The write is ATOMIC
         // (tmp+rename) so a concurrent sweep never reads a torn half-write,
@@ -1470,6 +1533,8 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           /* best effort */
         }
         gcOldFiles(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000); // [G15]
+        gcCorpusArtifacts(dir, corpusRetentionDays(cfg) * 24 * 60 * 60 * 1000, [CORPUS_INGESTED_SUFFIX, CORPUS_CLAIM_SUFFIX]);
+        }
       }
     }
   } catch (e) {
@@ -1520,6 +1585,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
     ...(turnsN !== undefined ? { turns: turnsN } : {}),
     ...(bytesN !== undefined ? { bytes: bytesN } : {}),
     ...(redactionsN !== undefined ? { redactions: redactionsN } : {}),
+    ...(segmentMode ? { segment: segmentMode } : {}),
   });
   return 0;
 }
