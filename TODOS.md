@@ -73,6 +73,19 @@
   the malformed_path_pages doctor hint could distinguish rows whose FILE
   still exists on disk (rename rescues content) from never-committed DB-only
   rows (delete is the only option). **Effort:** S. **Priority:** P3.
+- [ ] **P3 — thread source scope into `schema lint --with-db`.** **What:**
+  the stored-type data-plane rules accept `LintOpts.sourceId` (multi-source
+  brains can resolve different packs per source; comparing another source's
+  rows against this manifest yields false alias/undeclared warnings), but
+  neither `src/commands/schema.ts` (`runAllLintRules(pack, { engine })`) nor
+  MCP `schema_lint` passes it — the CLI runs a global scan. Add
+  `--source-id` / honor the worktree pin, and expose `[--json]` in the
+  `jobs stats` usage line while in the area (`src/commands/jobs.ts:309`
+  documents `--queue`/`--cluster-errors` but not the shipped `--json`).
+  Also: the interactive coalesce hint suggests "pass a fresh idempotency
+  key", which `gbrain agent run` has no flag for (raw `jobs submit` does).
+  Surfaced by the v0.46.11.0 post-ship doc review. **Effort:** S.
+  **Priority:** P3.
 - [ ] **P3 — one-time cross-source clobber audit.** **What:** the
   pre-guard unscoped-check/scoped-write class could have historically
   written 'default'-source rows that shadow same-slug rows in other sources.
