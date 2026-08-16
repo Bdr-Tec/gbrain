@@ -37,12 +37,15 @@ import {
   formatEnvOverrideWarning,
   resolveRerankerPlan,
   applyRerankerAction,
+  readMigrationStatus,
+  verifySearchRoundTrip,
   MIGRATION_STATE_KEY,
   type EmbeddingMigrationPlan,
   type MigrationVerify,
   type MigrationState,
   type EnvOverrideWarning,
   type RerankerPlan,
+  type VerifySearchOutcome,
 } from '../core/embedding-migration.ts';
 import { tryAcquireDbLock, type DbLockHandle } from '../core/db-lock.ts';
 import { embedBackfillLockId } from '../core/embed-backfill-lock.ts';
@@ -133,6 +136,10 @@ Flags:
                           provider:model (e.g. voyage:rerank-2.5). Reranker
                           config lives on the DB plane, unlike embedding
                           config (file/env planes).
+  --status                Read-only migration status: config planes (env/file/DB,
+                          key PRESENCE only), column widths, NULL censuses,
+                          signature census, in-flight marker + exact resume
+                          command, last completion + smoke-check outcome.
   --help                  Show this help.
 
 A killed run is resumable: re-run the same command. Already-migrated chunks
@@ -183,6 +190,11 @@ function renderPlan(ctx: MigrationPlanContext): string {
     }
   }
   lines.push(`  Chunks to re-embed: ${plan.chunks_to_embed}${plan.null_signature_chunks > 0 ? ` (includes ${plan.null_signature_chunks} on pages with no recorded embedding signature)` : ''}`);
+  if (plan.synopsis_tier_pages > 0) {
+    lines.push(`  Context tier: ${plan.synopsis_tier_pages} page(s) currently embedded at the per_chunk_synopsis`);
+    lines.push('          tier will re-embed at the TITLE tier (a retrieval-quality downgrade for');
+    lines.push('          those pages; tier-preserving re-embed is a filed follow-up).');
+  }
   lines.push(
     plan.price_known
       ? `  Estimated cost: $${plan.est_cost_usd.toFixed(2)} (${plan.total_chars} chars at the ${plan.to_model} rate)`
@@ -440,6 +452,7 @@ export type MigrationFlowResult =
       invalidated: number; cache_cleared: number;
       schema_transitioned: boolean; pinned_repaired: string[];
       reranker: RerankerOutcome;
+      verify_search: VerifySearchOutcome;
     }
   | {
       status: 'incomplete';
@@ -676,8 +689,16 @@ export async function executeMigrationFlow(
       reranker,
     };
     if (remaining === 0 && !embedResult.lock_lost) {
-      await completeEmbeddingMigration(engine, plan);
-      return { status: 'completed', remaining: 0, ...base };
+      // Completion smoke check (D11): warn-don't-block self-retrieval. The
+      // outcome is stamped into the completion marker (content-free) so
+      // `--status` can READ it later without re-spending on live probes.
+      const verifySearch = await verifySearchRoundTrip(engine, { samples: 3 });
+      await completeEmbeddingMigration(engine, plan, {
+        verify_search: { status: verifySearch.status, samples: verifySearch.samples },
+        ...(reranker.action !== 'none' && { reranker }),
+        ...(plan.synopsis_tier_pages > 0 && { context_tier_downgraded_pages: plan.synopsis_tier_pages }),
+      });
+      return { status: 'completed', remaining: 0, verify_search: verifySearch, ...base };
     }
     return {
       status: 'incomplete',
@@ -713,6 +734,88 @@ export async function runMigrateEmbeddings(
     exit(0);
   }
   const flags = parseMigrateEmbeddingsFlags(args);
+
+  // ── Read-only status surface (D6). No env refusal (it REPORTS env), no
+  // mutation, no spend — the mid-incident "where am I?" command.
+  if (args.includes('--status')) {
+    const report = await readMigrationStatus(engine);
+    const envPresence = detectEnvPresence();
+    // API-key PRESENCE only — never values (Section 3).
+    const keyPresence: Record<string, boolean> = {};
+    for (const k of ['VOYAGE_API_KEY', 'OPENAI_API_KEY', 'ZEROENTROPY_API_KEY', 'OPENROUTER_API_KEY']) {
+      keyPresence[k] = Boolean(process.env[k]);
+    }
+    let filePlane: { model?: string | null; dims?: number | null } | null = null;
+    let identity = { engine: 'unknown', target: 'unknown' };
+    try {
+      const { loadConfigFileOnly, loadConfig } = await import('../core/config.ts');
+      const fileCfg = loadConfigFileOnly();
+      filePlane = fileCfg
+        ? { model: fileCfg.embedding_model ?? null, dims: fileCfg.embedding_dimensions ?? null }
+        : null;
+      const cfg = loadConfig();
+      if (cfg?.database_url) identity = { engine: 'postgres', target: redactPgUrl(cfg.database_url) };
+      else if (cfg?.database_path) identity = { engine: 'pglite', target: cfg.database_path };
+      else identity = { engine: cfg?.engine ?? 'pglite', target: 'default path' };
+    } catch { /* informational */ }
+
+    const resumeCmd = report.marker.kind === 'live'
+      ? `gbrain migrate embeddings --to ${report.marker.state.to_model} --dim ${report.marker.state.to_dims}${report.marker.state.force_sunset_target ? ' --force-sunset-target' : ''} --yes`
+      : null;
+
+    if (flags.json) {
+      console.log(JSON.stringify({
+        status: 'status',
+        identity,
+        env: { present: envPresence.present, model: envPresence.model, dims: envPresence.dims },
+        keys: keyPresence,
+        file_plane: filePlane,
+        ...report,
+        resume_command: resumeCmd,
+      }, null, 2));
+      exit(0);
+    }
+
+    console.log('Embedding migration status');
+    console.log(`  Brain: ${identity.engine} (${identity.target}); scope: brain-wide (all sources)`);
+    console.log(`  Env plane:  GBRAIN_EMBEDDING_MODEL=${envPresence.model ?? '(unset)'} GBRAIN_EMBEDDING_DIMENSIONS=${envPresence.dims ?? '(unset)'}`);
+    console.log(`  Keys:       ${Object.entries(keyPresence).map(([k, v]) => `${k}=${v ? 'set' : 'unset'}`).join(' ')}`);
+    console.log(`  File plane: ${filePlane ? `${filePlane.model ?? '(none)'} @ ${filePlane.dims ?? '?'}d` : '(no ~/.gbrain/config.json)'}`);
+    console.log(`  DB plane:   ${report.db_plane.model ?? '(none)'} @ ${report.db_plane.dims ?? '?'}d`);
+    console.log(`  Column:     content_chunks.embedding ${report.column_dims === null ? 'absent/unreadable' : `${report.column_dims}d`}${report.pinned_widths.map((p) => `; ${p.table} ${p.dims === null ? '?' : `${p.dims}d`}`).join('')}`);
+    console.log(`  Vectors:    ${report.missing_embeddings ?? '?'} chunk(s) missing; ${report.chunkless_pages ?? '?'} contentful page(s) without chunks; facts pending: ${report.facts_pending ?? 'n/a'}`);
+    if (report.signature_census.length > 0) {
+      console.log(`  Signatures: ${report.signature_census.map((c) => `${c.signature ?? '(none recorded)'}: ${c.pages}`).join(', ')}`);
+    }
+    if (report.synopsis_tier_pages !== null && report.synopsis_tier_pages > 0) {
+      console.log(`  Context tier: ${report.synopsis_tier_pages} page(s) at per_chunk_synopsis (a migration re-embeds them at title tier)`);
+    }
+    if (report.stale_vs_target.target) {
+      console.log(`  Target:     ${report.stale_vs_target.target} — ${report.stale_vs_target.stale ?? '?'} chunk(s) not yet in that space`);
+    }
+    switch (report.marker.kind) {
+      case 'live': {
+        const s = report.marker.state;
+        console.log(`  Migration:  IN FLIGHT to ${s.to_model} (${s.to_dims}d), started ${s.started_at}${s.retargeted_at ? `, retargeted ${s.retargeted_at}` : ''}`);
+        if (s.superseded && s.superseded.length > 0) {
+          console.log(`              abandoned targets: ${s.superseded.map((x) => `${x.to_model} (${x.to_dims}d, started ${x.started_at})`).join('; ')}`);
+        }
+        console.log(`  Resume:     ${resumeCmd}`);
+        break;
+      }
+      case 'corrupt':
+        console.log(`  Migration:  state marker is CORRUPT (raw: ${report.marker.raw_prefix}) — re-running a migration rewrites it`);
+        break;
+      default:
+        console.log('  Migration:  none in flight');
+    }
+    if (report.completed) {
+      const c = report.completed;
+      console.log(`  Last completed: to ${String(c.to_model)} (${String(c.to_dims)}d) at ${String(c.completed_at)}${c.verify_search ? `; smoke check: ${String((c.verify_search as { status?: unknown }).status)}` : ''}`);
+    }
+    exit(0);
+  }
+
   if (!flags.to) {
     serr('Missing --to <provider:model>. Example: gbrain migrate embeddings --to openai:text-embedding-3-small');
     serr('Run with --help for all flags.');
@@ -879,6 +982,20 @@ export async function runMigrateEmbeddings(
         serr(`  [migrate] reconciled the embedding signature on ${result.signatures_reconciled} fully-embedded page(s) (batch-boundary pages).`);
       }
       for (const line of renderRerankerOutcome(result.reranker)) serr(line);
+      // Honestly labeled: a smoke check (self-retrieval), not a recall eval —
+      // BrainBench owns retrieval quality.
+      if (result.verify_search.status === 'pass') {
+        serr(`  [migrate] smoke check (self-retrieval, not a recall eval): pass (${result.verify_search.samples.length} sample(s)).`);
+      } else if (result.verify_search.status === 'warn') {
+        const bad = result.verify_search.samples.filter((s) => s.status !== 'hit');
+        serr(`  [migrate] smoke check: WARN (${result.verify_search.reason_code ?? 'miss'}) — ${bad.map((s) => `page ${s.page_id}: ${s.status}${s.reason_code ? ` (${s.reason_code})` : ''}`).join('; ') || 'no samples'}.`);
+        serr('            Search still completed the migration; investigate with `gbrain search` / doctor if quality looks off.');
+      } else {
+        serr(`  [migrate] smoke check: skipped (${result.verify_search.reason_code ?? 'n/a'}).`);
+      }
+      if (plan.synopsis_tier_pages > 0) {
+        serr(`  [migrate] context tier: ${plan.synopsis_tier_pages} page(s) re-embedded at the title tier (was per_chunk_synopsis).`);
+      }
       if (!flags.json) {
         slog(`Migration complete: ${result.embedded} chunk(s) embedded on ${plan.to_model} (${plan.to_dims}d).`);
       }

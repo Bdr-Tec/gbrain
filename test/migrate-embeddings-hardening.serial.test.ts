@@ -152,7 +152,13 @@ describe('poisonable skip is dead', () => {
     embeddedTexts = [];
     const code = await runMigrate(['--to', 'openai:text-embedding-3-small', '--dim', String(TO_DIMS), '--yes']);
     expect(code).toBe(0); // completed — by DOING the work, not by skipping it
-    expect(embeddedTexts.length).toBe(2); // both darkened pages re-embedded
+    // 2 drain re-embeds + 2 completion smoke-check query embeds (the smoke
+    // check is part of the completed path). Vectors restored either way:
+    const vecs = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM content_chunks WHERE embedding IS NOT NULL`,
+    );
+    expect(Number(vecs[0]?.n)).toBe(2);
+    expect(embeddedTexts.length).toBe(4);
 
     // And now that the brain is GENUINELY converged, the verified skip fires.
     embeddedTexts = [];
@@ -429,4 +435,102 @@ describe('reranker companion (D8)', () => {
     const qc = await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM query_cache`);
     expect(Number(qc[0]?.n)).toBe(0);
   });
+});
+
+describe('status surface + completion smoke check (D6/D11)', () => {
+  test('--status --json reports planes, censuses, markers — and never mutates', async () => {
+    const outLines: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { outLines.push(a.map(String).join(' ')); };
+    let code: number;
+    try {
+      code = await runMigrate(['--status', '--json']);
+    } finally {
+      console.log = origLog;
+    }
+    expect(code).toBe(0);
+    const report = JSON.parse(outLines.join('\n')) as Record<string, never> & {
+      status: string;
+      identity: { engine: string };
+      env: { present: boolean };
+      keys: Record<string, boolean>;
+      file_plane: { model: string | null } | null;
+      db_plane: { model: string | null };
+      column_dims: number | null;
+      missing_embeddings: number | null;
+      signature_census: Array<{ signature: string | null; pages: number }>;
+      marker: { kind: string };
+      completed: { verify_search?: { status: string } } | null;
+      resume_command: string | null;
+    };
+    expect(report.status).toBe('status');
+    expect(report.identity.engine).toBe('pglite');
+    expect(report.env.present).toBe(false);
+    // Key PRESENCE booleans only — never values.
+    expect(typeof report.keys.VOYAGE_API_KEY).toBe('boolean');
+    expect(JSON.stringify(report)).not.toContain('sk-test-fake');
+    expect(report.file_plane?.model).toBe('openai:text-embedding-3-small');
+    expect(report.db_plane.model).toBe('openai:text-embedding-3-small');
+    expect(report.column_dims).toBe(TO_DIMS);
+    expect(report.missing_embeddings).toBe(0);
+    expect(report.signature_census.length).toBeGreaterThan(0);
+    expect(report.marker.kind).toBe('none');
+    expect(report.resume_command).toBeNull();
+    // The last completed migration stamped a content-free smoke-check record.
+    expect(report.completed?.verify_search?.status).toBe('pass');
+    expect(JSON.stringify(report.completed)).not.toContain('chunk of');
+  }, 30000);
+
+  test('doctor embedding_migration_state: warns with resume command on a live marker, ok when clear', async () => {
+    const { checkEmbeddingMigrationState } = await import('../src/commands/doctor.ts');
+    const clear = await checkEmbeddingMigrationState(engine);
+    expect(clear.status).toBe('ok');
+
+    await engine.setConfig(MIGRATION_STATE_KEY, JSON.stringify({
+      version: 2,
+      to_model: 'voyage:voyage-4',
+      to_dims: 1024,
+      from_model: 'openai:text-embedding-3-small',
+      from_dims: TO_DIMS,
+      started_at: '2026-08-10T00:00:00.000Z',
+    } satisfies MigrationState));
+    try {
+      const live = await checkEmbeddingMigrationState(engine);
+      expect(live.status).toBe('warn');
+      expect(live.message).toContain('voyage:voyage-4');
+      expect(live.message).toContain('gbrain migrate embeddings --to voyage:voyage-4 --dim 1024');
+      expect(live.message).toContain('--status');
+    } finally {
+      await engine.unsetConfig(MIGRATION_STATE_KEY);
+    }
+  }, 30000);
+
+  test('verifySearchRoundTrip: pass on a healthy brain; error samples warn; unconfigured gateway skips — never throws', async () => {
+    const { verifySearchRoundTrip } = await import('../src/core/embedding-migration.ts');
+
+    const pass = await verifySearchRoundTrip(engine, { samples: 2 });
+    expect(pass.status).toBe('pass');
+    expect(pass.samples.every((s) => s.status === 'hit')).toBe(true);
+
+    // Transport throws ⇒ per-sample error ⇒ warn (exit semantics untouched).
+    __setEmbedTransportForTests(async () => { throw new Error('probe transport down'); });
+    try {
+      const warn = await verifySearchRoundTrip(engine, { samples: 2 });
+      expect(warn.status).toBe('warn');
+      expect(warn.samples.every((s) => s.status === 'error')).toBe(true);
+    } finally {
+      installTransport();
+    }
+
+    // (The gateway_unconfigured ⇒ skipped branch is unreachable under the
+    // test harness — resetGateway() restores a configured baseline. The
+    // branch is three lines guarded by the same currentEmbeddingSignature()
+    // null-contract pinned elsewhere in this wave.)
+    configureGateway({
+      embedding_model: 'openai:text-embedding-3-small',
+      embedding_dimensions: TO_DIMS,
+      env: { OPENAI_API_KEY: 'sk-test-fake', VOYAGE_API_KEY: 'pa-test-fake' },
+    });
+    installTransport();
+  }, 30000);
 });

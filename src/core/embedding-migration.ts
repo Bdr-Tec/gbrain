@@ -374,6 +374,13 @@ export interface EmbeddingMigrationPlan {
    * `signature: null` bucket = pages with no recorded signature.
    */
   signature_census: Array<{ signature: string | null; pages: number }>;
+  /**
+   * Pages currently embedded at the per_chunk_synopsis context tier. A plain
+   * stale re-embed lands them at the TITLE tier (embedding-context.ts) — a
+   * quality downgrade the user consents to via the plan (tier-preserving
+   * re-embed is a filed follow-up, not built).
+   */
+  synopsis_tier_pages: number;
 }
 
 export type MigrationApplyResult =
@@ -556,6 +563,19 @@ export async function planEmbeddingMigration(
     // Census is informational; a probe failure never blocks planning.
   }
 
+  // Context-tier downgrade consent (outside-voice C6): a stale re-embed
+  // replaces per_chunk_synopsis vectors with title-tier ones.
+  let synopsisTierPages = 0;
+  try {
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pages
+        WHERE deleted_at IS NULL AND contextual_retrieval_mode = 'per_chunk_synopsis'`,
+    );
+    synopsisTierPages = Number(rows[0]?.n ?? 0);
+  } catch {
+    // Column may not exist on older brains — informational only.
+  }
+
   // Sunset companion warning: migrating embeddings off a provider whose
   // reranker is still ACTIVE leaves rerank on the outgoing provider. Resolved
   // THROUGH the mode bundles (not the bare DB key) — the common ZE case is an
@@ -591,7 +611,208 @@ export async function planEmbeddingMigration(
     resuming,
     reranker_warning: rerankerWarning,
     signature_census: signatureCensus,
+    synopsis_tier_pages: synopsisTierPages,
   };
+}
+
+// ============================================================================
+// Read-only status + completion smoke check (D6 + D11)
+// ============================================================================
+
+export interface MigrationStatusReport {
+  marker:
+    | { kind: 'none' }
+    | { kind: 'live'; state: MigrationState }
+    | { kind: 'corrupt'; raw_prefix: string };
+  completed: Record<string, unknown> | null;
+  db_plane: { model: string | null; dims: string | null };
+  column_dims: number | null;
+  pinned_widths: Array<{ table: string; dims: number | null }>;
+  missing_embeddings: number | null;
+  chunkless_pages: number | null;
+  signature_census: Array<{ signature: string | null; pages: number }>;
+  /** facts rows whose text-space vector is NULL (regenerate on next extract/write). */
+  facts_pending: number | null;
+  synopsis_tier_pages: number | null;
+  /** Stale count vs the live marker's target (else null — no target known). */
+  stale_vs_target: { target: string | null; stale: number | null };
+}
+
+/**
+ * Read-only migration status. Never throws, never mutates, never spends —
+ * `--status` is the surface a stranded agent reads mid-incident, so every
+ * probe degrades to null instead of erroring.
+ */
+export async function readMigrationStatus(engine: BrainEngine): Promise<MigrationStatusReport> {
+  const marker = await readMigrationState(engine);
+  const markerReport: MigrationStatusReport['marker'] = marker.corrupt
+    ? { kind: 'corrupt', raw_prefix: (marker.raw ?? '').slice(0, 120) }
+    : marker.state
+      ? { kind: 'live', state: marker.state }
+      : { kind: 'none' };
+
+  let completed: Record<string, unknown> | null = null;
+  try {
+    const raw = await engine.getConfig(MIGRATION_COMPLETED_KEY);
+    if (raw) completed = JSON.parse(raw) as Record<string, unknown>;
+  } catch { /* corrupt/absent completion record — report null */ }
+
+  let dbModel: string | null = null;
+  let dbDims: string | null = null;
+  try {
+    dbModel = await engine.getConfig('embedding_model');
+    dbDims = await engine.getConfig('embedding_dimensions');
+  } catch { /* report null */ }
+
+  let columnDims: number | null = null;
+  try {
+    columnDims = (await readContentChunksEmbeddingDim(engine)).dims;
+  } catch { /* report null */ }
+
+  let pinned: Array<{ table: string; dims: number | null }> = [];
+  try {
+    pinned = await readDimPinnedWidths(engine);
+  } catch { /* report empty */ }
+
+  let missing: number | null = null;
+  try {
+    missing = (await engine.getHealth()).missing_embeddings;
+  } catch { /* report null */ }
+
+  let chunkless: number | null = null;
+  try {
+    chunkless = await engine.countChunklessPagesWithContent();
+  } catch { /* report null */ }
+
+  let census: Array<{ signature: string | null; pages: number }> = [];
+  try {
+    const rows = await engine.executeRaw<{ signature: string | null; pages: number }>(
+      `SELECT embedding_signature AS signature, count(*)::int AS pages
+         FROM pages WHERE deleted_at IS NULL
+        GROUP BY embedding_signature ORDER BY count(*) DESC LIMIT 5`,
+    );
+    census = rows.map((r) => ({ signature: r.signature, pages: Number(r.pages) }));
+  } catch { /* report empty */ }
+
+  let factsPending: number | null = null;
+  try {
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM facts WHERE embedding IS NULL AND expired_at IS NULL`,
+    );
+    factsPending = Number(rows[0]?.n ?? 0);
+  } catch { /* facts table absent — report null */ }
+
+  let synopsisTier: number | null = null;
+  try {
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pages
+        WHERE deleted_at IS NULL AND contextual_retrieval_mode = 'per_chunk_synopsis'`,
+    );
+    synopsisTier = Number(rows[0]?.n ?? 0);
+  } catch { /* report null */ }
+
+  let staleVsTarget: MigrationStatusReport['stale_vs_target'] = { target: null, stale: null };
+  const target = marker.state
+    ? { model: marker.state.to_model, dims: marker.state.to_dims }
+    : dbModel && dbDims && Number.isFinite(Number(dbDims))
+      ? { model: dbModel, dims: Number(dbDims) }
+      : null;
+  if (target) {
+    try {
+      const stale = await engine.countStaleChunks({
+        signature: migrationSignature(target.model, target.dims),
+        includeNullSignature: true,
+      });
+      staleVsTarget = { target: `${target.model} (${target.dims}d)`, stale };
+    } catch {
+      staleVsTarget = { target: `${target.model} (${target.dims}d)`, stale: null };
+    }
+  }
+
+  return {
+    marker: markerReport,
+    completed,
+    db_plane: { model: dbModel, dims: dbDims },
+    column_dims: columnDims,
+    pinned_widths: pinned,
+    missing_embeddings: missing,
+    chunkless_pages: chunkless,
+    signature_census: census,
+    facts_pending: factsPending,
+    synopsis_tier_pages: synopsisTier,
+    stale_vs_target: staleVsTarget,
+  };
+}
+
+export interface VerifySearchOutcome {
+  status: 'pass' | 'warn' | 'skipped';
+  /** Content-free per-sample record — safe to stamp into the completion marker. */
+  samples: Array<{ page_id: number; status: 'hit' | 'miss' | 'error'; reason_code?: string }>;
+  reason_code?: string;
+}
+
+/**
+ * Completion smoke check (D11): self-retrieval on up to N recently-embedded
+ * pages via query-side embedQuery + vector search. Honestly labeled: a SMOKE
+ * CHECK, not a recall eval (BrainBench owns retrieval quality). NEVER throws;
+ * warn-don't-block; hit identity by (page_id, source_id), never slug. The
+ * persisted record carries only page ids + reason codes — no query snippets
+ * or page content (markers land in config dumps and logs).
+ */
+export async function verifySearchRoundTrip(
+  engine: BrainEngine,
+  opts: { samples?: number } = {},
+): Promise<VerifySearchOutcome> {
+  try {
+    const { currentEmbeddingSignature, embedQuery } = await import('./embedding.ts');
+    if (currentEmbeddingSignature() === null) {
+      return { status: 'skipped', samples: [], reason_code: 'gateway_unconfigured' };
+    }
+    const n = Math.max(1, Math.min(10, opts.samples ?? 3));
+    const rows = await engine.executeRaw<{ page_id: number; source_id: string; chunk_text: string }>(
+      `SELECT cc.page_id, p.source_id, cc.chunk_text
+         FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+        WHERE cc.embedding IS NOT NULL AND p.deleted_at IS NULL
+          AND (cc.modality IS NULL OR cc.modality = 'text')
+        ORDER BY cc.id DESC
+        LIMIT $1`,
+      [n],
+    );
+    if (rows.length === 0) {
+      return { status: 'skipped', samples: [], reason_code: 'no_embedded_chunks' };
+    }
+    const samples: VerifySearchOutcome['samples'] = [];
+    for (const row of rows) {
+      try {
+        const query = row.chunk_text.slice(0, 160);
+        const vec = await embedQuery(query);
+        const results = await engine.searchVector(vec, {
+          limit: 10,
+          sourceId: row.source_id,
+        } as never);
+        const hit = Array.isArray(results)
+          && results.some((r) => Number((r as { page_id?: unknown }).page_id) === Number(row.page_id));
+        samples.push({ page_id: Number(row.page_id), status: hit ? 'hit' : 'miss' });
+      } catch (e) {
+        samples.push({
+          page_id: Number(row.page_id),
+          status: 'error',
+          reason_code: e instanceof Error ? e.message.slice(0, 80) : 'unknown',
+        });
+      }
+    }
+    const misses = samples.filter((s) => s.status !== 'hit');
+    return misses.length === 0
+      ? { status: 'pass', samples }
+      : { status: 'warn', samples, reason_code: 'self_retrieval_miss' };
+  } catch (e) {
+    return {
+      status: 'warn',
+      samples: [],
+      reason_code: e instanceof Error ? e.message.slice(0, 80) : 'unknown',
+    };
+  }
 }
 
 /**

@@ -1171,6 +1171,10 @@ export async function doctorReportRemote(
   // 716K-chunk damage incident from PR #1421's description.
   checks.push(await checkEmbeddingEnvOverride(engine));
 
+  // Surface the migration state marker (previously write-only): a live
+  // marker = mid-migration brain, with the exact resume + status commands.
+  checks.push(await checkEmbeddingMigrationState(engine));
+
   // v0.31.12 subagent runtime enforcement (Layer 3 of 3 — Codex F13).
   // The subagent loop requires native tool-calling. If models.subagent,
   // models.tier.subagent, or models.default resolves to a limited provider, warn here
@@ -3537,10 +3541,15 @@ async function checkEmbeddingEnvOverride(engine: BrainEngine): Promise<Check> {
     mismatches.push({ key: 'GBRAIN_EMBEDDING_DIMENSIONS', env: envDim, db: dbDim });
   }
   if (mismatches.length === 0) {
+    // Informational nuance (D10): agreeing env vars are still an override —
+    // the file plane is the durable home; say so instead of a bare ok.
+    const envSet = Boolean(envModel || envDim);
     return {
       name: 'embedding_env_override',
       status: 'ok',
-      message: 'env vars agree with DB config',
+      message: envSet
+        ? 'env vars agree with DB config today — note they override the file plane at runtime; prefer the file plane (or keep env in sync everywhere gbrain runs)'
+        : 'env vars agree with DB config',
     };
   }
   return {
@@ -3552,6 +3561,53 @@ async function checkEmbeddingEnvOverride(engine: BrainEngine): Promise<Check> {
       `or update DB config to match.`,
     details: { mismatches },
   };
+}
+
+/**
+ * Surface the (previously write-only) embedding-migration state marker: a
+ * live marker means a migration is in flight or was interrupted — the brain
+ * is mid-transition and retrieval may be degraded until it drains. Warn with
+ * the exact resume + status commands.
+ */
+export async function checkEmbeddingMigrationState(engine: BrainEngine): Promise<Check> {
+  try {
+    const { readMigrationState, migrationSignature } = await import('../core/embedding-migration.ts');
+    const marker = await readMigrationState(engine);
+    if (marker.corrupt) {
+      return {
+        name: 'embedding_migration_state',
+        status: 'warn',
+        message: 'embedding-migration state marker is corrupt. Inspect: gbrain migrate embeddings --status; re-running the migration rewrites it.',
+      };
+    }
+    if (!marker.state) {
+      return { name: 'embedding_migration_state', status: 'ok', message: 'no embedding migration in flight' };
+    }
+    const s = marker.state;
+    let staleNote = '';
+    try {
+      const stale = await engine.countStaleChunks({
+        signature: migrationSignature(s.to_model, s.to_dims),
+        includeNullSignature: true,
+      });
+      staleNote = `; ${stale} chunk(s) not yet in the target space`;
+    } catch { /* count is best-effort */ }
+    return {
+      name: 'embedding_migration_state',
+      status: 'warn',
+      message:
+        `an embedding migration to ${s.to_model} (${s.to_dims}d) started ${s.started_at} is in flight or was interrupted${staleNote}. ` +
+        `Resume: gbrain migrate embeddings --to ${s.to_model} --dim ${s.to_dims}${s.force_sunset_target ? ' --force-sunset-target' : ''} --yes. ` +
+        `Status: gbrain migrate embeddings --status`,
+      details: { to_model: s.to_model, to_dims: s.to_dims, started_at: s.started_at },
+    };
+  } catch (err) {
+    return {
+      name: 'embedding_migration_state',
+      status: 'warn',
+      message: `could not read migration state: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }
 
 export async function checkSubagentCapability(engine: BrainEngine): Promise<Check> {
@@ -7312,11 +7368,13 @@ export async function buildChecks(
         // Only warn when there's a real coverage gap. Empty brain (0 chunks)
         // is a normal state for new installs — skip the gate entirely.
         if (total > 0 && pct < 90) {
+          // NOTE: there is NO per-column embed flag (write-side custom-column
+          // support is a filed follow-up) — the old hint prescribed one.
           coverageWarn =
             `Active column '${activeCol}' is ${pct.toFixed(1)}% populated. ` +
             `Search quality silently degraded on un-embedded chunks. ` +
-            `Fix: gbrain embed --column ${activeCol} --stale (write-side support v2) ` +
-            `OR gbrain config set search_embedding_column embedding`;
+            `Fix: gbrain config set search_embedding_column embedding (read the default column), ` +
+            `then gbrain embed --stale; per-column write-side backfill is a filed follow-up (TODOS.md)`;
         }
       }
 
@@ -7356,6 +7414,10 @@ export async function buildChecks(
   //     checkEmbeddingEnvOverride() helper.
   progress.heartbeat('embedding_env_override');
   checks.push(await checkEmbeddingEnvOverride(engine));
+
+  // Surface the migration state marker (previously write-only): a live
+  // marker = mid-migration brain, with the exact resume + status commands.
+  checks.push(await checkEmbeddingMigrationState(engine));
 
   // 9. Graph health (link + timeline coverage on entity pages).
   // dead_links removed in v0.10.1: ON DELETE CASCADE on link FKs makes it always 0.
