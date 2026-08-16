@@ -233,9 +233,15 @@ export class MinionQueue {
     // parent's bookkeeping/aggregator — returning some other child would
     // corrupt child_done accounting. opts.coalesce_params overrides per call.
     const policy = await resolveAdmissionPolicy(this.engine, jobName);
+    // An EMPTY payload (after excluding the hash key itself) carries no
+    // dedupe signal — two no-param submits are more likely distinct
+    // placeholder/scaffolding jobs than a runaway producer (which always
+    // carries a prompt). Never coalesce those.
+    const hashablePayload = Object.keys(data ?? {}).some(k => k !== '__param_hash');
     const coalesceActive =
       (opts?.coalesce_params ?? policy.coalesceParams) &&
       !opts?.parent_job_id &&
+      hashablePayload &&
       childStatus === 'waiting';
     let paramHash: string | null = null;
     if (coalesceActive) {

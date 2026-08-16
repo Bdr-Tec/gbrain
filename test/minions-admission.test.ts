@@ -108,6 +108,13 @@ describe('param-coalescing (subagent default-on)', () => {
     expect(second.id).not.toBe(first.id);
   });
 
+  test('EMPTY payloads never coalesce (no dedupe signal — scaffolding/placeholder jobs stay distinct)', async () => {
+    const a = await queue.add('subagent', {}, {}, SUB);
+    const b = await queue.add('subagent', {}, {}, SUB);
+    expect(b.id).not.toBe(a.id);
+    expect((a.data as Record<string, unknown>).__param_hash).toBeUndefined();
+  });
+
   test('parented submits never coalesce (fanout children belong to their parent)', async () => {
     const parent = await queue.add('subagent_aggregator', { kind: 'agg' }, {}, SUB);
     const c1 = await queue.add('subagent', { prompt: 'chunk' }, { parent_job_id: parent.id }, SUB);
