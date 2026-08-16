@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.46.12.0] - 2026-08-16
+## [0.46.13.0] - 2026-08-16
 
 Fix wave: 13 verified issues fixed + 14 community PRs adopted with credit, from a
 triage of everything filed since the 2026-08-14 audit (42 new items, each verified
@@ -68,7 +68,7 @@ against HEAD with an adversarial second pass before entering scope).
 - **cli:** `sources --help` shows real usage instead of the circular stub
   (PR #4133 by @Masashi-Ono0611).
 
-### To take advantage of v0.46.12.0
+### To take advantage of v0.46.13.0
 - `gbrain upgrade` picks everything up; migration v131 runs automatically.
   Multi-worker Postgres deployments: stop running `gbrain jobs work` daemons
   BEFORE upgrading and restart them on the new binary — an old binary writing
