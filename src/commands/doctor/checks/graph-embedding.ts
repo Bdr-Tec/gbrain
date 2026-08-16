@@ -381,21 +381,18 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
             : `embedding_model="${model}": the hosted API shut down on ${ZEROENTROPY_SUNSET_DATE}. No embedded vectors exist yet, so retrieval is not impacted — but embedding will fail until the config points elsewhere.`
           : `embedding_model="${model}": the hosted API shuts down on ${ZEROENTROPY_SUNSET_DATE}. On that date semantic retrieval stops entirely — existing vectors become unqueryable (query embedding uses the same endpoint), not just new content.`,
       );
-      // v0.46.3: the paste-ready fix is TARGET-AWARE on dimensions. Voyage's
-      // valid widths are {256, 512, 1024, 2048} — blindly preserving this
-      // brain's actual width (usually 1280) would emit a command Voyage
-      // rejects. OpenAI text-3 supports flexible widths up to its native
-      // size, so the keep-width form is offered only when valid there.
-      const openaiDimFlag = dims && dims <= 1536 ? ` --dim ${dims}` : ' --dim 1536';
-      const openaiKeepsWidth = !!(dims && dims <= 1536);
+      // v0.46.3: the paste-ready fix is TARGET-AWARE on dimensions via the
+      // canonical renderer (defaults.ts) — Voyage's valid widths are
+      // {256, 512, 1024, 2048}, so the recommended command always carries
+      // --dim 1024; the keep-width OpenAI form renders only when valid there.
+      const { renderCanonicalMigrationCommands } = await import('../../../core/ai/defaults.ts');
+      const cmds = renderCanonicalMigrationCommands({ colDims: dims ?? null });
       parts.push(
         `Two fixes, either works: ` +
         `[1] self-host the same model — zembed-1 weights are Apache-2.0; keep the zeroentropyai:zembed-1 id and point provider_base_urls.zeroentropyai at a ZE-wire-compatible endpoint (NOT a generic OpenAI-compatible server — the id speaks ZE's /models/embed dialect). Keeps every existing vector, no re-embed (docs/guides/embedding-migration.md). ` +
-        `[2] migrate (resumable; preview cost first): ` +
-        `gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run` +
-        (dims && dims !== 1024 ? ` (${dims} is not a valid Voyage width — the migration rebuilds the index at 1024)` : '') +
-        `; OpenAI alternative${openaiKeepsWidth ? ` keeps this brain's ${dims}d width` : ''}: ` +
-        `gbrain migrate embeddings --to openai:text-embedding-3-small${openaiDimFlag} --dry-run.`,
+        `[2] migrate (resumable; preview cost first): ${cmds.recommendedDryRun}` +
+        (cmds.note ? ` ${cmds.note}` : '') +
+        (cmds.openaiAlternative ? ` Keep-width alternative: ${cmds.openaiAlternative}.` : ''),
       );
     }
     if (onSunsetReranker) {

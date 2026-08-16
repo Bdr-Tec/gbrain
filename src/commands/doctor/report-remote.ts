@@ -26,6 +26,7 @@ import {
   checkSubagentHealth,
   checkBatchRetryHealth,
   checkEmbeddingEnvOverride,
+  checkEmbeddingMigrationState,
   checkSubagentCapability,
   checkVolunteerChannels,
   checkSyncFreshness,
@@ -328,6 +329,10 @@ export async function doctorReportRemote(
   // with DB config; closes the silent-override class that caused the
   // 716K-chunk damage incident from PR #1421's description.
   checks.push(await checkEmbeddingEnvOverride(engine));
+
+  // Surface the migration state marker (previously write-only): a live
+  // marker = mid-migration brain, with the exact resume + status commands.
+  checks.push(await checkEmbeddingMigrationState(engine));
 
   // v0.31.12 subagent runtime enforcement (Layer 3 of 3 — Codex F13).
   // The subagent loop requires native tool-calling. If models.subagent,

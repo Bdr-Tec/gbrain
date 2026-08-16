@@ -1227,8 +1227,14 @@ export class PostgresEngine implements BrainEngine {
                contextual_retrieval_mode
         FROM pages
         WHERE slug = ${slug} ${sourceCondition} ${deletedCondition}
+        ORDER BY (source_id = 'default') DESC, source_id ASC
         LIMIT 1
       `;
+      // Deterministic multi-source tiebreak: without an ORDER BY, LIMIT 1 on a
+      // slug that exists in several sources returned an ARBITRARY row.
+      // Default-source-first (then stable alpha) — plain alpha would prefer
+      // e.g. 'archive' over 'default'. Engine parity: pglite-engine.ts carries
+      // the identical clause.
       if (rows.length === 0) return null;
       return rowToPage(rows[0]);
     });
@@ -2789,11 +2795,14 @@ export class PostgresEngine implements BrainEngine {
       // #2544: explicit non-vector column list — rowToChunk discards
       // embeddings at this call site (includeEmbedding defaults false), so
       // `cc.*` shipped every vector over the wire only to be thrown away.
+      // embedding_is_null: boolean truth of the stored vector (a schema
+      // rebuild NULLs vectors without touching embedded_at).
       const rows = await tx`
         SELECT cc.id, cc.page_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
                cc.model, cc.token_count, cc.embedded_at, cc.language,
                cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line,
-               cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified, cc.modality
+               cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified, cc.modality,
+               (cc.embedding IS NULL) AS embedding_is_null
         FROM content_chunks cc
         JOIN pages p ON p.id = cc.page_id
         WHERE p.slug = ${slug} AND ${scope}
@@ -4973,7 +4982,10 @@ export class PostgresEngine implements BrainEngine {
         -- storage until the autopilot purge phase runs.
         (SELECT count(*) FROM pages WHERE deleted_at IS NULL) as page_count,
         (SELECT count(*) FROM content_chunks) as chunk_count,
-        (SELECT count(*) FROM content_chunks WHERE embedded_at IS NOT NULL) as embedded_count,
+        -- Keyed on the stored VECTOR, not embedded_at: a schema rebuild NULLs
+        -- every vector without touching embedded_at, and this count must not
+        -- report a dark column as embedded.
+        (SELECT count(*) FROM content_chunks WHERE embedding IS NOT NULL) as embedded_count,
         (SELECT count(*) FROM links) as link_count,
         (SELECT count(DISTINCT tag) FROM tags) as tag_count,
         (SELECT count(*) FROM timeline_entries) as timeline_entry_count
@@ -5014,8 +5026,20 @@ export class PostgresEngine implements BrainEngine {
       )
       SELECT
         (SELECT count(*) FROM pages WHERE deleted_at IS NULL) as page_count,
-        (SELECT count(*) FROM content_chunks WHERE embedded_at IS NOT NULL)::float /
-          GREATEST((SELECT count(*) FROM content_chunks), 1)::float as embed_coverage,
+        -- Coverage is the stored-VECTOR truth over ELIGIBLE chunks: keyed on
+        -- embedding (not embedded_at, which a schema rebuild leaves stale) and
+        -- excluding embed_skip pages from BOTH sides so a brain with zero
+        -- remediable work can't read as under-covered. Zero eligible chunks =
+        -- vacuous 100%, matching missing_embeddings' exclusion below.
+        (SELECT CASE
+           WHEN count(*) FILTER (WHERE NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip')) = 0
+           THEN 1.0
+           ELSE count(*) FILTER (WHERE cc.embedding IS NOT NULL
+                                   AND NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip'))::float
+              / count(*) FILTER (WHERE NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip'))::float
+         END
+         FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id) as embed_coverage,
         0 as stale_pages,
         0 as orphan_pages,
         (SELECT count(*) FROM links l

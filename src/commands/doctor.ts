@@ -97,6 +97,7 @@ export {
   checkSearchMode,
   checkEvalDrift,
   checkEmbeddingEnvOverride,
+  checkEmbeddingMigrationState,
   checkSubagentCapability,
   computeConversationParserProbeHealthCheck,
   computeNightlyQualityProbeHealthCheck,
@@ -173,6 +174,7 @@ import {
   checkSearchMode,
   checkEvalDrift,
   checkEmbeddingEnvOverride,
+  checkEmbeddingMigrationState,
   checkSubagentCapability,
   computeConversationParserProbeHealthCheck,
   computeNightlyQualityProbeHealthCheck,
@@ -1126,6 +1128,44 @@ export async function buildChecks(
     // Best-effort; audit-log read failure shouldn't stop doctor.
   }
 
+  // 3d.05 Malformed-path pages. DB pages whose backing FILENAME contains
+  // bracket/control characters (markdown-link syntax as a literal filename).
+  // Sync refuses to import such markdown paths; this check is the discovery
+  // surface for rows ingested before that gate. Two-tier remediation matches
+  // core/sync.ts: POISONED rows (`](`/control chars) reconcile away on a full
+  // sync; bare-bracket rows are kept (deleting them while their file exists
+  // would be data loss) and need a rename + re-sync.
+  if (engine) {
+    try {
+      const { hasMalformedPathSegment, isPoisonedPath } = await import('../core/sync.ts');
+      const candidates = await engine.executeRaw<{ slug: string; source_id: string; source_path: string }>(
+        `SELECT slug, source_id, source_path FROM pages
+          WHERE source_path IS NOT NULL AND deleted_at IS NULL
+            AND (source_path LIKE '%[%' OR source_path LIKE '%]%'
+                 OR source_path ~ '[[:cntrl:]]')`,
+        [],
+      );
+      const malformed = candidates.filter(r => hasMalformedPathSegment(r.source_path));
+      if (malformed.length > 0) {
+        const poisoned = malformed.filter(r => isPoisonedPath(r.source_path)).length;
+        const bare = malformed.length - poisoned;
+        const preview = malformed.slice(0, 3).map(r => r.slug).join(', ');
+        checks.push({
+          name: 'malformed_path_pages',
+          status: 'warn',
+          message:
+            `${malformed.length} page(s) backed by malformed filenames (bracket/control ` +
+            `characters) pollute search: ${preview}` +
+            `${malformed.length > 3 ? `, and ${malformed.length - 3} more` : ''}. ` +
+            (poisoned > 0 ? `${poisoned} junk row(s): run a full 'gbrain sync' to reconcile them away. ` : '') +
+            (bare > 0 ? `${bare} bare-bracket row(s) are kept — rename the backing file(s) and re-sync.` : ''),
+        });
+      }
+    } catch {
+      // Best-effort; a schema without source_path shouldn't stop doctor.
+    }
+  }
+
   // 3d.1 Nightly quality probe (v0.40.1.0 Track D / T7). Reads the last
   // 7 days of quality-probe-YYYY-Www.jsonl audit events. SKIPPED with
   // paste-ready enable hint when the feature is opt-in disabled (default).
@@ -1917,12 +1957,26 @@ export async function buildChecks(
   try {
     const health = await engine.getHealth();
     const pct = (health.embed_coverage * 100).toFixed(0);
+    // Coverage + missing now share one source (the stored vector over
+    // eligible chunks), so the two numbers can no longer contradict each
+    // other. When the READ path rides a custom active column, say so — this
+    // check reports the default write-side column; the active-column truth
+    // lives in embedding_column_registry.
+    let carveOut = '';
+    try {
+      const activeCol = await engine.getConfig('search_embedding_column');
+      if (activeCol && activeCol !== 'embedding') {
+        carveOut = ` (read path uses '${activeCol}'; see embedding_column_registry)`;
+      }
+    } catch {
+      // Config read is best-effort; the coverage numbers stand alone.
+    }
     if (health.embed_coverage >= 0.9) {
-      checks.push({ name: 'embeddings', status: 'ok', message: `${pct}% coverage, ${health.missing_embeddings} missing` });
+      checks.push({ name: 'embeddings', status: 'ok', message: `${pct}% coverage, ${health.missing_embeddings} missing${carveOut}` });
     } else if (health.embed_coverage > 0) {
-      checks.push({ name: 'embeddings', status: 'warn', message: `${pct}% coverage, ${health.missing_embeddings} missing. Run: gbrain embed --stale` });
+      checks.push({ name: 'embeddings', status: 'warn', message: `${pct}% coverage, ${health.missing_embeddings} missing. Run: gbrain embed --stale${carveOut}` });
     } else {
-      checks.push({ name: 'embeddings', status: 'warn', message: 'No embeddings yet. Run: gbrain embed --stale' });
+      checks.push({ name: 'embeddings', status: 'warn', message: `No embeddings yet. Run: gbrain embed --stale${carveOut}` });
     }
   } catch {
     checks.push({ name: 'embeddings', status: 'warn', message: 'Could not check embedding health' });
@@ -2221,11 +2275,13 @@ export async function buildChecks(
         // Only warn when there's a real coverage gap. Empty brain (0 chunks)
         // is a normal state for new installs — skip the gate entirely.
         if (total > 0 && pct < 90) {
+          // NOTE: there is NO per-column embed flag (write-side custom-column
+          // support is a filed follow-up) — the old hint prescribed one.
           coverageWarn =
             `Active column '${activeCol}' is ${pct.toFixed(1)}% populated. ` +
             `Search quality silently degraded on un-embedded chunks. ` +
-            `Fix: gbrain embed --column ${activeCol} --stale (write-side support v2) ` +
-            `OR gbrain config set search_embedding_column embedding`;
+            `Fix: gbrain config set search_embedding_column embedding (read the default column), ` +
+            `then gbrain embed --stale; per-column write-side backfill is a filed follow-up (TODOS.md)`;
         }
       }
 
@@ -2265,6 +2321,10 @@ export async function buildChecks(
   //     checkEmbeddingEnvOverride() helper.
   progress.heartbeat('embedding_env_override');
   checks.push(await checkEmbeddingEnvOverride(engine));
+
+  // Surface the migration state marker (previously write-only): a live
+  // marker = mid-migration brain, with the exact resume + status commands.
+  checks.push(await checkEmbeddingMigrationState(engine));
 
   // 9. Graph health (link + timeline coverage on entity pages).
   // dead_links removed in v0.10.1: ON DELETE CASCADE on link FKs makes it always 0.
