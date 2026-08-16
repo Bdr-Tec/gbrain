@@ -13,7 +13,10 @@
   diff gate is built and reporting on every PR; blocking is a one-line flip once the
   measurement machinery has receipts. Review `scripts/coverage-gate-exemptions.txt` against
   report-only-window data in the same PR (shrink what gained unit coverage, add only what
-  repeatedly false-positives). **Effort:** S. **Priority:** P1.
+  repeatedly false-positives). **Adversarial acceptance items for the same PR:** decide the
+  enforce-mode degraded posture (today degraded -> report-only, which post-graduation is a
+  bypass channel - fail loud, or require explicit re-run); set a baseline re-seed cadence so
+  serial sub-threshold drops (<=0.49pp) cannot compound unboundedly. **Effort:** S. **Priority:** P1.
 - [ ] **P2 — Wave 4a: decompose performSyncInner (own plan).** **What:** the 1,923-line
   procedure inside src/commands/sync.ts → sync-phase-{deletes,renames,imports} modules.
   **Why:** the six pure clusters are peeled (sync.ts 5,991→4,121); the remaining bulk is one
