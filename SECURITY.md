@@ -44,10 +44,12 @@ enforced structurally by actionlint on every workflow change.
   than the asset CDN — confirming both the attested digest and that the
   attestation's builder id is this repo's release workflow. Verification is
   fail-closed: on a mismatch or an unfetchable attestation, the download is
-  discarded and the running binary is left untouched. The dependency-free check
-  is GitHub-account trust plus origin separation and a signed digest/identity
-  match; it does not independently validate the Fulcio certificate chain or
-  Rekor inclusion.
+  discarded and the running binary is left untouched. It also refuses a binary
+  whose reported version doesn't match the release it was fetched for (a
+  downgrade-replay guard). The dependency-free check is GitHub-account trust
+  plus origin separation and a digest/identity match against the attestation
+  fetched over TLS; it does NOT independently verify the attestation's Sigstore
+  signature (the Fulcio certificate chain or Rekor inclusion).
 - **From-source and pinned-tag installs remain trust-on-first-use.**
   `bun install -g github:garrytan/gbrain#latest-stable` follows a force-moved
   tag, and the `codex-plugin` branch / template repo are force-published; these
