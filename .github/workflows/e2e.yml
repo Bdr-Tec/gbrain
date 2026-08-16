@@ -224,6 +224,7 @@ jobs:
           path: ${{ runner.temp }}/coverage
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
 
   coverage-full-serial:
     if: github.event_name == 'schedule'
@@ -246,6 +247,7 @@ jobs:
           path: ${{ runner.temp }}/coverage
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
 
   coverage-full-slow:
     if: github.event_name == 'schedule'
@@ -274,6 +276,7 @@ jobs:
           path: ${{ runner.temp }}/coverage
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
 
   coverage-full-e2e:
     if: github.event_name == 'schedule'
@@ -320,6 +323,7 @@ jobs:
           path: ${{ runner.temp }}/coverage
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
 
   coverage-full-report:
     needs: [coverage-full-unit, coverage-full-serial, coverage-full-slow, coverage-full-e2e]
@@ -364,3 +368,4 @@ jobs:
           path: ${{ runner.temp }}/coverage-full-merged
           retention-days: 30
           if-no-files-found: ignore
+          overwrite: true

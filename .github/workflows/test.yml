@@ -176,6 +176,7 @@ jobs:
           path: ${{ runner.temp }}/coverage
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
 
   slow-eval-longmemeval:
     # Dedicated runner for the LongMemEval end-to-end test file. The file
@@ -214,6 +215,7 @@ jobs:
           path: ${{ runner.temp }}/coverage
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
 
   brainbench:
     # BrainBench memory-conformance gate (Cathedral 2). Hermetic: in-memory
@@ -290,6 +292,7 @@ jobs:
           path: ${{ runner.temp }}/coverage
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
       # Protocol self-certification: init a scratch brain and run the
       # conformance kit against gbrain's own stdio server. --synthesize is
       # safe here: no LLM key in CI, so it asserts the clean `unavailable`
@@ -354,6 +357,7 @@ jobs:
           path: ${{ runner.temp }}/coverage
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
 
   # ──────────────────────────────────────────────────────────────────────
   # coverage-report: merges the PR corpus (10 shards + serial + 2 slow
@@ -420,6 +424,7 @@ jobs:
           path: ${{ runner.temp }}/coverage-merged
           retention-days: 14
           if-no-files-found: ignore
+          overwrite: true
 
   # ──────────────────────────────────────────────────────────────────────
   # cache-write: ONLY runs when every gated job succeeded. Writes the
