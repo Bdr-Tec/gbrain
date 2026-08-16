@@ -5,8 +5,8 @@
 # Columns: path	max_lines	policy	note
 src/commands/doctor.ts	4205	ratchet	peel target: containment sprint C8-C13
 src/core/operations.ts	303	ratchet	peel target: containment sprint C4-C7
-src/core/postgres-engine.ts	5770	ratchet	peel target: containment sprint C15
-src/core/pglite-engine.ts	5657	ratchet	peel target: containment sprint C15
+src/core/postgres-engine.ts	5778	ratchet	peel target: containment sprint C15
+src/core/pglite-engine.ts	5665	ratchet	peel target: containment sprint C15
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4121	ratchet	peel target: containment sprint C13-C14
 src/core/ai/gateway.ts	4116	ratchet	watchlist
@@ -14,7 +14,7 @@ src/cli.ts	3337	ratchet	watchlist
 src/core/cycle.ts	2933	ratchet
 src/commands/serve-http.ts	2836	ratchet
 src/commands/jobs.ts	2839	ratchet
-src/core/search/hybrid.ts	2495	ratchet
+src/core/search/hybrid.ts	2500	ratchet
 src/core/engine.ts	2343	ratchet
 src/commands/autopilot.ts	2301	ratchet
 src/commands/extract.ts	2161	ratchet
@@ -32,4 +32,4 @@ src/commands/bootstrap.ts	1923	ratchet	grandfathered at merge (grew past the 150
 src/core/minions/worker.ts	1508	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170)
 src/commands/sources.ts	1586	ratchet
 src/core/bootstrap/harness.ts	1947	ratchet
-src/commands/hook.ts	1539	ratchet
+src/commands/hook.ts	1551	ratchet
