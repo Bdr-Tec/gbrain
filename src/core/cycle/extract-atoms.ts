@@ -72,9 +72,13 @@ const DEFAULT_EXTRACT_ATOMS_MODEL = 'anthropic:claude-haiku-4-5';
  */
 export const MAX_DETERMINISTIC_FAILURES = 3;
 
-/** Transient provider/infra failure shapes — retryable, never counted. */
+/**
+ * Transient provider/infra failure shapes — retryable, never counted.
+ * Numeric codes are word-bounded so a 3-digit run inside prose or a larger
+ * number ("chunk 1500", "$1.512") doesn't read as an HTTP 5xx/429.
+ */
 const TRANSIENT_EXTRACT_ERROR_RE =
-  /timeout|timed out|429|rate.?limit|5\d\d|ECONN|ETIMEDOUT|EPIPE|ENOTFOUND|fetch failed|network|socket|overloaded/i;
+  /timeout|timed out|\b429\b|rate.?limit|\b5\d\d\b|ECONN|ETIMEDOUT|EPIPE|ENOTFOUND|fetch failed|\bnetwork\b|socket|overloaded/i;
 
 // v0.42+ TODO: read atom_type enum from active pack manifest at runtime.
 const ATOM_TYPES = [

@@ -12,20 +12,22 @@ import type { Recipe } from '../types.ts';
  *
  * The version digits sit in different positions across ids (`gemini-2.5-pro`,
  * `gemini-3-flash-preview`, `gemini-3.6-flash`), so match the first numeric
- * token rather than a fixed segment. `-latest` aliases carry no digits and
- * always resolve to a current-generation model, so they pass. Any other
- * unversioned id reads false: a wrong `true` silently promises a discount the
- * provider never applies.
+ * token rather than a fixed segment. A VERSIONED `-latest` alias
+ * (`gemini-1.5-pro-latest`) is judged by its version — 1.5 aliases cache only
+ * via the explicit API and must stay false. Only an UNVERSIONED `-latest`
+ * alias (no digits to judge by) passes on the alias alone, since it resolves
+ * to a current-generation model. Any other unversioned id reads false: a
+ * wrong `true` silently promises a discount the provider never applies.
  */
 export function googleSupportsPromptCache(modelId: string): boolean {
   const normalized = modelId.trim().toLowerCase();
   if (!normalized.startsWith('gemini-')) return false;
-  if (normalized.endsWith('-latest')) return true;
   // Version tokens are 1-2 digits (2, 2.5, 3, 3.6, 10…); a longer numeric run
   // is a DATE/experiment suffix, not a version — `gemini-exp-1206` must not
   // parse as version 1206 and read as caching (review hardening on #4159).
   const version = normalized.match(/(?<!\d)\d{1,2}(?:\.\d+)?(?!\d)/);
-  return version !== null && Number.parseFloat(version[0]) >= 2.5;
+  if (version !== null) return Number.parseFloat(version[0]) >= 2.5;
+  return normalized.endsWith('-latest');
 }
 
 export const google: Recipe = {

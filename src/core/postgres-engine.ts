@@ -5066,8 +5066,15 @@ export class PostgresEngine implements BrainEngine {
         ) as missing_embeddings,
         (SELECT count(*) FROM links) as link_count,
         (SELECT count(*) FROM entity_pages) as entity_page_count,
+        -- gbrain#4153 consistency: an inbound link counts toward coverage
+        -- only when its SOURCE page is live — the same endpoint-liveness rule
+        -- the islanded predicate below applies, so an entity whose only
+        -- inbound link comes from a soft-deleted page can't read as covered
+        -- AND islanded in one payload.
         (SELECT count(*) FROM entity_pages e
-         WHERE EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id))::float /
+         WHERE EXISTS (SELECT 1 FROM links l
+                       JOIN pages src ON src.id = l.from_page_id
+                       WHERE l.to_page_id = e.id AND src.deleted_at IS NULL))::float /
           GREATEST((SELECT count(*) FROM entity_pages), 1)::float as link_coverage,
         (SELECT count(*) FROM entity_pages e
          WHERE EXISTS (SELECT 1 FROM timeline_entries te WHERE te.page_id = e.id))::float /

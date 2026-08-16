@@ -5871,6 +5871,11 @@ export const MIGRATIONS: Migration[] = [
     // EXISTS makes re-runs a no-op (v82 pglite precedent).
     // (Authored as v129; renumbered to v131 after #4152 and #4145 landed
     // 129/130 first — same renumber pattern as v130 itself.)
+    // Mixed-version fleets: an OLD binary still naming this constraint as an
+    // ON CONFLICT target errors (SQLSTATE 42P10) on every tool persist once
+    // the drop runs — fail-loud, not corrupting. Multi-worker Postgres
+    // deployments should stop `jobs work` daemons before upgrading and
+    // restart them on the new binary (release-noted in v0.46.12.0).
     idempotent: true,
     sql: `
       ALTER TABLE subagent_tool_executions

@@ -46,7 +46,7 @@ import type {
   Recipe,
   TouchpointKind,
 } from './types.ts';
-import { resolveRecipe, assertTouchpoint, parseModelId } from './model-resolver.ts';
+import { resolveRecipe, assertTouchpoint, parseModelId, embeddingDimsForModel } from './model-resolver.ts';
 import {
   OPENROUTER_CACHE_HEADER,
   openrouterRequiresExplicitPromptCache,
@@ -848,8 +848,12 @@ export function diagnoseEmbedding(modelOverride?: string): EmbeddingDiagnosis {
   // search. The genuine "picked a user-provided provider but no model" UX is
   // handled at the config/init layer, where a bare provider string still exists.
   const isUserProvided = (tp as any).user_provided_models === true;
-  const recipeDefaultDims = tp.default_dims ?? 0;
-  if ((isUserProvided || recipeDefaultDims === 0) && !_config!.embedding_dimensions) {
+  // Consult the per-model map, not just the recipe-wide default: a recipe
+  // with default_dims:0 (openrouter, #4114) still KNOWS the width of its
+  // listed models via model_dims, so those must not fail preflight when
+  // embedding_dimensions is unset — only genuinely unknown ids do.
+  const recipeDeclaredDims = embeddingDimsForModel(recipe, parsed.modelId);
+  if ((isUserProvided || recipeDeclaredDims === 0) && !_config!.embedding_dimensions) {
     return {
       ok: false,
       reason: 'user_provided_dims_unset',
@@ -2219,13 +2223,14 @@ async function embedMultimodalOpenAICompat(
     );
   }
 
-  // D12 — dim validation. Prefer recipe's declared default_dims when set;
-  // fall back to the brain's configured embedding_dimensions. If neither
-  // is known (LiteLLM recipe with default_dims=0 and no config override),
-  // we skip the dim check rather than fabricate an expected value — the
-  // engine's vector(N) column will reject mismatched rows at INSERT time
-  // with a clearer error than anything we could throw here.
-  const recipeDims = recipe.touchpoints.embedding?.default_dims ?? 0;
+  // D12 — dim validation. Prefer the recipe's declared dims for THIS model
+  // (per-model model_dims first, then default_dims — #4114); fall back to
+  // the brain's configured embedding_dimensions. If neither is known
+  // (LiteLLM recipe with default_dims=0 and no config override), we skip
+  // the dim check rather than fabricate an expected value — the engine's
+  // vector(N) column will reject mismatched rows at INSERT time with a
+  // clearer error than anything we could throw here.
+  const recipeDims = embeddingDimsForModel(recipe, modelId);
   const expectedDims = recipeDims > 0
     ? recipeDims
     : (cfg.embedding_dimensions ?? 0);

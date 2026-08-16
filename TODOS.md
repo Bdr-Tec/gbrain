@@ -81,6 +81,41 @@
   (c) transcripts replay-reconcile tests for WITHIN-TURN duplicate
   tool_use_id after migration v131 (same id, same message_idx — provider
   emits the dup inside one message). **Effort:** M spread. **P2.**
+- [ ] **P2 — adversarial-review residuals on the chennai wave (verified real,
+  deferred with rationale).** (a) subagent tool-ledger zero-row settlement
+  observability: in the residual zombie race a pending INSERT can be swallowed
+  by ON CONFLICT DO NOTHING, the tool still executes, and the settle UPDATE
+  then matches 0 rows — the outcome is silently unrecorded and a non-idempotent
+  tool can re-execute on replay. Add a rowcount check + job-log warn (needs a
+  logging seam in the persist helpers). (b) extract-atoms tombstones cover
+  pages only: `recordPageFailureCount` returns null for `kind !== 'page'`, so
+  a transcript that deterministically yields malformed output re-spends LLM
+  budget every cycle forever — extend #4148's failure-count machinery to
+  transcript items. (c) getHealth coverage numerators are not liveness-
+  filtered while islanded now is (#4153): a page whose only inbound link is
+  from a soft-deleted page counts as covered AND orphaned simultaneously;
+  align the coverage EXISTS subqueries with the islanded liveness JOINs in
+  both engines (parity + bootstrap-probe update). **Effort:** M spread. **P2.**
+- [ ] **P3 — conversation-parser: corpus-level false-positive receipt for the
+  multi_line bold-name-date builtin (#4163 follow-on).** Flipping the builtin
+  to `multi_line` + score_continuations_as_body means non-conversation prose
+  with as few as two `**Name** (date):`-shaped lines can clear the 5% density
+  floor (every other line counts as a continuation) and parse as a
+  conversation, feeding facts extraction with garbage segments. Build a
+  small negative corpus (essays/notes with incidental bold-date lines) and
+  either raise the floor for this builtin or require a minimum SPEAKER count.
+  Adjacent to the #4136 suspect-heading work above. **Effort:** S. **P3.**
+- [ ] **P3 — gateway expand(): record spend for a generateObject call that
+  throws after consuming tokens (#4121 follow-on).** The schema-rejection →
+  viaText fallback is the double-billed shape; the first call's tokens go
+  unrecorded because usage is only read on success. If the SDK error carries
+  usage, record it before the fallback retry. **Effort:** S. **P3.**
+- [ ] **P3 — eval-contradictions: reject flag-shaped slugs at render time.**
+  A slug beginning with `-` renders into `takes supersede '<slug>'` as a
+  flag-shaped positional; the pasted command errors rather than executes, but
+  a render-time shape check (or `--` separator support in the takes CLI)
+  would make the generated command paste-safe for any slug a remote MCP
+  writer can mint. **Effort:** S. **P3.**
 - [ ] **P3 — DRY refactors flagged by the review army (correct today,
   duplicated shape).** (a) hoist the settlement-status subquery duplicated
   across grade-takes call sites into one helper; (b) extract the three-tier

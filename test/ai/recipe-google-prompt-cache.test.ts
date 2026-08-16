@@ -33,9 +33,16 @@ describe('recipe: google prompt cache', () => {
     expect(googleSupportsPromptCache('gemini-3-flash-preview')).toBe(true);
     // Version digits trail the family name on this one — position varies.
     expect(googleSupportsPromptCache('gemini-3.6-flash')).toBe(true);
-    // `-latest` aliases carry no digits but always point at current models.
+    // UNVERSIONED `-latest` aliases carry no digits but always point at
+    // current models.
     expect(googleSupportsPromptCache('gemini-flash-latest')).toBe(true);
     expect(googleSupportsPromptCache('gemini-pro-latest')).toBe(true);
+    // VERSIONED `-latest` aliases are judged by their version, not the alias:
+    // the real gemini-1.5-*-latest ids cache only via the explicit API
+    // (adversarial-review fix — the alias shortcut used to run first).
+    expect(googleSupportsPromptCache('gemini-1.5-pro-latest')).toBe(false);
+    expect(googleSupportsPromptCache('gemini-1.5-flash-latest')).toBe(false);
+    expect(googleSupportsPromptCache('gemini-2.5-pro-latest')).toBe(true);
 
     expect(googleSupportsPromptCache('gemini-2.0-flash')).toBe(false);
     expect(googleSupportsPromptCache('gemini-2.0-flash-exp')).toBe(false);

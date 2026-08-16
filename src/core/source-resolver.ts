@@ -451,8 +451,12 @@ export async function noGrantFederatedScope(
  *
  * Archived sources are excluded (same rationale as pickSoleNonDefaultSource);
  * the archived column is v34+, so fall back to the un-archived query on older
- * brains. Callers put the result on `OperationContext.localFederatedSourceIds`
- * — consumed only by `federatedSearchScope` and only when `remote === false`.
+ * brains. Callers put the result on `OperationContext.localFederatedSourceIds`,
+ * consumed by `federatedSearchScope`. Two caller classes exist: local CLI/MCP
+ * stdio (`remote === false`, the original #2561 path) and — via
+ * `noGrantFederatedScope` below — remote transports for a legacy no-grant
+ * bearer token (#3242 parity), where the transport itself decides the caller
+ * may see the federated floor.
  */
 export async function localFederatedSourceIds(
   engine: BrainEngine,

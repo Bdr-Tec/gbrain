@@ -113,6 +113,38 @@ describe('#1305 — getHealth excludes soft-deleted pages', () => {
     expect(h.most_connected.map((c) => c.slug)).not.toContain('people/bob-example');
   });
 
+  test('link_coverage does not count inbound links whose SOURCE page is soft-deleted (red-team consistency with islanded)', async () => {
+    // Five entities (at the #4147 floor). Four get live inbound links; the
+    // fifth's ONLY inbound link comes from a page that is then soft-deleted.
+    // The islanded predicate (#4153) calls that entity islanded; coverage
+    // must agree it is uncovered — 4/5, not 5/5.
+    const slugs = ['people/alice-example', 'people/carol-example', 'people/dana-example', 'companies/acme-example', 'companies/widget-co'];
+    for (const slug of slugs) {
+      await engine.putPage(slug, { type: slug.startsWith('companies/') ? 'company' : 'person', title: slug, compiled_truth: 'an entity', frontmatter: {} });
+    }
+    await seedNote('wiki/live-hub');
+    await seedNote('wiki/doomed-hub');
+    const liveHub = await pageId('wiki/live-hub');
+    const doomedHub = await pageId('wiki/doomed-hub');
+    for (const slug of slugs.slice(0, 4)) {
+      await (engine as any).db.query(
+        `INSERT INTO links (from_page_id, to_page_id, link_type) VALUES ($1, $2, 'mentions')`,
+        [liveHub, await pageId(slug)],
+      );
+    }
+    await (engine as any).db.query(
+      `INSERT INTO links (from_page_id, to_page_id, link_type) VALUES ($1, $2, 'mentions')`,
+      [doomedHub, await pageId('companies/widget-co')],
+    );
+
+    await engine.softDeletePage('wiki/doomed-hub');
+    const h = await engine.getHealth();
+
+    expect(h.entity_page_count).toBe(5);
+    // Pre-fix: 1 (the dead inbound link still counted widget-co as covered).
+    expect(h.link_coverage).toBeCloseTo(0.8, 5);
+  });
+
   test('chunk storage counts stay raw (the deliberate boundary)', async () => {
     await seedNote('wiki/kept');
     await seedNote('wiki/gone');
