@@ -18,7 +18,7 @@ src/core/search/hybrid.ts	2479	ratchet
 src/core/engine.ts	2343	ratchet
 src/commands/autopilot.ts	2301	ratchet
 src/commands/extract.ts	2161	ratchet
-src/commands/extract-conversation-facts.ts	1968	ratchet
+src/commands/extract-conversation-facts.ts	2032	ratchet
 src/core/import-file.ts	1895	ratchet
 src/core/cycle/synthesize.ts	2642	ratchet
 src/commands/embed.ts	1859	ratchet
