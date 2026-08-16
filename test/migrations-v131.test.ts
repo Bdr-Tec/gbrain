@@ -103,7 +103,7 @@ describe('migration v131 — upgrade from a pre-v131 brain (PGLite)', () => {
     // Positive control: the guard actually fires pre-migration — this is the
     // exact #4155 dead-letter shape.
     await insertExec(1, 'toolu_01', 0);
-    await expect(insertExec(3, 'toolu_01', 0)).rejects.toThrow();
+    await expect(insertExec(3, 'toolu_01', 0)).rejects.toThrow(/uniq_subagent_tools_use_id|duplicate key/);
 
     // Apply v131 via the real migration runner (ledger rewind).
     await engine.setConfig('version', '130');

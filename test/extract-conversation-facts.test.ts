@@ -1448,6 +1448,42 @@ describe('#4136 folded speaker headings — decline gate is non-terminal', () =>
     expect(second.pages_skipped_unrecognized_speaker).toBe(1); // declined again — visibly, not silently
   });
 
+  test('WARN-ONLY branch: a speaker-shaped fold BETWEEN alternating speakers proceeds with the stderr warn (residual risk, visible)', async () => {
+    await engine.putPage('conversations/folded-multispeaker-example', {
+      type: 'conversation',
+      title: 'Folded heading between alternating speakers',
+      compiled_truth: [
+        '## User', '', 'Question one?', '',
+        '## Assistant', '', 'Answer one.', '',
+        '## Claude', '', 'A folded reply.', '',
+        '## User', '', 'Question two?', '',
+        '## Assistant', '', 'Answer two.',
+      ].join('\n'),
+      timeline: '',
+      frontmatter: { date: '2026-06-02' },
+    });
+    const warns: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: (c: string) => boolean }).write = (c: string) => {
+      warns.push(String(c));
+      return origWrite(c);
+    };
+    try {
+      const result = await runExtractConversationFactsCore(engine, {
+        sourceId: 'default',
+        slug: 'conversations/folded-multispeaker-example',
+        sleepMs: 0,
+      });
+      // Speakers alternate (User + Assistant = 2 distinct) → NOT declined,
+      // extraction proceeds, and the warn names the folded label.
+      expect(result.pages_skipped_unrecognized_speaker).toBe(0);
+      expect(result.pages_processed).toBe(1);
+      expect(warns.some((w) => w.includes('folded unrecognized heading(s) [Claude]') && w.includes('proceeding'))).toBe(true);
+    } finally {
+      (process.stderr as unknown as { write: unknown }).write = origWrite;
+    }
+  });
+
   test('NO REGRESSION: a single-speaker page with an unfenced doc heading (## Notes) is warn-only and still extracts', async () => {
     const result = await runExtractConversationFactsCore(engine, {
       sourceId: 'default',

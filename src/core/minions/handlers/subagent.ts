@@ -1548,6 +1548,24 @@ async function persistMessage(engine: BrainEngine, jobId: number, msg: Persisted
   );
 }
 
+/**
+ * #4155 — the ONE row a settle write may target when raw provider ids repeat
+ * within a job: the call's own ordinal first, then a pending row, then a
+ * legacy ordinal=NULL row — never a SETTLED sibling sharing the raw id at a
+ * different ordinal. Shared by persistToolExecComplete and
+ * persistToolExecFailed so the resolution priority cannot drift between the
+ * two settle paths. Binds: $1 job_id, $2 message_idx, $3 tool_use_id,
+ * $5 ordinal ($4 is each caller's payload).
+ */
+const TOOL_EXEC_TARGET_ROW_SUBSELECT = `
+      WHERE id = (
+        SELECT id FROM subagent_tool_executions
+         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
+           AND (ordinal = $5 OR ordinal IS NULL OR status = 'pending')
+         ORDER BY CASE WHEN ordinal = $5 THEN 0 WHEN status = 'pending' THEN 1 ELSE 2 END, id
+         LIMIT 1
+      )`;
+
 async function persistToolExecPending(
   engine: BrainEngine,
   jobId: number,
@@ -1606,13 +1624,7 @@ async function persistToolExecComplete(
   await engine.executeRaw(
     `UPDATE subagent_tool_executions
         SET status = 'complete', output = $4::text::jsonb, ended_at = now()
-      WHERE id = (
-        SELECT id FROM subagent_tool_executions
-         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
-           AND (ordinal = $5 OR ordinal IS NULL OR status = 'pending')
-         ORDER BY CASE WHEN ordinal = $5 THEN 0 WHEN status = 'pending' THEN 1 ELSE 2 END, id
-         LIMIT 1
-      )`,
+${TOOL_EXEC_TARGET_ROW_SUBSELECT}`,
     [jobId, messageIdx, toolUseId, typeof output === 'string' ? output : JSON.stringify(output), ordinal],
   );
 }
@@ -1641,13 +1653,7 @@ async function persistToolExecFailed(
   const updated = await engine.executeRaw<{ id: number }>(
     `UPDATE subagent_tool_executions
         SET status = 'failed', error = $4, ended_at = now()
-      WHERE id = (
-        SELECT id FROM subagent_tool_executions
-         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
-           AND (ordinal = $5 OR ordinal IS NULL OR status = 'pending')
-         ORDER BY CASE WHEN ordinal = $5 THEN 0 WHEN status = 'pending' THEN 1 ELSE 2 END, id
-         LIMIT 1
-      )
+${TOOL_EXEC_TARGET_ROW_SUBSELECT}
       RETURNING id`,
     [jobId, messageIdx, toolUseId, error, ordinal],
   );

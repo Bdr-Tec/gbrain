@@ -2524,11 +2524,6 @@ export function parseExpansionResponse(text: string): string[] | null {
   return parsed.success ? parsed.data.queries : null;
 }
 
-/**
- * Expand a search query into up to 4 related queries.
- * Returns the original query PLUS expansions. On failure, returns just the original.
- * Caller is responsible for sanitizing the query (prompt-injection boundary stays in expansion.ts).
- */
 // #4121 — pessimistic accounting constants for uninstrumented-path failures.
 // Expansion returns a 3-4 item JSON array; OCR of a single image is bounded
 // by the image token cost, NOT its base64 length (bytes are not tokens).
@@ -2548,6 +2543,31 @@ function normalizeSdkUsage(usage: unknown): { inputTokens: number; outputTokens:
   };
 }
 
+/**
+ * #4121 — one fail-open record wrapper for every uninstrumented-path spend
+ * site (expand + OCR): no-tracker is a no-op; BudgetExhausted from record()
+ * (TX1) is swallowed exactly like chat()'s _recordBudget — the breach
+ * surfaces on the NEXT reserve(), never here.
+ */
+function recordSpendOnTracker(
+  tracker: ReturnType<typeof getCurrentBudgetTracker>,
+  modelId: string,
+  label: string,
+  tokens: { inputTokens: number; outputTokens: number },
+): void {
+  if (!tracker) return;
+  try {
+    tracker.record({ modelId, inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens, label });
+  } catch {
+    // BudgetExhausted (TX1) — surfaced via the next reserve().
+  }
+}
+
+/**
+ * Expand a search query into up to 4 related queries.
+ * Returns the original query PLUS expansions. On failure, returns just the original.
+ * Caller is responsible for sanitizing the query (prompt-injection boundary stays in expansion.ts).
+ */
 export async function expand(query: string): Promise<string[]> {
   if (!query || !query.trim()) return [query];
   if (!isAvailable('expansion')) return [query];
@@ -2583,19 +2603,7 @@ export async function expand(query: string): Promise<string[]> {
     modelLabel: string,
     label: 'gateway.expand' | 'gateway.expand.failed',
     tokens: { inputTokens: number; outputTokens: number },
-  ): void => {
-    if (!tracker) return;
-    try {
-      tracker.record({
-        modelId: modelLabel,
-        inputTokens: tokens.inputTokens,
-        outputTokens: tokens.outputTokens,
-        label,
-      });
-    } catch {
-      // BudgetExhausted (TX1) raised here; surfaced via the next reserve().
-    }
-  };
+  ): void => recordSpendOnTracker(tracker, modelLabel, label, tokens);
   const recordExpansionUsage = (modelLabel: string, usage: unknown): void =>
     recordExpansion(modelLabel, 'gateway.expand', normalizeSdkUsage(usage));
   const estimatedPromptTokens = estimateChatInputTokens({
@@ -2735,12 +2743,8 @@ export async function generateOcrText(imageBytes: Buffer, mime: string): Promise
   const estimatedOcrInputTokens =
     estimateChatInputTokens({ system: systemPrompt, messages: [{ content: 'Extract visible text only.' }] }) +
     OCR_IMAGE_INPUT_TOKEN_ESTIMATE;
-  const recordOcr = (label: 'gateway.ocr' | 'gateway.ocr.failed', tokens: { inputTokens: number; outputTokens: number }): void => {
-    if (!tracker) return;
-    try {
-      tracker.record({ modelId: ocrModelId, inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens, label });
-    } catch { /* BudgetExhausted (TX1) surfaces on the next reserve() */ }
-  };
+  const recordOcr = (label: 'gateway.ocr' | 'gateway.ocr.failed', tokens: { inputTokens: number; outputTokens: number }): void =>
+    recordSpendOnTracker(tracker, ocrModelId, label, tokens);
   let result: Awaited<ReturnType<GenerateTextFn>>;
   try {
     result = await _generateTextTransport({

@@ -181,6 +181,22 @@ describe('v0.42.20.0 — background-work registry drains every sink before disco
     expect(src).toMatch(/export function __registerDrainerForTest/);
   });
 
+  test('#4143 engine parity: BOTH engines call the disconnect drain', () => {
+    // The postgres lane has no cheap behavioral harness (DATABASE_URL-gated),
+    // so pin the call sites structurally: a refactor that drops either
+    // engine's drain call silently reopens the in-flight-statement deadlock.
+    const pglite = readFileSync('src/core/pglite-engine.ts', 'utf8');
+    const postgres = readFileSync('src/core/postgres-engine.ts', 'utf8');
+    expect(pglite).toMatch(/await drainBackgroundWorkBeforeDisconnect\(\)/);
+    expect(postgres).toMatch(/await drainBackgroundWorkBeforeDisconnect\(\)/);
+    // PGLite ordering is load-bearing: drain AFTER the early-null (never
+    // before — that reopens the #1337 mid-close race), BEFORE close().
+    const nullIdx = pglite.indexOf('this._db = null;');
+    const drainIdx = pglite.indexOf('await drainBackgroundWorkBeforeDisconnect()');
+    expect(nullIdx).toBeGreaterThan(-1);
+    expect(drainIdx).toBeGreaterThan(nullIdx);
+  });
+
   test('cli-force-exit.ts daemon guard excludes "serve"', () => {
     const src = readFileSync('src/core/cli-force-exit.ts', 'utf8');
     expect(src).toMatch(/export function shouldForceExitAfterMain/);

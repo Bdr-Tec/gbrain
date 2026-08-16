@@ -739,7 +739,7 @@ describe('resolveProposeTakesDeadlineMs — derived phase budget (#4168)', () =>
 });
 
 describe('deadlineAtMs threading through the phase (#4168)', () => {
-  test('the JOB deadline governs: a near-future deadlineAtMs produces deadline_hit on a slow extractor', async () => {
+  test('a sufficient deadlineAtMs does not skip (runtime governance is pinned by the resolver unit tests above)', async () => {
     const pages = [
       buildPage({ slug: 'wiki/gov-a', body: 'page a' }),
       buildPage({ slug: 'wiki/gov-b', body: 'page b' }),

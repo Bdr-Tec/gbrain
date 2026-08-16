@@ -5861,8 +5861,14 @@ export const MIGRATIONS: Migration[] = [
     // fresh subprocess per turn from an id-stripped transcript, so the model
     // re-invents ids like "toolu_01"). The job-wide UNIQUE (job_id,
     // tool_use_id) constraint encoded the false assumption that provider ids
-    // are unique within a job; a reuse collided (this was never any INSERT's
-    // conflict target) and dead-lettered the job. Row identity is already
+    // are unique within a job; a reuse collided on the gateway loop's batch
+    // insert (whose conflict target is the stable-id constraint, so it could
+    // not absorb the violation) and dead-lettered the job. NOTE the
+    // mixed-version window: pre-v131 binaries' two-phase ledger writes DID
+    // target ON CONFLICT (job_id, tool_use_id) — a still-running old
+    // `gbrain jobs work` daemon hits 42P10 after this migration until it
+    // restarts (called out in the release's upgrade block). Those write
+    // sites were rewritten in the same change. Row identity is already
     // carried by subagent_tool_executions_stable_id UNIQUE (job_id,
     // message_idx, ordinal); readers resolve executions by (message_idx,
     // tool_use_id). A narrower unique (e.g. adding message_idx) would still

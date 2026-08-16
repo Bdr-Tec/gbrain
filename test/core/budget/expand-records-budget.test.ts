@@ -327,3 +327,28 @@ describe('expand() failure-path accounting (#4121 extension — .failed pessimis
     expect(rows.map(r => r.sub_label)).toEqual(['gateway.expand.failed', 'gateway.expand.failed']);
   });
 });
+
+describe('normalizeSdkUsage legacy shape (#4121 fix-first)', () => {
+  beforeEach(() => {
+    configureGateway({
+      expansion_model: 'anthropic:claude-haiku-4-5-20251001',
+      env: { ANTHROPIC_API_KEY: 'sk-test-fake' },
+    });
+  });
+
+  test('a provider reporting promptTokens/completionTokens (legacy SDK shape) still records real token counts', async () => {
+    __setGenerateObjectTransportForTests(async () => ({
+      object: { queries: ['alt one'] },
+      usage: { promptTokens: 111, completionTokens: 33 }, // legacy keys only
+    }) as any);
+    const tracker = new BudgetTracker({ label: 'test-legacy-usage', auditPath });
+    await withBudgetTracker(tracker, async () => {
+      await expand('original query');
+    });
+    const row = readAudit().find(r => r.event === 'record' || r.event === 'record_unpriced')!;
+    // A regression to inputTokens-only reads records 0/0 — the silent
+    // undercount class #4121 exists to prevent.
+    expect(row.input_tokens).toBe(111);
+    expect(row.output_tokens).toBe(33);
+  });
+});
