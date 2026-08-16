@@ -74,6 +74,7 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'embed_staleness',
   'embedding_column_registry',
   'embedding_env_override',
+  'embedding_migration_state',
   'embedding_provider',
   'embedding_width_consistency',
   'embeddings',

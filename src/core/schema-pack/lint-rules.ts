@@ -38,6 +38,13 @@ export interface LintOpts {
   engine?: BrainEngine;
   /** Limit scan window for audit-aware rules. Default 7 days. */
   daysBack?: number;
+  /**
+   * Scope DB-aware STORED-TYPE rules to one source. On a multi-source brain
+   * each source may resolve its own pack — comparing another source's rows
+   * against THIS manifest produces false alias/undeclared warnings (codex
+   * re-review). Omitted = global scan (single-source brains, status quo).
+   */
+  sourceId?: string;
 }
 
 export type LintRule = (manifest: SchemaPackManifest, opts?: LintOpts) =>
@@ -361,8 +368,10 @@ export const storedTypeIsAlias: LintRule = async (manifest, opts) => {
   if (!opts?.engine) return [];
   const issues: LintIssue[] = [];
   const rows = await opts.engine.executeRaw<{ type: string; n: string }>(
-    `SELECT type, count(*)::text AS n FROM pages WHERE deleted_at IS NULL GROUP BY type`,
-    [],
+    `SELECT type, count(*)::text AS n FROM pages
+      WHERE deleted_at IS NULL AND ($1::text IS NULL OR source_id = $1)
+      GROUP BY type`,
+    [opts.sourceId ?? null],
   );
   for (const r of rows) {
     const cls = classifyStoredType(r.type, manifest);
@@ -390,8 +399,10 @@ export const storedTypeUndeclared: LintRule = async (manifest, opts) => {
   if (!opts?.engine) return [];
   const issues: LintIssue[] = [];
   const rows = await opts.engine.executeRaw<{ type: string; n: string }>(
-    `SELECT type, count(*)::text AS n FROM pages WHERE deleted_at IS NULL GROUP BY type`,
-    [],
+    `SELECT type, count(*)::text AS n FROM pages
+      WHERE deleted_at IS NULL AND ($1::text IS NULL OR source_id = $1)
+      GROUP BY type`,
+    [opts.sourceId ?? null],
   );
   for (const r of rows) {
     if (classifyStoredType(r.type, manifest).kind === 'undeclared') {

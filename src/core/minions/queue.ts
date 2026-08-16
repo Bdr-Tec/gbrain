@@ -253,7 +253,23 @@ export class MinionQueue {
       childStatus === 'waiting';
     let paramHash: string | null = null;
     if (coalesceActive) {
-      paramHash = computeParamHash((data ?? {}) as Record<string, unknown>);
+      // Execution options are part of the coalescing IDENTITY (codex re-review
+      // P1): identical payloads with different timeout/priority/attempt/
+      // quiet-hours semantics are NOT the same job — coalescing them would
+      // silently hand the second submitter the first's execution contract.
+      // Only DEFINED options fold in (conservative: an explicit value never
+      // coalesces onto an implicit-default row; forward-safe like any hash
+      // input change — old rows just stop matching).
+      const optIdentity: Record<string, unknown> = {};
+      for (const k of ['priority', 'timeout_ms', 'max_attempts', 'quiet_hours', 'lock_duration_ms', 'delay_ms', 'max_stalled'] as const) {
+        const v = (opts as Record<string, unknown> | undefined)?.[k];
+        if (v !== undefined) optIdentity[k] = v;
+      }
+      paramHash = computeParamHash(
+        Object.keys(optIdentity).length > 0
+          ? { ...(data ?? {}), __opts_identity: optIdentity }
+          : ((data ?? {}) as Record<string, unknown>),
+      );
       // Clone rather than mutate the caller's object; the hash rides in the
       // payload (the __-prefixed embedded-metadata convention) so the SQL
       // match needs no DDL and `jobs get` shows what matched.

@@ -94,6 +94,10 @@ export interface RunImportResult {
   errors: number;
   chunksCreated: number;
   failures: Array<{ path: string; error: string }>;
+  /** Files dropped by the malformed-filename gate (walker + per-file defense). */
+  malformedSkipped?: number;
+  /** Aggregated alias/undeclared explicit-type warnings (schema.type_warnings). */
+  type_warnings?: Array<{ kind: 'alias_of' | 'undeclared'; type: string; canonical?: string; directory?: string; count: number }>;
 }
 
 export async function runImport(
@@ -341,6 +345,9 @@ export async function runImport(
   let imported = 0;
   let skipped = 0;
   let errors = 0;
+  // Per-file malformed skips (defense-in-depth hits inside importFromFile);
+  // the walker-level exclusions are counted separately via malformedExcluded.
+  let malformedFileSkips = 0;
   let processed = 0;
   // Time-based checkpoint floor (see the save site below). Chunking cost scales
   // with paragraph count, not bytes, so a single reference-style file can take
@@ -415,6 +422,7 @@ export async function runImport(
           // Informational skip (bracket/control-char filename): never a
           // failure-ledger row, and stable across runs — checkpoint as done.
           console.error(`  Skipped (malformed filename — rename to import): ${sanitizePathForDisplay(relativePath)}`);
+          malformedFileSkips++;
           completed.add(relativePath);
         } else if (result.error && result.error !== 'unchanged') {
           console.error(`  Skipped ${relativePath}: ${result.error}`);
@@ -622,8 +630,8 @@ export async function runImport(
   }
 
   // Alias/undeclared explicit-type warnings (schema.type_warnings, default on).
+  let typeWarningsEnabled = true;
   if (typeWarningCounts.size > 0) {
-    let typeWarningsEnabled = true;
     try {
       const v = await engine.getConfig('schema.type_warnings');
       typeWarningsEnabled = !(v === 'false' || v === '0' || v === 'off');
@@ -716,7 +724,14 @@ export async function runImport(
     // this import's to move (its sync anchors live on the `sources` row).
   }
 
-  return { imported, skipped, errors, chunksCreated, failures };
+  const totalMalformed = malformedExcluded.length + malformedFileSkips;
+  return {
+    imported, skipped, errors, chunksCreated, failures,
+    ...(totalMalformed > 0 ? { malformedSkipped: totalMalformed } : {}),
+    ...(typeWarningCounts.size > 0 && typeWarningsEnabled
+      ? { type_warnings: [...typeWarningCounts.values()] }
+      : {}),
+  };
 }
 
 /**

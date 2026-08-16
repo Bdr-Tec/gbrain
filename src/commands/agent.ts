@@ -314,7 +314,13 @@ export async function runAgentRun(engine: BrainEngine, args: string[]): Promise<
     allowProtectedSubmit: true,
   });
 
-  process.stderr.write(`submitted: job ${job.id} (subagent)\n`);
+  // Honest-dispatch at the interactive surface (codex re-review): a
+  // param-coalesced submit returns an EXISTING waiting job — printing
+  // 'submitted' would tell the operator a new run was queued when it wasn't.
+  process.stderr.write(job.coalesced === true
+    ? `coalesced: identical params matched existing waiting job ${job.id} (subagent). ` +
+      `Vary the prompt/params or pass a fresh idempotency key for an independent run.\n`
+    : `submitted: job ${job.id} (subagent)\n`);
 
   if (flags.detach || !flags.follow) {
     process.stdout.write(String(job.id) + '\n');
@@ -362,7 +368,9 @@ async function runFanout(engine: BrainEngine, queue: MinionQueue, flags: RunFlag
     const job = await queue.add('subagent', data as unknown as Record<string, unknown>, submitOpts, {
       allowProtectedSubmit: true,
     });
-    process.stderr.write(`submitted: job ${job.id} (single-entry manifest short-circuit)\n`);
+    process.stderr.write(job.coalesced === true
+      ? `coalesced: identical params matched existing waiting job ${job.id} (single-entry manifest short-circuit).\n`
+      : `submitted: job ${job.id} (single-entry manifest short-circuit)\n`);
     if (flags.detach || !flags.follow) { process.stdout.write(`${job.id}\n`); return; }
     await followJob(engine, queue, job.id, flags.timeoutMs);
     return;
