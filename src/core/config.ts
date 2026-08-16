@@ -1156,6 +1156,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // reconcile-links, and sweep. The documented off-switch is `gbrain config
   // set auto_link false` — same unregistered-key class as auto_chronicle.
   'auto_link',
+  // v0.46.3: the provider_sunset doctor check's own suppression escape hatch
+  // (doctor.ts) and docs/guides/embedding-migration.md both document
+  // `gbrain config set doctor.suppress_provider_sunset true`, but the key was
+  // never registered — the documented command exited 1 with "Unknown config
+  // key". Same class as auto_chronicle above. Deliberately an exact key, not
+  // a blanket 'doctor.' prefix (unbounded namespaces defeat the typo gate).
+  'doctor.suppress_provider_sunset',
   // #2606: chronicle judge output-token cap (default 4000). Event-dense
   // pages overflowed the old hardcoded 1500 and were misrecorded as
   // no_events; the cap is now configurable and truncation is surfaced.

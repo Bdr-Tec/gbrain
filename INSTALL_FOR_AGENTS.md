@@ -55,19 +55,22 @@ restart the shell or add the PATH export to the shell profile.
 
 ## Step 2: API Keys
 
-Ask the user for these. gbrain defaults to the ZeroEntropy embedding + reranker stack
-(as of v0.36.2.0); OpenAI/Voyage are still supported as fallbacks via `gbrain config
-set embedding_model <provider:model>`.
+Ask the user for these. gbrain defaults to the Voyage embedding + reranker stack
+(`voyage:voyage-4` @ 1024d + `voyage:rerank-2.5` — one key covers both); OpenAI is the
+main alternative, chosen at init via `--embedding-model <provider:model>`. ZeroEntropy
+is deprecated (its hosted API shuts down 2026-09-04): init auto-pick and the picker
+exclude it, and every ZE embed/rerank prints a deprecation warning.
 
 ```bash
-export ZEROENTROPY_API_KEY=ze-...     # default embedding + reranker (v0.36.2.0+)
-export OPENAI_API_KEY=sk-...          # fallback for vector search; also used for chat models
+export VOYAGE_API_KEY=pa-...          # default embedding + reranker (one key covers both)
+export OPENAI_API_KEY=sk-...          # alternative for vector search; also used for chat models
 export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality via query expansion
 ```
 
-Save to shell profile or `.env`. Keys are picked up by `gbrain config set` automatically
-or can be stored in `~/.gbrain/config.json` (file plane). Without any embedding provider,
-keyword search still works. Without Anthropic, search works but skips query expansion.
+Save to shell profile or `.env`, or store in `~/.gbrain/config.json` (file plane). Do
+NOT use `gbrain config set` for API keys — it writes the DB plane, which the embedding
+pipeline never reads. Without any embedding provider, keyword search still works.
+Without Anthropic, search works but skips query expansion.
 
 ## Step 3: Create the Brain
 
