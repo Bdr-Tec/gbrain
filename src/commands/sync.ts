@@ -210,6 +210,13 @@ export interface SyncResult {
    */
   malformedSkipped?: number;
   /**
+   * Aggregated alias/undeclared explicit-type warnings (schema.type_warnings,
+   * default on) — one entry per distinct non-canonical type this run.
+   * Carried on the RESULT (not just stderr) so worker-driven syncs surface it
+   * in job results where daemon stderr is invisible.
+   */
+  type_warnings?: Array<{ kind: 'alias_of' | 'undeclared'; type: string; canonical?: string; directory?: string; count: number }>;
+  /**
    * v0.41.13.0 partial-sync fields (only set when status === 'partial').
    *
    * D-V3-1 (honest scope): --timeout aborts ONLY in pre-bookmark phases
@@ -1930,7 +1937,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // importFile call below. Codex perf finding #7: per-file loadActivePack adds
   // disk/YAML/hash overhead × thousands of files. Best-effort: pack load
   // failure falls through to legacy inferType (parity preserved).
-  let syncActivePack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> } | undefined;
+  let syncActivePack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> } | undefined;
   try {
     // v0.41.37.0 #1569: --no-schema-pack escape hatch. Skip pack load entirely so
     // no user-supplied pack regex (markdown.ts subtype path_pattern) runs during
@@ -2817,6 +2824,23 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // advancement at the bottom of this function.
   const failedFiles: Array<{ path: string; error: string; line?: number }> = [];
 
+  // Alias-footgun visibility (schema.type_warnings, default on): aggregate
+  // per-file type_warning results ONCE per distinct type per run — an
+  // N-thousand-file sync must warn in O(distinct types) lines, not O(files).
+  const typeWarningCounts = new Map<string, import('../core/schema-pack/type-usage.ts').TypeWarningCount>();
+  const noteTypeWarning = (w: { kind: 'alias_of' | 'undeclared'; type: string; canonical?: string; directory?: string } | undefined): void => {
+    if (!w) return;
+    const key = `${w.kind}\t${w.type}`;
+    const cur = typeWarningCounts.get(key);
+    if (cur) cur.count++;
+    else typeWarningCounts.set(key, { ...w, count: 1 });
+  };
+  let typeWarningsEnabled = true;
+  try {
+    const v = await engine.getConfig('schema.type_warnings');
+    typeWarningsEnabled = !(v === 'false' || v === '0' || v === 'off');
+  } catch { /* config unavailable → default on */ }
+
   // v0.18.0+ multi-source: scope deletePage so we only delete the source-A
   // row, not every same-slug row across all sources.
   const deleteOpts = opts.sourceId ? { sourceId: opts.sourceId } : undefined;
@@ -3044,6 +3068,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         try {
           const result = await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack });
           importResult = result;
+          noteTypeWarning(result.type_warning);
           if (result.status === 'imported') chunksCreated += result.chunks;
           else if (result.status === 'skipped' && result.skip_reason === 'malformed_path') {
             // Informational skip — a bracket/control-char filename can never
@@ -3314,6 +3339,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         // duplicate rows that crashed bare-slug subqueries with Postgres 21000.
         const result = await observed(pacer, () =>
           importFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack }));
+        noteTypeWarning(result.type_warning);
         if (result.status === 'imported') {
           chunksCreated += result.chunks;
           pagesAffected.push(result.slug);
@@ -3849,6 +3875,13 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     );
   }
 
+  const typeWarnings = [...typeWarningCounts.values()];
+  if (typeWarningsEnabled && typeWarnings.length > 0) {
+    const { renderTypeWarningSummary } = await import('../core/schema-pack/type-usage.ts');
+    for (const line of renderTypeWarningSummary(typeWarnings)) serr(`  ${line}`);
+    serr(`  (silence with: gbrain config set schema.type_warnings false)`);
+  }
+
   return {
     status: 'synced',
     fromCommit: lastCommit,
@@ -3861,6 +3894,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     embedded,
     pagesAffected,
     malformedSkipped: malformedSkipped.length,
+    ...(typeWarningsEnabled && typeWarnings.length > 0 ? { type_warnings: typeWarnings } : {}),
   };
 }
 

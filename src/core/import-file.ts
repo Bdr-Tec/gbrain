@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import { marked } from 'marked';
 import type { BrainEngine, FileSpec } from './engine.ts';
 import { parseMarkdown } from './markdown.ts';
+import { classifyStoredType } from './schema-pack/type-usage.ts';
 import { chunkText } from './chunkers/recursive.ts';
 import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION } from './chunkers/code.ts';
 import { findChunkForOffset } from './chunkers/edge-extractor.ts';
@@ -243,6 +244,13 @@ export interface ImportResult {
    * ledger so they can never gate bookmark advancement.
    */
   skip_reason?: 'malformed_path';
+  /**
+   * Advisory (schema.type_warnings): the page's explicit frontmatter `type:`
+   * is an alias of a canonical pack type or undeclared in the pack. The type
+   * is stored literally either way; sync/import aggregate these once per
+   * distinct type per run.
+   */
+  type_warning?: { kind: 'alias_of' | 'undeclared'; type: string; canonical?: string; directory?: string };
 }
 
 const MAX_FILE_SIZE = 5_000_000; // 5MB
@@ -303,7 +311,7 @@ export async function importFromContent(
      * Callers thread this from `loadActivePack(ctx)` once per command —
      * NEVER per file inside sync (codex perf finding #7).
      */
-    activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> };
+    activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> };
     /**
      * v0.39.3.0 provenance write-through (WARN-8). When set, threaded to
      * `tx.putPage` so the page's `source_kind`, `source_uri`,
@@ -622,6 +630,22 @@ export async function importFromContent(
     parsed.type = existing.type;
   }
 
+  // Alias-footgun visibility: an explicit frontmatter `type:` that is an
+  // ALIAS of a canonical pack type (or entirely undeclared) is stored
+  // literally and never re-normalized — different agents can silently file
+  // the same concept under different types/directories. Classify it here
+  // (once per file, aggregated once per type per run by sync/import) so the
+  // misroute class is loud. Purely advisory: the type is still stored as-is.
+  let typeWarning: ImportResult['type_warning'];
+  if (parsed.typeExplicit === true && opts.activePack) {
+    const cls = classifyStoredType(parsed.type, opts.activePack);
+    if (cls.kind === 'alias_of') {
+      typeWarning = { kind: 'alias_of', type: parsed.type, canonical: cls.canonical, directory: cls.directory };
+    } else if (cls.kind === 'undeclared') {
+      typeWarning = { kind: 'undeclared', type: parsed.type };
+    }
+  }
+
   const HASH_EPHEMERAL_FRONTMATTER_KEYS = [
     'captured_at',
     'ingested_at',
@@ -655,7 +679,7 @@ export async function importFromContent(
   };
 
   if (existing?.content_hash === hash && !opts.forceRechunk) {
-    return { slug, status: 'skipped', chunks: 0, parsedPage };
+    return { slug, status: 'skipped', chunks: 0, parsedPage, ...(typeWarning ? { type_warning: typeWarning } : {}) };
   }
 
   // v0.41.13 (#1309) — identity-based cross-slug dedup pre-check.
@@ -1003,6 +1027,7 @@ export async function importFromContent(
     parsedPage,
     ...(pageQuarantined ? { quarantined: true } : {}),
     ...(pageFlagged ? { flagged: true, flag_reason: pageFlagReason } : {}),
+    ...(typeWarning ? { type_warning: typeWarning } : {}),
   };
 }
 
@@ -1090,7 +1115,7 @@ export async function importFromFile(
      * `parseMarkdown` uses pack-driven type inference. Load ONCE per command;
      * never per file (codex perf finding #7).
      */
-    activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> };
+    activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> };
   } = {},
 ): Promise<ImportResult> {
   // Defense-in-depth: reject symlinks before reading content.

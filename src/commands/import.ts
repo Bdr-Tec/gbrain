@@ -176,7 +176,7 @@ export async function runImport(
   }
   // v0.39 T1.5: load active pack ONCE at runImport entry; thread to every
   // per-file importFile call below. Codex perf finding #7 — never per-file.
-  let importActivePack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> } | undefined;
+  let importActivePack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> } | undefined;
   try {
     const { loadActivePack } = await import('../core/schema-pack/load-active.ts');
     const { loadConfig } = await import('../core/config.ts');
@@ -340,6 +340,16 @@ export async function runImport(
   const errorCounts: Record<string, number> = {};
   const errorSamples: Record<string, string> = {};
   const failures: Array<{ path: string; error: string }> = []; // Bug 9
+  // Alias-footgun visibility: aggregate per-file type_warning results once
+  // per distinct type per run (same surface `gbrain sync` carries).
+  const typeWarningCounts = new Map<string, import('../core/schema-pack/type-usage.ts').TypeWarningCount>();
+  const noteTypeWarning = (w: { kind: 'alias_of' | 'undeclared'; type: string; canonical?: string; directory?: string } | undefined): void => {
+    if (!w) return;
+    const key = `${w.kind}\t${w.type}`;
+    const cur = typeWarningCounts.get(key);
+    if (cur) cur.count++;
+    else typeWarningCounts.set(key, { ...w, count: 1 });
+  };
   // #3839: paths that succeeded (imported OR unchanged) this run, keyed the
   // same way as `failures` above (importRelPath) so a path that failed on a
   // prior run and now succeeds clears its ledger row instead of staying
@@ -374,6 +384,7 @@ export async function runImport(
       const result = isImageFilePath(relativePath) && process.env.GBRAIN_EMBEDDING_MULTIMODAL === 'true'
         ? await importImageFile(eng, filePath, importRelPath, { noEmbed, sourceId })
         : await importFile(eng, filePath, importRelPath, { noEmbed, sourceId, activePack: importActivePack });
+      noteTypeWarning((result as { type_warning?: Parameters<typeof noteTypeWarning>[0] }).type_warning);
       const _fileMs = Date.now() - _fileT0;
       if (_fileMs > 5000) {
         console.error(`[gbrain phase] import.process_file slow ${_fileMs}ms ${relativePath}`);
@@ -594,6 +605,22 @@ export async function runImport(
       }
     } catch {
       // best-effort
+    }
+  }
+
+  // Alias/undeclared explicit-type warnings (schema.type_warnings, default on).
+  if (typeWarningCounts.size > 0) {
+    let typeWarningsEnabled = true;
+    try {
+      const v = await engine.getConfig('schema.type_warnings');
+      typeWarningsEnabled = !(v === 'false' || v === '0' || v === 'off');
+    } catch { /* config unavailable → default on */ }
+    if (typeWarningsEnabled) {
+      const { renderTypeWarningSummary } = await import('../core/schema-pack/type-usage.ts');
+      for (const line of renderTypeWarningSummary([...typeWarningCounts.values()])) {
+        console.error(`  ${line}`);
+      }
+      console.error(`  (silence with: gbrain config set schema.type_warnings false)`);
     }
   }
 

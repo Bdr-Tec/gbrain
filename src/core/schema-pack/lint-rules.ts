@@ -15,6 +15,7 @@
 import type { SchemaPackManifest } from './manifest-v1.ts';
 import type { BrainEngine } from '../engine.ts';
 import { readRecentMutations } from './mutate-audit.ts';
+import { classifyStoredType, sanitizeTypeForDisplay } from './type-usage.ts';
 
 export type LintSeverity = 'error' | 'warning';
 
@@ -348,6 +349,62 @@ export const linkRegexCatastrophicBacktrack: LintRule = (manifest) => {
   return issues;
 };
 
+/**
+ * Data-plane corpus audit (alias-footgun incident class): pages whose STORED
+ * type is an alias of a canonical pack type. Explicit frontmatter types are
+ * stored literally and never re-normalized, so alias-typed pages silently
+ * diverge from the canonical filing. Warning severity — the import-time
+ * surface (schema.type_warnings) catches new writes; this catches the
+ * existing corpus.
+ */
+export const storedTypeIsAlias: LintRule = async (manifest, opts) => {
+  if (!opts?.engine) return [];
+  const issues: LintIssue[] = [];
+  const rows = await opts.engine.executeRaw<{ type: string; n: string }>(
+    `SELECT type, count(*)::text AS n FROM pages WHERE deleted_at IS NULL GROUP BY type`,
+    [],
+  );
+  for (const r of rows) {
+    const cls = classifyStoredType(r.type, manifest);
+    if (cls.kind === 'alias_of') {
+      const t = sanitizeTypeForDisplay(r.type);
+      issues.push({
+        rule: 'stored_type_is_alias',
+        severity: 'warning',
+        message: `${r.n} page(s) store type '${t}', an alias of '${cls.canonical}'${cls.directory ? ` (files under ${cls.directory})` : ''} — agents may route it inconsistently`,
+        pack: manifest.name,
+        type: r.type,
+        hint: `gbrain schema unify (retype '${t}' → '${cls.canonical}') OR declare '${t}' as its own page type`,
+      });
+    }
+  }
+  return issues;
+};
+
+/** Data-plane sibling: pages whose stored type is entirely undeclared in the pack. */
+export const storedTypeUndeclared: LintRule = async (manifest, opts) => {
+  if (!opts?.engine) return [];
+  const issues: LintIssue[] = [];
+  const rows = await opts.engine.executeRaw<{ type: string; n: string }>(
+    `SELECT type, count(*)::text AS n FROM pages WHERE deleted_at IS NULL GROUP BY type`,
+    [],
+  );
+  for (const r of rows) {
+    if (classifyStoredType(r.type, manifest).kind === 'undeclared') {
+      const t = sanitizeTypeForDisplay(r.type);
+      issues.push({
+        rule: 'stored_type_undeclared',
+        severity: 'warning',
+        message: `${r.n} page(s) store type '${t}' which is not declared in the active pack (not a page_type, not an alias)`,
+        pack: manifest.name,
+        type: r.type,
+        hint: `gbrain schema add-type '${t}' OR retype the pages to a canonical type`,
+      });
+    }
+  }
+  return issues;
+};
+
 /** All rules. File-plane callers can compose a subset via FILE_PLANE_RULES. */
 export const ALL_LINT_RULES: ReadonlyArray<{ name: string; rule: LintRule; planeAware: boolean }> = [
   { name: 'alias_shadows_type', rule: aliasShadowsType, planeAware: false },
@@ -362,6 +419,8 @@ export const ALL_LINT_RULES: ReadonlyArray<{ name: string; rule: LintRule; plane
   { name: 'link_regex_catastrophic_backtrack', rule: linkRegexCatastrophicBacktrack, planeAware: false },
   { name: 'extractable_empty_corpus', rule: extractableEmptyCorpus, planeAware: true },
   { name: 'mutation_count_anomaly', rule: mutationCountAnomaly, planeAware: true },
+  { name: 'stored_type_is_alias', rule: storedTypeIsAlias, planeAware: true },
+  { name: 'stored_type_undeclared', rule: storedTypeUndeclared, planeAware: true },
 ];
 
 /** File-plane subset: rules safe to run inside `withMutation`'s pre-write gate. */

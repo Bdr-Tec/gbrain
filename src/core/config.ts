@@ -1191,6 +1191,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // stops claiming "Nothing in gbrain reads this" for a key the resolver
   // reads on every unqualified call.
   'sources.default',
+  // Alias/undeclared explicit-type warnings at sync/import (default on).
+  // Read by performSync + runImport summary aggregation; 'false'/'0'/'off'
+  // silences both surfaces (schema lint rules stay active).
+  'schema.type_warnings',
 ];
 
 /**
