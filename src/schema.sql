@@ -771,13 +771,14 @@ CREATE INDEX IF NOT EXISTS context_volunteer_events_src_slug_idx
 -- runtime. Key (source_id, client_id, session_id); client_id 'local' sentinel
 -- for CLI/hook, remote auth client id otherwise. jsonb DDL-literal defaults.
 CREATE TABLE IF NOT EXISTS session_context_state (
-  source_id         TEXT NOT NULL,
-  client_id         TEXT NOT NULL DEFAULT 'local',
-  session_id        TEXT NOT NULL,
-  standing_entities JSONB NOT NULL DEFAULT '[]'::jsonb,
-  surfaced_slugs    JSONB NOT NULL DEFAULT '[]'::jsonb,
-  last_wake_at      TIMESTAMPTZ,
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  source_id           TEXT NOT NULL,
+  client_id           TEXT NOT NULL DEFAULT 'local',
+  session_id          TEXT NOT NULL,
+  standing_entities   JSONB NOT NULL DEFAULT '[]'::jsonb,
+  surfaced_slugs      JSONB NOT NULL DEFAULT '[]'::jsonb,
+  checkpoint_manifest JSONB NOT NULL DEFAULT '[]'::jsonb,
+  last_wake_at        TIMESTAMPTZ,
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (source_id, client_id, session_id)
 );
 CREATE INDEX IF NOT EXISTS session_context_state_updated_idx
