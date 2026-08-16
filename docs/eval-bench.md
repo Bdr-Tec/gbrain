@@ -290,7 +290,7 @@ Before merging anything that touches:
 - `src/core/search/expansion.ts` (Haiku query expansion)
 - `src/core/search/dedup.ts` (cross-page result collapse)
 - `src/core/embedding.ts` or any embedding model swap
-- `src/core/operations.ts` `query` or `search` op handlers (capture surface)
+- `src/core/ops/search.ts` `query` or `search` op handlers (capture surface)
 - `src/core/postgres-engine.ts` / `pglite-engine.ts` `searchKeyword` /
   `searchVector` SQL
 
