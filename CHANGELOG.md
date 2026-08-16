@@ -22,11 +22,11 @@ numbers measure production behavior.
   in either arm injects nothing — silence beats a wrong pointer. Kill
   switch: `retrieval_reflex_lexical_arms: false` in config or
   `GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS=false` (default on).
-- **Aliases now count everywhere identity resolves.** Entity operations
-  (`gbrain entity`, trajectory lookups) match documented aliases exactly
-  before falling back to fuzzy matching, and wikilink inference
-  recognizes alias mentions in page bodies — both verified against live
-  pages so a stale alias can never point at a deleted page.
+- **Aliases now count everywhere identity resolves.** Entity-slug
+  resolution (fact writes, recall, trajectory seeds) matches documented
+  aliases exactly before falling back to fuzzy matching, and wikilink
+  inference recognizes alias mentions in page bodies — both verified
+  against live pages so a stale alias can never point at a deleted page.
 - **Concept-shaped queries get concept-shaped ranking.** Definitional
   paraphrases ("what is the ownership economy?") are classified as a new
   `concept` intent and ranked vector-lean, so keyword-decoy pages stop
