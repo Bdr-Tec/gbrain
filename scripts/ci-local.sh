@@ -11,12 +11,12 @@
 #   bash scripts/ci-local.sh --clean      # nuke named volumes for cold debug
 #   bash scripts/ci-local.sh --no-shard   # debug: run E2E sequentially against postgres-1 only
 #
-# 4-way E2E sharding: 4 pgvector services on host ports 5434-5437. The 36 E2E
-# files split N/4 per shard; shards run in parallel. Within a shard, files run
+# 4-way E2E sharding: 4 pgvector services on host ports 5434-5437. The test/e2e/ file set splits
+# roughly N/4 per shard; shards run in parallel. Within a shard, files run
 # sequentially (TRUNCATE CASCADE no-race property documented in run-e2e.sh).
 # Wall-time on a 16-core host: ~6 min sequential -> ~1.5-2 min sharded.
 #
-# Stronger than PR CI: PR CI runs only Tier 1's 2 files; this runs all 36.
+# Stronger than PR CI: PR CI runs a handful of named files across its tiers; this runs every test/e2e file.
 
 set -euo pipefail
 
@@ -231,7 +231,7 @@ else
   echo "$SELECTED" | tr " " "\n" | grep -v "^$" > /tmp/e2e-selected.txt
 fi'
   else
-    # Empty file -> run-e2e.sh uses default glob (all 36 E2E files).
+    # Empty file -> run-e2e.sh uses default glob (every test/e2e file).
     DIFF_E2E_PREP='> /tmp/e2e-selected.txt'
   fi
   RUN_PHASES_CMD="echo \"[runner] guards + typecheck (run once before sharding)\"
