@@ -134,8 +134,6 @@ the database name must carry "test" as a word segment (like `gbrain_test`
 above) or destructive tests refuse to run — opt a differently-named database
 in one-shot with `GBRAIN_E2E_ALLOW_DB=<name>`.
 
-Use `bun run verify` before pushing. It runs 19+ guard checks in parallel
-
 Use `bun run verify` before pushing. It runs 40+ guard checks in parallel
 (`scripts/run-verify-parallel.sh`), including: banned fork-name leaks
 (`scripts/check-privacy.sh`), `JSON.stringify(x)::jsonb` interpolation
@@ -214,7 +212,7 @@ and it automatically appears in the CLI, MCP server, and tools-json:
 1. Add your operation to the matching domain module under `src/core/ops/`
    (`pages.ts`, `search.ts`, `takes.ts`, `jobs.ts`, ... — define params, handler,
    cliHints there). `src/core/operations.ts` is the assembly façade that spreads
-   every domain module into the single `operations` map: a new op in an existing
+   every domain module into the single `operations` array: a new op in an existing
    domain needs no façade change; a brand-new domain module gets one spread line
    in `operations.ts`. Shared contract types live in `src/core/ops/contract.ts`,
    the security/scope fences in `src/core/ops/context.ts`.
@@ -313,7 +311,7 @@ Trigger paths (rerun if your diff touches any of these):
 
 - `src/core/search/hybrid.ts`
 - `src/core/search/source-boost.ts`, `sql-ranking.ts`
-- `src/core/search/intent.ts`, `expansion.ts`, `dedup.ts`
+- `src/core/search/query-intent.ts`, `expansion.ts`, `dedup.ts`
 - `src/core/embedding.ts`
 - `src/core/ops/search.ts` (query / search op handlers)
 - `src/core/postgres-engine.ts` / `pglite-engine.ts` (searchKeyword /

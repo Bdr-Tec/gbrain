@@ -66,7 +66,7 @@ handler-source hash sensitivity).
 ### Guard registry and self-test
 
 `scripts/guards-manifest.tsv` is THE single registry of `scripts/check-*`
-guards (currently 45), each classified `scanner` (greps/parses repo sources —
+guards (currently 48), each classified `scanner` (greps/parses repo sources —
 must eventually carry fixtures), `buildfresh`, or `repostate` (build/freshness
 guards are exempt-with-reason, not fixture-tested).
 `scripts/guard-self-test.sh` (`bun run check:guard-self-test`, wired into
@@ -123,9 +123,10 @@ batch (`-n 100000 -x`) so an argv overflow fails loud instead of spawning a
 second, overwriting bun process. On a green run each lane writes
 `$COVERAGE_DIR/lane-manifest.json` (`{lane, sha, lcovCount, complete}`); a red
 run writes no manifest, which downstream merging treats as an incomplete lane.
-`run-e2e.sh` specifics: `COVERAGE_DIR` must be an ABSOLUTE path (the script
-redirects `HOME`/`GBRAIN_HOME` and E2E tests spawn CLI subprocesses with
-varying cwd — a relative dir would scatter output), and `E2E_FILE_TIMEOUT_SECS`
+`run-e2e.sh` specifics: `COVERAGE_DIR` is normalized to an absolute path
+against the repo root before `HOME` moves (the script redirects
+`HOME`/`GBRAIN_HOME` and E2E tests spawn CLI subprocesses with varying cwd —
+an un-normalized relative dir would scatter output), and `E2E_FILE_TIMEOUT_SECS`
 caps each file's wallclock (default 180s; the nightly coverage lane uses 300s
 for instrumentation overhead). Both env names are deliberately
 non-`GBRAIN_`-prefixed so the hermetic env scrub keeps them.
@@ -163,8 +164,11 @@ it). Non-executable lines (no lcov record) don't count against you; empty and
 doc-only diffs short-circuit to PASS via the `select-e2e` classifier. Escape
 hatches: a commit body containing `[coverage-exempt: reason]` passes with a
 loud warning, and `scripts/coverage-gate-exemptions.txt` (exact path or
-trailing-`/` prefix per line; SHRINK-ONLY — additions need a graduation review
-in the PR description) excludes paths from the gate while still reporting them
+trailing-`/` prefix per line; resolved via
+`git show origin/master:scripts/coverage-gate-exemptions.txt`, never the
+working tree, so a PR cannot self-exempt; SHRINK-ONLY — additions need a
+graduation review in the PR description) excludes paths from the gate while
+still reporting them
 (`[e2e-exempt]`, `[subprocess-undercount]`). Report-only unless
 `COVERAGE_GATE_ENFORCE=1`. Exit contract: 0 = pass or report-only, 1 = gate
 fail while enforcing, 2 = infrastructure error (missing summary, git failure —
@@ -174,9 +178,10 @@ never conflated with a coverage verdict).
 reads the baseline via `git show origin/master:scripts/coverage-baseline.json`
 — the master copy, never the working tree, so a PR cannot weaken its own bar —
 and compares like-for-like by corpus (`--corpus prCorpus` in test.yml,
-`--corpus fullCorpus` nightly). A global drop > 0.5pp or a per-directory drop
-> 1.0pp fails; a corpus section that is `null` on master is an ungated first
-landing. `provisional: true` in the baseline keeps the gate report-only
+`--corpus fullCorpus` nightly). A global drop > 0.5pp, a per-directory drop
+> 1.0pp, or a never-loaded-count increase fails (deleting tests shrinks the
+coverage denominator, which inflates pct for free); a corpus section that is
+`null` on master is an ungated first landing. `provisional: true` in the baseline keeps the gate report-only
 regardless of enforcement — the committed baseline is currently provisional
 with both corpus sections unseeded. `scripts/update-coverage-baseline.ts
 --summary <json> --corpus <c> [--promote]` writes the working-tree baseline
@@ -207,6 +212,12 @@ COVERAGE_DIR=$PWD/.coverage bash scripts/test-shard.sh 1 10 \
   && bun scripts/merge-lcov.ts --out-lcov .coverage/merged.lcov --out-json .coverage/summary.json .coverage \
   && bun scripts/render-coverage-summary.ts --summary .coverage/summary.json
 ```
+
+Optional flags: `coverage-diff-gate.ts --base <ref>` overrides the diff base
+(default `origin/master`); `render-coverage-summary.ts --structural
+scripts/structural-suites.tsv` adds the behavioral-vs-structural split to the
+rendered summary (both CI lanes pass it); `classify-tests.ts --summary` prints
+counts only.
 
 ### Failure-first logging
 

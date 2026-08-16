@@ -33,8 +33,8 @@ All notable changes to GBrain will be documented in this file.
   that execute product behavior from suites that assert on source/doc text
   (wiring guards, drift pins), with a freshness-checked committed inventory —
   so the headline test count stops conflating the two.
-- The 33-test behavioral engine-parity suite now runs in CI on every push and
-  PR (it previously only ran locally).
+- The 34-test behavioral engine-parity suite now runs in CI on every PR and
+  push to master (it previously only ran locally).
 
 ### Changed
 - **The four biggest modules are now façades over focused modules** (~19,500

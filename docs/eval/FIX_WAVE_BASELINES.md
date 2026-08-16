@@ -25,8 +25,8 @@ metrics here per run.
 
 ## Containment sprint (2026-08-15, v0.47.0.0, branch garrytan/containment-sprint-coverage-modularity)
 
-God-file line counts AFTER the façade peels. Four of the six giants became
-façades over focused module dirs; the peeled lines live in the sibling dirs
+God-file line counts AFTER the façade peels. Five of the six giants (all but
+migrate.ts) were peeled into focused module dirs; the peeled lines live in the sibling dirs
 listed below the table (count both when comparing against W0 — the façade
 number alone is not the receipt).
 
@@ -63,8 +63,8 @@ behavioral-vs-structural suite classification (`scripts/classify-tests.ts`)
 splits the headline test count.
 
 Retrieval canary: NOT RUN in this PR (structural refactor; behavior pinned by
-the engine-parity suite, now in CI on every push). The W1/W3/W9 canary
-mandate is unchanged.
+the engine-parity suite, now in CI on every PR and master push). The W1/W3/W9
+canary mandate is unchanged.
 
 ## W0 (2026-08-14, branch garrytan/code-smell-fix-wave @ post-hotfix)
 
