@@ -202,6 +202,61 @@ export async function computeQueueHealthCheck(
         `→ see worker_oom_loop for the cap + fix (the authoritative OOM-loop signal).`
       );
     }
+    // Queue divergence: per-type intake structurally exceeds useful drain
+    // (completions keyed on finished_at) while a real backlog waits. Same
+    // env thresholds as the `jobs stats` DIVERGENT scream so the two
+    // advisory surfaces agree. Cancellations (incl. the waiting-TTL sweep)
+    // are deliberately NOT counted as drain — outflow is not work.
+    try {
+      const { TTL_REASON_PREFIX, safeConfigSegment } = await import('../../../core/minions/admission.ts');
+      const { sanitizeTypeForDisplay } = await import('../../../core/schema-pack/type-usage.ts');
+      const divergenceRatio = resolveEnvNumber('GBRAIN_QUEUE_DIVERGENCE_RATIO', 2);
+      const divergenceMinWaiting = resolveEnvNumber('GBRAIN_QUEUE_DIVERGENCE_MIN_WAITING', 50);
+      const divRows = await engine.executeRaw<{ name: string; intake: string; completed: string; waiting: string }>(
+        `SELECT w.name,
+                COALESCE(i.intake, '0') AS intake,
+                COALESCE(c.completed, '0') AS completed,
+                w.waiting
+           FROM (SELECT name, count(*)::text AS waiting FROM minion_jobs
+                  WHERE status = 'waiting' GROUP BY name) w
+           LEFT JOIN (SELECT name, count(*)::text AS intake FROM minion_jobs
+                  WHERE created_at > now() - interval '24 hours' GROUP BY name) i ON i.name = w.name
+           LEFT JOIN (SELECT name, count(*)::text AS completed FROM minion_jobs
+                  WHERE finished_at > now() - interval '24 hours' AND status = 'completed'
+                  GROUP BY name) c ON c.name = w.name`,
+      );
+      for (const r of divRows) {
+        const waiting = parseInt(r.waiting, 10);
+        const intake = parseInt(r.intake, 10);
+        const completed = parseInt(r.completed, 10);
+        if (waiting > divergenceMinWaiting && intake > divergenceRatio * Math.max(completed, 1)) {
+          // Job names originate from the MCP-exposed submit surface —
+          // sanitize for display; strict-gate names embedded in the
+          // copy-pasteable config hint.
+          problems.push(
+            `DIVERGENT queue type '${sanitizeTypeForDisplay(r.name)}': intake ${intake}/24h vs ${completed} completed/24h, ` +
+            `${waiting} waiting — the backlog grows structurally. Reduce intake, raise drain, or cap ` +
+            `admission: \`gbrain config set minions.quota_max_waiting.${safeConfigSegment(r.name) ?? '<job-name>'} <n>\`. See \`gbrain jobs stats\`.`
+          );
+        }
+      }
+      // Waiting-TTL cancellations mean the divergence is being SHREDDED, not
+      // worked — that's operating as designed but the operator must know.
+      const ttlRows = await engine.executeRaw<{ name: string; count: string }>(
+        `SELECT name, count(*)::text AS count FROM minion_jobs
+          WHERE status = 'cancelled' AND error_text LIKE $1
+            AND finished_at > now() - interval '24 hours'
+          GROUP BY name`,
+        [`${TTL_REASON_PREFIX}%`],
+      );
+      for (const r of ttlRows) {
+        problems.push(
+          `waiting-TTL cancelled ${r.count} '${sanitizeTypeForDisplay(r.name)}' job(s) in the last 24h (queued work expired ` +
+          `unclaimed — intake still exceeds drain). Tune: \`gbrain config set ` +
+          `minions.ttl_waiting_hours.${safeConfigSegment(r.name) ?? '<job-name>'} <hours|0>\`.`
+        );
+      }
+    } catch { /* best-effort — divergence probes never break doctor */ }
     if (promptTooLongCount > 0) {
       problems.push(
         `${promptTooLongCount} subagent job(s) dead-lettered with prompt_too_long in last 24h. ` +

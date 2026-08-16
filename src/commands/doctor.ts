@@ -1128,6 +1128,44 @@ export async function buildChecks(
     // Best-effort; audit-log read failure shouldn't stop doctor.
   }
 
+  // 3d.05 Malformed-path pages. DB pages whose backing FILENAME contains
+  // bracket/control characters (markdown-link syntax as a literal filename).
+  // Sync refuses to import such markdown paths; this check is the discovery
+  // surface for rows ingested before that gate. Two-tier remediation matches
+  // core/sync.ts: POISONED rows (`](`/control chars) reconcile away on a full
+  // sync; bare-bracket rows are kept (deleting them while their file exists
+  // would be data loss) and need a rename + re-sync.
+  if (engine) {
+    try {
+      const { hasMalformedPathSegment, isPoisonedPath } = await import('../core/sync.ts');
+      const candidates = await engine.executeRaw<{ slug: string; source_id: string; source_path: string }>(
+        `SELECT slug, source_id, source_path FROM pages
+          WHERE source_path IS NOT NULL AND deleted_at IS NULL
+            AND (source_path LIKE '%[%' OR source_path LIKE '%]%'
+                 OR source_path ~ '[[:cntrl:]]')`,
+        [],
+      );
+      const malformed = candidates.filter(r => hasMalformedPathSegment(r.source_path));
+      if (malformed.length > 0) {
+        const poisoned = malformed.filter(r => isPoisonedPath(r.source_path)).length;
+        const bare = malformed.length - poisoned;
+        const preview = malformed.slice(0, 3).map(r => r.slug).join(', ');
+        checks.push({
+          name: 'malformed_path_pages',
+          status: 'warn',
+          message:
+            `${malformed.length} page(s) backed by malformed filenames (bracket/control ` +
+            `characters) pollute search: ${preview}` +
+            `${malformed.length > 3 ? `, and ${malformed.length - 3} more` : ''}. ` +
+            (poisoned > 0 ? `${poisoned} junk row(s): run a full 'gbrain sync' to reconcile them away. ` : '') +
+            (bare > 0 ? `${bare} bare-bracket row(s) are kept — rename the backing file(s) and re-sync.` : ''),
+        });
+      }
+    } catch {
+      // Best-effort; a schema without source_path shouldn't stop doctor.
+    }
+  }
+
   // 3d.1 Nightly quality probe (v0.40.1.0 Track D / T7). Reads the last
   // 7 days of quality-probe-YYYY-Www.jsonl audit events. SKIPPED with
   // paste-ready enable hint when the feature is opt-in disabled (default).
