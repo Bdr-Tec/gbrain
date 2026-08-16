@@ -159,7 +159,10 @@ pages fail to embed), re-run the **same command**: chunks already embedded on
 the target are never re-embedded, the schema/config steps no-op, and the run
 continues where it stopped. An in-flight marker (`embedding_migration.state`
 in DB config) records the target; it is cleared only when the backlog drains
-to zero.
+to zero. Re-running with a DIFFERENT `--to` target while a migration is in
+flight refuses and names both options: the exact resume command for the
+original target, or the same command with `--retarget` to abandon it
+deliberately (the marker records the superseded target in its history).
 
 One caveat after a HARD kill (SIGKILL, crash, power loss — not Ctrl-C): the
 run's per-source single-flight embed lock is left behind, and an immediate

@@ -112,6 +112,14 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   avoid. A tier-preserving mode needs its own LLM-spend consent design (synopsis
   regeneration costs per page). Filed from the migration-hardening wave
   (outside-voice C6).
+- [ ] **P3 — `gbrain config set embedding_model` refusal still prescribes
+  wipe-and-reinit.** The v0.37.11.0 hard-refuse in `src/commands/config.ts`
+  prints `mv brain.pglite` + re-init (PGLite) / "see docs/embedding-migrations.md"
+  (Postgres) as the switch recipe. The supported path is now `gbrain migrate
+  embeddings --to <provider:model> --dim <N>` on both engines — render this
+  surface via `renderCanonicalMigrationCommands` (`src/core/ai/defaults.ts`) and
+  add it to `test/canonical-migration-command.test.ts`'s sweep so it can't drift
+  again. Filed from the v0.46.9.0 /document-release audit.
 
 ## Issues #5+#6 follow-ups (pool starvation + process isolation; plan: ~/.claude/plans/system-instruction-you-are-working-witty-moore.md)
 

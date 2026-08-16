@@ -46,7 +46,7 @@ The resolved provider + dimensions get persisted to `~/.gbrain/config.json` atom
 
 ## If first import fails
 
-If `gbrain import` fails with `expected N dimensions, not M`, run `gbrain doctor`. The output will print the exact `gbrain config set ...` or `gbrain retrieval-upgrade` command to repair the mismatch. **You should not need to delete `~/.gbrain`.** The bug-class that historically forced `rm -rf` recoveries is closed as of v0.37.
+If `gbrain import` fails with `expected N dimensions, not M`, run `gbrain doctor`. The output will print the exact `gbrain config set ...` or `gbrain migrate embeddings` command to repair the mismatch. **You should not need to delete `~/.gbrain`.** The bug-class that historically forced `rm -rf` recoveries is closed as of v0.37.
 
 The doctor distinguishes two repair paths:
 
@@ -98,7 +98,7 @@ Voyage also serves the hosted rerankers `rerank-2.5` ($0.05/M) and `rerank-2.5-l
 gbrain init --pglite --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024
 ```
 
-To switch an existing brain, use `gbrain reinit-pglite --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024` (PGLite) or follow `docs/embedding-migrations.md` (Postgres). `gbrain config set embedding_model` is refused — the schema column has to resize.
+To switch an existing brain, run `gbrain migrate embeddings --to voyage:voyage-code-3 --dim 1024` (works on both engines; resumable, cost-previewed with `--dry-run` — see [`docs/guides/embedding-migration.md`](../guides/embedding-migration.md)). `gbrain config set embedding_model` is refused — the schema column has to resize, and the migration command is the path that does that safely.
 
 `gbrain reindex --code` will print a recommendation when run against a brain whose configured embedding model isn't code-tuned; suppress with `GBRAIN_NO_CODE_MODEL_NUDGE=1` if you've intentionally chosen another model (single-vendor procurement, compliance, etc.).
 
