@@ -219,6 +219,19 @@ describe('#2185 drift + freshness guards', () => {
     expect(missing).toEqual([]);
   });
 
+  test('every op whose cliHints.name is in CLI_ONLY is hidden (shadow guard)', () => {
+    // CLI_ONLY wins over op-generated dispatch (src/cli.ts handleCliOnly
+    // check precedes cliOps lookup), so a NON-hidden cliHints name that
+    // collides with CLI_ONLY is dead code that lies to the catalog — the
+    // think/salience/anomalies/whoknows class this wave swept. New collisions
+    // must mark the hint hidden (the advisor pattern) or drop the CLI_ONLY
+    // entry.
+    const shadowed = operations
+      .filter(op => op.cliHints?.name && CLI_ONLY.has(op.cliHints.name) && op.cliHints.hidden !== true)
+      .map(op => `${op.name} (cliHints.name='${op.cliHints?.name}')`);
+    expect(shadowed).toEqual([]);
+  });
+
   test('committed registry matches a fresh generator run (freshness guard)', () => {
     const fresh = buildFlagRegistry();
     const freshKeys = Object.keys(fresh).sort();

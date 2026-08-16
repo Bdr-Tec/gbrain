@@ -65,6 +65,11 @@ export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgr
   // v0.42.58 (#2035 class, caught by the handleCliOnly reachability sweep):
   // full handler at `case 'notability-eval'` but never dispatchable.
   'notability-eval',
+  // #2035 class (wired the #3502 way): `case 'whoknows'` had a live handler
+  // (runWhoknows: ranked table, per-factor explain, thin-client routing) that
+  // was shadowed by find_experts' non-hidden cliHints. The op hint is now
+  // hidden (ops/insights.ts); this entry makes the richer handler dispatch.
+  'whoknows',
 // Agent-bootstrap family (ENG-2 three-touchpoint rule): `bootstrap` + `hook`
 // are ENGINE-FREE (dispatched in handleCliOnly before the connectEngine
 // terminator) and must NEVER enter THIN_CLIENT_REFUSED_COMMANDS. `sweep` is
@@ -75,6 +80,8 @@ export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgr
 // per-subcommand usage stays reachable.
 const CLI_ONLY_SELF_HELP = new Set([
   'upgrade', 'post-upgrade', 'check-update',
+  // whoknows honours --help first (runWhoknows HELP block, whoknows.ts).
+  'whoknows',
   // #3502 sweep: pages + bench print their own usage (pages.ts printHelp,
   // bench-publish.ts printHelp). Both were documented but undispatchable —
   // `pages` had a live handleCliOnly case but was missing from CLI_ONLY
@@ -2701,12 +2708,6 @@ async function handleCliOnly(command: string, args: string[]) {
         await runModels(engine, args);
         break;
       }
-      case 'search': {
-        // v0.32.3 search-lite — `gbrain search modes/stats/tune`.
-        const { runSearch } = await import('./commands/search.ts');
-        await runSearch(engine, args);
-        break;
-      }
       case 'takes': {
         const { runTakes } = await import('./commands/takes.ts');
         await runTakes(engine, args);
@@ -3124,10 +3125,6 @@ export function printOpHelp(op: Operation, invokedName?: string) {
 }
 
 function printHelp() {
-  // Gather shared operations grouped by category
-  const cliNames = Array.from(cliOps.entries())
-    .map(([name, op]) => ({ name, desc: op.description }));
-
   console.log(`gbrain ${VERSION} -- personal knowledge brain
 
 USAGE

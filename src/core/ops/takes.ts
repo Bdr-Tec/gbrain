@@ -187,7 +187,10 @@ const think: Operation = {
       remote_persisted_blocked: remote && (Boolean(p.save) || Boolean(p.take)),
     };
   },
-  cliHints: { name: 'think', positional: ['question'] },
+  // hidden: 'think' is in CLI_ONLY (src/cli.ts) — the richer runThinkCli
+  // handler owns the CLI surface; a non-hidden hint here is dead (CLI_ONLY
+  // wins at dispatch) and lies to the catalog.
+  cliHints: { name: 'think', positional: ['question'], hidden: true },
 };
 
 
