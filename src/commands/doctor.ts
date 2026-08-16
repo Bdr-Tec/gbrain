@@ -1909,7 +1909,7 @@ export async function checkRerankerHealth(engine: BrainEngine): Promise<Check> {
       return {
         name: 'reranker_health',
         status: 'warn',
-        message: `${authFails.length} reranker auth failure(s) in last 7 days. Fix: verify ZEROENTROPY_API_KEY and run \`gbrain models doctor\`.`,
+        message: `${authFails.length} reranker auth failure(s) in last 7 days. Fix: verify the reranker provider's API key (e.g. VOYAGE_API_KEY) and run \`gbrain models doctor\`.`,
       };
     }
 
@@ -1949,9 +1949,13 @@ export async function checkRerankerHealth(engine: BrainEngine): Promise<Check> {
     if (unknownFails.length >= 3) {
       const setupHint = unknownFails.some((f) => {
         const summary = String(f.error_summary ?? '');
-        return summary.includes('ZEROENTROPY_API_KEY') || summary.toLowerCase().includes('api key');
+        return (
+          summary.includes('ZEROENTROPY_API_KEY') ||
+          summary.includes('VOYAGE_API_KEY') ||
+          summary.toLowerCase().includes('api key')
+        );
       })
-        ? ' Fix: verify ZEROENTROPY_API_KEY and run `gbrain models doctor`.'
+        ? " Fix: verify the reranker provider's API key (e.g. VOYAGE_API_KEY) and run `gbrain models doctor`."
         : '';
       return {
         name: 'reranker_health',
@@ -2748,7 +2752,18 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
     }
     const onSunsetEmbedding = model.startsWith('zeroentropyai:');
     const onSunsetReranker = !!reranker?.startsWith('zeroentropyai:');
-    if (!onSunsetEmbedding && !onSunsetReranker) {
+    // Custom embedding columns can route queries through a ZE-backed model
+    // even when the primary embedding + reranker are clear — without this arm
+    // the check reports ok while those columns die on the date.
+    let zeColumns: string[] = [];
+    try {
+      const { detectZeCustomColumns } = await import('../core/ze-exposure.ts');
+      zeColumns = (await detectZeCustomColumns(engine)).columns;
+    } catch {
+      // Probe failed — make no custom-column claim.
+    }
+    const onSunsetColumns = zeColumns.length > 0;
+    if (!onSunsetEmbedding && !onSunsetReranker && !onSunsetColumns) {
       return {
         name,
         status: 'ok',
@@ -2774,7 +2789,6 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
       } catch {
         // Probe failed (fresh/odd brain) — no exposure claim, warn-only.
       }
-      const dimFlag = dims ? ` --dim ${dims}` : '';
       parts.push(
         past
           ? hasVectors
@@ -2782,21 +2796,37 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
             : `embedding_model="${model}": the hosted API shut down on ${ZEROENTROPY_SUNSET_DATE}. No embedded vectors exist yet, so retrieval is not impacted — but embedding will fail until the config points elsewhere.`
           : `embedding_model="${model}": the hosted API shuts down on ${ZEROENTROPY_SUNSET_DATE}. On that date semantic retrieval stops entirely — existing vectors become unqueryable (query embedding uses the same endpoint), not just new content.`,
       );
+      // v0.46.3: the paste-ready fix is TARGET-AWARE on dimensions. Voyage's
+      // valid widths are {256, 512, 1024, 2048} — blindly preserving this
+      // brain's actual width (usually 1280) would emit a command Voyage
+      // rejects. OpenAI text-3 supports flexible widths up to its native
+      // size, so the keep-width form is offered only when valid there.
+      const openaiDimFlag = dims && dims <= 1536 ? ` --dim ${dims}` : ' --dim 1536';
+      const openaiKeepsWidth = !!(dims && dims <= 1536);
       parts.push(
         `Two fixes, either works: ` +
-        `[1] self-host the same model — zembed-1 weights are Apache-2.0; serve them via llama-server or Ollama and point the config at the local endpoint. Keeps every existing vector, no re-embed (docs/guides/embedding-migration.md, "Self-hosting instead of migrating"). ` +
-        `[2] migrate to another provider (resumable; preview cost first): ` +
-        `gbrain migrate embeddings --to <provider:model>${dimFlag} --dry-run` +
-        (dims ? ` — keep --dim ${dims} (this brain's actual index width) to avoid a needless schema rebuild when the target supports it.` : ''),
+        `[1] self-host the same model — zembed-1 weights are Apache-2.0; keep the zeroentropyai:zembed-1 id and point provider_base_urls.zeroentropyai at a ZE-wire-compatible endpoint (NOT a generic OpenAI-compatible server — the id speaks ZE's /models/embed dialect). Keeps every existing vector, no re-embed (docs/guides/embedding-migration.md). ` +
+        `[2] migrate (resumable; preview cost first): ` +
+        `gbrain migrate embeddings --to voyage:voyage-4 --dim 1024 --dry-run` +
+        (dims && dims !== 1024 ? ` (${dims} is not a valid Voyage width — the migration rebuilds the index at 1024)` : '') +
+        `; OpenAI alternative${openaiKeepsWidth ? ` keeps this brain's ${dims}d width` : ''}: ` +
+        `gbrain migrate embeddings --to openai:text-embedding-3-small${openaiDimFlag} --dry-run.`,
       );
     }
     if (onSunsetReranker) {
       parts.push(
         `The reranker (${reranker}) is on the same provider; after the shutdown search falls back to unreranked ordering. ` +
-        `Fix: gbrain config set search.reranker.enabled false, or point search.reranker.model at another provider.`,
+        `Fix: gbrain config set search.reranker.model voyage:rerank-2.5 (needs VOYAGE_API_KEY), or disable: gbrain config set search.reranker.enabled false.`,
       );
     }
-    if (onSunsetEmbedding || onSunsetReranker) {
+    if (onSunsetColumns) {
+      parts.push(
+        `Custom embedding column(s) backed by the shutting-down provider: ${zeColumns.join(', ')}. ` +
+        `No automated off-ramp exists for custom columns yet (migrate embeddings covers the primary column only) — ` +
+        `re-declare them on a new provider and re-embed (skills/migrations/v0.46.3.0.md).`,
+      );
+    }
+    if (onSunsetEmbedding || onSunsetReranker || onSunsetColumns) {
       parts.push('Accepted the risk? Silence this check: gbrain config set doctor.suppress_provider_sunset true');
     }
     // fail = retrieval is ACTUALLY down (past the date AND embedded vectors
@@ -2814,10 +2844,10 @@ export async function checkProviderSunset(engine: BrainEngine, now: number = Dat
  * v0.36.0.0 (A5): embedding_width_consistency doctor check.
  *
  * Cross-checks that `config.embedding_dimensions` matches the actual
- * `vector(N)` width on `content_chunks.embedding`. Drift here means the
- * ze-switch was interrupted mid-flight (schema changed but config write
- * crashed, or vice versa). Surfaces a paste-ready `gbrain ze-switch
- * --resume` hint.
+ * `vector(N)` width on `content_chunks.embedding`. Drift here means an
+ * embedding migration was interrupted mid-flight (schema changed but the
+ * config write crashed, or vice versa). Recovery path: `gbrain migrate
+ * embeddings` (resumable).
  */
 export async function checkEmbeddingWidthConsistency(engine: BrainEngine): Promise<Check> {
   try {

@@ -43,6 +43,7 @@ export interface MigrateEmbeddingsFlags {
   json: boolean;
   noEmbed: boolean;
   ignoreEnvOverride: boolean;
+  forceSunsetTarget: boolean;
   batchSize?: number;
   pace?: ReturnType<typeof parsePaceArgs>;
 }
@@ -62,6 +63,7 @@ export function parseMigrateEmbeddingsFlags(args: string[]): MigrateEmbeddingsFl
     json: args.includes('--json'),
     noEmbed: args.includes('--no-embed'),
     ignoreEnvOverride: args.includes('--ignore-env-override'),
+    forceSunsetTarget: args.includes('--force-sunset-target'),
     ...(batchSize !== undefined && { batchSize }),
     pace: parsePaceArgs(args),
   };
@@ -89,6 +91,9 @@ Flags:
   --pace[=mode]           DB-contention pacing for the re-embed (off|gentle|balanced|aggressive).
   --ignore-env-override   Proceed even when GBRAIN_EMBEDDING_* env vars would
                           override the target at runtime (you know why).
+  --force-sunset-target   Allow migrating ONTO a provider with an announced
+                          shutdown (e.g. a self-hosted wire-compatible endpoint
+                          behind a provider_base_urls override).
   --help                  Show this help.
 
 A killed run is resumable: re-run the same command. Already-migrated chunks
@@ -253,6 +258,7 @@ export async function runMigrateEmbeddings(
       ...(flags.dim !== undefined && { dim: flags.dim }),
       ...(fromModel !== undefined && { fromModel }),
       ...(fromDims !== undefined && { fromDims }),
+      ...(flags.forceSunsetTarget && { allowSunsetTarget: true }),
     });
   } catch (e) {
     serr(e instanceof Error ? e.message : String(e));
