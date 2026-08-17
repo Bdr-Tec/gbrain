@@ -43,7 +43,7 @@ import { sanitizeForJsonb, buildLinkRows, buildTimelineRows } from './batch-rows
 import { runMigrations } from './migrate.ts';
 import { SCHEMA_SQL } from './schema-embedded.ts';
 import { verifySchema } from './schema-verify.ts';
-import { applyChunkEmbeddingIndexPolicy, dropZombieIndexes, hnswEfSearchFor } from './vector-index.ts';
+import { applyChunkEmbeddingIndexPolicy, dropZombieIndexes, hnswEfSearchFor, hnswIndexExpected, HNSW_EF_SEARCH_MAX } from './vector-index.ts';
 import {
   normalizeEngineColumn,
   buildVectorCastFragment,
@@ -78,6 +78,7 @@ import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import * as db from './db.ts';
 import { ConnectionManager, DEFAULT_DIRECT_POOL_SIZE } from './connection-manager.ts';
 import { logConnectionEvent } from './connection-audit.ts';
+import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
 import { validateSlug, contentHash, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery } from './search/sql-ranking.ts';
@@ -368,6 +369,14 @@ export class PostgresEngine implements BrainEngine {
     try {
       logDbDisconnect('postgres', this._connectionStyle ?? 'unknown');
     } catch { /* best-effort; never block disconnect on audit failure */ }
+    // #4143 engine parity with PGLiteEngine.disconnect(): settle in-flight
+    // background-work statements before pool teardown. Mode 'disconnect' —
+    // residual telemetry buffers are dropped on BOTH engines (symmetric lossy
+    // semantics; the CLI-exit drain is where residuals flush). Guarded so a
+    // no-op disconnect (never connected / already torn down) skips the drain.
+    if (this.connectionManager || this._sql || this._connectionStyle === 'module') {
+      await drainBackgroundWorkBeforeDisconnect();
+    }
     // v0.30.1: tear down the direct pool first if the manager owns one.
     if (this.connectionManager) {
       await this.connectionManager.disconnect();
@@ -2333,7 +2342,29 @@ export class PostgresEngine implements BrainEngine {
     const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', boostMap, opts?.detail, 'unverified_stub');
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
     const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
-    const innerLimit = offset + Math.max(limit * 5, 100);
+    // v0.36 (D11): column routing via resolved descriptor. Engine doesn't
+    // read config — caller (hybrid/op) resolved it and passed it in.
+    // normalizeEngineColumn accepts the legacy union (string literals,
+    // ResolvedColumn, undefined) and produces a canonical descriptor.
+    // (Hoisted above innerLimit so the escalation cap can key off the
+    // column's index eligibility.)
+    const resolvedCol = normalizeEngineColumn(opts?.embeddingColumn);
+    // v0.46.15 (retrieval-cathedral P1): innerLimit counts CHUNKS before the
+    // best-per-page DISTINCT collapse — one dense page (150+ chunks near the
+    // query) could consume the whole pool and underfill the PAGE result. The
+    // execution below runs a bounded escalation loop (×4, ≤3 times) when the
+    // page set comes back short while the candidate pool was FULL (more
+    // candidates existed). Cap policy (outside-voice R2-10 + codex ship
+    // review): for HNSW-backed columns the scan returns at most ef_search
+    // rows and the GUC ceilings at 1000, so inner limits beyond that are
+    // fictitious. Columns ABOVE the index dim ceiling (e.g. vector >2000d)
+    // fall back to exact scans where ef_search is irrelevant — capping their
+    // SQL LIMIT would make offset >= 1000 permanently empty; they stay
+    // bounded by the escalation count instead.
+    const innerCap = hnswIndexExpected(resolvedCol.type, resolvedCol.dimensions)
+      ? HNSW_EF_SEARCH_MAX
+      : Number.MAX_SAFE_INTEGER;
+    const innerLimit = Math.min(offset + Math.max(limit * 5, 100), innerCap);
 
     const params: unknown[] = [vecStr];
     let typeClause = '';
@@ -2388,6 +2419,7 @@ export class PostgresEngine implements BrainEngine {
       sourceClause = `AND p.source_id = $${params.length}`;
     }
     params.push(innerLimit);
+    const innerLimitIdx = params.length - 1; // mutated by the escalation loop
     const innerLimitParam = `$${params.length}`;
     params.push(limit);
     const limitParam = `$${params.length}`;
@@ -2400,16 +2432,10 @@ export class PostgresEngine implements BrainEngine {
     // wasting candidate slots on hidden rows.
     const visibilityClause = buildVisibilityClause('p', 's');
 
-    // v0.36 (D11): column routing via resolved descriptor. Engine doesn't
-    // read config — caller (hybrid/op) resolved it and passed it in.
-    // normalizeEngineColumn accepts the legacy union (string literals,
-    // ResolvedColumn, undefined) and produces a canonical descriptor.
-    //
     // v0.36 Phase 3: 'embedding_multimodal' is the unified column populated
     // by `gbrain reindex --multimodal`. Carries BOTH text and image content
     // in Voyage multimodal-3 space — no modality filter; the column itself
     // is the discriminator (rows without embedding_multimodal aren't searched).
-    const resolvedCol = normalizeEngineColumn(opts?.embeddingColumn);
     const { col, castSql } = buildVectorCastFragment(resolvedCol);
     let modalityFilter: string;
     if (resolvedCol.name === 'embedding_image') {
@@ -2467,7 +2493,8 @@ export class PostgresEngine implements BrainEngine {
         message_id, thread_id, source_subject,
         chunk_id, chunk_index, chunk_text, chunk_source,
         score,
-        false AS stale
+        false AS stale,
+        (SELECT count(*) FROM hnsw_candidates)::int AS candidate_pool
       FROM best_per_page
       -- v0.41.13: stable tiebreaker for tied scores. See pglite-engine for
       -- rationale (basis-vector test fixtures, planner-dependent ordering).
@@ -2484,11 +2511,37 @@ export class PostgresEngine implements BrainEngine {
     // 40), so the inner CTE's LIMIT past 40 was silently unreachable — see
     // hnswEfSearchFor. Transaction-local (is_local=true); non-HNSW plans
     // (seq scan, or corpora without the index) ignore the GUC.
-    const rows = await this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, async (tx) => {
-      await tx`SET LOCAL statement_timeout = '8s'`;
-      await tx`SELECT set_config('hnsw.ef_search', ${String(hnswEfSearchFor(innerLimit))}, true)`;
-      return await tx.unsafe(rawQuery, params as Parameters<typeof tx.unsafe>[1]);
-    }, { alwaysTransaction: true });
+    //
+    // v0.46.15 bounded escalation (identical logic in pglite-engine —
+    // engine-parity pinned): retry ×4 up to 3 times while the PAGE set is
+    // short but the pre-collapse candidate pool was FULL. A short page with
+    // a non-full pool is a genuine final page (corpus/filter exhausted) —
+    // no retry, no event. Zero rows with offset>0 escalates (deep
+    // pagination) but never emits: pool state is unknowable there.
+    const runOnce = async (il: number) =>
+      await this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, async (tx) => {
+        await tx`SET LOCAL statement_timeout = '8s'`;
+        await tx`SELECT set_config('hnsw.ef_search', ${String(hnswEfSearchFor(il))}, true)`;
+        return await tx.unsafe(rawQuery, params as Parameters<typeof tx.unsafe>[1]);
+      }, { alwaysTransaction: true });
+    let escalations = 0;
+    let rows = await runOnce(innerLimit);
+    for (;;) {
+      const il = params[innerLimitIdx] as number;
+      if (rows.length >= limit) break;
+      const pool = rows.length > 0 ? Number((rows[0] as { candidate_pool?: number }).candidate_pool ?? 0) : null;
+      const shouldEscalate = pool !== null ? pool >= il : offset > 0;
+      if (!shouldEscalate) break;
+      if (il >= innerCap || escalations >= 3) {
+        if (pool !== null && pool >= il) {
+          opts?.onVectorPoolMeta?.({ underfilled: true, escalations, innerLimit: il });
+        }
+        break;
+      }
+      params[innerLimitIdx] = Math.min(il * 4, innerCap);
+      escalations++;
+      rows = await runOnce(params[innerLimitIdx] as number);
+    }
     return rows.map(rowToSearchResult);
   }
 

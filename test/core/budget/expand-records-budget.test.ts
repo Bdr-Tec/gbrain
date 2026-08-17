@@ -257,3 +257,98 @@ describe('expand() budget accounting — openai-compatible structured-output (ge
     expect(recordRow.output_tokens).toBe(22);
   });
 });
+
+describe('expand() failure-path accounting (#4121 extension — .failed pessimistic records)', () => {
+  const baseLitellm = getRecipe('litellm')!;
+  const structuredLitellm: Recipe = {
+    ...baseLitellm,
+    id: 'synthetic-structured-litellm-2',
+    touchpoints: {
+      ...baseLitellm.touchpoints,
+      chat: { ...baseLitellm.touchpoints.chat!, supports_structured_outputs: true },
+    },
+  };
+
+  beforeEach(() => {
+    __setTestRecipesForTests([structuredLitellm]);
+    configureGateway({
+      expansion_model: 'synthetic-structured-litellm-2:my-proxied-model',
+      env: {},
+    });
+  });
+
+  afterEach(() => {
+    __setTestRecipesForTests([]);
+  });
+
+  test('structured-output rejection bills BOTH calls: one .failed record + one viaText record', async () => {
+    __setGenerateObjectTransportForTests(async () => {
+      throw new Error('response_format json_schema rejected by backend');
+    });
+    __setGenerateTextTransportForTests(async () => ({
+      text: '{"queries": ["alt one"]}',
+      usage: { inputTokens: 70, outputTokens: 25 },
+    }) as any);
+
+    const tracker = new BudgetTracker({ label: 'test-expand-both-billed', auditPath });
+    let result: string[] = [];
+    await withBudgetTracker(tracker, async () => {
+      result = await expand('original query');
+    });
+
+    expect(result).toContain('alt one'); // fallback recovered the expansion
+    expect(tracker.snapshot().callsRecorded).toBe(2); // the failed attempt is NOT a free call
+
+    const rows = readAudit().filter(r => r.event === 'record' || r.event === 'record_unpriced');
+    const labels = rows.map(r => r.sub_label).sort();
+    expect(labels).toEqual(['gateway.expand', 'gateway.expand.failed']);
+    const failed = rows.find(r => r.sub_label === 'gateway.expand.failed')!;
+    // Pessimistic fallback: estimated prompt tokens, bounded output estimate.
+    expect(failed.input_tokens).toBeGreaterThan(0);
+    expect(failed.output_tokens).toBeGreaterThan(0);
+  });
+
+  test('total failure (fallback throws too) records TWO .failed rows and still degrades to [query]', async () => {
+    __setGenerateObjectTransportForTests(async () => {
+      throw new Error('backend down');
+    });
+    __setGenerateTextTransportForTests(async () => {
+      throw new Error('backend still down');
+    });
+
+    const tracker = new BudgetTracker({ label: 'test-expand-total-failure', auditPath });
+    let result: string[] = [];
+    await withBudgetTracker(tracker, async () => {
+      result = await expand('original query');
+    });
+
+    expect(result).toEqual(['original query']); // outer catch degrades, never throws
+    const rows = readAudit().filter(r => r.event === 'record' || r.event === 'record_unpriced');
+    expect(rows.map(r => r.sub_label)).toEqual(['gateway.expand.failed', 'gateway.expand.failed']);
+  });
+});
+
+describe('normalizeSdkUsage legacy shape (#4121 fix-first)', () => {
+  beforeEach(() => {
+    configureGateway({
+      expansion_model: 'anthropic:claude-haiku-4-5-20251001',
+      env: { ANTHROPIC_API_KEY: 'sk-test-fake' },
+    });
+  });
+
+  test('a provider reporting promptTokens/completionTokens (legacy SDK shape) still records real token counts', async () => {
+    __setGenerateObjectTransportForTests(async () => ({
+      object: { queries: ['alt one'] },
+      usage: { promptTokens: 111, completionTokens: 33 }, // legacy keys only
+    }) as any);
+    const tracker = new BudgetTracker({ label: 'test-legacy-usage', auditPath });
+    await withBudgetTracker(tracker, async () => {
+      await expand('original query');
+    });
+    const row = readAudit().find(r => r.event === 'record' || r.event === 'record_unpriced')!;
+    // A regression to inputTokens-only reads records 0/0 — the silent
+    // undercount class #4121 exists to prevent.
+    expect(row.input_tokens).toBe(111);
+    expect(row.output_tokens).toBe(33);
+  });
+});

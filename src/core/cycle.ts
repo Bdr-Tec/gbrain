@@ -2105,6 +2105,10 @@ export async function runCycle(
           // (explicit --source wins, else derived from the checkout dir).
           sourceId: cycleSourceId,
           once: opts.onceForPhase === 'synthesize',
+          // #4168 sibling: clamp child-subagent timeouts to the remaining
+          // job budget (same collision shape as propose_takes, cross-process
+          // timeout domain — clamped via the patterns.ts childBudget template).
+          deadlineAtMs: opts.deadlineAtMs ?? null,
         }));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
@@ -2475,7 +2479,9 @@ export async function runCycle(
           progress.start('cycle.propose_takes');
           const { runPhaseProposeTakes } = await import('./cycle/propose-takes.ts');
           // gbrain#4168: thread the job's absolute deadline so the phase's
-          // clean partial-exit fires before the worker's kill switch.
+          // clean partial-exit fires before the worker's kill switch (same
+          // literal shape as the patterns call above so the structural guard
+          // matches both).
           const { result, duration_ms } = await timePhase(() => runPhaseProposeTakes(calibrationCtx, { repoPath: brainDir ?? undefined, deadlineAtMs: opts.deadlineAtMs ?? null }) as Promise<PhaseResult>);
           result.duration_ms = duration_ms;
           phaseResults.push(result);

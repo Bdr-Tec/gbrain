@@ -17,7 +17,7 @@
  * sibling test files in the same bun-test process.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { writeFileSync, chmodSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, chmodSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { LanguageModelV2CallOptions } from '@ai-sdk/provider';
@@ -210,11 +210,72 @@ describe('claude-cli LanguageModel — tool use', () => {
       expect(result.content[0]).toMatchObject({ type: 'text', text: 'I will look up the pattern first.' });
       expect(result.content[1]).toMatchObject({
         type: 'tool-call',
-        toolCallId: 'toolu_01ABC',
         toolName: 'search',
         input: '{"query":"n+1 query"}',
       });
+      // #4155: a stray model-supplied id (older cached behavior — the prompt
+      // no longer asks for one) is tolerated but IGNORED; the id is minted.
+      const call = result.content[1] as { toolCallId: string };
+      expect(call.toolCallId).toMatch(/^toolu_claude_cli_/);
+      expect(call.toolCallId).not.toBe('toolu_01ABC');
     });
+  });
+
+  test('#4155: mints a fresh id per call — two identical envelopes yield distinct ids', async () => {
+    await withStubEnv(async () => {
+      const envelope = baseEnvelope(
+        [
+          '<use_tools>',
+          '[{"id": "toolu_01", "name": "search", "input": {"query": "same"}}]',
+          '</use_tools>',
+        ].join('\n'),
+      );
+      const { ClaudeCliLanguageModel } = await import('../src/core/ai/providers/claude-cli-language-model.ts');
+      const model = new ClaudeCliLanguageModel('claude-sonnet-4-6');
+      const opts = {
+        prompt: [userMessage('turn one')],
+        tools: [
+          {
+            type: 'function',
+            name: 'search',
+            description: 'Search the brain',
+            inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+          },
+        ],
+      } as LanguageModelV2CallOptions;
+
+      stageResponse(envelope);
+      const first = await model.doGenerate(opts);
+      stageResponse(envelope);
+      const second = await model.doGenerate(opts);
+
+      const id1 = (first.content.find(c => c.type === 'tool-call') as { toolCallId: string }).toolCallId;
+      const id2 = (second.content.find(c => c.type === 'tool-call') as { toolCallId: string }).toolCallId;
+      // The model repeated toolu_01 both turns (it structurally cannot avoid
+      // repeating: fresh subprocess + id-stripped replay). The adapter must
+      // still produce unique ids — this repetition is what dead-lettered
+      // dream patterns jobs pre-fix.
+      expect(id1).toMatch(/^toolu_claude_cli_/);
+      expect(id2).toMatch(/^toolu_claude_cli_/);
+      expect(id1).not.toBe(id2);
+    });
+  });
+
+  test('#4155: prompt protocol no longer asks the model to invent an id (source-shape pin)', () => {
+    // The stub harness cannot capture argv, so pin the protocol template at
+    // the source level (same style as the repo's other source-shape guards):
+    // asking the model for "a unique id" is structurally unsatisfiable — a
+    // fresh subprocess replayed from an id-stripped transcript cannot avoid
+    // repeats, which is exactly what collided real dream jobs to death.
+    const src = readFileSync(
+      new URL('../src/core/ai/providers/claude-cli-language-model.ts', import.meta.url).pathname,
+      'utf-8',
+    );
+    expect(src).toContain('{"name": "<tool name>", "input":');
+    expect(src).not.toContain('unique tool call id');
+    expect(src).not.toContain('toolu_01ABC');
+    // The unconditional mint is present and model ids are never trusted.
+    expect(src).toMatch(/const id = `toolu_claude_cli_\$\{randomUUIDv7\(\)\}`/);
   });
 
   test('parses multiple parallel tool calls in a single block', async () => {

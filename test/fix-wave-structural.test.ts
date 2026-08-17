@@ -188,8 +188,38 @@ describe('v0.42.20.0 — background-work registry drains every sink before disco
     const src = readFileSync('src/core/background-work.ts', 'utf8');
     expect(src).toMatch(/new\s+Map<string,\s*BackgroundWorkDrainer>/);
     expect(src).toMatch(/sort\(\s*\(a,\s*b\)\s*=>\s*a\.order\s*-\s*b\.order/);
-    expect(src).toMatch(/if\s*\(unfinished\s*>\s*0\s*&&\s*d\.abort\)\s*\{[\s\S]*?await\s+d\.abort\(\)/);
+    // #4143 widened the abort gate: still awaited, but only on the CLI-exit
+    // path (allowAbort) — the disconnect drain must never fire a permanent
+    // process-level abort from a long-lived process.
+    expect(src).toMatch(/if\s*\(unfinished\s*>\s*0\s*&&\s*d\.abort\s*&&\s*opts\.allowAbort\)\s*\{[\s\S]*?await\s+d\.abort\(\)/);
+    expect(src).toMatch(/export async function drainBackgroundWorkBeforeDisconnect/);
     expect(src).toMatch(/export function __registerDrainerForTest/);
+  });
+
+  test('#4136 scan surfaces unrecognized_headings on both output paths', () => {
+    // The CLI test harness is deliberately engine-less, so pin the scan
+    // command's field passthrough at source level: JSON payload + the human
+    // caveat line must both carry the folded-heading diagnostic.
+    const src = readFileSync('src/commands/conversation-parser.ts', 'utf8');
+    expect(src).toContain('unrecognized_headings: result.unrecognized_headings'); // JSON payload
+    expect(src).toContain('unrecognized_headings: [${result.unrecognized_headings.join'); // human line
+    expect(src).toContain('speaker attribution may be wrong (#4136)');
+  });
+
+  test('#4143 engine parity: BOTH engines call the disconnect drain', () => {
+    // The postgres lane has no cheap behavioral harness (DATABASE_URL-gated),
+    // so pin the call sites structurally: a refactor that drops either
+    // engine's drain call silently reopens the in-flight-statement deadlock.
+    const pglite = readFileSync('src/core/pglite-engine.ts', 'utf8');
+    const postgres = readFileSync('src/core/postgres-engine.ts', 'utf8');
+    expect(pglite).toMatch(/await drainBackgroundWorkBeforeDisconnect\(\)/);
+    expect(postgres).toMatch(/await drainBackgroundWorkBeforeDisconnect\(\)/);
+    // PGLite ordering is load-bearing: drain AFTER the early-null (never
+    // before — that reopens the #1337 mid-close race), BEFORE close().
+    const nullIdx = pglite.indexOf('this._db = null;');
+    const drainIdx = pglite.indexOf('await drainBackgroundWorkBeforeDisconnect()');
+    expect(nullIdx).toBeGreaterThan(-1);
+    expect(drainIdx).toBeGreaterThan(nullIdx);
   });
 
   test('cli-force-exit.ts daemon guard excludes "serve"', () => {

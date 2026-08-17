@@ -12,8 +12,8 @@
  *
  * Tool use is supported via system-prompt-instructed JSON emission:
  *   The recipe injects a fenced instruction block into the system prompt
- *   that teaches the model the `<use_tools>[{id,name,input}, ...]</use_tools>`
- *   emission format. The adapter parses those blocks back into ai-sdk
+ *   that teaches the model the `<use_tools>[{name,input}, ...]</use_tools>`
+ *   emission format (ids are gbrain-minted, never model-authored — #4155). The adapter parses those blocks back into ai-sdk
  *   `tool-call` content parts. Parallel tool calls (multiple entries in
  *   the JSON array) round-trip cleanly — this is the case that breaks
  *   on the codex-proxy / litellm GPT-5.x bridge today.
@@ -31,6 +31,7 @@
  * doStream is not yet implemented; the model declares no streaming. Callers
  * (gateway.toolLoop primarily) use doGenerate.
  */
+import { randomUUIDv7 } from 'bun';
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -110,7 +111,7 @@ function buildToolUseInstructions(
     '',
     '<use_tools>',
     '[',
-    '  {"id": "<unique tool call id, like toolu_01ABC>", "name": "<tool name>", "input": <input object matching the tool\'s input_schema>}',
+    '  {"name": "<tool name>", "input": <input object matching the tool\'s input_schema>}',
     ']',
     '</use_tools>',
     '',
@@ -372,9 +373,16 @@ function extractToolCalls(raw: string): {
     const e = entry as Record<string, unknown>;
     const name = typeof e.name === 'string' ? e.name : null;
     if (!name) continue;
-    const id = typeof e.id === 'string' && e.id.length > 0
-      ? e.id
-      : `toolu_claude_cli_${Math.random().toString(36).slice(2, 12)}`;
+    // #4155: ALWAYS mint — never trust a model-authored id. Each doGenerate
+    // is a fresh subprocess replayed from an id-stripped transcript
+    // (renderPrompt), so the model structurally CANNOT keep ids unique
+    // across turns; it echoed the prompt's example entropy-free (toolu_01,
+    // toolu_02 every turn) and collided real dream jobs to death before the
+    // job-wide unique constraint was retired (migration v131). The prompt no
+    // longer asks for an id; a stray `id` field from older cached behavior
+    // is deliberately ignored — nothing round-trips it (renderPrompt strips
+    // ids on replay; the loop pairs results in-memory within one turn).
+    const id = `toolu_claude_cli_${randomUUIDv7()}`;
     const inputJson = JSON.stringify(e.input ?? {});
     toolCalls.push({ id, name, input: inputJson });
   }

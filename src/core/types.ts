@@ -823,6 +823,15 @@ export interface SearchResult {
    */
   /** RRF + cosine score BEFORE any boost stage mutated it. */
   base_score?: number;
+  /**
+   * v0.46.15 — RAW query↔chunk cosine similarity from cosineReScore's
+   * hydration (the active embedding column's space). Absent on keyword-only
+   * / no-embedding paths. This is the ONLY calibrated semantic signal on the
+   * result — evidence's `high_vector_match` keys off it, never off the
+   * blended/boosted score (the #3963 class: a keyword+boost pile-up reading
+   * as a vector match).
+   */
+  cosine?: number;
   /** Multiplier applied by applyBacklinkBoost (1.0 = unchanged). */
   backlink_boost?: number;
   /** Multiplier applied by applySalienceBoost. */
@@ -959,6 +968,16 @@ export interface ResolvedColumn {
 export interface SearchOpts {
   limit?: number;
   offset?: number;
+  /**
+   * v0.46.15 — out-channel for searchVector's bounded pagination escalation
+   * (retrieval-cathedral P1: one dense page could consume the whole inner
+   * candidate pool before the per-page DISTINCT collapse, underfilling the
+   * result). Engines have no telemetry sink; the HYBRID layer passes a
+   * collector here and owns the emit. Called at most once per searchVector
+   * call, only when the escalation loop ended with the page set still
+   * underfilled at the HNSW substrate cap (ef_search hard ceiling).
+   */
+  onVectorPoolMeta?: (m: { underfilled: boolean; escalations: number; innerLimit: number }) => void;
   /**
    * v0.42 — intent-aware adaptive return-sizing. `true` enables with config/
    * default caps; an object overrides caps per-call; omitted/`false` = off
@@ -1742,12 +1761,19 @@ export interface HybridSearchMeta {
    * command can show "intent: temporal" alongside results to make the
    * weighting decision auditable.
    */
-  intent?: 'entity' | 'temporal' | 'event' | 'general';
+  intent?: 'entity' | 'temporal' | 'event' | 'concept' | 'general';
   /**
    * v0.42 — adaptive return-sizing decision (intent, cap, kept, total).
    * Omitted when the gate is off. Surfaced for `gbrain search --explain`.
    */
   adaptive_return?: import('./search/return-policy.ts').AdaptiveReturnDecision;
+  /**
+   * v0.46.15 — searchVector's bounded pagination escalation ended at the HNSW
+   * substrate cap with the page set still underfilled (dense-corpus signal:
+   * the caller asked for more distinct pages than the candidate pool could
+   * yield). Omitted on clean runs. Exhaustion is VISIBLE, not silent.
+   */
+  vector_pool_underfilled?: { escalations: number; innerLimit: number };
   /**
    * v0.42.3.0 — autocut decision (signal, cut point, kept/total, gapRatio).
    * Omitted when autocut didn't run (no reranker). Surfaced for
