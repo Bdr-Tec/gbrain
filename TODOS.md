@@ -53,6 +53,33 @@
   `src/commands/agent.ts`. **Effort:** S. **Priority:** P3.
 
 
+
+## Security-sweep mitigation follow-ups (filed 2026-08-16)
+
+- [ ] **P1 — `gbrain upgrade` binary lane returns success exit status on failure (autopilot false-success).** **What:** `runUpgrade`'s `binary` case logs every failure reason (`smoke_failed`, `download_failed`, `integrity_failed`, `integrity_unavailable`, `version_mismatch`, `replace_failed`) but never sets a non-zero CLI exit verdict, so callers see exit 0. **Why:** autopilot (`src/commands/autopilot.ts`) can read a false success, record "applied," relaunch, and then mark a transiently-unavailable version permanently bad — an amplification loop, now more reachable because `integrity_unavailable` fires on ordinary GitHub API rate limits. **Context:** PRE-EXISTING for the whole binary lane (not introduced by the v0.46.12.3 integrity work); surfaced by that PR's adversarial review with 2-model consensus. Fix needs care: distinguish hard-fail (`integrity_failed`/`version_mismatch` → exit non-zero, autopilot should NOT mark-bad on a security rejection) from transient (`integrity_unavailable` → retry, not a version fault), with autopilot-loop tests — hence its own PR, not a rushed rider. **Start:** `src/commands/upgrade.ts` binary case + `setCliExitVerdict` + `src/commands/autopilot.ts` upgrade handling.
+- [ ] **P3 — Self-update GitHub API rate-limit resilience.** **What:** each `gbrain upgrade` makes 2 unauthenticated `api.github.com` calls (releases/latest + attestations), 60/hr/IP; corporate NAT / CI fleets hit 403 → `integrity_unavailable` → fail-closed. **Why:** a hard availability regression for shared-egress fleets vs the pre-integrity path. **Options:** honor an ambient `GH_TOKEN`/`GITHUB_TOKEN` when present (weigh against widening what a leaked env token authorizes), or a small bounded retry with backoff, and align the attestation fetch timeout (10s) with the download budget so a slow-but-working link doesn't spuriously fail. **Start:** `defaultFetchRelease`/`defaultFetchAttestation` in `src/core/binary-self-update.ts`.
+
+
+- [ ] **P3 — Integrity for the from-source / `latest-stable` install paths.** **What:** the
+  compiled-binary self-update now verifies the GitHub build-provenance attestation before
+  installing (`src/core/binary-self-update.ts`), but the primary documented install
+  (`bun install -g github:garrytan/gbrain#latest-stable`, a force-moved tag) and the
+  force-published `codex-plugin` branch / template repo remain TLS+GitHub trust-on-first-use.
+  **Why:** those paths are how most users actually install; a compromised GitHub account could
+  serve an unverified tree. **Context:** documented as a residual in SECURITY.md
+  ("Install-path trust model"). A postinstall attestation check (or a documented
+  `gh attestation verify` step for tag installs) would close it, but a from-source tree has no
+  single binary to attest — needs design. **Start:** `scripts/postinstall.ts` +
+  SECURITY.md residual note. **Depends on:** the WS2 self-update integrity that just landed.
+- [ ] **P3 — Make `check:admin-embedded` deterministic so it can gate.** **What:**
+  `scripts/build-admin-embedded.ts` stamps today's date into a comment in
+  `src/admin-embedded.ts`, so `check-admin-embedded.sh`'s `git diff --exit-code` fails on any
+  day after commit — which is why it's `EXECUTION_EXEMPT` and unwired. **Why:** if the date
+  stamp were dropped (or the check ignored it), the embedded-manifest freshness guard could
+  actually run in CI. **Context:** correctness guard (catches a forgotten manifest regen), not
+  a security control — a backdoored dist regenerates the manifest and passes. The real dist
+  trust anchor is build-fresh-in-release (WS1, landed). **Start:** the date-comment line in
+  `scripts/build-admin-embedded.ts` + `guards-manifest.tsv:50`.
 ## CLI→MCP gap-closure wave follow-ups (2026-08-16; plan: ~/.claude/plans/system-instruction-you-are-working-concurrent-lantern.md)
 
 - [ ] **P2 — publish-gate fail-open on a DB-config read failure.**
@@ -1893,13 +1920,14 @@ Filed from the self-upgrading-gbrain wave. All deliberately scoped OUT (D7a/D7b
 + eng-review notes); none is a v0.42.12.0 regression. Plan + reviews at
 `~/.claude/plans/system-instruction-you-are-working-nifty-badger.md`.
 
-- [ ] **P2 — Signature/checksum verification before applying an auto-upgrade
-  (D7a).** Auto-upgrade currently trusts TLS + GitHub, same as `gbrain upgrade`.
-  This is the prerequisite for ever making `auto` a default instead of opt-in:
-  verify a release-asset checksum/signature before `atomicReplace`. Until it
-  lands, `self_upgrade.mode` stays opt-in everywhere. Touches
-  `src/core/binary-self-update.ts` (stage step) + the release workflow (publish
-  the signature/checksum alongside the asset).
+- [x] **P2 — Signature/checksum verification before applying an auto-upgrade
+  (D7a).** **Completed:** v0.46.12.3 (2026-08-16). `verifyIntegrity` in
+  `src/core/binary-self-update.ts` now checks the downloaded asset's SHA-256 +
+  builder identity against the GitHub build-provenance attestation (already
+  published by release.yml's `attest-build-provenance`) BEFORE chmod/exec/rename
+  — fail-closed with typed `integrity_failed`/`integrity_unavailable`. No new
+  release asset needed. Residual (from-source/`latest-stable` install paths) is
+  re-filed as the P3 entry at the top of this file.
 - [ ] **P2 — `gbrain serve` host graceful request-drain on auto-upgrade (D7b).**
   The silent channel currently skips while any request/stream/job/tx is in
   flight and retries next window. A true drain (stop accepting new, finish

@@ -66,6 +66,33 @@ export async function runUpgrade(args: string[]) {
         console.log('No published binary for this platform/arch.');
         console.log('Download the latest binary from GitHub Releases:');
         console.log('  https://github.com/garrytan/gbrain/releases');
+      } else if (
+        result.reason === 'integrity_failed' ||
+        result.reason === 'integrity_unavailable' ||
+        result.reason === 'version_mismatch'
+      ) {
+        // Fail-closed: the downloaded binary was never installed (renamed over
+        // the live path). "signed" is intentionally omitted — we match against
+        // the build-provenance attestation's digest + builder identity fetched
+        // over TLS from the GitHub API; we do NOT independently verify the
+        // Sigstore signature chain (see src/core/binary-self-update.ts header).
+        const detail =
+          result.reason === 'integrity_failed'
+            ? 'the downloaded binary did not match its build-provenance attestation (digest/builder mismatch)'
+            : result.reason === 'version_mismatch'
+              ? 'the downloaded binary reported a different version than the release it was fetched for (possible downgrade)'
+              : 'the build-provenance attestation could not be fetched (offline, rate-limited, or missing)';
+        console.error(`Binary self-update rejected — integrity not confirmed: ${detail}.`);
+        console.error('Your existing binary is unchanged and the download was discarded.');
+        console.error('Retry later, or download + verify manually:');
+        console.error('  https://github.com/garrytan/gbrain/releases');
+        recordUpgradeError({
+          phase: 'binary-self-update',
+          fromVersion: oldVersion,
+          toVersion: '',
+          error: result.reason,
+          hint: 'Integrity check failed; existing binary retained. Retry or download manually.',
+        });
       } else {
         console.error(`Binary self-update failed (${result.reason}${result.error ? `: ${result.error}` : ''}).`);
         console.error('Your existing binary is unchanged. Download manually if needed:');
