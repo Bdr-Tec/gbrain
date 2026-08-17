@@ -19,10 +19,12 @@ multi-user core the brain always had, finally packaged for multiple agents.
   contract (`schema_version: 1`) with credential redaction unless
   `--show-token`; typed failure envelopes for every refusal.
 - Presets that stay honest to the scoping model: `daily-driver` (read-broad
-  via a registration-time snapshot of your sources, starter tool surface) and
-  `coding-agent` (write-isolated `<name>-workspace` source, requires the
-  project sources it may read). Explicit flags always win; neither preset can
-  grant operator scopes. Surface tiers land through the audited operator path.
+  via a registration-time snapshot of your sources — other agents' workspace
+  scratch sources excluded, grant one explicitly to share it — starter tool
+  surface) and `coding-agent` (write-isolated `<name>-workspace` source,
+  requires the project sources it may read). Explicit flags always win;
+  neither preset can grant operator scopes. Surface tiers land through the
+  audited operator path.
 - `--reissue <client-id>` rotates a client secret and reprints the wiring —
   outstanding tokens stay valid until expiry, and the output says so.
 - Cross-agent memory continuity: `recall` now honors federated read grants,
@@ -32,21 +34,28 @@ multi-user core the brain always had, finally packaged for multiple agents.
   `docs/guides/agent-to-gbrain.md` carries the single decision table for the
   four onboarding paths. `gbrain auth clients` now shows each client's write
   source and federated reads; a new doctor check surfaces dangling read
-  grants and orphaned empty workspace sources.
+  grants and orphaned empty workspace sources (a workspace holding only
+  facts counts as data, never orphaned).
 - `gbrain auth register-client --token-ttl <seconds>` for per-client token
   lifetimes from the CLI.
 
 ### Changed
 - Registering on a thin client or against a live PGLite serve is refused
   up front with exact guidance (previously: dead credentials in a scratch
-  brain, or a silent 30-second lock hang).
-- The admin register API validates source existence and archived state with
-  structured 400s, refuses duplicate client names (409), and composes the
-  same registration core as the CLI so the two paths can never drift.
+  brain, or a silent 30-second lock hang). Registration also probes the
+  target serve and refuses one too old to enforce the token's scope grant —
+  upgrade the serve, or pass `--allow-old-serve` to accept the risk (an
+  unreachable serve stays a warning).
+- The admin register API validates source existence, archived state, and
+  token TTL bounds with structured 400s, refuses duplicate client names
+  (409), and composes the same registration core as the CLI — atomically,
+  under the same name lock — so the two paths can never drift.
 - Deleting or purging a source that an OAuth client still references is
   refused with the exact revoke commands — including clients that were
   revoked-but-retained, which still block deletion at the database level.
-  Recurring maintenance now skips such sources instead of aborting entirely.
+  Recurring maintenance now skips such sources instead of aborting entirely,
+  and a source's git scaffolding is torn down only after the deletion
+  commits, so a refused delete leaves it fully intact.
 - Multi-agent write throughput: same-slug writes in different sources no
   longer serialize on each other (source-scoped advisory locks, with an
   eleven-site audit documenting every intentionally-global lock). Restart

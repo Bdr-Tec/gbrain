@@ -254,7 +254,7 @@ The raw `register-client` flow above is the per-teammate primitive. When the cli
 
 Two presets cover the common shapes, with semantics worth knowing honestly:
 
-- **`daily-driver`** — a personal assistant agent: writes to one source, reads broadly. The read grant is a **snapshot** of all non-archived sources at registration time — a source you add next month is NOT automatically readable; re-grant with `gbrain auth rescope-client <client_id> --federated-read <updated list>`.
+- **`daily-driver`** — a personal assistant agent: writes to one source, reads broadly. The read grant is a **snapshot** of all non-archived sources at registration time, excluding other agents' `*-workspace` scratch sources (name one explicitly in `--federated-read` to share it) — a source you add next month is NOT automatically readable; re-grant with `gbrain auth rescope-client <client_id> --federated-read <updated list>`.
 - **`coding-agent`** — a write-isolated project agent: its writes land in an auto-created, DB-only `<name>-workspace` source (so a misbehaving agent can't scribble on your wiki), and it reads only the project sources you name via `--federated-read` (required — a coding agent that can read nothing but its own scratch space is a misconfiguration).
 
 Both presets start the client on the **starter** tool surface (the ~20-op daily set, not the full brain-admin surface). Widen a specific client later with `gbrain auth rescope-client <client_id> --surface full`.
