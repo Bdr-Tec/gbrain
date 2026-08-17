@@ -46,20 +46,15 @@
   tree, variants, bridge installs). Lint them toward sibling-relative
   (`../conventions/...`) which the layouts preserve. **Effort:** S.
   **Priority:** P3.
-- [ ] **P3 — bridge-status/help polish from the post-ship doc review (filed
-  v0.46.18.0).** **What:** three small code gaps the cross-model doc review
-  caught: (1) `collectBridgesStatus` in `src/commands/skillpack/harness.ts`
-  computes `lensError` but never sets `lens_error` on the pushed
-  `BridgesStatusEntry`, so a failed lens renders as all-zero counts (reads
-  as healthy); (2) `reference --harness` / `remove --harness` accept
-  `--scope`/`--workspace` (shared parser) but their `--help` text only
-  names `--dest`; scaffold's help also omits the `--all` shorthand;
-  (3) the removal-era label sweep — code error strings + docs say
-  "removed in v0.33" while the CHANGELOG history records the
-  install/uninstall retirement shipping in v0.36.0.0; pick the true
-  version and sweep `src/commands/skillpack.ts`, `harness.ts`,
-  `shared.ts`, the guide, KEY_FILES, and `docs/INSTALL.md` together.
-  **Effort:** S. **Priority:** P3.
+- [ ] **P3 — removal-era label sweep (filed v0.46.18.0).** **What:** code
+  error strings + docs say install/uninstall were "removed in v0.33" while
+  the CHANGELOG history records the retirement shipping in v0.36.0.0; pick
+  the true version and sweep `src/commands/skillpack.ts`, `harness.ts`,
+  `shared.ts`, the guide, KEY_FILES, and `docs/INSTALL.md` together. (The
+  other two gaps the post-ship doc review caught — `lens_error` dropped
+  from `BridgesStatusEntry`, and reference/remove/scaffold help omitting
+  `--scope`/`--workspace`/`--all` — were fixed pre-merge.) **Effort:** S.
+  **Priority:** P3.
 - [ ] **P3 — unify the three harness-id vocabularies.** **What:** bootstrap's
   `Harness` (src/commands/bootstrap.ts:262, unexported),
   `HarnessSelector` (src/core/bootstrap/harness.ts), and the bridge's

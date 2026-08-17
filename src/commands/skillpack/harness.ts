@@ -331,6 +331,7 @@ export async function cmdScaffoldHarness(args: string[]): Promise<void> {
         '  --persona      Named curation from skills/plugin-lanes.json#personas,\n' +
         '                 or `all` for the full plugin lane. Defaults: claude-code/\n' +
         '                 codex/opencode → coding-agent; openclaw → all.\n' +
+        '  --all          Shorthand for the full plugin lane (same as persona all).\n' +
         '  --skill        Explicit slug picks (repeatable; overrides --persona).\n' +
         '  --dest         Install dir override. Required for codex/opencode (no\n' +
         '                 attested native skills dir yet).\n' +
@@ -500,7 +501,9 @@ export async function cmdScaffoldHarness(args: string[]): Promise<void> {
 export async function cmdReferenceHarness(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack reference --harness <h> [<slug>] [--dest PATH] [--apply-clean-hunks] [--dry-run] [--json]\n\n' +
+      'gbrain skillpack reference --harness <h> [<slug>] [--dest PATH] [--scope user|project] [--workspace PATH] [--apply-clean-hunks] [--dry-run] [--json]\n\n' +
+        'Targeting resolves like scaffold: explicit dest wins, else the harness\n' +
+        'default for the scope (claude-code user scope unless --scope project).\n\n' +
         'Diff a harness install against gbrain\'s current bundle. Stub installs\n' +
         'diff against the RENDERED stub (a fresh stub reads identical). With the\n' +
         'install-time hash ledger, differs splits into local_edit vs\n' +
@@ -584,7 +587,9 @@ export async function cmdReferenceHarness(args: string[]): Promise<void> {
 export async function cmdRemove(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     console.log(
-      'gbrain skillpack remove --harness <h> [--dest PATH] [--skill <slug>]... [--dry-run] [--json]\n\n' +
+      'gbrain skillpack remove --harness <h> [--dest PATH] [--scope user|project] [--workspace PATH] [--skill <slug>]... [--dry-run] [--json]\n\n' +
+        'Targeting resolves like scaffold: explicit dest wins, else the harness\n' +
+        'default for the scope.\n\n' +
         'Remove files the harness bridge WROTE (the bridge-state ledger) — never\n' +
         'your own files: pre-existing and locally-created files were never\n' +
         'recorded as owned. Without --skill, removes every owned skill for the\n' +
@@ -708,6 +713,7 @@ export function collectBridgesStatus(gbrainRoot: string): BridgesStatusEntry[] {
       identical,
       differs,
       missing,
+      ...(lensError ? { lens_error: lensError } : {}),
     });
   }
   return out;
@@ -720,7 +726,10 @@ export function printBridgesStatus(gbrainRoot: string): void {
   for (const e of entries) {
     console.log(
       `  ${e.harness.padEnd(12)} ${e.dest}\n` +
-        `    persona:${e.persona ?? '(picks)'} mode:${e.mode} skills:${e.slugs} — identical:${e.identical} differs:${e.differs} missing:${e.missing}`,
+        `    persona:${e.persona ?? '(picks)'} mode:${e.mode} skills:${e.slugs} — ` +
+          (e.lens_error
+            ? `currency unavailable (${e.lens_error})`
+            : `identical:${e.identical} differs:${e.differs} missing:${e.missing}`),
     );
   }
 }

@@ -55,7 +55,8 @@ the marketplace. `gbrain skillpack status` shows what's installed where.
   server would resolve. Ships the shared-convention and sibling files skill
   bodies reference. Aimed at full-surface local/HTTP MCP setups.
 - `gbrain skillpack status` now reports installed harness bridges with
-  per-skill currency (identical / differs / missing).
+  file-level currency (identical / differs / missing), and says so when the
+  currency lens itself couldn't run instead of showing healthy zeros.
 
 ### Changed
 - Skill installs into harness directories are safety-gated end to end:
@@ -73,8 +74,9 @@ the marketplace. `gbrain skillpack status` shows what's installed where.
 
 ### Fixed
 - The CLI flag registry no longer registers phantom flags harvested from
-  type-only imports' documentation comments (656 phantom entries removed
-  across the command surface).
+  type-only imports' documentation comments (hundreds of phantom entries
+  removed across the command surface — flags a command never read but would
+  silently accept).
 
 ### For contributors
 - `src/commands/skillpack.ts` is now a façade (dispatch + help + the v0.33
