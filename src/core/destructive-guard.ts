@@ -34,6 +34,15 @@ export interface DestructiveImpact {
    * Optional so hand-built impact literals (tests, older callers) stay valid.
    */
   oauthClientCount?: number;
+  /**
+   * cathedral-6: count of hot-memory facts in the source. Facts are the
+   * primary agent write lane — a revoked agent's workspace can hold facts
+   * with ZERO pages, so a pages-only preview would say "safe to remove"
+   * while the delete cascades the agent's memory away. Optional so
+   * hand-built impact literals (tests, older callers) stay valid; consumers
+   * read it as `?? 0`.
+   */
+  factCount?: number;
   /** Human-readable summary line */
   summary: string;
 }
@@ -213,6 +222,21 @@ export async function assessDestructiveImpact(
     fileCount = fileRows[0]?.n ?? 0;
   }
 
+  // cathedral-6: count hot-memory facts. A revoked agent's workspace can
+  // hold facts with zero pages — those are data at risk, not "no data".
+  // Tolerant of a pre-v0.31 brain without the facts table (same degrade
+  // posture as clientsReferencingSource).
+  let factCount = 0;
+  try {
+    const factRows = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM facts WHERE source_id = $1`,
+      [sourceId],
+    );
+    factCount = factRows[0]?.n ?? 0;
+  } catch (e) {
+    if (!isUndefinedTableError(e)) throw e;
+  }
+
   // PR6 D5b: fold the FK-RESTRICT referent count into the preview so the
   // operator sees the block BEFORE pulling the trigger.
   const oauthClientCount = (await clientsReferencingSource(engine, sourceId)).length;
@@ -222,6 +246,7 @@ export async function assessDestructiveImpact(
   if (chunkCount > 0) parts.push(`${chunkCount.toLocaleString()} chunks`);
   if (embeddingCount > 0) parts.push(`${embeddingCount.toLocaleString()} embeddings`);
   if (fileCount > 0) parts.push(`${fileCount.toLocaleString()} files`);
+  if (factCount > 0) parts.push(`${factCount.toLocaleString()} facts`);
 
   const summary = parts.length > 0
     ? `⚠️  This will permanently delete: ${parts.join(', ')}`
@@ -234,6 +259,7 @@ export async function assessDestructiveImpact(
     chunkCount,
     embeddingCount,
     fileCount,
+    factCount,
     oauthClientCount,
     summary,
   };
@@ -256,8 +282,10 @@ export function checkDestructiveConfirmation(
   // Dry run always passes (no side effects)
   if (opts.dryRun) return null;
 
-  // No data = no risk
-  if (impact.pageCount === 0 && impact.chunkCount === 0 && impact.fileCount === 0) {
+  // No data = no risk. Facts gate exactly like pages (cathedral-6): a
+  // fact-only source (revoked agent workspace) is data at stake, not empty.
+  if (impact.pageCount === 0 && impact.chunkCount === 0 && impact.fileCount === 0
+    && (impact.factCount ?? 0) === 0) {
     return null;
   }
 
@@ -266,8 +294,9 @@ export function checkDestructiveConfirmation(
 
   // --yes alone is NOT sufficient for destructive operations with data.
   // This is the key behavior change: --yes used to be enough, now you
-  // need --confirm-destructive when there's actual data at stake.
-  if (opts.yes && impact.pageCount === 0) return null;
+  // need --confirm-destructive when there's actual data at stake. Facts
+  // mirror pages here too — --yes never bypasses a fact-holding source.
+  if (opts.yes && impact.pageCount === 0 && (impact.factCount ?? 0) === 0) return null;
 
   return (
     `\n${impact.summary}\n\n` +
@@ -461,6 +490,7 @@ export function formatImpact(impact: DestructiveImpact): string {
     `║  Chunks:     ${String(impact.chunkCount.toLocaleString()).padEnd(42)}║`,
     `║  Embeddings: ${String(impact.embeddingCount.toLocaleString()).padEnd(42)}║`,
     `║  Files:      ${String(impact.fileCount.toLocaleString()).padEnd(42)}║`,
+    `║  Facts:      ${String((impact.factCount ?? 0).toLocaleString()).padEnd(42)}║`,
     `╠══════════════════════════════════════════════════════════╣`,
     `║  ${impact.summary.padEnd(56)}║`,
     `╚══════════════════════════════════════════════════════════╝`,

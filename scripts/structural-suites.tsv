@@ -60,6 +60,9 @@ test/cycle-patterns-deadline-budget.test.ts	deadline plumbing wiring (structural
 test/cycle-patterns.test.ts	patterns phase wiring	9	readFileSync
 test/cycle-patterns.test.ts	patterns scope filter	6	readFileSync
 test/cycle/cycle-lock-ttl.test.ts	cycle lock TTL (T2 regression pin)	1	readFileSync
+test/destructive-guard.test.ts	FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)	9	readFileSync
+test/destructive-guard.test.ts	assessDestructiveImpact	5	readFileSync
+test/destructive-guard.test.ts	formatters (display helpers)	4	readFileSync
 test/doctor-embedding-env-override.test.ts	cross-surface parity (source-grep regression guard)	1	doctor-source-helper
 test/doctor-fix.test.ts	gbrain doctor --fix CLI integration	3	readFileSync
 test/doctor-frontmatter-partial.test.ts	doctor frontmatter_integrity — load-bearing render strings	5	doctor-source-helper

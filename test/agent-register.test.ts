@@ -19,6 +19,7 @@ import {
   resolvePreset,
   rotateClientSecret,
   ensureWorkspaceSource,
+  snapshotGrantSources,
   RegisterError,
   REGISTER_DEFAULT_TOKEN_TTL_SECONDS,
   WORKSPACE_NAME_MAX,
@@ -127,6 +128,40 @@ describe('parseAgentRegisterArgs', () => {
 
   test('unknown flag throws', () => {
     expect(() => parseAgentRegisterArgs(['a', '--harness', 'codex', '--frobnicate'])).toThrow(/Unknown flag/);
+  });
+
+  test('--allow-old-serve parses (default false)', () => {
+    expect(parseAgentRegisterArgs(['a', '--harness', 'codex']).allowOldServe).toBe(false);
+    expect(parseAgentRegisterArgs(['a', '--harness', 'codex', '--allow-old-serve']).allowOldServe).toBe(true);
+    // Boolean flag: it must not eat a following positional.
+    const p = parseAgentRegisterArgs(['a', '--allow-old-serve', '--harness', 'codex']);
+    expect(p.allowOldServe).toBe(true);
+    expect(p.name).toBe('a');
+    expect(p.harness).toBe('codex');
+  });
+});
+
+// ── snapshot grant (daily-driver) — workspace exclusion ───────────────────
+
+describe('snapshotGrantSources', () => {
+  test('excludes *-workspace sources from the snapshot grant, keeps the rest', () => {
+    const r = snapshotGrantSources(['default', 'proj-widget', 'x-workspace', 'nova-notes', 'aurora-coder-workspace']);
+    expect(r.granted).toEqual(['default', 'proj-widget', 'nova-notes']);
+    expect(r.excludedWorkspaces).toEqual(['x-workspace', 'aurora-coder-workspace']);
+  });
+
+  test('no workspaces → nothing excluded', () => {
+    const r = snapshotGrantSources(['default', 'proj-widget']);
+    expect(r.granted).toEqual(['default', 'proj-widget']);
+    expect(r.excludedWorkspaces).toEqual([]);
+  });
+
+  test('an EXPLICIT --federated-read grant of a workspace bypasses the snapshot (no filtering)', () => {
+    // The exclusion lives in the snapshot branch only: an explicit grant
+    // resolves through preset.federatedRead = flags.federatedRead verbatim.
+    const flags = { showToken: false, json: false, allowOldServe: false, name: 'aurora', harness: 'claude-code' } as any;
+    const r = resolvePreset({ ...flags, preset: 'daily-driver', federatedRead: ['x-workspace', 'proj-widget'] });
+    expect(r.federatedRead).toEqual(['x-workspace', 'proj-widget']);
   });
 });
 
@@ -411,5 +446,19 @@ describe('ensureWorkspaceSource', () => {
     );
     await expect(ensureWorkspaceSource(engine, sql(), 'ews-path-workspace'))
       .rejects.toThrow(/backed by a local path/);
+  });
+
+  test('source holding FILES (zero pages, zero facts) is dirty too — files can exist page-less', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('ews-files-workspace', 'ews-files-workspace')`,
+    );
+    await engine.executeRaw(
+      `INSERT INTO files (source_id, filename, storage_path, content_hash)
+       VALUES ('ews-files-workspace', 'notes.pdf', 'files/notes.pdf', 'deadbeef')`,
+    );
+    const caught = await ensureWorkspaceSource(engine, sql(), 'ews-files-workspace')
+      .then(() => null, (e: unknown) => e);
+    expect((caught as RegisterError).reason).toBe('dirty_source');
+    expect((caught as Error).message).toMatch(/holds 1 files/);
   });
 });

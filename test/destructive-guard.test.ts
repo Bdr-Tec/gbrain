@@ -115,6 +115,23 @@ describe('assessDestructiveImpact', () => {
     expect(a!.pageCount).toBe(2);
     expect(b!.pageCount).toBe(5);
   });
+
+  test('counts facts — a zero-page fact-holding source is data at risk, not "safe to remove"', async () => {
+    // Revoked-agent-workspace shape: zero pages, facts present (the primary
+    // agent write lane). Pre-fix the preview said "safe to remove" while the
+    // delete would cascade the facts away.
+    await seedSource(engine, 'aim-facts-only', { withPages: 0 });
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, fact, source) VALUES ($1, 'agent memory row', 'test'), ($1, 'second memory row', 'test')`,
+      ['aim-facts-only'],
+    );
+    const impact = await assessDestructiveImpact(engine, 'aim-facts-only');
+    expect(impact!.pageCount).toBe(0);
+    expect(impact!.factCount).toBe(2);
+    expect(impact!.summary).toContain('2 facts');
+    expect(impact!.summary).toContain('permanently delete');
+    expect(impact!.summary).not.toContain('safe to remove');
+  });
 });
 
 describe('checkDestructiveConfirmation (gate truth table)', () => {
@@ -164,6 +181,27 @@ describe('checkDestructiveConfirmation (gate truth table)', () => {
     const msg = checkDestructiveConfirmation(populated, {});
     expect(msg).not.toBeNull();
     expect(msg).toContain('--confirm-destructive');
+  });
+
+  test('a fact-only source requires --confirm-destructive (facts gate exactly like pages)', () => {
+    const factOnly: DestructiveImpact = {
+      sourceId: 'revoked-agent-workspace',
+      sourceName: 'revoked-agent-workspace',
+      pageCount: 0,
+      chunkCount: 0,
+      embeddingCount: 0,
+      fileCount: 0,
+      factCount: 7,
+      summary: '⚠️  This will permanently delete: 7 facts',
+    };
+    // No flags → blocked; --yes alone → still blocked (mirrors pages).
+    expect(checkDestructiveConfirmation(factOnly, {})).toContain('--confirm-destructive');
+    expect(checkDestructiveConfirmation(factOnly, { yes: true })).toContain('--confirm-destructive');
+    // --confirm-destructive and --dry-run pass.
+    expect(checkDestructiveConfirmation(factOnly, { confirmDestructive: true })).toBeNull();
+    expect(checkDestructiveConfirmation(factOnly, { dryRun: true })).toBeNull();
+    // Hand-built literal WITHOUT factCount stays valid (optional field, ?? 0).
+    expect(checkDestructiveConfirmation({ ...factOnly, factCount: undefined }, { yes: true })).toBeNull();
   });
 });
 
@@ -613,6 +651,43 @@ describe('formatters (display helpers)', () => {
     expect(out).toContain('5,033');
     expect(out).toContain('22,000');
     expect(out).toContain('DESTRUCTIVE OPERATION');
+    // cathedral-6: the box renders a Facts row (0 for a literal without it).
+    expect(out).toMatch(/Facts:\s+0/);
+  });
+
+  test('formatImpact renders the facts count (mirrors the page-count line)', () => {
+    const impact: DestructiveImpact = {
+      sourceId: 'revoked-agent-workspace',
+      sourceName: 'revoked-agent-workspace',
+      pageCount: 0,
+      chunkCount: 0,
+      embeddingCount: 0,
+      fileCount: 0,
+      factCount: 1234,
+      summary: '⚠️  This will permanently delete: 1,234 facts',
+    };
+    const out = formatImpact(impact);
+    expect(out).toMatch(/Facts:\s+1,234/);
+  });
+
+  test('sources remove orders the row DELETE (in-tx) BEFORE external teardown (F1 structural pin)', () => {
+    // A concurrent registration between the referents pre-check and the
+    // DELETE must surface as the refusal, never as destroyed scaffolding
+    // with the row still present — so the tx'd DELETE precedes unharden.
+    const { readFileSync } = require('fs');
+    const src = readFileSync(new URL('../src/commands/sources.ts', import.meta.url), 'utf-8');
+    const removeStart = src.indexOf('async function runRemove');
+    const removeEnd = src.indexOf('async function', removeStart + 1);
+    const body = src.slice(removeStart, removeEnd);
+    const deleteIdx = body.indexOf(`DELETE FROM sources WHERE id = $1`);
+    const teardownIdx = body.indexOf('unhardenBrainRepo');
+    expect(deleteIdx).toBeGreaterThan(0);
+    expect(teardownIdx).toBeGreaterThan(0);
+    expect(deleteIdx).toBeLessThan(teardownIdx);
+    // And the DELETE runs inside engine.transaction (atomic with the re-check).
+    const txIdx = body.indexOf('engine.transaction');
+    expect(txIdx).toBeGreaterThan(0);
+    expect(txIdx).toBeLessThan(deleteIdx);
   });
 
   test('formatSoftDelete renders the post-archive guidance with restore command', () => {

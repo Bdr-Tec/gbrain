@@ -108,7 +108,7 @@ const recall: Operation = {
   annotations: { title: 'recall (memory read)', readOnlyHint: true },
   handler: async (ctx, p) => {
     const sourceId = ctx.sourceId ?? 'default';
-    const limit = typeof p.limit === 'number' ? p.limit : 50;
+    const limit = clampRecallLimit(p.limit);
     const includeExpired = p.include_expired === true;
     const grep = typeof p.grep === 'string' ? p.grep.toLowerCase() : null;
 
@@ -162,15 +162,15 @@ const recall: Operation = {
 
     if (p.supersessions === true) {
       const since = parseSinceParam(p.since);
+      // Visibility filters at the ENGINE level (before each source's LIMIT),
+      // same as the sibling fact-list arms — a post-merge filter would let a
+      // private newest row consume a limit slot and hide an older world row.
       rows = mergeNewest(
         await Promise.all(factSources.map(src =>
-          ctx.engine.listSupersessions(src, { since: since ?? undefined, limit }),
+          ctx.engine.listSupersessions(src, { since: since ?? undefined, limit, visibility }),
         )),
         (rec) => rec.expired_at ?? rec.created_at,
       );
-      // listSupersessions has no visibility opt — post-filter so a remote
-      // caller never sees a private superseded fact through the audit arm.
-      if (visibility) rows = rows.filter(r => visibility.includes(r.visibility));
     } else if (typeof p.entity === 'string' && p.entity.length > 0) {
       const { resolveEntitySlug } = await import('../entities/resolve.ts');
       rows = mergeNewest(
@@ -227,11 +227,16 @@ const recall: Operation = {
 
     // v0.32: optional pending-consolidation count piggy-backed on the recall
     // response. Single round trip on thin-client; omitted when not requested
-    // so existing callers see no shape change.
+    // so existing callers see no shape change. Sums over the SAME factSources
+    // set the fact arms fan out across — a federated caller's pending count
+    // must cover every granted source, not just the scalar sourceId.
     let pending_consolidation_count: number | undefined;
     if (p.include_pending === true) {
       try {
-        pending_consolidation_count = await ctx.engine.countUnconsolidatedFacts(sourceId);
+        const counts = await Promise.all(
+          factSources.map(src => ctx.engine.countUnconsolidatedFacts(src)),
+        );
+        pending_consolidation_count = counts.reduce((a, b) => a + b, 0);
       } catch (e) {
         // Best-effort: if the count query fails we still return facts. Field
         // stays undefined so callers can tell the difference between "0
@@ -669,6 +674,19 @@ const forget_fact: Operation = {
     return { id, expired: true, path: result.path, reason: result.reason };
   },
 };
+
+/**
+ * recall's per-arm limit clamp — applied ONCE, before the per-source fan-out.
+ * The doc contract is "Default 50, cap 100": each engine clamps its own query,
+ * but the cross-source merge slices with THIS value, so an unclamped limit
+ * (e.g. 150 across two granted sources) would return up to 200 rows.
+ * Invalid input (undefined / NaN / non-positive / non-integer) → default 50;
+ * valid positive integers clamp to [1, 100]. Exported for the unit suite.
+ */
+export function clampRecallLimit(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) return 50;
+  return Math.min(raw, 100);
+}
 
 /**
  * Parse a `since` parameter into a Date. Accepts ISO 8601, plain duration

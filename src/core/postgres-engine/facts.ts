@@ -299,17 +299,19 @@ export async function listFactsBySession(
 export async function listSupersessions(
   deps: PgFactsDeps,
     source_id: string,
-    opts?: { since?: Date; limit?: number },
+    opts?: { since?: Date; limit?: number; visibility?: ('private' | 'world')[] },
   ): Promise<FactRow[]> {
     const sql = deps.sql;
     const limit = clampSearchLimit(opts?.limit, 50, MAX_SEARCH_LIMIT);
     const since = opts?.since ?? null;
+    const visibility = (opts?.visibility && opts.visibility.length > 0) ? opts.visibility : null;
     const rows = await sql<FactRowSqlShape[]>`
       SELECT * FROM facts
       WHERE source_id = ${source_id}
         AND expired_at IS NOT NULL
         AND superseded_by IS NOT NULL
         ${since ? sql`AND expired_at >= ${since}` : sql``}
+        ${visibility ? sql`AND visibility = ANY(${visibility}::text[])` : sql``}
       ORDER BY expired_at DESC, id DESC
       LIMIT ${limit}
     `;

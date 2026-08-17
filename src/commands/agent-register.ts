@@ -104,6 +104,7 @@ export type RegisterFailReason =
   | 'reissue_invalid_target'
   | 'mint_failed'
   | 'brain_too_old'
+  | 'serve_too_old'
   | 'internal';
 
 export class RegisterError extends Error {
@@ -132,17 +133,20 @@ export interface AgentRegisterArgs {
   surface?: 'verbs' | 'starter' | 'full';
   showToken: boolean;
   json: boolean;
+  /** Accept a PROVEN-too-old serve (< SCOPES_MIN_SERVE_VERSION verifies
+   * scoped tokens as FULL ACCESS) instead of failing registration. */
+  allowOldServe: boolean;
 }
 
 const REGISTER_USAGE =
   'Usage: gbrain agent register <name> --harness claude-code|codex|opencode|openclaw ' +
   '[--preset daily-driver|coding-agent] [--source ID] [--federated-read S1,S2] ' +
   '[--scopes "read write"] (--url URL | --port N) [--token-ttl SECONDS] ' +
-  '[--surface verbs|starter|full] [--show-token] [--json]\n' +
+  '[--surface verbs|starter|full] [--allow-old-serve] [--show-token] [--json]\n' +
   '       gbrain agent register --reissue <client-id> --harness H (--url URL | --port N) [--show-token] [--json]';
 
 export function parseAgentRegisterArgs(args: string[]): AgentRegisterArgs {
-  const out: AgentRegisterArgs = { showToken: false, json: false };
+  const out: AgentRegisterArgs = { showToken: false, json: false, allowOldServe: false };
   let i = 0;
   while (i < args.length) {
     const flag = args[i];
@@ -241,6 +245,7 @@ export function parseAgentRegisterArgs(args: string[]): AgentRegisterArgs {
         out.surface = v;
         i += 2; break;
       }
+      case '--allow-old-serve': out.allowOldServe = true; i += 1; break;
       case '--show-token': out.showToken = true; i += 1; break;
       case '--json': out.json = true; i += 1; break;
       default:
@@ -330,6 +335,23 @@ export function resolvePreset(flags: AgentRegisterArgs): ResolvedPreset {
         workspaceDerived: false,
       };
   }
+}
+
+/**
+ * daily-driver snapshot grant: all non-archived sources EXCEPT derived agent
+ * workspaces (`*-workspace`). A workspace is another agent's scratch memory
+ * by construction — sharing one requires an explicit --federated-read grant,
+ * never a default-on snapshot sweep. The write source is re-added by the
+ * runner's write-source-always-readable invariant, so an operator who
+ * EXPLICITLY targets a workspace still gets it. Exported for the unit suite.
+ */
+export function snapshotGrantSources(ids: string[]): { granted: string[]; excludedWorkspaces: string[] } {
+  const granted: string[] = [];
+  const excludedWorkspaces: string[] = [];
+  for (const id of ids) {
+    (id.endsWith(WORKSPACE_SUFFIX) ? excludedWorkspaces : granted).push(id);
+  }
+  return { granted, excludedWorkspaces };
 }
 
 // ── runner ────────────────────────────────────────────────────────────────
@@ -440,7 +462,15 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
     let federated: string[];
     if (preset.federatedRead === 'snapshot') {
       const all = await loadAllSources(engine, { includeArchived: false });
-      federated = all.map(s => s.id);
+      const snap = snapshotGrantSources(all.map(s => s.id));
+      federated = snap.granted;
+      if (snap.excludedWorkspaces.length > 0) {
+        console.error(
+          `Note: snapshot grant excludes ${snap.excludedWorkspaces.length} agent workspace source(s) ` +
+          `(${snap.excludedWorkspaces.join(', ')}) — agent scratch is not shared by default; ` +
+          `grant one explicitly with --federated-read.`,
+        );
+      }
       // The snapshot proves existence + non-archived for its members only.
       // A write source OUTSIDE it (and any explicitly passed --source, even
       // when it happens to be inside) gets the same check as the explicit
@@ -524,26 +554,37 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
     });
     registered.created.source = createdWorkspace;
 
-    // Post-commit, fail-open audit (its designed position — never in the tx).
-    if (registered.surface !== undefined) {
-      await writeSurfaceChangeAudit(engine, {
-        actor: 'operator',
-        client_id: registered.clientId,
-        old: registered.surfaceOld ?? null,
-        new: registered.surface,
-        via: 'register_cli',
-      });
-    }
+    // POST-COMMIT: a client row now exists — from here, EVERY failure must
+    // carry the clientId so fail() prints the revoke guidance (never a false
+    // "nothing was created"). RegisterErrors keep their reason; anything else
+    // maps to mint_failed with the clientId attached.
+    try {
+      // Post-commit, fail-open audit (its designed position — never in the tx).
+      if (registered.surface !== undefined) {
+        await writeSurfaceChangeAudit(engine, {
+          actor: 'operator',
+          client_id: registered.clientId,
+          old: registered.surfaceOld ?? null,
+          new: registered.surface,
+          via: 'register_cli',
+        });
+      }
 
-    const out = await mintAndProbe(engine, flags, registered, name, url, urlWarning, {
-      preset: flags.preset ?? null,
-      scopes: preset.scopes,
-      write_source: preset.writeSource,
-      federated_read: federated,
-      surface: registered.surface ?? null,
-      token_ttl: registered.tokenTtl ?? null,
-    });
-    printOutput(flags, out);
+      const out = await mintAndProbe(engine, flags, registered, name, url, urlWarning, {
+        preset: flags.preset ?? null,
+        scopes: preset.scopes,
+        write_source: preset.writeSource,
+        federated_read: federated,
+        surface: registered.surface ?? null,
+        token_ttl: registered.tokenTtl ?? null,
+      });
+      printOutput(flags, out);
+    } catch (e: any) {
+      if (e instanceof RegisterError) {
+        throw new RegisterError(e.reason, e.message, e.clientId ?? registered.clientId);
+      }
+      throw new RegisterError('mint_failed', e?.message ?? String(e), registered.clientId);
+    }
   } catch (e: any) {
     if (e instanceof RegisterError) {
       fail(flags.json, e.reason, e.message, 1, e.clientId);
@@ -555,9 +596,14 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
 /** Create the derived workspace source if missing; reuse only when clean.
  * Returns true when this call created it. Never catches source_id_taken as
  * control flow — existence is decided by SELECT first. "Clean" means: not
- * archived, no local path, zero pages AND zero facts (facts are the primary
- * agent write lane — a pages-only check would silently reuse a source that
- * already holds another agent's memory). Exported for the unit suite. */
+ * archived, no local path, zero pages AND zero facts AND zero files (facts
+ * are the primary agent write lane, and files can exist page-less — a
+ * pages-only check would silently reuse a source that already holds another
+ * agent's memory). raw_data and links are FK-subsumed: both are page-scoped
+ * (NOT NULL page FKs, ON DELETE CASCADE, no source_id column), so they
+ * cannot be non-zero when the page count is zero; there is no `entities`
+ * table (entity pages count as pages, fact entities count as facts).
+ * Exported for the unit suite. */
 export async function ensureWorkspaceSource(
   tx: BrainEngine,
   txSql: SqlQuery,
@@ -574,10 +620,22 @@ export async function ensureWorkspaceSource(
     const nPages = Number(pages[0]?.n ?? 0);
     const facts = await txSql`SELECT count(*) AS n FROM facts WHERE source_id = ${id}`;
     const nFacts = Number(facts[0]?.n ?? 0);
-    if (localPath != null || nPages > 0 || nFacts > 0) {
+    // files: tolerant of a brain without the table — probed via
+    // information_schema (NEVER try/catch: this runs inside the register tx,
+    // where an aborted statement is a 25P02, not a degrade).
+    let nFiles = 0;
+    const filesTable = await txSql`
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = current_schema() AND table_name = 'files'`;
+    if (filesTable.length > 0) {
+      const files = await txSql`SELECT count(*) AS n FROM files WHERE source_id = ${id}`;
+      nFiles = Number(files[0]?.n ?? 0);
+    }
+    if (localPath != null || nPages > 0 || nFacts > 0 || nFiles > 0) {
       const why = localPath != null
         ? 'is backed by a local path'
-        : nPages > 0 ? `holds ${nPages} pages` : `holds ${nFacts} facts`;
+        : nPages > 0 ? `holds ${nPages} pages`
+          : nFacts > 0 ? `holds ${nFacts} facts` : `holds ${nFiles} files`;
       throw new RegisterError('dirty_source',
         `source "${id}" already exists and ${why} — pass --source ${id} to reuse it deliberately, or pick another agent name.`);
     }
@@ -619,13 +677,22 @@ async function mintAndProbe(
     }
   }
 
-  // Serve probe: informational, never a failure. The scopes floor prints
-  // unconditionally — an older serve verifies scoped tokens as FULL ACCESS.
+  // Serve probe. An UNREACHABLE serve stays a note (it proves nothing). A
+  // reachable serve that PROVES version < SCOPES_MIN_SERVE_VERSION fails the
+  // registration lane — that serve verifies the freshly-minted scoped token
+  // as FULL ACCESS — unless the operator passed --allow-old-serve. The
+  // reissue lane keeps the warning: by this point the secret is already
+  // ROTATED, and failing would discard the only copy of the new credential.
   let probeNote: string | null = null;
   const health = await probeServeHealth(url, fetch);
   if (!health.ok) {
     probeNote = `could not reach ${url.replace(/\/mcp$/, '')}/health — skipping the scoped-token version check (${health.detail ?? 'unreachable'}).`;
   } else if (health.version && isServeOlderThanScopes(health.version)) {
+    if (flags.reissueClientId === undefined && !flags.allowOldServe) {
+      throw new RegisterError('serve_too_old',
+        `serve at ${url} reports v${health.version} — older than ${SCOPES_MIN_SERVE_VERSION}, so it verifies this scoped token as FULL ACCESS (the scope grant is not enforced). Upgrade the serve, or re-run with --allow-old-serve to accept the risk.`,
+        registered.clientId);
+    }
     probeNote = `serve at ${url} reports v${health.version} — OLDER than ${SCOPES_MIN_SERVE_VERSION}: it verifies this scoped token as FULL ACCESS. Upgrade the serve.`;
   } else {
     probeNote = `serve health: OK${health.version ? ` (v${health.version})` : ''}.`;
@@ -832,7 +899,12 @@ function printOutput(flags: AgentRegisterArgs, out: RegisterOutput): void {
     return;
   }
 
-  console.log(`Agent client registered: "${flags.name ?? r.clientId}"\n`);
+  // Lane-honest header: rotation is not registration (JSON shape unchanged —
+  // this is the human printer only).
+  const header = flags.reissueClientId !== undefined
+    ? `Agent client secret ROTATED: "${flags.name ?? r.clientId}"`
+    : `Agent client registered: "${flags.name ?? r.clientId}"`;
+  console.log(`${header}\n`);
   console.log(`  Client ID:           ${r.clientId}`);
   if (r.clientSecret) {
     console.log(`  Client Secret:       ${flags.showToken ? r.clientSecret : REDACTED}`);
@@ -869,8 +941,10 @@ ${REGISTER_USAGE}
 
 PRESETS
   daily-driver   read-broad, write to one source. Federated reads default to a
-                 SNAPSHOT of all current non-archived sources (new sources need
-                 a re-grant via \`gbrain auth rescope-client\`). Surface: starter.
+                 SNAPSHOT of all current non-archived sources EXCLUDING other
+                 agents' *-workspace sources (agent scratch — share one via an
+                 explicit --federated-read). New sources need a re-grant via
+                 \`gbrain auth rescope-client\`. Surface: starter.
   coding-agent   write-isolated: writes land in <name>${WORKSPACE_SUFFIX} (auto-created,
                  DB-only). Requires --federated-read (the project sources it may
                  read). Surface: starter.
@@ -879,6 +953,9 @@ NOTES
   Runs on the BRAIN HOST (a thin client is refused). Every block embeds the
   brain URL: pass --url or --port. The minted token defaults to a 30-day TTL
   (the server default is 1 hour); the printed expiry comes from the exchange.
-  --reissue <client-id> rotates the client secret and reprints the block;
-  outstanding tokens stay valid until expiry.`);
+  A reachable serve that reports a version older than ${SCOPES_MIN_SERVE_VERSION}
+  FAILS the registration (it would treat the scoped token as full access);
+  pass --allow-old-serve to accept that risk. An unreachable serve is only a
+  note. --reissue <client-id> rotates the client secret and reprints the
+  block; outstanding tokens stay valid until expiry.`);
 }

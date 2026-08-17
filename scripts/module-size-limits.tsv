@@ -12,10 +12,10 @@ src/commands/sync.ts	4300	ratchet	peel target: containment sprint C13-C14; grown
 src/core/ai/gateway.ts	4117	ratchet	watchlist
 src/cli.ts	3433	ratchet	watchlist; +21 gap-closure wave thin-client routing; +cathedral-6 agent-register pre-connect guards + `--`-aware help + shared thin-client message import
 src/core/cycle.ts	2933	ratchet
-src/commands/serve-http.ts	2903	ratchet	grown cathedral-6 multi-agent wave (admin register route composes registerScopedClient; batched source check + duplicate-name parity)
+src/commands/serve-http.ts	2962	ratchet	grown cathedral-6 multi-agent wave (admin register route composes registerScopedClient in one tx under the name advisory lock; ttl validation + brain_too_old preflight)
 src/commands/jobs.ts	2950	ratchet	grown v0.46.11.0 five-issue wave
 src/core/search/hybrid.ts	2479	ratchet
-src/core/engine.ts	2343	ratchet
+src/core/engine.ts	2345	ratchet
 src/commands/autopilot.ts	2301	ratchet
 src/commands/extract.ts	2161	ratchet
 src/commands/extract-conversation-facts.ts	1968	ratchet
@@ -30,6 +30,6 @@ src/commands/integrations.ts	1675	ratchet
 src/core/minions/handlers/subagent.ts	1643	ratchet
 src/commands/bootstrap.ts	1923	ratchet	grandfathered at merge (grew past the 1500 cap on master)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
-src/commands/sources.ts	1605	ratchet
+src/commands/sources.ts	1642	ratchet	grown cathedral-6 fix wave (remove: in-tx referents re-check + DELETE commits before external teardown)
 src/core/bootstrap/harness.ts	1914	ratchet
 src/commands/hook.ts	1525	ratchet

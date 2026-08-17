@@ -59,10 +59,12 @@ describe('register-client route wiring (structural)', () => {
     expect(src).toContain('sourceId = normalizeSourceInput(source)');
     expect(src).toContain('federatedReadIds = normalizeFederatedReadInput(federatedRead)');
     // cathedral-6: the route composes registerScopedClient (the CLI's core)
-    // instead of calling registerClientManual directly. The transposition
-    // hazard this pin exists for is now a NAMED-FIELD hazard — pin that the
-    // normalized values land on the right keys of the parsed-args object.
-    expect(src).toMatch(/registerScopedClient\(sql,\s*name,\s*\{[\s\S]*?scopes:\s*scopeString,[\s\S]*?sourceId,[\s\S]*?federatedRead:\s*federatedReadIds,[\s\S]*?tokenEndpointAuthMethod:\s*validatedAuthMethod[\s\S]*?\}/);
+    // instead of calling registerClientManual directly — now on the
+    // tx-scoped sql handle (dup-check + INSERT are one transaction). The
+    // transposition hazard this pin exists for is now a NAMED-FIELD hazard —
+    // pin that the normalized values land on the right keys of the
+    // parsed-args object.
+    expect(src).toMatch(/registerScopedClient\(txSql,\s*name,\s*\{[\s\S]*?scopes:\s*scopeString,[\s\S]*?sourceId,[\s\S]*?federatedRead:\s*federatedReadIds,[\s\S]*?tokenEndpointAuthMethod:\s*validatedAuthMethod[\s\S]*?\}/);
   });
 });
 

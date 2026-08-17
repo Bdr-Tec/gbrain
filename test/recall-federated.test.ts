@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { operationsByName } from '../src/core/operations.ts';
+import { clampRecallLimit } from '../src/core/ops/facts.ts';
 import type { OperationContext } from '../src/core/operations.ts';
 
 let engine: PGLiteEngine;
@@ -132,8 +133,9 @@ describe('recall federated grants (D1b)', () => {
        WHERE fact LIKE '%QQF4%' OR fact LIKE '%QQF5%'`,
     );
 
-    // Remote federated caller: the audit arm has no engine-level visibility
-    // opt — the handler's post-filter must hide the private row.
+    // Remote federated caller: the audit arm filters visibility at the
+    // ENGINE level (before each source's LIMIT) — the private row must
+    // never surface.
     const remoteRes: any = await recall().handler(
       ctx({
         remote: true,
@@ -153,5 +155,83 @@ describe('recall federated grants (D1b)', () => {
     );
     const localFacts = (localRes.facts ?? []).map((f: any) => String(f.fact));
     expect(localFacts.some((f: string) => f.includes('QQF4'))).toBe(true);
+  });
+
+  it('with limit=1 and the newest supersession private, a remote call still returns the older world row', async () => {
+    // Pre-fix ordering bug: the post-merge visibility filter let the private
+    // newest row consume the single limit slot at the engine, then filtered
+    // it away → empty response instead of the older world-visible row.
+    // Own source so the earlier supersession test's rows can't take the slot.
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('sup-limit', 'sup-limit') ON CONFLICT (id) DO NOTHING`,
+    );
+    const remember = operationsByName['remember'];
+    await remember.handler(
+      ctx({ remote: false, sourceId: 'sup-limit' }),
+      { fact: 'Private newest superseded marker QQF6', provenance: 'recall-federated test', visibility: 'private' },
+    );
+    await remember.handler(
+      ctx({ remote: true, sourceId: 'sup-limit' }),
+      { fact: 'World older superseded marker QQF7', provenance: 'recall-federated test', visibility: 'world' },
+    );
+    // Audit-log shape with DISTINCT expired_at: the private row is NEWEST.
+    await engine.executeRaw(
+      `UPDATE facts SET expired_at = now(), superseded_by = id WHERE fact LIKE '%QQF6%'`,
+    );
+    await engine.executeRaw(
+      `UPDATE facts SET expired_at = now() - interval '1 hour', superseded_by = id WHERE fact LIKE '%QQF7%'`,
+    );
+
+    const res: any = await recall().handler(
+      ctx({ remote: true, sourceId: 'sup-limit' }),
+      { supersessions: true, limit: 1 },
+    );
+    const facts = (res.facts ?? []).map((f: any) => String(f.fact));
+    expect(facts.length).toBe(1);
+    expect(facts[0]).toContain('QQF7');
+    expect(facts.some((f: string) => f.includes('QQF6'))).toBe(false);
+  });
+
+  it('include_pending sums pending-consolidation counts across the federated grant', async () => {
+    const remember = operationsByName['remember'];
+    await remember.handler(
+      ctx({ remote: true, sourceId: 'aurora-workspace' }),
+      { fact: 'Pending marker QQF8', provenance: 'recall-federated test', visibility: 'world' },
+    );
+    const a = await engine.countUnconsolidatedFacts('aurora-workspace');
+    const b = await engine.countUnconsolidatedFacts('proj-widget');
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(0);
+
+    const res: any = await recall().handler(
+      ctx({
+        remote: true,
+        sourceId: 'aurora-workspace',
+        auth: { allowedSources: ['aurora-workspace', 'proj-widget'] },
+      }),
+      { include_pending: true },
+    );
+    // Sum over the SAME factSources set the fact arms fan out across — not
+    // just the scalar sourceId (which would report `a` alone).
+    expect(res.pending_consolidation_count).toBe(a + b);
+  });
+});
+
+describe('clampRecallLimit (per-arm cap, applied once before the fan-out)', () => {
+  it('caps valid integers at 100 and passes small ones through', () => {
+    expect(clampRecallLimit(150)).toBe(100);
+    expect(clampRecallLimit(100)).toBe(100);
+    expect(clampRecallLimit(7)).toBe(7);
+    expect(clampRecallLimit(1)).toBe(1);
+  });
+
+  it('invalid input (undefined / NaN / non-positive / non-integer) → default 50', () => {
+    expect(clampRecallLimit(undefined)).toBe(50);
+    expect(clampRecallLimit(NaN)).toBe(50);
+    expect(clampRecallLimit(-1)).toBe(50);
+    expect(clampRecallLimit(0)).toBe(50);
+    expect(clampRecallLimit(3.7)).toBe(50);
+    expect(clampRecallLimit('25' as unknown)).toBe(50);
+    expect(clampRecallLimit(Infinity)).toBe(50);
   });
 });

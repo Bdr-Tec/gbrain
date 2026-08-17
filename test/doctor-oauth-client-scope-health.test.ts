@@ -32,7 +32,7 @@ afterAll(async () => {
 });
 
 async function truncate(): Promise<void> {
-  for (const t of ['pages', 'oauth_tokens', 'oauth_codes', 'oauth_clients']) {
+  for (const t of ['pages', 'facts', 'oauth_tokens', 'oauth_codes', 'oauth_clients']) {
     await (engine as any).db.exec(`DELETE FROM ${t}`);
   }
   await (engine as any).db.exec(`DELETE FROM sources WHERE id <> 'default'`);
@@ -67,6 +67,22 @@ describe('checkOauthClientScopeHealth', () => {
     // Arm (b): names the orphaned workspace, with the removal hint.
     expect(r.message).toMatch(/aurora-coder-workspace/);
     expect(r.message).toMatch(/gbrain sources remove/);
+  });
+
+  test('zero-page workspace WITH facts → NOT flagged (revoked agent memory, not residue)', async () => {
+    // A revoked agent's workspace: the client row is gone, no pages were ever
+    // written, but FACTS exist (the primary agent write lane). Recommending
+    // `gbrain sources remove` here would cascade the facts away.
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('revoked-agent-workspace', 'revoked-agent-workspace')`,
+    );
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, fact, source)
+       VALUES ('revoked-agent-workspace', 'agent memory row', 'test')`,
+    );
+    const r = await checkOauthClientScopeHealth(engine);
+    expect(r.status).toBe('ok');
+    expect(r.message).not.toMatch(/revoked-agent-workspace/);
   });
 
   test('pages-bearing non-default source → NOT flagged', async () => {
