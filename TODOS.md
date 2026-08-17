@@ -124,6 +124,60 @@
   functions taking 6+ positional args → params object; (d) the deadline-skip
   preamble repeated at the top of each cycle phase → shared guard in
   base-phase.ts. **Effort:** S each. **P3.**
+## Multi-agent wave follow-ups (cathedral-6, `gbrain agent register`)
+
+- [ ] **P2 — archived sources keep previously-granted federated reads until
+  re-registration.** **What:** grants are validated at mint time only — a
+  client whose `federated_read` names a source that is archived AFTER
+  registration keeps reading it; there is no per-request archived-source
+  filtering and no grant invalidation on archive. **How:** this is a
+  platform-wide read-path decision affecting every federated op (recall,
+  search, entity, boundary verbs), not just recall — either fold an
+  `archived = false` join into the shared source-scope resolution or sweep
+  grants on `sources archive`; decide once, apply everywhere. **Where:**
+  `src/core/ops/context.ts` (sourceScopeOpts consumers), engine read paths,
+  `src/core/destructive-guard.ts` (archive lifecycle). **Effort:** M.
+  **Priority:** P2.
+- [ ] **P2 — federate the remaining read verbs across allowedSources.**
+  **What:** `recall` now honors a federated grant (every fact arm fans out
+  across `ctx.auth.allowedSources` and merges per-arm — see the `factSources`
+  ladder in `src/core/ops/facts.ts` as the pattern), but the rest of the
+  frozen-verb read surface stays scalar: `entity` (card assembly) and the
+  `context_pack`/`delta` ambient boundary verbs resolve `ctx.sourceId ?? 'default'`
+  only. A client granted N sources gets cross-source recall but single-source
+  entity cards and boundary packs — the surface splits silently. **How:** route
+  each through `sourceScopeOpts(ctx)` and fan out + merge like recall; for the
+  perf-clean shape push the source set INTO the engine query instead of
+  N round-trips — `findTrajectory`'s `sourceIds` ANY() branch is the
+  engine-level filter to mirror. **Where:** `src/core/ops/facts.ts`
+  (context_pack/delta), `src/core/verbs.ts` (entity),
+  `src/core/context/turn-context.ts`, engine fact/entity list APIs.
+  **Effort:** M. **Priority:** P2.
+- [ ] **P3 — E5: content-level BrainBench leak detection.** **What:** the
+  isolation gate asserts STRUCTURAL leak-absence (every result's source_id is
+  inside the caller's grant); a content-level arm would seed known-plaintext
+  canary strings into a foreign source and assert no returned text (snippets,
+  synthesized answers, graph annotations) contains them — catching join/
+  snippet/synthesis leak classes a source_id check can't see. **Where:**
+  `evals/brainbench/`. **Effort:** M. **Priority:** P3.
+- [ ] **P3 — OpenClaw native remote-MCP register block, when upstream ships
+  remote support.** **What:** `gbrain agent register` renders the honest
+  thin-client CLI block for openclaw today (`openclawThinClientBlock` in
+  `src/core/mcp-registration.ts`) because OpenClaw has no native remote-MCP
+  client; when upstream ships one, add a native client-credentials wiring
+  block and demote the CLI block to the fallback. Blocked upstream. **Where:**
+  `src/core/mcp-registration.ts`, `src/commands/agent-register.ts`.
+  **Effort:** S. **Priority:** P3.
+- [ ] **P3 — E2: `gbrain agent list` / `gbrain agent revoke` conveniences.**
+  **What:** sugar over `gbrain auth clients` / `gbrain auth revoke-client`
+  filtered to agent-register-minted clients, with revoke-by-name. Motivation
+  is partly retired: `gbrain auth clients` now shows source_id +
+  federated_read columns, so the remaining value is the agent-only filter +
+  name-based revoke. Build only if operators ask. **Where:**
+  `src/commands/agent.ts`. **Effort:** S. **Priority:** P3.
+
+
+
 ## Security-sweep mitigation follow-ups (filed 2026-08-16)
 
 - [ ] **P1 — `gbrain upgrade` binary lane returns success exit status on failure (autopilot false-success).** **What:** `runUpgrade`'s `binary` case logs every failure reason (`smoke_failed`, `download_failed`, `integrity_failed`, `integrity_unavailable`, `version_mismatch`, `replace_failed`) but never sets a non-zero CLI exit verdict, so callers see exit 0. **Why:** autopilot (`src/commands/autopilot.ts`) can read a false success, record "applied," relaunch, and then mark a transiently-unavailable version permanently bad — an amplification loop, now more reachable because `integrity_unavailable` fires on ordinary GitHub API rate limits. **Context:** PRE-EXISTING for the whole binary lane (not introduced by the v0.46.12.3 integrity work); surfaced by that PR's adversarial review with 2-model consensus. Fix needs care: distinguish hard-fail (`integrity_failed`/`version_mismatch` → exit non-zero, autopilot should NOT mark-bad on a security rejection) from transient (`integrity_unavailable` → retry, not a version fault), with autopilot-loop tests — hence its own PR, not a rushed rider. **Start:** `src/commands/upgrade.ts` binary case + `setCliExitVerdict` + `src/commands/autopilot.ts` upgrade handling.
@@ -1110,12 +1164,10 @@ master before starting, several fixes landed independently).
   into one UNION ALL query and extract a shared targets constant
   (src/core/jsonb-integrity-targets.ts) consumed by both. Where:
   `src/commands/doctor.ts` jsonbIntegrityCheck, `src/commands/repair-jsonb.ts`.
-- [ ] **P3 — register-client HTTP-level e2e (ship-review follow-up).** The
-  source/federatedRead lane is covered by unit normalizers + a structural
-  route pin; a DATABASE_URL-gated serve-http e2e (register with bindings →
-  assert stored client via /admin/api/agents; invalid source → 400
-  invalid_source) closes the wire-level gap. Where:
-  `test/e2e/serve-http-oauth.test.ts`.
+- [x] **P3 — register-client HTTP-level e2e (ship-review follow-up).** ABSORBED
+  into the cathedral-6 multi-agent e2e suite on `garrytan/cathedral-6`
+  (test/e2e/serve-http-multi-agent.test.ts — wire-level register + scoped
+  round-trips + invalid source → 400).
 - [ ] **P3 — get_chunks `__all__` sentinel narrows to 'default' (red-team,
   Wave 3 territory).** `sourceScopeOpts` returns `{}` for a trusted local
   `--source __all__` caller (documented "spans the brain"), but both engines'
@@ -3947,9 +3999,9 @@ contributor traps.
 
 ## MCP fix wave follow-ups (v0.34.1)
 
-- [ ] **v0.34.x: Source-scope `takes_*` ops (pre-existing leak surfaced during v0.34.1 adversarial review).** `takes_list`, `takes_search`, `takes_scorecard`, `takes_calibration` in `src/core/operations.ts:1248-1335` thread `ctx.takesHoldersAllowList` but never `ctx.sourceId`. An auth'd OAuth client scoped to `source_id='canon-a'` can call `takes_list --page_slug=foo` (slug in `canon-b`) and read takes attached to foreign-source pages. Pre-existing, not introduced by v0.34.1, but the wave was framed as "P0 source-isolation seal on the read path" and `takes_*` surfaces were missed. Fix: extend `TakesListOpts` in `src/core/engine.ts:186` with `sourceId?: string` + `sourceIds?: string[]`; thread `sourceScopeOpts(ctx)` at each op handler; engine `listTakes`/`searchTakes` filter via the `pages` JOIN.
+- [x] **v0.34.x: Source-scope `takes_*` ops (pre-existing leak surfaced during v0.34.1 adversarial review).** DONE — verified already fixed and pinned on `garrytan/cathedral-6`: all four `takes_*` ops route through `sourceScopeOpts(ctx)` at `src/core/ops/takes.ts:30/57/86/113`.
 
-- [ ] **v0.34.x: Extend `sourceScopeOpts(ctx)` to the 14 read-side ops PR #861 didn't touch.** `get_page`, `get_tags`, `get_links`, `get_backlinks`, `get_timeline`, `list_files`, `get_file`, and the four `takes_*` ops (above) still use the v0.31.8-era `const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {}` pattern. NOT a leak (scalar `ctx.sourceId` IS threaded), but federated_read (#876, `ctx.auth?.allowedSources`) is silently dropped. A "WeCare L3 dept" client gets correct federated results from `search`/`query`/`list_pages`/`traverse_graph`/`find_experts` but only sees its scalar `source_id` for `get_page`/`get_tags`/etc. Fix: route all 14 sites through `sourceScopeOpts(ctx)`.
+- [ ] **v0.34.x: Extend `sourceScopeOpts(ctx)` to the remaining read-side ops on the v0.31.8-era scalar pattern.** Most of the original list is fixed: `get_page`/`list_pages` route through `federatedSearchScope` (#3242), the four `takes_*` ops route through `sourceScopeOpts` (ops/takes.ts), and links/timeline-read/tag-set reads were converted (#2200). Still on `const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {}`: `ops/tags.ts:26,45`, `ops/timeline.ts:51`, `ops/raw-data.ts:27`, `ops/sync-status.ts:31`, `ops/admin.ts:158`, `ops/extraction.ts:83,187`, and `ops/pages.ts:252,775,808` (the pages.ts/extraction.ts arms are write-adjacent — audit each before switching; write authority is deliberately scalar). NOT a leak (scalar `ctx.sourceId` IS threaded), but federated_read (#876, `ctx.auth?.allowedSources`) is silently dropped on those reads.
 
 - [ ] **v0.34.x: Migration v60 idempotency guard against `--force-retry` race with v64.** `gbrain apply-migrations --force-retry 58` after v64 has already run will re-install the FK with `ON DELETE SET NULL`, silently downgrading the v64 RESTRICT posture. Probability low (operator has to explicitly force-retry 58) but failure mode is invisible. Fix: v60 should probe `pg_constraint.confdeltype` before re-adding and refuse to clobber `'r'` (RESTRICT) with `'n'` (SET NULL).
 
@@ -3957,7 +4009,7 @@ contributor traps.
 
 - [ ] **v0.34.x: Doctor check `oauth_orphan_source_id`** — surfaces OAuth clients whose source_id was nulled by the v60 D10 silent-widen path (`GBRAIN_ACCEPT_SILENT_WIDEN=1`). Closes the observability gap from v0.34.1's D4 decision. Sibling to the `rls_event_trigger` check pattern in `src/commands/doctor.ts`.
 
-- [ ] **v0.34.x: `gbrain sources purge` FK error UX.** Post-v0.34, deleting a source is refused if any oauth_client references it (v64 ON DELETE RESTRICT). The CLI currently surfaces the raw Postgres FK violation. Fix: pre-check via `SELECT client_id, client_name FROM oauth_clients WHERE source_id = $1`, print "N OAuth clients reference this source: ... Revoke first via `gbrain auth revoke-client <id>`." Mirrors `assessDestructiveImpact` in destructive-guard.ts (v0.26.5).
+- [x] **v0.34.x: `gbrain sources purge` FK error UX.** DONE on `garrytan/cathedral-6`: `clientsReferencingSource` + `formatClientReferentsBlock` in `src/core/destructive-guard.ts` pre-check remove/purge/auto-purge in `src/commands/sources.ts` and print the named-client refusal (revoke hint included) instead of the raw FK violation; `assessDestructiveImpact` carries `oauthClientCount`.
 
 - [ ] **v0.34.x: `hybrid.ts:223` explicit-pick refactor.** The SearchOpts rebuild manually picks fields from HybridSearchOpts. This is the bug shape that caused the original v0.34.1 P0 leak — a new SearchOpts field is silently dropped if not manually added here. The wave added `sourceId` + `sourceIds` to the pick; future fields will keep hitting this footgun. Fix: refactor to spread + TypeScript `Pick<>` helper that narrows HybridSearchOpts → SearchOpts type-safely.
 
