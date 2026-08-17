@@ -6765,3 +6765,9 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   lane (likely repo-root fallback when the source local_path isn't threaded),
   fix it to fail closed, and add a run-e2e.sh post-run guard that fails the
   lane if `git status` at the host root gained tracked-file changes. Effort: M.
+
+### Dream oneshot wave — adversarial-review follow-ups (v0.46.19.0)
+- [ ] P2 (adversarial F2): a job that dies mid-oneshot-write-phase (wall-clock timeout) releases its idempotency key with a partial ledger; the next nightly's fresh job re-calls the model and can write differently-stemmed siblings next to the survivors (same hash suffix). Window is tiny (writes are DB-fast, chat is sub-budgeted at deadline/4). Consider: route write-phase timeouts to `delayed` when oneshot ledger rows exist, or dedupe at fan-out on existing `-<suffix>` pages.
+- [ ] P2 (adversarial F3): a chronically-failing transcript (always times out / deterministic all-writes-failed) releases its key on dead AND suppresses the cooldown stamp — re-triaged and re-paid every nightly. Add a bounded per-content-hash failure counter (N strikes → skip + surface in doctor/advisor).
+- [ ] P3 (adversarial F6): legacy direct-Anthropic path with the CDX-6 32k thinking default can exceed the SDK's 10-min default request timeout on slow generations (flag-off deployments only; surfaces as a retryable conn error at full token cost). Set an explicit SDK timeout or cap legacy maxTokens.
+- [ ] P3: phase-end `embedStalePages` runs outside BudgetTracker (bounded to the phase's own writes + 120s; fold under the tracker if spend telemetry wants it).
