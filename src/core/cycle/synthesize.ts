@@ -892,18 +892,27 @@ export async function runPhaseSynthesize(
       try {
         const { isAvailable } = await import('../ai/gateway.ts');
         if (isAvailable('embedding')) {
-          const { embedStaleForSource } = await import('../embed-stale.ts');
-          const embedRes = await embedStaleForSource(engine, cycleSourceId, {
-            batchSize: 500,
-            concurrency: 4,
+          const { embedStalePages } = await import('../embed-stale.ts');
+          const { currentEmbeddingSignature } = await import('../embedding.ts');
+          // Scoped to THIS phase's written pages only — the spend is exactly
+          // the deferred cost of our own writes (what the agentic inline
+          // path would have paid at put_page time), so it needs no backfill
+          // lock, budget ledger, or cooldown; the source-wide stale backlog
+          // stays the budget-tracked embed-backfill job's business. Racing a
+          // concurrent backfill is idempotent (it finds these chunks
+          // embedded). Signature stamping keeps the new pages inside the
+          // v0.41.31 model-drift invalidation contract.
+          const embedSig = currentEmbeddingSignature();
+          const embedRes = await embedStalePages(engine, writtenSlugs, cycleSourceId, {
             signal: AbortSignal.timeout(120_000),
+            ...(embedSig !== null && { embeddingSignature: embedSig }),
           });
           if (embedRes.embedded > 0) {
-            process.stderr.write(`[dream] phase-end embed backfill: ${embedRes.embedded} chunk(s) embedded${embedRes.aborted ? ' (120s budget hit; stale sweep owns the rest)' : ''}.\n`);
+            process.stderr.write(`[dream] phase-end embed of written pages: ${embedRes.embedded} chunk(s)${embedRes.aborted ? ' (120s budget hit; stale sweep owns the rest)' : ''}.\n`);
           }
         }
       } catch (e) {
-        process.stderr.write(`[dream] phase-end embed backfill failed (the stale-embed sweep will catch up): ${e instanceof Error ? e.message : String(e)}\n`);
+        process.stderr.write(`[dream] phase-end embed failed (the stale-embed sweep will catch up): ${e instanceof Error ? e.message : String(e)}\n`);
       }
     }
 

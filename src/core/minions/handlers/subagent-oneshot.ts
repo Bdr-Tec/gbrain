@@ -57,7 +57,18 @@ export type { OneshotFallbackReason } from '../types.ts';
 
 export type OneshotOutcome =
   | { kind: 'done'; result: SubagentResult }
-  | { kind: 'fallback'; reason: OneshotFallbackReason };
+  | {
+      kind: 'fallback';
+      reason: OneshotFallbackReason;
+      /**
+       * Usage of the PAID oneshot attempt, present on post-call fallbacks —
+       * the handler merges it into the agentic result's rollup so
+       * details.synthesis cost/turn math counts the attempt (absent on
+       * pre-call fallbacks like no_put_page_tool, and on oneshot_timeout
+       * where the provider returned no usage).
+       */
+      tokens?: { in: number; out: number; cache_read: number; cache_create: number };
+    };
 
 const SLUG_RE = new RegExp(`^${PAGE_SLUG_SEG}(\\/${PAGE_SLUG_SEG})*$`, 'u');
 const MAX_PAGES_PER_RESPONSE = 12;
@@ -116,7 +127,10 @@ export function parseOneshotResponse(raw: string): ParsedOneshot | null {
     pages.push({
       slug: rec.slug.trim(),
       title: typeof rec.title === 'string' && rec.title.trim() ? rec.title.trim() : rec.slug.trim().split('/').pop()!,
-      type: typeof rec.type === 'string' && rec.type.trim() ? rec.type.trim() : 'note',
+      // F5 (adversarial): `type` is model-controlled and PageType is an open
+      // string — pin to the contract's 'note' instead of letting the oneshot
+      // lane author arbitrary type taxonomies. Field kept for shape-compat.
+      type: 'note',
       body: rec.body,
     });
   }
@@ -168,15 +182,24 @@ export interface OneshotArgs {
 }
 
 /**
- * Abort/timeout-shaped errors must never be converted into permanent
- * per-page failures or misrouted into the agentic fallback — they belong to
- * the retry machinery. Name check covers DOMException AbortError/TimeoutError;
- * the message match covers provider-SDK wrappers.
+ * Strict abort classification for the WRITE/recovery paths: name-only, so a
+ * deterministic put_page failure whose message merely mentions a timeout
+ * (PG `statement timeout`, a provider wrapper naming an upstream timeout)
+ * settles 'failed' like any other write verdict instead of burning full job
+ * attempts through pending-row recovery.
+ */
+function isAbortError(e: unknown): boolean {
+  return e instanceof Error && (e.name === 'AbortError' || e.name === 'TimeoutError');
+}
+
+/**
+ * Looser abort classification for the CHAT-call catch ONLY, where it is
+ * additionally guarded by `budgetAbort.aborted` (so a message false-positive
+ * cannot misroute anything unless the budget really expired). The message
+ * match covers provider-SDK wrappers that rename the abort.
  */
 function isAbortShaped(e: unknown): boolean {
-  return e instanceof Error && (
-    e.name === 'AbortError' || e.name === 'TimeoutError' || /\babort|\btimed?[ _-]?out/i.test(e.message)
-  );
+  return isAbortError(e) || (e instanceof Error && /\babort|\btimed?[ _-]?out/i.test(e.message));
 }
 
 interface LedgerRow { tool_use_id: string; status: string; slug: string | null; content: string | null }
@@ -225,7 +248,7 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
         // errors are NOT write verdicts — rethrow and leave the row pending
         // so the next retry re-executes it, instead of freezing a permanent
         // 'failed' that could dead-letter perfectly writable content.
-        if (ctx.signal?.aborted || isAbortShaped(e) || isRetryableConnError(e)) throw e;
+        if (ctx.signal?.aborted || isAbortError(e) || isRetryableConnError(e)) throw e;
         await persistToolExecFailed(engine, ctx.id, 1, row.tool_use_id, 'brain_put_page', input,
           e instanceof Error ? e.message : String(e));
         row.status = 'failed';
@@ -269,7 +292,16 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   }
 
   // ── Single provider call under a rate lease + sub-budget (OV-9) ─────────
-  const lease = await acquireLease(engine, args.leaseKey, ctx.id, args.maxConcurrent, { ttlMs: args.leaseTtlMs });
+  const budgetMs = args._budgetMs ?? (ctx.deadlineAtMs
+    ? Math.min(ONESHOT_CALL_BUDGET_MS, Math.max(30_000, Math.floor((ctx.deadlineAtMs - Date.now()) / 4)))
+    : ONESHOT_CALL_BUDGET_MS);
+  // Lease TTL must OUTLIVE the call it guards: the sub-budget hard-bounds
+  // the call (AbortSignal.timeout below), so ttl = budget + slack. With the
+  // bare 120s default TTL a 300s call's lease would be pruned mid-flight and
+  // the next acquirer would over-admit past maxConcurrent.
+  const lease = await acquireLease(engine, args.leaseKey, ctx.id, args.maxConcurrent, {
+    ttlMs: Math.max(args.leaseTtlMs, budgetMs + 30_000),
+  });
   if (!lease.acquired) {
     // A full bucket is a scheduling condition, not a model failure — throw
     // RateLeaseUnavailableError so the worker / inline drain requeue the job
@@ -277,10 +309,6 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
     // the same full bucket sixteen times over).
     throw new RateLeaseUnavailableError(args.leaseKey, lease.activeCount, lease.maxConcurrent);
   }
-
-  const budgetMs = args._budgetMs ?? (ctx.deadlineAtMs
-    ? Math.min(ONESHOT_CALL_BUDGET_MS, Math.max(30_000, Math.floor((ctx.deadlineAtMs - Date.now()) / 4)))
-    : ONESHOT_CALL_BUDGET_MS);
   const budgetAbort = AbortSignal.timeout(budgetMs);
   const callSignal = ctx.signal ? AbortSignal.any([ctx.signal, budgetAbort]) : budgetAbort;
 
@@ -328,16 +356,19 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   };
   logSubagentHeartbeat({ job_id: ctx.id, event: 'llm_call_completed', turn_idx: 0, tokens: { in: tokens.in, out: tokens.out, cache_read: tokens.cache_read, cache_create: tokens.cache_create } });
 
+  // Post-call fallbacks carry the attempt's usage for the result rollup.
+  const fb = (reason: OneshotFallbackReason): OneshotOutcome => ({ kind: 'fallback', reason, tokens });
+
   // ── Degenerate-output discipline (judgeSignificance parity) ─────────────
-  if (chatResult.stopReason === 'length') return { kind: 'fallback', reason: 'length' };
+  if (chatResult.stopReason === 'length') return fb('length');
   if (chatResult.stopReason === 'refusal' || chatResult.stopReason === 'content_filter') {
-    return { kind: 'fallback', reason: 'refusal' };
+    return fb('refusal');
   }
 
   const parsed = parseOneshotResponse(chatResult.text ?? '');
-  if (!parsed) return { kind: 'fallback', reason: 'unparseable' };
+  if (!parsed) return fb('unparseable');
   if (parsed.pages.length === 0) {
-    if (!parsed.skipped) return { kind: 'fallback', reason: 'empty_no_skip' };
+    if (!parsed.skipped) return fb('empty_no_skip');
     // Task-D skip: a legitimate zero-write completion.
     const skipText = `oneshot: nothing met the bar — ${parsed.skip_reason ?? 'no reason given'}`;
     await persistOneshotTranscript(engine, ctx.id, data.prompt, chatResult.text ?? skipText, model, tokens);
@@ -353,7 +384,7 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
       },
     };
   }
-  if (parsed.pages.length > MAX_PAGES_PER_RESPONSE) return { kind: 'fallback', reason: 'too_many_pages' };
+  if (parsed.pages.length > MAX_PAGES_PER_RESPONSE) return fb('too_many_pages');
 
   // ── Validate ALL pages before ANY write ─────────────────────────────────
   const prefixes = data.allowed_slug_prefixes ?? [];
@@ -365,7 +396,7 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   // Duplicate slugs inside one batch would make the second write silently
   // overwrite the first while both report complete — reject the batch
   // (all-or-nothing contract).
-  if (inBatch.size !== parsed.pages.length) return { kind: 'fallback', reason: 'bad_slug' };
+  if (inBatch.size !== parsed.pages.length) return fb('bad_slug');
   // Targeted membership probe instead of materializing the whole slug set
   // (getAllSlugs is a full-table scan per job; wikilink targets are few).
   // Reads are scoped to the WRITE's source (source_id ?? 'default' — mirrors
@@ -397,23 +428,23 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   const coldBrain = pageSample < 5 && !data.prompt.includes(LINK_CANDIDATES_HEADER);
 
   for (const page of parsed.pages) {
-    if (!SLUG_RE.test(page.slug)) return { kind: 'fallback', reason: 'bad_slug' };
+    if (!SLUG_RE.test(page.slug)) return fb('bad_slug');
     if (prefixes.length > 0 && !matchesSlugAllowList(page.slug, prefixes)) {
-      return { kind: 'fallback', reason: 'bad_slug' };
+      return fb('bad_slug');
     }
     if (taskShapePrefixes.length > 0 && !taskShapePrefixes.some(p => page.slug.startsWith(p))) {
       // Oneshot synthesis writes ONLY reflections/originals (Task C forbids
       // touching person pages; the orchestrator owns people enrichment).
-      return { kind: 'fallback', reason: 'bad_slug' };
+      return fb('bad_slug');
     }
     if (data.oneshot_slug_suffix && !page.slug.endsWith(`-${data.oneshot_slug_suffix}`)) {
-      return { kind: 'fallback', reason: 'bad_slug' };
+      return fb('bad_slug');
     }
     const targets = extractWikilinkTargets(page.body);
-    if (targets.length === 0) return { kind: 'fallback', reason: 'no_wikilink' };
+    if (targets.length === 0) return fb('no_wikilink');
     if (!coldBrain) {
       const resolves = targets.some(t => existingSlugs.has(t) || (inBatch.has(t) && t !== page.slug));
-      if (!resolves) return { kind: 'fallback', reason: 'no_wikilink' };
+      if (!resolves) return fb('no_wikilink');
     }
   }
 
@@ -449,20 +480,38 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   for (let i = 0; i < parsed.pages.length; i++) {
     const page = parsed.pages[i];
     const { toolUseId, input } = plannedWrites[i];
+    // A cancelled job must stop writing and rethrow — the banked pending
+    // rows make the retry's recovery re-execute the remainder. Converting a
+    // cancellation into permanent 'failed' rows would complete the job with
+    // a silently lost tail under a consumed idempotency key.
+    if (ctx.signal?.aborted) throw new DOMException('oneshot write loop aborted by job signal', 'AbortError');
+    let output: unknown;
     try {
-      const output = await args.putPageTool.execute(input, {
+      output = await args.putPageTool.execute(input, {
         engine,
         jobId: ctx.id,
         remote: true,
         signal: ctx.signal,
       });
-      await persistToolExecComplete(engine, ctx.id, toolUseId, output);
-      writtenRefs.push({ slug: page.slug, status: 'complete' });
     } catch (e) {
+      // Abort/transient-conn errors are not write verdicts (same rule as
+      // recovery): rethrow, row stays pending, retry re-executes.
+      if (ctx.signal?.aborted || isAbortError(e) || isRetryableConnError(e)) throw e;
       const msg = e instanceof Error ? e.message : String(e);
       await persistToolExecFailed(engine, ctx.id, 1, toolUseId, 'brain_put_page', input, msg);
       writtenRefs.push({ slug: page.slug, status: 'failed' });
+      continue;
     }
+    try {
+      await persistToolExecComplete(engine, ctx.id, toolUseId, output);
+    } catch (e) {
+      // The PAGE COMMITTED but the ledger settle failed. Never settle
+      // 'failed' here — the page would exist while provenance/reverse-write
+      // /accounting exclude it. Rethrow: the row stays pending and recovery
+      // re-executes the idempotent upsert, then settles complete.
+      throw e instanceof Error ? e : new Error(String(e));
+    }
+    writtenRefs.push({ slug: page.slug, status: 'complete' });
   }
 
   // ── Post-batch auto-link pass (CEO-1/CDX-11) ─────────────────────────────

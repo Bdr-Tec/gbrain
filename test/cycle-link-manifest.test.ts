@@ -127,3 +127,36 @@ describe('buildLinkManifest (#4216)', () => {
     expect(slugs).toContain('projects/widget-launch');
   });
 });
+
+describe('one-liner privacy strip (untrusted-reader boundary)', () => {
+  test('takes-fence and private-facts content never enter the manifest block', async () => {
+    // The synthesis model is an external, untrusted reader: the one-liner
+    // must be built from the SAME stripped view the remote get_page path
+    // serves — whole takes fence dropped, private facts dropped, world
+    // facts kept.
+    const body = [
+      '<!--- gbrain:takes:begin -->',
+      '| # | take |',
+      '|---|------|',
+      '| 1 | SECRET-TAKE-NEVER-LEAK about a sensitive deal. |',
+      '<!--- gbrain:takes:end -->',
+      '<!--- gbrain:facts:begin -->',
+      '| # | claim | visibility |',
+      '|---|-------|------------|',
+      '| 1 | PRIVATE-FACT-NEVER-LEAK net worth detail. | private |',
+      '| 2 | Bob Example is a public speaker. | world |',
+      '<!--- gbrain:facts:end -->',
+      'Bob Example is a founder. He works on widget scaling.',
+    ].join('\n');
+    await importFromContent(engine, 'people/bob-example', body, { noEmbed: true });
+    const ctx = await buildManifestContext(engine);
+    const { block, slugs } = await buildLinkManifest(
+      engine, ctx, VERDICT(['Bob Example']), '2026-08-16-chat.txt', { outputRoot: 'wiki' },
+    );
+    expect(slugs).toContain('people/bob-example');
+    expect(block).not.toContain('SECRET-TAKE-NEVER-LEAK');
+    expect(block).not.toContain('PRIVATE-FACT-NEVER-LEAK');
+    // The stripped view still yields a usable public one-liner.
+    expect(block).toContain('[[people/bob-example]]');
+  });
+});

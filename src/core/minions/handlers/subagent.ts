@@ -182,6 +182,49 @@ export interface SubagentDeps {
  * worker startup. Always registered — `ANTHROPIC_API_KEY` is the natural
  * cost gate and `PROTECTED_JOB_NAMES` gates submission.
  */
+
+/**
+ * F1 (adversarial review): a replayed terminal assistant turn that hit the
+ * output cap must NOT launder into 'end_turn'. The zero-attempt honesty gate
+ * (finalizeWriteAccounting) keys on stop_reason, and a truncated zero-write
+ * run replaying as a clean finish would consume the transcript's idempotency
+ * key with zero pages written — the exact silent-loss class #4217 kills. The
+ * live stop reason is not persisted; `tokens_out >= cap` recovers it (a
+ * length stop reports the capped count). A clean turn producing EXACTLY cap
+ * tokens is a theoretical false positive; its consequence is dead-letter +
+ * key release + nightly retry — self-healing, never silent loss.
+ */
+/**
+ * Convert a lease-lost abort into the lease-full requeue vocabulary. When
+ * the per-turn permit heartbeat discovers its lease row vanished, it aborts
+ * the in-flight provider call; the surfacing AbortError is a SCHEDULING
+ * condition (slot re-admitted elsewhere), not a job failure — rethrow as
+ * RateLeaseUnavailableError so the worker / inline drain requeue WITHOUT
+ * burning an attempt.
+ */
+async function runLoopConvertingLeaseLoss<T>(
+  run: () => Promise<T>,
+  wasLeaseLost: () => boolean,
+  leaseKey: string,
+  maxConcurrent: number,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    if (wasLeaseLost()) {
+      throw new RateLeaseUnavailableError(leaseKey, maxConcurrent, maxConcurrent);
+    }
+    throw e;
+  }
+}
+
+function replayTerminalStopReason(
+  tokensOut: number | null | undefined,
+  maxOutputTokens: number,
+): SubagentStopReason {
+  return tokensOut != null && tokensOut >= maxOutputTokens ? 'max_tokens' : 'end_turn';
+}
+
 export function makeSubagentHandler(deps: SubagentDeps) {
   const engine = deps.engine;
   // sdk.messages IS the MessagesClient-shaped object. The v0.16.0 bug was
@@ -205,7 +248,10 @@ export function makeSubagentHandler(deps: SubagentDeps) {
     // its result; jobs submitted with require_writes (dream synthesize /
     // patterns fan-out) FAIL when every attempted put_page write failed —
     // "the turn finished" must never masquerade as "the work succeeded".
-    const modeState: { fallbackReason?: OneshotFallbackReason } = {};
+    const modeState: {
+      fallbackReason?: OneshotFallbackReason;
+      oneshotTokens?: { in: number; out: number; cache_read: number; cache_create: number };
+    } = {};
     const inner = await subagentHandlerInner(ctx, modeState);
     // #4216: stamp which execution path produced the result. Jobs with no
     // `mode` field keep the legacy result shape (REGRESSION pin).
@@ -220,6 +266,20 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           ...inner,
           synth_mode_used: 'agentic_fallback',
           fallback_reason: modeState.fallbackReason,
+          // The PAID oneshot attempt is part of this job's real cost/turn
+          // count — fold it into the rollup instead of silently dropping a
+          // full model call from details.synthesis math.
+          ...(modeState.oneshotTokens
+            ? {
+                turns_count: inner.turns_count + 1,
+                tokens: {
+                  in: inner.tokens.in + modeState.oneshotTokens.in,
+                  out: inner.tokens.out + modeState.oneshotTokens.out,
+                  cache_read: inner.tokens.cache_read + modeState.oneshotTokens.cache_read,
+                  cache_create: inner.tokens.cache_create + modeState.oneshotTokens.cache_create,
+                },
+              }
+            : {}),
         }
       : dataForAccounting.mode === 'agentic' && !inner.synth_mode_used
         ? { ...inner, synth_mode_used: 'agentic' }
@@ -235,7 +295,10 @@ export function makeSubagentHandler(deps: SubagentDeps) {
 
   async function subagentHandlerInner(
     ctx: MinionJobContext,
-    modeState: { fallbackReason?: OneshotFallbackReason } = {},
+    modeState: {
+    fallbackReason?: OneshotFallbackReason;
+    oneshotTokens?: { in: number; out: number; cache_read: number; cache_create: number };
+  } = {},
   ): Promise<SubagentResult> {
     const data = (ctx.data ?? {}) as unknown as SubagentHandlerData;
     if (!data.prompt || typeof data.prompt !== 'string') {
@@ -429,7 +492,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       if (dispatchOneshot) {
         // Rebuild put_page with deferEmbeds so the embed network call leaves
         // the model path (the standing embed machinery backfills).
-        const oneshotTools = deps.toolRegistry ?? buildBrainTools({
+        const oneshotRegistry = deps.toolRegistry ?? buildBrainTools({
           subagentId: ctx.id,
           engine,
           config,
@@ -438,6 +501,13 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           sourceId: data.source_id,
           deferEmbeds: true,
         });
+        // Honor allowed_tools EXACTLY like the loop registry — a submitter
+        // that scoped its job read-only must not gain write capability by
+        // setting mode: oneshot (put_page filtered out → no_put_page_tool
+        // fallback → the equally-filtered loop).
+        const oneshotTools = data.allowed_tools && data.allowed_tools.length > 0
+          ? filterAllowedTools(oneshotRegistry, data.allowed_tools)
+          : oneshotRegistry;
         const outcome = await runSubagentOneshot({
           engine,
           ctx,
@@ -452,6 +522,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
         });
         if (outcome.kind === 'done') return outcome.result;
         modeState.fallbackReason = outcome.reason;
+        if (outcome.tokens) modeState.oneshotTokens = outcome.tokens;
         logSubagentHeartbeat({ job_id: ctx.id, event: 'oneshot_fallback', turn_idx: 0, reason: outcome.reason, mode: 'oneshot' });
       }
     }
@@ -540,7 +611,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
         return {
           result: finalText,
           turns_count: assistantTurns,
-          stop_reason: 'end_turn',
+          stop_reason: replayTerminalStopReason(last.tokens_out, maxOutputTokens),
           tokens: tokenTotals,
         };
       }
@@ -664,9 +735,27 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       const t0 = Date.now();
       logSubagentHeartbeat({ job_id: ctx.id, event: 'llm_call_started', turn_idx: turnIdx });
 
-      // Renewal is short-lived; for single-call turns the initial TTL
-      // covers the whole request. A mid-call renewal loop would add
-      // complexity; for v0.15 we lean on the 120s TTL + abort-on-signal.
+      // Heartbeat the lease at ttl/3: pre-wave the initial TTL covered every
+      // request, but CDX-6 raised thinking-model turns to 32k output tokens
+      // and a single call can now outlive 120s — a pruned live lease gets
+      // back-filled past maxConcurrent.
+      const leaseLost = new AbortController();
+      let leaseLostMidCall = false;
+      const leaseRenewTimer = setInterval(() => {
+        void renewLeaseWithBackoff(engine, lease.leaseId!, leaseTtlMs)
+          .then((ok) => {
+            if (!ok) {
+              // Row pruned/stolen — the slot is already re-admitted. Abort
+              // the in-flight call (renewLeaseWithBackoff contract) instead
+              // of running above maxConcurrent; converted below to a
+              // lease-full requeue (no attempt burn).
+              leaseLostMidCall = true;
+              leaseLost.abort();
+            }
+          })
+          .catch(() => { /* next tick retries */ });
+      }, Math.max(5_000, Math.floor(leaseTtlMs / 3)));
+      (leaseRenewTimer as unknown as { unref?: () => void }).unref?.();
       try {
         // --- Patch B (borrow-ahead, hand-authored): rolling conversation prompt-cache ---
         // Direct path marks cache_control only on static system(485)+last-tool(498) ~5.2K;
@@ -750,11 +839,15 @@ export function makeSubagentHandler(deps: SubagentDeps) {
             : {}),
         };
 
-        const combinedSignal = mergeSignals(ctx.signal, ctx.shutdownSignal);
+        const combinedSignal = mergeSignals(mergeSignals(ctx.signal, ctx.shutdownSignal), leaseLost.signal);
         assistantMsg = await client.create(params, { signal: combinedSignal });
       } catch (err) {
         // Release lease eagerly on error so we don't starve capacity.
+        clearInterval(leaseRenewTimer);
         await releaseLease(engine, lease.leaseId!).catch(() => {});
+        if (leaseLostMidCall) {
+          throw new RateLeaseUnavailableError(rateLeaseKey, maxConcurrent, maxConcurrent);
+        }
         // Terminal classification: a 400 "prompt is too long" from Anthropic
         // is unrecoverable — retrying with the same prompt will always fail.
         // Convert to UnrecoverableError so the worker routes the job
@@ -769,6 +862,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
 
       // 2. Release lease as soon as the call returns. Tool execution runs
       //    outside the lease — tool calls use their own capacity.
+      clearInterval(leaseRenewTimer);
       await releaseLease(engine, lease.leaseId!).catch(() => {});
 
       const ms = Date.now() - t0;
@@ -1092,10 +1186,11 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
   // end_turn. Non-Anthropic providers reject a trailing assistant "prefill",
   // so surface the persisted text and skip the loop entirely.
   if (terminalText !== null) {
+    const lastAssistant = [...priorMessages].reverse().find(m => m.role === 'assistant');
     return {
       result: terminalText,
       turns_count: priorChatMessages.filter(m => m.role === 'assistant').length,
-      stop_reason: 'end_turn',
+      stop_reason: replayTerminalStopReason(lastAssistant?.tokens_out, maxOutputTokens),
       tokens: priorTokens,
     };
   }
@@ -1136,8 +1231,16 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
     } as any);
   };
 
+  // Set by the per-turn permit heartbeat when its lease row vanished
+  // mid-call (renewal returned false → in-flight request aborted). The
+  // wrapper below converts the resulting abort into a lease-full requeue so
+  // the job retries WITHOUT burning an attempt instead of dying on a
+  // generic AbortError.
+  let leaseLostDuringTurn = false;
+
   // Run the loop.
-  const result = await gatewayToolLoop({
+  const result = await runLoopConvertingLeaseLoss(
+    () => gatewayToolLoop({
     model,
     system: systemPrompt,
     initialMessages,
@@ -1156,7 +1259,33 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       if (!lease.acquired) {
         throw new RateLeaseUnavailableError(leaseKey, lease.activeCount, lease.maxConcurrent);
       }
-      return () => releaseLease(engine, lease.leaseId!).catch(() => { /* best-effort */ });
+      // Thinking-model turns (32k output cap, CDX-6) can outlive the base
+      // TTL; heartbeat at ttl/3 so a still-live call's lease is never pruned
+      // and back-filled past maxConcurrent. unref: a heartbeat must never
+      // hold the process open. A FALSE renewal means the row is gone (pruned
+      // /stolen — the slot is already re-admitted): per the
+      // renewLeaseWithBackoff contract the call must ABORT, not keep running
+      // above the ceiling; the loop converts the abort to a lease-full
+      // requeue via leaseLostDuringTurn.
+      const leaseLost = new AbortController();
+      const renewTimer = setInterval(() => {
+        void renewLeaseWithBackoff(engine, lease.leaseId!, leaseTtlMs)
+          .then((ok) => {
+            if (!ok) {
+              leaseLostDuringTurn = true;
+              leaseLost.abort();
+            }
+          })
+          .catch(() => { /* next tick retries */ });
+      }, Math.max(5_000, Math.floor(leaseTtlMs / 3)));
+      (renewTimer as unknown as { unref?: () => void }).unref?.();
+      return {
+        release: () => {
+          clearInterval(renewTimer);
+          return releaseLease(engine, lease.leaseId!).catch(() => { /* best-effort */ });
+        },
+        signal: leaseLost.signal,
+      };
     },
     // ALWAYS pass replayState (even on fresh runs) so the gateway loop's
     // messageIdx counter starts at `nextMessageIdx` (1 on fresh, after the
@@ -1279,7 +1408,11 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       });
     },
     onHeartbeat: heartbeat,
-  });
+    }),
+    () => leaseLostDuringTurn,
+    leaseKey,
+    maxConcurrent,
+  );
 
   // Map gateway stop reason to SubagentStopReason. 'length' (output-cap hit)
   // maps to 'max_tokens' — the #2778 honesty vocabulary the direct Anthropic

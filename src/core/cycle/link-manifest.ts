@@ -24,6 +24,8 @@
 import type { BrainEngine, DreamVerdict } from '../engine.ts';
 import { buildBasenameIndex, queryBasenameIndex } from '../link-extraction.ts';
 import { extractFirstTwoSentences } from '../embedding-context.ts';
+import { stripTakesFence } from '../takes-fence.ts';
+import { stripFactsFence } from '../facts-fence.ts';
 
 /**
  * Shared header literal: the renderer emits it and the oneshot runner's
@@ -149,7 +151,13 @@ export async function buildLinkManifest(
       try {
         const page = await engine.getPage(slug, opts.sourceId ? { sourceId: opts.sourceId } : undefined);
         if (page?.compiled_truth) {
-          oneLiner = collapse(extractFirstTwoSentences(page.compiled_truth)).slice(0, ONE_LINER_MAX_CHARS);
+          // The synthesis model is an UNTRUSTED reader (external API): apply
+          // the exact strip the remote/subagent get_page path applies —
+          // whole takes fence dropped, only world-visible facts kept —
+          // before any byte of page content enters the prompt. Raw
+          // compiled_truth here would exfiltrate private fence rows.
+          const visible = stripFactsFence(stripTakesFence(page.compiled_truth), { keepVisibility: ['world'] });
+          oneLiner = collapse(extractFirstTwoSentences(visible)).slice(0, ONE_LINER_MAX_CHARS);
         }
       } catch { /* one-liner is optional */ }
       const line = oneLiner ? `- [[${slug}]] — ${oneLiner}` : `- [[${slug}]]`;

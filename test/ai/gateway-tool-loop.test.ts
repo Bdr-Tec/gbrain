@@ -443,6 +443,30 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
       expect(chatCalls).toBe(0); // permit gates the provider call, not just accounting
     });
 
+    it('object-form permit: release runs, and aborting the permit signal aborts the in-flight call', async () => {
+      const events: string[] = [];
+      const leaseLost = new AbortController();
+      __setChatTransportForTests(async (opts: any) =>
+        new Promise((_, reject) => {
+          opts.abortSignal?.addEventListener('abort', () =>
+            reject(new DOMException('lease pruned mid-call', 'AbortError')));
+        }));
+
+      const loop = toolLoop({
+        initialMessages: [{ role: 'user', content: 'go' }],
+        tools: [],
+        toolHandlers: new Map(),
+        acquireTurnPermit: async () => ({
+          release: () => { events.push('release'); },
+          signal: leaseLost.signal,
+        }),
+      });
+      setTimeout(() => leaseLost.abort(), 20);
+      await expect(loop).rejects.toThrow('lease pruned mid-call');
+      // The permit was still released (finally bracket) even on abort.
+      expect(events).toEqual(['release']);
+    });
+
     it('a throwing release is swallowed (best-effort) and the loop result is unaffected', async () => {
       __setChatTransportForTests(async () => ({
         text: 'fine',

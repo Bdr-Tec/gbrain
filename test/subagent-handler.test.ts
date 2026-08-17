@@ -1029,6 +1029,66 @@ describe('oneshot mode dispatch (#4216)', () => {
     expect(oneshotCalls).toBe(0);
   });
 
+  test('read-only allowed_tools + mode oneshot → no write escalation (falls back tool-less)', async () => {
+    // A submitter that scoped its job to read-only tools must not gain
+    // brain_put_page by flipping mode: oneshot — the oneshot registry runs
+    // through the SAME filterAllowedTools as the loop registry.
+    const client = new FakeMessagesClient([
+      { content: [{ type: 'text', text: 'read-only answer' }] as any, stop_reason: 'end_turn' },
+    ]);
+    const handler = makeSubagentHandler({
+      engine, client,
+      toolRegistry: [makeEchoTool(), makeEchoTool('brain_put_page')],
+      _chat: chatStub(VALID),
+    });
+    const ctx = await makeCtx({
+      prompt: 'synthesize', mode: 'oneshot',
+      allowed_tools: ['echo'],
+      allowed_slug_prefixes: PREFIXES, oneshot_slug_suffix: SUFFIX,
+    });
+    const result = await handler(ctx);
+    expect(result.synth_mode_used).toBe('agentic_fallback');
+    expect(result.fallback_reason).toBe('no_put_page_tool');
+    // No page write happened anywhere.
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM subagent_tool_executions WHERE job_id = $1 AND tool_name = 'brain_put_page'`,
+      [ctx.id],
+    );
+    expect(rows[0]!.n).toBe(0);
+  });
+
+  test('crash-replayed TRUNCATED terminal turn recovers max_tokens, not end_turn (F1)', async () => {
+    // A length-stopped zero-write run persisted its terminal turn, crashed
+    // before completeJob, and replays. Pre-fix the early-return hardcoded
+    // end_turn, laundering the truncation past the zero-attempt honesty
+    // gate — the job completed with zero pages and consumed the transcript.
+    const client = new FakeMessagesClient([]); // replay path must not call the model
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [] });
+    const ctx = await makeCtx({ prompt: 'synthesize', require_writes: true });
+    await engine.executeRaw(
+      `INSERT INTO subagent_messages (job_id, message_idx, role, content_blocks, tokens_out)
+       VALUES ($1, 0, 'user', '[{"type":"text","text":"synthesize"}]'::jsonb, NULL),
+              ($1, 1, 'assistant', '[{"type":"text","text":"truncated partial outp"}]'::jsonb, 8192)`,
+      [ctx.id],
+    );
+    await expect(handler(ctx)).rejects.toThrow(/did not finish cleanly.*max_tokens/);
+  });
+
+  test('crash-replayed CLEAN terminal turn still returns end_turn', async () => {
+    const client = new FakeMessagesClient([]);
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [] });
+    const ctx = await makeCtx({ prompt: 'hello' });
+    await engine.executeRaw(
+      `INSERT INTO subagent_messages (job_id, message_idx, role, content_blocks, tokens_out)
+       VALUES ($1, 0, 'user', '[{"type":"text","text":"hello"}]'::jsonb, NULL),
+              ($1, 1, 'assistant', '[{"type":"text","text":"a normal answer"}]'::jsonb, 42)`,
+      [ctx.id],
+    );
+    const result = await handler(ctx);
+    expect(result.stop_reason).toBe('end_turn');
+    expect(result.result).toBe('a normal answer');
+  });
+
   test('half-persisted transcript + oneshot ledger rows → recovery, NEVER an agentic re-call (RT-2)', async () => {
     // Crash shape: all writes settled, then only the seed user message
     // landed (the two transcript INSERTs are not atomic). Pre-fix, the
@@ -1092,14 +1152,34 @@ describe('oneshot mode dispatch (#4216)', () => {
 
 // ── #4217 accounting fail-open (transient read error never kills a finished job) ──
 
-describe('finalizeWriteAccounting fail-open', () => {
+describe('finalizeWriteAccounting read-error posture (CX-A3)', () => {
   const { finalizeWriteAccounting } = require('../src/core/minions/handlers/subagent-persistence.ts');
-  test('a throwing accounting read returns the handler result unchanged (no counts, no crash)', async () => {
-    const explodingEngine = {
-      executeRaw: async () => { throw new Error('pool reaped mid-read'); },
+  const explodingEngine = {
+    executeRaw: async () => { throw new Error('pool reaped mid-read'); },
+  } as unknown as import('../src/core/engine.ts').BrainEngine;
+  const result = { result: 'done', turns_count: 3, stop_reason: 'end_turn', tokens: { in: 1, out: 1, cache_read: 0, cache_create: 0 } };
+
+  test('open-ended jobs fail OPEN: result returned unchanged on a read error', async () => {
+    const out = await finalizeWriteAccounting(explodingEngine, 999, result, { requireWrites: false });
+    expect(out).toBe(result);
+  });
+
+  test('require_writes jobs fail CLOSED: the read error rethrows (retry re-reads on a healthy pool)', async () => {
+    // Fail-open here would complete an all-writes-failed job on the exact
+    // pool failure the accounting exists to survive.
+    await expect(finalizeWriteAccounting(explodingEngine, 999, result, { requireWrites: true }))
+      .rejects.toThrow('pool reaped mid-read');
+  });
+
+  test('zero attempts + dirty stop_reason + require_writes → UnrecoverableError (CX-A4)', async () => {
+    const okEngine = {
+      executeRaw: async () => [],
     } as unknown as import('../src/core/engine.ts').BrainEngine;
-    const result = { result: 'done', turns_count: 3, stop_reason: 'end_turn', tokens: { in: 1, out: 1, cache_read: 0, cache_create: 0 } };
-    const out = await finalizeWriteAccounting(explodingEngine, 999, result, { requireWrites: true });
-    expect(out).toBe(result); // same object — untouched, and require_writes did NOT fire on unknowable counts
+    const truncated = { ...result, stop_reason: 'max_tokens' };
+    await expect(finalizeWriteAccounting(okEngine, 999, truncated, { requireWrites: true }))
+      .rejects.toThrow(/did not finish cleanly.*max_tokens/);
+    // Clean-finish zero-attempt (Task-D skip) still completes.
+    const out = await finalizeWriteAccounting(okEngine, 999, result, { requireWrites: true });
+    expect(out.pages_attempted).toBe(0);
   });
 });

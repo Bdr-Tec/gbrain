@@ -216,8 +216,17 @@ export async function finalizeWriteAccounting(
       opts.scopeToolUseIdPrefix ? [jobId, `${opts.scopeToolUseIdPrefix}%`] : [jobId],
     );
   } catch (e) {
-    // Accounting must never turn a finished job into a crash on a transient
-    // read error — surface zeroed counts and keep the handler result.
+    if (opts.requireWrites) {
+      // Fail CLOSED for write-required jobs: returning the result unchanged
+      // here would complete an all-writes-failed job on the exact pool
+      // failure this accounting exists to survive. The rethrow is retryable
+      // — replay short-circuits the model call and re-runs this read on a
+      // healthy pool; exhausted attempts dead-letter, which releases the
+      // idempotency key so the next nightly re-synthesizes.
+      throw e instanceof Error ? e : new Error(String(e));
+    }
+    // Open-ended agent jobs keep fail-open: accounting is supplemental
+    // there, and a transient read error must not crash a finished job.
     process.stderr.write(`[subagent] write accounting read failed for job ${jobId}: ${e instanceof Error ? e.message : String(e)}\n`);
     return result;
   }
@@ -234,6 +243,16 @@ export async function finalizeWriteAccounting(
     const firstError = rows.find(r => r.status === 'failed' && r.error)?.error ?? 'unknown write error';
     throw new UnrecoverableError(
       `all ${failed} put_page write(s) failed — job produced zero pages (first error: ${firstError})`,
+    );
+  }
+  // Zero attempts is legitimate ONLY as a clean-finish skip (Task D ends
+  // 'end_turn' with prose). A truncated / refused / turn-capped / errored
+  // run that never reached put_page is a failure wearing a completion — it
+  // would consume the idempotency key and stamp the cooldown, silently
+  // dropping the transcript. Dead-letter it (key releases; nightly retries).
+  if (opts.requireWrites && attempted === 0 && result.stop_reason !== 'end_turn') {
+    throw new UnrecoverableError(
+      `job produced zero put_page writes and did not finish cleanly (stop_reason: ${result.stop_reason}) — not a legitimate skip`,
     );
   }
   return accounted;

@@ -3663,14 +3663,22 @@ export interface ToolLoopOpts {
   onHeartbeat?: (event: string, data: Record<string, unknown>) => void;
   /**
    * #4194/CDX-7 — per-turn provider permit. Called before EVERY provider
-   * round-trip; the returned function releases the permit (invoked in a
-   * finally around the call). Throwing (e.g. RateLeaseUnavailableError when
-   * the provider bucket is full) aborts the turn WITHOUT consuming it — the
-   * job requeues under the caller's lease-full handling. Absent = unmetered
-   * (CLI one-shots, tests).
+   * round-trip; the returned release function (bare, or in the object form)
+   * is invoked in a finally around the call. Throwing (e.g.
+   * RateLeaseUnavailableError when the provider bucket is full) aborts the
+   * turn WITHOUT consuming it — the job requeues under the caller's
+   * lease-full handling. The object form's optional `signal` lets the
+   * permit owner ABORT the in-flight provider call (a heartbeat discovering
+   * its lease row was pruned mid-call must stop the request — continuing
+   * would run above the concurrency ceiling). Absent = unmetered (CLI
+   * one-shots, tests).
    */
-  acquireTurnPermit?: () => Promise<() => Promise<void> | void>;
+  acquireTurnPermit?: () => Promise<TurnPermit>;
 }
+
+export type TurnPermit =
+  | (() => Promise<void> | void)
+  | { release: () => Promise<void> | void; signal?: AbortSignal };
 
 export type ToolLoopStopReason = 'end' | 'length' | 'max_turns' | 'refusal' | 'content_filter' | 'aborted' | 'unrecoverable';
 
@@ -3738,8 +3746,15 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
     // call and releases in finally; an acquire failure (lease full)
     // propagates to the caller's requeue-without-attempt-burn handling.
     let releaseTurnPermit: (() => Promise<void> | void) | null = null;
+    let turnPermitSignal: AbortSignal | undefined;
     if (opts.acquireTurnPermit) {
-      releaseTurnPermit = await opts.acquireTurnPermit();
+      const permit = await opts.acquireTurnPermit();
+      if (typeof permit === 'function') {
+        releaseTurnPermit = permit;
+      } else {
+        releaseTurnPermit = permit.release;
+        turnPermitSignal = permit.signal;
+      }
     }
     let chatResult: ChatResult;
     try {
@@ -3749,7 +3764,9 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
         messages,
         tools: opts.tools,
         maxTokens,
-        abortSignal: opts.abortSignal,
+        abortSignal: turnPermitSignal
+          ? (opts.abortSignal ? AbortSignal.any([opts.abortSignal, turnPermitSignal]) : turnPermitSignal)
+          : opts.abortSignal,
         cacheSystem: opts.cacheSystem,
       });
     } catch (err) {

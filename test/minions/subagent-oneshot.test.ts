@@ -113,6 +113,9 @@ const DATA: SubagentHandlerData = {
   require_writes: true,
 };
 
+/** chatStub usage as the runner reports it on post-call fallbacks (CX-P2b). */
+const FB_TOKENS = { in: 100, out: 50, cache_read: 0, cache_create: 0 };
+
 const VALID_RESPONSE = JSON.stringify({
   pages: [
     { slug: GOOD_SLUG_A, title: 'Topic', type: 'note', body: `A reflection. See [[${GOOD_SLUG_B}]] for the idea.` },
@@ -207,7 +210,7 @@ describe('runSubagentOneshot', () => {
   test('unparseable output → fallback, NOTHING persisted (no messages, no ledger, no pages)', async () => {
     const ctx = await makeCtx(DATA);
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, 'I wrote some lovely pages for you!'));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'unparseable' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'unparseable', tokens: FB_TOKENS });
     const msgs = await engine.executeRaw<{ n: number }>(
       `SELECT count(*)::int AS n FROM subagent_messages WHERE job_id = $1`, [ctx.id]);
     expect(msgs[0]!.n).toBe(0);
@@ -226,7 +229,7 @@ describe('runSubagentOneshot', () => {
       skipped: false,
     });
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, resp));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug', tokens: FB_TOKENS });
     expect(await engine.getPage(GOOD_SLUG_A)).toBeNull(); // validation precedes ALL writes
   });
 
@@ -237,7 +240,7 @@ describe('runSubagentOneshot', () => {
       skipped: false,
     });
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, resp));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug', tokens: FB_TOKENS });
   });
 
   test('people-page write → bad_slug (Task C: orchestrator owns people enrichment)', async () => {
@@ -247,7 +250,7 @@ describe('runSubagentOneshot', () => {
       skipped: false,
     });
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, resp));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug', tokens: FB_TOKENS });
   });
 
   test('zero wikilinks → no_wikilink fallback', async () => {
@@ -257,7 +260,7 @@ describe('runSubagentOneshot', () => {
       skipped: false,
     });
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, resp));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'no_wikilink' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'no_wikilink', tokens: FB_TOKENS });
   });
 
   test('non-resolving wikilink on a warm brain with a manifest → no_wikilink (OV-1 exact match)', async () => {
@@ -271,7 +274,7 @@ describe('runSubagentOneshot', () => {
       skipped: false,
     });
     const outcome = await runSubagentOneshot(makeArgs(ctx, data, resp));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'no_wikilink' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'no_wikilink', tokens: FB_TOKENS });
   });
 
   test('cold brain without manifest accepts a syntactic wikilink (CEO-5)', async () => {
@@ -297,13 +300,13 @@ describe('runSubagentOneshot', () => {
   test('pages:[] WITHOUT skip flag → empty_no_skip fallback', async () => {
     const ctx = await makeCtx(DATA);
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, '{"pages":[],"skipped":false}'));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'empty_no_skip' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'empty_no_skip', tokens: FB_TOKENS });
   });
 
   test("stop reason 'length' → length fallback (truncated JSON never parsed-and-trusted)", async () => {
     const ctx = await makeCtx(DATA);
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, VALID_RESPONSE.slice(0, 50), 'length'));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'length' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'length', tokens: FB_TOKENS });
   });
 
   test('duplicate slugs within one batch → bad_slug (second write would silently overwrite the first)', async () => {
@@ -316,7 +319,7 @@ describe('runSubagentOneshot', () => {
       skipped: false,
     });
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, resp));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug', tokens: FB_TOKENS });
     expect(await engine.getPage(GOOD_SLUG_A)).toBeNull();
   });
 
@@ -327,7 +330,7 @@ describe('runSubagentOneshot', () => {
       body: `p${i} [[${GOOD_SLUG_B}]]`,
     }));
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, JSON.stringify({ pages, skipped: false })));
-    expect(outcome).toEqual({ kind: 'fallback', reason: 'too_many_pages' });
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'too_many_pages', tokens: FB_TOKENS });
   });
 
   test('missing put_page tool → no_put_page_tool (config error, distinct telemetry reason)', async () => {
@@ -341,10 +344,10 @@ describe('runSubagentOneshot', () => {
   test('refusal / content_filter stop reasons → refusal fallback', async () => {
     const ctx = await makeCtx(DATA);
     expect(await runSubagentOneshot(makeArgs(ctx, DATA, VALID_RESPONSE, 'refusal')))
-      .toEqual({ kind: 'fallback', reason: 'refusal' });
+      .toEqual({ kind: 'fallback', reason: 'refusal', tokens: FB_TOKENS });
     const ctx2 = await makeCtx(DATA);
     expect(await runSubagentOneshot(makeArgs(ctx2, DATA, VALID_RESPONSE, 'content_filter')))
-      .toEqual({ kind: 'fallback', reason: 'refusal' });
+      .toEqual({ kind: 'fallback', reason: 'refusal', tokens: FB_TOKENS });
   });
 
   test('skipped:true with pages present → pages win (skip flag ignored, writes proceed)', async () => {
