@@ -193,10 +193,12 @@ narrower mappings via `scripts/e2e-test-map.ts`.
 ### PR-side security checks
 
 Besides the test gate, PRs may trigger three security workflows: Semgrep CE
-SAST (every PR — **advisory/non-blocking** while the baseline is tuned, so a
-Semgrep finding won't fail your PR), OSV-Scanner (only when `package.json` or
-`bun.lock` change), and actionlint (only when `.github/workflows/**` change).
-See `SECURITY.md` → "Automated security scanning" for details.
+SAST (every PR — **blocking for findings new since the PR base**, so a net-new
+issue fails the check while pre-existing findings never block an unrelated PR;
+scheduled/dispatch runs do a full-tree report-only scan), OSV-Scanner (only when
+`package.json` or `bun.lock` change), and actionlint (only when
+`.github/workflows/**` change). See `SECURITY.md` → "Automated security
+scanning" for details.
 
 ## Building
 

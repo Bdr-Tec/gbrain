@@ -7,7 +7,7 @@ only.
 
 ### Test command tiers
 
-Six test command tiers, each with a clear scope:
+Seven test command tiers, each with a clear scope:
 
 | Command | What it runs | Wallclock | When to use |
 |---|---|---|---|
@@ -17,6 +17,7 @@ Six test command tiers, each with a clear scope:
 | `bun run test:slow` | Just the `*.slow.test.ts` set (intentional cold-path correctness checks). | seconds-to-minutes | When touching slow-path code. |
 | `bun run test:serial` | Just the `*.serial.test.ts` set (cross-file-contention quarantine; one bun process per file for true module-registry isolation), run through a POOL of concurrent per-file processes — the isolation is per-process, not per-machine. Pool defaults to `min(detect_cpus, 4)` then memory-adapts (same doctrine as the parallel runner); a small growth-guarded set of files (machine-global state or contention-critical timing — see the justified `EXCLUSIVE_FILES` list in `scripts/run-serial-tests.sh`, capped at 3 by `test/scripts/serial-files.test.ts`) runs on a sequential EXCLUSIVE lane after the pool. Per-test timeout 120s (pooled contention headroom); each pooled file is wall-clock-killed at 300s (`timeout -k`, exit-hang containment). Externally-killed files (exit 143/137 or a missing exit sentinel — sibling-workspace cleanup, memory jetsam) get ONE sequential rescue re-run, mirroring the parallel runner's doctrine: phantoms stay green with a rescue note, real failures stay red. Prints per-file PASS lines plus a top-10 slowest-files list. Knobs: `GBRAIN_SERIAL_POOL=N` (explicit pool width — bypasses the memory clamp; `1` restores fully-sequential), `GBRAIN_SERIAL_FILE_TIMEOUT`. | ~2.5min for all ~140 files at pool=4 (was ~8.5min sequential) | Debugging quarantined files; CI's serial-tests job. |
 | `bun run test:e2e` | Real Postgres E2E. Requires Docker + `DATABASE_URL`. Sequential. | ~5-10min | Pre-ship; nightly. |
+| `bun run test:compile-smoke` | Self-update integrity verify under a REAL `bun build --compile` binary, offline (sets `GBRAIN_SELFUPDATE_COMPILE_SMOKE=1`). The unit suite mocks the network seams; this proves the dependency-free crypto/base64/JSON verify path survives compilation — the failure mode `sigstore-js` would have hit. | ~5s (one compile) | When touching `src/core/binary-self-update.ts`; pre-ship on self-update changes. |
 
 There is no `check:all` script anymore — it was a second, hand-synced guard
 registry that drifted from `verify` (three checks were reachable ONLY from it,
