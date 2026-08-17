@@ -144,9 +144,10 @@ write allow-list, validated end-to-end (slug fences, task shapes, wikilinks)
 before any page is written programmatically. A response that fails validation
 falls back to the classic agentic loop in the same job, where the
 `dream.synthesize.max_turns` cap (default 16) applies; revert dial:
-`gbrain config set dream.synthesize.mode agentic`. Each subagent writes reflections
-(`wiki/personal/reflections/...`), originals (`wiki/originals/ideas/...`), and
-people timeline entries. The orchestrator collects the slugs from
+`gbrain config set dream.synthesize.mode agentic`. Each child writes reflections
+(`wiki/personal/reflections/...`) and originals (`wiki/originals/ideas/...`);
+people timeline entries are written only on the agentic path (fallback or
+`mode agentic`), where the child has the `add_timeline_entry` tool. The orchestrator collects the slugs from
 `subagent_tool_executions` (NOT `pages.updated_at` — that would pick up
 unrelated writes) and reverse-renders each new page from DB → markdown on
 disk. To re-apply the gate after retuning the threshold or drain a queued

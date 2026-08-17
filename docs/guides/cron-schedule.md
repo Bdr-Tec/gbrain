@@ -173,8 +173,9 @@ Above the triage cascade sit the execution dials (#4216/#4194):
   backfilled at phase end by a bounded pass over just the pages the phase
   wrote — never a source-wide sweep). A response that fails any check automatically
   falls back to the classic agentic loop **in the same job** — no lost work,
-  no resubmission. Typical effect: 10–25 provider round-trips per transcript
-  → 1. Revert dial: `gbrain config set dream.synthesize.mode agentic`.
+  no resubmission. Typical effect: 10+ provider round-trips per transcript
+  (up to the 16-turn default cap, more on raised `max_turns`) → 1. Revert
+  dial: `gbrain config set dream.synthesize.mode agentic`.
 - `dream.synthesize.link_manifest` (default on) — the zero-embed
   pre-retrieval manifest (built from the triage verdict's cached entities +
   segment notes). Benefits BOTH modes: agentic children stop burning turns

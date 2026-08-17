@@ -5,7 +5,8 @@ All notable changes to GBrain will be documented in this file.
 ## [0.46.19.0] - 2026-08-17
 
 Dream-cycle synthesis is now fast by default: transcript synthesis runs as a
-single validated model call instead of a 10–25-turn agent loop, and the child
+single validated model call instead of an agent loop that burned 10+ provider
+round-trips per transcript, and the child
 drain can run several transcripts at once. Six companion fixes make subagent
 jobs honest about truncation, failed writes, and provider quirks.
 
@@ -31,7 +32,8 @@ jobs honest about truncation, failed writes, and provider quirks.
   per-turn lease permit (they previously ran unleased), and a lease-full
   child requeues without burning an attempt. (#4194)
 - **Structural write accounting.** Every subagent job result now carries
-  `pages_attempted/written/failed` + `written_refs`; dream/patterns children
+  `pages_attempted/written/failed` (oneshot results also carry
+  `written_refs`); dream/patterns children
   set `require_writes` so a job whose every write failed goes to the dead
   letter with the first real error instead of reporting success. Phase
   cooldowns are only stamped on a fully-successful run, and a run where every
@@ -55,10 +57,13 @@ jobs honest about truncation, failed writes, and provider quirks.
   instead of re-calling the model, interrupted writes are re-executed, and
   in-batch link edges are replayed — a completed synthesis job can no longer
   silently lose pages. (ship-review + red-team hardening)
-- Legacy note: synthesis jobs that previously reported success without
-  writing pages release their idempotency keys when re-run — re-run
-  `gbrain dream --phase synthesize` (or wait for the nightly) after
-  upgrading and affected transcripts are picked up again.
+- Legacy note: from this release on, a synthesis child whose every write
+  failed dead-letters, and dead jobs release their idempotency keys — so the
+  next `gbrain dream --phase synthesize` (or the nightly) retries those
+  transcripts automatically. Rows from PRE-upgrade jobs that reported
+  success without writing pages stay `completed` and keep their keys, so
+  those transcripts are not retried automatically; any content change to
+  the transcript re-keys it and the next run picks it up.
 
 ### Changed
 - `gbrain agent logs` audit lines now show the synthesis mode and fallback
