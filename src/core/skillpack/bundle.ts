@@ -206,6 +206,9 @@ export interface EnumerateOptions {
  * the slug is the leading directory segment.
  */
 function manifestUniverseSkillPaths(gbrainRoot: string): string[] {
+  // gbrainRoot is the detected gbrain repo root (findGbrainRoot) joined with
+  // literals, on the local CLI plane — no untrusted input.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const manifestPath = join(gbrainRoot, 'skills', 'manifest.json');
   if (!existsSync(manifestPath)) {
     throw new BundleError(
@@ -234,6 +237,9 @@ function manifestUniverseSkillPaths(gbrainRoot: string): string[] {
     const p = (entry as { path?: unknown }).path;
     if (typeof p !== 'string' || p.length === 0) continue;
     const slug = p.split('/')[0];
+    // Relative path label built from the repo's own committed manifest —
+    // consumed under gbrainRoot only, no untrusted input.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     if (slug) paths.push(join('skills', slug));
   }
   return paths;

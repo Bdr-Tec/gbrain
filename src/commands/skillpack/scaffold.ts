@@ -142,6 +142,9 @@ export async function cmdScaffold(args: string[]): Promise<void> {
       // Next-action hint for the agent + the operator. Print only on
       // actual writes (re-runs that just skip are noise-quieter).
       if (!dryRun && result.summary.wroteNew > 0) {
+        // Display-only hint path; targetWorkspace is the operator's own
+        // --workspace flag on the local CLI plane (no untrusted input).
+        // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
         const onboardingPath = join(targetWorkspace, 'skills', '_AGENT_README.md');
         console.log(
           `\nNext: your agent walks \`skills/*/SKILL.md\` frontmatter \`triggers:\` for routing.\nIf this is a fresh install, read ${onboardingPath} for the agent contract.\nWhen gbrain ships an update later, run \`gbrain skillpack reference --all\` to sweep.`,

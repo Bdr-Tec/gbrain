@@ -14,7 +14,12 @@ import { isAbsolute, resolve as resolvePath } from 'path';
 import { findGbrainRoot } from '../../core/skillpack/bundle.ts';
 import { autoDetectSkillsDir } from '../../core/repo-root.ts';
 
+// Semgrep path-resolve suppressions below: skillpack subcommands run on the
+// LOCAL operator-invoked CLI plane only (never remote); `p`, `--workspace`,
+// and skills-dir come from the operator's own flags — there is no untrusted
+// input in these paths.
 export function resolveAbs(p: string): string {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   return isAbsolute(p) ? p : resolvePath(process.cwd(), p);
 }
 
@@ -29,6 +34,7 @@ export function findGbrainOrDie(): string {
 
 export function resolveWorkspace(opts: { workspace?: string | null; skillsDir?: string | null }): string {
   if (opts.workspace) return resolveAbs(opts.workspace);
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   if (opts.skillsDir) return resolvePath(resolveAbs(opts.skillsDir), '..');
   const detected = autoDetectSkillsDir();
   if (detected.dir) return resolvePath(detected.dir, '..');

@@ -181,9 +181,17 @@ mkdirSync(join(outDir, 'skills'), { recursive: true });
  * sites must never diverge (the shared_deps reconciliation follow-up in
  * TODOS.md gets fixed in one place).
  */
+// Semgrep path-join suppressions in this file: repo-only build/CI tooling,
+// deliberately not wired into src/cli.ts. ROOT is the repo root (or the
+// test-seam env var our own manifest test sets), persona names come from the
+// committed skills/plugin-lanes.json via loadPersonas validation, and
+// --out/--variants-out are operator flags with their own refuse() guards —
+// there is no untrusted input in these paths.
 function copySharedDeps(destSkillsDir: string): void {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   cpSync(join(ROOT, 'skills', 'conventions'), join(destSkillsDir, 'conventions'), { recursive: true });
   for (const f of readdirSync(join(ROOT, 'skills'))) {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     if (/^_.*\.(md|json)$/.test(f)) cpSync(join(ROOT, 'skills', f), join(destSkillsDir, f));
   }
 }
@@ -232,16 +240,21 @@ sessions pick it up).
 // byte-diff drift gate), a byte-copy of the launcher, the persona's skills,
 // and the same shared-dep set the main tree ships.
 function emitVariant(variantsDir: string, personaName: string, def: PersonaDef, version: string): void {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const root = join(variantsDir, def.plugin_name);
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   mkdirSync(join(root, 'skills'), { recursive: true });
 
   const slugs = Object.keys(def.skills).sort();
   for (const slug of slugs) {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     cpSync(join(ROOT, 'skills', slug), join(root, 'skills', slug), { recursive: true });
   }
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   copySharedDeps(join(root, 'skills'));
 
   // Launcher byte-copy (cpSync preserves the executable bit).
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   cpSync(join(ROOT, '.agents', 'gbrain-launcher'), join(root, '.agents', 'gbrain-launcher'));
 
   // Claude plugin manifest: model on the root manifest, retargeted at the
@@ -257,7 +270,9 @@ function emitVariant(variantsDir: string, personaName: string, def: PersonaDef, 
     description: `${def.description} (persona variant of the gbrain plugin — ${slugs.length} skills)`,
     skills: './skills/',
   };
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   mkdirSync(join(root, '.claude-plugin'), { recursive: true });
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   writeFileSync(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify(claudeVariant, null, 2) + '\n');
 
   // Codex plugin manifest + mcp.json: same retarget; mcp.json is verbatim
@@ -274,11 +289,15 @@ function emitVariant(variantsDir: string, personaName: string, def: PersonaDef, 
     skills: './skills/',
     mcpServers: './.codex-plugin/mcp.json',
   };
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   mkdirSync(join(root, '.codex-plugin'), { recursive: true });
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   writeFileSync(join(root, '.codex-plugin', 'plugin.json'), JSON.stringify(codexVariant, null, 2) + '\n');
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   cpSync(join(ROOT, '.codex-plugin', 'mcp.json'), join(root, '.codex-plugin', 'mcp.json'));
 
   writeFileSync(
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     join(root, 'README.md'),
     `<!-- gbrain-plugin-tree-stamp: ${version} -->
 # ${def.plugin_name} (generated persona variant — do not hand-edit)
@@ -313,6 +332,7 @@ if (variantsOut) {
   if (ROOT === variantsDir || ROOT.startsWith(variantsDir + '/')) refuse('would delete the repo root');
   if (existsSync(variantsDir) && readdirSync(variantsDir).length > 0) {
     const looksGenerated = readdirSync(variantsDir).some(d => {
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       const readme = join(variantsDir, d, 'README.md');
       try {
         return existsSync(readme) && readFileSync(readme, 'utf8').includes('gbrain-plugin-tree-stamp');

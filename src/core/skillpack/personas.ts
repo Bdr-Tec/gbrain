@@ -63,6 +63,9 @@ export class PersonaError extends Error {
 }
 
 function lanesPath(gbrainRoot: string): string {
+  // gbrainRoot is the detected gbrain repo root joined with literals, on the
+  // local CLI/build plane — no untrusted input.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   return join(gbrainRoot, 'skills', 'plugin-lanes.json');
 }
 
