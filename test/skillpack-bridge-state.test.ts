@@ -13,6 +13,7 @@ import { tmpdir } from 'os';
 
 import {
   SKILLPACK_BRIDGE_SCHEMA_VERSION,
+  BridgeStateError,
   loadBridgeState,
   saveBridgeState,
   findBridgeEntry,
@@ -112,5 +113,42 @@ describe('removeBridgeSlugs', () => {
     state = removeBridgeSlugs(state, { ...KEY }, ['beta']);
     expect(findBridgeEntry(state, KEY)).toBeUndefined();
     expect(state.entries).toEqual([]);
+  });
+});
+
+describe('per-entry fail-open (shape-corrupt entries degrade, never crash)', () => {
+  test('entries with the right schema but wrong shape are dropped on load', () => {
+    const path = tmpState();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schema_version: SKILLPACK_BRIDGE_SCHEMA_VERSION,
+        entries: [
+          {}, // no harness/dest/written
+          { harness: 'claude-code', dest: '/x' }, // missing written
+          { harness: 'claude-code', dest: '/y', written: [] }, // written not an object
+          { harness: 'claude-code', dest: '/z', written: { alpha: { mode: 'full' } } }, // record missing files
+          { harness: 'claude-code', dest: '/ok', written: { alpha: { mode: 'full', files: { a: 'h' } } }, last_persona: null, last_mode: 'full', gbrain_version: 'v', installed_at: 't', updated_at: 't' },
+        ],
+      }),
+    );
+    const state = loadBridgeState({ statePath: path });
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0].dest).toBe('/ok');
+    // The status-lens shape access that crashed on corrupt entries:
+    for (const e of state.entries) expect(() => Object.keys(e.written)).not.toThrow();
+  });
+
+  test('a failed atomic write throws BridgeStateError and leaves no .tmp behind', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-bridge-state-'));
+    cleanups.push(dir);
+    // Parent "directory" is a FILE → mkdir/rename must fail.
+    const blocker = join(dir, 'blocker');
+    writeFileSync(blocker, '');
+    const path = join(blocker, 'state.json');
+    expect(() =>
+      saveBridgeState({ schema_version: SKILLPACK_BRIDGE_SCHEMA_VERSION, entries: [] }, { statePath: path }),
+    ).toThrow(BridgeStateError);
+    expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([]);
   });
 });

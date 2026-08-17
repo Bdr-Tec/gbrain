@@ -33,6 +33,7 @@
 import {
   existsSync,
   lstatSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -108,6 +109,22 @@ export function bridgeTargetPath(destDir: string, relWorkspaceTarget: string): s
   return join(destDir, relWorkspaceTarget.replace(/^skills\//, ''));
 }
 
+interface EntryMeta {
+  /** Target path relative to destDir (the bridge-state ledger key). */
+  rel: string;
+  /** Owning slug; null for shared-dep files. */
+  slug: string | null;
+  isSkillMd: boolean;
+}
+
+/** Shared (plan + reference) mapping from a scaffold entry to bridge metadata. */
+function entryMeta(entry: { relWorkspaceTarget: string; sharedDep: boolean }): EntryMeta {
+  const rel = entry.relWorkspaceTarget.replace(/^skills\//, '');
+  const slug = entry.sharedDep ? null : pathSlug(join('skills', rel.split('/')[0]));
+  const isSkillMd = !entry.sharedDep && /(^|[\\/])SKILL\.md$/.test(rel);
+  return { rel, slug, isSkillMd };
+}
+
 export interface BridgePlanItem {
   /** Absolute source path in the gbrain tree. */
   source: string;
@@ -172,9 +189,7 @@ export function planHarnessBridge(opts: PlanHarnessBridgeOptions): BridgePlan {
       pairedSourcesSkipped++;
       continue;
     }
-    const rel = entry.relWorkspaceTarget.replace(/^skills\//, '');
-    const slug = entry.sharedDep ? null : pathSlug(join('skills', rel.split(sep)[0] ?? rel.split('/')[0]));
-    const isSkillMd = !entry.sharedDep && /(^|[\\/])SKILL\.md$/.test(rel);
+    const { rel, slug, isSkillMd } = entryMeta(entry);
 
     // Stub mode ships shared deps (dependency closure) but skips aux skill
     // files — get_skill serves only the SKILL.md body, so aux files would
@@ -270,32 +285,39 @@ export function renderSkillStub(sourceContent: string, slug: string): string {
  * inside destDir, judged on the REAL filesystem — the deepest existing
  * ancestor of each target is realpath'd and prefix-checked against the
  * realpath of destDir, so both `..` traversal and symlinked-parent escapes
- * are rejected BEFORE any write. copy.ts's own confinement gates guard
+ * are rejected BEFORE any write. A target that exists as a SYMLINK itself
+ * (including a dangling one — invisible to existsSync, followed by
+ * writeFileSync) is rejected too. copy.ts's own confinement gates guard
  * sources only; this is the mirror for targets.
+ *
+ * When destDir does not exist yet, only the lexical check can run here —
+ * applyHarnessBridge therefore CREATES destDir before calling this, so the
+ * realpath branch always executes on the apply path.
  */
 export function assertTargetsConfined(destDir: string, targets: readonly string[]): void {
   const logicalRoot = resolve(destDir);
-  if (!existsSync(logicalRoot)) {
-    // Nothing exists yet — logical containment is the only judgeable check;
-    // apply creates destDir first, then re-asserts with realpath.
-    for (const t of targets) {
-      const logical = resolve(t);
-      if (logical !== logicalRoot && !logical.startsWith(logicalRoot + sep)) {
-        throw new BridgeError(
-          `${t}: escapes the install destination (${destDir})`,
-          'target_escape',
-          t,
-        );
-      }
-    }
-    return;
-  }
-  const realRoot = realpathSync(logicalRoot);
+  const rootExists = existsSync(logicalRoot);
+  const realRoot = rootExists ? realpathSync(logicalRoot) : null;
   for (const t of targets) {
     const logical = resolve(t);
     if (logical !== logicalRoot && !logical.startsWith(logicalRoot + sep)) {
       throw new BridgeError(`${t}: escapes the install destination (${destDir})`, 'target_escape', t);
     }
+    // A symlink AT the target (dangling links pass existsSync=false but
+    // writeFileSync would write THROUGH them) is refused outright.
+    try {
+      if (lstatSync(logical).isSymbolicLink()) {
+        throw new BridgeError(
+          `${t}: the target is a symlink — refusing to write through it`,
+          'target_escape',
+          t,
+        );
+      }
+    } catch (err) {
+      if (err instanceof BridgeError) throw err;
+      // ENOENT: no filesystem object at the target — the normal case.
+    }
+    if (realRoot === null) continue; // lexical-only until the root exists
     // Deepest existing ancestor, realpath'd: catches a symlinked parent dir
     // pointing outside the dest.
     let probe = dirname(logical);
@@ -359,6 +381,20 @@ export interface BridgeApplyResult {
  */
 export function applyHarnessBridge(plan: BridgePlan, opts: ApplyHarnessBridgeOptions): BridgeApplyResult {
   const dryRun = opts.dryRun ?? false;
+  // Create destDir BEFORE the confinement gate so the realpath branch always
+  // runs on the apply path (a not-yet-existing dest would otherwise get the
+  // lexical check only — a symlinked ancestor could slip past it).
+  if (!dryRun) {
+    try {
+      mkdirSync(plan.destDir, { recursive: true });
+    } catch (err) {
+      throw new BridgeError(
+        `cannot create the install destination ${plan.destDir}: ${(err as Error).message}`,
+        'write_failed',
+        plan.destDir,
+      );
+    }
+  }
   assertTargetsConfined(plan.destDir, plan.items.map(i => i.target));
 
   const copyItems: CopyItem[] = plan.items.map(i => ({
@@ -369,11 +405,21 @@ export function applyHarnessBridge(plan: BridgePlan, opts: ApplyHarnessBridgeOpt
 
   let copyResult;
   try {
-    copyResult = copyArtifacts(copyItems, { dryRun });
+    copyResult = copyArtifacts(copyItems, { dryRun, computeSha256: true });
   } catch (err) {
     if (err instanceof CopyError) throw err; // already typed + path-bearing
     throw new BridgeError(
       `write failed under ${plan.destDir}: ${(err as Error).message}`,
+      'write_failed',
+      plan.destDir,
+    );
+  }
+
+  // copyArtifacts returns one result per item, in order — the ledger below
+  // zips by index, so a drift here would mis-attribute ownership hashes.
+  if (copyResult.files.length !== plan.items.length) {
+    throw new BridgeError(
+      `copy result count (${copyResult.files.length}) diverged from the plan (${plan.items.length}) — refusing to record ownership`,
       'write_failed',
       plan.destDir,
     );
@@ -387,16 +433,17 @@ export function applyHarnessBridge(plan: BridgePlan, opts: ApplyHarnessBridgeOpt
     outcome: f.outcome,
   }));
 
-  // Written-only ownership: hash exactly what landed, keyed per slug.
+  // Written-only ownership: hash exactly what landed (computed by the copy
+  // from the same buffer it wrote — no second read, no rehash window).
   if (!dryRun) {
     const perSlug = new Map<string, Record<string, string>>();
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       if (f.outcome !== 'wrote_new' || f.slug === null) continue;
-      const item = plan.items[i];
-      const content = item.content != null ? Buffer.from(item.content) : readFileSync(item.source);
+      const written = copyResult.files[i].sha256;
+      if (!written) continue; // dry-run or hashing disabled — nothing to record
       const bySlug = perSlug.get(f.slug) ?? {};
-      bySlug[f.relTarget] = sha256Hex(content);
+      bySlug[f.relTarget] = written;
       perSlug.set(f.slug, bySlug);
     }
     if (perSlug.size > 0) {
@@ -476,6 +523,10 @@ export interface HarnessReferenceOptions {
   slugs: readonly string[];
   harness: string;
   statePath?: string;
+  /** Skip unified-diff rendering (summary counts only) — the status
+   *  command's lens consumes counts and would discard every diff string
+   *  (the O(N*M) LCS is the dominant cost on drifted files). Default true. */
+  includeDiffs?: boolean;
 }
 
 /**
@@ -497,14 +548,27 @@ export function runHarnessReference(opts: HarnessReferenceOptions): HarnessRefRe
   const state = loadBridgeState({ statePath: opts.statePath });
   const stateEntry = findBridgeEntry(state, { harness: opts.harness, dest: opts.destDir });
 
+  const includeDiffs = opts.includeDiffs ?? true;
+  // Per-slug mode ground truth for expected-absence decisions: the state
+  // record when present, else the installed SKILL.md's marker (the same
+  // file-marker fallback the per-file comparison uses — survives state
+  // loss in both directions [CX8]).
+  const slugMode = (slug: string): BridgeMode => {
+    const recorded = stateEntry?.written[slug]?.mode;
+    if (recorded) return recorded;
+    const skillMd = join(opts.destDir, slug, 'SKILL.md');
+    try {
+      if (existsSync(skillMd) && readFileSync(skillMd, 'utf-8').includes(STUB_MARKER)) return 'stub';
+    } catch {}
+    return 'full';
+  };
+
   const files: HarnessRefFile[] = [];
   for (const entry of entries) {
     if (entry.pairedSource) continue;
-    const rel = entry.relWorkspaceTarget.replace(/^skills\//, '');
-    const slug = entry.sharedDep ? null : pathSlug(join('skills', rel.split(sep)[0] ?? rel.split('/')[0]));
-    const isSkillMd = !entry.sharedDep && /(^|[\\/])SKILL\.md$/.test(rel);
+    const { rel, slug, isSkillMd } = entryMeta(entry);
     const target = bridgeTargetPath(opts.destDir, entry.relWorkspaceTarget);
-    const stateMode: BridgeMode = (slug && stateEntry?.written[slug]?.mode) || 'full';
+    const stateMode: BridgeMode = slug ? slugMode(slug) : 'full';
 
     if (!existsSync(target)) {
       // Aux files are expected-absent for stub installs — not "missing".
@@ -536,7 +600,9 @@ export function runHarnessReference(opts: HarnessReferenceOptions): HarnessRefRe
       status: 'differs',
       mode: fileMode,
       differsKind,
-      unifiedDiff: unifiedDiff(actual, expected, { oldPath: `local/${rel}`, newPath: `gbrain/${rel}` }),
+      ...(includeDiffs
+        ? { unifiedDiff: unifiedDiff(actual, expected, { oldPath: `local/${rel}`, newPath: `gbrain/${rel}` }) }
+        : {}),
     });
   }
 
@@ -554,7 +620,7 @@ export function runHarnessReference(opts: HarnessReferenceOptions): HarnessRefRe
 export interface HarnessRefApplyFile {
   target: string;
   relTarget: string;
-  status: 'applied' | 'partial' | 'refused_stub' | 'identical' | 'missing';
+  status: 'applied' | 'partial' | 'refused_stub' | 'refused_local_edit' | 'identical' | 'missing';
   hunksApplied: number;
   hunksConflicted: number;
   conflicts: string[];
@@ -563,13 +629,22 @@ export interface HarnessRefApplyFile {
 export interface HarnessRefApplyResult {
   dryRun: boolean;
   files: HarnessRefApplyFile[];
-  summary: { totalHunksApplied: number; totalHunksConflicted: number; refusedStub: number };
+  summary: {
+    totalHunksApplied: number;
+    totalHunksConflicted: number;
+    refusedStub: number;
+    refusedLocalEdit: number;
+  };
 }
 
 /**
  * `--apply-clean-hunks` for a harness install [CX10]. Full-mode files only:
  * stub-marked files are refused (stubs are regenerated by a re-run, never
- * merged). Clean hunks land; conflicts are reported and left in place.
+ * merged), and LOCAL-EDIT files are refused too — the lens's own guidance
+ * prints "local_edit → your change; keep it", and unlike the workspace
+ * two-way apply, the install-time hash lets this lane honor that instead of
+ * silently reverting the user's edit. Clean hunks land on upstream_drift
+ * (and unknown-provenance) files; conflicts are reported and left in place.
  */
 export function runHarnessReferenceApply(
   opts: HarnessReferenceOptions & { dryRun?: boolean },
@@ -580,6 +655,7 @@ export function runHarnessReferenceApply(
   let totalApplied = 0;
   let totalConflicted = 0;
   let refusedStub = 0;
+  let refusedLocalEdit = 0;
 
   for (const f of ref.files) {
     if (f.status === 'identical' || f.status === 'missing') {
@@ -602,6 +678,18 @@ export function runHarnessReferenceApply(
         hunksApplied: 0,
         hunksConflicted: 0,
         conflicts: ['stub-mode file: stubs are regenerated by re-running the scaffold, never merged'],
+      });
+      continue;
+    }
+    if (f.differsKind === 'local_edit') {
+      refusedLocalEdit++;
+      files.push({
+        target: f.target,
+        relTarget: f.relTarget,
+        status: 'refused_local_edit',
+        hunksApplied: 0,
+        hunksConflicted: 0,
+        conflicts: ['local edit (file no longer matches the install-time hash): your change wins — patch by hand if you want the upstream version'],
       });
       continue;
     }
@@ -635,7 +723,12 @@ export function runHarnessReferenceApply(
   return {
     dryRun,
     files,
-    summary: { totalHunksApplied: totalApplied, totalHunksConflicted: totalConflicted, refusedStub },
+    summary: {
+      totalHunksApplied: totalApplied,
+      totalHunksConflicted: totalConflicted,
+      refusedStub,
+      refusedLocalEdit,
+    },
   };
 }
 
@@ -671,16 +764,19 @@ export function removeHarnessBridge(opts: {
 
   const removedFiles: string[] = [];
   const prunedDirs = new Set<string>();
+  // Confinement on the way out too — the ledger is machine-owned but a
+  // hand-edited relpath must not escape the dest. Same real-filesystem
+  // discipline as the install gate: lexical containment AND a realpath
+  // prefix check on the deepest existing ancestor (a symlinked component
+  // recorded into the ledger must not redirect the delete outside dest).
+  assertTargetsConfined(
+    opts.destDir,
+    toRemove.flatMap(slug => Object.keys(entry!.written[slug].files).map(rel => join(opts.destDir, rel))),
+  );
   for (const slug of toRemove) {
     const rec = entry!.written[slug];
     for (const rel of Object.keys(rec.files)) {
       const abs = join(opts.destDir, rel);
-      // Confinement on the way out too — the ledger is machine-owned but a
-      // hand-edited relpath must not escape the dest.
-      const logical = resolve(abs);
-      if (logical !== resolve(opts.destDir) && !logical.startsWith(resolve(opts.destDir) + sep)) {
-        throw new BridgeError(`${abs}: ledger path escapes the install destination`, 'target_escape', abs);
-      }
       if (!existsSync(abs)) continue;
       if (!dryRun) {
         try {

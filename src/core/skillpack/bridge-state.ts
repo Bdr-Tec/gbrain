@@ -91,7 +91,29 @@ export function loadBridgeState(opts: { statePath?: string } = {}): BridgeState 
     if (raw.schema_version !== SKILLPACK_BRIDGE_SCHEMA_VERSION || !Array.isArray(raw.entries)) {
       return { ...EMPTY, entries: [] };
     }
-    return { schema_version: SKILLPACK_BRIDGE_SCHEMA_VERSION, entries: raw.entries as BridgeEntry[] };
+    // Fail-open applies PER ENTRY too: a shape-corrupt entry (right schema
+    // version, wrong shape) must degrade to "dropped", never crash a
+    // downstream consumer like `skillpack status` — the fail-open promise
+    // is about the whole plane, not just the envelope.
+    const entries = (raw.entries as unknown[]).filter((e): e is BridgeEntry => {
+      if (typeof e !== 'object' || e === null) return false;
+      const entry = e as Partial<BridgeEntry>;
+      return (
+        typeof entry.harness === 'string' &&
+        typeof entry.dest === 'string' &&
+        typeof entry.written === 'object' &&
+        entry.written !== null &&
+        !Array.isArray(entry.written) &&
+        Object.values(entry.written).every(
+          rec =>
+            typeof rec === 'object' &&
+            rec !== null &&
+            (rec as BridgeSlugRecord).files !== null &&
+            typeof (rec as BridgeSlugRecord).files === 'object',
+        )
+      );
+    });
+    return { schema_version: SKILLPACK_BRIDGE_SCHEMA_VERSION, entries };
   } catch {
     return { ...EMPTY, entries: [] };
   }
@@ -99,9 +121,9 @@ export function loadBridgeState(opts: { statePath?: string } = {}): BridgeState 
 
 export function saveBridgeState(state: BridgeState, opts: { statePath?: string } = {}): void {
   const path = opts.statePath ?? defaultBridgeStatePath();
-  mkdirSync(dirname(path), { recursive: true });
   const tmp = path + '.tmp';
   try {
+    mkdirSync(dirname(path), { recursive: true });
     writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', { mode: 0o644 });
     renameSync(tmp, path);
   } catch (err) {

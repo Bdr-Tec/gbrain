@@ -65,11 +65,16 @@ function flagsInText(text: string): Set<string> {
   return out;
 }
 
-/** One level of ./relative imports (static or dynamic) from a module's source. */
+/** One level of ./relative imports (static or dynamic) from a module's source.
+ *  TYPE-ONLY imports are skipped: they carry no runtime behavior the command
+ *  can consume, so their doc-comment prose must not register flags (observed:
+ *  `import type { BrainEngine } from engine.ts` handed skillpack 10 phantom
+ *  flags from engine.ts's comments — the 4th prose-bleed incident). */
 function relativeImports(src: string, fromDir: string): string[] {
+  const scanSrc = src.replace(/import\s+type\s+[^;]+;/g, '');
   const paths = new Set<string>();
-  for (const m of src.matchAll(/from\s+'(\.\.?\/[^']+\.ts)'/g)) paths.add(m[1]);
-  for (const m of src.matchAll(/import\('(\.\.?\/[^']+\.ts)'\)/g)) paths.add(m[1]);
+  for (const m of scanSrc.matchAll(/from\s+'(\.\.?\/[^']+\.ts)'/g)) paths.add(m[1]);
+  for (const m of scanSrc.matchAll(/import\('(\.\.?\/[^']+\.ts)'\)/g)) paths.add(m[1]);
   return [...paths]
     .map(p => resolvePath(fromDir, p))
     .filter(p => existsSync(p) && !isExcludedModule(p))

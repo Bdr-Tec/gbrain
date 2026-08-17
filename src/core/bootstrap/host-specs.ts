@@ -241,11 +241,23 @@ export const GBRAIN_HARNESS_MARKER_VALUE = 'bootstrap-harness-v1';
  * HOME would otherwise write into the operator's REAL settings file (this
  * bit us; the write-ahead receipt's remove path self-healed it).
  */
-export function claudeUserSettingsPath(): string {
+/**
+ * The one CLAUDE_CONFIG_DIR-else-HOME-env-else-homedir() resolution (Bun's
+ * homedir() reads the password DB, not $HOME — the sandboxed-test hazard
+ * documented on claudeUserSettingsPath). Returns the directory that plays
+ * the role of `~/.claude` for paths that live INSIDE it (settings.json,
+ * skills/). NOT for claudeUserMcpConfigPath — its default lives at the HOME
+ * level (`~/.claude.json`), a genuinely different shape.
+ */
+function claudeConfigBase(): string {
   const configDir = process.env.CLAUDE_CONFIG_DIR?.trim();
-  if (configDir) return join(configDir, 'settings.json');
+  if (configDir) return configDir;
   const home = process.env.HOME?.trim();
-  return join(home || homedir(), '.claude', 'settings.json');
+  return join(home || homedir(), '.claude');
+}
+
+export function claudeUserSettingsPath(): string {
+  return join(claudeConfigBase(), 'settings.json');
 }
 
 /** permissions.allow entry that pre-approves an MCP server's tools for headless runs. */
@@ -279,10 +291,7 @@ export function claudeProjectsDir(): string {
  * HOME would otherwise write into the operator's REAL skills dir.
  */
 export function claudeUserSkillsDir(): string {
-  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim();
-  if (configDir) return join(configDir, 'skills');
-  const home = process.env.HOME?.trim();
-  return join(home || homedir(), '.claude', 'skills');
+  return join(claudeConfigBase(), 'skills');
 }
 
 /**

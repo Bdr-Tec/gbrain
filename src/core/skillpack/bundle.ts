@@ -247,10 +247,9 @@ function manifestUniverseSkillPaths(gbrainRoot: string): string[] {
  */
 function selectSkillPaths(opts: EnumerateOptions): string[] {
   if (opts.skillSlug && opts.skillSlugs) {
-    throw new BundleError(
-      'skillSlug and skillSlugs are mutually exclusive',
-      'manifest_malformed',
-    );
+    // Programmer error at the call site, not a manifest problem — a plain
+    // Error keeps the BundleError code taxonomy pointing at real data issues.
+    throw new Error('enumerate: skillSlug and skillSlugs are mutually exclusive');
   }
   const universe = opts.universe ?? 'openclaw';
   const universePaths =

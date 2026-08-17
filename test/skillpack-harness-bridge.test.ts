@@ -335,3 +335,74 @@ describe('bridgeTargetPath', () => {
     expect(bridgeTargetPath('/x/dest', 'skills/_rules.md')).toBe(resolve('/x/dest/_rules.md'));
   });
 });
+
+describe('review-driven hardening (ship pre-landing findings)', () => {
+  test('remove refuses a tampered ledger relpath that escapes dest (canary survives)', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const stateDir = tmp('gb-bridge-st-');
+    const statePath = join(stateDir, 'state.json');
+    applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'full' }), APPLY(dest, statePath));
+    // Canary outside dest + a tampered ledger relpath pointing at it.
+    const canary = join(stateDir, 'canary.txt');
+    writeFileSync(canary, 'precious');
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'));
+    state.entries[0].written.alpha.files['../' + '../' + stateDir.split('/').pop() + '/canary.txt'] = 'h';
+    writeFileSync(statePath, JSON.stringify(state));
+    expect(() =>
+      removeHarnessBridge({ harness: 'claude-code', destDir: dest, slugs: ['alpha'], statePath, nowIso: '2026-08-16T00:00:00Z' }),
+    ).toThrow(BridgeError);
+    expect(readFileSync(canary, 'utf-8')).toBe('precious');
+  });
+
+  test('confinement holds when destDir does not exist yet (lexical branch)', () => {
+    const holder = tmp('gb-bridge-holder-');
+    const dest = join(holder, 'not-created-yet');
+    expect(() => assertTargetsConfined(dest, [join(dest, 'alpha', 'SKILL.md')])).not.toThrow();
+    expect(() => assertTargetsConfined(dest, [join(dest, '..', 'escape.md')])).toThrow(BridgeError);
+  });
+
+  test('a dangling symlink AT a planned target is refused (write-through guard)', () => {
+    const dest = tmp('gb-bridge-dest-');
+    const link = join(dest, 'SKILL.md');
+    symlinkSync(join(dest, 'nowhere-target'), link); // dangling: existsSync=false
+    expect(existsSync(link)).toBe(false);
+    try {
+      assertTargetsConfined(dest, [link]);
+      expect.unreachable();
+    } catch (err) {
+      expect((err as BridgeError).code).toBe('target_escape');
+    }
+  });
+
+  test('apply-clean-hunks refuses local edits (your change wins) while applying upstream drift', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha', 'beta'], mode: 'full' }), APPLY(dest, statePath));
+    // alpha: LOCAL edit; beta: UPSTREAM drift.
+    const alphaPath = join(dest, 'alpha', 'SKILL.md');
+    const localContent = readFileSync(alphaPath, 'utf-8') + '\nMY LOCAL EDIT\n';
+    writeFileSync(alphaPath, localContent);
+    writeFileSync(join(root, 'skills', 'beta', 'SKILL.md'), SKILL_MD('beta').replace('Body of beta', 'Body of beta MOVED'));
+    const { runHarnessReferenceApply } = require('../src/core/skillpack/harness-bridge.ts') as typeof import('../src/core/skillpack/harness-bridge.ts');
+    const r = runHarnessReferenceApply({ gbrainRoot: root, destDir: dest, slugs: ['alpha', 'beta'], harness: 'claude-code', statePath });
+    expect(r.summary.refusedLocalEdit).toBe(1);
+    expect(r.summary.totalHunksApplied).toBeGreaterThan(0);
+    expect(readFileSync(alphaPath, 'utf-8')).toBe(localContent); // edit kept
+    expect(readFileSync(join(dest, 'beta', 'SKILL.md'), 'utf-8')).toContain('MOVED'); // drift aligned
+  });
+
+  test('stub install with aux: state loss does not report aux missing (marker-derived slug mode)', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const stateDir = tmp('gb-bridge-st-');
+    const statePath = join(stateDir, 'state.json');
+    applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'stub' }), APPLY(dest, statePath));
+    rmSync(statePath);
+    const { runHarnessReference } = require('../src/core/skillpack/harness-bridge.ts') as typeof import('../src/core/skillpack/harness-bridge.ts');
+    const ref = runHarnessReference({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], harness: 'claude-code', statePath });
+    expect(ref.summary.missing).toBe(0); // alpha/aux.md expected-absent, judged by the file marker
+    expect(ref.summary.differs).toBe(0);
+  });
+});

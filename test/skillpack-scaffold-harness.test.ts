@@ -196,7 +196,7 @@ describe('post-peel dispatch smoke [ENG-E5]', () => {
 });
 
 describe('scaffold --harness openclaw (workspace delegation)', () => {
-  test('persona filters the workspace scaffold; plugin-lane additions are reported skipped, not thrown', () => {
+  test('--skill picks filter the workspace scaffold; plugin-lane additions are reported skipped, not thrown', () => {
     const { home, gbrainHome } = homes();
     const ws = mkdtempSync(join(tmpdir(), 'gb-harness-ws-'));
     cleanups.push(ws);
@@ -316,5 +316,63 @@ describe('remaining CLI gaps (coverage audit)', () => {
     expect(applyAll.stderr).toContain('single skill');
     const oc = run(['reference', '--harness', 'openclaw'], env);
     expect(oc.code).toBe(2);
+  }, 180_000);
+});
+
+describe('review-driven CLI hardening', () => {
+  test('openclaw --persona path: lane additions inside the persona are skipped-and-reported', () => {
+    const { home, gbrainHome } = homes();
+    const ws = mkdtempSync(join(tmpdir(), 'gb-harness-ws-'));
+    cleanups.push(ws);
+    // daily-driver contains gbrain-advisor — verify whether it's an addition;
+    // the receipt's openclaw_skipped must exactly equal the persona's
+    // lane-addition subset (possibly empty), and the run must not throw.
+    const r = run(['scaffold', '--harness', 'openclaw', '--workspace', ws, '--persona', 'daily-driver', '--json'], {
+      HOME: home,
+      GBRAIN_HOME: gbrainHome,
+    });
+    expect(r.code, r.stderr).toBe(0);
+    const receipt = JSON.parse(r.stdout);
+    expect(Array.isArray(receipt.openclaw_skipped)).toBe(true);
+    expect(existsSync(join(ws, 'skills', 'query', 'SKILL.md'))).toBe(true);
+    for (const skipped of receipt.openclaw_skipped) {
+      expect(existsSync(join(ws, 'skills', skipped))).toBe(false);
+    }
+  }, 120_000);
+
+  test('unexpected positionals are rejected with a --skill hint (scaffold + remove)', () => {
+    const { home, gbrainHome } = homes();
+    const env = { HOME: home, GBRAIN_HOME: gbrainHome };
+    const sc = run(['scaffold', '--harness', 'claude-code', 'query'], env);
+    expect(sc.code).toBe(2);
+    expect(sc.stderr).toContain("unexpected argument 'query'");
+    const rm = run(['remove', '--harness', 'claude-code', 'query'], env);
+    expect(rm.code).toBe(2);
+    expect(rm.stderr).toContain("unexpected argument 'query'");
+  }, 120_000);
+
+  test('stub preflight honors the DB config plane (gbrain config set, no config.json key)', () => {
+    const { home, gbrainHome } = homes();
+    const dest = mkdtempSync(join(tmpdir(), 'gb-harness-dest-'));
+    cleanups.push(dest);
+    const env = { HOME: home, GBRAIN_HOME: gbrainHome };
+    // Initialize a PGLite brain and set the gate on the DB plane only.
+    const init = spawnSync('bun', [CLI, 'init', '--pglite', '--non-interactive'], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+      env: { ...process.env, ...env },
+      timeout: 120_000,
+    });
+    expect(init.status, init.stderr).toBe(0);
+    const set = spawnSync('bun', [CLI, 'config', 'set', 'mcp.publish_skills', 'true'], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+      env: { ...process.env, ...env },
+      timeout: 120_000,
+    });
+    expect(set.status, set.stderr).toBe(0);
+    const r = run(['scaffold', '--harness', 'claude-code', '--stub', '--skill', 'query', '--dest', dest, '--json'], env);
+    expect(r.code, r.stderr).toBe(0);
+    expect(readFileSync(join(dest, 'query', 'SKILL.md'), 'utf-8')).toContain('gbrain-skill-stub');
   }, 180_000);
 });

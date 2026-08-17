@@ -175,14 +175,23 @@ const outDir = resolve(out);
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(join(outDir, 'skills'), { recursive: true });
 
+/**
+ * Shared deps: always ship (mirrors openclaw.plugin.json#shared_deps). ONE
+ * implementation for the main tree and every persona variant — the two copy
+ * sites must never diverge (the shared_deps reconciliation follow-up in
+ * TODOS.md gets fixed in one place).
+ */
+function copySharedDeps(destSkillsDir: string): void {
+  cpSync(join(ROOT, 'skills', 'conventions'), join(destSkillsDir, 'conventions'), { recursive: true });
+  for (const f of readdirSync(join(ROOT, 'skills'))) {
+    if (/^_.*\.(md|json)$/.test(f)) cpSync(join(ROOT, 'skills', f), join(destSkillsDir, f));
+  }
+}
+
 for (const slug of laneSet) {
   cpSync(join(ROOT, 'skills', slug), join(outDir, 'skills', slug), { recursive: true });
 }
-// Shared deps: always ship (mirrors openclaw.plugin.json#shared_deps).
-cpSync(join(ROOT, 'skills', 'conventions'), join(outDir, 'skills', 'conventions'), { recursive: true });
-for (const f of readdirSync(join(ROOT, 'skills'))) {
-  if (/^_.*\.(md|json)$/.test(f)) cpSync(join(ROOT, 'skills', f), join(outDir, 'skills', f));
-}
+copySharedDeps(join(outDir, 'skills'));
 
 const version = readFileSync(join(ROOT, 'VERSION'), 'utf8').trim();
 const gapSkills = Object.keys(computedGaps).length;
@@ -230,10 +239,7 @@ function emitVariant(variantsDir: string, personaName: string, def: PersonaDef, 
   for (const slug of slugs) {
     cpSync(join(ROOT, 'skills', slug), join(root, 'skills', slug), { recursive: true });
   }
-  cpSync(join(ROOT, 'skills', 'conventions'), join(root, 'skills', 'conventions'), { recursive: true });
-  for (const f of readdirSync(join(ROOT, 'skills'))) {
-    if (/^_.*\.(md|json)$/.test(f)) cpSync(join(ROOT, 'skills', f), join(root, 'skills', f));
-  }
+  copySharedDeps(join(root, 'skills'));
 
   // Launcher byte-copy (cpSync preserves the executable bit).
   cpSync(join(ROOT, '.agents', 'gbrain-launcher'), join(root, '.agents', 'gbrain-launcher'));

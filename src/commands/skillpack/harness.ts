@@ -321,6 +321,12 @@ export async function cmdScaffoldHarness(args: string[]): Promise<void> {
     process.exit(0);
   }
   const a = parseHarnessArgs(args, 'scaffold --harness');
+  if (a.positional.length > 0) {
+    console.error(
+      `Error: unexpected argument '${a.positional[0]}' — the harness lane takes skills via --skill (did you mean --skill ${a.positional[0]}?).`,
+    );
+    process.exit(2);
+  }
   const gbrainRoot = findGbrainOrDie();
 
   try {
@@ -512,7 +518,8 @@ export async function cmdReferenceHarness(args: string[]): Promise<void> {
       else {
         console.log(
           `reference --harness --apply-clean-hunks: ${result.summary.totalHunksApplied} hunk(s) applied, ` +
-            `${result.summary.totalHunksConflicted} conflict(s), ${result.summary.refusedStub} stub file(s) refused`,
+            `${result.summary.totalHunksConflicted} conflict(s), ${result.summary.refusedStub} stub file(s) refused, ` +
+            `${result.summary.refusedLocalEdit} local edit(s) kept`,
         );
         for (const f of result.files) {
           if (f.status === 'identical' || f.status === 'missing') continue;
@@ -566,6 +573,12 @@ export async function cmdRemove(args: string[]): Promise<void> {
     process.exit(args.length === 0 ? 2 : 0);
   }
   const a = parseHarnessArgs(args, 'remove');
+  if (a.positional.length > 0) {
+    console.error(
+      `Error: unexpected argument '${a.positional[0]}' — remove takes skills via --skill (did you mean --skill ${a.positional[0]}?).`,
+    );
+    process.exit(2);
+  }
   if (a.harness === 'openclaw') {
     console.error(
       'Error: openclaw installs are user-owned workspace scaffolds — remove skill\n' +
@@ -631,6 +644,8 @@ export function collectBridgesStatus(gbrainRoot: string): BridgesStatusEntry[] {
         destDir: entry.dest,
         slugs,
         harness: entry.harness,
+        // Status consumes counts only — skip the O(N*M) diff rendering.
+        includeDiffs: false,
       });
       identical = ref.summary.identical;
       differs = ref.summary.differs;
