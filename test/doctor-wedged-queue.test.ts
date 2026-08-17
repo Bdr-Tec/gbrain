@@ -183,6 +183,91 @@ describe('orphaned private dream queues', () => {
   });
 });
 
+describe('orphaned private dream queues — cycle-lock liveness + ownership correlation (#4250)', () => {
+  async function seedWithData(
+    queue: string,
+    status: string,
+    dataJson: Record<string, unknown>,
+    extra: { createdAtSql?: string } = {},
+  ): Promise<void> {
+    await base.executeRaw(
+      `INSERT INTO minion_jobs (name, queue, status, data, created_at)
+       VALUES ($1, $2, $3, $4::text::jsonb, ${extra.createdAtSql ?? 'now()'})`,
+      ['subagent', queue, status, JSON.stringify(dataJson)],
+    );
+  }
+
+  async function seedLock(id: string, acquiredAtSql: string): Promise<void> {
+    await base.executeRaw(
+      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at)
+       VALUES ($1, 1234, 'test-host', ${acquiredAtSql}, now() + interval '10 min', now())
+       ON CONFLICT (id) DO UPDATE SET acquired_at = ${acquiredAtSql}, ttl_expires_at = now() + interval '10 min'`,
+      [id],
+    );
+  }
+
+  function inlineQueueName(bornMsAgo: number): string {
+    return `dream-inline-${Date.now() - bornMsAgo}-abcdef01`;
+  }
+
+  beforeEach(async () => {
+    await base.executeRaw('DELETE FROM gbrain_cycle_locks');
+  });
+
+  it('a live per-source lock acquired BEFORE the queue was born suppresses it (possibly owned)', async () => {
+    const q = inlineQueueName(2 * 3600_000); // born 2h ago
+    await seedWithData(q, 'waiting', { source_id: 'repo-a' }, { createdAtSql: "now() - interval '2 hours'" });
+    await seedLock('gbrain-cycle:repo-a', "now() - interval '3 hours'"); // acquired before birth
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('ok');
+    expect((check.details as any)?.suppressed_by_live_lock).toBe(1);
+  });
+
+  it('a live lock acquired AFTER the queue was born cannot own it — still flagged', async () => {
+    const q = inlineQueueName(2 * 3600_000); // born 2h ago
+    await seedWithData(q, 'waiting', { source_id: 'repo-a' }, { createdAtSql: "now() - interval '2 hours'" });
+    await seedLock('gbrain-cycle:repo-a', "now() - interval '30 min'"); // new cycle, acquired after birth
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('fail');
+    expect(check.message).toContain(q);
+  });
+
+  it("a live lock for a DIFFERENT source does not suppress another source's dead queue", async () => {
+    const q = inlineQueueName(2 * 3600_000);
+    await seedWithData(q, 'waiting', { source_id: 'repo-a' }, { createdAtSql: "now() - interval '2 hours'" });
+    await seedLock('gbrain-cycle:repo-b', "now() - interval '3 hours'");
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('fail');
+  });
+
+  it('the bare global lock suppresses only queues it could own (born at/after acquisition)', async () => {
+    const oldQ = inlineQueueName(4 * 3600_000); // predates the lock → flagged
+    const newQ = inlineQueueName(90 * 60_000);  // born after acquisition, >60m old → suppressed
+    await seedWithData(oldQ, 'waiting', {}, { createdAtSql: "now() - interval '4 hours'" });
+    await seedWithData(newQ, 'waiting', {}, { createdAtSql: "now() - interval '90 min'" });
+    await seedLock('gbrain-cycle', "now() - interval '2 hours'");
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('fail');
+    expect(check.message).toContain(oldQ);
+    expect(check.message).not.toContain(newQ);
+    expect((check.details as any)?.suppressed_by_live_lock).toBe(1);
+  });
+
+  it('delayed rows count toward the waiting-class (retriage repairs waiting|delayed)', async () => {
+    await seedWithData('dream-inline-delayed-only', 'delayed', {}, { createdAtSql: "now() - interval '2 hours'" });
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('fail');
+    expect((check.details as any)?.waiting_jobs).toBe(1);
+  });
+
+  it('paused rows never fail the check (no advertised repair path) but surface in details', async () => {
+    await seedWithData('dream-inline-paused-only', 'paused', {}, { createdAtSql: "now() - interval '2 hours'" });
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('ok');
+    expect((check.details as any)?.paused_jobs).toBe(1);
+  });
+});
+
 describe('Minions-visibility wave — computeQueueHealthCheck structured details', () => {
   it('ok path carries {depth, oldest_age_seconds, worker_alive} (messages unchanged)', async () => {
     const check = await computeQueueHealthCheck(pgLike, { readWorkers: () => [] });
