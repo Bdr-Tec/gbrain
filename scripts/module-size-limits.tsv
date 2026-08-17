@@ -11,7 +11,7 @@ src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely;
 src/commands/sync.ts	4300	ratchet	peel target: containment sprint C13-C14; grown v0.46.11.0 five-issue wave
 src/core/ai/gateway.ts	4117	ratchet	watchlist
 src/cli.ts	3414	ratchet	watchlist; +29 cathedral-5 compile-context wiring + +21 gap-closure thin-client routing (merged unions)
-src/core/cycle.ts	2933	ratchet
+src/core/cycle.ts	2965	ratchet	GC-safe steal side-channel (loaded-CI signal.reason read instability)
 src/commands/serve-http.ts	2836	ratchet
 src/commands/jobs.ts	2950	ratchet	grown v0.46.11.0 five-issue wave
 src/core/search/hybrid.ts	2479	ratchet

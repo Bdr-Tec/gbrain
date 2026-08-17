@@ -12,7 +12,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { tryAcquireDbLock, LockStolenError } from '../src/core/db-lock.ts';
-import { startCycleLockRefresher, buildYieldDuringPhase, type LockHandle } from '../src/core/cycle.ts';
+import { startCycleLockRefresher, buildYieldDuringPhase, getLockStolenReason, type LockHandle } from '../src/core/cycle.ts';
 
 let engine: PGLiteEngine;
 
@@ -102,20 +102,22 @@ describe('startCycleLockRefresher (Tier-1 #1 + D5.11)', () => {
     const stop = startCycleLockRefresher(fakeLock(async () => false), controller, 'test-lock', 15);
     try {
       // Poll instead of a fixed sleep: under full-suite shard load, timer
-      // ticks can be starved well past the nominal interval. Poll on the
-      // REASON, not just `aborted`: one loaded-CI run (2026-08-16, shard 9)
-      // observed `aborted === true` with `reason === undefined` at the first
-      // post-abort read — unreproduced locally/in-container across 50+ runs,
-      // so treat reason visibility as part of the awaited condition and keep
-      // the assertion diagnostic when it genuinely never arrives.
+      // ticks can be starved well past the nominal interval. Assert on ONE
+      // CAPTURED read through the GC-safe side-channel: two loaded-CI runs
+      // (both 2026-08-16, shard 9) observed `signal.reason` satisfying the
+      // instanceof on one read and reading back `undefined` on the next
+      // while `aborted` stayed true — so neither the test nor production
+      // classification may re-read `signal.reason` (production now goes
+      // through getLockStolenReason for the same reason).
       const deadline = Date.now() + 5_000;
-      while (!(controller.signal.reason instanceof LockStolenError) && Date.now() < deadline) {
+      let seen: LockStolenError | null = null;
+      while ((seen = getLockStolenReason(controller.signal)) === null && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 25));
       }
       expect(controller.signal.aborted).toBe(true);
-      if (!(controller.signal.reason instanceof LockStolenError)) {
+      if (!(seen instanceof LockStolenError)) {
         throw new Error(
-          `expected LockStolenError abort reason within 5s; aborted=${controller.signal.aborted} reason=${String(controller.signal.reason)}`,
+          `expected LockStolenError abort within 5s; aborted=${controller.signal.aborted} seen=${String(seen)} rawReason=${String(controller.signal.reason)}`,
         );
       }
     } finally {

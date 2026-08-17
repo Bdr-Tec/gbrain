@@ -825,6 +825,31 @@ export function buildYieldDuringPhase(
  * with a LockStolenError; a thrown (transient) refresh error is logged and
  * retried next tick — the TTL is the backstop.
  */
+
+/**
+ * GC-safe side-channel for steal aborts. Two loaded-CI shard runs (both
+ * 2026-08-16, shard 9) observed `AbortSignal.reason` reading as a
+ * LockStolenError on one read and `undefined` on the next while `aborted`
+ * stayed true — so steal CLASSIFICATION must never depend on re-reading
+ * `signal.reason`. The error is held here (weakly keyed by the signal, so
+ * no leak) at abort time; readers consult this first and fall back to the
+ * platform reason.
+ */
+const STOLEN_BY_SIGNAL = new WeakMap<AbortSignal, LockStolenError>();
+
+/** The steal error for an aborted signal, independent of `signal.reason`
+ * read stability. Null when the signal was never steal-aborted by us. */
+export function getLockStolenReason(signal: AbortSignal): LockStolenError | null {
+  const held = STOLEN_BY_SIGNAL.get(signal);
+  if (held) return held;
+  return signal.reason instanceof LockStolenError ? signal.reason : null;
+}
+
+function abortWithSteal(controller: AbortController, err: LockStolenError): void {
+  STOLEN_BY_SIGNAL.set(controller.signal, err);
+  controller.abort(err);
+}
+
 export function startCycleLockRefresher(
   lock: LockHandle,
   controller: AbortController,
@@ -839,7 +864,7 @@ export function startCycleLockRefresher(
       try {
         const stillOwned = await lock.refresh();
         if (stillOwned === false && !controller.signal.aborted) {
-          controller.abort(new LockStolenError(lockId));
+          abortWithSteal(controller, new LockStolenError(lockId));
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1899,14 +1924,18 @@ export async function runCycle(
   const stopRefresher: (() => void) | undefined = lock && stolen
     ? startCycleLockRefresher(lock, stolen, cycleLockIdFor(opts.sourceId))
     : undefined;
-  const onStolen = stolen ? (e: LockStolenError) => { if (!stolen.signal.aborted) stolen.abort(e); } : undefined;
+  const onStolen = stolen ? (e: LockStolenError) => { if (!stolen.signal.aborted) abortWithSteal(stolen, e); } : undefined;
   const raceStolen = !stolen
     ? <T,>(p: Promise<T>): Promise<T> => p
     : <T,>(p: Promise<T>): Promise<T> => {
-        if (stolen.signal.aborted) return Promise.reject(stolen.signal.reason);
+        // Rejection reason via the GC-safe side-channel first — a dropped
+        // signal.reason would otherwise reject with undefined.
+        const abortReason = () =>
+          getLockStolenReason(stolen.signal) ?? stolen.signal.reason ?? new Error('cycle aborted');
+        if (stolen.signal.aborted) return Promise.reject(abortReason());
         let onAbort!: () => void;
         const abortP = new Promise<never>((_, rej) => {
-          onAbort = () => rej(stolen.signal.reason);
+          onAbort = () => rej(abortReason());
           stolen.signal.addEventListener('abort', onAbort, { once: true });
         });
         return Promise.race([p, abortP]).finally(() => {
@@ -2714,12 +2743,15 @@ export async function runCycle(
     // per D5.6); report a structured partial instead of throwing so daemon
     // callers (jobs.ts / autopilot) don't have to classify an exception.
     // External aborts (cycleSignal) keep the existing throw-out contract.
-    const stolenFired = stolen?.signal.aborted === true
-      && stolen.signal.reason instanceof LockStolenError
-      && externalSignal?.aborted !== true;
-    if (stolenFired) {
+    // Classification reads the steal through the GC-safe side-channel (a
+    // re-read of signal.reason has been observed to return undefined on
+    // loaded CI runners while aborted stays true) and captures it ONCE.
+    const stolenErr = stolen?.signal.aborted === true && externalSignal?.aborted !== true
+      ? getLockStolenReason(stolen.signal)
+      : null;
+    if (stolenErr) {
       lockStolenAbort = true;
-      console.error(`[cycle] aborting: ${stolen!.signal.reason.message} — ${phaseResults.length} phase(s) completed before the steal; their writes are durable`);
+      console.error(`[cycle] aborting: ${stolenErr.message} — ${phaseResults.length} phase(s) completed before the steal; their writes are durable`);
     } else {
       throw e;
     }

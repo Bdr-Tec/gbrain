@@ -79,6 +79,11 @@ hand.
   hostage; multiline page titles can no longer damage the AGENTS.md managed
   block; a migration version-number collision across concurrent PRs now
   fails the suite loudly instead of silently skipping the second migration.
+- Cycle lock-steal detection no longer depends on re-reading the abort
+  signal's reason (observed to read back empty under loaded runners): the
+  steal error is held in a GC-safe side-channel, so a stolen lock is always
+  classified as the structured partial instead of surfacing as a generic
+  crash, and the corresponding test asserts on one captured read.
 
 **To take advantage of v0.46.17.0:** upgrade and keep working — Claude Code
 installs bootstrapped with hooks gain checkpoint compaction automatically
