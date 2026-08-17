@@ -13,7 +13,11 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { doctorSource } from './helpers/doctor-source.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { computeQueueHealthCheck, computeWedgedQueueCheck } from '../src/commands/doctor.ts';
+import {
+  computeOrphanedPrivateQueueCheck,
+  computeQueueHealthCheck,
+  computeWedgedQueueCheck,
+} from '../src/commands/doctor.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
 let base: PGLiteEngine;
@@ -124,10 +128,58 @@ describe('issue #1801 fix #3 — computeWedgedQueueCheck', () => {
     expect(check.message).not.toContain("'q-healthy'");
   });
 
+  it('does NOT misclassify parent-owned dream queues as worker wedges', async () => {
+    await seed('dream-inline-dead-parent', 'subagent', 'waiting', {
+      createdAtSql: "now() - interval '2 hours'",
+    });
+    await seed('dream-inline-dead-parent', 'subagent', 'completed', {
+      updatedAtSql: "now() - interval '2 hours'",
+    });
+    const check = await computeWedgedQueueCheck(pgLike);
+    expect(check.status).toBe('ok');
+  });
+
   it('returns ok on PGLite (no multi-process worker surface)', async () => {
     const check = await computeWedgedQueueCheck(base as unknown as BrainEngine);
     expect(check.status).toBe('ok');
     expect(check.message).toContain('PGLite');
+  });
+});
+
+describe('orphaned private dream queues', () => {
+  it('flags an old private queue with waiting jobs and no live parent', async () => {
+    await seed('dream-inline-dead-parent', 'subagent', 'waiting', {
+      createdAtSql: "now() - interval '2 hours'",
+    });
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('fail');
+    expect(check.message).toContain('supervisor restart cannot consume');
+    expect(check.message).toContain('queue-reconciliation dry run');
+    expect(check.details).toMatchObject({ orphaned_private_queues: 1, waiting_jobs: 1 });
+  });
+
+  it('does not flag a private queue whose parent still holds a live job lock', async () => {
+    await seed('dream-inline-live-parent', 'subagent', 'waiting', {
+      createdAtSql: "now() - interval '2 hours'",
+    });
+    await seed('dream-inline-live-parent', 'subagent', 'active', {
+      lockUntilSql: "now() + interval '5 min'",
+    });
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('ok');
+  });
+
+  it('allows a startup grace period for a new private queue', async () => {
+    await seed('dream-inline-new-parent', 'subagent', 'waiting', {
+      createdAtSql: "now() - interval '10 min'",
+    });
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('ok');
+  });
+
+  it('returns ok on PGLite', async () => {
+    const check = await computeOrphanedPrivateQueueCheck(base as unknown as BrainEngine);
+    expect(check.status).toBe('ok');
   });
 });
 

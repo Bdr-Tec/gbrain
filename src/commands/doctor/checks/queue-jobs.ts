@@ -326,6 +326,7 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
          EXTRACT(EPOCH FROM (now() - max(updated_at) FILTER (WHERE status = 'completed'))) / 60
            AS mins_since_completion
        FROM minion_jobs
+       WHERE queue NOT LIKE 'dream-inline-%'
        GROUP BY queue`,
     );
     const wedged: string[] = [];
@@ -356,6 +357,70 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
     // Pre-migration brains / transient errors: advisory check stays ok.
     return {
       name: 'wedged_queue',
+      status: 'ok',
+      message: `Skipped (${e instanceof Error ? e.message : String(e)})`,
+    };
+  }
+}
+
+/**
+ * Private dream queues are owned by one parent cycle and are intentionally not
+ * consumed by the default worker. If that parent disappears, restarting the
+ * supervisor cannot help; the queue needs reconciliation instead. Keep this
+ * diagnosis separate from wedged_queue so Doctor gives the right repair.
+ */
+export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Promise<Check> {
+  if (engine.kind !== 'postgres') {
+    return { name: 'orphaned_private_queue', status: 'ok', message: 'PGLite — no private queues to check' };
+  }
+  const thresholdMin = _resolveEnvNumber('GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES', 60);
+  try {
+    const rows = await engine.executeRaw<{
+      queue: string;
+      active_healthy: string | number;
+      waiting: string | number;
+      oldest_waiting_minutes: string | number | null;
+    }>(
+      `SELECT queue,
+         count(*) FILTER (WHERE status = 'active' AND lock_until > now()) AS active_healthy,
+         count(*) FILTER (WHERE status = 'waiting') AS waiting,
+         EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (WHERE status = 'waiting'))) / 60
+           AS oldest_waiting_minutes
+       FROM minion_jobs
+       WHERE queue LIKE 'dream-inline-%'
+       GROUP BY queue`,
+    );
+    const orphaned: string[] = [];
+    let waitingTotal = 0;
+    for (const r of rows) {
+      const activeHealthy = Number(r.active_healthy ?? 0);
+      const waiting = Number(r.waiting ?? 0);
+      const age = r.oldest_waiting_minutes === null ? null : Number(r.oldest_waiting_minutes);
+      if (activeHealthy === 0 && waiting > 0 && age !== null && age > thresholdMin) {
+        waitingTotal += waiting;
+        orphaned.push(`'${r.queue}' (${waiting} waiting, oldest ${Math.round(age)}m)`);
+      }
+    }
+    if (orphaned.length === 0) {
+      return { name: 'orphaned_private_queue', status: 'ok', message: 'No orphaned private queues' };
+    }
+    return {
+      name: 'orphaned_private_queue',
+      status: 'fail',
+      message:
+        `Orphaned private dream queue(s): ${orphaned.join('; ')}. ` +
+        `A supervisor restart cannot consume these parent-owned queues. ` +
+        `Run \`gbrain dream retriage --help\` and use its queue-reconciliation dry run; ` +
+        `apply cancellation only after reviewing that preview.`,
+      details: {
+        orphaned_private_queues: orphaned.length,
+        waiting_jobs: waitingTotal,
+        threshold_minutes: thresholdMin,
+      },
+    };
+  } catch (e) {
+    return {
+      name: 'orphaned_private_queue',
       status: 'ok',
       message: `Skipped (${e instanceof Error ? e.message : String(e)})`,
     };
@@ -508,4 +573,3 @@ export async function checkBatchRetryHealth(_engine: BrainEngine): Promise<Check
     };
   }
 }
-

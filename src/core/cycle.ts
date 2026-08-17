@@ -51,9 +51,9 @@ import { createProgress, type ProgressReporter } from './progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 import { tryAcquireDbLock, reapDeadHolderLocks, LockStolenError, type DbLockHandle } from './db-lock.ts';
 import { assertValidSourceId } from './source-id.ts';
-import { PHASE_SCOPE, type PhaseScope } from './cycle/phase-scope.ts';
+import { PHASE_SCOPE, SOURCE_FRESHNESS_PHASES, type PhaseScope } from './cycle/phase-scope.ts';
 
-export { PHASE_SCOPE, type PhaseScope } from './cycle/phase-scope.ts';
+export { PHASE_SCOPE, SOURCE_FRESHNESS_PHASES, type PhaseScope } from './cycle/phase-scope.ts';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -213,10 +213,19 @@ export const MIXED_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_SCOPE[p
 export const GLOBAL_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_SCOPE[p] === 'global');
 export const MAINTENANCE_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_SCOPE[p] !== 'source');
 
+/** LLM-backed or unbounded source work that cannot hold freshness hostage. */
+export const SOURCE_BACKGROUND_PHASES: CyclePhase[] = SOURCE_PHASES.filter(
+  (phase) => !SOURCE_FRESHNESS_PHASES.includes(phase),
+);
+
 /**
  * Resolve the effective phase list for one cycle invocation.
  *
- * A named non-default source excludes only MIXED phases: `synthesize` reads
+ * An implicit cycle for a named non-default source runs SOURCE phases only.
+ * This is the normal `dream --source X` path used by the freshness keeper: it
+ * must be able to finish and stamp source freshness without first draining
+ * brain-wide maintenance work. Explicit phase requests remain authoritative
+ * except that MIXED phases are still excluded: `synthesize` reads
  * the global transcript corpus and `patterns` reads cross-source reflections,
  * so re-running either once per source duplicates the same brain-wide read
  * into a near-identical write per source (the bug this boundary closes).
@@ -236,8 +245,9 @@ export function resolveCyclePhases(
   requested: CyclePhase[] | undefined,
   sourceId: string | undefined,
 ): CyclePhase[] {
-  const phases = requested ?? ALL_PHASES;
-  if (!sourceId || sourceId === 'default') return phases;
+  if (!sourceId || sourceId === 'default') return requested ?? ALL_PHASES;
+  if (requested === undefined) return SOURCE_FRESHNESS_PHASES;
+  const phases = requested;
   return phases.filter((phase) => PHASE_SCOPE[phase] !== 'mixed');
 }
 
@@ -1732,7 +1742,7 @@ export async function runCycle(
 ): Promise<CycleReport> {
   const start = performance.now();
   const requestedPhases = opts.phases ?? ALL_PHASES;
-  const phases = resolveCyclePhases(requestedPhases, opts.sourceId);
+  const phases = resolveCyclePhases(opts.phases, opts.sourceId);
   const excludedPhases = requestedPhases.filter((phase) => !phases.includes(phase));
   const dryRun = !!opts.dryRun;
   const pull = !!opts.pull;
@@ -1743,7 +1753,7 @@ export async function runCycle(
     duration_ms: 0,
     summary: `excluded from non-default source cycle (${PHASE_SCOPE[phase]} scope)`,
     details: {
-      reason: 'mixed_scope_excluded_from_source_cycle',
+      reason: 'non_source_phase_excluded_from_source_cycle',
       source_id: opts.sourceId,
       phase_scope: PHASE_SCOPE[phase],
     },

@@ -32,7 +32,7 @@
 
 import type { BrainEngine, SourceRow } from '../core/engine.ts';
 import type { MinionQueue } from '../core/minions/queue.ts';
-import { SOURCE_PHASES, MAINTENANCE_PHASES, LAST_GLOBAL_AT_KEY } from '../core/cycle.ts';
+import { SOURCE_FRESHNESS_PHASES, MAINTENANCE_PHASES, LAST_GLOBAL_AT_KEY } from '../core/cycle.ts';
 import { sourceConfigHasRemoteUrl } from '../core/sources-load.ts';
 import { AUTOPILOT_FULL_CYCLE_FLOOR_MINUTES } from './autopilot-remediation-policy.ts';
 
@@ -476,11 +476,10 @@ export async function dispatchPerSource(
           repoPath: opts.repoPath,
           source_id: src.id,
           pull: shouldPull,
-          // Per-source cycles run ONLY genuinely source-scoped phases. Mixed
-          // phases read brain-wide inputs and join global work in the single
-          // maintenance job below; fanning them out duplicates synthesized
-          // pages and patterns into every source.
-          phases: SOURCE_PHASES,
+          // Freshness is stamped by bounded deterministic work only. LLM-backed
+          // source enrichment (atoms, takes, thin-page development, etc.) is
+          // explicit/background work and cannot hold source freshness hostage.
+          phases: SOURCE_FRESHNESS_PHASES,
         },
         {
           queue: 'default',

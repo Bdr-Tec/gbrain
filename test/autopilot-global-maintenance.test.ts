@@ -20,6 +20,8 @@ import { registerBuiltinHandlers } from '../src/commands/jobs.ts';
 import {
   ALL_PHASES,
   SOURCE_PHASES,
+  SOURCE_FRESHNESS_PHASES,
+  SOURCE_BACKGROUND_PHASES,
   MIXED_PHASES,
   GLOBAL_PHASES,
   MAINTENANCE_PHASES,
@@ -58,15 +60,22 @@ describe('cycle phase partition (#2194 fix #3)', () => {
     expect(MAINTENANCE_PHASES).toContain('embed');
   });
 
-  test('non-default cycles exclude MIXED phases only at the shared boundary', () => {
-    // GLOBAL phases (e.g. orphans, embed) are NOT filtered here — several
-    // already accept an explicit source scope as a deliberate narrowing
-    // (CycleOpts.forceGlobalOrphans exists precisely because orphans can go
-    // either way), and test/core/cycle.serial.test.ts pins
-    // "--phase orphans preserves explicit source scope" on exactly that
-    // behavior. Only MIXED phases (synthesize, patterns) read brain-wide
-    // input regardless of scope, so only they are unsafe to fan out.
-    expect(resolveCyclePhases(undefined, 'repo-a')).toEqual(ALL_PHASES.filter((p) => PHASE_SCOPE[p] !== 'mixed'));
+  test('source freshness excludes LLM-backed/background source work', () => {
+    expect(new Set([...SOURCE_FRESHNESS_PHASES, ...SOURCE_BACKGROUND_PHASES])).toEqual(new Set(SOURCE_PHASES));
+    expect(SOURCE_FRESHNESS_PHASES).toContain('sync');
+    expect(SOURCE_FRESHNESS_PHASES).toContain('extract_facts');
+    expect(SOURCE_BACKGROUND_PHASES).toContain('extract_atoms');
+    expect(SOURCE_BACKGROUND_PHASES).toContain('consolidate');
+    expect(SOURCE_BACKGROUND_PHASES).toContain('propose_takes');
+    expect(SOURCE_BACKGROUND_PHASES).toContain('enrich_thin');
+    expect(SOURCE_FRESHNESS_PHASES).not.toContain('extract_atoms');
+  });
+
+  test('implicit source cycles are source-only; explicit global narrowing survives', () => {
+    // `dream --source X` is the freshness path and must finish independently
+    // of brain-wide maintenance. An explicitly requested global phase still
+    // preserves its source scope; MIXED phases remain unsafe in source fanout.
+    expect(resolveCyclePhases(undefined, 'repo-a')).toEqual(SOURCE_FRESHNESS_PHASES);
     expect(resolveCyclePhases(['sync', 'synthesize', 'patterns', 'embed'], 'repo-a')).toEqual(['sync', 'embed']);
     expect(resolveCyclePhases(undefined, 'default')).toEqual(ALL_PHASES);
     expect(resolveCyclePhases(undefined, undefined)).toEqual(ALL_PHASES);
@@ -83,7 +92,7 @@ describe('cycle phase partition (#2194 fix #3)', () => {
     expect(report.phases.map((p) => p.phase)).toEqual(['synthesize', 'patterns']);
     for (const phase of report.phases) {
       expect(phase.status).toBe('skipped');
-      expect(phase.details.reason).toBe('mixed_scope_excluded_from_source_cycle');
+      expect(phase.details.reason).toBe('non_source_phase_excluded_from_source_cycle');
       expect(phase.details.source_id).toBe('repo-a');
     }
   });
@@ -175,7 +184,7 @@ describe('dispatchPerSource — per-source jobs carry SOURCE phases only', () =>
     await dispatchPerSource(engine, queue, { repoPath: '/tmp', slot: 's', timeoutMs: 1, fanoutMax: 4, jsonMode: true, emit: () => {}, log: () => {} });
     expect(added.length).toBe(2);
     for (const j of added) {
-      expect(j.data.phases).toEqual(SOURCE_PHASES);
+      expect(j.data.phases).toEqual(SOURCE_FRESHNESS_PHASES);
       expect(j.data.phases).not.toContain('synthesize');
       expect(j.data.phases).not.toContain('patterns');
       expect(j.data.phases).not.toContain('embed');

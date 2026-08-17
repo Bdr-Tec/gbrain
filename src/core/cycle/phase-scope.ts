@@ -37,3 +37,9 @@ export const PHASE_SCOPE: Record<CyclePhase, PhaseScope> = {
   enrich_thin: 'source',
   skillopt: 'global',
 };
+
+/** Bounded deterministic phases that alone define source freshness. */
+export const SOURCE_FRESHNESS_PHASES: CyclePhase[] = [
+  'lint', 'backlinks', 'sync', 'extract', 'extract_facts',
+  'recompute_emotional_weight',
+];
