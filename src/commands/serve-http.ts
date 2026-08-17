@@ -58,6 +58,7 @@ import * as db from '../core/db.ts';
 import { sqlQueryForEngine, executeRawJsonb } from '../core/sql-query.ts';
 import { MinionQueue } from '../core/minions/queue.ts';
 import { registerScopedClient } from './auth.ts';
+import { isUndefinedColumnError } from '../core/utils.ts';
 import { isRetryableError } from '../core/retry-matcher.ts';
 import {
   computeContentHash,
@@ -1797,26 +1798,59 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         return;
       }
       // cathedral-6: a WELL-FORMED but nonexistent source used to surface as
-      // a 500 (the source_id FK fires inside the INSERT). Check existence up
-      // front for a structured 400 — same contract as the malformed case.
+      // a 500 (the source_id FK fires inside the INSERT). Check existence +
+      // archived up front for a structured 400 — same contract as the
+      // malformed case, mirroring the CLI lane. ONE batched query on the
+      // engine lane (SqlQuery forbids arrays; engine is in scope).
       {
         const idsToCheck = [...new Set([sourceId, ...(federatedReadIds ?? [])])];
+        const found = await engine.executeRaw<{ id: string; archived: boolean | null }>(
+          `SELECT id, archived FROM sources WHERE id = ANY($1::text[])`,
+          [idsToCheck],
+        );
+        const byId = new Map(found.map(r => [r.id, r]));
         for (const id of idsToCheck) {
-          const found = await sql`SELECT id FROM sources WHERE id = ${id}`;
-          if (found.length === 0) {
+          const row = byId.get(id);
+          if (!row) {
             res.status(400).json({
               error: 'unknown_source',
               message: `source "${id}" does not exist — create it first (gbrain sources add ${id})`,
             });
             return;
           }
+          if (row.archived) {
+            res.status(400).json({
+              error: 'archived_source',
+              message: `source "${id}" is archived — unarchive it or drop it from the grant`,
+            });
+            return;
+          }
+        }
+      }
+      // Duplicate-name parity with the CLI lane: a second client under the
+      // same name is a 409, never a silent second row. Tolerate a
+      // pre-migration brain without deleted_at (the standing 42703 idiom).
+      {
+        let dupRows: Array<Record<string, unknown>>;
+        try {
+          dupRows = await sql`SELECT client_id FROM oauth_clients WHERE client_name = ${name} AND deleted_at IS NULL`;
+        } catch (e) {
+          if (!isUndefinedColumnError(e, 'deleted_at')) throw e;
+          dupRows = await sql`SELECT client_id FROM oauth_clients WHERE client_name = ${name}`;
+        }
+        if (dupRows.length > 0) {
+          res.status(409).json({
+            error: 'duplicate_name',
+            client_id: String(dupRows[0].client_id),
+          });
+          return;
         }
       }
       // Compose the SAME core the CLI uses (registerScopedClient) instead of
       // open-coding registerClientManual + a raw TTL UPDATE — the two paths
       // had already drifted once (this route hardcoded 'default' pre-v0.41).
       const ttlNum = tokenTtl && Number(tokenTtl) > 0 ? Number(tokenTtl) : undefined;
-      const registered = await registerScopedClient(sql, engine, name, {
+      const registered = await registerScopedClient(sql, name, {
         grantTypes: grants,
         scopes: scopeString,
         sourceId,

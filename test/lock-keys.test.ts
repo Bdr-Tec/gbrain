@@ -15,6 +15,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { autoLinkLockKey } from '../src/core/ops/pages.ts';
+import { registerClientNameLockKey } from '../src/commands/agent-register.ts';
 import { slugRegistryLockKey, BrainWriter } from '../src/core/output/writer.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import type { ResolverContext } from '../src/core/resolvers/index.ts';
@@ -34,6 +35,17 @@ describe('autoLinkLockKey (ops/pages.ts)', () => {
 
   test('same (source, slug) produces the same key (same-scope writers still serialize)', () => {
     expect(autoLinkLockKey('src-a', 'notes/x')).toBe(autoLinkLockKey('src-a', 'notes/x'));
+  });
+});
+
+describe('registerClientNameLockKey (commands/agent-register.ts)', () => {
+  test('exact string (cross-process wire contract shared by register + reissue rotation)', () => {
+    expect(registerClientNameLockKey('aurora-coder')).toBe('register_client_name:aurora-coder');
+  });
+
+  test('different names produce different keys; same name serializes', () => {
+    expect(registerClientNameLockKey('a')).not.toBe(registerClientNameLockKey('b'));
+    expect(registerClientNameLockKey('a')).toBe(registerClientNameLockKey('a'));
   });
 });
 

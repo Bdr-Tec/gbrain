@@ -1771,8 +1771,12 @@ async function handleCliOnly(command: string, args: string[]) {
       process.exit(1);
     };
     if (isThinClient(cfg)) {
-      refuse('thin_client',
-        '`gbrain agent register` mints credentials into the HOST brain — run it on the brain host (the machine that runs `gbrain serve --http`), then wire this machine with the printed `gbrain init --mcp-only …` block.');
+      // Shared verbatim with the in-handler belt-and-braces re-check. Lazy
+      // import: this guard runs pre-connect for `agent register` only, and a
+      // top-level import would eager-load the register module on every CLI
+      // start.
+      const { THIN_CLIENT_REGISTER_MESSAGE } = await import('./commands/agent-register.ts');
+      refuse('thin_client', THIN_CLIENT_REGISTER_MESSAGE);
     }
     if (cfg && !cfg.database_url && cfg.database_path) {
       const { probeLivePgliteHolder } = await import('./core/bootstrap/uninstall.ts');

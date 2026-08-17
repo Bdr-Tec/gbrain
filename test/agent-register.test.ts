@@ -18,6 +18,8 @@ import {
   parseAgentRegisterArgs,
   resolvePreset,
   rotateClientSecret,
+  ensureWorkspaceSource,
+  RegisterError,
   REGISTER_DEFAULT_TOKEN_TTL_SECONDS,
   WORKSPACE_NAME_MAX,
 } from '../src/commands/agent-register.ts';
@@ -88,6 +90,13 @@ describe('parseAgentRegisterArgs', () => {
   test('rejects the __all__ literal in --federated-read', () => {
     expect(() => parseAgentRegisterArgs(['a', '--harness', 'codex', '--federated-read', 'default,__all__']))
       .toThrow(/no wildcard read grant exists/);
+  });
+
+  test('--federated-read dedupes repeated ids, preserving first-seen order', () => {
+    const p = parseAgentRegisterArgs([
+      'a', '--harness', 'codex', '--federated-read', 'proj-widget,shared,proj-widget,shared',
+    ]);
+    expect(p.federatedRead).toEqual(['proj-widget', 'shared']);
   });
 
   test('url|port mutual exclusion; port bounds', () => {
@@ -242,7 +251,7 @@ describe('PGLite integration (pre-flight → tx → audit → exchange)', () => 
     let registered!: Awaited<ReturnType<typeof registerScopedClient>>;
     await engine.transaction(async (tx) => {
       const txSql = sqlQueryForEngine(tx);
-      registered = await registerScopedClient(txSql, tx, 'itest-agent', baseRegisterArgs({
+      registered = await registerScopedClient(txSql, 'itest-agent', baseRegisterArgs({
         sourceId: 'default',
         federatedRead: ['default'],
       }), {
@@ -298,7 +307,7 @@ describe('PGLite integration (pre-flight → tx → audit → exchange)', () => 
     let registered!: Awaited<ReturnType<typeof registerScopedClient>>;
     await engine.transaction(async (tx) => {
       const txSql = sqlQueryForEngine(tx);
-      registered = await registerScopedClient(txSql, tx, 'itest-degrade', baseRegisterArgs(), {
+      registered = await registerScopedClient(txSql, 'itest-degrade', baseRegisterArgs(), {
         tokenTtlSeconds: REGISTER_DEFAULT_TOKEN_TTL_SECONDS,
         surface: 'starter',
         columns,
@@ -318,7 +327,7 @@ describe('PGLite integration (pre-flight → tx → audit → exchange)', () => 
     const sql = sqlQueryForEngine(engine);
     let registered!: Awaited<ReturnType<typeof registerScopedClient>>;
     await engine.transaction(async (tx) => {
-      registered = await registerScopedClient(sqlQueryForEngine(tx), tx, 'itest-rotate', baseRegisterArgs(), {});
+      registered = await registerScopedClient(sqlQueryForEngine(tx), 'itest-rotate', baseRegisterArgs(), {});
     });
     const oldSecret = registered.clientSecret!;
     const provider = new GBrainOAuthProvider({ sql });
@@ -336,5 +345,71 @@ describe('PGLite integration (pre-flight → tx → audit → exchange)', () => 
       `SELECT count(*) AS n FROM oauth_clients WHERE client_name = $1`, ['itest-rotate'],
     );
     expect(Number(rows[0].n)).toBe(1);
+  });
+});
+
+// ── ensureWorkspaceSource (create-or-clean-reuse, refuse dirty/archived) ──
+
+describe('ensureWorkspaceSource', () => {
+  const sql = () => sqlQueryForEngine(engine);
+
+  test('creates the source when missing (returns true)', async () => {
+    const created = await ensureWorkspaceSource(engine, sql(), 'ews-new-workspace');
+    expect(created).toBe(true);
+    const rows = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM sources WHERE id = $1`, ['ews-new-workspace'],
+    );
+    expect(rows.length).toBe(1);
+  });
+
+  test('reuses an existing CLEAN source (returns false)', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('ews-clean-workspace', 'ews-clean-workspace')`,
+    );
+    const created = await ensureWorkspaceSource(engine, sql(), 'ews-clean-workspace');
+    expect(created).toBe(false);
+  });
+
+  test('archived-but-empty workspace is refused with an unarchive hint (never silently reused)', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, archived) VALUES ('ews-archived-workspace', 'ews-archived-workspace', true)`,
+    );
+    const caught = await ensureWorkspaceSource(engine, sql(), 'ews-archived-workspace')
+      .then(() => null, (e: unknown) => e);
+    expect(caught).toBeInstanceOf(RegisterError);
+    expect((caught as RegisterError).reason).toBe('archived_source');
+    expect((caught as Error).message).toMatch(/exists but is archived — unarchive it/);
+  });
+
+  test('source holding pages is dirty', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('ews-pages-workspace', 'ews-pages-workspace')`,
+    );
+    await engine.executeRaw(
+      `INSERT INTO pages (source_id, slug, type, title) VALUES ('ews-pages-workspace', 'ews/p1', 'note', 'p1')`,
+    );
+    await expect(ensureWorkspaceSource(engine, sql(), 'ews-pages-workspace'))
+      .rejects.toThrow(/holds 1 pages/);
+  });
+
+  test('source holding FACTS (zero pages) is dirty too — the primary agent write lane', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('ews-facts-workspace', 'ews-facts-workspace')`,
+    );
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, fact, source) VALUES ('ews-facts-workspace', 'agent memory row', 'test')`,
+    );
+    const caught = await ensureWorkspaceSource(engine, sql(), 'ews-facts-workspace')
+      .then(() => null, (e: unknown) => e);
+    expect((caught as RegisterError).reason).toBe('dirty_source');
+    expect((caught as Error).message).toMatch(/holds 1 facts/);
+  });
+
+  test('source backed by a local path is dirty', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path) VALUES ('ews-path-workspace', 'ews-path-workspace', '/tmp/x')`,
+    );
+    await expect(ensureWorkspaceSource(engine, sql(), 'ews-path-workspace'))
+      .rejects.toThrow(/backed by a local path/);
   });
 });

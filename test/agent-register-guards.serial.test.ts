@@ -71,7 +71,10 @@ describe('agent register live-serve + duplicate-name refusals (real PGLite brain
     return { home, env };
   }
 
-  function register(env: Record<string, string | undefined>, extra: string[] = []): ReturnType<typeof Bun.spawn> {
+  // No explicit return annotation: `ReturnType<typeof Bun.spawn>` resolves the
+  // generic's DEFAULT io types (stdout: number | ReadableStream | undefined);
+  // inference from the literal options gives the precise piped Subprocess.
+  function register(env: Record<string, string | undefined>, extra: string[] = []) {
     return Bun.spawn([
       'bun', '--no-env-file', 'run', 'src/cli.ts',
       'agent', 'register', 'aurora-guard',

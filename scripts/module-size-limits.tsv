@@ -10,9 +10,9 @@ src/core/pglite-engine.ts	5660	ratchet	peel target: containment sprint C15; grow
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4300	ratchet	peel target: containment sprint C13-C14; grown v0.46.11.0 five-issue wave
 src/core/ai/gateway.ts	4117	ratchet	watchlist
-src/cli.ts	3429	ratchet	watchlist; +21 gap-closure wave thin-client routing; +cathedral-6 agent-register pre-connect guards + `--`-aware help
+src/cli.ts	3433	ratchet	watchlist; +21 gap-closure wave thin-client routing; +cathedral-6 agent-register pre-connect guards + `--`-aware help + shared thin-client message import
 src/core/cycle.ts	2933	ratchet
-src/commands/serve-http.ts	2870	ratchet	grown cathedral-6 multi-agent wave (admin register route composes registerScopedClient)
+src/commands/serve-http.ts	2903	ratchet	grown cathedral-6 multi-agent wave (admin register route composes registerScopedClient; batched source check + duplicate-name parity)
 src/commands/jobs.ts	2950	ratchet	grown v0.46.11.0 five-issue wave
 src/core/search/hybrid.ts	2479	ratchet
 src/core/engine.ts	2343	ratchet

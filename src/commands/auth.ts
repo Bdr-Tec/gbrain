@@ -24,6 +24,7 @@ import { loadConfig, toEngineConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import { assertAllowedScopes } from '../core/scope.ts';
+import { isUndefinedColumnError, isUndefinedTableError } from '../core/utils.ts';
 import { TOKEN_ID_RE } from '../core/token-mint.ts';
 import { normalizeTokenScopes } from '../core/legacy-token-scope.ts';
 import { sqlQueryForEngine, executeRawJsonb, type SqlQuery } from '../core/sql-query.ts';
@@ -441,6 +442,22 @@ export interface RegisterClientArgs {
 export const TOKEN_TTL_MIN_SECONDS = 60;
 export const TOKEN_TTL_MAX_SECONDS = 7_776_000;
 
+/**
+ * Shared --token-ttl value parser (auth register-client + agent register).
+ * `hint` is the parser-specific tail naming what omitting the flag means
+ * (the two commands have different defaults). Throws the canonical bounds
+ * message on anything outside [TOKEN_TTL_MIN_SECONDS, TOKEN_TTL_MAX_SECONDS].
+ */
+export function parseTokenTtl(raw: string, hint: string): number {
+  const v = Number(raw);
+  if (!Number.isInteger(v) || v < TOKEN_TTL_MIN_SECONDS || v > TOKEN_TTL_MAX_SECONDS) {
+    throw new Error(
+      `--token-ttl must be an integer number of seconds between ${TOKEN_TTL_MIN_SECONDS} and ${TOKEN_TTL_MAX_SECONDS} (90 days); got ${JSON.stringify(raw)}. ${hint}`,
+    );
+  }
+  return v;
+}
+
 export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
   const out: RegisterClientArgs = {
     grantTypes: ['client_credentials'],
@@ -547,14 +564,7 @@ export function parseRegisterClientArgs(args: string[]): RegisterClientArgs {
         i += 2; break;
       }
       case '--token-ttl': {
-        const raw = requireValue();
-        const v = Number(raw);
-        if (!Number.isInteger(v) || v < TOKEN_TTL_MIN_SECONDS || v > TOKEN_TTL_MAX_SECONDS) {
-          throw new Error(
-            `--token-ttl must be an integer number of seconds between ${TOKEN_TTL_MIN_SECONDS} and ${TOKEN_TTL_MAX_SECONDS} (90 days); got ${JSON.stringify(raw)}. Omit the flag to keep the server default.`,
-          );
-        }
-        out.tokenTtlSeconds = v;
+        out.tokenTtlSeconds = parseTokenTtl(requireValue(), 'Omit the flag to keep the server default.');
         i += 2; break;
       }
       default:
@@ -582,6 +592,7 @@ export async function preflightOauthClientColumns(sql: SqlQuery): Promise<Set<st
   const rows = await sql`
     SELECT column_name FROM information_schema.columns
     WHERE table_name = 'oauth_clients'
+      AND table_schema = current_schema()
       AND column_name IN ('token_ttl', 'surface', 'federated_read', 'source_id', 'deleted_at')
   `;
   return new Set(rows.map(r => String(r.column_name)));
@@ -615,7 +626,6 @@ export interface RegisteredClient {
   federatedRead: string[];
   surface?: 'verbs' | 'starter' | 'full';
   tokenTtl?: number;
-  tokenExpiresAt?: string;
   created: { source: boolean };
   /** Previous surface row value when opts.surface was written (for the
    * post-commit audit row — audit is fail-open and NEVER runs in the tx). */
@@ -627,15 +637,15 @@ export interface RegisteredClient {
 /**
  * Exit-free, print-free registration core (cathedral-6 seam). Named
  * registerScopedClient — not run*Core — because unlike the other peels it
- * returns data instead of printing. Takes INJECTED handles: callers on the
- * engine-bound CLI lane pass the dispatcher's engine (a second
- * withConfiguredSql engine self-deadlocks PGLite's single-writer lock);
- * `registerClient` below keeps withConfiguredSql for the early-routed
- * auth lane. Throws on failure — the thin callers own exit/print mapping.
+ * returns data instead of printing. Takes an INJECTED SqlQuery handle:
+ * callers on the engine-bound CLI lane pass the dispatcher's engine's sql
+ * (a second withConfiguredSql engine self-deadlocks PGLite's single-writer
+ * lock); `registerClient` below keeps withConfiguredSql for the
+ * early-routed auth lane. Throws on failure — the thin callers own
+ * exit/print mapping.
  */
 export async function registerScopedClient(
   sql: SqlQuery,
-  _engine: BrainEngine,
   name: string,
   parsed: RegisterClientArgs,
   opts: RegisterScopedClientOpts = {},
@@ -770,11 +780,11 @@ async function registerClient(name: string, args: string[]) {
   }
 
   try {
-    await withConfiguredSql(async (sql, engine) => {
+    await withConfiguredSql(async (sql) => {
       const columns = parsed.tokenTtlSeconds !== undefined
         ? await preflightOauthClientColumns(sql)
         : undefined;
-      const registered = await registerScopedClient(sql, engine, name, parsed, { columns });
+      const registered = await registerScopedClient(sql, name, parsed, { columns });
       if (registered.skipped?.tokenTtl) {
         console.error('Note: this brain predates the token_ttl column; run `gbrain apply-migrations --yes`, then rescope. The server default TTL applies.');
       }
@@ -935,24 +945,38 @@ export interface ClientRow {
  * Projection-widened client listing with a degrade ladder for pre-migration
  * brains: full shape (scope + surface + source-scoping columns) → source
  * columns without surface → the bare original triple. Drops the NEWEST
- * columns first and never errors; missing columns render as null. One round
+ * columns first; missing columns render as null. Only schema-shape errors
+ * (undefined column/table) degrade — anything else (dropped connection,
+ * permission) rethrows instead of silently narrowing the listing. One round
  * trip on a current brain (the widen adds columns, not queries). Exported
  * for the unit suite.
  */
 export async function listClientRows(engine: BrainEngine): Promise<ClientRow[]> {
+  // The columns each degrade tier drops. isUndefinedColumnError matches any
+  // 42703 by code; the column list covers message-only (code-less) variants.
+  const isSchemaShapeError = (e: unknown): boolean =>
+    isUndefinedTableError(e) ||
+    ['surface', 'surface_set_by', 'source_id', 'federated_read']
+      .some(col => isUndefinedColumnError(e, col));
   try {
     return await engine.executeRaw<ClientRow>(
       `SELECT client_id, client_name, scope, surface, surface_set_by, source_id, federated_read
          FROM oauth_clients ORDER BY client_name, client_id`,
     );
-  } catch { /* brain predates the surface columns — fall through */ }
+  } catch (e) {
+    // Brain predates the surface columns — fall through. Rethrow non-shape errors.
+    if (!isSchemaShapeError(e)) throw e;
+  }
   try {
     const mid = await engine.executeRaw<Omit<ClientRow, 'surface' | 'surface_set_by'>>(
       `SELECT client_id, client_name, scope, source_id, federated_read
          FROM oauth_clients ORDER BY client_name, client_id`,
     );
     return mid.map(r => ({ ...r, surface: null, surface_set_by: null }));
-  } catch { /* brain predates the source-scoping columns — fall through */ }
+  } catch (e) {
+    // Brain predates the source-scoping columns — fall through likewise.
+    if (!isSchemaShapeError(e)) throw e;
+  }
   const bare = await engine.executeRaw<Pick<ClientRow, 'client_id' | 'client_name' | 'scope'>>(
     `SELECT client_id, client_name, scope FROM oauth_clients ORDER BY client_name, client_id`,
   );

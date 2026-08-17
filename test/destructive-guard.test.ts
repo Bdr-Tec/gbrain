@@ -394,7 +394,7 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
     );
   }
 
-  test('clientsReferencingSource returns live referents only, scoped to the source', async () => {
+  test('clientsReferencingSource returns ALL physical referents (soft-deleted tagged), scoped to the source', async () => {
     await seedSource(engine, 'fk-ref-a');
     await seedSource(engine, 'fk-ref-b');
     await seedClient('cl-live-1', 'fk-ref-a');
@@ -403,12 +403,36 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
     await seedClient('cl-other-src', 'fk-ref-b');
     await seedClient('cl-no-src', null);
 
+    // PHYSICAL semantics: the soft-deleted row still holds the FK, so it is
+    // returned too — tagged deleted:true, never silently dropped.
     const refs = await clientsReferencingSource(engine, 'fk-ref-a');
     expect(refs).toEqual([
-      { clientId: 'cl-live-1', clientName: 'cl-live-1-name' },
-      { clientId: 'cl-live-2', clientName: 'cl-live-2-name' },
+      { clientId: 'cl-dead', clientName: 'cl-dead-name', deleted: true },
+      { clientId: 'cl-live-1', clientName: 'cl-live-1-name', deleted: false },
+      { clientId: 'cl-live-2', clientName: 'cl-live-2-name', deleted: false },
     ]);
     expect(await clientsReferencingSource(engine, 'fk-ref-none')).toEqual([]);
+  });
+
+  test('a soft-deleted referent alone BLOCKS the remove/purge pre-check with the retained-row guidance', async () => {
+    await seedSource(engine, 'fk-soft-only', { withPages: 1 });
+    await seedClient('cl-soft-only', 'fk-soft-only', { deleted: true });
+
+    // The pre-check truth (sources.ts blocks on referents.length > 0): the
+    // helper must return the soft-deleted row, because the FK ignores
+    // deleted_at and the hard delete WOULD fail at the database.
+    const refs = await clientsReferencingSource(engine, 'fk-soft-only');
+    expect(refs).toEqual([
+      { clientId: 'cl-soft-only', clientName: 'cl-soft-only-name', deleted: true },
+    ]);
+
+    const block = formatClientReferentsBlock('fk-soft-only', refs);
+    expect(block).toContain('Cannot delete source "fk-soft-only"');
+    expect(block).toContain('Revoked-but-retained rows still block the FK');
+    expect(block).toContain('hard-deletes them');
+    expect(block).toContain('gbrain auth revoke-client "cl-soft-only"');
+    // No live rows → no live-revoke section.
+    expect(block).not.toContain('Revoke each live client first');
   });
 
   test('assessDestructiveImpact folds the referent count; formatImpact shows it', async () => {
@@ -496,16 +520,20 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
     expect(rows.length).toBe(1);
   });
 
-  test('formatClientReferentsBlock lists clients + per-client revoke commands', () => {
+  test('formatClientReferentsBlock lists clients + per-client revoke commands, split by liveness', () => {
     const block = formatClientReferentsBlock('acme-example', [
-      { clientId: 'client-1', clientName: 'Agent One' },
-      { clientId: 'client-2', clientName: 'Agent Two' },
+      { clientId: 'client-1', clientName: 'Agent One', deleted: false },
+      { clientId: 'client-2', clientName: 'Agent Two', deleted: true },
     ]);
     expect(block).toContain('Cannot delete source "acme-example"');
     expect(block).toContain('2 OAuth client(s) reference this source');
     expect(block).toContain('Agent One (client-1)');
-    expect(block).toContain('Agent Two (client-2)');
+    expect(block).toContain('Agent Two (client-2)  [revoked, retained]');
+    // Live rows get the hard-delete revoke guidance...
+    expect(block).toContain('Revoke each live client first');
     expect(block).toContain('gbrain auth revoke-client "client-1"');
+    // ...soft-deleted rows get the retained-rows-still-block guidance.
+    expect(block).toContain('Revoked-but-retained rows still block the FK');
     expect(block).toContain('gbrain auth revoke-client "client-2"');
   });
 
@@ -520,7 +548,8 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
     expect(await clientsReferencingSource(noTable, 'x')).toEqual([]);
 
     // Pre-migration brain: deleted_at column missing → falls back to ALL
-    // referents (the 42703-retry idiom).
+    // referents (the 42703-retry idiom), tagged live (deleted:false — the
+    // column that would say otherwise doesn't exist).
     const noColumn = {
       executeRaw: async (sql: string) => {
         if (sql.includes('deleted_at')) {
@@ -530,7 +559,7 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
       },
     } as any;
     expect(await clientsReferencingSource(noColumn, 'x')).toEqual([
-      { clientId: 'c1', clientName: 'n1' },
+      { clientId: 'c1', clientName: 'n1', deleted: false },
     ]);
 
     // Anything else (e.g. a dropped connection) must PROPAGATE — a swallowed
@@ -539,6 +568,31 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
       executeRaw: async () => { throw new Error('connection reset'); },
     } as any;
     await expect(clientsReferencingSource(broken, 'x')).rejects.toThrow('connection reset');
+  });
+
+  test('missing source_id column → [] (no column ⇒ no FK ⇒ no referents)', async () => {
+    // Pre-v61 brain: oauth_clients exists but has no source_id column at all.
+    const noSourceId = {
+      executeRaw: async () => {
+        throw Object.assign(new Error('column "source_id" does not exist'), { code: '42703' });
+      },
+    } as any;
+    expect(await clientsReferencingSource(noSourceId, 'x')).toEqual([]);
+
+    // Same brain shape must not break the purge path either: the skip-set
+    // query 42703s, and the purge falls back to the unconditional DELETE.
+    let sawUnconditionalDelete = false;
+    const purgeStub = {
+      executeRaw: async (sql: string) => {
+        if (sql.includes('oauth_clients')) {
+          throw Object.assign(new Error('column "source_id" does not exist'), { code: '42703' });
+        }
+        if (sql.startsWith('DELETE FROM sources')) sawUnconditionalDelete = true;
+        return [];
+      },
+    } as any;
+    expect(await purgeExpiredSources(purgeStub)).toEqual([]);
+    expect(sawUnconditionalDelete).toBe(true);
   });
 });
 

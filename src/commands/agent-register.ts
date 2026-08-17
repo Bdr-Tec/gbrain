@@ -55,8 +55,7 @@ import {
   registerScopedClient,
   preflightOauthClientColumns,
   parseRegisterClientArgs,
-  TOKEN_TTL_MIN_SECONDS,
-  TOKEN_TTL_MAX_SECONDS,
+  parseTokenTtl,
   type RegisterClientArgs,
   type RegisteredClient,
 } from './auth.ts';
@@ -76,9 +75,23 @@ export const REGISTER_DEFAULT_TOKEN_TTL_SECONDS = 2_592_000;
 /** Scopes an agent client may not hold — operators use auth register-client. */
 const SCOPE_BLOCKLIST = new Set(['admin', 'sources_admin', 'users_admin', 'agent']);
 
-const WORKSPACE_SUFFIX = '-workspace';
+/** Derived-workspace source suffix. Exported for the doctor
+ * oauth_client_scope_health orphan heuristic (single source of truth). */
+export const WORKSPACE_SUFFIX = '-workspace';
 /** SOURCE_ID_RE caps ids at 32 chars; '-workspace' is 10. */
 export const WORKSPACE_NAME_MAX = 22;
+
+/** Advisory-lock key for name-scoped registration/rotation serialization.
+ * Cross-process wire contract (pinned in test/lock-keys.test.ts) — every
+ * writer hashing a different string holds a different lock. */
+export function registerClientNameLockKey(name: string): string {
+  return `register_client_name:${name}`;
+}
+
+/** The thin-client refusal, shared verbatim by the cli.ts pre-connect guard
+ * and the in-handler belt-and-braces re-check. */
+export const THIN_CLIENT_REGISTER_MESSAGE =
+  '`gbrain agent register` mints credentials into the HOST brain — run it on the brain host (the machine that runs `gbrain serve --http`), then wire this machine with the printed `gbrain init --mcp-only …` block.';
 
 export type RegisterFailReason =
   | 'invalid_argument'
@@ -86,13 +99,11 @@ export type RegisterFailReason =
   | 'archived_source'
   | 'dirty_source'
   | 'duplicate_name'
-  | 'invalid_scope'
   | 'thin_client'
   | 'pglite_live_serve'
   | 'reissue_invalid_target'
   | 'mint_failed'
-  | 'probe_failed'
-  | 'render_failed'
+  | 'brain_too_old'
   | 'internal';
 
 export class RegisterError extends Error {
@@ -176,7 +187,9 @@ export function parseAgentRegisterArgs(args: string[]): AgentRegisterArgs {
       }
       case '--federated-read': {
         const v = requireValue();
-        const ids = v.split(',').map(s => s.trim()).filter(Boolean);
+        // Set-dedupe (order-preserving): a repeated id would otherwise fan
+        // out twice in every downstream per-source loop.
+        const ids = [...new Set(v.split(',').map(s => s.trim()).filter(Boolean))];
         if (ids.length === 0) throw new Error('--federated-read requires at least one source id');
         for (const id of ids) {
           if (id === ALL_SOURCES) {
@@ -217,14 +230,7 @@ export function parseAgentRegisterArgs(args: string[]): AgentRegisterArgs {
         i += 2; break;
       }
       case '--token-ttl': {
-        const raw = requireValue();
-        const v = Number(raw);
-        if (!Number.isInteger(v) || v < TOKEN_TTL_MIN_SECONDS || v > TOKEN_TTL_MAX_SECONDS) {
-          throw new Error(
-            `--token-ttl must be an integer number of seconds between ${TOKEN_TTL_MIN_SECONDS} and ${TOKEN_TTL_MAX_SECONDS} (90 days); got ${JSON.stringify(raw)}. Omit the flag for the 30-day default.`,
-          );
-        }
-        out.tokenTtlSeconds = v;
+        out.tokenTtlSeconds = parseTokenTtl(requireValue(), 'Omit the flag for the 30-day default.');
         i += 2; break;
       }
       case '--surface': {
@@ -369,11 +375,7 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
   // Belt-and-braces: cli.ts refuses pre-connect; re-check here for direct callers.
   const cfg = loadConfig();
   if (isThinClient(cfg)) {
-    fail(
-      wantsJson, 'thin_client',
-      '`gbrain agent register` mints credentials into the HOST brain — run it on the brain host (the machine that runs `gbrain serve --http`), then wire this machine with the printed `gbrain init --mcp-only …` block.',
-      1,
-    );
+    fail(wantsJson, 'thin_client', THIN_CLIENT_REGISTER_MESSAGE, 1);
   }
 
   let flags: AgentRegisterArgs;
@@ -409,40 +411,64 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
     const preset = resolvePreset(flags);
     const name = flags.name!;
 
+    // Existence + not-archived check for a set of source ids. Engine lane
+    // for the ANY() — SqlQuery forbids arrays. Shared by the explicit and
+    // snapshot branches so the write source is validated the same way on both.
+    const validateSourceIds = async (ids: string[]): Promise<void> => {
+      const unique = [...new Set(ids)];
+      if (unique.length === 0) return;
+      const rows = await engine.executeRaw<{ id: string; archived: boolean | null }>(
+        `SELECT id, archived FROM sources WHERE id = ANY($1::text[])`,
+        [unique],
+      );
+      const found = new Map(rows.map(r => [r.id, r]));
+      for (const id of unique) {
+        const row = found.get(id);
+        if (!row) {
+          fail(flags.json, 'unknown_source',
+            `source "${id}" does not exist — create it first (gbrain sources add ${id}) or check the spelling with \`gbrain sources list\`. Only the derived <name>-workspace is auto-created.`, 1);
+        }
+        if (row.archived) {
+          fail(flags.json, 'archived_source',
+            `source "${id}" is archived — unarchive it or drop it from the grant.`, 1);
+        }
+      }
+    };
+
     // Resolve the snapshot + validate every explicit source id (existence +
-    // not archived). Engine lane for the ANY() — SqlQuery forbids arrays.
+    // not archived).
     let federated: string[];
     if (preset.federatedRead === 'snapshot') {
       const all = await loadAllSources(engine, { includeArchived: false });
       federated = all.map(s => s.id);
-      if (!federated.includes(preset.writeSource)) federated.push(preset.writeSource);
+      // The snapshot proves existence + non-archived for its members only.
+      // A write source OUTSIDE it (and any explicitly passed --source, even
+      // when it happens to be inside) gets the same check as the explicit
+      // branch — otherwise a typo'd or archived --source would be granted
+      // and then die at the FK (or worse, silently write nowhere readable).
+      if (!federated.includes(preset.writeSource) || flags.source !== undefined) {
+        await validateSourceIds([preset.writeSource]);
+      }
     } else {
       federated = preset.federatedRead;
       const toCheck = federated.filter(id => !(preset.workspaceDerived && id === preset.writeSource));
       if (!preset.workspaceDerived) toCheck.push(preset.writeSource);
-      const unique = [...new Set(toCheck)];
-      if (unique.length > 0) {
-        const rows = await engine.executeRaw<{ id: string; archived: boolean | null }>(
-          `SELECT id, archived FROM sources WHERE id = ANY($1::text[])`,
-          [unique],
-        );
-        const found = new Map(rows.map(r => [r.id, r]));
-        for (const id of unique) {
-          const row = found.get(id);
-          if (!row) {
-            fail(flags.json, 'unknown_source',
-              `source "${id}" does not exist — create it first (gbrain sources add ${id}) or check the spelling with \`gbrain sources list\`. Only the derived <name>-workspace is auto-created.`, 1);
-          }
-          if (row.archived) {
-            fail(flags.json, 'archived_source',
-              `source "${id}" is archived — unarchive it or drop it from the grant.`, 1);
-          }
-        }
-      }
+      await validateSourceIds(toCheck);
     }
+    // INVARIANT (every branch): the write source is always in the read grant.
+    // A client that can't read its own write source is a remember→recall
+    // black hole.
+    if (!federated.includes(preset.writeSource)) federated.push(preset.writeSource);
 
     // Column pre-flight: OUTSIDE the tx (25P02 — nothing inside may degrade).
     const columns = await preflightOauthClientColumns(sql);
+    // Pre-v61 brains lack the scoped-client columns entirely; refuse BEFORE
+    // the tx — registerClientManual's own 42703 retry ladder would die on
+    // 25P02 inside our transaction.
+    if (!columns.has('source_id') || !columns.has('federated_read')) {
+      fail(flags.json, 'brain_too_old',
+        'this brain predates scoped OAuth clients (source_id/federated_read columns) — run `gbrain apply-migrations --yes` first.', 1);
+    }
     const ttl = flags.tokenTtlSeconds ?? REGISTER_DEFAULT_TOKEN_TTL_SECONDS;
     const preflightNotes: string[] = [];
     if (!columns.has('token_ttl')) {
@@ -476,7 +502,7 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
       // Name-scoped advisory lock: no unique index exists on client_name, so
       // two concurrent registers of the same name would both pass the
       // pre-check. xact-scoped — released at COMMIT/ROLLBACK.
-      await tx.executeRaw(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [`register_client_name:${name}`]);
+      await tx.executeRaw(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [registerClientNameLockKey(name)]);
 
       const dupRows = columns.has('deleted_at')
         ? await txSql`SELECT client_id FROM oauth_clients WHERE client_name = ${name} AND deleted_at IS NULL`
@@ -487,10 +513,10 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
       }
 
       if (preset.workspaceDerived) {
-        createdWorkspace = await ensureWorkspaceSource(tx, txSql, preset.writeSource, flags.json);
+        createdWorkspace = await ensureWorkspaceSource(tx, txSql, preset.writeSource);
       }
 
-      registered = await registerScopedClient(txSql, tx, name, registerArgs, {
+      registered = await registerScopedClient(txSql, name, registerArgs, {
         tokenTtlSeconds: ttl,
         surface: preset.surface,
         columns,
@@ -509,7 +535,7 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
       });
     }
 
-    const out = await mintAndProbe(engine, flags, registered, url, urlWarning, {
+    const out = await mintAndProbe(engine, flags, registered, name, url, urlWarning, {
       preset: flags.preset ?? null,
       scopes: preset.scopes,
       write_source: preset.writeSource,
@@ -528,21 +554,32 @@ export async function runAgentRegister(engine: BrainEngine | null, args: string[
 
 /** Create the derived workspace source if missing; reuse only when clean.
  * Returns true when this call created it. Never catches source_id_taken as
- * control flow — existence is decided by SELECT first. */
-async function ensureWorkspaceSource(
+ * control flow — existence is decided by SELECT first. "Clean" means: not
+ * archived, no local path, zero pages AND zero facts (facts are the primary
+ * agent write lane — a pages-only check would silently reuse a source that
+ * already holds another agent's memory). Exported for the unit suite. */
+export async function ensureWorkspaceSource(
   tx: BrainEngine,
   txSql: SqlQuery,
   id: string,
-  _json: boolean,
 ): Promise<boolean> {
-  const existing = await txSql`SELECT id, local_path FROM sources WHERE id = ${id}`;
+  const existing = await txSql`SELECT id, local_path, archived FROM sources WHERE id = ${id}`;
   if (existing.length > 0) {
+    if (existing[0].archived === true) {
+      throw new RegisterError('archived_source',
+        `workspace source "${id}" exists but is archived — unarchive it (gbrain sources restore ${id}) or pick another name.`);
+    }
     const localPath = existing[0].local_path;
     const pages = await txSql`SELECT count(*) AS n FROM pages WHERE source_id = ${id}`;
-    const n = Number(pages[0]?.n ?? 0);
-    if (localPath != null || n > 0) {
+    const nPages = Number(pages[0]?.n ?? 0);
+    const facts = await txSql`SELECT count(*) AS n FROM facts WHERE source_id = ${id}`;
+    const nFacts = Number(facts[0]?.n ?? 0);
+    if (localPath != null || nPages > 0 || nFacts > 0) {
+      const why = localPath != null
+        ? 'is backed by a local path'
+        : nPages > 0 ? `holds ${nPages} pages` : `holds ${nFacts} facts`;
       throw new RegisterError('dirty_source',
-        `source "${id}" already exists and ${localPath != null ? 'is backed by a local path' : `holds ${n} pages`} — pass --source ${id} to reuse it deliberately, or pick another agent name.`);
+        `source "${id}" already exists and ${why} — pass --source ${id} to reuse it deliberately, or pick another agent name.`);
     }
     console.error(`Note: reusing existing empty workspace source "${id}".`);
     return false;
@@ -551,11 +588,14 @@ async function ensureWorkspaceSource(
   return true;
 }
 
-/** Shared tail: exchange client credentials, probe the serve, build the block. */
+/** Shared tail: exchange client credentials, probe the serve, build the block.
+ * `blockName` is the MCP server name embedded in the harness block: the agent
+ * name on the register lane, the stored client_name (when valid) on reissue. */
 async function mintAndProbe(
   engine: BrainEngine,
   flags: AgentRegisterArgs,
   registered: RegisteredClient,
+  blockName: string,
   url: string,
   urlWarning: string | null,
   presetResolved: RegisterOutput['presetResolved'],
@@ -592,13 +632,14 @@ async function mintAndProbe(
   }
 
   const block = buildHarnessBlock(flags.harness!, {
-    name: flags.reissueClientId ? String(registered.clientId) : flags.name!,
+    name: blockName,
     url,
     token: accessToken ?? null,
     clientId: registered.clientId,
     clientSecret: registered.clientSecret ?? null,
     showToken: flags.showToken,
     expiresAt: tokenExpiresAt ?? null,
+    isReissue: flags.reissueClientId !== undefined,
   });
 
   return {
@@ -624,9 +665,18 @@ async function runReissue(
 ): Promise<RegisterOutput> {
   const clientId = flags.reissueClientId!;
   const columns = await preflightOauthClientColumns(sql);
-  const rows = columns.has('deleted_at')
-    ? await sql`SELECT client_id, client_name, grant_types, client_secret_hash, source_id, federated_read, token_ttl, deleted_at FROM oauth_clients WHERE client_id = ${clientId}`
-    : await sql`SELECT client_id, client_name, grant_types, client_secret_hash, source_id, federated_read, token_ttl FROM oauth_clients WHERE client_id = ${clientId}`;
+  // Projection derived from the pre-flight column set: pre-migration brains
+  // lack source_id/federated_read/token_ttl/deleted_at — drop the absent ones
+  // (the ?? defaults below tolerate missing keys). Column names come from a
+  // fixed allowlist, never caller input.
+  const projection = [
+    'client_id', 'client_name', 'grant_types', 'client_secret_hash',
+    ...['source_id', 'federated_read', 'token_ttl', 'deleted_at'].filter(c => columns.has(c)),
+  ];
+  const rows = await engine.executeRaw<Record<string, unknown>>(
+    `SELECT ${projection.join(', ')} FROM oauth_clients WHERE client_id = $1`,
+    [clientId],
+  );
   if (rows.length === 0) {
     throw new RegisterError('reissue_invalid_target', `no OAuth client with id "${clientId}" — list clients with \`gbrain auth clients\`.`);
   }
@@ -657,7 +707,12 @@ async function runReissue(
     created: { source: false },
   };
 
-  const out = await mintAndProbe(engine, flags, registered, url, urlWarning, {
+  // MCP server name: the stored client_name when it is a valid server name
+  // (it was validated at registration, but DCR/legacy rows may carry
+  // arbitrary text) — fall back to the client id otherwise.
+  const clientName = String(row.client_name ?? '');
+  const blockName = isValidName(clientName) ? clientName : clientId;
+  const out = await mintAndProbe(engine, flags, registered, blockName, url, urlWarning, {
     preset: null,
     scopes: registered.scopes,
     write_source: registered.sourceId,
@@ -676,7 +731,7 @@ export async function rotateClientSecret(engine: BrainEngine, clientId: string, 
   let newSecret!: string;
   await engine.transaction(async (tx) => {
     const txSql = sqlQueryForEngine(tx);
-    await tx.executeRaw(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [`register_client_name:${clientName}`]);
+    await tx.executeRaw(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [registerClientNameLockKey(clientName)]);
     newSecret = generateToken('gbrain_cs_');
     const updated = await txSql`
       UPDATE oauth_clients SET client_secret_hash = ${hashToken(newSecret)}
@@ -692,11 +747,17 @@ export async function rotateClientSecret(engine: BrainEngine, clientId: string, 
 
 function buildHarnessBlock(
   harness: RegisterHarness,
-  p: { name: string; url: string; token: string | null; clientId: string; clientSecret: string | null; showToken: boolean; expiresAt: string | null },
+  p: { name: string; url: string; token: string | null; clientId: string; clientSecret: string | null; showToken: boolean; expiresAt: string | null; isReissue: boolean },
 ): string {
   const shownToken = p.token ? (p.showToken ? p.token : REDACTED) : '<mint-a-token>';
   const shownSecret = p.clientSecret ? (p.showToken ? p.clientSecret : REDACTED) : REDACTED;
-  const redactionHint = p.showToken ? [] : ['(credentials redacted — re-run with --show-token for a paste-ready block)'];
+  // Lane-honest recovery: re-running `agent register <name>` fails on
+  // duplicate_name, so the register lane names the REAL recovery (--reissue);
+  // the reissue lane's re-run genuinely works, so it keeps the simple hint.
+  const hintText = p.isReissue
+    ? '(credentials redacted — re-run with --show-token for a paste-ready block)'
+    : `(credentials redacted — reissue a paste-ready block with: gbrain agent register --reissue ${p.clientId} --harness ${harness} --url ${p.url} --show-token)`;
+  const redactionHint = p.showToken ? [] : [hintText];
   switch (harness) {
     case 'claude-code': {
       const cmd = cmdString('claude', buildClaudeMcpAddArgv({ name: p.name, url: p.url, headerToken: shownToken }));
@@ -734,13 +795,13 @@ function buildHarnessBlock(
         mcpUrl: p.url,
         clientId: p.clientId,
         clientSecret: shownSecret,
-      }) + (p.showToken ? '' : '\n\n(client secret redacted — re-run with --show-token for a paste-ready block)');
+      }) + (p.showToken ? '' : `\n\n${hintText}`);
   }
 }
 
 function printOutput(flags: AgentRegisterArgs, out: RegisterOutput): void {
   const r = out.registered;
-  const expiry = out.tokenExpiresAt ?? r.tokenExpiresAt ?? null;
+  const expiry = out.tokenExpiresAt ?? null;
   const floorLine = `token scoping requires serve ≥ ${SCOPES_MIN_SERVE_VERSION}; an older serve verifies this token as full access.`;
 
   if (flags.json) {
@@ -762,7 +823,10 @@ function printOutput(flags: AgentRegisterArgs, out: RegisterOutput): void {
       preset_resolved: out.presetResolved,
       created_workspace_source: r.created.source,
       skipped: r.skipped ?? null,
-      serve_warning: out.probeNote,
+      // probe_note carries the serve health-probe result; serve_warning is
+      // the URL http-token warning (null when the URL is clean).
+      probe_note: out.probeNote,
+      serve_warning: out.serveWarning ?? null,
       block: out.block,
     }));
     return;

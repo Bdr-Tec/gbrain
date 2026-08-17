@@ -120,10 +120,13 @@ const recall: Operation = {
     // the pre-v1 single-query path. A trusted-local `__all__` ({}) has no
     // enumerable grant and keeps the resolved-scalar behavior.
     const scope = sourceScopeOpts(ctx);
-    const factSources: string[] =
+    // Set-dedupe: a grant carrying a repeated id (or the scalar source again)
+    // must not fan out the same source twice into the merge.
+    const factSources: string[] = [...new Set(
       scope.sourceIds && scope.sourceIds.length > 0 ? scope.sourceIds
         : scope.sourceId ? [scope.sourceId]
-          : [sourceId];
+          : [sourceId],
+    )];
 
     // Visibility filter: remote callers see world-only unless their token
     // grants elevated visibility (future-proofing; v0.31 ships world-only
@@ -134,62 +137,90 @@ const recall: Operation = {
         : ['world'] as ('private' | 'world')[];
 
     type FactRows = Awaited<ReturnType<typeof ctx.engine.listFactsByEntity>>;
-    const mergeNewest = (lists: FactRows[]): FactRows => {
+    type FactRowItem = FactRows[number];
+    // Per-arm merge key: each arm's engine query ORDERs by a different column
+    // (supersessions by expired_at, entity by valid_from, the rest by
+    // created_at) — the cross-source merge must sort by the SAME key or the
+    // truncation at `limit` silently drops the wrong rows. Decorate-sort-
+    // undecorate: the key is computed once per row.
+    const mergeNewest = (lists: FactRows[], keyOf: (rec: Record<string, unknown>) => unknown): FactRows => {
       if (lists.length === 1) return lists[0];
-      const at = (r: FactRows[number]): number => {
-        const rec = r as unknown as Record<string, unknown>;
-        const v = rec.created_at ?? rec.since_date;
+      const toTime = (v: unknown): number => {
         const t = v instanceof Date ? v.getTime() : v ? new Date(String(v)).getTime() : 0;
         return Number.isFinite(t) ? t : 0;
       };
-      return lists.flat().sort((a, b) => at(b) - at(a)).slice(0, limit);
+      const decorated = lists.flat().map((r: FactRowItem) => ({
+        r,
+        k: toTime(keyOf(r as unknown as Record<string, unknown>)),
+      }));
+      decorated.sort((a, b) => b.k - a.k);
+      return decorated.slice(0, limit).map(d => d.r);
     };
+    const byCreated = (rec: Record<string, unknown>) => rec.created_at ?? rec.since_date;
 
     let rows: FactRows = [];
 
     if (p.supersessions === true) {
       const since = parseSinceParam(p.since);
-      rows = mergeNewest(await Promise.all(factSources.map(src =>
-        ctx.engine.listSupersessions(src, { since: since ?? undefined, limit }),
-      )));
+      rows = mergeNewest(
+        await Promise.all(factSources.map(src =>
+          ctx.engine.listSupersessions(src, { since: since ?? undefined, limit }),
+        )),
+        (rec) => rec.expired_at ?? rec.created_at,
+      );
+      // listSupersessions has no visibility opt — post-filter so a remote
+      // caller never sees a private superseded fact through the audit arm.
+      if (visibility) rows = rows.filter(r => visibility.includes(r.visibility));
     } else if (typeof p.entity === 'string' && p.entity.length > 0) {
       const { resolveEntitySlug } = await import('../entities/resolve.ts');
-      rows = mergeNewest(await Promise.all(factSources.map(async (src) => {
-        const slug = (await resolveEntitySlug(ctx.engine, src, p.entity as string)) ?? (p.entity as string);
-        return ctx.engine.listFactsByEntity(src, slug, {
-          activeOnly: !includeExpired,
-          limit,
-          visibility,
-        });
-      })));
+      rows = mergeNewest(
+        await Promise.all(factSources.map(async (src) => {
+          const slug = (await resolveEntitySlug(ctx.engine, src, p.entity as string)) ?? (p.entity as string);
+          return ctx.engine.listFactsByEntity(src, slug, {
+            activeOnly: !includeExpired,
+            limit,
+            visibility,
+          });
+        })),
+        (rec) => rec.valid_from ?? rec.created_at,
+      );
     } else if (typeof p.session_id === 'string' && p.session_id.length > 0) {
-      rows = mergeNewest(await Promise.all(factSources.map(src =>
-        ctx.engine.listFactsBySession(src, p.session_id as string, {
-          activeOnly: !includeExpired,
-          limit,
-          visibility,
-        }),
-      )));
-    } else if (p.since !== undefined) {
-      const since = parseSinceParam(p.since);
-      if (since) {
-        rows = mergeNewest(await Promise.all(factSources.map(src =>
-          ctx.engine.listFactsSince(src, since, {
+      rows = mergeNewest(
+        await Promise.all(factSources.map(src =>
+          ctx.engine.listFactsBySession(src, p.session_id as string, {
             activeOnly: !includeExpired,
             limit,
             visibility,
           }),
-        )));
+        )),
+        byCreated,
+      );
+    } else if (p.since !== undefined) {
+      const since = parseSinceParam(p.since);
+      if (since) {
+        rows = mergeNewest(
+          await Promise.all(factSources.map(src =>
+            ctx.engine.listFactsSince(src, since, {
+              activeOnly: !includeExpired,
+              limit,
+              visibility,
+            }),
+          )),
+          byCreated,
+        );
       }
     } else {
       // No filter: return recent across the granted source(s).
-      rows = mergeNewest(await Promise.all(factSources.map(src =>
-        ctx.engine.listFactsSince(src, new Date(0), {
-          activeOnly: !includeExpired,
-          limit,
-          visibility,
-        }),
-      )));
+      rows = mergeNewest(
+        await Promise.all(factSources.map(src =>
+          ctx.engine.listFactsSince(src, new Date(0), {
+            activeOnly: !includeExpired,
+            limit,
+            visibility,
+          }),
+        )),
+        byCreated,
+      );
     }
 
     if (grep) rows = rows.filter(r => r.fact.toLowerCase().includes(grep));

@@ -215,6 +215,10 @@ export async function checkOauthConfidentialHealth(engine: BrainEngine): Promise
  */
 export async function checkOauthClientScopeHealth(engine: BrainEngine): Promise<Check> {
   try {
+    // Single source of truth for the derived-workspace suffix — lazy import
+    // (same pattern as the other checks) so agent-register.ts stays out of
+    // doctor's static import graph.
+    const { WORKSPACE_SUFFIX } = await import('../../agent-register.ts');
     const dangling = await engine.executeRaw<{ client_id: string; client_name: string | null; grant_id: string }>(
       `SELECT c.client_id, c.client_name, g.grant_id
          FROM oauth_clients c
@@ -226,7 +230,7 @@ export async function checkOauthClientScopeHealth(engine: BrainEngine): Promise<
     const orphaned = await engine.executeRaw<{ id: string }>(
       `SELECT s.id
          FROM sources s
-        WHERE s.id LIKE '%-workspace'
+        WHERE s.id LIKE '%' || $1
           AND s.local_path IS NULL
           AND COALESCE(s.archived, false) = false
           AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.source_id = s.id)
@@ -236,6 +240,7 @@ export async function checkOauthClientScopeHealth(engine: BrainEngine): Promise<
                AND (c.source_id = s.id OR s.id = ANY(c.federated_read))
           )
         ORDER BY s.id`,
+      [WORKSPACE_SUFFIX],
     );
     const problems: string[] = [];
     if (dangling.length > 0) {

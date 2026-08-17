@@ -62,7 +62,7 @@ describe('register-client route wiring (structural)', () => {
     // instead of calling registerClientManual directly. The transposition
     // hazard this pin exists for is now a NAMED-FIELD hazard — pin that the
     // normalized values land on the right keys of the parsed-args object.
-    expect(src).toMatch(/registerScopedClient\(sql,\s*engine,\s*name,\s*\{[\s\S]*?scopes:\s*scopeString,[\s\S]*?sourceId,[\s\S]*?federatedRead:\s*federatedReadIds,[\s\S]*?tokenEndpointAuthMethod:\s*validatedAuthMethod[\s\S]*?\}/);
+    expect(src).toMatch(/registerScopedClient\(sql,\s*name,\s*\{[\s\S]*?scopes:\s*scopeString,[\s\S]*?sourceId,[\s\S]*?federatedRead:\s*federatedReadIds,[\s\S]*?tokenEndpointAuthMethod:\s*validatedAuthMethod[\s\S]*?\}/);
   });
 });
 

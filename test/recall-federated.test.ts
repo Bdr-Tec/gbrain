@@ -114,4 +114,44 @@ describe('recall federated grants (D1b)', () => {
     const facts = (res.facts ?? []).map((f: any) => String(f.fact));
     expect(facts.some((f: string) => f.includes('QQF2'))).toBe(true);
   });
+
+  it('a private superseded fact is invisible to a remote supersessions=true call', async () => {
+    const remember = operationsByName['remember'];
+    await remember.handler(
+      ctx({ remote: false, sourceId: 'proj-widget' }),
+      { fact: 'Private superseded marker QQF4', provenance: 'recall-federated test', visibility: 'private' },
+    );
+    await remember.handler(
+      ctx({ remote: true, sourceId: 'proj-widget' }),
+      { fact: 'World superseded marker QQF5', provenance: 'recall-federated test', visibility: 'world' },
+    );
+    // Put both into the supersession audit-log shape (expired_at +
+    // superseded_by both set). Self-reference keeps the FK satisfied.
+    await engine.executeRaw(
+      `UPDATE facts SET expired_at = now(), superseded_by = id
+       WHERE fact LIKE '%QQF4%' OR fact LIKE '%QQF5%'`,
+    );
+
+    // Remote federated caller: the audit arm has no engine-level visibility
+    // opt — the handler's post-filter must hide the private row.
+    const remoteRes: any = await recall().handler(
+      ctx({
+        remote: true,
+        sourceId: 'aurora-workspace',
+        auth: { allowedSources: ['aurora-workspace', 'proj-widget'] },
+      }),
+      { supersessions: true },
+    );
+    const remoteFacts = (remoteRes.facts ?? []).map((f: any) => String(f.fact));
+    expect(remoteFacts.some((f: string) => f.includes('QQF5'))).toBe(true);  // world audit row visible
+    expect(remoteFacts.some((f: string) => f.includes('QQF4'))).toBe(false); // private stays hidden
+
+    // Local trusted caller still sees the private audit row.
+    const localRes: any = await recall().handler(
+      ctx({ remote: false, sourceId: 'proj-widget' }),
+      { supersessions: true },
+    );
+    const localFacts = (localRes.facts ?? []).map((f: any) => String(f.fact));
+    expect(localFacts.some((f: string) => f.includes('QQF4'))).toBe(true);
+  });
 });

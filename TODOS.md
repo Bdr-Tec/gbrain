@@ -2,6 +2,21 @@
 
 ## Multi-agent wave follow-ups (cathedral-6, `gbrain agent register`)
 
+- [ ] **P2 — federate the remaining read verbs across allowedSources.**
+  **What:** `recall` now honors a federated grant (every fact arm fans out
+  across `ctx.auth.allowedSources` and merges per-arm — see the `factSources`
+  ladder in `src/core/ops/facts.ts` as the pattern), but the rest of the
+  frozen-verb read surface stays scalar: `entity` (card assembly) and the
+  `context_pack`/`delta` ambient boundary verbs resolve `ctx.sourceId ?? 'default'`
+  only. A client granted N sources gets cross-source recall but single-source
+  entity cards and boundary packs — the surface splits silently. **How:** route
+  each through `sourceScopeOpts(ctx)` and fan out + merge like recall; for the
+  perf-clean shape push the source set INTO the engine query instead of
+  N round-trips — `findTrajectory`'s `sourceIds` ANY() branch is the
+  engine-level filter to mirror. **Where:** `src/core/ops/facts.ts`
+  (context_pack/delta), `src/core/verbs.ts` (entity),
+  `src/core/context/turn-context.ts`, engine fact/entity list APIs.
+  **Effort:** M. **Priority:** P2.
 - [ ] **P3 — E5: content-level BrainBench leak detection.** **What:** the
   isolation gate asserts STRUCTURAL leak-absence (every result's source_id is
   inside the caller's grant); a content-level arm would seed known-plaintext

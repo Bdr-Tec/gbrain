@@ -27,9 +27,9 @@ export interface DestructiveImpact {
   embeddingCount: number;
   fileCount: number;
   /**
-   * PR6 D5b: count of live (deleted_at IS NULL) OAuth clients whose
-   * source_id references this source. oauth_clients.source_id is
-   * ON DELETE RESTRICT, so a hard delete with referents raises a raw FK
+   * PR6 D5b: count of ALL OAuth clients (live AND soft-deleted — the FK is
+   * physical, ON DELETE RESTRICT ignores deleted_at) whose source_id
+   * references this source. A hard delete with referents raises a raw FK
    * violation — the preview surfaces the block before the trigger is pulled.
    * Optional so hand-built impact literals (tests, older callers) stay valid.
    */
@@ -38,10 +38,13 @@ export interface DestructiveImpact {
   summary: string;
 }
 
-/** An OAuth client row that references a source via oauth_clients.source_id. */
+/** An OAuth client row that references a source via oauth_clients.source_id.
+ * `deleted` marks soft-deleted (revoked-but-retained) rows — the FK is
+ * PHYSICAL (ON DELETE RESTRICT ignores deleted_at), so they block too. */
 export interface SourceClientReferent {
   clientId: string;
   clientName: string;
+  deleted: boolean;
 }
 
 export interface SoftDeletedSource {
@@ -63,37 +66,50 @@ export const CONFIRM_THRESHOLD_PAGES = 1;
 // ── FK-RESTRICT lifecycle (PR6 D5b) ─────────────────────────
 
 /**
- * Live OAuth clients referencing a source via oauth_clients.source_id
+ * ALL OAuth clients referencing a source via oauth_clients.source_id
  * (ON DELETE RESTRICT — these rows BLOCK a hard delete of the source).
- * `deleted_at IS NULL` filters to clients the operator can still act on;
- * pre-migration brains without the column fall back to all referents
- * (same 42703-retry idiom as oauth-provider.ts), and brains without the
- * oauth_clients table at all have no referents by construction.
+ * PHYSICAL semantics: soft-deleted rows (admin revoke does UPDATE SET
+ * deleted_at) still hold the FK, so they are returned too, tagged
+ * `deleted: true`, and the guidance splits per row. Pre-migration brains
+ * without the deleted_at column fall back to all referents (same
+ * 42703-retry idiom as oauth-provider.ts) tagged live; brains without
+ * the oauth_clients table — or without the source_id column (no column
+ * ⇒ no FK ⇒ no referents) — have no referents by construction.
  */
 export async function clientsReferencingSource(
   engine: BrainEngine,
   sourceId: string,
 ): Promise<SourceClientReferent[]> {
-  const map = (rows: Array<{ client_id: string; client_name: string }>): SourceClientReferent[] =>
-    rows.map((r) => ({ clientId: r.client_id, clientName: r.client_name }));
   try {
-    const rows = await engine.executeRaw<{ client_id: string; client_name: string }>(
-      `SELECT client_id, client_name FROM oauth_clients
-       WHERE source_id = $1 AND deleted_at IS NULL
-       ORDER BY client_id`,
-      [sourceId],
-    );
-    return map(rows);
-  } catch (e) {
-    if (isUndefinedTableError(e)) return [];
-    if (!isUndefinedColumnError(e, 'deleted_at')) throw e;
-    const rows = await engine.executeRaw<{ client_id: string; client_name: string }>(
-      `SELECT client_id, client_name FROM oauth_clients
+    const rows = await engine.executeRaw<{ client_id: string; client_name: string; deleted: boolean }>(
+      `SELECT client_id, client_name, (deleted_at IS NOT NULL) AS deleted
+       FROM oauth_clients
        WHERE source_id = $1
        ORDER BY client_id`,
       [sourceId],
     );
-    return map(rows);
+    return rows.map((r) => ({ clientId: r.client_id, clientName: r.client_name, deleted: r.deleted === true }));
+  } catch (e) {
+    if (isUndefinedTableError(e)) return [];
+    // isUndefinedColumnError is code-first (any 42703 matches), and the
+    // primary query references BOTH optional columns — disambiguate on the
+    // message, which names the missing column.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (isUndefinedColumnError(e, 'source_id') && msg.includes('source_id')) return [];
+    if (!(isUndefinedColumnError(e, 'deleted_at') && msg.includes('deleted_at'))) throw e;
+    try {
+      const rows = await engine.executeRaw<{ client_id: string; client_name: string }>(
+        `SELECT client_id, client_name FROM oauth_clients
+         WHERE source_id = $1
+         ORDER BY client_id`,
+        [sourceId],
+      );
+      return rows.map((r) => ({ clientId: r.client_id, clientName: r.client_name, deleted: false }));
+    } catch (e2) {
+      // The fallback's only optional column is source_id — no column ⇒ no FK.
+      if (isUndefinedColumnError(e2, 'source_id')) return [];
+      throw e2;
+    }
   }
 }
 
@@ -107,6 +123,8 @@ export function formatClientReferentsBlock(
   sourceId: string,
   referents: SourceClientReferent[],
 ): string {
+  const live = referents.filter((r) => !r.deleted);
+  const dead = referents.filter((r) => r.deleted);
   const lines: string[] = [
     ``,
     `Cannot delete source "${sourceId}": ${referents.length} OAuth client(s) reference this source`,
@@ -114,12 +132,21 @@ export function formatClientReferentsBlock(
     ``,
   ];
   for (const r of referents) {
-    lines.push(`  - ${r.clientName} (${r.clientId})`);
+    lines.push(`  - ${r.clientName} (${r.clientId})${r.deleted ? '  [revoked, retained]' : ''}`);
   }
-  lines.push(``);
-  lines.push(`Revoke each client first, then retry:`);
-  for (const r of referents) {
-    lines.push(`  gbrain auth revoke-client "${r.clientId}"`);
+  if (live.length > 0) {
+    lines.push(``);
+    lines.push(`Revoke each live client first (hard delete), then retry:`);
+    for (const r of live) {
+      lines.push(`  gbrain auth revoke-client "${r.clientId}"`);
+    }
+  }
+  if (dead.length > 0) {
+    lines.push(``);
+    lines.push(`Revoked-but-retained rows still block the FK — \`gbrain auth revoke-client "<id>"\` hard-deletes them:`);
+    for (const r of dead) {
+      lines.push(`  gbrain auth revoke-client "${r.clientId}"`);
+    }
   }
   lines.push(``);
   return lines.join('\n');
@@ -384,8 +411,10 @@ export async function purgeExpiredSources(
   const referencedCond = `EXISTS (SELECT 1 FROM oauth_clients c WHERE c.source_id = sources.id)`;
 
   // Query the skip set FIRST so the warn can name ids even though the DELETE
-  // never touches them. Pre-oauth brains (no oauth_clients table) purge
-  // unconditionally — no table means no FK to violate.
+  // never touches them. Pre-oauth brains (no oauth_clients table) — and
+  // pre-migration brains without the source_id column (no column ⇒ no FK) —
+  // purge unconditionally. The EXISTS is deliberately PHYSICAL (no deleted_at
+  // filter): the FK ignores soft-deletion.
   let skipped: Array<{ id: string }> = [];
   let hasOauthTable = true;
   try {
@@ -393,7 +422,7 @@ export async function purgeExpiredSources(
       `SELECT id FROM sources WHERE ${expiredCond} AND ${referencedCond} ORDER BY id`,
     );
   } catch (e) {
-    if (!isUndefinedTableError(e)) throw e;
+    if (!isUndefinedTableError(e) && !isUndefinedColumnError(e, 'source_id')) throw e;
     hasOauthTable = false;
   }
 
