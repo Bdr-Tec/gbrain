@@ -29,13 +29,27 @@ const HAS_GITLEAKS = (() => {
   }
 })();
 
-function run(cwd: string, args: string[]): { out: string; code: number } {
+function run(cwd: string, args: string[]): { out: string; stdout: string; code: number } {
   try {
-    const out = execFileSync('bash', [SCRIPT, ...args], { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
-    return { out, code: 0 };
+    const stdout = execFileSync('bash', [SCRIPT, ...args], { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return { out: stdout, stdout, code: 0 };
   } catch (e: any) {
-    return { out: String(e.stdout ?? '') + String(e.stderr ?? ''), code: e.status ?? 1 };
+    // Keep stdout separate: on a non-zero exit (e.g. the fail-closed
+    // gitleaks-missing lane on CI runners) the script prints a WARNING to
+    // stderr, and a concatenated stream would put that line after the JSON.
+    return { out: String(e.stdout ?? '') + String(e.stderr ?? ''), stdout: String(e.stdout ?? ''), code: e.status ?? 1 };
   }
+}
+
+/** Last JSON object line on stdout — robust to any trailing/leading notices. */
+function lastJson(stdout: string): any {
+  const line = stdout
+    .trim()
+    .split('\n')
+    .reverse()
+    .find((l) => l.trimStart().startsWith('{'));
+  if (!line) throw new Error(`no JSON line in stdout:\n${stdout}`);
+  return JSON.parse(line);
 }
 
 /** Fixture repo with a base commit; returns its path. Caller adds commits. */
@@ -73,9 +87,9 @@ describe('wave-security-scan.sh exit-code contract', () => {
   test('exit 0: empty range, --json emits the standard schema', () => {
     const dir = fixtureRepo();
     try {
-      const { out, code } = run(dir, ['--json', 'HEAD..HEAD']);
+      const { stdout, code } = run(dir, ['--json', 'HEAD..HEAD']);
       expect(code).toBe(0);
-      const parsed = JSON.parse(out.trim().split('\n').pop()!);
+      const parsed = lastJson(stdout);
       expect(parsed.commits).toBe(0);
       expect(parsed.alarm).toBe(0);
       expect(parsed).toHaveProperty('checks');
@@ -126,8 +140,11 @@ describe('wave-security-scan.sh exit-code contract', () => {
     const dir = fixtureRepo();
     try {
       commitFile(dir, 'docs/notes.md', 'We never call eval( in production code.\n', 'docs');
-      const { out } = run(dir, ['--json', 'HEAD~1..HEAD']);
-      const parsed = JSON.parse(out.trim().split('\n').pop()!);
+      // No exit-code assertion here: on a runner without gitleaks the script
+      // fail-closes (exit 1, broken secrets lane) by design — this case only
+      // pins that markdown prose never counts as obfuscation.
+      const { stdout } = run(dir, ['--json', 'HEAD~1..HEAD']);
+      const parsed = lastJson(stdout);
       expect(parsed.checks.obfuscation.total).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
