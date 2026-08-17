@@ -79,6 +79,30 @@ export class OperationError extends Error {
 }
 
 /**
+ * CLI→MCP gap-closure wave (ENG-E2) — shared relation-missing guard for the
+ * telemetry ops (get_job_stats, cache_stats, search_stats, search_tune).
+ * Older brains that predate a feature's tables raw-error with Postgres 42P01
+ * ("relation … does not exist") / PGLite's equivalent; every telemetry op
+ * must degrade to the SAME actionable 'unavailable' envelope instead — one
+ * helper, never four inline copies.
+ */
+export async function withRelationGuard<T>(fn: () => Promise<T>, what: string): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/relation .* does not exist|no such table/i.test(msg)) {
+      throw new OperationError(
+        'unavailable',
+        `${what} is unavailable on this brain: a required table is missing.`,
+        'Run gbrain apply-migrations on the brain host, then retry.',
+      );
+    }
+    throw err;
+  }
+}
+
+/**
  * MEMORY_VERBS v1 error constructor. Every verb error carries a populated
  * `suggestion` (problem + cause + fix — agents read it and self-correct;
  * conformance asserts non-empty) and `protocol_version: 1`.

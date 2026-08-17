@@ -174,8 +174,8 @@ get_job_progress ID
 ```
 
 Check structured result fields (exit code, stdout/stderr tails, attempts,
-timings) from `get_job`. Use `gbrain jobs stats` (CLI) for worker/queue
-health dashboard.
+timings) from `get_job`. Use `get_job_stats` (MCP) or `gbrain jobs stats`
+(CLI) for the worker/queue health dashboard incl. the wedged-queue signal.
 
 ### Control (MCP-callable)
 
@@ -521,4 +521,5 @@ Total tokens so far: 4.3k
 - Replay a completed/failed job — `replay_job` (MCP)
 - Send sidechannel message — `send_job_message` (MCP)
 - Get structured progress — `get_job_progress` (MCP)
-- Queue stats — `gbrain jobs stats` (CLI; no MCP equivalent)
+- Queue stats — `get_job_stats` (MCP; admin scope over HTTP, same as the other
+  jobs ops here — includes the wedged-queue silent-halt signal) or `gbrain jobs stats` (CLI)

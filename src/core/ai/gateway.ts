@@ -2740,7 +2740,8 @@ export interface ChatToolDef {
  */
 /**
  * Default per-call max output tokens. Thinking-by-default Claude 5 models
- * (`anthropic:claude-*-5`) burn a large chunk of the budget on internal
+ * (`anthropic:claude-*-5`, including routed forms like
+ * `openrouter:anthropic/claude-*-5`) burn a large chunk of the budget on internal
  * reasoning before emitting any text, so a 4096 default leaves them with empty
  * final text on the subagent tool loop. Give those models headroom; providers
  * bill actual tokens, not the cap, so it is free for the models that don't use
