@@ -161,13 +161,19 @@ export function spliceCompiledBlock(existing: string, compiled: string): string 
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
+// Semgrep path-join suppressions below: `cwd` is process.cwd() on a LOCAL,
+// operator-invoked CLI command (CLI_ONLY, refused on thin clients) and every
+// joined segment is a literal — there is no untrusted input in these paths.
 export function defaultOutPath(target: CompileTarget, cwd: string): string {
   switch (target) {
     case 'claude-code':
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       return join(cwd, '.claude', 'gbrain-context.md');
     case 'codex':
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       return join(cwd, 'AGENTS.md');
     case 'openclaw':
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       return join(cwd, '.gbrain', 'compiled-context.md');
   }
 }

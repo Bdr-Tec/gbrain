@@ -108,6 +108,9 @@ const PATH_SHAPE_RES: readonly RegExp[] = [
 /** Strict allowlist load: absent → []; present-but-unreadable → THROW. */
 function loadAllowlistStrict(workspaceRoot?: string): string[] {
   if (!workspaceRoot) return [];
+  // workspaceRoot is the operator's own workspace root (trusted local CLI
+  // plane; compile-context is refused on thin clients) joined with a literal.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const p = join(workspaceRoot, SCAN_ALLOW_FILENAME);
   if (!existsSync(p)) return [];
   let raw: string;
@@ -130,6 +133,11 @@ function compileBlocklist(blocklist: string | undefined): RegExp | null {
   const src = (blocklist ?? '').trim();
   if (!src) return null;
   try {
+    // Operator-authored config on the trusted local plane (same posture as
+    // the operator pattern file): a malformed pattern throws a typed CONFIG
+    // error below and the whole compile run ABORTS without writing — the
+    // documented fail-closed lane. Never fed remote/untrusted input.
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     return new RegExp(`\\b(?:${src})\\b`, 'gi');
   } catch (err) {
     throw new SensitivityScanConfigError(
