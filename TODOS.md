@@ -21,26 +21,64 @@
   relaxed for the new job name (or a dedicated handler). **Blocked by:** the
   abort-signal threading TODO below (P2 — BasePhaseOpts + dream generators);
   extract_atoms/consolidate accept neither deadline nor abort today, so a
-  background job can't exit cleanly at its deadline. Effort: L (CC: M).
+  background job can't exit cleanly at its deadline. **Additional constraints
+  from the #4250 ship-stage adversarial reviews:** (a) the lane applies to
+  EVERY brain with registered sources, including single-source ones (the
+  legacy full-cycle fallback fires only when the sources table is empty, so
+  a one-source brain also loses automatic background work today); (b) the
+  taxonomy is scheduling-intent, not runtime scoping — consolidate,
+  enrich_thin, and conversation_facts_backfill iterate the whole brain
+  internally, so the lane must run those ONCE per tick, never once per
+  source (concurrent per-source invocations share no lock and consolidate's
+  take-row assignment can race); (c) the maintenance job runs synthesize →
+  patterns WITHOUT the source-scoped extract phase in between, so patterns
+  reads a graph that hasn't materialized the just-synthesized links until a
+  later freshness cycle runs extract — the lane should sequence extract (or
+  an equivalent materialization) between them; (d) mixed-once synthesis
+  writes attribute to the repoPath-resolved source rather than fanning out
+  attribution per source. Effort: L (CC: M). Priority: P2.
+- [ ] **P2 — maintenance-lane structure: ordering, keeper wall, slot
+  contention.** **What:** three ship-stage adversarial findings about the
+  single global-maintenance job, to resolve alongside (or inside) the
+  background lane above. (a) MAINTENANCE_PHASES runs synthesize →
+  resolve_symbol_edges → patterns with NO extract phase between synthesize
+  and patterns, so patterns reads a graph that hasn't materialized the
+  just-synthesized links until a later freshness cycle runs extract; (b)
+  synthesize runs FIRST in the job, so a large synthesis backlog + the job
+  keeper's timeout starves the brain-wide hygiene phases behind it (embed,
+  orphans, purge) and `last_global_at` never stamps — the next window
+  re-dispatches into the same wall (consider global-before-mixed ordering or
+  splitting mixed into its own job; note runCycle executes in canonical
+  order, so this needs more than reordering the list); (c) freshness jobs
+  share `queue: 'default'` with the hours-long maintenance job — with low
+  worker concurrency, per-source freshness queues behind maintenance
+  synthesis, re-coupling what this release decoupled (a fanout-vs-concurrency
+  doctor check exists but does not cover this pairing). Effort: M-L (CC).
   Priority: P2.
-- [ ] **P2 — legacy queued `autopilot-global-maintenance` payload window.**
-  **What:** a maintenance job queued before a deploy carries the old explicit
-  phase list; the handler prefers a non-empty payload over the current
-  `MAINTENANCE_PHASES` default, then stamps `autopilot.last_global_at` —
-  fine today (the constant is unchanged), but any future change to the
-  maintenance phase set will silently run the OLD list for one drain window.
-  **Fix shape:** normalize/refresh stale global payloads at the handler (same
-  pattern as the per-source normalization) or version the payload. Effort: S
+- [ ] **P2 — protected-phase submission bypass via unprotected job names.**
+  **What:** `synthesize`/`patterns`/`consolidate` are PROTECTED_JOB_NAMES so
+  scoped remote callers can't burn LLM budget, but `autopilot-global-
+  maintenance` (and no-source `autopilot-cycle`) accept arbitrary
+  `job.data.phases` — a write-scoped remote submitter can reach synthesize
+  through the global job's payload. v0.46.20.0 narrowed the surface
+  (per-source payloads normalize to freshness; maintenance payloads intersect
+  with MAINTENANCE_PHASES) but synthesize is legitimately IN
+  MAINTENANCE_PHASES. **Fix shape:** protect these job names, or require
+  `allowProtectedSubmit` when a payload names a protected-equivalent phase.
+  Pre-existing exposure, narrowed but not closed by this release. Effort: S-M
   (CC). Priority: P2.
 - [ ] **P3 — freshness-stamp gate: require ≥1 freshness-phase success.**
   **What:** `runCycle` stamps `last_source_cycle_at`/`last_full_cycle_at`
   when ANY phase ran and status ∈ {ok, clean, partial} — e.g. `--phase
   orphans --source X` (global phase, source-narrowed) stamps source
-  freshness. **Why:** pre-existing looseness (predates #4250, which
-  tightened zero-phase runs); sharpening further re-opens the #2549
-  freshness-poisoning debate (a too-strict gate starves the dispatch loop) —
-  design carefully. Start: `src/core/cycle.ts` stamp gate. Effort: S (CC).
-  Priority: P3.
+  freshness. Also note the semantic drift: `last_full_cycle_at` now stamps
+  after a 6-phase deterministic cycle, so any reader treating it as "the
+  full cycle ran" reads more than it means (KEY_FILES documents it as a
+  legacy-reader alias). **Why:** pre-existing looseness (predates #4250,
+  which tightened zero-phase runs and stopped all-failed cycles from
+  stamping); sharpening further re-opens the #2549 freshness-poisoning
+  debate (a too-strict gate starves the dispatch loop) — design carefully.
+  Start: `src/core/cycle.ts` stamp gate. Effort: S (CC). Priority: P3.
 - [ ] **P3 — peel the cycle.ts KEY_FILES mega-entry.** **What:** the
   `src/core/cycle.ts` entry in `docs/architecture/KEY_FILES.md` is a ~11KB
   single line carrying six unrelated concern clusters; every cycle-area PR

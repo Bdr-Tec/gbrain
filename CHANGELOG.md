@@ -2,6 +2,77 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.20.0] - 2026-08-17
+
+**Source freshness decoupled from synthesis.** A per-source maintenance cycle
+used to drag brain-wide synthesis and hours of LLM-backed enrichment along
+with it; on multi-source brains the fanout could enqueue a thousand-plus
+sequential synthesis jobs per source, the job keeper would kill the cycle
+before the freshness stamp landed, and the abandoned private queues were then
+misdiagnosed as a wedged default worker. Freshness is now stamped by the
+deterministic (non-LLM) phases alone, so `gbrain dream --source X` finishes
+in seconds instead of hours.
+
+### Changed
+- Implicit `dream --source X` and autopilot per-source cycles run only the
+  deterministic freshness phases (lint, backlinks, sync, extract,
+  extract_facts, recompute_emotional_weight). Mixed brain-wide work
+  (synthesize, patterns) runs once in the global-maintenance lane, never once
+  per source. The phase-scope taxonomy lives in
+  `src/core/cycle/phase-scope.ts`.
+- LLM-backed source enrichment (extract_atoms, consolidate, propose_takes,
+  enrich_thin, schema-suggest) no longer runs inside per-source freshness
+  cycles. Atom extraction keeps its existing autopilot auto-drain lane; the
+  others run on explicit invocation until the scheduled background lane
+  lands — e.g. `gbrain dream --source X --phase extract_atoms` per source,
+  while consolidate/enrich_thin/conversation_facts_backfill sweep the whole
+  brain in one invocation regardless of `--source`, so run those once, not
+  per source. A full implicit cycle still runs via plain `gbrain dream`
+  (no source flag), via `--source default`, and on brains with no sources
+  table.
+- Explicit phase requests on a named source (`dream --source X --phase …`,
+  and `--input <file>`, which implies synthesize) are honored verbatim; only
+  the implicit no-flag path is freshness-scoped.
+- Queued per-source cycle jobs are normalized at the worker boundary to the
+  freshness phase set, so jobs queued before this release can't replay the
+  old heavyweight behavior once per source. An all-rejected payload is an
+  explicit no-op with a visible reason, never a silent full run.
+
+### Fixed
+- Doctor no longer misdiagnoses parent-owned private dream queues as a wedged
+  default worker. `wedged_queue` excludes them, and a new
+  `orphaned_private_queue` check identifies dead private queues with the
+  correct repair path (the retriage queue-reconciliation dry run) — consulting
+  live cycle locks with ownership correlation (including starved-but-alive
+  holders within the lock steal grace, and tolerant of host-vs-DB clock skew)
+  so a running cycle is never flagged and an older crashed cycle's queue is
+  never hidden behind a new cycle's lock. Paused rows surface in details
+  instead of failing the check without a repair path, and a check that cannot
+  run reports a warning instead of reading as healthy.
+- The retriage queue reconciliation can now repair everything the doctor
+  check flags: it selects and converts any row stranded in a provably-dead
+  private dream queue (patterns children and legacy-grammar rows included,
+  not just current-generation synthesis rows), using the same
+  lock-ownership correlation, so doctor can never point at a queue the
+  repair refuses to touch.
+- A per-source cycle whose attempted phases ALL fail now reports `failed`
+  and does not stamp source freshness (the scope filter's bookkeeping
+  records previously diluted the status to a stampable `partial`, marking a
+  broken source permanently fresh).
+
+### To take advantage of v0.46.20.0
+
+Upgrade and restart your `gbrain jobs work` daemons so queued cycle jobs pick
+up the new phase handling (jobs queued by the previous version are normalized
+safely either way). Stale sources unstick on the next autopilot tick — or run
+`gbrain dream --source <id>` and watch it finish in seconds. Run
+`gbrain doctor` to see the wedged-queue vs orphaned-private-queue split; if it
+reports orphaned private queues, follow the printed retriage dry-run
+instructions. Schedule the heavier enrichment explicitly where you want it —
+`gbrain dream --source <id> --phase extract_atoms` per source, plus one
+brain-wide `gbrain dream --phase consolidate` — or wait for the scheduled
+background lane (tracked in TODOS).
+
 ## [0.46.17.0] - 2026-08-16
 
 **Checkpoint compaction + compiled views (Cathedral 5).** Compaction is the
