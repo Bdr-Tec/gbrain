@@ -1,5 +1,54 @@
 # TODOS
 
+## Dream freshness split follow-ups (v0.46.20.0)
+
+- [ ] **P2 — automatic background lane for `SOURCE_BACKGROUND_PHASES`.**
+  **What:** a per-source scheduled lane for the LLM-backed/unbounded source
+  phases (extract_atoms, consolidate, propose_takes, enrich_thin,
+  schema-suggest, conversation_facts_backfill) that the v0.46.20.0 freshness
+  split removed from automatic scheduling on multi-source brains. **Why:**
+  today those phases run only on explicit `gbrain dream --source X --phase …`
+  invocation; backlogs (atoms, consolidation) grow silently between manual
+  runs. **Design constraints (verified against code during the #4250
+  review):** MUST be per-source jobs — background phases scope to ONE source
+  per cycle (`cycle.ts` extract_atoms uses `cycleSourceId ?? 'default'`), and
+  per-source jobs hold the correct `gbrain-cycle:<source>` locks (a
+  global-maintenance-job version provably covers at most one source and its
+  bare `gbrain-cycle` lock does not conflict with per-source freshness
+  cycles). Needs its own cadence + stamp key (e.g.
+  `last_source_background_at`), lower dispatch priority than the freshness
+  lane, and the queue-boundary normalization in the `autopilot-cycle` handler
+  relaxed for the new job name (or a dedicated handler). **Blocked by:** the
+  abort-signal threading TODO below (P2 — BasePhaseOpts + dream generators);
+  extract_atoms/consolidate accept neither deadline nor abort today, so a
+  background job can't exit cleanly at its deadline. Effort: L (CC: M).
+  Priority: P2.
+- [ ] **P2 — legacy queued `autopilot-global-maintenance` payload window.**
+  **What:** a maintenance job queued before a deploy carries the old explicit
+  phase list; the handler prefers a non-empty payload over the current
+  `MAINTENANCE_PHASES` default, then stamps `autopilot.last_global_at` —
+  fine today (the constant is unchanged), but any future change to the
+  maintenance phase set will silently run the OLD list for one drain window.
+  **Fix shape:** normalize/refresh stale global payloads at the handler (same
+  pattern as the per-source normalization) or version the payload. Effort: S
+  (CC). Priority: P2.
+- [ ] **P3 — freshness-stamp gate: require ≥1 freshness-phase success.**
+  **What:** `runCycle` stamps `last_source_cycle_at`/`last_full_cycle_at`
+  when ANY phase ran and status ∈ {ok, clean, partial} — e.g. `--phase
+  orphans --source X` (global phase, source-narrowed) stamps source
+  freshness. **Why:** pre-existing looseness (predates #4250, which
+  tightened zero-phase runs); sharpening further re-opens the #2549
+  freshness-poisoning debate (a too-strict gate starves the dispatch loop) —
+  design carefully. Start: `src/core/cycle.ts` stamp gate. Effort: S (CC).
+  Priority: P3.
+- [ ] **P3 — peel the cycle.ts KEY_FILES mega-entry.** **What:** the
+  `src/core/cycle.ts` entry in `docs/architecture/KEY_FILES.md` is a ~11KB
+  single line carrying six unrelated concern clusters; every cycle-area PR
+  now pays a manual three-way merge on it (#4250 did). `phase-scope.ts` got
+  its own entry in v0.46.20.0; peel the rest (lock/refresher cluster,
+  extract-atoms batching, by-mention resume → op-checkpoint entry, doctor
+  hints) into per-module entries. Effort: M (CC). Priority: P3.
+
 ## Cathedral 5 follow-ups (checkpoint compaction + compiled views)
 
 - [ ] **P2 — `gbrain transcripts checkpoint` manual CLI.** **What:** a thin
