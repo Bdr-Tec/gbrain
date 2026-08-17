@@ -199,11 +199,17 @@ export const ALL_PHASES: CyclePhase[] = [
 /**
  * #2194 fix #3 / #2227 bug #3 — the cycle split.
  *
- * Per-source autopilot cycles run ONLY source-scoped phases. Mixed phases read
- * brain-wide inputs and therefore cannot safely fan out by source: synthesize
- * reads the global transcript corpus, and patterns reads cross-source
- * reflections. They join the brain-wide phases in the single maintenance job
- * instead of being repeated into every source.
+ * Per-source autopilot cycles enqueue ONLY the deterministic freshness subset
+ * (SOURCE_FRESHNESS_PHASES); the autopilot-cycle handler normalizes queued
+ * per-source payloads down to that subset so legacy payloads can't re-run
+ * heavier work N-way. Mixed phases read brain-wide inputs and therefore
+ * cannot safely fan out by source: synthesize reads the global transcript
+ * corpus, and patterns reads cross-source reflections. They join the
+ * brain-wide phases in the single maintenance job instead of being repeated
+ * into every source. SOURCE_BACKGROUND_PHASES have no automatic lane on
+ * multi-source brains yet — they run on explicit invocation
+ * (`gbrain dream --source X --phase extract_atoms`) until the background
+ * lane lands (see TODOS).
  *
  * SOURCE_PHASES ∪ MIXED_PHASES ∪ GLOBAL_PHASES == ALL_PHASES, with no overlap.
  * MAINTENANCE_PHASES is MIXED ∪ GLOBAL in original cycle order.
@@ -221,25 +227,24 @@ export const SOURCE_BACKGROUND_PHASES: CyclePhase[] = SOURCE_PHASES.filter(
 /**
  * Resolve the effective phase list for one cycle invocation.
  *
- * An implicit cycle for a named non-default source runs SOURCE phases only.
- * This is the normal `dream --source X` path used by the freshness keeper: it
- * must be able to finish and stamp source freshness without first draining
- * brain-wide maintenance work. Explicit phase requests remain authoritative
- * except that MIXED phases are still excluded: `synthesize` reads
- * the global transcript corpus and `patterns` reads cross-source reflections,
- * so re-running either once per source duplicates the same brain-wide read
- * into a near-identical write per source (the bug this boundary closes).
- * GLOBAL phases are left alone here — several of them (orphans, in
- * particular; see `forceGlobalOrphans` in CycleOpts) already accept an
- * explicit source scope as a deliberate narrowing rather than a brain-wide
- * scan, and existing callers rely on `--phase orphans --source X` still
- * running orphans scoped to X. SOURCE phases are always unaffected.
+ * An IMPLICIT cycle for a named non-default source runs the deterministic
+ * freshness phases only. This is the normal `dream --source X` path used by
+ * the freshness keeper: it must be able to finish and stamp source freshness
+ * without first draining LLM-backed maintenance work.
  *
- * Filtering happens here, at the shared runCycle boundary, so a manual
- * `dream --source X`, an autopilot job, or any future caller cannot
- * accidentally re-run MIXED work once per source. The canonical `default`
- * cycle remains the one place where a full cycle (including mixed phases)
- * is valid.
+ * EXPLICIT phase lists are honored verbatim. `dream --source X --phase
+ * synthesize` (and `--input <file>`, which implies synthesize) is a single
+ * deliberate operator action, not the N-way fanout duplication this boundary
+ * exists to prevent — the caller that looped `dream --source <id>` over every
+ * source with no phase flag hits the implicit branch above. Machine callers
+ * that enqueue per-source phase lists are normalized at the queue boundary
+ * instead (the `autopilot-cycle` handler intersects queued per-source
+ * payloads with SOURCE_FRESHNESS_PHASES), so a queued legacy payload cannot
+ * re-run mixed or background work once per source while human intent stays
+ * authoritative.
+ *
+ * The canonical `default` cycle remains the one place where a full implicit
+ * cycle (including mixed phases) is valid.
  */
 export function resolveCyclePhases(
   requested: CyclePhase[] | undefined,
@@ -247,8 +252,7 @@ export function resolveCyclePhases(
 ): CyclePhase[] {
   if (!sourceId || sourceId === 'default') return requested ?? ALL_PHASES;
   if (requested === undefined) return SOURCE_FRESHNESS_PHASES;
-  const phases = requested;
-  return phases.filter((phase) => PHASE_SCOPE[phase] !== 'mixed');
+  return requested;
 }
 
 /** Config key holding the ISO timestamp of the last successful global-maintenance run. */

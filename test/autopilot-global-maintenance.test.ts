@@ -71,29 +71,42 @@ describe('cycle phase partition (#2194 fix #3)', () => {
     expect(SOURCE_FRESHNESS_PHASES).not.toContain('extract_atoms');
   });
 
-  test('implicit source cycles are source-only; explicit global narrowing survives', () => {
-    // `dream --source X` is the freshness path and must finish independently
-    // of brain-wide maintenance. An explicitly requested global phase still
-    // preserves its source scope; MIXED phases remain unsafe in source fanout.
+  test('implicit source cycles are freshness-only; explicit phase lists are honored verbatim', () => {
+    // `dream --source X` with no phase flag is the freshness path and must
+    // finish independently of brain-wide maintenance. An EXPLICIT phase list
+    // is deliberate operator intent and is honored verbatim (#4250 regression
+    // pin: `dream --source X --phase synthesize`, and `--input <file>` which
+    // implies synthesize, must actually run — queue payloads are normalized
+    // at the autopilot-cycle handler instead, see the handler tests below).
     expect(resolveCyclePhases(undefined, 'repo-a')).toEqual(SOURCE_FRESHNESS_PHASES);
-    expect(resolveCyclePhases(['sync', 'synthesize', 'patterns', 'embed'], 'repo-a')).toEqual(['sync', 'embed']);
+    expect(resolveCyclePhases(['synthesize'], 'repo-a')).toEqual(['synthesize']);
+    expect(resolveCyclePhases(['sync', 'synthesize', 'patterns', 'embed'], 'repo-a'))
+      .toEqual(['sync', 'synthesize', 'patterns', 'embed']);
     expect(resolveCyclePhases(undefined, 'default')).toEqual(ALL_PHASES);
     expect(resolveCyclePhases(undefined, undefined)).toEqual(ALL_PHASES);
+    expect(resolveCyclePhases(['synthesize'], undefined)).toEqual(['synthesize']);
   });
 
-  test('runCycle reports excluded MIXED phases instead of silently omitting them', async () => {
+  test('implicit source cycle reports excluded non-freshness phases instead of silently omitting them', async () => {
     const report = await runCycle(null, {
       brainDir: null,
       sourceId: 'repo-a',
-      phases: ['synthesize', 'patterns'],
       dryRun: true,
     });
-    expect(report.status).toBe('clean');
-    expect(report.phases.map((p) => p.phase)).toEqual(['synthesize', 'patterns']);
-    for (const phase of report.phases) {
-      expect(phase.status).toBe('skipped');
-      expect(phase.details.reason).toBe('non_source_phase_excluded_from_source_cycle');
-      expect(phase.details.source_id).toBe('repo-a');
+    const byPhase = new Map(report.phases.map((p) => [p.phase, p]));
+    // Every non-freshness phase is present as an explicit exclusion record.
+    for (const phase of ALL_PHASES) {
+      if (SOURCE_FRESHNESS_PHASES.includes(phase)) continue;
+      const rec = byPhase.get(phase);
+      expect(rec?.status).toBe('skipped');
+      expect(rec?.details.reason).toBe('non_source_phase_excluded_from_source_cycle');
+      expect(rec?.details.source_id).toBe('repo-a');
+    }
+    // The freshness phases themselves are attempted (not exclusion records).
+    for (const phase of SOURCE_FRESHNESS_PHASES) {
+      const rec = byPhase.get(phase);
+      expect(rec).toBeTruthy();
+      expect(rec?.details?.reason).not.toBe('non_source_phase_excluded_from_source_cycle');
     }
   });
 
@@ -205,20 +218,57 @@ describe('autopilot-global-maintenance handler stamps last_global_at (PGLite)', 
     return handlers;
   }
 
-  test('a cycle containing only excluded phases does not stamp source freshness', async () => {
+  test('autopilot-cycle handler normalizes a legacy per-source payload down to freshness phases', async () => {
+    // Pre-v0.46.20 fanout payloads carried NON_GLOBAL_PHASES (mixed +
+    // background). A legacy job draining after upgrade must not re-run that
+    // work once per source: the handler intersects the queued list with
+    // SOURCE_FRESHNESS_PHASES and surfaces what it rejected.
     await engine.executeRaw(
-      `INSERT INTO sources (id, name, local_path) VALUES ($1, $2, $3)`,
-      ['repo-a', 'repo-a', '/tmp/repo-a'],
+      `INSERT INTO sources (id, name, local_path) VALUES ($1, $2, NULL)`,
+      ['repo-a', 'repo-a'],
     );
-    const report = await runCycle(engine, {
-      brainDir: null,
-      sourceId: 'repo-a',
-      phases: ['synthesize', 'patterns'],
+    const handlers = await captureHandlers();
+    const handler = handlers.get('autopilot-cycle');
+    expect(handler).toBeTruthy();
+
+    const legacyPhases = ['sync', 'synthesize', 'extract', 'patterns', 'extract_atoms', 'consolidate'];
+    const result = await handler!({
+      data: { source_id: 'repo-a', phases: legacyPhases, pull: false },
+      signal: undefined,
     });
-    expect(report.status).toBe('clean');
-    const source = (await engine.listAllSources()).find((row) => row.id === 'repo-a');
+    expect(result.phases_rejected_by_normalization)
+      .toEqual(['synthesize', 'patterns', 'extract_atoms', 'consolidate']);
+    // Only the freshness subset reached runCycle.
+    expect(result.report.phases.map((p: any) => p.phase)).toEqual(['sync', 'extract']);
+  });
+
+  test('an all-rejected queued payload is an explicit no-op, not an implicit freshness run', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path) VALUES ($1, $2, NULL)`,
+      ['repo-b', 'repo-b'],
+    );
+    const handlers = await captureHandlers();
+    const handler = handlers.get('autopilot-cycle');
+
+    const result = await handler!({
+      data: { source_id: 'repo-b', phases: ['synthesize', 'patterns'], pull: false },
+      signal: undefined,
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.report.reason).toBe('all_phases_rejected_by_normalization');
+    expect(result.report.phases_rejected_by_normalization).toEqual(['synthesize', 'patterns']);
+    // No cycle ran → no freshness stamp.
+    const source = (await engine.listAllSources()).find((row) => row.id === 'repo-b');
     expect(source?.config.last_source_cycle_at).toBeUndefined();
     expect(source?.config.last_full_cycle_at).toBeUndefined();
+
+    // Same contract for a payload that ARRIVES empty: explicit no-op.
+    const empty = await handler!({
+      data: { source_id: 'repo-b', phases: [], pull: false },
+      signal: undefined,
+    });
+    expect(empty.status).toBe('skipped');
+    expect(empty.report.reason).toBe('all_phases_rejected_by_normalization');
   });
 
   test('runs global phases (no source_id) and stamps autopilot.last_global_at on success', async () => {

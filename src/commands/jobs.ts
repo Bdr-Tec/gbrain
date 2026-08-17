@@ -2474,11 +2474,43 @@ export async function registerBuiltinHandlers(
 
     // Allow callers to select phases via job data (e.g. skip embed for
     // fast cycles). Validates against ALL_PHASES to prevent injection.
-    const { ALL_PHASES } = await import('../core/cycle.ts');
+    const { ALL_PHASES, SOURCE_FRESHNESS_PHASES } = await import('../core/cycle.ts');
     const validPhases = new Set(ALL_PHASES);
     const requestedPhases = Array.isArray(job.data.phases)
       ? (job.data.phases as string[]).filter(p => validPhases.has(p as any))
       : undefined;
+
+    // Queue-boundary normalization (#4250): queued PER-SOURCE payloads are
+    // machine-authored (autopilot fanout, legacy replays), not operator
+    // intent. Pre-v0.46.20 fanout payloads carried NON_GLOBAL_PHASES —
+    // mixed + background work that must not re-run once per source when a
+    // legacy job drains after upgrade. Intersect with
+    // SOURCE_FRESHNESS_PHASES: a fixed point for current fanout payloads, a
+    // safe downgrade for legacy ones. Operator intent goes through the CLI
+    // (`gbrain dream --source X --phase …`), which resolveCyclePhases
+    // honors verbatim — this normalization is queue-only by design.
+    let phasesRejectedByNormalization: string[] = [];
+    let effectivePhases = requestedPhases;
+    if (sourceId && requestedPhases !== undefined) {
+      const freshness = new Set<string>(SOURCE_FRESHNESS_PHASES);
+      effectivePhases = requestedPhases.filter(p => freshness.has(p));
+      phasesRejectedByNormalization = requestedPhases.filter(p => !freshness.has(p));
+    }
+    // An explicitly-empty phase list (arrived empty, or emptied by the
+    // normalization above) is a no-op — NOT an implicit run. Omitting
+    // `phases` from CycleOpts here would silently convert it into a full
+    // (or freshness) cycle.
+    if (effectivePhases !== undefined && effectivePhases.length === 0) {
+      return {
+        partial: false,
+        status: 'skipped',
+        report: {
+          reason: 'all_phases_rejected_by_normalization',
+          ...(sourceId ? { source_id: sourceId } : {}),
+          phases_rejected_by_normalization: phasesRejectedByNormalization,
+        },
+      };
+    }
 
     const pull = resolveJobPull(job.data);
 
@@ -2503,7 +2535,7 @@ export async function registerBuiltinHandlers(
       signal: job.signal, // propagate abort so cycle bails on timeout/cancel
       deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
       ...(sourceId ? { sourceId } : {}),
-      ...(requestedPhases && requestedPhases.length > 0 ? { phases: requestedPhases as any } : {}),
+      ...(effectivePhases !== undefined ? { phases: effectivePhases as any } : {}),
       yieldBetweenPhases: async () => {
         // Yield to the event loop so worker lock-renewal can fire.
         await new Promise<void>(r => setImmediate(r));
@@ -2514,6 +2546,12 @@ export async function registerBuiltinHandlers(
       partial: report.status === 'partial' || report.status === 'failed',
       status: report.status,
       report,
+      // Surfaced so operators can see the queue-boundary normalization at
+      // work in job results (runCycle never sees rejected phases, so its
+      // excludedPhases skip-reporting cannot cover them).
+      ...(phasesRejectedByNormalization.length > 0
+        ? { phases_rejected_by_normalization: phasesRejectedByNormalization }
+        : {}),
     };
   });
 
