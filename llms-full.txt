@@ -272,7 +272,8 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
   same commit as any peel. migrate.ts is `region-exempt` (the MIGRATIONS array grows freely;
   the runner logic around it is ratcheted).
 - **Peeled façades keep their surface.** operations.ts (`src/core/ops/*`), doctor.ts
-  (`src/commands/doctor/*`), sync.ts (`src/core/sync-*`), and both engines
+  (`src/commands/doctor/*`), sync.ts (`src/core/sync-*`), skillpack.ts
+  (`src/commands/skillpack/*`), and both engines
   (`src/core/{postgres,pglite}-engine/*`) are façades re-exporting everything they always
   exported — import sites and published package exports never chase the peel. New code goes
   in the module dirs, not back into the façades. Engine modules take narrow explicit deps
