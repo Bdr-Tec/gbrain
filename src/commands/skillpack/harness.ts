@@ -51,7 +51,7 @@ import {
   defaultBridgeStatePath,
 } from '../../core/skillpack/bridge-state.ts';
 import { runScaffold, ScaffoldError } from '../../core/skillpack/scaffold.ts';
-import { BundleError } from '../../core/skillpack/bundle.ts';
+import { BundleError, bundledSkillSlugs, loadBundleManifest } from '../../core/skillpack/bundle.ts';
 import { findGbrainOrDie, resolveAbs, resolveWorkspace } from './shared.ts';
 
 const DEFAULT_PERSONA: Record<Exclude<BridgeHarness, 'openclaw'>, string> = {
@@ -339,19 +339,39 @@ export async function cmdScaffoldHarness(args: string[]): Promise<void> {
       const targetWorkspace = resolveWorkspace({ workspace: a.workspace });
       const { slugs, persona } = resolveSlugs(gbrainRoot, a);
       const useFullBundle = a.skills.length === 0 && (a.persona === null || a.persona === 'all');
+      // The workspace scaffold enumerates the OPENCLAW universe (paired
+      // sources included) — plugin-lane ADDITIONS don't exist there, so a
+      // persona slug outside openclaw.plugin.json#skills must be reported,
+      // not thrown at as an unknown skill.
+      const openclawSlugs = new Set(bundledSkillSlugs(loadBundleManifest(gbrainRoot)));
+      const deliverable = useFullBundle ? slugs : slugs.filter(s => openclawSlugs.has(s));
+      const laneOnly = useFullBundle ? [] : slugs.filter(s => !openclawSlugs.has(s));
+      if (!useFullBundle && deliverable.length === 0) {
+        console.error(
+          'Error: none of the selected skills exist in the openclaw bundle (they are plugin-lane additions). Nothing to scaffold.',
+        );
+        process.exit(2);
+      }
       const result = runScaffold({
         gbrainRoot,
         targetWorkspace,
         skillSlug: null,
         // Full bundle (openclaw's default, today's behavior) enumerates the
         // openclaw universe directly; persona/skill picks filter it.
-        ...(useFullBundle ? {} : { skillSlugs: slugs }),
+        ...(useFullBundle ? {} : { skillSlugs: deliverable }),
         dryRun: a.dryRun,
       });
       if (a.json) {
         console.log(
           JSON.stringify(
-            { ok: true, harness: a.harness, persona: useFullBundle ? 'all' : persona, dryRun: result.dryRun, summary: result.summary },
+            {
+              ok: true,
+              harness: a.harness,
+              persona: useFullBundle ? 'all' : persona,
+              dryRun: result.dryRun,
+              summary: result.summary,
+              openclaw_skipped: laneOnly,
+            },
             null,
             2,
           ),
@@ -361,6 +381,11 @@ export async function cmdScaffoldHarness(args: string[]): Promise<void> {
           `${a.dryRun ? 'scaffold --harness openclaw (dry-run)' : 'scaffold --harness openclaw'}: ` +
             `${result.summary.wroteNew} wrote, ${result.summary.skippedExisting} skipped, ${result.summary.pairedSourcesWritten} paired source(s)`,
         );
+        if (laneOnly.length > 0) {
+          console.log(
+            `skipped (plugin-lane additions, not in the openclaw bundle): ${laneOnly.join(', ')}`,
+          );
+        }
       }
       process.exit(0);
     }
@@ -654,11 +679,6 @@ function exitTyped(cmd: string, err: unknown): never {
   }
   throw err;
 }
-
-/** Exposed for the contract test: the stub/preflight text hardcodes that
- *  get_skill is absent from the starter MCP surface. If STARTER_OPS ever
- *  gains get_skill, the pinned test fails and this copy must update. */
-export const HARDCODED_SURFACE_FACT = 'get_skill is full-surface only (not in the starter op set)';
 
 // Re-exported so tests can drive the state path used by status.
 export { defaultBridgeStatePath, loadPersonas };

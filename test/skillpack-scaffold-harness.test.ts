@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -193,4 +193,128 @@ describe('post-peel dispatch smoke [ENG-E5]', () => {
     expect(u.code).toBe(2);
     expect(u.stderr).toContain('removed in v0.33');
   }, 120_000);
+});
+
+describe('scaffold --harness openclaw (workspace delegation)', () => {
+  test('persona filters the workspace scaffold; plugin-lane additions are reported skipped, not thrown', () => {
+    const { home, gbrainHome } = homes();
+    const ws = mkdtempSync(join(tmpdir(), 'gb-harness-ws-'));
+    cleanups.push(ws);
+    const env = { HOME: home, GBRAIN_HOME: gbrainHome };
+    // gbrain-upgrade is a plugin-lane ADDITION (absent from the openclaw
+    // bundle): the openclaw path must skip-and-report it, never throw.
+    const r = run(
+      ['scaffold', '--harness', 'openclaw', '--workspace', ws, '--skill', 'query', '--skill', 'gbrain-upgrade', '--json'],
+      env,
+    );
+    expect(r.code, r.stderr).toBe(0);
+    const receipt = JSON.parse(r.stdout);
+    expect(receipt.openclaw_skipped).toEqual(['gbrain-upgrade']);
+    expect(existsSync(join(ws, 'skills', 'query', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(ws, 'skills', 'gbrain-upgrade'))).toBe(false);
+    expect(existsSync(join(ws, 'skills', 'conventions'))).toBe(true);
+  }, 120_000);
+
+  test('all-additions selection refuses with a clear error; --stub and --dest are refused', () => {
+    const { home, gbrainHome } = homes();
+    const ws = mkdtempSync(join(tmpdir(), 'gb-harness-ws-'));
+    cleanups.push(ws);
+    const env = { HOME: home, GBRAIN_HOME: gbrainHome };
+    const none = run(['scaffold', '--harness', 'openclaw', '--workspace', ws, '--skill', 'gbrain-upgrade'], env);
+    expect(none.code).toBe(2);
+    expect(none.stderr).toContain('plugin-lane additions');
+    const stub = run(['scaffold', '--harness', 'openclaw', '--workspace', ws, '--stub'], env);
+    expect(stub.code).toBe(2);
+    expect(stub.stderr).toContain('not supported for openclaw');
+    const dest = run(['scaffold', '--harness', 'openclaw', '--dest', ws], env);
+    expect(dest.code).toBe(2);
+    expect(dest.stderr).toContain('--workspace');
+  }, 120_000);
+});
+
+describe('remaining CLI gaps (coverage audit)', () => {
+  test('--scope project lands under <workspace>/.claude/skills', () => {
+    const { home, gbrainHome } = homes();
+    const ws = mkdtempSync(join(tmpdir(), 'gb-harness-proj-'));
+    cleanups.push(ws);
+    const r = run(
+      ['scaffold', '--harness', 'claude-code', '--scope', 'project', '--workspace', ws, '--skill', 'query', '--json'],
+      { HOME: home, GBRAIN_HOME: gbrainHome },
+    );
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout).dest).toBe(join(ws, '.claude', 'skills'));
+    expect(existsSync(join(ws, '.claude', 'skills', 'query', 'SKILL.md'))).toBe(true);
+  }, 120_000);
+
+  test('remove --harness without --skill removes every owned slug', () => {
+    const { home, gbrainHome } = homes();
+    const dest = mkdtempSync(join(tmpdir(), 'gb-harness-dest-'));
+    cleanups.push(dest);
+    const env = { HOME: home, GBRAIN_HOME: gbrainHome };
+    expect(run(['scaffold', '--harness', 'claude-code', '--skill', 'query', '--skill', 'ingest', '--dest', dest], env).code).toBe(0);
+    const r = run(['remove', '--harness', 'claude-code', '--dest', dest, '--json'], env);
+    expect(r.code, r.stderr).toBe(0);
+    expect(existsSync(join(dest, 'query', 'SKILL.md'))).toBe(false);
+    expect(existsSync(join(dest, 'ingest', 'SKILL.md'))).toBe(false);
+    // Shared conventions were never slug-owned; they survive a full remove.
+    expect(existsSync(join(dest, 'conventions'))).toBe(true);
+    // Ledger emptied → state entry gone → nothing owned on a re-run.
+    const again = JSON.parse(run(['remove', '--harness', 'claude-code', '--dest', dest, '--json'], env).stdout);
+    expect(again.removedFiles).toEqual([]);
+  }, 180_000);
+
+  test('skillpack status renders the installed-bridges section', () => {
+    const { home, gbrainHome } = homes();
+    const dest = mkdtempSync(join(tmpdir(), 'gb-harness-dest-'));
+    const ws = mkdtempSync(join(tmpdir(), 'gb-harness-ws-'));
+    cleanups.push(dest, ws);
+    const env = { HOME: home, GBRAIN_HOME: gbrainHome };
+    expect(run(['scaffold', '--harness', 'claude-code', '--skill', 'query', '--dest', dest], env).code).toBe(0);
+    const r = run(['status', '--workspace', ws, '--json'], env);
+    expect(r.code, r.stderr).toBe(0);
+    const receipt = JSON.parse(r.stdout);
+    expect(receipt.bridges).toHaveLength(1);
+    expect(receipt.bridges[0].harness).toBe('claude-code');
+    expect(receipt.bridges[0].dest).toBe(dest);
+    expect(receipt.bridges[0].identical).toBeGreaterThan(0);
+  }, 120_000);
+
+  test('stub preflight gate 2: an unservable slug is refused with the skills_dir hint', () => {
+    const { home, gbrainHome } = homes();
+    const dest = mkdtempSync(join(tmpdir(), 'gb-harness-dest-'));
+    const emptyDir = mkdtempSync(join(tmpdir(), 'gb-harness-empty-'));
+    cleanups.push(dest, emptyDir);
+    // Publish gate ON via the file plane; skills dir pointed at an EMPTY dir
+    // so every slug is unservable from the server's perspective.
+    mkdirSync(join(gbrainHome, '.gbrain'), { recursive: true });
+    writeFileSync(
+      join(gbrainHome, '.gbrain', 'config.json'),
+      JSON.stringify({ mcp: { publish_skills: true, skills_dir: emptyDir } }),
+    );
+    const r = run(['scaffold', '--harness', 'claude-code', '--stub', '--skill', 'query', '--dest', dest], {
+      HOME: home,
+      GBRAIN_HOME: gbrainHome,
+    });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('cannot serve');
+    expect(r.stderr).toContain('mcp.skills_dir');
+    expect(existsSync(join(dest, 'query'))).toBe(false);
+  }, 120_000);
+
+  test('reference --harness: positional slug lens + apply guard requires a single skill', () => {
+    const { home, gbrainHome } = homes();
+    const dest = mkdtempSync(join(tmpdir(), 'gb-harness-dest-'));
+    cleanups.push(dest);
+    const env = { HOME: home, GBRAIN_HOME: gbrainHome };
+    expect(run(['scaffold', '--harness', 'claude-code', '--skill', 'query', '--dest', dest], env).code).toBe(0);
+    const ref = run(['reference', '--harness', 'claude-code', '--dest', dest, 'query', '--json'], env);
+    expect(ref.code, ref.stderr).toBe(0);
+    const result = JSON.parse(ref.stdout);
+    expect(result.summary.differs).toBe(0);
+    const applyAll = run(['reference', '--harness', 'claude-code', '--dest', dest, '--apply-clean-hunks'], env);
+    expect(applyAll.code).toBe(2);
+    expect(applyAll.stderr).toContain('single skill');
+    const oc = run(['reference', '--harness', 'openclaw'], env);
+    expect(oc.code).toBe(2);
+  }, 180_000);
 });
