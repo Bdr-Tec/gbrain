@@ -530,3 +530,8 @@ scripts/generate-plugin-tree.ts --out plugin --variants-out plugin-variants`
 and stage `plugin/` + `plugin-variants/` + `skills/plugin-lanes.json`.
 `scripts/check-plugin-tree.sh` (in `bun run verify`) and the release
 `publish-codex-plugin` job both fail on drift.
+
+When personas change in `skills/plugin-lanes.json#personas`, also hand-edit
+`.claude-plugin/marketplace.json`: the variant entries must match the
+personas block exactly (`test/codex-plugin-manifest.test.ts` pins the
+mapping, so a persona added without a marketplace entry fails the suite).

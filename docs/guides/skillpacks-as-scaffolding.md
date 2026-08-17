@@ -218,13 +218,15 @@ gbrain skillpack remove --harness claude-code --skill query
 - **Personas** live in `skills/plugin-lanes.json#personas` (one recorded
   reason per skill, validated against the plugin lane — lane-excluded skills
   like `testing` are refused with their recorded reason). `--persona all`
-  installs the full lane. The same personas power the `gbrain-coding` /
-  `gbrain-daily` marketplace plugin variants.
+  (shorthand `--all`) installs the full lane. The same personas power the
+  `gbrain-coding` / `gbrain-daily` marketplace plugin variants.
 - **Never overwrites**: existing files are skipped and counted; the diff
   lens (`reference --harness`) splits `differs` into **local_edit** (your
   change — keep it) vs **upstream_drift** (gbrain moved —
   `--apply-clean-hunks` aligns), using the install-time hash ledger at
-  `~/.gbrain/skillpack-bridge-state.json`.
+  `~/.gbrain/skillpack-bridge-state.json`. A shared file with no
+  install-time hash in the ledger reports **unknown** provenance and is
+  never auto-applied — patch by hand, or remove and re-scaffold.
 - **`remove --harness`** deletes ONLY files the bridge wrote (the ledger) —
   never your own files. This is not the removed-in-v0.33 workspace
   `uninstall`; workspace scaffolds stay user-owned outright.
@@ -236,13 +238,15 @@ gbrain skillpack remove --harness claude-code --skill query
   the starter surface, where `get_skill` is not exposed; stub bodies tell
   agents to ask the operator for a wider serve surface (`request_tools`
   self-widening never exceeds the operator's ceiling, and stdio servers
-  cannot persist a per-client surface at all). Shared convention files ship
-  even in stub mode (skill bodies reference them); aux files are skipped.
+  cannot persist a per-client surface at all). Shared convention files AND
+  sibling aux files ship even in stub mode — skill bodies reference both,
+  and `get_skill` serves only the SKILL.md body itself.
 - **Targets**: `claude-code` has a verified user-scope skills dir (project
   scope via `--scope project`); `openclaw` delegates to the workspace
   scaffold; `codex` / `opencode` require an explicit `--dest` until their
   native locations get observation runs (the plugin lane already serves
-  both).
+  both). `reference --harness` and `remove --harness` accept the same
+  `--dest` / `--scope` / `--workspace` targeting as `scaffold --harness`.
 - **Coexistence**: the same skill names may also load from the gbrain
   marketplace plugin snapshot — duplicate names coexist in one session;
   prefer one lane per machine.

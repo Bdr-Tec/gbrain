@@ -511,8 +511,8 @@ ms, max waiters) for `--json`; a one-line summary prints to stderr.
 
 ## Version locations (single source of truth: `VERSION` file)
 
-Every release advances the version in **seven files at once**. Keep these in
-sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
+Every release advances the version in **every file in the table below at
+once**. Keep these in sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
 package.json drift), but the canonical list lives here so future runs and
 the auto-update agent know where to look.
 
@@ -527,7 +527,7 @@ four numeric segments are required first. Historical 3-segment versions
 (`0.31.3`, `0.22.1`) remain valid in `git log` and migration filenames
 (`skills/migrations/v0.21.0.md`); do NOT rewrite them. Going forward only.
 
-**Required (every release must update all seven):**
+**Required (every release must update every row):**
 
 | File | What lives there | Format |
 |---|---|---|
