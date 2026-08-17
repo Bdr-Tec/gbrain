@@ -98,28 +98,40 @@ describe('startCycleLockRefresher (Tier-1 #1 + D5.11)', () => {
   });
 
   test('aborts the controller with LockStolenError when a fenced refresh returns false', async () => {
-    const controller = new AbortController();
+    // Controller DOUBLE, deliberately not a platform AbortController: two
+    // coverage-instrumented CI shard-9 runs (2026-08-16/17) observed a
+    // freshly-constructed real signal SPURIOUSLY pre-aborted (aborted=true,
+    // reason=undefined, no abort caller — the next test's fresh controller
+    // read false again). A pre-aborted signal makes the refresher's tick
+    // gate skip refresh() entirely, so no assertion phrasing against the
+    // platform object can be stable. The unit under test is the refresher's
+    // DECISION — fenced-false ⇒ abort(LockStolenError) — so observe the
+    // abort CALL itself; real-signal integration is covered by the
+    // cycle-abort suites.
+    let abortedWith: unknown = null;
+    const signal = { aborted: false, reason: undefined as unknown };
+    const controller = {
+      signal,
+      abort(reason?: unknown) {
+        if (!signal.aborted) {
+          signal.aborted = true;
+          signal.reason = reason;
+          abortedWith = reason;
+        }
+      },
+    } as unknown as AbortController;
     const stop = startCycleLockRefresher(fakeLock(async () => false), controller, 'test-lock', 15);
     try {
       // Poll instead of a fixed sleep: under full-suite shard load, timer
-      // ticks can be starved well past the nominal interval. Assert on ONE
-      // CAPTURED read through the GC-safe side-channel: two loaded-CI runs
-      // (both 2026-08-16, shard 9) observed `signal.reason` satisfying the
-      // instanceof on one read and reading back `undefined` on the next
-      // while `aborted` stayed true — so neither the test nor production
-      // classification may re-read `signal.reason` (production now goes
-      // through getLockStolenReason for the same reason).
+      // ticks can be starved well past the nominal interval.
       const deadline = Date.now() + 5_000;
-      let seen: LockStolenError | null = null;
-      while ((seen = getLockStolenReason(controller.signal)) === null && Date.now() < deadline) {
+      while (abortedWith === null && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 25));
       }
-      expect(controller.signal.aborted).toBe(true);
-      if (!(seen instanceof LockStolenError)) {
-        throw new Error(
-          `expected LockStolenError abort within 5s; aborted=${controller.signal.aborted} seen=${String(seen)} rawReason=${String(controller.signal.reason)}`,
-        );
-      }
+      expect(abortedWith).toBeInstanceOf(LockStolenError);
+      // The GC-safe side-channel (production classification path) carries
+      // the same steal, keyed by the signal object.
+      expect(getLockStolenReason(controller.signal)).toBeInstanceOf(LockStolenError);
     } finally {
       stop();
     }
