@@ -137,6 +137,22 @@ describe('parseOneshotResponse', () => {
     expect(parseOneshotResponse('{"pages":[{"slug":"","body":"x"}]}')).toBeNull();
     expect(parseOneshotResponse('{"pages":[{"slug":"a/b","body":""}]}')).toBeNull();
   });
+  test('model-supplied frontmatter is stripped at parse time (R3-1: no type smuggling)', () => {
+    const p = parseOneshotResponse(JSON.stringify({
+      pages: [{ slug: 'a/b', body: '---\ntype: person\ntitle: Smuggled\n---\nReal body text. [[c/d]]' }],
+      skipped: false,
+    }));
+    expect(p).not.toBeNull();
+    expect(p!.pages[0].type).toBe('note');
+    expect(p!.pages[0].body).not.toContain('type: person');
+    expect(p!.pages[0].body.startsWith('Real body text.')).toBe(true);
+  });
+  test('a body whose ONLY content is frontmatter parses to null (empty after strip)', () => {
+    expect(parseOneshotResponse(JSON.stringify({
+      pages: [{ slug: 'a/b', body: '---\ntype: person\nlinks: "[[c/d]]"\n---\n' }],
+      skipped: false,
+    }))).toBeNull();
+  });
   test('skip contract parses', () => {
     const p = parseOneshotResponse('{"pages":[],"skipped":true,"skip_reason":"routine"}');
     expect(p).toEqual({ pages: [], skipped: true, skip_reason: 'routine' });

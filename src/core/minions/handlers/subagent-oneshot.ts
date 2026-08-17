@@ -112,6 +112,22 @@ export interface ParsedOneshot {
   skip_reason: string | null;
 }
 
+/**
+ * R3-1: model-supplied frontmatter is REJECTED at parse time (stripped from
+ * the body) rather than passed through to put_page. A leading YAML block
+ * could otherwise smuggle an explicit `type: person` past the note pin, and
+ * a wikilink living only inside the YAML would satisfy validation and then
+ * vanish when parseMarkdown strips the frontmatter — validation must see
+ * exactly the body that gets written.
+ */
+function stripLeadingFrontmatter(body: string): string {
+  if (!body.startsWith('---\n')) return body;
+  const close = body.indexOf('\n---', 4);
+  if (close === -1) return body; // unterminated — plain text, serialize as-is
+  const after = body.indexOf('\n', close + 4);
+  return (after === -1 ? '' : body.slice(after + 1)).trimStart();
+}
+
 /** Tolerant parse + shape validation (no slug/link policy here — that needs job context). */
 export function parseOneshotResponse(raw: string): ParsedOneshot | null {
   const parsed = parseLlmJson<Record<string, unknown>>(raw);
@@ -123,7 +139,9 @@ export function parseOneshotResponse(raw: string): ParsedOneshot | null {
     if (!p || typeof p !== 'object') return null;
     const rec = p as Record<string, unknown>;
     if (typeof rec.slug !== 'string' || rec.slug.trim() === '') return null;
-    if (typeof rec.body !== 'string' || rec.body.trim() === '') return null;
+    if (typeof rec.body !== 'string') return null;
+    const body = stripLeadingFrontmatter(rec.body);
+    if (body.trim() === '') return null;
     pages.push({
       slug: rec.slug.trim(),
       title: typeof rec.title === 'string' && rec.title.trim() ? rec.title.trim() : rec.slug.trim().split('/').pop()!,
@@ -131,7 +149,7 @@ export function parseOneshotResponse(raw: string): ParsedOneshot | null {
       // string — pin to the contract's 'note' instead of letting the oneshot
       // lane author arbitrary type taxonomies. Field kept for shape-compat.
       type: 'note',
-      body: rec.body,
+      body,
     });
   }
   const skipped = (parsed as { skipped?: unknown }).skipped === true;
@@ -451,12 +469,10 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   // ── Programmatic writes through the shared put_page executor ────────────
   const inv8 = randomUUID().replace(/-/g, '').slice(0, 8);
   const plannedWrites = parsed.pages.map((page, i) => {
-    // Thread the model's title/type through page frontmatter (they were
-    // parsed but previously discarded — pages got ugly slug-derived titles).
-    // A body that already opens with its own frontmatter is passed through.
-    const content = page.body.startsWith('---\n')
-      ? page.body
-      : serializeMarkdown({}, page.body, '', { type: page.type as PageType, title: page.title, tags: [] });
+    // ALWAYS serialize with the pinned type + parsed title — model-supplied
+    // frontmatter was stripped at parse time (R3-1), so no body can smuggle
+    // its own keys past normalization.
+    const content = serializeMarkdown({}, page.body, '', { type: page.type as PageType, title: page.title, tags: [] });
     return { toolUseId: `${ONESHOT_TOOL_USE_ID_PREFIX}${inv8}-p${i}`, input: { slug: page.slug, content } };
   });
   // Bank the WHOLE batch as pending in ONE transaction BEFORE the first

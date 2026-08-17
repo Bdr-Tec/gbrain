@@ -27,7 +27,7 @@ src/commands/skillpack.ts	1763	ratchet
 src/core/minions/queue.ts	2130	ratchet	grown v0.46.11.0 five-issue wave
 src/commands/init.ts	1932	ratchet
 src/commands/integrations.ts	1675	ratchet
-src/core/minions/handlers/subagent.ts	1790	ratchet	dream-wave C5 peel + C6 accounting + C7 lease heartbeats/lost-lease aborts + C9 oneshot dispatch + three adversarial fix batches
+src/core/minions/handlers/subagent.ts	1795	ratchet	dream-wave C5 peel + C6 accounting + C7 lease heartbeats/lost-lease aborts + C9 oneshot dispatch + three adversarial fix batches
 src/commands/bootstrap.ts	1923	ratchet	grandfathered at merge (grew past the 1500 cap on master)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
 src/commands/sources.ts	1586	ratchet

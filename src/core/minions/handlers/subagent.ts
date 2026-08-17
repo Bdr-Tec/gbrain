@@ -741,7 +741,13 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       // back-filled past maxConcurrent.
       const leaseLost = new AbortController();
       let leaseLostMidCall = false;
+      let renewInFlight = false;
       const leaseRenewTimer = setInterval(() => {
+        // Single-flight (R3-2): a stalled renewal during a pooler outage must
+        // not stack — N children x overlapping renewals would exhaust the
+        // pool that lock renewal and job recording also need.
+        if (renewInFlight) return;
+        renewInFlight = true;
         void renewLeaseWithBackoff(engine, lease.leaseId!, leaseTtlMs)
           .then((ok) => {
             if (!ok) {
@@ -753,7 +759,8 @@ export function makeSubagentHandler(deps: SubagentDeps) {
               leaseLost.abort();
             }
           })
-          .catch(() => { /* next tick retries */ });
+          .catch(() => { /* next tick retries */ })
+          .finally(() => { renewInFlight = false; });
       }, Math.max(5_000, Math.floor(leaseTtlMs / 3)));
       (leaseRenewTimer as unknown as { unref?: () => void }).unref?.();
       try {
@@ -1268,7 +1275,11 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       // above the ceiling; the loop converts the abort to a lease-full
       // requeue via leaseLostDuringTurn.
       const leaseLost = new AbortController();
+      let renewInFlight = false;
       const renewTimer = setInterval(() => {
+        // Single-flight (R3-2): never stack renewals behind a stalled pool.
+        if (renewInFlight) return;
+        renewInFlight = true;
         void renewLeaseWithBackoff(engine, lease.leaseId!, leaseTtlMs)
           .then((ok) => {
             if (!ok) {
@@ -1276,7 +1287,8 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
               leaseLost.abort();
             }
           })
-          .catch(() => { /* next tick retries */ });
+          .catch(() => { /* next tick retries */ })
+          .finally(() => { renewInFlight = false; });
       }, Math.max(5_000, Math.floor(leaseTtlMs / 3)));
       (renewTimer as unknown as { unref?: () => void }).unref?.();
       return {
