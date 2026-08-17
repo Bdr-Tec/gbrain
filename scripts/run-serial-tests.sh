@@ -30,6 +30,13 @@
 
 set -euo pipefail
 
+# Fixture tests that `git commit` in temp repos must not inherit the developer's
+# global commit.gpgsign — a signing gpg-agent can OOM under full-suite memory
+# pressure and fail the commit ("gpg: signing failed: Cannot allocate memory",
+# #1696). git applies these env keys as highest-precedence config on every
+# invocation in this process tree, so all child `git commit`s run unsigned.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="commit.gpgsign" GIT_CONFIG_VALUE_0="false"
+
 # #3485: serial tests need no database — strip ambient DB URLs at this
 # wrapper boundary (same four-layer guard as run-slow-tests.sh / the
 # parallel runner) so the bunfig preload guard passes and nothing can

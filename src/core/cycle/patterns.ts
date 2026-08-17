@@ -74,10 +74,11 @@ export interface PatternsPhaseOpts {
  * budgets. NOT a promise that tail phases complete — the cycle is allowed
  * to go partial and resume next tick. This only guarantees the phase's
  * wait returns and the handler unwinds cleanly before the worker's abort
- * fires: wait poll interval (5s) + worker force-evict grace (30s) + lock
- * and DB cleanup headroom.
+ * fires. Canonical definition moved to base-phase.ts (gbrain#4168 made it
+ * a every-phase concern); re-exported here for existing importers.
  */
-export const CYCLE_DEADLINE_RESERVE_MS = 60 * 1000;
+export { CYCLE_DEADLINE_RESERVE_MS } from './base-phase.ts';
+import { CYCLE_DEADLINE_RESERVE_MS } from './base-phase.ts';
 
 /**
  * Smallest remaining budget worth submitting a subagent for. Below this,

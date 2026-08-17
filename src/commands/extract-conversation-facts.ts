@@ -93,6 +93,16 @@ import { withRefreshingLock, LockUnavailableError } from '../core/db-lock.ts';
 import { assertFactsEmbeddingDimMatchesConfig } from '../core/embedding-dim-check.ts';
 import { writeReceipt, shortRunId } from '../core/extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../core/extract/rollup-writer.ts';
+import { ALLOWED_TYPES, type AllowedType } from '../core/facts/conversation-types.ts';
+
+// Re-exported verbatim so existing importers (this file's own helpers below
+// and this file's tests) keep working unchanged; doctor.ts, jobs.ts,
+// sources.ts, and the cycle backfill phase import the leaf directly. Moved to
+// src/core/facts/conversation-types.ts (see that file for why) so a
+// consumer that only needs the six values doesn't also pull in this file's
+// own CLI flag surface.
+export { ALLOWED_TYPES };
+export type { AllowedType };
 
 // ---------------------------------------------------------------------------
 // Tunables (exported for tests).
@@ -135,21 +145,11 @@ export const MAX_PAGE_BODY_BYTES = 25 * 1024 * 1024;
 /** Default cost cap when no tracker is passed explicitly. */
 export const DEFAULT_MAX_COST_USD = 5.0;
 
-/**
- * Allowlist of page types this command operates on. Mirrors
- * cycle.conversation_facts_backfill.types config default. CLI's
- * `--types` flag is an explicit per-run override; cycle config is
- * the single source of truth.
- */
-export const ALLOWED_TYPES = [
-  'conversation',
-  'meeting',
-  'slack',
-  'email',
-  'imessage',
-  'imessage-daily',
-] as const;
-export type AllowedType = (typeof ALLOWED_TYPES)[number];
+// ALLOWED_TYPES / AllowedType now live in
+// ../core/facts/conversation-types.ts (imported + re-exported above).
+// Mirrors cycle.conversation_facts_backfill.types config default. CLI's
+// `--types` flag is an explicit per-run override; cycle config is the
+// single source of truth.
 
 /**
  * Granular collector page-types that alias into each canonical conversation

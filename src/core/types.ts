@@ -1506,6 +1506,14 @@ export interface BrainStats {
   pages_by_type: Record<string, number>;
 }
 
+/**
+ * gbrain#4147: minimum entity pages before the entity-scoped coverage ratios
+ * (link_coverage / timeline_coverage) are statistically worth reporting.
+ * Behavior: 0 entities → null (0/0 used to read as a hard 0%); 1..4 → null
+ * (a one-page "100% ± 0.0%" is noise, cf. #3945); >= 5 → the real ratio.
+ */
+export const MIN_ENTITY_PAGES_FOR_COVERAGE = 5;
+
 export interface BrainHealth {
   page_count: number;
   /**
@@ -1542,10 +1550,24 @@ export interface BrainHealth {
    * DELETEs can produce dangling references.
    */
   dead_links: number;
-  /** Fraction of entity pages (person/company) with >= 1 inbound link. */
-  link_coverage: number;
-  /** Fraction of entity pages (person/company) with >= 1 structured timeline entry. */
-  timeline_coverage: number;
+  /**
+   * gbrain#4147: entity pages in the coverage denominator. Surfaced so
+   * consumers can tell "0% coverage" from "no entities to grade".
+   */
+  entity_page_count: number;
+  /**
+   * Entity link coverage, or null when entity_page_count is below
+   * MIN_ENTITY_PAGES_FOR_COVERAGE — a 0/0 or single-page ratio is
+   * statistically meaningless and used to read as a hard 0%/100%
+   * (gbrain#4147). Null means "not enough entity pages to grade"; consumers
+   * suppress the percentage AND its remediation actions.
+   */
+  link_coverage: number | null;
+  /**
+   * Fraction of entity pages (person/company) with >= 1 structured timeline
+   * entry, or null below the same small-N floor as link_coverage (#4147).
+   */
+  timeline_coverage: number | null;
   /** Top 5 entities by total link count (in + out). */
   most_connected: Array<{ slug: string; link_count: number }>;
   /**

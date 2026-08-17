@@ -78,6 +78,194 @@ To take advantage of v0.46.15.0:
   lowercase arm can catch; it only fires on documented, globally unique
   aliases.
 
+## [0.46.14.0] - 2026-08-16
+
+Fix wave: 13 verified issues fixed + 14 community PRs adopted with credit, from a
+triage of everything filed since the 2026-08-14 audit (42 new items, each verified
+against HEAD with an adversarial second pass before entering scope).
+
+### Fixed
+- **dream/cycle:** calibration-trio phases (propose_takes, grade_takes,
+  calibration_profile) now clamp their deadlines to the owning job's claim-time
+  timeout via shared `BasePhaseOpts.deadlineAtMs`, so long cycles bank partial
+  work and exit cleanly instead of dead-lettering at the worker kill switch (#4168).
+  extract_atoms distinguishes malformed model output from a real zero-yield
+  extraction (typed parse outcomes), writes atoms with a completion receipt so a
+  partial persist is retried instead of silently skipped forever, and tombstones a
+  page only after 3 consecutive same-content deterministic failures (#4148). The
+  nightly purge survives a RESTRICT-FK-held source (revoked oauth client) with a
+  structured `{purged, blocked}` report instead of aborting the whole sweep (#4115).
+  Dream `--input` on an already-synthesized transcript says why it skipped
+  (PR #4122 by @Masashi-Ono0611). The cycle lock-steal decision keys on the aborted
+  flag, not the droppable abort reason (#4140, PR #4141 by @Masashi-Ono0611).
+- **takes:** `eval suspected-contradictions` resolution commands are now
+  addressable and truthful — `--row` carries the per-page row number, commands
+  that need operator judgment say so instead of failing, and the unimplemented
+  mark-debate action is no longer minted (#4169).
+- **minions/claude-cli:** multi-turn claude-cli subagent jobs no longer
+  dead-letter when the provider reuses a tool_use_id — execution rows key on
+  (message_idx, tool_use_id) with migration v131 (#4155, PR #4156 by
+  @Masashi-Ono0611). claude-cli reports cachedInputTokens (PR #4120) and scrubs
+  ALL cloud-auth routing env vars so children always use the subscription auth the
+  recipe documents — intentional cloud routing belongs on the `anthropic` recipe
+  (PR #4111, both by @Masashi-Ono0611). `models doctor` honors slow-start
+  providers instead of a flat 5s probe abort (PR #4112 by @Masashi-Ono0611).
+- **recipes:** Google `supports_prompt_cache` is a per-model predicate — Gemini
+  2.5+ caches implicitly and no longer reads as cache-less (#4158, PR #4159 by
+  @dovstern). OpenRouter embedding models carry verified per-model dims and
+  unlisted ids require explicit dims instead of inheriting a plausible-wrong 1536
+  (#4114). Qwen embedding ids match case-insensitively so correctly-cased provider
+  ids get their dimensions pinned (#4123). Recipe-declared thinking-by-default
+  models (DeepSeek v4) get reasoning-token headroom in `think` via the capability
+  layer (reimplements stale-fork PR #4172; thanks @Tonyli1010).
+- **doctor/health:** `get_health`'s islanded check applies endpoint liveness in
+  both directions so it agrees with `gbrain orphans` (#4153), and entity coverage
+  ratios report "too few to grade" below a small-N floor instead of a misleading
+  hard 0%/100% (#4147, also closing the #3945 class). JSON/MCP consumers:
+  `link_coverage` and `timeline_coverage` are now `number | null` — `null` means
+  "too few entity pages to grade" — and the payload adds `entity_page_count` so
+  you can render the floor yourself.
+- **transcripts:** sparse multiline sessions parse (PR #4163 by @richtheworld);
+  `--max-bytes` gives oversized stores a validated escape hatch while per-format
+  safety defaults stay in charge, with the cap folded into the `--since last`
+  checkpoint fingerprint (#4149; thanks @justemu).
+- **search/budget:** query-expansion LLM spend records to the budget tracker and
+  audit (#4121, PR #4124 by @Masashi-Ono0611).
+- **serve --http:** no-grant legacy bearer tokens get #3242's federated read
+  parity via a shared, fail-closed widening decision (PR #4132 by @kyle944).
+  Behavior change: SDK-transport sessions authenticated with such a token now
+  see the same federated read scope as the HTTP dispatch path — reads that
+  previously came back empty on one transport are consistent on both.
+- **Windows:** path containment uses the OS separator (PR #4103 by
+  @MohammedAlkindi, with CI-runnable win32 shape tests), and sync accepts Windows
+  path casing + indexes .astro/.svelte files (#4044, PR #4144 by @javieraldape).
+- **facts:** the conversation-type allowlist derives from one frozen module
+  instead of five hand-copied lists (PR #4135 by @Masashi-Ono0611).
+- **cli:** `sources --help` shows real usage instead of the circular stub
+  (PR #4133 by @Masashi-Ono0611).
+
+### To take advantage of v0.46.14.0
+- `gbrain upgrade` picks everything up; migration v131 runs automatically.
+  Multi-worker Postgres deployments: stop running `gbrain jobs work` daemons
+  BEFORE upgrading and restart them on the new binary — an old binary writing
+  tool executions against a migrated database errors on every persist until
+  restarted. Single-binary PGLite installs need nothing.
+- If claude-cli subagent jobs previously dead-lettered on
+  `uniq_subagent_tools_use_id`, re-run them — the class is fixed.
+- Hermes stores over the default cap: `gbrain transcripts ingest --max-bytes 4gb <store>`.
+- If you intentionally route claude-cli through a cloud backend, switch that
+  workload to the `anthropic` recipe with cloud credentials — claude-cli children
+  now always use subscription auth.
+## [0.46.13.0] - 2026-08-16
+
+**One brain can now safely serve many agents.** `gbrain agent register` mints
+a scoped OAuth client and a working access token in one command and prints the
+exact wiring for your harness — a daily-driver agent, a coding agent, and a
+teammate's agent all share the same institutional memory, each seeing only
+what its token grants. This is the shared-brain wave (cathedral 6): the
+multi-user core the brain always had, finally packaged for multiple agents.
+
+### Added
+- `gbrain agent register <name> --harness claude-code|codex|opencode|openclaw`
+  — mints a scoped OAuth client, writes a real 30-day token TTL (the server
+  default is one hour — a printed "long-lived" config used to die silently),
+  and prints a paste-ready block per harness. `--json` is a stable machine
+  contract (`schema_version: 1`) with credential redaction unless
+  `--show-token`; typed failure envelopes for every refusal.
+- Presets that stay honest to the scoping model: `daily-driver` (read-broad
+  via a registration-time snapshot of your sources — other agents' workspace
+  scratch sources excluded, grant one explicitly to share it — starter tool
+  surface) and `coding-agent` (write-isolated `<name>-workspace` source,
+  requires the project sources it may read). Explicit flags always win;
+  neither preset can grant operator scopes. Surface tiers land through the
+  audited operator path.
+- `--reissue <client-id>` rotates a client secret and reprints the wiring —
+  outstanding tokens stay valid until expiry, and the output says so.
+- Cross-agent memory continuity: `recall` now honors federated read grants,
+  so a fact one agent saved in a shared source is recallable by every agent
+  granted that source (world-visible facts only; private stays local).
+- The company-brain tutorial gains a "many agents, one brain" recipe, and
+  `docs/guides/agent-to-gbrain.md` carries the single decision table for the
+  four onboarding paths. `gbrain auth clients` now shows each client's write
+  source and federated reads; a new doctor check surfaces dangling read
+  grants and orphaned empty workspace sources (a workspace holding only
+  facts counts as data, never orphaned).
+- `gbrain auth register-client --token-ttl <seconds>` for per-client token
+  lifetimes from the CLI.
+
+### Changed
+- Registering on a thin client or against a live PGLite serve is refused
+  up front with exact guidance (previously: dead credentials in a scratch
+  brain, or a silent 30-second lock hang). Registration also probes the
+  target serve and refuses one too old to enforce the token's scope grant —
+  upgrade the serve, or pass `--allow-old-serve` to accept the risk (an
+  unreachable serve stays a warning).
+- The admin register API validates source existence, archived state, and
+  token TTL bounds with structured 400s, refuses duplicate client names
+  (409), and composes the same registration core as the CLI — atomically,
+  under the same name lock — so the two paths can never drift.
+- Deleting or purging a source that an OAuth client still references is
+  refused with the exact revoke commands — including clients that were
+  revoked-but-retained, which still block deletion at the database level.
+  Recurring maintenance now skips such sources instead of aborting entirely,
+  and a source's git scaffolding is torn down only after the deletion
+  commits, so a refused delete leaves it fully intact.
+- Multi-agent write throughput: same-slug writes in different sources no
+  longer serialize on each other (source-scoped advisory locks, with an
+  eleven-site audit documenting every intentionally-global lock). Restart
+  your serve and upgrade CLIs together when picking this up.
+- Brains that predate the scoped-client schema are refused at registration
+  with a one-line migration command instead of failing mid-transaction.
+
+### Fixed
+- `recall --supersessions` now applies the same world-only visibility filter
+  as every other remote read arm, and federated recall merges each arm on its
+  own semantic timestamp.
+- `gbrain agent run -- --help` submits the literal prompt instead of printing
+  help; `gbrain agent … --help` answers on a machine with no brain configured.
+
+### Infrastructure
+- A 12-case end-to-end suite proves continuity, isolation, write-concurrency,
+  chaos-kill integrity, and secret rotation over a real HTTP serve with real
+  tokens, wired as its own CI step. BrainBench gains the first fixture
+  exercising the leak detector's non-default active-source arm. 100+ new
+  unit tests pin the registration contract byte-for-byte.
+
+To take advantage of v0.46.13.0: on the brain host, run
+`gbrain agent register <name> --harness <your-harness> --preset coding-agent
+--federated-read <project-sources> --url <your-serve-url>` and paste the
+printed block into your agent. Existing setups keep working unchanged; if
+`gbrain doctor` flags dangling read grants or orphaned workspace sources, the
+message names the exact fix.
+## [0.46.12.3] - 2026-08-16
+
+**Supply-chain hardening for how gbrain updates and how community code lands.**
+A security pass over the update path, the release build, and the contribution
+workflow. Nothing here fixes an active exposure; it raises the floor so a
+future compromised release channel or a slipped contribution can't turn into a
+silent problem.
+
+### Added
+- `gbrain upgrade` (compiled-binary self-update) now confirms the download's
+  integrity before it installs anything. It checks the downloaded binary against
+  the build-provenance attestation GitHub publishes for each release, and confirms
+  the binary really is the release it was fetched for. If the check can't be
+  satisfied, the update is refused and your existing binary is left untouched.
+- `wave-security-scan` (`bun run wave-security-scan <base>..<head>`): a repeatable
+  security sweep for reviewing batches of community contributions before they
+  ship. It surfaces newly introduced obfuscation, secrets (scanned without the
+  usual test/skills exclusions), and changes to the bundled admin UI, with
+  everything else as context.
+
+### Changed
+- Release binaries now build the admin UI fresh from source at release time, so
+  the shipped bundle always corresponds to reviewable source.
+- Static analysis (Semgrep) now blocks a pull request on issues that PR
+  introduces, while never blocking on pre-existing findings.
+- `SECURITY.md` documents which install paths verify update integrity and which
+  remain trust-on-first-use, and `docs/RELEASING.md` adds a security-review step
+  to the community-contribution process.
+
 ## [0.46.12.2] - 2026-08-16
 
 **Your agent can now do over MCP what it could only do from the CLI.** An

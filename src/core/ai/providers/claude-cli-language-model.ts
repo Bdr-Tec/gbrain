@@ -219,10 +219,24 @@ function runClaude(
     // (subscription), never via an inherited API key. Without this, an
     // ANTHROPIC_API_KEY in gbrain's env (the exact setup this recipe is meant
     // to replace) silently flips billing to per-token API usage.
+    //
+    // Also scrub the CLAUDE_CODE_USE_* backend-switch flags: Bedrock, Vertex
+    // AI, Mantle, Microsoft Foundry, and Claude Platform on AWS are each
+    // gated by one of these, take priority over subscription OAuth when set,
+    // and route billing through a cloud account instead. Clearing the switch
+    // is sufficient — provider-specific creds (AWS_*, ANTHROPIC_VERTEX_*,
+    // ANTHROPIC_FOUNDRY_*, ANTHROPIC_AWS_*, ...) are inert without it.
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
+    // Prefix wipe, not a denylist (review hardening): the backend-switch
+    // family grows one CLAUDE_CODE_USE_* flag per new cloud backend, and any
+    // future switch inherited from gbrain's env would silently re-route the
+    // child's billing. Subscription-only is the recipe's contract.
+    for (const k of Object.keys(env)) {
+      if (k.startsWith('CLAUDE_CODE_USE_')) delete env[k];
+    }
     const child = spawn(claudeBin(), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: ensureCleanCwd(),
@@ -392,7 +406,12 @@ export class ClaudeCliLanguageModel implements LanguageModelV2 {
   async doGenerate(options: LanguageModelV2CallOptions): Promise<{
     content: LanguageModelV2Content[];
     finishReason: 'stop' | 'length' | 'content-filter' | 'tool-calls' | 'error' | 'other' | 'unknown';
-    usage: { inputTokens: number | undefined; outputTokens: number | undefined; totalTokens: number | undefined };
+    usage: {
+      inputTokens: number | undefined;
+      outputTokens: number | undefined;
+      totalTokens: number | undefined;
+      cachedInputTokens: number | undefined;
+    };
     warnings: never[];
   }> {
     const { systemText, userPrompt } = renderPrompt(options.prompt);
@@ -422,6 +441,14 @@ export class ClaudeCliLanguageModel implements LanguageModelV2 {
     const inputTokens = result.usage?.input_tokens;
     const outputTokens = result.usage?.output_tokens;
     const totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0);
+    // `cache_creation_input_tokens` is deliberately NOT surfaced here — the AI
+    // SDK's LanguageModelV2Usage has no corresponding field, and folding it in
+    // would need a claude-cli-specific branch in the gateway's usage assembly
+    // (src/core/ai/gateway.ts). Out of scope for this fix.
+    const cachedInputTokens =
+      result.usage?.cache_read_input_tokens !== undefined
+        ? Number(result.usage.cache_read_input_tokens)
+        : undefined;
 
     return {
       content,
@@ -430,6 +457,7 @@ export class ClaudeCliLanguageModel implements LanguageModelV2 {
         inputTokens,
         outputTokens,
         totalTokens: inputTokens !== undefined && outputTokens !== undefined ? totalTokens : undefined,
+        cachedInputTokens,
       },
       warnings: [],
     };

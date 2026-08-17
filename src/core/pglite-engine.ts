@@ -78,7 +78,7 @@ import type {
 import { validateSlug, contentHash, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { executeRawJsonb, type SqlValue } from './sql-query.ts';
 import { sanitizeForJsonb, buildLinkRows, buildTimelineRows } from './batch-rows.ts';
-import { PAGE_SORT_SQL } from './types.ts';
+import { PAGE_SORT_SQL, MIN_ENTITY_PAGES_FOR_COVERAGE } from './types.ts';
 import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery } from './search/sql-ranking.ts';
@@ -4848,7 +4848,7 @@ export class PGLiteEngine implements BrainEngine {
 
   async listSupersessions(
     source_id: string,
-    opts?: { since?: Date; limit?: number },
+    opts?: { since?: Date; limit?: number; visibility?: ('private' | 'world')[] },
   ): Promise<FactRow[]> {
     return factsImpl.listSupersessions(this.factsDeps, source_id, opts);
   }
@@ -5189,8 +5189,16 @@ export class PGLiteEngine implements BrainEngine {
             AND NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip')
         ) as missing_embeddings,
         (SELECT count(*) FROM links) as link_count,
+        (SELECT count(*) FROM entity_pages) as entity_page_count,
+        -- gbrain#4153 consistency: an inbound link counts toward coverage
+        -- only when its SOURCE page is live — the same endpoint-liveness rule
+        -- the islanded predicate below applies, so an entity whose only
+        -- inbound link comes from a soft-deleted page can't read as covered
+        -- AND islanded in one payload.
         (SELECT count(*) FROM entity_pages e
-         WHERE EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id))::float /
+         WHERE EXISTS (SELECT 1 FROM links l
+                       JOIN pages src ON src.id = l.from_page_id
+                       WHERE l.to_page_id = e.id AND src.deleted_at IS NULL))::float /
           GREATEST((SELECT count(*) FROM entity_pages), 1)::float as link_coverage,
         (SELECT count(*) FROM entity_pages e
          WHERE EXISTS (SELECT 1 FROM timeline_entries te WHERE te.page_id = e.id))::float /
@@ -5215,10 +5223,20 @@ export class PGLiteEngine implements BrainEngine {
     // Archive (raw/), generated, and daily-log pages are not expected to
     // participate in the curated graph. Filtered in TS because the policy
     // includes per-brain config overrides.
+    // gbrain#4153: endpoint liveness in BOTH directions — an inbound link
+    // only counts when its SOURCE page is live (the invariant
+    // findOrphanPages documents), and an outbound link only counts when its
+    // TARGET is live. Without this, get_health's orphan_pages disagreed with
+    // `gbrain orphans` whenever a soft-deleted page still linked to (or was
+    // linked from) a live one.
     const { rows: pageScopeRows } = await this.db.query(`
       SELECT p.slug,
-             (NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
-              AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)) as islanded,
+             (NOT EXISTS (SELECT 1 FROM links l
+                          JOIN pages src ON src.id = l.from_page_id
+                          WHERE l.to_page_id = p.id AND src.deleted_at IS NULL)
+              AND NOT EXISTS (SELECT 1 FROM links l
+                          JOIN pages tgt ON tgt.id = l.to_page_id
+                          WHERE l.from_page_id = p.id AND tgt.deleted_at IS NULL)) as islanded,
              EXISTS (SELECT 1 FROM timeline_entries te WHERE te.page_id = p.id) as has_timeline
       FROM pages p
       WHERE p.deleted_at IS NULL
@@ -5270,8 +5288,12 @@ export class PGLiteEngine implements BrainEngine {
       missing_embeddings: Number(r.missing_embeddings),
       brain_score: brainScore,
       dead_links: deadLinks,
-      link_coverage: Number(r.link_coverage),
-      timeline_coverage: Number(r.timeline_coverage),
+      entity_page_count: Number(r.entity_page_count),
+      // gbrain#4147: below the small-N floor the ratio is statistically
+      // meaningless (0/0 used to read as a hard 0%), so it reports null and
+      // consumers suppress both the percentage and its remediation actions.
+      link_coverage: Number(r.entity_page_count) >= MIN_ENTITY_PAGES_FOR_COVERAGE ? Number(r.link_coverage) : null,
+      timeline_coverage: Number(r.entity_page_count) >= MIN_ENTITY_PAGES_FOR_COVERAGE ? Number(r.timeline_coverage) : null,
       most_connected: (connected as { slug: string; link_count: number }[]).map(c => ({
         slug: c.slug,
         link_count: Number(c.link_count),

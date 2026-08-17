@@ -46,7 +46,7 @@ import type {
   Recipe,
   TouchpointKind,
 } from './types.ts';
-import { resolveRecipe, assertTouchpoint, parseModelId } from './model-resolver.ts';
+import { resolveRecipe, assertTouchpoint, parseModelId, embeddingDimsForModel } from './model-resolver.ts';
 import {
   OPENROUTER_CACHE_HEADER,
   openrouterRequiresExplicitPromptCache,
@@ -164,6 +164,11 @@ type EmbedManyFn = typeof embedMany;
 let _embedTransport: EmbedManyFn = embedMany;
 type GenerateTextFn = typeof generateText;
 let _generateTextTransport: GenerateTextFn = generateText;
+// Test-only seam for expand()'s structured-output SDK call. Mirrors
+// _generateTextTransport (see __setGenerateObjectTransportForTests). Never
+// swapped in production — expand() always calls the real generateObject.
+type GenerateObjectFn = typeof generateObject;
+let _generateObjectTransport: GenerateObjectFn = generateObject;
 // v0.41.6.0 D1: tests that install a transport stub also pass the
 // embedding-creds preflight, matching the chat-transport fast-path
 // pattern. Set when __setEmbedTransportForTests is called with a
@@ -619,6 +624,7 @@ function clearGatewayState(): void {
   _shrinkState.clear();
   _embedTransport = embedMany;
   _generateTextTransport = generateText;
+  _generateObjectTransport = generateObject;
   _embedTransportInstalled = false;
   _chatTransport = null;
   _warnedRecipes.clear();
@@ -674,6 +680,17 @@ export function __setEmbedTransportForTests(fn: EmbedManyFn | null): void {
  */
 export function __setGenerateTextTransportForTests(fn: GenerateTextFn | null): void {
   _generateTextTransport = fn ?? generateText;
+}
+
+/**
+ * Test-only seam for expand()'s generateObject call (the structured-output
+ * path used for native providers and openai-compatible recipes that declare
+ * supportsStructuredOutputs). Same shape as __setGenerateTextTransportForTests.
+ *
+ * @internal exported for tests; not part of the public gateway API.
+ */
+export function __setGenerateObjectTransportForTests(fn: GenerateObjectFn | null): void {
+  _generateObjectTransport = fn ?? generateObject;
 }
 
 /**
@@ -831,8 +848,12 @@ export function diagnoseEmbedding(modelOverride?: string): EmbeddingDiagnosis {
   // search. The genuine "picked a user-provided provider but no model" UX is
   // handled at the config/init layer, where a bare provider string still exists.
   const isUserProvided = (tp as any).user_provided_models === true;
-  const recipeDefaultDims = tp.default_dims ?? 0;
-  if ((isUserProvided || recipeDefaultDims === 0) && !_config!.embedding_dimensions) {
+  // Consult the per-model map, not just the recipe-wide default: a recipe
+  // with default_dims:0 (openrouter, #4114) still KNOWS the width of its
+  // listed models via model_dims, so those must not fail preflight when
+  // embedding_dimensions is unset — only genuinely unknown ids do.
+  const recipeDeclaredDims = embeddingDimsForModel(recipe, parsed.modelId);
+  if ((isUserProvided || recipeDeclaredDims === 0) && !_config!.embedding_dimensions) {
     return {
       ok: false,
       reason: 'user_provided_dims_unset',
@@ -2202,13 +2223,14 @@ async function embedMultimodalOpenAICompat(
     );
   }
 
-  // D12 — dim validation. Prefer recipe's declared default_dims when set;
-  // fall back to the brain's configured embedding_dimensions. If neither
-  // is known (LiteLLM recipe with default_dims=0 and no config override),
-  // we skip the dim check rather than fabricate an expected value — the
-  // engine's vector(N) column will reject mismatched rows at INSERT time
-  // with a clearer error than anything we could throw here.
-  const recipeDims = recipe.touchpoints.embedding?.default_dims ?? 0;
+  // D12 — dim validation. Prefer the recipe's declared dims for THIS model
+  // (per-model model_dims first, then default_dims — #4114); fall back to
+  // the brain's configured embedding_dimensions. If neither is known
+  // (LiteLLM recipe with default_dims=0 and no config override), we skip
+  // the dim check rather than fabricate an expected value — the engine's
+  // vector(N) column will reject mismatched rows at INSERT time with a
+  // clearer error than anything we could throw here.
+  const recipeDims = embeddingDimsForModel(recipe, modelId);
   const expectedDims = recipeDims > 0
     ? recipeDims
     : (cfg.embedding_dimensions ?? 0);
@@ -2531,8 +2553,34 @@ export async function expand(query: string): Promise<string[]> {
     `Query: ${query}`,
   ].join('\n');
 
+  // #4121: expand() calls generateObject/generateText directly and never
+  // goes through chat()'s _recordBudget closure, so every expansion LLM
+  // call was invisible to BudgetTracker — spend happened but was never
+  // recorded, even inside a withBudgetTracker() scope. Resolve the ambient
+  // tracker once and record on every SUCCESSFUL call site below. Fail-open
+  // (no tracker → no-op) and swallow BudgetExhausted the same way chat()'s
+  // _recordBudget does — TX1 surfaces on the NEXT reserve(), not here.
+  const tracker = getCurrentBudgetTracker();
+  const recordExpansionUsage = (
+    modelLabel: string,
+    usage: { inputTokens?: number; outputTokens?: number } | undefined,
+  ): void => {
+    if (!tracker) return;
+    try {
+      tracker.record({
+        modelId: modelLabel,
+        inputTokens: Number(usage?.inputTokens ?? 0),
+        outputTokens: Number(usage?.outputTokens ?? 0),
+        label: 'gateway.expand',
+      });
+    } catch {
+      // BudgetExhausted (TX1) raised here; surfaced via the next reserve().
+    }
+  };
+
   try {
     const { model, recipe, modelId } = await resolveExpansionProvider(getExpansionModel());
+    const modelLabel = `${recipe.id}:${modelId}`;
 
     let expansions: string[];
 
@@ -2541,35 +2589,38 @@ export async function expand(query: string): Promise<string[]> {
     // there, so generateObject would warn and silently degrade. generateText + a
     // tolerant parse recovers the queries instead. Fresh abortSignal per call.
     const viaText = async (): Promise<string[]> => {
-      const { text } = await generateText({
+      const { text, usage } = await _generateTextTransport({
         model,
         abortSignal: withDefaultTimeout(undefined, AI_CHAT_TIMEOUT_MS),
         prompt: expansionPrompt,
       });
+      recordExpansionUsage(modelLabel, usage);
       return parseExpansionResponse(text) ?? [];
     };
 
     if (recipe.implementation !== 'openai-compatible') {
       // Native providers (Anthropic, OpenAI, Google) support generateObject's
       // structured output natively — unchanged path.
-      const result = await generateObject({
+      const result = await _generateObjectTransport({
         model,
         schema: ExpansionSchema,
         abortSignal: withDefaultTimeout(undefined, AI_CHAT_TIMEOUT_MS),
         prompt: expansionPrompt,
       });
+      recordExpansionUsage(modelLabel, result.usage);
       expansions = result.object?.queries ?? [];
     } else if (recipeSupportsStructuredOutputs(recipe)) {
       // openai-compatible backend that honors strict json_schema: request the
       // schema (strict validation), and fall back to the text path if it is
       // rejected at call time so a mis-declared capability never drops expansion.
       try {
-        const result = await generateObject({
+        const result = await _generateObjectTransport({
           model,
           schema: ExpansionSchema,
           abortSignal: withDefaultTimeout(undefined, AI_CHAT_TIMEOUT_MS),
           prompt: expansionPrompt,
         });
+        recordExpansionUsage(modelLabel, result.usage);
         expansions = result.object?.queries ?? [];
       } catch {
         expansions = await viaText();
