@@ -58,25 +58,32 @@ describe('cycle phase partition (#2194 fix #3)', () => {
     expect(MAINTENANCE_PHASES).toContain('embed');
   });
 
-  test('non-default cycles drop mixed/global phases at the shared boundary', () => {
-    expect(resolveCyclePhases(undefined, 'repo-a')).toEqual(SOURCE_PHASES);
-    expect(resolveCyclePhases(['sync', 'synthesize', 'patterns', 'embed'], 'repo-a')).toEqual(['sync']);
+  test('non-default cycles exclude MIXED phases only at the shared boundary', () => {
+    // GLOBAL phases (e.g. orphans, embed) are NOT filtered here — several
+    // already accept an explicit source scope as a deliberate narrowing
+    // (CycleOpts.forceGlobalOrphans exists precisely because orphans can go
+    // either way), and test/core/cycle.serial.test.ts pins
+    // "--phase orphans preserves explicit source scope" on exactly that
+    // behavior. Only MIXED phases (synthesize, patterns) read brain-wide
+    // input regardless of scope, so only they are unsafe to fan out.
+    expect(resolveCyclePhases(undefined, 'repo-a')).toEqual(ALL_PHASES.filter((p) => PHASE_SCOPE[p] !== 'mixed'));
+    expect(resolveCyclePhases(['sync', 'synthesize', 'patterns', 'embed'], 'repo-a')).toEqual(['sync', 'embed']);
     expect(resolveCyclePhases(undefined, 'default')).toEqual(ALL_PHASES);
     expect(resolveCyclePhases(undefined, undefined)).toEqual(ALL_PHASES);
   });
 
-  test('runCycle reports excluded mixed/global phases instead of silently omitting them', async () => {
+  test('runCycle reports excluded MIXED phases instead of silently omitting them', async () => {
     const report = await runCycle(null, {
       brainDir: null,
       sourceId: 'repo-a',
-      phases: ['synthesize', 'patterns', 'embed'],
+      phases: ['synthesize', 'patterns'],
       dryRun: true,
     });
     expect(report.status).toBe('clean');
-    expect(report.phases.map((p) => p.phase)).toEqual(['synthesize', 'patterns', 'embed']);
+    expect(report.phases.map((p) => p.phase)).toEqual(['synthesize', 'patterns']);
     for (const phase of report.phases) {
       expect(phase.status).toBe('skipped');
-      expect(phase.details.reason).toBe('non_source_phase');
+      expect(phase.details.reason).toBe('mixed_scope_excluded_from_source_cycle');
       expect(phase.details.source_id).toBe('repo-a');
     }
   });

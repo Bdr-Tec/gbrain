@@ -216,11 +216,21 @@ export const MAINTENANCE_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_S
 /**
  * Resolve the effective phase list for one cycle invocation.
  *
- * A named non-default source may run only phases whose inputs and outputs are
- * source-scoped. Filtering happens here, at the shared runCycle boundary, so a
- * manual `dream --source X`, an autopilot job, or any future caller cannot
- * accidentally re-run mixed/global work once per source. The canonical
- * `default` cycle remains the one place where a full cycle is valid.
+ * A named non-default source excludes only MIXED phases: `synthesize` reads
+ * the global transcript corpus and `patterns` reads cross-source reflections,
+ * so re-running either once per source duplicates the same brain-wide read
+ * into a near-identical write per source (the bug this boundary closes).
+ * GLOBAL phases are left alone here — several of them (orphans, in
+ * particular; see `forceGlobalOrphans` in CycleOpts) already accept an
+ * explicit source scope as a deliberate narrowing rather than a brain-wide
+ * scan, and existing callers rely on `--phase orphans --source X` still
+ * running orphans scoped to X. SOURCE phases are always unaffected.
+ *
+ * Filtering happens here, at the shared runCycle boundary, so a manual
+ * `dream --source X`, an autopilot job, or any future caller cannot
+ * accidentally re-run MIXED work once per source. The canonical `default`
+ * cycle remains the one place where a full cycle (including mixed phases)
+ * is valid.
  */
 export function resolveCyclePhases(
   requested: CyclePhase[] | undefined,
@@ -228,7 +238,7 @@ export function resolveCyclePhases(
 ): CyclePhase[] {
   const phases = requested ?? ALL_PHASES;
   if (!sourceId || sourceId === 'default') return phases;
-  return phases.filter((phase) => PHASE_SCOPE[phase] === 'source');
+  return phases.filter((phase) => PHASE_SCOPE[phase] !== 'mixed');
 }
 
 /** Config key holding the ISO timestamp of the last successful global-maintenance run. */
@@ -1733,7 +1743,7 @@ export async function runCycle(
     duration_ms: 0,
     summary: `excluded from non-default source cycle (${PHASE_SCOPE[phase]} scope)`,
     details: {
-      reason: 'non_source_phase',
+      reason: 'mixed_scope_excluded_from_source_cycle',
       source_id: opts.sourceId,
       phase_scope: PHASE_SCOPE[phase],
     },
