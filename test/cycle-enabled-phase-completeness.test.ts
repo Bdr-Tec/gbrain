@@ -96,10 +96,10 @@ describe('#2540 (i) — pack omitting optional phases, all enabled phases comple
       await seedSource('no-pack');
       expect(await readLastFullCycleAt('no-pack')).toBeNull();
 
-      // No active pack registered → packDeclaresPhase fails open (false)
-      // for extract_atoms/synthesize_concepts → both report 'skipped',
-      // not 'warn'/'fail'. Default ALL_PHASES selection (matches a real
-      // nightly `gbrain dream`/`gbrain dream --dir` run).
+      // No active pack registered → the source-scoped extract_atoms phase
+      // reports not_in_active_pack. The global synthesize_concepts phase is
+      // excluded earlier at the non-default source boundary. Both remain
+      // skipped rather than degrading the source-cycle status.
       const report = await runCycle(engine, {
         brainDir,
         sourceId: 'no-pack',
@@ -110,10 +110,11 @@ describe('#2540 (i) — pack omitting optional phases, all enabled phases comple
       expect(extractAtoms?.status).toBe('skipped');
       expect(extractAtoms?.details?.reason).toBe('not_in_active_pack');
       expect(synthConcepts?.status).toBe('skipped');
-      expect(synthConcepts?.details?.reason).toBe('not_in_active_pack');
+      expect(synthConcepts?.details?.reason).toBe('non_source_phase');
+      expect(synthConcepts?.details?.phase_scope).toBe('global');
 
-      // The cycle must not be reported 'failed' outright just because two
-      // phases the pack never declared were skipped.
+      // The cycle must not be reported 'failed' because inapplicable phases
+      // were skipped by either the pack gate or the scope gate.
       expect(report.status).not.toBe('failed');
 
       // Scope note (from review): 'not failed' deliberately does NOT claim
@@ -124,9 +125,9 @@ describe('#2540 (i) — pack omitting optional phases, all enabled phases comple
       // stamp `last_full_cycle_at` at all is a separate semantics question
       // for the maintainer; this PR does not change it, and this test must
       // not silently encode an answer to it. What IS pinned here is the
-      // narrow property under test: a phase the active pack never declared
-      // is 'skipped' — never 'fail' — so pack composition alone can never
-      // hold the stamp back.
+      // narrow property under test: an inapplicable phase is 'skipped' —
+      // never 'fail' — so pack composition and the source-scope boundary do
+      // not hold the stamp back.
       const packGatedFailures = report.phases
         .filter(p => p.details?.reason === 'not_in_active_pack' && p.status !== 'skipped')
         .map(p => `${p.phase}:${p.status}`);

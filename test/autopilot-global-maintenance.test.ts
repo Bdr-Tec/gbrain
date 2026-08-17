@@ -1,8 +1,8 @@
 /**
  * #2194 fix #3 / #2227 bug #3 — the cycle split.
  *
- * Per-source autopilot cycles run ONLY source-scoped (+ mixed) phases; the
- * brain-wide `global` phases run ONCE in a separate autopilot-global-maintenance
+ * Per-source autopilot cycles run ONLY source-scoped phases; mixed + global
+ * phases run ONCE in a separate autopilot-global-maintenance
  * job. This replaces the rejected skip-and-stamp-fresh design (codex #1/#2): the
  * split makes single-flight structural (one global job, not N concurrent embeds)
  * and never marks a source "fresh" for global work it didn't do. These tests pin
@@ -19,9 +19,13 @@ import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { registerBuiltinHandlers } from '../src/commands/jobs.ts';
 import {
   ALL_PHASES,
+  SOURCE_PHASES,
+  MIXED_PHASES,
   GLOBAL_PHASES,
-  NON_GLOBAL_PHASES,
+  MAINTENANCE_PHASES,
   PHASE_SCOPE,
+  resolveCyclePhases,
+  runCycle,
   LAST_GLOBAL_AT_KEY,
 } from '../src/core/cycle.ts';
 import {
@@ -32,13 +36,12 @@ import {
 import type { BrainEngine } from '../src/core/engine.ts';
 
 describe('cycle phase partition (#2194 fix #3)', () => {
-  test('GLOBAL ∪ NON_GLOBAL == ALL_PHASES, no overlap', () => {
-    const union = new Set([...GLOBAL_PHASES, ...NON_GLOBAL_PHASES]);
+  test('SOURCE ∪ MIXED ∪ GLOBAL == ALL_PHASES, no overlap', () => {
+    const union = new Set([...SOURCE_PHASES, ...MIXED_PHASES, ...GLOBAL_PHASES]);
     expect(union.size).toBe(ALL_PHASES.length);
     for (const p of ALL_PHASES) expect(union.has(p)).toBe(true);
-    // No phase in both.
-    const overlap = GLOBAL_PHASES.filter((p) => NON_GLOBAL_PHASES.includes(p));
-    expect(overlap).toEqual([]);
+    expect(SOURCE_PHASES.filter((p) => MIXED_PHASES.includes(p) || GLOBAL_PHASES.includes(p))).toEqual([]);
+    expect(MIXED_PHASES.filter((p) => GLOBAL_PHASES.includes(p))).toEqual([]);
   });
 
   test('every GLOBAL phase is PHASE_SCOPE==="global"; embed is global, lint is not', () => {
@@ -46,10 +49,38 @@ describe('cycle phase partition (#2194 fix #3)', () => {
     expect(GLOBAL_PHASES).toContain('embed');
     expect(GLOBAL_PHASES).toContain('orphans');
     expect(GLOBAL_PHASES).toContain('purge');
-    expect(NON_GLOBAL_PHASES).toContain('lint');
-    expect(NON_GLOBAL_PHASES).toContain('sync');
-    expect(NON_GLOBAL_PHASES).not.toContain('embed');
+    expect(SOURCE_PHASES).toContain('lint');
+    expect(SOURCE_PHASES).toContain('sync');
+    expect(SOURCE_PHASES).not.toContain('embed');
+    expect(MIXED_PHASES).toEqual(['synthesize', 'patterns']);
+    expect(MAINTENANCE_PHASES).toContain('synthesize');
+    expect(MAINTENANCE_PHASES).toContain('patterns');
+    expect(MAINTENANCE_PHASES).toContain('embed');
   });
+
+  test('non-default cycles drop mixed/global phases at the shared boundary', () => {
+    expect(resolveCyclePhases(undefined, 'repo-a')).toEqual(SOURCE_PHASES);
+    expect(resolveCyclePhases(['sync', 'synthesize', 'patterns', 'embed'], 'repo-a')).toEqual(['sync']);
+    expect(resolveCyclePhases(undefined, 'default')).toEqual(ALL_PHASES);
+    expect(resolveCyclePhases(undefined, undefined)).toEqual(ALL_PHASES);
+  });
+
+  test('runCycle reports excluded mixed/global phases instead of silently omitting them', async () => {
+    const report = await runCycle(null, {
+      brainDir: null,
+      sourceId: 'repo-a',
+      phases: ['synthesize', 'patterns', 'embed'],
+      dryRun: true,
+    });
+    expect(report.status).toBe('clean');
+    expect(report.phases.map((p) => p.phase)).toEqual(['synthesize', 'patterns', 'embed']);
+    for (const phase of report.phases) {
+      expect(phase.status).toBe('skipped');
+      expect(phase.details.reason).toBe('non_source_phase');
+      expect(phase.details.source_id).toBe('repo-a');
+    }
+  });
+
 });
 
 describe('isGlobalMaintenanceStale', () => {
@@ -91,7 +122,7 @@ describe('dispatchGlobalMaintenance — single-flight gate', () => {
     // across slot rotation (upstream issue #2).
     expect(added[0].opts.maxPending).toBe(1);
     expect(added[0].opts.maxWaiting).toBeUndefined();
-    expect(added[0].data.phases).toEqual(GLOBAL_PHASES);
+    expect(added[0].data.phases).toEqual(MAINTENANCE_PHASES);
   });
 
   test('fresh → does NOT dispatch', async () => {
@@ -123,8 +154,8 @@ describe('dispatchGlobalMaintenance — single-flight gate', () => {
   });
 });
 
-describe('dispatchPerSource — per-source jobs carry NON_GLOBAL phases (no embed)', () => {
-  test('each per-source job sets phases = NON_GLOBAL_PHASES', async () => {
+describe('dispatchPerSource — per-source jobs carry SOURCE phases only', () => {
+  test('each per-source job excludes mixed and global phases', async () => {
     const sources = [{ id: 'repo-a', name: 'a', config: {} }, { id: 'repo-b', name: 'b', config: {} }];
     const added: any[] = [];
     const engine = {
@@ -137,7 +168,9 @@ describe('dispatchPerSource — per-source jobs carry NON_GLOBAL phases (no embe
     await dispatchPerSource(engine, queue, { repoPath: '/tmp', slot: 's', timeoutMs: 1, fanoutMax: 4, jsonMode: true, emit: () => {}, log: () => {} });
     expect(added.length).toBe(2);
     for (const j of added) {
-      expect(j.data.phases).toEqual(NON_GLOBAL_PHASES);
+      expect(j.data.phases).toEqual(SOURCE_PHASES);
+      expect(j.data.phases).not.toContain('synthesize');
+      expect(j.data.phases).not.toContain('patterns');
       expect(j.data.phases).not.toContain('embed');
     }
   });
@@ -155,6 +188,22 @@ describe('autopilot-global-maintenance handler stamps last_global_at (PGLite)', 
     await registerBuiltinHandlers(fakeWorker as never, engine);
     return handlers;
   }
+
+  test('a cycle containing only excluded phases does not stamp source freshness', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path) VALUES ($1, $2, $3)`,
+      ['repo-a', 'repo-a', '/tmp/repo-a'],
+    );
+    const report = await runCycle(engine, {
+      brainDir: null,
+      sourceId: 'repo-a',
+      phases: ['synthesize', 'patterns'],
+    });
+    expect(report.status).toBe('clean');
+    const source = (await engine.listAllSources()).find((row) => row.id === 'repo-a');
+    expect(source?.config.last_source_cycle_at).toBeUndefined();
+    expect(source?.config.last_full_cycle_at).toBeUndefined();
+  });
 
   test('runs global phases (no source_id) and stamps autopilot.last_global_at on success', async () => {
     expect(await engine.getConfig(LAST_GLOBAL_AT_KEY)).toBeNull();

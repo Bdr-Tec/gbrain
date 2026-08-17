@@ -51,6 +51,9 @@ import { createProgress, type ProgressReporter } from './progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 import { tryAcquireDbLock, reapDeadHolderLocks, LockStolenError, type DbLockHandle } from './db-lock.ts';
 import { assertValidSourceId } from './source-id.ts';
+import { PHASE_SCOPE, type PhaseScope } from './cycle/phase-scope.ts';
+
+export { PHASE_SCOPE, type PhaseScope } from './cycle/phase-scope.ts';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -84,9 +87,9 @@ export type CyclePhase =
   //    Same pack-gate model.
   | 'extract_atoms' | 'synthesize_concepts'
   // v0.41.11.0 — opt-in (default OFF) bulk fact extraction for long-form
-  // conversation pages. The phase wrapper does its own multi-source
-  // iteration directly (PHASE_SCOPE='source' here is taxonomy only;
-  // see comment above PHASE_SCOPE). Wraps the per-source loop in ONE
+  // conversation pages. The outer scheduler uses PHASE_SCOPE, while this
+  // legacy phase wrapper also performs its own multi-source iteration.
+  // Wraps the inner per-source loop in ONE
   // brain-wide BudgetTracker and passes it through opts.budgetTracker
   // so the core's auto-wrap doesn't REPLACE it.
   | 'conversation_facts_backfill'
@@ -194,82 +197,39 @@ export const ALL_PHASES: CyclePhase[] = [
 ];
 
 /**
- * v0.38 (CEO + eng review): phase-scope taxonomy. Each entry in
- * `ALL_PHASES` declares whether its work is naturally per-source,
- * brain-global, or mixed. Static documentation only — no runtime
- * enforcement yet (filed as follow-up TODO in the plan).
- *
- * Load-bearing for any future fan-out wave:
- *   - `source`: safe to parallelize per source. Sync reads/writes the
- *     one source's rows; extract walks changed slugs.
- *   - `global`: must serialize across the brain. Embed walks all stale
- *     chunks; purge sweeps brain-wide; orphans can report a single
- *     resolved source but still belongs in the serialized global lane;
- *     grade_takes + calibration aggregate across sources;
- *     resolve_symbol_edges walks every chunk.
- *   - `mixed`: per-phase decomposition needed before parallelizing.
- *     Synthesize reads the brain-global transcripts dir but writes to
- *     per-source slugs (via subagent allowlist). Patterns reads
- *     cross-source reflections but writes pattern pages.
- *
- * Per-source cycle locks (codex r2 fix) let two cycles RUN concurrently,
- * but `global` phases inside each cycle will still touch the same rows.
- * Genuine per-source autopilot fan-out requires the deferred TODOs.
- */
-export type PhaseScope = 'source' | 'global' | 'mixed';
-export const PHASE_SCOPE: Record<CyclePhase, PhaseScope> = {
-  lint: 'source',
-  backlinks: 'source',
-  sync: 'source',
-  synthesize: 'mixed',
-  extract: 'source',
-  extract_facts: 'source',
-  resolve_symbol_edges: 'global',
-  patterns: 'mixed',
-  recompute_emotional_weight: 'source',
-  consolidate: 'source',
-  propose_takes: 'source',
-  grade_takes: 'global',
-  calibration_profile: 'global',
-  // #2653 — drift walks takes brain-wide (same posture as grade_takes) and
-  // writes one brain-global report page.
-  drift: 'global',
-  embed: 'global',
-  orphans: 'global',
-  purge: 'global',
-  'schema-suggest': 'source',
-  // v0.41 T9 — extract_atoms is naturally per-source (each source's
-  // transcript dir gets walked independently). synthesize_concepts is
-  // global because concept clusters cross sources by nature.
-  extract_atoms: 'source',
-  synthesize_concepts: 'global',
-  // v0.41.11.0 — declared 'source' for taxonomy alignment with
-  // extract_facts (per-source semantics). PHASE_SCOPE has no runtime
-  // fanout enforcement today (per the comment above); the phase
-  // wrapper does its own multi-source loop via listSources().
-  conversation_facts_backfill: 'source',
-  // v0.41.39 (#1700) — per-source (wrapper loops listSources, same as above).
-  enrich_thin: 'source',
-  // v0.41.20.0 SkillOpt — global (walks the skills/ directory; per-skill
-  // DB lock inside D14 handles cross-source coordination).
-  skillopt: 'global',
-};
-
-/**
  * #2194 fix #3 / #2227 bug #3 — the cycle split.
  *
- * Per-source autopilot cycles run ONLY the source-scoped (and mixed) phases;
- * the brain-wide `global` phases (embed, orphans, purge, resolve_symbol_edges,
- * grade_takes, calibration_profile, synthesize_concepts, skillopt) run ONCE in
- * a separate `autopilot-global-maintenance` job instead of N times concurrently
- * across per-source cycles (the 4→10GB RSS blowout). Single-flight is
- * structural: one global job, not a skip-and-pretend-fresh hack (codex #1/#2).
+ * Per-source autopilot cycles run ONLY source-scoped phases. Mixed phases read
+ * brain-wide inputs and therefore cannot safely fan out by source: synthesize
+ * reads the global transcript corpus, and patterns reads cross-source
+ * reflections. They join the brain-wide phases in the single maintenance job
+ * instead of being repeated into every source.
  *
- * GLOBAL_PHASES ∪ NON_GLOBAL_PHASES == ALL_PHASES, with no overlap — pinned by
- * test/autopilot-global-maintenance.test.ts.
+ * SOURCE_PHASES ∪ MIXED_PHASES ∪ GLOBAL_PHASES == ALL_PHASES, with no overlap.
+ * MAINTENANCE_PHASES is MIXED ∪ GLOBAL in original cycle order.
  */
+export const SOURCE_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_SCOPE[p] === 'source');
+export const MIXED_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_SCOPE[p] === 'mixed');
 export const GLOBAL_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_SCOPE[p] === 'global');
-export const NON_GLOBAL_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_SCOPE[p] !== 'global');
+export const MAINTENANCE_PHASES: CyclePhase[] = ALL_PHASES.filter((p) => PHASE_SCOPE[p] !== 'source');
+
+/**
+ * Resolve the effective phase list for one cycle invocation.
+ *
+ * A named non-default source may run only phases whose inputs and outputs are
+ * source-scoped. Filtering happens here, at the shared runCycle boundary, so a
+ * manual `dream --source X`, an autopilot job, or any future caller cannot
+ * accidentally re-run mixed/global work once per source. The canonical
+ * `default` cycle remains the one place where a full cycle is valid.
+ */
+export function resolveCyclePhases(
+  requested: CyclePhase[] | undefined,
+  sourceId: string | undefined,
+): CyclePhase[] {
+  const phases = requested ?? ALL_PHASES;
+  if (!sourceId || sourceId === 'default') return phases;
+  return phases.filter((phase) => PHASE_SCOPE[phase] === 'source');
+}
 
 /** Config key holding the ISO timestamp of the last successful global-maintenance run. */
 export const LAST_GLOBAL_AT_KEY = 'autopilot.last_global_at';
@@ -1074,7 +1034,7 @@ interface SyncPhaseResult extends PhaseResult {
  * everything but name, so dream derives the source id up front and passes
  * it as opts.sourceId — landing the freshness stamp without changing
  * runCycle's stamp/lock semantics for legacy global callers (the
- * autopilot-global-maintenance handler runs GLOBAL_PHASES with a brainDir
+ * autopilot-global-maintenance handler runs MAINTENANCE_PHASES with a brainDir
  * and MUST NOT stamp per-source freshness; see rejected PR #2549).
  */
 export async function resolveSourceForDir(
@@ -1761,11 +1721,23 @@ export async function runCycle(
   opts: CycleOpts,
 ): Promise<CycleReport> {
   const start = performance.now();
-  const phases = opts.phases ?? ALL_PHASES;
+  const requestedPhases = opts.phases ?? ALL_PHASES;
+  const phases = resolveCyclePhases(requestedPhases, opts.sourceId);
+  const excludedPhases = requestedPhases.filter((phase) => !phases.includes(phase));
   const dryRun = !!opts.dryRun;
   const pull = !!opts.pull;
   const timestamp = new Date().toISOString();
-  const phaseResults: PhaseResult[] = [];
+  const phaseResults: PhaseResult[] = excludedPhases.map((phase) => ({
+    phase,
+    status: 'skipped',
+    duration_ms: 0,
+    summary: `excluded from non-default source cycle (${PHASE_SCOPE[phase]} scope)`,
+    details: {
+      reason: 'non_source_phase',
+      source_id: opts.sourceId,
+      phase_scope: PHASE_SCOPE[phase],
+    },
+  }));
 
   // Capture as a const so it narrows to `string` inside the `else` branches of
   // the per-phase `if (brainDir === null)` guards, even within async closures
@@ -2866,7 +2838,7 @@ export async function runCycle(
   // timestamp post-failure is still higher than missing a successful write, so
   // the stamp itself is unchanged — only the reporting is.
   let stampWriteFailed: { source_id: string; error: string } | undefined;
-  if (opts.sourceId && engine && !dryRun && !aborted && (status === 'ok' || status === 'clean' || status === 'partial')) {
+  if (opts.sourceId && phases.length > 0 && engine && !dryRun && !aborted && (status === 'ok' || status === 'clean' || status === 'partial')) {
     try {
       const nowIso = new Date().toISOString();
       // #2194 fix #3 (the cycle split): `last_source_cycle_at` is the NEW gate
