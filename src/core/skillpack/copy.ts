@@ -70,8 +70,12 @@ export interface CopyResult {
 export class CopyError extends Error {
   constructor(
     message: string,
-    public code: 'symlink_rejected' | 'path_traversal' | 'source_missing',
+    public code: 'symlink_rejected' | 'path_traversal' | 'source_missing' | 'write_failed',
     public offendingPath?: string,
+    /** For 'write_failed': the per-file results completed BEFORE the failing
+     *  write, so callers can record ownership of what actually landed (a
+     *  mid-run disk-full/EACCES must not orphan files 1..k−1). */
+    public partial?: CopyFileResult[],
   ) {
     super(message);
     this.name = 'CopyError';
@@ -192,11 +196,22 @@ export function copyArtifacts(items: CopyItem[], opts: CopyArtifactsOpts = {}): 
     }
     let sha256: string | undefined;
     if (!dryRun) {
-      const content = item.content != null ? item.content : readFileSync(item.source);
-      mkdirSync(dirname(item.target), { recursive: true });
-      writeFileSync(item.target, content);
-      if (opts.computeSha256) {
-        sha256 = createHash('sha256').update(content).digest('hex');
+      try {
+        const content = item.content != null ? item.content : readFileSync(item.source);
+        mkdirSync(dirname(item.target), { recursive: true });
+        writeFileSync(item.target, content);
+        if (opts.computeSha256) {
+          sha256 = createHash('sha256').update(content).digest('hex');
+        }
+      } catch (err) {
+        // Carry the completed results so the caller can still record
+        // ownership of files 1..k−1 — a mid-run failure must not orphan them.
+        throw new CopyError(
+          `write failed for ${item.target}: ${(err as Error).message}`,
+          'write_failed',
+          item.target,
+          files,
+        );
       }
     }
     files.push({

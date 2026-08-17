@@ -49,7 +49,9 @@ import {
   loadBridgeState,
   findBridgeEntry,
   defaultBridgeStatePath,
+  BridgeStateError,
 } from '../../core/skillpack/bridge-state.ts';
+import { CopyError } from '../../core/skillpack/copy.ts';
 import { runScaffold, ScaffoldError } from '../../core/skillpack/scaffold.ts';
 import { BundleError, bundledSkillSlugs, loadBundleManifest } from '../../core/skillpack/bundle.ts';
 import { findGbrainOrDie, resolveAbs, resolveWorkspace } from './shared.ts';
@@ -132,6 +134,12 @@ function parseHarnessArgs(args: string[], cmd: string): HarnessArgs {
       }
     } else if (BOOL_FLAGS.has(a)) {
       // handled via args.includes below
+    } else if (BOOL_FLAGS.has(flagName) && eq > 0) {
+      // Agents commonly emit `--dry-run=true`; the flag registry tolerates
+      // the value but args.includes() would silently miss it — a real write
+      // on an intended dry run. Refuse instead of guessing.
+      console.error(`Error: ${flagName} is a boolean flag and takes no value (drop the '=${a.slice(eq + 1)}').`);
+      process.exit(2);
     } else if (!a.startsWith('--')) {
       positional.push(a);
     }
@@ -180,14 +188,28 @@ function resolveDest(a: HarnessArgs): string {
   process.exit(2);
 }
 
-/** Resolve the slug set: explicit picks (lane-validated) beat persona. */
+/** Resolve the slug set: explicit picks (lane-validated) beat persona;
+ *  --all is shorthand for --persona all (the full lane). */
 function resolveSlugs(gbrainRoot: string, a: HarnessArgs): { slugs: string[]; persona: string | null } {
+  if (a.all && a.persona && a.persona !== 'all') {
+    console.error(`Error: --all conflicts with --persona ${a.persona} (pick one).`);
+    process.exit(2);
+  }
   if (a.skills.length > 0) {
+    if (a.all) {
+      console.error('Error: --all conflicts with explicit --skill picks (pick one).');
+      process.exit(2);
+    }
     validateSlugsAgainstLane(gbrainRoot, a.skills);
     return { slugs: [...new Set(a.skills)].sort(), persona: null };
   }
   const persona =
-    a.persona ?? (a.harness === 'openclaw' ? 'all' : DEFAULT_PERSONA[a.harness as Exclude<BridgeHarness, 'openclaw'>]);
+    a.persona ??
+    (a.all
+      ? 'all'
+      : a.harness === 'openclaw'
+        ? 'all'
+        : DEFAULT_PERSONA[a.harness as Exclude<BridgeHarness, 'openclaw'>]);
   return { slugs: resolvePersonaSlugs(gbrainRoot, persona), persona };
 }
 
@@ -444,8 +466,7 @@ export async function cmdScaffoldHarness(args: string[]): Promise<void> {
           `persona: ${persona ?? '(explicit picks)'} | mode: ${mode}` +
           (result.summary.pairedSourcesSkipped > 0
             ? ` | ${result.summary.pairedSourcesSkipped} paired source(s) skipped (no src tree in a harness dir)`
-            : '') +
-          (result.summary.auxSkippedForStub > 0 ? ` | ${result.summary.auxSkippedForStub} aux file(s) stub-skipped` : ''),
+            : ''),
       );
       if (result.summary.modeConflicts.length > 0) {
         console.log(
@@ -509,8 +530,8 @@ export async function cmdReferenceHarness(args: string[]): Promise<void> {
           : resolveSlugs(gbrainRoot, a).slugs;
 
     if (a.applyCleanHunks) {
-      if (!positional && a.skills.length === 0) {
-        console.error('Error: --apply-clean-hunks needs a single skill (apply one at a time).');
+      if ((!positional && a.skills.length !== 1) || (positional && a.skills.length > 0) || slugs.length !== 1) {
+        console.error('Error: --apply-clean-hunks needs exactly ONE skill (apply one at a time).');
         process.exit(2);
       }
       const result = runHarnessReferenceApply({ gbrainRoot, destDir: dest, slugs, harness: a.harness, dryRun: a.dryRun });
@@ -519,7 +540,8 @@ export async function cmdReferenceHarness(args: string[]): Promise<void> {
         console.log(
           `reference --harness --apply-clean-hunks: ${result.summary.totalHunksApplied} hunk(s) applied, ` +
             `${result.summary.totalHunksConflicted} conflict(s), ${result.summary.refusedStub} stub file(s) refused, ` +
-            `${result.summary.refusedLocalEdit} local edit(s) kept`,
+            `${result.summary.refusedLocalEdit} local edit(s) kept, ` +
+            `${result.summary.refusedUnknown} unknown-provenance file(s) untouched`,
         );
         for (const f of result.files) {
           if (f.status === 'identical' || f.status === 'missing') continue;
@@ -595,11 +617,27 @@ export async function cmdRemove(args: string[]): Promise<void> {
       dryRun: a.dryRun,
       nowIso: new Date().toISOString(),
     });
+    // Silent-no-op guard: nothing owned at THIS (harness, dest), but the
+    // ledger knows other installs for the harness — name them instead of
+    // printing a success-shaped zero.
+    if (result.removedFiles.length === 0 && result.keptEdited.length === 0 && result.notOwned.length === 0) {
+      const others = loadBridgeState()
+        .entries.filter(e => e.harness === a.harness && e.dest !== dest)
+        .map(e => e.dest);
+      if (others.length > 0) {
+        console.error(
+          `note: no bridge install recorded at ${dest}; this harness has installs at: ${others.join(', ')} (pass --dest).`,
+        );
+      }
+    }
     if (a.json) console.log(JSON.stringify(result, null, 2));
     else {
       console.log(
         `${a.dryRun ? 'remove (dry-run)' : 'remove'}: ${result.removedFiles.length} owned file(s) removed, ` +
           `${result.prunedDirs.length} empty dir(s) pruned` +
+          (result.keptEdited.length > 0
+            ? ` — kept (you edited these; they're yours now): ${result.keptEdited.length}`
+            : '') +
           (result.notOwned.length > 0 ? ` — not owned (untouched): ${result.notOwned.join(', ')}` : ''),
       );
     }
@@ -622,6 +660,9 @@ export interface BridgesStatusEntry {
   identical: number;
   differs: number;
   missing: number;
+  /** Set when the currency lens itself failed (moved dest, deleted skills) —
+   *  zeros next to it mean "could not judge", not "all healthy". */
+  lens_error?: string;
 }
 
 /**
@@ -634,10 +675,13 @@ export function collectBridgesStatus(gbrainRoot: string): BridgesStatusEntry[] {
   const state = loadBridgeState();
   const out: BridgesStatusEntry[] = [];
   for (const entry of state.entries) {
-    const slugs = Object.keys(entry.written).sort();
+    const slugs = Object.keys(entry.written)
+      .filter(s => s !== '_shared')
+      .sort();
     let identical = 0;
     let differs = 0;
     let missing = 0;
+    let lensError: string | undefined;
     try {
       const ref = runHarnessReference({
         gbrainRoot,
@@ -650,9 +694,10 @@ export function collectBridgesStatus(gbrainRoot: string): BridgesStatusEntry[] {
       identical = ref.summary.identical;
       differs = ref.summary.differs;
       missing = ref.summary.missing;
-    } catch {
-      // Lens failure (moved dest, deleted skills) → report zeros; the entry
-      // row itself still surfaces the install.
+    } catch (err) {
+      // Lens failure (moved dest, deleted skills) — surface it; zeros alone
+      // would read as healthy.
+      lensError = (err as Error).message;
     }
     out.push({
       harness: entry.harness,
@@ -687,7 +732,9 @@ function exitTyped(cmd: string, err: unknown): never {
     err instanceof BridgeError ||
     err instanceof PersonaError ||
     err instanceof BundleError ||
-    err instanceof ScaffoldError
+    err instanceof ScaffoldError ||
+    err instanceof CopyError ||
+    err instanceof BridgeStateError
   ) {
     console.error(`skillpack ${cmd}: ${(err as Error).message}`);
     process.exit(2);

@@ -109,7 +109,9 @@ export function loadBridgeState(opts: { statePath?: string } = {}): BridgeState 
             typeof rec === 'object' &&
             rec !== null &&
             (rec as BridgeSlugRecord).files !== null &&
-            typeof (rec as BridgeSlugRecord).files === 'object',
+            typeof (rec as BridgeSlugRecord).files === 'object' &&
+            !Array.isArray((rec as BridgeSlugRecord).files) &&
+            Object.values((rec as BridgeSlugRecord).files).every(h => typeof h === 'string'),
         )
       );
     });
@@ -121,7 +123,9 @@ export function loadBridgeState(opts: { statePath?: string } = {}): BridgeState 
 
 export function saveBridgeState(state: BridgeState, opts: { statePath?: string } = {}): void {
   const path = opts.statePath ?? defaultBridgeStatePath();
-  const tmp = path + '.tmp';
+  // Unique tmp name: two concurrent gbrain processes must not rename each
+  // other's half-written tmp into place.
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', { mode: 0o644 });
@@ -182,7 +186,8 @@ export function recordBridgeWrites(
   const entry: BridgeEntry = {
     harness: key.harness,
     dest: key.dest,
-    ...(key.scope ? { scope: key.scope } : {}),
+    // A later run that omits scope must not erase the recorded one.
+    ...((key.scope ?? prior?.scope) ? { scope: key.scope ?? prior?.scope } : {}),
     last_persona: key.persona,
     last_mode: key.mode,
     written,

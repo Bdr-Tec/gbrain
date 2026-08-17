@@ -203,14 +203,58 @@ describe('apply-clean-hunks [CX10]', () => {
     expect(readFileSync(join(dest, 'alpha', 'SKILL.md'), 'utf-8')).toBe(before);
   });
 
-  test('aux files absent on a stub install are not reported missing', () => {
+  test('stub installs ship aux files; a deleted aux reports missing like any other file', () => {
     const root = fixtureRoot();
     writeFileSync(join(root, 'skills', 'alpha', 'aux.md'), 'aux\n');
     const dest = tmp('gb-ref-dest-');
     const statePath = join(tmp('gb-ref-st-'), 's.json');
     install(root, dest, statePath, 'stub');
-    const ref = REF(root, dest, statePath);
-    expect(ref.summary.missing).toBe(0);
-    expect(existsSync(join(dest, 'alpha', 'aux.md'))).toBe(false);
+    expect(existsSync(join(dest, 'alpha', 'aux.md'))).toBe(true); // closure shipped
+    expect(REF(root, dest, statePath).summary.missing).toBe(0);
+    unlinkSync(join(dest, 'alpha', 'aux.md'));
+    expect(REF(root, dest, statePath).summary.missing).toBe(1);
+  });
+
+  test('unknown provenance is refused by apply (pre-existing file the install skipped)', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-ref-dest-');
+    const statePath = join(tmp('gb-ref-st-'), 's.json');
+    // A user file exists BEFORE the install: skipped_existing, never hashed.
+    mkdirSync(join(dest, 'alpha'), { recursive: true });
+    writeFileSync(join(dest, 'alpha', 'SKILL.md'), SKILL_MD('alpha') + 'mine, before the bridge\n');
+    install(root, dest, statePath, 'full');
+    const r = runHarnessReferenceApply({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], harness: 'claude-code', statePath });
+    expect(r.summary.refusedUnknown).toBe(1);
+    expect(r.summary.totalHunksApplied).toBe(0);
+    expect(readFileSync(join(dest, 'alpha', 'SKILL.md'), 'utf-8')).toContain('mine, before the bridge');
+  });
+
+  test('ledger refresh after a clean apply: the NEXT upstream change still classifies as drift', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-ref-dest-');
+    const statePath = join(tmp('gb-ref-st-'), 's.json');
+    install(root, dest, statePath, 'full');
+    // First upstream move + clean apply.
+    writeFileSync(join(root, 'skills', 'alpha', 'SKILL.md'), SKILL_MD('alpha').replace('line two', 'line two V2'));
+    const r1 = runHarnessReferenceApply({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], harness: 'claude-code', statePath });
+    expect(r1.summary.totalHunksApplied).toBeGreaterThan(0);
+    // Second upstream move: without the refresh this would be local_edit.
+    writeFileSync(join(root, 'skills', 'alpha', 'SKILL.md'), SKILL_MD('alpha').replace('line two', 'line two V3'));
+    const d = REF(root, dest, statePath).files.find(f => f.status === 'differs')!;
+    expect(d.differsKind).toBe('upstream_drift');
+    const r2 = runHarnessReferenceApply({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], harness: 'claude-code', statePath });
+    expect(r2.summary.totalHunksApplied).toBeGreaterThan(0);
+    expect(readFileSync(join(dest, 'alpha', 'SKILL.md'), 'utf-8')).toContain('line two V3');
+  });
+
+  test('shared-dep drift is three-way too (hashed under the shared ledger key)', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-ref-dest-');
+    const statePath = join(tmp('gb-ref-st-'), 's.json');
+    install(root, dest, statePath, 'full');
+    writeFileSync(join(root, 'skills', '_rules.md'), 'shared rules, updated upstream\n');
+    const d = REF(root, dest, statePath).files.find(f => f.relTarget === '_rules.md')!;
+    expect(d.status).toBe('differs');
+    expect(d.differsKind).toBe('upstream_drift');
   });
 });

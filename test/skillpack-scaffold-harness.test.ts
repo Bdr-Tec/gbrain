@@ -313,7 +313,7 @@ describe('remaining CLI gaps (coverage audit)', () => {
     expect(result.summary.differs).toBe(0);
     const applyAll = run(['reference', '--harness', 'claude-code', '--dest', dest, '--apply-clean-hunks'], env);
     expect(applyAll.code).toBe(2);
-    expect(applyAll.stderr).toContain('single skill');
+    expect(applyAll.stderr).toContain('exactly ONE skill');
     const oc = run(['reference', '--harness', 'openclaw'], env);
     expect(oc.code).toBe(2);
   }, 180_000);

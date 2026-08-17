@@ -45,7 +45,7 @@ import { createHash } from 'crypto';
 import { dirname, join, resolve, sep } from 'path';
 
 import { enumerateScaffoldEntries, loadBundleManifest, pathSlug, BundleError } from './bundle.ts';
-import { copyArtifacts, CopyError, type CopyItem } from './copy.ts';
+import { copyArtifacts, CopyError, type CopyItem, type CopyOutcome } from './copy.ts';
 import { parseSkillFrontmatter } from '../skill-frontmatter.ts';
 import { unifiedDiff } from './diff-text.ts';
 import { parseUnifiedDiff, applyHunks } from './apply-hunks.ts';
@@ -148,10 +148,9 @@ export interface BridgePlan {
   /** Paired `sources:` files skipped (a harness dir has no src/ tree). */
   pairedSourcesSkipped: number;
   /** Slugs whose EXISTING SKILL.md is in the other mode (file marker is
-   *  ground truth). Never silently converted; remedy = remove + re-run. */
+   *  ground truth). Their items are DROPPED from the plan — apply never
+   *  half-converts an install; remedy = remove + re-run. */
   modeConflicts: string[];
-  /** Aux (non-SKILL.md skill files) skipped in stub mode. */
-  auxSkippedForStub: number;
 }
 
 export interface PlanHarnessBridgeOptions {
@@ -180,7 +179,6 @@ export function planHarnessBridge(opts: PlanHarnessBridgeOptions): BridgePlan {
 
   const items: BridgePlanItem[] = [];
   let pairedSourcesSkipped = 0;
-  let auxSkippedForStub = 0;
   const frontmatterViolations: string[] = [];
   const modeConflictSlugs = new Set<string>();
 
@@ -191,13 +189,10 @@ export function planHarnessBridge(opts: PlanHarnessBridgeOptions): BridgePlan {
     }
     const { rel, slug, isSkillMd } = entryMeta(entry);
 
-    // Stub mode ships shared deps (dependency closure) but skips aux skill
-    // files — get_skill serves only the SKILL.md body, so aux files would
-    // be orphans the stub never references.
-    if (opts.mode === 'stub' && !entry.sharedDep && !isSkillMd) {
-      auxSkippedForStub++;
-      continue;
-    }
+    // Stub mode ships shared deps AND aux files: skill bodies reference
+    // both (../conventions/… and sibling files like a MANIFEST-PATTERN.md),
+    // and the cold-pulled body still needs them on disk — get_skill serves
+    // only the SKILL.md body itself.
 
     const target = bridgeTargetPath(opts.destDir, entry.relWorkspaceTarget);
     const item: BridgePlanItem = {
@@ -222,7 +217,7 @@ export function planHarnessBridge(opts: PlanHarnessBridgeOptions): BridgePlan {
       // Mode conflict: judge the EXISTING file, not state (survives state
       // loss in both directions — marker present = stub, absent = full).
       if (existsSync(target) && slug) {
-        const existing = readFileSync(target, 'utf-8');
+        const existing = readTargetFile(target);
         const fileMode: BridgeMode = existing.includes(STUB_MARKER) ? 'stub' : 'full';
         if (fileMode !== opts.mode) modeConflictSlugs.add(slug);
       }
@@ -237,15 +232,44 @@ export function planHarnessBridge(opts: PlanHarnessBridgeOptions): BridgePlan {
     );
   }
 
+  // Mode-conflicted slugs are DROPPED wholesale: applying their non-conflicted
+  // items would half-convert the install (e.g. a full-mode run over a stub
+  // would land aux files next to a stub SKILL.md and flip the ledger mode
+  // while the marker still says stub). Report-only, never partially applied.
+  const conflicted = new Set(modeConflictSlugs);
+  const applicableItems = conflicted.size > 0 ? items.filter(i => i.slug === null || !conflicted.has(i.slug)) : items;
+
   return {
     destDir: opts.destDir,
     mode: opts.mode,
     slugs: [...opts.slugs],
-    items,
+    items: applicableItems,
     pairedSourcesSkipped,
-    modeConflicts: [...modeConflictSlugs].sort(),
-    auxSkippedForStub,
+    modeConflicts: [...conflicted].sort(),
   };
+}
+
+/** Read an existing target defensively: a symlink at the target is install-dir
+ *  tampering (the bridge only ever writes regular files) and unreadable
+ *  targets (EISDIR, EACCES) surface as typed errors, not raw stacks. */
+function readTargetFile(target: string): string {
+  try {
+    if (lstatSync(target).isSymbolicLink()) {
+      throw new BridgeError(
+        `${target}: the installed file is a symlink — refusing to read through it (the bridge only writes regular files; remove it and re-run)`,
+        'target_escape',
+        target,
+      );
+    }
+    return readFileSync(target, 'utf-8');
+  } catch (err) {
+    if (err instanceof BridgeError) throw err;
+    throw new BridgeError(
+      `cannot read ${target}: ${(err as Error).message}`,
+      'write_failed',
+      target,
+    );
+  }
 }
 
 /**
@@ -369,15 +393,62 @@ export interface BridgeApplyResult {
     wroteNew: number;
     skippedExisting: number;
     pairedSourcesSkipped: number;
-    auxSkippedForStub: number;
     modeConflicts: string[];
   };
+}
+
+/** Ledger pseudo-slug for shared-dep files (conventions/, _*.md). They belong
+ *  to every slug at once, so ownership hashes live under a reserved key —
+ *  remove skips it (shared files outlive any one slug), the reference lens
+ *  reads it so shared-dep drift classifies three-way like everything else. */
+export const SHARED_DEP_LEDGER_KEY = '_shared';
+
+/** Record wrote_new hashes into bridge-state (used by both the success path
+ *  and the mid-run-failure partial path — an fs error must not orphan the
+ *  files that DID land). */
+function recordLedger(
+  results: readonly { target: string; outcome: CopyOutcome; sha256?: string }[],
+  planItems: readonly BridgePlanItem[],
+  plan: BridgePlan,
+  opts: ApplyHarnessBridgeOptions,
+): void {
+  const perSlug = new Map<string, Record<string, string>>();
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.outcome !== 'wrote_new' || !r.sha256) continue;
+    const key = planItems[i].slug ?? SHARED_DEP_LEDGER_KEY;
+    const bySlug = perSlug.get(key) ?? {};
+    bySlug[planItems[i].relTarget] = r.sha256;
+    perSlug.set(key, bySlug);
+  }
+  if (perSlug.size === 0) return;
+  const writes: BridgeWriteRecord[] = [...perSlug.entries()].map(([slug, fileMap]) => ({
+    slug,
+    mode: plan.mode,
+    files: fileMap,
+  }));
+  const state = loadBridgeState({ statePath: opts.statePath });
+  const next = recordBridgeWrites(
+    state,
+    {
+      harness: opts.harness,
+      dest: plan.destDir,
+      scope: opts.scope,
+      persona: opts.persona,
+      mode: plan.mode,
+      gbrainVersion: opts.gbrainVersion,
+      nowIso: opts.nowIso,
+    },
+    writes,
+  );
+  saveBridgeState(next, { statePath: opts.statePath });
 }
 
 /**
  * Execute a plan: confinement gate → copy (refuse-overwrite) → bridge-state
  * upsert with install-time sha256 per written file. All fs failures wrap as
- * typed BridgeError('write_failed') with the offending path.
+ * typed BridgeError('write_failed') with the offending path; a mid-run
+ * failure still records ownership of everything that landed before it.
  */
 export function applyHarnessBridge(plan: BridgePlan, opts: ApplyHarnessBridgeOptions): BridgeApplyResult {
   const dryRun = opts.dryRun ?? false;
@@ -407,7 +478,18 @@ export function applyHarnessBridge(plan: BridgePlan, opts: ApplyHarnessBridgeOpt
   try {
     copyResult = copyArtifacts(copyItems, { dryRun, computeSha256: true });
   } catch (err) {
-    if (err instanceof CopyError) throw err; // already typed + path-bearing
+    if (err instanceof CopyError) {
+      // Mid-run write failure: bank ownership of files 1..k−1 before
+      // surfacing the error, so remove/reference still know about them.
+      if (err.code === 'write_failed' && err.partial && !dryRun) {
+        try {
+          recordLedger(err.partial, plan.items, plan, opts);
+        } catch {
+          // Ledger write also failing must not mask the original error.
+        }
+      }
+      throw err;
+    }
     throw new BridgeError(
       `write failed under ${plan.destDir}: ${(err as Error).message}`,
       'write_failed',
@@ -435,40 +517,7 @@ export function applyHarnessBridge(plan: BridgePlan, opts: ApplyHarnessBridgeOpt
 
   // Written-only ownership: hash exactly what landed (computed by the copy
   // from the same buffer it wrote — no second read, no rehash window).
-  if (!dryRun) {
-    const perSlug = new Map<string, Record<string, string>>();
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      if (f.outcome !== 'wrote_new' || f.slug === null) continue;
-      const written = copyResult.files[i].sha256;
-      if (!written) continue; // dry-run or hashing disabled — nothing to record
-      const bySlug = perSlug.get(f.slug) ?? {};
-      bySlug[f.relTarget] = written;
-      perSlug.set(f.slug, bySlug);
-    }
-    if (perSlug.size > 0) {
-      const writes: BridgeWriteRecord[] = [...perSlug.entries()].map(([slug, fileMap]) => ({
-        slug,
-        mode: plan.mode,
-        files: fileMap,
-      }));
-      const state = loadBridgeState({ statePath: opts.statePath });
-      const next = recordBridgeWrites(
-        state,
-        {
-          harness: opts.harness,
-          dest: plan.destDir,
-          scope: opts.scope,
-          persona: opts.persona,
-          mode: plan.mode,
-          gbrainVersion: opts.gbrainVersion,
-          nowIso: opts.nowIso,
-        },
-        writes,
-      );
-      saveBridgeState(next, { statePath: opts.statePath });
-    }
-  }
+  if (!dryRun) recordLedger(copyResult.files, plan.items, plan, opts);
 
   return {
     dryRun,
@@ -479,7 +528,6 @@ export function applyHarnessBridge(plan: BridgePlan, opts: ApplyHarnessBridgeOpt
       wroteNew: files.filter(f => f.outcome === 'wrote_new').length,
       skippedExisting: files.filter(f => f.outcome === 'skipped_existing').length,
       pairedSourcesSkipped: plan.pairedSourcesSkipped,
-      auxSkippedForStub: plan.auxSkippedForStub,
       modeConflicts: plan.modeConflicts,
     },
   };
@@ -571,13 +619,11 @@ export function runHarnessReference(opts: HarnessReferenceOptions): HarnessRefRe
     const stateMode: BridgeMode = slug ? slugMode(slug) : 'full';
 
     if (!existsSync(target)) {
-      // Aux files are expected-absent for stub installs — not "missing".
-      if (stateMode === 'stub' && !entry.sharedDep && !isSkillMd) continue;
       files.push({ target, relTarget: rel, slug, sharedDep: entry.sharedDep, status: 'missing', mode: stateMode });
       continue;
     }
 
-    const actual = readFileSync(target, 'utf-8');
+    const actual = readTargetFile(target);
     const sourceContent = readFileSync(entry.source, 'utf-8');
     const fileMode: BridgeMode = isSkillMd && actual.includes(STUB_MARKER) ? 'stub' : 'full';
     const expected = fileMode === 'stub' && isSkillMd && slug ? renderSkillStub(sourceContent, slug) : sourceContent;
@@ -586,7 +632,7 @@ export function runHarnessReference(opts: HarnessReferenceOptions): HarnessRefRe
       files.push({ target, relTarget: rel, slug, sharedDep: entry.sharedDep, status: 'identical', mode: fileMode });
       continue;
     }
-    const installedHash = slug ? stateEntry?.written[slug]?.files[rel] : undefined;
+    const installedHash = stateEntry?.written[slug ?? SHARED_DEP_LEDGER_KEY]?.files[rel];
     const differsKind: HarnessRefDiffersKind = installedHash
       ? sha256Hex(actual) === installedHash
         ? 'upstream_drift'
@@ -620,7 +666,14 @@ export function runHarnessReference(opts: HarnessReferenceOptions): HarnessRefRe
 export interface HarnessRefApplyFile {
   target: string;
   relTarget: string;
-  status: 'applied' | 'partial' | 'refused_stub' | 'refused_local_edit' | 'identical' | 'missing';
+  status:
+    | 'applied'
+    | 'partial'
+    | 'refused_stub'
+    | 'refused_local_edit'
+    | 'refused_unknown'
+    | 'identical'
+    | 'missing';
   hunksApplied: number;
   hunksConflicted: number;
   conflicts: string[];
@@ -634,17 +687,23 @@ export interface HarnessRefApplyResult {
     totalHunksConflicted: number;
     refusedStub: number;
     refusedLocalEdit: number;
+    refusedUnknown: number;
   };
 }
 
 /**
- * `--apply-clean-hunks` for a harness install [CX10]. Full-mode files only:
- * stub-marked files are refused (stubs are regenerated by a re-run, never
- * merged), and LOCAL-EDIT files are refused too — the lens's own guidance
- * prints "local_edit → your change; keep it", and unlike the workspace
- * two-way apply, the install-time hash lets this lane honor that instead of
- * silently reverting the user's edit. Clean hunks land on upstream_drift
- * (and unknown-provenance) files; conflicts are reported and left in place.
+ * `--apply-clean-hunks` for a harness install [CX10]. Applies ONLY to files
+ * with PROVEN upstream drift (install-time hash matches the current file):
+ *   - stub-marked files are refused (stubs are regenerated: remove the skill,
+ *     then re-run the scaffold — a plain re-run refuses to overwrite);
+ *   - LOCAL-EDIT files are refused — the lens's own guidance prints
+ *     "local_edit → your change; keep it";
+ *   - UNKNOWN-provenance files are refused — shared files never written by
+ *     this bridge, pre-existing files the install skipped, or state-loss:
+ *     the diff is computed from the live file, so every hunk would "apply
+ *     cleanly" and rewrite content the bridge never owned.
+ * After a fully-clean apply the ledger hash is refreshed to the new content,
+ * so the NEXT upstream change still classifies as drift, not local_edit.
  */
 export function runHarnessReferenceApply(
   opts: HarnessReferenceOptions & { dryRun?: boolean },
@@ -656,6 +715,13 @@ export function runHarnessReferenceApply(
   let totalConflicted = 0;
   let refusedStub = 0;
   let refusedLocalEdit = 0;
+  let refusedUnknown = 0;
+  const ledgerRefresh: Array<{ slugKey: string; relTarget: string; sha256: string; mode: BridgeMode }> = [];
+
+  // Same real-filesystem write gate as the install path — an installed file
+  // (or parent) later swapped for a symlink must not redirect the write.
+  const writeTargets = ref.files.filter(f => f.status === 'differs').map(f => f.target);
+  if (writeTargets.length > 0) assertTargetsConfined(opts.destDir, writeTargets);
 
   for (const f of ref.files) {
     if (f.status === 'identical' || f.status === 'missing') {
@@ -677,7 +743,9 @@ export function runHarnessReferenceApply(
         status: 'refused_stub',
         hunksApplied: 0,
         hunksConflicted: 0,
-        conflicts: ['stub-mode file: stubs are regenerated by re-running the scaffold, never merged'],
+        conflicts: [
+          'stub-mode file: stubs are never merged — remove the skill (gbrain skillpack remove with the harness and skill flags), then re-run the scaffold to regenerate it',
+        ],
       });
       continue;
     }
@@ -693,7 +761,24 @@ export function runHarnessReferenceApply(
       });
       continue;
     }
-    const actual = readFileSync(f.target, 'utf-8');
+    if (f.differsKind !== 'upstream_drift') {
+      // 'unknown' — no install-time hash: a shared file predating the hash
+      // ledger, a pre-existing file the install skipped (never ours), or a
+      // lost state file. Rewriting would violate written-only ownership.
+      refusedUnknown++;
+      files.push({
+        target: f.target,
+        relTarget: f.relTarget,
+        status: 'refused_unknown',
+        hunksApplied: 0,
+        hunksConflicted: 0,
+        conflicts: [
+          'unknown provenance (no install-time hash in the ledger): the bridge cannot prove this file is its own unedited write — patch by hand, or remove and re-scaffold the skill',
+        ],
+      });
+      continue;
+    }
+    const actual = readTargetFile(f.target);
     const diffText = f.unifiedDiff ?? '';
     const parsed = parseUnifiedDiff(diffText);
     const res = applyHunks(actual, parsed);
@@ -706,6 +791,14 @@ export function runHarnessReferenceApply(
           'write_failed',
           f.target,
         );
+      }
+      if (res.conflicted === 0) {
+        ledgerRefresh.push({
+          slugKey: f.slug ?? SHARED_DEP_LEDGER_KEY,
+          relTarget: f.relTarget,
+          sha256: sha256Hex(res.text),
+          mode: f.mode,
+        });
       }
     }
     totalApplied += res.applied;
@@ -720,6 +813,41 @@ export function runHarnessReferenceApply(
     });
   }
 
+  // Refresh the ledger for fully-clean applies — without this, the applied
+  // file no longer matches the install-time hash and the NEXT upstream
+  // change would misclassify as local_edit forever.
+  if (!dryRun && ledgerRefresh.length > 0) {
+    const state = loadBridgeState({ statePath: opts.statePath });
+    const entry = findBridgeEntry(state, { harness: opts.harness, dest: opts.destDir });
+    if (entry) {
+      const perSlug = new Map<string, Record<string, string>>();
+      for (const r of ledgerRefresh) {
+        const bySlug = perSlug.get(r.slugKey) ?? {};
+        bySlug[r.relTarget] = r.sha256;
+        perSlug.set(r.slugKey, bySlug);
+      }
+      const writes: BridgeWriteRecord[] = [...perSlug.entries()].map(([slug, fileMap]) => ({
+        slug,
+        mode: entry.written[slug]?.mode ?? 'full',
+        files: fileMap,
+      }));
+      const next = recordBridgeWrites(
+        state,
+        {
+          harness: opts.harness,
+          dest: opts.destDir,
+          scope: entry.scope,
+          persona: entry.last_persona,
+          mode: entry.last_mode,
+          gbrainVersion: entry.gbrain_version,
+          nowIso: new Date().toISOString(),
+        },
+        writes,
+      );
+      saveBridgeState(next, { statePath: opts.statePath });
+    }
+  }
+
   return {
     dryRun,
     files,
@@ -728,6 +856,7 @@ export function runHarnessReferenceApply(
       totalHunksConflicted: totalConflicted,
       refusedStub,
       refusedLocalEdit,
+      refusedUnknown,
     },
   };
 }
@@ -735,6 +864,9 @@ export function runHarnessReferenceApply(
 export interface BridgeRemoveResult {
   dryRun: boolean;
   removedFiles: string[];
+  /** Ledger-owned files the user has since edited — kept, not deleted
+   *  ("never your own files" includes files that became yours). */
+  keptEdited: string[];
   prunedDirs: string[];
   /** Slugs requested but not owned by the bridge (nothing to remove). */
   notOwned: string[];
@@ -757,12 +889,16 @@ export function removeHarnessBridge(opts: {
   const dryRun = opts.dryRun ?? false;
   const state = loadBridgeState({ statePath: opts.statePath });
   const entry = findBridgeEntry(state, { harness: opts.harness, dest: opts.destDir });
-  const owned = entry ? Object.keys(entry.written) : [];
-  const requested = opts.slugs === null ? owned : [...opts.slugs];
+  // The shared-dep ledger key never enumerates as a removable slug: shared
+  // files belong to every installed skill at once, so removing one slug (or
+  // even all of them) leaves the conventions in place.
+  const owned = entry ? Object.keys(entry.written).filter(s => s !== SHARED_DEP_LEDGER_KEY) : [];
+  const requested = opts.slugs === null ? owned : [...opts.slugs].filter(s => s !== SHARED_DEP_LEDGER_KEY);
   const notOwned = requested.filter(s => !owned.includes(s));
   const toRemove = requested.filter(s => owned.includes(s));
 
   const removedFiles: string[] = [];
+  const keptEdited: string[] = [];
   const prunedDirs = new Set<string>();
   // Confinement on the way out too — the ledger is machine-owned but a
   // hand-edited relpath must not escape the dest. Same real-filesystem
@@ -775,9 +911,22 @@ export function removeHarnessBridge(opts: {
   );
   for (const slug of toRemove) {
     const rec = entry!.written[slug];
-    for (const rel of Object.keys(rec.files)) {
+    for (const [rel, installedHash] of Object.entries(rec.files)) {
       const abs = join(opts.destDir, rel);
       if (!existsSync(abs)) continue;
+      // "Never your own files" includes files that BECAME yours: a
+      // bridge-written file the user has since edited no longer matches its
+      // install-time hash — keep it (it leaves the ledger either way and is
+      // henceforth user-owned).
+      try {
+        if (sha256Hex(readFileSync(abs)) !== installedHash) {
+          keptEdited.push(abs);
+          continue;
+        }
+      } catch {
+        keptEdited.push(abs);
+        continue;
+      }
       if (!dryRun) {
         try {
           rmSync(abs);
@@ -794,18 +943,22 @@ export function removeHarnessBridge(opts: {
     }
   }
 
-  // Prune emptied dirs (bottom-up, only within dest).
+  // Prune emptied dirs (bottom-up, then walk each pruned dir's parents up to
+  // dest — removing a slug's only child dir can empty the slug dir itself).
   const pruned: string[] = [];
   if (!dryRun) {
+    const destReal = resolve(opts.destDir);
     const candidates = [...prunedDirs].sort((a, b) => b.length - a.length);
-    for (const dir of candidates) {
-      try {
-        if (existsSync(dir) && readdirSync(dir).length === 0 && dir !== resolve(opts.destDir)) {
+    for (let dir of candidates) {
+      while (dir !== destReal && dir.startsWith(destReal + sep)) {
+        try {
+          if (!existsSync(dir) || readdirSync(dir).length > 0) break;
           rmdirSync(dir);
           pruned.push(dir);
+        } catch {
+          break; // best-effort prune
         }
-      } catch {
-        // best-effort prune
+        dir = dirname(dir);
       }
     }
   }
@@ -819,7 +972,7 @@ export function removeHarnessBridge(opts: {
     saveBridgeState(next, { statePath: opts.statePath });
   }
 
-  return { dryRun, removedFiles, prunedDirs: pruned, notOwned };
+  return { dryRun, removedFiles, keptEdited, prunedDirs: pruned, notOwned };
 }
 
 /** Guard against a caller passing a symlink AS the dest dir itself. */

@@ -199,12 +199,11 @@ describe('apply', () => {
 });
 
 describe('stub mode', () => {
-  test('marker + verbatim frontmatter + shared-dep closure shipped + aux skipped [CX4]', () => {
+  test('marker + verbatim frontmatter + shared-dep AND aux closure shipped [CX4]', () => {
     const root = fixtureRoot();
     const dest = tmp('gb-bridge-dest-');
     const statePath = join(tmp('gb-bridge-st-'), 'state.json');
     const plan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'stub' });
-    expect(plan.auxSkippedForStub).toBe(1); // alpha/aux.md
     applyHarnessBridge(plan, APPLY(dest, statePath));
 
     const stub = readFileSync(join(dest, 'alpha', 'SKILL.md'), 'utf-8');
@@ -213,30 +212,37 @@ describe('stub mode', () => {
     expect(stub).toContain('get_skill');
     expect(stub).toContain('gbrain skill alpha'); // CLI fallback (a real generated command)
     expect(stub).not.toContain('Body of alpha'); // cold invariant: no source body
-    // Shared deps ship even in stub mode — 32 real skills reference them.
+    // Shared deps AND aux files ship even in stub mode — cold-pulled bodies
+    // reference both (../conventions/… and sibling files); get_skill serves
+    // only the body itself.
     expect(existsSync(join(dest, 'conventions', 'style.md'))).toBe(true);
     expect(existsSync(join(dest, '_rules.md'))).toBe(true);
-    expect(existsSync(join(dest, 'alpha', 'aux.md'))).toBe(false);
+    expect(readFileSync(join(dest, 'alpha', 'aux.md'), 'utf-8')).toBe('aux content for alpha\n');
   });
 
-  test('mode conflict judged from the FILE marker, both directions [CX8/CEO-F5]', () => {
+  test('mode conflict: file marker is ground truth, conflicted slugs are DROPPED from the plan [CX8/CEO-F5]', () => {
     const root = fixtureRoot();
     const dest = tmp('gb-bridge-dest-');
     const statePath = join(tmp('gb-bridge-st-'), 'state.json');
-    // full install, then a stub plan → conflict.
+    // full install, then a stub plan → conflict; the slug's items are gone.
     applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'full' }), APPLY(dest, statePath));
     const stubPlan = planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'stub' });
     expect(stubPlan.modeConflicts).toEqual(['alpha']);
+    expect(stubPlan.items.every(i => i.slug !== 'alpha')).toBe(true);
     // stub install elsewhere, then a full plan → conflict (state absent —
     // the marker alone is ground truth).
     const dest2 = tmp('gb-bridge-dest2-');
     applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest2, slugs: ['beta'], mode: 'stub' }), APPLY(dest2, statePath));
     const fullPlan = planHarnessBridge({ gbrainRoot: root, destDir: dest2, slugs: ['beta'], mode: 'full' });
     expect(fullPlan.modeConflicts).toEqual(['beta']);
-    // Conflicted files are skipped_existing on apply, never converted.
+    expect(fullPlan.items.every(i => i.slug !== 'beta')).toBe(true);
+    // Applying the conflicted plan never converts the stub and never flips
+    // the ledger mode (nothing of beta's is written).
     const r = applyHarnessBridge(fullPlan, APPLY(dest2, statePath));
     expect(readFileSync(join(dest2, 'beta', 'SKILL.md'), 'utf-8')).toContain(STUB_MARKER);
     expect(r.summary.modeConflicts).toEqual(['beta']);
+    const entry2 = findBridgeEntry(loadBridgeState({ statePath }), { harness: 'claude-code', dest: dest2 })!;
+    expect(entry2.written.beta.mode).toBe('stub');
   });
 
   test('renderSkillStub refuses a frontmatterless source', () => {
@@ -294,9 +300,32 @@ describe('remove', () => {
     expect(existsSync(join(dest, 'alpha', 'aux.md'))).toBe(false);
     expect(existsSync(join(dest, 'alpha', 'user-note.md'))).toBe(true); // never ours
     expect(existsSync(join(dest, 'beta', 'SKILL.md'))).toBe(true); // not requested
-    expect(existsSync(join(dest, 'conventions', 'style.md'))).toBe(true); // shared, unowned by slugs
+    expect(existsSync(join(dest, 'conventions', 'style.md'))).toBe(true); // shared, hash-tracked but never slug-removed
     const entry = findBridgeEntry(loadBridgeState({ statePath }), { harness: 'claude-code', dest })!;
-    expect(Object.keys(entry.written)).toEqual(['beta']);
+    expect(Object.keys(entry.written).sort()).toEqual(['_shared', 'beta']);
+  });
+
+  test('a user-edited owned file is KEPT on remove (it became yours)', () => {
+    const root = fixtureRoot();
+    const dest = tmp('gb-bridge-dest-');
+    const statePath = join(tmp('gb-bridge-st-'), 'state.json');
+    applyHarnessBridge(planHarnessBridge({ gbrainRoot: root, destDir: dest, slugs: ['alpha'], mode: 'full' }), APPLY(dest, statePath));
+    const edited = join(dest, 'alpha', 'SKILL.md');
+    writeFileSync(edited, readFileSync(edited, 'utf-8') + '\nMY EDIT\n');
+
+    const r = removeHarnessBridge({
+      harness: 'claude-code',
+      destDir: dest,
+      slugs: ['alpha'],
+      statePath,
+      nowIso: '2026-08-16T00:00:00Z',
+    });
+    expect(r.keptEdited).toEqual([edited]);
+    expect(readFileSync(edited, 'utf-8')).toContain('MY EDIT'); // survives
+    expect(existsSync(join(dest, 'alpha', 'aux.md'))).toBe(false); // unedited sibling removed
+    // The slug leaves the ledger either way — the kept file is user-owned now.
+    const entry = findBridgeEntry(loadBridgeState({ statePath }), { harness: 'claude-code', dest });
+    expect(entry?.written.alpha).toBeUndefined();
   });
 });
 

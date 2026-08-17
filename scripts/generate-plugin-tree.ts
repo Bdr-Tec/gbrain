@@ -300,6 +300,28 @@ Regenerate with \`bun run scripts/generate-plugin-tree.ts --out plugin
 
 if (variantsOut) {
   const variantsDir = resolve(variantsOut);
+  // rmSync guard: --variants-out is recursively DELETED before emission, so
+  // a mistyped path must refuse rather than eat a real directory. Refuse:
+  // filesystem root, the repo root or any ancestor of it, the --out dir, and
+  // any existing NON-generated non-empty dir (a prior emission is
+  // recognizable by a variant README carrying the tree stamp).
+  const refuse = (why: string): never => {
+    console.error(`generate-plugin-tree: refusing --variants-out ${variantsDir}: ${why}`);
+    process.exit(2);
+  };
+  if (variantsDir === '/' || variantsDir === resolve(out)) refuse('unsafe target');
+  if (ROOT === variantsDir || ROOT.startsWith(variantsDir + '/')) refuse('would delete the repo root');
+  if (existsSync(variantsDir) && readdirSync(variantsDir).length > 0) {
+    const looksGenerated = readdirSync(variantsDir).some(d => {
+      const readme = join(variantsDir, d, 'README.md');
+      try {
+        return existsSync(readme) && readFileSync(readme, 'utf8').includes('gbrain-plugin-tree-stamp');
+      } catch {
+        return false;
+      }
+    });
+    if (!looksGenerated) refuse('existing non-empty directory without a generated tree stamp');
+  }
   rmSync(variantsDir, { recursive: true, force: true });
   const version = readFileSync(join(ROOT, 'VERSION'), 'utf8').trim();
   for (const [personaName, def] of Object.entries(personas)) {

@@ -562,4 +562,23 @@ describe('generator negative fixtures (a guard that cannot fail is not coverage)
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('--variants-out refuses to delete a non-generated non-empty directory (rmSync guard)', () => {
+    const root = fixtureRoot({ personas: { fixture: validPersona } });
+    try {
+      const precious = join(root, 'precious');
+      mkdirSync(precious, { recursive: true });
+      writeFileSync(join(precious, 'important.txt'), 'do not delete');
+      const r = spawnSync(
+        'bun',
+        ['run', join(ROOT, 'scripts/generate-plugin-tree.ts'), '--out', join(root, 'out'), '--variants-out', precious],
+        { encoding: 'utf8', timeout: 60_000, env: { ...process.env, GBRAIN_PLUGIN_TREE_ROOT: root } },
+      );
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('refusing --variants-out');
+      expect(readFileSync(join(precious, 'important.txt'), 'utf8')).toBe('do not delete');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
