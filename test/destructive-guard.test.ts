@@ -379,14 +379,50 @@ describe('soft-delete + restore lifecycle (column-based v0.26.5)', () => {
       `UPDATE sources SET archive_expires_at = now() - INTERVAL '1 hour' WHERE id = $1`,
       [expiredId],
     );
-    const purged = await purgeExpiredSources(engine);
+    const { purged, blocked } = await purgeExpiredSources(engine);
     expect(purged).toContain(expiredId);
     expect(purged).not.toContain(recoverableId);
+    expect(blocked).toEqual([]);
     const remainingPages = await engine.executeRaw<{ n: number }>(
       `SELECT COUNT(*)::int AS n FROM pages WHERE source_id = $1`,
       [expiredId],
     );
     expect(remainingPages[0].n).toBe(0);
+  });
+
+  test('gbrain#4115 — an FK-blocked source is reported and skipped; the deletable one still purges', async () => {
+    const blockedId = 'pe-fk-blocked';
+    const deletableId = 'pe-fk-deletable';
+    await seedSource(engine, blockedId, { withPages: 1 });
+    await seedSource(engine, deletableId, { withPages: 1 });
+    await softDeleteSource(engine, blockedId);
+    await softDeleteSource(engine, deletableId);
+    await engine.executeRaw(
+      `UPDATE sources SET archive_expires_at = now() - INTERVAL '1 hour' WHERE id IN ($1, $2)`,
+      [blockedId, deletableId],
+    );
+    // A revoked-but-retained oauth client (soft-deleted via deleted_at) under
+    // v64's ON DELETE RESTRICT — the exact production shape from the report.
+    await engine.executeRaw(
+      `INSERT INTO oauth_clients (client_id, client_name, source_id, deleted_at)
+       VALUES ('cl-4115-test', 'test client', $1, now())`,
+      [blockedId],
+    );
+    const { purged, blocked } = await purgeExpiredSources(engine);
+    expect(purged).toContain(deletableId);
+    expect(purged).not.toContain(blockedId);
+    expect(blocked.map((b) => b.id)).toEqual([blockedId]);
+    expect(blocked[0].reason).toContain('RESTRICT');
+    // The blocked source is untouched (still archived, still expired) — the
+    // next sweep retries it after the operator clears the client.
+    const still = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM sources WHERE id = $1 AND archived = true`,
+      [blockedId],
+    );
+    expect(still[0].n).toBe(1);
+    // Cleanup so later tests are unaffected.
+    await engine.executeRaw(`DELETE FROM oauth_clients WHERE client_id = 'cl-4115-test'`);
+    await engine.executeRaw(`DELETE FROM sources WHERE id = $1`, [blockedId]);
   });
 
   test('purgeExpiredSources is no-op when nothing is past TTL', async () => {
@@ -397,8 +433,33 @@ describe('soft-delete + restore lifecycle (column-based v0.26.5)', () => {
     await engine.executeRaw(
       `UPDATE sources SET archive_expires_at = now() + INTERVAL '72 hours' WHERE archived = true`,
     );
-    const purged = await purgeExpiredSources(engine);
+    const result = await purgeExpiredSources(engine);
+    expect(result.purged).toEqual([]);
+    expect(result.blocked).toEqual([]);
+  });
+
+  test('gbrain#4115 — a NON-FK error re-raises instead of reading as blocked (review gap G8)', async () => {
+    const stub = {
+      async executeRaw(sql: string): Promise<Array<{ id: string }>> {
+        if (sql.trimStart().startsWith('SELECT')) return [{ id: 'boom' }];
+        const err = new Error('canceling statement due to statement timeout') as Error & { code: string };
+        err.code = '57014'; // query_canceled — NOT the FK class
+        throw err;
+      },
+    } as never;
+    await expect(purgeExpiredSources(stub)).rejects.toThrow('statement timeout');
+  });
+
+  test('gbrain#4115 — a source restored between SELECT and DELETE is neither purged nor blocked (review gap G8)', async () => {
+    const stub = {
+      async executeRaw(sql: string): Promise<Array<{ id: string }>> {
+        if (sql.trimStart().startsWith('SELECT')) return [{ id: 'restored-mid-sweep' }];
+        return []; // per-id DELETE re-checks the expiry predicate → 0 rows
+      },
+    } as never;
+    const { purged, blocked } = await purgeExpiredSources(stub);
     expect(purged).toEqual([]);
+    expect(blocked).toEqual([]);
   });
 });
 
@@ -493,7 +554,11 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
     expect(formatImpact(impact!)).not.toContain('OAuth client');
   });
 
-  test('purgeExpiredSources purges only the unreferenced expired source and warns naming the skipped id', async () => {
+  test('purgeExpiredSources purges only the unreferenced expired source and reports the FK-held one as blocked', async () => {
+    // Ported from #4238's string[]-contract version at merge: the sweep now
+    // returns {purged, blocked} (chennai #4115 fix) — the skipped id and its
+    // revoke guidance live in the structured result, not a stderr warn
+    // (callers render it).
     await seedSource(engine, 'fk-purge-ref', { withPages: 1 });
     await seedSource(engine, 'fk-purge-free', { withPages: 1 });
     await seedClient('cl-purge-ref', 'fk-purge-ref');
@@ -504,37 +569,21 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
       [['fk-purge-ref', 'fk-purge-free']],
     );
 
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
-    let purged: string[];
-    let errCalls: string[];
-    try {
-      purged = await purgeExpiredSources(engine);
-    } finally {
-      // Snapshot BEFORE restore — mockRestore() clears mock.calls.
-      errCalls = errSpy.mock.calls.map((c) => String(c[0]));
-      errSpy.mockRestore();
-    }
+    const { purged, blocked } = await purgeExpiredSources(engine);
 
-    // Return contract preserved: string[] of purged ids ONLY — exactly the
-    // unreferenced one.
     expect(purged).toEqual(['fk-purge-free']);
+    expect(blocked.map((b) => b.id)).toEqual(['fk-purge-ref']);
+    expect(blocked[0].reason).toContain('revoke-client');
 
-    // Referenced source survives (skipped, not FK-crashed).
+    // Referenced source survives (blocked, not FK-crashed).
     const remaining = await engine.executeRaw<{ id: string }>(
       `SELECT id FROM sources WHERE id = ANY($1::text[])`,
       [['fk-purge-ref', 'fk-purge-free']],
     );
     expect(remaining.map((r) => r.id)).toEqual(['fk-purge-ref']);
-
-    // ONE stderr warn naming the skipped id + revoke guidance.
-    const warns = errCalls.filter((m) => m.includes('purge skipped'));
-    expect(warns.length).toBe(1);
-    expect(warns[0]).toContain('fk-purge-ref');
-    expect(warns[0]).toContain('revoke-client');
-    expect(warns[0]).not.toContain('fk-purge-free');
   });
 
-  test('purge skip is PHYSICAL: a soft-deleted client row still blocks (FK ignores deleted_at)', async () => {
+  test('purge block is PHYSICAL: a soft-deleted client row still blocks (FK ignores deleted_at)', async () => {
     await seedSource(engine, 'fk-purge-dead', { withPages: 1 });
     await seedClient('cl-purge-dead', 'fk-purge-dead', { deleted: true });
     await softDeleteSource(engine, 'fk-purge-dead');
@@ -543,15 +592,10 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
       ['fk-purge-dead'],
     );
 
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
-    let purged: string[];
-    try {
-      purged = await purgeExpiredSources(engine);
-    } finally {
-      errSpy.mockRestore();
-    }
+    const { purged, blocked } = await purgeExpiredSources(engine);
 
     expect(purged).not.toContain('fk-purge-dead');
+    expect(blocked.map((b) => b.id)).toContain('fk-purge-dead');
     const rows = await engine.executeRaw<{ id: string }>(
       `SELECT id FROM sources WHERE id = $1`, ['fk-purge-dead'],
     );
@@ -617,20 +661,19 @@ describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => 
     } as any;
     expect(await clientsReferencingSource(noSourceId, 'x')).toEqual([]);
 
-    // Same brain shape must not break the purge path either: the skip-set
-    // query 42703s, and the purge falls back to the unconditional DELETE.
-    let sawUnconditionalDelete = false;
+    // Same brain shape must not break the purge path either. The per-source
+    // sweep (chennai #4115) never queries oauth_clients at all — the FK, if
+    // present, surfaces as SQLSTATE 23503 on the DELETE — so a pre-v61 brain
+    // shape purges through the exact same code path.
+    let sawOauthQuery = false;
     const purgeStub = {
       executeRaw: async (sql: string) => {
-        if (sql.includes('oauth_clients')) {
-          throw Object.assign(new Error('column "source_id" does not exist'), { code: '42703' });
-        }
-        if (sql.startsWith('DELETE FROM sources')) sawUnconditionalDelete = true;
+        if (sql.includes('oauth_clients')) sawOauthQuery = true;
         return [];
       },
     } as any;
-    expect(await purgeExpiredSources(purgeStub)).toEqual([]);
-    expect(sawUnconditionalDelete).toBe(true);
+    expect(await purgeExpiredSources(purgeStub)).toEqual({ purged: [], blocked: [] });
+    expect(sawOauthQuery).toBe(false);
   });
 });
 

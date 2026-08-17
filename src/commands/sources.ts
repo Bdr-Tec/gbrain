@@ -786,11 +786,16 @@ async function runPurge(engine: BrainEngine, args: string[]): Promise<void> {
   }
 
   // No id: purge all expired archives
-  const purged = await purgeExpiredSources(engine);
-  if (purged.length === 0) {
+  const { purged, blocked } = await purgeExpiredSources(engine);
+  if (purged.length === 0 && blocked.length === 0) {
     console.log('No expired archives to purge.');
   } else {
-    console.log(`Purged ${purged.length} expired archive(s): ${purged.join(', ')}`);
+    if (purged.length > 0) {
+      console.log(`Purged ${purged.length} expired archive(s): ${purged.join(', ')}`);
+    }
+    for (const b of blocked) {
+      console.log(`Blocked: ${b.id} — ${b.reason}`);
+    }
   }
 }
 
@@ -1030,6 +1035,17 @@ function formatLag(seconds: number): string {
 }
 
 // ── v0.40 sources webhook (D8) ──────────────────────────────
+// Hoisted so both runWebhook's `case '--help'` and the top-level nested-help
+// guard in runSources (`sources webhook --help`, `sources webhook <sub>
+// --help`) print the identical text without dispatching into runWebhook.
+const SOURCES_WEBHOOK_HELP = `Usage: gbrain sources webhook <subcommand> <source-id> [options]
+
+Subcommands:
+  set <id>    [--secret VAL] [--github-repo owner/name]   One-time reveal
+  show <id>                                                Metadata only
+  rotate <id>                                              New secret, reveal
+  clear <id>                                               Remove webhook config`;
+
 async function runWebhook(engine: BrainEngine, args: string[]): Promise<void> {
   const sub = args[0];
   const rest = args.slice(1);
@@ -1041,13 +1057,7 @@ async function runWebhook(engine: BrainEngine, args: string[]): Promise<void> {
     case undefined:
     case '--help':
     case '-h':
-      console.log(`Usage: gbrain sources webhook <subcommand> <source-id> [options]
-
-Subcommands:
-  set <id>    [--secret VAL] [--github-repo owner/name]   One-time reveal
-  show <id>                                                Metadata only
-  rotate <id>                                              New secret, reveal
-  clear <id>                                               Remove webhook config`);
+      console.log(SOURCES_WEBHOOK_HELP);
       return;
     default:
       console.error(`Unknown webhook subcommand: ${sub}`);
@@ -1369,14 +1379,8 @@ async function runAudit(engine: BrainEngine, args: string[]): Promise<void> {
   // frontmatter.type and estimates per-page segment count from body
   // bytes. Estimated per-segment Sonnet cost is a rough heuristic
   // (~2000 in + 500 out tokens at $3/MTok in + $15/MTok out ≈ $0.013).
-  const FACTS_BACKFILL_ALLOWED = [
-    'conversation',
-    'meeting',
-    'slack',
-    'email',
-    'imessage',
-    'imessage-daily',
-  ];
+  // Single source of truth for the conversation-facts type allowlist.
+  const { ALLOWED_TYPES: FACTS_BACKFILL_ALLOWED } = await import('../core/facts/conversation-types.ts');
   const FACTS_BACKFILL_CHARS_PER_SEGMENT = 6500; // matches SEGMENT_TEXT_CHAR_LIMIT
   const FACTS_BACKFILL_USD_PER_SEGMENT = 0.013;
   let factsBackfillPages = 0;
@@ -1420,7 +1424,7 @@ async function runAudit(engine: BrainEngine, args: string[]): Promise<void> {
     }
     // Facts-backfill estimator: counts pages matching allowed types.
     const fmType = (parsed.frontmatter?.type as string | undefined) ?? null;
-    if (fmType && FACTS_BACKFILL_ALLOWED.includes(fmType)) {
+    if (fmType && (FACTS_BACKFILL_ALLOWED as readonly string[]).includes(fmType)) {
       factsBackfillPages++;
       const totalBytes = sanity.bytes;
       const segmentsEstimate = Math.max(
@@ -1519,6 +1523,36 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
   const sub = args[0];
   const rest = args.slice(1);
 
+  // Help guards run BEFORE the subcommand switch below (mirrors jobs.ts
+  // src/commands/jobs.ts:462-471 — help checked first-position, then any
+  // position, before any subcommand body runs). cli.ts routes bare `sources
+  // --help` here with a placeholder engine (SELF_HELP_WITHOUT_ENGINE): the
+  // second check is why that's safe — without it, `sources <sub> --help`
+  // would fall through to <sub>'s own handler instead of printing help,
+  // which crashes for engine-touching subcommands (the placeholder engine
+  // is not a real one) and, for engine-free subcommands like `detach`
+  // (unlinks .gbrain-source with no engine involved at all), would silently
+  // perform the destructive action instead of showing usage.
+  if (!sub || sub === '--help' || sub === '-h') {
+    printHelp();
+    return;
+  }
+  if (rest.includes('--help') || rest.includes('-h')) {
+    // webhook is the one sources subcommand that ships its own detailed
+    // --help (set/show/rotate/clear, in SOURCES_WEBHOOK_HELP) — print that
+    // instead of the general list so `sources webhook --help` and `sources
+    // webhook <sub> --help` reach it. Do NOT dispatch into runWebhook: that
+    // would let e.g. `sources webhook set x --help` fall through to
+    // runWebhookSet, the same destructive-dispatch class this guard exists
+    // to prevent for the rest of sources' subcommands.
+    if (sub === 'webhook') {
+      console.log(SOURCES_WEBHOOK_HELP);
+      return;
+    }
+    printHelp();
+    return;
+  }
+
   switch (sub) {
     case 'add':        return runAdd(engine, rest);
     case 'list':       return runList(engine, rest);
@@ -1552,11 +1586,8 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     // agent-bootstrap: scan-gated workspace push
     case 'push':       return runPush(engine, rest);
     case 'unharden':   { const { runUnharden } = await import('./sources-harden.ts'); return runUnharden(engine, rest); }
-    case undefined:
-    case '--help':
-    case '-h':
-      printHelp();
-      return;
+    // undefined / --help / -h are handled by the guards above, before this
+    // switch is ever reached — no case needed here.
     default:
       console.error(`Unknown sources subcommand: ${sub}`);
       printHelp();
@@ -1604,6 +1635,9 @@ Subcommands:
                                     override (v0.40.3.0). Pass "unset" or
                                     "default" to clear (NULL falls through
                                     to the global search.mode bundle).
+  webhook <set|show|rotate|clear> <id> [options]
+                                    v0.40 — per-source webhook secret management.
+                                    Run 'sources webhook --help' for subcommand detail.
   harden <id|--all> [--pat-file <p>] [--branch <b>] [--no-cron] [--no-verify] [--dry-run] [--json]
                                     v0.42.44 — make a brain repo durable: local
                                     auto-push hook, committed commit-push helper,
