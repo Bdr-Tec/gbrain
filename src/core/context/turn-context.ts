@@ -128,6 +128,8 @@ export interface AssembleTurnContextOpts {
   /** Opaque session identity — keys the hot-memory cache (CX2-11). */
   sessionId?: string;
   maxBytes?: number;
+  /** v0.46.15: lexical-arms kill switch — see ResolvePointersOpts.lexicalArms. */
+  lexicalArms?: boolean;
   // ── v0.45.7 ambient recall ──────────────────────────────────────────────
   /** Assembly mode. Default 'turn' (existing behavior). */
   mode?: ContextMode;
@@ -204,6 +206,7 @@ export async function assembleTurnContext(
           priorContextText: opts.priorContextText,
           suppression: 'slug-only',
           maxPointers: DEFAULT_MAX_POINTERS,
+          lexicalArms: opts.lexicalArms,
         });
         pointers = block?.pointers ?? [];
       }
@@ -222,6 +225,9 @@ export async function assembleTurnContext(
           priorContext: opts.priorContextText,
           excludeSlugs,
           maxPages: MAX_VOLUNTEERED_PAGES,
+          // v0.46.15+ lexical-arms kill switch rides the same threading as the
+          // pointer arm above (ResolvePointersOpts.lexicalArms).
+          lexicalArms: opts.lexicalArms,
         });
       }
     } catch {

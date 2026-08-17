@@ -88,6 +88,26 @@ describe('persistToolExec* — same-turn duplicate raw ids (#4155)', () => {
     expect(r[0].status).toBe('complete'); // untouched
     expect(r[1].status).toBe('failed');
   });
+
+  test('a failure for a call with no own row never captures a same-id sibling STILL-PENDING row', async () => {
+    // Red-team finding: an `OR status = 'pending'` disjunct in the failed
+    // UPDATE selected the sibling's in-flight row (different ordinal, same raw
+    // id) when the failing call had no row of its own (e.g. unregistered
+    // tool), marking the sibling failed with the wrong call's error and
+    // skipping the INSERT leg.
+    await persistToolExecPending(engine, jobId, 1, 0, 'dup', 'search', { q: 'a' });
+    // Call 1 (same raw id, ordinal 1) is rejected upfront — no pending row.
+    await persistToolExecFailed(engine, jobId, 1, 1, 'dup', 'bad_tool', {}, 'not in registry');
+
+    const r = await rows();
+    expect(r.length).toBe(2);
+    expect(r[0].ordinal).toBe(0);
+    expect(r[0].status).toBe('pending'); // sibling stays in flight, error-free
+    expect(r[0].error).toBeNull();
+    expect(r[1].ordinal).toBe(1);
+    expect(r[1].status).toBe('failed'); // failure lands on its OWN row
+    expect(r[1].error).toBe('not in registry');
+  });
 });
 
 describe('persistToolExecFailed — stable-id conflict downgrade guard', () => {
@@ -129,5 +149,44 @@ describe('persistToolExec* — legacy ordinal=NULL row compatibility', () => {
     r = await rows();
     expect(r.length).toBe(1);
     expect(r[0].status).toBe('complete');
+  });
+
+  test('a late failure never downgrades a legacy row that already settled complete', async () => {
+    // Adversarial-review finding: the ordinal IS NULL disjunct in the failed
+    // UPDATE's inner SELECT matched a legacy COMPLETE row (CASE priority 2)
+    // when no own-ordinal/pending row existed, silently overwriting a settled
+    // outcome with 'failed'.
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status, output)
+       VALUES ($1, 3, 'legacy-done', 'search', '{}'::jsonb, 'complete', '{"hit":"keep"}'::jsonb)`,
+      [jobId],
+    );
+
+    await persistToolExecFailed(engine, jobId, 3, 1, 'legacy-done', 'search', {}, 'late-zombie-error');
+
+    const r = await rows();
+    const legacy = r.find(x => x.ordinal === null);
+    expect(legacy?.status).toBe('complete'); // NOT downgraded
+    expect(legacy?.error).toBeNull();
+    // The failure lands as its own stamped row instead of clobbering.
+    const stamped = r.find(x => x.ordinal === 1);
+    expect(stamped?.status).toBe('failed');
+  });
+
+  test('a late completion never overwrites a legacy row that already settled complete', async () => {
+    // Same class on the complete side: a settled legacy sibling's output must
+    // not be replaced by a different call's completion.
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status, output)
+       VALUES ($1, 4, 'legacy-done2', 'search', '{}'::jsonb, 'complete', '{"hit":"original"}'::jsonb)`,
+      [jobId],
+    );
+
+    await persistToolExecComplete(engine, jobId, 4, 1, 'legacy-done2', { hit: 'other-call' });
+
+    const r = await rows();
+    const legacy = r.find(x => x.message_idx === 4 && x.ordinal === null);
+    const out = typeof legacy?.output === 'string' ? JSON.parse(legacy.output as string) : legacy?.output;
+    expect((out as Record<string, unknown>)?.hit).toBe('original'); // untouched
   });
 });

@@ -80,6 +80,11 @@ describe('qwen3-embedding mixed-case hub ids — LiteLLM / vLLM / HF routers (#4
       .toEqual({ openaiCompatible: { dimensions: 1024 } });
   });
 
+  test('org-prefixed cased 8B at a Matryoshka width pins dimensions', () => {
+    expect(dimsProviderOptions('openai-compatible', 'Qwen/Qwen3-Embedding-8B', 1536))
+      .toEqual({ openaiCompatible: { dimensions: 1536 } });
+  });
+
   test('cased 0.6B at its native width stays suppressed', () => {
     expect(dimsProviderOptions('openai-compatible', 'Qwen/Qwen3-Embedding-0.6B', 1024))
       .toBeUndefined();

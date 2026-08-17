@@ -1548,24 +1548,6 @@ async function persistMessage(engine: BrainEngine, jobId: number, msg: Persisted
   );
 }
 
-/**
- * #4155 — the ONE row a settle write may target when raw provider ids repeat
- * within a job: the call's own ordinal first, then a pending row, then a
- * legacy ordinal=NULL row — never a SETTLED sibling sharing the raw id at a
- * different ordinal. Shared by persistToolExecComplete and
- * persistToolExecFailed so the resolution priority cannot drift between the
- * two settle paths. Binds: $1 job_id, $2 message_idx, $3 tool_use_id,
- * $5 ordinal ($4 is each caller's payload).
- */
-const TOOL_EXEC_TARGET_ROW_SUBSELECT = `
-      WHERE id = (
-        SELECT id FROM subagent_tool_executions
-         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
-           AND (ordinal = $5 OR ordinal IS NULL OR status = 'pending')
-         ORDER BY CASE WHEN ordinal = $5 THEN 0 WHEN status = 'pending' THEN 1 ELSE 2 END, id
-         LIMIT 1
-      )`;
-
 async function persistToolExecPending(
   engine: BrainEngine,
   jobId: number,
@@ -1619,12 +1601,23 @@ async function persistToolExecComplete(
   // Scoped by message_idx: raw provider tool_use_ids may repeat across turns
   // (#4155), so (job_id, tool_use_id) alone could also update a sibling
   // turn's row. Targets exactly ONE row: the call's own ordinal first, then a
-  // pending row, then a legacy ordinal=NULL row — never a SETTLED sibling
-  // that shares the raw id at a different ordinal.
+  // legacy ordinal=NULL row — never an already-COMPLETE row (the ordinal IS
+  // NULL disjunct would otherwise let a legacy settled sibling's output be
+  // silently overwritten), and never a same-id SIBLING at another ordinal: a
+  // call's own row is always reachable via its ordinal (persistToolExecPending
+  // stamps the same value) or via the legacy NULL, so a broader status-based
+  // disjunct could only ever capture a sibling's row.
   await engine.executeRaw(
     `UPDATE subagent_tool_executions
         SET status = 'complete', output = $4::text::jsonb, ended_at = now()
-${TOOL_EXEC_TARGET_ROW_SUBSELECT}`,
+      WHERE id = (
+        SELECT id FROM subagent_tool_executions
+         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
+           AND (ordinal = $5 OR ordinal IS NULL)
+           AND status <> 'complete'
+         ORDER BY CASE WHEN ordinal = $5 THEN 0 ELSE 1 END, id
+         LIMIT 1
+      )`,
     [jobId, messageIdx, toolUseId, typeof output === 'string' ? output : JSON.stringify(output), ordinal],
   );
 }
@@ -1644,16 +1637,29 @@ async function persistToolExecFailed(
   // rejected upfront) and "pending row exists" (tool threw mid-execute).
   // UPDATE-then-INSERT replaces the former ON CONFLICT (job_id, tool_use_id)
   // upsert (that job-wide unique was dropped in migration v131, #4155).
-  // The UPDATE targets exactly ONE row (own ordinal first, then pending,
-  // then legacy ordinal=NULL — never a settled same-id sibling); the INSERT
-  // leg carries the stable-id ON CONFLICT backstop for the residual
-  // zombie-worker race, mirroring persistToolExecPending. The conflict
-  // update is predicated on the SAME tool_use_id and a non-complete row so
-  // a losing writer can never downgrade another call's settled outcome.
+  // The UPDATE targets exactly ONE row (own ordinal first, then legacy
+  // ordinal=NULL) and NEVER a row that already settled complete — without the
+  // status guard the ordinal IS NULL disjunct would let a late failure
+  // downgrade a legacy settled row, corrupting the ledger replay trusts. No
+  // status-based disjunct: a call's own row is always reachable via its
+  // ordinal or the legacy NULL, so an `OR status = 'pending'` arm could only
+  // ever capture a same-id SIBLING's pending row at another ordinal (e.g. an
+  // unregistered-tool failure with no own row stealing the sibling's slot).
+  // The INSERT leg carries the stable-id ON CONFLICT backstop for the
+  // residual zombie-worker race, mirroring persistToolExecPending; its
+  // conflict update is predicated on the SAME tool_use_id and a non-complete
+  // row for the same reason.
   const updated = await engine.executeRaw<{ id: number }>(
     `UPDATE subagent_tool_executions
         SET status = 'failed', error = $4, ended_at = now()
-${TOOL_EXEC_TARGET_ROW_SUBSELECT}
+      WHERE id = (
+        SELECT id FROM subagent_tool_executions
+         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
+           AND (ordinal = $5 OR ordinal IS NULL)
+           AND status <> 'complete'
+         ORDER BY CASE WHEN ordinal = $5 THEN 0 ELSE 1 END, id
+         LIMIT 1
+      )
       RETURNING id`,
     [jobId, messageIdx, toolUseId, error, ordinal],
   );

@@ -27,6 +27,285 @@
 - [ ] **P3 — unclosed code fence suppresses the #4136 folded-heading detector for the rest of the document.** Fence tracking now matches marker TYPE (``` vs ~~~, adversarial fix), but a single unclosed fence — common in truncated LLM output — still disables detection below it (CommonMark-consistent; wrong fail-direction for a detector). Consider bounding fence suppression (e.g. reset at the next recognized speaker anchor). Files: src/core/conversation-parser/parse.ts.
 
 - [ ] **P3 — codex CLI on this machine cannot start while its required MCP server is unreachable.** Every `codex exec` dies after a 30s handshake timeout when the tailnet gbrain MCP endpoint is down; `-c mcp_servers={}` does not bypass. Outside-voice reviews silently lose cross-model coverage (Claude-subagent fallback fires). Make the server optional in codex config, or teach the review preflight to detect-and-warn.
+## v0.46.15.0 identity/retrieval wave follow-ups (filed at ship; decisions recorded at CEO review + outside voice)
+
+- [ ] **P2 — Codex adapter full production flip.** v0.46.15 integrated the REAL rollout
+  parser (`src/core/transcripts/codex.ts`) for turn selection, but fragment DELIVERY
+  remains a harness-shaped contract (no shipped codex injection path exists yet). When
+  one lands, flip the seam like the claude-code row (run-scoped infra via
+  setupRun/teardownRun; bank the baseline in the same commit). Context: outside-voice F5.
+- [ ] **P2 — Per-model calibration for `search.evidence_cosine_floor` (0.80) and
+  `search.autocut_min_top` (0.35).** Both are provider-scale-dependent; both are
+  config-overridable today. The September reranker default flip (zerank-2 →
+  voyage:rerank-2.5) MUST re-tune autocut_min_top — add that line to the v0.47
+  removal checklist when executing it. Context: outside-voice F16. Ship-review
+  addendum (F6): the floor is not purely a label — `create_safety` consumes the
+  evidence tier and gates duplicate-page creation, so a floor that never fires on
+  a low-cosine-scale embedder degrades `exists`→`probable` and loosens the
+  don't-create-a-duplicate contract. Calibrate BEFORE the September embedder
+  default flip, and include a per-model floor table, not one global number.
+- [ ] **P2 — Cat 3 undocumented-alias enrichment.** The gbrain-evals Cat 3 runner's
+  undocumented class (initials, nicknames, typos) needs alias-TABLE growth
+  (enrichment writes page_aliases), not resolver changes — the v0.46.15 alias_exact
+  arm only helps documented aliases. Pair with the evals-repo runner repair
+  (seed page_aliases + route through resolveEntitySlug). Context: outside-voice F1.
+- [ ] **P3 — Lowercase bigram alias candidates.** v2 of the weak-candidate pass
+  (`entity-salience.ts`): "sable finch" as a two-token weak alias probe. Unigram
+  covers the alias-table convention today; bigram needs its own ambiguity study.
+- [ ] **P3 — Precomputed name-token index at ingest.** The surname arm's
+  `lower(title) LIKE '% <token>'` scan is bounded by the reflex fail-open budgets;
+  if reflex latency telemetry creeps on 10K+-page brains, build the token table
+  and swap the arm to an indexed lookup.
+- [ ] **P3 — Re-eval community #717 (graph-hop wikilink rerank, claimed +2.6/+2.8
+  P@5/R@5) against the post-v0.46.15 ranker** — the concept intent + dedup scope fix
+  may have absorbed part of its headroom.
+- [ ] **P2 — #1663 remainder (issue REOPENED at ship): query-shape routing,
+  structural exact-lookup tier, CRAG confidence escalation.** The issue was closed
+  with these three unbuilt; the wave shipped the adjacent pieces (concept intent,
+  autocut weak-top floor, evidence-on-cosine) but deliberately deferred these.
+- [ ] **P3 — Positive underfill-event coverage for searchVector escalation.** The
+  two NEGATIVE paths are pinned (no event on genuine short corpus / offset past
+  end); the positive fire-at-cap assertion needs a >1000-chunk fixture that pushes
+  `innerLimit` to `HNSW_EF_SEARCH_MAX` with the pre-DISTINCT pull full. Pair with
+  a >400-chunk second-escalation engine-parity case (both current fixtures stop at
+  one escalation). Also cover the exact-scan lane (ship-review): a >2000-dim
+  vector column (no HNSW) must keep deep offsets working — the cap now keys on
+  `hnswIndexExpected`, pinned only by inspection. From the ship coverage audit
+  (C5/T7 partials).
+- [ ] **P2 — Reflex IPC version skew: weak candidates against an old `gbrain serve`.**
+  An upgraded hook client emits `weak: true` candidates; a not-yet-restarted older
+  serve ignores the unknown field and runs lowercase words through ALL arms
+  (title/slug-suffix), fabricating pointers during the upgrade window (ship-review
+  F4). Options: protocol version tag on ResolveRequest with client-side weak-strip
+  when the server doesn't ack; or an upgrade-flow serve restart requirement made
+  explicit. Exposure ends at serve restart; kill switch (`GBRAIN_RETRIEVAL_REFLEX_
+  LEXICAL_ARMS=false` on the client) also closes it since the client then sends no
+  weak candidates.
+- [ ] **P3 — Shared wall-clock budget across searchVector escalation attempts.**
+  Each escalation retry gets a FRESH 8s statement_timeout on Postgres (worst ~32s
+  per vector arm; multiplied under tokenmax multi-query expansion). Share one
+  deadline across the loop's attempts (ship-review F8). The loop only fires on
+  dense-wall shapes, and per-op timeouts bound the blast radius — hence P3.
+- [ ] **P1 — Cat 13 conceptual recall: the concept tilt is NOT enough; the fusion
+  itself is the suspect.** Pre-merge receipt (v0.46.15, voyage-4/1024 space, 500
+  seeded probes, all adapters on the SAME gateway): bare vector 49.5 nDCG@5,
+  grep-only 46.2, vector+grep RRF fusion 40.5, gbrain hybrid 35.6 — and a master
+  A/B at the merge-base scored gbrain BYTE-IDENTICAL (35.6, every template), so the
+  wave neither regressed nor improved Cat 13. Two honest findings: (a) the
+  pre-registered "hybrid ≥ bare vector" target is NOT met — the ±10-20% RRF-k
+  concept tilt provably works on a discriminating corpus
+  (test/search/concept-weights.test.ts) but is a wash on this probe mix; (b)
+  FUSION ITSELF loses to its own best single arm here (40.5 < 46.2 < 49.5) — the
+  keyword arm's noise on paraphrase probes drags the merge below either component.
+  Next: instrument per-arm rank contributions on the Cat 13 losers
+  (synonym 38.7 vs vector 66.4 is the widest), then evaluate arm-confidence-
+  weighted fusion (down-weight keyword when its top score is weak) rather than a
+  bigger static tilt. Ship with the evals-repo PR (the three uncommitted gateway-
+  config patches in gbrain-evals are part of it). Also note: the recorded 47.0-vs-
+  49.1 OpenAI-space numbers cannot be reproduced keylessly; the voyage-space gap
+  is WIDER — stronger embedders make hybrid's keyword noise relatively costlier.
+
+## LongMemEval temporal gap — date-proximity signal SPIKE-REJECTED (filed v0.46.15.0, identity/retrieval wave)
+
+- **P2 — Reframe the temporal-reasoning gap (94.7% vs MemPal 96.2%, the only categorical
+  public-benchmark loss) around what the questions actually are.** The v0.46.15 wave
+  pre-registered a spike gate before building a date-proximity ranking term
+  (`COALESCE(effective_date, updated_at)` proximity to query-text-extracted since/until
+  bounds, per the outside-voice-amended plan). The spike FIRED the stop condition:
+  a 12-question sample of the 133 `temporal-reasoning` questions in `longmemeval_s`
+  contained ZERO extractable absolute bounds — they are duration-arithmetic
+  ("How many days passed between X and Y?", "how many weeks ago did I …") and
+  pairwise-ordering ("which happened first …") questions. A scalar date-proximity
+  boost fires on none of them; retrieval for these is EVENT-DESCRIPTION recall
+  (find the sessions naming the events), and the date math belongs to the answer
+  layer — which is what the existing `findTrajectory` routing already does.
+  Next honest hypotheses, in order: (a) measure per-question retrieval recall on the
+  temporal slice to locate WHERE the 1.5pt is lost (retrieval vs trajectory coverage
+  vs answer extraction); (b) if retrieval: event-phrase recall (the event descriptions
+  are long noun phrases — expansion/paraphrase territory, adjacent to the v0.46.15
+  concept lane); (c) if trajectory: widen `extractCandidateEntities` coverage on
+  event-shaped (non-person) anchors. Do NOT rebuild the date-proximity boost without
+  new evidence — this entry is the receipt for why it doesn't exist.
+
+
+
+## chennai fix-wave follow-ups (filed 2026-08-16)
+
+- [ ] **P1 — read_latency_under_sync hangs from 6a905a1e (#4143); 6a905a1e's
+  read-path hunks are the revert candidate.** **What:** phase B of
+  `tests/heavy/read_latency_under_sync.sh` never returns; the workload's own
+  600s timeout kills it (exit 124). **Investigation so far (chennai wave,
+  timeboxed):** reproduced 2/2 on darwin at wave HEAD with default params
+  (500/200/4); a stderr-instrumented copy of the SAME workload at the SAME
+  params passes cleanly (writers finish by query ~11), and small params
+  (50/20/4) pass — the per-iteration stderr writes act as load-bearing yield
+  points, consistent with the repo's known Bun timers-phase starvation class
+  (cf. GBRAIN_SYNC_YIELD_EVERY: `setTimeout(0)`, NOT `setImmediate` — "Bun
+  starves the timers phase under a tight loop"). Suspect surface: #4096's
+  hybrid.ts read-path rework (embedQueryBounded's AbortSignal.timeout pairs +
+  query-cache/mode changes) turning phase B into a microtask-dominated spin
+  that starves timers. Reporter's Linux bisect (100% reproducible, first bad
+  6a905a1e) is in #4143. **Next:** either root-cause the starvation (try a
+  setTimeout(0) yield in the phase-B loop to confirm the class, then find
+  which #4096 await lost its macrotask boundary) or revert 6a905a1e's
+  hybrid.ts hunks and re-run the lane. Harness hardening also owed: count
+  swallowed query errors (all-fail should not read as latency data), bound
+  the `Promise.allSettled(writers)` wait, per #4143's own notes. **Also:**
+  the Heavy Tests lane comes back `skipped` on in-repo branches, so this
+  gates nothing upstream — fix the lane gating or this class stays invisible.
+  **Effort:** M. **Priority:** P1.
+
+- [ ] **P2 — Cache-MODE enum: implicit vs Anthropic-explicit prompt caching.**
+  **What:** replace `supports_prompt_cache`'s boolean/predicate with a mode
+  (`explicit-anthropic` | `implicit` | `none`) so the gateway's cache-marker
+  injection is driven by MODE, not by "caching exists". **Why:** the Google
+  predicate fix (#4158) is functionally safe today only because anthropic-
+  namespaced providerOptions are ignored on native-google — a transport-level
+  pin test (`recipe-google-prompt-cache.test.ts`) guards that; the semantic
+  conflation stays until modes exist. **Context:** cross-model review finding
+  on PR #4159; the pin test names this TODO. **Effort:** M (CC: S). **P2.**
+- [ ] **P2 — Abort-signal threading through BasePhaseOpts + dream generators.**
+  **What:** thread an AbortSignal from the job deadline into every calibration
+  phase's LLM calls so an in-flight hung request is CANCELLED, not just
+  observed at the next loop boundary. **Why:** #4168's clamp restores the
+  clean partial-exit but a wedged provider call still burns the reserve.
+  **Context:** adjacent to banked PR #4077 (cooperative abort through
+  synthesis) — the same seam should serve both. **Effort:** M. **P2.**
+- [ ] **P2 — transcripts parser: surface out-of-set speaker headings (#4136).**
+  **What:** optional ParseResult field (`suspect_heading_labels` + count) when
+  a heading-only anchor-shaped continuation line with an out-of-set label is
+  folded under a heading-anchored multi_line pattern; extract-conversation-
+  facts warns. **Why:** silent speaker misattribution is accepted parse today.
+  **Context:** reporter offered the PR (green-lit in the issue thread with the
+  three-label reproducer as tests); keep phase `regex_match`; a decline
+  threshold is a follow-on decision. **Effort:** M. **P2.**
+- [ ] **P2 — skillopt field-report items (#4119, all verified at HEAD).**
+  **What:** (a) in-loop runtime-deadline check (orchestrator.ts:440 is
+  step-granular); (b) output-size-aware cost estimate (preflight.ts fixed
+  800-token constant); (c) validation-gate n-gram overlap detector vs judge
+  definitions; (d) stronger bootstrap judges; (e) opt-in `--hermetic-config`
+  (CLAUDE_CONFIG_DIR) for claude-cli children — default-on needs its own
+  security decision (the provider deliberately rides the operator's ~/.claude
+  OAuth session); (f) docs: rule judges as a gameable optimizer target, D13
+  limitation, cap sizing, human review of proposed.md is load-bearing.
+  **Context:** issue thread carries the full analysis; CLAUDE_CONFIG_DIR is
+  the documented interim mitigation. **Effort:** M spread. **P2.**
+- [ ] **P3 — orphans.exclude_domains (feature, #4157).** Third exclusion axis
+  on the shared orphan policy, matched on the derived domain; must thread the
+  orphans denominator query AND both engines' getHealth page-scope rows
+  (engine parity). **Effort:** S. **P3.**
+- [ ] **P3 — dream.synthesize flat/root output_root (feature, #4117).**
+  Per-family prefix shape (reflections/originals prefixes derived into prompts
+  AND the fail-closed allow-list; default preserves wiki/). No config-registry
+  drift to fix (`dream.` prefix already accepted). **Effort:** M. **P3.**
+- [ ] **P2 — test debt from the chennai wave's pre-landing review (deferred
+  with rationale, not skipped).** (a) `/mcp` SDK-transport integration test:
+  spin the serve-http surface with a legacy no-grant token end-to-end and
+  assert the federated source list matches `localFederatedSourceIds` — the
+  unit precedence test pins the resolver but not the transport wiring; also
+  pin `AuthInfo.hasSourceGrant` at the oauth-provider construction site.
+  (b) postgres `getHealth` parity e2e for the islanded/coverage changes —
+  unit coverage is PGLite-only; the DATABASE_URL-gated parity lane should
+  assert entity_page_count + null-coverage-below-floor on real Postgres.
+  (c) transcripts replay-reconcile tests for WITHIN-TURN duplicate
+  tool_use_id after migration v131 (same id, same message_idx — provider
+  emits the dup inside one message). **Effort:** M spread. **P2.**
+- [ ] **P2 — adversarial-review residuals on the chennai wave (verified real,
+  deferred with rationale).** (a) subagent tool-ledger zero-row settlement
+  observability: in the residual zombie race a pending INSERT can be swallowed
+  by ON CONFLICT DO NOTHING, the tool still executes, and the settle UPDATE
+  then matches 0 rows — the outcome is silently unrecorded and a non-idempotent
+  tool can re-execute on replay. Add a rowcount check + job-log warn (needs a
+  logging seam in the persist helpers). (b) extract-atoms tombstones cover
+  pages only: `recordPageFailureCount` returns null for `kind !== 'page'`, so
+  a transcript that deterministically yields malformed output re-spends LLM
+  budget every cycle forever — extend #4148's failure-count machinery to
+  transcript items. (c) getHealth coverage numerators are not liveness-
+  filtered while islanded now is (#4153): a page whose only inbound link is
+  from a soft-deleted page counts as covered AND orphaned simultaneously;
+  align the coverage EXISTS subqueries with the islanded liveness JOINs in
+  both engines (parity + bootstrap-probe update). **Effort:** M spread. **P2.**
+- [ ] **P3 — conversation-parser: corpus-level false-positive receipt for the
+  multi_line bold-name-date builtin (#4163 follow-on).** Flipping the builtin
+  to `multi_line` + score_continuations_as_body means non-conversation prose
+  with as few as two `**Name** (date):`-shaped lines can clear the 5% density
+  floor (every other line counts as a continuation) and parse as a
+  conversation, feeding facts extraction with garbage segments. Build a
+  small negative corpus (essays/notes with incidental bold-date lines) and
+  either raise the floor for this builtin or require a minimum SPEAKER count.
+  Adjacent to the #4136 suspect-heading work above. **Effort:** S. **P3.**
+- [ ] **P3 — gateway expand(): record spend for a generateObject call that
+  throws after consuming tokens (#4121 follow-on).** The schema-rejection →
+  viaText fallback is the double-billed shape; the first call's tokens go
+  unrecorded because usage is only read on success. If the SDK error carries
+  usage, record it before the fallback retry. **Effort:** S. **P3.**
+- [ ] **P3 — eval-contradictions: reject flag-shaped slugs at render time.**
+  A slug beginning with `-` renders into `takes supersede '<slug>'` as a
+  flag-shaped positional; the pasted command errors rather than executes, but
+  a render-time shape check (or `--` separator support in the takes CLI)
+  would make the generated command paste-safe for any slug a remote MCP
+  writer can mint. **Effort:** S. **P3.**
+- [ ] **P3 — DRY refactors flagged by the review army (correct today,
+  duplicated shape).** (a) hoist the settlement-status subquery duplicated
+  across grade-takes call sites into one helper; (b) extract the three-tier
+  resolution (per-call > config > default) repeated in pace-mode/search-mode/
+  probe-timeout into a shared `resolveTiered` helper; (c) `renderBlock`-style
+  functions taking 6+ positional args → params object; (d) the deadline-skip
+  preamble repeated at the top of each cycle phase → shared guard in
+  base-phase.ts. **Effort:** S each. **P3.**
+## Multi-agent wave follow-ups (cathedral-6, `gbrain agent register`)
+
+- [ ] **P2 — archived sources keep previously-granted federated reads until
+  re-registration.** **What:** grants are validated at mint time only — a
+  client whose `federated_read` names a source that is archived AFTER
+  registration keeps reading it; there is no per-request archived-source
+  filtering and no grant invalidation on archive. **How:** this is a
+  platform-wide read-path decision affecting every federated op (recall,
+  search, entity, boundary verbs), not just recall — either fold an
+  `archived = false` join into the shared source-scope resolution or sweep
+  grants on `sources archive`; decide once, apply everywhere. **Where:**
+  `src/core/ops/context.ts` (sourceScopeOpts consumers), engine read paths,
+  `src/core/destructive-guard.ts` (archive lifecycle). **Effort:** M.
+  **Priority:** P2.
+- [ ] **P2 — federate the remaining read verbs across allowedSources.**
+  **What:** `recall` now honors a federated grant (every fact arm fans out
+  across `ctx.auth.allowedSources` and merges per-arm — see the `factSources`
+  ladder in `src/core/ops/facts.ts` as the pattern), but the rest of the
+  frozen-verb read surface stays scalar: `entity` (card assembly) and the
+  `context_pack`/`delta` ambient boundary verbs resolve `ctx.sourceId ?? 'default'`
+  only. A client granted N sources gets cross-source recall but single-source
+  entity cards and boundary packs — the surface splits silently. **How:** route
+  each through `sourceScopeOpts(ctx)` and fan out + merge like recall; for the
+  perf-clean shape push the source set INTO the engine query instead of
+  N round-trips — `findTrajectory`'s `sourceIds` ANY() branch is the
+  engine-level filter to mirror. **Where:** `src/core/ops/facts.ts`
+  (context_pack/delta), `src/core/verbs.ts` (entity),
+  `src/core/context/turn-context.ts`, engine fact/entity list APIs.
+  **Effort:** M. **Priority:** P2.
+- [ ] **P3 — E5: content-level BrainBench leak detection.** **What:** the
+  isolation gate asserts STRUCTURAL leak-absence (every result's source_id is
+  inside the caller's grant); a content-level arm would seed known-plaintext
+  canary strings into a foreign source and assert no returned text (snippets,
+  synthesized answers, graph annotations) contains them — catching join/
+  snippet/synthesis leak classes a source_id check can't see. **Where:**
+  `evals/brainbench/`. **Effort:** M. **Priority:** P3.
+- [ ] **P3 — OpenClaw native remote-MCP register block, when upstream ships
+  remote support.** **What:** `gbrain agent register` renders the honest
+  thin-client CLI block for openclaw today (`openclawThinClientBlock` in
+  `src/core/mcp-registration.ts`) because OpenClaw has no native remote-MCP
+  client; when upstream ships one, add a native client-credentials wiring
+  block and demote the CLI block to the fallback. Blocked upstream. **Where:**
+  `src/core/mcp-registration.ts`, `src/commands/agent-register.ts`.
+  **Effort:** S. **Priority:** P3.
+- [ ] **P3 — E2: `gbrain agent list` / `gbrain agent revoke` conveniences.**
+  **What:** sugar over `gbrain auth clients` / `gbrain auth revoke-client`
+  filtered to agent-register-minted clients, with revoke-by-name. Motivation
+  is partly retired: `gbrain auth clients` now shows source_id +
+  federated_read columns, so the remaining value is the agent-only filter +
+  name-based revoke. Build only if operators ask. **Where:**
+  `src/commands/agent.ts`. **Effort:** S. **Priority:** P3.
+
+
 
 ## Security-sweep mitigation follow-ups (filed 2026-08-16)
 
@@ -910,7 +1189,7 @@ Deferred from the BrainBench wave (eng-reviewed; plan + GSTACK REVIEW REPORT at
 
 - [ ] **`--live` agent-in-the-loop know-to-ask.** Replay fixtures with a real model deciding whether to issue retrieval calls; grade the agent, not just the deterministic reflex. Pre-registered in `docs/eval/BRAINBENCH.md` (the v1 metric grades the injection decision, which IS the shipped mechanism). Needs: seeded N-repeat methodology for model stochasticity + budget rails. Priority: P2.
 - [ ] **Intrusion-budget gating calibration.** `avg_injected_tokens` is reported, non-gating (decision 18) — a wrong threshold is worse than none. After a few weeks of scoreboard data across PRs, pick calibrated per-seam thresholds and promote it to a gated metric. Priority: P2.
-- [ ] **Flip contract adapters to production — claude-code half now unblocked.** `adapters/claude-code.ts` exports the UserPromptSubmit hook wire types; the real hook (`gbrain hook user-prompt`, shipped with the bootstrap lane and extended with cross-turn dedupe + the channel feedback loop in the cathedral-3 convergence) swaps the in-process transport for an exec of the hook script and flips `seam: 'contract'` → `'production'` with continuous bench numbers. Note the production hook also exercises transcript-based dedupe, which the memoryless contract row deliberately doesn't. For the codex half: the cathedral-4 transcripts lane shipped a verified codex rollout PARSER (`src/core/transcripts/codex.ts`, structural turn selection pinned against a live sample) — a codex contract adapter can now consume it instead of waiting for a hook integration. Priority: P1 (the claude-code integration has landed; codex parsing has landed; this is now standalone-actionable).
+- [x] **Flip contract adapters to production — claude-code half DONE (v0.46.15 identity/retrieval wave).** `adapters/claude-code.ts` now drives the real `gbrain hook user-prompt` path (synthesized Claude Code JSONL transcripts, run-scoped resolve-IPC server with `turn_context` handler, `HookIo` seams) and the scoreboard row is `seam: 'production'`, banked with justification in the same commit. The codex half (real DELIVERY path, not just the parser) is re-filed as the P2 "Codex adapter full production flip" entry in the v0.46.15.0 wave section at the top of this file.
 - [ ] **Cathedral 1 conformance-kit fixture import.** The memory-verbs conformance scenarios convert to BrainBench fixtures via the published `evals/brainbench/schema/fixture.schema.json` once `garrytan/cathedral-1` merges ("conformance tests double as BrainBench seed fixtures", decision log 2026-06-12). Free corpus growth from already-reviewed scenarios. Blocked by: cathedral-1 on master. Priority: P2.
 - [ ] **Live-embeddings fidelity mode (`--embeddings`).** Hermetic CI grades the keyword/alias arms only (disclosed); an opt-in mode seeding real embeddings would grade write-back/continuity retrieval through the vector path. Same budget rails as `--llm`. Priority: P3.
 - [ ] **Community fixture intake + competitor adapters.** The TD1 remainder after the generated corpus absorbed in-PR growth: an `external-authors/`-style intake path for contributed fixtures (validator + privacy guard already gate them) and adapters for non-gbrain memory systems against the published schemas, enabling true head-to-head rows in the gbrain-evals scorecard. Priority: P3.
@@ -1015,12 +1294,10 @@ master before starting, several fixes landed independently).
   into one UNION ALL query and extract a shared targets constant
   (src/core/jsonb-integrity-targets.ts) consumed by both. Where:
   `src/commands/doctor.ts` jsonbIntegrityCheck, `src/commands/repair-jsonb.ts`.
-- [ ] **P3 — register-client HTTP-level e2e (ship-review follow-up).** The
-  source/federatedRead lane is covered by unit normalizers + a structural
-  route pin; a DATABASE_URL-gated serve-http e2e (register with bindings →
-  assert stored client via /admin/api/agents; invalid source → 400
-  invalid_source) closes the wire-level gap. Where:
-  `test/e2e/serve-http-oauth.test.ts`.
+- [x] **P3 — register-client HTTP-level e2e (ship-review follow-up).** ABSORBED
+  into the cathedral-6 multi-agent e2e suite on `garrytan/cathedral-6`
+  (test/e2e/serve-http-multi-agent.test.ts — wire-level register + scoped
+  round-trips + invalid source → 400).
 - [ ] **P3 — get_chunks `__all__` sentinel narrows to 'default' (red-team,
   Wave 3 territory).** `sourceScopeOpts` returns `{}` for a trusted local
   `--source __all__` caller (documented "spans the brain"), but both engines'
@@ -1549,10 +1826,15 @@ is deterministic + precision-biased. See plan + GSTACK REVIEW REPORT at
   wave: `extractCandidatesFromWindow` now covers assistant-introduced entities and
   pronoun follow-ups whose antecedent was NAMED in the rolling window; true pronoun
   coreference for never-named antecedents remains with the LLM-pass idea.)*
-- [ ] **P3 — recall knob: optional fuzzy/prefix-expansion resolution.** The resolver
-  (`src/core/context/retrieval-reflex.ts`) is exact-only (alias + title + slug-suffix)
-  for precision. Revisit adding `resolveEntitySlug`'s trgm-fuzzy / prefix-expansion
-  arm, gated on an unambiguous single hit, if recall telemetry comes back weak.
+- [x] **P3 — recall knob: optional fuzzy/prefix-expansion resolution.** RESOLVED
+  differently by the v0.46.15 identity wave, with a receipt: trigram fuzzy in the
+  reflex is deliberately REJECTED — the BrainBench adversarial near-miss class
+  (`"<Name>er"` for a real `<Name>` page) is gold-silent and any usable trigram
+  threshold would false-fire on it. The recall gap the fuzzy arm targeted was
+  closed by exact NORMALIZED-LEXICAL arms instead: the lowercase weak-alias arm
+  + the surname arm (know_to_ask 0.15→0, push_recall +9.6pp, false_fire/precision
+  unmoved). Do not re-add trigram here without a fixture that defeats the
+  near-miss class first.
 
 ## gbrain#1972 job-layer follow-up (v0.43+)
 
@@ -3182,14 +3464,12 @@ The original 3 items as filed (kept for traceability):
   `eval_capture_failures.reason` enum cleanup from the v0.25.0 P1 surgical
   hardenings list. Effort: human ~3 days / CC ~3 hours.
 
-- [ ] **P0 — Wire nightly quality probe into autopilot scheduler.** The
-  phase ships callable (`src/core/cycle/nightly-quality-probe.ts`) with
-  full DI surface; doctor surfaces outcomes; the audit JSONL rotates
-  cleanly. What's NOT wired: `src/commands/autopilot.ts` doesn't invoke
-  `runNightlyQualityProbe(deps)` on its 24h cadence. Add the phase
-  trigger; honor `autopilot.nightly_quality_probe.enabled` config gate.
-  Already filed in v0.40.1.0 Track D follow-ups — re-filing here as P0
-  with explicit D1-wave dependency. Effort: human ~3 hours / CC ~30 min.
+- [x] **P0 — Wire nightly quality probe into autopilot scheduler.** DONE —
+  and this entry was STALE when the v0.46.15 wave audited it: autopilot's
+  tick body already invokes `runNightlyQualityProbe` behind the
+  `autopilot.nightly_quality_probe.enabled` gate
+  (`src/commands/autopilot.ts:1361-1386`, pinned by
+  `test/autopilot-nightly-probe-wiring.test.ts`). Nothing to build.
 
 ### D2 — Code-indexing promoted to P1 (peer of Cursor/Sourcegraph)
 
@@ -3620,19 +3900,12 @@ contributor traps.
   vary too much). Estimate: ~2 weeks. Filed during v0.40.1.0 Track D
   /plan-eng-review (see `~/.claude/plans/system-instruction-you-are-working-whimsical-acorn.md`).
 
-- [ ] **v0.41+: Wire the nightly quality probe into autopilot scheduling.**
-  v0.40.1.0 Track D shipped the phase (`src/core/cycle/nightly-quality-probe.ts`),
-  the audit JSONL (`src/core/audit-quality-probe.ts`), the doctor check
-  (`nightly_quality_probe_health` in doctor.ts), and the 10-question
-  placeholder fixture. What's NOT yet wired: `src/commands/autopilot.ts`
-  doesn't yet invoke `runNightlyQualityProbe(deps)` on its 24h cadence —
-  the phase is callable in isolation (good for testing) but no scheduled
-  loop calls it. To finish: add a phase trigger to the autopilot cycle loop
-  that calls the probe with concrete deps wiring (`isEnabled`,
-  `hasEmbeddingProvider`, `resolveMaxUsd`, `resolveRepoRoot`, real
-  `runLongMemEval` / `runCrossModalBatch` invocations via subprocess or
-  direct function call). Honor `autopilot.nightly_quality_probe.enabled`
-  config gate (already in doctor's read-side; needs autopilot read-side).
+- [x] **v0.41+: Wire the nightly quality probe into autopilot scheduling.**
+  DONE (stale entry swept by the v0.46.15 wave): autopilot's tick body
+  invokes `runNightlyQualityProbe` behind the
+  `autopilot.nightly_quality_probe.enabled` gate
+  (`src/commands/autopilot.ts:1361-1386`, pinned by
+  `test/autopilot-nightly-probe-wiring.test.ts`).
   Doctor surface is already in place to show outcomes; just need the
   scheduling lane. Estimate: ~3 hours.
 
@@ -3852,9 +4125,9 @@ contributor traps.
 
 ## MCP fix wave follow-ups (v0.34.1)
 
-- [ ] **v0.34.x: Source-scope `takes_*` ops (pre-existing leak surfaced during v0.34.1 adversarial review).** `takes_list`, `takes_search`, `takes_scorecard`, `takes_calibration` in `src/core/operations.ts:1248-1335` thread `ctx.takesHoldersAllowList` but never `ctx.sourceId`. An auth'd OAuth client scoped to `source_id='canon-a'` can call `takes_list --page_slug=foo` (slug in `canon-b`) and read takes attached to foreign-source pages. Pre-existing, not introduced by v0.34.1, but the wave was framed as "P0 source-isolation seal on the read path" and `takes_*` surfaces were missed. Fix: extend `TakesListOpts` in `src/core/engine.ts:186` with `sourceId?: string` + `sourceIds?: string[]`; thread `sourceScopeOpts(ctx)` at each op handler; engine `listTakes`/`searchTakes` filter via the `pages` JOIN.
+- [x] **v0.34.x: Source-scope `takes_*` ops (pre-existing leak surfaced during v0.34.1 adversarial review).** DONE — verified already fixed and pinned on `garrytan/cathedral-6`: all four `takes_*` ops route through `sourceScopeOpts(ctx)` at `src/core/ops/takes.ts:30/57/86/113`.
 
-- [ ] **v0.34.x: Extend `sourceScopeOpts(ctx)` to the 14 read-side ops PR #861 didn't touch.** `get_page`, `get_tags`, `get_links`, `get_backlinks`, `get_timeline`, `list_files`, `get_file`, and the four `takes_*` ops (above) still use the v0.31.8-era `const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {}` pattern. NOT a leak (scalar `ctx.sourceId` IS threaded), but federated_read (#876, `ctx.auth?.allowedSources`) is silently dropped. A "WeCare L3 dept" client gets correct federated results from `search`/`query`/`list_pages`/`traverse_graph`/`find_experts` but only sees its scalar `source_id` for `get_page`/`get_tags`/etc. Fix: route all 14 sites through `sourceScopeOpts(ctx)`.
+- [ ] **v0.34.x: Extend `sourceScopeOpts(ctx)` to the remaining read-side ops on the v0.31.8-era scalar pattern.** Most of the original list is fixed: `get_page`/`list_pages` route through `federatedSearchScope` (#3242), the four `takes_*` ops route through `sourceScopeOpts` (ops/takes.ts), and links/timeline-read/tag-set reads were converted (#2200). Still on `const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {}`: `ops/tags.ts:26,45`, `ops/timeline.ts:51`, `ops/raw-data.ts:27`, `ops/sync-status.ts:31`, `ops/admin.ts:158`, `ops/extraction.ts:83,187`, and `ops/pages.ts:252,775,808` (the pages.ts/extraction.ts arms are write-adjacent — audit each before switching; write authority is deliberately scalar). NOT a leak (scalar `ctx.sourceId` IS threaded), but federated_read (#876, `ctx.auth?.allowedSources`) is silently dropped on those reads.
 
 - [ ] **v0.34.x: Migration v60 idempotency guard against `--force-retry` race with v64.** `gbrain apply-migrations --force-retry 58` after v64 has already run will re-install the FK with `ON DELETE SET NULL`, silently downgrading the v64 RESTRICT posture. Probability low (operator has to explicitly force-retry 58) but failure mode is invisible. Fix: v60 should probe `pg_constraint.confdeltype` before re-adding and refuse to clobber `'r'` (RESTRICT) with `'n'` (SET NULL).
 
@@ -3862,7 +4135,7 @@ contributor traps.
 
 - [ ] **v0.34.x: Doctor check `oauth_orphan_source_id`** — surfaces OAuth clients whose source_id was nulled by the v60 D10 silent-widen path (`GBRAIN_ACCEPT_SILENT_WIDEN=1`). Closes the observability gap from v0.34.1's D4 decision. Sibling to the `rls_event_trigger` check pattern in `src/commands/doctor.ts`.
 
-- [ ] **v0.34.x: `gbrain sources purge` FK error UX.** Post-v0.34, deleting a source is refused if any oauth_client references it (v64 ON DELETE RESTRICT). The CLI currently surfaces the raw Postgres FK violation. Fix: pre-check via `SELECT client_id, client_name FROM oauth_clients WHERE source_id = $1`, print "N OAuth clients reference this source: ... Revoke first via `gbrain auth revoke-client <id>`." Mirrors `assessDestructiveImpact` in destructive-guard.ts (v0.26.5).
+- [x] **v0.34.x: `gbrain sources purge` FK error UX.** DONE on `garrytan/cathedral-6`: `clientsReferencingSource` + `formatClientReferentsBlock` in `src/core/destructive-guard.ts` pre-check remove/purge/auto-purge in `src/commands/sources.ts` and print the named-client refusal (revoke hint included) instead of the raw FK violation; `assessDestructiveImpact` carries `oauthClientCount`.
 
 - [ ] **v0.34.x: `hybrid.ts:223` explicit-pick refactor.** The SearchOpts rebuild manually picks fields from HybridSearchOpts. This is the bug shape that caused the original v0.34.1 P0 leak — a new SearchOpts field is silently dropped if not manually added here. The wave added `sourceId` + `sourceIds` to the pick; future fields will keep hitting this footgun. Fix: refactor to spread + TypeScript `Pick<>` helper that narrows HybridSearchOpts → SearchOpts type-safely.
 

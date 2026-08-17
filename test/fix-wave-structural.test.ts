@@ -87,7 +87,22 @@ describe('v0.36.1.x #1077 — admin register-client supports PKCE public clients
     // UPDATE block (the regex deliberately asserts the post-insert UPDATE
     // is GONE).
     expect(src).toMatch(/validateTokenEndpointAuthMethod\(tokenEndpointAuthMethod\)/);
-    expect(src).toMatch(/registerClientManual\([^)]*validatedAuthMethod[^)]*\)/);
+    // cathedral-6: the route now composes registerScopedClient (the same core
+    // the CLI uses) instead of open-coding registerClientManual + a raw TTL
+    // UPDATE. The atomicity contract is unchanged — the validated method is
+    // threaded through the parsed args into registerClientManual's single
+    // INSERT inside the core; the no-post-insert-UPDATE guard below still
+    // pins the F4 regression. The call now runs on the tx-scoped sql handle
+    // (dup-check + INSERT are one transaction under the shared name lock).
+    expect(src).toMatch(/registerScopedClient\(txSql,\s*name,\s*\{[\s\S]*?tokenEndpointAuthMethod:\s*validatedAuthMethod[\s\S]*?\}/);
+    // cathedral-6: the dup-check + INSERT run in ONE engine.transaction under
+    // the SAME name-scoped advisory lock the CLI lane takes — two concurrent
+    // same-name requests can no longer both pass the autocommit pre-check.
+    expect(src).toMatch(/pg_advisory_xact_lock\(hashtext\(\$1\)::bigint\)`,\s*\[registerClientNameLockKey\(name\)\]/);
+    // cathedral-6 (C1): tokenTtl validates BEFORE the tx (integer within the
+    // shared bounds → structured 400, never an in-tx integer-cast 500).
+    expect(src).toMatch(/invalid_token_ttl/);
+    expect(src).toMatch(/Number\.isInteger\(v\) \|\| v < TOKEN_TTL_MIN_SECONDS \|\| v > TOKEN_TTL_MAX_SECONDS/);
     // Regression guard: post-insert UPDATE flipping client_secret_hash to
     // NULL based on a runtime check is exactly the non-atomic pattern T4
     // killed. Re-introducing it brings back codex F4.

@@ -487,10 +487,14 @@ class ProposeTakesPhase extends BaseCyclePhase {
     const promptVersion = opts.promptVersion ?? PROPOSE_TAKES_PROMPT_VERSION;
     const pageLimit = opts.pageLimit ?? 100;
     const skipPagesWithFence = opts.skipPagesWithFence ?? false;
-    // #4168: explicit test override wins; otherwise the REAL remaining job
-    // budget (when the cycle threads deadlineAtMs) clamped to the derived
-    // fallback. Resolved to null = not enough budget to start (see the
-    // honest-skip return after the provider probe below).
+    // gbrain#4168: explicit test override wins; otherwise the REAL remaining
+    // job budget (when the cycle threads deadlineAtMs) clamped to the derived
+    // fallback. At the default installed-daemon interval the old 30-min
+    // literal was bit-identical to the job timeout floor, and since this
+    // phase starts after earlier phases, phase-elapsed always trailed
+    // job-elapsed — the clean partial-exit below was unreachable and cycles
+    // dead-lettered instead of banking work. Resolved to null = not enough
+    // budget to start (see the honest-skip return after the provider probe).
     const resolvedDeadlineMs =
       opts.deadlineMs ?? resolveProposeTakesDeadlineMs(opts.deadlineAtMs, Date.now());
     const phaseStartMs = Date.now();
@@ -541,6 +545,9 @@ class ProposeTakesPhase extends BaseCyclePhase {
           `if this repeats every cycle. Next cycle retries with a fresh budget.`,
         details: {
           reason: 'insufficient_cycle_budget',
+          // The job deadline is WHY the phase can't start — carry the same
+          // flag the mid-run partial exit sets so dashboards see one signal.
+          deadline_hit: true,
           pages_scanned: 0,
           cache_hits: 0,
           cache_misses: 0,
@@ -562,7 +569,21 @@ class ProposeTakesPhase extends BaseCyclePhase {
       tombstones_written: 0,
       budget_exhausted: false,
       warnings: [],
+      deadline_hit: false,
     };
+
+    // gbrain#4168: job budget already inside the reserve window — exit
+    // cleanly before ANY work (the in-loop `elapsed > deadline` check can't
+    // fire on the first iteration when the effective deadline is 0).
+    if (deadlineMs <= 0) {
+      result.warnings.push('phase skipped: job deadline already inside the reserve window');
+      result.deadline_hit = true;
+      return {
+        summary: `propose_takes: skipped — job deadline inside the reserve window (run ${proposalRunId})`,
+        details: { ...result, proposal_run_id: proposalRunId, prompt_version: promptVersion },
+        status: 'warn' as PhaseStatus,
+      };
+    }
 
     // Load pages eligible for proposal. Source-scoped per BaseCyclePhase.
     const pages = await listCandidatePages(engine, scope, pageLimit);

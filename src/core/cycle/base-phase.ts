@@ -41,17 +41,6 @@ import type { ProgressReporter } from '../progress.ts';
  * BaseCyclePhase. The base class produces these via `this.scope()`; subclasses
  * receive them as the only sanctioned way to read source-scoped data.
  */
-/**
- * Reserve carved out of the enclosing job's remaining wall-clock before a
- * cycle phase commits to more work: enough headroom that a child-subagent
- * wait returns and the handler unwinds cleanly before the worker's abort
- * fires: wait poll interval (5s) + worker force-evict grace (30s) + lock
- * and DB cleanup headroom. ONE home (#4168) — patterns.ts re-exports it;
- * a second `60 * 1000` copy would recreate the duplicated-literal drift
- * this constant exists to prevent.
- */
-export const CYCLE_DEADLINE_RESERVE_MS = 60 * 1000;
-
 export interface ScopedReadOpts {
   sourceId?: string;
   sourceIds?: string[];
@@ -60,20 +49,49 @@ export interface ScopedReadOpts {
 export interface BasePhaseOpts {
   /** Optional progress reporter. Phases call tick() / start() through the base. */
   reporter?: ProgressReporter;
-  /** Absolute wall-clock deadline (epoch ms) of the ENCLOSING minion job
-   *  (#2781/#4168), threaded from MinionJobContext.deadlineAtMs by the
-   *  autopilot-cycle handler via runCycle. Null/unset for direct
-   *  `gbrain dream` callers — phases then fall back to their derived
-   *  defaults. Phases that spend real time (propose_takes, patterns,
-   *  synthesize) clamp against this so their clean-exit paths fire BEFORE
-   *  the job's kill switch instead of being structurally unreachable. */
-  deadlineAtMs?: number | null;
   /** Dry-run mode propagated from cycle opts. Subclasses honor this in process(). */
   dryRun?: boolean;
   /** Optional explicit budget override in USD. Otherwise base reads config. */
   budgetUsd?: number;
   /** Optional injected BudgetMeter (tests). When set, replaces the default constructed one. */
   meter?: BudgetMeter;
+  /**
+   * Absolute wall-clock deadline (epoch ms) inherited from the owning job's
+   * claim-time `timeout_at` (gbrain#4168). Phases with their own relative
+   * deadline (e.g. propose_takes' 30-min cap) clamp it via
+   * `effectivePhaseDeadlineMs()` so the clean partial-exit path fires BEFORE
+   * the worker's kill switch — without this, a phase default equal to (or,
+   * since phases start mid-cycle, always trailing) the job timeout makes the
+   * clean exit unreachable and the job dead-letters instead of banking
+   * partial work. Null/undefined = no job deadline (interactive CLI runs).
+   */
+  deadlineAtMs?: number | null;
+}
+
+/**
+ * Stop-margin reserved under the job deadline when deriving a phase's
+ * effective relative deadline. Guarantees the phase's clean exit + result
+ * write unwind before the worker's abort fires: wait poll interval (5s) +
+ * worker force-evict grace (30s) + lock and DB cleanup headroom. Lives here
+ * (not patterns.ts) because every deadline-aware phase consumes it;
+ * patterns.ts re-exports for back-compat.
+ */
+export const CYCLE_DEADLINE_RESERVE_MS = 60 * 1000;
+
+/**
+ * Effective relative deadline for a phase: the phase's own default, clamped
+ * to the time remaining under the job's absolute deadline minus the reserve.
+ * Returns 0 when the job budget is already inside the reserve — callers
+ * treat that as "exit cleanly now with deadline_hit", never as unlimited.
+ */
+export function effectivePhaseDeadlineMs(
+  phaseDefaultMs: number,
+  deadlineAtMs: number | null | undefined,
+  nowMs: number,
+): number {
+  if (deadlineAtMs == null) return phaseDefaultMs;
+  const remaining = deadlineAtMs - CYCLE_DEADLINE_RESERVE_MS - nowMs;
+  return Math.max(0, Math.min(phaseDefaultMs, remaining));
 }
 
 export abstract class BaseCyclePhase {

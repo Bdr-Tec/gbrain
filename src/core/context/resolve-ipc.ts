@@ -90,6 +90,11 @@ export interface ResolveRequest {
   sourceId?: string;
   /** v0.43 (#2095, codex D7): suppression mode — 'slug-only' under windowing. */
   suppression?: 'slug-and-title' | 'slug-only';
+  /**
+   * v0.46.15: lexical-arms kill switch. Either side may disable: a client
+   * `false` wins; otherwise the server applies its own file-config gate.
+   */
+  lexicalArms?: boolean;
 }
 
 export interface TurnContextRequest {
