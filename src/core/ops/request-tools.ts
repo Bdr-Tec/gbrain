@@ -58,10 +58,14 @@ function firstSentenceOf(description: string): string {
  * persist level), minus localOnly on network transports (stdio and the
  * trusted local CLI keep them — D7), minus ops outside the caller's scopes
  * (agent-callable carve-out per FOV-4), minus bound-client-fenced ops (same
- * predicate as tools/list, ENG-3), minus publish-gated ops whose gate is off
- * (stdio and the trusted local CLI bypass gates — the D7 local-surface
- * posture, matching assertPublishEnabled's remote===false exemption; a
- * failed gate read hides the gated ops, fail-closed).
+ * predicate as tools/list, ENG-3), minus publish-gated ops whose gate is off.
+ * Two DISTINCT caller axes here: localOnly visibility is the transport-
+ * LOCALITY axis (stdio pipe or trusted local CLI can call localOnly ops, D7),
+ * while publish gates are the owner-CONSENT axis and exempt ONLY
+ * ctx.remote === false (assertPublishEnabled + the advisor inline gate) —
+ * stdio dispatches remote:true, so its catalog subtracts gate-off ops or it
+ * advertises tools that deny at call time. A failed gate read hides the gated
+ * ops, fail-closed.
  */
 async function visibleOpsForCaller(
   ctx: OperationContext,
@@ -73,13 +77,15 @@ async function visibleOpsForCaller(
   // runs, operations.ts has finished evaluating.
   const { operations } = await import('../operations.ts');
   const { filterOpsForSurface } = await import('../../mcp/surface.ts');
-  // Trusted local callers: the stdio pipe, or the local CLI (remote is
-  // strictly false — the fail-closed trust marker). Both CAN call localOnly
-  // and gated ops, so hiding them would make the catalog dishonest.
-  const isLocal = ctx.transport === 'stdio' || ctx.remote === false;
+  // Locality axis: the stdio pipe or the local CLI (remote strictly false)
+  // CAN call localOnly ops, so hiding those would make the catalog dishonest.
+  const canSeeLocalOnly = ctx.transport === 'stdio' || ctx.remote === false;
+  // Consent axis: publish-gate enforcement exempts ONLY remote === false —
+  // stdio is remote:true, so it is gate-subject like every other agent caller.
+  const gateExempt = ctx.remote === false;
 
   let gateDisabled: ReadonlySet<string> = new Set();
-  if (!isLocal) {
+  if (!gateExempt) {
     try {
       const { disabledOpsForPublishGates } = await import('../../mcp/publish-gates.ts');
       gateDisabled = await disabledOpsForPublishGates(ctx.engine, ctx.config);
@@ -96,7 +102,7 @@ async function visibleOpsForCaller(
   const scopes = ctx.auth?.scopes && ctx.auth.scopes.length > 0 ? ctx.auth.scopes : null;
 
   return filterOpsForSurface(operations, ceiling).filter(op =>
-    (isLocal || !op.localOnly)
+    (canSeeLocalOnly || !op.localOnly)
     && (scopes === null
       || hasScope(scopes, op.scope ?? 'read')
       || (op.agentCallable === true && hasScope(scopes, 'agent')))
