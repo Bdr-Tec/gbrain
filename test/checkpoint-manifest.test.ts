@@ -2,7 +2,7 @@
  * Cathedral 5 (WI1) — session_context_state.checkpoint_manifest helpers.
  * Hermetic in-memory PGLite; drives the REAL getCheckpointManifest /
  * appendCheckpointManifest (newest-first, dedup-by-slug, cap, fail-open on
- * pre-v131 schema).
+ * pre-v132 schema).
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -104,7 +104,7 @@ describe('checkpoint_manifest append/read', () => {
     expect(state?.surfaced_slugs).toEqual(['cursor-slug']);
   });
 
-  test('pre-v131 schema (column missing): read reports null (error, not confirmed-empty), append returns false and never throws', async () => {
+  test('pre-v132 schema (column missing): read reports null (error, not confirmed-empty), append returns false and never throws', async () => {
     await engine.executeRaw('ALTER TABLE session_context_state DROP COLUMN checkpoint_manifest');
     try {
       // null (failed read) — NOT [] — so the assemble poll keeps its retry

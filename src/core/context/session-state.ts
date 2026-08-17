@@ -212,7 +212,7 @@ function toCheckpointLinks(v: unknown): CheckpointLink[] {
  * Read the session's checkpoint manifest. Distinguishes a CONFIRMED answer
  * from a failed read (adversarial review): `[]` means the row/manifest is
  * genuinely absent or empty; `null` means the read errored (engine down,
- * pre-v131 schema). Callers on the render path treat null as [] (fail-open);
+ * pre-v132 schema). Callers on the render path treat null as [] (fail-open);
  * `appendCheckpointManifest` treats null as abort (a merge seeded from a
  * failed read would overwrite-truncate the standing manifest), and the
  * assemble poll only SETTLES on a confirmed answer.

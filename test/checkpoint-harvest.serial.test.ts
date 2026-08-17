@@ -206,7 +206,7 @@ describe('post-compaction recall (the done criterion)', () => {
       session_id: 'sess-mfail', seg: seg.hash, links: ['people/dora-example'], ts: new Date().toISOString(),
     }) + '\n');
 
-    // Force the publish to fail: pre-v131 shape (column missing).
+    // Force the publish to fail: pre-v132 shape (column missing).
     await engine.executeRaw('ALTER TABLE session_context_state DROP COLUMN checkpoint_manifest');
     try {
       scheduleCheckpointHarvest({

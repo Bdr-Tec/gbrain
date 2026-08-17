@@ -97,7 +97,7 @@ describe('migration v126 — session_context_state', () => {
     const { columns } = await captureShape();
     const byName = Object.fromEntries(columns.map(c => [c.column_name, c]));
     expect(Object.keys(byName).sort()).toEqual([
-      'checkpoint_manifest', // cathedral 5 — added by migration v131
+      'checkpoint_manifest', // cathedral 5 — added by migration v132
       'client_id',
       'last_wake_at',
       'session_id',
@@ -214,11 +214,11 @@ describe('migration v126 — session_context_state', () => {
   test('drop + rewind to v125 → runMigrations recreates the fresh-bootstrap shape', async () => {
     // Drift guard: capture the fresh-bootstrap shape (schema blob), then drop
     // the table, rewind the version ledger, and re-run migrations so v126's
-    // DDL + the v131 checkpoint_manifest ALTER recreate it. The two shapes
+    // DDL + the v132 checkpoint_manifest ALTER recreate it. The two shapes
     // must match exactly — a divergence means migrate.ts drifted from
     // src/schema.sql / pglite-schema.ts.
     const fresh = await captureShape();
-    expect(fresh.columns.length).toBe(8); // 7 (v126) + checkpoint_manifest (v131)
+    expect(fresh.columns.length).toBe(8); // 7 (v126) + checkpoint_manifest (v132)
 
     await engine.executeRaw(`DROP TABLE IF EXISTS session_context_state`);
     await engine.setConfig('version', '125');

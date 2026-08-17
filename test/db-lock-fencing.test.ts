@@ -12,7 +12,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { tryAcquireDbLock, LockStolenError } from '../src/core/db-lock.ts';
-import { startCycleLockRefresher, buildYieldDuringPhase, getLockStolenReason, type LockHandle } from '../src/core/cycle.ts';
+import { startCycleLockRefresher, buildYieldDuringPhase, isLockStolenAbort, type LockHandle } from '../src/core/cycle.ts';
 
 let engine: PGLiteEngine;
 
@@ -98,40 +98,26 @@ describe('startCycleLockRefresher (Tier-1 #1 + D5.11)', () => {
   });
 
   test('aborts the controller with LockStolenError when a fenced refresh returns false', async () => {
-    // Controller DOUBLE, deliberately not a platform AbortController: two
-    // coverage-instrumented CI shard-9 runs (2026-08-16/17) observed a
-    // freshly-constructed real signal SPURIOUSLY pre-aborted (aborted=true,
-    // reason=undefined, no abort caller — the next test's fresh controller
-    // read false again). A pre-aborted signal makes the refresher's tick
-    // gate skip refresh() entirely, so no assertion phrasing against the
-    // platform object can be stable. The unit under test is the refresher's
-    // DECISION — fenced-false ⇒ abort(LockStolenError) — so observe the
-    // abort CALL itself; real-signal integration is covered by the
-    // cycle-abort suites.
-    let abortedWith: unknown = null;
-    const signal = { aborted: false, reason: undefined as unknown };
-    const controller = {
-      signal,
-      abort(reason?: unknown) {
-        if (!signal.aborted) {
-          signal.aborted = true;
-          signal.reason = reason;
-          abortedWith = reason;
-        }
-      },
-    } as unknown as AbortController;
+    const controller = new AbortController();
     const stop = startCycleLockRefresher(fakeLock(async () => false), controller, 'test-lock', 15);
     try {
       // Poll instead of a fixed sleep: under full-suite shard load, timer
-      // ticks can be starved well past the nominal interval.
+      // ticks can be starved well past the nominal interval. Poll on the
+      // REASON, not just `aborted`: one loaded-CI run (2026-08-16, shard 9)
+      // observed `aborted === true` with `reason === undefined` at the first
+      // post-abort read — unreproduced locally/in-container across 50+ runs,
+      // so treat reason visibility as part of the awaited condition and keep
+      // the assertion diagnostic when it genuinely never arrives.
       const deadline = Date.now() + 5_000;
-      while (abortedWith === null && Date.now() < deadline) {
+      while (!(controller.signal.reason instanceof LockStolenError) && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 25));
       }
-      expect(abortedWith).toBeInstanceOf(LockStolenError);
-      // The GC-safe side-channel (production classification path) carries
-      // the same steal, keyed by the signal object.
-      expect(getLockStolenReason(controller.signal)).toBeInstanceOf(LockStolenError);
+      expect(controller.signal.aborted).toBe(true);
+      if (!(controller.signal.reason instanceof LockStolenError)) {
+        throw new Error(
+          `expected LockStolenError abort reason within 5s; aborted=${controller.signal.aborted} reason=${String(controller.signal.reason)}`,
+        );
+      }
     } finally {
       stop();
     }
@@ -208,5 +194,36 @@ describe('buildYieldDuringPhase steal reporting', () => {
     );
     await fn!();
     expect(stolen).toBe(false);
+  });
+});
+
+describe('isLockStolenAbort — the steal decision does not depend on the reason (#4140)', () => {
+  // Duck-typed signals on purpose: `abort()` and `abort(undefined)` BOTH yield a
+  // DOMException, so `reason: undefined` — the state the runtime actually
+  // delivers — is unreachable through AbortController. This is the only way to
+  // pin it deterministically instead of waiting for the ~1-in-20 flake.
+
+  test('a steal with the reason DROPPED still classifies as a steal', () => {
+    expect(isLockStolenAbort({ aborted: true, reason: undefined }, undefined)).toBe(true);
+  });
+
+  test('a steal with the reason intact classifies as a steal (unchanged)', () => {
+    expect(isLockStolenAbort({ aborted: true, reason: new LockStolenError('x') }, undefined)).toBe(true);
+  });
+
+  test('no steal when the controller never fired', () => {
+    expect(isLockStolenAbort({ aborted: false }, undefined)).toBe(false);
+    expect(isLockStolenAbort(undefined, undefined)).toBe(false);
+  });
+
+  test('an external abort still wins — it keeps the throw-out contract', () => {
+    // Both with and without a surviving reason, so the external conjunct is
+    // pinned independently of the reason.
+    expect(isLockStolenAbort({ aborted: true, reason: new LockStolenError('x') }, { aborted: true })).toBe(false);
+    expect(isLockStolenAbort({ aborted: true, reason: undefined }, { aborted: true })).toBe(false);
+  });
+
+  test('a non-aborted external signal does not suppress the steal', () => {
+    expect(isLockStolenAbort({ aborted: true, reason: undefined }, { aborted: false })).toBe(true);
   });
 });

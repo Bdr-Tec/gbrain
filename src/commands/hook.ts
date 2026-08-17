@@ -75,7 +75,7 @@ import {
   heartbeatPath,
   hookStatusPath,
   readHeartbeatTail,
-  writeHeartbeat,
+  writeHeartbeat as writeHeartbeatShared,
   type HookHeartbeatEntry,
 } from '../core/context/hook-heartbeat.ts';
 import { CLAUDE_HOOK_OUTPUT_CAP_CHARS } from '../core/bootstrap/host-specs.ts';
@@ -171,6 +171,27 @@ export interface HookIo {
   userPromptDeadlineMs?: number;
   /** TEST SEAM: compact deadline override (drives the per-step degrade paths). */
   compactDeadlineMs?: number;
+  /**
+   * TEST SEAM (v0.46.15, BrainBench production seam): config override for
+   * hookUserPrompt — `undefined` = load the real file-plane config;
+   * `null`/object = use as-is. Lets the bench point the hook at a throwaway
+   * brain WITHOUT mutating process-global GBRAIN_HOME (parallel-test safe).
+   */
+  configOverride?: GBrainConfig | null;
+  /**
+   * TEST SEAM (v0.46.15): suppress the pending-push failure banner. The
+   * banner reads the OPERATOR's real push-status files — on a bench run
+   * that's environmental contamination (a locally-failing push would inject
+   * a banner on stay-silent turns and read as a false fire).
+   */
+  disablePushBanner?: boolean;
+  /**
+   * TEST SEAM (v0.46.15, codex ship-review): suppress hook telemetry WRITES
+   * (heartbeat JSONL). Telemetry paths resolve from GBRAIN_HOME/homedir —
+   * NOT from configOverride — so a hermetic bench replay would otherwise
+   * append every fixture turn to the operator's real hook-health history.
+   */
+  disableTelemetry?: boolean;
   /**
    * Feedback-loop attribution channel (`--harness <claude-code|codex|opencode>`).
    * Default 'claude-code' — the only harness bootstrap registers hooks for
@@ -406,6 +427,18 @@ export {
 export { heartbeatPath, hookStatusPath, readHeartbeatTail };
 export type { HookHeartbeatEntry };
 
+/**
+ * Hook-side heartbeat writer: delegates to the shared module (cathedral 5 —
+ * the serve harvest appends its own events there), honoring the BrainBench
+ * telemetry seam (v0.46.15): a hermetic bench replay drives the REAL hook
+ * in-process, and without this gate every fixture turn would append to the
+ * operator's real hook-health history and skew doctor/failure-notice reads.
+ */
+async function writeHeartbeat(io: HookIo, entry: HookHeartbeatEntry): Promise<void> {
+  if (io.disableTelemetry) return;
+  await writeHeartbeatShared(entry);
+}
+
 // ── session-start [A3, G4, B3, B4] ──────────────────────────────────────────
 
 async function hookSessionStart(io: HookIo): Promise<number> {
@@ -500,7 +533,7 @@ async function hookSessionStart(io: HookIo): Promise<number> {
     outcome = 'error';
     reason = errorCode(e); // fail-open: empty stdout, exit 0
   }
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'session-start',
     outcome,
@@ -975,7 +1008,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
   let wrotePayload = false;
 
   const work = (async (): Promise<UserPromptOutcome> => {
-    banner = pendingPushFailureBanner();
+    banner = io.disablePushBanner ? null : pendingPushFailureBanner();
     const j = await readStdinJson(io, 300);
     if (!j) return { outcome: 'degraded', reason: 'no_stdin' };
 
@@ -1027,7 +1060,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     if (prompt.trim()) turns = [...turns, { role: 'user', text: prompt }];
     if (turns.length === 0) return { outcome: 'ok', reason: 'empty_window' };
 
-    const cfg = loadConfig();
+    const cfg = io.configOverride !== undefined ? io.configOverride : loadConfig();
     if (!cfg?.database_path) {
       // No config, or a Postgres brain (no PGLite data dir → no IPC socket).
       // ENGINE-FREE means no direct-engine fallback here; pull-mode covers it.
@@ -1127,7 +1160,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     );
     pendingBanner.record();
   }
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'user-prompt',
     outcome: result.outcome,
@@ -1261,7 +1294,7 @@ async function hookCompact(io: HookIo): Promise<number> {
     outcome = 'error';
     reason = errorCode(e); // fail-open: exit 0
   }
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'compact',
     outcome,
@@ -1306,7 +1339,7 @@ async function hookStop(io: HookIo): Promise<number> {
   } catch {
     pushReason = 'push_unavailable';
   }
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'stop',
     outcome,
@@ -1502,7 +1535,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
     /* best effort */
   }
 
-  await writeHeartbeat({
+  await writeHeartbeat(io, {
     ts: new Date().toISOString(),
     event: 'session-end',
     outcome,
