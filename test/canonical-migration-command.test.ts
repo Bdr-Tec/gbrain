@@ -152,6 +152,9 @@ describe('canonical migration command (single home: ai/defaults.ts)', () => {
       'src/commands/upgrade.ts',
       'src/core/ze-exposure.ts',
       'src/commands/ze-switch.ts',
+      // Interim ZE cleanup: providers env prints the off-ramp for sunsetting
+      // recipes instead of the signup funnel.
+      'src/commands/providers.ts',
     ];
     for (const rel of consumers) {
       const text = readFileSync(join(import.meta.dir, '..', rel), 'utf-8');

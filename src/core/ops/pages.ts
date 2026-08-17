@@ -19,7 +19,7 @@ import type { WriterLintPayload } from '../output/post-write.ts';
 import { stripFactsFence } from '../facts-fence.ts';
 import { getContentFlag } from '../quarantine.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
-import { LIST_PAGES_DESCRIPTION } from '../operations-descriptions.ts';
+import { LIST_PAGES_DESCRIPTION, CAPTURE_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
 import type { Operation } from './contract.ts';
 import {
@@ -27,6 +27,8 @@ import {
   slugOutsideCallerFence,
   enforceClientSlugFence,
   federatedSearchScope,
+  normalizeSlugPrefix,
+  validatePageSlug,
 } from './context.ts';
 
 // --- Page CRUD ---
@@ -930,9 +932,95 @@ const list_pages: Operation = {
 
 
 // Ops in EXACTLY the order they appear in the canonical `operations` array
+/**
+ * CLI→MCP gap-closure wave — `capture` over MCP (D2A). The documented "just
+ * get this into my brain" entrypoint: three separate docs carried the
+ * "unknown tool: capture → use put_page" FAQ because agents kept reaching for
+ * it. Thin sugar that DELEGATES to the put_page handler with the same ctx
+ * (inheriting every fence: slug fence, dedupe, unknown-type audit,
+ * write-through, remote auto-link skip) after adding what agents had to
+ * hand-roll: a stable content-derived default slug + the frontmatter merge +
+ * the binary/empty guards. Remote provenance stays the CV6 server-stamp
+ * `mcp:put_page` (the write API truthfully IS put_page); the result carries
+ * channel: 'capture' for the receipt. Joins STARTER_OPS as a direct literal
+ * [EV8] so the plugin/starter lanes that retired the FAQ can actually call it.
+ */
+const capture: Operation = {
+  name: 'capture',
+  description: CAPTURE_DESCRIPTION,
+  params: {
+    content: { type: 'string', required: true, description: 'Markdown or plain text to capture. File paths are NOT accepted over MCP — read the file yourself and pass its content (the CLI --file lane is local-only).' },
+    slug: { type: 'string', required: false, description: "Target slug. Default: inbox/YYYY-MM-DD-<sha8-of-content> (stable per content — recapturing identical text hits the same slug); type diary/event routes under life/. Fenced clients: the default lands under your first bound prefix." },
+    type: { type: 'string', required: false, description: "Page type for the stamped frontmatter (default 'note')." },
+  },
+  scope: 'write',
+  mutating: true,
+  area: 'pages',
+  // 'capture' is in CLI_ONLY (rich local UX: --file/--stdin/event sugar);
+  // hidden hint per the advisor pattern.
+  cliHints: { name: 'capture', hidden: true },
+  handler: async (ctx, p) => {
+    const {
+      detectBinaryNullByte, normalizeForHash, mergeCaptureFrontmatter,
+      defaultSlug,
+    } = await import('../capture-content.ts');
+    const { computeContentHash } = await import('../ingestion/types.ts');
+    const content = p.content as string;
+    const nulAt = detectBinaryNullByte(Buffer.from(content, 'utf8'));
+    if (nulAt !== -1) {
+      throw new OperationError('invalid_params',
+        `content contains a NUL byte at offset ${nulAt} — binary payloads are refused.`,
+        'Capture takes text/markdown; upload binaries through the files lane on the host.');
+    }
+    const normalized = normalizeForHash(content);
+    if (normalized.length === 0) {
+      throw new OperationError('invalid_params', 'Refusing to capture empty content.');
+    }
+    const type = typeof p.type === 'string' && p.type.length > 0 ? p.type : 'note';
+    let slug = typeof p.slug === 'string' && p.slug.length > 0 ? p.slug : undefined;
+    if (slug) {
+      // Defense-in-depth on the caller-supplied slug (matches the takes ops);
+      // put_page validates again, but reject a malformed slug before we build
+      // provenance frontmatter around it.
+      validatePageSlug(slug);
+    } else {
+      slug = defaultSlug(normalized, new Date(), type);
+      // [EV7] A slug-bound client would 403 on the inbox/ default via the
+      // inherited slug fence — the zero-config path must work for exactly
+      // that audience, so the ENTIRE default slug (type prefix included —
+      // diary/event prefixes are two segments) nests under the FIRST bound
+      // prefix. Normalize a stored `<prefix>/*` glob (submit_agent binding
+      // grammar) to `<prefix>/` first so the nested slug never carries a
+      // literal `*` segment.
+      const bound = ctx.auth?.boundSlugPrefixes;
+      if (bound && bound.length > 0) {
+        const base = normalizeSlugPrefix(bound[0]);
+        const prefix = base.endsWith('/') ? base : `${base}/`;
+        slug = `${prefix}${slug}`;
+      }
+    }
+    // Remote MCP captures record `capture-mcp` provenance; local CLI callers
+    // (ctx.remote === false) keep the neutral 'capture-cli' default.
+    const capturedVia = ctx.remote !== false ? 'capture-mcp' : undefined;
+    const fullContent = mergeCaptureFrontmatter(content, { type, capturedVia });
+    if (ctx.dryRun) return { dry_run: true, action: 'capture', slug };
+    // Delegate with the SAME ctx (the runCapture local-path precedent) —
+    // put_page enforces the slug fence, validates the slug, dedupes, and
+    // server-stamps provenance for remote callers.
+    const result = await put_page.handler(ctx, { slug, content: fullContent }) as Record<string, unknown>;
+    return {
+      ...result,
+      slug,
+      channel: 'capture',
+      content_hash: computeContentHash(normalized),
+      dedupe: 'identical normalized content produces the same default slug and hash',
+    };
+  },
+};
+
 // (Page CRUD quartet first, then the v0.26.5 destructive-guard ops:
-// page-level soft-delete recovery + admin purge).
+// page-level soft-delete recovery + admin purge, then capture.)
 export const pagesOperations: Operation[] = [
   get_page, put_page, delete_page, list_pages,
-  restore_page, purge_deleted_pages,
+  restore_page, purge_deleted_pages, capture,
 ];

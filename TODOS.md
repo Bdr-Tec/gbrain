@@ -54,6 +54,65 @@
   src/core/bootstrap/format.ts). **Why:** three unions drift; a new harness
   should be one edit. **Effort:** M. **Priority:** P3. [CEO-F10]
 
+## CLI→MCP gap-closure wave follow-ups (2026-08-16; plan: ~/.claude/plans/system-instruction-you-are-working-concurrent-lantern.md)
+
+- [ ] **P2 — publish-gate fail-open on a DB-config read failure.**
+  **What:** `readPublishGate` + `assertPublishEnabled` (publish-gate path) fall back to the
+  file plane when `engine.getConfig` throws, so a DB outage with file-plane=true but a
+  DB-override=false widens authorization instead of denying it. **Why:** an auth gate that
+  opens wider when its store is unreachable is fail-open — the wrong default for a
+  publish/authorization boundary. **Context:** pre-existing behavior, explicitly pinned by
+  `test/publish-gates.test.ts:71`; this needs a dedicated auth-plane decision (fail-closed
+  vs. the current fail-open), NOT a drive-by flip in a test-regression pass. **Effort:** M,
+  review-bound (one-way-door auth semantics).
+
+- [ ] **P2 — takes-fence parser drops pack-extended kinds (whole-page refusal is the interim guard).**
+  **What:** `parseTakesFence`'s `KIND_VALUES` is the closed `{fact,take,bet,hunch}` set, so a
+  schema-pack kind (`finding|hypothesis|…`) is skipped as malformed and surfaces a warning —
+  which is exactly why the F1 guard (`assertFenceRoundTrips`) has to refuse the WHOLE page to
+  avoid deleting the skipped row on a re-render. **Why:** a brain with pack-extended takes
+  kinds can't be mutated through the write verbs at all today (every mutate refuses
+  `fence_unparsed`). **Deeper fix:** widen the parser to accept any string kind (`TakeKind`
+  opened to `string` in v0.38) and/or make the fence editor splice-preserve raw unparsed
+  lines instead of a whole-fence re-render. **Effort:** M. (Related to the P3 pack-aware
+  kind-validation item below, but that one is write-side; this is the parser + editor.)
+
+- [ ] **P2 — `get_health` migration-ledger honesty.**
+  **What:** `loadCompletedMigrations` skips a malformed JSONL line with a `warn`, so a
+  truncated ledger entry silently mis-reports — a completed migration can look pending —
+  instead of surfacing a `ledger_unreadable` signal. **Why:** health/doctor output should
+  fail loud when its own audit trail is unreadable, not quietly under-count. **Effort:** S.
+
+- [ ] **P2 — `quarantine_list` SELECT projection pushdown.**
+  **What:** the quarantine scan pulls full page bodies (`SELECT p.*`) only to read two
+  frontmatter keys. Push the marker filter into SQL (`frontmatter ? 'quarantine'`) and
+  project just `slug`, `source_id`, `frontmatter`. **Why:** loading every page body to check
+  a frontmatter flag is O(corpus-bytes) for an O(matches) result. **Effort:** S.
+
+- [ ] **P3 — `permissions.takes_write_holders`: split the takes read/write holder axes.**
+  **What:** a dedicated write-side holder allow-list config, consumed by the takes write
+  verbs' fence in `src/core/ops/takes.ts` (today the WRITE fence reuses the READ
+  allow-list `takesHoldersAllowList` — fail-closed and symmetric, but semantically
+  overloaded). **Why:** an operator may want an agent to READ private holders but WRITE
+  only world-held rows, or vice versa. **Context:** decided at the wave's CEO/OV review
+  ("reuse now, split when field use demands"); the fence is one shared function
+  (`takesWriteAllowList` + takes-write.ts's holder checks), so the split is a
+  resolution-chain change, not a redesign. **Effort:** S. **Depends on:** field demand.
+
+- [ ] **P3 — pack-aware takes kind validation, shared CLI + ops.**
+  **What:** `takes_add`/`takes_supersede` pin `kind` to the 4 base literals
+  (fact|take|bet|hunch) — same limitation as the CLI's `ensureKind` — while schema packs
+  can extend `takes_kinds` (engine.ts TakeKindLiteral). Validate against the ACTIVE
+  pack's kind set in ONE shared place (takes-write.ts) and widen the op enum note.
+  **Why:** pack-extended kinds (finding|hypothesis|…) can't be written through either
+  surface today. **Effort:** S.
+
+- [ ] **P3 — `mcp:capture` provenance channel label (mini trust review).**
+  **What:** capture delegates to put_page, so remote captures stamp `source_kind:
+  'mcp:put_page'` (honest CV6 delegation; the op result carries channel:'capture').
+  A distinct `mcp:capture` stamp needs a trusted internal channel label through the CV6
+  else-branch — its own small trust review, filed rather than rushed. **Why:** finer
+  provenance analytics on ingestion channels. **Effort:** S, review-bound.
 ## Five-issue fix wave follow-ups (backlinks corruption / malformed paths / type warnings / getPage scoping / queue admission)
 
 - [ ] **P2 — migrate the remaining fs writers to core/atomic-write.** **What:**
@@ -274,12 +333,19 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   registry entries (recipes/index.ts); `zeroEntropyCompatFetch`,
   `MAX_ZEROENTROPY_RESPONSE_BYTES`, `ZeroEntropyResponseTooLargeError` + the
   fetch-ternary arm (gateway.ts); ZE sets in dims.ts; `ze-switch.ts` +
-  `retrieval-upgrade-planner.ts` + `retrieval-upgrade-prompt.ts` (~1200 lines) +
-  cli.ts dispatch/CLI_ONLY/flag-registry rows; `checkZeEmbeddingHealth` in doctor
+  `retrieval-upgrade-planner.ts` + cli.ts dispatch/CLI_ONLY/CLI_ONLY_SELF_HELP/
+  SELF_HELP_WITHOUT_ENGINE/flag-registry rows; `checkZeEmbeddingHealth` in doctor
   (`provider_sunset` STAYS and goes generic — read `recipe.sunset` instead of the
   hardcoded ZE constants); pricing rows LAST (budget-tracker rerank metering reads
   them for historical audit rows). NOTE: test/ai/zeroentropy-compat-fetch.test.ts
   greps gateway.ts SOURCE TEXT — delete the test with the code, in the same commit.
+  ALREADY DONE by the interim ZE cleanup wave (pre-Sept): `retrieval-upgrade-prompt.ts`
+  deleted (banner/marketing copy gone); `ze-switch.ts` is now a ~170-line pure
+  refusal/redirect shim (undo/dry-run ACTIONS retired — apply/undo wrote DB-plane
+  config the file-plane-canonical runtime never read); `providers env`/`explain` are
+  sunset-aware via the shared `sunsetMarker` in providers.ts (generic on
+  `recipe.sunset` — the removal wave inherits it); `ze_embedding_health`'s missing-key
+  copy is migration-first (the check itself still gets deleted here).
 - [ ] **P1 — Self-host continuity decision.** The v0.46.3 playbook's zero-re-embed
   path keeps the `zeroentropyai:zembed-1` id behind a base-URL override to a
   ZE-wire-compatible endpoint. Recipe deletion breaks it. Decide: keep a minimal
@@ -289,11 +355,14 @@ Staged-deletion discipline (ship replacements → migrate call sites → update 
   playbook (skills/migrations/v0.46.3.0.md) links here — honor it.
 - [ ] **P2 — Tests + CI.** Delete the 8 ZE-dedicated test files
   (zeroentropy-recipe, zeroentropy-compat-fetch, dims-zeroentropy,
-  e2e/zeroentropy-live, ze-switch-cli, ze-switch-env-override, doctor-ze-checks,
-  provider-sunset-doctor.serial gets REWRITTEN generic not deleted) + update ~40
-  coupled files; drop the zeroentropy-live job + ZEROENTROPY_API_KEY secret from
-  .github/workflows/e2e.yml:168,179 (already date-skip-gated since v0.46.3);
-  scripts/test-weights.json rows.
+  e2e/zeroentropy-live, ze-switch-cli [now pins the shim contract — dies with the
+  shim], ze-switch-env-override [pins the planner's test-only functions],
+  doctor-ze-checks, provider-sunset-doctor.serial gets REWRITTEN generic not
+  deleted) + update ~40 coupled files; drop the zeroentropy-live job +
+  ZEROENTROPY_API_KEY secret from .github/workflows/e2e.yml:239,250,377 (line refs
+  refreshed by the interim cleanup wave; already date-skip-gated since v0.46.3);
+  scripts/test-weights.json rows. Also remove 'ze-switch' from the
+  cli-help-without-brain HELP_WITHOUT_BRAIN list when the shim dies.
 - [ ] **P2 — Config + docs.** `zeroentropy_api_key` config key: keep
   parseable-but-warned (removing it would make old config.json files fail to
   load); delete docs/ai-providers/zeroentropy.md + its scripts/llms-config.ts
@@ -4288,6 +4357,16 @@ verify Voyage adapter integration in `src/core/ai/recipes/voyage.ts`).
 ### Token rotation: `gbrain auth rotate <name>` + `rotate_token` MCP op
 **Priority:** P2
 
+**Deferral note (CLI→MCP gap-closure wave, 2026-08-16, user decision D3A):**
+deliberately NOT bundled into the gap-closure wave — there is no CLI to
+mirror yet (this TODO is its own work item, not a CLI→MCP gap), and a token
+that can mint its own successor turns a leaked credential into persistence +
+operator lock-out, so it needs its own auth-plane design pass. Sketch agreed
+at review: admin scope, NOT localOnly (remote rotation is the point),
+SELF-rotation only (the calling token/client — never a name param), returns
+the new secret exactly once, rate-limited via the RateLimiter house pattern,
+and ships in the same PR as the `gbrain auth rotate` CLI.
+
 **What:** Atomic rotate for legacy + OAuth tokens. Issue a new token in the same TX as the revocation of the old, no overlap window. Refresh-token rotation already exists for OAuth; this is the unified user-facing surface (CLI + MCP).
 
 **Why:** Today rotation is `revoke + create`, with a window where neither token works. For long-lived bearer keys handed to agents, that's a reload outage every time the key gets rotated.
@@ -4298,7 +4377,15 @@ verify Voyage adapter integration in `src/core/ai/recipes/voyage.ts`).
 **Depends on:** Nothing.
 
 ### Migration introspection in `get_health`
-**Priority:** P3
+**Priority:** P3 — **DONE (CLI→MCP gap-closure wave, 2026-08-16).** The
+`get_health` OP now returns `migrations {pending, partial, wedged,
+skipped_future}` composed at the op layer from the new
+`src/core/migration-ledger.ts` (version strings only). Op-layer composition
+was chosen over this TODO's engine-method wording: the ledger is a
+filesystem JSONL, engine-agnostic — growing `BrainEngine.getHealth()` would
+have duplicated a file read in both engines. Pinned by
+`test/migration-ledger.test.ts` + `test/get-job-stats-op.test.ts`'s sibling
+patterns.
 
 **What:** Extend `BrainEngine.getHealth()` return shape with `migrations: { pending: [...], wedged: [...] }`. `gbrain doctor` already shows this; expose it via the MCP op so remote agents can detect partial-migration state without invoking `doctor` separately.
 
