@@ -27,6 +27,7 @@ import {
   MAINTENANCE_PHASES,
   PHASE_SCOPE,
   resolveCyclePhases,
+  deriveStatus,
   runCycle,
   LAST_GLOBAL_AT_KEY,
 } from '../src/core/cycle.ts';
@@ -85,6 +86,28 @@ describe('cycle phase partition (#2194 fix #3)', () => {
     expect(resolveCyclePhases(undefined, 'default')).toEqual(ALL_PHASES);
     expect(resolveCyclePhases(undefined, undefined)).toEqual(ALL_PHASES);
     expect(resolveCyclePhases(['synthesize'], undefined)).toEqual(['synthesize']);
+  });
+
+  test('exclusion skip-records never dilute failure status into a stampable partial (#4250 ship-stage P1)', () => {
+    // Pre-fix: six failed freshness phases + seventeen synthetic exclusion
+    // skips made deriveStatus see "not every entry failed" → 'partial' →
+    // the stamp gate marked a totally-failed source fresh forever.
+    const fail = (phase: string) => ({ phase, status: 'fail', duration_ms: 0, summary: '', details: {} });
+    const exclusion = (phase: string) => ({
+      phase, status: 'skipped', duration_ms: 0, summary: '',
+      details: { reason: 'non_source_phase_excluded_from_source_cycle' },
+    });
+    const realSkip = (phase: string) => ({
+      phase, status: 'skipped', duration_ms: 0, summary: '', details: { reason: 'no_brain_dir' },
+    });
+    const zeroTotals = {} as never;
+    // All attempted phases failed + exclusion bookkeeping → 'failed', never 'partial'.
+    expect(deriveStatus(
+      [fail('sync'), fail('lint'), exclusion('synthesize'), exclusion('patterns'), exclusion('embed')] as never,
+      zeroTotals,
+    )).toBe('failed');
+    // A genuinely mixed run (one fail, one real skip) stays 'partial'.
+    expect(deriveStatus([fail('sync'), realSkip('lint')] as never, zeroTotals)).toBe('partial');
   });
 
   test('implicit source cycle reports excluded non-freshness phases instead of silently omitting them', async () => {
@@ -270,6 +293,38 @@ describe('autopilot-global-maintenance handler stamps last_global_at (PGLite)', 
     expect(empty.status).toBe('skipped');
     expect(empty.report.reason).toBe('all_phases_rejected_by_normalization');
   });
+
+  test('an explicit empty phase list with a sourceId runs nothing and never stamps freshness', async () => {
+    // Direct-caller edge of the PR-added `phases.length > 0` stamp guard:
+    // queue callers are already protected by handler normalization, but a
+    // direct runCycle caller passing [] must not get a freshness stamp for
+    // work that never ran.
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path) VALUES ($1, $2, NULL)`,
+      ['repo-empty', 'repo-empty'],
+    );
+    const report = await runCycle(engine, { brainDir: null, sourceId: 'repo-empty', phases: [] });
+    expect(report.phases).toEqual([]);
+    const source = (await engine.listAllSources()).find((row) => row.id === 'repo-empty');
+    expect(source?.config.last_source_cycle_at).toBeUndefined();
+    expect(source?.config.last_full_cycle_at).toBeUndefined();
+  });
+
+  test('a maintenance job with NO phases payload defaults to MAINTENANCE_PHASES (mixed included), not GLOBAL_PHASES', async () => {
+    // Regression pin for the split's changed default: a legacy queued
+    // maintenance job (or a hand-submitted one) with no explicit phases now
+    // runs mixed + global — synthesize/patterns must appear in the report.
+    const repoPath = mkdtempSync(join(tmpdir(), 'gbrain-global-default-'));
+    const handlers = await captureHandlers();
+    const handler = handlers.get('autopilot-global-maintenance');
+    const result = await handler!({ data: { repoPath }, signal: undefined });
+    const ranPhases = result.report.phases.map((p: any) => p.phase);
+    for (const p of MAINTENANCE_PHASES) expect(ranPhases).toContain(p);
+    expect(ranPhases).toContain('synthesize');
+    expect(ranPhases).toContain('patterns');
+    expect(ranPhases).not.toContain('sync');
+    expect(await engine.getConfig(LAST_GLOBAL_AT_KEY)).not.toBeNull();
+  }, 60_000);
 
   test('runs global phases (no source_id) and stamps autopilot.last_global_at on success', async () => {
     expect(await engine.getConfig(LAST_GLOBAL_AT_KEY)).toBeNull();

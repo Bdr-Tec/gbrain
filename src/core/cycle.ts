@@ -255,6 +255,35 @@ export function resolveCyclePhases(
   return requested;
 }
 
+/**
+ * Queue-boundary normalization for PER-SOURCE cycle job payloads (#4250).
+ *
+ * Queued phase lists are machine-authored (autopilot fanout, legacy replays),
+ * not operator intent. Pre-v0.46.20 fanout payloads carried the old
+ * NON_GLOBAL set — mixed + background work that must not re-run once per
+ * source when a legacy job drains after upgrade. Intersecting with
+ * SOURCE_FRESHNESS_PHASES is a fixed point for current fanout payloads and a
+ * safe downgrade for legacy ones. Operator intent goes through the CLI
+ * (`gbrain dream --source X --phase …`), which resolveCyclePhases honors
+ * verbatim — this normalization is for the queue handler only.
+ *
+ * No-source or no-phases payloads pass through untouched. Callers must treat
+ * a returned EMPTY phases array as an explicit no-op, never as an implicit
+ * run (omitting `phases` from CycleOpts would silently convert an
+ * all-rejected payload into a freshness cycle).
+ */
+export function normalizeQueuedSourcePhases(
+  requested: CyclePhase[] | undefined,
+  sourceId: string | undefined,
+): { phases: CyclePhase[] | undefined; rejected: CyclePhase[] } {
+  if (!sourceId || requested === undefined) return { phases: requested, rejected: [] };
+  const freshness = new Set<CyclePhase>(SOURCE_FRESHNESS_PHASES);
+  return {
+    phases: requested.filter((p) => freshness.has(p)),
+    rejected: requested.filter((p) => !freshness.has(p)),
+  };
+}
+
 /** Config key holding the ISO timestamp of the last successful global-maintenance run. */
 export const LAST_GLOBAL_AT_KEY = 'autopilot.last_global_at';
 
@@ -2986,7 +3015,21 @@ function extractTotals(phases: PhaseResult[]): CycleReport['totals'] {
   return t;
 }
 
-function deriveStatus(phases: PhaseResult[], totals: CycleReport['totals']): CycleStatus {
+export function deriveStatus(phases: PhaseResult[], totals: CycleReport['totals']): CycleStatus {
+  // #4250: exclusion bookkeeping records (the implicit source-cycle scope
+  // filter's synthetic skips) are not attempted phases and must not dilute
+  // failure aggregation. Pre-fix, an implicit source cycle whose SIX real
+  // freshness phases ALL failed still carried seventeen exclusion skips, so
+  // `allFailed` was false, status became 'partial', and the stamp gate
+  // (which accepts 'partial') marked a totally-failed source fresh —
+  // suppressing its retry forever. Score only attempted phases; fall back to
+  // the full list if somehow every record is an exclusion (unreachable via
+  // current callers — SOURCE_FRESHNESS_PHASES is never empty).
+  // Exported for test-only consumption; downstream code should NOT call it.
+  const attempted = phases.filter(
+    p => p.details?.reason !== 'non_source_phase_excluded_from_source_cycle',
+  );
+  if (attempted.length > 0) phases = attempted;
   if (phases.length === 0) return 'failed';
   const anyFailed = phases.some(p => p.status === 'fail');
   const allFailed = phases.every(p => p.status === 'fail');

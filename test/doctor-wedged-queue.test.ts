@@ -266,6 +266,19 @@ describe('orphaned private dream queues — cycle-lock liveness + ownership corr
     expect(check.status).toBe('ok');
     expect((check.details as any)?.paused_jobs).toBe(1);
   });
+
+  it('GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES overrides the age threshold', async () => {
+    await seedWithData('dream-inline-fresh-orphan', 'waiting', {}, { createdAtSql: "now() - interval '10 min'" });
+    const prev = process.env.GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES;
+    try {
+      process.env.GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES = '5';
+      const check = await computeOrphanedPrivateQueueCheck(pgLike);
+      expect(check.status).toBe('fail'); // 10min > 5min override; default 60 would pass
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES;
+      else process.env.GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES = prev;
+    }
+  });
 });
 
 describe('Minions-visibility wave — computeQueueHealthCheck structured details', () => {

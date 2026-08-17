@@ -2473,33 +2473,18 @@ export async function registerBuiltinHandlers(
     const effectiveBrainDir: string | null = sourceId ? sourceLocalPath : repoPath;
 
     // Allow callers to select phases via job data (e.g. skip embed for
-    // fast cycles). Validates against ALL_PHASES to prevent injection.
-    const { ALL_PHASES, SOURCE_FRESHNESS_PHASES } = await import('../core/cycle.ts');
+    // fast cycles). Validates against ALL_PHASES to prevent injection, then
+    // normalizes per-source payloads to the freshness set (queue payloads
+    // are machine-authored; see normalizeQueuedSourcePhases in cycle.ts).
+    const { ALL_PHASES, normalizeQueuedSourcePhases } = await import('../core/cycle.ts');
     const validPhases = new Set(ALL_PHASES);
     const requestedPhases = Array.isArray(job.data.phases)
       ? (job.data.phases as string[]).filter(p => validPhases.has(p as any))
       : undefined;
-
-    // Queue-boundary normalization (#4250): queued PER-SOURCE payloads are
-    // machine-authored (autopilot fanout, legacy replays), not operator
-    // intent. Pre-v0.46.20 fanout payloads carried NON_GLOBAL_PHASES —
-    // mixed + background work that must not re-run once per source when a
-    // legacy job drains after upgrade. Intersect with
-    // SOURCE_FRESHNESS_PHASES: a fixed point for current fanout payloads, a
-    // safe downgrade for legacy ones. Operator intent goes through the CLI
-    // (`gbrain dream --source X --phase …`), which resolveCyclePhases
-    // honors verbatim — this normalization is queue-only by design.
-    let phasesRejectedByNormalization: string[] = [];
-    let effectivePhases = requestedPhases;
-    if (sourceId && requestedPhases !== undefined) {
-      const freshness = new Set<string>(SOURCE_FRESHNESS_PHASES);
-      effectivePhases = requestedPhases.filter(p => freshness.has(p));
-      phasesRejectedByNormalization = requestedPhases.filter(p => !freshness.has(p));
-    }
+    const { phases: effectivePhases, rejected: phasesRejectedByNormalization } =
+      normalizeQueuedSourcePhases(requestedPhases as any, sourceId);
     // An explicitly-empty phase list (arrived empty, or emptied by the
-    // normalization above) is a no-op — NOT an implicit run. Omitting
-    // `phases` from CycleOpts here would silently convert it into a full
-    // (or freshness) cycle.
+    // normalization) is a no-op — NOT an implicit run.
     if (effectivePhases !== undefined && effectivePhases.length === 0) {
       return {
         partial: false,
