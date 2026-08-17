@@ -89,6 +89,7 @@ export {
   checkSourceRoutingHealth,
   checkFederationHealth,
   checkOauthConfidentialHealth,
+  checkOauthClientScopeHealth,
   checkAutopilotLockScope,
   checkStaleLocks,
   checkCyclePhaseScope,
@@ -166,6 +167,7 @@ import {
 import {
   checkSourceRoutingHealth,
   checkOauthConfidentialHealth,
+  checkOauthClientScopeHealth,
   checkAutopilotLockScope,
   checkStaleLocks,
   checkCyclePhaseScope,
@@ -3730,6 +3732,9 @@ export async function buildChecks(
     // 5L — oauth_confidential_client_health (success-path probe per codex CF8)
     progress.heartbeat('oauth_confidential_client_health');
     checks.push(await checkOauthConfidentialHealth(engine));
+    // oauth_client_scope_health — dangling federated grants + orphaned empty workspace sources
+    progress.heartbeat('oauth_client_scope_health');
+    checks.push(await checkOauthClientScopeHealth(engine));
     // 5M — autopilot_lock_scope (PID-safe hint per codex CF11)
     progress.heartbeat('autopilot_lock_scope');
     checks.push(checkAutopilotLockScope());

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "fixtures_hash": "76f201590dd3ad7a929e2e12efc9bf1406627b10ef4edbcfe7caf379aafd4090",
+  "fixtures_hash": "509fd20d7cda693350030393b6d54154e2685516d30f017ca219bd25e92c0e57",
   "config": {
     "include_holdout": false,
     "llm": false,
@@ -16,6 +16,7 @@
       "write-back"
     ]
   },
+  "justification": "ms-002-nondefault-active added (hand-authored): exercises the cross-source leak detector's non-default active_source arm — active_source=teambrain with a twin slug seeded into default+teambrain, a teambrain-only page, and a default-only leak canary. +3 know-to-ask gold turns and +2 push gold turns per harness, all passing on all three harnesses; every gated metric moved favorably or held, source_isolation_violations stays 0.",
   "cells": {
     "claude-code/continuity": {
       "avg_injected_tokens": 75.3333,
@@ -23,15 +24,15 @@
       "source_isolation_violations": 0
     },
     "claude-code/know-to-ask": {
-      "avg_injected_tokens": 30.9247,
-      "false_fire_rate": 0.0233,
-      "know_to_ask_failure_rate": 0.15,
+      "avg_injected_tokens": 31.2416,
+      "false_fire_rate": 0.023,
+      "know_to_ask_failure_rate": 0.1452,
       "source_isolation_violations": 0
     },
     "claude-code/push": {
-      "avg_injected_tokens": 38.8077,
+      "avg_injected_tokens": 39.028,
       "push_precision": 1,
-      "push_recall": 0.6596,
+      "push_recall": 0.6667,
       "source_isolation_violations": 0
     },
     "claude-code/write-back": {
@@ -44,15 +45,15 @@
       "source_isolation_violations": 0
     },
     "codex/know-to-ask": {
-      "avg_injected_tokens": 40.7123,
+      "avg_injected_tokens": 41,
       "false_fire_rate": 0,
-      "know_to_ask_failure_rate": 0.15,
+      "know_to_ask_failure_rate": 0.1452,
       "source_isolation_violations": 0
     },
     "codex/push": {
-      "avg_injected_tokens": 48.5865,
+      "avg_injected_tokens": 48.7664,
       "push_precision": 1,
-      "push_recall": 0.4468,
+      "push_recall": 0.4583,
       "source_isolation_violations": 0
     },
     "codex/write-back": {
@@ -65,15 +66,15 @@
       "source_isolation_violations": 0
     },
     "openclaw/know-to-ask": {
-      "avg_injected_tokens": 33.7945,
+      "avg_injected_tokens": 34.0537,
       "false_fire_rate": 0,
-      "know_to_ask_failure_rate": 0.15,
+      "know_to_ask_failure_rate": 0.1452,
       "source_isolation_violations": 0
     },
     "openclaw/push": {
-      "avg_injected_tokens": 44.1346,
+      "avg_injected_tokens": 44.2056,
       "push_precision": 1,
-      "push_recall": 0.8085,
+      "push_recall": 0.8125,
       "source_isolation_violations": 0
     },
     "openclaw/write-back": {
@@ -87,11 +88,11 @@
       "gold_failed": 0
     },
     "claude-code/know-to-ask": {
-      "gold_total": 146,
+      "gold_total": 149,
       "gold_failed": 11
     },
     "claude-code/push": {
-      "gold_total": 94,
+      "gold_total": 96,
       "gold_failed": 32
     },
     "claude-code/write-back": {
@@ -103,11 +104,11 @@
       "gold_failed": 0
     },
     "codex/know-to-ask": {
-      "gold_total": 146,
+      "gold_total": 149,
       "gold_failed": 9
     },
     "codex/push": {
-      "gold_total": 94,
+      "gold_total": 96,
       "gold_failed": 52
     },
     "codex/write-back": {
@@ -119,11 +120,11 @@
       "gold_failed": 0
     },
     "openclaw/know-to-ask": {
-      "gold_total": 146,
+      "gold_total": 149,
       "gold_failed": 9
     },
     "openclaw/push": {
-      "gold_total": 94,
+      "gold_total": 96,
       "gold_failed": 18
     },
     "openclaw/write-back": {

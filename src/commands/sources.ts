@@ -40,6 +40,8 @@ import {
   purgeExpiredSources,
   formatImpact,
   formatSoftDelete,
+  clientsReferencingSource,
+  formatClientReferentsBlock,
   SOFT_DELETE_TTL_HOURS,
 } from '../core/destructive-guard.ts';
 import {
@@ -60,6 +62,8 @@ import {
   sourceFederationState,
   type SourceRow as LoadedSourceRow,
 } from '../core/sources-load.ts';
+import { sqlQueryForEngine } from '../core/sql-query.ts';
+import { preflightOauthClientColumns } from './auth.ts';
 
 // ── Validation ──────────────────────────────────────────────
 
@@ -535,19 +539,63 @@ async function runRemove(engine: BrainEngine, args: string[]): Promise<void> {
     }
   }
 
-  // v0.42.44 — tear down durability scaffolding BEFORE the row is deleted (we
-  // need the path/label while it still exists). Best-effort; tolerates missing
-  // repo/cron/credential independently.
+  // PR6 D5b: FK-RESTRICT pre-check — a referenced source refuses with revoke
+  // guidance, never a raw FK violation.
+  const referents = await clientsReferencingSource(engine, id);
+  if (referents.length > 0) {
+    console.error(formatClientReferentsBlock(id, referents));
+    process.exit(5);
+  }
+
+  // cathedral-6 (F1): the row DELETE commits FIRST — atomically with an in-tx
+  // referents re-check — and external teardown (unharden: git scaffolding /
+  // cron / credential) runs only AFTER the commit. Pre-fix the teardown ran
+  // before the DELETE, so a registration racing between the pre-check and the
+  // DELETE failed the FK AFTER scaffolding was already destroyed. The in-tx
+  // re-check uses a column-preflighted statement shape (25P02: no
+  // catch-and-retry degrade inside a tx; missing table ⇒ empty column set ⇒
+  // no FK ⇒ skip); the FK constraint itself is the backstop for a
+  // registration committing between the re-check and the DELETE.
+  class SourceReferencedError extends Error {}
+  try {
+    await engine.transaction(async (tx) => {
+      const cols = await preflightOauthClientColumns(sqlQueryForEngine(tx));
+      if (cols.has('source_id')) {
+        // PHYSICAL count (no deleted_at filter): the FK ignores soft-deletion.
+        const rows = await tx.executeRaw<{ n: string }>(
+          `SELECT COUNT(*)::text AS n FROM oauth_clients WHERE source_id = $1`,
+          [id],
+        );
+        if (Number(rows[0]?.n ?? 0) > 0) throw new SourceReferencedError();
+      }
+      await tx.executeRaw(`DELETE FROM sources WHERE id = $1`, [id]);
+    });
+  } catch (e) {
+    const code = typeof e === 'object' && e !== null && 'code' in e ? String((e as { code?: unknown }).code) : '';
+    if (e instanceof SourceReferencedError || code === '23503') {
+      const raced = await clientsReferencingSource(engine, id);
+      console.error(formatClientReferentsBlock(id, raced.length > 0 ? raced : referents));
+      process.exit(5);
+    }
+    throw e;
+  }
+
+  const pageCount = impact?.pageCount ?? 0;
+  console.log(`Removed source "${id}" (${pageCount} pages + dependent rows cascaded).`);
+
+  // v0.42.44 — durability-scaffolding teardown, POST-COMMIT as of cathedral-6
+  // (the path/label were captured from `src` before the delete). Best-effort;
+  // on failure the DB row is already gone — print exactly what remains so the
+  // operator can sweep the residue (doctor also surfaces it).
   try {
     const { unhardenBrainRepo } = await import('../core/brain-repo-durability.ts');
     await unhardenBrainRepo({ repoPath: src.local_path ?? '', sourceId: id, logger: (l) => console.error(l) });
   } catch (e) {
-    console.error(`[gbrain] durability teardown skipped (non-fatal): ${(e as Error).message}`);
+    console.error(
+      `[gbrain] source row "${id}" is deleted, but durability teardown failed (non-fatal): ${(e as Error).message}. ` +
+      `Residue may remain${src.local_path ? ` at ${src.local_path}` : ''} (git hardening / cron entry / stored credential) — \`gbrain doctor\` surfaces it.`,
+    );
   }
-
-  await engine.executeRaw(`DELETE FROM sources WHERE id = $1`, [id]);
-  const pageCount = impact?.pageCount ?? 0;
-  console.log(`Removed source "${id}" (${pageCount} pages + dependent rows cascaded).`);
 }
 
 // ── Subcommand: archive (soft-delete) ───────────────────────
@@ -721,6 +769,14 @@ async function runPurge(engine: BrainEngine, args: string[]): Promise<void> {
 
     if (!confirmDestructive) {
       console.error(`Pass --confirm-destructive to permanently delete source "${id}".`);
+      process.exit(5);
+    }
+
+    // PR6 D5b: FK-RESTRICT pre-check — refuse with revoke guidance instead of
+    // letting the raw FK violation surface from the DELETE.
+    const referents = await clientsReferencingSource(engine, id);
+    if (referents.length > 0) {
+      console.error(formatClientReferentsBlock(id, referents));
       process.exit(5);
     }
 

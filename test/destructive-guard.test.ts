@@ -13,7 +13,7 @@
  * RLS) are covered separately by E2E tests.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import {
   assessDestructiveImpact,
@@ -24,6 +24,8 @@ import {
   purgeExpiredSources,
   formatImpact,
   formatSoftDelete,
+  clientsReferencingSource,
+  formatClientReferentsBlock,
   SOFT_DELETE_TTL_HOURS,
   type DestructiveImpact,
 } from '../src/core/destructive-guard.ts';
@@ -113,6 +115,23 @@ describe('assessDestructiveImpact', () => {
     expect(a!.pageCount).toBe(2);
     expect(b!.pageCount).toBe(5);
   });
+
+  test('counts facts — a zero-page fact-holding source is data at risk, not "safe to remove"', async () => {
+    // Revoked-agent-workspace shape: zero pages, facts present (the primary
+    // agent write lane). Pre-fix the preview said "safe to remove" while the
+    // delete would cascade the facts away.
+    await seedSource(engine, 'aim-facts-only', { withPages: 0 });
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, fact, source) VALUES ($1, 'agent memory row', 'test'), ($1, 'second memory row', 'test')`,
+      ['aim-facts-only'],
+    );
+    const impact = await assessDestructiveImpact(engine, 'aim-facts-only');
+    expect(impact!.pageCount).toBe(0);
+    expect(impact!.factCount).toBe(2);
+    expect(impact!.summary).toContain('2 facts');
+    expect(impact!.summary).toContain('permanently delete');
+    expect(impact!.summary).not.toContain('safe to remove');
+  });
 });
 
 describe('checkDestructiveConfirmation (gate truth table)', () => {
@@ -162,6 +181,27 @@ describe('checkDestructiveConfirmation (gate truth table)', () => {
     const msg = checkDestructiveConfirmation(populated, {});
     expect(msg).not.toBeNull();
     expect(msg).toContain('--confirm-destructive');
+  });
+
+  test('a fact-only source requires --confirm-destructive (facts gate exactly like pages)', () => {
+    const factOnly: DestructiveImpact = {
+      sourceId: 'revoked-agent-workspace',
+      sourceName: 'revoked-agent-workspace',
+      pageCount: 0,
+      chunkCount: 0,
+      embeddingCount: 0,
+      fileCount: 0,
+      factCount: 7,
+      summary: '⚠️  This will permanently delete: 7 facts',
+    };
+    // No flags → blocked; --yes alone → still blocked (mirrors pages).
+    expect(checkDestructiveConfirmation(factOnly, {})).toContain('--confirm-destructive');
+    expect(checkDestructiveConfirmation(factOnly, { yes: true })).toContain('--confirm-destructive');
+    // --confirm-destructive and --dry-run pass.
+    expect(checkDestructiveConfirmation(factOnly, { confirmDestructive: true })).toBeNull();
+    expect(checkDestructiveConfirmation(factOnly, { dryRun: true })).toBeNull();
+    // Hand-built literal WITHOUT factCount stays valid (optional field, ?? 0).
+    expect(checkDestructiveConfirmation({ ...factOnly, factCount: undefined }, { yes: true })).toBeNull();
   });
 });
 
@@ -362,6 +402,238 @@ describe('soft-delete + restore lifecycle (column-based v0.26.5)', () => {
   });
 });
 
+// ── PR6 D5b: FK-RESTRICT lifecycle ──────────────────────────
+// oauth_clients.source_id is ON DELETE RESTRICT; the guard must surface the
+// block BEFORE a hard delete instead of letting the raw FK violation escape.
+
+describe('FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)', () => {
+  // Own engine — the soft-delete describe's purge tests mutate every
+  // archived row's expiry; don't cross-pollute.
+  let engine: PGLiteEngine;
+
+  beforeAll(async () => {
+    engine = await setupBrain();
+  }, 30000);
+
+  afterAll(async () => {
+    await engine.disconnect();
+  });
+
+  async function seedClient(
+    clientId: string,
+    sourceId: string | null,
+    opts?: { deleted?: boolean },
+  ): Promise<void> {
+    await engine.executeRaw(
+      `INSERT INTO oauth_clients (client_id, client_name, source_id, deleted_at)
+       VALUES ($1, $2, $3, ${opts?.deleted ? 'now()' : 'NULL'})
+       ON CONFLICT (client_id) DO NOTHING`,
+      [clientId, `${clientId}-name`, sourceId],
+    );
+  }
+
+  test('clientsReferencingSource returns ALL physical referents (soft-deleted tagged), scoped to the source', async () => {
+    await seedSource(engine, 'fk-ref-a');
+    await seedSource(engine, 'fk-ref-b');
+    await seedClient('cl-live-1', 'fk-ref-a');
+    await seedClient('cl-live-2', 'fk-ref-a');
+    await seedClient('cl-dead', 'fk-ref-a', { deleted: true });
+    await seedClient('cl-other-src', 'fk-ref-b');
+    await seedClient('cl-no-src', null);
+
+    // PHYSICAL semantics: the soft-deleted row still holds the FK, so it is
+    // returned too — tagged deleted:true, never silently dropped.
+    const refs = await clientsReferencingSource(engine, 'fk-ref-a');
+    expect(refs).toEqual([
+      { clientId: 'cl-dead', clientName: 'cl-dead-name', deleted: true },
+      { clientId: 'cl-live-1', clientName: 'cl-live-1-name', deleted: false },
+      { clientId: 'cl-live-2', clientName: 'cl-live-2-name', deleted: false },
+    ]);
+    expect(await clientsReferencingSource(engine, 'fk-ref-none')).toEqual([]);
+  });
+
+  test('a soft-deleted referent alone BLOCKS the remove/purge pre-check with the retained-row guidance', async () => {
+    await seedSource(engine, 'fk-soft-only', { withPages: 1 });
+    await seedClient('cl-soft-only', 'fk-soft-only', { deleted: true });
+
+    // The pre-check truth (sources.ts blocks on referents.length > 0): the
+    // helper must return the soft-deleted row, because the FK ignores
+    // deleted_at and the hard delete WOULD fail at the database.
+    const refs = await clientsReferencingSource(engine, 'fk-soft-only');
+    expect(refs).toEqual([
+      { clientId: 'cl-soft-only', clientName: 'cl-soft-only-name', deleted: true },
+    ]);
+
+    const block = formatClientReferentsBlock('fk-soft-only', refs);
+    expect(block).toContain('Cannot delete source "fk-soft-only"');
+    expect(block).toContain('Revoked-but-retained rows still block the FK');
+    expect(block).toContain('hard-deletes them');
+    expect(block).toContain('gbrain auth revoke-client "cl-soft-only"');
+    // No live rows → no live-revoke section.
+    expect(block).not.toContain('Revoke each live client first');
+  });
+
+  test('assessDestructiveImpact folds the referent count; formatImpact shows it', async () => {
+    await seedSource(engine, 'fk-impact', { withPages: 1 });
+    await seedClient('cl-impact', 'fk-impact');
+
+    const impact = await assessDestructiveImpact(engine, 'fk-impact');
+    expect(impact).not.toBeNull();
+    expect(impact!.oauthClientCount).toBe(1);
+
+    const out = formatImpact(impact!);
+    expect(out).toContain('1 OAuth client(s) reference this source');
+    expect(out).toContain('revoke-client');
+  });
+
+  test('assessDestructiveImpact reports zero referents for an unreferenced source', async () => {
+    await seedSource(engine, 'fk-unref', { withPages: 1 });
+    const impact = await assessDestructiveImpact(engine, 'fk-unref');
+    expect(impact!.oauthClientCount).toBe(0);
+    expect(formatImpact(impact!)).not.toContain('OAuth client');
+  });
+
+  test('purgeExpiredSources purges only the unreferenced expired source and warns naming the skipped id', async () => {
+    await seedSource(engine, 'fk-purge-ref', { withPages: 1 });
+    await seedSource(engine, 'fk-purge-free', { withPages: 1 });
+    await seedClient('cl-purge-ref', 'fk-purge-ref');
+    await softDeleteSource(engine, 'fk-purge-ref');
+    await softDeleteSource(engine, 'fk-purge-free');
+    await engine.executeRaw(
+      `UPDATE sources SET archive_expires_at = now() - INTERVAL '1 hour' WHERE id = ANY($1::text[])`,
+      [['fk-purge-ref', 'fk-purge-free']],
+    );
+
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    let purged: string[];
+    let errCalls: string[];
+    try {
+      purged = await purgeExpiredSources(engine);
+    } finally {
+      // Snapshot BEFORE restore — mockRestore() clears mock.calls.
+      errCalls = errSpy.mock.calls.map((c) => String(c[0]));
+      errSpy.mockRestore();
+    }
+
+    // Return contract preserved: string[] of purged ids ONLY — exactly the
+    // unreferenced one.
+    expect(purged).toEqual(['fk-purge-free']);
+
+    // Referenced source survives (skipped, not FK-crashed).
+    const remaining = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM sources WHERE id = ANY($1::text[])`,
+      [['fk-purge-ref', 'fk-purge-free']],
+    );
+    expect(remaining.map((r) => r.id)).toEqual(['fk-purge-ref']);
+
+    // ONE stderr warn naming the skipped id + revoke guidance.
+    const warns = errCalls.filter((m) => m.includes('purge skipped'));
+    expect(warns.length).toBe(1);
+    expect(warns[0]).toContain('fk-purge-ref');
+    expect(warns[0]).toContain('revoke-client');
+    expect(warns[0]).not.toContain('fk-purge-free');
+  });
+
+  test('purge skip is PHYSICAL: a soft-deleted client row still blocks (FK ignores deleted_at)', async () => {
+    await seedSource(engine, 'fk-purge-dead', { withPages: 1 });
+    await seedClient('cl-purge-dead', 'fk-purge-dead', { deleted: true });
+    await softDeleteSource(engine, 'fk-purge-dead');
+    await engine.executeRaw(
+      `UPDATE sources SET archive_expires_at = now() - INTERVAL '1 hour' WHERE id = $1`,
+      ['fk-purge-dead'],
+    );
+
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    let purged: string[];
+    try {
+      purged = await purgeExpiredSources(engine);
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(purged).not.toContain('fk-purge-dead');
+    const rows = await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM sources WHERE id = $1`, ['fk-purge-dead'],
+    );
+    expect(rows.length).toBe(1);
+  });
+
+  test('formatClientReferentsBlock lists clients + per-client revoke commands, split by liveness', () => {
+    const block = formatClientReferentsBlock('acme-example', [
+      { clientId: 'client-1', clientName: 'Agent One', deleted: false },
+      { clientId: 'client-2', clientName: 'Agent Two', deleted: true },
+    ]);
+    expect(block).toContain('Cannot delete source "acme-example"');
+    expect(block).toContain('2 OAuth client(s) reference this source');
+    expect(block).toContain('Agent One (client-1)');
+    expect(block).toContain('Agent Two (client-2)  [revoked, retained]');
+    // Live rows get the hard-delete revoke guidance...
+    expect(block).toContain('Revoke each live client first');
+    expect(block).toContain('gbrain auth revoke-client "client-1"');
+    // ...soft-deleted rows get the retained-rows-still-block guidance.
+    expect(block).toContain('Revoked-but-retained rows still block the FK');
+    expect(block).toContain('gbrain auth revoke-client "client-2"');
+  });
+
+  test('degrade ladder: missing oauth_clients table → [], missing deleted_at → all referents, other errors propagate', async () => {
+    // Pre-oauth brain: no oauth_clients table at all → no referents by
+    // construction (isUndefinedTableError arm).
+    const noTable = {
+      executeRaw: async () => {
+        throw Object.assign(new Error('relation "oauth_clients" does not exist'), { code: '42P01' });
+      },
+    } as any;
+    expect(await clientsReferencingSource(noTable, 'x')).toEqual([]);
+
+    // Pre-migration brain: deleted_at column missing → falls back to ALL
+    // referents (the 42703-retry idiom), tagged live (deleted:false — the
+    // column that would say otherwise doesn't exist).
+    const noColumn = {
+      executeRaw: async (sql: string) => {
+        if (sql.includes('deleted_at')) {
+          throw Object.assign(new Error('column "deleted_at" does not exist'), { code: '42703' });
+        }
+        return [{ client_id: 'c1', client_name: 'n1' }];
+      },
+    } as any;
+    expect(await clientsReferencingSource(noColumn, 'x')).toEqual([
+      { clientId: 'c1', clientName: 'n1', deleted: false },
+    ]);
+
+    // Anything else (e.g. a dropped connection) must PROPAGATE — a swallowed
+    // error here would let a hard delete proceed past live referents.
+    const broken = {
+      executeRaw: async () => { throw new Error('connection reset'); },
+    } as any;
+    await expect(clientsReferencingSource(broken, 'x')).rejects.toThrow('connection reset');
+  });
+
+  test('missing source_id column → [] (no column ⇒ no FK ⇒ no referents)', async () => {
+    // Pre-v61 brain: oauth_clients exists but has no source_id column at all.
+    const noSourceId = {
+      executeRaw: async () => {
+        throw Object.assign(new Error('column "source_id" does not exist'), { code: '42703' });
+      },
+    } as any;
+    expect(await clientsReferencingSource(noSourceId, 'x')).toEqual([]);
+
+    // Same brain shape must not break the purge path either: the skip-set
+    // query 42703s, and the purge falls back to the unconditional DELETE.
+    let sawUnconditionalDelete = false;
+    const purgeStub = {
+      executeRaw: async (sql: string) => {
+        if (sql.includes('oauth_clients')) {
+          throw Object.assign(new Error('column "source_id" does not exist'), { code: '42703' });
+        }
+        if (sql.startsWith('DELETE FROM sources')) sawUnconditionalDelete = true;
+        return [];
+      },
+    } as any;
+    expect(await purgeExpiredSources(purgeStub)).toEqual([]);
+    expect(sawUnconditionalDelete).toBe(true);
+  });
+});
+
 describe('formatters (display helpers)', () => {
   test('formatImpact renders the boxed preview with the source id and counts', () => {
     const impact: DestructiveImpact = {
@@ -379,6 +651,43 @@ describe('formatters (display helpers)', () => {
     expect(out).toContain('5,033');
     expect(out).toContain('22,000');
     expect(out).toContain('DESTRUCTIVE OPERATION');
+    // cathedral-6: the box renders a Facts row (0 for a literal without it).
+    expect(out).toMatch(/Facts:\s+0/);
+  });
+
+  test('formatImpact renders the facts count (mirrors the page-count line)', () => {
+    const impact: DestructiveImpact = {
+      sourceId: 'revoked-agent-workspace',
+      sourceName: 'revoked-agent-workspace',
+      pageCount: 0,
+      chunkCount: 0,
+      embeddingCount: 0,
+      fileCount: 0,
+      factCount: 1234,
+      summary: '⚠️  This will permanently delete: 1,234 facts',
+    };
+    const out = formatImpact(impact);
+    expect(out).toMatch(/Facts:\s+1,234/);
+  });
+
+  test('sources remove orders the row DELETE (in-tx) BEFORE external teardown (F1 structural pin)', () => {
+    // A concurrent registration between the referents pre-check and the
+    // DELETE must surface as the refusal, never as destroyed scaffolding
+    // with the row still present — so the tx'd DELETE precedes unharden.
+    const { readFileSync } = require('fs');
+    const src = readFileSync(new URL('../src/commands/sources.ts', import.meta.url), 'utf-8');
+    const removeStart = src.indexOf('async function runRemove');
+    const removeEnd = src.indexOf('async function', removeStart + 1);
+    const body = src.slice(removeStart, removeEnd);
+    const deleteIdx = body.indexOf(`DELETE FROM sources WHERE id = $1`);
+    const teardownIdx = body.indexOf('unhardenBrainRepo');
+    expect(deleteIdx).toBeGreaterThan(0);
+    expect(teardownIdx).toBeGreaterThan(0);
+    expect(deleteIdx).toBeLessThan(teardownIdx);
+    // And the DELETE runs inside engine.transaction (atomic with the re-check).
+    const txIdx = body.indexOf('engine.transaction');
+    expect(txIdx).toBeGreaterThan(0);
+    expect(txIdx).toBeLessThan(deleteIdx);
   });
 
   test('formatSoftDelete renders the post-archive guidance with restore command', () => {
