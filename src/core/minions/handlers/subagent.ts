@@ -41,6 +41,7 @@ import { buildBrainTools, filterAllowedTools } from '../tools/brain-allowlist.ts
 import {
   acquireLease,
   releaseLease,
+  RateLeaseUnavailableError,
   renewLeaseWithBackoff,
 } from '../rate-leases.ts';
 import {
@@ -54,7 +55,8 @@ import { buildSystemPrompt, DEFAULT_SUBAGENT_SYSTEM } from '../system-prompt.ts'
 import { toolLoop as gatewayToolLoop, isThinkingByDefaultModel, THINKING_MODEL_MAX_OUTPUT_TOKENS } from '../../ai/gateway.ts';
 import type { ChatToolDef, ChatMessage, ChatBlock, ChatResult, ToolHandler } from '../../ai/gateway.ts';
 import { classifyCapabilities } from '../../ai/capabilities.ts';
-import { runSubagentOneshot, type OneshotFallbackReason } from './subagent-oneshot.ts';
+import { runSubagentOneshot, ONESHOT_TOOL_USE_ID_PREFIX } from './subagent-oneshot.ts';
+import type { OneshotFallbackReason } from '../types.ts';
 import {
   loadPriorMessages,
   loadPriorTools,
@@ -207,11 +209,17 @@ export function makeSubagentHandler(deps: SubagentDeps) {
     const inner = await subagentHandlerInner(ctx, modeState);
     // #4216: stamp which execution path produced the result. Jobs with no
     // `mode` field keep the legacy result shape (REGRESSION pin).
-    const stamped: SubagentResult = dataForAccounting.mode === 'oneshot' && inner.synth_mode_used !== 'oneshot'
+    // Honesty rule: 'agentic_fallback' is stamped ONLY when the oneshot
+    // attempt actually ran and returned a fallback reason this invocation. A
+    // replayed already-successful oneshot job (messages persisted, outcome
+    // write lost) re-enters via the loop replay path with no marker — leaving
+    // synth_mode_used unset there is honest 'unknown/replay', never a fake
+    // fallback in phase telemetry.
+    const stamped: SubagentResult = dataForAccounting.mode === 'oneshot' && inner.synth_mode_used !== 'oneshot' && modeState.fallbackReason
       ? {
           ...inner,
           synth_mode_used: 'agentic_fallback',
-          ...(modeState.fallbackReason ? { fallback_reason: modeState.fallbackReason } : {}),
+          fallback_reason: modeState.fallbackReason,
         }
       : dataForAccounting.mode === 'agentic' && !inner.synth_mode_used
         ? { ...inner, synth_mode_used: 'agentic' }
@@ -221,7 +229,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       // OV-4: a successful oneshot job's verdict is scoped to its own
       // invocation family; a fallback wrote through the loop (no oneshot
       // rows exist — validation precedes all writes), so job-wide is exact.
-      ...(stamped.synth_mode_used === 'oneshot' ? { scopeToolUseIdPrefix: 'oneshot-' } : {}),
+      ...(stamped.synth_mode_used === 'oneshot' ? { scopeToolUseIdPrefix: ONESHOT_TOOL_USE_ID_PREFIX } : {}),
     });
   };
 
@@ -401,7 +409,24 @@ export function makeSubagentHandler(deps: SubagentDeps) {
         `SELECT count(*)::int AS n FROM subagent_messages WHERE job_id = $1`,
         [ctx.id],
       );
-      if ((freshRows[0]?.n ?? 0) === 0) {
+      let dispatchOneshot = (freshRows[0]?.n ?? 0) === 0;
+      if (!dispatchOneshot) {
+        // Transcript persistence is two INSERTs; a crash between them leaves
+        // messages WITHOUT a terminal assistant row, and the loop replay
+        // below would re-call a nondeterministic model with the oneshot
+        // pages ALREADY WRITTEN (near-duplicate pages under the same hash
+        // suffix). Oneshot ledger rows exist only after full validation on
+        // the oneshot path, so their presence routes to the runner's
+        // idempotent ledger-first recovery instead of the loop.
+        const ledger = await engine.executeRaw<{ n: number }>(
+          `SELECT count(*)::int AS n FROM (
+             SELECT 1 FROM subagent_tool_executions
+              WHERE job_id = $1 AND tool_use_id LIKE $2 LIMIT 1) t`,
+          [ctx.id, `${ONESHOT_TOOL_USE_ID_PREFIX}%`],
+        );
+        dispatchOneshot = (ledger[0]?.n ?? 0) > 0;
+      }
+      if (dispatchOneshot) {
         // Rebuild put_page with deferEmbeds so the embed network call leaves
         // the model path (the standing embed machinery backfills).
         const oneshotTools = deps.toolRegistry ?? buildBrainTools({
@@ -1561,12 +1586,10 @@ function mergeSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
  * treats this as a renewable error — job goes back to waiting with
  * backoff, no terminal fail.
  */
-export class RateLeaseUnavailableError extends Error {
-  constructor(public key: string, public active: number, public max: number) {
-    super(`rate lease "${key}" full (${active}/${max})`);
-    this.name = 'RateLeaseUnavailableError';
-  }
-}
+// Moved to rate-leases.ts (its natural layer); re-exported here because
+// worker.ts, inline-drain.ts, job-isolation and tests import it from this
+// module historically.
+export { RateLeaseUnavailableError } from '../rate-leases.ts';
 
 /**
  * Detect Anthropic SDK errors that indicate the input prompt exceeded the

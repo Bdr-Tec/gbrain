@@ -315,6 +315,76 @@ describe('runSubagentViaGateway (v0.38 Slice 1 — full handler path through gat
     expect(String(toolRows[1].tool_use_id)).toStartWith('toolu_01#m'); // second disambiguated
   });
 
+  it('second uniq violation (suffixed id also taken) reuses the existing row\'s gbrain id (#4155 CEO-3)', async () => {
+    // Replay shape: a prior invocation already persisted BOTH the original
+    // provider id AND the disambiguated suffix for this job. The third
+    // insert attempt must not die — it SELECTs the existing suffixed row's
+    // canonical gbrain_tool_use_id and the settle path lands on that row.
+    __setChatTransportForTests(async (opts) => {
+      const turns = opts.messages.filter((m) => m.role === 'assistant').length;
+      if (turns === 0) {
+        return {
+          text: '',
+          blocks: [
+            { type: 'tool-call', toolCallId: 'toolu_01', toolName: 'search', input: { q: 'again' } },
+          ] as ChatBlock[],
+          stopReason: 'tool_calls',
+          usage: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_creation_tokens: 0 },
+          model: 'claude-cli:claude-fable-5',
+          providerId: 'claude-cli',
+        } satisfies ChatResult;
+      }
+      return {
+        text: 'survived double collision',
+        blocks: [{ type: 'text', text: 'survived double collision' }] as ChatBlock[],
+        stopReason: 'end',
+        usage: { input_tokens: 12, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'claude-cli:claude-fable-5',
+        providerId: 'claude-cli',
+      } satisfies ChatResult;
+    });
+
+    const executions: Array<{ name: string; input: unknown; ts: number }> = [];
+    const tools = makeStubTools(executions);
+    const handler = buildHandler(tools);
+    const { jobId, ctx } = await makeFakeJob({
+      prompt: 'double collision',
+      model: 'anthropic:claude-sonnet-4-6',
+      allowed_tools: ['search'],
+    });
+
+    // Seed the two colliding ids at out-of-the-way (message_idx, ordinal)
+    // slots so the arbiter never matches but uniq (job_id, tool_use_id) does.
+    const seededGbrainId = '01890000-0000-7000-8000-00000000aaaa';
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions
+         (job_id, message_idx, tool_use_id, tool_name, input, status, schema_version, ordinal, gbrain_tool_use_id)
+       VALUES ($1, 90, 'toolu_01', 'search', '{}'::jsonb, 'complete', 2, 0, '01890000-0000-7000-8000-000000009999'),
+              ($1, 91, 'toolu_01#m1o0', 'search', '{}'::jsonb, 'pending', 2, 0, $2)`,
+      [jobId, seededGbrainId],
+    );
+
+    const result = await handler(ctx);
+    expect(result.result).toBe('survived double collision');
+    expect(executions.length).toBe(1); // the tool still really ran
+
+    // The settle landed on the SEEDED suffixed row (reused canonical id).
+    const settled = await engine.executeRaw<Record<string, unknown>>(
+      `SELECT status FROM subagent_tool_executions
+        WHERE job_id = $1 AND gbrain_tool_use_id::text = $2`,
+      [jobId, seededGbrainId],
+    );
+    expect(settled.length).toBe(1);
+    expect(settled[0].status).toBe('complete');
+
+    // No phantom third row was inserted for the live turn's slot.
+    const liveSlot = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM subagent_tool_executions WHERE job_id = $1 AND message_idx = 1`,
+      [jobId],
+    );
+    expect(liveSlot[0]!.n).toBe(0);
+  });
+
   it('tool error path: handler persists status=failed, loop continues with error feedback', async () => {
     let turn = 0;
     __setChatTransportForTests(async () => {

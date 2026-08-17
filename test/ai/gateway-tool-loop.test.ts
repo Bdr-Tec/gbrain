@@ -363,4 +363,105 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
     expect(result.stopReason).toBe('refusal');
     expect(result.finalText).toBe('I cannot help with that');
   });
+
+  describe('acquireTurnPermit hook (#4194 CDX-7 — per-turn rate leases on the gateway path)', () => {
+    it('acquires before EVERY provider call and releases after each (incl. the final turn)', async () => {
+      const events: string[] = [];
+      let turn = 0;
+      __setChatTransportForTests(async () => {
+        events.push(`chat${turn}`);
+        turn++;
+        if (turn === 1) {
+          return {
+            text: '',
+            blocks: [{ type: 'tool-call', toolCallId: 'tc1', toolName: 'work', input: {} }] as ChatBlock[],
+            stopReason: 'tool_calls',
+            usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0 },
+            model: 'anthropic:claude-sonnet-4-6',
+            providerId: 'anthropic',
+          };
+        }
+        return {
+          text: 'done',
+          blocks: [{ type: 'text', text: 'done' }] as ChatBlock[],
+          stopReason: 'end',
+          usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0 },
+          model: 'anthropic:claude-sonnet-4-6',
+          providerId: 'anthropic',
+        };
+      });
+
+      const result = await toolLoop({
+        initialMessages: [{ role: 'user', content: 'go' }],
+        tools: [{ name: 'work', description: 'w', inputSchema: { type: 'object' } }],
+        toolHandlers: new Map([['work', { idempotent: true, async execute() { return null; } }]]),
+        acquireTurnPermit: async () => {
+          events.push('acquire');
+          return () => { events.push('release'); };
+        },
+      });
+
+      expect(result.stopReason).toBe('end');
+      // Strict bracketing: acquire → chat → release, once per provider call.
+      expect(events).toEqual(['acquire', 'chat0', 'release', 'acquire', 'chat1', 'release']);
+    });
+
+    it('releases the permit even when the provider call throws', async () => {
+      const events: string[] = [];
+      __setChatTransportForTests(async () => {
+        throw new Error('provider exploded');
+      });
+
+      await expect(toolLoop({
+        initialMessages: [{ role: 'user', content: 'go' }],
+        tools: [],
+        toolHandlers: new Map(),
+        acquireTurnPermit: async () => {
+          events.push('acquire');
+          return () => { events.push('release'); };
+        },
+      })).rejects.toThrow('provider exploded');
+
+      expect(events).toEqual(['acquire', 'release']); // no leaked lease
+    });
+
+    it('an acquire failure (lease full) propagates to the caller WITHOUT a provider call', async () => {
+      let chatCalls = 0;
+      __setChatTransportForTests(async () => {
+        chatCalls++;
+        throw new Error('should never be reached');
+      });
+
+      class FakeLeaseFull extends Error {}
+      await expect(toolLoop({
+        initialMessages: [{ role: 'user', content: 'go' }],
+        tools: [],
+        toolHandlers: new Map(),
+        acquireTurnPermit: async () => { throw new FakeLeaseFull('bucket full'); },
+      })).rejects.toThrow('bucket full');
+
+      expect(chatCalls).toBe(0); // permit gates the provider call, not just accounting
+    });
+
+    it('a throwing release is swallowed (best-effort) and the loop result is unaffected', async () => {
+      __setChatTransportForTests(async () => ({
+        text: 'fine',
+        blocks: [{ type: 'text', text: 'fine' }] as ChatBlock[],
+        stopReason: 'end',
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'anthropic:claude-sonnet-4-6',
+        providerId: 'anthropic',
+      }));
+
+      const result = await toolLoop({
+        initialMessages: [{ role: 'user', content: 'go' }],
+        tools: [],
+        toolHandlers: new Map(),
+        acquireTurnPermit: async () => async () => { throw new Error('release hiccup'); },
+      });
+
+      expect(result.stopReason).toBe('end');
+      expect(result.finalText).toBe('fine');
+    });
+  });
 });

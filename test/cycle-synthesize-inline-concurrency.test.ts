@@ -174,3 +174,73 @@ describe('percentile helper (#4194 telemetry)', () => {
     expect(percentile([...vals].reverse(), 50)).toBe(50); // unsorted input ok
   });
 });
+
+describe('loadSynthConfig knob validation (#4194/#4216)', () => {
+  const { loadSynthConfig } = require('../src/core/cycle/synthesize.ts');
+
+  test('inline_concurrency clamps to [1,8], floors, and shrugs off garbage', async () => {
+    await engine.setConfig('dream.synthesize.inline_concurrency', '0');
+    expect((await loadSynthConfig(engine)).inlineConcurrency).toBe(1);
+    await engine.setConfig('dream.synthesize.inline_concurrency', '50');
+    expect((await loadSynthConfig(engine)).inlineConcurrency).toBe(8);
+    await engine.setConfig('dream.synthesize.inline_concurrency', '3.9');
+    expect((await loadSynthConfig(engine)).inlineConcurrency).toBe(3);
+    await engine.setConfig('dream.synthesize.inline_concurrency', 'garbage');
+    expect((await loadSynthConfig(engine)).inlineConcurrency).toBe(1);
+    await engine.unsetConfig('dream.synthesize.inline_concurrency');
+    expect((await loadSynthConfig(engine)).inlineConcurrency).toBe(1); // default
+  });
+
+  test("mode: unknown value warns + falls back to 'oneshot'; casing/whitespace tolerated", async () => {
+    expect((await loadSynthConfig(engine)).mode).toBe('oneshot'); // D1=A default
+    await engine.setConfig('dream.synthesize.mode', 'agentic');
+    expect((await loadSynthConfig(engine)).mode).toBe('agentic');
+    await engine.setConfig('dream.synthesize.mode', '  ONESHOT ');
+    expect((await loadSynthConfig(engine)).mode).toBe('oneshot');
+    await engine.setConfig('dream.synthesize.mode', 'turbo');
+    expect((await loadSynthConfig(engine)).mode).toBe('oneshot'); // warn + default
+    await engine.unsetConfig('dream.synthesize.mode');
+  });
+
+  test("link_manifest: default ON; only explicit false/0/off disables (case/space-insensitive)", async () => {
+    expect((await loadSynthConfig(engine)).linkManifest).toBe(true);
+    for (const off of ['false', ' OFF ', '0']) {
+      await engine.setConfig('dream.synthesize.link_manifest', off);
+      expect((await loadSynthConfig(engine)).linkManifest).toBe(false);
+    }
+    await engine.setConfig('dream.synthesize.link_manifest', 'true');
+    expect((await loadSynthConfig(engine)).linkManifest).toBe(true);
+    await engine.unsetConfig('dream.synthesize.link_manifest');
+  });
+});
+
+describe('pool abort on a loop-level failure (OV-6)', () => {
+  test('a non-retryable queue failure rejects the pool without hanging siblings', async () => {
+    const queueName = `dream-inline-test-${++queueSeq}`;
+    await seedChildren(queueName, 6);
+    let claims = 0;
+    const realClaim = queue.claim.bind(queue);
+    const brokenQueue = new Proxy(queue, {
+      get(target, prop, receiver) {
+        if (prop === 'claim') {
+          return async (...args: Parameters<typeof realClaim>) => {
+            claims++;
+            if (claims === 2) throw new Error('catastrophic non-retryable queue failure');
+            return realClaim(...args);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const handler: MinionHandler = async () => {
+      await sleep(20);
+      return { ok: true };
+    };
+    // One loop dies on the poisoned claim; poolAbort stops siblings after
+    // their current child; the pool rejects with the loop-level cause
+    // instead of hanging on the remaining unclaimed children.
+    await expect(
+      runSubagentsInline(engine, brokenQueue, queueName, undefined, handler, 30_000, 3),
+    ).rejects.toThrow('catastrophic non-retryable queue failure');
+  }, 30_000);
+});

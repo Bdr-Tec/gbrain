@@ -1032,4 +1032,87 @@ describe('E2E synthesize — oneshot mode (#4216, DEFAULT)', () => {
       await rig.cleanup();
     }
   }, 60_000);
+
+  test('mixed outcome: one dead child degrades the phase but does NOT fail it; cooldown NOT stamped (CDX-4)', async () => {
+    const rig = await setupRig();
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-test-mixed-outcome';
+    try {
+      await rig.engine.setConfig('dream.synthesize.enabled', 'true');
+      await rig.engine.setConfig('dream.synthesize.session_corpus_dir', rig.corpusDir);
+      await rig.engine.setConfig('agent.use_gateway_loop', 'true');
+
+      const contentA = 'User: the good transcript about widget scaling\n'.repeat(120);
+      const fileA = join(rig.corpusDir, '2026-08-16-good-widget.txt');
+      writeFileSync(fileA, contentA);
+      const hashA = await seedVerdictFor(rig, fileA, contentA);
+      const suffixA = hashA.slice(0, 6);
+      const slugA1 = `wiki/personal/reflections/2026-08-16-good-widget-${suffixA}`;
+      const slugA2 = `wiki/originals/ideas/2026-08-16-good-widget-idea-${suffixA}`;
+
+      const contentB = 'User: the doomed transcript whose writes all fail\n'.repeat(120);
+      const fileB = join(rig.corpusDir, '2026-08-16-doomed.txt');
+      writeFileSync(fileB, contentB);
+      await seedVerdictFor(rig, fileB, contentB);
+
+      let bTurns = 0;
+      __setChatTransportForTests(async (opts: { messages: unknown }) => {
+        const convo = JSON.stringify(opts.messages);
+        const mk = (text: string, blocks: unknown[], stop: string) => ({
+          text, blocks, stopReason: stop,
+          usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, cache_creation_tokens: 0 },
+          model: 'anthropic:claude-sonnet-4-6',
+          providerId: 'anthropic',
+        }) as any;
+        if (convo.includes('good-widget')) {
+          const text = JSON.stringify({
+            pages: [
+              { slug: slugA1, body: `Reflection. See [[${slugA2}]].` },
+              { slug: slugA2, body: `Idea. From [[${slugA1}]].` },
+            ],
+            skipped: false,
+          });
+          return mk(text, [{ type: 'text', text }], 'end');
+        }
+        // Doomed transcript: oneshot mangles → fallback loop attempts ONE
+        // out-of-fence write (fence-rejected → failed ledger row) then ends
+        // → require_writes fires → UnrecoverableError → dead in one invocation.
+        bTurns++;
+        if (bTurns === 1) return mk('here you go! pages!', [{ type: 'text', text: 'here you go! pages!' }], 'end');
+        if (bTurns === 2) {
+          return mk('', [{
+            type: 'tool-call', toolCallId: 'tcB1', toolName: 'brain_put_page',
+            input: { slug: 'notallowed/sneaky-page', content: 'nope' },
+          }], 'tool_calls');
+        }
+        return mk('done', [{ type: 'text', text: 'done' }], 'end');
+      });
+
+      const result = await runPhaseSynthesize(rig.engine, { brainDir: rig.brainDir, dryRun: false });
+      // One child completed with real pages — the phase is degraded, not failed.
+      expect(result.status).toBe('ok');
+      const synthesis = (result.details as { synthesis: Record<string, unknown> }).synthesis;
+      expect(synthesis.degraded).toBe(true);
+      expect(synthesis.dead_jobs).toBe(1);
+      expect(synthesis.non_completed_jobs).toBe(1);
+      expect(synthesis.oneshot_jobs).toBe(1);
+
+      const jobs = await rig.engine.executeRaw<{ status: string }>(
+        `SELECT status FROM minion_jobs WHERE name = 'subagent' ORDER BY id`);
+      expect(jobs.map(j => j.status).sort()).toEqual(['completed', 'dead']);
+
+      // The good child's pages landed.
+      expect(await rig.engine.getPage(slugA1)).not.toBeNull();
+
+      // CDX-4: cooldown NOT stamped — the dead child's idempotency key is
+      // released and the next nightly retries it instead of sleeping 12h.
+      expect(await rig.engine.getConfig('dream.synthesize.last_completion_ts')).toBeNull();
+    } finally {
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+      __setChatTransportForTests(null);
+      resetGateway();
+      await rig.cleanup();
+    }
+  }, 60_000);
 });

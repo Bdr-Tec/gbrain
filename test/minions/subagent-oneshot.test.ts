@@ -190,6 +190,18 @@ describe('runSubagentOneshot', () => {
       `SELECT count(*)::int AS n FROM subagent_messages WHERE job_id = $1`, [ctx.id],
     );
     expect(msgs[0]!.n).toBe(2);
+
+    // CEO-1: the in-batch forward edge (A → B, where B was written AFTER A)
+    // materialized in the links table via the post-batch auto-link pass —
+    // A's own put_page auto-link dropped it because B didn't exist yet.
+    const edges = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM links l
+        JOIN pages pf ON pf.id = l.from_page_id
+        JOIN pages pt ON pt.id = l.to_page_id
+       WHERE pf.slug = $1 AND pt.slug = $2`,
+      [GOOD_SLUG_A, GOOD_SLUG_B],
+    );
+    expect(edges[0]!.n).toBeGreaterThan(0);
   });
 
   test('unparseable output → fallback, NOTHING persisted (no messages, no ledger, no pages)', async () => {
@@ -292,6 +304,278 @@ describe('runSubagentOneshot', () => {
     const ctx = await makeCtx(DATA);
     const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, VALID_RESPONSE.slice(0, 50), 'length'));
     expect(outcome).toEqual({ kind: 'fallback', reason: 'length' });
+  });
+
+  test('duplicate slugs within one batch → bad_slug (second write would silently overwrite the first)', async () => {
+    const ctx = await makeCtx(DATA);
+    const resp = JSON.stringify({
+      pages: [
+        { slug: GOOD_SLUG_A, body: `first [[${GOOD_SLUG_A}]]` },
+        { slug: GOOD_SLUG_A, body: `second [[${GOOD_SLUG_A}]]` },
+      ],
+      skipped: false,
+    });
+    const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, resp));
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'bad_slug' });
+    expect(await engine.getPage(GOOD_SLUG_A)).toBeNull();
+  });
+
+  test('more than 12 pages → too_many_pages fallback', async () => {
+    const ctx = await makeCtx(DATA);
+    const pages = Array.from({ length: 13 }, (_, i) => ({
+      slug: `wiki/personal/reflections/2026-08-16-topic-${i}-${SUFFIX}`,
+      body: `p${i} [[${GOOD_SLUG_B}]]`,
+    }));
+    const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, JSON.stringify({ pages, skipped: false })));
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'too_many_pages' });
+  });
+
+  test('missing put_page tool → no_put_page_tool (config error, distinct telemetry reason)', async () => {
+    const ctx = await makeCtx(DATA);
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    args.putPageTool = undefined;
+    const outcome = await runSubagentOneshot(args);
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'no_put_page_tool' });
+  });
+
+  test('refusal / content_filter stop reasons → refusal fallback', async () => {
+    const ctx = await makeCtx(DATA);
+    expect(await runSubagentOneshot(makeArgs(ctx, DATA, VALID_RESPONSE, 'refusal')))
+      .toEqual({ kind: 'fallback', reason: 'refusal' });
+    const ctx2 = await makeCtx(DATA);
+    expect(await runSubagentOneshot(makeArgs(ctx2, DATA, VALID_RESPONSE, 'content_filter')))
+      .toEqual({ kind: 'fallback', reason: 'refusal' });
+  });
+
+  test('skipped:true with pages present → pages win (skip flag ignored, writes proceed)', async () => {
+    const ctx = await makeCtx(DATA);
+    const resp = JSON.stringify({
+      pages: [
+        { slug: GOOD_SLUG_A, body: `A [[${GOOD_SLUG_B}]]` },
+        { slug: GOOD_SLUG_B, body: `B [[${GOOD_SLUG_A}]]` },
+      ],
+      skipped: true,
+      skip_reason: 'contradictory flag',
+    });
+    const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, resp));
+    expect(outcome.kind).toBe('done');
+    expect(await engine.getPage(GOOD_SLUG_A)).not.toBeNull();
+  });
+
+  test('oneshot sub-budget expiry → oneshot_timeout fallback, job signal intact (OV-9)', async () => {
+    const ctx = await makeCtx(DATA);
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    args._budgetMs = 50;
+    args._chat = (async (opts: Parameters<NonNullable<OneshotArgs['_chat']>>[0]) =>
+      new Promise((_, reject) => {
+        opts.abortSignal?.addEventListener('abort', () => reject(new Error('The operation was aborted.')));
+      })) as OneshotArgs['_chat'];
+    const outcome = await runSubagentOneshot(args);
+    expect(outcome).toEqual({ kind: 'fallback', reason: 'oneshot_timeout' });
+  });
+
+  test('rate-lease bucket full → RateLeaseUnavailableError thrown (requeue path, never fallback)', async () => {
+    const ctx = await makeCtx(DATA);
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    args.maxConcurrent = 0; // immediately-full bucket
+    await expect(runSubagentOneshot(args)).rejects.toThrow(/rate lease|lease/i);
+  });
+
+  test('a failing write is ledgered failed; siblings still written; refs are truthful', async () => {
+    const ctx = await makeCtx(DATA);
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    const realTool = args.putPageTool!;
+    let call = 0;
+    args.putPageTool = {
+      ...realTool,
+      execute: async (input, execCtx) => {
+        call++;
+        if (call === 2) throw new Error('disk on fire');
+        return realTool.execute(input, execCtx);
+      },
+    };
+    const outcome = await runSubagentOneshot(args);
+    expect(outcome.kind).toBe('done');
+    const result = (outcome as { result: { written_refs?: Array<{ slug: string; status: string }> } }).result;
+    expect(result.written_refs).toEqual([
+      { slug: GOOD_SLUG_A, status: 'complete' },
+      { slug: GOOD_SLUG_B, status: 'failed' },
+    ]);
+    const rows = await engine.executeRaw<{ status: string; err: string | null }>(
+      `SELECT status, error AS err FROM subagent_tool_executions WHERE job_id = $1 ORDER BY id`,
+      [ctx.id],
+    );
+    expect(rows.map(r => r.status)).toEqual(['complete', 'failed']);
+    expect(rows[1]!.err).toContain('disk on fire');
+  });
+
+  test('ALL writes fail → outcome still done with all-failed refs (job failure is the accountant\'s job)', async () => {
+    const ctx = await makeCtx(DATA);
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    args.putPageTool = {
+      ...args.putPageTool!,
+      execute: async () => { throw new Error('every write rejected'); },
+    };
+    const outcome = await runSubagentOneshot(args);
+    expect(outcome.kind).toBe('done');
+    const result = (outcome as { result: { written_refs?: Array<{ status: string }> } }).result;
+    expect(result.written_refs!.every(r => r.status === 'failed')).toBe(true);
+  });
+
+  test('pending-row recovery RE-EXECUTES the write from ledger input (crash between pending and settle)', async () => {
+    const ctx = await makeCtx(DATA);
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status)
+       VALUES ($1, 1, 'oneshot-deadbeef-p0', 'brain_put_page', $2::text::jsonb, 'pending')`,
+      [ctx.id, JSON.stringify({ slug: GOOD_SLUG_A, content: `Recovered body. [[${GOOD_SLUG_B}]]` })],
+    );
+    let chatCalls = 0;
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    const inner = args._chat!;
+    args._chat = (async (opts: Parameters<NonNullable<OneshotArgs['_chat']>>[0]) => {
+      chatCalls++;
+      return inner(opts);
+    }) as OneshotArgs['_chat'];
+    const outcome = await runSubagentOneshot(args);
+    expect(outcome.kind).toBe('done');
+    expect(chatCalls).toBe(0);
+    const result = (outcome as { result: { recovered?: boolean; written_refs?: Array<{ slug: string; status: string }> } }).result;
+    expect(result.recovered).toBe(true);
+    // The page actually exists — recovery re-executed the upsert, so
+    // 'completed' can never again mean zero pages (the #4217 class).
+    expect(result.written_refs).toEqual([{ slug: GOOD_SLUG_A, status: 'complete' }]);
+    const page = await engine.getPage(GOOD_SLUG_A);
+    expect(page).not.toBeNull();
+    expect(page!.compiled_truth).toContain('Recovered body.');
+    const rows = await engine.executeRaw<{ status: string }>(
+      `SELECT status FROM subagent_tool_executions WHERE job_id = $1 AND tool_use_id = 'oneshot-deadbeef-p0'`,
+      [ctx.id],
+    );
+    expect(rows[0]!.status).toBe('complete');
+  });
+
+  test('pending-row recovery with unusable ledger input → row settles failed, refs truthful', async () => {
+    const ctx = await makeCtx(DATA);
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status)
+       VALUES ($1, 1, 'oneshot-deadbeef-p0', 'brain_put_page', $2::text::jsonb, 'pending')`,
+      [ctx.id, JSON.stringify({ slug: GOOD_SLUG_A })], // no content banked
+    );
+    const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, VALID_RESPONSE));
+    expect(outcome.kind).toBe('done');
+    const result = (outcome as { result: { recovered?: boolean; written_refs?: Array<{ slug: string; status: string }> } }).result;
+    expect(result.recovered).toBe(true);
+    expect(result.written_refs).toEqual([{ slug: GOOD_SLUG_A, status: 'failed' }]);
+    expect(await engine.getPage(GOOD_SLUG_A)).toBeNull();
+  });
+
+  test('the WHOLE batch is banked pending before the first write executes (crash-safe recovery universe)', async () => {
+    const ctx = await makeCtx(DATA);
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    const realTool = args.putPageTool!;
+    let pendingAtFirstWrite = -1;
+    args.putPageTool = {
+      ...realTool,
+      execute: async (input, execCtx) => {
+        if (pendingAtFirstWrite === -1) {
+          const rows = await engine.executeRaw<{ n: number }>(
+            `SELECT count(*)::int AS n FROM subagent_tool_executions
+              WHERE job_id = $1 AND tool_use_id LIKE 'oneshot-%'`, [ctx.id]);
+          pendingAtFirstWrite = rows[0]!.n;
+        }
+        return realTool.execute(input, execCtx);
+      },
+    };
+    const outcome = await runSubagentOneshot(args);
+    expect(outcome.kind).toBe('done');
+    // Both rows existed BEFORE the first put_page ran — a crash at any write
+    // leaves the complete batch in the ledger for recovery to re-execute.
+    expect(pendingAtFirstWrite).toBe(2);
+  });
+
+  test('recovery rethrows on abort-shaped write errors, leaving the row PENDING for the next retry', async () => {
+    const ctx = await makeCtx(DATA);
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status)
+       VALUES ($1, 1, 'oneshot-deadbeef-p0', 'brain_put_page', $2::text::jsonb, 'pending')`,
+      [ctx.id, JSON.stringify({ slug: GOOD_SLUG_A, content: `Body. [[${GOOD_SLUG_B}]]` })],
+    );
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    args.putPageTool = {
+      ...args.putPageTool!,
+      execute: async () => {
+        const e = new Error('The operation was aborted.');
+        e.name = 'AbortError';
+        throw e;
+      },
+    };
+    await expect(runSubagentOneshot(args)).rejects.toThrow('aborted');
+    const rows = await engine.executeRaw<{ status: string }>(
+      `SELECT status FROM subagent_tool_executions WHERE job_id = $1`, [ctx.id]);
+    expect(rows[0]!.status).toBe('pending'); // NOT frozen to 'failed'
+  });
+
+  test('a non-abort transport error is rethrown even if the budget expired concurrently (never misrouted to fallback)', async () => {
+    const ctx = await makeCtx(DATA);
+    const args = makeArgs(ctx, DATA, VALID_RESPONSE);
+    args._budgetMs = 30;
+    args._chat = (async () =>
+      new Promise((_, reject) => {
+        // Reject with a NON-abort-shaped provider error after the budget
+        // timer has fired — the pre-fix classifier would have read
+        // budgetAbort.aborted and returned 'oneshot_timeout' → fallback
+        // against a broken provider.
+        setTimeout(() => reject(new Error('socket hang up (ECONNRESET)')), 80);
+      })) as OneshotArgs['_chat'];
+    await expect(runSubagentOneshot(args)).rejects.toThrow('ECONNRESET');
+  });
+
+  test('recovery replays the post-batch auto-link pass for in-batch edges (RT-5)', async () => {
+    // Simulate: prior invocation wrote both pages + settled both rows, then
+    // crashed BEFORE the post-batch auto-link pass. Recovery must
+    // materialize the in-batch A→B edge from the ledger bodies.
+    const bodyA = `Recovered A. See [[${GOOD_SLUG_B}]].`;
+    const bodyB = `Recovered B. See [[${GOOD_SLUG_A}]].`;
+    await importFromContent(engine, GOOD_SLUG_A, bodyA, { noEmbed: true });
+    await importFromContent(engine, GOOD_SLUG_B, bodyB, { noEmbed: true });
+    const ctx = await makeCtx(DATA);
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status)
+       VALUES ($1, 1, 'oneshot-deadbeef-p0', 'brain_put_page', $2::text::jsonb, 'complete'),
+              ($1, 1, 'oneshot-deadbeef-p1', 'brain_put_page', $3::text::jsonb, 'complete')`,
+      [ctx.id,
+       JSON.stringify({ slug: GOOD_SLUG_A, content: bodyA }),
+       JSON.stringify({ slug: GOOD_SLUG_B, content: bodyB })],
+    );
+    const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, VALID_RESPONSE));
+    expect(outcome.kind).toBe('done');
+    expect((outcome as { result: { recovered?: boolean } }).result.recovered).toBe(true);
+    const edges = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM links l
+        JOIN pages pf ON pf.id = l.from_page_id
+        JOIN pages pt ON pt.id = l.to_page_id
+       WHERE pf.slug = $1 AND pt.slug = $2`,
+      [GOOD_SLUG_A, GOOD_SLUG_B],
+    );
+    expect(edges[0]!.n).toBeGreaterThan(0);
+  });
+
+  test('model title/type land in the written page (frontmatter threading)', async () => {
+    const ctx = await makeCtx(DATA);
+    const resp = JSON.stringify({
+      pages: [
+        { slug: GOOD_SLUG_A, title: 'A Human Title', type: 'note', body: `Body. [[${GOOD_SLUG_B}]]` },
+        { slug: GOOD_SLUG_B, body: `B [[${GOOD_SLUG_A}]]` },
+      ],
+      skipped: false,
+    });
+    const outcome = await runSubagentOneshot(makeArgs(ctx, DATA, resp));
+    expect(outcome.kind).toBe('done');
+    const page = await engine.getPage(GOOD_SLUG_A);
+    expect(page).not.toBeNull();
+    // parseMarkdown promotes title/type out of the frontmatter jsonb into
+    // dedicated columns — assert on the promoted column.
+    expect((page as unknown as { title?: string }).title).toBe('A Human Title');
   });
 
   test('ledger-first recovery: prior oneshot rows → finalize WITHOUT re-calling the model (OV-4)', async () => {

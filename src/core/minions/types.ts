@@ -685,6 +685,17 @@ export type SubagentStopReason =
   | 'refusal'     // detected via stop_reason + content shape
   | 'error';      // unrecoverable (empty response retry exhausted, etc.)
 
+/**
+ * #4216 — why a oneshot attempt fell back to the agentic loop. Owned here
+ * (the lower layer) so subagent-oneshot.ts and the result type can never
+ * drift; 'no_put_page_tool' and 'too_many_pages' distinguish operator
+ * misconfiguration and contract overflow from model-output failures in the
+ * fallback_reasons telemetry.
+ */
+export type OneshotFallbackReason =
+  | 'unparseable' | 'length' | 'refusal' | 'bad_slug' | 'no_wikilink'
+  | 'empty_no_skip' | 'oneshot_timeout' | 'no_put_page_tool' | 'too_many_pages';
+
 /** Terminal result payload emitted by the subagent handler. */
 export interface SubagentResult {
   /** Concatenated text from the final assistant message. */
@@ -719,7 +730,7 @@ export interface SubagentResult {
    * #4216 — why the oneshot attempt fell back (only on synth_mode_used =
    * 'agentic_fallback').
    */
-  fallback_reason?: 'unparseable' | 'length' | 'refusal' | 'bad_slug' | 'no_wikilink' | 'empty_no_skip' | 'oneshot_timeout';
+  fallback_reason?: OneshotFallbackReason;
   /** #4216 — slugs written by the oneshot path (operator visibility supplement). */
   written_refs?: Array<{ slug: string; status: 'complete' | 'failed' }>;
   /** #4216 — true when a retried oneshot job finalized from a prior invocation's ledger. */

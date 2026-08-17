@@ -33,23 +33,27 @@
 
 import { randomUUID } from 'node:crypto';
 import type { BrainEngine } from '../../engine.ts';
-import type { MinionJobContext, SubagentHandlerData, SubagentResult, ToolDef, ContentBlock } from '../types.ts';
+import type { MinionJobContext, SubagentHandlerData, SubagentResult, ToolDef, ContentBlock, OneshotFallbackReason } from '../types.ts';
 import { chat as gatewayChat, type ChatResult } from '../../ai/gateway.ts';
 import { parseLlmJson } from '../../llm-json.ts';
 import { PAGE_SLUG_SEG } from '../../cjk.ts';
 import { matchesSlugAllowList } from '../../ops/context.ts';
 import { autoLinkWrittenPage } from '../../ops/pages.ts';
-import { acquireLease, releaseLease } from '../rate-leases.ts';
+import { serializeMarkdown } from '../../markdown.ts';
+import type { PageType } from '../../types.ts';
+import { LINK_CANDIDATES_HEADER } from '../../cycle/link-manifest.ts';
+import { acquireLease, releaseLease, RateLeaseUnavailableError } from '../rate-leases.ts';
+import { isRetryableConnError } from '../../retry-matcher.ts';
 import { logSubagentHeartbeat } from './subagent-audit.ts';
 import {
   persistMessage,
-  persistToolExecPending,
   persistToolExecComplete,
   persistToolExecFailed,
 } from './subagent-persistence.ts';
 
-export type OneshotFallbackReason =
-  | 'unparseable' | 'length' | 'refusal' | 'bad_slug' | 'no_wikilink' | 'empty_no_skip' | 'oneshot_timeout';
+// The reason vocabulary is owned by ../types.ts (SubagentResult references
+// it); re-exported here for the handler + tests.
+export type { OneshotFallbackReason } from '../types.ts';
 
 export type OneshotOutcome =
   | { kind: 'done'; result: SubagentResult }
@@ -58,6 +62,12 @@ export type OneshotOutcome =
 const SLUG_RE = new RegExp(`^${PAGE_SLUG_SEG}(\\/${PAGE_SLUG_SEG})*$`, 'u');
 const MAX_PAGES_PER_RESPONSE = 12;
 const ONESHOT_CALL_BUDGET_MS = 300_000;
+
+/**
+ * One constant for the three coupled sites: the ledger LIKE pattern, the
+ * per-write id template, and subagent.ts's accounting scope prefix.
+ */
+export const ONESHOT_TOOL_USE_ID_PREFIX = 'oneshot-';
 
 /**
  * Static system contract — deliberately free of per-job content so the
@@ -153,17 +163,31 @@ export interface OneshotArgs {
   leaseTtlMs: number;
   /** Test seam (extract-atoms pattern). */
   _chat?: typeof gatewayChat;
+  /** Test seam: override the OV-9 sub-budget (default min(5min, deadline/4)). */
+  _budgetMs?: number;
 }
 
-interface LedgerRow { tool_use_id: string; status: string; slug: string | null }
+/**
+ * Abort/timeout-shaped errors must never be converted into permanent
+ * per-page failures or misrouted into the agentic fallback — they belong to
+ * the retry machinery. Name check covers DOMException AbortError/TimeoutError;
+ * the message match covers provider-SDK wrappers.
+ */
+function isAbortShaped(e: unknown): boolean {
+  return e instanceof Error && (
+    e.name === 'AbortError' || e.name === 'TimeoutError' || /\babort|\btimed?[ _-]?out/i.test(e.message)
+  );
+}
+
+interface LedgerRow { tool_use_id: string; status: string; slug: string | null; content: string | null }
 
 async function loadOneshotLedger(engine: BrainEngine, jobId: number): Promise<LedgerRow[]> {
   return engine.executeRaw<LedgerRow>(
-    `SELECT tool_use_id, status, input->>'slug' AS slug
+    `SELECT tool_use_id, status, input->>'slug' AS slug, input->>'content' AS content
        FROM subagent_tool_executions
-      WHERE job_id = $1 AND tool_use_id LIKE 'oneshot-%'
+      WHERE job_id = $1 AND tool_use_id LIKE $2
       ORDER BY id`,
-    [jobId],
+    [jobId, `${ONESHOT_TOOL_USE_ID_PREFIX}%`],
   );
 }
 
@@ -177,10 +201,51 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   // pages); the completed rows ARE the writes.
   const priorLedger = await loadOneshotLedger(engine, ctx.id);
   if (priorLedger.length > 0) {
+    // Settle any PENDING rows first (crash between the pending bank and
+    // the settle write). The ledger stores the exact input, and put_page is
+    // an upsert, so re-executing is idempotent. Without this, a pending-only
+    // ledger would finalize 'completed' with zero pages — the exact
+    // completed-means-zero-pages class #4217 exists to kill (flagged
+    // independently by two ship reviewers).
+    for (const row of priorLedger) {
+      if (row.status !== 'pending') continue;
+      const input = { slug: row.slug ?? '', content: row.content ?? '' };
+      if (!args.putPageTool || !input.slug || !input.content) {
+        await persistToolExecFailed(engine, ctx.id, 1, row.tool_use_id, 'brain_put_page', input,
+          'oneshot recovery: pending write could not be re-executed (missing tool or ledger input)');
+        row.status = 'failed';
+        continue;
+      }
+      try {
+        const output = await args.putPageTool.execute(input, { engine, jobId: ctx.id, remote: true, signal: ctx.signal });
+        await persistToolExecComplete(engine, ctx.id, row.tool_use_id, output);
+        row.status = 'complete';
+      } catch (e) {
+        // Abort (job cancel/timeout mid-recovery) and transient connection
+        // errors are NOT write verdicts — rethrow and leave the row pending
+        // so the next retry re-executes it, instead of freezing a permanent
+        // 'failed' that could dead-letter perfectly writable content.
+        if (ctx.signal?.aborted || isAbortShaped(e) || isRetryableConnError(e)) throw e;
+        await persistToolExecFailed(engine, ctx.id, 1, row.tool_use_id, 'brain_put_page', input,
+          e instanceof Error ? e.message : String(e));
+        row.status = 'failed';
+      }
+    }
     const writtenRefs = priorLedger
       .filter(r => r.status === 'complete' || r.status === 'failed')
       .map(r => ({ slug: r.slug ?? '', status: (r.status === 'complete' ? 'complete' : 'failed') as 'complete' | 'failed' }))
       .filter(r => r.slug !== '');
+    // A crash AFTER the write loop but before/during the post-batch
+    // auto-link pass would otherwise permanently drop the in-batch forward
+    // edges (CEO-1) for recovered jobs — replay the same gated, best-effort
+    // pass here from the ledger's stored bodies.
+    const recoveredSlugs = new Set(writtenRefs.filter(r => r.status === 'complete').map(r => r.slug));
+    for (const row of priorLedger) {
+      if (row.status !== 'complete' || !row.slug || !row.content) continue;
+      const targets = extractWikilinkTargets(row.content);
+      if (!targets.some(t => recoveredSlugs.has(t) && t !== row.slug)) continue;
+      await autoLinkWrittenPage(engine, row.slug, { sourceId: data.source_id ?? 'default' });
+    }
     const recoveredText = `oneshot recovery: finalized from a prior invocation's ledger (${writtenRefs.filter(r => r.status === 'complete').length} completed write(s))`;
     await persistOneshotTranscript(engine, ctx.id, data.prompt, recoveredText, model);
     return {
@@ -198,25 +263,24 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   }
 
   if (!args.putPageTool) {
-    // No put_page in the registry (misconfigured allow-list) — the agentic
-    // loop will surface the same problem through its own vocabulary.
-    return { kind: 'fallback', reason: 'unparseable' };
+    // No put_page in the registry (misconfigured allow-list) — a config
+    // error, not a model failure; distinct reason so telemetry separates it.
+    return { kind: 'fallback', reason: 'no_put_page_tool' };
   }
 
   // ── Single provider call under a rate lease + sub-budget (OV-9) ─────────
   const lease = await acquireLease(engine, args.leaseKey, ctx.id, args.maxConcurrent, { ttlMs: args.leaseTtlMs });
   if (!lease.acquired) {
-    // Propagate through the caller's lease-full vocabulary by falling back?
-    // NO — a full bucket is a scheduling condition, not a model failure. The
-    // caller throws RateLeaseUnavailableError for us (see subagent.ts) — but
-    // to keep this module self-contained we simply signal via exception.
-    const { RateLeaseUnavailableError } = await import('./subagent.ts');
+    // A full bucket is a scheduling condition, not a model failure — throw
+    // RateLeaseUnavailableError so the worker / inline drain requeue the job
+    // WITHOUT burning an attempt (never fall back: the fallback would hit
+    // the same full bucket sixteen times over).
     throw new RateLeaseUnavailableError(args.leaseKey, lease.activeCount, lease.maxConcurrent);
   }
 
-  const budgetMs = ctx.deadlineAtMs
+  const budgetMs = args._budgetMs ?? (ctx.deadlineAtMs
     ? Math.min(ONESHOT_CALL_BUDGET_MS, Math.max(30_000, Math.floor((ctx.deadlineAtMs - Date.now()) / 4)))
-    : ONESHOT_CALL_BUDGET_MS;
+    : ONESHOT_CALL_BUDGET_MS);
   const budgetAbort = AbortSignal.timeout(budgetMs);
   const callSignal = ctx.signal ? AbortSignal.any([ctx.signal, budgetAbort]) : budgetAbort;
 
@@ -230,10 +294,14 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
       messages: [{ role: 'user', content: data.prompt }],
       maxTokens: args.maxOutputTokens,
       abortSignal: callSignal,
+      // cacheSystem marks the system block as a cache breakpoint. Note:
+      // ONESHOT_SYSTEM alone is under Anthropic's ~1024-token cache minimum,
+      // so cross-job prefix hits only materialize on providers/models with a
+      // lower floor — harmless no-op otherwise.
       cacheSystem: true,
     });
   } catch (err) {
-    if (budgetAbort.aborted && !(ctx.signal?.aborted)) {
+    if (budgetAbort.aborted && !(ctx.signal?.aborted) && isAbortShaped(err)) {
       // The oneshot sub-budget expired — the agentic fallback still has the
       // rest of the job budget (OV-9). Never charge a slow single call
       // against the whole job.
@@ -285,7 +353,7 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
       },
     };
   }
-  if (parsed.pages.length > MAX_PAGES_PER_RESPONSE) return { kind: 'fallback', reason: 'unparseable' };
+  if (parsed.pages.length > MAX_PAGES_PER_RESPONSE) return { kind: 'fallback', reason: 'too_many_pages' };
 
   // ── Validate ALL pages before ANY write ─────────────────────────────────
   const prefixes = data.allowed_slug_prefixes ?? [];
@@ -294,16 +362,39 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
     .filter(p => p.includes('/personal/reflections/') || p.includes('/originals/'))
     .map(p => (p.endsWith('/*') ? p.slice(0, -1) : p.endsWith('/') ? p : `${p}/`));
   const inBatch = new Set(parsed.pages.map(p => p.slug));
+  // Duplicate slugs inside one batch would make the second write silently
+  // overwrite the first while both report complete — reject the batch
+  // (all-or-nothing contract).
+  if (inBatch.size !== parsed.pages.length) return { kind: 'fallback', reason: 'bad_slug' };
+  // Targeted membership probe instead of materializing the whole slug set
+  // (getAllSlugs is a full-table scan per job; wikilink targets are few).
+  // Reads are scoped to the WRITE's source (source_id ?? 'default' — mirrors
+  // putPage's schema default) so validation universe == write universe.
+  const writeSourceId = data.source_id ?? 'default';
+  const allTargets = [...new Set(parsed.pages.flatMap(p => extractWikilinkTargets(p.body)))];
   let existingSlugs: Set<string>;
+  let pageSample = 0;
   try {
-    existingSlugs = await engine.getAllSlugs(data.source_id ? { sourceId: data.source_id } : undefined);
+    const rows = allTargets.length > 0
+      ? await engine.executeRaw<{ slug: string }>(
+          `SELECT slug FROM pages WHERE slug = ANY($1) AND source_id = $2 AND deleted_at IS NULL`,
+          [allTargets, writeSourceId],
+        )
+      : [];
+    existingSlugs = new Set(rows.map(r => r.slug));
+    const sample = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM (SELECT 1 FROM pages WHERE source_id = $1 AND deleted_at IS NULL LIMIT 5) t`,
+      [writeSourceId],
+    );
+    pageSample = sample[0]?.n ?? 0;
   } catch {
     existingSlugs = new Set();
+    pageSample = 5; // fail toward strict validation, not toward cold-brain leniency
   }
   // CEO-5 cold-brain relaxation: no manifest was offered AND the brain has
   // almost no pages — a resolving wikilink is impossible; accept syntactic
   // presence (content-first; the edge materializes once targets exist).
-  const coldBrain = existingSlugs.size < 5 && !data.prompt.includes('LINK CANDIDATES (');
+  const coldBrain = pageSample < 5 && !data.prompt.includes(LINK_CANDIDATES_HEADER);
 
   for (const page of parsed.pages) {
     if (!SLUG_RE.test(page.slug)) return { kind: 'fallback', reason: 'bad_slug' };
@@ -328,12 +419,36 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
 
   // ── Programmatic writes through the shared put_page executor ────────────
   const inv8 = randomUUID().replace(/-/g, '').slice(0, 8);
+  const plannedWrites = parsed.pages.map((page, i) => {
+    // Thread the model's title/type through page frontmatter (they were
+    // parsed but previously discarded — pages got ugly slug-derived titles).
+    // A body that already opens with its own frontmatter is passed through.
+    const content = page.body.startsWith('---\n')
+      ? page.body
+      : serializeMarkdown({}, page.body, '', { type: page.type as PageType, title: page.title, tags: [] });
+    return { toolUseId: `${ONESHOT_TOOL_USE_ID_PREFIX}${inv8}-p${i}`, input: { slug: page.slug, content } };
+  });
+  // Bank the WHOLE batch as pending in ONE transaction BEFORE the first
+  // write executes. Interleaved pending/execute would let a crash mid-batch
+  // leave a truncated ledger, and recovery would then finalize 'completed'
+  // with the tail of the batch silently lost (the idempotency key is
+  // consumed — no future cycle rewrites it). Atomic banking makes recovery's
+  // universe all-or-nothing: either every page is re-executable or none was
+  // started. Same $N::text::jsonb discipline as persistToolExecPending.
+  await engine.transaction(async (tx) => {
+    for (const w of plannedWrites) {
+      await tx.executeRaw(
+        `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status)
+         VALUES ($1, 1, $2, 'brain_put_page', $3::text::jsonb, 'pending')
+         ON CONFLICT (job_id, tool_use_id) DO NOTHING`,
+        [ctx.id, w.toolUseId, JSON.stringify(w.input)],
+      );
+    }
+  });
   const writtenRefs: Array<{ slug: string; status: 'complete' | 'failed' }> = [];
   for (let i = 0; i < parsed.pages.length; i++) {
     const page = parsed.pages[i];
-    const toolUseId = `oneshot-${inv8}-p${i}`;
-    const input = { slug: page.slug, content: page.body };
-    await persistToolExecPending(engine, ctx.id, 1, toolUseId, 'brain_put_page', input);
+    const { toolUseId, input } = plannedWrites[i];
     try {
       const output = await args.putPageTool.execute(input, {
         engine,
@@ -352,11 +467,16 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
 
   // ── Post-batch auto-link pass (CEO-1/CDX-11) ─────────────────────────────
   // In-batch forward references (page A → page B written later) were dropped
-  // by A's own auto-link run because B did not exist yet. Re-run now that the
-  // whole batch landed; gated + best-effort inside the wrapper.
-  for (const ref of writtenRefs) {
-    if (ref.status !== 'complete') continue;
-    await autoLinkWrittenPage(engine, ref.slug, data.source_id ? { sourceId: data.source_id } : undefined);
+  // by A's own auto-link run because B did not exist yet. Re-run ONLY for
+  // pages that actually reference an in-batch sibling — re-running for every
+  // page would double the auto-link work (full slug scan + tx each) for the
+  // common no-forward-refs case. Gated + best-effort inside the wrapper.
+  for (let i = 0; i < parsed.pages.length; i++) {
+    const ref = writtenRefs[i];
+    if (!ref || ref.status !== 'complete') continue;
+    const targets = extractWikilinkTargets(parsed.pages[i].body);
+    if (!targets.some(t => inBatch.has(t) && t !== parsed.pages[i].slug)) continue;
+    await autoLinkWrittenPage(engine, ref.slug, { sourceId: writeSourceId });
   }
 
   const written = writtenRefs.filter(r => r.status === 'complete');

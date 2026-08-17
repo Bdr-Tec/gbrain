@@ -38,7 +38,8 @@ import type { BrainEngine } from '../engine.ts';
 import { MinionQueue } from '../minions/queue.ts';
 import type { MinionHandler, MinionJobContext } from '../minions/types.ts';
 import { UnrecoverableError } from '../minions/types.ts';
-import { makeSubagentHandler, RateLeaseUnavailableError } from '../minions/handlers/subagent.ts';
+import { makeSubagentHandler } from '../minions/handlers/subagent.ts';
+import { RateLeaseUnavailableError, leaseFullBackoffMs } from '../minions/rate-leases.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
 
@@ -331,7 +332,7 @@ async function drainLoop(
         //     describes).
         //   - Timeout stays terminal (handleTimeouts parity), never delayed.
         if (handlerErr instanceof RateLeaseUnavailableError) {
-          const leaseBackoffMs = 1000 + Math.floor(Math.random() * 2000);
+          const leaseBackoffMs = leaseFullBackoffMs();
           const released = await queue.releaseLeaseFullJob(
             job.id, lockToken, handlerErr.message, leaseBackoffMs,
           );

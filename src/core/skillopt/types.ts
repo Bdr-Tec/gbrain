@@ -13,6 +13,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
+import type { ToolLoopStopReason } from '../ai/gateway.ts';
 
 // ─── Benchmarks + judges ──────────────────────────────────────────────────
 
@@ -104,7 +105,7 @@ export interface Trajectory {
   /** Number of agent turns the loop took. */
   turns: number;
   /** End reason from gateway.toolLoop ('length' = output-cap truncation, #4088). */
-  stop_reason: 'end' | 'length' | 'max_turns' | 'refusal' | 'content_filter' | 'aborted' | 'unrecoverable';
+  stop_reason: ToolLoopStopReason;
   /** Wall-clock duration in ms. */
   duration_ms: number;
 }

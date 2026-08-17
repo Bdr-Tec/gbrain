@@ -1028,4 +1028,78 @@ describe('oneshot mode dispatch (#4216)', () => {
     expect(result.synth_mode_used).toBe('agentic');
     expect(oneshotCalls).toBe(0);
   });
+
+  test('half-persisted transcript + oneshot ledger rows → recovery, NEVER an agentic re-call (RT-2)', async () => {
+    // Crash shape: all writes settled, then only the seed user message
+    // landed (the two transcript INSERTs are not atomic). Pre-fix, the
+    // messages>0 gate skipped oneshot entirely and the loop replay re-called
+    // a nondeterministic model with the pages already written.
+    const client = new FakeMessagesClient([
+      { content: [{ type: 'text', text: 'should never run' }] as any, stop_reason: 'end_turn' },
+    ]);
+    let oneshotChatCalls = 0;
+    const spy = (async (...args: any[]) => { oneshotChatCalls++; return chatStub(VALID)(...args); }) as any;
+    const handler = makeSubagentHandler({ engine, client, _chat: spy });
+    const ctx = await makeCtx({
+      prompt: 'synthesize', mode: 'oneshot', require_writes: true,
+      allowed_slug_prefixes: PREFIXES, oneshot_slug_suffix: SUFFIX,
+    });
+    // Seed: one message (no terminal assistant row) + a completed oneshot ledger row.
+    await engine.executeRaw(
+      `INSERT INTO subagent_messages (job_id, message_idx, role, content_blocks)
+       VALUES ($1, 0, 'user', '[{"type":"text","text":"synthesize"}]'::jsonb)`,
+      [ctx.id],
+    );
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status)
+       VALUES ($1, 1, 'oneshot-cafef00d-p0', 'brain_put_page', $2::text::jsonb, 'complete')`,
+      [ctx.id, JSON.stringify({ slug: SLUG_A, content: 'already written' })],
+    );
+    const result = await handler(ctx);
+    expect(result.synth_mode_used).toBe('oneshot');
+    expect((result as { recovered?: boolean }).recovered).toBe(true);
+    expect(oneshotChatCalls).toBe(0); // ledger-first: model never re-called
+    expect(client.calls.length).toBe(0); // agentic loop never ran
+  });
+
+  test('replayed completed oneshot job is NOT stamped agentic_fallback (honesty rule)', async () => {
+    // First invocation completes via oneshot (persists the 2-message terminal
+    // transcript). A second invocation of the SAME job (outcome write lost,
+    // stall requeue) replays from the transcript — no fallback happened, so
+    // stamping 'agentic_fallback' would poison the phase fallback histogram.
+    const client = new FakeMessagesClient([]);
+    const handler = makeSubagentHandler({ engine, client, _chat: chatStub(VALID) });
+    const ctx = await makeCtx({
+      prompt: 'synthesize', mode: 'oneshot', require_writes: true,
+      allowed_slug_prefixes: PREFIXES, oneshot_slug_suffix: SUFFIX,
+    });
+    const first = await handler(ctx);
+    expect(first.synth_mode_used).toBe('oneshot');
+
+    let chatCalls = 0;
+    const spy = (async (...args: any[]) => { chatCalls++; return chatStub(VALID)(...args); }) as any;
+    const handler2 = makeSubagentHandler({ engine, client, _chat: spy });
+    const replayCtx: typeof ctx = { ...ctx, attempts_made: 1 };
+    const replay = await handler2(replayCtx);
+    expect(replay.synth_mode_used).not.toBe('agentic_fallback');
+    expect('fallback_reason' in replay).toBe(false);
+    // The ledger-first recovery path may finalize from rows (oneshot) or the
+    // transcript replay may return unset — either is honest; a fabricated
+    // fallback is not. Either way the model is not re-called by the loop.
+    expect(chatCalls).toBe(0);
+  });
+});
+
+// ── #4217 accounting fail-open (transient read error never kills a finished job) ──
+
+describe('finalizeWriteAccounting fail-open', () => {
+  const { finalizeWriteAccounting } = require('../src/core/minions/handlers/subagent-persistence.ts');
+  test('a throwing accounting read returns the handler result unchanged (no counts, no crash)', async () => {
+    const explodingEngine = {
+      executeRaw: async () => { throw new Error('pool reaped mid-read'); },
+    } as unknown as import('../src/core/engine.ts').BrainEngine;
+    const result = { result: 'done', turns_count: 3, stop_reason: 'end_turn', tokens: { in: 1, out: 1, cache_read: 0, cache_create: 0 } };
+    const out = await finalizeWriteAccounting(explodingEngine, 999, result, { requireWrites: true });
+    expect(out).toBe(result); // same object — untouched, and require_writes did NOT fire on unknowable counts
+  });
 });

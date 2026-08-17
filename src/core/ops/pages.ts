@@ -560,16 +560,6 @@ const put_page: Operation = {
 // predicate. Imported above.
 
 /**
- * Extract entity refs from a freshly-written page, sync the links table to match.
- * Creates new links via addLink, removes stale ones (links present in DB but no
- * longer referenced in content) via removeLink. Returns counts.
- *
- * Runs OUTSIDE importFromContent's transaction so it doesn't block the page write
- * or get rolled back if a single link operation fails. Per-link failures are
- * counted; the overall function never throws (catch in put_page handler covers
- * extraction errors).
- */
-/**
  * #4216 post-batch auto-link reconciliation for the oneshot runner.
  *
  * Within one oneshot batch, page A can wikilink page B that is written LATER
@@ -604,6 +594,16 @@ export async function autoLinkWrittenPage(
   }
 }
 
+/**
+ * Extract entity refs from a freshly-written page, sync the links table to match.
+ * Creates new links via addLink, removes stale ones (links present in DB but no
+ * longer referenced in content) via removeLink. Returns counts.
+ *
+ * Runs OUTSIDE importFromContent's transaction so it doesn't block the page write
+ * or get rolled back if a single link operation fails. Per-link failures are
+ * counted; the overall function never throws (catch in put_page handler covers
+ * extraction errors).
+ */
 async function runAutoLink(
   engine: BrainEngine,
   slug: string,

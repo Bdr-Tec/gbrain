@@ -53,8 +53,6 @@ import type { BrainEngine, DreamVerdict, TriageSegment } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { MinionQueue } from '../minions/queue.ts';
 import { isQueueQuotaExceededError } from '../minions/admission.ts';
-import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
-import { isRetryableConnError } from '../retry-matcher.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
 import type { MinionJobInput, SubagentHandlerData } from '../minions/types.ts';
 import { runSubagentsInline, runDrainRenewalTick, percentile, INLINE_LOCK_MS } from './inline-drain.ts';
@@ -500,11 +498,14 @@ export async function runPhaseSynthesize(
 
     // #4216: pre-retrieval manifest context — one slug snapshot + basename
     // index per phase, reused across every transcript's LINK CANDIDATES
-    // block. Best-effort: a failure here degrades to the manifest-less prompt.
+    // block. Scoped to the cycle's write source so manifest reads see the
+    // same universe the oneshot validator probes. Best-effort: a failure
+    // here degrades to the manifest-less prompt.
+    const cycleSourceId = opts.sourceId ?? 'default';
     let manifestCtx: ManifestContext | null = null;
     if (config.linkManifest) {
       try {
-        manifestCtx = await buildManifestContext(engine, opts.sourceId);
+        manifestCtx = await buildManifestContext(engine, cycleSourceId);
       } catch (e) {
         process.stderr.write(`[dream] manifest context build failed (continuing without manifests): ${e instanceof Error ? e.message : String(e)}\n`);
       }
@@ -525,7 +526,6 @@ export async function runPhaseSynthesize(
     const skipReports: Array<{ filePath: string; reason: string }> = [];
 
     const maxCharsPerChunk = computeChunkCharBudget(config.model, config.maxPromptTokens);
-    const cycleSourceId = opts.sourceId ?? 'default';
     const successfulLegacyKeys = await loadSuccessfulLegacySynthesisKeys(
       engine,
       cycleSourceId,
@@ -656,7 +656,7 @@ export async function runPhaseSynthesize(
       if (manifestCtx) {
         const manifest = await buildLinkManifest(
           engine, manifestCtx, triageVerdict, t.basename,
-          { outputRoot: config.outputRoot, sourceId: opts.sourceId },
+          { outputRoot: config.outputRoot, sourceId: cycleSourceId },
         );
         manifestBlock = manifest.block;
       }
@@ -807,6 +807,10 @@ export async function runPhaseSynthesize(
       engine, queue, childQueueName, opts.yieldDuringPhase,
       undefined, undefined, effectiveConcurrency,
     );
+    // Captured HERE: everything after this line (waiters, collection,
+    // provenance, reverse-writes, backfill) is post-drain phase work and must
+    // not inflate the #4194 drain observability number.
+    const drainMs = Date.now() - drainStartedAt;
 
     // Wait for every child to reach a terminal state. Tick yieldDuringPhase
     // every 5 min so the cycle lock TTL refreshes.
@@ -877,10 +881,14 @@ export async function runPhaseSynthesize(
     // `embedding IS NULL`; the global `embed` phase only runs on SOME
     // invocation shapes (autopilot per-source cycles run NON_GLOBAL_PHASES,
     // and `--phase synthesize` never reaches it), so close the freshness gap
-    // HERE with a bounded inline backfill. Works on PGLite + standalone;
-    // no-op when embeddings are unavailable; best-effort (a backfill error
-    // never fails a phase that already wrote its pages).
-    if (config.mode === 'oneshot' && writtenSlugs.length > 0) {
+    // HERE. Runs whenever this phase wrote pages REGARDLESS of the current
+    // mode (a revert to agentic must still sweep debt left by earlier oneshot
+    // runs — cheap no-op when nothing is stale), and is BOUNDED by a 120s
+    // abort signal: the stale backlog can predate this run (embeds disabled
+    // for a while, big noEmbed sync) and an unbounded sweep would block the
+    // phase past the cycle-lock TTL. The standing stale-embed machinery owns
+    // any remainder. Best-effort: never fails a phase that wrote its pages.
+    if (writtenSlugs.length > 0) {
       try {
         const { isAvailable } = await import('../ai/gateway.ts');
         if (isAvailable('embedding')) {
@@ -888,9 +896,10 @@ export async function runPhaseSynthesize(
           const embedRes = await embedStaleForSource(engine, cycleSourceId, {
             batchSize: 500,
             concurrency: 4,
+            signal: AbortSignal.timeout(120_000),
           });
           if (embedRes.embedded > 0) {
-            process.stderr.write(`[dream] phase-end embed backfill: ${embedRes.embedded} chunk(s) embedded.\n`);
+            process.stderr.write(`[dream] phase-end embed backfill: ${embedRes.embedded} chunk(s) embedded${embedRes.aborted ? ' (120s budget hit; stale sweep owns the rest)' : ''}.\n`);
           }
         }
       } catch (e) {
@@ -1017,13 +1026,17 @@ export async function runPhaseSynthesize(
         // #4194 drain observability.
         inline_concurrency_config: config.inlineConcurrency,
         inline_concurrency_effective: effectiveConcurrency,
-        drain_ms: Date.now() - drainStartedAt,
+        drain_ms: drainMs,
         queue_wait_ms_p50: queueWaitP50,
         queue_wait_ms_p95: queueWaitP95,
         child_runtime_ms_p50: runtimeP50,
         child_runtime_ms_p95: runtimeP95,
-        // CDX-4: dead-child visibility (0 on a clean run).
-        dead_jobs: failedChildren.length,
+        // CDX-4: dead-child visibility (0 on a clean run). dead_jobs counts
+        // TERMINAL failures only (dead/cancelled — same semantics as the
+        // failure-path details); non_completed_jobs additionally includes
+        // 'timeout' (parent stopped waiting, outcome unknown).
+        dead_jobs: deadChildren.length,
+        non_completed_jobs: failedChildren.length,
         degraded: failedChildren.length > 0,
       },
     });
@@ -1190,7 +1203,7 @@ export async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig>
   const inlineConcurrency = Math.max(1, Math.min(8,
     Math.floor(await getNumberConfig(engine, 'dream.synthesize.inline_concurrency', 1)) || 1));
   // #4216: manifest default ON; only an explicit 'false'/'0'/'off' disables.
-  const linkManifestRaw = await engine.getConfig('dream.synthesize.link_manifest');
+  const linkManifestRaw = (await engine.getConfig('dream.synthesize.link_manifest'))?.trim().toLowerCase();
   const linkManifest = !(linkManifestRaw === 'false' || linkManifestRaw === '0' || linkManifestRaw === 'off');
   // #4216: mode default 'oneshot' (D1=A). loadOutputRoot pattern: unknown
   // values warn to stderr and fall back to the default rather than failing.
@@ -2206,7 +2219,7 @@ A. Reflections (self-knowledge, pattern recognition, emotional processing):
 B. Originals (new ideas, frames, theses, mental models):
    slug: \`${outputRoot}/originals/ideas/${dateHint}-<idea-slug>-${hashSuffix}\`
 
-C. People mentions: search first; if a page exists, do not put_page over it (the orchestrator handles people enrichment via timeline entries — your job is the reflection/original synthesis, NOT modifying existing person pages).
+C. People mentions: ${linkManifestBlock ? 'check LINK CANDIDATES (and the search tool, when available) first' : 'search first, when a search tool is available'}; never write over an existing person page (the orchestrator handles people enrichment via timeline entries — your job is the reflection/original synthesis, NOT modifying existing person pages).
 
 D. If nothing in this transcript meets the bar (significance filter already passed but the content is still routine), return without writing anything.
 
