@@ -132,7 +132,9 @@ per-transcript synthesis subagents. The dials:
 - `dream.triage.max_tokens` (default 2048, floor 256) — judge output budget.
 - `dream.triage.concurrency` (default 4, clamped 1–16) — concurrent judge
   calls.
-- `dream.synthesize.max_turns` (default 16) — synthesis turn budget. The
+- `dream.synthesize.max_turns` (default 16) — synthesis turn budget for
+  agentic children and oneshot fallbacks (the default oneshot path — see
+  the next section — is a single completion and never spends turns). The
   triage map hands the subagent pre-extracted segments, so the mid-tier
   default model (`models.dream.synthesize`, tier `reasoning`) with a 16-turn
   budget is the intended pairing — frontier-model overrides are unnecessary
@@ -168,7 +170,8 @@ Above the triage cascade sit the execution dials (#4216/#4194):
   allow-list, then validates and writes the pages programmatically (slug
   grammar, allow-list, transcript hash suffix, exact-match wikilinks — all
   checked before any write; embeds deferred out of the model path and
-  backfilled at phase end). A response that fails any check automatically
+  backfilled at phase end by a bounded pass over just the pages the phase
+  wrote — never a source-wide sweep). A response that fails any check automatically
   falls back to the classic agentic loop **in the same job** — no lost work,
   no resubmission. Typical effect: 10–25 provider round-trips per transcript
   → 1. Revert dial: `gbrain config set dream.synthesize.mode agentic`.

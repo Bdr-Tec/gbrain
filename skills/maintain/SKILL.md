@@ -136,8 +136,15 @@ by `dream.triage.max_ms`, default 5 min — deferred files retry next cycle,
 never silently rejected). Only files scoring
 at or above `dream.triage.threshold` (default 0.5 — applied at read time, so
 retuning the threshold re-gates with zero new LLM calls) fan out one synthesis
-subagent per transcript chunk, each primed with the triage map and capped at
-`dream.synthesize.max_turns` (default 16). Each subagent writes reflections
+subagent per transcript chunk, each primed with the triage map. By default
+each child runs in oneshot mode (`dream.synthesize.mode`, default `oneshot`):
+ONE tool-less completion against a prompt carrying a pre-retrieved LINK
+CANDIDATES manifest (`dream.synthesize.link_manifest`, default on) and the
+write allow-list, validated end-to-end (slug fences, task shapes, wikilinks)
+before any page is written programmatically. A response that fails validation
+falls back to the classic agentic loop in the same job, where the
+`dream.synthesize.max_turns` cap (default 16) applies; revert dial:
+`gbrain config set dream.synthesize.mode agentic`. Each subagent writes reflections
 (`wiki/personal/reflections/...`), originals (`wiki/originals/ideas/...`), and
 people timeline entries. The orchestrator collects the slugs from
 `subagent_tool_executions` (NOT `pages.updated_at` — that would pick up
