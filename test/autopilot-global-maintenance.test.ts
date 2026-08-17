@@ -95,7 +95,7 @@ describe('cycle phase partition (#2194 fix #3)', () => {
     const fail = (phase: string) => ({ phase, status: 'fail', duration_ms: 0, summary: '', details: {} });
     const exclusion = (phase: string) => ({
       phase, status: 'skipped', duration_ms: 0, summary: '',
-      details: { reason: 'non_source_phase_excluded_from_source_cycle' },
+      details: { reason: 'excluded_from_implicit_source_cycle' },
     });
     const realSkip = (phase: string) => ({
       phase, status: 'skipped', duration_ms: 0, summary: '', details: { reason: 'no_brain_dir' },
@@ -122,14 +122,14 @@ describe('cycle phase partition (#2194 fix #3)', () => {
       if (SOURCE_FRESHNESS_PHASES.includes(phase)) continue;
       const rec = byPhase.get(phase);
       expect(rec?.status).toBe('skipped');
-      expect(rec?.details.reason).toBe('non_source_phase_excluded_from_source_cycle');
+      expect(rec?.details.reason).toBe('excluded_from_implicit_source_cycle');
       expect(rec?.details.source_id).toBe('repo-a');
     }
     // The freshness phases themselves are attempted (not exclusion records).
     for (const phase of SOURCE_FRESHNESS_PHASES) {
       const rec = byPhase.get(phase);
       expect(rec).toBeTruthy();
-      expect(rec?.details?.reason).not.toBe('non_source_phase_excluded_from_source_cycle');
+      expect(rec?.details?.reason).not.toBe('excluded_from_implicit_source_cycle');
     }
   });
 
@@ -285,13 +285,15 @@ describe('autopilot-global-maintenance handler stamps last_global_at (PGLite)', 
     expect(source?.config.last_source_cycle_at).toBeUndefined();
     expect(source?.config.last_full_cycle_at).toBeUndefined();
 
-    // Same contract for a payload that ARRIVES empty: explicit no-op.
+    // A payload that ARRIVES empty is the same explicit no-op, with an
+    // honest reason (nothing was rejected — the list was empty).
     const empty = await handler!({
       data: { source_id: 'repo-b', phases: [], pull: false },
       signal: undefined,
     });
     expect(empty.status).toBe('skipped');
-    expect(empty.report.reason).toBe('all_phases_rejected_by_normalization');
+    expect(empty.report.reason).toBe('empty_phase_list');
+    expect(empty.report.phases_rejected_by_normalization).toEqual([]);
   });
 
   test('an explicit empty phase list with a sourceId runs nothing and never stamps freshness', async () => {

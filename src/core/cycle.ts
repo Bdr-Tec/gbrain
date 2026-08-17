@@ -579,7 +579,7 @@ const LEGACY_CYCLE_LOCK_ID = 'gbrain-cycle';
 // long-running cycle keeps the TTL alive while the shorter window
 // shrinks crash recovery 6×.
 const LOCK_TTL_MS = 5 * 60 * 1000;        // 5 minutes (was 30)
-const LOCK_TTL_MINUTES = 5;               // was 30; db-lock.ts takes minutes
+export const LOCK_TTL_MINUTES = 5;        // was 30; db-lock.ts takes minutes (exported: doctor/retriage liveness grace derives from it)
 // Lazy: GBRAIN_HOME may be set after module load; resolve at call time.
 const getLockFilePathDefault = () => gbrainPath('cycle.lock');
 
@@ -1784,9 +1784,9 @@ export async function runCycle(
     phase,
     status: 'skipped',
     duration_ms: 0,
-    summary: `excluded from non-default source cycle (${PHASE_SCOPE[phase]} scope)`,
+    summary: `excluded from implicit non-default source cycle (${PHASE_SCOPE[phase]} scope)`,
     details: {
-      reason: 'non_source_phase_excluded_from_source_cycle',
+      reason: 'excluded_from_implicit_source_cycle',
       source_id: opts.sourceId,
       phase_scope: PHASE_SCOPE[phase],
     },
@@ -3027,7 +3027,7 @@ export function deriveStatus(phases: PhaseResult[], totals: CycleReport['totals'
   // current callers — SOURCE_FRESHNESS_PHASES is never empty).
   // Exported for test-only consumption; downstream code should NOT call it.
   const attempted = phases.filter(
-    p => p.details?.reason !== 'non_source_phase_excluded_from_source_cycle',
+    p => p.details?.reason !== 'excluded_from_implicit_source_cycle',
   );
   if (attempted.length > 0) phases = attempted;
   if (phases.length === 0) return 'failed';

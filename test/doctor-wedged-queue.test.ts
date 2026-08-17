@@ -12,6 +12,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { doctorSource } from './helpers/doctor-source.ts';
+import { withEnv } from './helpers/with-env.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import {
   computeOrphanedPrivateQueueCheck,
@@ -269,15 +270,37 @@ describe('orphaned private dream queues — cycle-lock liveness + ownership corr
 
   it('GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES overrides the age threshold', async () => {
     await seedWithData('dream-inline-fresh-orphan', 'waiting', {}, { createdAtSql: "now() - interval '10 min'" });
-    const prev = process.env.GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES;
-    try {
-      process.env.GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES = '5';
+    await withEnv({ GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES: '5' }, async () => {
       const check = await computeOrphanedPrivateQueueCheck(pgLike);
       expect(check.status).toBe('fail'); // 10min > 5min override; default 60 would pass
-    } finally {
-      if (prev === undefined) delete process.env.GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES;
-      else process.env.GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES = prev;
-    }
+    });
+  });
+
+  it('a TTL-lapsed lock refreshed within the steal grace still counts as live (starved-but-alive holder)', async () => {
+    const q = inlineQueueName(2 * 3600_000);
+    await seedWithData(q, 'waiting', { source_id: 'repo-slow' }, { createdAtSql: "now() - interval '2 hours'" });
+    // TTL lapsed 1 min ago, but the holder refreshed 30s ago and acquired
+    // BEFORE the queue was born — db-lock's steal path would not kill this
+    // holder, so doctor must not point operators at cancelling its queue.
+    await base.executeRaw(
+      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at)
+       VALUES ('gbrain-cycle:repo-slow', 1234, 'test-host', now() - interval '3 hours', now() - interval '1 min', now() - interval '30 sec')`,
+    );
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('ok');
+    expect((check.details as any)?.suppressed_by_live_lock).toBe(1);
+  });
+
+  it('clock-skew tolerance: a lock acquired seconds AFTER the queue birth still owns it', async () => {
+    // Host Date.now (queue name) vs DB NOW() (acquired_at) can skew by
+    // seconds on remote engines; the maintenance lane mints its queue right
+    // after acquiring the lock. A 30s gap must suppress, not flag.
+    const q = inlineQueueName(2 * 3600_000);
+    await seedWithData(q, 'waiting', { source_id: 'repo-skew' }, { createdAtSql: "now() - interval '2 hours'" });
+    await seedLock('gbrain-cycle:repo-skew', "now() - interval '2 hours' + interval '30 sec'");
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('ok');
+    expect((check.details as any)?.suppressed_by_live_lock).toBe(1);
   });
 });
 

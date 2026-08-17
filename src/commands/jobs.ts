@@ -2484,13 +2484,16 @@ export async function registerBuiltinHandlers(
     const { phases: effectivePhases, rejected: phasesRejectedByNormalization } =
       normalizeQueuedSourcePhases(requestedPhases as any, sourceId);
     // An explicitly-empty phase list (arrived empty, or emptied by the
-    // normalization) is a no-op — NOT an implicit run.
+    // normalization) is a no-op — NOT an implicit run. The reason string is
+    // honest about WHICH of the two happened.
     if (effectivePhases !== undefined && effectivePhases.length === 0) {
       return {
         partial: false,
         status: 'skipped',
         report: {
-          reason: 'all_phases_rejected_by_normalization',
+          reason: phasesRejectedByNormalization.length > 0
+            ? 'all_phases_rejected_by_normalization'
+            : 'empty_phase_list',
           ...(sourceId ? { source_id: sourceId } : {}),
           phases_rejected_by_normalization: phasesRejectedByNormalization,
         },
@@ -2545,14 +2548,18 @@ export async function registerBuiltinHandlers(
   // No source_id → uses the legacy global cycle lock; stamps autopilot.last_global_at
   // on success so the dispatch gate backs off.
   worker.register('autopilot-global-maintenance', async (job) => {
-    const { runCycle, MAINTENANCE_PHASES, LAST_GLOBAL_AT_KEY, ALL_PHASES } = await import('../core/cycle.ts');
+    const { runCycle, MAINTENANCE_PHASES, LAST_GLOBAL_AT_KEY } = await import('../core/cycle.ts');
     const repoPath: string | null = typeof job.data.repoPath === 'string'
       ? job.data.repoPath
       : (await engine.getConfig('sync.repo_path')) ?? null;
 
-    const validPhases = new Set(ALL_PHASES);
+    // #4250: queued maintenance payloads are machine-authored too — intersect
+    // with MAINTENANCE_PHASES so a stale (or remote-submitted) payload can't
+    // run source-scoped phases through the global lane, symmetric with the
+    // per-source normalization in the autopilot-cycle handler.
+    const maintenanceSet = new Set<string>(MAINTENANCE_PHASES);
     const requested = Array.isArray(job.data.phases)
-      ? (job.data.phases as string[]).filter((p) => validPhases.has(p as never))
+      ? (job.data.phases as string[]).filter((p) => maintenanceSet.has(p))
       : MAINTENANCE_PHASES;
     const phases = (requested.length > 0 ? requested : MAINTENANCE_PHASES) as typeof MAINTENANCE_PHASES;
 

@@ -107,9 +107,9 @@ describe('#2540 (i) — pack omitting optional phases, all enabled phases comple
       const extractAtoms = report.phases.find(p => p.phase === 'extract_atoms');
       const synthConcepts = report.phases.find(p => p.phase === 'synthesize_concepts');
       expect(extractAtoms?.status).toBe('skipped');
-      expect(extractAtoms?.details?.reason).toBe('non_source_phase_excluded_from_source_cycle');
+      expect(extractAtoms?.details?.reason).toBe('excluded_from_implicit_source_cycle');
       expect(synthConcepts?.status).toBe('skipped');
-      expect(synthConcepts?.details?.reason).toBe('non_source_phase_excluded_from_source_cycle');
+      expect(synthConcepts?.details?.reason).toBe('excluded_from_implicit_source_cycle');
 
       // The cycle must not be reported 'failed' outright just because two
       // phases the pack never declared were skipped.

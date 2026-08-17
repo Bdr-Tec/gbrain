@@ -488,9 +488,17 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
     // with several slow sequential children can legitimately exceed the 1h
     // grace. Consult the REAL signal: a live (unexpired) cycle lock means a
     // cycle is running right now, so no dream-inline queue is provably dead.
+    // Liveness matches db-lock's model: unexpired TTL OR refreshed within the
+    // steal grace (a starved-but-alive holder must keep suppressing repair).
+    const { resolveStealGraceSeconds } = await import('../core/db-lock.ts');
+    const { LOCK_TTL_MINUTES } = await import('../core/cycle.ts');
+    const stealGraceSecs = resolveStealGraceSeconds(LOCK_TTL_MINUTES);
     const liveLocks = await engine.executeRaw<{ id: string; acquired_epoch_ms: string | number | null }>(
       `SELECT id, EXTRACT(EPOCH FROM acquired_at) * 1000 AS acquired_epoch_ms
-         FROM gbrain_cycle_locks WHERE ttl_expires_at > NOW() AND id LIKE 'gbrain-cycle%'`,
+         FROM gbrain_cycle_locks
+        WHERE (ttl_expires_at > NOW()
+               OR last_refreshed_at > NOW() - make_interval(secs => ${Number(stealGraceSecs)}))
+          AND id LIKE 'gbrain-cycle%'`,
     );
     // Structured-review round 2 P2: cycle locks are per-source
     // (`gbrain-cycle:<source>`) — a cycle running for source A must not
@@ -513,12 +521,19 @@ export async function runDreamRetriage(engine: BrainEngine | null, args: string[
         .filter((s): s is string => s !== null),
     );
     const nowMsForBirth = Date.now();
-    /** A live lock suppresses a queue only if it could OWN it: queue born at/after acquisition (or birth/acquisition unknown — fail-safe). */
+    /**
+     * A live lock suppresses a queue only if it could OWN it: queue born
+     * at/after acquisition (or birth/acquisition unknown — fail-safe). The
+     * 60s tolerance absorbs host-clock (queue-name Date.now) vs DB-clock
+     * (acquired_at NOW()) skew — the maintenance lane mints its queue
+     * seconds after acquiring the lock.
+     */
+    const OWNERSHIP_SKEW_TOLERANCE_MS = 60_000;
     const lockCouldOwnQueue = (lockId: string, queueAgeMs: number | null): boolean => {
       const acquired = lockAcquiredMs.get(lockId);
       if (acquired === undefined) return false; // lock not live
       if (queueAgeMs === null || !Number.isFinite(acquired)) return true; // fail-safe
-      return (nowMsForBirth - queueAgeMs) >= acquired;
+      return (nowMsForBirth - queueAgeMs) >= acquired - OWNERSHIP_SKEW_TOLERANCE_MS;
     };
     if (liveLocks.length > 0) {
       process.stderr.write(

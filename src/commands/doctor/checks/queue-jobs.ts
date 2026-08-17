@@ -391,6 +391,8 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
   const thresholdMin = _resolveEnvNumber('GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES', 60);
   try {
     const { dreamInlineQueueAgeMs } = await import('../../../core/cycle/synthesize.ts');
+    const { resolveStealGraceSeconds } = await import('../../../core/db-lock.ts');
+    const { LOCK_TTL_MINUTES } = await import('../../../core/cycle.ts');
     const rows = await engine.executeRaw<{
       queue: string;
       source_id: string | null;
@@ -413,10 +415,17 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
        GROUP BY queue`,
     );
     // Live cycle locks with their acquisition time, for ownership correlation.
+    // Liveness matches db-lock's own model: an unexpired TTL, OR a lapsed TTL
+    // whose holder refreshed within the steal grace (starved-but-alive —
+    // exactly the holder the steal path refuses to kill; treating it as dead
+    // here would point operators at cancelling a still-draining cycle's queue).
+    const stealGraceSecs = resolveStealGraceSeconds(LOCK_TTL_MINUTES);
     const locks = await engine.executeRaw<{ id: string; acquired_epoch_ms: string | number }>(
       `SELECT id, EXTRACT(EPOCH FROM acquired_at) * 1000 AS acquired_epoch_ms
          FROM gbrain_cycle_locks
-        WHERE ttl_expires_at > NOW() AND id LIKE 'gbrain-cycle%'`,
+        WHERE (ttl_expires_at > NOW()
+               OR last_refreshed_at > NOW() - make_interval(secs => ${Number(stealGraceSecs)}))
+          AND id LIKE 'gbrain-cycle%'`,
     );
     const globalLockAcquiredMs = locks
       .filter(l => l.id === 'gbrain-cycle')
@@ -446,8 +455,13 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
         ? nowMs - nameAgeMs
         : (r.birth_epoch_ms === null ? null : Number(r.birth_epoch_ms));
       // A live lock suppresses the queue only if it could OWN it: the queue
-      // was born at/after the lock was acquired. Unknown birth = possibly
-      // owned (fail-safe suppress).
+      // was born at/after the lock was acquired. SKEW_TOLERANCE_MS absorbs
+      // host-clock (queue-name Date.now) vs DB-clock (acquired_at NOW())
+      // drift — the maintenance lane mints its queue seconds after lock
+      // acquisition, so seconds of skew must not flip a live cycle's own
+      // queue into "born before the lock". Unknown birth = possibly owned
+      // (fail-safe suppress).
+      const SKEW_TOLERANCE_MS = 60_000;
       const candidateLockAcquisitions = [
         ...(globalLockAcquiredMs !== undefined ? [globalLockAcquiredMs] : []),
         ...(r.source_id !== null && sourceLockAcquiredMs.has(r.source_id)
@@ -455,7 +469,7 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
           : []),
       ];
       const possiblyOwnedByLiveCycle = candidateLockAcquisitions.some(
-        acquiredMs => birthMs === null || !Number.isFinite(acquiredMs) || birthMs >= acquiredMs,
+        acquiredMs => birthMs === null || !Number.isFinite(acquiredMs) || birthMs >= acquiredMs - SKEW_TOLERANCE_MS,
       );
       if (possiblyOwnedByLiveCycle) {
         suppressedByLiveLock++;
@@ -493,10 +507,12 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
       },
     };
   } catch (e) {
+    // Warn, never ok: a permanently-broken check must not read as
+    // permanently healthy (the fail-open would hide every future orphan).
     return {
       name: 'orphaned_private_queue',
-      status: 'ok',
-      message: `Skipped (${e instanceof Error ? e.message : String(e)})`,
+      status: 'warn',
+      message: `Check could not run (${e instanceof Error ? e.message : String(e)}) — orphan detection is NOT covered this run`,
     };
   }
 }
