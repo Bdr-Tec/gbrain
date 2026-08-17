@@ -25,6 +25,8 @@ export interface PersistedMessage {
 
 export interface PersistedToolExec {
   message_idx: number;
+  /** D11 stable ordinal (per-turn tool-call position). NULL on legacy rows. */
+  ordinal: number | null;
   tool_use_id: string;
   tool_name: string;
   input: unknown;
@@ -102,7 +104,7 @@ export async function loadPriorMessages(engine: BrainEngine, jobId: number): Pro
 
 export async function loadPriorTools(engine: BrainEngine, jobId: number): Promise<PersistedToolExec[]> {
   const rows = await engine.executeRaw<Record<string, unknown>>(
-    `SELECT message_idx, tool_use_id, tool_name, input, status, output, error
+    `SELECT message_idx, ordinal, tool_use_id, tool_name, input, status, output, error
        FROM subagent_tool_executions
       WHERE job_id = $1
       ORDER BY message_idx, COALESCE(ordinal, 0), id`,
@@ -110,6 +112,7 @@ export async function loadPriorTools(engine: BrainEngine, jobId: number): Promis
   );
   return rows.map(r => ({
     message_idx: r.message_idx as number,
+    ordinal: (r.ordinal as number | null) ?? null,
     tool_use_id: r.tool_use_id as string,
     tool_name: r.tool_name as string,
     input: typeof r.input === 'string' ? JSON.parse(r.input) : r.input,
@@ -145,6 +148,8 @@ export async function persistToolExecPending(
   engine: BrainEngine,
   jobId: number,
   messageIdx: number,
+  /** 0-based tool_use block position within the turn — the D11 ordinal. */
+  ordinal: number,
   toolUseId: string,
   toolName: string,
   input: unknown,
@@ -155,25 +160,61 @@ export async function persistToolExecPending(
   // postgres.js .unsafe() (#2339 class; PGLite hides it). The ::text cast makes
   // the text→jsonb parse produce a real jsonb object.
   const jsonStr = typeof input === 'string' ? input : JSON.stringify(input);
+  // Two guards replace the former job-wide ON CONFLICT (job_id, tool_use_id)
+  // DO NOTHING (that constraint was dropped in migration v131, #4155 — raw
+  // provider ids may repeat across turns):
+  //   1. NOT EXISTS, restricted to LEGACY ordinal=NULL rows, preserves the
+  //      DO NOTHING semantics against rows that predate ordinal stamping
+  //      (they never trip a conflict target). Stamped rows are governed by
+  //      guard 2 alone, so two distinct same-turn calls that share a raw id
+  //      each keep their own row.
+  //   2. ON CONFLICT on the stable-id constraint (job_id, message_idx,
+  //      ordinal) is the constraint-backed backstop for the residual race —
+  //      a lease bounds honest workers to one owner per job, but an expired
+  //      job can be reclaimed while a partitioned old worker still writes.
   await engine.executeRaw(
-    `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status)
-     VALUES ($1, $2, $3, $4, $5::text::jsonb, 'pending')
-     ON CONFLICT (job_id, tool_use_id) DO NOTHING`,
-    [jobId, messageIdx, toolUseId, toolName, jsonStr],
+    `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status, ordinal)
+     SELECT $1, $2, $3, $4, $5::text::jsonb, 'pending', $6
+      WHERE NOT EXISTS (
+        SELECT 1 FROM subagent_tool_executions
+         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
+           AND ordinal IS NULL
+      )
+     ON CONFLICT (job_id, message_idx, ordinal) DO NOTHING`,
+    [jobId, messageIdx, toolUseId, toolName, jsonStr, ordinal],
   );
 }
 
 export async function persistToolExecComplete(
   engine: BrainEngine,
   jobId: number,
+  messageIdx: number,
+  /** 0-based tool_use block position within the turn — the D11 ordinal. */
+  ordinal: number,
   toolUseId: string,
   output: unknown,
 ): Promise<void> {
+  // Scoped by message_idx: raw provider tool_use_ids may repeat across turns
+  // (#4155), so (job_id, tool_use_id) alone could also update a sibling
+  // turn's row. Targets exactly ONE row: the call's own ordinal first, then a
+  // legacy ordinal=NULL row — never an already-COMPLETE row (the ordinal IS
+  // NULL disjunct would otherwise let a legacy settled sibling's output be
+  // silently overwritten), and never a same-id SIBLING at another ordinal: a
+  // call's own row is always reachable via its ordinal (persistToolExecPending
+  // stamps the same value) or via the legacy NULL, so a broader status-based
+  // disjunct could only ever capture a sibling's row.
   await engine.executeRaw(
     `UPDATE subagent_tool_executions
-        SET status = 'complete', output = $3::text::jsonb, ended_at = now()
-      WHERE job_id = $1 AND tool_use_id = $2`,
-    [jobId, toolUseId, typeof output === 'string' ? output : JSON.stringify(output)],
+        SET status = 'complete', output = $4::text::jsonb, ended_at = now()
+      WHERE id = (
+        SELECT id FROM subagent_tool_executions
+         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
+           AND (ordinal = $5 OR ordinal IS NULL)
+           AND status <> 'complete'
+         ORDER BY CASE WHEN ordinal = $5 THEN 0 ELSE 1 END, id
+         LIMIT 1
+      )`,
+    [jobId, messageIdx, toolUseId, typeof output === 'string' ? output : JSON.stringify(output), ordinal],
   );
 }
 
@@ -262,6 +303,8 @@ export async function persistToolExecFailed(
   engine: BrainEngine,
   jobId: number,
   messageIdx: number,
+  /** 0-based tool_use block position within the turn — the D11 ordinal. */
+  ordinal: number,
   toolUseId: string,
   toolName: string,
   input: unknown,
@@ -269,11 +312,43 @@ export async function persistToolExecFailed(
 ): Promise<void> {
   // INSERT-or-UPDATE to failed — covers both "no pending row yet" (tool
   // rejected upfront) and "pending row exists" (tool threw mid-execute).
-  await engine.executeRaw(
-    `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status, error, ended_at)
-     VALUES ($1, $2, $3, $4, $5::text::jsonb, 'failed', $6, now())
-     ON CONFLICT (job_id, tool_use_id) DO UPDATE
-       SET status = 'failed', error = EXCLUDED.error, ended_at = now()`,
-    [jobId, messageIdx, toolUseId, toolName, typeof input === 'string' ? input : JSON.stringify(input), error],
+  // UPDATE-then-INSERT replaces the former ON CONFLICT (job_id, tool_use_id)
+  // upsert (that job-wide unique was dropped in migration v131, #4155).
+  // The UPDATE targets exactly ONE row (own ordinal first, then legacy
+  // ordinal=NULL) and NEVER a row that already settled complete — without the
+  // status guard the ordinal IS NULL disjunct would let a late failure
+  // downgrade a legacy settled row, corrupting the ledger replay trusts. No
+  // status-based disjunct: a call's own row is always reachable via its
+  // ordinal or the legacy NULL, so an `OR status = 'pending'` arm could only
+  // ever capture a same-id SIBLING's pending row at another ordinal (e.g. an
+  // unregistered-tool failure with no own row stealing the sibling's slot).
+  // The INSERT leg carries the stable-id ON CONFLICT backstop for the
+  // residual zombie-worker race, mirroring persistToolExecPending; its
+  // conflict update is predicated on the SAME tool_use_id and a non-complete
+  // row for the same reason.
+  const updated = await engine.executeRaw<{ id: number }>(
+    `UPDATE subagent_tool_executions
+        SET status = 'failed', error = $4, ended_at = now()
+      WHERE id = (
+        SELECT id FROM subagent_tool_executions
+         WHERE job_id = $1 AND message_idx = $2 AND tool_use_id = $3
+           AND (ordinal = $5 OR ordinal IS NULL)
+           AND status <> 'complete'
+         ORDER BY CASE WHEN ordinal = $5 THEN 0 ELSE 1 END, id
+         LIMIT 1
+      )
+      RETURNING id`,
+    [jobId, messageIdx, toolUseId, error, ordinal],
   );
+  if (updated.length === 0) {
+    await engine.executeRaw(
+      `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status, error, ended_at, ordinal)
+       VALUES ($1, $2, $3, $4, $5::text::jsonb, 'failed', $6, now(), $7)
+       ON CONFLICT (job_id, message_idx, ordinal) DO UPDATE
+         SET status = 'failed', error = EXCLUDED.error, ended_at = now()
+         WHERE subagent_tool_executions.tool_use_id = EXCLUDED.tool_use_id
+           AND subagent_tool_executions.status <> 'complete'`,
+      [jobId, messageIdx, toolUseId, toolName, typeof input === 'string' ? input : JSON.stringify(input), error, ordinal],
+    );
+  }
 }

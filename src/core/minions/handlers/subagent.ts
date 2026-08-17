@@ -547,7 +547,14 @@ export function makeSubagentHandler(deps: SubagentDeps) {
     // ── Load prior state (replay) ───────────────────────────
     const priorMessages = await loadPriorMessages(engine, ctx.id);
     const priorTools = await loadPriorTools(engine, ctx.id);
-    const priorToolByUseId = new Map(priorTools.map(t => [t.tool_use_id, t]));
+    // Keyed by (message_idx, tool_use_id) — raw provider tool_use_ids may
+    // repeat across turns (#4155), so tool_use_id alone could resolve a
+    // sibling turn's execution row. WITHIN a turn this legacy path relies on
+    // the Anthropic-direct invariant that ids are unique per message (the
+    // whole loop is Anthropic-pinned for exactly that stability — see
+    // src/core/ai/capabilities.ts); the gateway path carries D11 ordinals
+    // for providers without that guarantee.
+    const priorToolByUseId = new Map(priorTools.map(t => [`${t.message_idx}:${t.tool_use_id}`, t]));
 
     // Rebuild the Anthropic messages array from persisted rows.
     const anthroMessages: Anthropic.MessageParam[] = priorMessages.length > 0
@@ -617,8 +624,8 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       }
       if (pendingToolUses.length > 0) {
         const synthesizedResults: ContentBlock[] = [];
-        for (const use of pendingToolUses) {
-          const prior = priorToolByUseId.get(use.id);
+        for (const [useOrdinal, use] of pendingToolUses.entries()) {
+          const prior = priorToolByUseId.get(`${last.message_idx}:${use.id}`);
           if (prior?.status === 'complete') {
             synthesizedResults.push({
               type: 'tool_result',
@@ -640,7 +647,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           const toolDef = toolDefs.find(t => t.name === use.name);
           if (!toolDef) {
             await persistToolExecFailed(
-              engine, ctx.id, last.message_idx, use.id, use.name, use.input,
+              engine, ctx.id, last.message_idx, useOrdinal, use.id, use.name, use.input,
               `tool "${use.name}" is not in the registry for this subagent`,
             );
             synthesizedResults.push({
@@ -652,19 +659,19 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           if (prior?.status === 'pending' && !toolDef.idempotent) {
             throw new Error(`non-idempotent tool "${use.name}" pending on resume; cannot safely re-run`);
           }
-          await persistToolExecPending(engine, ctx.id, last.message_idx, use.id, use.name, use.input);
+          await persistToolExecPending(engine, ctx.id, last.message_idx, useOrdinal, use.id, use.name, use.input);
           try {
             const output = await toolDef.execute(use.input, {
               engine, jobId: ctx.id, remote: true, signal: ctx.signal,
             });
-            await persistToolExecComplete(engine, ctx.id, use.id, output);
+            await persistToolExecComplete(engine, ctx.id, last.message_idx, useOrdinal, use.id, output);
             synthesizedResults.push({
               type: 'tool_result', tool_use_id: use.id,
               content: asStringIfNotObject(output),
             } as ContentBlock);
           } catch (e) {
             const errText = e instanceof Error ? (e.stack ?? e.message) : String(e);
-            await persistToolExecFailed(engine, ctx.id, last.message_idx, use.id, use.name, use.input, errText);
+            await persistToolExecFailed(engine, ctx.id, last.message_idx, useOrdinal, use.id, use.name, use.input, errText);
             synthesizedResults.push({
               type: 'tool_result', tool_use_id: use.id,
               content: errText, is_error: true,
@@ -936,7 +943,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
 
       // 5. Dispatch each tool_use. Two-phase persist (pending → complete/failed).
       const toolResults: ContentBlock[] = [];
-      for (const use of toolUses) {
+      for (const [useOrdinal, use] of toolUses.entries()) {
         if (ctx.signal.aborted || ctx.shutdownSignal.aborted) {
           throw new Error('subagent aborted during tool dispatch');
         }
@@ -947,7 +954,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           // Model called a tool we didn't expose. Mark execution failed
           // with a clear error and feed the error back in the next turn.
           await persistToolExecFailed(
-            engine, ctx.id, assistantIdx, use.id, toolName, use.input,
+            engine, ctx.id, assistantIdx, useOrdinal, use.id, toolName, use.input,
             `tool "${toolName}" is not in the registry for this subagent`,
           );
           toolResults.push({
@@ -966,9 +973,10 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           continue;
         }
 
-        // Replay: if we already have a row for this tool_use_id, trust it
-        // unless status='pending' and the tool is idempotent (re-run).
-        const prior = priorToolByUseId.get(use.id);
+        // Replay: if we already have a row for this turn's tool_use_id,
+        // trust it unless status='pending' and the tool is idempotent
+        // (re-run). Keyed by (message_idx, tool_use_id) — see #4155.
+        const prior = priorToolByUseId.get(`${assistantIdx}:${use.id}`);
         if (prior && prior.status === 'complete') {
           toolResults.push({
             type: 'tool_result',
@@ -992,7 +1000,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
         }
 
         // Fresh or idempotent-replay dispatch.
-        await persistToolExecPending(engine, ctx.id, assistantIdx, use.id, toolName, use.input);
+        await persistToolExecPending(engine, ctx.id, assistantIdx, useOrdinal, use.id, toolName, use.input);
         logSubagentHeartbeat({ job_id: ctx.id, event: 'tool_called', turn_idx: turnIdx, tool_name: toolName });
 
         const toolStart = Date.now();
@@ -1003,7 +1011,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
             remote: true,
             signal: ctx.signal,
           });
-          await persistToolExecComplete(engine, ctx.id, use.id, output);
+          await persistToolExecComplete(engine, ctx.id, assistantIdx, useOrdinal, use.id, output);
           logSubagentHeartbeat({
             job_id: ctx.id,
             event: 'tool_result',
@@ -1020,7 +1028,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           const errText = e instanceof Error
             ? (e.stack ?? e.message)
             : String(e);
-          await persistToolExecFailed(engine, ctx.id, assistantIdx, use.id, toolName, use.input, errText);
+          await persistToolExecFailed(engine, ctx.id, assistantIdx, useOrdinal, use.id, toolName, use.input, errText);
           logSubagentHeartbeat({
             job_id: ctx.id,
             event: 'tool_failed',
@@ -1345,44 +1353,29 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       // circuit silently breaks and the tool re-executes. Pinned by
       // test/e2e/subagent-crash-replay-multi-provider.test.ts.
       const candidateId = randomUUIDv7();
-      const insertPending = async (toolUseId: string) => engine.executeRaw<{ gbrain_tool_use_id: string }>(
+      // #4155 — tool_use_id stores the RAW provider id, which is NOT unique
+      // per job: some providers (claude-cli) hand back short, repeating ids
+      // (e.g. "toolu_01" on every turn, since each `claude -p` (print mode)
+      // call is a fresh subprocess replayed from an id-stripped transcript).
+      // NOTE: spell it `-p`, not the long form — scripts/generate-flag-registry.ts
+      // harvests flag-shaped literals out of comments too, and the long form
+      // lands in the generated registry as a flag `jobs` does not accept.
+      // The former job-wide `uniq_subagent_tools_use_id UNIQUE (job_id,
+      // tool_use_id)` constraint encoded the false assumption that provider
+      // ids are job-unique; a reuse collided (it was never this INSERT's
+      // conflict target) and dead-lettered the job. Migration v131 dropped
+      // it — row identity is (job_id, message_idx, ordinal), and every
+      // reader resolves an execution by (message_idx, tool_use_id) or by
+      // gbrain_tool_use_id, never by tool_use_id alone.
+      const rows = await engine.executeRaw<{ gbrain_tool_use_id: string }>(
         `INSERT INTO subagent_tool_executions
            (job_id, message_idx, tool_use_id, tool_name, input, status, schema_version, ordinal, gbrain_tool_use_id, provider_id)
          VALUES ($1, $2, $3, $4, $5::text::jsonb, 'pending', 2, $6, $7, $8)
          ON CONFLICT (job_id, message_idx, ordinal) DO UPDATE
            SET status = subagent_tool_executions.status
          RETURNING gbrain_tool_use_id::text AS gbrain_tool_use_id`,
-        [ctx.id, messageIdx, toolUseId, toolName, JSON.stringify(input ?? null), ordinal, candidateId, recipeIdFromModel(model)],
+        [ctx.id, messageIdx, providerToolCallId, toolName, JSON.stringify(input ?? null), ordinal, candidateId, recipeIdFromModel(model)],
       );
-      let rows: Array<{ gbrain_tool_use_id: string }>;
-      try {
-        rows = await insertPending(providerToolCallId);
-      } catch (e) {
-        // #4155 backstop: providers can mint the SAME tool_use_id across turns
-        // (claude-cli's fresh-subprocess turns, or any future provider). The
-        // ON CONFLICT arbiter above is (job_id, message_idx, ordinal), so a
-        // (job_id, tool_use_id) collision surfaces as a raised uniq violation
-        // that used to dead-letter the whole job. tool_use_id is a debug-only
-        // side channel (the settle path keys on gbrain_tool_use_id, and the
-        // conversation blocks keep the original id), so persist under a
-        // disambiguated value instead of dying.
-        if (!/uniq_subagent_tools_use_id/.test(e instanceof Error ? e.message : String(e))) throw e;
-        const suffixed = `${providerToolCallId}#m${messageIdx}o${ordinal}`;
-        try {
-          rows = await insertPending(suffixed);
-        } catch (e2) {
-          // Second violation = replay of the same (message_idx, ordinal) slot
-          // whose row already carries the suffixed id — reuse its canonical
-          // gbrain_tool_use_id (correct replay semantics, mirrors RETURNING).
-          if (!/uniq_subagent_tools_use_id/.test(e2 instanceof Error ? e2.message : String(e2))) throw e2;
-          rows = await engine.executeRaw<{ gbrain_tool_use_id: string }>(
-            `SELECT gbrain_tool_use_id::text AS gbrain_tool_use_id
-               FROM subagent_tool_executions
-              WHERE job_id = $1 AND tool_use_id = $2`,
-            [ctx.id, suffixed],
-          );
-        }
-      }
       const gbrainToolUseId = rows[0]?.gbrain_tool_use_id ?? candidateId;
       heartbeat('tool_called', { turn_idx: turnIdx, tool_name: toolName });
       return { gbrainToolUseId };
@@ -1508,15 +1501,29 @@ async function reconcileGatewayReplay(args: ReconcileArgs): Promise<ReconcileRes
     };
   });
 
-  // Settled executions, looked up by (assistant message_idx, provider
-  // tool_use_id) with an ordinal-position fallback for legacy rows.
+  // Settled executions, three lookup structures:
+  //   - execByOrdinal: rows keyed by their PERSISTED (message_idx, ordinal) —
+  //     the true D11 row identity. The block position callIdx equals the
+  //     ordinal stamped at first observation, so this survives both same-id
+  //     repeats within a turn and slot shift when an earlier call never got
+  //     a ledger row.
+  //   - execByKey: (message_idx, tool_use_id) — exact whenever the turn's raw
+  //     ids are unique (single-value: last-write-wins only for the same-id-
+  //     twice shape, which execByOrdinal already resolves first).
+  //   - legacyByMsg: ordinal=NULL rows (pre-stamping writes) in block order,
+  //     for the positional fallback.
+  const execByOrdinal = new Map<string, PersistedToolExec>();
   const execByKey = new Map<string, PersistedToolExec>();
-  const execByMsg = new Map<number, PersistedToolExec[]>();
+  const legacyByMsg = new Map<number, PersistedToolExec[]>();
   for (const t of priorTools) {
     execByKey.set(`${t.message_idx}:${t.tool_use_id}`, t);
-    const arr = execByMsg.get(t.message_idx) ?? [];
-    arr.push(t);
-    execByMsg.set(t.message_idx, arr);
+    if (t.ordinal != null) {
+      execByOrdinal.set(`${t.message_idx}:${t.ordinal}`, t);
+    } else {
+      const arr = legacyByMsg.get(t.message_idx) ?? [];
+      arr.push(t);
+      legacyByMsg.set(t.message_idx, arr);
+    }
   }
 
   let maxIdx = work.reduce((mx, w) => Math.max(mx, w.message_idx), -1);
@@ -1538,15 +1545,34 @@ async function reconcileGatewayReplay(args: ReconcileArgs): Promise<ReconcileRes
     const next = work[i + 1];
     if (next && next.role === 'user' && next.blocks.some(b => b.type === 'tool-result')) continue;
 
+    // Ids that repeat WITHIN this turn are ambiguous as a lookup key — the
+    // single-value execByKey map is last-write-wins for them, so the exact-id
+    // fallback below is disabled for those ids (ordinal identity only).
+    const idCounts = new Map<string, number>();
+    for (const c of toolCalls) idCounts.set(c.toolCallId, (idCounts.get(c.toolCallId) ?? 0) + 1);
+
     const results: ChatBlock[] = [];
     for (let callIdx = 0; callIdx < toolCalls.length; callIdx++) {
       const call = toolCalls[callIdx];
-      // Prefer an exact (message_idx, provider tool_use_id) match. The
-      // positional fallback is used only when the row at that ordinal is for
-      // the SAME tool, so a missing row can't mis-attribute a sibling's output.
-      const fallback = execByMsg.get(msg.message_idx)?.[callIdx];
-      const exec = execByKey.get(`${msg.message_idx}:${call.toolCallId}`)
-        ?? (fallback && fallback.tool_name === call.toolName ? fallback : undefined);
+      // Row resolution order:
+      //   1. The persisted-ordinal row at this block position when its raw id
+      //      matches the call — exact D11 identity (#4155: raw ids may repeat
+      //      within a turn, and an earlier call without a ledger row must not
+      //      shift a later row into its slot).
+      //   2. The exact (message_idx, tool_use_id) key — only when this turn
+      //      uses the id ONCE (a repeated id makes the key ambiguous and the
+      //      call must resolve by ordinal or not at all, else one row's
+      //      outcome would be served to every call sharing the id).
+      //   3. The legacy (ordinal=NULL) positional row, only when it is for
+      //      the SAME tool, so a missing row can't mis-attribute a sibling's
+      //      output.
+      const stamped = execByOrdinal.get(`${msg.message_idx}:${callIdx}`);
+      const idIsUniqueInTurn = (idCounts.get(call.toolCallId) ?? 0) <= 1;
+      const legacyPositional = legacyByMsg.get(msg.message_idx)?.[callIdx];
+      const exec = (stamped && stamped.tool_use_id === call.toolCallId)
+        ? stamped
+        : (idIsUniqueInTurn ? execByKey.get(`${msg.message_idx}:${call.toolCallId}`) : undefined)
+          ?? (legacyPositional && legacyPositional.tool_name === call.toolName ? legacyPositional : undefined);
       if (exec?.status === 'complete') {
         results.push({ type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: exec.output ?? null });
         continue;
@@ -1557,21 +1583,21 @@ async function reconcileGatewayReplay(args: ReconcileArgs): Promise<ReconcileRes
       }
       const toolDef = toolDefs.find(t => t.name === call.toolName);
       if (!toolDef) {
-        await persistToolExecFailed(engine, jobId, msg.message_idx, call.toolCallId, call.toolName, call.input, `tool "${call.toolName}" is not in the registry for this subagent`);
+        await persistToolExecFailed(engine, jobId, msg.message_idx, callIdx, call.toolCallId, call.toolName, call.input, `tool "${call.toolName}" is not in the registry for this subagent`);
         results.push({ type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: `tool "${call.toolName}" is not available`, isError: true });
         continue;
       }
       if (exec?.status === 'pending' && !toolDef.idempotent) {
         throw new Error(`non-idempotent tool "${call.toolName}" pending on resume; cannot safely re-run`);
       }
-      await persistToolExecPending(engine, jobId, msg.message_idx, call.toolCallId, call.toolName, call.input);
+      await persistToolExecPending(engine, jobId, msg.message_idx, callIdx, call.toolCallId, call.toolName, call.input);
       try {
         const output = await toolDef.execute(call.input, { engine, jobId, remote: true, signal });
-        await persistToolExecComplete(engine, jobId, call.toolCallId, output);
+        await persistToolExecComplete(engine, jobId, msg.message_idx, callIdx, call.toolCallId, output);
         results.push({ type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output });
       } catch (e) {
         const errText = e instanceof Error ? (e.stack ?? e.message) : String(e);
-        await persistToolExecFailed(engine, jobId, msg.message_idx, call.toolCallId, call.toolName, call.input, errText);
+        await persistToolExecFailed(engine, jobId, msg.message_idx, callIdx, call.toolCallId, call.toolName, call.input, errText);
         results.push({ type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: errText, isError: true });
       }
     }

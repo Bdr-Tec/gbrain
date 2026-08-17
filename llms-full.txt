@@ -272,7 +272,8 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
   same commit as any peel. migrate.ts is `region-exempt` (the MIGRATIONS array grows freely;
   the runner logic around it is ratcheted).
 - **Peeled façades keep their surface.** operations.ts (`src/core/ops/*`), doctor.ts
-  (`src/commands/doctor/*`), sync.ts (`src/core/sync-*`), and both engines
+  (`src/commands/doctor/*`), sync.ts (`src/core/sync-*`), skillpack.ts
+  (`src/commands/skillpack/*`), and both engines
   (`src/core/{postgres,pglite}-engine/*`) are façades re-exporting everything they always
   exported — import sites and published package exports never chase the peel. New code goes
   in the module dirs, not back into the façades. Engine modules take narrow explicit deps
@@ -301,6 +302,7 @@ detail on demand.)
 | search modes / cost knobs | `docs/guides/search-modes.md` |
 | embedding spend gates / cost gate / `spend.posture` / off switches | `docs/operations/spend-controls.md` |
 | push-based context (volunteer/watch/reflex window) | `docs/guides/push-context.md` |
+| checkpoint compaction / compiled context files (`gbrain compile-context`) | `docs/guides/checkpoint-compaction.md` + `docs/guides/ambient-recall.md` |
 | schema packs / page types / extraction | `docs/architecture/schema-packs.md`, `type-taxonomy.md`, `lens-packs.md` |
 | thin-client / remote MCP / cross-modal | `docs/architecture/thin-client.md` |
 | memory verbs / MCP tool surface (`--surface`) / conformance | `docs/protocol/MEMORY_VERBS_v1.md` + the `verbs*`/`surface.ts`/`protocol.ts` entries in `KEY_FILES.md` |
@@ -665,8 +667,8 @@ ms, max waiters) for `--json`; a one-line summary prints to stderr.
 
 ## Version locations (single source of truth: `VERSION` file)
 
-Every release advances the version in **seven files at once**. Keep these in
-sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
+Every release advances the version in **every file in the table below at
+once**. Keep these in sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
 package.json drift), but the canonical list lives here so future runs and
 the auto-update agent know where to look.
 
@@ -681,7 +683,7 @@ four numeric segments are required first. Historical 3-segment versions
 (`0.31.3`, `0.22.1`) remain valid in `git log` and migration filenames
 (`skills/migrations/v0.21.0.md`); do NOT rewrite them. Going forward only.
 
-**Required (every release must update all seven):**
+**Required (every release must update every row):**
 
 | File | What lives there | Format |
 |---|---|---|
@@ -697,10 +699,12 @@ four numeric segments are required first. Historical 3-segment versions
 
 **Auto-derived (no manual edit; refreshed by their own commands):**
 
-- `plugin/` — the committed codex/claude plugin skill tree embeds a
-  `gbrain-plugin-tree-stamp: X.Y.Z.W` in its generated README, so every
-  version bump drifts it. Regenerate after the bump: `bun run
-  scripts/generate-plugin-tree.ts --out plugin` (guarded by
+- `plugin/` + `plugin-variants/` — the committed codex/claude plugin skill
+  tree AND the persona variant trees (gbrain-coding, gbrain-daily) embed a
+  `gbrain-plugin-tree-stamp: X.Y.Z.W` (the variants' generated plugin
+  manifests carry the version too), so every version bump drifts them.
+  Regenerate after the bump: `bun run scripts/generate-plugin-tree.ts --out
+  plugin --variants-out plugin-variants` (guarded by
   `scripts/check-plugin-tree.sh` in `bun run verify`; the release
   `publish-codex-plugin` job also drift-gates it before publishing).
 - `bun.lock` — root-package version is auto-pinned from `package.json`. After
@@ -865,7 +869,11 @@ Before any ship, read **[docs/RELEASING.md](docs/RELEASING.md)** in full. It car
 full release + contributor process: pre-ship test requirements (`bun run ci:local` / the
 E2E lifecycle), the CHANGELOG voice + release-summary template, the "To take advantage of
 vX" self-repair block, version migrations, the GitHub Actions SHA refresh, PR conventions,
-and the community-PR-wave process. **Use `/ship` — never hand-roll a release.**
+and the community-PR-wave process. **Use `/ship` — never hand-roll a release.** Every
+community wave runs `bun run wave-security-scan <base>..<head>` (RELEASING.md step 5) before
+ship — the repeatable mechanical sweep (obfuscation/eval, gitleaks with the test/skills
+allowlist stripped, committed `admin/dist` changes as alarms; new endpoints/spawns/env/deps
+as context).
 
 The ship-critical IRON RULES stay inline in this file (do NOT relocate them): the
 Version-locations table above (the 5-file sync + the 3-line VERSION/package.json/CHANGELOG
@@ -1819,6 +1827,8 @@ gbrain connect https://your-host/mcp --token gbrain_xxx --install               
 gbrain connect https://your-host/mcp --token gbrain_xxx --agent codex --install # Codex
 ```
 
+Onboarding a whole agent harness onto a shared brain? On the brain host, `gbrain agent register <name> --harness claude-code` mints a scoped OAuth client plus a 30-day token and prints the paste-ready wiring block — presets for daily-driver and write-isolated coding agents. The [onboarding decision table](docs/guides/agent-to-gbrain.md#onboarding-paths--the-decision-table) says which path fits.
+
 **Brain-only install into another coding agent** (Cursor, Claude Cowork, or anything that can fetch a URL and run shell commands) — paste the OpenClaw/Hermes block above (`INSTALL_FOR_AGENTS.md`); it installs the brain, skills, and dream cycle without the personal-agent identity layer. Tested with Codex, Claude Code, Claude Cowork, Cursor, and AlphaClaw.
 
 **[→ Full walkthrough: give your coding agent a memory](docs/tutorials/connect-coding-agent.md)** — the memory-only paths end to end, plus the brain-first protocol you paste into `CLAUDE.md` / `AGENTS.md` and the four habits that make it actually change how you work.
@@ -1839,7 +1849,7 @@ Postgres-at-scale, Supabase, and thin-client setup paths live in [`docs/INSTALL.
 
 GBrain exposes nearly all of its 100+ operations as MCP tools (stdio and HTTP; a handful of local-only ops stay CLI-side) — or exactly the seven memory verbs with `--surface verbs`. The specific snippet depends on which client you use:
 
-- **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — plugin: `/plugin marketplace add garrytan/gbrain` + `/plugin install gbrain@gbrain` (MCP + skills). Or local one-liner: `claude mcp add gbrain -- gbrain serve` (zero server, zero tunnel). Remote with just a bearer token: `gbrain connect https://your-host/mcp --token gbrain_xxx` prints a paste-ready block (or `--install` wires it up and smoke-tests the token).
+- **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — plugin: `/plugin marketplace add garrytan/gbrain` + `/plugin install gbrain@gbrain` (MCP + skills; persona variants `gbrain-coding` / `gbrain-daily` install curated subsets — pick exactly one gbrain plugin). Marketplace-free skills: `gbrain skillpack scaffold --harness claude-code` copies a persona-curated skill set into your user-scope skills dir with a local-edit-respecting update lens. Or local one-liner: `claude mcp add gbrain -- gbrain serve` (zero server, zero tunnel). Remote with just a bearer token: `gbrain connect https://your-host/mcp --token gbrain_xxx` prints a paste-ready block (or `--install` wires it up and smoke-tests the token).
 - **[Codex](docs/mcp/CODEX.md)** — plugin (recommended): `codex plugin marketplace add garrytan/gbrain@codex-plugin` + `codex plugin add gbrain@gbrain` installs the MCP server AND the curated skill set. Or connect-only: `gbrain connect https://your-host/mcp --token gbrain_xxx --agent codex` (or `--install`); Codex reads the bearer from `$GBRAIN_REMOTE_TOKEN` at runtime, so the token never lands in Codex config.
 - **[Cursor / Windsurf / any stdio MCP client](docs/mcp/CLAUDE_CODE.md)** — same shape, add `{"command": "gbrain", "args": ["serve"]}` to your MCP config.
 - **[Hermes](docs/mcp/HERMES.md)** — `printf 'Y\n' | hermes mcp add gbrain --env GBRAIN_HOME=$HOME --connect-timeout 60 --command $(which gbrain) --args serve`. Keep `--args` last, and verify with `hermes mcp test gbrain` (the add exits 0 even on failure).
@@ -1918,6 +1928,7 @@ re-runs are free — unchanged sessions skip on content hash:
 gbrain transcripts ingest                    # discover importable session logs
 gbrain transcripts ingest --all              # import everything discovered
 gbrain transcripts ingest ~/Downloads/conversations.json  # consumer export (unzip first)
+gbrain transcripts ingest --max-bytes 4gb <store>          # oversized store; omit to keep per-format caps
 gbrain transcripts status                    # found vs imported, per harness
 ```
 
@@ -2165,7 +2176,7 @@ the page PK, soft-delete-filtered, source-safe) and completes in seconds.
 - [`AGENTS.md`](AGENTS.md) — entry point for non-Claude agents
 - [`CLAUDE.md`](CLAUDE.md) — entry point for Claude Code (deep operating context)
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor guide, test discipline, eval-capture mode
-- [`SECURITY.md`](SECURITY.md) — OAuth threat model, hardening defaults
+- [`SECURITY.md`](SECURITY.md) — install-path trust model, self-update integrity, automated scanning, OAuth threat model, hardening defaults
 
 ## Contributing
 
@@ -4052,9 +4063,15 @@ The push channels share one zero-LLM core (`src/core/context/volunteer.ts`):
    merged with recency / frequency / user-role salience. Assistant-introduced
    entities and "what did she invest in?" follow-ups whose antecedent was named
    in the window now resolve.
-2. **Resolve** through the alias table, exact titles, and slug suffixes — each
-   arm carries an honest confidence: alias 0.9, exact title 0.8, slug-suffix 0.6,
-   +0.05 when mentioned in ≥2 turns or the newest turn.
+2. **Resolve** through the alias table, exact titles, surnames, and slug
+   suffixes — each arm carries an honest confidence: alias 0.9, exact title
+   0.8, surname 0.72, slug-suffix 0.6, +0.05 when mentioned in ≥2 turns or the
+   newest turn. Lowercase mentions ("remind me what alice said") probe the
+   alias table only, and only when the alias is unique across every source in
+   play; a surname-only reference ("Did Galewright follow up?") resolves when
+   exactly one person page carries that surname. Ambiguity in either arm
+   injects nothing — silence beats a wrong pointer. Kill switch for both:
+   `retrieval_reflex_lexical_arms` (default on).
 3. **Gate** at `min_confidence` (default 0.7 — slug-suffix matches need an
    explicit lower gate), suppress pages already surfaced (slug-presence only),
    cap at 3 pages (hard cap 5).
@@ -4129,6 +4146,7 @@ Kill switch: `GBRAIN_HOOKS=0`. Install/uninstall: `docs/guides/bootstrap.md`.
 | `retrieval_reflex_window_turns` | 4 | turns the ambient reflex extracts from; 1 = legacy current-turn-only (file/env plane: `GBRAIN_RETRIEVAL_REFLEX_WINDOW_TURNS`) |
 | `retrieval_reflex` | true | the ambient channel's master switch |
 | `retrieval_reflex_max_pointers` | 3 | pointer cap per turn |
+| `retrieval_reflex_lexical_arms` | true | the lowercase-alias + surname recall arms (env: `GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS`); off = pre-v0.46.15 arm set |
 
 Per-call knobs: `max_pages` + `min_confidence` on both the op and `gbrain watch`
 (`--max-pages` / `--min-confidence`, plus `--window-turns` / `--source` on watch);

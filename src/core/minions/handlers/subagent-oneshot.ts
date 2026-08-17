@@ -220,11 +220,11 @@ function isAbortShaped(e: unknown): boolean {
   return isAbortError(e) || (e instanceof Error && /\babort|\btimed?[ _-]?out/i.test(e.message));
 }
 
-interface LedgerRow { tool_use_id: string; status: string; slug: string | null; content: string | null }
+interface LedgerRow { tool_use_id: string; ordinal: number | null; status: string; slug: string | null; content: string | null }
 
 async function loadOneshotLedger(engine: BrainEngine, jobId: number): Promise<LedgerRow[]> {
   return engine.executeRaw<LedgerRow>(
-    `SELECT tool_use_id, status, input->>'slug' AS slug, input->>'content' AS content
+    `SELECT tool_use_id, ordinal, status, input->>'slug' AS slug, input->>'content' AS content
        FROM subagent_tool_executions
       WHERE job_id = $1 AND tool_use_id LIKE $2
       ORDER BY id`,
@@ -252,14 +252,14 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
       if (row.status !== 'pending') continue;
       const input = { slug: row.slug ?? '', content: row.content ?? '' };
       if (!args.putPageTool || !input.slug || !input.content) {
-        await persistToolExecFailed(engine, ctx.id, 1, row.tool_use_id, 'brain_put_page', input,
+        await persistToolExecFailed(engine, ctx.id, 1, row.ordinal ?? 0, row.tool_use_id, 'brain_put_page', input,
           'oneshot recovery: pending write could not be re-executed (missing tool or ledger input)');
         row.status = 'failed';
         continue;
       }
       try {
         const output = await args.putPageTool.execute(input, { engine, jobId: ctx.id, remote: true, signal: ctx.signal });
-        await persistToolExecComplete(engine, ctx.id, row.tool_use_id, output);
+        await persistToolExecComplete(engine, ctx.id, 1, row.ordinal ?? 0, row.tool_use_id, output);
         row.status = 'complete';
       } catch (e) {
         // Abort (job cancel/timeout mid-recovery) and transient connection
@@ -267,7 +267,7 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
         // so the next retry re-executes it, instead of freezing a permanent
         // 'failed' that could dead-letter perfectly writable content.
         if (ctx.signal?.aborted || isAbortError(e) || isRetryableConnError(e)) throw e;
-        await persistToolExecFailed(engine, ctx.id, 1, row.tool_use_id, 'brain_put_page', input,
+        await persistToolExecFailed(engine, ctx.id, 1, row.ordinal ?? 0, row.tool_use_id, 'brain_put_page', input,
           e instanceof Error ? e.message : String(e));
         row.status = 'failed';
       }
@@ -483,12 +483,16 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   // universe all-or-nothing: either every page is re-executable or none was
   // started. Same $N::text::jsonb discipline as persistToolExecPending.
   await engine.transaction(async (tx) => {
-    for (const w of plannedWrites) {
+    for (let i = 0; i < plannedWrites.length; i++) {
+      const w = plannedWrites[i];
+      // ordinal = page index: row identity is (job_id, message_idx, ordinal)
+      // post-v131 (the job-wide tool_use_id unique is gone), and oneshot ids
+      // are invocation-unique anyway.
       await tx.executeRaw(
-        `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status)
-         VALUES ($1, 1, $2, 'brain_put_page', $3::text::jsonb, 'pending')
-         ON CONFLICT (job_id, tool_use_id) DO NOTHING`,
-        [ctx.id, w.toolUseId, JSON.stringify(w.input)],
+        `INSERT INTO subagent_tool_executions (job_id, message_idx, tool_use_id, tool_name, input, status, ordinal)
+         VALUES ($1, 1, $2, 'brain_put_page', $3::text::jsonb, 'pending', $4)
+         ON CONFLICT (job_id, message_idx, ordinal) DO NOTHING`,
+        [ctx.id, w.toolUseId, JSON.stringify(w.input), i],
       );
     }
   });
@@ -514,12 +518,12 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
       // recovery): rethrow, row stays pending, retry re-executes.
       if (ctx.signal?.aborted || isAbortError(e) || isRetryableConnError(e)) throw e;
       const msg = e instanceof Error ? e.message : String(e);
-      await persistToolExecFailed(engine, ctx.id, 1, toolUseId, 'brain_put_page', input, msg);
+      await persistToolExecFailed(engine, ctx.id, 1, i, toolUseId, 'brain_put_page', input, msg);
       writtenRefs.push({ slug: page.slug, status: 'failed' });
       continue;
     }
     try {
-      await persistToolExecComplete(engine, ctx.id, toolUseId, output);
+      await persistToolExecComplete(engine, ctx.id, 1, i, toolUseId, output);
     } catch (e) {
       // The PAGE COMMITTED but the ledger settle failed. Never settle
       // 'failed' here — the page would exist while provenance/reverse-write

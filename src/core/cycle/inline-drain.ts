@@ -42,6 +42,14 @@ import { makeSubagentHandler } from '../minions/handlers/subagent.ts';
 import { RateLeaseUnavailableError, leaseFullBackoffMs } from '../minions/rate-leases.ts';
 import { reconnectAfterConnectionError } from '../minions/reconnect.ts';
 import { isRetryableConnError } from '../retry-matcher.ts';
+import { CYCLE_DEADLINE_RESERVE_MS } from './base-phase.ts';
+
+/**
+ * #4168: minimum budget a freshly-claimed child is worth starting with.
+ * Mirrors patterns.ts's MIN_PATTERNS_SUBAGENT_BUDGET_MS (importing it here
+ * would close a module cycle: patterns → synthesize → inline-drain).
+ */
+const MIN_CHILD_BUDGET_MS = 2 * 60 * 1000;
 
 export const INLINE_LOCK_MS = 30_000;
 
@@ -108,17 +116,25 @@ export async function runSubagentsInline(
   handler: MinionHandler = makeSubagentHandler({ engine }),
   lockMs: number = INLINE_LOCK_MS,
   concurrency = 1,
+  /** #4168 adversarial: absolute parent-job deadline. When the remaining
+   *  budget drops under the minimum child budget, loops stop CLAIMING —
+   *  the caller cancels the still-waiting children and defers their
+   *  transcripts (children submit fast, so submit-time clamps alone cannot
+   *  bound a sequential multi-child drain). Residual, documented: each
+   *  loop's LAST claimed child may still overrun the parent by up to its
+   *  own clamped timeout. */
+  deadlineAtMs: number | null = null,
 ): Promise<void> {
   const n = Math.max(1, Math.floor(concurrency));
   if (n === 1) {
     // Serial fast path: identical semantics to the pre-#4194 drain.
-    await drainLoop(engine, queue, queueName, yieldDuringPhase, handler, lockMs, 0, null);
+    await drainLoop(engine, queue, queueName, yieldDuringPhase, handler, lockMs, 0, null, deadlineAtMs);
     return;
   }
   const poolAbort = new AbortController();
   const settled = await Promise.allSettled(
     Array.from({ length: n }, (_, loopIdx) =>
-      drainLoop(engine, queue, queueName, yieldDuringPhase, handler, lockMs, loopIdx, poolAbort)),
+      drainLoop(engine, queue, queueName, yieldDuringPhase, handler, lockMs, loopIdx, poolAbort, deadlineAtMs)),
   );
   // allSettled (not all): a rejecting loop must not strand siblings'
   // in-flight children mid-record. The first non-retryable rejection is
@@ -136,6 +152,7 @@ async function drainLoop(
   lockMs: number,
   loopIdx: number,
   poolAbort: AbortController | null,
+  deadlineAtMs: number | null = null,
 ): Promise<void> {
   // #3555 interaction: the drain's queue ops used to be bare awaits, so a
   // transient pooler reap mid-drain threw out of the loop and stranded the
@@ -162,6 +179,15 @@ async function drainLoop(
       // Shared-abort check: a sibling loop hit a non-retryable failure. Stop
       // claiming new children; the sibling's rejection carries the cause.
       if (poolAbort?.signal.aborted) return;
+      // #4168 adversarial: stop claiming when the parent budget cannot fit
+      // another child. Already-running work is unaffected; unclaimed
+      // children stay 'waiting' for the caller's cancel-and-defer pass.
+      if (
+        deadlineAtMs != null &&
+        deadlineAtMs - CYCLE_DEADLINE_RESERVE_MS - Date.now() < MIN_CHILD_BUDGET_MS
+      ) {
+        return;
+      }
       const lockToken = randomUUID();
       let job: Awaited<ReturnType<MinionQueue['claim']>>;
       try {
