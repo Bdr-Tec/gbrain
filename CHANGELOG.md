@@ -275,7 +275,9 @@ open community PRs by @Masashi-Ono0611 — thank you.
   shutdown permanently (observed as a 10-minute CI kill; a workload that
   took 19 seconds before the regression). Both engines now settle in-flight
   background work before closing, the close itself is time-bounded
-  (override: `GBRAIN_PGLITE_CLOSE_TIMEOUT_MS`), and a clean CLI exit now
+  (override: `GBRAIN_PGLITE_CLOSE_TIMEOUT_MS`; the bound covers a close
+  that still yields to the event loop — a wedged close cannot be caught
+  in-process, see #4284), and a clean CLI exit now
   also flushes buffered search telemetry — short-lived CLI calls finally
   show up in `gbrain search stats`.
 - **Mixed-case embedding model ids work.** `litellm:Qwen/Qwen3-Embedding-4B`
