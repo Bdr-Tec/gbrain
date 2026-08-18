@@ -72,6 +72,72 @@ instructions. Schedule the heavier enrichment explicitly where you want it —
 `gbrain dream --source <id> --phase extract_atoms` per source, plus one
 brain-wide `gbrain dream --phase consolidate` — or wait for the scheduled
 background lane (tracked in TODOS).
+## [0.46.19.0] - 2026-08-17
+
+Dream-cycle synthesis is now fast by default: transcript synthesis runs as a
+single validated model call instead of an agent loop that burned 10+ provider
+round-trips per transcript, and the child
+drain can run several transcripts at once. Six companion fixes make subagent
+jobs honest about truncation, failed writes, and provider quirks.
+
+### Added
+- **Oneshot dream synthesis (default).** `dream.synthesize.mode` (default
+  `oneshot`) replaces the per-transcript agentic loop with ONE structured
+  completion; pages are validated (slug fences, task shapes, hash suffix,
+  exact-match wikilinks) before ANY write, then written programmatically
+  through the same put_page executor with deferred embeds. Any validation
+  failure falls back to the agentic loop in the same job with a
+  `fallback_reason` operators can read from phase telemetry. Revert dial:
+  `gbrain config set dream.synthesize.mode agentic`. (#4216)
+- **Pre-retrieval LINK CANDIDATES manifest.** Wikilink targets are resolved
+  BEFORE the model call from triage-cached entities/segments (zero-embed:
+  basename index + keyword search), so both modes stop burning search turns.
+  `dream.synthesize.link_manifest` (default on). The synthesis prompt now
+  also carries the write allow-list explicitly. (#4216)
+- **Bounded inline-drain concurrency.** `dream.synthesize.inline_concurrency`
+  (default 1, clamp [1,8], PGLite stays serial) runs multiple synthesis
+  children at once; phase details now report queue-wait/runtime p50/p95,
+  drain wall-clock, per-mode job counts, and a fallback-reason histogram.
+  Rate leases stay the provider ceiling — gateway-loop turns now acquire a
+  per-turn lease permit (they previously ran unleased), and a lease-full
+  child requeues without burning an attempt. (#4194)
+- **Structural write accounting.** Every subagent job result now carries
+  `pages_attempted/written/failed` (oneshot results also carry
+  `written_refs`); dream/patterns children
+  set `require_writes` so a job whose every write failed goes to the dead
+  letter with the first real error instead of reporting success. Phase
+  cooldowns are only stamped on a fully-successful run, and a run where every
+  child died is an honest phase failure. (#4217)
+
+### Fixed
+- Gateway tool loop reports output-cap truncation as `max_tokens` instead of
+  a clean completion; oneshot treats truncated JSON as a fallback, never a
+  parse. (#4088)
+- Thinking-by-default Claude 5 models are detected under provider-prefixed
+  and bare ids (`openrouter:anthropic/claude-*-5`, `claude-cli:*`), so the
+  32k output headroom applies wherever it should — and never to
+  8k-capped 3.5-era models. (#4087)
+- claude-cli subagent jobs no longer dead-letter when the model repeats a
+  tool id across turns: ids are minted locally, and a uniqueness-violation
+  backstop covers any provider that repeats ids. (#4155)
+- Gemini 3.x multi-turn tool loops work: per-part provider metadata
+  (`thoughtSignature`) survives the round-trip and crash-replay. (#4201)
+- Crash-safe oneshot recovery: the whole write batch is banked atomically
+  before the first write, a retried job finalizes from the write ledger
+  instead of re-calling the model, interrupted writes are re-executed, and
+  in-batch link edges are replayed — a completed synthesis job can no longer
+  silently lose pages. (ship-review + red-team hardening)
+- Legacy note: from this release on, a synthesis child whose every write
+  failed dead-letters, and dead jobs release their idempotency keys — so the
+  next `gbrain dream --phase synthesize` (or the nightly) retries those
+  transcripts automatically. Rows from PRE-upgrade jobs that reported
+  success without writing pages stay `completed` and keep their keys, so
+  those transcripts are not retried automatically; any content change to
+  the transcript re-keys it and the next run picks it up.
+
+### Changed
+- `gbrain agent logs` audit lines now show the synthesis mode and fallback
+  reason when present.
 ## [0.46.18.0] - 2026-08-17
 
 **Your harness now gets gbrain's skills as capability, not just knowledge —
