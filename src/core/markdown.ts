@@ -740,7 +740,8 @@ function extractTags(frontmatter: Record<string, unknown>): string[] {
 // stamps. This extract is the single source of truth.
 // ---------------------------------------------------------------------------
 
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 /** Options for serializePageToMarkdown. */
 export interface SerializePageOpts {
@@ -809,4 +810,44 @@ export function resolvePageFilePath(
   return sourceId === 'default'
     ? join(brainDir, `${slug}.md`)
     : join(brainDir, '.sources', sourceId, `${slug}.md`);
+}
+
+/**
+ * Map a git-root-relative `pages.source_path` into a source's `local_path`.
+ *
+ * Scoped syncs keep `source_path` relative to the Git root even when
+ * `sources.local_path` points at a subdirectory. A direct join duplicates the
+ * scope (`.../public/changelog/public/changelog/...`). Find the same Git root
+ * sync uses without spawning a subprocess, then remove that exact scope.
+ * Non-Git vaults and Git-root local paths keep the direct path.
+ *
+ * Returns null for an unsafe or non-markdown source path. Callers must still
+ * enforce their normal realpath containment check before a write.
+ */
+export function resolveSourceLocalFilePath(
+  localPath: string,
+  rawSourcePath: string | null | undefined,
+): string | null {
+  if (!rawSourcePath) return null;
+  const value = rawSourcePath.trim();
+  if (!value || value.includes('\0') || !/\.mdx?$/i.test(value)) return null;
+  if (isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) return null;
+  const sourceSegments = value.split(/[\\/]+/).filter(Boolean);
+  if (sourceSegments.length === 0 || sourceSegments.some(segment => segment === '..')) return null;
+
+  const absoluteLocalPath = resolve(localPath);
+  let cursor = absoluteLocalPath;
+  while (true) {
+    if (existsSync(join(cursor, '.git'))) {
+      const scope = relative(cursor, absoluteLocalPath).split(/[\\/]+/).filter(Boolean);
+      if (scope.length > 0 && scope.every((segment, index) => segment === sourceSegments[index])) {
+        return join(absoluteLocalPath, ...sourceSegments.slice(scope.length));
+      }
+      break;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return join(absoluteLocalPath, ...sourceSegments);
 }

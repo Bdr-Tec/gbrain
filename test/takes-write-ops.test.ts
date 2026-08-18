@@ -21,7 +21,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -215,6 +215,45 @@ describe('takes_resolve', () => {
     ] as const) {
       const res = await dispatchToolCall(engine, op, args as Record<string, unknown>, { ...STDIO_WORLD });
       expect(parsed(res).error).toBe('invalid_params');
+    }
+  });
+
+  test('resolves a Git-root source_path when local_path is a repo subdirectory', async () => {
+    const gitRoot = mkdtempSync(join(tmpdir(), 'gbrain-takes-scoped-source-'));
+    mkdirSync(join(gitRoot, '.git'));
+    const sourceRoot = join(gitRoot, 'public', 'changelog');
+    const slug = 'public/changelog/posts/scoped-take';
+    const sourcePath = `${slug}.md`;
+    const filePath = join(sourceRoot, 'posts', 'scoped-take.md');
+    mkdirSync(join(sourceRoot, 'posts'), { recursive: true });
+    writeFileSync(filePath, [
+      '# Scoped take',
+      '',
+      TAKES_FENCE_BEGIN,
+      '| # | claim | kind | who | weight | since | source |',
+      '|---|-------|------|-----|--------|-------|--------|',
+      '| 1 | The scoped path resolves | take | world | 0.8 | 2026-08 | test |',
+      TAKES_FENCE_END,
+      '',
+    ].join('\n'));
+    await engine.putPage(slug, { type: 'note', title: slug, compiled_truth: 'Scoped take' });
+    await engine.executeRaw(
+      `UPDATE pages SET source_path = $1 WHERE source_id = 'default' AND slug = $2`,
+      [sourcePath, slug],
+    );
+    await engine.executeRaw(`UPDATE sources SET local_path = $1 WHERE id = 'default'`, [sourceRoot]);
+
+    try {
+      const res = await dispatchToolCall(engine, 'takes_resolve', {
+        slug, row_num: 1, quality: 'correct', evidence: 'verified',
+      }, { ...STDIO_WORLD });
+
+      expect(res.isError ?? false).toBe(false);
+      expect(readFileSync(filePath, 'utf-8')).toContain('| correct |');
+      expect(existsSync(join(sourceRoot, `${slug}.md`))).toBe(false);
+    } finally {
+      await engine.executeRaw(`UPDATE sources SET local_path = NULL WHERE id = 'default'`);
+      rmSync(gitRoot, { recursive: true, force: true });
     }
   });
 });
@@ -455,8 +494,8 @@ describe('takes-write adversarial regressions (F1 cross-holder / P1-2 containmen
       get(target, prop) {
         if (prop === 'executeRaw') {
           return async (sql: unknown, params: unknown) => {
-            if (typeof sql === 'string' && /SELECT local_path FROM sources/i.test(sql)) {
-              return [{ local_path: sourceRoot }];
+            if (typeof sql === 'string' && /SELECT\s+(?:s\.)?local_path[\s\S]+FROM sources/i.test(sql)) {
+              return [{ local_path: sourceRoot, source_path: null }];
             }
             return (target as unknown as { executeRaw: (s: unknown, p: unknown) => Promise<unknown> })
               .executeRaw(sql, params);
