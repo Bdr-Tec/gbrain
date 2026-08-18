@@ -54,6 +54,255 @@
   long-standing operator trap AND makes worker key-refresh complete. Start:
   `src/commands/config.ts` set handler (redirect key fields to the 0600
   config.json write path). **Effort:** S-M.
+## Dream freshness split follow-ups (v0.46.20.0)
+
+- [ ] **P2 — automatic background lane for `SOURCE_BACKGROUND_PHASES`.**
+  **What:** a per-source scheduled lane for the LLM-backed/unbounded source
+  phases (extract_atoms, consolidate, propose_takes, enrich_thin,
+  schema-suggest, conversation_facts_backfill) that the v0.46.20.0 freshness
+  split removed from automatic scheduling on multi-source brains. **Why:**
+  today those phases run only on explicit `gbrain dream --source X --phase …`
+  invocation; backlogs (atoms, consolidation) grow silently between manual
+  runs. **Design constraints (verified against code during the #4250
+  review):** MUST be per-source jobs — background phases scope to ONE source
+  per cycle (`cycle.ts` extract_atoms uses `cycleSourceId ?? 'default'`), and
+  per-source jobs hold the correct `gbrain-cycle:<source>` locks (a
+  global-maintenance-job version provably covers at most one source and its
+  bare `gbrain-cycle` lock does not conflict with per-source freshness
+  cycles). Needs its own cadence + stamp key (e.g.
+  `last_source_background_at`), lower dispatch priority than the freshness
+  lane, and the queue-boundary normalization in the `autopilot-cycle` handler
+  relaxed for the new job name (or a dedicated handler). **Blocked by:** the
+  abort-signal threading TODO below (P2 — BasePhaseOpts + dream generators);
+  extract_atoms/consolidate accept neither deadline nor abort today, so a
+  background job can't exit cleanly at its deadline. **Additional constraints
+  from the #4250 ship-stage adversarial reviews:** (a) the lane applies to
+  EVERY brain with registered sources, including single-source ones (the
+  legacy full-cycle fallback fires only when the sources table is empty, so
+  a one-source brain also loses automatic background work today); (b) the
+  taxonomy is scheduling-intent, not runtime scoping — consolidate,
+  enrich_thin, and conversation_facts_backfill iterate the whole brain
+  internally, so the lane must run those ONCE per tick, never once per
+  source (concurrent per-source invocations share no lock and consolidate's
+  take-row assignment can race); (c) the maintenance job runs synthesize →
+  patterns WITHOUT the source-scoped extract phase in between, so patterns
+  reads a graph that hasn't materialized the just-synthesized links until a
+  later freshness cycle runs extract — the lane should sequence extract (or
+  an equivalent materialization) between them; (d) mixed-once synthesis
+  writes attribute to the repoPath-resolved source rather than fanning out
+  attribution per source. Effort: L (CC: M). Priority: P2.
+- [ ] **P2 — maintenance-lane structure: ordering, keeper wall, slot
+  contention.** **What:** three ship-stage adversarial findings about the
+  single global-maintenance job, to resolve alongside (or inside) the
+  background lane above. (a) MAINTENANCE_PHASES runs synthesize →
+  resolve_symbol_edges → patterns with NO extract phase between synthesize
+  and patterns, so patterns reads a graph that hasn't materialized the
+  just-synthesized links until a later freshness cycle runs extract; (b)
+  synthesize runs FIRST in the job, so a large synthesis backlog + the job
+  keeper's timeout starves the brain-wide hygiene phases behind it (embed,
+  orphans, purge) and `last_global_at` never stamps — the next window
+  re-dispatches into the same wall (consider global-before-mixed ordering or
+  splitting mixed into its own job; note runCycle executes in canonical
+  order, so this needs more than reordering the list); (c) freshness jobs
+  share `queue: 'default'` with the hours-long maintenance job — with low
+  worker concurrency, per-source freshness queues behind maintenance
+  synthesis, re-coupling what this release decoupled (a fanout-vs-concurrency
+  doctor check exists but does not cover this pairing). Effort: M-L (CC).
+  Priority: P2.
+- [ ] **P2 — protected-phase submission bypass via unprotected job names.**
+  **What:** `synthesize`/`patterns`/`consolidate` are PROTECTED_JOB_NAMES so
+  scoped remote callers can't burn LLM budget, but `autopilot-global-
+  maintenance` (and no-source `autopilot-cycle`) accept arbitrary
+  `job.data.phases` — a write-scoped remote submitter can reach synthesize
+  through the global job's payload. v0.46.20.0 narrowed the surface
+  (per-source payloads normalize to freshness; maintenance payloads intersect
+  with MAINTENANCE_PHASES) but synthesize is legitimately IN
+  MAINTENANCE_PHASES. **Fix shape:** protect these job names, or require
+  `allowProtectedSubmit` when a payload names a protected-equivalent phase.
+  Pre-existing exposure, narrowed but not closed by this release. Effort: S-M
+  (CC). Priority: P2.
+- [ ] **P3 — freshness-stamp gate: require ≥1 freshness-phase success.**
+  **What:** `runCycle` stamps `last_source_cycle_at`/`last_full_cycle_at`
+  when ANY phase ran and status ∈ {ok, clean, partial} — e.g. `--phase
+  orphans --source X` (global phase, source-narrowed) stamps source
+  freshness. Also note the semantic drift: `last_full_cycle_at` now stamps
+  after a 6-phase deterministic cycle, so any reader treating it as "the
+  full cycle ran" reads more than it means (KEY_FILES documents it as a
+  legacy-reader alias). **Why:** pre-existing looseness (predates #4250,
+  which tightened zero-phase runs and stopped all-failed cycles from
+  stamping); sharpening further re-opens the #2549 freshness-poisoning
+  debate (a too-strict gate starves the dispatch loop) — design carefully.
+  Start: `src/core/cycle.ts` stamp gate. Effort: S (CC). Priority: P3.
+- [ ] **P3 — peel the cycle.ts KEY_FILES mega-entry.** **What:** the
+  `src/core/cycle.ts` entry in `docs/architecture/KEY_FILES.md` is a ~11KB
+  single line carrying six unrelated concern clusters; every cycle-area PR
+  now pays a manual three-way merge on it (#4250 did). `phase-scope.ts` got
+  its own entry in v0.46.20.0; peel the rest (lock/refresher cluster,
+  extract-atoms batching, by-mention resume → op-checkpoint entry, doctor
+  hints) into per-module entries. Effort: M (CC). Priority: P3.
+## Dream-wave follow-ups (#4216 oneshot + #4194/#4217/#4088/#4087/#4155/#4201)
+
+- [ ] **P2 — gateway-loop truncation note for `length` WITH tool calls.**
+  **What:** the legacy Anthropic path injects a truncation note into the
+  tool-result turn when a `max_tokens` stop arrives mid-tool-round
+  (subagent.ts ~:835) so the model re-issues the dropped call; the gateway
+  toolLoop has no equivalent — #4088 fixed only the zero-tool-call honesty
+  arm. Add the same note-injection to `gateway.ts:toolLoop`. **Why:** a
+  capped tool turn on the gateway path silently drops the trailing calls.
+  **Effort:** S. **Priority:** P2.
+- [ ] **P2 — synthesis-quality eval lane (oneshot vs agentic).** **What:** a
+  `gbrain eval` suite scoring synthesis output (faithfulness/link quality/
+  self-containedness) on a synthetic fixture corpus, following the
+  takes-quality 3-judge template + the eval-chronicle deterministic-gold
+  pattern; wire `details.synthesis.fallback_reasons` into the receipt.
+  Adjacent: #4198 (synthesize-concepts evaluator stub). **Why:** the
+  oneshot default currently leans on the soak + fallback telemetry; CI
+  should catch a quality regression, not output review. **Effort:** L.
+  **Priority:** P2.
+- [ ] **P3 — `dream.patterns.max_turns` config.** patterns.ts hardcodes
+  `max_turns: 30`; make it a registered key mirroring
+  `dream.synthesize.max_turns`. **Effort:** S.
+- [ ] **P3 — doctor/advisor collector for oneshot fallback rate.** Surface
+  `details.synthesis.fallback_jobs / oneshot_jobs` over the last N cycles;
+  advise the agentic revert dial when the rate stays high. **Effort:** S.
+- [ ] **P3 — evaluate oneshot for the patterns phase.** One job per cycle so
+  the latency win is small, but the pattern-page output contract is just as
+  structured. **Effort:** M.
+- [ ] **P3 — shared collectPutPageSlugs (ENG-3, deferred at C9).** synthesize
+  and patterns keep private ledger collectors; they differ materially
+  (chunk-slug rewrite + jobRawSource threading vs the simple patterns copy),
+  so unification was deferred rather than forced late in the wave. Unify
+  when patterns gains chunking or the collectors next change together.
+  **Effort:** M.
+- [ ] **P3 — relax the handler-entry capability gate for oneshot jobs
+  (ENG-1).** The oneshot attempt needs no tools, so a tool-incapable model
+  could legitimately run it; today the gate refuses at entry
+  (behavior-preserving v1). Move the check to the fallback boundary for
+  `mode: 'oneshot'` jobs. **Effort:** S.
+
+
+## Skill-bridge (cathedral-7) follow-ups (plan: ~/.claude/plans/system-instruction-you-are-working-witty-fern.md)
+
+- [ ] **P2 — codex/opencode native skills-dir + codex multi-plugin observation
+  runs.** **What:** hermetic observation runs (OPENCODE-CLI-PIN.md style)
+  answering (a) does codex/opencode read a native skills DIR for direct file
+  installs, and (b) does codex's plugin installer handle a multi-entry
+  marketplace. On (a) verified: add the dest default to
+  `src/core/bootstrap/host-specs.ts` (dated TARGETS note) and lift the
+  `--dest`-required refusal in `src/commands/skillpack/harness.ts`. On (b)
+  verified: add `gbrain-coding`/`gbrain-daily` entries to
+  `.agents/plugins/marketplace.json` (the dist branch already carries the
+  variant trees) and flip `test/codex-plugin-manifest.test.ts`'s codex
+  marketplace pin from 1 to 3. Recipe anchor: the Grok bootstrap-harness
+  checklist below. **Why:** prove-before-publish — the claude lane got a
+  real-binary door; these two shipped gated instead. **Effort:** M.
+  **Priority:** P2.
+- [ ] **P2 — STARTER_OPS question: should get_skill/list_skills join the
+  starter surface?** **What:** the stub lane is dead on unmodified plugin
+  installs (starter surface hides skills ops; stdio can't persist a
+  request_tools widening). Decide whether the starter set grows the two
+  read-only skills ops (frozen-surface change: monotonicity test in
+  test/mcp-surface.test.ts, publish gate still applies) or stub mode stays
+  documented full-surface-only. The contract pin lives in
+  test/skillpack-harness-bridge.test.ts (get_skill ∉ STARTER_OPS) and the
+  warn text in src/commands/skillpack/harness.ts must move with it. **Why:**
+  the biggest single unlock for cold-pull stubs. **Effort:** S (decision) +
+  S (change). **Priority:** P2.
+- [ ] **P3 — duplicate-skill-name coexistence doctor check.** **What:** a
+  doctor probe that detects the same skill name loadable from two lanes at
+  once (marketplace plugin snapshot + a bridge install in
+  ~/.claude/skills, or two persona variants) and names the lanes. The
+  bridge prints a static callout today; #4167 built coexistence detection
+  for the MCP server name only. **Effort:** S. **Priority:** P3.
+- [ ] **P3 — shared_deps set reconciliation.** **What:** the plugin tree +
+  bridge variants ship `_friction-protocol.md` (generator regex) though
+  openclaw.plugin.json#shared_deps omits it; RESOLVER.md is referenced by 6
+  skills but shipped by neither; _AGENT_README.md is in shared_deps but
+  referenced by zero SKILL.md. Pick ONE authoritative set, encode it in
+  openclaw.plugin.json#shared_deps, and make the generator + bundle.ts
+  consume it. **Effort:** S. **Priority:** P3.
+- [ ] **P3 — skill-lint rule for repo-relative shared-dep references.**
+  **What:** 20+ SKILL.md bodies reference `skills/conventions/...`
+  repo-relatively; those literal paths break in every copied layout (plugin
+  tree, variants, bridge installs). Lint them toward sibling-relative
+  (`../conventions/...`) which the layouts preserve. **Effort:** S.
+  **Priority:** P3.
+- [ ] **P3 — removal-era label sweep (filed v0.46.18.0).** **What:** code
+  error strings + docs say install/uninstall were "removed in v0.33" while
+  the CHANGELOG history records the retirement shipping in v0.36.0.0; pick
+  the true version and sweep `src/commands/skillpack.ts`, `harness.ts`,
+  `shared.ts`, the guide, KEY_FILES, and `docs/INSTALL.md` together. (The
+  other two gaps the post-ship doc review caught — `lens_error` dropped
+  from `BridgesStatusEntry`, and reference/remove/scaffold help omitting
+  `--scope`/`--workspace`/`--all` — were fixed pre-merge.) **Effort:** S.
+  **Priority:** P3.
+- [ ] **P3 — unify the three harness-id vocabularies.** **What:** bootstrap's
+  `Harness` (src/commands/bootstrap.ts:262, unexported),
+  `HarnessSelector` (src/core/bootstrap/harness.ts), and the bridge's
+  `BRIDGE_HARNESSES` (src/core/skillpack/harness-bridge.ts) into one core
+  registry module (note `HarnessTarget` is taken by the receipt-row type in
+  src/core/bootstrap/format.ts). **Why:** three unions drift; a new harness
+  should be one edit. **Effort:** M. **Priority:** P3. [CEO-F10]
+
+## Cathedral 5 follow-ups (checkpoint compaction + compiled views)
+
+- [ ] **P2 — `gbrain transcripts checkpoint` manual CLI.** **What:** a thin
+  subcommand that runs the checkpoint harvest over an explicit session file
+  (tail-read → segment → extract → manifest), direct-engine when no serve is
+  running (map LiveServeLockError to a typed skipped status). **Why:** the
+  hook + IPC lane covers production; a manual/e2e surface helps debugging and
+  non-hook harnesses. **Context:** shipping as a `transcripts` subcommand
+  inherits CLI_ONLY + CLI_ONLY_SELF_HELP + SELF_HELP_WITHOUT_ENGINE +
+  THIN_CLIENT_REFUSED wiring, the registry entry, and the format flag surface
+  for free (cathedral-5 review decision — deferred, not rejected). Start:
+  `src/commands/transcripts.ts` + `src/core/context/checkpoint-harvest.ts`.
+  Effort: S (CC). Priority: P2.
+- [ ] **P2 — opencode transcript adapter + dated SPEC_TARGET.** **What:** an
+  opencode session-log adapter in `src/core/transcripts/` (registry entry,
+  live-captured fixture, drift alarm) — the prerequisite for ANY opencode
+  boundary lane (checkpoint segments, transcripts ingest). **Why:** opencode
+  is a full-parity client (v0.46.4.0) with no transcript format; its sessions
+  are invisible to the import + checkpoint lanes. **Context:** needs its own
+  dated spec verification against a real opencode install before any parser
+  lands (cathedral-4 discipline; `OPENCODE_HAS_HOOKS=false` at
+  host-specs.ts:365 also blocks the hook lane until verified). Effort: M
+  (CC). Priority: P2. Blocked by: access to a live opencode session log.
+- [ ] **P3 — compile-context auto-refresh.** **What:** regenerate compiled
+  views on the autopilot cycle (or a documented cron recipe) so warm files
+  stay living build artifacts instead of manual runs. **Why:** the spec's
+  promise is "CLAUDE.md stopped drifting — the fragment is regenerated, not
+  hand-edited"; v1 ships the deterministic command only. **Context:** wire
+  `runCompileContext` as a cycle phase behind a config gate once the command
+  has proven byte-stability in the wild; `--check` is the CI-side staleness
+  probe. Start: `src/commands/autopilot.ts` phases + `src/commands/compile-context.ts`.
+  Effort: M (CC). Priority: P3.
+- [ ] **P3 — thin-client `compile-context`.** **What:** let a thin client
+  compile warm files from a REMOTE brain (today the command is
+  THIN_CLIENT_REFUSED with a "run on the host install" hint). **Why:**
+  remote-brain topologies are exactly the installs that want local compiled
+  files with no local DB. **Context:** needs remote read ops for the
+  selection arms (list_pages with source scoping exists; salience does not)
+  and a stance on scan allowlist location. Cathedral-5 review deferral.
+  Effort: M (CC). Priority: P3.
+- [ ] **P3 — `asOf`-parameterized, totally-ordered `getRecentSalience`.**
+  **What:** add `asOf?: string` to SalienceOpts, replace the SQL `NOW()`
+  decay term with the param, and add a slug tie-breaker to the ORDER BY so
+  the method becomes deterministic for byte-stable consumers; then restore
+  take-signal salience to compile-context selection (v1 dropped it — codex
+  round-2 finding: Date.now window + NOW() decay + no total order can
+  nondeterministically omit rows at the 100-row cutoff). **Context:** engine
+  change + parity work in BOTH engines (`src/core/{pglite,postgres}-engine/salience.ts`,
+  `src/core/search/sql-ranking.ts:323`). Effort: M (CC). Priority: P3.
+- [ ] **P3 — source-tagged corpus files.** **What:** carry an authenticated
+  source id on corpus/segment files so the sweep fallback routes facts to the
+  right source instead of the sweep's current source. **Why:** the sweep
+  corpus pass ingests every `.txt` in one global dir into ONE sourceId — a
+  pre-existing class shared with session-end corpus files (the checkpoint's
+  primary IPC lane is already source-correct via boundSourceId). **Context:**
+  cathedral-5 codex round-2 finding #5, dispositioned as documented
+  limitation + this TODO. Start: `src/core/sweep.ts:466` +
+  `src/commands/hook.ts` corpus writers. Effort: M (CC). Priority: P3.
+
 
 ## Fix-wave #4116-#4168 follow-ups (filed 2026-08-16; plan: ~/.claude/plans/system-instruction-you-are-working-compiled-tide.md)
 
@@ -7114,3 +7363,9 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   lane (likely repo-root fallback when the source local_path isn't threaded),
   fix it to fail closed, and add a run-e2e.sh post-run guard that fails the
   lane if `git status` at the host root gained tracked-file changes. Effort: M.
+
+### Dream oneshot wave — adversarial-review follow-ups (v0.46.19.0)
+- [ ] P2 (adversarial F2): a job that dies mid-oneshot-write-phase (wall-clock timeout) releases its idempotency key with a partial ledger; the next nightly's fresh job re-calls the model and can write differently-stemmed siblings next to the survivors (same hash suffix). Window is tiny (writes are DB-fast, chat is sub-budgeted at deadline/4). Consider: route write-phase timeouts to `delayed` when oneshot ledger rows exist, or dedupe at fan-out on existing `-<suffix>` pages.
+- [ ] P2 (adversarial F3): a chronically-failing transcript (always times out / deterministic all-writes-failed) releases its key on dead AND suppresses the cooldown stamp — re-triaged and re-paid every nightly. Add a bounded per-content-hash failure counter (N strikes → skip + surface in doctor/advisor).
+- [ ] P3 (adversarial F6): legacy direct-Anthropic path with the CDX-6 32k thinking default can exceed the SDK's 10-min default request timeout on slow generations (flag-off deployments only; surfaces as a retryable conn error at full token cost). Set an explicit SDK timeout or cap legacy maxTokens.
+- [ ] P3: phase-end `embedStalePages` runs outside BudgetTracker (bounded to the phase's own writes + 120s; fold under the tracker if spend telemetry wants it).

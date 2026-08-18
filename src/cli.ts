@@ -65,6 +65,9 @@ export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgr
   // v0.42.58 (#2035 class, caught by the handleCliOnly reachability sweep):
   // full handler at `case 'notability-eval'` but never dispatchable.
   'notability-eval',
+  // cathedral-5: deterministic compiled-context views (engine-needing;
+  // refused on thin clients; help answers engine-free).
+  'compile-context',
   // #2035 class (wired the #3502 way): `case 'whoknows'` had a live handler
   // (runWhoknows: ranked table, per-factor explain, thin-client routing) that
   // was shadowed by find_experts' non-hidden cliHints. The op hint is now
@@ -175,6 +178,9 @@ const CLI_ONLY_SELF_HELP = new Set([
   // would hide both — `gbrain dream retriage --help` printed the one-line
   // dream stub instead of the retriage contract (outside-voice CX9).
   'dream',
+  // cathedral-5: compile-context ships its own detailed usage (targets,
+  // check-mode exit codes). Without this the generic stub hides it.
+  'compile-context',
   // sources ships its own printHelp() (sources.ts, wired to `case '--help'`)
   // covering all ~28 subcommands, but was missing from this set — so
   // `gbrain sources --help` hit the generic one-line stub, which itself says
@@ -212,6 +218,9 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   // runDream accepts BrainEngine | null; --help (and `retriage --help`) is
   // answered before any engine-bearing work per the dream.ts IRON RULE.
   dream: async () => (await import('./commands/dream.ts')).runDream as never,
+  // runCompileContext accepts BrainEngine | null; the help guard runs first.
+  'compile-context': async () =>
+    (await import('./commands/compile-context.ts')).runCompileContext as never,
   // runSources's `--help`/`-h`/undefined-subcommand branch calls printHelp()
   // without ever touching `engine` — safe to dispatch with no brain
   // configured, matching the reader who runs `sources --help` because they
@@ -1688,6 +1697,9 @@ export const THIN_CLIENT_REFUSED_COMMANDS = new Set([
   // it would fabricate a scratch PGLite and sweep nothing anyone reads.
   // `bootstrap` and `hook` are deliberately NOT here (ENG-2).
   'sweep',
+  // cathedral-5: compiled views read the LOCAL brain (thin clients have
+  // no engine to compile from; remote-brain support is a filed follow-up).
+  'compile-context',
 ]);
 
 /**
@@ -1719,6 +1731,7 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   takes: 'takes list/search/scorecard/calibration + add/update/resolve/supersede route to the brain host automatically (takes_* MCP ops). This subcommand (extract/revisit) is host-bound: run it on the host machine.',
   sources: 'sources commands manage local DB + config rows. Per-subcommand thin-client routing lands in v0.31.x. For now: use `sources_list` / `sources_status` MCP tools, or run on the host.',
   sweep: 'sweep runs the serve-resident maintenance passes against the LOCAL engine. Run it on the host (the serve process also runs it automatically).',
+  'compile-context': 'compile-context compiles from the local brain; run it on the host install.',
   // v0.32 audit additions
   pages: '`pages purge-deleted` is admin+localOnly (hard-deletes from the local DB). Run on the host.',
   files: '`files list` and `files url` MCP ops are localOnly (paths live on the host filesystem). Use `gbrain files` on the host machine.',
@@ -2136,6 +2149,20 @@ async function handleCliOnly(command: string, args: string[]) {
     }
     try {
       await runZeSwitch(args, eng);
+    } finally {
+      await finishCliTeardown({ engine: eng });
+    }
+    return;
+  }
+
+  if (command === 'compile-context') {
+    // cathedral-5: deterministic compiled-context views. Owns its engine
+    // lifecycle (ze-switch pattern); the module returns the exit verdict
+    // (0 ok, 1 check found a difference, 2 error — no partial writes).
+    const { runCompileContext } = await import('./commands/compile-context.ts');
+    const eng = await connectEngine();
+    try {
+      setCliExitVerdict(await runCompileContext(eng, args));
     } finally {
       await finishCliTeardown({ engine: eng });
     }
@@ -3331,6 +3358,8 @@ TOOLS
   transcripts <ingest|status|recent> v0.46: import agent session logs + chat exports (local-only)
   dream [--dry-run] [--json]         Run the overnight maintenance cycle once (cron-friendly).
                                      See also: autopilot --install (continuous daemon).
+  compile-context --target <t>       Compile a deterministic, scanned, budgeted context
+        [--budget N] [--check]       file (claude-code | codex | openclaw)
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)
   report --type <name> --content ... Save timestamped report to brain/reports/
 

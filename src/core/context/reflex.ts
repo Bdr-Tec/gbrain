@@ -204,10 +204,22 @@ async function resolve(
   return null;
 }
 
-function isPostgres(cfg: GBrainConfig | null): boolean {
+export function isPostgres(cfg: GBrainConfig | null): boolean {
   if (cfg?.engine === 'postgres') return true;
   // engine unset but a database_url present → postgres (createEngine default).
   return !cfg?.engine && !!cfg?.database_url;
+}
+
+/**
+ * Cathedral 5 — narrow EXPORTED accessor for the ladder's rung-3 cached
+ * direct-Postgres connection (the checkpoint step in context-engine.ts's
+ * compact() shares the SAME process-singleton — never a second connection,
+ * never a duplicated cache). Returns null off-Postgres or during the
+ * connect-failure cooldown.
+ */
+export async function getDirectPostgresEngine(cfg: GBrainConfig | null): Promise<BrainEngine | null> {
+  if (!isPostgres(cfg)) return null;
+  return getPostgresEngine(cfg);
 }
 
 // ── Postgres process-singleton ──────────────────────────────────────────

@@ -300,7 +300,14 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
     try { startupSweep?.cancel(); } catch { /* noop */ }
     try { resolveServer?.close(); } catch { /* noop */ }
     if (resolveSocket) cleanupStaleSocket(resolveSocket);
-    Promise.resolve(engine.disconnect?.())
+    // Cathedral 5: abort the in-flight checkpoint harvest + drop its queue
+    // BEFORE engine.disconnect — the background-work registry's drain is
+    // CLI-exit-only by contract, and a fire-and-forget DB writer surviving
+    // disconnect busy-loops the single-writer lock (the #1762 hazard class).
+    import('../core/context/checkpoint-harvest.ts')
+      .then((m) => m.shutdownCheckpointHarvest())
+      .catch(() => {})
+      .then(() => Promise.resolve(engine.disconnect?.()))
       .catch(() => {})
       .finally(() => process.exit(code));
   };

@@ -2,6 +2,321 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.20.0] - 2026-08-17
+
+**Source freshness decoupled from synthesis.** A per-source maintenance cycle
+used to drag brain-wide synthesis and hours of LLM-backed enrichment along
+with it; on multi-source brains the fanout could enqueue a thousand-plus
+sequential synthesis jobs per source, the job keeper would kill the cycle
+before the freshness stamp landed, and the abandoned private queues were then
+misdiagnosed as a wedged default worker. Freshness is now stamped by the
+deterministic (non-LLM) phases alone, so `gbrain dream --source X` finishes
+in seconds instead of hours.
+
+### Changed
+- Implicit `dream --source X` and autopilot per-source cycles run only the
+  deterministic freshness phases (lint, backlinks, sync, extract,
+  extract_facts, recompute_emotional_weight). Mixed brain-wide work
+  (synthesize, patterns) runs once in the global-maintenance lane, never once
+  per source. The phase-scope taxonomy lives in
+  `src/core/cycle/phase-scope.ts`.
+- LLM-backed source enrichment (extract_atoms, consolidate, propose_takes,
+  enrich_thin, schema-suggest) no longer runs inside per-source freshness
+  cycles. Atom extraction keeps its existing autopilot auto-drain lane; the
+  others run on explicit invocation until the scheduled background lane
+  lands — e.g. `gbrain dream --source X --phase extract_atoms` per source,
+  while consolidate/enrich_thin/conversation_facts_backfill sweep the whole
+  brain in one invocation regardless of `--source`, so run those once, not
+  per source. A full implicit cycle still runs via plain `gbrain dream`
+  (no source flag), via `--source default`, and on brains with no sources
+  table.
+- Explicit phase requests on a named source (`dream --source X --phase …`,
+  and `--input <file>`, which implies synthesize) are honored verbatim; only
+  the implicit no-flag path is freshness-scoped.
+- Queued per-source cycle jobs are normalized at the worker boundary to the
+  freshness phase set, so jobs queued before this release can't replay the
+  old heavyweight behavior once per source. An all-rejected payload is an
+  explicit no-op with a visible reason, never a silent full run.
+
+### Fixed
+- Doctor no longer misdiagnoses parent-owned private dream queues as a wedged
+  default worker. `wedged_queue` excludes them, and a new
+  `orphaned_private_queue` check identifies dead private queues with the
+  correct repair path (the retriage queue-reconciliation dry run) — consulting
+  live cycle locks with ownership correlation (including starved-but-alive
+  holders within the lock steal grace, and tolerant of host-vs-DB clock skew)
+  so a running cycle is never flagged and an older crashed cycle's queue is
+  never hidden behind a new cycle's lock. Paused rows surface in details
+  instead of failing the check without a repair path, and a check that cannot
+  run reports a warning instead of reading as healthy.
+- The retriage queue reconciliation can now repair everything the doctor
+  check flags: it selects and converts any row stranded in a provably-dead
+  private dream queue (patterns children and legacy-grammar rows included,
+  not just current-generation synthesis rows), using the same
+  lock-ownership correlation, so doctor can never point at a queue the
+  repair refuses to touch.
+- A per-source cycle whose attempted phases ALL fail now reports `failed`
+  and does not stamp source freshness (the scope filter's bookkeeping
+  records previously diluted the status to a stampable `partial`, marking a
+  broken source permanently fresh).
+
+### To take advantage of v0.46.20.0
+
+Upgrade and restart your `gbrain jobs work` daemons so queued cycle jobs pick
+up the new phase handling (jobs queued by the previous version are normalized
+safely either way). Stale sources unstick on the next autopilot tick — or run
+`gbrain dream --source <id>` and watch it finish in seconds. Run
+`gbrain doctor` to see the wedged-queue vs orphaned-private-queue split; if it
+reports orphaned private queues, follow the printed retriage dry-run
+instructions. Schedule the heavier enrichment explicitly where you want it —
+`gbrain dream --source <id> --phase extract_atoms` per source, plus one
+brain-wide `gbrain dream --phase consolidate` — or wait for the scheduled
+background lane (tracked in TODOS).
+## [0.46.19.0] - 2026-08-17
+
+Dream-cycle synthesis is now fast by default: transcript synthesis runs as a
+single validated model call instead of an agent loop that burned 10+ provider
+round-trips per transcript, and the child
+drain can run several transcripts at once. Six companion fixes make subagent
+jobs honest about truncation, failed writes, and provider quirks.
+
+### Added
+- **Oneshot dream synthesis (default).** `dream.synthesize.mode` (default
+  `oneshot`) replaces the per-transcript agentic loop with ONE structured
+  completion; pages are validated (slug fences, task shapes, hash suffix,
+  exact-match wikilinks) before ANY write, then written programmatically
+  through the same put_page executor with deferred embeds. Any validation
+  failure falls back to the agentic loop in the same job with a
+  `fallback_reason` operators can read from phase telemetry. Revert dial:
+  `gbrain config set dream.synthesize.mode agentic`. (#4216)
+- **Pre-retrieval LINK CANDIDATES manifest.** Wikilink targets are resolved
+  BEFORE the model call from triage-cached entities/segments (zero-embed:
+  basename index + keyword search), so both modes stop burning search turns.
+  `dream.synthesize.link_manifest` (default on). The synthesis prompt now
+  also carries the write allow-list explicitly. (#4216)
+- **Bounded inline-drain concurrency.** `dream.synthesize.inline_concurrency`
+  (default 1, clamp [1,8], PGLite stays serial) runs multiple synthesis
+  children at once; phase details now report queue-wait/runtime p50/p95,
+  drain wall-clock, per-mode job counts, and a fallback-reason histogram.
+  Rate leases stay the provider ceiling — gateway-loop turns now acquire a
+  per-turn lease permit (they previously ran unleased), and a lease-full
+  child requeues without burning an attempt. (#4194)
+- **Structural write accounting.** Every subagent job result now carries
+  `pages_attempted/written/failed` (oneshot results also carry
+  `written_refs`); dream/patterns children
+  set `require_writes` so a job whose every write failed goes to the dead
+  letter with the first real error instead of reporting success. Phase
+  cooldowns are only stamped on a fully-successful run, and a run where every
+  child died is an honest phase failure. (#4217)
+
+### Fixed
+- Gateway tool loop reports output-cap truncation as `max_tokens` instead of
+  a clean completion; oneshot treats truncated JSON as a fallback, never a
+  parse. (#4088)
+- Thinking-by-default Claude 5 models are detected under provider-prefixed
+  and bare ids (`openrouter:anthropic/claude-*-5`, `claude-cli:*`), so the
+  32k output headroom applies wherever it should — and never to
+  8k-capped 3.5-era models. (#4087)
+- claude-cli subagent jobs no longer dead-letter when the model repeats a
+  tool id across turns: ids are minted locally, and a uniqueness-violation
+  backstop covers any provider that repeats ids. (#4155)
+- Gemini 3.x multi-turn tool loops work: per-part provider metadata
+  (`thoughtSignature`) survives the round-trip and crash-replay. (#4201)
+- Crash-safe oneshot recovery: the whole write batch is banked atomically
+  before the first write, a retried job finalizes from the write ledger
+  instead of re-calling the model, interrupted writes are re-executed, and
+  in-batch link edges are replayed — a completed synthesis job can no longer
+  silently lose pages. (ship-review + red-team hardening)
+- Legacy note: from this release on, a synthesis child whose every write
+  failed dead-letters, and dead jobs release their idempotency keys — so the
+  next `gbrain dream --phase synthesize` (or the nightly) retries those
+  transcripts automatically. Rows from PRE-upgrade jobs that reported
+  success without writing pages stay `completed` and keep their keys, so
+  those transcripts are not retried automatically; any content change to
+  the transcript re-keys it and the next run picks it up.
+
+### Changed
+- `gbrain agent logs` audit lines now show the synthesis mode and fallback
+  reason when present.
+## [0.46.18.0] - 2026-08-17
+
+**Your harness now gets gbrain's skills as capability, not just knowledge —
+curated to who you are.** One command copies a persona-curated skill set into
+Claude Code's native skills directory with an update lens that respects your
+local edits, and the plugin marketplace gains two persona variants
+(`gbrain-coding`, `gbrain-daily`) for sessions that don't want all 65 skills
+in the manifest. This is the skill bridge (cathedral 7): personas defined
+once, delivered over every lane.
+
+To take advantage of v0.46.18.0: `gbrain upgrade`, then either
+`gbrain skillpack scaffold --harness claude-code` (marketplace-free,
+user-scope, persona-curated) or `/plugin install gbrain-coding@gbrain` from
+the marketplace. `gbrain skillpack status` shows what's installed where.
+
+### Added
+- `gbrain skillpack scaffold --harness <claude-code|openclaw|codex|opencode>`
+  — installs a persona-curated set of bundled skills into the harness's
+  native skill-discovery location. Claude Code defaults to the
+  `coding-agent` persona and your user-scope skills dir (`--scope project`
+  for a repo-local install); openclaw delegates to the workspace scaffold
+  with persona filtering; codex/opencode take an explicit `--dest` until
+  their native locations are verified. Additive and idempotent: re-runs
+  never overwrite your files.
+- **Personas** — named, reasoned skill curations in
+  `skills/plugin-lanes.json#personas`: `coding-agent` (18 skills: retrieval,
+  routing, ingest discipline, correction hygiene) and `daily-driver`
+  (17 skills: meetings, tasks, briefings, reading, research). `--persona
+  all` installs the full lane; `--skill` picks individual skills, validated
+  against the lane so repo-development-only skills are refused with the
+  recorded reason. Installing everything costs every session ~80 tokens per
+  skill of native manifest — curation is the fix.
+- **Marketplace persona variants** — `/plugin install gbrain-coding@gbrain`
+  or `gbrain-daily@gbrain` install curated subsets as native Claude Code
+  plugins (self-contained trees under `plugin-variants/`, same MCP server).
+  Install exactly one gbrain plugin per machine.
+- `gbrain skillpack reference --harness <h>` — a three-way diff lens over a
+  harness install: with the install-time hash ledger it tells **your edits**
+  (`local_edit` — kept, always) apart from **upstream movement**
+  (`upstream_drift` — `--apply-clean-hunks` aligns it and keeps the ledger
+  current). Files the bridge can't prove it wrote are never touched.
+- `gbrain skillpack remove --harness <h>` — removes only files the bridge
+  itself wrote (a machine-owned ledger at
+  `~/.gbrain/skillpack-bridge-state.json`); files you've edited since
+  install are kept — they're yours now. Never the removed-in-v0.33
+  workspace `uninstall`.
+- **Cold-pull stub mode** (`--stub`) — installs pointer SKILL.md files whose
+  bodies fetch the real instructions from your brain via the MCP `get_skill`
+  op, so skill bodies are always current. Preflight-gated: refuses unless
+  skill publishing is on and every skill is servable from the directory the
+  server would resolve. Ships the shared-convention and sibling files skill
+  bodies reference. Aimed at full-surface local/HTTP MCP setups.
+- `gbrain skillpack status` now reports installed harness bridges with
+  file-level currency (identical / differs / missing), and says so when the
+  currency lens itself couldn't run instead of showing healthy zeros.
+
+### Changed
+- Skill installs into harness directories are safety-gated end to end:
+  frontmatter is validated before any write (a frontmatterless SKILL.md can
+  break a harness session at startup), every write path is confined to the
+  destination on the real filesystem (traversal and symlinked parents
+  refused), and switching a skill between full and stub modes is reported as
+  a conflict — never silently converted.
+- The plugin regeneration step now emits the persona variant trees alongside
+  `plugin/` (`--variants-out plugin-variants`), drift-gated in CI and shipped
+  on the release dist branch.
+- The codex marketplace intentionally stays at the single full plugin until
+  codex's multi-entry marketplace handling is verified; the variant trees
+  already ship on the dist branch, so enabling later is a two-line change.
+
+### Fixed
+- The CLI flag registry no longer registers phantom flags harvested from
+  type-only imports' documentation comments (hundreds of phantom entries
+  removed across the command surface — flags a command never read but would
+  silently accept).
+
+### For contributors
+- `src/commands/skillpack.ts` is now a façade (dispatch + help + the v0.33
+  removal errors); handlers live in `src/commands/skillpack/`. New core
+  modules: `src/core/skillpack/{personas,bridge-state,harness-bridge}.ts`.
+  Persona validation has ONE implementation (`personas.ts`) shared by the
+  CLI and `scripts/generate-plugin-tree.ts`. Skills-dir locations live in
+  `src/core/bootstrap/host-specs.ts` with dated verification notes.
+- The bridge's test matrix covers traversal/symlink confinement, mode
+  conflicts in both directions, written-only ownership, ledger refresh after
+  applies, partial-failure ledger banking, and a real-binary marketplace
+  install of the `gbrain-coding` variant.
+
+## [0.46.17.0] - 2026-08-16
+
+**Checkpoint compaction + compiled views (Cathedral 5).** Compaction is the
+worst moment in a long-lived agent's life: the harness summarizes the window
+and the un-extracted detail dies with it. The brain is now the durable side
+of that boundary — the pre-compaction window is banked to disk before the
+summary lands, facts are harvested from it moments later, and the
+post-compaction context carries `brain://` links the agent re-pulls on
+demand. And the hand-maintained warm files (the CLAUDE.md fragment, the
+AGENTS.md block) can now be *compiled from the brain* instead of drifting by
+hand.
+
+### Added
+- **Checkpoint compaction on Claude Code — zero new setup.** The
+  bootstrap-installed PreCompact hook now banks the since-last-compaction
+  window as a secret-scanned, content-addressed corpus segment *inside its
+  deadline, before any IPC* — a crash after that point loses nothing
+  (the maintenance sweep extracts every segment as a backstop). The same IPC
+  round trip asks a running `gbrain serve` to harvest the segment promptly:
+  facts land with session provenance, and only links whose page actually
+  resolves are banked into the new per-session checkpoint manifest
+  (migration v132, one additive column). The post-compaction session start
+  renders those links as a `## Compaction checkpoints` section with honest
+  copy. Existing installs pick all of this up on upgrade with no re-install.
+- **Checkpoint compaction on OpenClaw — engine-internal.** `compact()` runs
+  a time-bounded, fail-open checkpoint step before delegating (spool-first;
+  serve IPC on PGLite, direct connection on Postgres), and `assemble()`
+  injects a deterministic checkpoint block from the banked manifest, keyed
+  to the exact segment it spooled so a stale manifest never masquerades as
+  the new checkpoint. Engine contract version 0.3.0 (additive; older hosts
+  unchanged).
+- **`gbrain compile-context --target claude-code|codex|openclaw`** — compile
+  a token-budgeted, sensitivity-scanned warm-file fragment straight from
+  brain pages: `.claude/gbrain-context.md` (one `@import` line and it loads
+  on every Claude Code session), a managed `AGENTS.md` block (serves codex
+  AND opencode), or the OpenClaw workspace file. Deterministic by
+  construction — an unchanged brain compiles to identical bytes, so
+  `--check` is a real staleness probe (exit 1 when the committed file is
+  stale). The budget caps the whole file; anything that trips the secret/PII
+  scan drops that page's entry with a report, and reviewed false positives
+  un-drop via the fingerprint allowlist. Pin any page to the top of every
+  compile with the `compile-context` tag (the scan and the budget still
+  apply).
+- **Session-end corpus writes got smarter.** When every compaction window
+  was already segment-banked, session-end writes only the remainder —
+  coverage decided by exact content hashes, never counts, so a missed
+  compaction always falls back to the full transcript (at-least-once,
+  never loss). Corpus housekeeping now also reaps orphaned sidecar files and
+  aged ledgers that previously lived forever.
+- **Operational visibility for the whole lane.** Compact, session-end, and
+  serve-side harvest outcomes all ride the hooks heartbeat with typed reason
+  codes (counts only, never content) — `docs/guides/checkpoint-compaction.md`
+  is the guide and runbook.
+
+### Changed
+- Transcript parsing surfaces compaction-boundary *positions* (returned
+  directly by the Claude Code parser; the OpenClaw format goes through its
+  exported line mapper), enabling precise boundary windows everywhere; the
+  mapper export means every boundary consumer shares the same dated format
+  contract.
+- The facts pipeline reports which entity pages actually received
+  fence-written facts in a run — the truthful-links source for checkpoint
+  manifests — and `hook:compact` is a first-class provenance tag.
+- The PII scrubber's regex families are now an ordered, exported pattern
+  set (`PII_PATTERNS`, queried via `findPii`) with byte-identical scrubbing
+  behavior, composed with the
+  secret scanner, path/blocklist families, and the operator pattern file
+  into one sensitivity scan used by compiled views.
+
+### Fixed
+- Ship-stage review hardening across the new lane: manifest polls are
+  version-skew-safe against older serves and bounded per turn; session ids
+  are charset-sanitized before any filename use; the harvest queue is
+  bounded with typed skips and a shutdown grace so serve exit is never held
+  hostage; multiline page titles can no longer damage the AGENTS.md managed
+  block; a migration version-number collision across concurrent PRs now
+  fails the suite loudly instead of silently skipping the second migration.
+- Cycle lock-steal detection no longer depends on re-reading the abort
+  signal's reason (observed to read back empty under loaded runners): the
+  steal error is held in a GC-safe side-channel, so a stolen lock is always
+  classified as the structured partial instead of surfacing as a generic
+  crash, and the corresponding test asserts on one captured read.
+
+**To take advantage of v0.46.17.0:** upgrade and keep working — Claude Code
+installs bootstrapped with hooks gain checkpoint compaction automatically
+(run a session past a compaction and watch the `## Compaction checkpoints`
+section appear on re-entry). Then try
+`gbrain compile-context --target claude-code --budget 3000` and add the
+printed one-line `@import` to your CLAUDE.md; re-run it (or `--check` in CI)
+whenever the brain changes. Codex/opencode users: the AGENTS.md target works
+today; native codex hooks are a filed follow-up.
 ## [0.46.16.0] - 2026-08-16
 
 **Seven verified breakages from the live issue queue, fixed at the root.**

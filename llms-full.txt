@@ -272,7 +272,8 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
   same commit as any peel. migrate.ts is `region-exempt` (the MIGRATIONS array grows freely;
   the runner logic around it is ratcheted).
 - **Peeled façades keep their surface.** operations.ts (`src/core/ops/*`), doctor.ts
-  (`src/commands/doctor/*`), sync.ts (`src/core/sync-*`), and both engines
+  (`src/commands/doctor/*`), sync.ts (`src/core/sync-*`), skillpack.ts
+  (`src/commands/skillpack/*`), and both engines
   (`src/core/{postgres,pglite}-engine/*`) are façades re-exporting everything they always
   exported — import sites and published package exports never chase the peel. New code goes
   in the module dirs, not back into the façades. Engine modules take narrow explicit deps
@@ -301,6 +302,7 @@ detail on demand.)
 | search modes / cost knobs | `docs/guides/search-modes.md` |
 | embedding spend gates / cost gate / `spend.posture` / off switches | `docs/operations/spend-controls.md` |
 | push-based context (volunteer/watch/reflex window) | `docs/guides/push-context.md` |
+| checkpoint compaction / compiled context files (`gbrain compile-context`) | `docs/guides/checkpoint-compaction.md` + `docs/guides/ambient-recall.md` |
 | schema packs / page types / extraction | `docs/architecture/schema-packs.md`, `type-taxonomy.md`, `lens-packs.md` |
 | thin-client / remote MCP / cross-modal | `docs/architecture/thin-client.md` |
 | memory verbs / MCP tool surface (`--surface`) / conformance | `docs/protocol/MEMORY_VERBS_v1.md` + the `verbs*`/`surface.ts`/`protocol.ts` entries in `KEY_FILES.md` |
@@ -665,8 +667,8 @@ ms, max waiters) for `--json`; a one-line summary prints to stderr.
 
 ## Version locations (single source of truth: `VERSION` file)
 
-Every release advances the version in **seven files at once**. Keep these in
-sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
+Every release advances the version in **every file in the table below at
+once**. Keep these in sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
 package.json drift), but the canonical list lives here so future runs and
 the auto-update agent know where to look.
 
@@ -681,7 +683,7 @@ four numeric segments are required first. Historical 3-segment versions
 (`0.31.3`, `0.22.1`) remain valid in `git log` and migration filenames
 (`skills/migrations/v0.21.0.md`); do NOT rewrite them. Going forward only.
 
-**Required (every release must update all seven):**
+**Required (every release must update every row):**
 
 | File | What lives there | Format |
 |---|---|---|
@@ -697,10 +699,12 @@ four numeric segments are required first. Historical 3-segment versions
 
 **Auto-derived (no manual edit; refreshed by their own commands):**
 
-- `plugin/` — the committed codex/claude plugin skill tree embeds a
-  `gbrain-plugin-tree-stamp: X.Y.Z.W` in its generated README, so every
-  version bump drifts it. Regenerate after the bump: `bun run
-  scripts/generate-plugin-tree.ts --out plugin` (guarded by
+- `plugin/` + `plugin-variants/` — the committed codex/claude plugin skill
+  tree AND the persona variant trees (gbrain-coding, gbrain-daily) embed a
+  `gbrain-plugin-tree-stamp: X.Y.Z.W` (the variants' generated plugin
+  manifests carry the version too), so every version bump drifts them.
+  Regenerate after the bump: `bun run scripts/generate-plugin-tree.ts --out
+  plugin --variants-out plugin-variants` (guarded by
   `scripts/check-plugin-tree.sh` in `bun run verify`; the release
   `publish-codex-plugin` job also drift-gates it before publishing).
 - `bun.lock` — root-package version is auto-pinned from `package.json`. After
@@ -1848,7 +1852,7 @@ Postgres-at-scale, Supabase, and thin-client setup paths live in [`docs/INSTALL.
 
 GBrain exposes nearly all of its 100+ operations as MCP tools (stdio and HTTP; a handful of local-only ops stay CLI-side) — or exactly the seven memory verbs with `--surface verbs`. The specific snippet depends on which client you use:
 
-- **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — plugin: `/plugin marketplace add garrytan/gbrain` + `/plugin install gbrain@gbrain` (MCP + skills). Or local one-liner: `claude mcp add gbrain -- gbrain serve` (zero server, zero tunnel). Remote with just a bearer token: `gbrain connect https://your-host/mcp --token gbrain_xxx` prints a paste-ready block (or `--install` wires it up and smoke-tests the token).
+- **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — plugin: `/plugin marketplace add garrytan/gbrain` + `/plugin install gbrain@gbrain` (MCP + skills; persona variants `gbrain-coding` / `gbrain-daily` install curated subsets — pick exactly one gbrain plugin). Marketplace-free skills: `gbrain skillpack scaffold --harness claude-code` copies a persona-curated skill set into your user-scope skills dir with a local-edit-respecting update lens. Or local one-liner: `claude mcp add gbrain -- gbrain serve` (zero server, zero tunnel). Remote with just a bearer token: `gbrain connect https://your-host/mcp --token gbrain_xxx` prints a paste-ready block (or `--install` wires it up and smoke-tests the token).
 - **[Codex](docs/mcp/CODEX.md)** — plugin (recommended): `codex plugin marketplace add garrytan/gbrain@codex-plugin` + `codex plugin add gbrain@gbrain` installs the MCP server AND the curated skill set. Or connect-only: `gbrain connect https://your-host/mcp --token gbrain_xxx --agent codex` (or `--install`); Codex reads the bearer from `$GBRAIN_REMOTE_TOKEN` at runtime, so the token never lands in Codex config.
 - **[Cursor / Windsurf / any stdio MCP client](docs/mcp/CLAUDE_CODE.md)** — same shape, add `{"command": "gbrain", "args": ["serve"]}` to your MCP config.
 - **[Hermes](docs/mcp/HERMES.md)** — `printf 'Y\n' | hermes mcp add gbrain --env GBRAIN_HOME=$HOME --connect-timeout 60 --command $(which gbrain) --args serve`. Keep `--args` last, and verify with `hermes mcp test gbrain` (the add exits 0 even on failure).
@@ -3322,7 +3326,9 @@ per-transcript synthesis subagents. The dials:
 - `dream.triage.max_tokens` (default 2048, floor 256) — judge output budget.
 - `dream.triage.concurrency` (default 4, clamped 1–16) — concurrent judge
   calls.
-- `dream.synthesize.max_turns` (default 16) — synthesis turn budget. The
+- `dream.synthesize.max_turns` (default 16) — synthesis turn budget for
+  agentic children and oneshot fallbacks (the default oneshot path — see
+  the next section — is a single completion and never spends turns). The
   triage map hands the subagent pre-extracted segments, so the mid-tier
   default model (`models.dream.synthesize`, tier `reasoning`) with a 16-turn
   budget is the intended pairing — frontier-model overrides are unnecessary
@@ -3347,6 +3353,44 @@ gbrain dream retriage --dry-run          # what would change (zero LLM calls)
 gbrain dream retriage --reconcile-queue  # re-score + cancel below-threshold queued jobs
 gbrain dream retriage --audit-rejects 20 # synthesis-model second opinion on 20 rejects
 ```
+
+### Synthesis speed: oneshot mode + the drain pool
+
+Above the triage cascade sit the execution dials (#4216/#4194):
+
+- `dream.synthesize.mode` (default `oneshot`) — how each synthesis child
+  runs. `oneshot` makes ONE tool-less completion against a prompt that
+  already carries a pre-retrieved **LINK CANDIDATES** manifest and the write
+  allow-list, then validates and writes the pages programmatically (slug
+  grammar, allow-list, transcript hash suffix, exact-match wikilinks — all
+  checked before any write; embeds deferred out of the model path and
+  backfilled at phase end by a bounded pass over just the pages the phase
+  wrote — never a source-wide sweep). A response that fails any check automatically
+  falls back to the classic agentic loop **in the same job** — no lost work,
+  no resubmission. Typical effect: 10+ provider round-trips per transcript
+  (up to the 16-turn default cap, more on raised `max_turns`) → 1. Revert
+  dial: `gbrain config set dream.synthesize.mode agentic`.
+- `dream.synthesize.link_manifest` (default on) — the zero-embed
+  pre-retrieval manifest (built from the triage verdict's cached entities +
+  segment notes). Benefits BOTH modes: agentic children stop burning turns
+  on low-yield searches; oneshot children get their link targets up front.
+- `dream.synthesize.inline_concurrency` (default 1, clamp 1–8) — concurrent
+  drain loops for the per-run child queue on Postgres (PGLite always drains
+  serially). Provider ceilings stay with the rate leases (every provider
+  round-trip on every path holds a lease slot), so this dial only removes
+  queue-wait, never over-drives the API.
+
+Reading the phase report (`details.synthesis`): `mode`, `oneshot_jobs` /
+`fallback_jobs` / `agentic_jobs` + a `fallback_reasons` histogram (a rising
+fallback rate means the model is failing the output contract — check the
+top reason before considering the agentic revert), `queue_wait_ms_p50/p95`
+and `child_runtime_ms_p50/p95` (a slow-but-healthy drain is visible instead
+of indistinguishable from a stuck one), and `dead_jobs`/`degraded`. A run
+with any non-completed child does NOT stamp the cooldown, so the next
+nightly retries exactly the failed transcripts; a run whose EVERY child
+died fails the phase loudly. Synthesis children also fail (dead-letter)
+when every attempted page write failed — `completed` can no longer mean
+"zero pages written".
 
 ### What It Does
 

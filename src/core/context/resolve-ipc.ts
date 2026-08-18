@@ -153,6 +153,20 @@ export interface ContextPackRequest {
   trigger?: string;
   /** PreCompact banking mode: persist entities, skip assembly. */
   bankOnly?: boolean;
+  /**
+   * Cathedral 5 (additive, bankOnly companion): BASENAME of a corpus segment
+   * this hook just banked — serve schedules a prompt checkpoint harvest of it
+   * (fire-and-forget; the ack never waits on the LLM). Version-skew tolerant
+   * BY DESIGN: an old serve destructures known fields and ignores this one
+   * (today's behavior); the sweep backstop still extracts the segment.
+   */
+  flushCorpusFile?: string;
+  /**
+   * Cathedral 5 (additive, read-only): return the session's checkpoint
+   * manifest links — no assembly, no cursor advance, no banking. Used by the
+   * OpenClaw assemble poll.
+   */
+  manifestOnly?: boolean;
 }
 
 export type IpcRequest = ResolveRequest | TurnContextRequest | ContextPackRequest;

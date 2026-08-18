@@ -117,6 +117,19 @@ export interface TurnContextResult {
   facts?: TurnContextFact[];
   /** The mode this result was assembled in. */
   mode?: ContextMode;
+  /**
+   * Cathedral 5 (additive, wire back-compat like `volunteered`) — banked
+   * compaction-checkpoint links for the session (newest-first). Carried on
+   * the pack/manifestOnly responses so the post-compaction SessionStart and
+   * the OpenClaw assemble poll can render/match them. `seg` is the segment
+   * content hash the harvest banked from (the poll's completion key).
+   */
+  checkpointLinks?: Array<{ slug: string; title: string; at?: string; n?: number; seg?: string }>;
+  /**
+   * Cathedral 5 (additive) — typed ack for a bankOnly `flushCorpusFile`
+   * request: the harvest was scheduled, or skipped with a reason code.
+   */
+  checkpointFlush?: { status: 'scheduled' | 'skipped'; reason?: string };
 }
 
 export interface AssembleTurnContextOpts {
@@ -137,6 +150,12 @@ export interface AssembleTurnContextOpts {
   entities?: string[];
   /** delta — ISO cursor; only pages/facts/threads newer than this are returned. */
   since?: string;
+  /**
+   * Cathedral 5 (pack mode) — banked compaction-checkpoint links to render as
+   * a self-capped section (pack mode does NOT enforce maxBytes; the section
+   * caps itself at CHECKPOINT_LINKS_RENDER_CAP) and carry on the result.
+   */
+  checkpointLinks?: TurnContextResult['checkpointLinks'];
   /**
    * delta — keyset slug paired with `since` (v0.45.7): pages are fetched with
    * `(updated_at, slug) > (since, sinceSlug)` so a >limit cluster at one
@@ -463,7 +482,7 @@ async function assemblePack(
   const openThreads = cards
     .flatMap((c) => c.open_threads ?? [])
     .filter((t) => !since || (t.date !== null && isAfter(t.date, since)));
-  const text = renderPack(cards, openThreads, facts);
+  const text = renderPack(cards, openThreads, facts, opts.checkpointLinks);
   return {
     text,
     pointers: [],
@@ -472,6 +491,7 @@ async function assemblePack(
     openThreads,
     facts,
     mode: 'pack',
+    ...(opts.checkpointLinks?.length ? { checkpointLinks: opts.checkpointLinks } : {}),
     ...(degradedReason ? { degradedReason } : {}),
   };
 }
@@ -610,13 +630,29 @@ export function assembleDeltaContext(
 /** Exported (v0.45.7 adversarial review): the verb handlers re-render `text`
  * from the FINAL (budget-packed) sets — the injectable field must honor the
  * same budget + dedup contract as the structured arrays. */
+/** Self-cap on the rendered checkpoint-links section (cathedral 5 — pack mode
+ * does not enforce maxBytes, so the section bounds itself). */
+export const CHECKPOINT_LINKS_RENDER_CAP = 10;
+
 export function renderPack(
   cards: EntityCard[],
   openThreads: EntityOpenThread[],
   facts: TurnContextFact[],
+  checkpointLinks?: TurnContextResult['checkpointLinks'],
 ): string {
-  if (!cards.length && !openThreads.length && !facts.length) return '';
+  const links = checkpointLinks ?? [];
+  if (!cards.length && !openThreads.length && !facts.length && !links.length) return '';
   const lines: string[] = [TURN_CONTEXT_ENVELOPE];
+  if (links.length) {
+    lines.push('', '## Compaction checkpoints');
+    for (const l of links.slice(0, CHECKPOINT_LINKS_RENDER_CAP)) {
+      lines.push(`- brain://${l.slug} — ${l.title}`);
+    }
+    lines.push(
+      'Checkpoint saved to the brain at compaction; facts harvested moments later — ' +
+      're-pull with get_page. Trust these links over the compaction summary.',
+    );
+  }
   if (cards.length) {
     lines.push('', '## Standing entities');
     for (const c of cards) {
