@@ -2,6 +2,158 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.21.0] - 2026-08-18
+
+**Fact extraction no longer requires an Anthropic key — and OpenAI defaults
+never go stale.** Model routing now honors whichever provider key you have:
+an OpenAI-only install gets automatic fact extraction, query expansion,
+synthesis, and dream cycles routed to OpenAI instead of silently failing
+against Anthropic defaults. On OpenAI-keyed installs, gbrain discovers the
+newest usable models from your own account (priced-only, cached, fail-open)
+so nothing is ever pinned to a model generation that has since been
+superseded. Keyless installs stay useful and honest: `extract_facts` tells
+the calling agent to extract facts itself via the `remember` verb, and
+doctor/bootstrap-verify report the real state instead of certifying a dead
+pipeline.
+
+### Added
+- Key-aware tier defaults: model resolution's final step consults which
+  provider keys are actually present (config-file keys folded with the
+  environment) instead of assuming Anthropic. Anthropic still wins when both
+  keys exist — zero change for working installs.
+- Latest-model discovery for OpenAI (`GET /v1/models` on your own account):
+  per-tier defaults follow the newest model family that has a pricing row,
+  with a conservative id grammar so unfamiliar future names degrade safely.
+  24h cache with atomic writes; stale cache beats static fallback; failures
+  back off across process boundaries; `GBRAIN_MODEL_DISCOVERY=off` disables.
+- Keyless `extract_facts` returns a structured `extraction_unavailable`
+  envelope instructing the agent to self-extract (one `remember` call per
+  fact, visibility pinned so facts stay private); other extractor failures
+  return their specific reason instead of a lying `inserted: 0`.
+- One canonical provider-key/env fold (`src/core/ai/provider-env.ts`) shared
+  by the gateway, capability report, and model routing — the Gemini alias
+  and Azure OpenAI fields now reach every consumer identically.
+
+### Changed
+- An explicit `chat_model` pin in `~/.gbrain/config.json` survives engine
+  reconnect when its provider key is present; a pin whose key is gone falls
+  back to the key-aware default with one clear stderr note (prefix-less pins
+  get their own diagnosis). `gbrain init` no longer persists auto-detected
+  chat pins — runtime resolution replaced install-time pinning.
+- `bootstrap verify` and `gbrain doctor` report extraction health against
+  the model extraction will actually call, per provider; keyless installs
+  read as "keyless" with the fence/`remember` guidance, not as healthy
+  automatic extraction.
+- The jobs worker re-reads file-plane config before facts-absorb jobs, so an
+  API key added to `~/.gbrain/config.json` reaches a long-lived worker at the
+  next job without a restart.
+- Config writes are atomic (temp file + rename), so concurrent readers never
+  see a torn `config.json`.
+- Install/bootstrap copy states per-provider truth: OpenAI = semantic search
+  + automatic fact extraction; Voyage = semantic search; Anthropic =
+  fact extraction.
+
+### Fixed
+- Fact extraction gated on the wrong model: it probed the global chat model,
+  then called the extraction model — the two can disagree in both
+  directions. It now gates on the model it actually calls (classification
+  same fix).
+- Extraction failures were silently swallowed as "0 facts": provider errors
+  and truncation now raise typed errors that the durable job lane retries
+  visibly (5 attempts, 60s backoff, parked as re-runnable failed jobs — a
+  page write never fails because its facts backstop threw); refusals and
+  malformed output are logged with the resolved model named. Keyless
+  installs write no log spam — one calm stderr note.
+- Provider error bodies (which can echo partial credentials) no longer flow
+  into MCP responses or persisted logs from extraction failures.
+
+To take advantage of v0.46.21.0:
+- `gbrain upgrade` (or reinstall the binary), then restart any long-running
+  `gbrain jobs work` daemons so workers pick up the new routing.
+- **Spend note:** if you have an `OPENAI_API_KEY` (env or config), features
+  that previously no-oped without an Anthropic key now actually run against
+  your OpenAI account: automatic fact extraction on eligible page writes,
+  query expansion (only in the `tokenmax` search mode), and LLM dream-cycle
+  phases you invoke. Controls: `gbrain config set facts.extraction_enabled
+  false` (extraction kill switch), `models.*` pins for explicit routing, and
+  your search mode's expansion knob. Anthropic-keyed installs see no routing
+  change.
+- OpenAI-only installs: run `gbrain bootstrap verify` — extraction should
+  report available via openai. Nothing else to configure.
+- Keyless installs: nothing breaks; `extract_facts` now hands your agent
+  explicit self-extraction instructions, and doctor explains the keyless
+  state honestly.
+
+## [0.46.20.0] - 2026-08-17
+
+**Source freshness decoupled from synthesis.** A per-source maintenance cycle
+used to drag brain-wide synthesis and hours of LLM-backed enrichment along
+with it; on multi-source brains the fanout could enqueue a thousand-plus
+sequential synthesis jobs per source, the job keeper would kill the cycle
+before the freshness stamp landed, and the abandoned private queues were then
+misdiagnosed as a wedged default worker. Freshness is now stamped by the
+deterministic (non-LLM) phases alone, so `gbrain dream --source X` finishes
+in seconds instead of hours.
+
+### Changed
+- Implicit `dream --source X` and autopilot per-source cycles run only the
+  deterministic freshness phases (lint, backlinks, sync, extract,
+  extract_facts, recompute_emotional_weight). Mixed brain-wide work
+  (synthesize, patterns) runs once in the global-maintenance lane, never once
+  per source. The phase-scope taxonomy lives in
+  `src/core/cycle/phase-scope.ts`.
+- LLM-backed source enrichment (extract_atoms, consolidate, propose_takes,
+  enrich_thin, schema-suggest) no longer runs inside per-source freshness
+  cycles. Atom extraction keeps its existing autopilot auto-drain lane; the
+  others run on explicit invocation until the scheduled background lane
+  lands — e.g. `gbrain dream --source X --phase extract_atoms` per source,
+  while consolidate/enrich_thin/conversation_facts_backfill sweep the whole
+  brain in one invocation regardless of `--source`, so run those once, not
+  per source. A full implicit cycle still runs via plain `gbrain dream`
+  (no source flag), via `--source default`, and on brains with no sources
+  table.
+- Explicit phase requests on a named source (`dream --source X --phase …`,
+  and `--input <file>`, which implies synthesize) are honored verbatim; only
+  the implicit no-flag path is freshness-scoped.
+- Queued per-source cycle jobs are normalized at the worker boundary to the
+  freshness phase set, so jobs queued before this release can't replay the
+  old heavyweight behavior once per source. An all-rejected payload is an
+  explicit no-op with a visible reason, never a silent full run.
+
+### Fixed
+- Doctor no longer misdiagnoses parent-owned private dream queues as a wedged
+  default worker. `wedged_queue` excludes them, and a new
+  `orphaned_private_queue` check identifies dead private queues with the
+  correct repair path (the retriage queue-reconciliation dry run) — consulting
+  live cycle locks with ownership correlation (including starved-but-alive
+  holders within the lock steal grace, and tolerant of host-vs-DB clock skew)
+  so a running cycle is never flagged and an older crashed cycle's queue is
+  never hidden behind a new cycle's lock. Paused rows surface in details
+  instead of failing the check without a repair path, and a check that cannot
+  run reports a warning instead of reading as healthy.
+- The retriage queue reconciliation can now repair everything the doctor
+  check flags: it selects and converts any row stranded in a provably-dead
+  private dream queue (patterns children and legacy-grammar rows included,
+  not just current-generation synthesis rows), using the same
+  lock-ownership correlation, so doctor can never point at a queue the
+  repair refuses to touch.
+- A per-source cycle whose attempted phases ALL fail now reports `failed`
+  and does not stamp source freshness (the scope filter's bookkeeping
+  records previously diluted the status to a stampable `partial`, marking a
+  broken source permanently fresh).
+
+### To take advantage of v0.46.20.0
+
+Upgrade and restart your `gbrain jobs work` daemons so queued cycle jobs pick
+up the new phase handling (jobs queued by the previous version are normalized
+safely either way). Stale sources unstick on the next autopilot tick — or run
+`gbrain dream --source <id>` and watch it finish in seconds. Run
+`gbrain doctor` to see the wedged-queue vs orphaned-private-queue split; if it
+reports orphaned private queues, follow the printed retriage dry-run
+instructions. Schedule the heavier enrichment explicitly where you want it —
+`gbrain dream --source <id> --phase extract_atoms` per source, plus one
+brain-wide `gbrain dream --phase consolidate` — or wait for the scheduled
+background lane (tracked in TODOS).
 ## [0.46.19.0] - 2026-08-17
 
 Dream-cycle synthesis is now fast by default: transcript synthesis runs as a
