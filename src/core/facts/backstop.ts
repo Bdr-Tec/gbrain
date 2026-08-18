@@ -127,10 +127,16 @@ export function __resetBackstopWarningsForTests(): void {
   _warnedKeys.clear();
 }
 
+/**
+ * ONE sentence for every keyless-extraction surface (backstop note, doctor's
+ * facts_extraction_health) — a future provider addition edits it here only.
+ */
+export const KEYLESS_EXTRACTION_GUIDANCE =
+  'memory comes from agent-authored `## Facts` fences and the `remember` verb. ' +
+  'One optional key enables automatic extraction (OpenAI or Anthropic).';
+
 const KEYLESS_NOTE =
-  '[facts] keyless: automatic fact extraction off — memory comes from agent-authored ' +
-  '`## Facts` fences and the `remember` verb. One optional key enables automatic ' +
-  'extraction (OpenAI or Anthropic).';
+  `[facts] keyless: automatic fact extraction off — ${KEYLESS_EXTRACTION_GUIDANCE}`;
 
 /**
  * Classify a chat_unavailable extraction failure: an EXPECTED keyless state
@@ -235,15 +241,18 @@ export async function runFactsBackstop(
   // keys in hook subprocesses — the #1249 class — while the worker holds the
   // real key and even re-folds file-plane keys per job), so an enqueue-time
   // skip there would silently drop work a keyed worker could execute.
-  const availabilityGate = async (): Promise<boolean> => {
+  // Returns the resolved model on pass (threaded into the pipeline so
+  // extraction does NOT re-resolve it — the resolve is up to 3 sequential
+  // engine.getConfig round-trips per page write), or null on gate failure.
+  const availabilityGate = async (): Promise<string | null> => {
     const { getFactsExtractionModel } = await import('./extract.ts');
     const { isAvailable } = await import('../ai/gateway.ts');
     const extractionModel = ctx.model ?? (await getFactsExtractionModel(ctx.engine));
-    if (isAvailable('chat', extractionModel)) return true;
+    if (isAvailable('chat', extractionModel)) return extractionModel;
     await surfaceExtractionFailure(
       ctx.engine, parsedPage.slug, 'chat_unavailable', extractionModel, ctx.sourceId,
     );
-    return false;
+    return null;
   };
 
   // --- Mode dispatch ---
@@ -306,9 +315,11 @@ export async function runFactsBackstop(
       }
     }
     // In-process queue lane: THIS process executes the extraction — gate here.
-    if (!(await availabilityGate())) {
+    const queueModel = await availabilityGate();
+    if (!queueModel) {
       return { mode: 'queue', enqueued: false, queueDepth: 0, skipped: 'extraction_unavailable' };
     }
+    ctx = { ...ctx, model: queueModel };
     const { getFactsQueue } = await import('./queue.ts');
     const queue = getFactsQueue();
     const enqueued = queue.enqueue(async (signal) => {
@@ -351,10 +362,11 @@ export async function runFactsBackstop(
   // Inline executes in THIS process — gate here (this is also the durable
   // facts-absorb handler's execution-time gate in the jobs worker; the
   // handler converts a keyed skip into a retryable failure).
-  if (!(await availabilityGate())) {
+  const inlineModel = await availabilityGate();
+  if (!inlineModel) {
     return { mode: 'inline', inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'extraction_unavailable' };
   }
-  const r = await runPipeline(parsedPage, ctx, ctx.abortSignal);
+  const r = await runPipeline(parsedPage, { ...ctx, model: inlineModel }, ctx.abortSignal);
   return { mode: 'inline', ...r };
 }
 

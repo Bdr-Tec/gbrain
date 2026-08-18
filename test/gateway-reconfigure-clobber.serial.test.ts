@@ -121,3 +121,22 @@ describe('reconfigureGatewayWithEngine — no-clobber', () => {
     expect(getChatModel()).toBe(openaiStaticTierFallback().reasoning);
   });
 });
+
+describe('expansion-side effective resolution (review-army addition)', () => {
+  test('servable expansion_model file pin survives reconnect', async () => {
+    writeFileConfig({ expansion_model: 'openai:gpt-4o-mini' });
+    configureGateway({ expansion_model: 'openai:gpt-4o-mini', env: { OPENAI_API_KEY: 'sk-test' } });
+    await reconfigureGatewayWithEngine(stub as never);
+    const { getExpansionModel } = await import('../src/core/ai/gateway.ts');
+    expect(getExpansionModel()).toBe('openai:gpt-4o-mini');
+  });
+
+  test('unservable expansion pin falls to the key-aware utility default + warn', async () => {
+    writeFileConfig({ expansion_model: 'openai:gpt-4o-mini' });
+    configureGateway({ expansion_model: 'openai:gpt-4o-mini', env: { ANTHROPIC_API_KEY: 'sk-ant-test' } });
+    await reconfigureGatewayWithEngine(stub as never);
+    const { getExpansionModel } = await import('../src/core/ai/gateway.ts');
+    expect(getExpansionModel()).toBe(TIER_DEFAULTS.utility);
+    expect(stderrCapture).toContain('expansion_model');
+  });
+});

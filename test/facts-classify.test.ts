@@ -116,6 +116,12 @@ describe('classifyAgainstCandidates', () => {
 describe('classify gate — key-aware, engine-free (CX10)', () => {
   test('unservable classifier model degrades to cosine fallback, never throws', async () => {
     const { withEnv } = await import('./helpers/with-env.ts');
+    // Deterministic gate: clear any gateway/transport state a sibling file in
+    // this shard's process left behind — the test must exercise the
+    // unavailability gate, not a leftover stub or a network failure.
+    const { resetGateway, __setChatTransportForTests } = await import('../src/core/ai/gateway.ts');
+    resetGateway();
+    __setChatTransportForTests(null);
     await withEnv({
       ANTHROPIC_API_KEY: undefined,
       OPENAI_API_KEY: undefined,

@@ -86,11 +86,10 @@ const extract_facts: Operation = {
     // defaults to 'world' while extract_facts facts default 'private' —
     // omitting it would silently widen private data to every connected agent.
     // The visibility instruction names the RESOLVED visibility for THIS call
-    // (caller param > facts.default_visibility config > private) — a caller
-    // who explicitly asked for world-visible facts must not be steered to
-    // private, and vice versa. The pin itself is mandatory either way:
-    // `remember` hard-defaults to 'world', so an unpinned instruction would
-    // silently widen private-default extractions.
+    // (caller param > facts.default_visibility config > private): a caller who
+    // asked for world must not be steered to private, and an unpinned
+    // instruction would silently widen private-default extractions because
+    // `remember` hard-defaults to 'world'.
     const visibilityPin = `visibility: "${visibility}"` +
       (visibility === 'private' ? ' (remember defaults to world — omitting it would widen these facts)' : '');
     if (r.skipped_reason === 'chat_unavailable') {

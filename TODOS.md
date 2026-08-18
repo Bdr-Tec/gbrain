@@ -54,6 +54,28 @@
   long-standing operator trap AND makes worker key-refresh complete. Start:
   `src/commands/config.ts` set handler (redirect key fields to the 0600
   config.json write path). **Effort:** S-M.
+- [ ] **P2 — Doctor `facts_extraction_health` can't see the WORKER's env.**
+  **What:** the zero-rows branch gates on `isAvailable('chat', model)` in the
+  doctor process; a launchd worker with a different env (no keys) skips every
+  extraction calmly while a keyed operator shell's doctor reports healthy.
+  **Fix direction:** keyless-skip in the worker records a low-volume marker
+  (job result field or daily absorb row) doctor can read — doctor already
+  reads job results. Start: src/commands/jobs.ts facts-absorb handler +
+  src/commands/doctor.ts facts_extraction_health. **Effort:** S-M.
+- [ ] **P3 — Cap/dedupe absorb-log rows on keyed extraction failure.**
+  **What:** a keyed-but-failing extraction writes one ingest_log row PER
+  RETRY ATTEMPT (5 per job); a 10k-page sync during a revoked-key day yields
+  ~50k rows + 10k parked jobs. **Fix direction:** one absorb row per job
+  (stamp attempt count into it), or a per-source daily cap. Visibility was
+  the goal; unbounded growth wasn't. Start: src/core/facts/backstop.ts
+  `surfaceExtractionFailure` call sites. **Effort:** S.
+- [ ] **P3 — mtime-memoize `loadConfig()`.** **What:** key-aware resolution
+  put sync read+parse of config.json on per-resolution hot paths
+  (`resolveTierDefault` step 7, `classifyUnavailable`). Bulk syncs multiply
+  it. **Fix direction:** the exact mtime-keyed memo pattern in
+  src/core/ai/openai-latest.ts `readCacheFile`. Same cost profile as the
+  old `hasAnthropicKey` precedent, so P3 not P2. Start: src/core/config.ts
+  `loadConfig`. **Effort:** S.
 ## Dream freshness split follow-ups (v0.46.20.0)
 
 - [ ] **P2 — automatic background lane for `SOURCE_BACKGROUND_PHASES`.**

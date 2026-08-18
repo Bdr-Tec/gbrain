@@ -3303,14 +3303,28 @@ export async function buildChecks(
       const { isAvailable } = await import('../core/ai/gateway.ts');
       const extractionAvailable = isAvailable('chat', await getFactsExtractionModel(engine));
       if (!extractionAvailable) {
-        checks.push({
-          name: 'facts_extraction_health',
-          status: 'ok',
-          message:
-            'Automatic fact extraction not configured (keyless) — memory comes from ' +
-            'agent-authored `## Facts` fences and the `remember` verb. One optional key ' +
-            'enables automatic extraction (OpenAI or Anthropic).',
-        });
+        // Keyless vs keyed-but-misrouted split (same classification the
+        // backstop uses): a quiet keyed brain whose pinned extraction model
+        // lost its key must NOT read as calm "(keyless)" — that masks a
+        // fixable misconfiguration.
+        const { KEYLESS_EXTRACTION_GUIDANCE, classifyUnavailable } = await import('../core/facts/backstop.ts');
+        const { getFactsExtractionModel } = await import('../core/facts/extract.ts');
+        const unavailableModel = await getFactsExtractionModel(engine);
+        if ((await classifyUnavailable(unavailableModel)) === 'keyed') {
+          checks.push({
+            name: 'facts_extraction_health',
+            status: 'warn',
+            message:
+              `Automatic fact extraction is misconfigured: resolved model ${unavailableModel} has no usable ` +
+              `provider key. Fix: set the provider's API key, or \`gbrain config set facts.extraction_model <provider:model>\`.`,
+          });
+        } else {
+          checks.push({
+            name: 'facts_extraction_health',
+            status: 'ok',
+            message: `Automatic fact extraction not configured (keyless) — ${KEYLESS_EXTRACTION_GUIDANCE}`,
+          });
+        }
       } else {
         checks.push({
           name: 'facts_extraction_health',

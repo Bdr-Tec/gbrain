@@ -126,20 +126,19 @@ export function openaiStaticTierFallback(): Record<ModelTier, string> {
  * Adding a provider here needs a curated per-tier model choice — see the
  * TODOS.md follow-up before extending.
  */
+/** Account-discovered latest for a tier, else the recipe-ranked static floor. */
+function discoveredOrStaticOpenAITier(tier: ModelTier): string {
+  const discovered = latestOpenAITiers(tier);
+  return typeof discovered === 'string' ? discovered : openaiStaticTierFallback()[tier];
+}
+
 export const PROVIDER_TIER_DEFAULTS: ReadonlyArray<{
   provider: 'anthropic' | 'openai';
   envKey: string;
   tiers: (tier: ModelTier) => string;
 }> = [
   { provider: 'anthropic', envKey: 'ANTHROPIC_API_KEY', tiers: (tier) => TIER_DEFAULTS[tier] },
-  {
-    provider: 'openai',
-    envKey: 'OPENAI_API_KEY',
-    tiers: (tier) => {
-      const discovered = latestOpenAITiers(tier);
-      return typeof discovered === 'string' ? discovered : openaiStaticTierFallback()[tier];
-    },
-  },
+  { provider: 'openai', envKey: 'OPENAI_API_KEY', tiers: discoveredOrStaticOpenAITier },
 ];
 
 /** loadConfig, throw-safe (the hasAnthropicKey pattern): unreadable config = env-only. */
@@ -218,18 +217,40 @@ function resolveEffectiveModelForTier(
   const merged = mergedProviderEnv(fileCfg, env);
   const envModel = merged.GBRAIN_MODEL?.trim();
   if (envModel) {
-    return { model: DEFAULT_ALIASES[envModel] ?? envModel, source: 'env_model' };
+    // Same `gpt` discovery routing as the pin branch below and
+    // resolveAlias — GBRAIN_MODEL=gpt must not resolve differently
+    // depending on which resolver ran.
+    const model = envModel === 'gpt'
+      ? discoveredOrStaticOpenAITier('deep')
+      : DEFAULT_ALIASES[envModel] ?? envModel;
+    return { model, source: 'env_model' };
   }
   const rawPin = pin?.trim();
   if (rawPin) {
-    const fullPin = DEFAULT_ALIASES[rawPin] ?? rawPin;
+    // A bare `gpt` alias pin resolves through the same discovery path as
+    // resolveAlias('gpt') — the DEFAULT_ALIASES entry is only the
+    // documentation floor and would silently bypass the account-discovered
+    // flagship.
+    const fullPin = rawPin === 'gpt'
+      ? discoveredOrStaticOpenAITier('deep')
+      : DEFAULT_ALIASES[rawPin] ?? rawPin;
     if (providerKeyReady(fullPin, merged)) return { model: fullPin, source: 'file_pin' };
     if (!_unservablePinWarningsEmitted.has(fullPin)) {
       _unservablePinWarningsEmitted.add(fullPin);
+      // Explicit tier→config-key map: an unmapped future caller mislabeling
+      // the warn would be a silent doc bug with a ternary.
+      const PIN_KEY_BY_TIER: Record<ModelTier, string> = {
+        utility: 'expansion_model', reasoning: 'chat_model', deep: 'chat_model', subagent: 'chat_model',
+      };
+      // A prefix-less pin is a DIFFERENT problem than a missing key — saying
+      // "no usable provider key" for `chat_model: "claude-sonnet-4-6"` sends
+      // the user hunting for a key problem they may not have.
+      const diagnosis = splitProviderModelId(fullPin).provider === null
+        ? `has no provider prefix, so its key can't be verified — prefix it (e.g. "anthropic:${fullPin}")`
+        : `has no usable provider key — set the provider's API key, update the pin`;
       process.stderr.write(
-        `[models] configured ${tier === 'utility' ? 'expansion_model' : 'chat_model'} "${fullPin}" has no usable ` +
-        `provider key — falling back to the key-aware default. Set the provider's API key, update the pin, ` +
-        `or remove it from ~/.gbrain/config.json.\n`,
+        `[models] configured ${PIN_KEY_BY_TIER[tier]} "${fullPin}" ${diagnosis}, ` +
+        `or remove it from ~/.gbrain/config.json. Falling back to the key-aware default.\n`,
       );
     }
   }
@@ -519,12 +540,7 @@ export async function resolveAlias(
   if (name in DEFAULT_ALIASES) {
     // `gpt` tracks the CURRENT OpenAI flagship (discovered from the account,
     // recipe-ranked static floor) instead of a pinned id that goes stale.
-    const next = name === 'gpt'
-      ? ((): string => {
-          const discovered = latestOpenAITiers('deep');
-          return typeof discovered === 'string' ? discovered : openaiStaticTierFallback().deep;
-        })()
-      : DEFAULT_ALIASES[name];
+    const next = name === 'gpt' ? discoveredOrStaticOpenAITier('deep') : DEFAULT_ALIASES[name];
     if (next && next !== name) return await resolveAlias(engine, next, depth + 1);
   }
   return name;

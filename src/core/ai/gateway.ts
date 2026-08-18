@@ -486,25 +486,6 @@ export function configureGateway(config: AIGatewayConfig): void {
 }
 
 /**
- * v0.31.12 — async re-stamp seam.
- *
- * After `engine.connect()` succeeds, callers (today: `src/cli.ts`)
- * invoke this to re-resolve the gateway's expansion / chat / embedding
- * defaults through `resolveModel()` (which can read `models.tier.*` /
- * `models.default` / per-task config keys from the engine). The pre-connect
- * `configureGateway` path used hardcoded TIER_DEFAULTS as fallbacks;
- * this re-stamp picks up any user overrides that live in the DB-backed
- * config plane.
- *
- * Sync `configureGateway` stays for pre-connect callers (rare bootstrap
- * paths like `gbrain --version` that never touch a brain). Per Codex F3
- * in the v0.31.12 plan review: spelling out the sync→async boundary instead
- * of hand-waving "config-build time."
- *
- * Idempotent. Safe to call multiple times. Returns the resolved gateway
- * config for callers who want to inspect what landed.
- */
-/**
  * Re-fold ONLY the provider-key env from the file plane + process env into the
  * LIVE gateway config, leaving models/base_urls/chat-options untouched. For
  * long-lived workers: a key added to ~/.gbrain/config.json reaches the gateway
@@ -524,6 +505,25 @@ export function refreshGatewayEnvFromFilePlane(): void {
   _modelCache.clear();
 }
 
+/**
+ * v0.31.12 — async re-stamp seam.
+ *
+ * After `engine.connect()` succeeds, callers (today: `src/cli.ts`)
+ * invoke this to re-resolve the gateway's expansion / chat / embedding
+ * defaults through `resolveModel()` (which can read `models.tier.*` /
+ * `models.default` / per-task config keys from the engine). The pre-connect
+ * `configureGateway` path used hardcoded TIER_DEFAULTS as fallbacks;
+ * this re-stamp picks up any user overrides that live in the DB-backed
+ * config plane.
+ *
+ * Sync `configureGateway` stays for pre-connect callers (rare bootstrap
+ * paths like `gbrain --version` that never touch a brain). Per Codex F3
+ * in the v0.31.12 plan review: spelling out the sync→async boundary instead
+ * of hand-waving "config-build time."
+ *
+ * Idempotent. Safe to call multiple times. Returns the resolved gateway
+ * config for callers who want to inspect what landed.
+ */
 export async function reconfigureGatewayWithEngine(engine: BrainEngine): Promise<AIGatewayConfig> {
   const cfg = requireConfig();
   // Refresh the OpenAI latest-model discovery cache BEFORE resolution so the

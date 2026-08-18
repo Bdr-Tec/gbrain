@@ -4,10 +4,11 @@
  *
  * refreshGatewayForJob's contract (three staleness tiers): a key added to the
  * FILE plane (~/.gbrain/config.json) reaches a long-lived worker at the next
- * gateway-refresh job — the refresh re-folds loadConfig() through
- * buildGatewayConfig before re-resolving models. (DB-plane `config set
- * *_api_key` is deliberately unmerged — filed TODO; true env vars need a
- * restart.)
+ * gateway-refresh job — the refresh re-folds mergedProviderEnv(loadConfig(),
+ * process.env) into the LIVE gateway env only (never through
+ * buildGatewayConfig, which would clobber DB-plane-merged fields), then
+ * re-resolves models. (DB-plane `config set *_api_key` is deliberately
+ * unmerged — filed TODO; true env vars need a restart.)
  *
  * Serial: mutates GBRAIN_HOME + process env + global gateway state.
  */
@@ -122,5 +123,21 @@ describe('init resolveChatByEnv (no-persist contract, CX2)', () => {
     // Key-aware runtime resolution replaced install-time pins — the resolved
     // options object must stay unpinned regardless of what was detected.
     expect(out.chat_model).toBeUndefined();
+  });
+});
+
+describe('refreshGatewayEnvFromFilePlane guards (review-army addition)', () => {
+  test('safe no-op before configure; corrupt config still folds process env', async () => {
+    const { refreshGatewayEnvFromFilePlane } = await import('../src/core/ai/gateway.ts');
+    resetGateway();
+    expect(() => refreshGatewayEnvFromFilePlane()).not.toThrow();
+    expect(isAvailable('chat', 'anthropic:claude-sonnet-4-6')).toBe(false); // still unconfigured
+    // Corrupt config.json: loadConfig throws inside → cfg=null → process-env fold.
+    mkdirSync(join(tmpHome, '.gbrain'), { recursive: true });
+    writeFileSync(join(tmpHome, '.gbrain', 'config.json'), '{not json');
+    process.env.ANTHROPIC_API_KEY = 'sk-ant';
+    configureGateway({ chat_model: 'anthropic:claude-sonnet-4-6', env: {} });
+    expect(() => refreshGatewayEnvFromFilePlane()).not.toThrow();
+    expect(isAvailable('chat', 'anthropic:claude-sonnet-4-6')).toBe(true);
   });
 });

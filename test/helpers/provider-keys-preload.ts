@@ -23,7 +23,18 @@
  * today's behavior — same pattern as GBRAIN_TEST_ALLOW_DATABASE_URL.
  */
 
-const STRIPPED_KEYS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] as const;
+// The two chat providers in PROVIDER_TIER_DEFAULTS plus every other provider
+// key the gateway fold recognizes (provider-env.ts) — an ambient GEMINI or
+// VOYAGE key flips capability/embedding assertions the same way a chat key
+// flips model routing.
+const STRIPPED_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_GENERATIVE_AI_API_KEY',
+  'VOYAGE_API_KEY',
+  'OPENROUTER_API_KEY',
+] as const;
 
 if (process.env.GBRAIN_TEST_KEEP_PROVIDER_KEYS !== '1') {
   for (const key of STRIPPED_KEYS) {

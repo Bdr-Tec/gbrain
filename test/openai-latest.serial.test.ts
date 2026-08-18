@@ -4,7 +4,7 @@
  * GBRAIN_HOME + process env + module memo state.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -105,6 +105,18 @@ describe('rankOpenAIChatModels — newest PRICED family, tier ladder', () => {
     expect(newestUnpriced).toBe('gpt-5.7');
   });
 
+  test('OLDER unpriced families are not reported (no obsolete-model pricing nags)', () => {
+    // Accounts still list legacy unpriced ids; warning about them would tell
+    // a release engineer to price a model nobody should adopt.
+    const priced = (id: string) => id.startsWith('gpt-5.6');
+    const { tiers, newestUnpriced } = rankOpenAIChatModels(
+      ['gpt-5', 'gpt-5.1', 'gpt-5.6', 'gpt-5.6-luna'],
+      priced,
+    );
+    expect(tiers?.deep).toBe('openai:gpt-5.6');
+    expect(newestUnpriced).toBeUndefined();
+  });
+
   test('nothing usable → null tiers', () => {
     expect(rankOpenAIChatModels(['gpt-realtime-2.1', 'davinci'], allPriced).tiers).toBeNull();
     expect(rankOpenAIChatModels([], allPriced).tiers).toBeNull();
@@ -162,8 +174,12 @@ describe('refresh + cache + resolution overlay', () => {
     await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: boom, force: true }); // throws inside → absorbed
     const err401 = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch;
     await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: err401, force: true });
-    expect(existsSync(join(tmpHome, '.gbrain', 'model-cache.json'))).toBe(false);
+    // Failures persist ONLY the attempt stamp (durable backoff) — never
+    // tiers. The overlay must still see nothing.
     expect(latestOpenAITiers()).toBeNull();
+    const raw = JSON.parse(readFileSync(join(tmpHome, '.gbrain', 'model-cache.json'), 'utf8'));
+    expect(raw.openai).toBeUndefined();
+    expect(typeof raw.last_attempt_at).toBe('string');
   });
 
   test('unpriced-newer warning fires once and cache still lands on the priced family', async () => {
@@ -192,5 +208,62 @@ describe('refresh + cache + resolution overlay', () => {
     } finally {
       process.stderr.write = origWrite;
     }
+  });
+});
+
+describe('review-army additions', () => {
+  test('numeric family compare: gpt-10 beats gpt-9.9 (no lexicographic rot)', () => {
+    const { tiers } = rankOpenAIChatModels(['gpt-9.9', 'gpt-10'], () => true);
+    expect(tiers?.deep).toBe('openai:gpt-10');
+    const minors = rankOpenAIChatModels(['gpt-5.9', 'gpt-5.10'], () => true);
+    expect(minors.tiers?.deep).toBe('openai:gpt-5.10');
+  });
+
+  test('gpt alias tracks the discovered flagship; recipe-ranked floor otherwise', async () => {
+    const { resolveAlias } = await import('../src/core/model-config.ts');
+    // No cache in this hermetic tmp home → static floor.
+    expect(await resolveAlias(null, 'gpt')).toBe(openaiStaticTierFallback().deep);
+    await refreshLatestOpenAIModels({
+      env: { OPENAI_API_KEY: 'k' },
+      fetchImpl: fetchReturning(['gpt-5.6-sol', 'gpt-5.6', 'gpt-5.6-luna']),
+      force: true,
+    });
+    expect(await resolveAlias(null, 'gpt')).toBe('openai:gpt-5.6-sol');
+  });
+});
+
+describe('coverage-gap additions (ship review)', () => {
+  test('failure backoff: a failed non-force refresh suppresses refetch within the window', async () => {
+    let calls = 0;
+    const failing = (async () => { calls++; throw new Error('offline'); }) as unknown as typeof fetch;
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: failing });
+    expect(calls).toBe(1);
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: failing });
+    expect(calls).toBe(1); // within FAILURE_BACKOFF_MS → no second attempt
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: failing, force: true });
+    expect(calls).toBe(2); // force bypasses the backoff
+  });
+
+  test('failure backoff survives a process boundary (persisted attempt stamp)', async () => {
+    let calls = 0;
+    const failing = (async () => { calls++; throw new Error('offline'); }) as unknown as typeof fetch;
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: failing });
+    expect(calls).toBe(1);
+    // Simulate a fresh process: module state cleared, cache file intact
+    // (the reset touches only module state, never the file). Short-lived CLI
+    // invocations on a blackholed network must not each re-pay the fetch
+    // timeout — the stamp in model-cache.json carries the backoff across
+    // processes.
+    _resetOpenAILatestForTests();
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: failing });
+    expect(calls).toBe(1);
+  });
+
+  test('empty/malformed bodies never write the cache', async () => {
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: fetchReturning([]), force: true });
+    expect(latestOpenAITiers()).toBeNull();
+    const noData = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: noData, force: true });
+    expect(latestOpenAITiers()).toBeNull();
   });
 });

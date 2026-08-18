@@ -48,7 +48,7 @@ export function resolveJobPull(data: Record<string, unknown>): boolean {
  * paths, so a stale process-level default cannot route new work to the wrong
  * provider.
  *
- * Three staleness tiers (document in KEY_FILES):
+ * Three staleness tiers (documented in KEY_FILES's refreshGatewayForJob entry):
  *   - DB-plane model config: re-resolved here (reconfigureGatewayWithEngine).
  *   - FILE-plane config (`~/.gbrain/config.json` — incl. provider API keys):
  *     re-folded here, so a key added to config.json reaches the worker at the
@@ -66,6 +66,14 @@ export async function refreshGatewayForJob(engine: BrainEngine): Promise<void> {
   await reconfigureGatewayWithEngine(engine);
 }
 
+/** Shared predicate: an inline result reporting execution-time unavailability. */
+export function factsAbsorbUnavailable(result: FactsBackstopResult): boolean {
+  return (
+    result.mode === 'inline' &&
+    (result.skipped === 'extraction_unavailable' || result.skipped_reason === 'chat_unavailable')
+  );
+}
+
 /**
  * The facts-absorb retry decision (@internal exported for tests). A job that
  * finds chat unavailable at EXECUTION in a KEYED worker is config drift — it
@@ -79,11 +87,7 @@ export function factsAbsorbShouldRetry(
   result: FactsBackstopResult,
   classification: 'keyed' | 'keyless',
 ): boolean {
-  return (
-    classification === 'keyed' &&
-    result.mode === 'inline' &&
-    (result.skipped === 'extraction_unavailable' || result.skipped_reason === 'chat_unavailable')
-  );
+  return classification === 'keyed' && factsAbsorbUnavailable(result);
 }
 
 const GATEWAY_REFRESH_JOB_NAMES = new Set([
@@ -2417,8 +2421,7 @@ export async function registerBuiltinHandlers(
     // classification runs in the WORKER process: availability decisions
     // belong to the process that executes (the submitting hook subprocess may
     // have a deliberately neutered env).
-    if (result.mode === 'inline' &&
-        (result.skipped === 'extraction_unavailable' || result.skipped_reason === 'chat_unavailable')) {
+    if (factsAbsorbUnavailable(result)) {
       const { classifyUnavailable } = await import('../core/facts/backstop.ts');
       const jobModel = typeof job.data.model === 'string' && job.data.model ? job.data.model : undefined;
       if (factsAbsorbShouldRetry(result, await classifyUnavailable(jobModel))) {

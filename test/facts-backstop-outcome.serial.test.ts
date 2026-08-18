@@ -17,7 +17,7 @@
  *     visibility: "private" (remember defaults to world)
  *   - put_page NEVER fails because its facts backstop threw (E1 invariant)
  */
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,7 +108,6 @@ const restoreEnv = () => {
     else process.env[k] = saved[k];
   }
 };
-import { afterEach } from 'bun:test';
 afterEach(restoreEnv);
 
 afterAll(async () => {
@@ -193,7 +192,7 @@ describe('transport-class failures throw typed', () => {
     __setChatTransportForTests(async () => { throw new Error('simulated 500 from provider'); });
     let thrown: unknown;
     try {
-      await runFactsPipeline('Garry founded Initialized in 2010 with Alexis.', {
+      await runFactsPipeline('alice-example founded acme-example in 2010 with charlie-example.', {
         engine: engine as BrainEngine, sourceId: 'default', sessionId: null,
         source: 'mcp:extract_facts', mode: 'inline',
       });
@@ -301,5 +300,56 @@ describe('legacy wrapper visibility (eng F3)', () => {
     const before = stderrCapture.length;
     await extractFactsFromTurn({ turnText: 'Another turn.', source: 'test:wrapper' });
     expect(stderrCapture.length).toBe(before); // once per reason per process
+  });
+});
+
+describe('caller-resolved visibility pin (review-army addition)', () => {
+  test('keyless envelope pins the CALLER visibility (world), not hardcoded private', async () => {
+    configureGateway({ env: {} });
+    const res = unwrap(await dispatchToolCall(engine, 'extract_facts', {
+      turn_text: ELIGIBLE_BODY, visibility: 'world',
+    }, { remote: false }));
+    expect(res.skipped).toBe('extraction_unavailable');
+    const action = String(res.agent_action);
+    expect(action).toContain('visibility: "world"');
+    expect(action).not.toContain('omitting it would widen');
+  });
+});
+
+describe('coverage-gap additions (ship review)', () => {
+  test('inline-lane keyless gate returns the skip envelope (the worker-consumed shape)', async () => {
+    configureGateway({ env: {} });
+    const r = await runFactsBackstop(
+      { slug: 'outcome-inline-keyless', type: 'note', compiled_truth: ELIGIBLE_BODY, frontmatter: {} },
+      { engine: engine as BrainEngine, sourceId: 'default', sessionId: null, source: 'mcp:put_page', mode: 'inline' },
+    );
+    expect(r.mode).toBe('inline');
+    expect((r as { skipped?: string }).skipped).toBe('extraction_unavailable');
+    expect((r as { inserted: number }).inserted).toBe(0);
+  });
+
+  test('CRITICAL placement rule: keyless SUBMITTER still enqueues the durable job (worker may be keyed)', async () => {
+    configureGateway({ env: {} }); // keyless in the submitting process
+    markShortLivedCliProcess();    // durable-submit lane
+    const r = await runFactsBackstop(
+      { slug: 'outcome-keyless-submit', type: 'note', compiled_truth: ELIGIBLE_BODY, frontmatter: {} },
+      { engine: engine as BrainEngine, sourceId: 'default', sessionId: null, source: 'mcp:put_page', mode: 'queue' },
+    );
+    expect(r.mode).toBe('queue');
+    expect((r as { enqueued: boolean }).enqueued).toBe(true); // NOT gated at submit time
+    const jobs = await engine.executeRaw<{ name: string }>(
+      `SELECT name FROM minion_jobs WHERE name = 'facts-absorb'`,
+    );
+    expect(jobs).toHaveLength(1);
+  });
+
+  test('FactsExtractionError redaction: JSON.stringify and spread omit the provider body', () => {
+    const err = new FactsExtractionError('provider_error', 'openai:gpt-5.6-terra',
+      new Error('401 Incorrect API key provided: sk-proj-****xyz'));
+    expect(JSON.stringify(err)).not.toContain('sk-proj');
+    expect(JSON.stringify({ ...err })).not.toContain('sk-proj');
+    expect(err.message).not.toContain('sk-proj');
+    // The cause stays reachable for local debugging.
+    expect(String((err as { cause?: unknown }).cause)).toContain('401');
   });
 });

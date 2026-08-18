@@ -257,7 +257,15 @@ export class FactsExtractionError extends Error {
     this.name = 'FactsExtractionError';
     this.reason = reason;
     this.model = model;
-    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
+    // NON-ENUMERABLE cause (matching `new Error(msg, { cause })` semantics):
+    // a plain property assignment would be enumerable, so a future
+    // JSON.stringify(err) / {...err} / own-prop structured logger would ship
+    // the raw provider body — exactly what the message discipline excludes.
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', {
+        value: cause, enumerable: false, writable: true, configurable: true,
+      });
+    }
   }
 }
 
@@ -279,9 +287,11 @@ export async function extractFactsFromTurnWithOutcome(
   // disagree with the extraction model in both directions (a servable
   // facts.extraction_model behind an unservable global, and vice versa).
   const cap = Math.max(1, Math.min(input.maxFactsPerTurn ?? 10, 25));
-  const defaultModel = await getFactsExtractionModel(input.engine);
+  // When the caller (the backstop availability gate) already resolved the
+  // model, honor it — resolving again costs up to 3 engine.getConfig
+  // round-trips per gated page write.
+  const model = input.model ?? await getFactsExtractionModel(input.engine);
   const maxTokens = await getFactsExtractionMaxTokens(input.engine);
-  const model = input.model ?? defaultModel;
 
   if (!isAvailable('chat', model)) {
     // No servable chat model → no extraction. Caller still inserts facts via

@@ -40,7 +40,7 @@
  *   bare family alias).
  */
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { configDir } from '../config.ts';
 import { canonicalLookup } from '../model-pricing.ts';
@@ -63,6 +63,13 @@ interface ModelCacheFile {
     /** Newest family seen on the account with NO canonical pricing row (informational). */
     newest_unpriced?: string;
   };
+  /**
+   * Last refresh ATTEMPT (success or fail). Persisted so the failure backoff
+   * survives process boundaries: short-lived CLI invocations on a blackholed
+   * network (captive portal, VPN down) would otherwise each re-pay the full
+   * FETCH_TIMEOUT_MS — module-state backoff only protects long-lived workers.
+   */
+  last_attempt_at?: string;
 }
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -122,13 +129,20 @@ export function rankOpenAIChatModels(
 
   const eligible = parsed.filter((p) => priced(p.id));
   const skipped = parsed.filter((p) => !priced(p.id));
-  const newestUnpriced = skipped.sort((a, b) => familyCmp(b.family, a.family))[0]?.id;
+  const newestSkipped = skipped.sort((a, b) => familyCmp(b.family, a.family))[0];
 
-  if (eligible.length === 0) return { tiers: null, newestUnpriced };
+  if (eligible.length === 0) return { tiers: null, newestUnpriced: newestSkipped?.id };
 
   const newestFamily = eligible.reduce((best, p) =>
     familyCmp(p.family, best) > 0 ? p.family : best, eligible[0].family);
   const members = eligible.filter((p) => familyCmp(p.family, newestFamily) === 0);
+  // Only surface an unpriced id when its family is strictly NEWER than the
+  // newest priced family — accounts often still list obsolete unpriced ids
+  // (legacy families), and warning about those tells a release engineer to
+  // add a pricing row for a model nobody should adopt.
+  const newestUnpriced = newestSkipped && familyCmp(newestSkipped.family, newestFamily) > 0
+    ? newestSkipped.id
+    : undefined;
 
   // Top: named top tier, else the bare family alias (OpenAI's flagship alias).
   const top = pickBySuffix(members, TOP_SUFFIXES) ?? pickBySuffix(members, ['']);
@@ -151,11 +165,25 @@ export function rankOpenAIChatModels(
 
 /* ── sync cache read (the resolveTierDefault overlay) ─────────────────────── */
 
+// mtime-keyed memo: the sync read fires per model resolution on OpenAI-keyed
+// installs — statSync is far cheaper than read+parse, and staleness is
+// already tolerated by design. Keyed on path too (GBRAIN_HOME can change in
+// tests). Invalidated implicitly: a refresh write bumps the mtime.
+let _cacheMemo: { path: string; mtimeMs: number; value: ModelCacheFile | null } | null = null;
+
 function readCacheFile(): ModelCacheFile | null {
+  const path = cachePath();
   try {
-    const parsed = JSON.parse(readFileSync(cachePath(), 'utf8')) as ModelCacheFile;
-    return parsed?.version === 1 ? parsed : null;
+    const mtimeMs = statSync(path).mtimeMs;
+    if (_cacheMemo && _cacheMemo.path === path && _cacheMemo.mtimeMs === mtimeMs) {
+      return _cacheMemo.value;
+    }
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as ModelCacheFile;
+    const value = parsed?.version === 1 ? parsed : null;
+    _cacheMemo = { path, mtimeMs, value };
+    return value;
   } catch {
+    _cacheMemo = null;
     return null;
   }
 }
@@ -176,10 +204,47 @@ export function latestOpenAITiers(tier?: ModelTier): OpenAITierPick | string | n
 
 let _refreshInFlight: Promise<void> | null = null;
 let _warnedUnpriced: string | null = null;
+// Failure backoff: a persistently-failing refresh (blackholed network,
+// revoked key, unwritable config dir — nothing lands in the cache, so the
+// TTL throttle never engages) must not re-pay the FETCH_TIMEOUT_MS bound on
+// every engine connect and every gateway-refresh job. One attempt per
+// backoff window, success or fail. The attempt stamp is BOTH module state
+// (fast path) and persisted in the cache file (short-lived CLI processes —
+// each `gbrain <cmd>` is a fresh process, so module state alone would re-pay
+// the timeout per invocation on an offline shell).
+const FAILURE_BACKOFF_MS = 10 * 60 * 1000;
+let _lastAttemptAt = 0;
+
+/** Atomic cache write (tmp + rename) so a concurrent sync reader never sees a torn file. */
+function writeCacheFile(next: ModelCacheFile): void {
+  const path = cachePath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(next, null, 2));
+  renameSync(tmp, path);
+}
+
+/**
+ * Best-effort: persist the attempt stamp WITHOUT touching the (possibly
+ * stale, still-useful) discovered tiers. Its own try/catch — an unwritable
+ * config dir must stay fail-open.
+ */
+function stampAttempt(): void {
+  try {
+    writeCacheFile({
+      ...(readCacheFile() ?? { version: 1 as const }),
+      last_attempt_at: new Date().toISOString(),
+    });
+  } catch {
+    // Module-state backoff still covers this process.
+  }
+}
 
 export function _resetOpenAILatestForTests(): void {
   _refreshInFlight = null;
   _warnedUnpriced = null;
+  _lastAttemptAt = 0;
+  _cacheMemo = null;
 }
 
 export interface RefreshOpts {
@@ -205,10 +270,14 @@ export async function refreshLatestOpenAIModels(opts: RefreshOpts = {}): Promise
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) return;
 
-  const cached = readCacheFile()?.openai;
+  const cacheFile = readCacheFile();
+  const cached = cacheFile?.openai;
   if (!opts.force && cached && Date.now() - Date.parse(cached.fetched_at) < CACHE_TTL_MS) return;
+  const persistedAttempt = Date.parse(cacheFile?.last_attempt_at ?? '') || 0;
+  if (!opts.force && Date.now() - Math.max(_lastAttemptAt, persistedAttempt) < FAILURE_BACKOFF_MS) return;
 
   if (_refreshInFlight) return _refreshInFlight;
+  _lastAttemptAt = Date.now();
   _refreshInFlight = (async () => {
     try {
       const doFetch = opts.fetchImpl ?? fetch;
@@ -217,10 +286,10 @@ export async function refreshLatestOpenAIModels(opts: RefreshOpts = {}): Promise
         headers: { Authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
-      if (!res.ok) return;
+      if (!res.ok) { stampAttempt(); return; }
       const body = (await res.json()) as { data?: Array<{ id?: string }> };
       const ids = (body.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === 'string');
-      if (ids.length === 0) return;
+      if (ids.length === 0) { stampAttempt(); return; }
       const { tiers, newestUnpriced } = rankOpenAIChatModels(ids);
       if (newestUnpriced && _warnedUnpriced !== newestUnpriced) {
         _warnedUnpriced = newestUnpriced;
@@ -229,26 +298,27 @@ export async function refreshLatestOpenAIModels(opts: RefreshOpts = {}): Promise
           `staying on the newest PRICED family so budget caps keep working. Add the pricing row to adopt it.\n`,
         );
       }
-      if (!tiers) return;
-      const next: ModelCacheFile = {
+      if (!tiers) {
+        // In-grammar ids but none priced: stamp the attempt so offline/
+        // misconfigured shells don't re-pay the fetch on every invocation.
+        stampAttempt();
+        return;
+      }
+      writeCacheFile({
         version: 1,
         openai: {
           tiers,
           fetched_at: new Date().toISOString(),
           ...(newestUnpriced ? { newest_unpriced: newestUnpriced } : {}),
         },
-      };
-      // Atomic-ish write (tmp + rename) so a concurrent sync reader never
-      // sees a torn file.
-      const path = cachePath();
-      mkdirSync(dirname(path), { recursive: true });
-      const tmp = `${path}.tmp-${process.pid}`;
-      writeFileSync(tmp, JSON.stringify(next, null, 2));
-      renameSync(tmp, path);
+        last_attempt_at: new Date().toISOString(),
+      });
     } catch {
       // Fail-open: offline / 401 / abort / unwritable dir all keep the prior
       // state (stale cache or static fallback). Discovery never breaks a
-      // connect.
+      // connect. Persist the attempt stamp (best-effort) so the NEXT process
+      // honors the backoff too.
+      stampAttempt();
     } finally {
       _refreshInFlight = null;
     }

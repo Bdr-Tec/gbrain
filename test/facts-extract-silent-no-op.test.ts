@@ -110,7 +110,7 @@ describe('facts extract — silent-no-op regression (v0.31.6 bug class)', () => 
     });
     expect(isAvailable('chat')).toBe(false);
     const facts = await extractFactsFromTurn({
-      turnText: 'Garry founded Initialized in 2010 with Alexis.',
+      turnText: 'alice-example founded acme-example in 2010 with charlie-example.',
       source: 'test:no-op-regression',
     });
     expect(facts).toEqual([]);
@@ -141,7 +141,7 @@ describe('facts extract — silent-no-op regression (v0.31.6 bug class)', () => 
       };
     });
     await extractFactsFromTurn({
-      turnText: 'Garry founded Initialized in 2010 with Alexis.',
+      turnText: 'alice-example founded acme-example in 2010 with charlie-example.',
       source: 'test:smoking-gun',
     });
     expect(chatCalled).toBe(true);  // ← THE bug-class assertion
