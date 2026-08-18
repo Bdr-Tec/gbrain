@@ -1,5 +1,60 @@
 # TODOS
 
+## Key-aware model routing wave follow-ups (filed 2026-08-17; plan: ~/.claude/plans/system-instruction-you-are-working-enchanted-lark.md)
+
+- [ ] **P2 — More providers in `PROVIDER_TIER_DEFAULTS` (+ discovery).** **What:**
+  extend the key-aware tier-default table (src/core/model-config.ts) beyond
+  anthropic/openai — google, deepseek, groq, openrouter each need a curated
+  per-tier model choice, and ideally a latest-model discovery adapter like
+  OpenAI's (`src/core/ai/openai-latest.ts` — provider models endpoint →
+  grammar-ranked, priced-only, cached; Anthropic also has GET /v1/models).
+  **Why:** a GOOGLE_GENERATIVE_AI_API_KEY-only install still resolves tier
+  defaults to Anthropic (unservable) and degrades to the honest keyless path
+  instead of using the key it has; and every static entry rots the way the
+  openai gpt-5.2 pin did. **Context:** the mechanism is done — one table
+  entry per provider; the work is choosing tier grammar per provider and
+  asserting recipe capability fit (tool support for subagent). Start:
+  `PROVIDER_TIER_DEFAULTS` + `test/model-config.serial.test.ts` matrix +
+  the openai-latest ranking pattern. **Effort:** S-M per provider.
+  **Depends on:** nothing.
+- [ ] **P3 — Key-aware `DEFAULT_SYNOPSIS_MODEL` (page-summary).** **What:**
+  `src/core/page-summary.ts` pins the synopsis default to Anthropic Haiku.
+  **Why deferred:** the model id feeds `computeCorpusGeneration` hashing
+  (contextual-retrieval-service.ts) — making it key-dependent churns the
+  corpus generation hash per-environment. Needs a hash-stable design (e.g.
+  exclude the model from the hash, or version the generation) before touching.
+  **Effort:** M.
+- [ ] **P3 — Structured agent-side extraction protocol.** **What:** upgrade
+  the keyless `extract_facts` envelope (skipped: extraction_unavailable +
+  prose `agent_action`) into a structured handoff (taxonomy fields, per-fact
+  write-back contract, conformance test). **Why:** the prose instruction
+  works but agent compliance is unmeasured; a typed contract makes keyless
+  extraction quality testable. Start: `src/core/ops/facts.ts` envelope +
+  `skills/brain-ops/SKILL.md`. **Effort:** M.
+- [ ] **P2 — Durable-job parking/requeue without consuming attempts.**
+  **What:** facts-absorb jobs that fail `chat_unavailable` retry 5× at a 60s
+  exponential base, then park as visible failures; a true "parked —
+  reactivate when a key appears" state would survive arbitrarily long
+  operator delay without manual `jobs retry`. **Why:** config drift is fixed
+  on human timescales; retry windows are minutes. Start:
+  `src/core/minions/queue.ts` (new status or delayed-until-capability
+  semantics). **Effort:** M-L.
+- [ ] **P2 — Chat-side extraction budget/rate cap.** **What:** the spend
+  system (docs/operations/spend-controls.md) is embedding-focused; the facts
+  backstop has no per-source budget or rate cap on chat calls. **Why:** a key
+  activates uncapped extraction on eligible writes; today's controls are the
+  kill switch + model pins only (disclosed in CHANGELOG). Start: a leaser like
+  the contextual-reindex Haiku rate-leaser, keyed per source. **Effort:** M.
+- [ ] **P2 — Route `gbrain config set *_api_key` to the file plane.** **What:**
+  `config set <provider>_api_key` writes the DB plane, which
+  `loadConfigWithEngine()` deliberately never merges for key fields
+  (documented at src/core/config.ts) — so those writes never reach the
+  gateway, and the per-job worker re-fold (src/commands/jobs.ts
+  refreshGatewayForJob) only sees file-plane edits. **Why:** closes a
+  long-standing operator trap AND makes worker key-refresh complete. Start:
+  `src/commands/config.ts` set handler (redirect key fields to the 0600
+  config.json write path). **Effort:** S-M.
+
 ## Fix-wave #4116-#4168 follow-ups (filed 2026-08-16; plan: ~/.claude/plans/system-instruction-you-are-working-compiled-tide.md)
 
 - [ ] **P2 — Expansion reserve()/cap enforcement.** #4121 shipped record-only: expansion spend lands in the tracker (and counts against the ceiling at the NEXT chat reserve) but expand() itself never pre-flights a reserve. A reserve would hard-disable expansion for unpriced local models under any cap (BudgetExhausted reason no_pricing fires whenever a cap is set and the model has no pricing entry). Right shape: reserve only when `isModelPriceable()` (budget-tracker.ts), degrade to `[query]` on denial (the reserve_denied audit row already writes), and apply an output cap (EXPANSION_FAILED_PESSIMISTIC_OUTPUT_TOKENS exists as the accounting constant; passing it to the SDK calls is the behavior change this defers). Files: src/core/ai/gateway.ts, test/core/budget/expand-records-budget.test.ts.

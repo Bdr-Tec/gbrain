@@ -45,6 +45,13 @@ flows through in both directions.
 > `put_page` / `add_link` / `add_timeline_entry` stay the page/graph write path.
 > Fall back to the classic ops when the verbs aren't on the surface. Contract:
 > `docs/protocol/MEMORY_VERBS_v1.md`.
+>
+> **Keyless brains:** when `extract_facts` returns `skipped:
+> extraction_unavailable`, YOU are the extractor — pull the facts from the turn
+> yourself and write each one via `remember` with `kind` set (event | preference
+> | commitment | belief) and `visibility: "private"` (remember defaults to
+> world; extract_facts facts default private — pin it), or author a `## Facts`
+> fence on the entity page.
 
 ## Contract
 
