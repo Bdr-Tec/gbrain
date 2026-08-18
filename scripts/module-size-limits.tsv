@@ -28,7 +28,7 @@ src/core/minions/queue.ts	2130	ratchet	grown v0.46.11.0 five-issue wave
 src/commands/init.ts	1932	ratchet
 src/commands/integrations.ts	1675	ratchet
 src/core/minions/handlers/subagent.ts	1818	ratchet	merged: master v131 settle rework + dream-wave C5 peel + C6 accounting + C7 lease heartbeats/lost-lease aborts + C9 oneshot dispatch + adversarial fix batches
-src/commands/bootstrap.ts	1923	ratchet	grandfathered at merge (grew past the 1500 cap on master)
+src/commands/bootstrap.ts	2010	ratchet	grandfathered at merge (grew past the 1500 cap on master); raised for #4066 HOME_WORKSPACE_GUARD_EXEMPT (status/uninstall/harness)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
 src/commands/sources.ts	1676	ratchet
 src/core/bootstrap/harness.ts	1947	ratchet
