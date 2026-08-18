@@ -80,8 +80,9 @@ Save to shell profile or `.env`, or store in `~/.gbrain/config.json` (file plane
 NOT use `gbrain config set` for API keys — it writes the DB plane, which the provider
 pipeline never reads. Without any embedding provider, keyword search still works.
 Chat-shaped features (automatic fact extraction, enrichment, synthesis, query
-expansion) route to whichever chat-capable key is present — Anthropic when both are
-set, OpenAI when it is the only one. With neither, extraction stays off and memory
+expansion) route to whichever supported chat key is present (Anthropic or OpenAI) —
+Anthropic when both are set, OpenAI when it is the only one; other chat providers
+need an explicit `models.*` pin. With neither key, extraction stays off and memory
 comes from agent-authored `## Facts` fences and the `remember` verb.
 
 ## Step 3: Create the Brain

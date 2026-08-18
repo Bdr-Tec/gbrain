@@ -57,9 +57,11 @@ export ANTHROPIC_API_KEY=sk-ant-...   # automatic fact extraction + chat models;
 ```
 
 Chat-shaped features (automatic fact extraction, enrichment, synthesis, query
-expansion) route to whichever chat-capable key is present — Anthropic when both
-are set, OpenAI when it is the only one. With neither, they stay off calmly and
-memory comes from agent-authored `## Facts` fences and the `remember` verb.
+expansion) route to whichever supported chat key is present (Anthropic or
+OpenAI) — Anthropic when both are set, OpenAI when it is the only one; other
+chat providers need an explicit `models.*` pin. With neither key, they stay off
+calmly and memory comes from agent-authored `## Facts` fences and the
+`remember` verb.
 
 `ZEROENTROPY_API_KEY` is still honored but deprecated — the ZeroEntropy hosted API shuts down 2026-09-04. Off-ramp: the agent playbook at [`skills/migrations/v0.46.3.0.md`](../skills/migrations/v0.46.3.0.md) (one command migrates embeddings + reranker) with the full reference in [`docs/guides/embedding-migration.md`](guides/embedding-migration.md).
 

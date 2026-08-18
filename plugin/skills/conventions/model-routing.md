@@ -42,6 +42,13 @@ One exception: the dream triage judge pre-reads `models.dream.triage` first —
 when that key is set, it wins over this entire chain (`gbrain models` reports
 it as the effective route).
 
+File-plane pins are a separate seam: the gateway's boot/reconnect fallback
+(and the capability report) resolve the effective chat model as `GBRAIN_MODEL`
+env > servable `chat_model` pin in `~/.gbrain/config.json` (honored only while
+its provider's key is present; an unservable pin warns once and falls through)
+> key-aware tier default. `gbrain init` no longer persists auto-detected chat
+pins (v0.46.21+) — only a pin you set yourself survives reconnect.
+
 Power-user recipes:
 
 ```bash
