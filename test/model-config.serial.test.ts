@@ -389,7 +389,15 @@ describe('providerKeyReady + resolveEffectiveChatModel (shared runtime/report re
     expect(providerKeyReady('openai:gpt-5.2', {})).toBe(false);
     expect(providerKeyReady('claude-sonnet-4-6', { ANTHROPIC_API_KEY: 'x' })).toBe(false); // bare id
     expect(providerKeyReady('not-a-provider:x', { OPENAI_API_KEY: 'sk-test' })).toBe(false);
-    expect(providerKeyReady('ollama:llama3', {})).toBe(true); // no required keys
+    // No required keys + a chat touchpoint (the CLI owns auth) → ready.
+    expect(providerKeyReady('claude-cli:claude-sonnet-4-6', {})).toBe(true);
+    // A keyed/keyless but CHAT-LESS recipe is NOT ready: honoring an
+    // embedding-only pin as chat_model would install a model
+    // isAvailable('chat') rejects instead of falling back to the key-aware
+    // default. (ollama is embedding-only in this repo's recipe, hence false
+    // despite requiring no keys.)
+    expect(providerKeyReady('voyage:voyage-4-large', { VOYAGE_API_KEY: 'x' })).toBe(false);
+    expect(providerKeyReady('ollama:llama3', {})).toBe(false);
   });
 
   test('servable file pin wins (init-era openai pin + live key)', () => {

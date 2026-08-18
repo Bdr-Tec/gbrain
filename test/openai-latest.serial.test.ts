@@ -105,6 +105,21 @@ describe('rankOpenAIChatModels — newest PRICED family, tier ladder', () => {
     expect(newestUnpriced).toBe('gpt-5.7');
   });
 
+  test('partial family (no top tier, no bare alias) still serves every tier', () => {
+    // An account entitled to only terra/luna of the newest family must get
+    // usable tiers, not tiers:null + a static fallback it may not serve.
+    const { tiers } = rankOpenAIChatModels(['gpt-5.6-terra', 'gpt-5.6-luna'], allPriced);
+    expect(tiers).toEqual({
+      utility: 'openai:gpt-5.6-luna',
+      reasoning: 'openai:gpt-5.6-terra',
+      deep: 'openai:gpt-5.6-terra',
+      subagent: 'openai:gpt-5.6-terra',
+    });
+    // Cheap-only family: everything degrades to the one available model.
+    const only = rankOpenAIChatModels(['gpt-5.6-luna'], allPriced).tiers;
+    expect(only?.deep).toBe('openai:gpt-5.6-luna');
+  });
+
   test('OLDER unpriced families are not reported (no obsolete-model pricing nags)', () => {
     // Accounts still list legacy unpriced ids; warning about them would tell
     // a release engineer to price a model nobody should adopt.
@@ -242,6 +257,40 @@ describe('coverage-gap additions (ship review)', () => {
     expect(calls).toBe(1); // within FAILURE_BACKOFF_MS → no second attempt
     await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'k' }, fetchImpl: failing, force: true });
     expect(calls).toBe(2); // force bypasses the backoff
+  });
+
+  test('identity switch (key/endpoint) bypasses TTL and replaces the cache', async () => {
+    await refreshLatestOpenAIModels({
+      env: { OPENAI_API_KEY: 'sk-account-a' },
+      fetchImpl: fetchReturning(['gpt-5.6', 'gpt-5.6-luna']),
+    });
+    expect(latestOpenAITiers('deep')).toBe('openai:gpt-5.6');
+    // Same identity, fresh cache → TTL suppresses (no force).
+    let calls = 0;
+    const counting = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ data: [{ id: 'gpt-5.5' }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'sk-account-a' }, fetchImpl: counting });
+    expect(calls).toBe(0);
+    // DIFFERENT key → the cached tiers belong to another account; the TTL
+    // must not serve them. Refresh fires and overwrites.
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'sk-account-b' }, fetchImpl: counting });
+    expect(calls).toBe(1);
+    expect(latestOpenAITiers('deep')).toBe('openai:gpt-5.5');
+  });
+
+  test('identity switch + failed refresh drops the other account\'s tiers (static floor)', async () => {
+    await refreshLatestOpenAIModels({
+      env: { OPENAI_API_KEY: 'sk-account-a' },
+      fetchImpl: fetchReturning(['gpt-5.6']),
+    });
+    expect(latestOpenAITiers('deep')).toBe('openai:gpt-5.6');
+    const failing = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+    await refreshLatestOpenAIModels({ env: { OPENAI_API_KEY: 'sk-account-b' }, fetchImpl: failing });
+    // Account A's tiers must not serve account B — honest state is the
+    // static floor until B's own discovery succeeds.
+    expect(latestOpenAITiers()).toBeNull();
   });
 
   test('failure backoff survives a process boundary (persisted attempt stamp)', async () => {

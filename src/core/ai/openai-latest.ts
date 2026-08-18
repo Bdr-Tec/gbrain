@@ -41,6 +41,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { configDir } from '../config.ts';
 import { canonicalLookup } from '../model-pricing.ts';
@@ -62,14 +63,26 @@ interface ModelCacheFile {
     fetched_at: string;
     /** Newest family seen on the account with NO canonical pricing row (informational). */
     newest_unpriced?: string;
+    /**
+     * Non-secret identity fingerprint (sha256 of endpoint + key, truncated).
+     * A key/endpoint change within the TTL must trigger an immediate refresh
+     * — the cached tiers belong to the PREVIOUS account and may be
+     * inaccessible to the new one. The sync reader can't check this (no env
+     * in scope), so staleness after an identity switch is bounded by the
+     * first reconfigure, not the 24h TTL.
+     */
+    fingerprint?: string;
   };
   /**
    * Last refresh ATTEMPT (success or fail). Persisted so the failure backoff
    * survives process boundaries: short-lived CLI invocations on a blackholed
    * network (captive portal, VPN down) would otherwise each re-pay the full
    * FETCH_TIMEOUT_MS — module-state backoff only protects long-lived workers.
+   * Scoped by fingerprint: a failed attempt under one identity never
+   * suppresses another identity's first attempt.
    */
   last_attempt_at?: string;
+  last_attempt_fingerprint?: string;
 }
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -144,8 +157,13 @@ export function rankOpenAIChatModels(
     ? newestSkipped.id
     : undefined;
 
-  // Top: named top tier, else the bare family alias (OpenAI's flagship alias).
-  const top = pickBySuffix(members, TOP_SUFFIXES) ?? pickBySuffix(members, ['']);
+  // Tier picks degrade WITHIN the newest priced family — an account exposing
+  // only a partial family (e.g. terra/luna without sol or the bare alias)
+  // still gets usable tiers rather than tiers:null and a static fallback the
+  // account may not serve. Since `members` is non-empty, every tier resolves.
+  // Top: named top tier, else the bare family alias, else the best remaining.
+  const top = pickBySuffix(members, TOP_SUFFIXES) ?? pickBySuffix(members, [''])
+    ?? pickBySuffix(members, MID_SUFFIXES) ?? pickBySuffix(members, CHEAP_SUFFIXES);
   // Mid: named mid tier, else the bare alias, else top.
   const mid = pickBySuffix(members, MID_SUFFIXES) ?? pickBySuffix(members, ['']) ?? top;
   // Cheap: named cheap tier, else mid.
@@ -214,6 +232,12 @@ let _warnedUnpriced: string | null = null;
 // the timeout per invocation on an offline shell).
 const FAILURE_BACKOFF_MS = 10 * 60 * 1000;
 let _lastAttemptAt = 0;
+let _lastAttemptFp = '';
+
+/** Non-secret identity fingerprint: truncated sha256 of endpoint + key. */
+function accountFingerprint(base: string, apiKey: string): string {
+  return createHash('sha256').update(`${base}|${apiKey}`).digest('hex').slice(0, 16);
+}
 
 /** Atomic cache write (tmp + rename) so a concurrent sync reader never sees a torn file. */
 function writeCacheFile(next: ModelCacheFile): void {
@@ -226,14 +250,20 @@ function writeCacheFile(next: ModelCacheFile): void {
 
 /**
  * Best-effort: persist the attempt stamp WITHOUT touching the (possibly
- * stale, still-useful) discovered tiers. Its own try/catch — an unwritable
- * config dir must stay fail-open.
+ * stale, still-useful) discovered tiers — UNLESS those tiers belong to a
+ * different identity (fingerprint mismatch), in which case they're another
+ * account's models and honesty is the static floor, so drop them. Its own
+ * try/catch — an unwritable config dir must stay fail-open.
  */
-function stampAttempt(): void {
+function stampAttempt(fp: string): void {
   try {
+    const prior = readCacheFile();
+    const keepTiers = prior?.openai && prior.openai.fingerprint === fp ? prior.openai : undefined;
     writeCacheFile({
-      ...(readCacheFile() ?? { version: 1 as const }),
+      version: 1,
+      ...(keepTiers ? { openai: keepTiers } : {}),
       last_attempt_at: new Date().toISOString(),
+      last_attempt_fingerprint: fp,
     });
   } catch {
     // Module-state backoff still covers this process.
@@ -244,6 +274,7 @@ export function _resetOpenAILatestForTests(): void {
   _refreshInFlight = null;
   _warnedUnpriced = null;
   _lastAttemptAt = 0;
+  _lastAttemptFp = '';
   _cacheMemo = null;
 }
 
@@ -270,26 +301,34 @@ export async function refreshLatestOpenAIModels(opts: RefreshOpts = {}): Promise
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) return;
 
+  const base = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+  const fp = accountFingerprint(base, apiKey);
   const cacheFile = readCacheFile();
   const cached = cacheFile?.openai;
-  if (!opts.force && cached && Date.now() - Date.parse(cached.fetched_at) < CACHE_TTL_MS) return;
-  const persistedAttempt = Date.parse(cacheFile?.last_attempt_at ?? '') || 0;
-  if (!opts.force && Date.now() - Math.max(_lastAttemptAt, persistedAttempt) < FAILURE_BACKOFF_MS) return;
+  // TTL and backoff are per-identity: a key/endpoint switch within either
+  // window must refresh immediately (the cached tiers/attempt belong to the
+  // previous account).
+  if (!opts.force && cached && cached.fingerprint === fp
+    && Date.now() - Date.parse(cached.fetched_at) < CACHE_TTL_MS) return;
+  const persistedAttempt = cacheFile?.last_attempt_fingerprint === fp
+    ? Date.parse(cacheFile?.last_attempt_at ?? '') || 0 : 0;
+  const moduleAttempt = _lastAttemptFp === fp ? _lastAttemptAt : 0;
+  if (!opts.force && Date.now() - Math.max(moduleAttempt, persistedAttempt) < FAILURE_BACKOFF_MS) return;
 
   if (_refreshInFlight) return _refreshInFlight;
   _lastAttemptAt = Date.now();
+  _lastAttemptFp = fp;
   _refreshInFlight = (async () => {
     try {
       const doFetch = opts.fetchImpl ?? fetch;
-      const base = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
       const res = await doFetch(`${base}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
-      if (!res.ok) { stampAttempt(); return; }
+      if (!res.ok) { stampAttempt(fp); return; }
       const body = (await res.json()) as { data?: Array<{ id?: string }> };
       const ids = (body.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === 'string');
-      if (ids.length === 0) { stampAttempt(); return; }
+      if (ids.length === 0) { stampAttempt(fp); return; }
       const { tiers, newestUnpriced } = rankOpenAIChatModels(ids);
       if (newestUnpriced && _warnedUnpriced !== newestUnpriced) {
         _warnedUnpriced = newestUnpriced;
@@ -301,7 +340,7 @@ export async function refreshLatestOpenAIModels(opts: RefreshOpts = {}): Promise
       if (!tiers) {
         // In-grammar ids but none priced: stamp the attempt so offline/
         // misconfigured shells don't re-pay the fetch on every invocation.
-        stampAttempt();
+        stampAttempt(fp);
         return;
       }
       writeCacheFile({
@@ -309,16 +348,18 @@ export async function refreshLatestOpenAIModels(opts: RefreshOpts = {}): Promise
         openai: {
           tiers,
           fetched_at: new Date().toISOString(),
+          fingerprint: fp,
           ...(newestUnpriced ? { newest_unpriced: newestUnpriced } : {}),
         },
         last_attempt_at: new Date().toISOString(),
+        last_attempt_fingerprint: fp,
       });
     } catch {
       // Fail-open: offline / 401 / abort / unwritable dir all keep the prior
       // state (stale cache or static fallback). Discovery never breaks a
       // connect. Persist the attempt stamp (best-effort) so the NEXT process
       // honors the backoff too.
-      stampAttempt();
+      stampAttempt(fp);
     } finally {
       _refreshInFlight = null;
     }

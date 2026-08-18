@@ -175,17 +175,22 @@ export function resolveTierDefault(
 }
 
 /**
- * True when `model`'s provider has every required auth env var present in
- * `env` (per its recipe's auth_env.required). Bare model ids (no provider
- * prefix) and unknown providers return false — an unverifiable pin is not a
- * servable pin. Recipes with no required keys (e.g. local Ollama) are always
- * ready.
+ * True when `model`'s provider can serve CHAT and has every required auth
+ * env var present in `env` (per its recipe's auth_env.required). Bare model
+ * ids (no provider prefix) and unknown providers return false — an
+ * unverifiable pin is not a servable pin. A keyed but chat-less recipe
+ * (e.g. an embedding-only provider pinned as chat_model) is also not ready:
+ * every caller of this function resolves a chat-shaped tier, and honoring
+ * such a pin would install a model `isAvailable('chat')` rejects instead of
+ * falling back to the key-aware default. Recipes with no required keys
+ * (e.g. local Ollama) are always ready.
  */
 export function providerKeyReady(model: string, env: Record<string, string>): boolean {
   const { provider } = splitProviderModelId(model);
   if (!provider) return false;
   const recipe = RECIPES.get(provider.trim().toLowerCase());
   if (!recipe) return false;
+  if (!recipe.touchpoints?.chat) return false;
   const required = recipe.auth_env?.required ?? [];
   if (required.length === 0) return true;
   return required.every((k) => !!env[k]);

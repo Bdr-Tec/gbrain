@@ -155,11 +155,27 @@ export async function classifyUnavailable(model: string | undefined): Promise<'k
     const { loadConfig } = await import('../config.ts');
     cfg = loadConfig();
   } catch {
-    cfg = null;
+    // Fail toward RETRY, not calm consumption (loadConfig swallows file
+    // errors itself, so this only fires on pathological import failures).
+    return 'keyed';
   }
   const merged = mergedProviderEnv(cfg, process.env);
   if (model && providerKeyReady(model, merged)) return 'keyed';
   const anyChatKey = PROVIDER_TIER_DEFAULTS.some((e) => !!merged[e.envKey]);
+  if (!anyChatKey) {
+    // Before declaring keyless, check for a config file that EXISTS but
+    // yielded nothing (EACCES, disk error, corrupt JSON — loadConfig returns
+    // null for all of them, indistinguishable from "no config"). That file
+    // may hold the only key this worker has; classifying it keyless would
+    // calmly consume a job that a retry after repair would have served.
+    try {
+      const { loadConfigFileOnly, configPath } = await import('../config.ts');
+      const { existsSync } = await import('node:fs');
+      if (loadConfigFileOnly() === null && existsSync(configPath())) return 'keyed';
+    } catch {
+      return 'keyed';
+    }
+  }
   return anyChatKey ? 'keyed' : 'keyless';
 }
 

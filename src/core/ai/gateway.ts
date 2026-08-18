@@ -531,7 +531,18 @@ export async function reconfigureGatewayWithEngine(engine: BrainEngine): Promise
   // 3s-bounded, fail-open, disabled in test lanes via GBRAIN_MODEL_DISCOVERY
   // — a connect never blocks on or breaks from discovery.
   const { refreshLatestOpenAIModels } = await import('./openai-latest.ts');
-  await refreshLatestOpenAIModels({ env: cfg.env ?? process.env, baseUrl: cfg.base_urls?.openai });
+  // Discovery hits the same endpoint real native-openai calls use:
+  // OPENAI_BASE_URL via resolveNativeBaseUrl — the ENV PLANE, deliberately
+  // NOT cfg.base_urls.openai. Two reasons: (1) defaulting to api.openai.com
+  // when a custom endpoint is configured would send that endpoint's key to
+  // the official host; (2) base_urls can be DB-plane-merged from a mounted
+  // brain, and discovery fires automatically on connect — a hostile shared
+  // brain must never be able to point this process's bearer key at an
+  // attacker URL (native chat calls ignore base_urls for the same reason).
+  await refreshLatestOpenAIModels({
+    env: cfg.env ?? process.env,
+    baseUrl: resolveNativeBaseUrl('openai', cfg),
+  });
   // Resolve expansion (utility tier) and chat (reasoning tier). Embedding is
   // intentionally NOT re-resolved here — switching embedding models invalidates
   // the vector index. Out of scope per v0.31.12 plan ("Embedding tier knob").

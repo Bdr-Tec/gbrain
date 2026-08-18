@@ -58,6 +58,10 @@
   **What:** the zero-rows branch gates on `isAvailable('chat', model)` in the
   doctor process; a launchd worker with a different env (no keys) skips every
   extraction calmly while a keyed operator shell's doctor reports healthy.
+  Sharper edge (adversarial review): the calm skip COMPLETES the job, and the
+  queue's content-hash idempotency then returns the completed row for
+  identical resubmissions — so those turns' facts are never extracted even
+  after the key is repaired, unless the page changes.
   **Fix direction:** keyless-skip in the worker records a low-volume marker
   (job result field or daily absorb row) doctor can read — doctor already
   reads job results. Start: src/commands/jobs.ts facts-absorb handler +
@@ -69,6 +73,23 @@
   (stamp attempt count into it), or a per-source daily cap. Visibility was
   the goal; unbounded growth wasn't. Start: src/core/facts/backstop.ts
   `surfaceExtractionFailure` call sites. **Effort:** S.
+- [ ] **P2 — Classify provider HTTP status into extraction retry policy.**
+  **What:** `FactsExtractionError` deliberately drops the provider error body
+  (redaction), but it also drops the STATUS — the worker retries 401s (
+  permanent), 429s (needs longer backoff), and 5xx (transient) identically,
+  5 attempts each. **Fix direction:** carry a sanitized `status?: number` on
+  the typed error (a number can't leak a key), map 401/403 →
+  UnrecoverableError (park immediately with the fix hint), 429 → longer
+  backoff. Start: src/core/facts/extract.ts provider_error arm +
+  src/commands/jobs.ts facts-absorb handler. **Effort:** S-M.
+- [ ] **P2 — Live-key e2e for latest-model discovery.** **What:** discovery
+  is off in ALL test lanes (provider-keys preload); the authenticated
+  /v1/models path, endpoint override, fingerprint switch, and real response
+  shape have zero e2e coverage — only the manual scratch-HOME smoke. **Fix
+  direction:** a skip-gated e2e (runs only when OPENAI_API_KEY + an explicit
+  opt-in env is set, like the live embed parity tests) asserting a real
+  refresh lands priced tiers. Start: test/e2e/ + scripts/run-e2e.sh
+  scrub-allowlist for GBRAIN_MODEL_DISCOVERY. **Effort:** S.
 - [ ] **P3 — mtime-memoize `loadConfig()`.** **What:** key-aware resolution
   put sync read+parse of config.json on per-resolution hot paths
   (`resolveTierDefault` step 7, `classifyUnavailable`). Bulk syncs multiply
