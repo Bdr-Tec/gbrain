@@ -24,10 +24,10 @@ src/core/cycle/synthesize.ts	2702	ratchet	merged: five-issue wave + dream-wave C
 src/commands/embed.ts	1963	ratchet
 src/core/types.ts	1863	ratchet
 src/commands/skillpack.ts	1360	ratchet
-src/core/minions/queue.ts	2130	ratchet	grown v0.46.11.0 five-issue wave
+src/core/minions/queue.ts	2138	ratchet	grown by #4078 subagent-loop capability fix
 src/commands/init.ts	1950	ratchet	grown v0.46.x keyless capability notices
 src/commands/integrations.ts	1675	ratchet
-src/core/minions/handlers/subagent.ts	1818	ratchet	merged: master v131 settle rework + dream-wave C5 peel + C6 accounting + C7 lease heartbeats/lost-lease aborts + C9 oneshot dispatch + adversarial fix batches
+src/core/minions/handlers/subagent.ts	1825	ratchet	grown by #4078 subagent-loop capability fix
 src/commands/bootstrap.ts	1923	ratchet	grandfathered at merge (grew past the 1500 cap on master)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
 src/commands/sources.ts	1676	ratchet
