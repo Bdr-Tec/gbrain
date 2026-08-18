@@ -3290,11 +3290,32 @@ export async function buildChecks(
     );
 
     if (rows.length === 0) {
-      checks.push({
-        name: 'facts_extraction_health',
-        status: 'ok',
-        message: 'No facts:absorb failures in the last 24h.',
-      });
+      // Zero failure rows is only "healthy" when extraction is actually
+      // configured. Keyless installs deliberately write NO absorb rows (the
+      // calm expected state) — reporting "ok: no failures" there would read
+      // as extraction-healthy while extraction never runs. Doctor HOLDS the
+      // engine, so probe the ACTUAL resolved extraction model (sees DB-plane
+      // facts.extraction_model / models.* overrides the engine-blind
+      // detectCapabilities() cannot) — the same gate the runtime uses.
+      const { getFactsExtractionModel } = await import('../core/facts/extract.ts');
+      const { isAvailable } = await import('../core/ai/gateway.ts');
+      const extractionAvailable = isAvailable('chat', await getFactsExtractionModel(engine));
+      if (!extractionAvailable) {
+        checks.push({
+          name: 'facts_extraction_health',
+          status: 'ok',
+          message:
+            'Automatic fact extraction not configured (keyless) — memory comes from ' +
+            'agent-authored `## Facts` fences and the `remember` verb. One optional key ' +
+            'enables automatic extraction (OpenAI or Anthropic).',
+        });
+      } else {
+        checks.push({
+          name: 'facts_extraction_health',
+          status: 'ok',
+          message: 'No facts:absorb failures in the last 24h.',
+        });
+      }
     } else {
       // Group per source so the breakdown is operator-friendly.
       const bySource = new Map<string, Array<{ reason: string; n: number }>>();
