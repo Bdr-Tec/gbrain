@@ -10,18 +10,11 @@ import { join as joinPath, resolve as resolvePath, sep as pathSep } from 'node:p
 // so a `bun build --compile` binary can serve a PGLite brain (Bun vfs #1340).
 // The embedded `extensions` REPLACE the stock `{ vector, pg_trgm }` imports.
 import { getEmbeddedPgliteOptions } from './pglite-embedded-assets.ts';
-import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
-
-/**
- * #4143 — bound for PGlite.close() inside disconnect(). close() deadlocks
- * permanently when a statement is in flight; the drain above close() removes
- * the known trigger, this bound converts any residual instance into a 5s warn
- * instead of a wedged process. Env-overridable for incident response.
- */
-const PGLITE_CLOSE_TIMEOUT_MS = Math.max(
-  1000,
-  Number(process.env.GBRAIN_PGLITE_CLOSE_TIMEOUT_MS ?? '') || 5000,
-);
+import { drainBackgroundWorkBeforeDisconnect, backgroundWorkSinkCount } from './background-work.ts';
+// Engine-live path: static top-level import (no lazy `import()`). The opt-in
+// out-of-band disconnect watchdog (#4284) reuses the worker_threads watchdog
+// `gbrain sync` already validated against starved event loops (#1633).
+import { installProcessWatchdog } from './process-watchdog.ts';
 import type {
   BrainEngine,
   BatchOpts,
@@ -115,6 +108,71 @@ import * as codeEdgesImpl from './pglite-engine/code-edges.ts';
 import type { PgliteCodeEdgesDeps } from './pglite-engine/code-edges.ts';
 import * as salienceImpl from './pglite-engine/salience.ts';
 import type { PgliteSalienceDeps } from './pglite-engine/salience.ts';
+
+/**
+ * setTimeout delay ceiling: Node/Bun overflow-clamp anything above 2^31−1 to
+ * ~1ms (TimeoutOverflowWarning), so an oversized env value must mean "longer
+ * bound", never an instant spurious fire (#4284).
+ */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * #4143/#4284 — in-loop bound for PGlite.close() inside disconnect().
+ * HONEST SCOPE: this bound catches a close that still YIELDS to the event
+ * loop (a slow close, or a promise deadlock that leaves the loop idle). A
+ * close that WEDGES the loop — synchronously blocked, or microtask-starved
+ * like the #1762 re-pump class — can never lose a same-loop Promise.race:
+ * the timers phase never runs while the loop is wedged (#4284, measured).
+ * That class is PREVENTED by the pre-close drain and can only be
+ * observed/killed by the opt-in out-of-band watchdog (pgliteCloseWatchdogMs).
+ * Read per call (not module load) so tests and incident responders can set
+ * GBRAIN_PGLITE_CLOSE_TIMEOUT_MS without subprocess gymnastics; floor 1s.
+ */
+function pgliteCloseTimeoutMs(): number {
+  return Math.min(
+    MAX_TIMER_MS,
+    Math.max(1000, Number(process.env.GBRAIN_PGLITE_CLOSE_TIMEOUT_MS ?? '') || 5000),
+  );
+}
+
+/**
+ * #4284 — opt-in out-of-band watchdog for a PGLite disconnect with a live
+ * handle. OFF by default: a DIAGNOSTIC/INCIDENT instrument (CI lanes, heavy
+ * tests, wedge hunts), not ambient production protection. When armed it is
+ * the ONLY layer that can fire while the event loop is wedged (worker_threads
+ * — its timers live on a separate OS thread): stderr line + SIGTERM at the
+ * deadline, SIGKILL at deadline+grace, converting a silent 600s CI kill into
+ * a fast, loud, attributed death.
+ *
+ * Resolve ordering is OFF-check FIRST: unset/0/non-finite/negative → inert
+ * (deadline 0). Only a positive value proceeds to the lethal-knob floor
+ *   max(5000, backgroundWorkSinkCount()*2000 + closeTimeout + 2000)
+ * which budgets the serial pre-close drain (each registered sink is bounded
+ * at 2000ms) plus the in-loop close bound, so a units typo (`=30`, thinking
+ * seconds) clamps UP with a warn instead of SIGKILLing a HEALTHY slow
+ * teardown — `jobs work` daemons reconnect() through disconnect(). Mirrors
+ * the computed-deadline pattern in cli-force-exit.ts.
+ */
+function pgliteCloseWatchdogMs(): { deadlineMs: number; graceMs: number } {
+  const raw = Number(process.env.GBRAIN_PGLITE_CLOSE_WATCHDOG_MS ?? '');
+  if (!Number.isFinite(raw) || raw <= 0) return { deadlineMs: 0, graceMs: 0 }; // OFF (default)
+  const floor = Math.min(
+    MAX_TIMER_MS,
+    Math.max(5000, backgroundWorkSinkCount() * 2000 + pgliteCloseTimeoutMs() + 2000),
+  );
+  const deadlineMs = Math.min(MAX_TIMER_MS, Math.max(floor, Math.floor(raw)));
+  if (deadlineMs > raw) {
+    warnOncePerProcess(
+      'pglite-close-watchdog-floor',
+      `[pglite] GBRAIN_PGLITE_CLOSE_WATCHDOG_MS=${raw} is below this process's safe floor (drain budget + close timeout) — clamped up to ${deadlineMs}ms so a healthy slow teardown is never killed.`,
+    );
+  }
+  const graceMs = Math.min(
+    MAX_TIMER_MS,
+    Math.max(0, Math.floor(Number(process.env.GBRAIN_PGLITE_CLOSE_WATCHDOG_GRACE_MS ?? '') || 30_000)),
+  );
+  return { deadlineMs, graceMs };
+}
 
 type PGLiteDB = PGlite;
 
@@ -783,6 +841,27 @@ export class PGLiteEngine implements BrainEngine {
     this._lock = null;
     if (!db && !lock) return; // already disconnected — nothing to drain or close
 
+    // #4284 — out-of-band watchdog (opt-in; see pgliteCloseWatchdogMs). Armed
+    // ONLY when a live handle exists (a lock-only teardown has no close to
+    // wedge) and BEFORE the drain so a drain-side wedge is covered too.
+    // Scope: a PGLite disconnect with a live handle — nothing else. Disposed
+    // in the outer finally below, even when releaseLock throws.
+    let watchdog: { dispose(): void } | null = null;
+    if (db) {
+      const { deadlineMs, graceMs } = pgliteCloseWatchdogMs();
+      if (deadlineMs > 0) {
+        watchdog = installProcessWatchdog({
+          deadlineMs,
+          graceMs,
+          label: 'pglite-disconnect-watchdog',
+        });
+        warnOncePerProcess(
+          'pglite-close-watchdog-armed',
+          `[pglite] disconnect watchdog armed: SIGTERM at ${deadlineMs}ms, SIGKILL at ${deadlineMs + graceMs}ms (out-of-band worker thread — fires even if the event loop wedges; #4284).`,
+        );
+      }
+    }
+
     // #4143: drain in-flight background work AFTER the early-null and BEFORE
     // close(). PGLite's close() deadlocks PERMANENTLY — close's promise AND
     // the in-flight query's promise never settle — when any statement is in
@@ -802,27 +881,38 @@ export class PGLiteEngine implements BrainEngine {
         // process.exitCode at all — it lives in the gbrain-owned channel
         // (setCliExitVerdict/currentExitCode in cli-force-exit.ts).
         //
-        // #4143 backstop: bound close() so any residual instance of the
-        // in-flight-statement deadlock degrades to a loud warning instead of
-        // wedging the process until an outer 600s CI kill. A close-throw
-        // still propagates (lock releases in finally, same as before). Note
-        // for reconnect(): a timed-out close leaves a zombie instance briefly
+        // #4143/#4284 in-loop bound — HONEST SCOPE: catches a close that
+        // still YIELDS (slow, or promise-deadlocked with an idle loop). It
+        // can NEVER fire against a close that wedges the event loop (#4284):
+        // the timers phase doesn't run, so no same-loop timer wins this
+        // race. That class is prevented by the drain above; the opt-in
+        // watchdog is the only observer. The timer is armed BEFORE close()
+        // is called so close's pre-first-yield work runs with the bound
+        // already ticking, and it is deliberately REF'D (no unref): in the
+        // one case this bound can catch, an unref'd timer would let Bun exit
+        // before the warn and the lock release fire (precedent:
+        // cli-force-exit.ts adversarial F3, db-pacer.ts). Deliberately NOT
+        // timeout.ts:withTimeout — it unrefs its timer and rejects; this
+        // site needs a ref'd race that resolves a flag. A close-throw still
+        // propagates (lock releases in finally, same as before). Note for
+        // reconnect(): a timed-out close leaves a zombie instance briefly
         // coexisting with a re-opened dataDir — the WAL-repair path covers
         // the consequence on next open.
-        const closePromise = db.close();
+        const timeoutMs = pgliteCloseTimeoutMs();
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
+          const timedOutPromise = new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(true), timeoutMs);
+          });
+          const closePromise = db.close();
           const timedOut = await Promise.race([
             closePromise.then(() => false),
-            new Promise<boolean>((resolve) => {
-              timer = setTimeout(() => resolve(true), PGLITE_CLOSE_TIMEOUT_MS);
-              timer.unref?.();
-            }),
+            timedOutPromise,
           ]);
           if (timedOut) {
             warnOncePerProcess(
               'pglite-close-timeout',
-              `[pglite] db.close() did not settle within ${PGLITE_CLOSE_TIMEOUT_MS}ms — proceeding with teardown (a statement may still be in flight; #4143). Override with GBRAIN_PGLITE_CLOSE_TIMEOUT_MS.`,
+              `[pglite] db.close() did not settle within ${timeoutMs}ms — proceeding with teardown (a statement may still be in flight; #4143). Override with GBRAIN_PGLITE_CLOSE_TIMEOUT_MS. A close that WEDGES the event loop cannot be caught by this in-loop bound — arm GBRAIN_PGLITE_CLOSE_WATCHDOG_MS for the out-of-band watchdog (#4284).`,
             );
             // Abandoned close may reject later — never let it become an
             // unhandled rejection.
@@ -833,8 +923,14 @@ export class PGLiteEngine implements BrainEngine {
         }
       }
     } finally {
-      if (lock?.acquired) {
-        await releaseLock(lock);
+      try {
+        if (lock?.acquired) {
+          await releaseLock(lock);
+        }
+      } finally {
+        // #4284: dispose even when releaseLock throws — a leaked armed worker
+        // would SIGTERM/SIGKILL a process whose close already completed.
+        watchdog?.dispose();
       }
     }
   }
