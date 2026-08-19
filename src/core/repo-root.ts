@@ -44,8 +44,11 @@ function hasFrontmatterTriggerSkill(dir: string): boolean {
     if (!dirent.isDirectory()) continue;
     const name = dirent.name;
     if (name.startsWith('_') || name.startsWith('.')) continue;
+    if (name.includes('/') || name.includes('\\')) continue;
 
-    const skillPath = join(dir, name, 'SKILL.md');
+    // Directory names come from readdirSync(dir), are separator-checked above,
+    // and are confined to explicit operator-selected skills catalogs.
+    const skillPath = join(dir, name, 'SKILL.md'); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     if (!existsSync(skillPath)) continue;
 
     try {
@@ -161,7 +164,8 @@ export function autoDetectSkillsDir(
   if (env.GBRAIN_SKILLS_DIR) {
     const explicit = isAbsolute(env.GBRAIN_SKILLS_DIR)
       ? env.GBRAIN_SKILLS_DIR
-      : resolvePath(startDir, env.GBRAIN_SKILLS_DIR);
+      // GBRAIN_SKILLS_DIR is an explicit operator override for local skills discovery.
+      : resolvePath(startDir, env.GBRAIN_SKILLS_DIR); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     if (hasResolverFile(explicit)) {
       return { dir: explicit, source: 'env_explicit' };
     }
@@ -277,7 +281,8 @@ export function autoDetectSkillsDirReadOnly(
   if (env.GBRAIN_SKILLS_DIR) {
     const explicit = isAbsolute(env.GBRAIN_SKILLS_DIR)
       ? env.GBRAIN_SKILLS_DIR
-      : resolvePath(startDir, env.GBRAIN_SKILLS_DIR);
+      // GBRAIN_SKILLS_DIR is an explicit operator override for local skills discovery.
+      : resolvePath(startDir, env.GBRAIN_SKILLS_DIR); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     if (hasResolverFile(explicit) || hasFrontmatterTriggerSkill(explicit)) {
       return { dir: explicit, source: 'env_explicit' };
     }
