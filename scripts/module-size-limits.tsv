@@ -9,7 +9,7 @@ src/core/postgres-engine.ts	5832	ratchet	peel target: containment sprint C15; gr
 src/core/pglite-engine.ts	5875	ratchet	peel target: containment sprint C15; grown v0.46.11.0 five-issue wave + retrieval wave + #4284 honest close bound/watchdog + its review-fix batch + #4091 FTS term cap
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4330	ratchet	peel target: containment sprint C13-C14; grown v0.46.11.0 five-issue wave + #3942 fallback-slug delete collision guard
-src/core/ai/gateway.ts	4428	ratchet	watchlist; merged: dream-wave turn permits + key-aware effective-model reconfigure + env-only worker refresh + discovery endpoint-trust docstring
+src/core/ai/gateway.ts	4449	ratchet	watchlist; merged: dream-wave turn permits + key-aware effective-model reconfigure + env-only worker refresh + discovery endpoint-trust docstring + #4107 OCR-model routing (getImageOcrModel)
 src/cli.ts	3482	ratchet	watchlist; merged unions: cathedral-5 compile-context wiring + gap-closure thin-client routing + cathedral-6 register guards + sources self-help
 src/core/cycle.ts	3080	ratchet	grown v0.46.20.0 phase-boundary split (resolveCyclePhases + normalizeQueuedSourcePhases + deriveStatus exclusion filter)
 src/commands/serve-http.ts	2978	ratchet	grown cathedral-6 multi-agent wave (admin register route composes registerScopedClient in one tx under the name advisory lock; ttl validation + brain_too_old preflight) + chennai no-grant federated scope
