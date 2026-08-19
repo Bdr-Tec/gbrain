@@ -2702,10 +2702,10 @@ async function handleCliOnly(command: string, args: string[]) {
         await runMaintain(engine, args);
         break;
       }
-      // v0.32.7 CJK wave — post-upgrade markdown re-chunk sweep.
-      // v0.36 Phase 3 wave — `gbrain reindex --multimodal` re-embeds content_chunks
-      // into the unified Voyage multimodal-3 column.
       case 'reindex': {
+        const reindex = await import('./commands/reindex.ts'); args = reindex.normalizeReindexArgs(args);
+        const scopeError = reindex.validateReindexModeScope(args);
+        if (scopeError) { process.stderr.write(`[reindex] ${scopeError}\n`); setCliExitVerdict(2); break; }
         if (args.includes('--multimodal')) {
           const { runReindexMultimodal } = await import('./commands/reindex-multimodal.ts');
           const { parseWorkers } = await import('./core/sync-concurrency.ts');
