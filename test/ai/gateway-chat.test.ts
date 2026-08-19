@@ -45,10 +45,10 @@ describe('chat touchpoint — recipe registry', () => {
     }
   });
 
-  test('only Anthropic claims supports_prompt_cache outright; others gate per model', () => {
+  test('only known cache-capable recipes claim supports_prompt_cache', () => {
     for (const r of listRecipes()) {
       if (!r.touchpoints.chat) continue;
-      if (r.id === 'anthropic') {
+      if (r.id === 'anthropic' || r.id === 'llama-server') {
         expect(r.touchpoints.chat.supports_prompt_cache).toBe(true);
       } else if (r.id === 'openrouter' || r.id === 'google') {
         // Scoped predicates, never a blanket true: OpenRouter by routed model
