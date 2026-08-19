@@ -188,8 +188,10 @@ export function rankOpenAIChatModels(
 // already tolerated by design. Keyed on path too (GBRAIN_HOME can change in
 // tests). mtime alone is insufficient: two fast writes can share an observed
 // timestamp, while an external atomic rename can preserve it deliberately.
-// ino changes across atomic replacement and the in-process writer refreshes
-// the memo explicitly after a successful rename.
+// ino changes across atomic replacement, whether the write comes from this
+// process or a concurrent one (readCacheFile() always re-stats and re-reads
+// on a mismatch — writeCacheFile() deliberately does not memo its own write,
+// since statting post-rename can race a peer process's own atomic replace).
 let _cacheMemo: {
   path: string;
   mtimeMs: number;
