@@ -252,21 +252,21 @@ function accountFingerprint(base: string, apiKey: string): string {
   return createHash('sha256').update(`${base}|${apiKey}`).digest('hex').slice(0, 16);
 }
 
-/** Atomic cache write (tmp + rename) so a concurrent sync reader never sees a torn file. */
+/**
+ * Atomic cache write (tmp + rename) so a concurrent sync reader never sees a
+ * torn file. Deliberately does NOT refresh `_cacheMemo` here: statting `path`
+ * post-rename can observe a DIFFERENT process's file if that process wins an
+ * atomic replace in the same window (measured ~167µs), which would poison
+ * this process's memo with someone else's (mtimeMs, ino) pair keyed to a
+ * value that isn't what's actually on disk long-term. The next `readCacheFile()`
+ * call re-stats and self-heals through the normal cache-miss path instead.
+ */
 function writeCacheFile(next: ModelCacheFile): void {
   const path = cachePath();
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(next, null, 2));
   renameSync(tmp, path);
-  try {
-    const { mtimeMs, ino } = statSync(path);
-    _cacheMemo = { path, mtimeMs, ino, value: next };
-  } catch {
-    // The rename succeeded, but the file may have been replaced/removed by
-    // another process before stat. Force the next reader through disk.
-    _cacheMemo = null;
-  }
 }
 
 /**
