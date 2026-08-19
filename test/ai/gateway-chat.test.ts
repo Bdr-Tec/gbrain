@@ -61,12 +61,23 @@ describe('chat touchpoint — recipe registry', () => {
     }
   });
 
-  test('embedding-only providers (voyage, ollama) do NOT declare chat', () => {
+  test('Voyage remains embedding-only', () => {
     expect(getRecipe('voyage')!.touchpoints.chat).toBeUndefined();
-    expect(getRecipe('ollama')!.touchpoints.chat).toBeUndefined();
+  });
+
+  test('Ollama declares local chat without subagent tool-loop support', () => {
+    const chat = getRecipe('ollama')!.touchpoints.chat;
+    expect(chat).toBeDefined();
+    expect(chat!.models).toContain('qwen3:8b');
+    expect(chat!.supports_tools).toBe(false);
+    expect(chat!.supports_subagent_loop).toBe(false);
+    expect(chat!.supports_prompt_cache).toBe(false);
+    expect(chat!.cost_per_1m_input_usd).toBe(0);
+    expect(chat!.cost_per_1m_output_usd).toBe(0);
   });
 
   test('openai-compat chat recipes have base_url_default', () => {
+    expect(getRecipe('ollama')!.base_url_default).toBe('http://localhost:11434/v1');
     expect(getRecipe('deepseek')!.base_url_default).toBe('https://api.deepseek.com/v1');
     expect(getRecipe('groq')!.base_url_default).toBe('https://api.groq.com/openai/v1');
     expect(getRecipe('together')!.base_url_default).toBe('https://api.together.xyz/v1');
@@ -173,8 +184,6 @@ describe('chat touchpoint — model resolver + aliases (Codex F-OV-5)', () => {
   test('assertTouchpoint rejects chat on embedding-only providers with a fix hint', () => {
     expect(() => assertTouchpoint(getRecipe('voyage')!, 'chat', 'voyage-3'))
       .toThrow(AIConfigError);
-    expect(() => assertTouchpoint(getRecipe('ollama')!, 'chat', 'nomic-embed-text'))
-      .toThrow(AIConfigError);
   });
 
   test('assertTouchpoint accepts unlisted models on native recipes (no runtime allowlist)', () => {
@@ -191,6 +200,7 @@ describe('chat touchpoint — model resolver + aliases (Codex F-OV-5)', () => {
   test('assertTouchpoint accepts arbitrary model on openai-compat tier', () => {
     // openai-compat lets users pass models not declared in the recipe (provider may host more)
     expect(() => assertTouchpoint(getRecipe('groq')!, 'chat', 'some-future-model')).not.toThrow();
+    expect(() => assertTouchpoint(getRecipe('ollama')!, 'chat', 'locally-installed-model')).not.toThrow();
   });
 });
 
