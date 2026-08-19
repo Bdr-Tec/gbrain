@@ -308,9 +308,13 @@ describe('coverage-gap additions (ship review)', () => {
       fetchImpl: fetchReturning(['gpt-5.6']),
       force: true,
     });
-    expect(latestOpenAITiers('deep')).toBe('openai:gpt-5.6'); // prime memo
-
     const path = join(tmpHome, '.gbrain', 'model-cache.json');
+    // Pin BOTH files to an integer-second timestamp before priming the memo.
+    // Reusing `before.mtime` through utimesSync is not portable: Linux can
+    // round the source stat's fractional nanoseconds differently from macOS.
+    const fixedSeconds = 1_700_000_000;
+    utimesSync(path, fixedSeconds, fixedSeconds);
+    expect(latestOpenAITiers('deep')).toBe('openai:gpt-5.6'); // prime fixed-mtime memo
     const before = statSync(path);
     const replacement = `${path}.external-replacement`;
     const current = JSON.parse(readFileSync(path, 'utf8'));
@@ -326,7 +330,7 @@ describe('coverage-gap additions (ship review)', () => {
         },
       },
     }, null, 2));
-    utimesSync(replacement, before.atime, before.mtime);
+    utimesSync(replacement, fixedSeconds, fixedSeconds);
     renameSync(replacement, path);
 
     const after = statSync(path);
