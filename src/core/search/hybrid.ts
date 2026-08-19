@@ -637,6 +637,45 @@ export async function runPostFusionStages(
 }
 
 /**
+ * Memoized per-engine gate for the supersession stage. Most brains carry zero
+ * `supersedes` edges, so the downrank lookup would be a wasted roundtrip on
+ * every search. One existence probe per engine per TTL answers "any edges at
+ * all?"; false skips the stage entirely. A fresh edge minted inside the TTL
+ * window is invisible for up to ~5 minutes — an acceptable delay for a
+ * ranking hint (the downrank applies on the next probe refresh). Fail-open: a
+ * probe error must never kill search — the stage runs and its own catch
+ * no-ops on the same underlying failure (e.g. pre-links schema).
+ */
+const SUPERSEDE_PROBE_TTL_MS = 5 * 60 * 1000;
+let supersedeEdgeProbe = new WeakMap<
+  import('../engine.ts').BrainEngine,
+  { at: number; exists: boolean }
+>();
+
+/** Test seam: drop memoized supersede-edge probes (WeakMap has no clear()). */
+export function _resetSupersedeProbeForTests(): void {
+  supersedeEdgeProbe = new WeakMap();
+}
+
+async function hasAnySupersedeEdges(
+  engine: import('../engine.ts').BrainEngine,
+): Promise<boolean> {
+  const cached = supersedeEdgeProbe.get(engine);
+  if (cached && Date.now() - cached.at < SUPERSEDE_PROBE_TTL_MS) return cached.exists;
+  try {
+    const rows = await engine.executeRaw<{ one: number }>(
+      `SELECT 1 AS one FROM links WHERE link_type = 'supersedes' LIMIT 1`,
+    );
+    const exists = rows.length > 0;
+    supersedeEdgeProbe.set(engine, { at: Date.now(), exists });
+    return exists;
+  } catch {
+    // Fail-open; not cached so a transient error doesn't pin the gate open.
+    return true;
+  }
+}
+
+/**
  * Down-rank results whose page is superseded by a newer/canon page, and stamp
  * the SUPERSEDED annotation.
  *
@@ -650,14 +689,17 @@ export async function runPostFusionStages(
  * where the cross-encoder owns the final head order.
  *
  * Single index-hit query bounded by top-K (links.to_page_id is indexed;
- * `supersedes` edges are sparse). page_id is globally unique, so the lookup is
- * by page_id array — no source-composite needed. Fail-soft: a brain with no
- * `supersedes` edges (or a pre-links schema) returns 0 rows / throws and the
- * stage no-ops (matches applyAliasResolvedBoost's pre-v104 guard).
+ * `supersedes` edges are sparse). Lookup is by page_id array, but supersession
+ * is WITHIN-SOURCE only (matches relational-recall's contract): a cross-source
+ * `supersedes` edge neither downranks nor leaks the superseding slug across
+ * the source boundary, and a soft-deleted superseder no longer counts.
+ * Fail-soft: a brain with no `supersedes` edges (or a pre-links schema)
+ * returns 0 rows / throws and the stage no-ops (matches
+ * applyAliasResolvedBoost's pre-v104 guard).
  */
-const SUPERSEDE_PENALTY = 0.5;
+export const SUPERSEDE_PENALTY = 0.5;
 
-async function applySupersedeDownrank(
+export async function applySupersedeDownrank(
   results: SearchResult[],
   engine: import('../engine.ts').BrainEngine,
 ): Promise<void> {
@@ -666,13 +708,17 @@ async function applySupersedeDownrank(
     new Set(results.map(r => r.page_id).filter((id): id is number => typeof id === 'number')),
   );
   if (pageIds.length === 0) return;
+  if (!(await hasAnySupersedeEdges(engine))) return;
   let rows: Array<{ to_page_id: number; by_slug: string }> = [];
   try {
     rows = await engine.executeRaw<{ to_page_id: number; by_slug: string }>(
       `SELECT DISTINCT l.to_page_id, pf.slug AS by_slug
          FROM links l
          JOIN pages pf ON pf.id = l.from_page_id
+         JOIN pages pt ON pt.id = l.to_page_id
         WHERE l.link_type = 'supersedes'
+          AND pf.deleted_at IS NULL
+          AND pf.source_id = pt.source_id
           AND l.to_page_id = ANY($1::bigint[])`,
       [pageIds],
     );
