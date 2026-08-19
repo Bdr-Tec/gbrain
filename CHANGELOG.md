@@ -4,14 +4,25 @@ All notable changes to GBrain will be documented in this file.
 
 ## [0.46.23.0] - 2026-08-19
 
-**A 22-contribution community wave.** Approved from the phone across
-2026-08-17 and 2026-08-18, this release spans dream-pipeline correctness,
-budget and pricing coverage, search and link quality, transcript and reindex
+**A 23-contribution community wave, plus an end to silently lost pages.**
+If your agent ever "saved" a page and a re-read came back without the change,
+or a page you were editing came back blanked, this release closes both halves
+of that story: large piped reads no longer lose their tail on process exit,
+and the store itself now refuses to overwrite a page's real content with an
+empty body. Beyond that, the wave spans dream-pipeline correctness, budget
+and pricing coverage, search and link quality, transcript and reindex
 resilience, provider error surfacing, and a set of long-tail adoptions from
 older PRs — including a new GitHub source kind that puts issues and PRs in
 the brain.
 
 ### Added
+- `putPage` refuses to overwrite a non-empty page body with a blank one.
+  A page edit is a read-modify-write; when the read comes back empty for any
+  reason, the write used to blank the page silently. It now fails loudly with
+  a clear error instead. Genuinely new empty pages still save, file-sourced
+  syncs of a deliberately emptied file still clear, and a deliberate clear
+  passes `allow_empty` / `allowEmptyOverwrite: true`. Contributed by
+  @JamisonMercurio.
 - GitHub is now a source kind: `gbrain sources add --kind github` mirrors
   issues and PRs into the brain, with webhook refresh, a demo fixture, and
   a guide at `docs/guides/github-source.md`. Contributed by @veltri-23.
@@ -40,9 +51,12 @@ the brain.
 ### Changed
 - Concept synthesis gets budget priority and falls back to labels instead of
   dropping work when the budget runs short. Contributed by @calebhicks.
-- LLM cycle phases halt on global billing, auth, and rate-limit errors
-  instead of swallowing them per page, so one bad credential fails loudly
-  once rather than quietly on every page. Contributed by @Masashi-Ono0611.
+- LLM cycle phases (propose, grade, atom extraction, and concept synthesis)
+  halt on global billing, auth, and rate-limit errors instead of swallowing
+  them per page, so one bad credential fails loudly once rather than quietly
+  on every page — and a global outage no longer counts against per-page
+  failure budgets or overwrites concept pages with fallback stubs.
+  Contributed by @Masashi-Ono0611.
 - The claude-cli provider surfaces `api_error_status` as a typed error rather
   than a raw exit blob. Contributed by @Masashi-Ono0611.
 - `dream extract-atoms` failure details name the provider and model that
@@ -51,6 +65,18 @@ the brain.
   trail instead of vanishing. Contributed by @herove.
 
 ### Fixed
+- Piped CLI output larger than 64KiB no longer truncates with exit 0 when the
+  reader drains slowly (#3423). This was the root cause of agents reporting
+  that saves "didn't stick": a verify-read of a big page lost its tail, which
+  is exactly where the fresh edit lives, and feeding that truncated read back
+  through an edit could shrink or blank the page. Output delivery is now
+  awaited to the last byte before exit — `get_page`, `gbrain call`, and
+  `--tools-json` all return complete payloads at any reader pace.
+- claude-cli auth and configuration failures (401/403/400) now classify as
+  configuration errors instead of retryable transients, so callers stop
+  re-billing a revoked credential.
+- An invalid configured timezone degrades to "unknown" instead of breaking
+  context assembly on every turn.
 - Pattern excerpts split UTF-16 surrogate pairs, which could make Postgres
   reject the subagent job payload; excerpts now use the shared UTF-16-safe
   truncator. Contributed by @calebhicks.
@@ -58,7 +84,8 @@ the brain.
   the first one; `reindex --type` reaches the flag registry. Contributed by
   @calebhicks.
 - Oversized codex rollouts import instead of throwing, and `--max-bytes`
-  reaches the transcript adapters. Contributed by @mweber82.
+  reaches the transcript adapters; a truncated scan never advances the
+  ingest watermark over unscanned content. Contributed by @mweber82.
 - Malformed extractor output is retried once with an explicit JSON-only
   reminder before the turn's facts are given up on. Contributed by @herove.
 - Fence writes are committed durably. Contributed by @herove.
@@ -71,6 +98,10 @@ the brain.
 
 To take advantage of v0.46.23.0:
 - `gbrain upgrade` (or reinstall the binary).
+- If your agent harness ever reported pages that "didn't save" or reads that
+  came back incomplete on large pages, upgrading is the fix: reads deliver
+  fully, and the store refuses a blank body over real content (a deliberate
+  clear passes `allow_empty` on the `put_page` op).
 - **Search cache cold-miss:** the knobs hash moves 18 → 19 to fold the
   autocut floor into the cache key. Existing `query_cache` rows become
   unreachable on first re-query and refill within `cache.ttl_seconds`. No
