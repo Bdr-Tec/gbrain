@@ -13,7 +13,12 @@ import { writeStdoutFinal } from '../core/cli-force-exit.ts';
  * > brain default > 'default'). Without --source, the chain still resolves —
  * env / dotfile / path-match all work.
  */
-export async function runCall(engine: BrainEngine, args: string[]) {
+export async function runCall(
+  engine: BrainEngine,
+  args: string[],
+  // Test seam — production always uses the awaited-delivery writer (#3423).
+  out: (payload: string) => Promise<void> = writeStdoutFinal,
+) {
   // Parse --source <id> from anywhere in args (must come before tool/json
   // tokens to keep the existing `gbrain call <tool> <json>` shape readable,
   // but the parser is positional-tolerant for ergonomics).
@@ -56,5 +61,5 @@ export async function runCall(engine: BrainEngine, args: string[]) {
   // (BIGSERIAL id) would otherwise crash plain JSON.stringify (#2450).
   // Awaited delivery (#3423): a >64KiB payload piped to a slow reader loses
   // its tail to the exit grace under queued stdout writes.
-  await writeStdoutFinal(JSON.stringify(result, bigintToStringReplacer, 2) + '\n');
+  await out(JSON.stringify(result, bigintToStringReplacer, 2) + '\n');
 }
