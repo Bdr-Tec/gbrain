@@ -229,6 +229,8 @@ describe('writePageThrough', () => {
     expect(res.written).toBe(true);
     expect(res.path).toBe(resolvePageFilePath(brainDir, slug, 'default'));
     expect(fs.existsSync(path.join(tmpRoot, '..', 'escaped.md'))).toBe(false);
+  });
+
   test('sync.write_through=false → skipped disabled_by_config, nothing touches disk', async () => {
     // Everything else is configured for a successful write — the flag alone
     // must stop it, proving the gate runs before any FS work.
