@@ -265,7 +265,7 @@ async function expandPaths(specs: string[]): Promise<string[]> {
   return [...new Set(out)].filter((p) => !isOpenclawCheckpointFile(p));
 }
 
-function fmtSummary(r: TranscriptsIngestResult): string {
+export function fmtSummary(r: TranscriptsIngestResult): string {
   const byHarness = new Map<string, number>();
   for (const f of r.files) {
     for (const s of f.sessions) {
@@ -290,6 +290,12 @@ function fmtSummary(r: TranscriptsIngestResult): string {
     lines.push(
       `DRIFT WARNING: ${r.driftFiles} file(s) parsed to zero sessions — the host ` +
         `format may have changed; see the adapter SPEC_TARGET runbook`,
+    );
+  }
+  if (r.truncatedFiles > 0) {
+    lines.push(
+      `TRUNCATED: ${r.truncatedFiles} file(s) only partially scanned (byte cap) — ` +
+        `watermark frozen; re-run with a larger --max-bytes to cover the skipped window`,
     );
   }
   for (const f of r.files) {

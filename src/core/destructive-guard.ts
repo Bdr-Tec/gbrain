@@ -15,8 +15,10 @@
 
 import type { BrainEngine } from './engine.ts';
 import { SOURCE_CONFIG_OBJECT_SQL } from './source-config-sql.ts';
-import { rmSync, lstatSync } from 'node:fs';
+import { rmSync, lstatSync, realpathSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import { isPathContained } from './path-confine.ts';
+import { defaultCloneDir } from './sources-ops.ts';
 import { gbrainPath } from './config.ts';
 import { isUndefinedColumnError, isUndefinedTableError } from './utils.ts';
 
@@ -484,7 +486,17 @@ export async function purgeExpiredSources(
             ? JSON.parse(candidate.config)
             : (candidate.config ?? {})) as Record<string, unknown>;
           if (cfg.kind === 'github' && cfg.gh_managed === true && candidate.local_path) {
-            if (isPathContained(candidate.local_path, cloneRoot)) {
+            // STRICT containment: isPathContained accepts child === parent, so
+            // a corrupt row whose local_path IS the clone root would rm -rf
+            // every mirror. Require a real subtree AND pin the gh_managed
+            // creation shape — addSource only sets the marker when the dir is
+            // exactly defaultCloneDir('<id>-github').
+            const strictSubtree =
+              isPathContained(candidate.local_path, cloneRoot) &&
+              realpathSync(candidate.local_path) !== realpathSync(cloneRoot);
+            const expectedShape =
+              resolvePath(candidate.local_path) === resolvePath(defaultCloneDir(`${id}-github`));
+            if (strictSubtree && expectedShape) {
               const lst = lstatSync(candidate.local_path);
               if (!lst.isSymbolicLink()) {
                 rmSync(candidate.local_path, { recursive: true, force: true });

@@ -373,11 +373,26 @@ function locationName(location: LocationState, fallback: string): string {
   return location.city ?? location.state ?? location.province ?? location.country ?? fallback;
 }
 
+/**
+ * Heartbeat timezones are user-edited JSON: a typo'd IANA id ('Amrica/…') must
+ * degrade to the UNKNOWN_TZ warning path, not throw RangeError out of
+ * getTimeInTz mid-assemble().
+ */
+function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolveHomeLocation(hb: HeartbeatState | null): { city: string; tz: string } | null {
   if (!hb?.homeLocation?.timezone) return null;
+  const tz = hb.homeLocation.timezone;
   return {
     city: locationName(hb.homeLocation, 'Home'),
-    tz: hb.homeLocation.timezone,
+    tz: isValidTimezone(tz) ? tz : UNKNOWN_TZ,
   };
 }
 
@@ -386,10 +401,22 @@ function resolveLocation(
   flights: FlightData | null,
 ): { city: string; tz: string; source: string } {
   if (hb?.currentLocation?.timezone) {
+    const tz = hb.currentLocation.timezone;
+    const source = hb.currentLocation.source ?? 'heartbeat';
+    if (!isValidTimezone(tz)) {
+      // Configured-but-invalid is NOT unconfigured: never fall through to
+      // flights/home (a wrong-but-confident time is the bug class this
+      // engine prevents). Name the bad zone so the warning is actionable.
+      return {
+        city: locationName(hb.currentLocation, 'Current location'),
+        tz: UNKNOWN_TZ,
+        source: `${source}:tz-invalid:${sanitizeForPrompt(tz, 50)}`,
+      };
+    }
     return {
       city: locationName(hb.currentLocation, 'Current location'),
-      tz: hb.currentLocation.timezone,
-      source: hb.currentLocation.source ?? 'heartbeat',
+      tz,
+      source,
     };
   }
 
@@ -415,7 +442,9 @@ function resolveLocation(
   }
 
   const home = resolveHomeLocation(hb);
-  if (home) return { ...home, source: 'home' };
+  // A home with an invalid configured tz degrades to the warning path with a
+  // source label that names the cause, not a misleading 'unconfigured'.
+  if (home) return { ...home, source: home.tz === UNKNOWN_TZ ? 'home:tz-invalid' : 'home' };
 
   // No configured location and no active travel signal. Refuse to guess a
   // city/timezone: a wrong-but-confident default is worse than an explicit gap.

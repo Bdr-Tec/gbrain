@@ -646,3 +646,56 @@ describe('gbrain-context engine', () => {
     expect(result.systemPromptAddition).toContain('**User awake:** no');
   });
 });
+
+describe('invalid configured timezone degrades instead of throwing (RangeError guard)', () => {
+  let tmpDir: string;
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('a typo-ed currentLocation.timezone emits the unknown-tz warning naming the bad zone, never a throw', async () => {
+    tmpDir = makeWorkspace({
+      heartbeat: {
+        userAwake: true,
+        currentLocation: { city: 'Somewhere', timezone: 'Amrica/New_York', source: 'user-confirmed' },
+      },
+    });
+    const engine = createGBrainContextEngine({ workspaceDir: tmpDir });
+    const result = await engine.assemble({ sessionId: 'tz-invalid', messages: [] });
+    const block = result.systemPromptAddition!;
+    expect(block).toContain('Timezone:');
+    expect(block).toContain('unknown');
+    expect(block).toContain('tz-invalid');
+    expect(block).toContain('Local time NOT computed');
+    expect(block).not.toMatch(/Time:\*\* \d{4}-/);
+  });
+
+  it('a typo-ed homeLocation.timezone with a valid current tz: current time renders, home time is omitted', async () => {
+    tmpDir = makeWorkspace({
+      heartbeat: {
+        userAwake: true,
+        currentLocation: { city: 'Markham', timezone: 'America/Toronto', source: 'user-confirmed' },
+        homeLocation: { city: 'San Francisco', timezone: 'Not/AZone' },
+      },
+    });
+    const engine = createGBrainContextEngine({ workspaceDir: tmpDir });
+    const result = await engine.assemble({ sessionId: 'home-tz-invalid', messages: [] });
+    const block = result.systemPromptAddition!;
+    expect(block).toContain('America/Toronto');
+    expect(block).not.toContain('Home (');
+  });
+
+  it('a home-only config with an invalid tz lands on the warning path labeled home:tz-invalid', async () => {
+    tmpDir = makeWorkspace({
+      heartbeat: {
+        userAwake: true,
+        homeLocation: { city: 'San Francisco', timezone: 'Pacific/Nowhere' },
+      },
+    });
+    const engine = createGBrainContextEngine({ workspaceDir: tmpDir });
+    const result = await engine.assemble({ sessionId: 'home-only-invalid', messages: [] });
+    const block = result.systemPromptAddition!;
+    expect(block).toContain('home:tz-invalid');
+    expect(block).toContain('Local time NOT computed');
+  });
+});

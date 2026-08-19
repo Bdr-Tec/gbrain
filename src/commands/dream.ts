@@ -496,8 +496,11 @@ function printHuman(report: CycleReport) {
     const failures = Array.isArray(details?.failures) ? details.failures : [];
     if (failures.length > 0) {
       for (const f of failures) {
-        const { source, error } = f as { source?: string; error?: string };
-        console.log(`      ✗ ${source ?? '?'}: ${error ?? 'unknown error'}`);
+        // sync failures carry `source`; synthesize_concepts failures carry
+        // `concept` — name whichever is present so a concept-synthesis
+        // failure isn't printed as an anonymous '?'.
+        const { source, concept, error } = f as { source?: string; concept?: string; error?: string };
+        console.log(`      ✗ ${source ?? concept ?? '?'}: ${error ?? 'unknown error'}`);
       }
     }
     if (p.error) {
