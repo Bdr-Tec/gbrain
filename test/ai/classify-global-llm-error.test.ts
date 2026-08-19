@@ -146,6 +146,18 @@ describe('classifyGlobalLlmError — negatives (per-item errors stay per-item)',
     ).toBeNull();
   });
 
+  test('null for prose-shaped status forms inside a --- raw --- slice', () => {
+    // The quoted `"api_error_status":NNN` JSON form scans the full message
+    // (pinned above); the prose forms only scan the pre-raw slice — model
+    // text quoting an HTTP status must not halt a run.
+    expect(
+      classifyGlobalLlmError(new Error('claude-cli exited 1\n--- raw ---\nRequest failed: HTTP 429')),
+    ).toBeNull();
+    expect(
+      classifyGlobalLlmError(new Error('claude-cli exited 1\n--- raw ---\nthe app returned status code: 401 to the probe')),
+    ).toBeNull();
+  });
+
   test('null for timeouts / network errors / parse failures', () => {
     expect(classifyGlobalLlmError(new Error('LLM timeout'))).toBeNull();
     expect(classifyGlobalLlmError(new Error('fetch failed: ECONNRESET'))).toBeNull();

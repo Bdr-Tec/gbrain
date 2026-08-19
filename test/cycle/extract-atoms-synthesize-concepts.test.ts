@@ -588,6 +588,86 @@ describe('#2123: concepts label parsing', () => {
   });
 });
 
+// #3044 adoption — a whole-run LLM outage must halt the phase instead of
+// overwriting existing concept pages with error_fallback stub narratives.
+// Non-global per-item errors keep the error_fallback behavior (pinned by
+// 'marks LLM-error fallback output distinctly' above).
+describe('runPhaseSynthesizeConcepts — global-error halt (#3044)', () => {
+  // Equal-count T2 groups sort by slug, so call order is deterministic.
+  const mkGroups = (themes: string[]) =>
+    themes.flatMap((theme) =>
+      Array.from({ length: 6 }, (_, i) => ({
+        slug: `${theme}-${i}`,
+        title: `${theme} ${i}`,
+        body: `${theme} body ${i}`,
+        concept_refs: [theme],
+      })),
+    );
+
+  async function conceptCount(): Promise<number> {
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM pages WHERE type = 'concept' AND slug LIKE 'concepts/%'`,
+    );
+    return Number(rows[0].n);
+  }
+
+  test('auth error halts on the FIRST hit — no stub narrative is written', async () => {
+    let calls = 0;
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: mkGroups(['alpha-theme', 'beta-theme']),
+      _chat: (async () => {
+        calls++;
+        throw Object.assign(new Error('invalid x-api-key'), { status: 401 });
+      }) as typeof import('../../src/core/ai/gateway.ts').chat,
+    });
+    expect(calls).toBe(1); // beta-theme never called the LLM
+    expect(result.details?.aborted_global_error).toBe('auth');
+    expect(result.details?.concepts_written).toBe(0);
+    expect(result.status).toBe('warn');
+    const failures = result.details?.failures as Array<{ error: string }>;
+    expect(failures).toHaveLength(1);
+    expect(failures[0].error).toContain('whole-run condition');
+    expect(await conceptCount()).toBe(0); // pre-fix: 2 error_fallback stubs
+  });
+
+  test('below-streak 429 skips the stub write for that group and continues', async () => {
+    let calls = 0;
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: mkGroups(['alpha-theme', 'beta-theme', 'gamma-theme']),
+      _chat: (async (opts) => {
+        calls++;
+        if (calls === 1) throw Object.assign(new Error('rate limited'), { status: 429 });
+        return stubChat('Recovered narrative.')(opts as ChatOpts);
+      }) as typeof import('../../src/core/ai/gateway.ts').chat,
+    });
+    expect(calls).toBe(3);
+    expect(result.details?.aborted_global_error).toBeUndefined();
+    expect(result.details?.concepts_written).toBe(2);
+    // alpha-theme (the rate-limited group) keeps NO page — retried next run
+    // instead of stubbed; the others synthesized normally.
+    expect(await engine.getPage('concepts/alpha-theme')).toBeFalsy();
+    expect((await engine.getPage('concepts/beta-theme'))?.frontmatter.synthesis_mode).toBe('llm');
+    expect((await engine.getPage('concepts/gamma-theme'))?.frontmatter.synthesis_mode).toBe('llm');
+  });
+
+  test('3 consecutive 429s halt the phase with zero stub writes', async () => {
+    let calls = 0;
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: mkGroups(['alpha-theme', 'beta-theme', 'gamma-theme', 'delta-theme']),
+      _chat: (async () => {
+        calls++;
+        throw Object.assign(new Error('rate limited'), { status: 429 });
+      }) as typeof import('../../src/core/ai/gateway.ts').chat,
+    });
+    expect(calls).toBe(3); // 4th group never called the LLM
+    expect(result.details?.aborted_global_error).toBe('rate_limit');
+    expect(result.details?.concepts_written).toBe(0);
+    const failures = result.details?.failures as Array<{ error: string }>;
+    expect(failures[2].error).toContain('3 consecutive rate_limit errors');
+    expect(await conceptCount()).toBe(0);
+  });
+});
+
 describe('#2123: extractor stamps concepts → synthesize_concepts consumes via real DB path', () => {
   test('end-to-end: atoms with shared label materialize a concept page', async () => {
     const chat = stubChat(`[

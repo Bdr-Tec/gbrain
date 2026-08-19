@@ -153,6 +153,28 @@ describe('extractFactsFromTurn malformed-output retry', () => {
     expect(facts[0]!.fact).toContain('alcohol');
   });
 
+  test('malformed retry after a truncation retry re-sends at the escalated cap [1x, 2x, 2x]', async () => {
+    // Truncation retry doubles the cap; when THAT response completes but is
+    // malformed, the malformed retry must keep the doubled cap — dropping
+    // back to 1x would just re-truncate the same payload.
+    const seen: ChatOpts[] = [];
+    __setChatTransportForTests(async (opts) => {
+      seen.push(opts);
+      if (seen.length === 1) return chatResult('{"facts":[{"fact":"user gave up alco', 'length');
+      if (seen.length === 2) return chatResult('not json', 'end');
+      return chatResult(GOOD_JSON, 'end');
+    });
+
+    const facts = await extractFactsFromTurn({
+      turnText: 'I gave up alcohol.',
+      source: 'test:escalated-cap',
+    });
+
+    expect(seen.map((o) => o.maxTokens)).toEqual([4000, 8000, 8000]);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toContain('alcohol');
+  });
+
   test('second malformed response is still fail-closed', async () => {
     let calls = 0;
     __setChatTransportForTests(async () => {

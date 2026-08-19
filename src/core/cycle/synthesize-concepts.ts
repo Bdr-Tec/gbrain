@@ -26,6 +26,7 @@ import type { ProgressReporter } from '../progress.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { chat as gatewayChat, isAvailable } from '../ai/gateway.ts';
+import { createGlobalLlmHaltTracker, haltedClassOf, type GlobalLlmErrorClass } from '../ai/errors.ts';
 // #2163: concept pages route through importFromContent (the same
 // parse→chunk→embed pipeline put_page uses) instead of a bare engine.putPage,
 // so they land in the retrieval surface (content_chunks + embeddings) where
@@ -182,6 +183,11 @@ export async function runPhaseSynthesizeConcepts(
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
   const failures: Array<{ concept: string; error: string }> = [];
+  // #3044 adoption: shared halt policy — auth/billing halt on the first
+  // hit, a rate_limit streak halts after 3 consecutive failures, a
+  // successful chat call resets the streak.
+  const llmHalt = createGlobalLlmHaltTracker();
+  let abortedGlobalError: GlobalLlmErrorClass | null = null;
   const tierCounts = { T1: 0, T2: 0, T3: 0, T4: 0 };
   const synthesisModeCounts: Record<ConceptSynthesisMode, number> = {
     llm: 0,
@@ -241,6 +247,7 @@ export async function runPhaseSynthesizeConcepts(
           // codex flagged. Throttle inside maybeYield bounds the actual
           // refresh rate.
           await maybeYield();
+          llmHalt.reset();
           // Price from the model that actually answered, through the one
           // canonical chat-pricing table (CLAUDE.md invariant). Canonical
           // miss → Sonnet-tier FALLBACK_PRICING (see constant above).
@@ -259,10 +266,24 @@ export async function runPhaseSynthesizeConcepts(
             synthesisMode = 'error_fallback';
           }
         } catch (err) {
-          failures.push({
-            concept: group.conceptSlug,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          const msg = err instanceof Error ? err.message : String(err);
+          // #3044 adoption: a whole-run LLM outage must not overwrite
+          // existing concept pages with error_fallback stub narratives.
+          // A halt decision stops the phase; a below-streak rate limit
+          // skips this group's write (the page stays intact for the next
+          // run); only non-global errors keep the per-item
+          // error_fallback behavior.
+          const decision = llmHalt.observe(err);
+          if (decision !== 'continue') {
+            abortedGlobalError = haltedClassOf(decision);
+            failures.push({
+              concept: group.conceptSlug,
+              error: `aborting phase: ${llmHalt.note()} (${msg})`,
+            });
+            break;
+          }
+          failures.push({ concept: group.conceptSlug, error: msg });
+          if (llmHalt.lastClass() === 'rate_limit') continue;
           narrative = deterministicNarrative(group);
           synthesisMode = 'error_fallback';
         }
@@ -356,6 +377,7 @@ export async function runPhaseSynthesizeConcepts(
       groups_found: atomGroups.length,
       atoms_seen: atoms.length,
       failures,
+      ...(abortedGlobalError ? { aborted_global_error: abortedGlobalError } : {}),
       estimated_spend_usd: estimatedSpendUsd,
       budget_usd: budgetCap,
       dry_run: opts.dryRun ?? false,

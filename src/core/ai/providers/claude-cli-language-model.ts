@@ -355,8 +355,12 @@ function runClaude(
           reject(envelopeError(attempt.envelope, code ?? undefined));
           return;
         }
+        // The blob goes AFTER the `--- raw ---` marker: it can carry
+        // model/page-derived text, and classifyGlobalLlmError's phrase
+        // regexes only scan text before the marker (an auth-looking essay in
+        // stdout must never read as a whole-run auth outage).
         reject(new ClaudeCliProcessError(
-          `claude-cli exited ${code}: ${stderr.trim() || stdout.trim()}`,
+          `claude-cli exited ${code}\n--- raw ---\n${stderr.trim() || stdout.trim()}`,
           { exitCode: code ?? undefined },
         ));
         return;

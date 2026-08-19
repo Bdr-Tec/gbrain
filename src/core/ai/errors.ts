@@ -68,8 +68,21 @@ function carryStatusFields(from: unknown, to: AIServiceError): AIServiceError {
 export function normalizeAIError(err: unknown, context?: string): AIServiceError {
   if (err instanceof AIServiceError) return err;
 
-  const anyErr = err as { name?: string; status?: number; statusCode?: number; message?: string };
-  const status = anyErr?.status ?? anyErr?.statusCode;
+  const anyErr = err as {
+    name?: string;
+    status?: number;
+    statusCode?: number;
+    apiErrorStatus?: unknown;
+    message?: string;
+  };
+  // apiErrorStatus is the claude-cli provider's typed HTTP status
+  // (ClaudeCliProcessError); without it a claude-cli 401/403 fell through to
+  // AITransientError and got retried forever instead of surfacing as a
+  // config-level failure like every other provider's 4xx.
+  const status =
+    anyErr?.status ??
+    anyErr?.statusCode ??
+    (typeof anyErr?.apiErrorStatus === 'number' ? anyErr.apiErrorStatus : undefined);
   const name = anyErr?.name ?? '';
   const msg = anyErr?.message ?? String(err);
   const ctxPrefix = context ? `[${context}] ` : '';
@@ -124,11 +137,16 @@ const BILLING_MESSAGE_RE =
 const AUTH_MESSAGE_RE =
   /authentication_error|permission_error|invalid (?:x-)?api[-_ ]?key|api key (?:is )?(?:invalid|expired|missing)|unauthorized/i;
 const RATE_MESSAGE_RE = /rate[-_ ]?limit(?:ed|_error)?\b|too many requests/i;
-// Structured status forms only — `HTTP 429`, `status 429`, `status code: 429`,
-// `"api_error_status":429` (the claude-cli JSON result blob). A bare number in
-// prose ("processed 429 pages") never matches.
-const STRUCTURED_STATUS_RE =
-  /(?:"(?:api_error_status|status|statusCode)"\s*:\s*|\bHTTP[ /]|\bstatus(?:\s+code)?\s*[:= ]\s*)(401|402|403|429)\b/i;
+// Structured status forms only; a bare number in prose ("processed 429
+// pages") never matches either shape. The quoted-JSON form
+// (`"api_error_status":429`, the claude-cli result blob) cannot occur as free
+// prose, so it may scan the FULL message including any raw-output slice. The
+// prose-shaped forms (`HTTP 429`, `status 429`, `status code: 401`) CAN occur
+// inside model/page-derived text, so they only ever scan the pre-raw slice.
+const STRUCTURED_JSON_STATUS_RE =
+  /"(?:api_error_status|status|statusCode)"\s*:\s*(401|402|403|429)\b/i;
+const STRUCTURED_PROSE_STATUS_RE =
+  /(?:\bHTTP[ /]|\bstatus(?:\s+code)?\s*[:= ]\s*)(401|402|403|429)\b/i;
 
 function numericStatusOf(e: unknown): number | undefined {
   const anyErr = e as Record<string, unknown> | null | undefined;
@@ -174,13 +192,14 @@ export function classifyGlobalLlmError(err: unknown): GlobalLlmErrorClass | null
     cur = (cur as { cause?: unknown }).cause;
   }
   const message = messages.join('\n');
-  // Phrase regexes only see text BEFORE any raw-output slice: adapter errors
-  // append model output after a `--- raw ---` marker (see
-  // claude-cli-language-model.ts), and free prose in that slice ("the
-  // provider rate limit should increase") must not trip a whole-run halt.
-  // The structured form stays safe on the FULL text — a quoted
-  // `"api_error_status":NNN` JSON key cannot occur as free prose, and the
-  // claude-cli error blob it targets can land on either side of the marker.
+  // Phrase regexes (and the prose-shaped status forms) only see text BEFORE
+  // any raw-output slice: adapter errors append model output after a
+  // `--- raw ---` marker (see claude-cli-language-model.ts), and free prose
+  // in that slice ("the provider rate limit should increase", "Request
+  // failed: HTTP 429") must not trip a whole-run halt. Only the quoted
+  // `"api_error_status":NNN` JSON form stays safe on the FULL text — that key
+  // cannot occur as free prose, and the claude-cli error blob it targets can
+  // land on either side of the marker.
   const rawIdx = message.indexOf('--- raw ---');
   const phraseText = rawIdx === -1 ? message : message.slice(0, rawIdx);
 
@@ -199,7 +218,8 @@ export function classifyGlobalLlmError(err: unknown): GlobalLlmErrorClass | null
   if (err instanceof AIConfigError && !(status !== undefined && PER_ITEM_HTTP_STATUSES.has(status))) {
     return 'auth';
   }
-  const structured = STRUCTURED_STATUS_RE.exec(message);
+  const structured =
+    STRUCTURED_JSON_STATUS_RE.exec(message) ?? STRUCTURED_PROSE_STATUS_RE.exec(phraseText);
   if (structured) {
     const byMessageStatus = statusToClass(Number(structured[1]));
     if (byMessageStatus) return byMessageStatus;
@@ -207,4 +227,69 @@ export function classifyGlobalLlmError(err: unknown): GlobalLlmErrorClass | null
   if (AUTH_MESSAGE_RE.test(phraseText)) return 'auth';
   if (RATE_MESSAGE_RE.test(phraseText)) return 'rate_limit';
   return null;
+}
+
+/** Per-error verdict from GlobalLlmHaltTracker.observe: halt the phase now, or keep going. */
+export type GlobalLlmHaltDecision =
+  | 'halt-auth'
+  | 'halt-billing'
+  | 'halt-rate_limit'
+  | 'continue';
+
+/** Map a halt decision back to its GlobalLlmErrorClass ('continue' → null). */
+export function haltedClassOf(decision: GlobalLlmHaltDecision): GlobalLlmErrorClass | null {
+  return decision === 'continue' ? null : (decision.slice('halt-'.length) as GlobalLlmErrorClass);
+}
+
+export interface GlobalLlmHaltTracker {
+  /**
+   * Classify one per-item LLM failure and fold it into the halt policy.
+   * `countRateLimit: false` skips the streak increment (grade_takes counts a
+   * rate-limited take at most once across its ensemble judges) but still
+   * reports a halt when the streak already crossed the threshold.
+   */
+  observe(err: unknown, opts?: { countRateLimit?: boolean }): GlobalLlmHaltDecision;
+  /** classifyGlobalLlmError result of the most recent observe() (null = not global). */
+  lastClass(): GlobalLlmErrorClass | null;
+  /** A successful LLM call breaks the consecutive rate-limit streak. */
+  reset(): void;
+  /** Abort-message fragment for the most recent halt decision (byte-stable — callers pin it). */
+  note(): string;
+}
+
+/**
+ * The one halt policy every cycle phase's per-item LLM loop applies (#3044):
+ * auth/billing halt on the FIRST hit (a revoked key or exhausted spend limit
+ * is deterministic — every remaining item would fail identically); a bare
+ * rate_limit halts only after RATE_LIMIT_HALT_STREAK consecutive hits (a
+ * burst 429 can clear between items); everything else stays per-item.
+ * One tracker per phase run — the streak is phase-scoped state.
+ */
+export function createGlobalLlmHaltTracker(): GlobalLlmHaltTracker {
+  let rateLimitStreak = 0;
+  let lastCls: GlobalLlmErrorClass | null = null;
+  let lastNote = '';
+  return {
+    observe(err, opts) {
+      const cls = classifyGlobalLlmError(err);
+      lastCls = cls;
+      if (cls === 'auth' || cls === 'billing') {
+        lastNote = `${cls} error is a whole-run condition`;
+        return `halt-${cls}`;
+      }
+      if (cls === 'rate_limit') {
+        if (opts?.countRateLimit !== false) rateLimitStreak += 1;
+        if (rateLimitStreak >= RATE_LIMIT_HALT_STREAK) {
+          lastNote = `${RATE_LIMIT_HALT_STREAK} consecutive rate_limit errors are a whole-run condition`;
+          return 'halt-rate_limit';
+        }
+      }
+      return 'continue';
+    },
+    lastClass: () => lastCls,
+    reset() {
+      rateLimitStreak = 0;
+    },
+    note: () => lastNote,
+  };
 }

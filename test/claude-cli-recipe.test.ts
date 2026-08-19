@@ -762,6 +762,50 @@ describe('claude-cli LanguageModel — abort + error envelopes', () => {
     });
   });
 
+  test('non-zero exit keeps the raw blob behind a --- raw --- marker (auth-looking stdout never classifies)', async () => {
+    // The blob can carry model/page-derived text; classifyGlobalLlmError's
+    // phrase regexes only scan text before the marker, so an essay
+    // mentioning api keys in stdout must not read as a whole-run auth
+    // outage.
+    await withStubEnv(async () => {
+      writeFileSync(stubResponsePath, 'essay draft: invalid x-api-key handling and rate limit tips');
+      const failStub = [
+        '#!/bin/sh',
+        'cat > /dev/null',
+        `cat "${stubResponsePath}"`,
+        'exit 1',
+      ].join('\n');
+      writeFileSync(stubBin, failStub);
+      chmodSync(stubBin, 0o755);
+      try {
+        const { ClaudeCliLanguageModel, ClaudeCliProcessError } = await import('../src/core/ai/providers/claude-cli-language-model.ts');
+        const { classifyGlobalLlmError } = await import('../src/core/ai/errors.ts');
+        const model = new ClaudeCliLanguageModel('claude-sonnet-4-6');
+        let caught: unknown;
+        try {
+          await model.doGenerate({ prompt: [userMessage('x')] } as LanguageModelV2CallOptions);
+        } catch (e) {
+          caught = e;
+        }
+        expect(caught).toBeInstanceOf(ClaudeCliProcessError);
+        const err = caught as InstanceType<typeof ClaudeCliProcessError>;
+        expect(err.message).toMatch(/claude-cli exited 1/);
+        expect(err.message).toContain('--- raw ---');
+        // The blob sits AFTER the marker, so the phrase never classifies.
+        expect(err.message.indexOf('--- raw ---')).toBeLessThan(err.message.indexOf('invalid x-api-key'));
+        expect(classifyGlobalLlmError(err)).toBeNull();
+      } finally {
+        const fastStub = [
+          '#!/bin/sh',
+          'cat > /dev/null',
+          `cat "${stubResponsePath}"`,
+        ].join('\n');
+        writeFileSync(stubBin, fastStub);
+        chmodSync(stubBin, 0o755);
+      }
+    });
+  });
+
   test('exit 0 with a JSON primitive on stdout rejects instead of crashing', async () => {
     // JSON.parse accepts bare primitives (null / numbers / strings); none of
     // them is a result envelope. Each must reject through the promise, never

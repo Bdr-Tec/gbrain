@@ -37,7 +37,7 @@
 import { createHash } from 'node:crypto';
 import { BaseCyclePhase, effectivePhaseDeadlineMs, type ScopedReadOpts, type BasePhaseOpts } from './base-phase.ts';
 import { chat as gatewayChat, getChatModel } from '../ai/gateway.ts';
-import { classifyGlobalLlmError, RATE_LIMIT_HALT_STREAK, type GlobalLlmErrorClass } from '../ai/errors.ts';
+import { createGlobalLlmHaltTracker, haltedClassOf, type GlobalLlmErrorClass } from '../ai/errors.ts';
 import { splitProviderModelId } from '../model-id.ts';
 import { GBrainError } from '../types.ts';
 import type { OperationContext } from '../operations.ts';
@@ -476,11 +476,11 @@ class GradeTakesPhase extends BaseCyclePhase {
       };
     }
 
-    // #3044 — consecutive rate_limit-classified LLM failures (single-model
-    // judge or ensemble rejection; counted at most once per take). A take
-    // that completes without one resets it; auth/billing never consult it
-    // (first hit halts).
-    let rateLimitStreak = 0;
+    // #3044 — shared halt policy over single-model judge AND ensemble
+    // rejections (rate limits counted at most once per take via
+    // rateLimitedThisTake). A take that completes without one resets the
+    // streak; auth/billing halt on the first hit.
+    const llmHalt = createGlobalLlmHaltTracker();
 
     // Load unresolved active takes, oldest-first.
     const takes = await engine.listTakes({
@@ -559,25 +559,14 @@ class GradeTakesPhase extends BaseCyclePhase {
         result.judge_calls_failed += 1;
         const msg = err instanceof Error ? err.message : String(err);
         const detail = `judge failed on take ${take.id}: ${msg}`;
-        const globalClass = classifyGlobalLlmError(err);
-        if (globalClass === 'auth' || globalClass === 'billing') {
-          result.aborted_global_error = globalClass;
+        const decision = llmHalt.observe(err);
+        if (decision !== 'continue') {
+          result.aborted_global_error = haltedClassOf(decision)!;
           result.warnings.push(
             `aborting phase at take ${result.takes_scanned}/${takes.length}: ` +
-            `${globalClass} error is a whole-run condition (${detail})`,
+            `${llmHalt.note()} (${detail})`,
           );
           break;
-        }
-        if (globalClass === 'rate_limit') {
-          rateLimitStreak += 1;
-          if (rateLimitStreak >= RATE_LIMIT_HALT_STREAK) {
-            result.aborted_global_error = 'rate_limit';
-            result.warnings.push(
-              `aborting phase at take ${result.takes_scanned}/${takes.length}: ` +
-              `${RATE_LIMIT_HALT_STREAK} consecutive rate_limit errors are a whole-run condition (${detail})`,
-            );
-            break;
-          }
         }
         result.warnings.push(detail);
         continue;
@@ -611,22 +600,14 @@ class GradeTakesPhase extends BaseCyclePhase {
         for (let i = 0; i < ensembleResults.length; i++) {
           const res = ensembleResults[i];
           if (!res || res.status !== 'rejected') continue;
-          const cls = classifyGlobalLlmError(res.reason);
-          if (!cls) continue;
+          const decision = llmHalt.observe(res.reason, { countRateLimit: !rateLimitedThisTake });
+          if (llmHalt.lastClass() === null) continue;
+          if (llmHalt.lastClass() === 'rate_limit') rateLimitedThisTake = true;
           const judgeId = opts.ensembleJudges[i]?.modelId ?? 'unknown';
           const rmsg = res.reason instanceof Error ? res.reason.message : String(res.reason);
           const detail = `ensemble judge ${judgeId} failed on take ${take.id}: ${rmsg}`;
-          if (cls === 'auth' || cls === 'billing') {
-            ensembleHaltClass = cls;
-            ensembleHaltDetail = detail;
-            break;
-          }
-          if (!rateLimitedThisTake) {
-            rateLimitedThisTake = true;
-            rateLimitStreak += 1;
-          }
-          if (rateLimitStreak >= RATE_LIMIT_HALT_STREAK) {
-            ensembleHaltClass = 'rate_limit';
+          if (decision !== 'continue') {
+            ensembleHaltClass = haltedClassOf(decision);
             ensembleHaltDetail = detail;
             break;
           }
@@ -636,10 +617,7 @@ class GradeTakesPhase extends BaseCyclePhase {
           result.aborted_global_error = ensembleHaltClass;
           result.warnings.push(
             `aborting phase at take ${result.takes_scanned}/${takes.length}: ` +
-            (ensembleHaltClass === 'rate_limit'
-              ? `${RATE_LIMIT_HALT_STREAK} consecutive rate_limit errors are a whole-run condition`
-              : `${ensembleHaltClass} error is a whole-run condition`) +
-            ` (${ensembleHaltDetail})`,
+            `${llmHalt.note()} (${ensembleHaltDetail})`,
           );
           break;
         }
@@ -748,7 +726,7 @@ class GradeTakesPhase extends BaseCyclePhase {
       // failure breaks the consecutive streak. (Cache hits / too-recent
       // takes `continue` before the judge call and neither extend nor
       // reset it.)
-      if (!rateLimitedThisTake) rateLimitStreak = 0;
+      if (!rateLimitedThisTake) llmHalt.reset();
 
       // Tally is silent — the caller surfaces it via the GradeTakesResult.
       void recordedVerdict;

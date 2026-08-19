@@ -41,7 +41,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { BaseCyclePhase, CYCLE_DEADLINE_RESERVE_MS, type ScopedReadOpts, type BasePhaseOpts } from './base-phase.ts';
 import { defaultTimeoutMsFor } from '../minions/handler-timeouts.ts';
 import { chat as gatewayChat, getChatModel, probeChatModel } from '../ai/gateway.ts';
-import { classifyGlobalLlmError, RATE_LIMIT_HALT_STREAK, type GlobalLlmErrorClass } from '../ai/errors.ts';
+import { createGlobalLlmHaltTracker, haltedClassOf, type GlobalLlmErrorClass } from '../ai/errors.ts';
 import { normalizeModelId } from '../model-id.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
@@ -607,10 +607,10 @@ class ProposeTakesPhase extends BaseCyclePhase {
       opts.reporter.start('propose_takes.pages' as never, pages.length);
     }
 
-    // #3044 — consecutive rate_limit-classified extractor failures. A
-    // successful call resets it; auth/billing never consult it (first hit
-    // halts).
-    let rateLimitStreak = 0;
+    // #3044 — shared halt policy: auth/billing halt on the first hit, a
+    // rate_limit streak halts after RATE_LIMIT_HALT_STREAK consecutive
+    // failures. A successful call resets the streak.
+    const llmHalt = createGlobalLlmHaltTracker();
 
     for (const page of pages) {
       // Phase deadline check. Break (not throw) so the phase returns a
@@ -683,31 +683,20 @@ class ProposeTakesPhase extends BaseCyclePhase {
         result.llm_calls_failed += 1;
         const msg = err instanceof Error ? err.message : String(err);
         const detail = `extractor failed on ${page.slug}: ${msg}`;
-        const globalClass = classifyGlobalLlmError(err);
-        if (globalClass === 'auth' || globalClass === 'billing') {
-          result.aborted_global_error = globalClass;
+        const decision = llmHalt.observe(err);
+        if (decision !== 'continue') {
+          result.aborted_global_error = haltedClassOf(decision)!;
           result.warnings.push(
             `aborting phase at page ${result.pages_scanned}/${pages.length}: ` +
-            `${globalClass} error is a whole-run condition (${detail})`,
+            `${llmHalt.note()} (${detail})`,
           );
           break;
-        }
-        if (globalClass === 'rate_limit') {
-          rateLimitStreak += 1;
-          if (rateLimitStreak >= RATE_LIMIT_HALT_STREAK) {
-            result.aborted_global_error = 'rate_limit';
-            result.warnings.push(
-              `aborting phase at page ${result.pages_scanned}/${pages.length}: ` +
-              `${RATE_LIMIT_HALT_STREAK} consecutive rate_limit errors are a whole-run condition (${detail})`,
-            );
-            break;
-          }
         }
         result.warnings.push(detail);
         continue;
       }
       result.llm_calls_succeeded += 1;
-      rateLimitStreak = 0;
+      llmHalt.reset();
 
       // Write proposals to take_proposals. #2138: the idempotency key is
       // per-CLAIM — take_proposals_idempotency_idx folds md5(claim_text) into
