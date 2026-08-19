@@ -54,6 +54,8 @@ export const ollama: Recipe = {
       supports_tools: false,
       supports_subagent_loop: false,
       supports_prompt_cache: false,
+      // Provider-wide routing ceiling only; Ollama still enforces each loaded
+      // model's actual context window at request time.
       max_context_tokens: 128_000,
       cost_per_1m_input_usd: 0,
       cost_per_1m_output_usd: 0,
@@ -62,5 +64,5 @@ export const ollama: Recipe = {
       default_timeout_ms: 180_000,
     },
   },
-  setup_hint: 'Install Ollama from https://ollama.ai, then `ollama pull nomic-embed-text` and `ollama serve`.',
+  setup_hint: 'Install Ollama from https://ollama.ai, then `ollama pull nomic-embed-text` for embeddings, `ollama pull qwen3:8b` for local chat, and `ollama serve`. Custom local model tags are accepted.',
 };
