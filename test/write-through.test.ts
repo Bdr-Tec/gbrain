@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { resetGateway } from '../src/core/ai/gateway.ts';
-import { writePageThrough } from '../src/core/write-through.ts';
+import { writePageThrough, isWriteThroughDisabled, _resetWriteThroughCacheForTest } from '../src/core/write-through.ts';
 import { importFromContent } from '../src/core/import-file.ts';
 import { serializePageToMarkdown, resolvePageFilePath } from '../src/core/markdown.ts';
 
@@ -36,6 +36,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetPgliteState(engine);
   resetGateway();
+  _resetWriteThroughCacheForTest();
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gbrain-wt-helper-'));
   brainDir = path.join(tmpRoot, 'brain');
   fs.mkdirSync(brainDir, { recursive: true });
@@ -278,6 +279,71 @@ describe('writePageThrough', () => {
 
     const res = await writePageThrough(engine, slug, { sourceId: 'default' });
 
+    expect(res.written).toBe(true);
+    expect(fs.existsSync(res.path!)).toBe(true);
+  });
+
+  test('off values parse case-insensitively: FALSE / 0 / Off / no / " false " all disable', async () => {
+    await engine.setConfig('sync.repo_path', brainDir);
+    const slug = 'wiki/ideas/off-value-parsing';
+    await seedPage(slug);
+
+    for (const value of ['FALSE', '0', 'Off', 'no', ' false ']) {
+      await engine.setConfig('sync.write_through', value);
+      _resetWriteThroughCacheForTest();
+      const res = await writePageThrough(engine, slug, { sourceId: 'default' });
+      expect(res).toEqual({ written: false, skipped: 'disabled_by_config' });
+    }
+
+    // Non-off values (including garbage) keep the default-on behavior.
+    for (const value of ['1', 'yes', 'banana', '']) {
+      await engine.setConfig('sync.write_through', value);
+      _resetWriteThroughCacheForTest();
+      expect(await isWriteThroughDisabled(engine)).toBe(false);
+      _resetWriteThroughCacheForTest();
+    }
+  });
+
+  test('the flag read is memoized per engine — bulk loops pay one config SELECT, not one per page', async () => {
+    await engine.setConfig('sync.repo_path', brainDir);
+    let flagReads = 0;
+    const counting = Object.create(engine) as typeof engine;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (counting as any).getConfig = async (key: string) => {
+      if (key === 'sync.write_through') flagReads += 1;
+      return engine.getConfig(key);
+    };
+
+    const slugA = 'wiki/ideas/memo-a';
+    const slugB = 'wiki/ideas/memo-b';
+    await seedPage(slugA);
+    await seedPage(slugB);
+
+    expect((await writePageThrough(counting, slugA, { sourceId: 'default' })).written).toBe(true);
+    expect((await writePageThrough(counting, slugB, { sourceId: 'default' })).written).toBe(true);
+    expect(flagReads).toBe(1);
+
+    // A config flip inside the TTL window keeps serving the cached value...
+    await engine.setConfig('sync.write_through', 'false');
+    expect((await writePageThrough(counting, slugA, { sourceId: 'default' })).written).toBe(true);
+    // ...and becomes visible once the cache is dropped.
+    _resetWriteThroughCacheForTest();
+    const res = await writePageThrough(counting, slugA, { sourceId: 'default' });
+    expect(res).toEqual({ written: false, skipped: 'disabled_by_config' });
+  });
+
+  test('a failing flag read fails open to enabled (the write still lands)', async () => {
+    await engine.setConfig('sync.repo_path', brainDir);
+    const failing = Object.create(engine) as typeof engine;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (failing as any).getConfig = async (key: string) => {
+      if (key === 'sync.write_through') throw new Error('simulated config outage');
+      return engine.getConfig(key);
+    };
+
+    const slug = 'wiki/ideas/fail-open';
+    await seedPage(slug);
+    const res = await writePageThrough(failing, slug, { sourceId: 'default' });
     expect(res.written).toBe(true);
     expect(fs.existsSync(res.path!)).toBe(true);
   });

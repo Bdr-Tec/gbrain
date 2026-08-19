@@ -22,6 +22,10 @@ import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { writeFactsToFence, lookupSourceLocalPath } from '../src/core/facts/fence-write.ts';
 import type { FenceInputFact } from '../src/core/facts/fence-write.ts';
+import { writeSingleFact } from '../src/core/facts/write-single.ts';
+import { _resetWriteThroughCacheForTest } from '../src/core/write-through.ts';
+import { resetGateway } from '../src/core/ai/gateway.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
@@ -39,6 +43,9 @@ afterAll(async () => {
 beforeEach(async () => {
   // Fresh tempdir per test so the fence-write FS state is hermetic.
   brainDir = mkdtempSync(join(tmpdir(), 'fence-write-test-'));
+  _resetWriteThroughCacheForTest();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (engine as any).db.query(`DELETE FROM config WHERE key = 'sync.write_through'`);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (engine as any).db.query('DELETE FROM facts');
   // Default source pointed at the fresh brainDir.
@@ -409,6 +416,178 @@ describe('writeFactsToFence — row_num survives a fence-less rewrite', () => {
     expect(result.inserted).toBe(1);
     expect(result.fenceWriteFailed).toBeUndefined();
   });
+});
+
+describe('writeFactsToFence — sync.write_through opt-out', () => {
+  test("flag 'false' suppresses the fence lane: no stub page, no fence file, legacyFallback contract", async () => {
+    await engine.setConfig('sync.write_through', 'false');
+    _resetWriteThroughCacheForTest();
+
+    const result = await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug: 'people/alice-example' },
+      [baseInput()],
+    );
+
+    // Same contract as a missing local_path — the caller's DB-only path
+    // records the facts, so nothing is silently dropped.
+    expect(result).toEqual({ inserted: 0, ids: [], legacyFallback: true });
+    expect(existsSync(join(brainDir, 'people/alice-example.md'))).toBe(false);
+    expect(existsSync(join(brainDir, 'people'))).toBe(false);
+    // The fence lane wrote nothing to the DB either (the caller owns the
+    // DB-only insert).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query('SELECT COUNT(*) AS n FROM facts');
+    expect(Number(rows.rows[0].n)).toBe(0);
+  });
+
+  test("off values parse case-insensitively ('OFF'), and no git commit fires on a hardened repo", async () => {
+    initGitRepo(brainDir);
+    installFakeDurabilityHook(brainDir);
+    await engine.setConfig('sync.write_through', 'OFF');
+    _resetWriteThroughCacheForTest();
+
+    const result = await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug: 'people/db-only' },
+      [baseInput()],
+    );
+
+    expect(result).toEqual({ inserted: 0, ids: [], legacyFallback: true });
+    expect(existsSync(join(brainDir, 'people/db-only.md'))).toBe(false);
+    expect(git(brainDir, 'log', '-1', '--format=%s')).toBe('init');
+  }, 60_000);
+
+  test('writeSingleFact under the flag: the DB fact still lands, no file appears', async () => {
+    // No embedder configured → degraded dedup, no network (matches the
+    // conformance suite's no-provider assumption).
+    resetGateway();
+    await engine.setConfig('sync.write_through', 'false');
+    _resetWriteThroughCacheForTest();
+
+    const r = await writeSingleFact(engine, 'default', {
+      fact: 'prefers DB-only storage',
+      provenance: 'test',
+      entity: 'people/frank-example',
+    });
+
+    expect(r.status).toBe('inserted');
+    expect(r.entity_slug).toBe('people/frank-example');
+    expect(existsSync(join(brainDir, 'people/frank-example.md'))).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query(
+      'SELECT entity_slug, source_markdown_slug FROM facts WHERE id = $1',
+      [r.id],
+    );
+    expect(rows.rows[0].entity_slug).toBe('people/frank-example');
+    // No .md backs the row — the fence-tracking column stays null.
+    expect(rows.rows[0].source_markdown_slug).toBeNull();
+  });
+});
+
+describe('writeFactsToFence — durability latch recovery', () => {
+  test('a failed commit does not latch durability off: the next write sweeps the self-dirt', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'fence-latch-home-'));
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        initGitRepo(brainDir);
+        installFakeDurabilityHook(brainDir);
+
+        // Sabotage the first commit the way real contention does: a live
+        // index.lock makes git add/commit fail through all retries.
+        const indexLock = join(brainDir, '.git', 'index.lock');
+        writeFileSync(indexLock, '');
+        const first = await writeFactsToFence(
+          engine,
+          { sourceId: 'default', localPath: brainDir, slug: 'people/latch' },
+          [baseInput({ fact: 'First latch fact' })],
+        );
+        expect(first.inserted).toBe(1);
+        // Commit failed — the fence file is uncommitted self-dirt.
+        expect(git(brainDir, 'status', '--porcelain', 'people/latch.md')).not.toBe('');
+        rmSync(indexLock);
+
+        const second = await writeFactsToFence(
+          engine,
+          { sourceId: 'default', localPath: brainDir, slug: 'people/latch' },
+          [baseInput({ fact: 'Second latch fact' })],
+        );
+        expect(second.inserted).toBe(1);
+        // Pre-fix: the prewrite self-dirt recorded preexisting_dirty and
+        // skipped the commit on every subsequent write, forever. The
+        // path-limited commit sweeping the file's own dirt IS the recovery.
+        expect(git(brainDir, 'status', '--porcelain', 'people/latch.md')).toBe('');
+        expect(git(brainDir, 'log', '-1', '--format=%s')).toBe('gbrain: write-through people/latch');
+        const committed = git(brainDir, 'show', 'HEAD:people/latch.md');
+        expect(committed).toContain('First latch fact');
+        expect(committed).toContain('Second latch fact');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("a concurrent waiter commits its write instead of skipping on the holder's in-flight dirt", async () => {
+    const home = mkdtempSync(join(tmpdir(), 'fence-race-home-'));
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        initGitRepo(brainDir);
+        installFakeDurabilityHook(brainDir);
+        const filePath = join(brainDir, 'people/race.md');
+
+        // Gate writer A between its rename and its commit (insertFacts sits
+        // between the two), so writer B arrives while A's content is renamed
+        // into place but not yet committed — the false preexisting_dirty
+        // shape from the out-of-lock prewrite snapshot.
+        let release: () => void = () => {};
+        const gate = new Promise<void>((r) => { release = r; });
+        let gated = false;
+        const gatedEngine = Object.create(engine) as typeof engine;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (gatedEngine as any).insertFacts = async (rows: unknown, opts: unknown) => {
+          if (!gated) { gated = true; await gate; }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (engine as any).insertFacts(rows, opts);
+        };
+
+        const a = writeFactsToFence(
+          gatedEngine,
+          { sourceId: 'default', localPath: brainDir, slug: 'people/race' },
+          [baseInput({ fact: 'Writer A fact' })],
+        );
+        // Wait until A's rename landed (post-rename, pre-commit).
+        for (let i = 0; i < 400; i++) {
+          if (existsSync(filePath) && readFileSync(filePath, 'utf-8').includes('Writer A fact')) break;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(readFileSync(filePath, 'utf-8')).toContain('Writer A fact');
+
+        const b = writeFactsToFence(
+          engine,
+          { sourceId: 'default', localPath: brainDir, slug: 'people/race' },
+          [baseInput({ fact: 'Writer B fact' })],
+        );
+        // Give B a beat to start (pre-fix, its snapshot fired here, before
+        // the page lock), then let A finish.
+        await new Promise((r) => setTimeout(r, 100));
+        release();
+
+        const [ra, rb] = await Promise.all([a, b]);
+        expect(ra.inserted).toBe(1);
+        expect(rb.inserted).toBe(1);
+        // B's write is committed — pre-fix B skipped its commit on A's
+        // in-flight dirt and left the fence file dirty with a false audit.
+        expect(git(brainDir, 'status', '--porcelain', 'people/race.md')).toBe('');
+        expect(git(brainDir, 'show', 'HEAD:people/race.md')).toContain('Writer B fact');
+        const failLog = join(home, '.gbrain', 'facts.write_failures.jsonl');
+        if (existsSync(failLog)) {
+          expect(readFileSync(failLog, 'utf-8')).not.toContain('git_durability_preexisting_dirty');
+        }
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 // Cleanup any leftover tempdirs after the whole suite.
