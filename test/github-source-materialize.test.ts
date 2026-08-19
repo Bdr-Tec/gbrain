@@ -9,11 +9,15 @@ import { withEnv } from './helpers/with-env.ts';
 import { runGitHubSync, type GitHubSourceConfig } from '../src/core/github-source.ts';
 
 let engine: PGLiteEngine;
+// Captured post-initSchema: resetPgliteState wipes the config `version` row
+// that MinionQueue.ensureSchema() reads; tests that enqueue jobs restore it.
+let migratedVersion: string;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  migratedVersion = (await engine.getConfig('version')) ?? '1';
 });
 
 afterAll(async () => {
@@ -220,11 +224,9 @@ function makeCfg(dir: string): GitHubSourceConfig {
   return {
     tokenEnv: 'GH_TOKEN',
     app: null,
-    handle: 'veltr',
     scope: 'repos',
     repos: [REPO],
     dir,
-    includeInvolvement: true,
   };
 }
 
@@ -279,19 +281,24 @@ describe('github-source materialize', () => {
         const row = await engine.executeRaw<{ last_sync_at: string | null }>(`SELECT last_sync_at FROM sources WHERE id = 'ghsrc'`);
         expect(row[0].last_sync_at).not.toBeNull();
 
-        // 2) Sweep with nothing changed: up_to_date, no detail fetches.
-        const detailCallsBefore = fx.calls.filter((c) => /\/issues\/\d+$|\/pulls\/\d+$/.test(c)).length;
+        // 2) Sweep with nothing changed: only the open PR is re-fetched
+        // (check state can change without bumping updated_at); issues and
+        // closed PRs stay skipped.
+        const callsBefore = fx.calls.length;
         const second = await runGitHubSync(engine, 'ghsrc', makeCfg(dir), { sourceId: 'ghsrc' }, fetchImpl);
-        expect(second.status).toBe('up_to_date');
-        expect(second.added + second.modified).toBe(0);
-        const detailCallsAfter = fx.calls.filter((c) => /\/issues\/\d+$|\/pulls\/\d+$/.test(c)).length;
-        expect(detailCallsAfter).toBe(detailCallsBefore);
+        expect(second.status).toBe('synced');
+        expect(second.modified).toBe(1);
+        expect(second.pagesAffected).toEqual(['gh/acme/app/2']);
+        const newDetailCalls = fx.calls.slice(callsBefore).filter((c) => /\/issues\/\d+$|\/pulls\/\d+$/.test(c));
+        expect(newDetailCalls.length).toBeGreaterThan(0);
+        expect(newDetailCalls.every((c) => c.endsWith('/2'))).toBe(true);
 
-        // 3) One item changes upstream; sweep picks it up.
+        // 3) One item changes upstream; sweep picks it up (plus the
+        // always-refreshed open PR).
         fx.items.get(1)!.updated_at = '2026-08-04T00:00:00Z';
         const third = await runGitHubSync(engine, 'ghsrc', makeCfg(dir), { sourceId: 'ghsrc' }, fetchImpl);
         expect(third.status).toBe('synced');
-        expect(third.modified).toBe(1);
+        expect(third.modified).toBe(2);
         expect(third.pagesAffected).toContain('gh/acme/app/1');
       });
     } finally {
@@ -535,7 +542,8 @@ describe('github-source materialize', () => {
         fx.items.get(3)!.updated_at = '2026-08-06T00:00:00Z';
         fx.items.get(3)!.comments = [{ user: 'bob', body: 'Post-merge follow-up.', created_at: '2026-08-06T00:00:00Z' }];
         const res = await runGitHubSync(engine, 'ghsrc', makeCfg(dir), { sourceId: 'ghsrc' }, fetchImpl);
-        expect(res.modified).toBe(1);
+        // 2 = the changed closed PR + the always-refreshed open PR 2.
+        expect(res.modified).toBe(2);
         expect(res.pagesAffected).toContain('gh/acme/app/3');
         const page = readFileSync(join(dir, 'gh', REPO, '3.md'), 'utf-8');
         expect(page).toContain('Post-merge follow-up.');
@@ -602,6 +610,208 @@ describe('github-source materialize', () => {
         expect(readFileSync(join(dir, 'gh', REPO, '1.md'), 'utf-8')).toContain('detail_fetched: true');
         const state2 = JSON.parse(readFileSync(join(dir, '.github-source.json'), 'utf-8')) as { last_sweep_at?: string };
         expect(state2.last_sweep_at).toBe('2026-08-02T00:00:00Z');
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('open PR check changes are picked up even when updated_at is unchanged', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghsrc-checks-'));
+    const fx = makeFixture();
+    const fetchImpl = buildFetch(fx);
+    try {
+      await insertSource(engine, dir);
+      await withEnv({ GH_TOKEN: 'test-token' }, async () => {
+        await runGitHubSync(engine, 'ghsrc', makeCfg(dir), { sourceId: 'ghsrc', full: true }, fetchImpl);
+        // Checks flip to green; the PR's updated_at does NOT move, so the
+        // since-filtered issues list never lists it — the open-PR union must.
+        fx.items.get(2)!.checks = { pass: 3, fail: 0, pending: 0, failing: [] };
+        const res = await runGitHubSync(engine, 'ghsrc', makeCfg(dir), { sourceId: 'ghsrc' }, fetchImpl);
+        expect(res.pagesAffected).toContain('gh/acme/app/2');
+        const page = readFileSync(join(dir, 'gh', REPO, '2.md'), 'utf-8');
+        expect(page).toContain('checks_pass: 3');
+        expect(page).toContain('checks_fail: 0');
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a repo that fails its sweep is not state-listed and bootstraps on the next run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghsrc-failed-repo-'));
+    const calls: string[] = [];
+    let failTwo = true;
+    const fetchImpl = async (url: string): Promise<Response> => {
+      const u = new URL(url);
+      const path = u.pathname;
+      calls.push(url);
+      const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), {
+        status,
+        headers: { 'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': '9999999999' },
+      });
+      if (path === '/repos/acme/one/issues') return json([]);
+      if (path === '/repos/acme/one/pulls') return json([]);
+      if (path === '/repos/acme/one') return json({ full_name: 'acme/one', private: false, archived: false, default_branch: 'main', description: null });
+      if (path === '/repos/acme/two/issues') {
+        if (failTwo) return json({ message: 'boom' }, 500);
+        if (u.searchParams.has('since')) return json([]);
+        return json([{
+          number: 7,
+          title: 'Historical issue',
+          state: 'open',
+          updated_at: '2026-08-01T00:00:00Z',
+          body: 'Existed before the repo ever swept successfully.',
+          html_url: 'https://github.com/acme/two/issues/7',
+          created_at: '2026-07-01T00:00:00Z',
+          labels: [],
+          assignees: [],
+          milestone: null,
+          user: { login: 'alice' },
+        }]);
+      }
+      if (path === '/repos/acme/two/pulls') return json([]);
+      if (path === '/repos/acme/two') return json({ full_name: 'acme/two', private: false, archived: false, default_branch: 'main', description: null });
+      if (path === '/repos/acme/two/issues/7') return json({
+        number: 7,
+        title: 'Historical issue',
+        state: 'open',
+        state_reason: null,
+        body: 'Existed before the repo ever swept successfully.',
+        created_at: '2026-07-01T00:00:00Z',
+        updated_at: '2026-08-01T00:00:00Z',
+        closed_at: null,
+        labels: [],
+        assignees: [],
+        milestone: null,
+        html_url: 'https://github.com/acme/two/issues/7',
+        user: { login: 'alice' },
+      });
+      if (path === '/repos/acme/two/issues/7/comments') return json([]);
+      return new Response(JSON.stringify({ message: 'unexpected ' + path }), { status: 404 });
+    };
+    const cfg = { ...makeCfg(dir), repos: ['acme/one', 'acme/two'] };
+    try {
+      await insertSource(engine, dir);
+      await withEnv({ GH_TOKEN: 'test-token' }, async () => {
+        // Sweep 1: acme/one succeeds and advances the cursor; acme/two fails.
+        // It must NOT enter state.repos — that would mark it bootstrapped.
+        await runGitHubSync(engine, 'ghsrc', { ...cfg, repos: ['acme/one'] }, { sourceId: 'ghsrc', full: true, noExtract: true, noEmbed: true }, fetchImpl);
+        const partial = await runGitHubSync(engine, 'ghsrc', cfg, { sourceId: 'ghsrc', noExtract: true, noEmbed: true }, fetchImpl);
+        expect(partial.status).toBe('partial');
+        const state1 = JSON.parse(readFileSync(join(dir, '.github-source.json'), 'utf-8')) as { repos: string[] };
+        expect(state1.repos).toEqual(['acme/one']);
+
+        // Sweep 2: acme/two recovers and gets a since-less history bootstrap
+        // despite the source cursor being ahead of its items.
+        failTwo = false;
+        const res = await runGitHubSync(engine, 'ghsrc', cfg, { sourceId: 'ghsrc', noExtract: true, noEmbed: true }, fetchImpl);
+        expect(res.added).toBe(2); // historical item + repo card
+        expect(await pageSlugs(engine)).toContain('gh/acme/two/7');
+        const twoIssueLists = calls.filter((u) => u.includes('/repos/acme/two/issues?'));
+        expect(twoIssueLists.some((u) => !u.includes('since='))).toBe(true);
+        const state2 = JSON.parse(readFileSync(join(dir, '.github-source.json'), 'utf-8')) as { repos: string[] };
+        expect(state2.repos).toEqual(['acme/one', 'acme/two']);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('webhook single-item refresh does not persist discovered scope', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghsrc-webhook-scope-'));
+    const fx = makeFixture();
+    const fetchImpl = buildFetch(fx);
+    try {
+      await insertSource(engine, dir);
+      await withEnv({ GH_TOKEN: 'test-token' }, async () => {
+        // Auto scope + mixed-case webhook payload: the refresh materializes
+        // the lowercase page but must NOT write state.repos — only a
+        // successful sweep may mark a repo as bootstrapped.
+        const res = await runGitHubSync(
+          engine,
+          'ghsrc',
+          { ...makeCfg(dir), scope: 'auto', repos: [] },
+          { sourceId: 'ghsrc', githubItem: { repo: 'Acme/App', number: 1, kind: 'issue' } },
+          fetchImpl,
+        );
+        expect(res.modified).toBe(1);
+        expect(existsSync(join(dir, 'gh', 'acme/app', '1.md'))).toBe(true);
+        expect(existsSync(join(dir, '.github-source.json'))).toBe(false);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('mixed-case discovery materializes lowercase paths and state', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghsrc-case-'));
+    const fx = makeFixture();
+    const inner = buildFetch(fx);
+    const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+      const u = new URL(url);
+      if (u.pathname === '/user/repos') {
+        // Canonical GitHub casing differs from the lowercase page layout.
+        return new Response(
+          JSON.stringify([{ full_name: 'Acme/App', private: true, archived: false, default_branch: 'main', description: 'The app' }]),
+          { status: 200, headers: { 'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': '9999999999' } },
+        );
+      }
+      return inner(url, init);
+    };
+    try {
+      await insertSource(engine, dir);
+      await withEnv({ GH_TOKEN: 'test-token' }, async () => {
+        const res = await runGitHubSync(
+          engine,
+          'ghsrc',
+          { ...makeCfg(dir), scope: 'auto', repos: [] },
+          { sourceId: 'ghsrc', full: true },
+          fetchImpl,
+        );
+        expect(res.added).toBe(4);
+        expect(existsSync(join(dir, 'gh', 'acme/app', '1.md'))).toBe(true);
+        // The slug namespace and the state file both carry the folded form
+        // (the FS may be case-insensitive, so paths can't pin casing).
+        expect(await pageSlugs(engine)).toContain('gh/acme/app/1');
+        const state = JSON.parse(readFileSync(join(dir, '.github-source.json'), 'utf-8')) as { repos: string[] };
+        expect(state.repos).toEqual(['acme/app']);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('large sync defers embeds to an embed-backfill job with a drain hint', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghsrc-embed-defer-'));
+    const fx = makeFixture();
+    for (let n = 10; n < 111; n++) {
+      fx.items.set(n, {
+        number: n,
+        kind: 'issue',
+        state: 'open',
+        updated_at: '2026-08-01T00:00:00Z',
+        body: `Filler issue ${n}.`,
+        labels: [],
+        assignees: [],
+        comments: [],
+        reviews: [],
+      });
+    }
+    const fetchImpl = buildFetch(fx);
+    try {
+      await insertSource(engine, dir);
+      await engine.setConfig('version', migratedVersion); // MinionQueue schema gate
+      await withEnv({ GH_TOKEN: 'test-token' }, async () => {
+        const res = await runGitHubSync(engine, 'ghsrc', makeCfg(dir), { sourceId: 'ghsrc', full: true, noExtract: true }, fetchImpl);
+        expect(res.added).toBeGreaterThan(100);
+        expect(res.embedded).toBe(0); // inline embed skipped by the size gate
+        const jobs = await engine.executeRaw<{ data: unknown }>(
+          `SELECT data FROM minion_jobs WHERE name = 'embed-backfill'`,
+        );
+        expect(jobs.length).toBe(1);
+        const data = (typeof jobs[0].data === 'string' ? JSON.parse(jobs[0].data) : jobs[0].data) as { sourceId: string };
+        expect(data.sourceId).toBe('ghsrc');
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

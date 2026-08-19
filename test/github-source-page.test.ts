@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { generateKeyPairSync } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +18,7 @@ import {
   pageHasDetail,
   isValidRepoName,
   linkNextUrl,
+  parseRetryAfterMs,
   mintAppInstallationToken,
   AppTokenProvider,
   type GitHubItemData,
@@ -63,28 +64,25 @@ describe('parseGitHubSourceConfig', () => {
     expect(cfg.scope).toBe('auto');
     expect(cfg.repos).toEqual([]);
     expect(cfg.dir).toBe('/tmp/fallback');
-    expect(cfg.includeInvolvement).toBe(true);
   });
 
-  test('reads explicit fields and validates repo entries', () => {
+  test('reads explicit fields, lowercases repos, tolerates reserved keys', () => {
     const cfg = parseGitHubSourceConfig(
       {
         kind: 'github',
         gh_token_env: 'GH_MY_TOKEN',
-        gh_handle: 'veltr',
+        gh_handle: 'veltr', // reserved: tolerated, ignored
         gh_scope: 'repos',
-        gh_repos: 'acme/app, acme/tool',
+        gh_repos: 'Acme/App, acme/tool',
         gh_dir: '/data/gh',
-        gh_involvement: false,
+        gh_involvement: false, // reserved: tolerated, ignored
       },
       '/tmp/fallback',
     );
     expect(cfg.tokenEnv).toBe('GH_MY_TOKEN');
-    expect(cfg.handle).toBe('veltr');
     expect(cfg.scope).toBe('repos');
     expect(cfg.repos).toEqual(['acme/app', 'acme/tool']);
     expect(cfg.dir).toBe('/data/gh');
-    expect(cfg.includeInvolvement).toBe(false);
   });
 
   test('drops malformed repo entries', () => {
@@ -279,6 +277,113 @@ describe('fetchAllPages', () => {
       'https://api.github.com/repos/a/b/issues?page=2&per_page=100',
     ]);
     expect(out).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
+  test('non-array field payload throws naming the endpoint and field', async () => {
+    const client = new GitHubClient('tok', (async () =>
+      new Response(JSON.stringify({ check_runs: 'nope' }), { status: 200 })) as never);
+    await expect(
+      client.fetchAllPages('/repos/a/b/commits/abc/check-runs', { field: 'check_runs' }),
+    ).rejects.toThrow('non-array payload on /repos/a/b/commits/abc/check-runs (field "check_runs")');
+  });
+
+  test('non-array payload without a field throws naming the endpoint', async () => {
+    const client = new GitHubClient('tok', (async () =>
+      new Response(JSON.stringify({ message: 'moved' }), { status: 200 })) as never);
+    await expect(client.fetchAllPages('/repos/a/b/issues')).rejects.toThrow(
+      'non-array payload on /repos/a/b/issues',
+    );
+  });
+});
+
+describe('parseRetryAfterMs', () => {
+  test('delta-seconds form', () => {
+    expect(parseRetryAfterMs('120')).toBe(120_000);
+    expect(parseRetryAfterMs('0')).toBe(0);
+  });
+
+  test('HTTP-date form (future waits, past is 0)', () => {
+    const now = Math.floor(Date.now() / 1000) * 1000; // HTTP-dates drop ms
+    expect(parseRetryAfterMs(new Date(now + 120_000).toUTCString(), now)).toBe(120_000);
+    expect(parseRetryAfterMs(new Date(now - 60_000).toUTCString(), now)).toBe(0);
+  });
+
+  test('absent or garbage is null, never NaN', () => {
+    expect(parseRetryAfterMs(null)).toBeNull();
+    expect(parseRetryAfterMs('')).toBeNull();
+    expect(parseRetryAfterMs('soon')).toBeNull();
+  });
+});
+
+describe('GitHubClient 403/429 handling', () => {
+  const jsonRes = (body: unknown, status: number, headers: Record<string, string> = {}): Response =>
+    new Response(JSON.stringify(body), { status, headers });
+
+  test('403 with rate budget left and no Retry-After fails fast', async () => {
+    let calls = 0;
+    const client = new GitHubClient('tok', (async () => {
+      calls++;
+      return jsonRes({ message: 'Resource not accessible' }, 403, {
+        'x-ratelimit-remaining': '4000',
+        'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 3600),
+      });
+    }) as never);
+    await expect(client.fetchJSON('/repos/a/b/issues')).rejects.toThrow('check token permissions');
+    expect(calls).toBe(1); // no useless retry against a permission error
+  });
+
+  test('403 with an exhausted bucket retries after the reset', async () => {
+    let calls = 0;
+    const resetSec = Math.floor(Date.now() / 1000) - 2; // already elapsed
+    const client = new GitHubClient('tok', (async () => {
+      calls++;
+      if (calls === 1) {
+        return jsonRes({ message: 'rate limited' }, 403, {
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': String(resetSec),
+        });
+      }
+      return jsonRes([{ ok: true }], 200, {
+        'x-ratelimit-remaining': '5000',
+        'x-ratelimit-reset': String(resetSec + 3600),
+      });
+    }) as never);
+    const out = await client.fetchJSON<Array<{ ok: boolean }>>('/repos/a/b/issues');
+    expect(calls).toBe(2);
+    expect(out).toEqual([{ ok: true }]);
+  }, 10_000);
+
+  test('429 with an HTTP-date Retry-After in the past retries without a NaN sleep', async () => {
+    let calls = 0;
+    const client = new GitHubClient('tok', (async () => {
+      calls++;
+      if (calls === 1) {
+        return jsonRes({}, 429, { 'retry-after': new Date(Date.now() - 5000).toUTCString() });
+      }
+      return jsonRes([1], 200);
+    }) as never);
+    const started = Date.now();
+    const out = await client.fetchJSON<number[]>('/x');
+    expect(calls).toBe(2);
+    expect(out).toEqual([1]);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe('symlink containment', () => {
+  test('itemPagePath refuses a gh/ symlink escaping the managed dir', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'ghsrc-outside-'));
+    const dir = mkdtempSync(join(tmpdir(), 'ghsrc-managed-'));
+    try {
+      // A lexical prefix check passes here — only realpath containment
+      // catches the planted symlinked intermediate directory.
+      symlinkSync(outside, join(dir, 'gh'));
+      expect(() => itemPagePath(dir, 'acme/app', 7)).toThrow('Path escapes managed dir');
+      expect(() => repoCardPath(dir, 'acme/app')).toThrow('Path escapes managed dir');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 

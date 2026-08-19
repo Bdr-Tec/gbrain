@@ -86,6 +86,63 @@ export function extractGitHubItemRef(parsed: Record<string, unknown>): { repo: s
   const kind = prObj !== undefined || issueObj?.pull_request !== undefined || nestedPrNumber !== undefined ? 'pr' : 'issue';
   return { repo, number, kind };
 }
+
+/**
+ * True when a github-kind source covers `fullName`: explicit gh_repos list
+ * for scope=repos, the last-discovered state file for scope=auto (accept
+ * when no state exists yet — the sync engine re-checks scope). Repo names
+ * are case-insensitive on GitHub, so matching folds case on both sides
+ * (config and legacy state files may carry canonical-case entries).
+ */
+export function githubKindCoversRepo(
+  cfg: Record<string, unknown>,
+  localPath: string | null,
+  fullName: string,
+): boolean {
+  const repo = fullName.toLowerCase();
+  if (cfg.gh_scope === 'repos') {
+    const repos = typeof cfg.gh_repos === 'string' ? cfg.gh_repos.split(',').map((s) => s.trim().toLowerCase()) : [];
+    return repos.includes(repo);
+  }
+  if (localPath) {
+    try {
+      const state = JSON.parse(readFileSync(join(localPath, '.github-source.json'), 'utf-8')) as {
+        repos?: unknown[];
+      };
+      if (Array.isArray(state.repos)) {
+        return state.repos.some((r) => typeof r === 'string' && r.toLowerCase() === repo);
+      }
+    } catch {
+      /* no state yet */
+    }
+  }
+  return true;
+}
+
+/**
+ * Partition signature-verified webhook sources for an item event. Only a
+ * github-kind source can service a github_item refresh — the sync core
+ * rejects github_item on any other kind, so enqueueing for a legacy
+ * github_repo push source would only mint a dead job. Legacy matches are
+ * reported so the handler can ACK-and-ignore them instead.
+ */
+export function selectGitHubItemSources<Row extends { local_path: string | null; config: unknown }>(
+  rows: Row[],
+  repo: string,
+  verify: (cfg: Record<string, unknown>) => boolean,
+): { verified: Row[]; legacyMatched: boolean } {
+  const verified: Row[] = [];
+  let legacyMatched = false;
+  for (const row of rows) {
+    const cfg = (typeof row.config === 'string' ? JSON.parse(row.config) : (row.config ?? {})) as Record<string, unknown>;
+    if (cfg.kind === 'github' && githubKindCoversRepo(cfg, row.local_path, repo) && verify(cfg)) {
+      verified.push(row);
+      continue;
+    }
+    if (cfg.github_repo === repo && verify(cfg)) legacyMatched = true;
+  }
+  return { verified, legacyMatched };
+}
 import {
   registerScopedClient,
   preflightOauthClientColumns,
@@ -2868,8 +2925,9 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
     // Collect ALL candidate sources: exact github_repo matches (legacy
     // webhook config) and github-kind sources with a webhook secret, then
-    // verify HMAC per candidate. First valid HMAC wins; two valid matches
-    // mean ambiguous configuration and must not pick silently.
+    // verify HMAC per candidate. Only github-kind sources may enqueue a
+    // github_item refresh; two verifying github-kind sources mean ambiguous
+    // configuration and must not pick silently.
     let source: { id: string; local_path: string | null; config: unknown } | null = null;
     try {
       const rows = await engine.executeRaw<{ id: string; local_path: string | null; config: unknown }>(
@@ -2879,23 +2937,22 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
                OR (config->>'kind' = 'github' AND config->>'webhook_secret' IS NOT NULL))`,
         [ref.repo],
       );
-      const verified: { id: string; local_path: string | null; config: unknown }[] = [];
-      for (const row of rows) {
-        const cfg = (typeof row.config === 'string' ? JSON.parse(row.config) : (row.config ?? {})) as Record<string, unknown>;
-        if (cfg.github_repo === ref.repo && verifyWebhookSig(cfg, sigHeader, payload)) {
-          verified.push(row);
-          continue;
-        }
-        if (cfg.kind === 'github' && githubKindCoversRepo(cfg, row.local_path, ref.repo) && verifyWebhookSig(cfg, sigHeader, payload)) {
-          verified.push(row);
-        }
-      }
+      const { verified, legacyMatched } = selectGitHubItemSources(rows, ref.repo, (cfg) =>
+        verifyWebhookSig(cfg, sigHeader, payload),
+      );
       if (verified.length > 1) {
         res.status(500).json({
           error: 'ambiguous_webhook',
           message: `multiple sources verified the signature for ${ref.repo}; configure one webhook secret per source`,
           sources: verified.map((v) => v.id),
         });
+        return;
+      }
+      if (verified.length === 0 && legacyMatched) {
+        // A legacy push-webhook source verified the signature but cannot
+        // service item events — ACK so GitHub doesn't retry, exactly like
+        // the pre-item-flow non-push behavior.
+        res.status(202).json({ status: 'ignored', reason: `event=${eventName}` });
         return;
       }
       source = verified[0] ?? null;
@@ -2946,39 +3003,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     if (!/^sha256=[0-9a-f]{64}$/.test(sigHeader)) return false;
     const computedHex = createHmac('sha256', secret).update(payload).digest('hex');
     return safeHexEqual(sigHeader.slice('sha256='.length), computedHex);
-  }
-
-  /**
-   * Normalize the per-event payload shape into {repo, number, kind}.
-   * GitHub documents distinct shapes per event: issues/issue_comment/
-   * label/assignee/milestone carry a top-level `issue` (PRs appear there
-   * too, flagged by `issue.pull_request`), pull_request/review events
-   * carry top-level `pull_request`, and check events nest the linked PRs
-   * under check_run/check_suite/workflow_run. Returns null when the
-   * payload carries no item reference (ping, branch, etc.).
-   */
-  function githubKindCoversRepo(
-    cfg: Record<string, unknown>,
-    localPath: string | null,
-    fullName: string,
-  ): boolean {
-    if (cfg.gh_scope === 'repos') {
-      const repos = typeof cfg.gh_repos === 'string' ? cfg.gh_repos.split(',').map((s) => s.trim()) : [];
-      return repos.includes(fullName);
-    }
-    // auto scope: honor the last discovery (state file). Without state yet,
-    // accept and let the sync engine's own scope re-check decide.
-    if (localPath) {
-      try {
-        const state = JSON.parse(readFileSync(join(localPath, '.github-source.json'), 'utf-8')) as {
-          repos?: string[];
-        };
-        if (Array.isArray(state.repos)) return state.repos.includes(fullName);
-      } catch {
-        /* no state yet */
-      }
-    }
-    return true;
   }
 
   app.post(

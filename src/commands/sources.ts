@@ -133,8 +133,8 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
     console.error(
       'Usage: gbrain sources add <id> [--path <path> | --url <https-url> | --kind github] ' +
         '[--name <display>] [--federated|--no-federated] [--clone-dir <path>] [--force]\n' +
-        '       github kind: [--token-env <env>] [--handle <login>] [--scope auto|repos] ' +
-        '[--repos owner/name,...] [--dir <path>] [--no-involvement] ' +
+        '       github kind: [--token-env <env>] [--scope auto|repos] ' +
+        '[--repos owner/name,...] [--dir <path>] ' +
         '[--app-id <n> --app-pem <path>] [--app-install <n>]',
     );
     process.exit(2);
@@ -151,11 +151,9 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
   // v0.46 github-kind flags.
   let ghKind = false;
   let ghTokenEnv: string | undefined;
-  let ghHandle: string | undefined;
   let ghScope: 'auto' | 'repos' = 'auto';
   let ghRepos: string[] = [];
   let ghDir: string | undefined;
-  let ghInvolvement = true;
   let ghAppId: number | undefined;
   let ghAppPem: string | undefined;
   let ghAppInstall: number | undefined;
@@ -181,7 +179,6 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
       continue;
     }
     if (a === '--token-env') { ghTokenEnv = args[++i]; continue; }
-    if (a === '--handle') { ghHandle = args[++i]; continue; }
     if (a === '--scope') {
       const scope = args[++i];
       if (scope !== 'auto' && scope !== 'repos') {
@@ -199,7 +196,6 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
       continue;
     }
     if (a === '--dir') { ghDir = args[++i]; continue; }
-    if (a === '--no-involvement') { ghInvolvement = false; continue; }
     if (a === '--app-id') {
       const v = Number(args[++i]);
       if (!Number.isInteger(v) || v <= 0) {
@@ -261,11 +257,13 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
       ? {
           github: {
             tokenEnv: ghTokenEnv ?? 'GH_TOKEN',
-            handle: ghHandle ?? '',
+            // gh_handle / gh_involvement are reserved config keys (written
+            // as inert defaults, ignored by the sync).
+            handle: '',
             scope: ghScope,
             repos: ghRepos,
             dir: ghDir ?? defaultCloneDir(`${id}-github`),
-            involvement: ghInvolvement,
+            involvement: true,
             appId: ghAppId,
             appPemPath: ghAppPem,
             appInstallId: ghAppInstall,

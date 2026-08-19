@@ -33,10 +33,13 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync } from 'node:fs';
 import { createSign } from 'node:crypto';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import type { BrainEngine } from './engine.ts';
 import type { SyncOpts } from '../commands/sync.ts';
+import { isWriteTargetContained } from './path-confine.ts';
+import { createProgress, startHeartbeat } from './progress.ts';
+import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,16 +57,12 @@ export interface GitHubSourceConfig {
   tokenEnv: string;
   /** GitHub App credentials; when set, the sync mints hourly installation tokens itself. */
   app: GitHubAppConfig | null;
-  /** GitHub handle for involvement queries and auto-scope (default: none). */
-  handle: string;
   /** 'auto' = owner + collaborator + org-member repos; 'repos' = explicit list. */
   scope: 'auto' | 'repos';
-  /** owner/name list, only when scope === 'repos'. */
+  /** owner/name list (lowercase), only when scope === 'repos'. */
   repos: string[];
   /** Managed dir where pages are materialized. */
   dir: string;
-  /** Involvement: also sync items where the handle is author/assignee/commenter/mentioned/reviewer. */
-  includeInvolvement: boolean;
 }
 
 export interface GitHubItemRef {
@@ -127,21 +126,23 @@ export function parseGitHubSourceConfig(
               : undefined,
         }
       : null;
-  const handle = typeof config.gh_handle === 'string' ? config.gh_handle : '';
+  // gh_handle / gh_involvement are reserved config keys: tolerated when
+  // present but ignored (the involvement expansion is not implemented).
   const scope = config.gh_scope === 'repos' ? 'repos' : 'auto';
+  // Repo names are case-insensitive on GitHub; everything downstream (page
+  // paths, state file, webhook matching, slugs) keys on the lowercase form.
   const repos =
     typeof config.gh_repos === 'string'
       ? config.gh_repos
           .split(',')
-          .map((s) => s.trim())
+          .map((s) => s.trim().toLowerCase())
           .filter(isValidRepoName)
       : [];
   const dir =
     typeof config.gh_dir === 'string' && config.gh_dir.length > 0
       ? config.gh_dir
       : fallbackDir;
-  const includeInvolvement = config.gh_involvement !== false;
-  return { tokenEnv, app, handle, scope, repos, dir, includeInvolvement };
+  return { tokenEnv, app, scope, repos, dir };
 }
 
 export function gitHubStateFile(dir: string): string {
@@ -160,7 +161,11 @@ function readState(dir: string): GitHubState {
     const parsed = JSON.parse(raw) as Partial<GitHubState>;
     return {
       last_sweep_at: typeof parsed.last_sweep_at === 'string' ? parsed.last_sweep_at : null,
-      repos: Array.isArray(parsed.repos) ? parsed.repos : [],
+      // Legacy state files may carry canonical-case names; the module keys
+      // on lowercase everywhere.
+      repos: Array.isArray(parsed.repos)
+        ? parsed.repos.filter((r): r is string => typeof r === 'string').map((r) => r.toLowerCase())
+        : [],
     };
   } catch {
     return { last_sweep_at: null, repos: [] };
@@ -339,8 +344,15 @@ export class GitHubClient {
         continue;
       }
       if (res.status === 403 || res.status === 429) {
-        const retryAfter = res.headers.get('retry-after');
-        const waitMs = retryAfter !== null ? Number(retryAfter) * 1000 : this.rate.resetAt !== null
+        const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
+        // A 403 with no Retry-After and budget left in the rate bucket is a
+        // permission/abuse error, not a rate limit — sleeping until the
+        // bucket reset can't fix it.
+        const rateExhausted = this.rate.remaining !== null && this.rate.remaining <= 2;
+        if (res.status === 403 && retryAfterMs === null && !rateExhausted) {
+          throw new Error(`GitHub API HTTP 403 on ${pathOrUrl} (not rate-limited; check token permissions)`);
+        }
+        const waitMs = retryAfterMs !== null ? retryAfterMs : this.rate.resetAt !== null
           ? Math.max(0, this.rate.resetAt - Date.now()) + 1000
           : 60_000;
         if (attempt < retries) {
@@ -380,7 +392,15 @@ export class GitHubClient {
     let pages = 0;
     for (;;) {
       const { data, link } = await this.fetchJSONWithMeta<Record<string, unknown> | unknown[]>(url, opts);
-      const batch = (Array.isArray(data) ? data : opts.field ? (data as Record<string, unknown>)[opts.field] : []) as T[];
+      const raw = Array.isArray(data) ? data : opts.field ? (data as Record<string, unknown>)[opts.field] : data;
+      // Fail loud on shape drift: silently treating a non-array payload as
+      // empty would let a reconcile see "no items" where the API sent some.
+      if (!Array.isArray(raw)) {
+        throw new Error(
+          `GitHub API returned a non-array payload on ${path}${opts.field ? ` (field "${opts.field}")` : ''}`,
+        );
+      }
+      const batch = raw as T[];
       out.push(...batch);
       const next = link !== null ? linkNextUrl(link) : null;
       if (next === null) break;
@@ -399,6 +419,19 @@ export class GitHubClient {
     }
     return out;
   }
+}
+
+/**
+ * Retry-After is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3).
+ * Returns milliseconds to wait, or null when absent/unparseable — never NaN,
+ * which would turn the backoff sleep into a hot retry loop.
+ */
+export function parseRetryAfterMs(value: string | null, nowMs: number = Date.now()): number | null {
+  if (value === null || value.trim() === '') return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const dateMs = Date.parse(value);
+  return Number.isFinite(dateMs) ? Math.max(0, dateMs - nowMs) : null;
 }
 
 /** Thrown when pagination hits the safety cap; callers treat enumeration as incomplete. */
@@ -429,8 +462,15 @@ interface RawRepo {
 }
 
 /**
- * Expand the source's scope to the concrete owner/name list.
+ * Expand the source's scope to the concrete owner/name list (lowercase —
+ * GitHub repo names are case-insensitive and the whole module keys on the
+ * lowercase form).
  * auto = affiliation owner,collaborator,organization_member (paginated).
+ *
+ * NEVER persists state.repos: only a sweep that fully succeeded for a repo
+ * may state-list it (see runGitHubSync). Persisting at discovery time — in
+ * particular during a webhook single-item refresh — would mark unswept repos
+ * as already bootstrapped and silently skip their history on the next sweep.
  */
 export async function resolveScopeRepos(
   cfg: GitHubSourceConfig,
@@ -438,7 +478,7 @@ export async function resolveScopeRepos(
   signal?: AbortSignal,
 ): Promise<string[]> {
   if (cfg.scope === 'repos') {
-    return [...cfg.repos];
+    return [...new Set(cfg.repos.map((r) => r.toLowerCase()))];
   }
   // Installation tokens cannot call /user/repos, so the app path resolves
   // through /installation/repositories (object-shaped: { repositories }).
@@ -448,24 +488,14 @@ export async function resolveScopeRepos(
           signal,
           field: 'repositories',
         })
-      )
-        .map((r) => r.full_name)
-        .sort()
+      ).map((r) => r.full_name.toLowerCase())
     : (
         await client.fetchAllPages<RawRepo>(
           '/user/repos?affiliation=owner,collaborator,organization_member&sort=full_name',
           { signal },
         )
-      )
-        .map((r) => r.full_name)
-        .sort();
-  // Persist the discovered list so webhook repo matching and status display
-  // work without an API call.
-  mkdirSync(cfg.dir, { recursive: true });
-  const state = readState(cfg.dir);
-  state.repos = names;
-  writeState(cfg.dir, state);
-  return names;
+      ).map((r) => r.full_name.toLowerCase());
+  return [...new Set(names)].sort();
 }
 
 // ── Item enumeration ─────────────────────────────────────────────────────────
@@ -564,6 +594,14 @@ export async function enumerateRepoItems(
         draft: src?.draft,
       });
     }
+  }
+  // Open PRs whose updated_at predates `since` never appear in the issues
+  // list, but their check state can change without bumping updated_at (a new
+  // check run doesn't touch it). Union them in so the per-sweep open-PR
+  // refresh actually sees every open PR, not just recently-updated ones.
+  const sinceFiltered = new Set(prNumbers);
+  for (const p of openPrs) {
+    if (!sinceFiltered.has(p.number)) prs.push(p);
   }
   return { issues, prs };
 }
@@ -780,14 +818,17 @@ export function repoCardPath(dir: string, repo: string): string {
   return p;
 }
 
-/** Path-containment guard: a crafted repo name must never escape the managed dir. */
+/**
+ * Path-containment guard: a crafted repo name must never escape the managed
+ * dir. Symlink-safe: `isWriteTargetContained` realpaths the deepest existing
+ * ancestor, so a planted `gh/` symlink pointing outside the managed dir is
+ * caught where a lexical prefix check would pass.
+ */
 function assertContained(dir: string, path: string, repo: string): void {
   if (!isValidRepoName(repo)) {
     throw new Error(`Invalid GitHub repo name: "${repo}"`);
   }
-  const base = resolve(dir);
-  const target = resolve(path);
-  if (target !== base && !target.startsWith(base + sep)) {
+  if (!isWriteTargetContained(path, dir)) {
     throw new Error(`Path escapes managed dir: "${path}"`);
   }
 }
@@ -1071,7 +1112,9 @@ async function deleteStalePages(
     if (r.source_path === null) return false;
     const parts = r.source_path.split('/');
     const ownerRepo = parts.length >= 3 ? parts.slice(0, 3).join('/') : '';
-    return ownerRepo !== '' && succeededRepos.has(ownerRepo);
+    // Case-folded: legacy rows may carry canonical-case source_paths while
+    // succeededRepos keys on the lowercase form.
+    return ownerRepo !== '' && succeededRepos.has(ownerRepo.toLowerCase());
   });
   const plan = planReconcileDeletes(
     rows,
@@ -1155,198 +1198,242 @@ export async function runGitHubSync(
     } catch { /* fall back to legacy typing */ }
   }
 
-  // Keep previous scope before auto-discovery writes its refreshed repo list.
+  // Keep previous scope before this run resolves its refreshed repo list.
   // A repo added to an existing source needs a history bootstrap even when
   // the source-wide cursor is already ahead of its old items.
   const state = readState(cfg.dir);
-  const previousRepos = new Set(state.repos.filter((repo): repo is string => typeof repo === 'string'));
-  const repos = await resolveScopeRepos(cfg, client, opts.signal);
+  const previousRepos = new Set(state.repos);
 
-  if (opts.githubItem) {
-    // Scope guard: only refresh items in the resolved scope. Webhooks for
-    // out-of-scope repos are acknowledged upstream but never materialized.
-    // Repo casing is normalized so a webhook payload that differs in case
-    // from the stored repo still matches (GitHub repo names are
-    // case-insensitive; the managed dir layout is lowercase).
-    const item = { ...opts.githubItem, repo: opts.githubItem.repo.toLowerCase() };
-    if (!repos.some((r) => r.toLowerCase() === item.repo)) {
-      return syncResult({ ...summary, status: 'up_to_date' }, opts);
-    }
-    await refreshSingleItem(deps, item, activePack, summary);
-    await touchSourceRow(deps, new Date().toISOString());
-    return syncResult(summary, opts);
-  }
-
-  const since = opts.full ? undefined : state.last_sweep_at ?? undefined;
-  const keepPaths = new Set<string>();
-  const succeededRepos = new Set<string>();
-  // Pages counted in pass 1 must not be counted again when pass 2 replaces
-  // them in the same run (added/modified describe distinct page outcomes).
-  const countedSlugs = new Set<string>();
-  let maxUpdatedAt = state.last_sweep_at ?? '';
-  const repoMeta = new Map<string, RawRepo>();
-
-  for (const repo of repos) {
-    if (opts.signal?.aborted) break;
+  // Shared bulk-progress reporter (docs/progress-events.md, phase
+  // sync.github_materialize): stderr-only heartbeats during the network
+  // phases, one tick per item. finish() is guaranteed by the finally so a
+  // thrown error never leaves a live phase behind.
+  const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
+  progress.start('sync.github_materialize');
+  try {
+    const stopScopeHb = startHeartbeat(progress, 'resolving repo scope');
+    let repos: string[];
     try {
-      const repoSince = opts.full || !previousRepos.has(repo) ? undefined : since;
-      const { issues, prs } = await enumerateRepoItems(repo, client, { since: repoSince, signal: opts.signal });
-      const items: Array<{
-        repo: string;
-        number: number;
-        kind: 'issue' | 'pr';
-        state: string;
-        updated_at: string;
-        list: RawIssueListItem | RawPullListItem;
-      }> = [
-        ...issues.map((i) => ({ repo, number: i.number, kind: 'issue' as const, state: i.state, updated_at: i.updated_at, list: i as RawIssueListItem })),
-        ...prs.map((p) => ({ repo, number: p.number, kind: 'pr' as const, state: p.state, updated_at: p.updated_at, list: p as RawPullListItem })),
-      ];
-      const pendingDetail: typeof items = [];
-      for (const item of items) {
-        const filePath = itemPagePath(cfg.dir, repo, item.number);
-        keepPaths.add(relative(cfg.dir, filePath).replace(/\\/g, '/'));
-        summary.itemsSeen++;
-        // Open PRs are never fresh: their check state can change without
-        // touching the PR's updated_at (a new check run does not bump it),
-        // so they are re-fetched every sweep. Cost is bounded by the number
-        // of open PRs, which is small in practice.
-        const isOpenPr = item.kind === 'pr' && item.state === 'open';
-        const fresh = isPageFresh(filePath, item.updated_at);
-        const hasDetail = pageHasDetail(filePath);
-        if (!opts.full && !isOpenPr && fresh && hasDetail) {
-          // Cursor accounting: a fresh skip is a success too. Without this,
-          // a repo whose newest item is always fresh stays re-listed on
-          // every sweep (the since filter never passes it).
-          if (item.updated_at > maxUpdatedAt) maxUpdatedAt = item.updated_at;
-          continue;
+      repos = await resolveScopeRepos(cfg, client, opts.signal);
+    } finally {
+      stopScopeHb();
+    }
+
+    if (opts.githubItem) {
+      // Scope guard: only refresh items in the resolved scope. Webhooks for
+      // out-of-scope repos are acknowledged upstream but never materialized.
+      // Repo casing is normalized so a webhook payload that differs in case
+      // from the stored repo still matches (GitHub repo names are
+      // case-insensitive; the managed dir layout is lowercase).
+      const item = { ...opts.githubItem, repo: opts.githubItem.repo.toLowerCase() };
+      if (!repos.includes(item.repo)) {
+        return syncResult({ ...summary, status: 'up_to_date' }, opts);
+      }
+      const stopItemHb = startHeartbeat(progress, `refreshing ${item.repo}#${item.number}`);
+      try {
+        await refreshSingleItem(deps, item, activePack, summary);
+      } finally {
+        stopItemHb();
+      }
+      await touchSourceRow(deps, new Date().toISOString());
+      return syncResult(summary, opts);
+    }
+
+    const since = opts.full ? undefined : state.last_sweep_at ?? undefined;
+    const keepPaths = new Set<string>();
+    const succeededRepos = new Set<string>();
+    // Pages counted in pass 1 must not be counted again when pass 2 replaces
+    // them in the same run (added/modified describe distinct page outcomes).
+    const countedSlugs = new Set<string>();
+    let maxUpdatedAt = state.last_sweep_at ?? '';
+    const repoMeta = new Map<string, RawRepo>();
+
+    for (const repo of repos) {
+      if (opts.signal?.aborted) break;
+      try {
+        const repoSince = opts.full || !previousRepos.has(repo) ? undefined : since;
+        const stopListHb = startHeartbeat(progress, `listing ${repo}`);
+        let issues: RawIssueListItem[];
+        let prs: RawPullListItem[];
+        try {
+          ({ issues, prs } = await enumerateRepoItems(repo, client, { since: repoSince, signal: opts.signal }));
+        } finally {
+          stopListHb();
         }
-        // Pass 1 (cheap): materialize from the list payload when the page is
-        // missing or never detail-fetched. Pages that already carry detail
-        // are left intact until pass 2 replaces them, so comments never
-        // vanish mid-sweep.
-        if (!hasDetail) {
-          try {
-            mkdirSync(dirname(filePath), { recursive: true });
-            const before = existsSync(filePath);
-            // Temp-write then import then rename: a failed refresh must never
-            // destroy the previously-good page (codex HIGH, round 3). The
-            // import declares the canonical relative path, so the page slug
-            // and source_path stay correct despite the temp filename.
-            const tmpPath = `${filePath}.tmp`;
-            writeFileSync(tmpPath, renderListItemPage(repo, item.kind, item.list), 'utf-8');
-            try {
-              const imported = await importPage(deps, tmpPath, activePack, relative(cfg.dir, filePath).replace(/\\/g, '/'));
-              renameSync(tmpPath, filePath);
-              summary.pagesAffected.push(imported.slug);
-              summary.chunksCreated += imported.chunks;
-              if (!countedSlugs.has(imported.slug)) {
-                if (before) summary.modified++; else summary.added++;
-                countedSlugs.add(imported.slug);
-              }
-            } finally {
-              rmSync(tmpPath, { force: true });
-            }
-          } catch (err) {
-            deps.client.log?.(`[github] item ${repo}#${item.number} list render failed: ${err instanceof Error ? err.message : String(err)}`);
-            summary.failedFiles++;
-            summary.status = 'partial';
+        const items: Array<{
+          repo: string;
+          number: number;
+          kind: 'issue' | 'pr';
+          state: string;
+          updated_at: string;
+          list: RawIssueListItem | RawPullListItem;
+        }> = [
+          ...issues.map((i) => ({ repo, number: i.number, kind: 'issue' as const, state: i.state, updated_at: i.updated_at, list: i as RawIssueListItem })),
+          ...prs.map((p) => ({ repo, number: p.number, kind: 'pr' as const, state: p.state, updated_at: p.updated_at, list: p as RawPullListItem })),
+        ];
+        // Item count known: restart the phase with this repo's total. Every
+        // item ticks exactly once (fresh skip, pass-1 failure, or pass 2).
+        progress.start('sync.github_materialize', items.length);
+        const pendingDetail: typeof items = [];
+        for (const item of items) {
+          const filePath = itemPagePath(cfg.dir, repo, item.number);
+          keepPaths.add(relative(cfg.dir, filePath).replace(/\\/g, '/'));
+          summary.itemsSeen++;
+          // Open PRs are never fresh: their check state can change without
+          // touching the PR's updated_at (a new check run does not bump it),
+          // so they are re-fetched every sweep. Cost is bounded by the number
+          // of open PRs, which is small in practice.
+          const isOpenPr = item.kind === 'pr' && item.state === 'open';
+          const fresh = isPageFresh(filePath, item.updated_at);
+          const hasDetail = pageHasDetail(filePath);
+          if (!opts.full && !isOpenPr && fresh && hasDetail) {
+            // Cursor accounting: a fresh skip is a success too. Without this,
+            // a repo whose newest item is always fresh stays re-listed on
+            // every sweep (the since filter never passes it).
+            if (item.updated_at > maxUpdatedAt) maxUpdatedAt = item.updated_at;
+            progress.tick(1, `${repo}#${item.number} fresh`);
             continue;
           }
-        }
-        pendingDetail.push(item);
-      }
-      // Pass 2 (expensive): comments, reviews, checks, exact merge state.
-      // Runs in the same sweep so the final page is complete; an item that
-      // fails here keeps its pass-1 (or previous) page and the cursor does
-      // not advance past it, so the next sweep retries just that item.
-      for (const item of pendingDetail) {
-        if (opts.signal?.aborted) {
-          summary.status = 'partial';
-          break;
-        }
-        const filePath = itemPagePath(cfg.dir, repo, item.number);
-        summary.itemDetailFetches++;
-        try {
-          const data = await fetchItemData(repo, item.number, item.kind, client, { signal: opts.signal });
-          mkdirSync(dirname(filePath), { recursive: true });
-          const before = existsSync(filePath);
-          const tmpPath = `${filePath}.tmp`;
-          writeFileSync(tmpPath, renderItemPage(data), 'utf-8');
-          try {
-            const imported = await importPage(deps, tmpPath, activePack, relative(cfg.dir, filePath).replace(/\\/g, '/'));
-            renameSync(tmpPath, filePath);
-            summary.pagesAffected.push(imported.slug);
-            summary.chunksCreated += imported.chunks;
-            if (!countedSlugs.has(imported.slug)) {
-              if (before) summary.modified++; else summary.added++;
-              countedSlugs.add(imported.slug);
+          // Pass 1 (cheap): materialize from the list payload when the page is
+          // missing or never detail-fetched. Pages that already carry detail
+          // are left intact until pass 2 replaces them, so comments never
+          // vanish mid-sweep.
+          if (!hasDetail) {
+            try {
+              mkdirSync(dirname(filePath), { recursive: true });
+              const before = existsSync(filePath);
+              // Temp-write then import then rename: a failed refresh must never
+              // destroy the previously-good page (codex HIGH, round 3). The
+              // import declares the canonical relative path, so the page slug
+              // and source_path stay correct despite the temp filename.
+              const tmpPath = `${filePath}.tmp`;
+              writeFileSync(tmpPath, renderListItemPage(repo, item.kind, item.list), 'utf-8');
+              try {
+                const imported = await importPage(deps, tmpPath, activePack, relative(cfg.dir, filePath).replace(/\\/g, '/'));
+                renameSync(tmpPath, filePath);
+                summary.pagesAffected.push(imported.slug);
+                summary.chunksCreated += imported.chunks;
+                if (!countedSlugs.has(imported.slug)) {
+                  if (before) summary.modified++; else summary.added++;
+                  countedSlugs.add(imported.slug);
+                }
+              } finally {
+                rmSync(tmpPath, { force: true });
+              }
+            } catch (err) {
+              deps.client.log?.(`[github] item ${repo}#${item.number} list render failed: ${err instanceof Error ? err.message : String(err)}`);
+              summary.failedFiles++;
+              summary.status = 'partial';
+              progress.tick(1, `${repo}#${item.number} failed`);
+              continue;
             }
-          } finally {
-            rmSync(tmpPath, { force: true });
           }
-        } catch (err) {
-          deps.client.log?.(`[github] item ${repo}#${item.number} failed: ${err instanceof Error ? err.message : String(err)}`);
-          summary.failedFiles++;
-          summary.status = 'partial';
-          continue;
+          pendingDetail.push(item);
         }
-        // Cursor advances only for items that fully succeeded.
-        if (item.updated_at > maxUpdatedAt) maxUpdatedAt = item.updated_at;
-      }
-      // Repo card, refreshed once per repo.
-      const cardPath = repoCardPath(cfg.dir, repo);
-      keepPaths.add(relative(cfg.dir, cardPath).replace(/\\/g, '/'));
-      if (opts.full || !existsSync(cardPath)) {
+        // Pass 2 (expensive): comments, reviews, checks, exact merge state.
+        // Runs in the same sweep so the final page is complete; an item that
+        // fails here keeps its pass-1 (or previous) page and the cursor does
+        // not advance past it, so the next sweep retries just that item.
+        const stopDetailHb = startHeartbeat(progress, `fetching item detail for ${repo}`);
         try {
-          const meta = await client.fetchJSON<RawRepo>(`/repos/${repo}`, { signal: opts.signal });
-          repoMeta.set(repo, meta);
-          mkdirSync(dirname(cardPath), { recursive: true });
-          const cardExisted = existsSync(cardPath);
-          writeFileSync(cardPath, renderRepoCard(repo, meta), 'utf-8');
-          const imported = await importPage(deps, cardPath, activePack);
-          if (!summary.pagesAffected.includes(imported.slug)) summary.pagesAffected.push(imported.slug);
-          if (cardExisted) summary.modified++; else summary.added++;
-        } catch { /* card is best-effort */ }
-      } else {
+          for (const item of pendingDetail) {
+            if (opts.signal?.aborted) {
+              summary.status = 'partial';
+              break;
+            }
+            const filePath = itemPagePath(cfg.dir, repo, item.number);
+            summary.itemDetailFetches++;
+            try {
+              const data = await fetchItemData(repo, item.number, item.kind, client, { signal: opts.signal });
+              mkdirSync(dirname(filePath), { recursive: true });
+              const before = existsSync(filePath);
+              const tmpPath = `${filePath}.tmp`;
+              writeFileSync(tmpPath, renderItemPage(data), 'utf-8');
+              try {
+                const imported = await importPage(deps, tmpPath, activePack, relative(cfg.dir, filePath).replace(/\\/g, '/'));
+                renameSync(tmpPath, filePath);
+                summary.pagesAffected.push(imported.slug);
+                summary.chunksCreated += imported.chunks;
+                if (!countedSlugs.has(imported.slug)) {
+                  if (before) summary.modified++; else summary.added++;
+                  countedSlugs.add(imported.slug);
+                }
+              } finally {
+                rmSync(tmpPath, { force: true });
+              }
+            } catch (err) {
+              deps.client.log?.(`[github] item ${repo}#${item.number} failed: ${err instanceof Error ? err.message : String(err)}`);
+              summary.failedFiles++;
+              summary.status = 'partial';
+              progress.tick(1, `${repo}#${item.number} failed`);
+              continue;
+            }
+            progress.tick(1, `${repo}#${item.number}`);
+            // Cursor advances only for items that fully succeeded.
+            if (item.updated_at > maxUpdatedAt) maxUpdatedAt = item.updated_at;
+          }
+        } finally {
+          stopDetailHb();
+        }
+        // Repo card, refreshed once per repo.
+        const cardPath = repoCardPath(cfg.dir, repo);
         keepPaths.add(relative(cfg.dir, cardPath).replace(/\\/g, '/'));
+        if (opts.full || !existsSync(cardPath)) {
+          try {
+            const meta = await client.fetchJSON<RawRepo>(`/repos/${repo}`, { signal: opts.signal });
+            repoMeta.set(repo, meta);
+            mkdirSync(dirname(cardPath), { recursive: true });
+            const cardExisted = existsSync(cardPath);
+            writeFileSync(cardPath, renderRepoCard(repo, meta), 'utf-8');
+            const imported = await importPage(deps, cardPath, activePack);
+            if (!summary.pagesAffected.includes(imported.slug)) summary.pagesAffected.push(imported.slug);
+            if (cardExisted) summary.modified++; else summary.added++;
+          } catch { /* card is best-effort */ }
+        } else {
+          keepPaths.add(relative(cfg.dir, cardPath).replace(/\\/g, '/'));
+        }
+        succeededRepos.add(`gh/${repo}`);
+      } catch (err) {
+        deps.client.log?.(`[github] repo ${repo} failed: ${err instanceof Error ? err.message : String(err)}`);
+        summary.failedFiles++;
+        summary.status = 'partial';
       }
-      succeededRepos.add(`gh/${repo}`);
-    } catch (err) {
-      deps.client.log?.(`[github] repo ${repo} failed: ${err instanceof Error ? err.message : String(err)}`);
-      summary.failedFiles++;
-      summary.status = 'partial';
     }
+
+    // A page can be imported twice in a run (pass 1 list render, then pass 2
+    // detail render): dedupe before extract/embed so each page is processed once.
+    summary.pagesAffected = [...new Set(summary.pagesAffected)];
+
+    if (opts.full) {
+      await deleteStalePages(deps, keepPaths, summary, succeededRepos);
+    }
+
+    // Size-gated extract + embed, mirroring performSyncInner's gates.
+    await runExtractAndEmbed(deps, summary, activePack);
+
+    // Cursor discipline: the sweep cursor only advances on a fully successful
+    // run. On a partial run (item or repo failures) or an aborted signal we
+    // keep the previous cursor so the next sweep re-enumerates from the old
+    // point; fresh pages are still skipped by content hash, so the only real
+    // cost is the retry of whatever failed.
+    if (opts.signal?.aborted) summary.status = 'partial';
+    // A repo enters state.repos only once a sweep fully succeeded for it (or
+    // it was already listed): state-listing an unswept repo would skip its
+    // history bootstrap on the next run (previousRepos gates the since filter).
+    state.repos = repos.filter((r) => succeededRepos.has(`gh/${r}`) || previousRepos.has(r));
+    if (summary.status === 'synced') {
+      state.last_sweep_at = maxUpdatedAt || new Date().toISOString();
+      writeState(cfg.dir, state);
+      await touchSourceRow(deps, maxUpdatedAt || new Date().toISOString());
+    } else {
+      writeState(cfg.dir, state);
+      await touchSourceRow(deps, state.last_sweep_at ?? new Date().toISOString());
+    }
+
+    return syncResult(summary, opts);
+  } finally {
+    progress.finish();
   }
-
-  // A page can be imported twice in a run (pass 1 list render, then pass 2
-  // detail render): dedupe before extract/embed so each page is processed once.
-  summary.pagesAffected = [...new Set(summary.pagesAffected)];
-
-  if (opts.full) {
-    await deleteStalePages(deps, keepPaths, summary, succeededRepos);
-  }
-
-  // Size-gated extract + embed, mirroring performSyncInner's gates.
-  await runExtractAndEmbed(deps, summary, activePack);
-
-  // Cursor discipline: the sweep cursor only advances on a fully successful
-  // run. On a partial run (item or repo failures) or an aborted signal we
-  // keep the previous cursor so the next sweep re-enumerates from the old
-  // point; fresh pages are still skipped by content hash, so the only real
-  // cost is the retry of whatever failed.
-  if (opts.signal?.aborted) summary.status = 'partial';
-  state.repos = repos;
-  if (summary.status === 'synced') {
-    state.last_sweep_at = maxUpdatedAt || new Date().toISOString();
-    writeState(cfg.dir, state);
-    await touchSourceRow(deps, maxUpdatedAt || new Date().toISOString());
-  } else {
-    writeState(cfg.dir, state);
-    await touchSourceRow(deps, state.last_sweep_at ?? new Date().toISOString());
-  }
-
-  return syncResult(summary, opts);
 }
 
 async function refreshSingleItem(
@@ -1407,7 +1494,7 @@ async function runExtractAndEmbed(
       );
     } catch { /* extraction is best-effort */ }
   } else if (totalChanges > 100 && !deps.opts.noExtract) {
-    deps.client.log?.(`[github] large sync (${totalChanges} files); extraction deferred to 'gbrain extract --stale --source-id ${deps.sourceId}'`);
+    process.stderr.write(`[github] large sync (${totalChanges} pages); extraction deferred to 'gbrain extract --stale --source-id ${deps.sourceId}'\n`);
   }
 
   if (!deps.opts.noEmbed && totalChanges <= 100 && pagesAffected.length > 0) {
@@ -1416,6 +1503,22 @@ async function runExtractAndEmbed(
       await runEmbedCore(deps.engine, { slugs: pagesAffected, sourceId: deps.sourceId });
       summary.embedded = pagesAffected.length;
     } catch { /* embed is best-effort */ }
+  } else if (!deps.opts.noEmbed && totalChanges > 100) {
+    // Large sync skips the inline embed; queue a capped backfill job so the
+    // mirrored pages don't sit unembedded until someone notices recall is
+    // keyword-only. Mirrors performSync's auto-defer chaser.
+    const drainHint = `run 'gbrain embed --stale --source-id ${deps.sourceId}' to drain now`;
+    try {
+      const { submitEmbedBackfill } = await import('./embed-backfill-submit.ts');
+      const sub = await submitEmbedBackfill(deps.engine, deps.sourceId, { reason: 'github_sync_defer' });
+      if (sub.status === 'submitted') {
+        process.stderr.write(`[github] large sync (${totalChanges} pages); embeds deferred to embed-backfill job ${sub.jobId} — or ${drainHint}\n`);
+      } else {
+        process.stderr.write(`[github] large sync (${totalChanges} pages); embed-backfill not queued (${sub.status}) — ${drainHint}\n`);
+      }
+    } catch (err) {
+      process.stderr.write(`[github] embed-backfill submission failed: ${err instanceof Error ? err.message : String(err)} — ${drainHint}\n`);
+    }
   }
 }
 
