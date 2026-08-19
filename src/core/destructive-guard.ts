@@ -15,6 +15,9 @@
 
 import type { BrainEngine } from './engine.ts';
 import { SOURCE_CONFIG_OBJECT_SQL } from './source-config-sql.ts';
+import { rmSync, lstatSync } from 'node:fs';
+import { isPathContained } from './path-confine.ts';
+import { gbrainPath } from './config.ts';
 import { isUndefinedColumnError, isUndefinedTableError } from './utils.ts';
 
 // ── Types ───────────────────────────────────────────────────
@@ -449,8 +452,8 @@ export interface PurgeExpiredResult {
 export async function purgeExpiredSources(
   engine: BrainEngine,
 ): Promise<PurgeExpiredResult> {
-  const candidates = await engine.executeRaw<{ id: string }>(
-    `SELECT id FROM sources
+  const candidates = await engine.executeRaw<{ id: string; config: unknown; local_path: string | null }>(
+    `SELECT id, config, local_path FROM sources
      WHERE archived = true
        AND archive_expires_at IS NOT NULL
        AND archive_expires_at <= now()
@@ -458,7 +461,9 @@ export async function purgeExpiredSources(
   );
   const purged: string[] = [];
   const blocked: PurgeExpiredResult['blocked'] = [];
-  for (const { id } of candidates) {
+  const cloneRoot = gbrainPath('clones');
+  for (const candidate of candidates) {
+    const { id } = candidate;
     try {
       const rows = await engine.executeRaw<{ id: string }>(
         `DELETE FROM sources
@@ -469,7 +474,27 @@ export async function purgeExpiredSources(
          RETURNING id`,
         [id],
       );
-      if (rows.length > 0) purged.push(id);
+      if (rows.length > 0) {
+        purged.push(id);
+        // github-kind mirrors are gbrain-owned only when created at the
+        // default clone location. Never recursively delete an altered or
+        // symlinked path outside the managed clone root.
+        try {
+          const cfg = (typeof candidate.config === 'string'
+            ? JSON.parse(candidate.config)
+            : (candidate.config ?? {})) as Record<string, unknown>;
+          if (cfg.kind === 'github' && cfg.gh_managed === true && candidate.local_path) {
+            if (isPathContained(candidate.local_path, cloneRoot)) {
+              const lst = lstatSync(candidate.local_path);
+              if (!lst.isSymbolicLink()) {
+                rmSync(candidate.local_path, { recursive: true, force: true });
+              }
+            }
+          }
+        } catch {
+          // Best-effort cleanup; source deletion already completed.
+        }
+      }
       // 0 rows = restored/already gone between SELECT and DELETE; neither
       // purged nor blocked.
     } catch (err) {
