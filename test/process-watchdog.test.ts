@@ -93,6 +93,22 @@ describe('clampWatchdogTimers (#4284 joint-overflow clamp)', () => {
     expect(Number.isFinite(clampWatchdogTimers(Number.NaN, 100).deadlineMs)).toBe(false);
   });
 
+  test('NaN grace is coerced to 0, never armed as a ~1ms overflow SIGKILL', () => {
+    // setTimeout(deadline + NaN) = setTimeout(NaN) fires at ~1ms — the exact
+    // failure class this clamp exists to prevent (multi-specialist finding).
+    const { deadlineMs, graceMs } = clampWatchdogTimers(5000, Number.NaN);
+    expect(deadlineMs).toBe(5000);
+    expect(graceMs).toBe(0);
+  });
+
+  test('Infinity deadline clamps to the ceiling and arms (documented contract)', () => {
+    // Deliberate: "oversized means longer bound" — an infinite deadline
+    // becomes ~24.8 days armed, not inert (see the clamp docstring).
+    const { deadlineMs, graceMs } = clampWatchdogTimers(Number.POSITIVE_INFINITY, 30_000);
+    expect(deadlineMs).toBe(MAX_WATCHDOG_TIMER_MS);
+    expect(deadlineMs + graceMs).toBeLessThanOrEqual(MAX_WATCHDOG_TIMER_MS);
+  });
+
   test('installProcessWatchdog stays inert on NaN and non-positive deadlines post-clamp', () => {
     const h = installProcessWatchdog({ deadlineMs: Number.NaN });
     expect(h.active).toBe(false);

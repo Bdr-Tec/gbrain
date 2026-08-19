@@ -35,6 +35,8 @@
  */
 
 import { Worker } from 'node:worker_threads';
+// Zero-import teardown-budget leaf — safe edge, no cycle (it imports nothing).
+import { MAX_TIMER_DELAY_MS } from './background-work.ts';
 
 export type WatchdogAction = 'wait' | 'sigterm' | 'sigkill';
 
@@ -76,23 +78,29 @@ const DEFAULT_GRACE_MS = 30_000;
 /**
  * setTimeout delay ceiling (2^31−1): Node/Bun overflow-clamp larger delays to
  * ~1ms, which for the deadline+grace SUM timer would mean SIGKILLing a healthy
- * process almost immediately (#4284 hardening).
+ * process almost immediately (#4284 hardening). Aliased from the shared
+ * teardown-budget constant so the ceiling cannot drift between modules.
  */
-export const MAX_WATCHDOG_TIMER_MS = 2 ** 31 - 1;
+export const MAX_WATCHDOG_TIMER_MS = MAX_TIMER_DELAY_MS;
 
 /**
  * Pure clamp for the two worker timers (#4284). The worker arms
  * setTimeout(deadlineMs) AND setTimeout(deadlineMs + graceMs); BOTH delays
  * must stay ≤ 2^31−1 or the overflowing one fires at ~1ms — for the sum
- * timer that is an instant SIGKILL. Grace is clamped so the SUM fits.
- * Exported pure so unit tests verify the arithmetic without ever arming a
- * real max-deadline worker in-suite (whose buggy overflow would SIGTERM the
- * test runner itself). NaN deadline flows through as NaN so the caller's
- * Number.isFinite inert-check still catches it.
+ * timer that is an instant SIGKILL. Grace is clamped so the SUM fits, and a
+ * NON-FINITE grace is coerced to 0 (never NaN: setTimeout(deadline + NaN)
+ * fires at ~1ms — the exact failure this clamp exists to prevent). NaN
+ * deadline flows through as NaN so the caller's Number.isFinite inert-check
+ * still catches it; an INFINITE deadline clamps to the ceiling and ARMS
+ * (~24.8 days) rather than going inert — deliberate, matching the "oversized
+ * means longer bound" rule. Exported pure so unit tests verify the arithmetic
+ * without ever arming a real max-deadline worker in-suite (whose buggy
+ * overflow would SIGTERM the test runner itself).
  */
 export function clampWatchdogTimers(deadlineMs: number, graceMs: number): { deadlineMs: number; graceMs: number } {
   const d = Math.min(MAX_WATCHDOG_TIMER_MS, Math.floor(deadlineMs));
-  const g = Math.min(MAX_WATCHDOG_TIMER_MS - (Number.isFinite(d) ? Math.max(0, d) : 0), Math.max(0, Math.floor(graceMs)));
+  const safeGrace = Number.isFinite(graceMs) ? Math.max(0, Math.floor(graceMs)) : 0;
+  const g = Math.min(MAX_WATCHDOG_TIMER_MS - (Number.isFinite(d) ? Math.max(0, d) : 0), safeGrace);
   return { deadlineMs: d, graceMs: g };
 }
 

@@ -10,7 +10,13 @@ import { join as joinPath, resolve as resolvePath, sep as pathSep } from 'node:p
 // so a `bun build --compile` binary can serve a PGLite brain (Bun vfs #1340).
 // The embedded `extensions` REPLACE the stock `{ vector, pg_trgm }` imports.
 import { getEmbeddedPgliteOptions } from './pglite-embedded-assets.ts';
-import { drainBackgroundWorkBeforeDisconnect, backgroundWorkSinkCount } from './background-work.ts';
+import {
+  drainBackgroundWorkBeforeDisconnect,
+  backgroundWorkSinkCount,
+  pgliteCloseTimeoutMs,
+  SINK_DRAIN_TIMEOUT_MS,
+  MAX_TIMER_DELAY_MS,
+} from './background-work.ts';
 // Engine-live path: static top-level import (no lazy `import()`). The opt-in
 // out-of-band disconnect watchdog (#4284) reuses the worker_threads watchdog
 // `gbrain sync` already validated against starved event loops (#1633).
@@ -110,32 +116,6 @@ import * as salienceImpl from './pglite-engine/salience.ts';
 import type { PgliteSalienceDeps } from './pglite-engine/salience.ts';
 
 /**
- * setTimeout delay ceiling: Node/Bun overflow-clamp anything above 2^31−1 to
- * ~1ms (TimeoutOverflowWarning), so an oversized env value must mean "longer
- * bound", never an instant spurious fire (#4284).
- */
-const MAX_TIMER_MS = 2 ** 31 - 1;
-
-/**
- * #4143/#4284 — in-loop bound for PGlite.close() inside disconnect().
- * HONEST SCOPE: this bound catches a close that still YIELDS to the event
- * loop (a slow close, or a promise deadlock that leaves the loop idle). A
- * close that WEDGES the loop — synchronously blocked, or microtask-starved
- * like the #1762 re-pump class — can never lose a same-loop Promise.race:
- * the timers phase never runs while the loop is wedged (#4284, measured).
- * That class is PREVENTED by the pre-close drain and can only be
- * observed/killed by the opt-in out-of-band watchdog (pgliteCloseWatchdogMs).
- * Read per call (not module load) so tests and incident responders can set
- * GBRAIN_PGLITE_CLOSE_TIMEOUT_MS without subprocess gymnastics; floor 1s.
- */
-function pgliteCloseTimeoutMs(): number {
-  return Math.min(
-    MAX_TIMER_MS,
-    Math.max(1000, Number(process.env.GBRAIN_PGLITE_CLOSE_TIMEOUT_MS ?? '') || 5000),
-  );
-}
-
-/**
  * #4284 — opt-in out-of-band watchdog for a PGLite disconnect with a live
  * handle. OFF by default: a DIAGNOSTIC/INCIDENT instrument (CI lanes, heavy
  * tests, wedge hunts), not ambient production protection. When armed it is
@@ -144,33 +124,64 @@ function pgliteCloseTimeoutMs(): number {
  * deadline, SIGKILL at deadline+grace, converting a silent 600s CI kill into
  * a fast, loud, attributed death.
  *
- * Resolve ordering is OFF-check FIRST: unset/0/non-finite/negative → inert
- * (deadline 0). Only a positive value proceeds to the lethal-knob floor
- *   max(5000, backgroundWorkSinkCount()*2000 + closeTimeout + 2000)
- * which budgets the serial pre-close drain (each registered sink is bounded
- * at 2000ms) plus the in-loop close bound, so a units typo (`=30`, thinking
- * seconds) clamps UP with a warn instead of SIGKILLing a HEALTHY slow
- * teardown — `jobs work` daemons reconnect() through disconnect(). Mirrors
- * the computed-deadline pattern in cli-force-exit.ts.
+ * (The in-loop close bound this backs up — `pgliteCloseTimeoutMs` — lives in
+ * background-work.ts so cli-force-exit's computed teardown deadline budgets
+ * the SAME bound the engine honors; its HONEST SCOPE is documented at the
+ * close site below.)
+ *
+ * Resolve ordering is OFF-check FIRST: unset/''/0/negative → inert (deadline
+ * 0) — but a SET-and-unparseable value ("30s", "5m") warns once before going
+ * inert, because a garbage value must not silently disarm the instrument an
+ * incident responder deliberately armed. Only a positive value proceeds to
+ * the lethal-knob floor
+ *   max(5000, backgroundWorkSinkCount()*SINK_DRAIN_TIMEOUT_MS + closeTimeout + 2000)
+ * which budgets the serial pre-close drain plus the in-loop close bound, so a
+ * numeric units typo (`=30`, thinking seconds) clamps UP with a warn instead
+ * of SIGKILLing a HEALTHY slow teardown — `jobs work` daemons reconnect()
+ * through disconnect(). Mirrors the computed-deadline pattern in
+ * cli-force-exit.ts. Grace: explicit `0` is honored (SIGKILL at the
+ * deadline); unset → default 30000; garbage warns once and uses the default.
  */
 function pgliteCloseWatchdogMs(): { deadlineMs: number; graceMs: number } {
-  const raw = Number(process.env.GBRAIN_PGLITE_CLOSE_WATCHDOG_MS ?? '');
-  if (!Number.isFinite(raw) || raw <= 0) return { deadlineMs: 0, graceMs: 0 }; // OFF (default)
-  const floor = Math.min(
-    MAX_TIMER_MS,
-    Math.max(5000, backgroundWorkSinkCount() * 2000 + pgliteCloseTimeoutMs() + 2000),
-  );
-  const deadlineMs = Math.min(MAX_TIMER_MS, Math.max(floor, Math.floor(raw)));
-  if (deadlineMs > raw) {
+  const rawStr = process.env.GBRAIN_PGLITE_CLOSE_WATCHDOG_MS;
+  if (rawStr === undefined || rawStr === '') return { deadlineMs: 0, graceMs: 0 }; // OFF (default)
+  const raw = Number(rawStr);
+  if (!Number.isFinite(raw)) {
     warnOncePerProcess(
-      'pglite-close-watchdog-floor',
+      'pglite-close-watchdog-env-invalid',
+      `[pglite] GBRAIN_PGLITE_CLOSE_WATCHDOG_MS=${rawStr} is not a number — the disconnect watchdog is OFF, not armed. Use milliseconds (e.g. 30000).`,
+    );
+    return { deadlineMs: 0, graceMs: 0 };
+  }
+  if (raw <= 0) return { deadlineMs: 0, graceMs: 0 }; // deliberate off
+  const floor = Math.min(
+    MAX_TIMER_DELAY_MS,
+    Math.max(5000, backgroundWorkSinkCount() * SINK_DRAIN_TIMEOUT_MS + pgliteCloseTimeoutMs() + 2000),
+  );
+  const deadlineMs = Math.min(MAX_TIMER_DELAY_MS, Math.max(floor, Math.floor(raw)));
+  if (deadlineMs > raw) {
+    // Keyed by the computed deadline: in a long-lived daemon the floor GROWS
+    // as sinks register lazily, and the warn must re-fire when the effective
+    // deadline changes — otherwise the attribution surface lies about when
+    // the kill will land (#4284 red-team).
+    warnOncePerProcess(
+      `pglite-close-watchdog-floor:${deadlineMs}`,
       `[pglite] GBRAIN_PGLITE_CLOSE_WATCHDOG_MS=${raw} is below this process's safe floor (drain budget + close timeout) — clamped up to ${deadlineMs}ms so a healthy slow teardown is never killed.`,
     );
   }
-  const graceMs = Math.min(
-    MAX_TIMER_MS,
-    Math.max(0, Math.floor(Number(process.env.GBRAIN_PGLITE_CLOSE_WATCHDOG_GRACE_MS ?? '') || 30_000)),
-  );
+  let graceMs = 30_000;
+  const rawGraceStr = process.env.GBRAIN_PGLITE_CLOSE_WATCHDOG_GRACE_MS;
+  if (rawGraceStr !== undefined && rawGraceStr !== '') {
+    const g = Number(rawGraceStr);
+    if (Number.isFinite(g) && g >= 0) {
+      graceMs = Math.min(MAX_TIMER_DELAY_MS, Math.floor(g)); // explicit 0 = SIGKILL at deadline
+    } else {
+      warnOncePerProcess(
+        'pglite-close-watchdog-grace-env-invalid',
+        `[pglite] Ignoring invalid GBRAIN_PGLITE_CLOSE_WATCHDOG_GRACE_MS=${rawGraceStr}; using default 30000ms.`,
+      );
+    }
+  }
   return { deadlineMs, graceMs };
 }
 
@@ -845,7 +856,7 @@ export class PGLiteEngine implements BrainEngine {
     // ONLY when a live handle exists (a lock-only teardown has no close to
     // wedge) and BEFORE the drain so a drain-side wedge is covered too.
     // Scope: a PGLite disconnect with a live handle — nothing else. Disposed
-    // in the outer finally below, even when releaseLock throws.
+    // in the outer finally below, even when the drain or releaseLock throws.
     let watchdog: { dispose(): void } | null = null;
     if (db) {
       const { deadlineMs, graceMs } = pgliteCloseWatchdogMs();
@@ -855,24 +866,32 @@ export class PGLiteEngine implements BrainEngine {
           graceMs,
           label: 'pglite-disconnect-watchdog',
         });
+        // Keyed by the computed deadline (not once-per-process flat): in a
+        // long-lived daemon the drain-aware floor grows as sinks register, and
+        // this breadcrumb is the kill's attribution surface — it must re-fire
+        // when the effective deadline changes (#4284 red-team).
         warnOncePerProcess(
-          'pglite-close-watchdog-armed',
+          `pglite-close-watchdog-armed:${deadlineMs}:${graceMs}`,
           `[pglite] disconnect watchdog armed: SIGTERM at ${deadlineMs}ms, SIGKILL at ${deadlineMs + graceMs}ms (out-of-band worker thread — fires even if the event loop wedges; #4284).`,
         );
       }
     }
 
-    // #4143: drain in-flight background work AFTER the early-null and BEFORE
-    // close(). PGLite's close() deadlocks PERMANENTLY — close's promise AND
-    // the in-flight query's promise never settle — when any statement is in
-    // flight (the trigger was the telemetry flush issuing two sequential
-    // INSERTs). Ordering is load-bearing: the early-null means no NEW
-    // statement can reach the raw handle (drainer writes fail fast with
-    // 'PGLite not connected' and are swallowed — that is intended), while
-    // statements ALREADY in flight settle against the still-open handle.
-    // Reordering the drain above the null would reopen the #1337 race.
-    await drainBackgroundWorkBeforeDisconnect();
     try {
+      // #4143: drain in-flight background work AFTER the early-null and BEFORE
+      // close(). PGLite's close() deadlocks PERMANENTLY — close's promise AND
+      // the in-flight query's promise never settle — when any statement is in
+      // flight (the trigger was the telemetry flush issuing two sequential
+      // INSERTs). Ordering is load-bearing: the early-null means no NEW
+      // statement can reach the raw handle (drainer writes fail fast with
+      // 'PGLite not connected' and are swallowed — that is intended), while
+      // statements ALREADY in flight settle against the still-open handle.
+      // Reordering the drain above the null would reopen the #1337 race.
+      // Inside the try (#4284 red-team): the drain is contractually
+      // non-throwing, but the no-leaked-armed-worker guarantee must be
+      // structural, not contractual — a throw here still reaches the
+      // finally's releaseLock + dispose.
+      await drainBackgroundWorkBeforeDisconnect();
       if (db) {
         // Deliberately NOT wrapped in preservingProcessExitCode: close's
         // status write (0) is long-standing baseline behavior that test-runner

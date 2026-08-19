@@ -59,7 +59,15 @@ async function runFixture(
   let killedByTest = false;
   let armedAt = 0;
   let markerCap: ReturnType<typeof setTimeout> | undefined;
-  const failsafe = setTimeout(() => { killedByTest = true; proc.kill('SIGKILL'); }, 60_000);
+  // Both kill-caps no-op on an already-exited child: buffered stdout can
+  // arrive after proc.exited (arming markerCap on a stale closure), and a
+  // spurious late fire must not flip killedByTest or signal a dead PID.
+  const killIfAlive = () => {
+    if (proc.exitCode !== null) return;
+    killedByTest = true;
+    proc.kill('SIGKILL');
+  };
+  const failsafe = setTimeout(killIfAlive, 60_000);
   let stdout = '';
   const stdoutReader = (async () => {
     const dec = new TextDecoder();
@@ -67,15 +75,19 @@ async function runFixture(
       stdout += dec.decode(chunk);
       if (!armedAt && stdout.includes('ARMED')) {
         armedAt = Date.now();
-        markerCap = setTimeout(() => { killedByTest = true; proc.kill('SIGKILL'); }, capAfterArmedMs);
+        markerCap = setTimeout(killIfAlive, capAfterArmedMs);
       }
     }
   })();
   await proc.exited;
   const exitAt = Date.now();
   clearTimeout(failsafe);
-  if (markerCap) clearTimeout(markerCap);
+  // Drain the reader BEFORE clearing markerCap: buffered stdout (a fast clean
+  // exit's ARMED marker) can arrive after proc.exited resolves, and the
+  // reader is what arms markerCap — clearing first would leave a freshly
+  // armed timer dangling in the runner (maintainability review).
   await stdoutReader;
+  if (markerCap) clearTimeout(markerCap);
   const stderr = await new Response(proc.stderr).text();
   return {
     exitCode: proc.exitCode,
@@ -103,9 +115,13 @@ describe('pglite disconnect watchdog vs a wedged event loop (#4284, Bun-pinned)'
       GBRAIN_PGLITE_CLOSE_WATCHDOG_GRACE_MS: String(WATCHDOG_GRACE_MS),
     }, 12_000);
 
-    // The watchdog — not this test — must be the killer.
+    // The watchdog — not this test — must be the killer, by SIGKILL: the
+    // harness's production-mirroring SIGTERM handler means only the kernel-
+    // level SIGKILL can end a starved loop. signalCode is the race-free pin
+    // (the worker's final stderr write could in principle lose to the kill).
     expect(r.killedByTest).toBe(false);
     expect(r.exitCode === 0).toBe(false);
+    expect(r.signalCode).toBe('SIGKILL');
     expect(r.stdout).not.toContain('DISCONNECTED'); // the wedge never resolves
 
     // Death lands near deadline+grace, measured from the child's ARMED marker
@@ -134,6 +150,11 @@ describe('pglite disconnect watchdog vs a wedged event loop (#4284, Bun-pinned)'
       GBRAIN_PGLITE_CLOSE_WATCHDOG_GRACE_MS: undefined,
     }, 5_000);
 
+    // Anchor: the wedge actually ran. Without this, a pre-ARMED hang (e.g. a
+    // future connect() regression) would satisfy every negative assertion
+    // below against near-empty output and the regression pin would pass
+    // vacuously (testing-specialist finding).
+    expect(r.stdout).toContain('ARMED');
     // Only the test's cap ends it: the wedge holds past 5x the in-loop bound.
     expect(r.killedByTest).toBe(true);
     expect(r.stdout).not.toContain('DISCONNECTED');
