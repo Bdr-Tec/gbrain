@@ -2,6 +2,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import { handleToolCall } from '../mcp/server.ts';
 import { resolveSourceId } from '../core/source-resolver.ts';
 import { bigintToStringReplacer } from '../cli.ts';
+import { writeStdoutFinal } from '../core/cli-force-exit.ts';
 
 /**
  * `gbrain call <tool> <json>` — trusted local op-dispatch surface.
@@ -53,5 +54,7 @@ export async function runCall(engine: BrainEngine, args: string[]) {
   // `gbrain call` bypasses cli.ts's op-output normalizer entirely, so this
   // exit needs its own bigint-safe replacer — any op returning an int8 column
   // (BIGSERIAL id) would otherwise crash plain JSON.stringify (#2450).
-  console.log(JSON.stringify(result, bigintToStringReplacer, 2));
+  // Awaited delivery (#3423): a >64KiB payload piped to a slow reader loses
+  // its tail to the exit grace under queued stdout writes.
+  await writeStdoutFinal(JSON.stringify(result, bigintToStringReplacer, 2) + '\n');
 }
