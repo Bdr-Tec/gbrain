@@ -15,7 +15,11 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { importFromFile, importCodeFile, withImportTransaction } from '../src/core/import-file.ts';
 
 const SLUG = 'projects/suzanne-tasks';
 
@@ -72,5 +76,74 @@ describe('putPage empty-overwrite guard', () => {
     await engine.putPage(slug, body('first version'));
     await expect(engine.putPage(slug, body('second version'))).resolves.toBeDefined();
     expect(await storedBody(engine, slug)).toBe('second version');
+  });
+});
+
+/**
+ * Caller audit: file-authoritative import paths carry the escape hatch (the
+ * file IS the source of truth, so an emptied file is a deliberate clear);
+ * agent/LLM-facing writers (put_page op — see put-page-empty-guard.test.ts —
+ * BrainWriter, enrichment, reports) do not, so the guard stays armed for
+ * exactly the read-empty read-modify-write class it was built for.
+ */
+describe('putPage empty-overwrite guard — import-path caller audit', () => {
+  let engine: PGLiteEngine;
+  let tmp: string;
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+    tmp = mkdtempSync(join(tmpdir(), 'gbrain-empty-overwrite-'));
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('sync/import of an emptied markdown file clears the body (no throw)', async () => {
+    const rel = 'concepts/emptied-on-disk.md';
+    const filePath = join(tmp, 'emptied-on-disk.md');
+    writeFileSync(filePath, '# Real page\n\nContent the user later deleted.\n');
+    const first = await importFromFile(engine, filePath, rel, { noEmbed: true });
+    expect(first.status).toBe('imported');
+    expect(await storedBody(engine, first.slug)).toContain('Content the user later deleted.');
+
+    // The user empties the file on disk; the next sync/import must treat
+    // that as an authoritative clear, not a guarded data-loss overwrite.
+    writeFileSync(filePath, '');
+    const second = await importFromFile(engine, filePath, rel, { noEmbed: true });
+    expect(second.status).toBe('imported');
+    expect(((await storedBody(engine, second.slug)) ?? '').trim()).toBe('');
+  });
+
+  test('an emptied code file clears the body (no throw)', async () => {
+    const rel = 'src/emptied-fixture.ts';
+    const first = await importCodeFile(engine, rel, 'export const kept = 1;\n', { noEmbed: true });
+    expect(first.status).toBe('imported');
+    expect(await storedBody(engine, first.slug)).toContain('kept');
+
+    const second = await importCodeFile(engine, rel, '', { noEmbed: true });
+    expect(second.status).toBe('imported');
+    expect(((await storedBody(engine, second.slug)) ?? '').trim()).toBe('');
+  });
+
+  test('withImportTransaction: guard stays armed unless the spec opts in (image OCR path)', async () => {
+    const slug = 'files/photo-page';
+    await engine.putPage(slug, body('ocr text from the previous image bytes'));
+
+    const blankPage = { type: 'image' as any, title: 'photo', compiled_truth: '', timeline: '', frontmatter: {} };
+    await expect(
+      withImportTransaction(engine, { slug, hadExisting: true, page: blankPage }),
+    ).rejects.toThrow(/refusing to overwrite non-empty page/);
+    expect(await storedBody(engine, slug)).toContain('ocr text');
+
+    // importImageFile sets allowEmptyOverwrite: the image bytes are the
+    // source of truth, and a changed image may legitimately OCR to nothing.
+    await expect(
+      withImportTransaction(engine, { slug, hadExisting: true, page: blankPage, allowEmptyOverwrite: true }),
+    ).resolves.toBeUndefined();
+    expect(((await storedBody(engine, slug)) ?? '').trim()).toBe('');
   });
 });
