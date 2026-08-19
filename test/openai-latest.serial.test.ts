@@ -4,7 +4,16 @@
  * GBRAIN_HOME + process env + module memo state.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  statSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -291,6 +300,39 @@ describe('coverage-gap additions (ship review)', () => {
     // Account A's tiers must not serve account B — honest state is the
     // static floor until B's own discovery succeeds.
     expect(latestOpenAITiers()).toBeNull();
+  });
+
+  test('atomic replacement with the same mtime invalidates the memo by inode', async () => {
+    await refreshLatestOpenAIModels({
+      env: { OPENAI_API_KEY: 'sk-account-a' },
+      fetchImpl: fetchReturning(['gpt-5.6']),
+      force: true,
+    });
+    expect(latestOpenAITiers('deep')).toBe('openai:gpt-5.6'); // prime memo
+
+    const path = join(tmpHome, '.gbrain', 'model-cache.json');
+    const before = statSync(path);
+    const replacement = `${path}.external-replacement`;
+    const current = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(replacement, JSON.stringify({
+      ...current,
+      openai: {
+        ...current.openai,
+        tiers: {
+          utility: 'openai:gpt-5.5',
+          reasoning: 'openai:gpt-5.5',
+          deep: 'openai:gpt-5.5',
+          subagent: 'openai:gpt-5.5',
+        },
+      },
+    }, null, 2));
+    utimesSync(replacement, before.atime, before.mtime);
+    renameSync(replacement, path);
+
+    const after = statSync(path);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+    expect(after.ino).not.toBe(before.ino);
+    expect(latestOpenAITiers('deep')).toBe('openai:gpt-5.5');
   });
 
   test('failure backoff survives a process boundary (persisted attempt stamp)', async () => {

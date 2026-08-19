@@ -183,22 +183,35 @@ export function rankOpenAIChatModels(
 
 /* ── sync cache read (the resolveTierDefault overlay) ─────────────────────── */
 
-// mtime-keyed memo: the sync read fires per model resolution on OpenAI-keyed
+// File-identity-keyed memo: the sync read fires per model resolution on OpenAI-keyed
 // installs — statSync is far cheaper than read+parse, and staleness is
 // already tolerated by design. Keyed on path too (GBRAIN_HOME can change in
-// tests). Invalidated implicitly: a refresh write bumps the mtime.
-let _cacheMemo: { path: string; mtimeMs: number; value: ModelCacheFile | null } | null = null;
+// tests). mtime alone is insufficient: two fast writes can share an observed
+// timestamp, while an external atomic rename can preserve it deliberately.
+// ino changes across atomic replacement and the in-process writer refreshes
+// the memo explicitly after a successful rename.
+let _cacheMemo: {
+  path: string;
+  mtimeMs: number;
+  ino: number;
+  value: ModelCacheFile | null;
+} | null = null;
 
 function readCacheFile(): ModelCacheFile | null {
   const path = cachePath();
   try {
-    const mtimeMs = statSync(path).mtimeMs;
-    if (_cacheMemo && _cacheMemo.path === path && _cacheMemo.mtimeMs === mtimeMs) {
+    const { mtimeMs, ino } = statSync(path);
+    if (
+      _cacheMemo &&
+      _cacheMemo.path === path &&
+      _cacheMemo.mtimeMs === mtimeMs &&
+      _cacheMemo.ino === ino
+    ) {
       return _cacheMemo.value;
     }
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as ModelCacheFile;
     const value = parsed?.version === 1 ? parsed : null;
-    _cacheMemo = { path, mtimeMs, value };
+    _cacheMemo = { path, mtimeMs, ino, value };
     return value;
   } catch {
     _cacheMemo = null;
@@ -246,6 +259,14 @@ function writeCacheFile(next: ModelCacheFile): void {
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(next, null, 2));
   renameSync(tmp, path);
+  try {
+    const { mtimeMs, ino } = statSync(path);
+    _cacheMemo = { path, mtimeMs, ino, value: next };
+  } catch {
+    // The rename succeeded, but the file may have been replaced/removed by
+    // another process before stat. Force the next reader through disk.
+    _cacheMemo = null;
+  }
 }
 
 /**
