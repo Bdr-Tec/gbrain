@@ -21,6 +21,8 @@ import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { writeFactsToFence, lookupSourceLocalPath } from '../src/core/facts/fence-write.ts';
 import type { FenceInputFact } from '../src/core/facts/fence-write.ts';
+import { readRecentStubGuardEvents } from '../src/core/facts/stub-guard-audit.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
@@ -65,7 +67,7 @@ describe('writeFactsToFence — happy path', () => {
   test('stub-creates entity page when none exists, writes fence, stamps DB', async () => {
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'people/alice' },
+      { sourceId: 'default', localPath: brainDir, slug: 'people/alice', resolutionSource: 'exact_page' },
       [baseInput()],
     );
 
@@ -108,7 +110,7 @@ describe('writeFactsToFence — happy path', () => {
 
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'people/bob' },
+      { sourceId: 'default', localPath: brainDir, slug: 'people/bob', resolutionSource: 'exact_page' },
       [baseInput({ fact: 'Founded Widgets Inc.' })],
     );
 
@@ -124,7 +126,7 @@ describe('writeFactsToFence — happy path', () => {
   test('multi-fact batch appends consecutive row_nums', async () => {
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'people/carol' },
+      { sourceId: 'default', localPath: brainDir, slug: 'people/carol', resolutionSource: 'exact_page' },
       [
         baseInput({ fact: 'Claim 1' }),
         baseInput({ fact: 'Claim 2' }),
@@ -147,14 +149,14 @@ describe('writeFactsToFence — happy path', () => {
     // First write seeds the fence with rows 1 and 2.
     await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'people/dan' },
+      { sourceId: 'default', localPath: brainDir, slug: 'people/dan', resolutionSource: 'exact_page' },
       [baseInput({ fact: 'First' }), baseInput({ fact: 'Second' })],
     );
 
     // Second write should pick up at row_num=3.
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'people/dan' },
+      { sourceId: 'default', localPath: brainDir, slug: 'people/dan', resolutionSource: 'exact_page' },
       [baseInput({ fact: 'Third' })],
     );
 
@@ -169,7 +171,7 @@ describe('writeFactsToFence — happy path', () => {
   test('stub-creates nested directories (companies/x → mkdir companies)', async () => {
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'companies/acme' },
+      { sourceId: 'default', localPath: brainDir, slug: 'companies/acme', resolutionSource: 'exact_page' },
       [baseInput({ fact: 'Founded 2017' })],
     );
 
@@ -184,7 +186,7 @@ describe('writeFactsToFence — legacy fallback', () => {
   test('null localPath returns legacyFallback:true with no inserts', async () => {
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: null, slug: 'people/whoever' },
+      { sourceId: 'default', localPath: null, slug: 'people/whoever', resolutionSource: 'exact_page' },
       [baseInput()],
     );
 
@@ -200,7 +202,7 @@ describe('writeFactsToFence — legacy fallback', () => {
     const slug = 'people/should-not-exist';
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug },
+      { sourceId: 'default', localPath: brainDir, slug, resolutionSource: 'exact_page' },
       [],
     );
     expect(result).toEqual({ inserted: 0, ids: [] });
@@ -214,7 +216,7 @@ describe('writeFactsToFence — atomic recovery', () => {
   test('after a successful write, no .tmp file is left behind', async () => {
     await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'people/erin' },
+      { sourceId: 'default', localPath: brainDir, slug: 'people/erin', resolutionSource: 'exact_page' },
       [baseInput()],
     );
 
@@ -224,10 +226,13 @@ describe('writeFactsToFence — atomic recovery', () => {
 });
 
 describe('writeFactsToFence — stub guard (v0.34.5)', () => {
-  test('refuses to stub-create an unprefixed entity page (bare slug)', async () => {
+  test('refuses to stub-create an unprefixed entity page (bare slug), even with exact_page provenance', async () => {
+    // #4108: the guard is a UNION — the unprefixed-slug arm keeps blocking
+    // regardless of resolution provenance, it wasn't replaced by the
+    // provenance arm.
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'alice' },
+      { sourceId: 'default', localPath: brainDir, slug: 'alice', resolutionSource: 'exact_page' },
       [baseInput()],
     );
 
@@ -245,10 +250,11 @@ describe('writeFactsToFence — stub guard (v0.34.5)', () => {
   test('prefixed slugs (people/, companies/, etc.) bypass the guard', async () => {
     // Sanity: re-prove the happy path right next to the guard test so a
     // future refactor that breaks the guard's slug.includes('/') check
-    // can't silently pass by only running the guard case.
+    // can't silently pass by only running the guard case. #4108: passes
+    // 'exact_page' — resolved-to-existing entities still fence.
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'people/zelda' },
+      { sourceId: 'default', localPath: brainDir, slug: 'people/zelda', resolutionSource: 'exact_page' },
       [baseInput({ fact: 'Founded Hyrule Labs in 2024' })],
     );
 
@@ -262,7 +268,7 @@ describe('writeFactsToFence — stub guard (v0.34.5)', () => {
     // guard only fires when there's actual work the caller wants to do.
     const result = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug: 'alice' },
+      { sourceId: 'default', localPath: brainDir, slug: 'alice', resolutionSource: 'fallback_slugify' },
       [],
     );
 
@@ -270,6 +276,92 @@ describe('writeFactsToFence — stub guard (v0.34.5)', () => {
     expect(result.stubGuardBlocked).toBeUndefined();
     expect(result.legacyFallback).toBeUndefined();
     expect(existsSync(join(brainDir, 'alice.md'))).toBe(false);
+  });
+});
+
+describe('writeFactsToFence — fallback-resolution stub guard (#4108)', () => {
+  test('prefixed slug with fallback_slugify provenance is blocked: no page, no DB rows', async () => {
+    const auditDir = mkdtempSync(join(tmpdir(), 'stub-guard-audit-4108-'));
+    try {
+      await withEnv({ GBRAIN_AUDIT_DIR: auditDir }, async () => {
+        const result = await writeFactsToFence(
+          engine,
+          { sourceId: 'default', localPath: brainDir, slug: 'companies/zeta-nonexistent', resolutionSource: 'fallback_slugify' },
+          [baseInput()],
+        );
+
+        expect(result.inserted).toBe(0);
+        expect(result.ids).toHaveLength(0);
+        expect(result.stubGuardBlocked).toBe(true);
+
+        // No canonical stub page materialized for the invented slug.
+        expect(existsSync(join(brainDir, 'companies/zeta-nonexistent.md'))).toBe(false);
+        expect(existsSync(join(brainDir, 'companies/zeta-nonexistent.md.tmp'))).toBe(false);
+
+        // No DB rows either — the CALLER routes to the legacy DB-only path.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rows = await (engine as any).db.query('SELECT COUNT(*) AS n FROM facts');
+        expect(Number(rows.rows[0].n)).toBe(0);
+
+        // The audit event carries the new reason so stub_guard_24h can count
+        // fallback blocks separately from unprefixed ones.
+        const events = readRecentStubGuardEvents({ sinceMs: 60_000 });
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          slug: 'companies/zeta-nonexistent',
+          reason: 'fallback_resolution',
+        });
+      });
+    } finally {
+      rmSync(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test('null provenance is blocked too (fail-closed when the caller has no resolution step)', async () => {
+    const result = await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug: 'companies/zeta-nullprov', resolutionSource: null },
+      [baseInput()],
+    );
+
+    expect(result.stubGuardBlocked).toBe(true);
+    expect(existsSync(join(brainDir, 'companies/zeta-nullprov.md'))).toBe(false);
+  });
+
+  test('fallback provenance still APPENDS when the page file already exists on disk (DB/file drift edge)', async () => {
+    // The guard lives on the stub-CREATE branch only: a file that exists on
+    // disk but hasn't reached the pages index yet keeps accepting appends.
+    const slug = 'companies/zeta-ondisk';
+    mkdirSync(join(brainDir, 'companies'), { recursive: true });
+    writeFileSync(
+      join(brainDir, `${slug}.md`),
+      `---\ntype: company\ntitle: Zeta Ondisk\nslug: ${slug}\n---\n\n# Zeta Ondisk\n`,
+      'utf-8',
+    );
+
+    const result = await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug, resolutionSource: 'fallback_slugify' },
+      [baseInput({ fact: 'Still accepts drift appends' })],
+    );
+
+    expect(result.inserted).toBe(1);
+    expect(result.stubGuardBlocked).toBeUndefined();
+    expect(readFileSync(join(brainDir, `${slug}.md`), 'utf-8')).toContain('Still accepts drift appends');
+  });
+
+  test('alias_exact provenance passes the guard (curated alias hits may stub-create)', async () => {
+    // #4108 blocklist shape: only fallback_slugify/null are blocked, so the
+    // v0.46.15 alias_exact member fences like exact_page/fuzzy_match.
+    const result = await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug: 'people/star-example', resolutionSource: 'alias_exact' },
+      [baseInput()],
+    );
+
+    expect(result.inserted).toBe(1);
+    expect(result.stubGuardBlocked).toBeUndefined();
+    expect(existsSync(join(brainDir, 'people/star-example.md'))).toBe(true);
   });
 });
 
@@ -306,7 +398,7 @@ describe('writeFactsToFence — row_num survives a fence-less rewrite', () => {
 
     const first = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug },
+      { sourceId: 'default', localPath: brainDir, slug, resolutionSource: 'exact_page' },
       [baseInput({ fact: 'First fact' }), baseInput({ fact: 'Second fact' })],
     );
     expect(first.inserted).toBe(2);
@@ -324,7 +416,7 @@ describe('writeFactsToFence — row_num survives a fence-less rewrite', () => {
     // existing rows on idx_facts_fence_key.
     const second = await writeFactsToFence(
       engine,
-      { sourceId: 'default', localPath: brainDir, slug },
+      { sourceId: 'default', localPath: brainDir, slug, resolutionSource: 'exact_page' },
       [baseInput({ fact: 'Third fact' })],
     );
     expect(second.inserted).toBe(1);
@@ -355,7 +447,7 @@ describe('writeFactsToFence — row_num survives a fence-less rewrite', () => {
 
     const result = await writeFactsToFence(
       brokenEngine,
-      { sourceId: 'default', localPath: brainDir, slug: 'people/dave' },
+      { sourceId: 'default', localPath: brainDir, slug: 'people/dave', resolutionSource: 'exact_page' },
       [baseInput({ fact: 'Written despite the failed hint' })],
     );
     expect(result.inserted).toBe(1);
@@ -381,7 +473,7 @@ describe('writeFactsToFence — non-default source with its own local_path (#420
 
       const result = await writeFactsToFence(
         engine,
-        { sourceId: 'projx', localPath: srcDir, slug: 'people/nova-example' },
+        { sourceId: 'projx', localPath: srcDir, slug: 'people/nova-example', resolutionSource: 'exact_page' },
         [baseInput()],
       );
 
