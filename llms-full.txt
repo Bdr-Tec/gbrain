@@ -4231,11 +4231,14 @@ Options:
 | Flag | Meaning | Default |
 |---|---|---|
 | `--token-env <var>` | env var holding the token | `GH_TOKEN` |
-| `--handle <login>` | your GitHub handle (reserved for involvement queries) | none |
 | `--scope auto\|repos` | auto-discover vs explicit list | `auto` |
 | `--repos a/b,c/d` | repos when `--scope repos` | none |
 | `--dir <path>` | managed page directory | `$GBRAIN_HOME/clones/<id>-github` |
-| `--no-involvement` | disable involvement query expansion | enabled |
+
+Repo names are matched case-insensitively everywhere (GitHub treats them
+that way); pages and state always use the lowercase form. The `gh_handle`
+and `gh_involvement` config keys are reserved: tolerated when present,
+ignored by the sync.
 
 ### 3. Sync
 
