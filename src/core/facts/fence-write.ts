@@ -173,12 +173,17 @@ export async function writeFactsToFence(
     return { inserted: 0, ids: [] };
   }
 
-  // Local patch 2026-06-11: route through resolvePageFilePath so non-default
-  // sources fence into `<local_path>/.sources/<id>/<slug>.md` — the same path
-  // the put_page write-through and dream-cycle reverse-render compute. The
-  // bare join wrote main-source fences to the repo ROOT (the default source's
-  // tree), polluting ~/brain with stray root-level fence files.
-  const filePath = resolvePageFilePath(target.localPath, target.slug, target.sourceId);
+  // #4204: FenceTarget.localPath is the source's OWN tree root (from
+  // lookupSourceLocalPath), so its pages file at that root — the 'default'
+  // arm of resolvePageFilePath — matching every other writer/reader of a
+  // source's own tree (scanOneSource read-back, write-through #2018
+  // topology 1, takes-write P1-1, forget.ts's `join(localPath, slug.md)`).
+  // The `.sources/<id>/` nesting is the HOST-repo layout for sources
+  // WITHOUT their own local_path; those never reach this line (callers
+  // fall back to the legacy DB path when local_path is NULL), and sync's
+  // disk walk skips dot-directories, so a fence nested there is invisible
+  // and the next extract_facts reconcile wipes its DB rows.
+  const filePath = resolvePageFilePath(target.localPath, target.slug, 'default');
   const tmpPath = `${filePath}.tmp`;
 
   return withPageLock(

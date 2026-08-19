@@ -363,6 +363,55 @@ describe('writeFactsToFence — row_num survives a fence-less rewrite', () => {
   });
 });
 
+describe('writeFactsToFence — non-default source with its own local_path (#4204)', () => {
+  test('fences at the source tree ROOT, not under .sources/<id>/', async () => {
+    // A second working tree owned by a non-default source. Every other
+    // writer/reader (takes-write P1-1, forget, write-through #2018 topology 1,
+    // scanOneSource) files this source's pages at the tree root; disk-walk
+    // skips dot-directories, so a `.sources/` fence is invisible to sync and
+    // the next extract_facts reconcile wipes the fence-owned DB rows.
+    const srcDir = mkdtempSync(join(tmpdir(), 'fence-write-owntree-'));
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (engine as any).db.query(
+        `INSERT INTO sources (id, name, local_path) VALUES ('projx', 'projx', $1)
+         ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path`,
+        [srcDir],
+      );
+
+      const result = await writeFactsToFence(
+        engine,
+        { sourceId: 'projx', localPath: srcDir, slug: 'people/nova-example' },
+        [baseInput()],
+      );
+
+      expect(result.inserted).toBe(1);
+      const rootPath = join(srcDir, 'people/nova-example.md');
+      expect(existsSync(rootPath)).toBe(true);
+      const body = readFileSync(rootPath, 'utf-8');
+      expect(body).toContain('## Facts');
+      expect(body).toContain('Founded Acme in 2017');
+      expect(existsSync(join(srcDir, '.sources', 'projx', 'people', 'nova-example.md'))).toBe(false);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rows = await (engine as any).db.query(
+        'SELECT source_id, source_markdown_slug FROM facts WHERE id = $1',
+        [result.ids[0]],
+      );
+      expect(rows.rows[0]).toMatchObject({
+        source_id: 'projx',
+        source_markdown_slug: 'people/nova-example',
+      });
+    } finally {
+      rmSync(srcDir, { recursive: true, force: true });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (engine as any).db.query(`DELETE FROM facts WHERE source_id = 'projx'`);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (engine as any).db.query(`DELETE FROM sources WHERE id = 'projx'`);
+    }
+  });
+});
+
 // Cleanup any leftover tempdirs after the whole suite.
 afterAll(() => {
   // No-op: each test cleaned up via the beforeEach; this is a safety net.
