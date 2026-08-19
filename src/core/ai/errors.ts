@@ -12,6 +12,16 @@
  */
 
 export class AIServiceError extends Error {
+  /**
+   * HTTP status of the underlying API failure, carried through top-level by
+   * `normalizeAIError` when the wrapped error exposes one (e.g. the claude-cli
+   * provider's ClaudeCliProcessError.apiErrorStatus), so callers can branch on
+   * it without digging into `cause`.
+   */
+  apiErrorStatus?: number;
+  /** HTTP status carried through from a wrapped error's own `status` field. */
+  status?: number;
+
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
     this.name = 'AIServiceError';
@@ -41,6 +51,20 @@ export class AITransientError extends AIServiceError {
  * by status code + name; unknown errors default to AITransientError so the
  * caller does not permanently abort on a transient network blip.
  */
+/**
+ * Copy status fields from the wrapped error onto the normalized error's top
+ * level (same property names), so typed information like the claude-cli
+ * provider's `apiErrorStatus` stays reachable without unwrapping `cause`.
+ */
+function carryStatusFields(from: unknown, to: AIServiceError): AIServiceError {
+  const src = from as { apiErrorStatus?: unknown; status?: unknown } | null | undefined;
+  if (src && typeof src === 'object') {
+    if (typeof src.apiErrorStatus === 'number') to.apiErrorStatus = src.apiErrorStatus;
+    if (typeof src.status === 'number') to.status = src.status;
+  }
+  return to;
+}
+
 export function normalizeAIError(err: unknown, context?: string): AIServiceError {
   if (err instanceof AIServiceError) return err;
 
@@ -52,20 +76,20 @@ export function normalizeAIError(err: unknown, context?: string): AIServiceError
 
   // 4xx (except 429) = config-level, non-retryable
   if (typeof status === 'number' && status >= 400 && status < 500 && status !== 429) {
-    return new AIConfigError(
+    return carryStatusFields(err, new AIConfigError(
       `${ctxPrefix}${msg}`,
       status === 401 || status === 403
         ? 'Check your API key is valid and has access to this model.'
         : 'Check your model id + provider options match the provider API.',
       err,
-    );
+    ));
   }
 
   // AI SDK named errors
   if (name === 'LoadAPIKeyError' || name === 'InvalidArgumentError') {
-    return new AIConfigError(`${ctxPrefix}${msg}`, undefined, err);
+    return carryStatusFields(err, new AIConfigError(`${ctxPrefix}${msg}`, undefined, err));
   }
 
   // Everything else (5xx, timeouts, network) = transient
-  return new AITransientError(`${ctxPrefix}${msg}`, err);
+  return carryStatusFields(err, new AITransientError(`${ctxPrefix}${msg}`, err));
 }

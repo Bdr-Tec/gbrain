@@ -37,7 +37,7 @@ test/check-bootstrap-guards.test.ts	check-grok-pin.sh	10	readFileSync
 test/check-bootstrap-guards.test.ts	verify + workflow wiring	6	readFileSync
 test/check-update.test.ts	check-update CLI	3	bun-file
 test/child-worker-supervisor.test.ts	issue #1801 — restartCurrentChild + killChild liveness fix	3	readFileSync
-test/claude-cli-recipe.test.ts	claude-cli LanguageModel — abort + error envelopes	7	readFileSync
+test/claude-cli-recipe.test.ts	claude-cli LanguageModel — abort + error envelopes	12	readFileSync
 test/claude-cli-recipe.test.ts	claude-cli LanguageModel — context isolation	2	readFileSync
 test/claude-cli-recipe.test.ts	claude-cli LanguageModel — text-only round trip	4	readFileSync
 test/claude-cli-recipe.test.ts	claude-cli LanguageModel — tool use	11	readFileSync
