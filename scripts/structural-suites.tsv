@@ -68,7 +68,7 @@ test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: orchestrator dispatch wires the 
 test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: pre-existing 17 core phases always run	3	readFileSync
 test/cycle-patterns-deadline-budget.test.ts	deadline plumbing wiring (structural)	7	readFileSync
 test/cycle-patterns.test.ts	patterns phase wiring	9	readFileSync
-test/cycle-patterns.test.ts	patterns scope filter	6	readFileSync
+test/cycle-patterns.test.ts	patterns scope filter	7	readFileSync
 test/cycle-phase-deadline-drift.test.ts	propose_takes deadline < job timeout (#4168)	4	readFileSync
 test/cycle/cycle-lock-ttl.test.ts	cycle lock TTL (T2 regression pin)	1	readFileSync
 test/destructive-guard.test.ts	FK-RESTRICT lifecycle (clientsReferencingSource + purge skip)	9	readFileSync
