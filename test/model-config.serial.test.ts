@@ -408,10 +408,10 @@ describe('providerKeyReady + resolveEffectiveChatModel (shared runtime/report re
     // A keyed/keyless but CHAT-LESS recipe is NOT ready: honoring an
     // embedding-only pin as chat_model would install a model
     // isAvailable('chat') rejects instead of falling back to the key-aware
-    // default. (ollama is embedding-only in this repo's recipe, hence false
-    // despite requiring no keys.)
+    // default. (voyage is embedding-only, hence false despite a live key.
+    // ollama gained a local chat touchpoint in #4073, so keyless → ready.)
     expect(providerKeyReady('voyage:voyage-4-large', { VOYAGE_API_KEY: 'x' })).toBe(false);
-    expect(providerKeyReady('ollama:llama3', {})).toBe(false);
+    expect(providerKeyReady('ollama:llama3', {})).toBe(true);
   });
 
   test('servable file pin wins (init-era openai pin + live key)', () => {
