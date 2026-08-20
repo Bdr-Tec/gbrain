@@ -38,7 +38,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendF
 import { dirname, isAbsolute, relative } from 'node:path';
 
 import type { BrainEngine, NewFact, FactVisibility } from '../engine.ts';
-import { resolvePageFilePath } from '../markdown.ts';
+import { resolvePageFilePath, inferTypeFromPack } from '../markdown.ts';
+import { loadActivePackBestEffort } from '../schema-pack/best-effort.ts';
 import { withPageLock } from '../page-lock.ts';
 import { gbrainPath } from '../config.ts';
 import { isWriteThroughDisabled } from '../write-through.ts';
@@ -197,14 +198,24 @@ async function commitFactFenceFile(
  * (e.g. `people/alice` → 'person'); unknown prefixes fall back to
  * 'concept' which is the most permissive PageType.
  */
-function stubEntityPage(slug: string): string {
-  const prefix = slug.split('/')[0];
-  const type =
-    prefix === 'people'    ? 'person' :
-    prefix === 'companies' ? 'company' :
-    prefix === 'deals'     ? 'deal' :
-    prefix === 'topics'    ? 'concept' :
-    /* fallback */           'concept';
+function stubEntityPage(
+  slug: string,
+  pack: Parameters<typeof inferTypeFromPack>[1] | null,
+): string {
+  // #4322: resolve the type through the ACTIVE PACK, not a hardcoded table.
+  // The previous people/companies/deals/topics ternary shadowed every other
+  // pack-declared prefix, so a stub under a declared prefix such as
+  // `products/` was written as `concept` even though the pack maps that
+  // prefix to `company` — manufacturing prefix/type mismatches in brains
+  // that were otherwise fully pack-conformant, and (because `concept` skips
+  // the facts backstop) silently opting those pages out of the very
+  // subsystem that created them.
+  //
+  // A null pack means the load failed. Per best-effort.ts's contract we do
+  // NOT substitute an ad-hoc table here; passing an empty pack routes
+  // inferTypeFromPack to its own documented GBRAIN_BASE_PATH_PREFIXES
+  // fallback, the same base behaviour every other ingest path degrades to.
+  const type = inferTypeFromPack(slug, pack ?? { page_types: [] });
   const tail = slug.split('/').slice(1).join('/');
   const title = tail
     .replace(/[-_/]+/g, ' ')
@@ -299,7 +310,8 @@ export async function writeFactsToFence(
         }
         // Stub-create the parent directory if it doesn't exist.
         mkdirSync(dirname(filePath), { recursive: true });
-        body = stubEntityPage(target.slug);
+        const activePack = await loadActivePackBestEffort({ engine } as never);
+        body = stubEntityPage(target.slug, activePack?.manifest ?? null);
       }
 
       // 2. Upsert each fact onto the fence in input order. row_num

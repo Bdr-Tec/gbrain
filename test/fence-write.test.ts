@@ -133,6 +133,27 @@ describe('writeFactsToFence — happy path', () => {
     });
   });
 
+  // #4322 regression. stubEntityPage used to pick the type from a hardcoded
+  // people/companies/deals/topics ternary, so a stub under ANY other declared
+  // prefix silently became `concept`. `projects/` is in the gbrain-base prefix
+  // table (→ `project`) but was absent from that ternary, so it is the minimal
+  // case that fails on the old code and passes on the pack-aware one. No custom
+  // pack needed: with no pack configured the loader returns null and
+  // inferTypeFromPack falls back to GBRAIN_BASE_PATH_PREFIXES.
+  test('types a stub from the prefix table, not a hardcoded 4-entry list', async () => {
+    const result = await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug: 'projects/apollo' },
+      [baseInput({ fact: 'Apollo shipped in 2017' })],
+    );
+
+    expect(result.inserted).toBe(1);
+    const body = readFileSync(join(brainDir, 'projects/apollo.md'), 'utf-8');
+    expect(body).toContain('type: project');
+    expect(body).not.toContain('type: concept');
+    expect(body).toContain('slug: projects/apollo');
+  });
+
   test('appends to existing entity page without overwriting body', async () => {
     // Pre-create the entity page with custom content.
     const filePath = join(brainDir, 'people/bob.md');
