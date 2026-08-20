@@ -433,7 +433,9 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // detail=low write must not be served to a detail=medium lookup.
     // v0.46.15 (#1863): bumped 17→18 to fold the autocut weak-top floor (acm=).
     // #3621: bumped 18→19 to fold the autocut minKeep floor (ack=).
-    expect(KNOBS_HASH_VERSION).toBe(19);
+    // D-3002: bumped 19→20 for the pre-fusion pool floor — innerLimit widens
+    // the candidate pool for the same knobs (no new key part).
+    expect(KNOBS_HASH_VERSION).toBe(20);
   });
 
   test('#3515: detail set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -452,7 +454,8 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // carry degraded[]/retrieved_count; pre-stamp rows must not claim clean.
     // v0.46.15 (#1863): 17→18 — autocut weak-top floor folds in (acm=).
     // #3621: 18→19 — autocut minKeep floor folds in (ack=).
-    expect(KNOBS_HASH_VERSION).toBe(19);
+    // D-3002: 19→20 — pre-fusion pool floor (version-only invalidation).
+    expect(KNOBS_HASH_VERSION).toBe(20);
   });
 
   test('T1 (codex): floor_ratio set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -617,8 +620,8 @@ describe('v0.40.4 — graph_signals knob', () => {
 });
 
 describe('v0.42.3.0 — autocut knobs', () => {
-  test('KNOBS_HASH_VERSION is 19 (16→17 degradation-stamp epoch; 17→18 autocut weak-top floor #1863; 18→19 autocut minKeep floor #3621)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(19);
+  test('KNOBS_HASH_VERSION is 20 (17→18 autocut weak-top floor #1863; 18→19 autocut minKeep floor #3621; 19→20 pre-fusion pool floor D-3002)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(20);
   });
 
   test('bundle defaults: conservative off, balanced/tokenmax on @0.20', () => {

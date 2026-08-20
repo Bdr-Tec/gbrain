@@ -859,7 +859,15 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // expects the floor) — same contamination class as ac=/acj=. The PR
 // authored this as v=16; master had already reached 18, so it sequences
 // here per the D8 convention. Same one-time global cold-miss pattern.
-export const KNOBS_HASH_VERSION = 19;
+//
+// bump 19→20 (D-3002): pre-fusion pool floor. hybridSearch's innerLimit
+// gains a floor (PRE_FUSION_POOL_FLOOR=50, and at least offset+limit), so
+// every recall arm fetches a wider candidate pool at small limits — same
+// knobs, different result set. A cache row written under the old limit*2
+// pool math must NOT be served post-upgrade. No new key part; the version
+// bump alone invalidates. Same one-time global cold-miss pattern as the
+// bumps above; refills within cache.ttl_seconds (3600s default).
+export const KNOBS_HASH_VERSION = 20;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
