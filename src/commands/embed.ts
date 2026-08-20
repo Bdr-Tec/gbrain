@@ -1,11 +1,12 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { embedBatch, currentEmbeddingSignature } from '../core/embedding.ts';
 import type { ChunkInput } from '../core/types.ts';
-import { carryChunkMetadata } from '../core/embed-stale.ts';
+import { carryChunkMetadata, probeEmbedder } from '../core/embed-stale.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
 import { createProgress, type ProgressReporter } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { assertEmbeddingEnabled } from '../core/embedding-dim-check.ts';
+import { invalidateStaleSignatureEmbeddingsGuarded } from '../core/embedding-invalidation.ts';
 import { loadConfig } from '../core/config.ts';
 import { slog, serr } from '../core/console-prefix.ts';
 import { filterOutEmbedSkipped } from '../core/embed-skip.ts';
@@ -1381,12 +1382,48 @@ async function embedAllStale(
   // swap). dry-run must NOT mutate, so it counts signature-stale via the
   // widened predicate; a live run NULLs them first so the existing
   // NULL-embedding cursor (listStaleChunks) picks them up unchanged.
+  // Guarded (#4306): embed_skip pages keep their retained vectors — every
+  // stale selector excludes them, so NULLing them here (the migrate
+  // embeddings drain path included) would be permanent loss.
+  //
+  // #4283: NULLing is conditional on a WORKING embedder. The drift pre-count
+  // keeps the probe's one embed call off the no-drift common path; a failed
+  // probe (bad key, unreachable provider, wrong-dims model) skips the
+  // invalidation so a misresolved config can't strip vectors it can never
+  // replace. validateEmbeddingCreds at runEmbedCore entry is a static env
+  // check only — the probe is the live proof.
   if (!dryRun && signature) {
-    const invalidated = await engine.invalidateStaleSignatureEmbeddings({
-      signature,
-      ...(sourceId && { sourceId }),
-      ...(includeNullSig && { includeNullSignature: true }),
-    });
+    let signatureDrift = 0;
+    try {
+      const wide = await engine.countStaleChunks({
+        ...sourceOpt, signature, ...(includeNullSig && { includeNullSignature: true }),
+      });
+      const nullOnly = await engine.countStaleChunks(sourceOpt);
+      signatureDrift = wide - nullOnly;
+    } catch {
+      // Pre-count is best-effort; fall through as "no drift" (no NULLing).
+    }
+    let invalidated = 0;
+    if (signatureDrift > 0) {
+      const probeOk = await probeEmbedder(
+        (texts, fnOpts) => embedBatchWithBackoff(texts, { abortSignal: fnOpts.abortSignal }),
+        signature,
+        externalSignal,
+      );
+      if (probeOk) {
+        invalidated = await invalidateStaleSignatureEmbeddingsGuarded(engine, {
+          signature,
+          ...(sourceId && { sourceId }),
+          ...(includeNullSig && { includeNullSignature: true }),
+        });
+      } else {
+        serr(
+          `  [embed] WARNING: ${signatureDrift} chunk(s) drifted from signature ${signature} but the ` +
+          `embedder probe failed — SKIPPING invalidation (existing vectors preserved). ` +
+          `Check embedding provider config/credentials.`,
+        );
+      }
+    }
     if (invalidated > 0 && !staleOpts?.quiet) {
       slog(`[embed] invalidated ${invalidated} chunk(s) embedded under a prior model signature`);
     }
@@ -1416,6 +1453,23 @@ async function embedAllStale(
       } catch {
         // The warning probe is best-effort; never break the embed run.
       }
+    }
+  }
+
+  // #4246: invalidate chunks whose embedding was computed from a PREVIOUS
+  // chunk_text revision (embedded_text_hash <> md5(chunk_text)) so content
+  // edits flow through the NULL cursor. NOT probe-gated: the blast radius is
+  // bounded by real content edits (config-independent, unlike signature
+  // drift) and those vectors point at stale text either way. NULL hash
+  // (pre-v133 rows) is grandfathered.
+  if (!dryRun) {
+    try {
+      const drifted = await engine.invalidateContentDriftEmbeddings(sourceId ? { sourceId } : undefined);
+      if (drifted > 0 && !staleOpts?.quiet) {
+        slog(`[embed] invalidated ${drifted} chunk(s) whose text changed after embedding (content drift)`);
+      }
+    } catch {
+      // Best-effort (pre-v133 schema mid-upgrade); the NULL-only loop still runs.
     }
   }
 

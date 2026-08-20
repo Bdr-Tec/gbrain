@@ -1094,6 +1094,19 @@ export interface BrainEngine {
    */
   invalidateStaleSignatureEmbeddings(opts: { signature: string; sourceId?: string; includeNullSignature?: boolean }): Promise<number>;
   /**
+   * #4246: NULL out the embeddings (embedding + embedded_at +
+   * embedded_text_hash) of every chunk whose stored `embedded_text_hash` no
+   * longer matches `md5(chunk_text)` — i.e. the chunk's text was rewritten
+   * after its vector was computed, so the vector describes a previous
+   * content revision. Feeds the NULL-embedding cursor exactly like
+   * invalidateStaleSignatureEmbeddings. GRANDFATHER: NULL hash (rows
+   * embedded before v133 stamped provenance) is never invalidated — no
+   * upgrade re-embed spike; the hash lands on each row's next re-embed.
+   * embed_skip pages are excluded (listStaleChunks can't re-embed them, so
+   * NULLing would strand them). Returns the chunk count invalidated.
+   */
+  invalidateContentDriftEmbeddings(opts?: { sourceId?: string }): Promise<number>;
+  /**
    * Return every chunk where embedding IS NULL, with the metadata needed
    * to call embedBatch + upsertChunks. The `embedding` column is omitted
    * by design — stale rows have NULL embeddings, so shipping them wastes
