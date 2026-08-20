@@ -47,6 +47,8 @@ import { applyChunkEmbeddingIndexPolicy, dropZombieIndexes, hnswEfSearchFor, hns
 import {
   normalizeEngineColumn,
   buildVectorCastFragment,
+  vectorCastSuffix,
+  resolveWriteColumnFromConfigRows,
   quoteIdentifier,
   COLUMN_NAME_REGEX,
   EmbeddingColumnNotRegisteredError,
@@ -56,7 +58,7 @@ import { MARKDOWN_CHUNKER_VERSION } from './chunkers/recursive.ts';
 import type {
   Page, PageInput, PageFilters, PageType,
   Chunk, ChunkInput, StaleChunkRow, StalePageRow, ChunklessPageRow,
-  SearchResult, SearchOpts,
+  SearchResult, SearchOpts, ResolvedColumn,
   Link, GraphNode, GraphPath,
   TimelineEntry, TimelineInput, TimelineOpts,
   ChronicleTimelineRow, ChronicleTimelineOpts, LastSeenResult,
@@ -2674,11 +2676,11 @@ export class PostgresEngine implements BrainEngine {
   }
 
   // Chunks
-  async upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string } & BatchOpts): Promise<void> {
+  async upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string; embeddingColumn?: ResolvedColumn } & BatchOpts): Promise<void> {
     return this.batchRetry(opts?.auditSite ?? 'upsertChunks', opts?.signal, () => this._upsertChunksOnce(slug, chunks, opts), chunks.length);
   }
 
-  private async _upsertChunksOnce(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string }): Promise<void> {
+  private async _upsertChunksOnce(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string; embeddingColumn?: ResolvedColumn }): Promise<void> {
     // Normalize the same way putPage does — pages.slug is stored lowercased,
     // so a raw mixed-case slug here would miss the row it just wrote (#430).
     slug = validateSlug(slug);
@@ -2710,7 +2712,36 @@ export class PostgresEngine implements BrainEngine {
     // scope metadata through upserts.
     // v0.27.1 (Phase 8): added `modality` + `embedding_image` to the column
     // list. Image chunks pass embedding=null + embedding_image=Float32Array.
-    const cols = '(page_id, chunk_index, chunk_text, chunk_source, embedding, model, token_count, embedded_at, language, symbol_name, symbol_type, start_line, end_line, parent_symbol_path, doc_comment, symbol_name_qualified, modality, embedding_image)';
+    //
+    // #1262: the text-embedding column is registry-resolved, not the literal
+    // `embedding`. A caller-resolved descriptor wins; otherwise the DB-plane
+    // registry rows route the write to the SAME active column the read side
+    // searches (a Voyage-routed brain must not fail every write with a
+    // dimension mismatch against the legacy 1536d column). Config-table read
+    // failure (pre-v36 brain mid-migration) falls back to the legacy column;
+    // an unregistered `search_embedding_column` throws the resolver's loud
+    // paste-ready hint. Mirrored in pglite-engine.ts (parity).
+    let writeCol: ResolvedColumn;
+    if (opts?.embeddingColumn) {
+      writeCol = normalizeEngineColumn(opts.embeddingColumn);
+    } else {
+      let searchEmbeddingColumn: string | null = null;
+      let embeddingColumnsJson: string | null = null;
+      try {
+        const cfgRows = await sql`SELECT key, value FROM config WHERE key IN ('search_embedding_column', 'embedding_columns')`;
+        for (const r of cfgRows) {
+          if (r.key === 'search_embedding_column') searchEmbeddingColumn = r.value as string;
+          else if (r.key === 'embedding_columns') embeddingColumnsJson = r.value as string;
+        }
+      } catch {
+        // config table unreadable — legacy column via the resolver default.
+      }
+      writeCol = resolveWriteColumnFromConfigRows({ searchEmbeddingColumn, embeddingColumnsJson });
+    }
+    const writeColId = quoteIdentifier(writeCol.name);
+    const writeCast = vectorCastSuffix(writeCol);
+
+    const cols = `(page_id, chunk_index, chunk_text, chunk_source, ${writeColId}, model, token_count, embedded_at, language, symbol_name, symbol_type, start_line, end_line, parent_symbol_path, doc_comment, symbol_name_qualified, modality, embedding_image)`;
     const rows: string[] = [];
     const params: unknown[] = [];
     let paramIdx = 1;
@@ -2760,7 +2791,7 @@ export class PostgresEngine implements BrainEngine {
         : null;
       const modality = chunk.modality ?? 'text';
 
-      const embeddingPh = embeddingStr ? `$${paramIdx++}::vector` : 'NULL';
+      const embeddingPh = embeddingStr ? `$${paramIdx++}${writeCast}` : 'NULL';
       const embeddedAtPh = embeddingStr ? 'now()' : 'NULL';
       const embeddingImagePh = embeddingImageStr ? `$${paramIdx++}::vector` : 'NULL';
 
@@ -2820,17 +2851,17 @@ export class PostgresEngine implements BrainEngine {
        ON CONFLICT (page_id, chunk_index) DO UPDATE SET
          chunk_text = EXCLUDED.chunk_text,
          chunk_source = EXCLUDED.chunk_source,
-         embedding = CASE
-           WHEN EXCLUDED.chunk_text != content_chunks.chunk_text THEN EXCLUDED.embedding
-           WHEN content_chunks.embedding IS NULL THEN EXCLUDED.embedding
+         ${writeColId} = CASE
+           WHEN EXCLUDED.chunk_text != content_chunks.chunk_text THEN EXCLUDED.${writeColId}
+           WHEN content_chunks.${writeColId} IS NULL THEN EXCLUDED.${writeColId}
            WHEN EXCLUDED.embedded_at IS NOT NULL
                 AND (content_chunks.embedded_at IS NULL OR EXCLUDED.embedded_at > content_chunks.embedded_at)
-                THEN EXCLUDED.embedding
-           ELSE content_chunks.embedding
+                THEN EXCLUDED.${writeColId}
+           ELSE content_chunks.${writeColId}
          END,
          model = CASE
            WHEN EXCLUDED.chunk_text != content_chunks.chunk_text THEN EXCLUDED.model
-           WHEN content_chunks.embedding IS NULL THEN EXCLUDED.model
+           WHEN content_chunks.${writeColId} IS NULL THEN EXCLUDED.model
            WHEN EXCLUDED.embedded_at IS NOT NULL
                 AND (content_chunks.embedded_at IS NULL OR EXCLUDED.embedded_at > content_chunks.embedded_at)
                 THEN EXCLUDED.model
@@ -2838,8 +2869,8 @@ export class PostgresEngine implements BrainEngine {
          END,
          token_count = EXCLUDED.token_count,
          embedded_at = CASE
-           WHEN EXCLUDED.chunk_text != content_chunks.chunk_text AND EXCLUDED.embedding IS NULL THEN NULL
-           WHEN content_chunks.embedding IS NULL AND EXCLUDED.embedding IS NOT NULL THEN EXCLUDED.embedded_at
+           WHEN EXCLUDED.chunk_text != content_chunks.chunk_text AND EXCLUDED.${writeColId} IS NULL THEN NULL
+           WHEN content_chunks.${writeColId} IS NULL AND EXCLUDED.${writeColId} IS NOT NULL THEN EXCLUDED.embedded_at
            WHEN EXCLUDED.embedded_at IS NOT NULL
                 AND (content_chunks.embedded_at IS NULL OR EXCLUDED.embedded_at > content_chunks.embedded_at)
                 THEN EXCLUDED.embedded_at

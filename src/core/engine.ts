@@ -1,7 +1,7 @@
 import type {
   Page, PageInput, PageFilters, GetPageOpts,
   Chunk, ChunkInput, StaleChunkRow, StalePageRow, ChunklessPageRow,
-  SearchResult, SearchOpts,
+  SearchResult, SearchOpts, ResolvedColumn,
   Link, GraphNode, GraphPath, RelationalFanoutRow, RelationalFanoutOpts,
   TimelineEntry, TimelineInput, TimelineOpts,
   ChronicleTimelineRow, ChronicleTimelineOpts, LastSeenResult,
@@ -1016,8 +1016,17 @@ export interface BrainEngine {
    * — Postgres rolls back automatically on conn drop, so commit-ambiguous
    * failure replays to the same end state. Callers MUST NOT wrap externally;
    * see {@link BatchOpts} retry-contract block.
+   *
+   * #1262 registry-aware text-embedding writes: `opts.embeddingColumn`
+   * (a caller-resolved descriptor, mirror of SearchOpts) routes
+   * `chunk.embedding` into that column with its declared cast. When
+   * omitted, engines resolve the active column from the DB-plane
+   * registry rows (`search_embedding_column` + `embedding_columns`) via
+   * resolveWriteColumnFromConfigRows — the same registry the read side
+   * searches — falling back to the legacy `embedding`::vector column on
+   * pre-registry brains. `embedding_image` routing is unaffected.
    */
-  upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string } & BatchOpts): Promise<void>;
+  upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string; embeddingColumn?: ResolvedColumn } & BatchOpts): Promise<void>;
   /**
    * Read every chunk for a page. Scope precedence mirrors getPage (#2555):
    * a federated grant (`sourceIds[]`) wins over scalar `sourceId`; with
