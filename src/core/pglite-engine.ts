@@ -1138,6 +1138,8 @@ export class PGLiteEngine implements BrainEngine {
         EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema='public' AND table_name='minion_jobs' AND column_name='private_queue_owner_job_id') AS minion_jobs_pq_owner_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='minion_jobs' AND column_name='private_queue_owner_token') AS minion_jobs_pq_token_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema='public' AND table_name='minion_jobs' AND column_name='private_queue_lease_until') AS minion_jobs_pq_lease_exists
     `);
     const probe = rows[0] as {
@@ -1189,6 +1191,7 @@ export class PGLiteEngine implements BrainEngine {
       minion_jobs_timeout_at_exists: boolean;
       minion_jobs_idempotency_key_exists: boolean;
       minion_jobs_pq_owner_exists: boolean;
+      minion_jobs_pq_token_exists: boolean;
       minion_jobs_pq_lease_exists: boolean;
     };
 
@@ -1281,8 +1284,11 @@ export class PGLiteEngine implements BrainEngine {
     // exactly like the v121 incident.
     const needsMinionJobsTimeoutAt = probe.minion_jobs_exists && !probe.minion_jobs_timeout_at_exists;
     const needsMinionJobsIdempotencyKey = probe.minion_jobs_exists && !probe.minion_jobs_idempotency_key_exists;
+    // Token rides the probe too: a token-only-missing brain (partial upgrade)
+    // would otherwise be unrepairable — the ALTER block adds all three.
     const needsMinionJobsPrivateQueue = probe.minion_jobs_exists
-      && (!probe.minion_jobs_pq_owner_exists || !probe.minion_jobs_pq_lease_exists);
+      && (!probe.minion_jobs_pq_owner_exists || !probe.minion_jobs_pq_token_exists
+          || !probe.minion_jobs_pq_lease_exists);
 
     // Fresh installs (no tables yet) and modern brains both no-op.
     if (!needsPagesBootstrap && !needsLinksBootstrap && !needsChunksBootstrap

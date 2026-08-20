@@ -349,6 +349,8 @@ USAGE
   gbrain jobs prune [--older-than 30d] [--dry-run]
   gbrain jobs delete <id>
   gbrain jobs stats [--queue Q] [--cluster-errors]
+                    (dream-inline-* queues report ABANDONED/live only with an
+                     explicit --queue; use \`gbrain doctor\` to discover them)
   gbrain jobs smoke [--sigkill-rescue] [--wedge-rescue]
   gbrain jobs watch [--json] [--follow] [--refresh-ms=N]
   gbrain jobs work [--queue Q] [--concurrency N] [--max-rss MB]
@@ -557,6 +559,30 @@ OPTIONS
   --dry-run         Report what would be deleted without deleting
 `,
 };
+
+// Bare (unsupervised) workers run the same orphaned-private-queue recovery
+// the supervisor runs in beforeSpawn — a deployment that starts
+// `gbrain jobs work` directly must not lose the crash-recovery lane.
+// Supervised children skip it: their supervisor already ran it.
+export async function maybeRunWorkerStartupRecovery(
+  queue: MinionQueue,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  if (env.GBRAIN_SUPERVISED === '1') return;
+  try {
+    const recovered = await queue.reconcileOrphanedPrivateQueues({
+      reason: 'worker startup recovery: orphaned dream-inline private queue',
+    });
+    if (recovered.cancelled_jobs > 0) {
+      console.error(
+        `[gbrain jobs] private-queue startup recovery: cancelled ${recovered.cancelled_jobs} ` +
+        `job(s) across ${recovered.cancelled_queues} orphaned queue(s)`,
+      );
+    }
+  } catch (e) {
+    console.error(`[gbrain jobs] private-queue startup recovery failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
 
 export async function runJobs(engineOrNull: BrainEngine | null, args: string[]): Promise<void> {
   const sub = args[0];
@@ -1563,25 +1589,7 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       try { await queue.ensureSchema(); }
       catch (e) { console.error(e instanceof Error ? e.message : String(e)); process.exit(1); }
 
-      // Bare (unsupervised) workers run the same orphaned-private-queue
-      // recovery the supervisor runs in beforeSpawn — a deployment that starts
-      // `gbrain jobs work` directly must not lose the crash-recovery lane.
-      // Supervised children skip it: their supervisor already ran it.
-      if (process.env.GBRAIN_SUPERVISED !== '1') {
-        try {
-          const recovered = await queue.reconcileOrphanedPrivateQueues({
-            reason: 'worker startup recovery: orphaned dream-inline private queue',
-          });
-          if (recovered.cancelled_jobs > 0) {
-            console.error(
-              `[gbrain jobs] private-queue startup recovery: cancelled ${recovered.cancelled_jobs} ` +
-              `job(s) across ${recovered.cancelled_queues} orphaned queue(s)`,
-            );
-          }
-        } catch (e) {
-          console.error(`[gbrain jobs] private-queue startup recovery failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
+      await maybeRunWorkerStartupRecovery(queue);
 
       // issue #6: the direct-pool kill switch collapses lock renewal, health
       // probes, and handler workload onto ONE shared pool — silently. Make

@@ -866,6 +866,9 @@ export class MinionQueue {
         result.skipped_live_queues++;
         continue;
       }
+      // Defensive only: the scan's HAVING bool_or(owner/lease) excludes
+      // metadata-less queues at the SQL level, so this arm is unreachable
+      // today — kept in case the scan predicate ever loosens.
       if (verdict === 'unowned') {
         result.skipped_unowned_queues++;
         continue;
@@ -941,6 +944,7 @@ export class MinionQueue {
       [queueName],
     );
     const r = rows[0];
+    // Defensive only: the FROM q aggregate always yields exactly one row.
     if (!r) return 'not_orphan';
     if (Number(r.active_healthy ?? 0) > 0 || Number(r.live_owner_rows ?? 0) > 0) {
       return 'live';

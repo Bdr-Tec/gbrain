@@ -456,7 +456,11 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
     const nowMs = Date.now();
     const orphaned: string[] = [];
     const candidateQueues: string[] = [];
-    let waitingTotal = 0;
+    // Per-candidate waiting counts, index-aligned with candidateQueues:
+    // waiting_jobs must count FLAGGED queues only — summing during the scan
+    // would include live-lease-suppressed and cap-truncated queues that
+    // orphaned_private_queues excludes.
+    const candidateWaiting: number[] = [];
     let pausedTotal = 0;
     let suppressedByLiveLock = 0;
     for (const r of rows) {
@@ -494,9 +498,9 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
         suppressedByLiveLock++;
         continue;
       }
-      waitingTotal += waiting;
       orphaned.push(`'${r.queue}' (${waiting} waiting, oldest ${Math.round(age)}m)`);
       candidateQueues.push(r.queue);
+      candidateWaiting.push(waiting);
     }
     // Bucket the survivors through the SAME classifier recovery uses, so the
     // advertised remediation and recovery's actual behavior cannot drift:
@@ -517,12 +521,14 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
     const CLASSIFY_CAP = 100;
     const truncatedCandidates = Math.max(0, candidateQueues.length - CLASSIFY_CAP);
     candidateQueues.length = Math.min(candidateQueues.length, CLASSIFY_CAP);
+    let flaggedWaiting = 0;
     for (let i = 0; i < candidateQueues.length; i++) {
       const verdict = await classifierQueue.classifyPrivateQueueForRecovery(candidateQueues[i]);
       if (verdict === 'live') { suppressedByLiveLease++; continue; }
       if (verdict === 'orphan') recoverable.push(orphaned[i]);
       else if (verdict === 'unowned') legacyUnowned.push(orphaned[i]);
       else ownerPending.push(orphaned[i]);
+      flaggedWaiting += candidateWaiting[i];
     }
     const flagged = recoverable.length + legacyUnowned.length + ownerPending.length;
     if (flagged === 0) {
@@ -530,11 +536,19 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
       return {
         name: 'orphaned_private_queue',
         status: 'ok',
-        message: suppressed > 0
-          ? `No provably-orphaned private queues (${suppressed} possibly owned by a live cycle)`
+        // Truncation must stay visible on the ok path too: 100 live + 50
+        // never-classified candidates is NOT a clean bill of health.
+        message: suppressed > 0 || truncatedCandidates > 0
+          ? `No provably-orphaned private queues (${suppressed} possibly owned by a live cycle` +
+            (truncatedCandidates > 0 ? `, ${truncatedCandidates} unclassified — re-run doctor to page through them` : '') + `)`
           : 'No orphaned private queues',
-        ...(pausedTotal > 0 || suppressed > 0
-          ? { details: { paused_jobs: pausedTotal, suppressed_by_live_lock: suppressedByLiveLock, suppressed_by_live_lease: suppressedByLiveLease } }
+        ...(pausedTotal > 0 || suppressed > 0 || truncatedCandidates > 0
+          ? { details: {
+              paused_jobs: pausedTotal,
+              suppressed_by_live_lock: suppressedByLiveLock,
+              suppressed_by_live_lease: suppressedByLiveLease,
+              ...(truncatedCandidates > 0 ? { unclassified_candidates: truncatedCandidates } : {}),
+            } }
           : {}),
       };
     }
@@ -569,7 +583,7 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
         recoverable_queues: recoverable.length,
         legacy_unowned_queues: legacyUnowned.length,
         owner_pending_queues: ownerPending.length,
-        waiting_jobs: waitingTotal,
+        waiting_jobs: flaggedWaiting,
         paused_jobs: pausedTotal,
         suppressed_by_live_lock: suppressedByLiveLock,
         suppressed_by_live_lease: suppressedByLiveLease,

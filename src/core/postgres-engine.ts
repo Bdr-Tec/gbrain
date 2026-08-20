@@ -663,6 +663,8 @@ export class PostgresEngine implements BrainEngine {
         EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema = current_schema() AND table_name = 'minion_jobs' AND column_name = 'private_queue_owner_job_id') AS minion_jobs_pq_owner_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'minion_jobs' AND column_name = 'private_queue_owner_token') AS minion_jobs_pq_token_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema = current_schema() AND table_name = 'minion_jobs' AND column_name = 'private_queue_lease_until') AS minion_jobs_pq_lease_exists
     `;
     const probe = probeRows[0]!;
@@ -757,6 +759,7 @@ export class PostgresEngine implements BrainEngine {
       minion_jobs_timeout_at_exists?: boolean;
       minion_jobs_idempotency_key_exists?: boolean;
       minion_jobs_pq_owner_exists?: boolean;
+      minion_jobs_pq_token_exists?: boolean;
       minion_jobs_pq_lease_exists?: boolean;
     };
     const needsContextualRetrievalColumns = (probe.pages_exists
@@ -788,8 +791,11 @@ export class PostgresEngine implements BrainEngine {
       && !probeCr.minion_jobs_timeout_at_exists;
     const needsMinionJobsIdempotencyKey = probeCr.minion_jobs_exists === true
       && !probeCr.minion_jobs_idempotency_key_exists;
+    // Token rides the probe too: a token-only-missing brain (partial upgrade)
+    // would otherwise be unrepairable — the ALTER block adds all three.
     const needsMinionJobsPrivateQueue = probeCr.minion_jobs_exists === true
-      && (!probeCr.minion_jobs_pq_owner_exists || !probeCr.minion_jobs_pq_lease_exists);
+      && (!probeCr.minion_jobs_pq_owner_exists || !probeCr.minion_jobs_pq_token_exists
+          || !probeCr.minion_jobs_pq_lease_exists);
 
     if (!needsPagesBootstrap && !needsLinksBootstrap && !needsChunksBootstrap
         && !needsPagesDeletedAt && !needsMcpLogBootstrap && !needsSubagentProviderId
