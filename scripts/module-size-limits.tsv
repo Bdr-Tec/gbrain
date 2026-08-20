@@ -14,7 +14,7 @@ src/cli.ts	3594	ratchet	grown v0.46.24.0 overnight wave (#4186)
 src/core/cycle.ts	3080	ratchet	grown v0.46.20.0 phase-boundary split (resolveCyclePhases + normalizeQueuedSourcePhases + deriveStatus exclusion filter)
 src/commands/serve-http.ts	3194	ratchet	grown v0.46.23.0 review fix wave: github-kind webhook gating + case-insensitive repo match
 src/commands/jobs.ts	3027	ratchet	grown v0.46.22.0 phone wave: github source sync job (#4104)
-src/core/search/hybrid.ts	2629	ratchet	grown v0.46.23.0 review fix wave: supersede scoping + edge-existence gate
+src/core/search/hybrid.ts	2636	ratchet	grown v0.46.24.0 overnight wave (#4296)
 src/core/engine.ts	2351	ratchet	grown v0.46.23.0: putPage allowEmptyOverwrite contract (#4335)
 src/commands/autopilot.ts	2301	ratchet
 src/commands/extract.ts	2161	ratchet
