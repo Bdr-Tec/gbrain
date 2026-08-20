@@ -11,9 +11,12 @@
  *   - a caller-supplied source_id is honored (threaded to the engine call)
  *     or rejected loudly (invalid_params / permission_denied) — never ignored;
  *   - destructive ops reject '__all__' (they target exactly one source);
- *   - an AUTHENTICATED remote caller may only target sources inside its grant
- *     (write source or federated allowedSources); unauthenticated transports
- *     (stdio MCP — the reporter's surface) are honored;
+ *   - a remote caller (anything not strictly ctx.remote === false) may target
+ *     ONLY its write authority: ctx.auth.sourceId when auth exists (falling
+ *     back to ctx.sourceId for legacy tokens without a source grant), else
+ *     ctx.sourceId. `allowedSources` is the READ-federation grant
+ *     (contract.ts) and plays NO role in writes — a client that can READ
+ *     sources [A, B] with write authority A cannot delete/restore in B;
  *   - delete/restore responses echo the targeted source_id so callers can
  *     verify WHICH row the op landed on.
  *
@@ -93,14 +96,35 @@ describe('#4329 — op contracts carry source_id (honored, never silently droppe
 });
 
 describe('#4329 — delete_page source_id', () => {
-  test('REGRESSION: source_id targets that source\'s row, not ctx.sourceId\'s', async () => {
-    // The reporter's exact shape: ctx resolved to 'default', param says beta.
-    const res = await delete_page.handler(ctxOf(), { slug: 'shared/doc', source_id: 'beta' }) as Record<string, unknown>;
+  test('REGRESSION: source_id targets that source\'s row, not ctx.sourceId\'s (trusted local)', async () => {
+    // Trusted local caller (ctx.remote === false) owns the brain: an explicit
+    // source_id is honored and threaded to the engine, never silently dropped.
+    const res = await delete_page.handler(ctxOf({ remote: false }), { slug: 'shared/doc', source_id: 'beta' }) as Record<string, unknown>;
     expect(res.status).toBe('soft_deleted');
     expect(res.source_id).toBe('beta');
     const rows = await deletedAtBySource('shared/doc');
     expect(rows.beta).not.toBeNull();       // intended target deleted
     expect(rows.default).toBeNull();        // ctx source untouched
+  });
+
+  test('S1 REGRESSION: no-auth remote with an out-of-authority source_id → permission_denied, never a cross-source delete', async () => {
+    // The reporter's exact shape: ctx resolved to 'default', param says beta,
+    // remote transport with no auth (stdio MCP). Rejected loudly — an
+    // unauthenticated remote caller's write authority is exactly ctx.sourceId.
+    await expect(delete_page.handler(ctxOf(), { slug: 'shared/doc', source_id: 'beta' }))
+      .rejects.toMatchObject({ code: 'permission_denied' });
+    const rows = await deletedAtBySource('shared/doc');
+    expect(rows.beta).toBeNull();           // nothing deleted anywhere
+    expect(rows.default).toBeNull();
+  });
+
+  test('no-auth remote: explicit source_id equal to ctx.sourceId is honored (redundant-but-matching)', async () => {
+    const res = await delete_page.handler(ctxOf({ sourceId: 'beta' }), { slug: 'shared/doc', source_id: 'beta' }) as Record<string, unknown>;
+    expect(res.status).toBe('soft_deleted');
+    expect(res.source_id).toBe('beta');
+    const rows = await deletedAtBySource('shared/doc');
+    expect(rows.beta).not.toBeNull();
+    expect(rows.default).toBeNull();
   });
 
   test('without source_id, keeps the ctx.sourceId status quo (and echoes it)', async () => {
@@ -136,17 +160,37 @@ describe('#4329 — delete_page source_id', () => {
     expect(rows.beta).toBeNull();
   });
 
-  test('authenticated remote caller: in-grant source_id (federated allowedSources) is honored', async () => {
+  test('S1: allowedSources is a READ grant — write authority A + allowedSources [A, B] CANNOT delete in B', async () => {
+    // The federated read grant must play NO role in writes: a client that can
+    // READ ['default', 'beta'] with write authority 'default' must not be able
+    // to soft-delete beta's row.
     const ctx = ctxOf({ auth: authOf({ sourceId: 'default', allowedSources: ['default', 'beta'] }) as any });
+    await expect(delete_page.handler(ctx, { slug: 'shared/doc', source_id: 'beta' }))
+      .rejects.toMatchObject({ code: 'permission_denied' });
+    const rows = await deletedAtBySource('shared/doc');
+    expect(rows.beta).toBeNull();           // read grant conferred no write
+    expect(rows.default).toBeNull();        // and nothing was retargeted
+  });
+
+  test('authenticated remote caller: source_id equal to the write authority (auth.sourceId) is honored', async () => {
+    // HTTP transport dual-writes auth.sourceId into ctx.sourceId; mirror that.
+    const ctx = ctxOf({ sourceId: 'beta', auth: authOf({ sourceId: 'beta', allowedSources: ['default', 'beta'] }) as any });
+    const res = await delete_page.handler(ctx, { slug: 'shared/doc', source_id: 'beta' }) as Record<string, unknown>;
+    expect(res.status).toBe('soft_deleted');
+    const rows = await deletedAtBySource('shared/doc');
+    expect(rows.beta).not.toBeNull();
+    expect(rows.default).toBeNull();
+  });
+
+  test('legacy authenticated token (no auth.sourceId): falls back to ctx.sourceId as the write authority', async () => {
+    const ctx = ctxOf({ sourceId: 'beta', auth: authOf({}) as any });
     const res = await delete_page.handler(ctx, { slug: 'shared/doc', source_id: 'beta' }) as Record<string, unknown>;
     expect(res.status).toBe('soft_deleted');
     expect((await deletedAtBySource('shared/doc')).beta).not.toBeNull();
-  });
-
-  test('unauthenticated remote transport (stdio MCP — the reporter) is honored', async () => {
-    const res = await delete_page.handler(ctxOf({ remote: true }), { slug: 'shared/doc', source_id: 'beta' }) as Record<string, unknown>;
-    expect(res.status).toBe('soft_deleted');
-    expect((await deletedAtBySource('shared/doc')).beta).not.toBeNull();
+    // ...and the same legacy token cannot target outside ctx.sourceId.
+    await expect(delete_page.handler(ctxOf({ sourceId: 'beta', auth: authOf({}) as any }), { slug: 'shared/doc', source_id: 'default' }))
+      .rejects.toMatchObject({ code: 'permission_denied' });
+    expect((await deletedAtBySource('shared/doc')).default).toBeNull();
   });
 
   test('dry-run still validates the param before returning the preview', async () => {
@@ -162,7 +206,7 @@ describe('#4329 — restore_page source_id', () => {
   });
 
   test('restores only the targeted source\'s row (and echoes it)', async () => {
-    const res = await restore_page.handler(ctxOf(), { slug: 'shared/doc', source_id: 'beta' }) as Record<string, unknown>;
+    const res = await restore_page.handler(ctxOf({ remote: false }), { slug: 'shared/doc', source_id: 'beta' }) as Record<string, unknown>;
     expect(res.status).toBe('restored');
     expect(res.source_id).toBe('beta');
     const rows = await deletedAtBySource('shared/doc');
@@ -170,9 +214,22 @@ describe('#4329 — restore_page source_id', () => {
     expect(rows.default).not.toBeNull();     // still soft-deleted
   });
 
-  test('authenticated remote caller: out-of-grant source_id → permission_denied', async () => {
+  test('authenticated remote caller: out-of-authority source_id → permission_denied', async () => {
     const ctx = ctxOf({ auth: authOf({ sourceId: 'default', allowedSources: [] }) as any });
     await expect(restore_page.handler(ctx, { slug: 'shared/doc', source_id: 'beta' }))
+      .rejects.toMatchObject({ code: 'permission_denied' });
+    expect((await deletedAtBySource('shared/doc')).beta).not.toBeNull();
+  });
+
+  test('S1: federated allowedSources confers no restore authority either', async () => {
+    const ctx = ctxOf({ auth: authOf({ sourceId: 'default', allowedSources: ['default', 'beta'] }) as any });
+    await expect(restore_page.handler(ctx, { slug: 'shared/doc', source_id: 'beta' }))
+      .rejects.toMatchObject({ code: 'permission_denied' });
+    expect((await deletedAtBySource('shared/doc')).beta).not.toBeNull();  // still soft-deleted
+  });
+
+  test('S1: no-auth remote cannot restore outside ctx.sourceId', async () => {
+    await expect(restore_page.handler(ctxOf(), { slug: 'shared/doc', source_id: 'beta' }))
       .rejects.toMatchObject({ code: 'permission_denied' });
     expect((await deletedAtBySource('shared/doc')).beta).not.toBeNull();
   });

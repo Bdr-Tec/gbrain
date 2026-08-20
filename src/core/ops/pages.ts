@@ -69,25 +69,30 @@ function parseSourceIdParam(
 }
 
 /**
- * #4329: write-authority gate for a per-call source_id on the destructive
- * page ops. Trusted local callers (ctx.remote === false) and unauthenticated
- * transports (stdio MCP, subagent dispatch — no ctx.auth) own the brain and
- * may target any source (slug fences still apply). An AUTHENTICATED remote
- * caller may only target its write source or a source inside its federated
- * grant — fail-closed permission_denied otherwise, never a silent retarget.
+ * #4329 (S1-tightened): write-authority gate for a per-call source_id on the
+ * destructive page ops. Trusted local callers (ctx.remote === false) own the
+ * brain and may target any source (slug fences still apply). EVERY other
+ * caller — authenticated HTTP MCP, unauthenticated transports (stdio MCP,
+ * subagent dispatch), unset trust — may target ONLY its write authority:
+ * `ctx.auth.sourceId` when auth exists (falling back to `ctx.sourceId` for
+ * legacy tokens that predate the v0.34.1 source grant), else `ctx.sourceId`.
+ *
+ * `ctx.auth.allowedSources` is the READ-federation grant (see contract.ts:
+ * "array of source ids this OAuth client may READ from") and plays NO role
+ * in writes — mirroring put_page, which writes only to ctx.sourceId
+ * (`localFederatedSourceIds` is likewise consumed exclusively by
+ * federatedSearchScope, a read path). Fail-closed permission_denied
+ * otherwise, never a silent retarget.
  */
 function assertSourceInWriteGrant(ctx: OperationContext, sourceId: string): void {
-  if (ctx.remote === false || !ctx.auth) return;
-  const inGrant = sourceId === ctx.sourceId
-    || sourceId === ctx.auth.sourceId
-    || (ctx.auth.allowedSources?.includes(sourceId) ?? false);
-  if (!inGrant) {
-    throw new OperationError(
-      'permission_denied',
-      `source '${sourceId}' is outside your granted sources`,
-      'Omit source_id to target your write source, or request access to this source.',
-    );
-  }
+  if (ctx.remote === false) return;
+  const writeAuthority = ctx.auth?.sourceId ?? ctx.sourceId;
+  if (sourceId === writeAuthority) return;
+  throw new OperationError(
+    'permission_denied',
+    `source '${sourceId}' is outside your write authority`,
+    'Omit source_id (or pass your write source) to target your write source. Federated read grants do not confer delete/restore access.',
+  );
 }
 
 const get_page: Operation = {
@@ -871,7 +876,7 @@ const delete_page: Operation = {
   description: 'Soft-delete a page. The row is hidden from search and from get_page/list_pages, but is recoverable via restore_page within 72h. The autopilot purge phase hard-deletes after the recovery window. Pass include_deleted: true to get_page to verify the soft-delete landed.',
   params: {
     slug: { type: 'string', required: true, description: "Slug of the page to soft-delete, e.g. 'people/alice-example'." },
-    source_id: { type: 'string', description: "#4329: source holding the row to soft-delete (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId. Remote callers may only target sources inside their grant." },
+    source_id: { type: 'string', description: "#4329: source holding the row to soft-delete (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId. Remote callers may only target their write source — federated read grants do not confer delete access." },
   },
   mutating: true,
   scope: 'write',
@@ -914,7 +919,7 @@ const restore_page: Operation = {
   description: 'v0.26.5 — restore a soft-deleted page (clear deleted_at). Returns success only if the page was actually soft-deleted. After this op, the page reappears in search and in get_page/list_pages without the include_deleted flag.',
   params: {
     slug: { type: 'string', required: true, description: "Slug of the soft-deleted page to restore, e.g. 'people/alice-example'." },
-    source_id: { type: 'string', description: "#4329: source holding the row to restore (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId. Remote callers may only target sources inside their grant." },
+    source_id: { type: 'string', description: "#4329: source holding the row to restore (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId. Remote callers may only target their write source — federated read grants do not confer restore access." },
   },
   mutating: true,
   scope: 'write',
