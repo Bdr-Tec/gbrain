@@ -14,7 +14,7 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { MinionQueue } from '../src/core/minions/queue.ts';
+import { MinionQueue, DEFAULT_PRIVATE_QUEUE_LEASE_MS } from '../src/core/minions/queue.ts';
 import type { ChildDoneMessage } from '../src/core/minions/types.ts';
 
 let engine: PGLiteEngine;
@@ -574,5 +574,291 @@ describe('makeThrottledLeaseRenewer (shared phase keepalive)', () => {
   test('a throwing renewal propagates to the caller (shared queue refused)', async () => {
     const renew = queue.makeThrottledLeaseRenewer('default', 'tok-shared');
     await expect(renew()).rejects.toThrow('refusing to renew non-private queue');
+  });
+});
+
+describe('private queue recovery classification + lease hardening (lane A backfill)', () => {
+  async function readLeaseMs(id: number): Promise<number | null> {
+    const rows = await engine.executeRaw<{ lease: string | null }>(
+      `SELECT private_queue_lease_until::text AS lease FROM minion_jobs WHERE id = $1`, [id],
+    );
+    return rows[0].lease === null ? null : new Date(rows[0].lease).getTime();
+  }
+
+  // Age past the 2-minute recently-touched guard so the freshness fast path
+  // cannot mask the arm under test (see the expired-lease fixture note above).
+  async function ageUpdatedAt(ids: number[]): Promise<void> {
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET updated_at = now() - interval '5 minutes' WHERE id = ANY($1::int[])`,
+      [ids],
+    );
+  }
+
+  test('K10: lease-only queue with a FUTURE lease classifies live even when updated_at is stale', async () => {
+    // The long-quiet-subagent safety arm: no owner metadata, nothing touched
+    // the rows in >2min (freshness guard does NOT short-circuit), but the
+    // creation-time lease is still hours out — recovery must skip it.
+    const q = `dream-inline-${Date.now()}-k10lease`;
+    const job = await queue.add('private-waiting', {}, {
+      queue: q,
+      private_queue_lease_ms: 2 * 60 * 60 * 1000,
+    });
+    await ageUpdatedAt([job.id]);
+
+    expect(await queue.classifyPrivateQueueForRecovery(q)).toBe('live');
+    const result = await queue.reconcileOrphanedPrivateQueues({ reason: 'must not fire' });
+    expect(result.cancelled_jobs).toBe(0);
+    expect(result.skipped_live_queues).toBe(1);
+    expect((await queue.getJob(job.id))?.status).toBe('waiting');
+  });
+
+  test('K2: an actively claimed child with a healthy lock classifies live despite stale updated_at and expired lease', async () => {
+    const q = `dream-inline-${Date.now()}-k2active`;
+    const job = await queue.add('private-active', {}, {
+      queue: q,
+      private_queue_owner_token: 'k2-token',
+      private_queue_lease_ms: 600_000,
+    });
+    const claimed = await queue.claim(nextToken(), 30_000, q, ['private-active']);
+    expect(claimed?.id).toBe(job.id);
+    // Expire the lease and age updated_at — the healthy lock alone keeps it live.
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET private_queue_lease_until = now() - interval '1 second', updated_at = now() - interval '5 minutes' WHERE id = $1`,
+      [job.id],
+    );
+
+    expect(await queue.classifyPrivateQueueForRecovery(q)).toBe('live');
+    const result = await queue.reconcileOrphanedPrivateQueues();
+    expect(result.cancelled_jobs).toBe(0);
+    expect(result.skipped_live_queues).toBe(1);
+    expect((await queue.getJob(job.id))?.status).toBe('active');
+  });
+
+  test('L6: renewPrivateQueueLease returns 0 when every job in the queue is terminal', async () => {
+    const q = `dream-inline-${Date.now()}-l6term`;
+    const job = await queue.add('private-active', {}, {
+      queue: q,
+      private_queue_owner_token: 'l6-token',
+      private_queue_lease_ms: 600_000,
+    });
+    const token = nextToken();
+    const claimed = await queue.claim(token, 30_000, q, ['private-active']);
+    expect(claimed?.id).toBe(job.id);
+    await queue.completeJob(job.id, token, { ok: true });
+
+    expect(await queue.renewPrivateQueueLease(q, 'l6-token')).toBe(0);
+  });
+
+  test('L4: renew COALESCEs a NULL lease — returns 1 and stamps ~now + default horizon', async () => {
+    const q = `dream-inline-${Date.now()}-l4null`;
+    const job = await queue.add('private-waiting', {}, {
+      queue: q,
+      private_queue_owner_token: 'l4-token',
+      // NO private_queue_lease_ms: the row starts with a NULL lease.
+    });
+    expect(await readLeaseMs(job.id)).toBeNull();
+
+    const before = Date.now();
+    expect(await queue.renewPrivateQueueLease(q, 'l4-token')).toBe(1);
+    const lease = await readLeaseMs(job.id);
+    expect(lease).not.toBeNull();
+    expect(lease!).toBeGreaterThanOrEqual(before + DEFAULT_PRIVATE_QUEUE_LEASE_MS - 60_000);
+    expect(lease!).toBeLessThanOrEqual(Date.now() + DEFAULT_PRIVATE_QUEUE_LEASE_MS + 60_000);
+  });
+
+  test('add() clamps private_queue_lease_ms 0 and negatives to the 1ms floor without crashing', async () => {
+    const qZero = `dream-inline-${Date.now()}-clamp0`;
+    const zero = await queue.add('private-waiting', {}, { queue: qZero, private_queue_lease_ms: 0 });
+    const zeroLease = await readLeaseMs(zero.id);
+    expect(zeroLease).not.toBeNull();
+    expect(Math.abs(zeroLease! - Date.now())).toBeLessThan(10_000);
+
+    const qNeg = `dream-inline-${Date.now()}-clampneg`;
+    const neg = await queue.add('private-waiting', {}, { queue: qNeg, private_queue_lease_ms: -3_600_000 });
+    const negLease = await readLeaseMs(neg.id);
+    expect(negLease).not.toBeNull();
+    // Floored at 1ms after submit — NOT an hour in the past.
+    expect(negLease!).toBeGreaterThan(Date.now() - 10_000);
+  });
+
+  test('renewPrivateQueueLease with leaseMs 0 clamps to 1ms and GREATEST never shrinks the horizon', async () => {
+    const q = `dream-inline-${Date.now()}-renew0`;
+    const job = await queue.add('private-waiting', {}, {
+      queue: q,
+      private_queue_owner_token: 'renew0-token',
+      private_queue_lease_ms: 600_000,
+    });
+    const before = await readLeaseMs(job.id);
+    expect(await queue.renewPrivateQueueLease(q, 'renew0-token', 0)).toBe(1);
+    const after = await readLeaseMs(job.id);
+    expect(after).not.toBeNull();
+    expect(after!).toBeGreaterThanOrEqual(before!);
+  });
+
+  test('reconcilePrivateQueue does not double-stamp an already-prefixed reason', async () => {
+    const q = `dream-inline-${Date.now()}-prefix1`;
+    const job = await queue.add('private-waiting', {}, { queue: q });
+    const cancelled = await queue.reconcilePrivateQueue(q, 'private_queue_reconciled: caller stamped');
+    expect(cancelled).toHaveLength(1);
+    const row = await queue.getJob(job.id);
+    expect(row?.error_text).toBe('private_queue_reconciled: caller stamped');
+    expect(row!.error_text!.split('private_queue_reconciled').length - 1).toBe(1);
+  });
+
+  test('reconcileOrphanedPrivateQueues default reason is the exact startup-recovery literal', async () => {
+    const owner = await queue.add('autopilot-cycle', {});
+    await claimAndComplete('autopilot-cycle', { ok: true });
+    const q = `dream-inline-${Date.now()}-defreason`;
+    const job = await queue.add('private-waiting', {}, {
+      queue: q,
+      private_queue_owner_job_id: owner.id,
+      private_queue_owner_token: 'defreason-token',
+      private_queue_lease_ms: 600_000,
+    });
+    await ageUpdatedAt([job.id]);
+
+    const result = await queue.reconcileOrphanedPrivateQueues(); // NO reason opt
+    expect(result.cancelled_jobs).toBe(1);
+    expect((await queue.getJob(job.id))?.error_text).toBe(
+      'private_queue_reconciled: startup recovery: orphaned dream-inline private queue',
+    );
+  });
+
+  test('O8: a verdict flipping to live on the pre-cancel recheck cancels nothing and bumps skipped_non_orphan_queues', async () => {
+    // Simulated TOCTOU race: a claim/renewal lands between the first classify
+    // and the cancel. The recheck must catch it — and its non-orphan verdict
+    // routes to skipped_non_orphan_queues, NOT skipped_live_queues.
+    let calls = 0;
+    class FlipVerdictQueue extends MinionQueue {
+      override async classifyPrivateQueueForRecovery(): Promise<'orphan' | 'live' | 'unowned' | 'not_orphan'> {
+        calls++;
+        return calls === 1 ? 'orphan' : 'live';
+      }
+    }
+    const flip = new FlipVerdictQueue(engine);
+    const q = `dream-inline-${Date.now()}-toctou1`;
+    const job = await queue.add('private-waiting', {}, {
+      queue: q,
+      private_queue_owner_token: 'toctou-token',
+      private_queue_lease_ms: 600_000,
+    });
+
+    const result = await flip.reconcileOrphanedPrivateQueues();
+    expect(calls).toBe(2);
+    expect(result.cancelled_queues).toBe(0);
+    expect(result.cancelled_jobs).toBe(0);
+    expect(result.skipped_non_orphan_queues).toBe(1);
+    expect(result.skipped_live_queues).toBe(0);
+    expect((await queue.getJob(job.id))?.status).toBe('waiting');
+  });
+
+  test('O1/O3: maxQueues bounds the scan ordered by min(created_at) — only the OLDER orphan is processed', async () => {
+    const older = `dream-inline-${Date.now()}-older01`;
+    const newer = `dream-inline-${Date.now()}-newer01`;
+    const olderJob = await queue.add('private-waiting', {}, {
+      queue: older, private_queue_owner_token: 'older-token', private_queue_lease_ms: 600_000,
+    });
+    const newerJob = await queue.add('private-waiting', {}, {
+      queue: newer, private_queue_owner_token: 'newer-token', private_queue_lease_ms: 600_000,
+    });
+    // Both orphan-shaped (expired lease + stale updated_at), distinct created_at.
+    await engine.executeRaw(
+      `UPDATE minion_jobs
+          SET private_queue_lease_until = now() - interval '1 second',
+              updated_at = now() - interval '5 minutes'
+        WHERE id = ANY($1::int[])`,
+      [[olderJob.id, newerJob.id]],
+    );
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET created_at = now() - interval '10 minutes' WHERE id = $1`,
+      [olderJob.id],
+    );
+
+    const result = await queue.reconcileOrphanedPrivateQueues({ maxQueues: 1 });
+    expect(result.scanned_queues).toBe(1);
+    expect(result.cancelled_queues).toBe(1);
+    expect(result.cancelled_jobs).toBe(1);
+    expect((await queue.getJob(olderJob.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(newerJob.id))?.status).toBe('waiting');
+  });
+
+  test('O4: scanned_queues counts only metadata-bearing non-terminal queues on a mixed fixture', async () => {
+    const liveQ = `dream-inline-${Date.now()}-mixlive`;
+    const orphanQ = `dream-inline-${Date.now()}-mixorph`;
+    const legacyQ = `dream-inline-${Date.now()}-mixleg`;
+    const liveJob = await queue.add('private-waiting', {}, {
+      queue: liveQ, private_queue_lease_ms: 2 * 60 * 60 * 1000,
+    });
+    const orphanJob = await queue.add('private-waiting', {}, {
+      queue: orphanQ, private_queue_owner_token: 'mix-token', private_queue_lease_ms: 1,
+    });
+    const legacyJob = await queue.add('legacy-private-waiting', {}, { queue: legacyQ });
+    await ageUpdatedAt([liveJob.id, orphanJob.id, legacyJob.id]);
+
+    const result = await queue.reconcileOrphanedPrivateQueues();
+    expect(result.scanned_queues).toBe(2); // legacy metadata-less queue never scanned
+    expect(result.skipped_live_queues).toBe(1);
+    expect(result.cancelled_queues).toBe(1);
+    expect(result.cancelled_jobs).toBe(1);
+    expect(result.skipped_unowned_queues).toBe(0);
+    expect((await queue.getJob(liveJob.id))?.status).toBe('waiting');
+    expect((await queue.getJob(orphanJob.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(legacyJob.id))?.status).toBe('waiting');
+  });
+
+  test('O11: an orphan verdict over an all-terminal queue cancels nothing — cancelled_queues stays 0', async () => {
+    // Race shape: every child terminalizes between the scan and the cancel.
+    // Both classify calls say orphan, but reconcilePrivateQueue finds nothing
+    // to cancel, so the cancelled_* counters must not budge.
+    const q = `dream-inline-${Date.now()}-allterm`;
+    const job = await queue.add('private-waiting', {}, {
+      queue: q, private_queue_owner_token: 'allterm-token', private_queue_lease_ms: 600_000,
+    });
+    let victimCancelled = false;
+    class TerminalizeOnClassifyQueue extends MinionQueue {
+      override async classifyPrivateQueueForRecovery(): Promise<'orphan' | 'live' | 'unowned' | 'not_orphan'> {
+        if (!victimCancelled) {
+          victimCancelled = true;
+          await this.cancelJob(job.id);
+        }
+        return 'orphan';
+      }
+    }
+    const raced = new TerminalizeOnClassifyQueue(engine);
+
+    const result = await raced.reconcileOrphanedPrivateQueues();
+    expect(result.scanned_queues).toBe(1);
+    expect(result.cancelled_queues).toBe(0);
+    expect(result.cancelled_jobs).toBe(0);
+    expect((await queue.getJob(job.id))?.status).toBe('cancelled'); // by the simulated race, not recovery
+  });
+
+  test('rowToMinionJob maps private-queue metadata: owner id number, token string, lease Date; missing token → null', async () => {
+    const owner = await queue.add('owner-job', {});
+    const q = `dream-inline-${Date.now()}-rowmap1`;
+    const withToken = await queue.add('private-waiting', {}, {
+      queue: q,
+      private_queue_owner_job_id: owner.id,
+      private_queue_owner_token: 'rowmap-token',
+      private_queue_lease_ms: 600_000,
+    });
+    const fetched = await queue.getJob(withToken.id);
+    expect(typeof fetched?.private_queue_owner_job_id).toBe('number');
+    expect(fetched?.private_queue_owner_job_id).toBe(owner.id);
+    expect(fetched?.private_queue_owner_token).toBe('rowmap-token');
+    expect(fetched?.private_queue_lease_until).toBeInstanceOf(Date);
+    expect(fetched!.private_queue_lease_until!.getTime()).toBeGreaterThan(Date.now());
+
+    // types.ts maps the token with `|| null`, so an absent (NULL) token — and
+    // by the same operator an empty string — surfaces as null, never ''.
+    const q2 = `dream-inline-${Date.now()}-rowmap2`;
+    const noToken = await queue.add('private-waiting', {}, {
+      queue: q2,
+      private_queue_owner_job_id: owner.id,
+    });
+    const fetched2 = await queue.getJob(noToken.id);
+    expect(fetched2?.private_queue_owner_job_id).toBe(owner.id);
+    expect(fetched2?.private_queue_owner_token).toBeNull();
+    expect(fetched2?.private_queue_lease_until).toBeNull();
   });
 });
