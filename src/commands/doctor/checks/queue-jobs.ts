@@ -493,7 +493,7 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
     return {
       name: 'orphaned_private_queue',
       status: 'fail',
-     message:
+      message:
         `Orphaned private dream queue(s): ${orphaned.join('; ')}. ` +
         `A supervisor restart cannot consume these parent-owned queues. ` +
         `Current binaries run metadata-backed private-queue startup recovery when ` +

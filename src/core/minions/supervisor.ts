@@ -711,8 +711,6 @@ export class MinionSupervisor {
     // can be 0/disabled) so the TTL never lapses while we're alive.
     this.lockRefreshTimer = setInterval(() => { void this.refreshDbLock(); }, SUPERVISOR_LOCK_REFRESH_MS);
 
-    await this.reconcileOrphanedPrivateQueuesOnStartup();
-
     // 3. Signal handlers (tracked refs; removed on shutdown for test lifecycle hygiene).
     this.sigtermListener = () => { void this.shutdown('SIGTERM', ExitCodes.CLEAN); };
     this.sigintListener = () => { void this.shutdown('SIGINT', ExitCodes.CLEAN); };
@@ -792,7 +790,7 @@ export class MinionSupervisor {
     }
   }
 
-  private async reconcileOrphanedPrivateQueuesOnStartup(): Promise<void> {
+  private async reconcileOrphanedPrivateQueuesBeforeWorkerSpawn(): Promise<void> {
     try {
       const result = await new MinionQueue(this.engine).reconcileOrphanedPrivateQueues({
         reason: 'supervisor startup recovery: orphaned dream-inline private queue',
@@ -1046,6 +1044,11 @@ export class MinionSupervisor {
       hardStopMaxCrashes: resolveHardStopMaxCrashes(this.opts.maxCrashes),
       _backoffFloorMs: this.opts._backoffFloorMs,
       isStopping: () => this.stopping,
+      // Run under the supervisor's queue-scoped DB singleton lock before every
+      // child spawn, not merely once when the supervisor starts. The supervisor
+      // intentionally survives worker crashes/watchdog drains, and those are
+      // exactly the exits that can strand a parent-owned private queue.
+      beforeSpawn: () => this.reconcileOrphanedPrivateQueuesBeforeWorkerSpawn(),
       onMaxCrashesExceeded: (count, max) => {
         this.emit('max_crashes_exceeded', {
           crash_count: count,

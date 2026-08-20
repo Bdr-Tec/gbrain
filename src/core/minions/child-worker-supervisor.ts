@@ -145,6 +145,14 @@ export interface ChildWorkerSupervisorOpts {
   /** Accessor for the composer's stopping flag; loop exits when this returns true. */
   isStopping: () => boolean;
 
+  /**
+   * Optional fenced maintenance hook run immediately before EVERY child spawn,
+   * including crash/watchdog respawns. The composer owns error handling: a
+   * rejected hook aborts the supervise loop instead of spawning past a failed
+   * safety precondition.
+   */
+  beforeSpawn?: () => Promise<void>;
+
   /** Test seed for the clean-restart window. Defaults to Date.now. @internal */
   _now?: () => number;
 }
@@ -328,6 +336,8 @@ export class ChildWorkerSupervisor {
       this.opts.maxCrashes * HARD_STOP_CRASH_MULTIPLIER;
     let degradedAnnounced = false;
     while (!this.opts.isStopping()) {
+      await this.opts.beforeSpawn?.();
+      if (this.opts.isStopping()) return;
       await this.spawnOnce();
 
       if (this.opts.isStopping()) return;

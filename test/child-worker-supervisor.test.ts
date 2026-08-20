@@ -140,6 +140,7 @@ async function runUntilTerminal(
     watchdogLoopBudget: number;
     watchdogLoopWindowMs: number;
     watchdogBackoffMs: number;
+    beforeSpawn: () => Promise<void>;
     _now: () => number;
     stopAfterEvents: number; // safety net so a buggy test can't hang
     deadlineMs: number; // wall-clock safety net (see below)
@@ -165,6 +166,7 @@ async function runUntilTerminal(
     watchdogLoopWindowMs: overrides.watchdogLoopWindowMs,
     watchdogBackoffMs: overrides.watchdogBackoffMs,
     _now: overrides._now,
+    beforeSpawn: overrides.beforeSpawn,
     isStopping: () => stopping,
     onMaxCrashesExceeded: (count, max) => {
       maxCrashesFired = { count, max };
@@ -231,6 +233,23 @@ afterEach(() => {
 });
 
 describe('ChildWorkerSupervisor', () => {
+  it('runs the maintenance hook before every crash respawn', async () => {
+    const h = makeConstantExitHarness(1);
+    let beforeSpawnCalls = 0;
+    try {
+      const res = await runUntilTerminal(h, {
+        maxCrashes: 2,
+        hardStopMaxCrashes: 3,
+        beforeSpawn: async () => { beforeSpawnCalls++; },
+      });
+      const spawns = res.events.filter((e) => e.kind === 'worker_spawned').length;
+      expect(spawns).toBeGreaterThanOrEqual(2);
+      expect(beforeSpawnCalls).toBe(spawns);
+    } finally {
+      h.cleanup();
+    }
+  });
+
   describe('D1 — code=0 exit classifier', () => {
     it('code=0 worker exit does not count as crash; restarts immediately', async () => {
       const h = makeConstantExitHarness(0);
