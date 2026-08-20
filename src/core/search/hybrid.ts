@@ -2274,9 +2274,17 @@ export async function hybridSearchCached(
       cacheSimilarity = hit.similarity;
       cacheAge = hit.ageSeconds;
 
+      // #3871 defense-in-depth: re-filter the stored rows by the CALLER's
+      // scope BEFORE paging. A legacy row written under the pre-fix key
+      // scheme (unscoped all-sources writes keyed 'default') can carry rows
+      // from other sources; the filter guarantees a scoped read never pages
+      // a foreign row — and filtering first means foreign rows can't
+      // displace legitimate ones off the offset/limit window either.
+      const scopedResults = filterResultsByCallerScope(hit.results, opts);
+
       const limit = opts?.limit || 20;
       const offset = opts?.offset || 0;
-      const sliced = hit.results.slice(offset, offset + limit);
+      const sliced = scopedResults.slice(offset, offset + limit);
 
       // Budget enforcement — same pipeline tail as fresh path.
       const { results: budgeted, meta: budgetMeta } = enforceTokenBudget(sliced, opts?.tokenBudget);
@@ -2468,13 +2476,49 @@ function rrfKey(r: SearchResult): string {
  *   - federated (sourceIds set) → `__set__:` + sorted, comma-joined ids
  *     (order-independent; two different source-sets get distinct keys)
  *   - scalar sourceId           → the id itself (single-source unchanged)
- *   - unscoped                  → `'default'` (single-source brains unchanged)
+ *   - unscoped                  → `'__unscoped__'` sentinel (#3871)
+ *
+ * #3871: an UNSCOPED search reads ALL sources, so its cached result set can
+ * carry rows from every source. It used to key to `'default'` — the same
+ * key a scalar `sourceId: 'default'` read uses — so a default-source-scoped
+ * read could be served an all-sources row (cross-source leak). The
+ * `'__unscoped__'` sentinel keeps the two populations on distinct rows;
+ * `filterResultsByCallerScope` on the hit path is the belt-and-braces for
+ * legacy rows written under the old scheme.
  */
 export function cacheScopeKey(opts?: { sourceId?: string; sourceIds?: string[] }): string {
   if (opts?.sourceIds && opts.sourceIds.length > 0) {
     return '__set__:' + [...opts.sourceIds].sort().join(',');
   }
-  return opts?.sourceId ?? 'default';
+  return opts?.sourceId ?? '__unscoped__';
+}
+
+/**
+ * #3871 — re-filter cached results by the CALLER's scope (hit-path
+ * defense-in-depth). A cache row written under the pre-fix key scheme
+ * (unscoped all-sources writes keyed `'default'`) can hold rows from ANY
+ * source; serving it verbatim to a scoped read is a cross-source leak.
+ * The `'__unscoped__'` key split stops NEW contamination; this filter
+ * guarantees even a legacy/poisoned row can never page foreign rows into
+ * a scoped response. Runs BEFORE offset/limit so foreign rows can't
+ * displace legitimate ones off the page either.
+ *
+ *   - federated (sourceIds set) → set membership on (source_id ?? 'default')
+ *   - scalar sourceId           → (source_id ?? 'default') === sourceId
+ *   - unscoped                  → no filter (caller reads all sources)
+ */
+export function filterResultsByCallerScope(
+  results: SearchResult[],
+  opts?: { sourceId?: string; sourceIds?: string[] },
+): SearchResult[] {
+  if (opts?.sourceIds && opts.sourceIds.length > 0) {
+    const allowed = new Set(opts.sourceIds);
+    return results.filter((r) => allowed.has(r.source_id ?? 'default'));
+  }
+  if (opts?.sourceId != null) {
+    return results.filter((r) => (r.source_id ?? 'default') === opts.sourceId);
+  }
+  return results;
 }
 
 /**
