@@ -23,9 +23,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { BrainEngine } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
-import { MinionQueue } from '../minions/queue.ts';
+import { DEFAULT_PRIVATE_QUEUE_LEASE_MS, MinionQueue } from '../minions/queue.ts';
 import { isQueueQuotaExceededError } from '../minions/admission.ts';
-import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
+import { waitForCompletionRenewing, TimeoutError } from '../minions/wait-for-completion.ts';
 import type { MinionJobInput, MinionJobStatus, SubagentHandlerData } from '../minions/types.ts';
 import { serializeMarkdown } from '../markdown.ts';
 import { truncateUtf8 } from '../text-safe.ts';
@@ -209,17 +209,15 @@ export async function runPhasePatterns(
     const childQueueName = `dream-inline-${Date.now()}-${randomUUID().slice(0, 8)}`;
     ownedPrivateQueue = { queue, name: childQueueName };
     const privateQueueOwnerToken = randomUUID();
-    // Same lease posture as synthesize: renew with the CREATION-TIME horizon
-    // (never the shrinking 10-min default), throttled to 30s because the
-    // drain loop also calls this from its 1-5s idle polls.
-    const privateQueueLeaseHorizonMs = Math.max(600_000, budgets.waitTimeoutMs);
+    // Same lease posture as synthesize: rolling 10-min default lease renewed
+    // every ≤30s (drain loop + chunked post-drain wait); the whole wrapper is
+    // 30s-throttled so idle polls cost one UPDATE per half-minute.
     let lastLeaseRenewalAtMs = 0;
     const renewPrivateQueueLease = async () => {
       const nowMs = Date.now();
-      if (nowMs - lastLeaseRenewalAtMs >= 30_000) {
-        lastLeaseRenewalAtMs = nowMs;
-        await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken, privateQueueLeaseHorizonMs);
-      }
+      if (nowMs - lastLeaseRenewalAtMs < 30_000) return;
+      lastLeaseRenewalAtMs = nowMs;
+      await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken);
       if (opts.yieldDuringPhase) await opts.yieldDuringPhase();
     };
     const data: SubagentHandlerData = {
@@ -241,7 +239,7 @@ export async function runPhasePatterns(
       queue: childQueueName,
       private_queue_owner_job_id: opts.privateQueueOwnerJobId ?? null,
       private_queue_owner_token: privateQueueOwnerToken,
-      private_queue_lease_ms: Math.max(600_000, budgets.waitTimeoutMs),
+      private_queue_lease_ms: DEFAULT_PRIVATE_QUEUE_LEASE_MS,
     };
     let job: Awaited<ReturnType<typeof queue.add>>;
     try {
@@ -266,9 +264,10 @@ export async function runPhasePatterns(
 
     let outcome: MinionJobStatus | 'timeout';
     try {
-      const final = await waitForCompletion(queue, job.id, {
+      const final = await waitForCompletionRenewing(queue, job.id, {
         timeoutMs: budgets.waitTimeoutMs,
         pollMs: 5 * 1000,
+        renew: renewPrivateQueueLease,
       });
       outcome = final.status;
     } catch (e) {

@@ -13,18 +13,18 @@ src/core/ai/gateway.ts	4428	ratchet	watchlist; merged: dream-wave turn permits +
 src/cli.ts	3499	ratchet	grown v0.46.24.0: serve-delegated sync preflight hook
 src/core/cycle.ts	3093	ratchet	grown v0.46.25.0 private-queue wave: cycle-start orphan recovery
 src/commands/serve-http.ts	3194	ratchet	grown v0.46.23.0 review fix wave: github-kind webhook gating + case-insensitive repo match
-src/commands/jobs.ts	3065	ratchet	grown v0.46.25.0 private-queue wave: worker startup recovery + maintenance owner id + stats hint
+src/commands/jobs.ts	3071	ratchet	grown v0.46.25.0 review fixes: classifier-gated abandoned-queue line
 src/core/search/hybrid.ts	2629	ratchet	grown v0.46.23.0 review fix wave: supersede scoping + edge-existence gate
 src/core/engine.ts	2351	ratchet	grown v0.46.23.0: putPage allowEmptyOverwrite contract (#4335)
-src/commands/autopilot.ts	2305	ratchet	grown v0.46.25.0 private-queue wave: recovery-coverage comment
+src/commands/autopilot.ts	2308	ratchet	grown v0.46.25.0 review fixes: GBRAIN_SUPERVISED strip
 src/commands/extract.ts	2161	ratchet
 src/commands/extract-conversation-facts.ts	2045	ratchet	grown v0.46.x per-provider gateway-unavailable copy
 src/core/import-file.ts	2000	ratchet	grown v0.46.11.0 five-issue wave
-src/core/cycle/synthesize.ts	2745	ratchet	grown v0.46.25.0 private-queue wave: monotonic lease horizon + throttle
+src/core/cycle/synthesize.ts	2746	ratchet	grown v0.46.25.0 review fixes: rolling lease + renewing wait
 src/commands/embed.ts	1963	ratchet
 src/core/types.ts	1879	ratchet	grown v0.46.22.0 phone wave: supersession rerank result fields (#4056)
 src/commands/skillpack.ts	1360	ratchet
-src/core/minions/queue.ts	2356	ratchet	grown v0.46.25.0 private-queue wave: monotonic lease + reason family + public classifier
+src/core/minions/queue.ts	2387	ratchet	grown v0.46.25.0 review fixes: freshness guard + re-verify + literal predicates
 src/core/schema-embedded.ts	1501	ratchet	generated schema bundle grew for private queue metadata
 src/commands/init.ts	1950	ratchet	grown v0.46.x keyless capability notices
 src/commands/integrations.ts	1675	ratchet

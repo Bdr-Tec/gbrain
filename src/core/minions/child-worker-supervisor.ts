@@ -147,9 +147,12 @@ export interface ChildWorkerSupervisorOpts {
 
   /**
    * Optional fenced maintenance hook run immediately before EVERY child spawn,
-   * including crash/watchdog respawns. The composer owns error handling: a
-   * rejected hook aborts the supervise loop instead of spawning past a failed
-   * safety precondition.
+   * including crash/watchdog respawns. The composer owns error handling AND
+   * bounding: a rejection propagates out of run() with no crash accounting or
+   * respawn, and the await is not isStopping-checked — so composers must
+   * try/catch and time-bound the hook themselves (MinionSupervisor wraps its
+   * recovery hook in a 30s race and spawns on failure). Reserve a bare
+   * rethrowing hook for genuine spawn-blocking safety preconditions.
    */
   beforeSpawn?: () => Promise<void>;
 

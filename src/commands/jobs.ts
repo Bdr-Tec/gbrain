@@ -1089,16 +1089,22 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         // Shared derivation (queue.ts deriveWedgeSignal) so this line, the
         // doctor wedged_queue check, and the get_job_stats op agree (#1801).
         const { wedged, wedge_threshold_minutes: wedgeMins, private_queue } = deriveWedgeSignal(w);
-        if (private_queue && w.active_healthy === 0 && w.waiting > 0) {
-          // Parent-owned dream-inline queue: no shared worker can EVER claim
-          // it, so the supervisor-restart advice below would be a dead end
-          // (the incident bug class). Point at reconciliation instead.
+        // Parent-owned dream-inline queue: no shared worker can EVER claim it,
+        // so the supervisor-restart advice below would be a dead end (the
+        // incident bug class). Gate the ABANDONED line on the SAME classifier
+        // recovery uses — a healthy mid-drain queue (active_healthy 0 in a
+        // claim gap) classifies live and must not scream.
+        const privateVerdict = private_queue && w.active_healthy === 0 && w.waiting > 0
+          ? await queue.classifyPrivateQueueForRecovery(w.queue)
+          : null;
+        if (privateVerdict === 'orphan' || privateVerdict === 'unowned') {
           const since = mins === null ? 'no completions on record' : `${mins}m since last completion`;
           console.log(
             `\n  ⚠  ABANDONED PRIVATE QUEUE '${w.queue}': ${w.waiting} waiting, 0 active (live-lock), ${since}.\n` +
             `     This dream-inline queue is parent-owned; restarting a worker cannot consume it.\n` +
-            `     Recovery runs automatically before worker spawns and at cycle start on current\n` +
-            `     binaries; for legacy unowned queues, preview \`gbrain dream retriage --help\`.`,
+            (privateVerdict === 'orphan'
+              ? `     Auto-recovery cancels it at the next worker spawn or dream-cycle start.`
+              : `     Legacy unowned queue: preview \`gbrain dream retriage --help\` before manual cancellation.`),
           );
         } else if (wedged) {
           const since = mins === null ? 'no completions on record' : `${mins}m since last completion`;

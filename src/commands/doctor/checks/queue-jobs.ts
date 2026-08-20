@@ -347,13 +347,19 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
     }
     // Queue-aware restart hint: the bare stop/start pair bounces the DEFAULT
     // worker — for a non-default wedged queue that advice restarts the wrong
-    // process. Name the queue in the start command.
+    // process. Name the queue in the start command. Queue names are
+    // producer-controlled and this hint gets copy-pasted (by operators AND
+    // remediation agents), so embedded quotes are escaped for the shell.
+    const shellQuote = (q: string) => `'${q.replace(/'/g, String.raw`'\''`)}'`;
     const nonDefault = wedgedQueueNames.filter(q => q !== 'default');
-    const restartHint = nonDefault.length === 0
-      ? `\`gbrain jobs supervisor stop && gbrain jobs supervisor start\``
-      : nonDefault
-          .map(q => `\`gbrain jobs supervisor stop && gbrain jobs supervisor start --queue '${q}'\``)
-          .join(', ');
+    const hints: string[] = [];
+    if (nonDefault.length < wedgedQueueNames.length || nonDefault.length === 0) {
+      hints.push('`gbrain jobs supervisor stop && gbrain jobs supervisor start`');
+    }
+    for (const q of nonDefault) {
+      hints.push(`\`gbrain jobs supervisor stop && gbrain jobs supervisor start --queue ${shellQuote(q)}\``);
+    }
+    const restartHint = hints.join(', ');
     return {
       name: 'wedged_queue',
       status: 'fail',
@@ -505,6 +511,12 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
     const recoverable: string[] = [];
     const legacyUnowned: string[] = [];
     const ownerPending: string[] = [];
+    // One classify query per candidate — cap the loop so a pathological brain
+    // (hundreds of stale queues) can't turn an advisory doctor check into a
+    // hang; the count line below reports the truncation honestly.
+    const CLASSIFY_CAP = 100;
+    const truncatedCandidates = Math.max(0, candidateQueues.length - CLASSIFY_CAP);
+    candidateQueues.length = Math.min(candidateQueues.length, CLASSIFY_CAP);
     for (let i = 0; i < candidateQueues.length; i++) {
       const verdict = await classifierQueue.classifyPrivateQueueForRecovery(candidateQueues[i]);
       if (verdict === 'live') { suppressedByLiveLease++; continue; }
@@ -562,6 +574,7 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
         suppressed_by_live_lock: suppressedByLiveLock,
         suppressed_by_live_lease: suppressedByLiveLease,
         threshold_minutes: thresholdMin,
+        ...(truncatedCandidates > 0 ? { unclassified_candidates: truncatedCandidates } : {}),
       },
     };
   } catch (e) {

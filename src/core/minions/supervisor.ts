@@ -792,9 +792,19 @@ export class MinionSupervisor {
 
   private async reconcileOrphanedPrivateQueuesBeforeWorkerSpawn(): Promise<void> {
     try {
-      const result = await new MinionQueue(this.engine).reconcileOrphanedPrivateQueues({
-        reason: 'supervisor startup recovery: orphaned dream-inline private queue',
-      });
+      // 30s bound: a hanging DB call here would otherwise block EVERY worker
+      // respawn indefinitely (the hook is awaited in the supervise loop with
+      // isStopping unchecked during the await). Timeout → spawn proceeds; the
+      // next respawn retries recovery.
+      const result = await Promise.race([
+        new MinionQueue(this.engine).reconcileOrphanedPrivateQueues({
+          reason: 'supervisor startup recovery: orphaned dream-inline private queue',
+        }),
+        new Promise<never>((_, reject) => {
+          const t = setTimeout(() => reject(new Error('private-queue recovery timed out after 30s')), 30_000);
+          t.unref?.();
+        }),
+      ]);
       if (result.cancelled_jobs > 0) {
         this.emit('health_warn', {
           reason: 'private_queue_startup_recovery',

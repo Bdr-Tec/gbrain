@@ -263,8 +263,11 @@ describe('private queue terminal reconciliation', () => {
       private_queue_owner_token: token,
       private_queue_lease_ms: 600_000,
     });
+    // A crashed run's rows go untouched — age updated_at past the 2-minute
+    // recently-touched guard so the fixture models a real crash, not a queue
+    // something is actively working.
     await engine.executeRaw(
-      `UPDATE minion_jobs SET private_queue_lease_until = now() - interval '1 second' WHERE id = $1`,
+      `UPDATE minion_jobs SET private_queue_lease_until = now() - interval '1 second', updated_at = now() - interval '5 minutes' WHERE id = $1`,
       [job.id],
     );
 
@@ -327,6 +330,12 @@ describe('private queue terminal reconciliation', () => {
       private_queue_lease_ms: 600_000,
     });
 
+    // Age past the recently-touched guard (see the expired-lease fixture note).
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET updated_at = now() - interval '5 minutes' WHERE id = $1`,
+      [child.id],
+    );
+
     const result = await queue.reconcileOrphanedPrivateQueues({ reason: 'owner terminal' });
     expect(result.cancelled_jobs).toBe(1);
     expect((await queue.getJob(child.id))?.status).toBe('cancelled');
@@ -339,7 +348,10 @@ describe('private queue terminal reconciliation', () => {
 
     const result = await queue.reconcileOrphanedPrivateQueues();
     expect(result.cancelled_jobs).toBe(0);
-    expect(result.skipped_unowned_queues).toBeGreaterThanOrEqual(1);
+    // The scan's HAVING excludes metadata-less queues at the SQL level (they
+    // are never recoverable by this lane and must not occupy the LIMIT
+    // window), so they no longer even count as scanned/skipped.
+    expect(result.skipped_unowned_queues).toBe(0);
     expect((await queue.getJob(job.id))?.status).toBe('waiting');
   });
 
@@ -365,6 +377,12 @@ describe('private queue terminal reconciliation', () => {
       private_queue_lease_ms: 600_000,
     });
 
+    // Age past the recently-touched guard (see the expired-lease fixture note).
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET updated_at = now() - interval '5 minutes' WHERE id = ANY($1::int[])`,
+      [[child.id, grandchild.id]],
+    );
+
     const result = await queue.reconcileOrphanedPrivateQueues({ reason: 'owner terminal tree' });
     expect(result.cancelled_jobs).toBeGreaterThanOrEqual(2);
     expect((await queue.getJob(child.id))?.status).toBe('cancelled');
@@ -372,6 +390,59 @@ describe('private queue terminal reconciliation', () => {
     expect((await queue.getJob(aggregator.id))?.status).toBe('waiting');
     const msgs = await readChildDoneInbox(aggregator.id);
     expect(msgs.some(m => m.child_id === child.id && m.outcome === 'cancelled')).toBe(true);
+  });
+});
+
+describe('recovery freshness guard (fix-wave review)', () => {
+  test('a terminal-owner queue touched in the last 2 minutes is LIVE, never cancelled', async () => {
+    // The laptop-sleep shape: the owner job row went terminal (stall-swept)
+    // but the drain loop survived and still renews/claims — updated_at is
+    // fresh. Recovery must classify live and touch nothing; the queue becomes
+    // orphaned only after 2 minutes of silence.
+    const owner = await queue.add('autopilot-cycle', {});
+    await claimAndComplete('autopilot-cycle', { ok: true });
+    const privateQueue = `dream-inline-${Date.now()}-fresh01`;
+    const child = await queue.add('private-waiting', {}, {
+      queue: privateQueue,
+      private_queue_owner_job_id: owner.id,
+      private_queue_owner_token: 'fresh-token',
+      private_queue_lease_ms: 600_000,
+    });
+    expect(await queue.classifyPrivateQueueForRecovery(privateQueue)).toBe('live');
+    const result = await queue.reconcileOrphanedPrivateQueues({ reason: 'must not fire' });
+    expect(result.cancelled_jobs).toBe(0);
+    expect((await queue.getJob(child.id))?.status).toBe('waiting');
+  });
+
+  test('renewPrivateQueueLease negative paths: wrong token renews nothing; empty token and shared queues throw', async () => {
+    const privateQueue = `dream-inline-${Date.now()}-neg001`;
+    await queue.add('private-waiting', {}, {
+      queue: privateQueue,
+      private_queue_owner_token: 'right-token',
+      private_queue_lease_ms: 600_000,
+    });
+    expect(await queue.renewPrivateQueueLease(privateQueue, 'wrong-token')).toBe(0);
+    await expect(queue.renewPrivateQueueLease(privateQueue, '')).rejects.toThrow('owner token cannot be empty');
+    await expect(queue.renewPrivateQueueLease('default', 'right-token')).rejects.toThrow('refusing to renew non-private queue');
+  });
+
+  test('owner nonterminal without a lease classifies not_orphan and is skipped', async () => {
+    const owner = await queue.add('autopilot-cycle', {}); // stays waiting (non-terminal)
+    const privateQueue = `dream-inline-${Date.now()}-pend01`;
+    const child = await queue.add('private-waiting', {}, {
+      queue: privateQueue,
+      private_queue_owner_job_id: owner.id,
+      private_queue_owner_token: 'pending-token',
+    });
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET updated_at = now() - interval '5 minutes' WHERE id = $1`,
+      [child.id],
+    );
+    expect(await queue.classifyPrivateQueueForRecovery(privateQueue)).toBe('not_orphan');
+    const result = await queue.reconcileOrphanedPrivateQueues();
+    expect(result.cancelled_jobs).toBe(0);
+    expect(result.skipped_non_orphan_queues).toBeGreaterThanOrEqual(1);
+    expect((await queue.getJob(child.id))?.status).toBe('waiting');
   });
 });
 

@@ -207,8 +207,8 @@ describe('orphaned private dream queues', () => {
     );
     const owner = await base.executeRaw<{ id: number }>(`SELECT max(id)::int AS id FROM minion_jobs`);
     await base.executeRaw(
-      `INSERT INTO minion_jobs (name, queue, status, created_at, private_queue_owner_job_id, private_queue_owner_token, private_queue_lease_until)
-       VALUES ('child', 'dream-inline-owned-dead', 'waiting', now() - interval '2 hours', $1, 'tok', now() - interval '1 hour')`,
+      `INSERT INTO minion_jobs (name, queue, status, created_at, updated_at, private_queue_owner_job_id, private_queue_owner_token, private_queue_lease_until)
+       VALUES ('child', 'dream-inline-owned-dead', 'waiting', now() - interval '2 hours', now() - interval '2 hours', $1, 'tok', now() - interval '1 hour')`,
       [owner[0].id],
     );
     const check = await computeOrphanedPrivateQueueCheck(pgLike);

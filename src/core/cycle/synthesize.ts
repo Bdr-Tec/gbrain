@@ -54,7 +54,7 @@ import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { DEFAULT_PRIVATE_QUEUE_LEASE_MS, MinionQueue } from '../minions/queue.ts';
 import { clampSubagentBudgets, CYCLE_DEADLINE_RESERVE_MS, MIN_PATTERNS_SUBAGENT_BUDGET_MS } from './patterns.ts';
 import { isQueueQuotaExceededError } from '../minions/admission.ts';
-import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
+import { waitForCompletionRenewing, TimeoutError } from '../minions/wait-for-completion.ts';
 import type { MinionJobInput, SubagentHandlerData } from '../minions/types.ts';
 import { runSubagentsInline, runDrainRenewalTick, percentile, INLINE_LOCK_MS } from './inline-drain.ts';
 import { buildManifestContext, buildLinkManifest, type ManifestContext } from './link-manifest.ts';
@@ -548,17 +548,18 @@ export async function runPhaseSynthesize(
     const childQueueName = `dream-inline-${Date.now()}-${randomUUID().slice(0, 8)}`;
     ownedPrivateQueue = { queue, name: childQueueName };
     const privateQueueOwnerToken = randomUUID();
-    // Renewals must never SHRINK the creation-time horizon (sized per child
-    // below), and the drain loop calls this wrapper from 1-5s idle polls —
-    // throttle to 30s so safety costs one UPDATE per half-minute, not per poll.
-    let privateQueueLeaseHorizonMs = DEFAULT_PRIVATE_QUEUE_LEASE_MS;
+    // Rolling 10-min lease renewed every ≤30s from the drain loop (idle polls,
+    // claim iterations, per-child keepalive) and the post-drain chunked wait —
+    // a crashed run's queue becomes lease-recoverable within ~10 minutes
+    // instead of a wait-timeout-sized horizon. The whole wrapper (lease AND
+    // cycle-lock refresh) is 30s-throttled so 1-5s polls cost one UPDATE per
+    // half-minute, not per poll; the cycle lock's 5-min TTL is ample at 30s.
     let lastLeaseRenewalAtMs = 0;
     const renewPrivateQueueLease = async () => {
       const nowMs = Date.now();
-      if (nowMs - lastLeaseRenewalAtMs >= 30_000) {
-        lastLeaseRenewalAtMs = nowMs;
-        await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken, privateQueueLeaseHorizonMs);
-      }
+      if (nowMs - lastLeaseRenewalAtMs < 30_000) return;
+      lastLeaseRenewalAtMs = nowMs;
+      await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken);
       if (opts.yieldDuringPhase) await opts.yieldDuringPhase();
     };
     const childIds: number[] = [];
@@ -773,9 +774,8 @@ export async function runPhaseSynthesize(
           queue: childQueueName,
           private_queue_owner_job_id: opts.privateQueueOwnerJobId ?? null,
           private_queue_owner_token: privateQueueOwnerToken,
-          private_queue_lease_ms: Math.max(600_000, perChild.waitTimeoutMs),
+          private_queue_lease_ms: DEFAULT_PRIVATE_QUEUE_LEASE_MS,
         };
-        privateQueueLeaseHorizonMs = Math.max(privateQueueLeaseHorizonMs, 600_000, perChild.waitTimeoutMs);
         let child: Awaited<ReturnType<typeof queue.add>>;
         try {
           child = await queue.add(
@@ -911,9 +911,10 @@ export async function runPhaseSynthesize(
         const remainingParentMs = opts.deadlineAtMs != null
           ? Math.max(1000, opts.deadlineAtMs - CYCLE_DEADLINE_RESERVE_MS - Date.now())
           : config.subagentWaitTimeoutMs;
-        const job = await waitForCompletion(queue, jobId, {
+        const job = await waitForCompletionRenewing(queue, jobId, {
           timeoutMs: Math.min(config.subagentWaitTimeoutMs, remainingParentMs),
           pollMs: 5 * 1000,
+          renew: renewPrivateQueueLease,
         });
         // Turn telemetry: surfaces max_turns cap pressure in details.synthesis
         // so the 30→16 default can be re-litigated on data. #4216 adds the

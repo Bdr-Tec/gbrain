@@ -189,6 +189,9 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // bootstrap ALTERs (same class as v121).
   { kind: 'column', table: 'minion_jobs', column: 'private_queue_owner_job_id' },
   { kind: 'column', table: 'minion_jobs', column: 'private_queue_lease_until' },
+  // Token rides the same bootstrap ALTER; registering it guards any FUTURE
+  // blob index on it against the same wedge.
+  { kind: 'column', table: 'minion_jobs', column: 'private_queue_owner_token' },
 ];
 
 test('applyForwardReferenceBootstrap covers every forward reference declared in REQUIRED_BOOTSTRAP_COVERAGE', async () => {
