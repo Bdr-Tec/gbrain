@@ -90,10 +90,17 @@ const add_timeline_entry: Operation = {
       }
     }
 
+    // When the helper failed AFTER the canonical bullet reached the on-disk
+    // file, `writeThrough.entry` carries the canonical tuple (source 'manual'
+    // default, collapsed one-line summary) that the next sync re-extracts
+    // from that bullet. The fallback MUST store that tuple — inserting the
+    // raw input tuple would recreate the duplicate class on the error path
+    // (raw row now + re-extracted canonical row later).
+    const canonical = writeThrough?.entry;
     await ctx.engine.addTimelineEntry(p.slug as string, { // gbrain-allow-direct-insert: add_timeline_entry MCP op is the explicit canonical surface for manual timeline entries on DB-only brains; FS-canonical brains route through writeTimelineEntryThrough above
-      date,
-      source: entryInput.source,
-      summary: entryInput.summary,
+      date: canonical?.date ?? date,
+      source: canonical ? canonical.source : entryInput.source,
+      summary: canonical ? canonical.summary : entryInput.summary,
       detail: entryInput.detail,
     }, sourceOpts);
     return {

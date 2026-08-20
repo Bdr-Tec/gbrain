@@ -219,3 +219,80 @@ describe('resolveSlugsForRemovedPaths (shared delete-side resolver, #3942)', () 
     expect(res.refused.length).toBe(1);
   });
 });
+
+describe('unscoped lane on multi-source brains: refuse-vs-allow is deterministic (wave-C review)', () => {
+  const REMOVED = 'extracts/propose-/round-single.md';
+  const DERIVED = 'extracts/propose/round-single';
+
+  async function addSource(id: string): Promise<void> {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING`,
+      [id],
+    );
+  }
+
+  async function softDelete(slug: string, sourceId = 'default'): Promise<void> {
+    await engine.executeRaw(
+      `UPDATE pages SET deleted_at = now() WHERE source_id = $1 AND slug = $2`,
+      [sourceId, slug],
+    );
+  }
+
+  test('mixed NULL + foreign origins across sources → allow, regardless of row order', async () => {
+    await addSource('src2');
+    // NULL-origin (legacy) row seeded FIRST so a last-row-wins lookup would
+    // land on the foreign-origin row and refuse — the outcome must not
+    // depend on which source's row the query happened to return.
+    await seedPage(DERIVED, null, 'src2');
+    await seedPage(DERIVED, 'extracts/propose/round-single.md', 'default');
+    const res = await resolveSlugsForRemovedPaths(engine, [REMOVED], undefined);
+    expect(res.slugs.get(REMOVED)).toBe(DERIVED);
+    expect(res.refused).toEqual([]);
+  });
+
+  test('ANY live row whose origin matches (after separator normalization) allows', async () => {
+    await addSource('src2');
+    // Backslash-separator origin: misses the phase-1 exact-string match but
+    // IS the removed file after normalization. Seeded first so a
+    // last-row-wins collection would see only the foreign origin and refuse.
+    await seedPage(DERIVED, 'extracts\\propose-\\round-single.md', 'src2');
+    await seedPage(DERIVED, 'extracts/propose/round-single.md', 'default');
+    const res = await resolveSlugsForRemovedPaths(engine, [REMOVED], undefined);
+    expect(res.slugs.get(REMOVED)).toBe(DERIVED);
+    expect(res.refused).toEqual([]);
+  });
+
+  test('every live row records a foreign origin → refused, with a deterministic originPath', async () => {
+    await addSource('src2');
+    await seedPage(DERIVED, 'somewhere/else.md', 'src2');
+    await seedPage(DERIVED, 'extracts/propose/round-single.md', 'default');
+    const res = await resolveSlugsForRemovedPaths(engine, [REMOVED], undefined);
+    expect(res.slugs.has(REMOVED)).toBe(false);
+    // source_id-ordered collection: the reported origin is always the
+    // 'default' row's, never whichever row the engine returned last.
+    expect(res.refused).toEqual([
+      { path: REMOVED, slug: DERIVED, originPath: 'extracts/propose/round-single.md' },
+    ]);
+  });
+
+  test('a soft-deleted foreign-origin row no longer vetoes the fallback', async () => {
+    await seedPage(DERIVED, 'extracts/propose/round-single.md');
+    await softDelete(DERIVED);
+    const res = await resolveSlugsForRemovedPaths(engine, [REMOVED], undefined);
+    // No LIVE row at the derived slug → harmless no-op delete passes through.
+    expect(res.slugs.get(REMOVED)).toBe(DERIVED);
+    expect(res.refused).toEqual([]);
+  });
+
+  test("a soft-deleted row's exact source_path match no longer drives unscoped resolution", async () => {
+    await seedPage('legacy-dead', REMOVED);
+    await softDelete('legacy-dead');
+    // A live page sits at the derived slug and records its own (different)
+    // file — the dead row must not resolve the removed path onto anything.
+    await seedPage(DERIVED, 'extracts/propose/round-single.md');
+    const res = await resolveSlugsForRemovedPaths(engine, [REMOVED], undefined);
+    expect(res.slugs.has(REMOVED)).toBe(false);
+    expect(res.refused.length).toBe(1);
+    expect(res.refused[0].originPath).toBe('extracts/propose/round-single.md');
+  });
+});

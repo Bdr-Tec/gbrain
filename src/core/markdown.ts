@@ -441,7 +441,14 @@ export function splitBody(body: string): { compiled_truth: string; timeline: str
   return { compiled_truth, timeline };
 }
 
-function findTimelineSplitIndex(lines: string[]): number {
+/**
+ * Line index of the first recognized timeline sentinel, or -1. Exported for
+ * the timeline write-through's on-disk splice (timeline-write-through.ts),
+ * which must locate the sentinel in raw file text without re-serializing the
+ * page. Callers pass BODY lines (after frontmatter — splitBody's own call
+ * shape) so the frontmatter's `---` delimiters can't false-positive rule 3.
+ */
+export function findTimelineSplitIndex(lines: string[]): number {
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
 

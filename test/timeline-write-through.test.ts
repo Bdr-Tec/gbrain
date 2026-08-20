@@ -28,6 +28,8 @@ import {
   spliceTimelineBlock,
   writeTimelineEntryThrough,
 } from '../src/core/timeline-write-through.ts';
+import { writeFactsToFence } from '../src/core/facts/fence-write.ts';
+import type { FenceInputFact } from '../src/core/facts/fence-write.ts';
 import { extractTimelineFromContent } from '../src/commands/extract.ts';
 
 const addTimelineEntryOp = operations.find((o) => o.name === 'add_timeline_entry') as Operation;
@@ -291,6 +293,198 @@ describe('add_timeline_entry on an FS-canonical brain (#1856)', () => {
     const timeline = await engine.getTimeline(slug, { sourceId: 'default' });
     expect(timeline.length).toBe(1);
     expect(timeline[0].source).toBe(''); // legacy tuple, unchanged
+  });
+});
+
+/** Minimal fence input for the file-only-edit coexistence cases. */
+function fenceFact(fact: string): FenceInputFact {
+  return {
+    fact,
+    kind: 'fact',
+    notability: 'high',
+    source: 'mcp:put_page',
+    visibility: 'world',
+    confidence: 1.0,
+    validFrom: new Date(Date.UTC(2026, 0, 1)),
+    embedding: null,
+    sessionId: null,
+  };
+}
+
+describe('wave-C review: splice-under-lock, never whole-file regeneration', () => {
+  test('BLOCKER: file-only fence lines survive a timeline add', async () => {
+    await engine.setConfig('sync.repo_path', brainDir);
+    const slug = 'people/fence-survivor';
+    const filePath = await seedPage(slug);
+
+    // File-only edit: the facts fence writer appends a `## Facts` fence to
+    // the ON-DISK file directly (never engine.putPage), so the fence exists
+    // on disk but not in the pages row. Regenerating the whole file from the
+    // DB row silently reverts it — and the next extract_facts reconcile then
+    // deletes the fence-owned fact rows.
+    const fence = await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug },
+      [fenceFact('Founded Widget-Co in 2017')],
+    );
+    expect(fence.inserted).toBe(1);
+    expect(fs.readFileSync(filePath, 'utf8')).toContain('gbrain:facts:begin');
+
+    const res = await addTimelineEntryOp.handler(makeCtx(), {
+      slug,
+      date: '2026-07-15',
+      summary: 'Post-fence milestone',
+      source: 'manual',
+    }) as { status: string; write_through?: { written?: boolean } };
+    expect(res.status).toBe('ok');
+    expect(res.write_through?.written).toBe(true);
+
+    const disk = fs.readFileSync(filePath, 'utf8');
+    // THE blocker assertion: the fence (a file-only edit) is still there…
+    expect(disk).toContain('gbrain:facts:begin');
+    expect(disk).toContain('Founded Widget-Co in 2017');
+    // …AND the bullet landed.
+    expect(disk).toContain('- **2026-07-15** | manual — Post-fence milestone');
+  });
+
+  test('bullet splices among existing bullets, not past a trailing facts fence', async () => {
+    await engine.setConfig('sync.repo_path', brainDir);
+    const slug = 'people/fence-placement';
+    const body = [
+      '---', 'title: T', 'type: note', '---', '',
+      '# Body', '',
+      '<!-- timeline -->', '',
+      '## Timeline', '',
+      '- **2026-07-01** | kickoff — Project kicked off.', '',
+    ].join('\n');
+    const filePath = await seedPage(slug, body);
+    await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug },
+      [fenceFact('Fence row that must stay last')],
+    );
+
+    await addTimelineEntryOp.handler(makeCtx(), {
+      slug,
+      date: '2026-07-20',
+      summary: 'Latest milestone',
+      source: 'manual',
+    });
+
+    const disk = fs.readFileSync(filePath, 'utf8');
+    const bullet = disk.indexOf('- **2026-07-20** | manual — Latest milestone');
+    const first = disk.indexOf('- **2026-07-01**');
+    const fenceBegin = disk.indexOf('gbrain:facts:begin');
+    expect(bullet).toBeGreaterThan(first);
+    // The bullet stays inside the timeline section — it must not be appended
+    // past the trailing `## Facts` fence.
+    expect(fenceBegin).toBeGreaterThan(bullet);
+    expect(extractTimelineFromContent(disk, slug).length).toBe(2);
+  });
+
+  test('concurrent fence + timeline writers both land (page-lock serialization pin)', async () => {
+    await engine.setConfig('sync.repo_path', brainDir);
+    const slug = 'people/concurrent-writers';
+    const filePath = await seedPage(slug);
+
+    const [fenceRes, opRes] = await Promise.all([
+      writeFactsToFence(
+        engine,
+        { sourceId: 'default', localPath: brainDir, slug },
+        [fenceFact('Concurrent fence fact')],
+      ),
+      addTimelineEntryOp.handler(makeCtx(), {
+        slug,
+        date: '2026-07-15',
+        summary: 'Concurrent milestone',
+        source: 'manual',
+      }) as Promise<{ status: string }>,
+    ]);
+    expect(fenceRes.inserted).toBe(1);
+    expect(opRes.status).toBe('ok');
+
+    // Whichever writer went second must have read the first writer's rename,
+    // not clobbered it — both artifacts are in the final file.
+    const disk = fs.readFileSync(filePath, 'utf8');
+    expect(disk).toContain('Concurrent fence fact');
+    expect(disk).toContain('- **2026-07-15** | manual — Concurrent milestone');
+  });
+
+  test('error after the disk splice → fallback inserts the CANONICAL tuple (no dupe on re-extract)', async () => {
+    await engine.setConfig('sync.repo_path', brainDir);
+    const slug = 'notes/error-canonical';
+    const filePath = await seedPage(slug);
+
+    // First addTimelineEntry call (the helper's canonical insert) fails;
+    // the second (the op's DB-only fallback) succeeds.
+    let calls = 0;
+    const flaky = new Proxy(engine, {
+      get(target, prop, receiver) {
+        if (prop === 'addTimelineEntry') {
+          calls++;
+          if (calls === 1) {
+            return async () => { throw new Error('transient insert failure'); };
+          }
+        }
+        const v = Reflect.get(target, prop, receiver);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    }) as unknown as PGLiteEngine;
+
+    const res = await addTimelineEntryOp.handler(makeCtx({ engine: flaky }), {
+      slug,
+      date: '2026-07-15',
+      summary: '  Multi-line\nsummary   with   noise  ',
+      // no source → the canonical bullet carries 'manual'
+    }) as { status: string; write_through?: { written?: boolean; error?: string } };
+    expect(res.status).toBe('ok');
+    expect(res.write_through?.written).toBe(false);
+    expect(res.write_through?.error).toContain('transient insert failure');
+
+    // The bullet already reached the disk file, so the fallback row MUST be
+    // the canonical tuple (source 'manual', collapsed one-line summary) —
+    // the raw input tuple would duplicate on the next sync re-extract.
+    const timeline = await engine.getTimeline(slug, { sourceId: 'default' });
+    expect(timeline.length).toBe(1);
+    expect(timeline[0].source).toBe('manual');
+    expect(timeline[0].summary).toBe('Multi-line summary with noise');
+
+    // Sync re-extract of the on-disk bullet conflicts-no-ops against it.
+    const disk = fs.readFileSync(filePath, 'utf8');
+    const extracted = extractTimelineFromContent(disk, slug);
+    expect(extracted.length).toBe(1);
+    await engine.addTimelineEntriesBatch(
+      extracted.map((e) => ({ ...e, source_id: 'default' })),
+    );
+    expect(await timelineRowCount(slug)).toBe(1);
+  });
+
+  test('missing on-disk file → DB-only fallback, never fabricates a file from the DB row', async () => {
+    await engine.setConfig('sync.repo_path', brainDir);
+    const slug = 'notes/helper-file-missing';
+    const filePath = await seedPage(slug);
+    fs.rmSync(filePath);
+
+    const out = await writeTimelineEntryThrough(engine, slug, 'default', {
+      date: '2026-07-15',
+      summary: 'x',
+    });
+    expect(out.handled).toBe(false);
+    expect(out.skipped).toBe('file_missing');
+    expect(fs.existsSync(filePath)).toBe(false); // no fabrication from the DB row
+
+    // The op still records the entry via the legacy DB-only insert.
+    const res = await addTimelineEntryOp.handler(makeCtx(), {
+      slug,
+      date: '2026-07-16',
+      summary: 'DB-only entry',
+    }) as { write_through?: { written?: boolean; skipped?: string } };
+    expect(res.write_through?.written).toBe(false);
+    expect(res.write_through?.skipped).toBe('file_missing');
+    expect(fs.existsSync(filePath)).toBe(false);
+    const timeline = await engine.getTimeline(slug, { sourceId: 'default' });
+    expect(timeline.length).toBe(1);
+    expect(timeline[0].summary).toBe('DB-only entry');
   });
 });
 

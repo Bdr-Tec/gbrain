@@ -101,11 +101,14 @@ export function refusedRemovedPathMessage(r: RefusedSlugResolution): string {
  *     side's `slugifyPath` dispatch) — but VERIFIED before use:
  *     `slugifySegment` strips trailing hyphens (among other lossy rewrites),
  *     so `extracts/propose-/x.md` and `extracts/propose/x.md` derive the SAME
- *     slug. If the page at the derived slug records a DIFFERENT origin file,
- *     the resolution is REFUSED (returned in `refused`, absent from `slugs`)
- *     instead of silently deleting a page whose own file is untouched. Pages
+ *     slug. Verification inspects ALL live rows at the derived slug (the
+ *     unscoped lane can see one per source): if every one records a DIFFERENT
+ *     origin file, the resolution is REFUSED (returned in `refused`, absent
+ *     from `slugs`) instead of silently deleting a page whose own file is
+ *     untouched; any row whose origin IS the removed path allows it. Pages
  *     with a NULL `source_path` (legacy pre-source_path imports) and slugs
- *     with no row at all (no-op deletes) keep today's fallback behavior.
+ *     with no live row at all (no-op deletes) keep today's fallback behavior;
+ *     soft-deleted rows are ignored on both phases.
  *
  * Fail-open on lookup errors (pre-migration schemas): a failed verification
  * query preserves the legacy fallback rather than wedging deletes — matching
@@ -134,8 +137,13 @@ export async function resolveSlugsForRemovedPaths(
   } else {
     for (const p of paths) {
       try {
+        // Unscoped lane: only LIVE rows may drive resolution (a soft-deleted
+        // row's record must not name a slug for the delete side to act on),
+        // and the pick is ORDER BY-deterministic when a multi-source brain
+        // holds several rows for the same source_path.
         const rows = await engine.executeRaw<{ slug: string }>(
-          `SELECT slug FROM pages WHERE source_path = $1 LIMIT 1`,
+          `SELECT slug FROM pages WHERE source_path = $1 AND deleted_at IS NULL
+            ORDER BY source_id, slug LIMIT 1`,
           [p],
         );
         if (rows.length > 0 && rows[0].slug) exact.set(p, rows[0].slug);
@@ -157,30 +165,51 @@ export async function resolveSlugsForRemovedPaths(
   // Per-item placeholders (not ANY(array)) so the same executeRaw shape binds
   // identically on both engines — a query error here fails OPEN, which would
   // silently disable the guard, so the boring portable form wins.
-  const originBySlug = new Map<string, string | null>();
+  //
+  // Collect ALL live rows per slug: the unscoped lane can see one row per
+  // source at the same slug, and a single-value (last-row-wins) map made
+  // refuse-vs-allow depend on engine row order. `deleted_at IS NULL` keeps
+  // soft-deleted rows from vetoing (or licensing) a delete, and the ORDER BY
+  // makes the reported refusal origin deterministic. The scoped lane has at
+  // most one live row per slug, so its behavior is unchanged.
+  const originsBySlug = new Map<string, Array<string | null>>();
   for (let i = 0; i < fallbacks.length; i += DELETE_BATCH_SIZE) {
     const chunk = fallbacks.slice(i, i + DELETE_BATCH_SIZE).map(f => f.slug);
     try {
       const params: unknown[] = [...chunk];
       const placeholders = chunk.map((_, j) => `$${j + 1}`).join(', ');
-      let where = `slug IN (${placeholders})`;
+      let where = `slug IN (${placeholders}) AND deleted_at IS NULL`;
       if (sourceId !== undefined) {
         params.push(sourceId);
         where += ` AND source_id = $${params.length}`;
       }
       const rows = await engine.executeRaw<{ slug: string; source_path: string | null }>(
-        `SELECT slug, source_path FROM pages WHERE ${where}`,
+        `SELECT slug, source_path FROM pages WHERE ${where} ORDER BY source_id, slug`,
         params,
       );
-      for (const r of rows) originBySlug.set(r.slug, r.source_path);
+      for (const r of rows) {
+        const list = originsBySlug.get(r.slug);
+        if (list) list.push(r.source_path);
+        else originsBySlug.set(r.slug, [r.source_path]);
+      }
     } catch {
       // Fail-open: without origin evidence, keep the legacy fallback.
     }
   }
   for (const f of fallbacks) {
-    const origin = originBySlug.get(f.slug);
-    if (origin != null && normalizeOriginPath(origin) !== normalizeOriginPath(f.path)) {
-      refused.push({ path: f.path, slug: f.slug, originPath: origin });
+    const origins = originsBySlug.get(f.slug) ?? [];
+    // Allow when: no live row at the slug (harmless no-op delete), any legacy
+    // NULL-origin row (pre-source_path brains keep today's fallback), or ANY
+    // live row that records the removed path itself as its origin. Refuse
+    // only when every live row positively names a DIFFERENT origin file.
+    const anyNullOrigin = origins.some(o => o == null);
+    const anyMatch = origins.some(
+      o => o != null && normalizeOriginPath(o) === normalizeOriginPath(f.path),
+    );
+    if (origins.length > 0 && !anyNullOrigin && !anyMatch) {
+      // All origins are non-null mismatches; origins[0] is source_id-ordered,
+      // so the reported path is deterministic.
+      refused.push({ path: f.path, slug: f.slug, originPath: origins[0] as string });
     } else {
       slugs.set(f.path, f.slug);
     }
