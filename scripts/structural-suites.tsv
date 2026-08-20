@@ -113,6 +113,7 @@ test/eval-brainbench-e2e.test.ts	--llm availability gate	1	exec-scan
 test/eval-brainbench-e2e.test.ts	privacy guard violation branches (negative path)	1	exec-scan
 test/eval-brainbench-e2e.test.ts	render-brainbench-delta.ts (the CI step-summary block)	2	exec-scan
 test/eval-brainbench-e2e.test.ts	run-all once-per-sweep semantics (decision 16)	1	exec-scan
+test/eval-capture-db-plane.serial.test.ts	eval.capture set on the DB plane reaches the runtime gate (#1475)	9	bun-file
 test/exit-classification.test.ts	consumer wire-up — helper used by all 3 sites (no inline filters left)	5	doctor-source-helper,readFileSync
 test/extract-atoms-drain.test.ts	extract-atoms-drain Minion handler retries on provider_failure (issue #3218)	2	readFileSync
 test/extract-atoms-drain.test.ts	shared wiring helper holds the cycle lock (5A)	2	readFileSync

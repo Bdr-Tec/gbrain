@@ -10,7 +10,7 @@ src/core/pglite-engine.ts	5881	ratchet	grown v0.46.23.0: putPage empty-overwrite
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4311	ratchet	grown v0.46.22.0 phone wave: github source kind (#4104)
 src/core/ai/gateway.ts	4428	ratchet	watchlist; merged: dream-wave turn permits + key-aware effective-model reconfigure + env-only worker refresh + discovery endpoint-trust docstring
-src/cli.ts	3486	ratchet	grown v0.46.23.0: awaited stdout delivery (#3423)
+src/cli.ts	3594	ratchet	grown v0.46.24.0 overnight wave (#4186)
 src/core/cycle.ts	3080	ratchet	grown v0.46.20.0 phase-boundary split (resolveCyclePhases + normalizeQueuedSourcePhases + deriveStatus exclusion filter)
 src/commands/serve-http.ts	3194	ratchet	grown v0.46.23.0 review fix wave: github-kind webhook gating + case-insensitive repo match
 src/commands/jobs.ts	3027	ratchet	grown v0.46.22.0 phone wave: github source sync job (#4104)
@@ -26,7 +26,7 @@ src/core/types.ts	1879	ratchet	grown v0.46.22.0 phone wave: supersession rerank 
 src/commands/skillpack.ts	1360	ratchet
 src/core/minions/queue.ts	2138	ratchet	grown by #4078 subagent-loop capability fix
 src/commands/init.ts	1950	ratchet	grown v0.46.x keyless capability notices
-src/commands/integrations.ts	1675	ratchet
+src/commands/integrations.ts	1733	ratchet	grown v0.46.24.0 overnight wave (#3588)
 src/core/minions/handlers/subagent.ts	1825	ratchet	merged: master v131 settle rework + dream-wave C5 peel + C6 accounting + C7 lease heartbeats/lost-lease aborts + C9 oneshot dispatch + adversarial fix batches; grown by #4078 subagent-loop capability fix
 src/commands/bootstrap.ts	2010	ratchet	grandfathered at merge (grew past the 1500 cap on master); raised for #4066 HOME_WORKSPACE_GUARD_EXEMPT (status/uninstall/harness)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
