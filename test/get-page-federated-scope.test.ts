@@ -454,13 +454,18 @@ describe('#2555 get_chunks federated scope', () => {
         expect(body, `${enginePath} getChunks must select cc.${col}`).toContain(`cc.${col}`);
       }
       // The vector columns stay unselected. The ONE allowed reference is the
-      // cheap `(cc.embedding IS NULL) AS embedding_is_null` boolean (no vector
-      // egress — a schema rebuild NULLs vectors without touching embedded_at,
-      // and the per-slug embed filter needs the stored-vector truth). Strip
-      // that exact shape, then keep forbidding any other cc.embedding use.
-      const withoutNullBoolean = body.replace(/\(cc\.embedding IS NULL\) AS embedding_is_null/g, '');
+      // cheap `(cc.<active column> IS NULL) AS embedding_is_null` boolean (no
+      // vector egress — a schema rebuild NULLs vectors without touching
+      // embedded_at, and the per-slug embed filter needs the stored-vector
+      // truth). S2: the column is the registry-ACTIVE one (resolved via
+      // activeEmbeddingColId), not the literal legacy `embedding` — a
+      // registry-routed brain's truth lives in the active column. Strip that
+      // exact shape, then keep forbidding any other cc.embedding use.
+      const nullBooleanShape = /\(cc\..*? IS NULL\) AS embedding_is_null/g;
+      const withoutNullBoolean = body.replace(nullBooleanShape, '');
       expect(withoutNullBoolean).not.toMatch(/cc\.embedding\b/);
-      expect(body).toContain('(cc.embedding IS NULL) AS embedding_is_null');
+      expect(body).toMatch(/\(cc\..*? IS NULL\) AS embedding_is_null/);
+      expect(body, `${enginePath} getChunks embedding_is_null must key on the registry-active column`).toContain('activeEmbeddingColId');
     }
   });
 });

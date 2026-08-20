@@ -18,9 +18,12 @@ import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { PostgresEngine } from '../../src/core/postgres-engine.ts';
 import {
   resolveWriteColumnFromConfigRows,
+  resolveActiveEmbeddingColumnFromEngine,
   vectorCastSuffix,
   EmbeddingColumnNotRegisteredError,
 } from '../../src/core/search/embedding-column.ts';
+import { invalidateStaleSignatureEmbeddingsGuarded } from '../../src/core/embedding-invalidation.ts';
+import { embedStalePages } from '../../src/core/embed-stale.ts';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import type { ResolvedColumn } from '../../src/core/types.ts';
 import { assertSafeE2eDatabaseUrl } from '../helpers/db-guard.ts';
@@ -196,6 +199,163 @@ function registryWriteScenario(name: string, getEngine: () => BrainEngine) {
   });
 }
 
+// ---- Shared stale/invalidate/health scenario (S2 read/write unification) --
+//
+// #1262 routed WRITES through the registry, but the stale/invalidate/health
+// plane still keyed on the literal legacy `cc.embedding` — on a registry-
+// routed brain every embedded chunk read as permanently stale (re-embed loop)
+// while coverage read 0%. These tests pin that every selector resolves the
+// SAME active column the write side uses, on BOTH engines.
+
+function registryStaleScenario(name: string, getEngine: () => BrainEngine) {
+  const SLUG = 'docs/registry-stale';
+
+  test(`${name}: embedded registry-column chunk is NOT stale; content flip re-stales it`, async () => {
+    const engine = getEngine();
+    await engine.setConfig('search_embedding_column', 'embedding_test8');
+    await engine.setConfig('embedding_columns', REGISTRY_JSON);
+    await engine.putPage(SLUG, {
+      type: 'concept',
+      title: 'Registry stale probe',
+      compiled_truth: 'registry stale probe target',
+    });
+
+    const countBefore = await engine.countStaleChunks();
+    await engine.upsertChunks(SLUG, [
+      {
+        chunk_index: 0,
+        chunk_text: 'stale probe v1',
+        chunk_source: 'compiled_truth',
+        embedding: VEC8,
+        model: 'voyage:voyage-3-large',
+      },
+    ]);
+
+    // Pre-fix: the selectors read the legacy column (still NULL) and reported
+    // this freshly embedded chunk as stale FOREVER.
+    expect(await engine.countStaleChunks()).toBe(countBefore);
+    const staleAfterEmbed = await engine.listStaleChunks({ batchSize: 100000 });
+    expect(staleAfterEmbed.some((r) => r.slug === SLUG)).toBe(false);
+
+    // getChunks' embedding_is_null reports the ACTIVE column's truth (the
+    // per-page `gbrain embed <slug>` filter keys on it).
+    const chunks = await engine.getChunks(SLUG);
+    expect(chunks.length).toBe(1);
+    expect(chunks[0].embedding_is_null).toBe(false);
+
+    // Content flip without a fresh vector → the ACTIVE column resets to NULL
+    // and every selector agrees it is stale again.
+    await engine.upsertChunks(SLUG, [
+      { chunk_index: 0, chunk_text: 'stale probe v2', chunk_source: 'compiled_truth' },
+    ]);
+    expect(await engine.countStaleChunks()).toBe(countBefore + 1);
+    const staleAfterFlip = await engine.listStaleChunks({ batchSize: 100000 });
+    const mine = staleAfterFlip.filter((r) => r.slug === SLUG);
+    expect(mine.length).toBe(1);
+    expect(mine[0].chunk_text).toBe('stale probe v2');
+    expect(await engine.sumStaleChunkChars()).toBeGreaterThanOrEqual('stale probe v2'.length);
+    expect((await engine.getChunks(SLUG))[0].embedding_is_null).toBe(true);
+  });
+
+  test(`${name}: getStats/getHealth coverage keys on the registry column`, async () => {
+    const engine = getEngine();
+    const statsBefore = await engine.getStats();
+    const healthBefore = await engine.getHealth();
+    await engine.upsertChunks(SLUG, [
+      {
+        chunk_index: 0,
+        chunk_text: 'stale probe v2',
+        chunk_source: 'compiled_truth',
+        embedding: VEC8_B,
+        model: 'voyage:voyage-3-large',
+      },
+    ]);
+    // Pre-fix: embedded_count/missing_embeddings watched the legacy column,
+    // so embedding a registry-routed chunk moved neither number.
+    const statsAfter = await engine.getStats();
+    expect(statsAfter.embedded_count).toBe(statsBefore.embedded_count + 1);
+    const healthAfter = await engine.getHealth();
+    expect(healthAfter.missing_embeddings).toBe(healthBefore.missing_embeddings - 1);
+  });
+
+  test(`${name}: signature invalidation NULLs the registry column (guarded + engine method)`, async () => {
+    const engine = getEngine();
+    // Guarded helper (the migration/embed entry point).
+    await engine.setPageEmbeddingSignature(SLUG, { signature: 'sig-old' });
+    const n = await invalidateStaleSignatureEmbeddingsGuarded(engine, { signature: 'sig-new' });
+    expect(n).toBeGreaterThanOrEqual(1);
+    let rows = await columnTruth(engine, SLUG);
+    expect(rows[0].test8_null).toBe(true);
+    expect((await engine.listStaleChunks({ batchSize: 100000 })).some((r) => r.slug === SLUG)).toBe(true);
+
+    // Engine method: re-embed, then invalidate against a different signature.
+    await engine.upsertChunks(SLUG, [
+      {
+        chunk_index: 0,
+        chunk_text: 'stale probe v2',
+        chunk_source: 'compiled_truth',
+        embedding: VEC8,
+        model: 'voyage:voyage-3-large',
+      },
+    ]);
+    await engine.setPageEmbeddingSignature(SLUG, { signature: 'sig-mid' });
+    const n2 = await engine.invalidateStaleSignatureEmbeddings({ signature: 'sig-final' });
+    expect(n2).toBeGreaterThanOrEqual(1);
+    rows = await columnTruth(engine, SLUG);
+    expect(rows[0].test8_null).toBe(true);
+  });
+
+  test(`${name}: content-drift invalidation NULLs the registry column (#4246 x S2)`, async () => {
+    const engine = getEngine();
+    // Stamp signature to the invalidation target so the drift path (not the
+    // signature path) is what re-stales the chunk.
+    await engine.upsertChunks(SLUG, [
+      {
+        chunk_index: 0,
+        chunk_text: 'stale probe v3',
+        chunk_source: 'compiled_truth',
+        embedding: VEC8_B,
+        model: 'voyage:voyage-3-large',
+      },
+    ]);
+    let rows = await columnTruth(engine, SLUG);
+    expect(rows[0].test8_null).toBe(false);
+    // Simulate an external rewrite that kept the vector: embedded_text_hash
+    // (stamped at embed time) no longer matches md5(chunk_text).
+    await engine.executeRaw(
+      `UPDATE content_chunks cc SET chunk_text = 'drifted text'
+        FROM pages p WHERE cc.page_id = p.id AND p.slug = '${SLUG}'`,
+    );
+    const n = await engine.invalidateContentDriftEmbeddings();
+    expect(n).toBeGreaterThanOrEqual(1);
+    rows = await columnTruth(engine, SLUG);
+    expect(rows[0].test8_null).toBe(true);
+  });
+
+  test(`${name}: embedStalePages targets the registry column (no re-embed loop)`, async () => {
+    const engine = getEngine();
+    // Chunk is currently stale (drift invalidation above) → one embed lands
+    // in the ACTIVE column.
+    let calls = 0;
+    const embedFn = async (texts: string[]) => {
+      calls += texts.length;
+      return texts.map(() => VEC8);
+    };
+    const first = await embedStalePages(engine, [SLUG], 'default', { embedFn });
+    expect(first.embedded).toBe(1);
+    expect(calls).toBe(1);
+    const rows = await columnTruth(engine, SLUG);
+    expect(rows[0].test8_null).toBe(false);
+
+    // Second pass: nothing stale in the ACTIVE column → zero embeds.
+    // Pre-fix the selector keyed on the legacy column (always NULL) and
+    // re-embedded every chunk on every phase end — paid spend, forever.
+    const second = await embedStalePages(engine, [SLUG], 'default', { embedFn });
+    expect(second.embedded).toBe(0);
+    expect(calls).toBe(1);
+  });
+}
+
 // ---- PGLite (always runs) ------------------------------------------------
 
 describe('#1262 upsertChunks registry-aware writes (PGLite)', () => {
@@ -246,6 +406,23 @@ describe('#1262 upsertChunks registry-aware writes (PGLite)', () => {
     ]);
     const rows = await columnTruth(engine, 'docs/registry-badjson');
     expect(rows.length).toBe(1);
+    await engine.unsetConfig('embedding_columns');
+  });
+
+  registryStaleScenario('pglite', () => engine);
+
+  test('pglite: resolveActiveEmbeddingColumnFromEngine — throw vs fallbackToLegacy on a broken registry', async () => {
+    await engine.setConfig('search_embedding_column', 'embedding_ghost');
+    await expect(
+      resolveActiveEmbeddingColumnFromEngine(engine),
+    ).rejects.toThrow(EmbeddingColumnNotRegisteredError);
+    const legacy = await resolveActiveEmbeddingColumnFromEngine(engine, { fallbackToLegacy: true });
+    expect(legacy.name).toBe('embedding');
+    await engine.setConfig('search_embedding_column', 'embedding_test8');
+    const active = await resolveActiveEmbeddingColumnFromEngine(engine);
+    expect(active.name).toBe('embedding_test8');
+    expect(active.dimensions).toBe(8);
+    await engine.unsetConfig('search_embedding_column');
     await engine.unsetConfig('embedding_columns');
   });
 });
@@ -337,5 +514,6 @@ if (!dbUrl) {
     });
 
     registryWriteScenario('postgres', () => engine);
+    registryStaleScenario('postgres', () => engine);
   });
 }

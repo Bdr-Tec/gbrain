@@ -1007,11 +1007,21 @@ export async function importFromContent(
         );
       } catch { /* same reason — silent skip */ }
     }
-  }).catch((err: unknown) => {
+  }).catch(async (err: unknown) => {
     // #4287: name the dimension-mismatch rollback instead of letting the bare
     // pgvector message ("expected N dimensions, not M") surface with no code,
-    // no consequence and no fix.
-    throw decorateEmbeddingDimError(err, slug);
+    // no consequence and no fix. S2: name the registry-ACTIVE column the
+    // write actually targeted (best-effort — plane-agnostic wording when the
+    // registry itself is unreadable).
+    let activeColName: string | undefined;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/expected \d+ dimensions, not \d+/.test(msg)) {
+      try {
+        const { resolveActiveEmbeddingColumnFromEngine } = await import('./search/embedding-column.ts');
+        activeColName = (await resolveActiveEmbeddingColumnFromEngine(engine, { fallbackToLegacy: true })).name;
+      } catch { /* keep the plane-agnostic wording */ }
+    }
+    throw decorateEmbeddingDimError(err, slug, activeColName);
   });
 
   // T3 — project frontmatter `aliases:` into page_aliases (free-text alias

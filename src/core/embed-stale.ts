@@ -22,6 +22,10 @@ import type { Chunk, ChunkInput } from './types.ts';
 import { embedBatchWithBackoff, restampIfDemotedToTitleTier } from '../commands/embed.ts';
 import { wrapChunkTextsForStoredMode } from './embedding-context.ts';
 import { invalidateStaleSignatureEmbeddingsGuarded } from './embedding-invalidation.ts';
+import {
+  resolveActiveEmbeddingColumnFromEngine,
+  quoteIdentifier,
+} from './search/embedding-column.ts';
 import { type DbPacer, createNoopPacer, observed } from './db-pacer.ts';
 import { AbortError } from './abort-check.ts';
 
@@ -207,6 +211,14 @@ export async function embedStalePages(
   const embedFn = opts.embedFn ?? (async (texts: string[], fnOpts: { abortSignal?: AbortSignal }) =>
     embedBatchWithBackoff(texts, { abortSignal: fnOpts.abortSignal }));
   const result = { embedded: 0, pagesProcessed: 0, aborted: false };
+  // S2: stale = NULL in the registry-ACTIVE column (the one upsertChunks
+  // writes) — the literal legacy `embedding` stays NULL forever on a
+  // registry-routed brain, which would re-embed every chunk on every phase
+  // end. Resolved once per call; fallback keeps the per-page log+skip
+  // contract (a broken registry surfaces at the upsert, loudly).
+  const staleColId = quoteIdentifier(
+    (await resolveActiveEmbeddingColumnFromEngine(engine, { fallbackToLegacy: true })).name,
+  );
   for (const slug of slugs) {
     if (opts.signal?.aborted) {
       result.aborted = true;
@@ -218,7 +230,7 @@ export async function embedStalePages(
         (await engine.executeRaw<{ chunk_index: number }>(
           `SELECT cc.chunk_index
              FROM content_chunks cc JOIN pages p ON p.id = cc.page_id
-            WHERE p.slug = $1 AND p.source_id = $2 AND cc.embedding IS NULL
+            WHERE p.slug = $1 AND p.source_id = $2 AND cc.${staleColId} IS NULL
             ORDER BY cc.chunk_index`,
           [slug, sourceId],
         )).map(r => r.chunk_index),

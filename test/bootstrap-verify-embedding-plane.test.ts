@@ -111,3 +111,63 @@ describe('checkEmbeddingPlane (#4287)', () => {
     expect(check.detail).toContain('cannot verify the active embedding plane');
   });
 });
+
+// S2 (registry read/write unification): the probe must compare the embedder
+// against the registry-ACTIVE column, not the literal legacy `embedding`.
+// Pre-fix, a healthy brain routed to an 8d registry column false-FAILed
+// because the probe width was compared to the legacy column's width.
+describe('checkEmbeddingPlane on a registry-routed brain (S2)', () => {
+  const REG_JSON = JSON.stringify({
+    embedding_reg8: { provider: 'openai:text-embedding-3-small', dimensions: 8, type: 'vector' },
+  });
+
+  beforeAll(async () => {
+    await engine.executeRaw(
+      `ALTER TABLE content_chunks ADD COLUMN IF NOT EXISTS embedding_reg8 vector(8)`,
+    );
+    await engine.setConfig('search_embedding_column', 'embedding_reg8');
+    await engine.setConfig('embedding_columns', REG_JSON);
+  });
+
+  afterAll(async () => {
+    await engine.unsetConfig('search_embedding_column');
+    await engine.unsetConfig('embedding_columns');
+  });
+
+  test('keyed + embedder agrees with the ACTIVE column: ok (pre-fix false FAIL)', async () => {
+    installTransport(8);
+    const check = await checkEmbeddingPlane(engine, KEYED);
+    expect(check.ok).toBe(true);
+    expect(check.warn).toBeUndefined();
+    expect(check.detail).toContain('verified end-to-end');
+    expect(check.detail).toContain('content_chunks.embedding_reg8');
+    expect(check.detail).toContain('8d');
+  });
+
+  test('keyed + genuine mismatch against the ACTIVE column: named FAIL', async () => {
+    installTransport(24);
+    const check = await checkEmbeddingPlane(engine, KEYED);
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('EMBEDDING PLANE SPLIT');
+    expect(check.detail).toContain('content_chunks.embedding_reg8');
+    expect(check.detail).toContain('returns 24d vectors');
+    expect(check.detail).toContain('expected 8 dimensions, not 24');
+  });
+
+  test('unresolvable registry row: named FAIL carrying the resolver hint', async () => {
+    await engine.setConfig('search_embedding_column', 'embedding_ghost');
+    installTransport(8);
+    const check = await checkEmbeddingPlane(engine, KEYED);
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('embedding_ghost');
+    expect(check.detail).toContain('cannot be resolved');
+    await engine.setConfig('search_embedding_column', 'embedding_reg8');
+  });
+
+  test('keyless registry brain: ok, names the active column', async () => {
+    const check = await checkEmbeddingPlane(engine, KEYLESS);
+    expect(check.ok).toBe(true);
+    expect(check.detail).toContain('keyless');
+    expect(check.detail).toContain('content_chunks.embedding_reg8');
+  });
+});

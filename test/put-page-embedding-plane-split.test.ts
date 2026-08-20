@@ -82,6 +82,21 @@ describe('decorateEmbeddingDimError', () => {
     const notErr = 'string failure';
     expect(decorateEmbeddingDimError(notErr, 'x')).toBe(notErr);
   });
+
+  test('S2: names the actual failing column when known, plane-agnostic otherwise', () => {
+    const named = decorateEmbeddingDimError(
+      new Error('expected 8 dimensions, not 24'),
+      'p',
+      'embedding_voyage',
+    ) as OperationError;
+    expect(named.message).toContain('content_chunks.embedding_voyage column is 8d');
+    const agnostic = decorateEmbeddingDimError(
+      new Error('expected 8 dimensions, not 24'),
+      'p',
+    ) as OperationError;
+    expect(agnostic.message).toContain('active embedding column is 8d');
+    expect(agnostic.message).not.toContain('content_chunks.embedding');
+  });
 });
 
 describe('importFromContent on a split embedding plane (#4287)', () => {

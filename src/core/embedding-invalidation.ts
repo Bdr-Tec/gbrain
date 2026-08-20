@@ -26,6 +26,10 @@
  */
 
 import type { BrainEngine } from './engine.ts';
+import {
+  resolveActiveEmbeddingColumnFromEngine,
+  quoteIdentifier,
+} from './search/embedding-column.ts';
 
 /**
  * `<provider:model>:<dims>` — the one-line shape of
@@ -37,22 +41,39 @@ function targetSignature(toModel: string, toDims: number): string {
 }
 
 /**
+ * S2: quoted identifier of the registry-ACTIVE embedding column. Every
+ * helper in this file keys on the vectors writes actually land in
+ * (#1262 routes upsertChunks through the registry) — the literal legacy
+ * `embedding` column stays NULL forever on a registry-routed brain, which
+ * would blind these predicates. Loud resolver failure by design: these are
+ * migration-plane reads/writes, and a destructive invalidation must never
+ * guess a column.
+ */
+async function activeColId(engine: Pick<BrainEngine, 'executeRaw'>): Promise<string> {
+  const col = await resolveActiveEmbeddingColumnFromEngine(engine);
+  return quoteIdentifier(col.name);
+}
+
+/**
  * Shared #4305 predicate: the page carries at least one EMBEDDED chunk whose
  * model matches neither the target `provider:model` nor its bare model tail
  * (pre-#3461 rows stored the model without the provider prefix — those must
  * not trigger a surprise paid re-embed). embed_skip pages are excluded to
  * match the selectors (#4306). $1 = target signature, $2 = target model.
+ * `colId` = registry-active embedding column identifier (S2).
  */
-const FALSE_STAMP_PAGE_WHERE = `
+function falseStampPageWhere(colId: string): string {
+  return `
         p.embedding_signature = $1
         AND p.deleted_at IS NULL
         AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
         AND EXISTS (
           SELECT 1 FROM content_chunks c
-           WHERE c.page_id = p.id AND c.embedding IS NOT NULL
+           WHERE c.page_id = p.id AND c.${colId} IS NOT NULL
              AND c.model IS NOT NULL AND c.model <> $2
              AND c.model <> substr($2, strpos($2, ':') + 1)
         )`;
+}
 
 /**
  * #4305 count side (plan / verify / --status honesty). Counts the falsely
@@ -64,17 +85,18 @@ export async function countFalseStampedChunks(
   toModel: string,
   toDims: number,
 ): Promise<{ pages: number; chunks: number; chars: number }> {
+  const colId = await activeColId(engine);
   const rows = await engine.executeRaw<{ pages: number; chunks: number; chars: number | string }>(
     `WITH fs AS (
        SELECT p.id FROM pages p
-        WHERE ${FALSE_STAMP_PAGE_WHERE}
+        WHERE ${falseStampPageWhere(colId)}
      )
      SELECT count(DISTINCT fs.id)::int AS pages,
             count(cc.id)::int AS chunks,
             COALESCE(sum(length(cc.chunk_text)), 0)::bigint AS chars
        FROM fs
        JOIN content_chunks cc ON cc.page_id = fs.id
-      WHERE cc.embedding IS NOT NULL`,
+      WHERE cc.${colId} IS NOT NULL`,
     [targetSignature(toModel, toDims), toModel],
   );
   return {
@@ -94,9 +116,10 @@ export async function clearFalseStampedSignatures(
   toModel: string,
   toDims: number,
 ): Promise<number> {
+  const colId = await activeColId(engine);
   const rows = await engine.executeRaw<{ id: number }>(
     `UPDATE pages p SET embedding_signature = NULL
-      WHERE ${FALSE_STAMP_PAGE_WHERE}
+      WHERE ${falseStampPageWhere(colId)}
       RETURNING p.id`,
     [targetSignature(toModel, toDims), toModel],
   );
@@ -107,6 +130,7 @@ export async function invalidateStaleSignatureEmbeddingsGuarded(
   engine: Pick<BrainEngine, 'executeRaw'>,
   opts: { signature: string; sourceId?: string; includeNullSignature?: boolean },
 ): Promise<number> {
+  const colId = await activeColId(engine);
   const params: unknown[] = [opts.signature];
   let srcClause = '';
   if (opts.sourceId !== undefined) {
@@ -121,10 +145,10 @@ export async function invalidateStaleSignatureEmbeddingsGuarded(
     : `p.embedding_signature IS NOT NULL AND p.embedding_signature <> $1`;
   const rows = await engine.executeRaw<{ page_id: number }>(
     `UPDATE content_chunks cc
-        SET embedding = NULL, embedded_at = NULL
+        SET ${colId} = NULL, embedded_at = NULL
        FROM pages p
       WHERE cc.page_id = p.id
-        AND cc.embedding IS NOT NULL
+        AND cc.${colId} IS NOT NULL
         AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
         AND ${sigClause}${srcClause}
       RETURNING cc.page_id`,

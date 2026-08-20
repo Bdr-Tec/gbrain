@@ -651,3 +651,57 @@ export function resolveWriteColumnFromConfigRows(rows: {
   if (registry) cfg.embedding_columns = registry;
   return resolveEmbeddingColumn(undefined, cfg);
 }
+
+/**
+ * Minimal raw-query surface both engines (and engine-pure helpers holding a
+ * `Pick<BrainEngine, 'executeRaw'>`) satisfy. Structural so this module
+ * never imports engine.ts (cycle-free — engines import THIS module).
+ */
+export interface RawQueryEngine {
+  executeRaw<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+}
+
+/**
+ * Registry read/write unification (S2, follow-up to #1262). #1262 routed
+ * upsertChunks' text-embedding WRITE through the DB-plane registry rows, but
+ * every stale/invalidate/health selector still keyed on the literal
+ * `cc.embedding` — on a registry-routed brain the legacy column stays NULL
+ * forever, so stale selectors re-embed everything on every pass while
+ * coverage reads 0%. This helper is the ONE place that resolves the ACTIVE
+ * column from the brain's own config table (the exact rows + resolution
+ * _upsertChunksOnce uses), so the write plane and the stale/invalidate/
+ * health plane can never key on different columns again.
+ *
+ * Failure posture:
+ *   - Config table unreadable (pre-v36 brain mid-migration) → legacy
+ *     `embedding` descriptor, mirroring the #1262 write-side catch.
+ *   - Unregistered/invalid `search_embedding_column` → throws the loud
+ *     paste-ready resolver error by default (destructive invalidation must
+ *     not guess a column); pass `fallbackToLegacy: true` on read-only/
+ *     diagnostic paths (health, coverage, stale counts) that must keep
+ *     working on a misconfigured brain.
+ */
+export async function resolveActiveEmbeddingColumnFromEngine(
+  engine: RawQueryEngine,
+  opts?: { fallbackToLegacy?: boolean },
+): Promise<ResolvedColumn> {
+  let searchEmbeddingColumn: string | null = null;
+  let embeddingColumnsJson: string | null = null;
+  try {
+    const rows = await engine.executeRaw<{ key: string; value: string }>(
+      `SELECT key, value FROM config WHERE key IN ('search_embedding_column', 'embedding_columns')`,
+    );
+    for (const r of rows) {
+      if (r.key === 'search_embedding_column') searchEmbeddingColumn = r.value;
+      else if (r.key === 'embedding_columns') embeddingColumnsJson = r.value;
+    }
+  } catch {
+    // config table unreadable — legacy column via the resolver default.
+  }
+  try {
+    return resolveWriteColumnFromConfigRows({ searchEmbeddingColumn, embeddingColumnsJson });
+  } catch (err) {
+    if (opts?.fallbackToLegacy) return normalizeEngineColumn(undefined);
+    throw err;
+  }
+}

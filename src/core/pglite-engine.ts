@@ -102,7 +102,7 @@ import {
   normalizeEngineColumn,
   buildVectorCastFragment,
   vectorCastSuffix,
-  resolveWriteColumnFromConfigRows,
+  resolveActiveEmbeddingColumnFromEngine,
   quoteIdentifier,
   COLUMN_NAME_REGEX,
   EmbeddingColumnNotRegisteredError,
@@ -3046,25 +3046,9 @@ export class PGLiteEngine implements BrainEngine {
     // searches. Config-table read failure falls back to the legacy column;
     // an unregistered `search_embedding_column` throws the resolver's loud
     // paste-ready hint. Mirrors postgres-engine.ts for parity.
-    let writeCol: ResolvedColumn;
-    if (opts?.embeddingColumn) {
-      writeCol = normalizeEngineColumn(opts.embeddingColumn);
-    } else {
-      let searchEmbeddingColumn: string | null = null;
-      let embeddingColumnsJson: string | null = null;
-      try {
-        const cfgResult = await this.db.query(
-          `SELECT key, value FROM config WHERE key IN ('search_embedding_column', 'embedding_columns')`,
-        );
-        for (const r of cfgResult.rows as { key: string; value: string }[]) {
-          if (r.key === 'search_embedding_column') searchEmbeddingColumn = r.value;
-          else if (r.key === 'embedding_columns') embeddingColumnsJson = r.value;
-        }
-      } catch {
-        // config table unreadable — legacy column via the resolver default.
-      }
-      writeCol = resolveWriteColumnFromConfigRows({ searchEmbeddingColumn, embeddingColumnsJson });
-    }
+    const writeCol: ResolvedColumn = opts?.embeddingColumn
+      ? normalizeEngineColumn(opts.embeddingColumn)
+      : await resolveActiveEmbeddingColumnFromEngine(this);
     const writeColId = quoteIdentifier(writeCol.name);
     const writeCast = vectorCastSuffix(writeCol);
 
@@ -3214,6 +3198,10 @@ export class PGLiteEngine implements BrainEngine {
   async getChunks(slug: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<Chunk[]> {
     const sourceIds = opts?.sourceIds && opts.sourceIds.length > 0 ? opts.sourceIds : undefined;
     const source = sourceIds ?? opts?.sourceId ?? 'default';
+    // S2: embedding_is_null reports the registry-ACTIVE column's truth —
+    // `embed <page>` filters on it, so legacy-column truth would re-embed
+    // every chunk on every pass on a registry-routed brain.
+    const colId = await this.activeEmbeddingColId({ fallbackToLegacy: true });
     // #2544: explicit non-vector column list — rowToChunk discards embeddings
     // at this call site, so `cc.*` shipped every vector only to be thrown away.
     // embedding_is_null: boolean truth of the stored vector (a schema rebuild
@@ -3223,7 +3211,7 @@ export class PGLiteEngine implements BrainEngine {
               cc.model, cc.token_count, cc.embedded_at, cc.language,
               cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line,
               cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified, cc.modality,
-              (cc.embedding IS NULL) AS embedding_is_null
+              (cc.${colId} IS NULL) AS embedding_is_null
        FROM content_chunks cc
        JOIN pages p ON p.id = cc.page_id
        WHERE p.slug = $1 AND ${sourceIds ? 'p.source_id = ANY($2::text[])' : 'p.source_id = $2'}
@@ -3241,18 +3229,18 @@ export class PGLiteEngine implements BrainEngine {
    * (provider-migration paths). Shared by countStaleChunks +
    * sumStaleChunkChars so they can't drift.
    */
-  private buildStaleChunkWhere(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): { where: string; params: unknown[] } {
+  private buildStaleChunkWhere(staleColRef: string, opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): { where: string; params: unknown[] } {
     const params: unknown[] = [];
     const conds: string[] = [];
     if (opts?.signature !== undefined) {
       params.push(opts.signature);
       conds.push(
         opts.includeNullSignature
-          ? `(cc.embedding IS NULL OR p.embedding_signature IS NULL OR p.embedding_signature <> $${params.length})`
-          : `(cc.embedding IS NULL OR (p.embedding_signature IS NOT NULL AND p.embedding_signature <> $${params.length}))`,
+          ? `(${staleColRef} IS NULL OR p.embedding_signature IS NULL OR p.embedding_signature <> $${params.length})`
+          : `(${staleColRef} IS NULL OR (p.embedding_signature IS NOT NULL AND p.embedding_signature <> $${params.length}))`,
       );
     } else {
-      conds.push(`cc.embedding IS NULL`);
+      conds.push(`${staleColRef} IS NULL`);
     }
     conds.push(`NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')`);
     if (opts?.sourceId !== undefined) {
@@ -3262,11 +3250,22 @@ export class PGLiteEngine implements BrainEngine {
     return { where: conds.join(' AND '), params };
   }
 
+  /** S2: quoted identifier of the registry-ACTIVE embedding column for the
+   *  stale/invalidate/health plane — read-only sites pass fallbackToLegacy
+   *  so a broken registry row can't crash diagnostics (writes/invalidation
+   *  stay loud). Callers prefix the table alias themselves (`cc.${colId}`).
+   *  Mirrors postgres-engine.ts (parity). */
+  private async activeEmbeddingColId(opts?: { fallbackToLegacy?: boolean }): Promise<string> {
+    const col = await resolveActiveEmbeddingColumnFromEngine(this, opts);
+    return quoteIdentifier(col.name);
+  }
+
   async countStaleChunks(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): Promise<number> {
     // D7: source-scoped count for `gbrain embed --stale --source X`. Always
     // JOIN pages so embed-skip + signature predicates apply. PGLite is
     // PostgreSQL 17.5 in WASM and supports the full JSONB operator set.
-    const { where, params } = this.buildStaleChunkWhere(opts);
+    const staleColId = await this.activeEmbeddingColId({ fallbackToLegacy: true });
+    const { where, params } = this.buildStaleChunkWhere(`cc.${staleColId}`, opts);
     const { rows } = await this.db.query(
       `SELECT count(*)::int AS count
          FROM content_chunks cc
@@ -3281,7 +3280,8 @@ export class PGLiteEngine implements BrainEngine {
   async sumStaleChunkChars(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): Promise<number> {
     // Sibling of countStaleChunks: same stale predicate, summing chunk_text
     // length for the sync cost preview. ::bigint guards int4 overflow.
-    const { where, params } = this.buildStaleChunkWhere(opts);
+    const staleColId = await this.activeEmbeddingColId({ fallbackToLegacy: true });
+    const { where, params } = this.buildStaleChunkWhere(`cc.${staleColId}`, opts);
     const { rows } = await this.db.query(
       `SELECT COALESCE(SUM(LENGTH(cc.chunk_text)), 0)::bigint AS chars
          FROM content_chunks cc
@@ -3305,7 +3305,10 @@ export class PGLiteEngine implements BrainEngine {
     // current model signature. GRANDFATHER: NULL signature untouched —
     // UNLESS includeNullSignature (#3391): provider migrations must not
     // leave pre-stamp pages in the old embedding space. Feeds the existing
-    // NULL-embedding cursor so listStaleChunks stays unchanged.
+    // NULL-embedding cursor so listStaleChunks stays unchanged. S2: keyed on
+    // the registry-ACTIVE column (loud resolver failure — destructive writes
+    // never guess).
+    const colId = await this.activeEmbeddingColId();
     const params: unknown[] = [opts.signature];
     let srcClause = '';
     if (opts.sourceId !== undefined) {
@@ -3318,10 +3321,10 @@ export class PGLiteEngine implements BrainEngine {
           AND p.embedding_signature <> $1`;
     const { rows } = await this.db.query(
       `UPDATE content_chunks cc
-          SET embedding = NULL, embedded_at = NULL
+          SET ${colId} = NULL, embedded_at = NULL
          FROM pages p
         WHERE cc.page_id = p.id
-          AND cc.embedding IS NOT NULL
+          AND cc.${colId} IS NOT NULL
           AND ${sigClause}${srcClause}
         RETURNING cc.page_id`,
       params,
@@ -3338,6 +3341,8 @@ export class PGLiteEngine implements BrainEngine {
     // pages excluded — the stale selectors can't re-embed them, so NULLing
     // would strand them (same never-NULL-what-nothing-re-embeds rule as
     // embedding-invalidation.ts). Mirrors postgres-engine.ts (parity).
+    // S2: keyed on the registry-ACTIVE column (loud resolver failure).
+    const colId = await this.activeEmbeddingColId();
     const params: unknown[] = [];
     let srcClause = '';
     if (opts?.sourceId !== undefined) {
@@ -3346,10 +3351,10 @@ export class PGLiteEngine implements BrainEngine {
     }
     const { rows } = await this.db.query(
       `UPDATE content_chunks cc
-          SET embedding = NULL, embedded_at = NULL, embedded_text_hash = NULL
+          SET ${colId} = NULL, embedded_at = NULL, embedded_text_hash = NULL
          FROM pages p
         WHERE cc.page_id = p.id
-          AND cc.embedding IS NOT NULL
+          AND cc.${colId} IS NOT NULL
           AND cc.embedded_text_hash IS NOT NULL
           AND cc.embedded_text_hash <> md5(cc.chunk_text)
           AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')${srcClause}
@@ -3372,6 +3377,10 @@ export class PGLiteEngine implements BrainEngine {
     const afterIdx = opts?.afterChunkIndex ?? -1;
     const orderBy = opts?.orderBy ?? 'page_id';
 
+    // S2: stale = NULL in the registry-ACTIVE column (fallback to legacy on
+    // a broken registry so read-only listing never crashes diagnostics).
+    const staleColId = await this.activeEmbeddingColId({ fallbackToLegacy: true });
+
     // v0.41.18.0 (A13, codex #9): --priority recent path. See postgres-engine
     // sibling for full rationale. Same composite cursor + ORDER BY.
     if (orderBy === 'updated_desc') {
@@ -3384,7 +3393,7 @@ export class PGLiteEngine implements BrainEngine {
                   p.updated_at
              FROM content_chunks cc
              JOIN pages p ON p.id = cc.page_id
-            WHERE cc.embedding IS NULL
+            WHERE cc.${staleColId} IS NULL
               AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
             ORDER BY p.updated_at DESC NULLS LAST, p.id ASC, cc.chunk_index ASC
             LIMIT $1`,
@@ -3395,7 +3404,7 @@ export class PGLiteEngine implements BrainEngine {
                   p.updated_at
              FROM content_chunks cc
              JOIN pages p ON p.id = cc.page_id
-            WHERE cc.embedding IS NULL
+            WHERE cc.${staleColId} IS NULL
               AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
               AND (
                 p.updated_at < $1::timestamptz
@@ -3414,7 +3423,7 @@ export class PGLiteEngine implements BrainEngine {
                 p.updated_at
            FROM content_chunks cc
            JOIN pages p ON p.id = cc.page_id
-          WHERE cc.embedding IS NULL
+          WHERE cc.${staleColId} IS NULL
             AND p.source_id = $1
             AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
           ORDER BY p.updated_at DESC NULLS LAST, p.id ASC, cc.chunk_index ASC
@@ -3426,7 +3435,7 @@ export class PGLiteEngine implements BrainEngine {
                 p.updated_at
            FROM content_chunks cc
            JOIN pages p ON p.id = cc.page_id
-          WHERE cc.embedding IS NULL
+          WHERE cc.${staleColId} IS NULL
             AND p.source_id = $1
             AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
             AND (
@@ -3451,7 +3460,7 @@ export class PGLiteEngine implements BrainEngine {
                 cc.model, cc.token_count, p.source_id, cc.page_id
            FROM content_chunks cc
            JOIN pages p ON p.id = cc.page_id
-          WHERE cc.embedding IS NULL
+          WHERE cc.${staleColId} IS NULL
             AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
             AND (cc.page_id, cc.chunk_index) > ($1, $2)
           ORDER BY cc.page_id, cc.chunk_index
@@ -3465,7 +3474,7 @@ export class PGLiteEngine implements BrainEngine {
               cc.model, cc.token_count, p.source_id, cc.page_id
          FROM content_chunks cc
          JOIN pages p ON p.id = cc.page_id
-        WHERE cc.embedding IS NULL
+        WHERE cc.${staleColId} IS NULL
           AND p.source_id = $1
           AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
           AND (cc.page_id, cc.chunk_index) > ($2, $3)
@@ -5376,6 +5385,9 @@ export class PGLiteEngine implements BrainEngine {
 
   // Stats + health
   async getStats(): Promise<BrainStats> {
+    // S2: embedded_count keys on the registry-ACTIVE column (fallback to
+    // legacy on a broken registry — diagnostics never crash).
+    const colId = await this.activeEmbeddingColId({ fallbackToLegacy: true });
     const { rows: [stats] } = await this.db.query(`
       SELECT
         -- v0.26.5: exclude soft-deleted from page_count (mirrors postgres-engine).
@@ -5384,7 +5396,7 @@ export class PGLiteEngine implements BrainEngine {
         -- Keyed on the stored VECTOR, not embedded_at (parity with
         -- postgres-engine): a schema rebuild NULLs every vector without
         -- touching embedded_at.
-        (SELECT count(*) FROM content_chunks WHERE embedding IS NOT NULL) as embedded_count,
+        (SELECT count(*) FROM content_chunks WHERE ${colId} IS NOT NULL) as embedded_count,
         (SELECT count(*) FROM links) as link_count,
         (SELECT count(DISTINCT tag) FROM tags) as tag_count,
         (SELECT count(*) FROM timeline_entries) as timeline_entry_count
@@ -5419,6 +5431,8 @@ export class PGLiteEngine implements BrainEngine {
     // posture as getStats — so brain_score moves when the user deletes pages.
     // Chunk/link counts stay raw (storage until the purge phase), matching
     // getStats, and destructive-removal counts elsewhere deliberately stay raw.
+    // S2: coverage + missing_embeddings key on the registry-ACTIVE column.
+    const colId = await this.activeEmbeddingColId({ fallbackToLegacy: true });
     const { rows: [h] } = await this.db.query(`
       WITH entity_pages AS (
         SELECT id, slug FROM pages WHERE type IN ('entity', 'person', 'company') AND deleted_at IS NULL
@@ -5431,7 +5445,7 @@ export class PGLiteEngine implements BrainEngine {
         (SELECT CASE
            WHEN count(*) FILTER (WHERE NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip')) = 0
            THEN 1.0
-           ELSE count(*) FILTER (WHERE cc.embedding IS NOT NULL
+           ELSE count(*) FILTER (WHERE cc.${colId} IS NOT NULL
                                    AND NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip'))::float
               / count(*) FILTER (WHERE NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip'))::float
          END
@@ -5451,7 +5465,7 @@ export class PGLiteEngine implements BrainEngine {
         -- count can reach zero and the embed.stale remediation can converge.
         (SELECT count(*) FROM content_chunks cc
            JOIN pages p ON p.id = cc.page_id
-          WHERE cc.embedding IS NULL
+          WHERE cc.${colId} IS NULL
             AND NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip')
         ) as missing_embeddings,
         (SELECT count(*) FROM links) as link_count,

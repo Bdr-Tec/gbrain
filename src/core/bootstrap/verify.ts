@@ -477,28 +477,48 @@ export async function checkEmbeddingPlane(
   caps: CapabilityReport,
 ): Promise<VerifyCheck> {
   const id = 'embedding_plane';
+  // S2: resolve the registry-ACTIVE write column FIRST — comparing the
+  // embedder to the literal legacy `embedding` column false-FAILs a healthy
+  // brain whose registry routes writes elsewhere (e.g. a 1024d Voyage
+  // column). An unresolvable registry row is itself a genuine FAIL: every
+  // chunk write throws the resolver error until the config row is fixed.
+  let activeColName: string;
+  try {
+    const { resolveActiveEmbeddingColumnFromEngine } = await import('../search/embedding-column.ts');
+    activeColName = (await resolveActiveEmbeddingColumnFromEngine(engine)).name;
+  } catch (e) {
+    return {
+      id,
+      ok: false,
+      detail:
+        `the configured embedding column cannot be resolved (${(e as Error).message}) — every chunk ` +
+        `write fails until the registry row is fixed. Inspect \`gbrain config get search_embedding_column\` ` +
+        `and \`gbrain config get embedding_columns\`.`,
+    };
+  }
+  const colLabel = `content_chunks.${activeColName}`;
   let colDims: number | null = null;
   let colExists = false;
   try {
-    const { readContentChunksEmbeddingDim } = await import('../embedding-dim-check.ts');
-    const col = await readContentChunksEmbeddingDim(engine);
+    const { readContentChunksColumnDim } = await import('../embedding-dim-check.ts');
+    const col = await readContentChunksColumnDim(engine, activeColName);
     colDims = col.dims;
     colExists = col.exists;
   } catch (e) {
-    return { id, ok: true, warn: true, detail: `embedding column width probe failed: ${(e as Error).message}` };
+    return { id, ok: true, warn: true, detail: `embedding column width probe failed (${colLabel}): ${(e as Error).message}` };
   }
   if (!caps.embeddings.available) {
     return {
       id,
       ok: true,
-      detail: `keyless — no embedding provider configured; writes store no vectors (column: ${colExists ? `${colDims ?? '?'}d` : 'absent'})`,
+      detail: `keyless — no embedding provider configured; writes store no vectors (active column ${colLabel}: ${colExists ? `${colDims ?? '?'}d` : 'absent'})`,
     };
   }
   if (!colExists) {
     return {
       id,
       ok: false,
-      detail: 'embeddings are configured but the content_chunks.embedding column is ABSENT — every embedding write fails. Run `gbrain migrate embeddings --status` to diagnose, then `gbrain migrate embeddings --to <provider:model>` to (re)build it.',
+      detail: `embeddings are configured but the active ${colLabel} column is ABSENT — every embedding write fails. Run \`gbrain migrate embeddings --status\` to diagnose, then \`gbrain migrate embeddings --to <provider:model>\` to (re)build it.`,
     };
   }
   try {
@@ -515,7 +535,7 @@ export async function checkEmbeddingPlane(
         ok: false,
         detail:
           `EMBEDDING PLANE SPLIT: the runtime embedder (${model}) returns ${got}d vectors but ` +
-          `content_chunks.embedding is ${colDims}d — every embedding write fails ("expected ${colDims} ` +
+          `${colLabel} is ${colDims}d — every embedding write fails ("expected ${colDims} ` +
           `dimensions, not ${got}") and nothing is stored. Fix: gbrain migrate embeddings --to <provider:model> ` +
           `--dim ${got} (or correct embedding_model/embedding_dimensions to match the column).`,
       };
@@ -523,7 +543,7 @@ export async function checkEmbeddingPlane(
     return {
       id,
       ok: true,
-      detail: `active plane verified end-to-end: ${model} emits ${got}d = content_chunks.embedding ${colDims ?? got}d`,
+      detail: `active plane verified end-to-end: ${model} emits ${got}d = ${colLabel} ${colDims ?? got}d`,
     };
   } catch (e) {
     // A dead/misconfigured provider surfaces in the roundtrip put; this check
