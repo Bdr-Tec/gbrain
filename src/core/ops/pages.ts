@@ -19,9 +19,10 @@ import type { WriterLintPayload } from '../output/post-write.ts';
 import { stripFactsFence } from '../facts-fence.ts';
 import { getContentFlag } from '../quarantine.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
+import { isValidSourceId, ALL_SOURCES } from '../source-id.ts';
 import { LIST_PAGES_DESCRIPTION, CAPTURE_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
-import type { Operation } from './contract.ts';
+import type { Operation, OperationContext } from './contract.ts';
 import {
   enforceSubagentSlugFence,
   slugOutsideCallerFence,
@@ -33,6 +34,62 @@ import {
 
 // --- Page CRUD ---
 
+/**
+ * #4329: parse a per-call `source_id` param. Pre-fix, get_page / delete_page /
+ * restore_page had NO source_id in their contracts, so an agent-passed
+ * source_id was SILENTLY dropped and the op acted on ctx.sourceId —
+ * soft-deleting the WRONG row on a multi-source brain while returning a
+ * success that named the requested slug. A caller-supplied value is either
+ * honored or rejected loudly — never ignored. `allowAll` admits the
+ * `__all__` sentinel for read ops (resolveRequestedScope collapses it per
+ * trust); destructive ops target exactly one source and reject it.
+ */
+function parseSourceIdParam(
+  raw: unknown,
+  opName: string,
+  opts?: { allowAll?: boolean },
+): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === 'string') {
+    if (raw === ALL_SOURCES) {
+      if (opts?.allowAll === true) return raw;
+      throw new OperationError(
+        'invalid_params',
+        `${opName}: source_id '${ALL_SOURCES}' is not a valid target — this op acts on exactly one source.`,
+        'Pass the single source_id of the row to target, or omit source_id to use the ambient source scope.',
+      );
+    }
+    if (isValidSourceId(raw)) return raw;
+  }
+  throw new OperationError(
+    'invalid_params',
+    `${opName}: invalid source_id ${JSON.stringify(raw)} — must be 1-32 lowercase alnum chars with optional interior hyphens.`,
+    'Pass a registered source id (see list_sources), or omit source_id to use the ambient source scope.',
+  );
+}
+
+/**
+ * #4329: write-authority gate for a per-call source_id on the destructive
+ * page ops. Trusted local callers (ctx.remote === false) and unauthenticated
+ * transports (stdio MCP, subagent dispatch — no ctx.auth) own the brain and
+ * may target any source (slug fences still apply). An AUTHENTICATED remote
+ * caller may only target its write source or a source inside its federated
+ * grant — fail-closed permission_denied otherwise, never a silent retarget.
+ */
+function assertSourceInWriteGrant(ctx: OperationContext, sourceId: string): void {
+  if (ctx.remote === false || !ctx.auth) return;
+  const inGrant = sourceId === ctx.sourceId
+    || sourceId === ctx.auth.sourceId
+    || (ctx.auth.allowedSources?.includes(sourceId) ?? false);
+  if (!inGrant) {
+    throw new OperationError(
+      'permission_denied',
+      `source '${sourceId}' is outside your granted sources`,
+      'Omit source_id to target your write source, or request access to this source.',
+    );
+  }
+}
+
 const get_page: Operation = {
   name: 'get_page',
   description: 'Read a page by slug (supports optional fuzzy matching). Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
@@ -40,11 +97,16 @@ const get_page: Operation = {
     slug: { type: 'string', required: true, description: 'Page slug' },
     fuzzy: { type: 'boolean', description: 'Enable fuzzy slug resolution (default: false)' },
     include_deleted: { type: 'boolean', description: 'v0.26.5: surface soft-deleted pages with deleted_at populated (default: false). Used by restore workflows.' },
+    source_id: { type: 'string', description: "#4329: scope the lookup to a single source (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId / the caller's grant. '__all__' spans every source for trusted local callers, your granted sources for remote callers." },
   },
   handler: async (ctx, p) => {
     const slug = p.slug as string;
     const fuzzy = (p.fuzzy as boolean) || false;
     const includeDeleted = (p.include_deleted as boolean) === true;
+    // #4329: honor a per-call source_id (pre-fix it was silently dropped).
+    // resolveRequestedScope (inside federatedSearchScope) enforces the remote
+    // caller's grant on the explicit value.
+    const sourceIdParam = parseSourceIdParam(p.source_id, 'get_page', { allowAll: true });
     // #1393: route BOTH the exact-match read and the fuzzy resolveSlugs through
     // the canonical precedence ladder (federated array > scalar > nothing). The
     // exact path previously used scalar `ctx.sourceId` only, so a remote client
@@ -53,7 +115,7 @@ const get_page: Operation = {
     // now honors sourceIds[] (both engines), so the same scope closes both paths.
     // #3242: federatedSearchScope (not bare sourceScopeOpts) so an unqualified
     // read sees pages in `federated: true` sources, matching search/query.
-    const sourceOpts = federatedSearchScope(ctx);
+    const sourceOpts = federatedSearchScope(ctx, sourceIdParam);
     const fuzzyScope = sourceOpts;
 
     let page = await ctx.engine.getPage(slug, { includeDeleted, ...sourceOpts });
@@ -809,16 +871,23 @@ const delete_page: Operation = {
   description: 'Soft-delete a page. The row is hidden from search and from get_page/list_pages, but is recoverable via restore_page within 72h. The autopilot purge phase hard-deletes after the recovery window. Pass include_deleted: true to get_page to verify the soft-delete landed.',
   params: {
     slug: { type: 'string', required: true, description: "Slug of the page to soft-delete, e.g. 'people/alice-example'." },
+    source_id: { type: 'string', description: "#4329: source holding the row to soft-delete (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId. Remote callers may only target sources inside their grant." },
   },
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
     const slug = p.slug as string;
     enforceClientSlugFence(ctx, slug, 'delete_page');
+    // #4329: honor a per-call source_id (pre-fix it was silently dropped and
+    // the delete landed on ctx.sourceId's row — the wrong-source soft-delete).
+    const requestedSource = parseSourceIdParam(p.source_id, 'delete_page');
+    if (requestedSource !== undefined) assertSourceInWriteGrant(ctx, requestedSource);
     if (ctx.dryRun) return { dry_run: true, action: 'soft_delete_page', slug };
     // v0.31.8 (D7): thread ctx.sourceId so multi-source brains soft-delete the
     // intended row instead of always targeting (default, slug).
-    const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
+    const sourceOpts = requestedSource
+      ? { sourceId: requestedSource }
+      : ctx.sourceId ? { sourceId: ctx.sourceId } : {};
     // v0.26.5: rewired from hard-delete to soft-delete. The hard-delete primitive
     // (engine.deletePage) is now reserved for purgeDeletedPages and explicit
     // tests. softDeletePage returns null when the slug is unknown OR already
@@ -829,11 +898,13 @@ const delete_page: Operation = {
       // clear signal. Probe once with include_deleted to disambiguate.
       const existing = await ctx.engine.getPage(slug, { includeDeleted: true, ...sourceOpts });
       if (!existing) {
-        throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Check the slug.');
+        throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Check the slug (and source_id on a multi-source brain).');
       }
-      return { status: 'already_soft_deleted', slug, deleted_at: existing.deleted_at };
+      return { status: 'already_soft_deleted', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}), deleted_at: existing.deleted_at };
     }
-    return { status: 'soft_deleted', slug, recoverable_until: 'now + 72h via restore_page' };
+    // Echo the targeted source so a multi-source caller can verify WHICH row
+    // the delete landed on (#4329's false-confidence failure mode).
+    return { status: 'soft_deleted', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}), recoverable_until: 'now + 72h via restore_page' };
   },
   cliHints: { name: 'delete', positional: ['slug'] },
 };
@@ -843,25 +914,31 @@ const restore_page: Operation = {
   description: 'v0.26.5 — restore a soft-deleted page (clear deleted_at). Returns success only if the page was actually soft-deleted. After this op, the page reappears in search and in get_page/list_pages without the include_deleted flag.',
   params: {
     slug: { type: 'string', required: true, description: "Slug of the soft-deleted page to restore, e.g. 'people/alice-example'." },
+    source_id: { type: 'string', description: "#4329: source holding the row to restore (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId. Remote callers may only target sources inside their grant." },
   },
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
     const slug = p.slug as string;
     enforceClientSlugFence(ctx, slug, 'restore_page');
+    // #4329: honor a per-call source_id (pre-fix it was silently dropped).
+    const requestedSource = parseSourceIdParam(p.source_id, 'restore_page');
+    if (requestedSource !== undefined) assertSourceInWriteGrant(ctx, requestedSource);
     if (ctx.dryRun) return { dry_run: true, action: 'restore_page', slug };
     // v0.31.8 (D7): thread ctx.sourceId.
-    const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
+    const sourceOpts = requestedSource
+      ? { sourceId: requestedSource }
+      : ctx.sourceId ? { sourceId: ctx.sourceId } : {};
     const ok = await ctx.engine.restorePage(slug, sourceOpts);
     if (!ok) {
       // Distinguish "not found" from "already active" (idempotent-as-false).
       const existing = await ctx.engine.getPage(slug, { includeDeleted: true, ...sourceOpts });
       if (!existing) {
-        throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Check the slug.');
+        throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Check the slug (and source_id on a multi-source brain).');
       }
-      return { status: 'already_active', slug };
+      return { status: 'already_active', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}) };
     }
-    return { status: 'restored', slug };
+    return { status: 'restored', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}) };
   },
   cliHints: { name: 'restore', positional: ['slug'] },
 };

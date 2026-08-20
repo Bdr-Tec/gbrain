@@ -156,8 +156,9 @@ export async function resolveSourceId(
   //      the "532 silent edit failures" bug class where users with a single
   //      Vault-mounted source ran `gbrain sync` without --source and routed
   //      to source_id='default' (which held 0 pages). Conservative: fires
-  //      only when there's literally one option — multi-source brains still
-  //      require explicit --source or sources.default.
+  //      only when there's literally one option AND 'default' is empty
+  //      (#3070) — multi-source brains and established default corpora
+  //      still require explicit --source or sources.default.
   //
   //      Placed AFTER brain_default per codex review: a user who explicitly
   //      set sources.default has stated intent, that wins over auto-routing.
@@ -205,6 +206,12 @@ export function resolveSourceIdEngineFree(
  *   - 2+ non-default sources are registered (ambiguous — user must pick)
  *   - the only non-default source has a NULL local_path (no on-disk shape)
  *   - the only registered source IS 'default'
+ *   - 'default' holds an established corpus (#3070 — any active page): the
+ *     tier's charter is rescuing brains whose 'default' is EMPTY (#1434's
+ *     "532 silent edit failures"); when 'default' is actively used,
+ *     auto-routing would hijack every bare `put`/`capture`/`sync` into the
+ *     sole side-source, so the resolver falls through to seed_default and
+ *     the user must pick via --source / sources.default.
  *
  * Excludes archived sources (`archived = false`) so a soft-deleted source
  * doesn't auto-resolve. Shared by `resolveSourceId` and `resolveSourceWithTier`
@@ -229,8 +236,19 @@ async function pickSoleNonDefaultSource(engine: BrainEngine): Promise<string | n
       `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default'`,
     );
   }
-  if (rows.length === 1) return rows[0].id;
-  return null;
+  if (rows.length !== 1) return null;
+  // #3070 emptiness guard: fire only when 'default' holds no active pages.
+  try {
+    const defaultPages = await engine.executeRaw<{ one: number }>(
+      `SELECT 1 AS one FROM pages WHERE source_id = 'default' AND deleted_at IS NULL LIMIT 1`,
+    );
+    if (defaultPages.length > 0) return null;
+  } catch {
+    // pages.deleted_at exists on every supported schema; a failure here means
+    // an exotic/legacy brain — keep the pre-guard routing rather than breaking
+    // resolution outright.
+  }
+  return rows[0].id;
 }
 
 /**
