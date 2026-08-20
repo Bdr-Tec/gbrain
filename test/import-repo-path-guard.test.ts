@@ -293,11 +293,114 @@ describe('import sync-bookmark guard (#2114)', () => {
     await writeSyncAnchor(engine, undefined, 'last_commit', 'anchor-a2', undefined, repoA);
     expect(await engine.getConfig('sync.last_commit')).toBe('anchor-a2');
 
-    // A resolved sourceId keeps writing to its own sources row, untouched by the guard.
+    // An OWNED sourceId write still lands on its sources row ('default'
+    // delegates to the same global ownership check, which repoA passes).
     await writeSyncAnchor(engine, 'default', 'repo_path', repoA);
     const rows = await engine.executeRaw<{ local_path: string | null }>(
       `SELECT local_path FROM sources WHERE id = 'default'`,
     );
     expect(rows[0]?.local_path).toBe(repoA);
+  });
+
+  // #4369 — the per-source branch of writeSyncAnchor used to UPDATE
+  // sources.local_path unconditionally. A sync fallback (or an explicit
+  // --source + foreign --dir combination) silently repointed an
+  // explicitly-registered source's directory identity, poisoning put_page
+  // write-through and the incremental anchor for that source — the same
+  // clobber class as #2114, one level down. Only `repo_path` is guarded;
+  // per-source `last_commit` stays unguarded by design (a subpath-scoped
+  // sync legitimately advances it while its dir spelling differs from the
+  // registered local_path — guarding it would false-refuse those advances).
+  describe('per-source repo_path guard (#4369)', () => {
+    async function localPathOf(id: string): Promise<string | null> {
+      const rows = await engine.executeRaw<{ local_path: string | null }>(
+        `SELECT local_path FROM sources WHERE id = $1`,
+        [id],
+      );
+      return rows[0]?.local_path ?? null;
+    }
+
+    test('foreign dir is refused with a loud notice; local_path unchanged', async () => {
+      await engine.executeRaw(
+        `INSERT INTO sources (id, name, local_path) VALUES ('work-code', 'work-code', $1)`,
+        [repoA],
+      );
+
+      const notices = await captureStderr(async () => {
+        await writeSyncAnchor(engine, 'work-code', 'repo_path', repoB);
+      });
+
+      expect(await localPathOf('work-code')).toBe(repoA);
+      expect(notices).toContain('not repointing');
+      expect(notices).toContain('work-code');
+    });
+
+    test('registered dir still writes, under any spelling (realpath compare)', async () => {
+      // Register under a non-canonical spelling (macOS /var vs /private/var);
+      // the guard must not false-refuse the source's own directory.
+      const altA = repoA.startsWith('/private/') ? repoA.slice('/private'.length) : repoA;
+      await engine.executeRaw(
+        `INSERT INTO sources (id, name, local_path) VALUES ('work-code', 'work-code', $1)`,
+        [altA],
+      );
+
+      const notices = await captureStderr(async () => {
+        await writeSyncAnchor(engine, 'work-code', 'repo_path', repoA);
+      });
+
+      expect(notices).not.toContain('not repointing');
+      // The write lands (canonical spelling replaces the alt spelling).
+      expect(await localPathOf('work-code')).toBe(repoA);
+    });
+
+    test('null local_path bootstraps on first write', async () => {
+      await engine.executeRaw(
+        `INSERT INTO sources (id, name) VALUES ('work-code', 'work-code')`,
+      );
+      expect(await localPathOf('work-code')).toBeNull();
+
+      const notices = await captureStderr(async () => {
+        await writeSyncAnchor(engine, 'work-code', 'repo_path', repoB);
+      });
+
+      expect(notices).not.toContain('not repointing');
+      expect(await localPathOf('work-code')).toBe(repoB);
+    });
+
+    test('default source delegates to the GLOBAL ownership rule', async () => {
+      // sources.default.local_path is null (beforeEach) but the global key
+      // holds the brain repo — the default source's identity lives in
+      // ownsGlobalSyncAnchor, so a foreign dir must be refused even though
+      // the row itself looks bootstrappable.
+      await engine.setConfig('sync.repo_path', repoA);
+
+      const notices = await captureStderr(async () => {
+        await writeSyncAnchor(engine, 'default', 'repo_path', repoB);
+      });
+
+      expect(await localPathOf('default')).toBeNull();
+      expect(notices).toContain('not repointing');
+    });
+
+    test('per-source last_commit stays unguarded (subpath advances must not false-refuse)', async () => {
+      await engine.executeRaw(
+        `INSERT INTO sources (id, name, local_path) VALUES ('work-code', 'work-code', $1)`,
+        [repoA],
+      );
+
+      // repoDir deliberately foreign to the registered local_path — the
+      // per-source last_commit write is NOT dir-guarded (documented plan
+      // decision: subpath syncs pass a git root that can differ from the
+      // registered scope root).
+      const notices = await captureStderr(async () => {
+        await writeSyncAnchor(engine, 'work-code', 'last_commit', 'anchor-x', undefined, repoB);
+      });
+
+      expect(notices).not.toContain('not repointing');
+      const rows = await engine.executeRaw<{ last_commit: string | null }>(
+        `SELECT last_commit FROM sources WHERE id = 'work-code'`,
+      );
+      expect(rows[0]?.last_commit).toBe('anchor-x');
+    });
   });
 });

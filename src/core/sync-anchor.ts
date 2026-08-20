@@ -6,7 +6,7 @@
 import { realpathSync } from 'fs';
 import type { BrainEngine } from './engine.ts';
 import type { SyncOpts } from '../commands/sync.ts';
-import { ownsGlobalSyncAnchor } from './sync.ts';
+import { ownsGlobalSyncAnchor, sameRepoDir } from './sync.ts';
 import { serr } from './console-prefix.ts';
 
 // v0.18.0 Step 5: source-scoped sync state helpers. When opts.sourceId
@@ -89,6 +89,54 @@ export async function isAnchorOwnedSyncPath(
   }
 }
 
+export interface SourceAnchorOwnership {
+  owns: boolean;
+  /** The path ownership was judged against, or null when the source has no
+   * directory identity yet (bootstrap allowed). */
+  configured: string | null;
+}
+
+/**
+ * #4369 — may a sync of `dir` move THIS source's directory anchor
+ * (`sources.local_path`)? The per-source analog of `ownsGlobalSyncAnchor`,
+ * one level down: `local_path` is the source's registered directory
+ * identity, and `writeSyncAnchor`'s per-source branch used to UPDATE it
+ * unconditionally — an explicit `--source <id>` paired with a foreign
+ * directory (or a fallback that resolved the wrong dir) silently repointed
+ * an explicitly-registered source, poisoning put_page write-through and
+ * that source's incremental anchor. Ownership rules:
+ *   - `'default'` delegates to `ownsGlobalSyncAnchor` (the default source
+ *     IS the brain repo; its identity rules — global key first, then the
+ *     row's local_path, bootstrap only when neither exists — already live
+ *     there, so the two layers cannot drift).
+ *   - any other id: the row's `local_path` when set (realpath-tolerant via
+ *     `sameRepoDir`, so a symlinked/case-variant spelling can't
+ *     false-refuse the source's own directory); a null `local_path`
+ *     bootstraps (first sync of a freshly-registered source).
+ * Best-effort: a failed row read fails OPEN (a guard bug must never block
+ * anchor writes — the UPDATE itself surfaces real DB trouble).
+ */
+export async function ownsSourceSyncAnchor(
+  engine: BrainEngine,
+  sourceId: string,
+  dir: string,
+): Promise<SourceAnchorOwnership> {
+  if (sourceId === 'default') {
+    return await ownsGlobalSyncAnchor(engine, sourceId, dir);
+  }
+  try {
+    const rows = await engine.executeRaw<{ local_path: string | null }>(
+      `SELECT local_path FROM sources WHERE id = $1`,
+      [sourceId],
+    );
+    const configured = rows[0]?.local_path ?? null;
+    if (configured === null) return { owns: true, configured: null };
+    return { owns: sameRepoDir(configured, dir), configured };
+  } catch {
+    return { owns: true, configured: null };
+  }
+}
+
 export async function writeSyncAnchor(
   engine: BrainEngine,
   sourceId: string | undefined,
@@ -126,6 +174,20 @@ export async function writeSyncAnchor(
         );
       }
     } else {
+      // #4369: guard repo_path only. Per-source last_commit stays
+      // UNGUARDED by design — a subpath-scoped sync legitimately advances
+      // it while the dir it passes (git root vs registered scope root) can
+      // differ from local_path, so a dir guard there would false-refuse
+      // real advances (documented in the D-4369 plan).
+      const { owns, configured } = await ownsSourceSyncAnchor(engine, sourceId, value);
+      if (!owns) {
+        serr(
+          `[sync] sources.local_path for "${sourceId}" stays at ${configured ?? '(unset)'} — ` +
+          `not repointing the source at "${value}". Sync from the registered directory, ` +
+          `or re-register the source to move it intentionally.`,
+        );
+        return;
+      }
       await engine.executeRaw(
         `UPDATE sources SET ${col} = $1 WHERE id = $2`,
         [value, sourceId],
