@@ -136,6 +136,57 @@ export function frontmatterBodyOffset(content: string): number {
  * heading (backward-compat for existing files). A bare `---` in body text
  * is treated as a markdown horizontal rule, not a timeline separator.
  */
+/**
+ * gray-matter's YAML parser treats an unquoted `: ` (colon-space) or a
+ * trailing `:` inside a plain scalar value as an ambiguous nested-mapping
+ * indicator and fails to parse the ENTIRE leading frontmatter block — not
+ * just that one field. This is silent: parseMarkdown catches the error and
+ * falls back to empty frontmatter + the whole document as body, which
+ * looks exactly like accidental double-frontmatter corruption even though
+ * only one (syntactically invalid) block was ever written. The single most
+ * common trigger is a raw email/message subject line landing unquoted in
+ * `title:` — "Re: ..." is close to universal in reply subjects.
+ * See github.com/garrytan/gbrain/issues/3708.
+ *
+ * Fix: quote any single-line `key: value` frontmatter scalar whose value
+ * isn't already quoted, a flow collection (`[...]`/`{...}`), or a block
+ * scalar (`|`/`>`), and contains an ambiguous colon, before handing the
+ * block to gray-matter. Multi-line values, list items (indented, so they
+ * never match the bare `key:` anchor below), and already-safe values are
+ * left untouched — this only rescues the exact shape that breaks, so
+ * writers (agents, scripts, humans) no longer have to remember to quote
+ * colon-bearing titles themselves.
+ */
+function quoteAmbiguousFrontmatterScalars(content: string): string {
+  const fenceMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/);
+  if (!fenceMatch) return content;
+  const fenceBody = fenceMatch[1]!;
+  const closer = fenceMatch[2]!;
+  const rest = content.slice(fenceMatch[0].length);
+
+  const fixedBody = fenceBody
+    .split('\n')
+    .map(line => {
+      // Top-level `key: value` only — indented lines (list items, nested
+      // maps) never match this anchor, so they pass through untouched.
+      const kv = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):[ \t]+(.+)$/);
+      if (!kv) return line;
+      const key = kv[1]!;
+      const value = kv[2]!;
+      // Already quoted, a flow collection, or a block-scalar indicator —
+      // caller already handled quoting correctly; leave it alone.
+      if (/^['"[{|>]/.test(value)) return line;
+      // The ambiguous cases gray-matter/js-yaml chokes on: an embedded
+      // ": " (looks like a nested mapping key) or a trailing ":".
+      if (!value.includes(': ') && !value.endsWith(':')) return line;
+      const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      return `${key}: "${escaped}"`;
+    })
+    .join('\n');
+
+  return `---\n${fixedBody}\n---${closer}${rest}`;
+}
+
 export function parseMarkdown(
   content: string,
   filePath?: string,
@@ -147,10 +198,19 @@ export function parseMarkdown(
   // pretty much any input. The validation surface below catches the cases
   // it silently swallows. Validation only runs when opts.validate is true,
   // so existing callers are unaffected.
+  //
+  // quoteAmbiguousFrontmatterScalars runs unconditionally, not just as an
+  // error-path retry: the unquoted-colon case (#3708) doesn't throw a
+  // catchable exception here — gray-matter just silently decides there's
+  // no valid frontmatter at all (empty data, the whole document as body),
+  // so there's no failure signal to react to after the fact. Pre-quoting
+  // ambiguous values keeps that input from ever reaching gray-matter in
+  // its broken shape.
+  const safeContent = quoteAmbiguousFrontmatterScalars(content);
   let parsed: ReturnType<typeof matter> | null = null;
   let yamlParseError: Error | null = null;
   try {
-    parsed = matter(content);
+    parsed = matter(safeContent);
   } catch (e) {
     yamlParseError = e as Error;
   }

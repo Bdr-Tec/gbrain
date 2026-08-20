@@ -387,3 +387,76 @@ describe('issue #2446 — body H1 fallback for missing frontmatter title', () =>
     expect(parsed.title).toBe('Closed ATX Heading');
   });
 });
+
+// github.com/garrytan/gbrain/issues/3708 — an unquoted `: ` inside a
+// frontmatter scalar (near-universal in "Re: ..." email/message subjects)
+// used to break gray-matter's parse of the whole leading frontmatter block:
+// it silently fell back to empty frontmatter + type 'concept' + a
+// slug-derived title, with the well-formed original document folded into
+// the body underneath a synthesized wrapper — indistinguishable at a
+// glance from accidental double-frontmatter corruption. Fixed by quoting
+// ambiguous scalars before gray-matter ever sees them.
+describe('Markdown Parser — ambiguous-colon frontmatter scalars (#3708)', () => {
+  test('an unquoted "Re: ..." title parses correctly instead of falling back to concept/slug-title', () => {
+    const md = `---
+type: imessage
+title: Text with Jane Oh re: October 24 booking
+participants: ["Jane Oh"]
+---
+
+**Jane Oh** (12:35 PM): body text`;
+    const parsed = parseMarkdown(md, 'messages/jane-oh.md');
+    // The discriminating assertions: on the unfixed code these are
+    // 'concept' / false / 'Jane Oh' (slug-derived) instead.
+    expect(parsed.type).toBe('imessage');
+    expect(parsed.typeExplicit).toBe(true);
+    expect(parsed.title).toBe('Text with Jane Oh re: October 24 booking');
+    // The body must NOT contain the frontmatter fence — proof the fence was
+    // actually recognized and stripped, not just coincidentally present.
+    expect(parsed.compiled_truth).not.toContain('---');
+    expect(parsed.compiled_truth).toContain('body text');
+  });
+
+  test('a trailing colon in a title is also quoted (the other ambiguous YAML case)', () => {
+    const md = '---\ntype: email\ntitle: Subject line ending in a colon:\n---\n\nbody';
+    const parsed = parseMarkdown(md, 'emails/x.md');
+    expect(parsed.type).toBe('email');
+    expect(parsed.title).toBe('Subject line ending in a colon:');
+  });
+
+  test('an already-quoted colon-bearing value is left alone (idempotent, no double-quoting)', () => {
+    const md = '---\ntype: email\ntitle: "Re: already quoted"\n---\n\nbody';
+    const parsed = parseMarkdown(md, 'emails/x.md');
+    expect(parsed.type).toBe('email');
+    expect(parsed.title).toBe('Re: already quoted');
+  });
+
+  test('a colon not followed by a space (e.g. a URL) is left untouched', () => {
+    const md = '---\ntype: bookmark\ntitle: See http://example.com/page for details\n---\n\nbody';
+    const parsed = parseMarkdown(md, 'bookmarks/x.md');
+    expect(parsed.type).toBe('bookmark');
+    expect(parsed.title).toBe('See http://example.com/page for details');
+  });
+
+  test('multi-line list values under a key are untouched (only top-level key: value lines are ever quoted)', () => {
+    const md = `---
+type: email
+title: Re: multi-recipient thread
+participants:
+  - "Alice: Ops Lead"
+  - Bob
+---
+
+body`;
+    const parsed = parseMarkdown(md, 'emails/x.md');
+    expect(parsed.type).toBe('email');
+    expect(parsed.title).toBe('Re: multi-recipient thread');
+    expect(parsed.frontmatter.participants).toEqual(['Alice: Ops Lead', 'Bob']);
+  });
+
+  test('content with no frontmatter fence at all is returned unchanged', () => {
+    const md = 'Just a body, no frontmatter: not even a fence.';
+    const parsed = parseMarkdown(md, 'notes/x.md');
+    expect(parsed.compiled_truth).toContain('Just a body, no frontmatter: not even a fence.');
+  });
+});
