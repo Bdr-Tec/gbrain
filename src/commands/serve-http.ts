@@ -2205,6 +2205,20 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       cache.set(asset.path, buf);
       return buf;
     }
+    // Bare /admin (no trailing slash) never matches the '/admin/{*path}'
+    // pattern below — path-to-regexp requires the literal '/' that
+    // precedes the wildcard segment. The dev-path branch above doesn't need
+    // this: express.static() issues its own redirect-to-trailing-slash for
+    // a directory index request. Mirror that behavior explicitly here.
+    // Express route matching is non-strict by default, so the '/admin'
+    // pattern below also matches '/admin/' — guard on the exact path so
+    // it doesn't shadow the '/admin/{*path}' handler and redirect-loop.
+    app.get('/admin', (req: Request, res: Response, next: NextFunction) => {
+      if (req.path !== '/admin') {
+        return next();
+      }
+      res.redirect('/admin/');
+    });
     app.get('/admin/{*path}', (req: Request, res: Response, next: NextFunction) => {
       if (req.path.startsWith('/admin/api/') || req.path === '/admin/events' || req.path === '/admin/login') {
         return next();
