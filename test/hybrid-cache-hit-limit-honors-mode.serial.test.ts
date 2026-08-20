@@ -7,7 +7,7 @@
  * shape call served from cache silently sliced that cached row down to 20 —
  * inconsistent between the miss and hit paths for the same call shape.
  * (Scope note: this fix closes that gap for `offset: 0` — the common case,
- * and the shape every test below drives. A SEPARATE, pre-existing bug
+ * and the shape the first three tests below drive. A SEPARATE, pre-existing bug
  * — offset is applied twice on a hit, once already baked into what the miss
  * path stored and once again by the hit branch, AND offset isn't part of
  * the cache key at all — means a nonzero `offset` still breaks hit/miss
@@ -206,13 +206,14 @@ describe('cache HIT — limit honors the resolved mode (#4356)', () => {
   // This test pins the CURRENT (broken) behavior so a future fix shows up
   // as an intentional test update, per the same "pin the gap" pattern the
   // original #3995/#4355 review applied to the cache-hit relational-meta
-  // absence. Properly fixing this requires redesigning what the cache
-  // stores (e.g. cache the pre-offset pool and re-slice offset+limit fresh
-  // on every hit, key offset into the cache, or skip caching for
-  // offset>0) — a distinct concern from the `|| 20` vs
-  // `|| resolvedMode.searchLimit` substitution this PR makes, so it is
-  // deliberately NOT fixed here (would reintroduce the "bundling unrelated
-  // changes" problem that got #4355/#4357 closed).
+  // absence. Possible fixes include caching the pre-offset pool, bypassing
+  // paginated (offset>0) cache calls, or keying offset and returning the
+  // stored page without re-slicing (keying offset alone does NOT fix the
+  // double-slice — the hit branch would still need to stop re-applying
+  // `offset` to an already-offset-sliced row). A distinct concern from the
+  // `|| 20` vs `|| resolvedMode.searchLimit` substitution this PR makes, so
+  // it is deliberately NOT fixed here (would reintroduce the "bundling
+  // unrelated changes" problem that got #4355/#4357 closed).
   test('KNOWN LIMITATION: nonzero offset breaks hit/miss count parity (offset is re-applied to an already offset-sliced cached row)', async () => {
     let missMeta: import('../src/core/types.ts').HybridSearchMeta | undefined;
     const missResults = await hybridSearchCached(engine, KEYWORD, {
