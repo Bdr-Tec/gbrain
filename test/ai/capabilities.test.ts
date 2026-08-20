@@ -47,6 +47,13 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
     expect(caps.supportsPromptCaching).toBe(false);
   });
 
+  it('returns local chat capabilities for Ollama without tool-loop support', () => {
+    const caps = getProviderCapabilities('ollama:qwen2.5-coder:14b');
+    expect(caps.supportsToolCalling).toBe(false);
+    expect(caps.supportsPromptCaching).toBe(false);
+    expect(caps.supportsParallelTools).toBe(false);
+  });
+
   it('honors Anthropic alias (undated → dated)', () => {
     const caps = getProviderCapabilities('anthropic:claude-haiku-4-5');
     expect(caps.supportsToolCalling).toBe(true);
@@ -115,6 +122,10 @@ describe('classifyCapabilities (D6 — three-tier capability verdict)', () => {
     // supports_subagent_loop: false — the stronger no_tools verdict wins.
     expect(classifyCapabilities('minimax:MiniMax-M2.5')).toBe('unusable:no_tools');
     expect(classifyCapabilities('nvidia:nvidia/nemotron-3-super-120b-a12b')).toBe('unusable:no_tools');
+  });
+
+  it('returns unusable:no_tools for Ollama subagent loops', () => {
+    expect(classifyCapabilities('ollama:qwen2.5-coder:14b')).toBe('unusable:no_tools');
   });
 
   it('returns unknown for unrecognized providers', () => {
