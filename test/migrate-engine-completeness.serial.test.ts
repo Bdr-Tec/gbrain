@@ -165,6 +165,102 @@ describe('runMigrateEngine — facts + config completeness (#4350)', () => {
   }, 60000);
 });
 
+describe('runMigrateEngine — facts-only foreign target guard', () => {
+  afterEach(() => {
+    _resetCliExitVerdictForTests();
+  });
+
+  test('a facts-only target (zero pages, no manifest) refuses instead of wiping facts', async () => {
+    const gbrainHome = mkdtempSync(join(tmpdir(), 'gbrain-migrate-home-'));
+    const targetDbPath = join(mkdtempSync(join(tmpdir(), 'gbrain-migrate-target-')), 'brain.pglite');
+    const prevGbrainHome = process.env.GBRAIN_HOME;
+    const prevDatabaseUrl = process.env.DATABASE_URL;
+    const prevGbrainDatabaseUrl = process.env.GBRAIN_DATABASE_URL;
+    const prevExitCode = process.exitCode;
+    const originalLog = console.log;
+    const originalError = console.error;
+
+    let source: PGLiteEngine | null = null;
+    let target: PGLiteEngine | null = null;
+
+    try {
+      delete process.env.DATABASE_URL;
+      delete process.env.GBRAIN_DATABASE_URL;
+      process.env.GBRAIN_HOME = gbrainHome;
+      saveConfig({ engine: 'postgres', database_url: 'postgresql://unused/guard-only' });
+
+      // Target: a DB-only remember corpus — zero pages, one conversation
+      // fact. The page_count-only guard can't see it, so pre-fix the
+      // migration proceeded and copyMigrationFacts's DELETE FROM facts
+      // destroyed the target's only copy (conversation facts have no
+      // markdown fence to re-sync from).
+      target = new PGLiteEngine();
+      await target.connect({ database_path: targetDbPath });
+      await target.initSchema();
+      const kept = await target.insertFact(
+        { fact: 'target-only conversation memory', kind: 'preference', source: 'cli:think' },
+        { source_id: 'default' },
+      );
+      await target.disconnect();
+      target = null;
+
+      source = new PGLiteEngine();
+      await source.connect({});
+      await source.initSchema();
+      await source.putPage('a-page', {
+        type: 'note', title: 'A', compiled_truth: 'body', timeline: '', frontmatter: {},
+      });
+      await source.insertFact(
+        { fact: 'source fact that must NOT replace target memory', source: 'cli:think' },
+        { source_id: 'default' },
+      );
+
+      const errLines: string[] = [];
+      console.log = () => {};
+      console.error = (...args: unknown[]) => { errLines.push(args.join(' ')); };
+      try {
+        await runMigrateEngine(source, ['--to', 'pglite', '--path', targetDbPath]);
+      } finally {
+        console.log = originalLog;
+        console.error = originalError;
+      }
+
+      // Refused with the same shape as the page guard: non-zero verdict +
+      // the actionable overwrite/empty-brain message.
+      expect(currentExitCode()).toBe(1);
+      const stderr = errLines.join('\n');
+      expect(stderr).toContain('not empty');
+      expect(stderr).toContain('facts');
+      expect(stderr).toContain('--force');
+
+      // The destructive delete never ran: the target's memory survives
+      // verbatim and nothing from the source landed.
+      target = new PGLiteEngine();
+      await target.connect({ database_path: targetDbPath });
+      const facts = await target.executeRaw<{ id: number | string; fact: string }>(
+        'SELECT id, fact FROM facts ORDER BY id',
+      );
+      expect(facts.length).toBe(1);
+      expect(Number(facts[0].id)).toBe(kept.id);
+      expect(facts[0].fact).toBe('target-only conversation memory');
+      const pages = await target.executeRaw<{ n: number | string }>('SELECT COUNT(*) AS n FROM pages');
+      expect(Number(pages[0].n)).toBe(0);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      if (source) await source.disconnect();
+      if (target) await target.disconnect();
+      _resetCliExitVerdictForTests();
+      process.exitCode = prevExitCode;
+      if (prevGbrainHome !== undefined) process.env.GBRAIN_HOME = prevGbrainHome; else delete process.env.GBRAIN_HOME;
+      if (prevDatabaseUrl !== undefined) process.env.DATABASE_URL = prevDatabaseUrl;
+      if (prevGbrainDatabaseUrl !== undefined) process.env.GBRAIN_DATABASE_URL = prevGbrainDatabaseUrl;
+      rmSync(gbrainHome, { recursive: true, force: true });
+      rmSync(join(targetDbPath, '..'), { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
 describe('copyMigrationFacts — convergence and schema tolerance (#4350)', () => {
   test('re-copy converges the target to source truth and an older source schema (missing columns) still copies', async () => {
     let source: PGLiteEngine | null = null;

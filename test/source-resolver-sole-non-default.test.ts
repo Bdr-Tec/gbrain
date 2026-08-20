@@ -204,6 +204,83 @@ describe('#1434 — sole_non_default tier', () => {
     expect(result.tier).toBe('sole_non_default');
   });
 
+  // The #3070 flip must not be silent: one stray page in 'default' quietly
+  // reroutes every bare command away from the sole side-source. A one-line
+  // stderr warning names both sides so the misroute is diagnosable.
+  test('#3070: the flip prints a one-line stderr warning naming both sources', async () => {
+    const engine = makeStub(
+      [
+        { id: 'default', local_path: null },
+        { id: 'studiovault', local_path: '/Users/india/vault' },
+      ],
+      null,
+      { defaultActivePages: 1 },
+    );
+    const originalError = console.error;
+    const errLines: string[] = [];
+    console.error = (...args: unknown[]) => { errLines.push(args.join(' ')); };
+    try {
+      await withEnv({ GBRAIN_NO_SOLE_NON_DEFAULT_NUDGE: undefined }, async () => {
+        const result = await resolveSourceWithTier(engine, null, '/tmp');
+        expect(result.source_id).toBe('default');
+        expect(result.tier).toBe('seed_default');
+      });
+    } finally {
+      console.error = originalError;
+    }
+    expect(errLines.length).toBe(1);
+    const line = errLines[0];
+    expect(line).toContain("'studiovault'");
+    expect(line).toContain("'default'");
+    expect(line).toContain('non-empty');
+  });
+
+  test('#3070: the flip warning is suppressed via GBRAIN_NO_SOLE_NON_DEFAULT_NUDGE=1', async () => {
+    const engine = makeStub(
+      [
+        { id: 'default', local_path: null },
+        { id: 'studiovault', local_path: '/Users/india/vault' },
+      ],
+      null,
+      { defaultActivePages: 1 },
+    );
+    const originalError = console.error;
+    const errLines: string[] = [];
+    console.error = (...args: unknown[]) => { errLines.push(args.join(' ')); };
+    try {
+      await withEnv({ GBRAIN_NO_SOLE_NON_DEFAULT_NUDGE: '1' }, async () => {
+        const result = await resolveSourceWithTier(engine, null, '/tmp');
+        expect(result.source_id).toBe('default');
+      });
+    } finally {
+      console.error = originalError;
+    }
+    expect(errLines.length).toBe(0);
+  });
+
+  test('#3070: no flip warning when default is empty (tier fires normally)', async () => {
+    const engine = makeStub(
+      [
+        { id: 'default', local_path: null },
+        { id: 'studiovault', local_path: '/Users/india/vault' },
+      ],
+      null,
+      { defaultActivePages: 0 },
+    );
+    const originalError = console.error;
+    const errLines: string[] = [];
+    console.error = (...args: unknown[]) => { errLines.push(args.join(' ')); };
+    try {
+      await withEnv({ GBRAIN_NO_SOLE_NON_DEFAULT_NUDGE: undefined }, async () => {
+        const result = await resolveSourceWithTier(engine, null, '/tmp');
+        expect(result.source_id).toBe('studiovault');
+      });
+    } finally {
+      console.error = originalError;
+    }
+    expect(errLines.length).toBe(0);
+  });
+
   test('#3070: pages-probe failure keeps the pre-guard routing (legacy brain)', async () => {
     const engine = makeStub(
       [

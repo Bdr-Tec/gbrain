@@ -168,6 +168,23 @@ export interface MigrateFactsResult {
   table_missing: boolean;
 }
 
+/**
+ * Non-empty-target guard, facts leg: `getStats().page_count` can't see a
+ * facts-only brain (a DB-only remember corpus — conversation facts with zero
+ * pages), so the page guard alone would let `copyMigrationFacts`'s
+ * delete-and-recopy destroy the target's only copy of its hot memory.
+ * Bounded single-row probe; a target schema that predates the facts table
+ * has nothing to protect, so probe failure returns false.
+ */
+async function targetHasFactRows(target: BrainEngine): Promise<boolean> {
+  try {
+    const rows = await target.executeRaw<{ one: number }>('SELECT 1 AS one FROM facts LIMIT 1');
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function factsColumns(engine: BrainEngine): Promise<string[]> {
   const rows = await engine.executeRaw<{ column_name: string }>(`
     SELECT column_name FROM information_schema.columns
@@ -783,6 +800,20 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
     return;
   } else if (targetStats.page_count > 0 && resumingMatchingManifest) {
     console.log(`Resuming previous migration: ${manifest!.completed_slugs.length} page(s) already copied.`);
+  } else if (!resumingMatchingManifest && await targetHasFactRows(targetEngine)) {
+    // Facts leg of the non-empty guard: a facts-only foreign target (zero
+    // pages, so the page_count check above passed) would lose its hot memory
+    // to copyMigrationFacts's DELETE FROM facts. A matching manifest means
+    // those rows came from OUR OWN in-progress run (delete-and-recopy
+    // converges them), so only a manifest-less target refuses. Same refusal
+    // shape as the page guard.
+    console.error('Target brain is not empty (its facts table has rows, though no pages).');
+    console.error('Run with --force to overwrite, or migrate to an empty brain.');
+    await targetEngine.disconnect();
+    // Not process.exit: the resume must run (see the quiesce block above).
+    setCliExitVerdict(1);
+    resumeAutopilot();
+    return;
   }
 
   // v0.32.8 F8: manifest keys are now `${source_id}::${slug}` so multi-source

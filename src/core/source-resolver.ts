@@ -211,7 +211,9 @@ export function resolveSourceIdEngineFree(
  *     "532 silent edit failures"); when 'default' is actively used,
  *     auto-routing would hijack every bare `put`/`capture`/`sync` into the
  *     sole side-source, so the resolver falls through to seed_default and
- *     the user must pick via --source / sources.default.
+ *     the user must pick via --source / sources.default. The flip prints a
+ *     one-line stderr warning naming both sides (suppressed by
+ *     GBRAIN_NO_SOLE_NON_DEFAULT_NUDGE=1) so the reroute is diagnosable.
  *
  * Excludes archived sources (`archived = false`) so a soft-deleted source
  * doesn't auto-resolve. Shared by `resolveSourceId` and `resolveSourceWithTier`
@@ -242,7 +244,18 @@ async function pickSoleNonDefaultSource(engine: BrainEngine): Promise<string | n
     const defaultPages = await engine.executeRaw<{ one: number }>(
       `SELECT 1 AS one FROM pages WHERE source_id = 'default' AND deleted_at IS NULL LIMIT 1`,
     );
-    if (defaultPages.length > 0) return null;
+    if (defaultPages.length > 0) {
+      // The flip must not be silent: one stray page in 'default' reroutes
+      // every bare command away from the sole side-source, and the user
+      // hunts for "lost" writes. One stderr line names both sides so the
+      // misroute is diagnosable; same suppression knob as the routing nudge.
+      if (process.env.GBRAIN_NO_SOLE_NON_DEFAULT_NUDGE !== '1') {
+        console.error(
+          `[gbrain] sole non-default source '${rows[0].id}' exists, but 'default' is non-empty — routing to 'default' (#3070 emptiness guard). Pass --source ${rows[0].id} or set sources.default to target it.`,
+        );
+      }
+      return null;
+    }
   } catch {
     // pages.deleted_at exists on every supported schema; a failure here means
     // an exotic/legacy brain — keep the pre-guard routing rather than breaking
