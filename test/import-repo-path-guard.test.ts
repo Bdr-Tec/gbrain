@@ -25,7 +25,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync, realpathSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFileSync } from 'child_process';
@@ -307,10 +307,12 @@ describe('import sync-bookmark guard (#2114)', () => {
   // --source + foreign --dir combination) silently repointed an
   // explicitly-registered source's directory identity, poisoning put_page
   // write-through and the incremental anchor for that source — the same
-  // clobber class as #2114, one level down. Only `repo_path` is guarded;
-  // per-source `last_commit` stays unguarded by design (a subpath-scoped
-  // sync legitimately advances it while its dir spelling differs from the
-  // registered local_path — guarding it would false-refuse those advances).
+  // clobber class as #2114, one level down. `repo_path` requires directory
+  // EQUALITY; per-source `last_commit` (wave-D review follow-up) uses the
+  // weaker same-tree containment guard: a subpath-scoped sync legitimately
+  // advances it while the dir it passes (git root vs registered scope root)
+  // differs from local_path, but a FOREIGN repo's HEAD must never land in
+  // the anchor.
   describe('per-source repo_path guard (#4369)', () => {
     async function localPathOf(id: string): Promise<string | null> {
       const rows = await engine.executeRaw<{ local_path: string | null }>(
@@ -382,25 +384,93 @@ describe('import sync-bookmark guard (#2114)', () => {
       expect(notices).toContain('not repointing');
     });
 
-    test('per-source last_commit stays unguarded (subpath advances must not false-refuse)', async () => {
+    test('per-source last_commit refuses a FOREIGN repo (anchor poisoning; trio untouched)', async () => {
       await engine.executeRaw(
         `INSERT INTO sources (id, name, local_path) VALUES ('work-code', 'work-code', $1)`,
         [repoA],
       );
 
-      // repoDir deliberately foreign to the registered local_path — the
-      // per-source last_commit write is NOT dir-guarded (documented plan
-      // decision: subpath syncs pass a git root that can differ from the
-      // registered scope root).
+      // repoDir is a disjoint repo tree — pre-fix this advanced last_commit
+      // unconditionally, stamping a foreign HEAD into the incremental anchor.
+      // The refusal covers the whole atomic trio: last_commit, last_sync_at,
+      // AND newest_content_at (threaded here to hit the 3-column UPDATE).
       const notices = await captureStderr(async () => {
-        await writeSyncAnchor(engine, 'work-code', 'last_commit', 'anchor-x', undefined, repoB);
+        await writeSyncAnchor(engine, 'work-code', 'last_commit', 'anchor-x', 1_700_000_000_000, repoB);
       });
 
-      expect(notices).not.toContain('not repointing');
+      expect(notices).toContain('not advanced');
+      expect(notices).toContain('work-code');
+      const rows = await engine.executeRaw<{
+        last_commit: string | null;
+        last_sync_at: string | null;
+        newest_content_at: string | null;
+      }>(
+        `SELECT last_commit, last_sync_at, newest_content_at FROM sources WHERE id = 'work-code'`,
+      );
+      expect(rows[0]?.last_commit).toBeNull();
+      expect(rows[0]?.last_sync_at).toBeNull();
+      expect(rows[0]?.newest_content_at).toBeNull();
+    });
+
+    test('per-source last_commit still advances for a subpath-of-same-repo sync', async () => {
+      // The real subpath-sync shape: the registered local_path is the SCOPE
+      // root (a subdir), while sync passes the git ROOT as repoDir. Same
+      // tree, either containment direction — must not false-refuse.
+      const scopeRoot = join(repoA, 'docs');
+      mkdirSync(scopeRoot);
+      await engine.executeRaw(
+        `INSERT INTO sources (id, name, local_path) VALUES ('work-code', 'work-code', $1)`,
+        [scopeRoot],
+      );
+
+      const notices = await captureStderr(async () => {
+        await writeSyncAnchor(engine, 'work-code', 'last_commit', 'anchor-sub', undefined, repoA);
+      });
+
+      expect(notices).not.toContain('not advanced');
+      const rows = await engine.executeRaw<{ last_commit: string | null; last_sync_at: string | null }>(
+        `SELECT last_commit, last_sync_at FROM sources WHERE id = 'work-code'`,
+      );
+      expect(rows[0]?.last_commit).toBe('anchor-sub');
+      expect(rows[0]?.last_sync_at).not.toBeNull();
+    });
+
+    test('per-source last_commit advances for a dir INSIDE the registered root (mirror containment)', async () => {
+      const nested = join(repoA, 'nested');
+      mkdirSync(nested);
+      await engine.executeRaw(
+        `INSERT INTO sources (id, name, local_path) VALUES ('work-code', 'work-code', $1)`,
+        [repoA],
+      );
+
+      const notices = await captureStderr(async () => {
+        await writeSyncAnchor(engine, 'work-code', 'last_commit', 'anchor-nested', undefined, nested);
+      });
+
+      expect(notices).not.toContain('not advanced');
       const rows = await engine.executeRaw<{ last_commit: string | null }>(
         `SELECT last_commit FROM sources WHERE id = 'work-code'`,
       );
-      expect(rows[0]?.last_commit).toBe('anchor-x');
+      expect(rows[0]?.last_commit).toBe('anchor-nested');
+    });
+
+    test('per-source last_commit with repoDir omitted keeps legacy-caller behavior (advances)', async () => {
+      // Callers that never threaded repoDir (pre-#2114 shape) can't be
+      // dir-judged — the guard must not refuse what it cannot see.
+      await engine.executeRaw(
+        `INSERT INTO sources (id, name, local_path) VALUES ('work-code', 'work-code', $1)`,
+        [repoA],
+      );
+
+      const notices = await captureStderr(async () => {
+        await writeSyncAnchor(engine, 'work-code', 'last_commit', 'anchor-legacy');
+      });
+
+      expect(notices).not.toContain('not advanced');
+      const rows = await engine.executeRaw<{ last_commit: string | null }>(
+        `SELECT last_commit FROM sources WHERE id = 'work-code'`,
+      );
+      expect(rows[0]?.last_commit).toBe('anchor-legacy');
     });
   });
 });

@@ -263,3 +263,54 @@ describe('poisoned default-key row (#3871 layer 2 — hit-path re-filter)', () =
     expect(hitResults[0].slug.startsWith('secret/')).toBe(false);
   });
 });
+
+describe('offset pages bypass the cache (wave-D review)', () => {
+  test('a page-2 read after a page-1 write reaches the engine — no poisoned empty page', async () => {
+    // Page 1 (offset 0, limit 1): miss → the SLICED page is what gets stored.
+    let p1Meta: HybridSearchMeta | undefined;
+    const page1 = await hybridSearchCached(engine, 'builder', {
+      limit: 1,
+      onMeta: (m) => { p1Meta = m; },
+    });
+    expect(p1Meta?.cache?.status).toBe('miss');
+    expect(page1.length).toBe(1);
+    await awaitPendingSearchCacheWrites();
+    const afterP1 = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM query_cache`,
+    );
+    expect(afterP1[0].n).toBe(1);
+
+    // Page 2 (offset 1, limit 1): identical embedding + knobs (offset is NOT
+    // in the knobs hash). Pre-fix this HIT the page-1 row and re-sliced the
+    // already-sliced 1-row page → an empty page-2 forever. Post-fix the
+    // cache is bypassed entirely and the engine serves the real second row.
+    let p2Meta: HybridSearchMeta | undefined;
+    const page2 = await hybridSearchCached(engine, 'builder', {
+      limit: 1,
+      offset: 1,
+      onMeta: (m) => { p2Meta = m; },
+    });
+    expect(p2Meta?.cache?.status).toBe('disabled');
+    expect(page2.length).toBe(1);
+    expect(page2[0].slug).not.toBe(page1[0].slug);
+
+    // The bypass covers the STORE too: the page-2 read banks no row (a
+    // stored page-2 slice under the shared knobs hash would poison offset-0
+    // reads the same way).
+    await awaitPendingSearchCacheWrites();
+    const afterP2 = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM query_cache`,
+    );
+    expect(afterP2[0].n).toBe(1);
+
+    // Page-1 semantics unchanged: a repeat offset-0 read still hits and
+    // serves the same page.
+    let p1AgainMeta: HybridSearchMeta | undefined;
+    const page1Again = await hybridSearchCached(engine, 'builder', {
+      limit: 1,
+      onMeta: (m) => { p1AgainMeta = m; },
+    });
+    expect(p1AgainMeta?.cache?.status).toBe('hit');
+    expect(page1Again.map((r) => r.slug)).toEqual(page1.map((r) => r.slug));
+  });
+});

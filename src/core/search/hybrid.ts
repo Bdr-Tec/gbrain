@@ -2230,13 +2230,24 @@ export async function hybridSearchCached(
   // now-relative timestamp, which a persisted cache row can't express.
   const dateFiltered =
     Boolean(opts?.since ?? opts?.afterDate) || Boolean(opts?.until ?? opts?.beforeDate);
+  // Offset pages are cache-hostile until the pre-slice POOL itself is what's
+  // stored: the cache holds the already offset/limit-sliced page (bare
+  // hybridSearch slices before returning), so a hit for any other offset
+  // re-slices an already-sliced page — page-2 reads after a page-1 write come
+  // back wrong/empty. And innerLimit is derived from offset (D-3002 pool
+  // floor), making offset a result-affecting input that sits OUTSIDE the
+  // knobs hash. Bypass the cache entirely (lookup AND store — the store is
+  // gated on cacheStatus === 'miss' below, so 'disabled' covers both) for
+  // offset>0 requests; offset===0 semantics are unchanged.
+  const pagedRequest = (opts?.offset ?? 0) > 0;
   const skipCache =
     !cache.isEnabled() ||
     (opts?.walkDepth ?? 0) > 0 ||
     Boolean(opts?.nearSymbol) ||
     isNonDefaultColumn ||
     adaptiveReturnOn ||
-    dateFiltered;
+    dateFiltered ||
+    pagedRequest;
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';
   let cacheSimilarity: number | undefined;

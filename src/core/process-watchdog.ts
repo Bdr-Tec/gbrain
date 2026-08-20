@@ -215,10 +215,11 @@ export function installProcessWatchdog(opts: ProcessWatchdogOpts): WatchdogHandl
  * Mechanism: the main thread "pets" a worker_threads Worker via postMessage on
  * a short interval. The worker (independent OS thread, own event loop) tracks
  * lag = now − lastPet. lag ≥ stall → SIGTERM once (latched: the graceful path
- * gets exactly one chance); lag ≥ stall+grace → SIGKILL (uncatchable — the
- * starved-loop backstop). A loop that recovers after the SIGTERM resumes
- * petting, lag collapses, and the SIGKILL never fires — the escalation only
- * completes while the loop is STILL starved.
+ * gets exactly one chance PER STALL); lag ≥ stall+grace → SIGKILL (uncatchable
+ * — the starved-loop backstop). A loop that recovers after the SIGTERM resumes
+ * petting, lag collapses, the SIGKILL never fires, and the latch RESETS — a
+ * later, separate stall starts the escalation over from SIGTERM. The
+ * escalation only completes while the loop is STILL starved.
  *
  * Suspend forgiveness: across a system sleep (laptop lid) BOTH threads stop,
  * so on wake the worker would see a huge lag on a perfectly healthy process.
@@ -226,7 +227,11 @@ export function installProcessWatchdog(opts: ProcessWatchdogOpts): WatchdogHandl
  * and forgives — a fresh full stall window is required post-wake.
  * ———————————————————————————————————————————————————————————————————————— */
 
-/** Env knob for `gbrain serve --http` (opt-in; ms; 0/unset = off). */
+/** Env knob for `gbrain serve --http` (opt-in; ms; 0/unset = off).
+ * Large PGLite brains routinely hold the loop synchronously for tens of
+ * seconds (WASM checkpoint, vacuum, big JSON parse) — prefer a value well
+ * above the floor there (e.g. 60000+) so legitimate pauses never SIGTERM a
+ * healthy server. */
 export const SERVE_STALL_WATCHDOG_ENV = 'GBRAIN_SERVE_STALL_WATCHDOG_MS';
 
 /**
@@ -243,7 +248,8 @@ export const STALL_DEFAULT_GRACE_MS = 30_000;
 /**
  * Pure decision function for the stall watchdog — mirrors the worker's inline
  * logic exactly (same reason watchdogDecision exists: unit-testable without
- * threads or timers). `latched` = "SIGTERM already sent this lifetime".
+ * threads or timers). `latched` = "SIGTERM already sent for the CURRENT
+ * stall" (see nextStallLatch — recovery resets it).
  *   lag >= stall+grace          -> 'sigkill' (regardless of latch)
  *   lag >= stall and !latched   -> 'sigterm' (caller latches)
  *   otherwise                   -> 'wait' (includes the recovered-loop case:
@@ -254,6 +260,20 @@ export function stallDecision(lagMs: number, stallMs: number, graceMs: number, l
   if (lagMs >= stallMs + graceMs) return 'sigkill';
   if (lagMs >= stallMs && !latched) return 'sigterm';
   return 'wait';
+}
+
+/**
+ * Pure latch-transition companion to stallDecision (mirrored in the worker —
+ * keep them in lockstep). The latch arms when SIGTERM fires and RESETS when
+ * lag recovers below the stall threshold: a process that recovered (pets
+ * resumed) and later re-stalls is a NEW stall, so it gets a fresh graceful
+ * SIGTERM chance before the SIGKILL escalation instead of skipping straight
+ * to SIGKILL on the second stall of its lifetime.
+ */
+export function nextStallLatch(action: WatchdogAction, lagMs: number, stallMs: number, latched: boolean): boolean {
+  if (action === 'sigterm') return true;
+  if (lagMs < stallMs) return false;
+  return latched;
 }
 
 /**
@@ -320,7 +340,8 @@ export interface LoopStallWatchdogOpts {
 /**
  * Worker body for the stall watchdog (own OS thread; inline string so
  * `eval: true` bakes into the compiled binary, same as WORKER_SRC). Logic
- * mirrors stallDecision + stallCheckSawSuspend — keep them in lockstep.
+ * mirrors stallDecision + nextStallLatch + stallCheckSawSuspend — keep them
+ * in lockstep.
  * The check interval is deliberately NOT unref'd: it (with the parentPort
  * listener) keeps the worker alive; the MAIN thread unrefs the worker itself
  * so the watchdog never holds the host process open.
@@ -351,6 +372,12 @@ setInterval(() => {
     latched = true;
     w('main loop unresponsive for ' + Math.round(lag / 1000) + 's (>= ' + Math.round(stallMs / 1000) + 's stall threshold) — sending SIGTERM for graceful shutdown');
     try { process.kill(process.pid, 'SIGTERM'); } catch (e) {}
+  } else if (latched && lag < stallMs) {
+    // mirrors nextStallLatch: the loop recovered (pets resumed), so a later
+    // re-stall is a NEW stall — re-arm the graceful SIGTERM rather than
+    // skipping straight to SIGKILL on the second stall of this lifetime.
+    latched = false;
+    w('main loop recovered — re-arming graceful SIGTERM for any future stall');
   }
 }, checkIntervalMs);
 `;

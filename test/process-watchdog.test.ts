@@ -10,6 +10,7 @@ import {
   clampWatchdogTimers,
   MAX_WATCHDOG_TIMER_MS,
   stallDecision,
+  nextStallLatch,
   stallCheckSawSuspend,
   resolveServeStallWatchdogMs,
   installLoopStallWatchdog,
@@ -162,6 +163,51 @@ describe('stallDecision (#4281 loop-stall state machine)', () => {
     // The SIGTERM already went out (latched); if the loop recovered and pets
     // resumed, lag drops below stall and the SIGKILL escalation MUST not fire.
     expect(stallDecision(10, stall, grace, true)).toBe('wait');
+  });
+});
+
+describe('nextStallLatch (wave-D review: latch resets on recovery)', () => {
+  const stall = 300;
+  const grace = 200;
+
+  test('arms on sigterm, holds through the same stall, resets on recovery', () => {
+    let latched = false;
+    // First stall crosses the threshold → SIGTERM, latch arms.
+    let action = stallDecision(300, stall, grace, latched);
+    expect(action).toBe('sigterm');
+    latched = nextStallLatch(action, 300, stall, latched);
+    expect(latched).toBe(true);
+    // Still the SAME stall (in-grace lag): no SIGTERM spam, latch holds.
+    action = stallDecision(450, stall, grace, latched);
+    expect(action).toBe('wait');
+    latched = nextStallLatch(action, 450, stall, latched);
+    expect(latched).toBe(true);
+    // Pets resume, lag collapses below stall: latch RESETS.
+    action = stallDecision(10, stall, grace, latched);
+    expect(action).toBe('wait');
+    latched = nextStallLatch(action, 10, stall, latched);
+    expect(latched).toBe(false);
+  });
+
+  test('a recovered-then-restalled loop gets a fresh SIGTERM before SIGKILL', () => {
+    // Lifetime latch (pre-fix): the second stall's graceful window was
+    // silently skipped — the process waited mute until the SIGKILL line.
+    let latched = true; // SIGTERM already sent for a PREVIOUS stall
+    latched = nextStallLatch('wait', 5, stall, latched); // recovery tick
+    expect(latched).toBe(false);
+    // Re-stall: lag past stall, still inside grace → SIGTERM fires AGAIN.
+    expect(stallDecision(350, stall, grace, latched)).toBe('sigterm');
+  });
+
+  test('the latch never resets mid-stall (one SIGTERM per stall window)', () => {
+    let latched = true;
+    latched = nextStallLatch('wait', 450, stall, latched); // lag still >= stall
+    expect(latched).toBe(true);
+    expect(stallDecision(450, stall, grace, latched)).toBe('wait');
+  });
+
+  test('sigkill ticks do not disturb the latch', () => {
+    expect(nextStallLatch('sigkill', 600, stall, true)).toBe(true);
   });
 });
 
