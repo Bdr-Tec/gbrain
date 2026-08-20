@@ -525,3 +525,54 @@ describe('private queue lease + wedge-signal hardening (fix wave)', () => {
     expect(priv.private_queue).toBe(true);
   });
 });
+
+describe('makeThrottledLeaseRenewer (shared phase keepalive)', () => {
+  async function readLease(id: number): Promise<number | null> {
+    const rows = await engine.executeRaw<{ lease: string | null }>(
+      `SELECT private_queue_lease_until::text AS lease FROM minion_jobs WHERE id = $1`, [id],
+    );
+    return rows[0].lease === null ? null : new Date(rows[0].lease).getTime();
+  }
+
+  test('first call renews then yields; second call inside the throttle is a no-op for BOTH', async () => {
+    const q = 'dream-inline-renewer-throttle';
+    const job = await queue.add('subagent', {}, {
+      queue: q, private_queue_owner_token: 'tok-renewer', private_queue_lease_ms: 1000,
+    }, { allowProtectedSubmit: true });
+    const order: string[] = [];
+    let leaseWhenYielded: number | null = null;
+    const renew = queue.makeThrottledLeaseRenewer(q, 'tok-renewer', async () => {
+      order.push('yield');
+      leaseWhenYielded = await readLease(job.id);
+    });
+    const before = await readLease(job.id);
+    await renew();
+    const after = await readLease(job.id);
+    expect(after!).toBeGreaterThan(before!);
+    // Order is fixed: the lease was already extended when onRenewed ran.
+    expect(order).toEqual(['yield']);
+    expect(leaseWhenYielded!).toBe(after!);
+    // Inside the 30s throttle window: neither the renew nor the yield fires.
+    await renew();
+    expect(order).toEqual(['yield']);
+    expect(await readLease(job.id)).toBe(after);
+  });
+
+  test('throttleMs elapses → renews again; onRenewed is optional', async () => {
+    const q = 'dream-inline-renewer-elapse';
+    const job = await queue.add('subagent', {}, {
+      queue: q, private_queue_owner_token: 'tok-elapse', private_queue_lease_ms: 1000,
+    }, { allowProtectedSubmit: true });
+    const renew = queue.makeThrottledLeaseRenewer(q, 'tok-elapse', undefined, 0);
+    await renew();
+    const first = await readLease(job.id);
+    await new Promise(r => setTimeout(r, 5));
+    await renew();
+    expect((await readLease(job.id))!).toBeGreaterThanOrEqual(first!);
+  });
+
+  test('a throwing renewal propagates to the caller (shared queue refused)', async () => {
+    const renew = queue.makeThrottledLeaseRenewer('default', 'tok-shared');
+    await expect(renew()).rejects.toThrow('refusing to renew non-private queue');
+  });
+});

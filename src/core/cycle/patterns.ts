@@ -212,14 +212,9 @@ export async function runPhasePatterns(
     // Same lease posture as synthesize: rolling 10-min default lease renewed
     // every ≤30s (drain loop + chunked post-drain wait); the whole wrapper is
     // 30s-throttled so idle polls cost one UPDATE per half-minute.
-    let lastLeaseRenewalAtMs = 0;
-    const renewPrivateQueueLease = async () => {
-      const nowMs = Date.now();
-      if (nowMs - lastLeaseRenewalAtMs < 30_000) return;
-      lastLeaseRenewalAtMs = nowMs;
-      await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken);
-      if (opts.yieldDuringPhase) await opts.yieldDuringPhase();
-    };
+    const renewPrivateQueueLease = queue.makeThrottledLeaseRenewer(
+      childQueueName, privateQueueOwnerToken, opts.yieldDuringPhase,
+    );
     const data: SubagentHandlerData = {
       prompt: buildPatternsPrompt(reflections, config.minEvidence, config.sourceSlugPrefix, config.outputSlugPrefix),
       model: config.model,

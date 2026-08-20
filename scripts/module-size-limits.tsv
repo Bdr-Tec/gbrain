@@ -24,7 +24,7 @@ src/core/cycle/synthesize.ts	2746	ratchet	grown v0.46.25.0 review fixes: rolling
 src/commands/embed.ts	1963	ratchet
 src/core/types.ts	1879	ratchet	grown v0.46.22.0 phone wave: supersession rerank result fields (#4056)
 src/commands/skillpack.ts	1360	ratchet
-src/core/minions/queue.ts	2391	ratchet	grown v0.46.25.0 coverage wave: unreachable-arm rationale comments
+src/core/minions/queue.ts	2414	ratchet	grown v0.46.25.0 coverage wave: makeThrottledLeaseRenewer factory (T0 DRY extraction)
 src/core/schema-embedded.ts	1501	ratchet	generated schema bundle grew for private queue metadata
 src/commands/init.ts	1950	ratchet	grown v0.46.x keyless capability notices
 src/commands/integrations.ts	1675	ratchet

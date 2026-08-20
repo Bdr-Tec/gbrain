@@ -822,6 +822,29 @@ export class MinionQueue {
   }
 
   /**
+   * Throttled keepalive closure for a phase that owns a private queue: renews
+   * the lease at most once per `throttleMs`, then runs `onRenewed` (the cycle
+   * lock refresh rides it). The throttle gates BOTH — 1-5s drain polls cost
+   * one UPDATE per half-minute, not per poll — and the order is fixed
+   * (renew, then onRenewed) so a lock-refresh failure can't starve the lease.
+   */
+  makeThrottledLeaseRenewer(
+    queueName: string,
+    ownerToken: string,
+    onRenewed?: () => Promise<void> | void,
+    throttleMs = 30_000,
+  ): () => Promise<void> {
+    let lastRenewalAtMs = 0;
+    return async () => {
+      const nowMs = Date.now();
+      if (nowMs - lastRenewalAtMs < throttleMs) return;
+      lastRenewalAtMs = nowMs;
+      await this.renewPrivateQueueLease(queueName, ownerToken);
+      if (onRenewed) await onRenewed();
+    };
+  }
+
+  /**
    * Startup/supervisor crash recovery for metadata-backed private dream queues.
    * Cancels only queues that are provably orphaned:
    *   - no live child lock in the private queue;

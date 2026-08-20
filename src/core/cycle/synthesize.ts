@@ -554,14 +554,9 @@ export async function runPhaseSynthesize(
     // instead of a wait-timeout-sized horizon. The whole wrapper (lease AND
     // cycle-lock refresh) is 30s-throttled so 1-5s polls cost one UPDATE per
     // half-minute, not per poll; the cycle lock's 5-min TTL is ample at 30s.
-    let lastLeaseRenewalAtMs = 0;
-    const renewPrivateQueueLease = async () => {
-      const nowMs = Date.now();
-      if (nowMs - lastLeaseRenewalAtMs < 30_000) return;
-      lastLeaseRenewalAtMs = nowMs;
-      await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken);
-      if (opts.yieldDuringPhase) await opts.yieldDuringPhase();
-    };
+    const renewPrivateQueueLease = queue.makeThrottledLeaseRenewer(
+      childQueueName, privateQueueOwnerToken, opts.yieldDuringPhase,
+    );
     const childIds: number[] = [];
     /** Map child job_id → chunk metadata for D6 orchestrator-side slug rewrite. */
     const chunkInfo = new Map<number, { idx: number; hash6: string }>();

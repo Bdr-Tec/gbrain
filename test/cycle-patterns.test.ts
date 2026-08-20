@@ -24,6 +24,9 @@ describe('patterns phase wiring', () => {
     // The post-drain wait must be the lease-renewing variant — a plain
     // waitForCompletion would let the private-queue lease lapse mid-wait.
     expect(patternsSrc).toContain('waitForCompletionRenewing');
+    // The keepalive must come from the shared throttled factory (T0
+    // extraction) — an inline closure here and in synthesize drifts.
+    expect(patternsSrc).toContain('makeThrottledLeaseRenewer');
     expect(patternsSrc).toContain('SubagentHandlerData');
   });
 
