@@ -49,6 +49,7 @@ import {
   buildVectorCastFragment,
   vectorCastSuffix,
   resolveActiveEmbeddingColumnFromEngine,
+  resolveWriteColumnFromConfigRows,
   quoteIdentifier,
   COLUMN_NAME_REGEX,
   EmbeddingColumnNotRegisteredError,
@@ -2721,9 +2722,28 @@ export class PostgresEngine implements BrainEngine {
     // failure (pre-v36 brain mid-migration) falls back to the legacy column;
     // an unregistered `search_embedding_column` throws the resolver's loud
     // paste-ready hint. Mirrored in pglite-engine.ts (parity).
-    const writeCol: ResolvedColumn = opts?.embeddingColumn
-      ? normalizeEngineColumn(opts.embeddingColumn)
-      : await resolveActiveEmbeddingColumnFromEngine(this);
+    // Resolution MUST stay on the local sql handle: callers (import-file)
+    // invoke this inside their own transaction — re-entering the engine's
+    // public surface via resolveActiveEmbeddingColumnFromEngine deadlocks
+    // the connection path. Same rows, same pure resolver, no re-entrancy.
+    // Mirrored in pglite-engine.ts (parity).
+    let writeCol: ResolvedColumn;
+    if (opts?.embeddingColumn) {
+      writeCol = normalizeEngineColumn(opts.embeddingColumn);
+    } else {
+      let searchEmbeddingColumn: string | null = null;
+      let embeddingColumnsJson: string | null = null;
+      try {
+        const cfgRows = await sql`SELECT key, value FROM config WHERE key IN ('search_embedding_column', 'embedding_columns')`;
+        for (const r of cfgRows) {
+          if (r.key === 'search_embedding_column') searchEmbeddingColumn = r.value as string;
+          else if (r.key === 'embedding_columns') embeddingColumnsJson = r.value as string;
+        }
+      } catch {
+        // config table unreadable — legacy column via the resolver default.
+      }
+      writeCol = resolveWriteColumnFromConfigRows({ searchEmbeddingColumn, embeddingColumnsJson });
+    }
     const writeColId = quoteIdentifier(writeCol.name);
     const writeCast = vectorCastSuffix(writeCol);
 

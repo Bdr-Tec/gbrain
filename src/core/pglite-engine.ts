@@ -103,6 +103,7 @@ import {
   buildVectorCastFragment,
   vectorCastSuffix,
   resolveActiveEmbeddingColumnFromEngine,
+  resolveWriteColumnFromConfigRows,
   quoteIdentifier,
   COLUMN_NAME_REGEX,
   EmbeddingColumnNotRegisteredError,
@@ -3046,9 +3047,30 @@ export class PGLiteEngine implements BrainEngine {
     // searches. Config-table read failure falls back to the legacy column;
     // an unregistered `search_embedding_column` throws the resolver's loud
     // paste-ready hint. Mirrors postgres-engine.ts for parity.
-    const writeCol: ResolvedColumn = opts?.embeddingColumn
-      ? normalizeEngineColumn(opts.embeddingColumn)
-      : await resolveActiveEmbeddingColumnFromEngine(this);
+    // Resolution MUST stay on the raw db handle: callers (import-file) invoke
+    // this inside their own transaction while holding the engine's public
+    // surface — routing through resolveActiveEmbeddingColumnFromEngine (which
+    // re-enters engine.executeRaw) deadlocks the single-connection path. Same
+    // rows, same pure resolver, no re-entrancy.
+    let writeCol: ResolvedColumn;
+    if (opts?.embeddingColumn) {
+      writeCol = normalizeEngineColumn(opts.embeddingColumn);
+    } else {
+      let searchEmbeddingColumn: string | null = null;
+      let embeddingColumnsJson: string | null = null;
+      try {
+        const cfgResult = await this.db.query(
+          `SELECT key, value FROM config WHERE key IN ('search_embedding_column', 'embedding_columns')`,
+        );
+        for (const r of cfgResult.rows as { key: string; value: string }[]) {
+          if (r.key === 'search_embedding_column') searchEmbeddingColumn = r.value;
+          else if (r.key === 'embedding_columns') embeddingColumnsJson = r.value;
+        }
+      } catch {
+        // config table unreadable — legacy column via the resolver default.
+      }
+      writeCol = resolveWriteColumnFromConfigRows({ searchEmbeddingColumn, embeddingColumnsJson });
+    }
     const writeColId = quoteIdentifier(writeCol.name);
     const writeCast = vectorCastSuffix(writeCol);
 
