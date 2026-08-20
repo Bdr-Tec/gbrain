@@ -2281,8 +2281,8 @@ describe('v117 — context_volunteer_events_table', () => {
     expect(m!.idempotent).toBe(true);
   });
 
-  test('LATEST_VERSION is at or above 117', () => {
-    expect(LATEST_VERSION).toBeGreaterThanOrEqual(117);
+  test('LATEST_VERSION is at or above 133', () => {
+    expect(LATEST_VERSION).toBeGreaterThanOrEqual(133);
   });
 
   test('table exists after initSchema with the documented columns', async () => {
