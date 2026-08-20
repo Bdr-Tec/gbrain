@@ -52,6 +52,22 @@ review found unwired. Closes #4332.
   wedged queue (`supervisor start --queue '<q>'`) instead of always bouncing
   the default worker.
 
+### Fixed
+- Doctor's orphaned-queue check is honest about truncation on the healthy
+  path too: with more than 100 candidate queues, the never-classified
+  remainder is now reported (`unclassified_candidates`) even when everything
+  classified came back live — previously 100 live + 50 unexamined orphans
+  read as a clean bill of health. `waiting_jobs` now counts flagged queues
+  only, matching what `orphaned_private_queues` reports.
+- The upgrade bootstrap probes all three private-queue columns (owner id,
+  owner token, lease) in both engines — a partially-upgraded brain missing
+  only the token column now repairs itself instead of wedging.
+- The private-queue lease keepalive is one shared, tested helper
+  (`MinionQueue.makeThrottledLeaseRenewer`) instead of twin inline copies in
+  synthesize and patterns; the coverage wave backfills behavioral tests for
+  every recovery lane, the renewing wait, the v133 migration replay, doctor's
+  hint/bucket surfaces, and token redaction on the jobs MCP ops.
+
 To take advantage of v0.46.25.0:
 - `gbrain upgrade` (or reinstall the binary). No schema action needed beyond
   the automatic migration that adds the owner/lease columns.

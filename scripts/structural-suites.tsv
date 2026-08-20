@@ -19,7 +19,7 @@ test/autopilot-install.test.ts	autopilot wrapper script — env source order (v0
 test/autopilot-pause-marker.test.ts	pause marker fences minion job pickup	1	readFileSync
 test/autopilot-self-upgrade.test.ts	autopilot self-upgrade static-shape regressions	4	readFileSync
 test/autopilot-shutdown-engine-close.test.ts	autopilot.ts graceful engine shutdown (#1872)	4	readFileSync
-test/autopilot-supervisor-wiring.test.ts	autopilot.ts ↔ ChildWorkerSupervisor wiring	6	readFileSync
+test/autopilot-supervisor-wiring.test.ts	autopilot.ts ↔ ChildWorkerSupervisor wiring	7	readFileSync
 test/backlinks-job-default.test.ts	backlinks Minion handler — empty payload defaults to check, not fix	3	readFileSync
 test/book-mirror.test.ts	gbrain book-mirror — source file invariants	7	readFileSync
 test/bootstrap-codex-door.test.ts	Codex door — rendered AGENTS.md pull protocol (Gate 3)	2	readFileSync
@@ -135,6 +135,7 @@ test/integrations-install.test.ts	installRecipeIntoHostRepo — happy path	6	rea
 test/integrations.test.ts	CLI integration	3	readFileSync
 test/jobs-embed-background-parity.serial.test.ts	embed job background parity (D7)	2	readFileSync
 test/jobs-thin-client-date-rehydration.test.ts	thin-client unpack sites route through rehydrateJobDates (source audit)	2	readFileSync
+test/jobs-worker-startup-recovery.test.ts	work-handler recovery placement (structural)	1	readFileSync
 test/migrate-stdout-clean.test.ts	migration output stays off stdout	2	readFileSync
 test/migrate.test.ts	PR #356 + #363 — session timeouts applied via startup parameters	1	readFileSync
 test/migrate.test.ts	PR #356 — LATEST_VERSION is max(versions), not array[-1]	2	readFileSync
@@ -205,6 +206,7 @@ test/skillpack-scaffold.test.ts	runScaffold — happy path	3	readFileSync
 test/skillpack-scrub-legacy.test.ts	runScrubLegacy	8	readFileSync
 test/sources-webhook.test.ts	Webhook sync job extraction contract	1	readFileSync
 test/spend-off-switch.test.ts	reindex / onboard off-switch dispatch (regression guards)	3	bun-file
+test/supervisor.test.ts	recovery hook timeout bound (structural)	1	readFileSync
 test/sync-failures.test.ts	Bug 9 — doctor surfaces sync failures	2	doctor-source-helper
 test/sync-failures.test.ts	Bug 9 — sync.ts CLI flag wiring	6	bun-file,doctor-source-helper
 test/sync.test.ts	buildSyncManifest	9	bun-file
