@@ -942,7 +942,7 @@ export async function runPhaseSynthesize(
 
     // Summary index page (deterministic; orchestrator-written via direct
     // engine.putPage so no allow-list path needed).
-    const summarySlug = `dream-cycle-summaries/${summaryDate}`;
+    const summarySlug = buildDreamSummarySlug(config.outputRoot, summaryDate);
     // Back-compat: writeSummaryPage takes string[] for display; map refs back to slugs.
     const writtenSlugs = writtenRefs.map(r => r.slug);
     if (SUMMARY_SLUG_RE.test(summarySlug)) {
@@ -1213,6 +1213,13 @@ export interface SynthConfig {
   mode: 'agentic' | 'oneshot';
 }
 
+/** Keep orchestrator summaries inside a configured non-default namespace. */
+export function buildDreamSummarySlug(outputRoot: string, summaryDate: string): string {
+  return outputRoot === 'wiki'
+    ? `dream-cycle-summaries/${summaryDate}`
+    : `${outputRoot}/dream-cycle-summaries/${summaryDate}`;
+}
+
 /** #2415: shared output-root resolution (synthesize + patterns phases). */
 export async function loadOutputRoot(engine: BrainEngine): Promise<string> {
   const raw = await engine.getConfig('dream.synthesize.output_root');
@@ -1425,9 +1432,11 @@ export async function loadAllowedSlugPrefixes(outputRoot = 'wiki'): Promise<stri
       const globs = parsed?.dream_synthesize_paths?.globs;
       if (Array.isArray(globs) && globs.every(g => typeof g === 'string')) {
         if (outputRoot === 'wiki') return globs as string[];
-        return (globs as string[]).map(g =>
-          g.startsWith('wiki/') ? `${outputRoot}/${g.slice('wiki/'.length)}` : g,
-        );
+        return (globs as string[]).map(g => {
+          if (g.startsWith('wiki/')) return `${outputRoot}/${g.slice('wiki/'.length)}`;
+          if (g.startsWith('dream-cycle-summaries/')) return `${outputRoot}/${g}`;
+          return g;
+        });
       }
     } catch { /* try next */ }
   }
@@ -2695,6 +2704,7 @@ function makeError(cls: string, code: string, message: string, hint?: string): P
 export const __testing = {
   collectChildPutPageSlugs,
   buildSynthesisPrompt,
+  buildDreamSummarySlug,
   stampDreamProvenance,
   reverseWriteRefs,
   runSubagentsInline,
