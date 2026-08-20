@@ -65,6 +65,16 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
   it('throws for missing colon', () => {
     expect(() => getProviderCapabilities('claude-sonnet-4-6')).toThrow(/missing a provider prefix/);
   });
+
+  it('mirrors the recipe supports_subagent_loop declaration', () => {
+    // Declared true — loop-capable.
+    expect(getProviderCapabilities('anthropic:claude-sonnet-4-6').supportsSubagentLoop).toBe(true);
+    expect(getProviderCapabilities('deepseek:deepseek-v4-flash').supportsSubagentLoop).toBe(true);
+    // Declared false — tools work, but tool_call_ids aren't replay-stable.
+    expect(getProviderCapabilities('moonshot:kimi-k2.5').supportsSubagentLoop).toBe(false);
+    expect(getProviderCapabilities('mistral:mistral-large-latest').supportsSubagentLoop).toBe(false);
+    expect(getProviderCapabilities('openrouter:openai/gpt-5.2').supportsSubagentLoop).toBe(false);
+  });
 });
 
 describe('classifyCapabilities (D6 — three-tier capability verdict)', () => {
@@ -85,10 +95,26 @@ describe('classifyCapabilities (D6 — three-tier capability verdict)', () => {
     expect(classifyCapabilities('google:gemini-1.5-pro')).toBe('degraded:no_caching');
   });
 
-  it('returns ok for cacheable OpenRouter routes, degraded:no_caching otherwise', () => {
-    expect(classifyCapabilities('openrouter:openai/gpt-5.2')).toBe('ok');
-    expect(classifyCapabilities('openrouter:anthropic/claude-sonnet-4.6')).toBe('ok');
-    expect(classifyCapabilities('openrouter:deepseek/deepseek-chat')).toBe('degraded:no_caching');
+  it('returns unusable:no_subagent_loop for OpenRouter routes (recipe declares the loop unsupported)', () => {
+    // Pre-fix these classified 'ok' / 'degraded:no_caching' even though the
+    // recipe declares supports_subagent_loop: false — the loop-stability gate
+    // was silently bypassed for every openai-compat aggregator route.
+    expect(classifyCapabilities('openrouter:openai/gpt-5.2')).toBe('unusable:no_subagent_loop');
+    expect(classifyCapabilities('openrouter:anthropic/claude-sonnet-4.6')).toBe('unusable:no_subagent_loop');
+    expect(classifyCapabilities('openrouter:deepseek/deepseek-chat')).toBe('unusable:no_subagent_loop');
+  });
+
+  it('returns unusable:no_subagent_loop when tools work but the recipe declares the loop unsupported', () => {
+    // moonshot + mistral declare supports_tools: true, supports_subagent_loop: false.
+    expect(classifyCapabilities('moonshot:kimi-k2.5')).toBe('unusable:no_subagent_loop');
+    expect(classifyCapabilities('mistral:mistral-large-latest')).toBe('unusable:no_subagent_loop');
+  });
+
+  it('keeps unusable:no_tools precedence when tool calling is missing too', () => {
+    // minimax + nvidia declare BOTH supports_tools: false and
+    // supports_subagent_loop: false — the stronger no_tools verdict wins.
+    expect(classifyCapabilities('minimax:MiniMax-M2.5')).toBe('unusable:no_tools');
+    expect(classifyCapabilities('nvidia:nvidia/nemotron-3-super-120b-a12b')).toBe('unusable:no_tools');
   });
 
   it('returns unknown for unrecognized providers', () => {

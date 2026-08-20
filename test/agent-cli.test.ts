@@ -229,10 +229,11 @@ describe('queue.add trusted-submit gate for subagent', () => {
     expect(ok.name).toBe('subagent_aggregator');
   });
 
-  test('v0.38 S1.7: subagent with any tool-supporting provider passes the queue gate', async () => {
+  test('v0.38 S1.7: subagent with a loop-capable provider passes the queue gate', async () => {
     // v0.38 D6/D7 — the Anthropic pin is removed. The gateway tool loop
-    // routes any provider with native tool calling. Submit-time guard now
-    // refuses ONLY on unusable:no_tools or unknown verdicts.
+    // routes any provider whose recipe declares tool calling AND
+    // supports_subagent_loop: true. Submit-time guard refuses on the
+    // unusable:no_tools / unusable:no_subagent_loop / unknown verdicts.
     const openaiJob = await queue.add(
       'subagent',
       { prompt: 'hi', model: 'openai:gpt-5.2' },
@@ -275,6 +276,19 @@ describe('queue.add trusted-submit gate for subagent', () => {
     await expect(
       queue.add('subagent', { prompt: 'hi', model: 'voyage:voyage-3-large' }, {}, { allowProtectedSubmit: true }),
     ).rejects.toThrow(/unknown provider/i);
+  });
+
+  test('subagent with a loop-incapable provider (supports_subagent_loop: false) is rejected at submit time', async () => {
+    // moonshot supports tools but declares the loop unsupported
+    // (tool_call_ids not replay-stable); OpenRouter routes carry the same
+    // declaration because stability can't be guaranteed through the proxy.
+    // Pre-fix these passed the gate as 'ok' / 'degraded:no_caching'.
+    await expect(
+      queue.add('subagent', { prompt: 'hi', model: 'moonshot:kimi-k2.5' }, {}, { allowProtectedSubmit: true }),
+    ).rejects.toThrow(/supports_subagent_loop/);
+    await expect(
+      queue.add('subagent', { prompt: 'hi', model: 'openrouter:openai/gpt-5.2' }, {}, { allowProtectedSubmit: true }),
+    ).rejects.toThrow(/supports_subagent_loop/);
   });
 });
 

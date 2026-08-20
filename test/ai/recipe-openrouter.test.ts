@@ -69,8 +69,9 @@ describe('recipe: openrouter', () => {
     const r = getRecipe('openrouter')!;
     expect(r.touchpoints.chat).toBeDefined();
     expect(r.touchpoints.chat!.supports_tools).toBe(true);
-    // supports_subagent_loop is informational; isAnthropicProvider() is the
-    // real gate. Field stays false per the recipe docstring.
+    // supports_subagent_loop: false is enforced — classifyCapabilities()
+    // refuses the subagent tier on it (unusable:no_subagent_loop). Field
+    // stays false per the recipe docstring.
     expect(r.touchpoints.chat!.supports_subagent_loop).toBe(false);
     expect(() =>
       assertTouchpoint(r, 'chat', 'some/provider-model'),
