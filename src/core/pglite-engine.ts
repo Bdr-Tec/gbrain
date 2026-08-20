@@ -92,7 +92,7 @@ import { sanitizeForJsonb, buildLinkRows, buildTimelineRows } from './batch-rows
 import { PAGE_SORT_SQL, MIN_ENTITY_PAGES_FOR_COVERAGE } from './types.ts';
 import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
-import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery } from './search/sql-ranking.ts';
+import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery } from './search/sql-ranking.ts';
 import { unverifiedExtractionFragment } from './extraction-review.ts';
 import { shouldExcludeFromOrphanReporting, loadOrphanPolicyOverrides } from './orphan-policy.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
@@ -2384,8 +2384,8 @@ export class PGLiteEngine implements BrainEngine {
    * construction) with the same page-grain filters the keyword arm applies
    * (type/types/excludeSlugs/date/source scoping, hard-excludes,
    * visibility), joined to one representative chunk per page. Applies the
-   * same AND→OR recall fallback as searchKeyword. NO query-length gate —
-   * long exact-title queries are the case this arm exists for.
+   * same AND→OR recall fallback as searchKeyword. Ordinary long titles are
+   * preserved; oversized pasted context is bounded before websearch FTS.
    *
    * CJK queries fall through to websearch FTS here (a single-token CJK
    * query CAN exact-match a single-token CJK title); the richer CJK ILIKE
@@ -2413,7 +2413,7 @@ export class PGLiteEngine implements BrainEngine {
     // — safe to interpolate into raw SQL.
     const ftsLang = getFtsLanguage();
 
-    const params: unknown[] = [query, limit, offset];
+    const params: unknown[] = [boundWebsearchQuery(query), limit, offset];
     let extraFilter = '';
     if (opts?.type) {
       params.push(opts.type);
@@ -2482,10 +2482,10 @@ export class PGLiteEngine implements BrainEngine {
 
     let { rows } = await this.db.query(titlesSql, params);
     if (rows.length === 0) {
-      const orQuery = buildOrFallbackWebsearchQuery(query);
+      const orQuery = buildOrFallbackWebsearchQuery(params[0] as string);
       if (orQuery) {
         const fallbackParams = [...params];
-        fallbackParams[0] = orQuery;
+        fallbackParams[0] = boundWebsearchQuery(orQuery);
         ({ rows } = await this.db.query(titlesSql, fallbackParams));
       }
     }
