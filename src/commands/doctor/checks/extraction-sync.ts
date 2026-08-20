@@ -22,6 +22,7 @@ import {
   findDbOnlyCollisions,
 } from '../../../core/storage-config.ts';
 import { slugifyPath } from '../../../core/sync.ts';
+import { resolveSourceLocalFilePath } from '../../../core/markdown.ts';
 import { unverifiedExtractionFragment } from '../../../core/extraction-review.ts';
 import type { Check } from '../../doctor.ts';
 
@@ -307,15 +308,21 @@ export async function checkUndeclaredDbOnlyPages(engine: BrainEngine): Promise<C
         // already surfaces the config error itself.
       }
       const dbOnlyDirs = effectiveDbOnlyDirs(declared);
-      const rows = await engine.executeRaw<{ slug: string }>(
-        `SELECT slug FROM pages WHERE deleted_at IS NULL AND source_id = $1 AND page_kind = 'markdown'`,
+      const rows = await engine.executeRaw<{ slug: string; source_path: string | null }>(
+        `SELECT slug, source_path FROM pages WHERE deleted_at IS NULL AND source_id = $1 AND page_kind = 'markdown'`,
         [src.id],
       );
       if (rows.length === 0) continue;
-      const backed = collectMarkdownSlugs(src.local_path!);
-      for (const { slug } of rows) {
+      let backedWithoutSourcePath: Set<string> | null = null;
+      for (const { slug, source_path: sourcePath } of rows) {
         if (dbOnlyDirs.some(dir => slug.startsWith(dir))) continue;
-        if (backed.has(slug)) continue;
+        if (sourcePath) {
+          const filePath = resolveSourceLocalFilePath(src.local_path!, sourcePath);
+          if (filePath && existsSync(filePath)) continue;
+        } else {
+          backedWithoutSourcePath ??= collectMarkdownSlugs(src.local_path!);
+          if (backedWithoutSourcePath.has(slug.toLowerCase())) continue;
+        }
         total++;
         perSource[src.id] = (perSource[src.id] ?? 0) + 1;
         if (samples.length < 5) samples.push(`${slug} (src=${src.id})`);

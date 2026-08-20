@@ -51,7 +51,7 @@ import {
   type ParseResult,
 } from './takes-fence.ts';
 import { withPageLock } from './page-lock.ts';
-import { resolvePageFilePath } from './markdown.ts';
+import { resolvePageFilePath, resolveSourceLocalFilePath } from './markdown.ts';
 import { isWriteTargetContained } from './path-confine.ts';
 import { atomicWriteFileSync } from './atomic-write.ts';
 
@@ -125,8 +125,9 @@ export async function resolveTakesRepoDir(engine: BrainEngine): Promise<string |
  * `join(brainDir, slug.md)` ignored the page's source entirely, so a non-default
  * source's write clobbered a same-slug file in the wrong tree.
  *
- *   1. Source has its OWN `local_path` working tree → file at that tree's root
- *      (matches scanOneSource + write-through.ts; never nested under `.sources/`).
+ *   1. Source has its OWN `local_path` working tree → use the page's recorded
+ *      `source_path`, removing a duplicated Git-root scope when local_path is
+ *      a repo subdirectory; a DB-born page falls back to `<local_path>/<slug>.md`.
  *   2. No per-source `local_path` → the shared host repo (`brainDir`): default
  *      source at the root, non-default nested under `.sources/<id>/`.
  *
@@ -140,14 +141,20 @@ async function resolveTakesFilePath(
   sourceId?: string,
 ): Promise<{ path: string; writeRoot: string }> {
   const src = sourceId ?? 'default';
-  const rows = await engine.executeRaw<{ local_path: string | null }>(
-    `SELECT local_path FROM sources WHERE id = $1`,
-    [src],
+  const rows = await engine.executeRaw<{ local_path: string | null; source_path: string | null }>(
+    `SELECT s.local_path, p.source_path
+       FROM sources s
+       LEFT JOIN pages p ON p.source_id = s.id AND p.slug = $2
+      WHERE s.id = $1
+      LIMIT 1`,
+    [src, slug],
   );
   const sourceLocalPath = rows[0]?.local_path ?? null;
   if (sourceLocalPath) {
-    // A source's own working tree files pages at its root (default layout).
-    return { path: resolvePageFilePath(sourceLocalPath, slug, 'default'), writeRoot: sourceLocalPath };
+    const recordedPath = resolveSourceLocalFilePath(sourceLocalPath, rows[0]?.source_path);
+    // A null source_path means a DB-born page. Keep the established slug path.
+    const path = recordedPath ?? resolvePageFilePath(sourceLocalPath, slug, 'default');
+    return { path, writeRoot: sourceLocalPath };
   }
   return { path: resolvePageFilePath(brainDir, slug, src), writeRoot: brainDir };
 }

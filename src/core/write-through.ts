@@ -25,7 +25,7 @@ import { existsSync, statSync, mkdirSync, writeFileSync, renameSync, unlinkSync,
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { randomBytes } from 'crypto';
 import type { BrainEngine } from './engine.ts';
-import { serializePageToMarkdown, resolvePageFilePath } from './markdown.ts';
+import { serializePageToMarkdown, resolvePageFilePath, resolveSourceLocalFilePath } from './markdown.ts';
 import { isWriteTargetContained } from './path-confine.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
@@ -205,8 +205,8 @@ export type PageWriteTarget =
  * #2018: pick the disk target so a page is NEVER written into a different
  * source's working tree. Two legitimate topologies, plus the leak guard:
  *   1. The assigned source has its OWN `local_path` (a separate working
- *      tree) → write at that tree's root (matches how `scanOneSource` reads
- *      it back; never nested under `.sources/`).
+ *      tree) → map its recorded Git-root-relative source_path into that
+ *      tree, including when local_path scopes a repo subdirectory.
  *   2. No per-source `local_path` → nest under the host repo
  *      (`sync.repo_path`): default at the root, non-default under
  *      `.sources/<id>/` (the established multi-source layout).
@@ -259,10 +259,9 @@ export async function resolvePageWriteTarget(
     if (!existsSync(sourceLocalPath) || !statSync(sourceLocalPath).isDirectory()) {
       return { ok: false, skipped: 'repo_not_found' };
     }
-    filePath = join(
-      sourceLocalPath,
-      recordedPath ?? recordedPathFromFileUri(recordedUri, sourceLocalPath) ?? `${slug}.md`,
-    );
+    filePath = recordedPath
+      ? resolveSourceLocalFilePath(sourceLocalPath, recordedPath) ?? join(sourceLocalPath, `${slug}.md`)
+      : join(sourceLocalPath, recordedPathFromFileUri(recordedUri, sourceLocalPath) ?? `${slug}.md`);
     writeRoot = sourceLocalPath;
   } else {
     const repoPath = await engine.getConfig('sync.repo_path');
