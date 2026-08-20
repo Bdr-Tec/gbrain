@@ -96,7 +96,7 @@ export const STALE_TIME_BUDGET_MS = Math.max(1000, Number(process.env.GBRAIN_EXT
  */
 export async function stampExtracted(
   engine: BrainEngine,
-  refs: Array<{ slug: string; source_id: string }>,
+  refs: Array<{ slug: string; source_id: string; extractedAt?: string }>,
   at: string = new Date().toISOString(),
 ): Promise<void> {
   if (refs.length === 0) return;
