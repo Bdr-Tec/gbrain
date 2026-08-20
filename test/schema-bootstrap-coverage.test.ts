@@ -293,6 +293,16 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
       DROP INDEX IF EXISTS uniq_minion_jobs_idempotency;
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS timeout_at;
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS idempotency_key;
+
+      -- v133 private-queue strip: owner/token/lease are migration-added and
+      -- blob-indexed; without these drops the three REQUIRED_BOOTSTRAP_COVERAGE
+      -- entries assert on columns initSchema already created (vacuous) and the
+      -- needsMinionJobsPrivateQueue bootstrap branch never executes.
+      DROP INDEX IF EXISTS idx_minion_jobs_private_queue_recovery;
+      DROP INDEX IF EXISTS idx_minion_jobs_private_queue_owner;
+      ALTER TABLE minion_jobs DROP COLUMN IF EXISTS private_queue_owner_job_id;
+      ALTER TABLE minion_jobs DROP COLUMN IF EXISTS private_queue_owner_token;
+      ALTER TABLE minion_jobs DROP COLUMN IF EXISTS private_queue_lease_until;
     `);
 
     // Note: we don't strip sources.archived* here because they're inline in the
@@ -386,6 +396,15 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       DROP INDEX IF EXISTS uniq_minion_jobs_idempotency;
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS timeout_at;
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS idempotency_key;
+
+      -- v133 private-queue strip: the SCHEMA_SQL replay would crash on
+      -- idx_minion_jobs_private_queue_recovery / _owner without the bootstrap
+      -- re-adding these migration-added columns (the v121 wedge class).
+      DROP INDEX IF EXISTS idx_minion_jobs_private_queue_recovery;
+      DROP INDEX IF EXISTS idx_minion_jobs_private_queue_owner;
+      ALTER TABLE minion_jobs DROP COLUMN IF EXISTS private_queue_owner_job_id;
+      ALTER TABLE minion_jobs DROP COLUMN IF EXISTS private_queue_owner_token;
+      ALTER TABLE minion_jobs DROP COLUMN IF EXISTS private_queue_lease_until;
 
       -- WP4 (v127) strip: surface columns + the wedge-signal index; replay
       -- must succeed from the pre-v127 shape.
