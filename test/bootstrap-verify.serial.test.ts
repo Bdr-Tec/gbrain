@@ -145,6 +145,10 @@ describe('verifyWorkspace — keyless pass', () => {
     // execution_env is informational and NEVER gates [D-cloud].
     expect(check(res.checks, 'execution_env')[0].ok).toBe(true);
     for (const c of check(res.checks, 'roundtrip')) expect(c.ok).toBe(true);
+    // #4287 wiring: the active-plane probe runs on every verify; keyless
+    // installs pass it (no active plane exists to split).
+    expect(check(res.checks, 'embedding_plane')[0].ok).toBe(true);
+    expect(check(res.checks, 'embedding_plane')[0].detail).toContain('keyless');
     expect(check(res.checks, 'graph_floor')[0].ok).toBe(true);
     expect(check(res.checks, 'magic_moment')[0].ok).toBe(true);
     expect(check(res.checks, 'capability_report')[0].detail).toContain('keyless');

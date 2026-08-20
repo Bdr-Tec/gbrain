@@ -38,6 +38,7 @@ import {
 import { loadSearchModeConfig, resolveSearchMode } from './search/mode.ts';
 import { normalizeAliasList } from './search/alias-normalize.ts';
 import { isUndefinedTableError, warnOncePerProcess, validateSlug } from './utils.ts';
+import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { computeCorpusGeneration } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
 import { runGuardrails } from './guardrails.ts';
@@ -1006,6 +1007,11 @@ export async function importFromContent(
         );
       } catch { /* same reason — silent skip */ }
     }
+  }).catch((err: unknown) => {
+    // #4287: name the dimension-mismatch rollback instead of letting the bare
+    // pgvector message ("expected N dimensions, not M") surface with no code,
+    // no consequence and no fix.
+    throw decorateEmbeddingDimError(err, slug);
   });
 
   // T3 — project frontmatter `aliases:` into page_aliases (free-text alias

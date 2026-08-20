@@ -459,6 +459,79 @@ async function ensureDefaultVisibilityPosture(engine: BrainEngine): Promise<Veri
   }
 }
 
+/**
+ * #4287 — ACTIVE embedding-plane probe. A verify that passes its roundtrip
+ * keyless-style while the configured embedder and the schema column disagree
+ * certifies a brain on which every keyed write fails ("expected N dimensions,
+ * not M"). Config numbers can lie about what the runtime emits (the observed
+ * split emitted the compiled-in default, a width no config plane named), so
+ * in keyed mode this embeds ONE short probe string through the same
+ * document-side path put_page uses and compares the RETURNED width to the
+ * actual `content_chunks.embedding` column width. Keyless installs pass (no
+ * active plane exists — writes store no vectors by design); a transient probe
+ * failure WARNs (the roundtrip owns hard put failures); a confirmed width
+ * mismatch is a named FAIL with the recovery command.
+ */
+export async function checkEmbeddingPlane(
+  engine: BrainEngine,
+  caps: CapabilityReport,
+): Promise<VerifyCheck> {
+  const id = 'embedding_plane';
+  let colDims: number | null = null;
+  let colExists = false;
+  try {
+    const { readContentChunksEmbeddingDim } = await import('../embedding-dim-check.ts');
+    const col = await readContentChunksEmbeddingDim(engine);
+    colDims = col.dims;
+    colExists = col.exists;
+  } catch (e) {
+    return { id, ok: true, warn: true, detail: `embedding column width probe failed: ${(e as Error).message}` };
+  }
+  if (!caps.embeddings.available) {
+    return {
+      id,
+      ok: true,
+      detail: `keyless — no embedding provider configured; writes store no vectors (column: ${colExists ? `${colDims ?? '?'}d` : 'absent'})`,
+    };
+  }
+  if (!colExists) {
+    return {
+      id,
+      ok: false,
+      detail: 'embeddings are configured but the content_chunks.embedding column is ABSENT — every embedding write fails. Run `gbrain migrate embeddings --status` to diagnose, then `gbrain migrate embeddings --to <provider:model>` to (re)build it.',
+    };
+  }
+  try {
+    // Same document-side embed path put_page uses (import-file.ts embedBatch),
+    // lazy so keyless verifies never load the gateway.
+    const { embedBatch, getEmbeddingModelName } = await import('../embedding.ts');
+    const vecs = await embedBatch(['gbrain bootstrap verify embedding-plane probe']);
+    const got = vecs[0]?.length ?? 0;
+    let model = 'unknown';
+    try { model = getEmbeddingModelName(); } catch { /* label only */ }
+    if (colDims !== null && got !== colDims) {
+      return {
+        id,
+        ok: false,
+        detail:
+          `EMBEDDING PLANE SPLIT: the runtime embedder (${model}) returns ${got}d vectors but ` +
+          `content_chunks.embedding is ${colDims}d — every embedding write fails ("expected ${colDims} ` +
+          `dimensions, not ${got}") and nothing is stored. Fix: gbrain migrate embeddings --to <provider:model> ` +
+          `--dim ${got} (or correct embedding_model/embedding_dimensions to match the column).`,
+      };
+    }
+    return {
+      id,
+      ok: true,
+      detail: `active plane verified end-to-end: ${model} emits ${got}d = content_chunks.embedding ${colDims ?? got}d`,
+    };
+  } catch (e) {
+    // A dead/misconfigured provider surfaces in the roundtrip put; this check
+    // only certifies plane AGREEMENT, so degrade to a warning here.
+    return { id, ok: true, warn: true, detail: `live embed probe failed (${(e as Error).message}) — cannot verify the active embedding plane end-to-end` };
+  }
+}
+
 /** Effective MCP-surface posture: bootstrap registrations pin `--surface
  * full`, but a REGISTRATION THAT PREDATES that pin resolves the config key —
  * `mcp_surface: 'verbs'` would silently narrow the bootstrap contract
@@ -954,8 +1027,13 @@ export async function verifyWorkspace(
   checks.push(checkMcpJsonHygiene(ws));
   checks.push(checkHookCarrierOverlap(ws));
 
-  // Round-trip family only makes sense on a reachable engine.
+  // Round-trip family only makes sense on a reachable engine. The
+  // embedding-plane check (#4287) runs FIRST so a plane split gets its named
+  // diagnosis before the roundtrip's put surfaces the raw dimension error —
+  // and so a keyless-passing roundtrip can never certify a brain whose keyed
+  // writes all fail.
   if (engineHealthy) {
+    checks.push(await checkEmbeddingPlane(engine, caps));
     const rt = await runRoundtrip(engine, ws, sourceId, { ...opts, capabilities: caps });
     checks.push(...rt.checks);
   } else {

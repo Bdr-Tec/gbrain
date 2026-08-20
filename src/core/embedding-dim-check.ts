@@ -14,6 +14,7 @@
  */
 
 import type { BrainEngine } from './engine.ts';
+import { OperationError } from './ops/contract.ts';
 import { PGVECTOR_HNSW_VECTOR_MAX_DIMS, hnswMaxDimsForType } from './vector-index.ts';
 import { gbrainPath } from './config.ts';
 import { resolveRecipe } from './ai/model-resolver.ts';
@@ -759,4 +760,30 @@ export async function assertFactsEmbeddingDimMatchesConfig(engine: BrainEngine):
   );
   _factsDimCheckCache.set(engine, { err });
   throw err;
+}
+
+/**
+ * #4287 — name the dimension-mismatch write failure.
+ *
+ * pgvector rejects a vector whose width differs from the column with the bare
+ * "expected N dimensions, not M" message: no error code, no statement of
+ * consequence, no fix. That shape means the EMBEDDING PLANE is split — the
+ * runtime embedder and the schema column disagree — so EVERY embedding write
+ * fails and the page transaction rolls back (the page is NOT stored, even
+ * though the message never says so). Decorate it with a named OperationError
+ * (`embedding_plane_split` — distinct from `embedding_failed`, because a
+ * retry can never succeed until the planes are re-aligned) carrying the
+ * consequence and the recovery command. Anything else passes through
+ * untouched. Applied at the import/put transaction boundary
+ * (import-file.ts:importFromContent).
+ */
+export function decorateEmbeddingDimError(err: unknown, slug: string): unknown {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = msg.match(/expected (\d+) dimensions, not (\d+)/);
+  if (!m) return err;
+  return new OperationError(
+    'embedding_plane_split',
+    `page '${slug}' was NOT written: the runtime embedder emitted ${m[2]}d vectors but the content_chunks.embedding column is ${m[1]}d (${msg}). Every embedding write fails until the planes agree.`,
+    `Diagnose with \`gbrain migrate embeddings --status\`; fix with \`gbrain migrate embeddings --to <provider:model> --dim ${m[2]}\` (or correct embedding_model/embedding_dimensions to match the column).`,
+  );
 }
