@@ -68,6 +68,8 @@ export interface PatternsPhaseOpts {
    * row. Unset → legacy 'default'. Mirrors synthesize.ts's `sourceId`.
    */
   sourceId?: string;
+  /** Internal: minion owner job id for private dream-inline queue recovery. */
+  privateQueueOwnerJobId?: number | null;
 }
 
 /**
@@ -206,6 +208,11 @@ export async function runPhasePatterns(
     // synthesize.ts's childQueueName derivation exactly.
     const childQueueName = `dream-inline-${Date.now()}-${randomUUID().slice(0, 8)}`;
     ownedPrivateQueue = { queue, name: childQueueName };
+    const privateQueueOwnerToken = randomUUID();
+    const renewPrivateQueueLease = async () => {
+      await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken);
+      if (opts.yieldDuringPhase) await opts.yieldDuringPhase();
+    };
     const data: SubagentHandlerData = {
       prompt: buildPatternsPrompt(reflections, config.minEvidence, config.sourceSlugPrefix, config.outputSlugPrefix),
       model: config.model,
@@ -223,6 +230,9 @@ export async function runPhasePatterns(
       max_stalled: 3,
       timeout_ms: budgets.timeoutMs,
       queue: childQueueName,
+      private_queue_owner_job_id: opts.privateQueueOwnerJobId ?? null,
+      private_queue_owner_token: privateQueueOwnerToken,
+      private_queue_lease_ms: Math.max(600_000, budgets.waitTimeoutMs),
     };
     let job: Awaited<ReturnType<typeof queue.add>>;
     try {
@@ -243,7 +253,7 @@ export async function runPhasePatterns(
     // the terminal state instead of polling waitForCompletion until
     // subagentWaitTimeoutMs expires. Runs on BOTH engines — on Postgres the
     // parent job otherwise deadlocks a fully-occupied worker (#2050).
-    await runSubagentsInline(engine, queue, childQueueName, opts.yieldDuringPhase);
+    await runSubagentsInline(engine, queue, childQueueName, renewPrivateQueueLease);
 
     let outcome: MinionJobStatus | 'timeout';
     try {

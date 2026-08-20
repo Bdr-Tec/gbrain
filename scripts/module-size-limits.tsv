@@ -13,18 +13,19 @@ src/core/ai/gateway.ts	4428	ratchet	watchlist; merged: dream-wave turn permits +
 src/cli.ts	3499	ratchet	grown v0.46.24.0: serve-delegated sync preflight hook
 src/core/cycle.ts	3080	ratchet	grown v0.46.20.0 phase-boundary split (resolveCyclePhases + normalizeQueuedSourcePhases + deriveStatus exclusion filter)
 src/commands/serve-http.ts	3194	ratchet	grown v0.46.23.0 review fix wave: github-kind webhook gating + case-insensitive repo match
-src/commands/jobs.ts	3027	ratchet	grown v0.46.22.0 phone wave: github source sync job (#4104)
+src/commands/jobs.ts	3029	ratchet	private queue owner id threading
 src/core/search/hybrid.ts	2629	ratchet	grown v0.46.23.0 review fix wave: supersede scoping + edge-existence gate
 src/core/engine.ts	2351	ratchet	grown v0.46.23.0: putPage allowEmptyOverwrite contract (#4335)
 src/commands/autopilot.ts	2301	ratchet
 src/commands/extract.ts	2161	ratchet
 src/commands/extract-conversation-facts.ts	2045	ratchet	grown v0.46.x per-provider gateway-unavailable copy
 src/core/import-file.ts	2000	ratchet	grown v0.46.11.0 five-issue wave
-src/core/cycle/synthesize.ts	2702	ratchet	merged: five-issue wave + dream-wave C7 peel + C8 manifest + C9 mode/telemetry/backfill + adversarial fix batches
+src/core/cycle/synthesize.ts	2735	ratchet	private queue lease renewal
 src/commands/embed.ts	1963	ratchet
 src/core/types.ts	1879	ratchet	grown v0.46.22.0 phone wave: supersession rerank result fields (#4056)
 src/commands/skillpack.ts	1360	ratchet
-src/core/minions/queue.ts	2130	ratchet	grown v0.46.11.0 five-issue wave
+src/core/minions/queue.ts	2325	ratchet	grown for private queue startup recovery
+src/core/schema-embedded.ts	1501	ratchet	generated schema bundle grew for private queue metadata
 src/commands/init.ts	1950	ratchet	grown v0.46.x keyless capability notices
 src/commands/integrations.ts	1675	ratchet
 src/core/minions/handlers/subagent.ts	1818	ratchet	merged: master v131 settle rework + dream-wave C5 peel + C6 accounting + C7 lease heartbeats/lost-lease aborts + C9 oneshot dispatch + adversarial fix batches

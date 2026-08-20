@@ -45,6 +45,7 @@ import {
 import { dirname, resolve } from 'path';
 import type { BrainEngine } from '../engine.ts';
 import { tryAcquireDbLock, inspectLock, isLockHolderLive, type DbLockHandle } from '../db-lock.ts';
+import { MinionQueue } from './queue.ts';
 import { currentBrainId, readWorkers } from './worker-registry.ts';
 import { autopilotPausedMarkerPath } from '../autopilot-paths.ts';
 import { resolveEnvNumber } from '../env-number.ts';
@@ -710,6 +711,8 @@ export class MinionSupervisor {
     // can be 0/disabled) so the TTL never lapses while we're alive.
     this.lockRefreshTimer = setInterval(() => { void this.refreshDbLock(); }, SUPERVISOR_LOCK_REFRESH_MS);
 
+    await this.reconcileOrphanedPrivateQueuesOnStartup();
+
     // 3. Signal handlers (tracked refs; removed on shutdown for test lifecycle hygiene).
     this.sigtermListener = () => { void this.shutdown('SIGTERM', ExitCodes.CLEAN); };
     this.sigintListener = () => { void this.shutdown('SIGINT', ExitCodes.CLEAN); };
@@ -785,6 +788,25 @@ export class MinionSupervisor {
         reason: 'wedge_watchdog_inert',
         error: e instanceof Error ? e.message : String(e),
         queue: this.opts.queue,
+      });
+    }
+  }
+
+  private async reconcileOrphanedPrivateQueuesOnStartup(): Promise<void> {
+    try {
+      const result = await new MinionQueue(this.engine).reconcileOrphanedPrivateQueues({
+        reason: 'supervisor startup recovery: orphaned dream-inline private queue',
+      });
+      if (result.cancelled_jobs > 0) {
+        this.emit('health_warn', {
+          reason: 'private_queue_startup_recovery',
+          ...result,
+        });
+      }
+    } catch (e) {
+      this.emit('health_warn', {
+        reason: 'private_queue_startup_recovery_failed',
+        error: e instanceof Error ? e.message : String(e),
       });
     }
   }

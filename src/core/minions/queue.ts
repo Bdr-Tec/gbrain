@@ -49,6 +49,8 @@ export interface TrustedSubmitOpts {
 const MIGRATION_VERSION = 7;
 
 const DEFAULT_MAX_SPAWN_DEPTH = 5;
+export const DREAM_INLINE_PRIVATE_QUEUE_PREFIX = 'dream-inline-';
+export const DEFAULT_PRIVATE_QUEUE_LEASE_MS = 10 * 60 * 1000;
 
 /**
  * Stall-sweep reclaim grace (#4145, CDX-7): don't reclaim a row whose
@@ -108,6 +110,20 @@ export function resolveStallReclaimGraceMs(
 const DEFAULT_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MiB
 
 const TERMINAL_STATUSES = ['completed', 'failed', 'dead', 'cancelled'] as const;
+const NON_TERMINAL_STATUSES: MinionJobStatus[] = ['waiting', 'active', 'delayed', 'waiting-children', 'paused'];
+
+export function isDreamInlinePrivateQueue(queueName: string): boolean {
+  return queueName.startsWith(DREAM_INLINE_PRIVATE_QUEUE_PREFIX);
+}
+
+export interface PrivateQueueRecoveryResult {
+  scanned_queues: number;
+  cancelled_queues: number;
+  cancelled_jobs: number;
+  skipped_live_queues: number;
+  skipped_unowned_queues: number;
+  skipped_non_orphan_queues: number;
+}
 
 /** Audit payload deferred from inside the submission transaction. */
 type CoalesceAuditEvent = {
@@ -540,13 +556,18 @@ export class MinionQueue {
         ? Math.max(1, Math.min(100, Math.floor(opts!.max_stalled as number)))
         : null;
 
+      const privateQueueLeaseUntil = opts?.private_queue_lease_ms != null
+        ? new Date(Date.now() + Math.max(1, Math.floor(opts.private_queue_lease_ms))).toISOString()
+        : null;
+
       const baseCols = `name, queue, status, priority, data, max_attempts, backoff_type,
             backoff_delay, backoff_jitter, delay_until, parent_job_id, on_child_fail,
             depth, max_children, timeout_ms, lock_duration_ms, remove_on_complete, remove_on_fail, idempotency_key,
-            quiet_hours, stagger_key`;
+            quiet_hours, stagger_key, private_queue_owner_job_id, private_queue_owner_token, private_queue_lease_until`;
       const baseVals = `$1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20::jsonb, $21`;
+      const baseValsWithOwner = `${baseVals}, $22, $23, $24`;
       const cols = hasMaxStalled ? `${baseCols}, max_stalled` : baseCols;
-      const vals = hasMaxStalled ? `${baseVals}, $22` : baseVals;
+      const vals = hasMaxStalled ? `${baseValsWithOwner}, $25` : baseValsWithOwner;
 
       const insertSql = opts?.idempotency_key
         ? `INSERT INTO minion_jobs (${cols})
@@ -589,6 +610,9 @@ export class MinionQueue {
         opts?.idempotency_key ?? null,
         opts?.quiet_hours ?? null,
         opts?.stagger_key ?? null,
+        opts?.private_queue_owner_job_id ?? null,
+        opts?.private_queue_owner_token ?? null,
+        privateQueueLeaseUntil,
       ];
       if (hasMaxStalled) params.push(clampedMaxStalled);
 
@@ -723,7 +747,7 @@ export class MinionQueue {
    * retain the queue's normal bookkeeping semantics.
    */
   async reconcilePrivateQueue(queueName: string, reason: string): Promise<MinionJob[]> {
-    if (!queueName.startsWith('dream-inline-')) {
+    if (!isDreamInlinePrivateQueue(queueName)) {
       throw new Error(`refusing to reconcile non-private queue '${queueName}'`);
     }
     const rows = await this.engine.executeRaw<{ id: number }>(
@@ -738,6 +762,150 @@ export class MinionQueue {
       reason,
       rootStatuses: ['waiting', 'active', 'delayed', 'waiting-children', 'paused'],
     });
+  }
+
+  /**
+   * Renew the owner lease on still-non-terminal jobs in one private queue.
+   * The owner token prevents a stale phase finally/keepalive from extending a
+   * successor queue that reused the same queue name in a test or fixture.
+   */
+  async renewPrivateQueueLease(
+    queueName: string,
+    ownerToken: string,
+    leaseMs = DEFAULT_PRIVATE_QUEUE_LEASE_MS,
+  ): Promise<number> {
+    if (!isDreamInlinePrivateQueue(queueName)) {
+      throw new Error(`refusing to renew non-private queue '${queueName}'`);
+    }
+    if (ownerToken.length === 0) {
+      throw new Error('private queue owner token cannot be empty');
+    }
+    const rows = await this.engine.executeRaw<{ id: number }>(
+      `UPDATE minion_jobs
+          SET private_queue_lease_until = now() + ($3::text::interval),
+              updated_at = now()
+        WHERE queue = $1
+          AND private_queue_owner_token = $2
+          AND status = ANY($4::text[])
+        RETURNING id`,
+      [queueName, ownerToken, `${Math.max(1, Math.floor(leaseMs))} milliseconds`, NON_TERMINAL_STATUSES],
+    );
+    return rows.length;
+  }
+
+  /**
+   * Startup/supervisor crash recovery for metadata-backed private dream queues.
+   * Cancels only queues that are provably orphaned:
+   *   - no live child lock in the private queue;
+   *   - explicit owner metadata exists; and
+   *   - the owner job is terminal/missing OR the renewable lease has expired.
+   *
+   * Legacy `dream-inline-*` rows with no owner metadata are left untouched and
+   * remain a Doctor/manual-retriage concern.
+   */
+  async reconcileOrphanedPrivateQueues(opts: {
+    reason?: string;
+    maxQueues?: number;
+  } = {}): Promise<PrivateQueueRecoveryResult> {
+    const result: PrivateQueueRecoveryResult = {
+      scanned_queues: 0,
+      cancelled_queues: 0,
+      cancelled_jobs: 0,
+      skipped_live_queues: 0,
+      skipped_unowned_queues: 0,
+      skipped_non_orphan_queues: 0,
+    };
+    const maxQueues = Math.max(1, Math.floor(opts.maxQueues ?? 100));
+    const queues = await this.engine.executeRaw<{ queue: string }>(
+      `SELECT queue
+         FROM minion_jobs
+        WHERE queue LIKE 'dream-inline-%'
+          AND status = ANY($1::text[])
+        GROUP BY queue
+        ORDER BY min(created_at), queue
+        LIMIT $2`,
+      [NON_TERMINAL_STATUSES, maxQueues],
+    );
+    result.scanned_queues = queues.length;
+    for (const q of queues) {
+      const verdict = await this.classifyPrivateQueueForRecovery(q.queue);
+      if (verdict === 'live') {
+        result.skipped_live_queues++;
+        continue;
+      }
+      if (verdict === 'unowned') {
+        result.skipped_unowned_queues++;
+        continue;
+      }
+      if (verdict === 'not_orphan') {
+        result.skipped_non_orphan_queues++;
+        continue;
+      }
+      const cancelled = await this.reconcilePrivateQueue(
+        q.queue,
+        opts.reason ?? 'startup recovery: orphaned dream-inline private queue',
+      );
+      if (cancelled.length > 0) {
+        result.cancelled_queues++;
+        result.cancelled_jobs += cancelled.length;
+      }
+    }
+    return result;
+  }
+
+  private async classifyPrivateQueueForRecovery(
+    queueName: string,
+  ): Promise<'orphan' | 'live' | 'unowned' | 'not_orphan'> {
+    const rows = await this.engine.executeRaw<{
+      active_healthy: string | number;
+      owner_ids: unknown;
+      metadata_rows: string | number;
+      live_owner_rows: string | number;
+      nonterminal_owner_rows: string | number;
+      max_lease_until: string | null;
+      future_lease_rows: string | number;
+    }>(
+      `WITH q AS (
+         SELECT *
+           FROM minion_jobs
+          WHERE queue = $1
+            AND status = ANY($2::text[])
+       ),
+       owner_ids AS (
+         SELECT DISTINCT private_queue_owner_job_id AS id
+           FROM q
+          WHERE private_queue_owner_job_id IS NOT NULL
+       ),
+       owners AS (
+         SELECT o.id, m.status, m.lock_until
+           FROM owner_ids o
+           LEFT JOIN minion_jobs m ON m.id = o.id
+       )
+       SELECT
+         count(*) FILTER (WHERE q.status = 'active' AND q.lock_until > now()) AS active_healthy,
+         COALESCE(jsonb_agg(DISTINCT q.private_queue_owner_job_id) FILTER (WHERE q.private_queue_owner_job_id IS NOT NULL), '[]'::jsonb) AS owner_ids,
+         count(*) FILTER (WHERE q.private_queue_owner_job_id IS NOT NULL OR q.private_queue_lease_until IS NOT NULL) AS metadata_rows,
+         (SELECT count(*) FROM owners WHERE status = 'active' AND lock_until > now()) AS live_owner_rows,
+         (SELECT count(*) FROM owners WHERE status IN ('waiting','active','delayed','waiting-children','paused')) AS nonterminal_owner_rows,
+         max(q.private_queue_lease_until)::text AS max_lease_until,
+         count(*) FILTER (WHERE q.private_queue_lease_until > now()) AS future_lease_rows
+       FROM q`,
+      [queueName, NON_TERMINAL_STATUSES],
+    );
+    const r = rows[0];
+    if (!r) return 'not_orphan';
+    if (Number(r.active_healthy ?? 0) > 0 || Number(r.live_owner_rows ?? 0) > 0) {
+      return 'live';
+    }
+    if (Number(r.metadata_rows ?? 0) === 0) return 'unowned';
+    const ownerIds = Array.isArray(r.owner_ids)
+      ? r.owner_ids
+      : (typeof r.owner_ids === 'string' ? JSON.parse(r.owner_ids) : []);
+    const ownerTerminal = ownerIds.length > 0 && Number(r.nonterminal_owner_rows ?? 0) === 0;
+    if (ownerTerminal) return 'orphan';
+    if (Number(r.future_lease_rows ?? 0) > 0) return 'live';
+    const leaseExpired = r.max_lease_until !== null && new Date(r.max_lease_until).getTime() <= Date.now();
+    return leaseExpired ? 'orphan' : 'not_orphan';
   }
 
   /**

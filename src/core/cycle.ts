@@ -560,6 +560,8 @@ export interface CycleOpts {
    * phases then use their configured timeouts unchanged.
    */
   deadlineAtMs?: number | null;
+  /** Internal: minion job id that owns any phase-created private dream-inline queues. */
+  privateQueueOwnerJobId?: number | null;
 }
 
 // ─── Lock primitives ───────────────────────────────────────────────
@@ -2142,6 +2144,7 @@ export async function runCycle(
           // job budget (same collision shape as propose_takes, cross-process
           // timeout domain — clamped via the patterns.ts childBudget template).
           deadlineAtMs: opts.deadlineAtMs ?? null,
+          privateQueueOwnerJobId: opts.privateQueueOwnerJobId ?? null,
         }));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
@@ -2350,6 +2353,7 @@ export async function runCycle(
           yieldDuringPhase: buildYieldDuringPhase(lock, opts.yieldDuringPhase, onStolen),
           once: opts.onceForPhase === 'patterns',
           deadlineAtMs: opts.deadlineAtMs ?? null,
+          privateQueueOwnerJobId: opts.privateQueueOwnerJobId ?? null,
           // #1586: scope pattern writes to the cycle's resolved source, same as
           // synthesize above. Without it the child's put_page rows land in
           // 'default' while the reverse-write drops the file into the named

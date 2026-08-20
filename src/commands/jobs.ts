@@ -2595,6 +2595,7 @@ export async function registerBuiltinHandlers(
       pull,
       signal: job.signal, // propagate abort so cycle bails on timeout/cancel
       deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
+      privateQueueOwnerJobId: job.id,
       ...(sourceId ? { sourceId } : {}),
       ...(effectivePhases !== undefined ? { phases: effectivePhases as any } : {}),
       yieldBetweenPhases: async () => {
@@ -2791,6 +2792,7 @@ export async function registerBuiltinHandlers(
       phases: [phase as any],
       signal: job.signal,
       deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
+      privateQueueOwnerJobId: job.id,
     });
     return { phase, status: report.status, report };
   };

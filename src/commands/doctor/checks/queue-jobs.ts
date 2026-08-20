@@ -493,11 +493,13 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
     return {
       name: 'orphaned_private_queue',
       status: 'fail',
-      message:
+     message:
         `Orphaned private dream queue(s): ${orphaned.join('; ')}. ` +
         `A supervisor restart cannot consume these parent-owned queues. ` +
-        `Run \`gbrain dream retriage --help\` and use its queue-reconciliation dry run; ` +
-        `apply cancellation only after reviewing that preview.`,
+        `Current binaries run metadata-backed private-queue startup recovery when ` +
+        `\`gbrain jobs supervisor start\` begins. For legacy unowned queues, run ` +
+        `\`gbrain dream retriage --help\` and use its queue-reconciliation dry run; ` +
+        `apply manual cancellation only after reviewing that preview.`,
       details: {
         orphaned_private_queues: orphaned.length,
         waiting_jobs: waitingTotal,

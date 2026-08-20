@@ -254,6 +254,125 @@ describe('private queue terminal reconciliation', () => {
   test('refuses to reconcile a shared queue', async () => {
     await expect(queue.reconcilePrivateQueue('default', 'bad target')).rejects.toThrow('refusing to reconcile non-private queue');
   });
+
+  test('startup recovery cancels an ownerless private queue only after its lease expires', async () => {
+    const privateQueue = `dream-inline-${Date.now()}-expired1`;
+    const token = 'ownerless-expired';
+    const job = await queue.add('private-waiting', {}, {
+      queue: privateQueue,
+      private_queue_owner_token: token,
+      private_queue_lease_ms: 600_000,
+    });
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET private_queue_lease_until = now() - interval '1 second' WHERE id = $1`,
+      [job.id],
+    );
+
+    const first = await queue.reconcileOrphanedPrivateQueues({ reason: 'test startup recovery' });
+    expect(first.cancelled_jobs).toBe(1);
+    expect(first.cancelled_queues).toBe(1);
+    expect((await queue.getJob(job.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(job.id))?.error_text).toBe('test startup recovery');
+
+    const second = await queue.reconcileOrphanedPrivateQueues({ reason: 'second pass' });
+    expect(second.cancelled_jobs).toBe(0);
+    expect(second.cancelled_queues).toBe(0);
+  });
+
+  test('startup recovery never cancels a private queue with a future lease', async () => {
+    const privateQueue = `dream-inline-${Date.now()}-future1`;
+    const job = await queue.add('private-waiting', {}, {
+      queue: privateQueue,
+      private_queue_owner_token: 'ownerless-live',
+      private_queue_lease_ms: 600_000,
+    });
+
+    const result = await queue.reconcileOrphanedPrivateQueues();
+    expect(result.cancelled_jobs).toBe(0);
+    expect(result.skipped_live_queues).toBeGreaterThanOrEqual(1);
+    expect((await queue.getJob(job.id))?.status).toBe('waiting');
+  });
+
+  test('startup recovery never cancels a private queue whose owner job is live', async () => {
+    const owner = await queue.add('autopilot-cycle', {});
+    const ownerToken = nextToken();
+    const claimedOwner = await queue.claim(ownerToken, 30_000, 'default', ['autopilot-cycle']);
+    expect(claimedOwner?.id).toBe(owner.id);
+    const privateQueue = `dream-inline-${Date.now()}-liveown`;
+    const child = await queue.add('private-waiting', {}, {
+      queue: privateQueue,
+      private_queue_owner_job_id: owner.id,
+      private_queue_owner_token: 'live-owner-token',
+      private_queue_lease_ms: 1,
+    });
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET private_queue_lease_until = now() - interval '1 second' WHERE id = $1`,
+      [child.id],
+    );
+
+    const result = await queue.reconcileOrphanedPrivateQueues();
+    expect(result.cancelled_jobs).toBe(0);
+    expect(result.skipped_live_queues).toBeGreaterThanOrEqual(1);
+    expect((await queue.getJob(child.id))?.status).toBe('waiting');
+  });
+
+  test('startup recovery cancels when the owner job is terminal even if the lease has not expired', async () => {
+    const owner = await queue.add('autopilot-cycle', {});
+    await claimAndComplete('autopilot-cycle', { ok: true });
+    const privateQueue = `dream-inline-${Date.now()}-termown`;
+    const child = await queue.add('private-waiting', {}, {
+      queue: privateQueue,
+      private_queue_owner_job_id: owner.id,
+      private_queue_owner_token: 'terminal-owner-token',
+      private_queue_lease_ms: 600_000,
+    });
+
+    const result = await queue.reconcileOrphanedPrivateQueues({ reason: 'owner terminal' });
+    expect(result.cancelled_jobs).toBe(1);
+    expect((await queue.getJob(child.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(child.id))?.error_text).toBe('owner terminal');
+  });
+
+  test('startup recovery preserves legacy unowned private queues for manual Doctor/retriage handling', async () => {
+    const privateQueue = `dream-inline-${Date.now()}-legacy1`;
+    const job = await queue.add('legacy-private-waiting', {}, { queue: privateQueue });
+
+    const result = await queue.reconcileOrphanedPrivateQueues();
+    expect(result.cancelled_jobs).toBe(0);
+    expect(result.skipped_unowned_queues).toBeGreaterThanOrEqual(1);
+    expect((await queue.getJob(job.id))?.status).toBe('waiting');
+  });
+
+  test('startup recovery uses normal cancellation semantics for descendants and aggregators', async () => {
+    const owner = await queue.add('autopilot-cycle', {});
+    await claimAndComplete('autopilot-cycle', { ok: true });
+    const aggregator = await queue.add('aggregator', {});
+    const privateQueue = `dream-inline-${Date.now()}-tree001`;
+    const child = await queue.add('private-child', {}, {
+      queue: privateQueue,
+      parent_job_id: aggregator.id,
+      on_child_fail: 'continue',
+      private_queue_owner_job_id: owner.id,
+      private_queue_owner_token: 'tree-token',
+      private_queue_lease_ms: 600_000,
+    });
+    const grandchild = await queue.add('private-grandchild', {}, {
+      queue: privateQueue,
+      parent_job_id: child.id,
+      on_child_fail: 'continue',
+      private_queue_owner_job_id: owner.id,
+      private_queue_owner_token: 'tree-token',
+      private_queue_lease_ms: 600_000,
+    });
+
+    const result = await queue.reconcileOrphanedPrivateQueues({ reason: 'owner terminal tree' });
+    expect(result.cancelled_jobs).toBeGreaterThanOrEqual(2);
+    expect((await queue.getJob(child.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(grandchild.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(aggregator.id))?.status).toBe('waiting');
+    const msgs = await readChildDoneInbox(aggregator.id);
+    expect(msgs.some(m => m.child_id === child.id && m.outcome === 'cancelled')).toBe(true);
+  });
 });
 
 describe('v0.16 MinionJobInput.max_stalled', () => {

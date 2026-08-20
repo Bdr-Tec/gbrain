@@ -327,6 +327,8 @@ export interface SynthesizePhaseOpts {
    * correct (source_id, slug) row. Unset → legacy 'default'.
    */
   sourceId?: string;
+  /** Internal: minion owner job id for private dream-inline queue recovery. */
+  privateQueueOwnerJobId?: number | null;
   /**
    * issue #2860 — `gbrain dream --phase synthesize --once`. Bypasses the
    * `dream.synthesize.enabled` gate for THIS call only (does NOT bypass
@@ -545,6 +547,11 @@ export async function runPhaseSynthesize(
     // claim a child this parent is about to run itself.
     const childQueueName = `dream-inline-${Date.now()}-${randomUUID().slice(0, 8)}`;
     ownedPrivateQueue = { queue, name: childQueueName };
+    const privateQueueOwnerToken = randomUUID();
+    const renewPrivateQueueLease = async () => {
+      await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken);
+      if (opts.yieldDuringPhase) await opts.yieldDuringPhase();
+    };
     const childIds: number[] = [];
     /** Map child job_id → chunk metadata for D6 orchestrator-side slug rewrite. */
     const chunkInfo = new Map<number, { idx: number; hash6: string }>();
@@ -755,6 +762,9 @@ export async function runPhaseSynthesize(
           idempotency_key,
           timeout_ms: perChild.timeoutMs,
           queue: childQueueName,
+          private_queue_owner_job_id: opts.privateQueueOwnerJobId ?? null,
+          private_queue_owner_token: privateQueueOwnerToken,
+          private_queue_lease_ms: Math.max(600_000, perChild.waitTimeoutMs),
         };
         let child: Awaited<ReturnType<typeof queue.add>>;
         try {
@@ -855,7 +865,7 @@ export async function runPhaseSynthesize(
     }
     const drainStartedAt = Date.now();
     await runSubagentsInline(
-      engine, queue, childQueueName, opts.yieldDuringPhase,
+      engine, queue, childQueueName, renewPrivateQueueLease,
       undefined, undefined, effectiveConcurrency, opts.deadlineAtMs ?? null,
     );
     // Captured HERE: everything after this line (waiters, collection,
