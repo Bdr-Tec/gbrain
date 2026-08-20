@@ -1026,6 +1026,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'remote_mcp',
   'sync',
   'sync.repo_path',
+  'import.require_configured_root',
   'sync.last_commit',
   // Opt-out for the put_page/capture disk write-through (write-through.ts):
   // 'false' makes every page write DB-only. For brains whose host repo is a
