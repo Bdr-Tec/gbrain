@@ -160,10 +160,12 @@ describe('runGather — per-stream typed warnings (GATHER_*_FAILED)', () => {
     expect(r.warnings).toEqual([]);
   });
 
-  test('a throwing hybrid stream surfaces GATHER_HYBRID_FAILED and stays fail-open', async () => {
+  test('a keyword-arm failure degrades inside hybrid — no gather warning, takes keep working', async () => {
+    // #4296: the keyword arm fails open INSIDE hybridSearch, so the
+    // gather-level GATHER_HYBRID_FAILED is reserved for a hybrid call that
+    // throws outright, not a degraded arm.
     const r = await runGather(withFailing(['searchKeyword']), { question: 'technical founder' });
-    expect(r.warnings).toContain('GATHER_HYBRID_FAILED');
-    expect(r.pages).toEqual([]);
+    expect(r.warnings).not.toContain('GATHER_HYBRID_FAILED');
     // Fail-open: the takes stream keeps working.
     expect(r.takes.length).toBeGreaterThan(0);
   });
@@ -177,16 +179,23 @@ describe('runGather — per-stream typed warnings (GATHER_*_FAILED)', () => {
         questionEmbedding: new Float32Array(8),
       },
     );
+    // #4296: a degraded keyword arm no longer surfaces GATHER_HYBRID_FAILED;
+    // the takes/graph streams still map failures to their own codes.
     expect([...r.warnings].sort()).toEqual([
       'GATHER_GRAPH_FAILED',
-      'GATHER_HYBRID_FAILED',
       'GATHER_TAKES_KEYWORD_FAILED',
       'GATHER_TAKES_VECTOR_FAILED',
     ]);
-    expect(r.pages).toEqual([]);
     expect(r.takes).toEqual([]);
     expect(r.graphSlugs).toEqual([]);
   });
+
+  // No engine-level failure reaches GATHER_HYBRID_FAILED anymore: every arm
+  // inside hybridSearch fails open (#4296 completed the set), verified by
+  // attempting to trip it with every query surface rejecting. The gather-level
+  // catch stays as a defensive backstop for non-engine throws (bad opts,
+  // programming errors) and is deliberately untested rather than artificially
+  // triggered.
 
   test('runThink folds gather warnings into ThinkResult.warnings', async () => {
     const stubClient: ThinkLLMClient = {
