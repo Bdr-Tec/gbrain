@@ -969,6 +969,61 @@ export async function loadConfigWithEngine(
     merged.dream = mergedDream;
   }
 
+  // #1475 — eval.* DB-plane merge. Both keys are in KNOWN_CONFIG_KEYS, so
+  // `gbrain config set eval.capture true` is accepted and stored, and
+  // `gbrain config get` reads it back (it queries engine.getConfig directly
+  // and prints `source: db plane`). But the runtime gates read the MERGED
+  // config — isEvalCaptureEnabled/isEvalScrubEnabled take `ctx.config` — so
+  // without a merge branch here the write was accepted, echoed back, and had
+  // no effect: capture stayed off unless GBRAIN_CONTRIBUTOR_MODE=1 was also
+  // exported, which is what the config was supposed to make unnecessary.
+  //
+  // Both directions matter. `false` is not "unset": eval.capture=false is the
+  // documented opt-out for a brain that has CONTRIBUTOR_MODE exported, and
+  // eval.scrub_pii=false is an explicit privacy decision. dbBool already
+  // distinguishes them ('' / null / undefined → undefined).
+  // Strict, not `dbBool`. `dbBool` maps every non-empty value other than the
+  // exact string 'true' to FALSE, and `config set` stores whatever it is given
+  // — so `gbrain config set eval.scrub_pii TRUE` (or `1`, or a typo like
+  // `tru`) would arrive here as `false` and silently DISABLE PII scrubbing.
+  // Measured: 'true'→true, 'false'→false, and 'tru' / 'TRUE' / '1' / 'yes' all
+  // →false under dbBool. Before this merge existed those values were inert, so
+  // adopting dbBool here would newly activate that footgun on a privacy knob.
+  // An unrecognised value is treated as unset, which falls back to the
+  // documented default (scrub on, capture per CONTRIBUTOR_MODE) — fail-safe.
+  //
+  // Deliberately scoped to the two keys this change introduces. The same
+  // looseness applies to the other dbBool keys, but tightening those is a
+  // behavior change for existing brains and belongs in its own PR.
+  async function dbBoolStrict(key: string): Promise<boolean | undefined> {
+    try {
+      const v = await engine.getConfig(key);
+      if (v === 'true') return true;
+      if (v === 'false') return false;
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const dbEvalCapture = await dbBoolStrict('eval.capture');
+  const dbEvalScrubPii = await dbBoolStrict('eval.scrub_pii');
+
+  const mergedEval: NonNullable<GBrainConfig['eval']> = { ...(merged.eval ?? {}) };
+  if (mergedEval.capture === undefined && dbEvalCapture !== undefined) {
+    mergedEval.capture = dbEvalCapture;
+  }
+  if (mergedEval.scrub_pii === undefined && dbEvalScrubPii !== undefined) {
+    mergedEval.scrub_pii = dbEvalScrubPii;
+  }
+  // Same container discipline as dream/content_sanity: a brain that sets
+  // neither key keeps `cfg.eval` undefined, so `config show` does not sprout
+  // an empty object and downstream `config?.eval?.x === undefined` reads are
+  // unchanged.
+  if (Object.keys(mergedEval).length > 0) {
+    merged.eval = mergedEval;
+  }
+
   return merged;
 }
 

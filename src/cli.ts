@@ -1339,6 +1339,55 @@ export function findUnknownOpFlag(op: Operation, args: string[]): string | null 
   return null;
 }
 
+/**
+ * #1475 — the DB-plane merge `connectEngine` performs after connect, published
+ * for `makeContext` so the operation context carries it too.
+ *
+ * Why a map rather than a module-level variable: a process can hold more than
+ * one engine (`--brain <mount>` connects a second one), and the host brain's
+ * merged config must never be served for a mounted brain's context. Weak so a
+ * disconnected engine does not pin its config for the life of the process.
+ */
+const MERGED_CONFIG_BY_ENGINE = new WeakMap<BrainEngine, GBrainConfig>();
+
+/**
+ * Adversarial-review fixup (PR #4186): which BrainEngine instances came from
+ * connectMountEngine. Keyed on the engine object itself — same engine-keyed
+ * weak-reference pattern as MERGED_CONFIG_BY_ENGINE above (a WeakMap; this is
+ * a WeakSet since there's no payload to store, just membership), and for the
+ * same reason that comment gives: a process can hold more than one engine,
+ * so any guard that decides per-engine behavior must bind to the specific
+ * engine instance, not to process-wide module state. (The prior version of
+ * this fixup checked a module-level `activeBrainId` variable instead; that
+ * drifts from the `engine` argument makeContext actually receives if a
+ * process ever holds a host engine and a mount engine at once — the CLI
+ * doesn't today, but nothing enforces that.) Weak so a disconnected mount
+ * engine does not pin memory.
+ */
+const MOUNT_ENGINES = new WeakSet<BrainEngine>();
+
+/**
+ * @internal Exported for test/eval-capture-db-plane.serial.test.ts.
+ *
+ * Publishing the merge is the whole point of the map — if the `set` in
+ * connectEngine is ever dropped, makeContext silently falls back to
+ * re-merging and every command pays the per-key reads twice with no test
+ * going red. The seam lets a test prime the map the way connectEngine does
+ * and observe that no further reads happen.
+ */
+export const __testing = {
+  publishMergedConfig(engine: BrainEngine, config: GBrainConfig): void {
+    MERGED_CONFIG_BY_ENGINE.set(engine, config);
+  },
+  // Test-only seam for the mount-engine guard in makeContext's DB-plane
+  // fallback (see the #1475 comment there). Mirrors the MOUNT_ENGINES.add
+  // connectMountEngine makes on a real mount connect, without needing a live
+  // BrainRegistry.
+  markEngineAsMountForTests(engine: BrainEngine): void {
+    MOUNT_ENGINES.add(engine);
+  },
+};
+
 export async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {
   // v0.31.8 (D11): resolve sourceId via the canonical 6-tier chain. Honors
   // --source / GBRAIN_SOURCE / .gbrain-source / path-match / brain default /
@@ -1370,9 +1419,56 @@ export async function makeContext(engine: BrainEngine, params: Record<string, un
     // to the cross-source view (D16 back-compat path).
     sourceId = undefined;
   }
+  // #1475 — the operation context must carry the DB plane, not just file/env.
+  // `gbrain config set` writes DB-plane keys and `gbrain config get` reads
+  // them back, but every op-side gate reads `ctx.config` — so building this
+  // from the sync, file-only `loadConfig()` made those writes inert
+  // (`eval.capture` was the reported case: set, echoed back, still off).
+  //
+  // connectEngine already performs exactly this merge after connect for the
+  // HOST brain; it publishes the result, so the normal CLI path costs ZERO
+  // additional config reads. The fallback merge below only runs when both
+  // (a) the engine was never published (callers that reach makeContext with
+  // an engine connectEngine never saw — tests with a stub engine) AND
+  // (b) the engine is not a mount engine (MOUNT_ENGINES, set by
+  // connectMountEngine). A mounted brain's engine never re-merges here.
+  // connectMountEngine's own docstring only promises that a mount's DB-plane
+  // model config is never merged into the caller's AI gateway; it says
+  // nothing about ctx.config, and this fallback — added for #1475 after that
+  // docstring was written — would otherwise happily merge a mount's DB-plane
+  // config into the caller's context too, which is the same kind of leak the
+  // gateway guarantee exists to prevent (a caller trusting a mount's config
+  // as if it were its own). Skipping the merge for mount engines closes that
+  // gap and, as a side effect, avoids adding a full per-key DB round-trip to
+  // every mounted-brain command (the #3980 cost this whole publish/consume
+  // split exists to avoid). Mounted brains keep the same file/env-only
+  // config makeContext built before #1475.
+  //
+  // Fail-open, but not silent. The expected failure — a brain mid-migration
+  // whose config table does not exist yet — is already absorbed per key inside
+  // loadConfigWithEngine, so anything that escapes to here is unexpected (a
+  // contract violation such as a malformed listConfigKeys result). Falling
+  // back to the file plane keeps the command usable, but swallowing it without
+  // a word would turn "the DB plane silently did nothing" back into a mystery —
+  // which is the whole shape of #1475. Warn and continue.
+  const fileConfig = loadConfig() || { engine: 'postgres' as const };
+  let mergedConfig = MERGED_CONFIG_BY_ENGINE.get(engine) ?? fileConfig;
+  if (!MERGED_CONFIG_BY_ENGINE.has(engine) && !MOUNT_ENGINES.has(engine)) {
+    try {
+      mergedConfig = (await loadConfigWithEngine(engine, fileConfig)) ?? fileConfig;
+    } catch (err) {
+      console.warn(
+        `[config] DB-plane merge failed; using file/env config only. ` +
+        `Values set via \`gbrain config set\` will not apply to this command: ` +
+        `${(err as Error).message}`,
+      );
+      mergedConfig = fileConfig;
+    }
+  }
+
   return {
     engine,
-    config: loadConfig() || { engine: 'postgres' },
+    config: mergedConfig,
     logger: { info: console.log, warn: console.warn, error: console.error },
     dryRun: (params.dry_run as boolean) || false,
     // Local CLI invocation — the user owns the machine; do not apply remote-caller
@@ -3142,6 +3238,11 @@ async function connectMountEngine(brainId: string): Promise<BrainEngine> {
   const { loadRegistry } = await import('./core/brain-registry.ts');
   const handle = await loadRegistry().getBrain(brainId);
   activeBrainId = brainId;
+  // Fixup (PR #4186): mark this specific engine as a mount engine so
+  // makeContext's DB-plane fallback (see MOUNT_ENGINES above) never re-merges
+  // a mount's config into the caller's context, regardless of what other
+  // engine — host or another mount — this process may also be holding.
+  MOUNT_ENGINES.add(handle.engine);
   return handle.engine;
 }
 
@@ -3222,6 +3323,13 @@ async function connectEngine(opts?: { probeOnly?: boolean }): Promise<BrainEngin
   try {
     const merged = await loadConfigWithEngine(engine, config);
     if (merged) {
+      // #1475 — hand the merged config to makeContext instead of letting it
+      // re-derive one. See MERGED_CONFIG_BY_ENGINE: the op-side gates read
+      // ctx.config, and re-running the merge there would double this
+      // function's per-key config reads on every command (the cost #3980 is
+      // about). Keyed on the engine so a mounted brain cannot be served the
+      // host brain's merge.
+      MERGED_CONFIG_BY_ENGINE.set(engine, merged);
       // Stash gate flags on process.env for downstream readers (import-file.ts
       // dispatches on GBRAIN_EMBEDDING_MULTIMODAL, OCR consumer reads
       // GBRAIN_EMBEDDING_IMAGE_OCR_*). The gateway itself doesn't read these
