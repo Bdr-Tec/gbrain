@@ -118,6 +118,23 @@ describe('extractEntityRefs', () => {
     expect(refs[0].dir).toBe('meetings');
   });
 
+  test('percent-decodes a markdown-link target before resolution', () => {
+    // ANY_DIR_SEGMENT requires a lowercase leading directory segment, so
+    // this producer's realistic percent-encoded input keeps the dir
+    // lowercase and encodes a character in the basename — here `%2D` for
+    // `-`, decoding to the exact page slug `people/alice-chen`.
+    const refs = extractEntityRefs('Met with [Alice Chen](people/alice%2Dchen) at the office.');
+    expect(refs.length).toBe(1);
+    expect(refs[0].slug).toBe('people/alice-chen');
+  });
+
+  test('keeps a malformed percent-escape raw instead of throwing', () => {
+    expect(() => extractEntityRefs('[Alice](people/alice%zzchen)')).not.toThrow();
+    const refs = extractEntityRefs('[Alice](people/alice%zzchen)');
+    expect(refs.length).toBe(1);
+    expect(refs[0].slug).toBe('people/alice%zzchen');
+  });
+
   // ─── issue #972: generic `[[bare-name]]` wikilinks (pass 2c) ─────────────
 
   test('tags bare wikilinks with needsResolution flag', () => {
