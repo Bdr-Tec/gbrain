@@ -51,6 +51,13 @@ const MIGRATION_VERSION = 7;
 const DEFAULT_MAX_SPAWN_DEPTH = 5;
 export const DREAM_INLINE_PRIVATE_QUEUE_PREFIX = 'dream-inline-';
 export const DEFAULT_PRIVATE_QUEUE_LEASE_MS = 10 * 60 * 1000;
+/**
+ * Machine-readable reason family for private-queue reconciliation, mirroring
+ * the waiting-TTL prefix convention: every reconcile cancellation is stamped
+ * `<prefix>: <detail>` by reconcilePrivateQueue itself, so jobs-stats/doctor
+ * surfaces can LIKE-match the family without chasing per-call-site strings.
+ */
+export const PRIVATE_QUEUE_RECONCILE_REASON_PREFIX = 'private_queue_reconciled';
 
 /**
  * Stall-sweep reclaim grace (#4145, CDX-7): don't reclaim a row whose
@@ -750,6 +757,12 @@ export class MinionQueue {
     if (!isDreamInlinePrivateQueue(queueName)) {
       throw new Error(`refusing to reconcile non-private queue '${queueName}'`);
     }
+    // Enforce the machine-readable family at the single choke point so the
+    // four call sites (phase finally ×2, supervisor spawn, startup recovery)
+    // can never drift apart.
+    if (!reason.startsWith(PRIVATE_QUEUE_RECONCILE_REASON_PREFIX)) {
+      reason = `${PRIVATE_QUEUE_RECONCILE_REASON_PREFIX}: ${reason}`;
+    }
     const rows = await this.engine.executeRaw<{ id: number }>(
       `SELECT id FROM minion_jobs
         WHERE queue = $1
@@ -780,9 +793,16 @@ export class MinionQueue {
     if (ownerToken.length === 0) {
       throw new Error('private queue owner token cannot be empty');
     }
+    // GREATEST: a renewal may only EXTEND the lease. A default-horizon (10min)
+    // renewal racing a creation-time horizon sized to the phase's wait timeout
+    // must never shrink the window a healthy long run still needs — shrinking
+    // is what would let startup recovery cancel a LIVE ownerless queue.
     const rows = await this.engine.executeRaw<{ id: number }>(
       `UPDATE minion_jobs
-          SET private_queue_lease_until = now() + ($3::text::interval),
+          SET private_queue_lease_until = GREATEST(
+                COALESCE(private_queue_lease_until, to_timestamp(0)),
+                now() + ($3::text::interval)
+              ),
               updated_at = now()
         WHERE queue = $1
           AND private_queue_owner_token = $2
@@ -853,7 +873,12 @@ export class MinionQueue {
     return result;
   }
 
-  private async classifyPrivateQueueForRecovery(
+  /**
+   * PUBLIC (doctor shares this verdict): the orphaned_private_queue check
+   * buckets its candidates through the SAME classifier recovery uses, so the
+   * check's advertised remediation and recovery's actual behavior can't drift.
+   */
+  async classifyPrivateQueueForRecovery(
     queueName: string,
   ): Promise<'orphan' | 'live' | 'unowned' | 'not_orphan'> {
     const rows = await this.engine.executeRaw<{
@@ -2312,14 +2337,20 @@ export class MinionQueue {
  * check: GBRAIN_WEDGED_QUEUE_WARN_MINUTES (server-side env), default 15.
  */
 export function deriveWedgeSignal(wedge: {
+  queue?: string;
   active_healthy: number;
   waiting: number;
   minutes_since_completion: number | null;
-}): { wedged: boolean; wedge_threshold_minutes: number } {
+}): { wedged: boolean; wedge_threshold_minutes: number; private_queue: boolean } {
   const raw = parseInt(process.env.GBRAIN_WEDGED_QUEUE_WARN_MINUTES ?? '', 10);
   const wedge_threshold_minutes = Number.isFinite(raw) && raw > 0 ? raw : 15;
+  // A dream-inline private queue is parent-owned: no shared worker will ever
+  // claim it, so "wedged — restart the worker" is impossible advice (the
+  // incident bug class). Surface it as private_queue instead so every consumer
+  // (jobs stats, get_job_stats op, doctor) points at reconciliation.
+  const private_queue = wedge.queue !== undefined && isDreamInlinePrivateQueue(wedge.queue);
   const mins = wedge.minutes_since_completion;
-  const wedged = wedge.active_healthy === 0 && wedge.waiting > 0
+  const wedged = !private_queue && wedge.active_healthy === 0 && wedge.waiting > 0
     && (mins === null || mins > wedge_threshold_minutes);
-  return { wedged, wedge_threshold_minutes };
+  return { wedged, wedge_threshold_minutes, private_queue };
 }

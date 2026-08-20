@@ -51,7 +51,7 @@ import { basename, join, dirname, isAbsolute, resolve } from 'node:path';
 import { parseLlmJson } from '../llm-json.ts';
 import type { BrainEngine, DreamVerdict, TriageSegment } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
-import { MinionQueue } from '../minions/queue.ts';
+import { DEFAULT_PRIVATE_QUEUE_LEASE_MS, MinionQueue } from '../minions/queue.ts';
 import { clampSubagentBudgets, CYCLE_DEADLINE_RESERVE_MS, MIN_PATTERNS_SUBAGENT_BUDGET_MS } from './patterns.ts';
 import { isQueueQuotaExceededError } from '../minions/admission.ts';
 import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.ts';
@@ -548,8 +548,17 @@ export async function runPhaseSynthesize(
     const childQueueName = `dream-inline-${Date.now()}-${randomUUID().slice(0, 8)}`;
     ownedPrivateQueue = { queue, name: childQueueName };
     const privateQueueOwnerToken = randomUUID();
+    // Renewals must never SHRINK the creation-time horizon (sized per child
+    // below), and the drain loop calls this wrapper from 1-5s idle polls —
+    // throttle to 30s so safety costs one UPDATE per half-minute, not per poll.
+    let privateQueueLeaseHorizonMs = DEFAULT_PRIVATE_QUEUE_LEASE_MS;
+    let lastLeaseRenewalAtMs = 0;
     const renewPrivateQueueLease = async () => {
-      await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken);
+      const nowMs = Date.now();
+      if (nowMs - lastLeaseRenewalAtMs >= 30_000) {
+        lastLeaseRenewalAtMs = nowMs;
+        await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken, privateQueueLeaseHorizonMs);
+      }
       if (opts.yieldDuringPhase) await opts.yieldDuringPhase();
     };
     const childIds: number[] = [];
@@ -766,6 +775,7 @@ export async function runPhaseSynthesize(
           private_queue_owner_token: privateQueueOwnerToken,
           private_queue_lease_ms: Math.max(600_000, perChild.waitTimeoutMs),
         };
+        privateQueueLeaseHorizonMs = Math.max(privateQueueLeaseHorizonMs, 600_000, perChild.waitTimeoutMs);
         let child: Awaited<ReturnType<typeof queue.add>>;
         try {
           child = await queue.add(

@@ -155,8 +155,15 @@ describe('orphaned private dream queues', () => {
     const check = await computeOrphanedPrivateQueueCheck(pgLike);
     expect(check.status).toBe('fail');
     expect(check.message).toContain('supervisor restart cannot consume');
-    expect(check.message).toContain('queue-reconciliation dry run');
-    expect(check.details).toMatchObject({ orphaned_private_queues: 1, waiting_jobs: 1 });
+    // No owner metadata seeded → the legacy bucket, whose ONLY advertised
+    // remediation is the retriage preview (never a worker restart).
+    expect(check.message).toContain('gbrain dream retriage');
+    expect(check.details).toMatchObject({
+      orphaned_private_queues: 1,
+      waiting_jobs: 1,
+      legacy_unowned_queues: 1,
+      recoverable_queues: 0,
+    });
   });
 
   it('does not flag a private queue whose parent still holds a live job lock', async () => {
@@ -178,9 +185,46 @@ describe('orphaned private dream queues', () => {
     expect(check.status).toBe('ok');
   });
 
-  it('returns ok on PGLite', async () => {
+  it('runs on PGLite too (no engine short-circuit): a dead-parent queue is flagged', async () => {
+    // PGLite mints the same dream-inline-* queues (children are inlined
+    // precisely because no worker process can run) — the old short-circuit
+    // hid exactly the brains with the fewest recovery lanes.
+    await seed('dream-inline-pglite-dead', 'subagent', 'waiting', {
+      createdAtSql: "now() - interval '2 hours'",
+    });
     const check = await computeOrphanedPrivateQueueCheck(base as unknown as BrainEngine);
+    expect(check.status).toBe('fail');
+    // Engine-aware remediation: on PGLite the auto-recovery trigger is the
+    // next dream run, never a supervisor command.
+    expect(check.message).not.toContain('supervisor start`');
+  });
+
+  it('buckets a metadata-backed orphan as recoverable with the auto-recovery remediation', async () => {
+    // Terminal owner + expired lease → the classifier verdict is 'orphan':
+    // auto-recovery cancels it at the next worker spawn / cycle start.
+    await base.executeRaw(
+      `INSERT INTO minion_jobs (name, queue, status, created_at) VALUES ('parent', 'cycle', 'completed', now() - interval '3 hours')`,
+    );
+    const owner = await base.executeRaw<{ id: number }>(`SELECT max(id)::int AS id FROM minion_jobs`);
+    await base.executeRaw(
+      `INSERT INTO minion_jobs (name, queue, status, created_at, private_queue_owner_job_id, private_queue_owner_token, private_queue_lease_until)
+       VALUES ('child', 'dream-inline-owned-dead', 'waiting', now() - interval '2 hours', $1, 'tok', now() - interval '1 hour')`,
+      [owner[0].id],
+    );
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
+    expect(check.status).toBe('fail');
+    expect(check.message).toContain('Auto-recovery cancels the metadata-backed queue(s)');
+    expect(check.details).toMatchObject({ recoverable_queues: 1, legacy_unowned_queues: 0 });
+  });
+
+  it('suppresses a queue whose owner lease is still in the future (live, never flagged)', async () => {
+    await base.executeRaw(
+      `INSERT INTO minion_jobs (name, queue, status, created_at, private_queue_owner_token, private_queue_lease_until)
+       VALUES ('child', 'dream-inline-leased', 'waiting', now() - interval '2 hours', 'tok', now() + interval '30 min')`,
+    );
+    const check = await computeOrphanedPrivateQueueCheck(pgLike);
     expect(check.status).toBe('ok');
+    expect(check.details).toMatchObject({ suppressed_by_live_lease: 1 });
   });
 });
 

@@ -605,6 +605,10 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     const autopilotMaxRssMb = resolveDefaultMaxRssMb();
     childSupervisor = new ChildWorkerSupervisor({
       cliPath,
+      // Orphaned-private-queue recovery runs INSIDE each spawned worker's
+      // startup (jobs.ts 'work', gated on GBRAIN_SUPERVISED !== '1', which
+      // autopilot children never set) — so every spawn AND crash-respawn
+      // recovers without a parent-side beforeSpawn double-running the scan.
       args: ['jobs', 'work', '--max-rss', String(autopilotMaxRssMb)],
       // process.env clone; autopilot doesn't gate shell jobs the way the
       // standalone supervisor does (autopilot is the operator-trust path).

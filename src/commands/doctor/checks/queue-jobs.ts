@@ -330,6 +330,7 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
        GROUP BY queue`,
     );
     const wedged: string[] = [];
+    const wedgedQueueNames: string[] = [];
     for (const r of rows) {
       const activeHealthy = Number(r.active_healthy ?? 0);
       const waiting = Number(r.waiting ?? 0);
@@ -338,18 +339,27 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
       // threshold). The null-completions case is the supervisor's job.
       if (activeHealthy === 0 && waiting > 0 && mins !== null && mins > thresholdMin) {
         wedged.push(`'${r.queue}' (${waiting} waiting, 0 active, ${Math.round(mins)}m since last completion)`);
+        wedgedQueueNames.push(r.queue);
       }
     }
     if (wedged.length === 0) {
       return { name: 'wedged_queue', status: 'ok', message: 'No wedged queues' };
     }
+    // Queue-aware restart hint: the bare stop/start pair bounces the DEFAULT
+    // worker — for a non-default wedged queue that advice restarts the wrong
+    // process. Name the queue in the start command.
+    const nonDefault = wedgedQueueNames.filter(q => q !== 'default');
+    const restartHint = nonDefault.length === 0
+      ? `\`gbrain jobs supervisor stop && gbrain jobs supervisor start\``
+      : nonDefault
+          .map(q => `\`gbrain jobs supervisor stop && gbrain jobs supervisor start --queue '${q}'\``)
+          .join(', ');
     return {
       name: 'wedged_queue',
       status: 'fail',
       message:
         `Wedged queue(s) — worker alive but not claiming work: ${wedged.join('; ')}. ` +
-        `Restart the worker so it rebuilds a fresh DB pool: ` +
-        `\`gbrain jobs supervisor stop && gbrain jobs supervisor start\`, ` +
+        `Restart the worker so it rebuilds a fresh DB pool: ${restartHint}, ` +
         `then \`gbrain jobs retry <id>\` on any dead-lettered jobs.`,
       details: { wedged_queues: wedged.length, threshold_minutes: thresholdMin },
     };
@@ -385,9 +395,11 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
  *     (flagging them would fail doctor with no advertised fix).
  */
 export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Promise<Check> {
-  if (engine.kind !== 'postgres') {
-    return { name: 'orphaned_private_queue', status: 'ok', message: 'PGLite — no private queues to check' };
-  }
+  // Runs on BOTH engines: PGLite mints the same dream-inline-* queues (every
+  // child is inlined precisely because no separate worker can run), and the
+  // grouped SQL below is plain Postgres that PGLite executes unchanged. The
+  // old PGLite short-circuit hid exactly the brains with the fewest recovery
+  // lanes.
   const thresholdMin = _resolveEnvNumber('GBRAIN_ORPHANED_PRIVATE_QUEUE_MINUTES', 60);
   try {
     const { dreamInlineQueueAgeMs } = await import('../../../core/cycle/synthesize.ts');
@@ -437,6 +449,7 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
     );
     const nowMs = Date.now();
     const orphaned: string[] = [];
+    const candidateQueues: string[] = [];
     let waitingTotal = 0;
     let pausedTotal = 0;
     let suppressedByLiveLock = 0;
@@ -477,34 +490,77 @@ export async function computeOrphanedPrivateQueueCheck(engine: BrainEngine): Pro
       }
       waitingTotal += waiting;
       orphaned.push(`'${r.queue}' (${waiting} waiting, oldest ${Math.round(age)}m)`);
+      candidateQueues.push(r.queue);
     }
-    if (orphaned.length === 0) {
+    // Bucket the survivors through the SAME classifier recovery uses, so the
+    // advertised remediation and recovery's actual behavior cannot drift:
+    //   live      → owner lease/lock still healthy — suppress (not an orphan);
+    //   orphan    → metadata-backed: auto-recovery cancels it at the next
+    //               worker spawn or cycle start;
+    //   unowned   → legacy pre-metadata rows: retriage preview is the tool;
+    //   not_orphan→ owner job non-terminal — inspect the owner, don't cancel.
+    const { MinionQueue } = await import('../../../core/minions/queue.ts');
+    const classifierQueue = new MinionQueue(engine);
+    let suppressedByLiveLease = 0;
+    const recoverable: string[] = [];
+    const legacyUnowned: string[] = [];
+    const ownerPending: string[] = [];
+    for (let i = 0; i < candidateQueues.length; i++) {
+      const verdict = await classifierQueue.classifyPrivateQueueForRecovery(candidateQueues[i]);
+      if (verdict === 'live') { suppressedByLiveLease++; continue; }
+      if (verdict === 'orphan') recoverable.push(orphaned[i]);
+      else if (verdict === 'unowned') legacyUnowned.push(orphaned[i]);
+      else ownerPending.push(orphaned[i]);
+    }
+    const flagged = recoverable.length + legacyUnowned.length + ownerPending.length;
+    if (flagged === 0) {
+      const suppressed = suppressedByLiveLock + suppressedByLiveLease;
       return {
         name: 'orphaned_private_queue',
         status: 'ok',
-        message: suppressedByLiveLock > 0
-          ? `No provably-orphaned private queues (${suppressedByLiveLock} possibly owned by a live cycle)`
+        message: suppressed > 0
+          ? `No provably-orphaned private queues (${suppressed} possibly owned by a live cycle)`
           : 'No orphaned private queues',
-        ...(pausedTotal > 0 || suppressedByLiveLock > 0
-          ? { details: { paused_jobs: pausedTotal, suppressed_by_live_lock: suppressedByLiveLock } }
+        ...(pausedTotal > 0 || suppressed > 0
+          ? { details: { paused_jobs: pausedTotal, suppressed_by_live_lock: suppressedByLiveLock, suppressed_by_live_lease: suppressedByLiveLease } }
           : {}),
       };
+    }
+    const remediation: string[] = [];
+    if (recoverable.length > 0) {
+      remediation.push(
+        `Auto-recovery cancels the metadata-backed queue(s) at the next worker spawn or dream-cycle start` +
+        (engine.kind === 'postgres'
+          ? ` (trigger now: \`gbrain jobs supervisor start\`)`
+          : ` (trigger now: \`gbrain dream\`)`) + `.`,
+      );
+    }
+    if (legacyUnowned.length > 0) {
+      remediation.push(
+        `Legacy unowned queue(s) need manual retriage: preview with \`gbrain dream retriage --help\` ` +
+        `and apply cancellation only after reviewing that dry run.`,
+      );
+    }
+    if (ownerPending.length > 0) {
+      remediation.push(
+        `Owner-pending queue(s) have a NON-terminal owner job — inspect it with \`gbrain jobs get <owner id>\` before cancelling anything.`,
+      );
     }
     return {
       name: 'orphaned_private_queue',
       status: 'fail',
       message:
-        `Orphaned private dream queue(s): ${orphaned.join('; ')}. ` +
-        `A supervisor restart cannot consume these parent-owned queues. ` +
-        `Current binaries run metadata-backed private-queue startup recovery when ` +
-        `\`gbrain jobs supervisor start\` begins. For legacy unowned queues, run ` +
-        `\`gbrain dream retriage --help\` and use its queue-reconciliation dry run; ` +
-        `apply manual cancellation only after reviewing that preview.`,
+        `Orphaned private dream queue(s): ${[...recoverable, ...legacyUnowned, ...ownerPending].join('; ')}. ` +
+        `A supervisor restart cannot consume these parent-owned queues. ${remediation.join(' ')}`,
       details: {
-        orphaned_private_queues: orphaned.length,
+        orphaned_private_queues: flagged,
+        recoverable_queues: recoverable.length,
+        legacy_unowned_queues: legacyUnowned.length,
+        owner_pending_queues: ownerPending.length,
         waiting_jobs: waitingTotal,
         paused_jobs: pausedTotal,
         suppressed_by_live_lock: suppressedByLiveLock,
+        suppressed_by_live_lease: suppressedByLiveLease,
         threshold_minutes: thresholdMin,
       },
     };

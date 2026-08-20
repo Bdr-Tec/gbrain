@@ -183,6 +183,12 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // wedges the blob replay exactly like the v121 incident.
   { kind: 'column', table: 'minion_jobs', column: 'timeout_at' },
   { kind: 'column', table: 'minion_jobs', column: 'idempotency_key' },
+  // v0.46.25 private-queue lifecycle: blob indexes
+  // idx_minion_jobs_private_queue_recovery / _owner reference the owner and
+  // lease columns; a pre-upgrade minion_jobs wedges blob replay without the
+  // bootstrap ALTERs (same class as v121).
+  { kind: 'column', table: 'minion_jobs', column: 'private_queue_owner_job_id' },
+  { kind: 'column', table: 'minion_jobs', column: 'private_queue_lease_until' },
 ];
 
 test('applyForwardReferenceBootstrap covers every forward reference declared in REQUIRED_BOOTSTRAP_COVERAGE', async () => {

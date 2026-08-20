@@ -2034,6 +2034,26 @@ export async function runCycle(
       // Non-fatal: reaping is a backstop, never blocks the cycle.
       console.warn(`[cycle] dead-holder lock reap failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     }
+    // Orphaned-private-queue recovery at cycle start — the ONLY recovery lane
+    // on engines that never run a supervisor/worker process (PGLite inlines
+    // every child), and a cheap idempotent second net elsewhere. Same posture
+    // as the lock reap above: best-effort, never blocks the cycle; the
+    // classifier skips live queues (healthy child lock / live owner / future
+    // lease), so a concurrent cycle's queue is never touched.
+    try {
+      const { MinionQueue } = await import('./minions/queue.ts');
+      const recovered = await new MinionQueue(engine).reconcileOrphanedPrivateQueues({
+        reason: 'cycle startup recovery: orphaned dream-inline private queue',
+      });
+      if (recovered.cancelled_jobs > 0) {
+        console.warn(
+          `[cycle] private-queue startup recovery: cancelled ${recovered.cancelled_jobs} ` +
+          `job(s) across ${recovered.cancelled_queues} orphaned queue(s)`,
+        );
+      }
+    } catch (e) {
+      console.warn(`[cycle] private-queue startup recovery failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   try {

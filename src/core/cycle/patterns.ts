@@ -209,8 +209,17 @@ export async function runPhasePatterns(
     const childQueueName = `dream-inline-${Date.now()}-${randomUUID().slice(0, 8)}`;
     ownedPrivateQueue = { queue, name: childQueueName };
     const privateQueueOwnerToken = randomUUID();
+    // Same lease posture as synthesize: renew with the CREATION-TIME horizon
+    // (never the shrinking 10-min default), throttled to 30s because the
+    // drain loop also calls this from its 1-5s idle polls.
+    const privateQueueLeaseHorizonMs = Math.max(600_000, budgets.waitTimeoutMs);
+    let lastLeaseRenewalAtMs = 0;
     const renewPrivateQueueLease = async () => {
-      await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken);
+      const nowMs = Date.now();
+      if (nowMs - lastLeaseRenewalAtMs >= 30_000) {
+        lastLeaseRenewalAtMs = nowMs;
+        await queue.renewPrivateQueueLease(childQueueName, privateQueueOwnerToken, privateQueueLeaseHorizonMs);
+      }
       if (opts.yieldDuringPhase) await opts.yieldDuringPhase();
     };
     const data: SubagentHandlerData = {

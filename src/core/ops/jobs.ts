@@ -678,8 +678,10 @@ const get_job_stats: Operation = {
         since: new Date(Date.now() - hours * 3_600_000),
         queue: typeof p.queue === 'string' && p.queue.length > 0 ? p.queue : 'default',
       });
-      const { wedged, wedge_threshold_minutes } = deriveWedgeSignal(stats.wedge);
-      return { schema_version: 1, window_hours: hours, ...stats, wedged, wedge_threshold_minutes };
+      const { wedged, wedge_threshold_minutes, private_queue } = deriveWedgeSignal(stats.wedge);
+      // private_queue tells the MCP consumer "restart the worker" is dead-end
+      // advice for this queue — it is parent-owned and needs reconciliation.
+      return { schema_version: 1, window_hours: hours, ...stats, wedged, wedge_threshold_minutes, private_queue };
     }, 'Job queue statistics (minions schema)');
   },
 };

@@ -829,7 +829,13 @@
   prefix `waiting_ttl_expired`) that turns out to have been wanted needs a
   `jobs requeue` (or a retry carve-out gated on that prefix) instead of
   hand-resubmitting. The data survives (cancelled rows keep payloads +
-  free their idempotency keys), so this is purely a CLI surface. **Effort:**
+  free their idempotency keys), so this is purely a CLI surface. v0.46.25.0
+  adds a SECOND machine-readable family to gate on: private-queue reconcile
+  cancellations are stamped `private_queue_reconciled: <detail>`
+  (PRIVATE_QUEUE_RECONCILE_REASON_PREFIX, minions/queue.ts). A requeue of
+  those rows must strip parent/ownership metadata (parent_job_id,
+  private_queue_owner_*) and resubmit into a CLAIMABLE queue — never flip
+  status in place inside a dead dream-inline-* queue. **Effort:**
   S. **Priority:** P2. (Pre-landing data-migration review, five-issue wave.)
 - [ ] **P2 — dream-path quota-degradation integration tests.** **What:**
   live-queue integration tests for the QueueQuotaExceededError consumers:

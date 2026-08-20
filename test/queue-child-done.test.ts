@@ -244,7 +244,7 @@ describe('private queue terminal reconciliation', () => {
     expect(reconciled.map(j => j.id).sort((a, b) => a - b)).toEqual([waiting.id, active.id].sort((a, b) => a - b));
     expect((await queue.getJob(waiting.id))?.status).toBe('cancelled');
     expect((await queue.getJob(active.id))?.status).toBe('cancelled');
-    expect((await queue.getJob(waiting.id))?.error_text).toBe('owner terminalized');
+    expect((await queue.getJob(waiting.id))?.error_text).toBe('private_queue_reconciled: owner terminalized');
     expect((await queue.getJob(unrelated.id))?.status).toBe('waiting');
 
     // Idempotent: a second finally/recovery pass finds nothing to do.
@@ -272,7 +272,7 @@ describe('private queue terminal reconciliation', () => {
     expect(first.cancelled_jobs).toBe(1);
     expect(first.cancelled_queues).toBe(1);
     expect((await queue.getJob(job.id))?.status).toBe('cancelled');
-    expect((await queue.getJob(job.id))?.error_text).toBe('test startup recovery');
+    expect((await queue.getJob(job.id))?.error_text).toBe('private_queue_reconciled: test startup recovery');
 
     const second = await queue.reconcileOrphanedPrivateQueues({ reason: 'second pass' });
     expect(second.cancelled_jobs).toBe(0);
@@ -330,7 +330,7 @@ describe('private queue terminal reconciliation', () => {
     const result = await queue.reconcileOrphanedPrivateQueues({ reason: 'owner terminal' });
     expect(result.cancelled_jobs).toBe(1);
     expect((await queue.getJob(child.id))?.status).toBe('cancelled');
-    expect((await queue.getJob(child.id))?.error_text).toBe('owner terminal');
+    expect((await queue.getJob(child.id))?.error_text).toBe('private_queue_reconciled: owner terminal');
   });
 
   test('startup recovery preserves legacy unowned private queues for manual Doctor/retriage handling', async () => {
@@ -402,5 +402,55 @@ describe('v0.16 MinionJobInput.max_stalled', () => {
     // First submitter wins; second submitter's override is silently ignored
     // (per codex iteration 3 finding — mutation would be a footgun).
     expect(second.max_stalled).toBe(3);
+  });
+});
+
+describe('private queue lease + wedge-signal hardening (fix wave)', () => {
+  test('lease renewal is MONOTONIC: a default-horizon renewal never shrinks a longer creation-time lease', async () => {
+    const q = 'dream-inline-monotonic';
+    const job = await queue.add('subagent', {}, {
+      queue: q,
+      private_queue_owner_token: 'tok-mono',
+      // Creation-time horizon: 2 hours (a long phase's wait timeout).
+      private_queue_lease_ms: 2 * 60 * 60 * 1000,
+    }, { allowProtectedSubmit: true });
+    const before = await engine.executeRaw<{ lease: string }>(
+      `SELECT private_queue_lease_until::text AS lease FROM minion_jobs WHERE id = $1`, [job.id],
+    );
+    // Renew with the (shorter) 10-min default — GREATEST must keep the 2h horizon.
+    const renewed = await queue.renewPrivateQueueLease(q, 'tok-mono');
+    expect(renewed).toBe(1);
+    const after = await engine.executeRaw<{ lease: string }>(
+      `SELECT private_queue_lease_until::text AS lease FROM minion_jobs WHERE id = $1`, [job.id],
+    );
+    expect(new Date(after[0].lease).getTime()).toBeGreaterThanOrEqual(new Date(before[0].lease).getTime());
+    // And a LONGER explicit horizon still extends.
+    await queue.renewPrivateQueueLease(q, 'tok-mono', 4 * 60 * 60 * 1000);
+    const extended = await engine.executeRaw<{ lease: string }>(
+      `SELECT private_queue_lease_until::text AS lease FROM minion_jobs WHERE id = $1`, [job.id],
+    );
+    expect(new Date(extended[0].lease).getTime()).toBeGreaterThan(new Date(after[0].lease).getTime());
+  });
+
+  test('reconcile reason family: every cancellation is stamped with the machine-readable prefix', async () => {
+    const q = 'dream-inline-reason-family';
+    const job = await queue.add('subagent', {}, { queue: q }, { allowProtectedSubmit: true });
+    const cancelled = await queue.reconcilePrivateQueue(q, 'anything a call site writes');
+    expect(cancelled).toHaveLength(1);
+    const row = await queue.getJob(job.id);
+    expect(row?.error_text?.startsWith('private_queue_reconciled: ')).toBe(true);
+  });
+
+  test('deriveWedgeSignal never calls a dream-inline queue wedged — it reports private_queue instead', async () => {
+    const { deriveWedgeSignal } = await import('../src/core/minions/queue.ts');
+    const shape = { active_healthy: 0, waiting: 5, minutes_since_completion: 120 };
+    const shared = deriveWedgeSignal({ ...shape, queue: 'default' });
+    expect(shared.wedged).toBe(true);
+    expect(shared.private_queue).toBe(false);
+    // The incident bug class: a private queue must NEVER produce the
+    // "restart the worker" wedge signal — no worker can claim it.
+    const priv = deriveWedgeSignal({ ...shape, queue: 'dream-inline-123-abc' });
+    expect(priv.wedged).toBe(false);
+    expect(priv.private_queue).toBe(true);
   });
 });
