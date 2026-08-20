@@ -27,6 +27,10 @@ import { createHash } from 'crypto';
 import { CR_MODES, type CRMode } from '../types.ts';
 import { getFtsLanguage } from '../fts-language.ts';
 import { getRecipe } from '../ai/recipes/index.ts';
+// #3657 seam: the sunsetting legacy reranker default has ONE code home
+// (ai/defaults.ts — a leaf module, no SDK loads). The three bundles below
+// resolve through it so the September default swap is a one-line change.
+import { LEGACY_DEFAULT_RERANKER_MODEL } from '../ai/defaults.ts';
 
 /**
  * Look up the `reranker.default_timeout_ms` declared by the resolved
@@ -104,7 +108,8 @@ export interface ModeBundle {
    */
   reranker_enabled: boolean;
   /**
-   * Provider:model for the reranker. Bundle default `'zeroentropyai:zerank-2'`
+   * Provider:model for the reranker. Bundle default is
+   * `LEGACY_DEFAULT_RERANKER_MODEL` (ai/defaults.ts — currently zerank-2)
    * — LEGACY until the September removal (v0.46.3 split-default: existing
    * ZE-keyed brains keep a working reranker until the hosted API dies on
    * 2026-09-04; voyage-keyed new installs get an explicit
@@ -327,7 +332,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // v0.35.0.0+: reranker off — conservative is cost-sensitive; reranker
     // spend doesn't fit the tier's value prop.
     reranker_enabled: false,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
     reranker_top_n_in: 30,
     reranker_top_n_out: null,
     reranker_timeout_ms: 5000,
@@ -380,7 +385,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // return input order unchanged. Opt out with
     // `gbrain config set search.reranker.enabled false`.
     reranker_enabled: true,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
     // v0.42.3.0 D4: topNIn = searchLimit (25) so the cross-encoder scores
     // every result the limit slice will return — no unscored tail for autocut
     // to wrongly drop (Codex #2). Was 30; tracking searchLimit is the
@@ -438,7 +443,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // their fee. ~$0.0003/query at this shape; rounding error vs the
     // tier's $700/mo @ Opus pairing per CLAUDE.md cost matrix.
     reranker_enabled: true,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
     // v0.42.3.0 D4: topNIn = searchLimit (50) so every returned result is
     // cross-encoder scored — closes the Codex #2 recall gap where autocut
     // would drop the deliberately-preserved un-reranked tail (results 31-50).
