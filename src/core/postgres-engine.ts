@@ -3670,12 +3670,11 @@ export class PostgresEngine implements BrainEngine {
     sourceId?: string,
   ): Promise<{ slug: string; similarity: number } | null> {
     const sql = this.sql;
-    // Use the `similarity()` function directly with an explicit threshold
-    // comparison. DO NOT use `SET LOCAL pg_trgm.similarity_threshold` +
-    // the `%` operator here — postgres.js auto-commits each sql`` call
-    // so `SET LOCAL` is a no-op across statement boundaries. Inline
-    // comparison is the only way to get predictable threshold behavior
-    // without wrapping the caller in a transaction.
+    // Use `%` so the existing idx_pages_trgm GIN index can prune candidates
+    // when the requested threshold is at least pg_trgm's default 0.3. Below
+    // that, retain the exact comparison path so low-threshold callers do not
+    // lose valid matches. Keep the explicit comparison in both paths as the
+    // result contract.
     //
     // Tie-breaker: sort by slug after similarity so re-runs return the
     // same winner when multiple pages score equally (prevents churn
@@ -3688,11 +3687,14 @@ export class PostgresEngine implements BrainEngine {
     // `operations.ts:reconcileLinks` (the `allSlugs` filter) — making it
     // look like the match failed when in fact it picked the wrong page.
     const prefixPattern = dirPrefix ? `${dirPrefix}/%` : '%';
+    const trgmPrefilter = minSimilarity >= 0.3
+      ? sql`title % ${name} AND`
+      : sql``;
     const rows = sourceId
       ? await sql`
           SELECT slug, similarity(title, ${name}) AS sim
           FROM pages
-          WHERE similarity(title, ${name}) >= ${minSimilarity}
+          WHERE ${trgmPrefilter} similarity(title, ${name}) >= ${minSimilarity}
             AND slug LIKE ${prefixPattern}
             AND source_id = ${sourceId}
             AND deleted_at IS NULL
@@ -3702,7 +3704,7 @@ export class PostgresEngine implements BrainEngine {
       : await sql`
           SELECT slug, similarity(title, ${name}) AS sim
           FROM pages
-          WHERE similarity(title, ${name}) >= ${minSimilarity}
+          WHERE ${trgmPrefilter} similarity(title, ${name}) >= ${minSimilarity}
             AND slug LIKE ${prefixPattern}
           ORDER BY sim DESC, slug ASC
           LIMIT 1

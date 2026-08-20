@@ -3946,10 +3946,9 @@ export class PGLiteEngine implements BrainEngine {
     minSimilarity: number = 0.55,
     sourceId?: string,
   ): Promise<{ slug: string; similarity: number } | null> {
-    // Inline threshold comparison instead of `SET LOCAL pg_trgm.similarity_threshold`.
-    // The GUC only scopes to the current transaction and pglite auto-commits each
-    // .query() call, so the SET LOCAL would be a no-op. Using similarity() >= $N
-    // directly gives predictable behavior. Tie-breaker: sort by slug so re-runs
+    // Use `%` so idx_pages_trgm can prune candidates for normal thresholds at
+    // or above 0.3. Retain the exact comparison-only path below 0.3 so callers
+    // do not lose low-similarity matches. Tie-breaker: sort by slug so re-runs
     // pick the same winner.
     //
     // `sourceId` + `deleted_at IS NULL` mirror the filters `tryFuzzyMatch` in
@@ -3958,11 +3957,12 @@ export class PGLiteEngine implements BrainEngine {
     // silently drops at the FK filter — making it look like the match failed
     // when in fact it picked the wrong page.
     const prefixPattern = dirPrefix ? `${dirPrefix}/%` : '%';
+    const trgmPrefilter = minSimilarity >= 0.3 ? 'title % $1 AND ' : '';
     const { rows } = sourceId
       ? await this.db.query(
           `SELECT slug, similarity(title, $1) AS sim
            FROM pages
-           WHERE similarity(title, $1) >= $3
+           WHERE ${trgmPrefilter}similarity(title, $1) >= $3
              AND slug LIKE $2
              AND source_id = $4
              AND deleted_at IS NULL
@@ -3973,7 +3973,7 @@ export class PGLiteEngine implements BrainEngine {
       : await this.db.query(
           `SELECT slug, similarity(title, $1) AS sim
            FROM pages
-           WHERE similarity(title, $1) >= $3
+           WHERE ${trgmPrefilter}similarity(title, $1) >= $3
              AND slug LIKE $2
            ORDER BY sim DESC, slug ASC
            LIMIT 1`,
