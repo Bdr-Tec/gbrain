@@ -1304,7 +1304,14 @@ export async function hybridSearch(
     earlyModality === 'image'
       ? [[], []]
       : await Promise.all([
-          engine.searchKeyword(query, searchOpts),
+          engine.searchKeyword(query, searchOpts).catch((err: unknown) => {
+            warnOncePerProcess(
+              'search-keyword-arm-failed',
+              `[gbrain] searchKeyword arm failed (fail-open, keyword candidates skipped): ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            );
+            return [] as SearchResult[];
+          }),
           engine.searchTitles(query, searchOpts).catch((err: unknown) => {
             warnOncePerProcess(
               'search-titles-arm-failed',
