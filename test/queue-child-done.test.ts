@@ -230,6 +230,32 @@ describe('v0.15 parent-resolution terminal set', () => {
   });
 });
 
+describe('private queue terminal reconciliation', () => {
+  test('cancels every non-terminal job in the owned queue and preserves unrelated work', async () => {
+    const privateQueue = `dream-inline-${Date.now()}-deadbeef`;
+    const waiting = await queue.add('private-waiting', {}, { queue: privateQueue });
+    const active = await queue.add('private-active', {}, { queue: privateQueue });
+    const unrelated = await queue.add('unrelated', {}, { queue: 'default' });
+    const claimed = await queue.claim(nextToken(), 30_000, privateQueue, ['private-active']);
+    expect(claimed?.id).toBe(active.id);
+
+    const reconciled = await queue.reconcilePrivateQueue(privateQueue, 'owner terminalized');
+
+    expect(reconciled.map(j => j.id).sort((a, b) => a - b)).toEqual([waiting.id, active.id].sort((a, b) => a - b));
+    expect((await queue.getJob(waiting.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(active.id))?.status).toBe('cancelled');
+    expect((await queue.getJob(waiting.id))?.error_text).toBe('owner terminalized');
+    expect((await queue.getJob(unrelated.id))?.status).toBe('waiting');
+
+    // Idempotent: a second finally/recovery pass finds nothing to do.
+    expect(await queue.reconcilePrivateQueue(privateQueue, 'second pass')).toEqual([]);
+  });
+
+  test('refuses to reconcile a shared queue', async () => {
+    await expect(queue.reconcilePrivateQueue('default', 'bad target')).rejects.toThrow('refusing to reconcile non-private queue');
+  });
+});
+
 describe('v0.16 MinionJobInput.max_stalled', () => {
   test('default max_stalled picks up schema DEFAULT when omitted (regression)', async () => {
     // v0.14.3 bumped the schema column DEFAULT from 1 → 5 (max_stalled becomes

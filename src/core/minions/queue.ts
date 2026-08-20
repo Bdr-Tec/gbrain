@@ -713,6 +713,34 @@ export class MinionQueue {
   }
 
   /**
+   * Terminalize every non-terminal job in one private, parent-owned queue.
+   *
+   * Dream phases drain `dream-inline-*` queues themselves; the shared worker
+   * intentionally never claims them.  A phase therefore owns cleanup too:
+   * every return/throw/timeout path calls this from `finally`.  The method is
+   * idempotent and routes through cancelJobs() so child_done messages,
+   * descendant cancellation, active-job aborts, and aggregator unblocking all
+   * retain the queue's normal bookkeeping semantics.
+   */
+  async reconcilePrivateQueue(queueName: string, reason: string): Promise<MinionJob[]> {
+    if (!queueName.startsWith('dream-inline-')) {
+      throw new Error(`refusing to reconcile non-private queue '${queueName}'`);
+    }
+    const rows = await this.engine.executeRaw<{ id: number }>(
+      `SELECT id FROM minion_jobs
+        WHERE queue = $1
+          AND status IN ('waiting','active','delayed','waiting-children','paused')
+        ORDER BY id`,
+      [queueName],
+    );
+    if (rows.length === 0) return [];
+    return this.cancelJobs(rows.map(r => r.id), {
+      reason,
+      rootStatuses: ['waiting', 'active', 'delayed', 'waiting-children', 'paused'],
+    });
+  }
+
+  /**
    * Batch variant of cancelJob: cancels every root id AND its descendants in
    * ONE transaction, with the full bookkeeping the single-id path carries
    * (child_done inbox messages + aggregator-parent resolution). Callers that

@@ -341,6 +341,7 @@ export async function runPhaseSynthesize(
   opts: SynthesizePhaseOpts,
 ): Promise<PhaseResult> {
   const start = Date.now();
+  let ownedPrivateQueue: { queue: MinionQueue; name: string } | null = null;
   // Normalize brainDir to an absolute path BEFORE any reverse-write. Without
   // this, a relative or empty brainDir flows down to writeReversePages →
   // `join(brainDir, '${slug}.md')` → relative path → resolves against cwd at
@@ -543,6 +544,7 @@ export async function runPhaseSynthesize(
     // unrelated 'default'-queue jobs, and a 'default'-queue worker must never
     // claim a child this parent is about to run itself.
     const childQueueName = `dream-inline-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    ownedPrivateQueue = { queue, name: childQueueName };
     const childIds: number[] = [];
     /** Map child job_id → chunk metadata for D6 orchestrator-side slug rewrite. */
     const chunkInfo = new Map<number, { idx: number; hash6: string }>();
@@ -1132,6 +1134,27 @@ export async function runPhaseSynthesize(
   } catch (e) {
     return failed(makeError('InternalError', 'SYNTH_PHASE_FAIL',
       e instanceof Error ? (e.message || 'synthesize phase threw') : String(e)));
+  } finally {
+    if (ownedPrivateQueue) {
+      try {
+        const cancelled = await ownedPrivateQueue.queue.reconcilePrivateQueue(
+          ownedPrivateQueue.name,
+          'private queue owner terminalized: synthesize phase ended',
+        );
+        if (cancelled.length > 0) {
+          process.stderr.write(
+            `[dream] synthesize reconciled ${cancelled.length} non-terminal child job(s) from ${ownedPrivateQueue.name}\n`,
+          );
+        }
+      } catch (cleanupError) {
+        // The phase result must survive a transient cleanup failure; Doctor
+        // and waiting-TTL remain delayed backstops and will surface/reap it.
+        process.stderr.write(
+          `[dream] synthesize private-queue cleanup failed for ${ownedPrivateQueue.name}: ` +
+          `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`,
+        );
+      }
+    }
   }
 }
 
