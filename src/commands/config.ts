@@ -29,6 +29,31 @@ export function isSensitiveConfigKey(key: string): boolean {
   return /(^|[._-])(key|secret|token|password|pwd|passwd|auth)([._-]|$)/.test(lower);
 }
 
+/**
+ * Vendor credential keys that `buildGatewayConfig` folds into the gateway env.
+ * That seam reads the FILE plane (~/.gbrain/config.json) plus process.env and
+ * never the DB plane, so `config set <vendor>_api_key` must not write the DB:
+ * it would report success, `config get` would read it straight back, and every
+ * provider call would still fail "requires <VENDOR>_API_KEY".
+ *
+ * Same bug class the v0.37.11.0 wave closed for embedding_model. That field
+ * could only be fixed by refusing, because changing it needs a wipe-and-reinit.
+ * A credential carries no such constraint, so the honest fix is to route the
+ * write to the plane the consumer actually reads.
+ *
+ * Keep in sync with the `envFromConfig` mappings in
+ * src/core/ai/build-gateway-config.ts.
+ */
+export const FILE_PLANE_API_KEYS: readonly string[] = [
+  'openai_api_key',
+  'anthropic_api_key',
+  'zeroentropy_api_key',
+  'openrouter_api_key',
+  'voyage_api_key',
+  'dashscope_api_key',
+  'google_api_key',
+];
+
 export function redactConfigValue(key: string, value: string): string {
   if (value.includes('postgresql://')) return redactUrl(value);
   if (isSensitiveConfigKey(key)) return '***';
@@ -103,6 +128,19 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
       if (cfg && branch && leaf in branch) {
         delete branch[leaf];
         saveConfig(cfg);
+        console.log(`Unset ${key} (file plane)`);
+      } else {
+        console.error(`Config key not found: ${key}`);
+        process.exit(1);
+      }
+      return;
+    }
+    if (FILE_PLANE_API_KEYS.includes(key)) {
+      const { loadConfigFileOnly, saveConfig } = await import('../core/config.ts');
+      const cfg = loadConfigFileOnly() as unknown as Record<string, unknown> | null;
+      if (cfg && key in cfg) {
+        delete cfg[key];
+        saveConfig(cfg as unknown as Parameters<typeof saveConfig>[0]);
         console.log(`Unset ${key} (file plane)`);
       } else {
         console.error(`Config key not found: ${key}`);
@@ -210,6 +248,19 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
       }
       return;
     }
+    // Vendor credentials are file-plane canonical (see FILE_PLANE_API_KEYS).
+    // Routed, not refused: unlike embedding_model there is nothing to re-init,
+    // so the user's intent is satisfiable exactly as typed.
+    if (FILE_PLANE_API_KEYS.includes(key)) {
+      const { loadConfigFileOnly, saveConfig } = await import('../core/config.ts');
+      const cfg = (loadConfigFileOnly() ?? { engine: 'pglite' }) as Parameters<typeof saveConfig>[0];
+      (cfg as unknown as Record<string, unknown>)[key] = value;
+      saveConfig(cfg);
+      // #892: redact — the raw secret must not reach scrollback or shell history.
+      console.log(`Set ${key} = ${redactConfigValue(key, value)} (file plane: ~/.gbrain/config.json)`);
+      return;
+    }
+
     // v0.37.11.0 fix wave (Lane C.2 + CDX2-13): refuse writes to schema-sizing
     // fields unconditionally. These fields size the `content_chunks.embedding`
     // column at init time and are file-plane canonical. `gbrain config set
