@@ -2617,6 +2617,21 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // Thin-client `think` dispatch: runThinkCli already routes through
+  // callRemoteTool when isThinClient(cfg) (v0.31.1). Falling through to
+  // connectEngine() below fails with `database_url is missing` on
+  // Topology-2 installs and never reaches that branch. Official invariant:
+  // detect isThinClient BEFORE connectEngine (docs/architecture/thin-client.md).
+  // --save/--take stay server-gated; runThinkCli already warns.
+  if (command === 'think') {
+    const cfgThink = loadConfig();
+    if (cfgThink && isThinClient(cfgThink)) {
+      const { runThinkCli } = await import('./commands/think.ts');
+      await runThinkCli(null as never, args);
+      return;
+    }
+  }
+
   // All remaining CLI-only commands need a DB connection
   const engine = await connectEngine();
   try {
