@@ -1499,6 +1499,19 @@ export async function hybridSearch(
     // vector didn't run, and whether the keyword arm itself came up empty
     // (skipped-by-modality is not a keyword miss, hence the image gate).
     pushDegraded(degraded, 'embed_unavailable', 'no_provider');
+    // #3808: meta names the degradation for programmatic callers, but a CLI
+    // human never saw it — mirror the embed-failure warn (once per process,
+    // stderr) with the diagnose reason so a silently keyword-only brain is
+    // visible the first time it ships results.
+    {
+      const { diagnoseEmbedding } = await import('../ai/gateway.ts');
+      const diag = diagnoseEmbedding(providerProbe);
+      const reason = diag.ok ? 'provider_unreachable' : (diag.reason ?? 'provider_unreachable');
+      warnOncePerProcess(
+        'search-vector-leg-unavailable',
+        `[gbrain] vector search unavailable (${reason}) — results are keyword-only. Run \`gbrain doctor\` to diagnose.`,
+      );
+    }
     if (keywordResults.length === 0 && earlyModality !== 'image') {
       pushDegraded(degraded, 'keyword_zero');
     }
