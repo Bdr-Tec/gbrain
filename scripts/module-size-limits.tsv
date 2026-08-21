@@ -28,7 +28,7 @@ src/core/minions/queue.ts	2423	ratchet	grown v0.46.26.0 private-queue lifecycle:
 src/commands/init.ts	1950	ratchet	grown v0.46.x keyless capability notices
 src/commands/integrations.ts	1733	ratchet	grown v0.46.24.0 overnight wave (#3588)
 src/core/minions/handlers/subagent.ts	1825	ratchet	merged: master v131 settle rework + dream-wave C5 peel + C6 accounting + C7 lease heartbeats/lost-lease aborts + C9 oneshot dispatch + adversarial fix batches; grown by #4078 subagent-loop capability fix
-src/commands/bootstrap.ts	2010	ratchet	grandfathered at merge (grew past the 1500 cap on master); raised for #4066 HOME_WORKSPACE_GUARD_EXEMPT (status/uninstall/harness)
+src/commands/bootstrap.ts	2015	ratchet	grandfathered at merge (grew past the 1500 cap on master); raised for #4066 HOME_WORKSPACE_GUARD_EXEMPT (status/uninstall/harness); +5 for the harnessDetect test seam (bulk lives in core/bootstrap/harness.ts)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
 src/commands/sources.ts	1790	ratchet	grown v0.46.22.0 phone wave: github source kind (#4104)
 src/core/link-extraction.ts	1467	ratchet	grown v0.46.25.0 delegated wave (#3939 #3723); lowered: stripCodeBlocks + citation loop peeled to markdown-code.ts/timeline-citations.ts (#3892 adoption)
