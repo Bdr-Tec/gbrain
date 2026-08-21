@@ -139,7 +139,9 @@ export async function doctorReportRemote(
       checks.push({
         name: 'timeline_dedup_index',
         status: 'ok',
-        message: idx.tablePresent ? 'idx_timeline_dedup has the 4-column shape' : 'no timeline_entries table yet',
+        // #3737: canonical shape keys md5(summary) so long summaries can't
+        // overflow the btree row cap.
+        message: idx.tablePresent ? 'idx_timeline_dedup has the md5-keyed 4-column shape' : 'no timeline_entries table yet',
       });
     } else {
       checks.push({
@@ -147,7 +149,7 @@ export async function doctorReportRemote(
         status: 'fail',
         message:
           `idx_timeline_dedup is ${idx.indexPresent ? `(${idx.columns.join(', ')})` : 'absent'}, ` +
-          `expected (page_id, date, summary, source) — timeline writes are failing (#2038). ` +
+          `expected (page_id, date, md5(summary), source) — timeline writes are failing (#2038/#3737). ` +
           `Run \`gbrain apply-migrations --force-schema\` to heal it.`,
       });
     }

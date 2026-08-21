@@ -4495,7 +4495,8 @@ export class PGLiteEngine implements BrainEngine {
         throw new Error(`addTimelineEntry failed: page "${slug}" (source=${sourceId}) not found`);
       }
     }
-    // ON CONFLICT DO NOTHING via the (page_id, date, summary) unique index.
+    // ON CONFLICT DO NOTHING via the (page_id, date, md5(summary), source)
+    // unique index (#3737: md5-keyed so long summaries fit the btree row cap).
     // #3827: RETURNING 1 makes the outcome observable (true = inserted,
     // false = deduplicated or JOIN-dropped under skipExistenceCheck),
     // mirroring the Postgres engine. Source-qualify the page-id lookup so
@@ -4507,7 +4508,7 @@ export class PGLiteEngine implements BrainEngine {
       `INSERT INTO timeline_entries (page_id, date, source, summary, detail)
        SELECT id, $2::date, $3, $4, $5
        FROM pages WHERE slug = $1 AND source_id = $6
-       ON CONFLICT (page_id, date, summary, source) DO NOTHING
+       ON CONFLICT (page_id, date, md5(summary), source) DO NOTHING
        RETURNING 1`,
       [slug, entry.date, sanitizeForJsonb(entry.source || ''), sanitizeForJsonb(entry.summary), sanitizeForJsonb(entry.detail || ''), sourceId]
     );
@@ -4532,7 +4533,7 @@ export class PGLiteEngine implements BrainEngine {
        FROM jsonb_to_recordset(($1::jsonb)->'rows')
          AS v(slug text, date text, source text, summary text, detail text, source_id text)
        JOIN pages p ON p.slug = v.slug AND p.source_id = v.source_id AND p.deleted_at IS NULL
-       ON CONFLICT (page_id, date, summary, source) DO NOTHING
+       ON CONFLICT (page_id, date, md5(summary), source) DO NOTHING
        RETURNING 1`,
       [],
       [{ rows }],

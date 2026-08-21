@@ -19,7 +19,14 @@
 import type { BrainEngine } from './engine.ts';
 
 const INDEX_NAME = 'idx_timeline_dedup';
-const EXPECTED_COLUMNS = ['page_id', 'date', 'summary', 'source'];
+// #3737: the dedup tuple keys md5(summary) — the raw summary overflowed the
+// btree v4 row cap (~2704 bytes) on long/incompressible summaries and aborted
+// every timeline insert for that page. Both engines' insert sites infer
+// ON CONFLICT (page_id, date, md5(summary), source) against this shape, so
+// the self-heal MUST expect (and rebuild to) the md5 form — an
+// EXPECTED_COLUMNS of the raw shape would make this repair revert migration
+// v137 on every migrate pass.
+const EXPECTED_COLUMNS = ['page_id', 'date', 'md5(summary)', 'source'];
 
 export interface TimelineDedupStatus {
   /** The timeline_entries table exists (nothing to repair if not). */
@@ -32,15 +39,39 @@ export interface TimelineDedupStatus {
   needsRepair: boolean;
 }
 
-/** Parse the column list out of a pg_indexes `indexdef` string. */
-function parseIndexColumns(indexdef: string): string[] {
-  const open = indexdef.lastIndexOf('(');
+/**
+ * Parse the column list out of a pg_indexes `indexdef` string.
+ *
+ * #3737: the column list is the span from the FIRST `(` (the list opener
+ * after `USING btree`) to the LAST `)`. The previous `lastIndexOf('(')`
+ * pointed INSIDE an expression column — `... (page_id, date, md5(summary),
+ * source)` parsed as `['summary']` — so the shape check misread a healthy
+ * md5-keyed index as drifted and rebuilt it on every migrate pass. The
+ * split is paren-depth-aware so `md5(summary)` (or any future expression
+ * with internal commas) stays one entry.
+ */
+export function parseIndexColumns(indexdef: string): string[] {
+  const open = indexdef.indexOf('(');
   const close = indexdef.lastIndexOf(')');
   if (open < 0 || close < 0 || close < open) return [];
-  return indexdef
-    .slice(open + 1, close)
-    .split(',')
-    .map(c => c.trim().split(/\s+/)[0]) // drop any "col DESC"/opclass suffix
+  const list = indexdef.slice(open + 1, close);
+  const cols: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of list) {
+    if (ch === '(') { depth++; cur += ch; }
+    else if (ch === ')') { depth--; cur += ch; }
+    else if (ch === ',' && depth === 0) { cols.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  cols.push(cur);
+  return cols
+    .map(c => {
+      const t = c.trim();
+      // Drop any "col DESC"/opclass suffix — but only for plain columns;
+      // an expression entry (contains '(') is kept whole.
+      return t.includes('(') ? t : t.split(/\s+/)[0];
+    })
     .filter(Boolean);
 }
 
@@ -74,10 +105,12 @@ export interface TimelineDedupRepairResult {
 }
 
 /**
- * Heal the index if it's missing the v102 4-column shape. Dedupes FIRST —
- * the loose 3-column index let rows differing only by `source` coexist, and
- * `CREATE UNIQUE INDEX` would throw on those collisions otherwise. Keeps the
- * earliest row (min ctid) of each 4-tuple group.
+ * Heal the index if it's missing the canonical shape (v137: (page_id, date,
+ * md5(summary), source)). Dedupes FIRST — the loose 3-column index let rows
+ * differing only by `source` coexist, and `CREATE UNIQUE INDEX` would throw
+ * on those collisions otherwise. Keeps the earliest row (min id) of each
+ * 4-tuple group (raw-summary grouping is equivalent to md5 grouping —
+ * md5-equal ⟺ summary-equal modulo negligible collisions).
  */
 export async function repairTimelineDedupIndex(engine: BrainEngine): Promise<TimelineDedupRepairResult> {
   const status = await checkTimelineDedupIndex(engine);
@@ -112,9 +145,12 @@ export async function repairTimelineDedupIndex(engine: BrainEngine): Promise<Tim
   const collapsedDuplicates = parseInt(del[0]?.n ?? '0', 10);
 
   await engine.executeRaw(`DROP INDEX IF EXISTS ${INDEX_NAME}`);
+  // #3737: rebuild to the md5-keyed shape (matches migration v137 + both
+  // engines' ON CONFLICT inference) — rebuilding the raw-summary shape here
+  // would revert the btree-overflow fix on the next migrate pass.
   await engine.executeRaw(
     `CREATE UNIQUE INDEX IF NOT EXISTS ${INDEX_NAME}
-       ON timeline_entries(page_id, date, summary, source)`,
+       ON timeline_entries(page_id, date, md5(summary), source)`,
   );
   return { repaired: true, before: status.columns, collapsedDuplicates, reason: 'rebuilt' };
 }

@@ -4322,7 +4322,8 @@ export class PostgresEngine implements BrainEngine {
         throw new Error(`addTimelineEntry failed: page "${slug}" (source=${sourceId}) not found`);
       }
     }
-    // ON CONFLICT DO NOTHING via the (page_id, date, summary) unique index.
+    // ON CONFLICT DO NOTHING via the (page_id, date, md5(summary), source)
+    // unique index (#3737: md5-keyed so long summaries fit the btree row cap).
     // #3827: RETURNING 1 makes the outcome observable — 0 rows means either
     // page missing OR duplicate; with the existence check above (default) the
     // false return unambiguously means "deduplicated", and under
@@ -4336,7 +4337,7 @@ export class PostgresEngine implements BrainEngine {
       INSERT INTO timeline_entries (page_id, date, source, summary, detail)
       SELECT id, ${entry.date}::date, ${sanitizeForJsonb(entry.source || '')}, ${sanitizeForJsonb(entry.summary)}, ${sanitizeForJsonb(entry.detail || '')}
       FROM pages WHERE slug = ${slug} AND source_id = ${sourceId}
-      ON CONFLICT (page_id, date, summary, source) DO NOTHING
+      ON CONFLICT (page_id, date, md5(summary), source) DO NOTHING
       RETURNING 1
     `;
     return inserted.length > 0;
@@ -4361,7 +4362,7 @@ export class PostgresEngine implements BrainEngine {
        FROM jsonb_to_recordset(($1::jsonb)->'rows')
          AS v(slug text, date text, source text, summary text, detail text, source_id text)
        JOIN pages p ON p.slug = v.slug AND p.source_id = v.source_id AND p.deleted_at IS NULL
-       ON CONFLICT (page_id, date, summary, source) DO NOTHING
+       ON CONFLICT (page_id, date, md5(summary), source) DO NOTHING
        RETURNING 1`,
       [],
       [{ rows }],
