@@ -319,6 +319,10 @@ async function runLinksTimelinePass(
 
   const resolver = makeResolver(engine, { mode: 'batch', sourceId });
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // #3190: pack-aware verbs — the sweep must type edges the same way the
+  // extract command does or reconciliation flip-flops the link_type.
+  const { loadActivePackForLocalEngine } = await import('./schema-pack/best-effort.ts');
+  const pack = (await loadActivePackForLocalEngine(engine))?.manifest ?? null;
 
   type Extracted = Awaited<ReturnType<typeof extractPageLinks>>;
 
@@ -345,7 +349,7 @@ async function runLinksTimelinePass(
       // (frontmatter backfill stays a migration-orchestrator concern).
       const extracted = await extractPageLinks(
         slug, fullContent, page.frontmatter, page.type, resolver,
-        { skipFrontmatter: true, globalBasename },
+        { skipFrontmatter: true, globalBasename, pack },
       );
       if (extracted.candidates.length > 0) {
         pageCandidates.push({ slug, candidates: extracted.candidates });

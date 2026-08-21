@@ -14,6 +14,8 @@ import { importFromContent } from '../import-file.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
 import { writePageThrough, type WriteThroughResult } from '../write-through.ts';
 import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from '../link-extraction.ts';
+// #3190: pack-aware link typing on the put_page auto-link path.
+import { loadActivePackForLocalEngine } from '../schema-pack/best-effort.ts';
 import { isFactsBackstopEligible } from '../facts/eligibility.ts';
 import { stripTakesFence } from '../takes-fence.ts';
 import type { WriterLintPayload } from '../output/post-write.ts';
@@ -748,9 +750,14 @@ async function runAutoLink(
   const resolver = makeResolver(engine, { mode: 'live', sourceId: opts?.sourceId });
   // Issue #972: opt-in bare-wikilink basename resolution. Off by default.
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // #3190: pack-aware link typing + pack frontmatter_links on the put_page
+  // auto-link path. Loaded via the local-engine best-effort resolver (this
+  // hook only runs for trusted-local / trusted-workspace writes); null keeps
+  // the legacy in-code inference.
+  const pack = (await loadActivePackForLocalEngine(engine))?.manifest ?? null;
   const { candidates, unresolved } = await extractPageLinks(
     slug, fullContent, parsed.frontmatter, parsed.type, resolver,
-    { globalBasename },
+    { globalBasename, pack },
   );
 
   // Resolve which targets exist (skip refs to non-existent pages to avoid FK

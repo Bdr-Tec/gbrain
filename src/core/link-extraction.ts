@@ -18,6 +18,19 @@ import { stripCodeBlocks } from './markdown-code.ts';
 import { parseInlineCitationTimelineEntries } from './timeline-citations.ts';
 import { slugifyPath } from './sync.ts';
 import { SLUG_WORD_CHARS } from './cjk.ts';
+// #3190: pack-aware link typing. link-inference imports only manifest-v1
+// (zod) + redos-guard (node:vm) — no cycle back into this module.
+import type { SchemaPackManifest } from './schema-pack/manifest-v1.ts';
+import { inferLinkTypeFromPack, frontmatterLinkTypeFromPack } from './schema-pack/link-inference.ts';
+import { PageRegexBudget } from './schema-pack/redos-guard.ts';
+
+/**
+ * #3190: the slice of a schema-pack manifest link extraction consumes.
+ * Callers thread the ACTIVE pack's manifest (loadActivePackForLocalEngine /
+ * loadActivePackBestEffort → `.manifest`); null/undefined keeps the legacy
+ * in-code inference exactly as before.
+ */
+export type LinkExtractionPack = Pick<SchemaPackManifest, 'link_types' | 'frontmatter_links'>;
 
 export { stripCodeBlocks } from './markdown-code.ts';
 export { parseInlineCitationTimelineEntries, type InlineCitationTimelineCandidate } from './timeline-citations.ts';
@@ -91,6 +104,15 @@ export interface EntityRef {
    * — the reason subtree-scoped / nested brains got zero cross-dir edges.
    */
   upLevels?: number;
+  /**
+   * #3190: set for a same-directory markdown link — `[Name](slug.md)` with
+   * no directory segment and no scheme. `slug` holds the target basename
+   * (`.md` stripped); the caller (`extractPageLinks`) resolves it against
+   * the LINKING page's directory, mirroring the FS path's `resolveSlug`.
+   * Pre-fix these refs were silently dropped (pass 1 requires `dir/`),
+   * so flat directories and sibling links produced zero DB-path edges.
+   */
+  sameDir?: boolean;
 }
 
 /**
@@ -211,6 +233,16 @@ const WIKILINK_GENERIC_RE = /\[\[([^|\]#\n[]+?)(?:#[^|\]]*?)?(?:\|([^\]]+?))?\]\
  * span out of the 2c scan so a wikilink inside a markdown label is inert.
  */
 const MARKDOWN_LABEL_WIKILINK_RE = /\[[^\]\n]*\[\[[^\]\n]+\]\][^\]\n]*\]\([^)\n]+\)/g;
+
+/**
+ * #3190: same-directory markdown link — `[Name](slug.md)` whose target has
+ * NO directory segment and NO scheme/anchor (`/`, `:`, `#` all excluded).
+ * The `.md` suffix is REQUIRED (mirrors the FS extractor's mdPattern) so
+ * bare parenthetical prose (`[sic](reference)`) never produces a ref.
+ * Resolution against the linking page's directory happens in
+ * extractPageLinks (this module has no page context here).
+ */
+const SAME_DIR_MD_RE = /\[([^\]]+)\]\(([^)/:#\s]+?)\.md\)/g;
 
 /**
  * A code-reference found in markdown prose. Created by extractCodeRefs and
@@ -346,6 +378,23 @@ export function extractEntityRefs(content: string): EntityRef[] {
     // are unaffected.
     if (up) ref.upLevels = up[0].length / 3;
     refs.push(ref);
+    markdownRanges.push([match.index, match.index + match[0].length]);
+  }
+
+  // 1b. #3190: same-directory markdown links — `[Name](slug.md)` (no `/`,
+  //     no scheme). Pass 1 requires a `dir/` segment, so sibling links in
+  //     flat directories were silently dropped on the DB path while the FS
+  //     walker (extractMarkdownLinks → resolveSlug) linked them. Tagged
+  //     `sameDir: true`; extractPageLinks resolves against the page's dir.
+  //     Disjoint from pass 1 (its targets always contain `/`).
+  const sameDirPattern = new RegExp(SAME_DIR_MD_RE.source, SAME_DIR_MD_RE.flags);
+  while ((match = sameDirPattern.exec(stripped)) !== null) {
+    const name = match[1];
+    let target = match[2];
+    if (target.includes('%')) {
+      try { target = decodeURIComponent(target); } catch { /* keep raw */ }
+    }
+    refs.push({ name, slug: target, dir: '', sameDir: true });
     markdownRanges.push([match.index, match.index + match[0].length]);
   }
 
@@ -536,12 +585,49 @@ export async function extractPageLinks(
   frontmatter: Record<string, unknown>,
   pageType: PageType,
   resolver: SlugResolver,
-  opts: { globalBasename?: boolean; skipFrontmatter?: boolean } = {},
+  opts: { globalBasename?: boolean; skipFrontmatter?: boolean; pack?: LinkExtractionPack | null } = {},
 ): Promise<PageLinksResult> {
   const candidates: LinkCandidate[] = [];
 
+  // #3190: pack-aware verb inference. Pack-declared verbs win (page-type
+  // bindings, then pack regexes under the shared per-page ReDoS budget);
+  // the in-code inferLinkType stays the fall-through for everything the
+  // pack doesn't claim — matching the resolution order extract-ner already
+  // ships (schema-pack/link-inference.ts header). Pre-fix a user pack's
+  // `link_types[].inference.regex` (e.g. parent_of) was silently ignored
+  // here and every such edge landed as 'mentions'.
+  const pack = opts.pack ?? null;
+  const packBudget = pack ? new PageRegexBudget() : undefined;
+  const typeFor = (ctx: string, targetSlug: string): string => {
+    if (pack) {
+      const packVerb = inferLinkTypeFromPack(pack, pageType as string, ctx, packBudget);
+      if (packVerb) return packVerb;
+    }
+    return inferLinkType(pageType, ctx, content, targetSlug);
+  };
+
   // 1. Markdown entity refs.
   for (const ref of extractEntityRefs(content)) {
+    // #3190: same-directory markdown link — resolve against THIS page's
+    // directory (the FS path's resolveSlug does exactly this via
+    // join(fileDir, target)). Slugified through the sync grammar so
+    // `[Alice](Alice%20Chen.md)` reaches `people/alice-chen`. Downstream
+    // existence checks drop targets that aren't pages.
+    if (ref.sameDir) {
+      const dirSegs = slug.includes('/') ? slug.split('/').slice(0, -1) : [];
+      const target = slugifyPath([...dirSegs, ref.slug].join('/'));
+      if (target && target !== slug) {
+        const idx = content.indexOf(ref.name);
+        const context = idx >= 0 ? excerpt(content, idx, 240) : ref.name;
+        candidates.push({
+          targetSlug: target,
+          linkType: typeFor(context, target),
+          context,
+          linkSource: 'markdown',
+        });
+      }
+      continue;
+    }
     // Issue #972: refs from the generic `[[bare-name]]` pass carry the
     // literal wikilink text, not a real page slug. When global_basename
     // mode is on AND the resolver implements basename lookup, resolve
@@ -565,7 +651,7 @@ export async function extractPageLinks(
         const litContext = litIdx >= 0 ? excerpt(content, litIdx, 240) : ref.name;
         candidates.push({
           targetSlug: ref.slug,
-          linkType: inferLinkType(pageType, litContext, content, ref.slug),
+          linkType: typeFor(litContext, ref.slug),
           context: litContext,
           linkSource: 'markdown',
         });
@@ -588,7 +674,7 @@ export async function extractPageLinks(
           const litContext = litIdx >= 0 ? excerpt(content, litIdx, 240) : ref.name;
           candidates.push({
             targetSlug: bareDirect,
-            linkType: inferLinkType(pageType, litContext, content, bareDirect),
+            linkType: typeFor(litContext, bareDirect),
             context: litContext,
             linkSource: 'markdown',
           });
@@ -651,7 +737,7 @@ export async function extractPageLinks(
     const targetSlug = resolveRelativeSlug(slug, ref);
     candidates.push({
       targetSlug,
-      linkType: inferLinkType(pageType, context, content, targetSlug),
+      linkType: typeFor(context, targetSlug),
       context,
       linkSource: 'markdown',
     });
@@ -685,7 +771,7 @@ export async function extractPageLinks(
     const context = excerpt(strippedContent, m.index, 240);
     candidates.push({
       targetSlug: m[1],
-      linkType: inferLinkType(pageType, context, content, m[1]),
+      linkType: typeFor(context, m[1]),
       context,
       linkSource: 'markdown',
     });
@@ -701,7 +787,7 @@ export async function extractPageLinks(
   // path needed `resolveBasenameMatches` on the real resolver.
   let fmUnresolved: UnresolvedFrontmatterRef[] = [];
   if (!opts.skipFrontmatter) {
-    const fm = await extractFrontmatterLinks(slug, pageType, frontmatter, resolver, opts.globalBasename);
+    const fm = await extractFrontmatterLinks(slug, pageType, frontmatter, resolver, opts.globalBasename, pack);
     candidates.push(...fm.candidates);
     fmUnresolved = fm.unresolved;
   }
@@ -1228,11 +1314,34 @@ export async function extractFrontmatterLinks(
   frontmatter: Record<string, unknown>,
   resolver: SlugResolver,
   globalBasename = false,
+  pack?: LinkExtractionPack | null,
 ): Promise<FrontmatterExtractResult> {
   const candidates: LinkCandidate[] = [];
   const unresolved: UnresolvedFrontmatterRef[] = [];
 
-  for (const mapping of FRONTMATTER_LINK_MAP) {
+  // #3190: append pack-declared frontmatter_links as OUTGOING mappings.
+  // Pre-fix a pack's `frontmatter_links` table (e.g. `parents:` →
+  // parent_of) was dead weight — only the hardcoded FRONTMATTER_LINK_MAP
+  // ever ran, so pack-declared fields produced 0 candidates. Field → verb
+  // resolution goes through frontmatterLinkTypeFromPack (first matching
+  // pack rule for this page type wins, the helper's documented contract).
+  // Built-ins keep their table order; pack mappings run after, and the
+  // final within-page dedup collapses exact duplicates.
+  const packMappings: FrontmatterFieldMapping[] = [];
+  if (pack && pack.frontmatter_links.length > 0) {
+    const seenFields = new Set<string>();
+    for (const fl of pack.frontmatter_links) {
+      for (const field of fl.fields) {
+        if (seenFields.has(field)) continue;
+        seenFields.add(field);
+        const type = frontmatterLinkTypeFromPack(pack, pageType as string, field);
+        if (!type) continue; // no pack rule for this page type
+        packMappings.push({ fields: [field], type, direction: 'outgoing', dirHint: '' });
+      }
+    }
+  }
+
+  for (const mapping of [...FRONTMATTER_LINK_MAP, ...packMappings]) {
     if (mapping.pageType && mapping.pageType !== pageType) continue;
     for (const field of mapping.fields) {
       const value = frontmatter[field];
