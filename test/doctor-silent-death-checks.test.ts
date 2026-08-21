@@ -102,11 +102,43 @@ describe('content_hash_duplicates (#2250)', () => {
     expect(c.message).toContain('my-project <-> projects/my-project');
   });
 
-  test('two path-prefixed pages with same hash → ok (not the wrong-root pattern)', async () => {
+  test('#3946: two path-prefixed pages with same hash → warn, listed, NO delete hint', async () => {
+    // Pre-#3946 the shape FILTER predicates hid every all-nested duplicate
+    // group; now it surfaces, but WITHOUT the bare-slug delete hint (#3942 —
+    // either copy may be canonical).
     await addPage('people/alice-example', { hash: 'same' });
     await addPage('archive/people/alice-example', { hash: 'same' });
     const c = await checkContentHashDuplicates(engine);
-    expect(c.status).toBe('ok');
+    expect(c.status).toBe('warn');
+    expect(c.message).toContain('people/alice-example == archive/people/alice-example');
+    expect(c.message).not.toContain('gbrain pages delete');
+    expect((c.details as any).pair_count).toBe(0);
+    expect((c.details as any).distinct_slug_group_count).toBe(1);
+  });
+
+  test('#3946: two distinct bare slugs with same hash → warn without delete hint', async () => {
+    await addPage('alice-example', { hash: 'same' });
+    await addPage('alice-copy', { hash: 'same' });
+    const c = await checkContentHashDuplicates(engine);
+    expect(c.status).toBe('warn');
+    expect(c.message).toContain('alice-copy == alice-example');
+    expect(c.message).not.toContain('gbrain pages delete');
+    expect((c.details as any).pair_count).toBe(0);
+    expect((c.details as any).distinct_slug_group_count).toBe(1);
+  });
+
+  test('#3946: mixed brain — wrong-root pair keeps the delete hint, nested group listed beside it', async () => {
+    await addPage('people/alice-example', { hash: 'h1' });
+    await addPage('alice-example', { hash: 'h1' });
+    await addPage('notes/dup-a', { hash: 'h2' });
+    await addPage('archive/dup-a', { hash: 'h2' });
+    const c = await checkContentHashDuplicates(engine);
+    expect(c.status).toBe('warn');
+    expect(c.message).toContain('alice-example <-> people/alice-example');
+    expect(c.message).toContain('gbrain pages delete <bare-slug>');
+    expect(c.message).toContain('notes/dup-a == archive/dup-a');
+    expect((c.details as any).pair_count).toBe(1);
+    expect((c.details as any).distinct_slug_group_count).toBe(1);
   });
 
   test('soft-deleted twin is ignored', async () => {

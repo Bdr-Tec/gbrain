@@ -215,6 +215,13 @@ export async function checkContentHashDuplicates(engine: BrainEngine): Promise<C
   const name = 'content_hash_duplicates';
   const fix = 'Fix: gbrain pages delete <bare-slug> for each pair, then gbrain pages purge-deleted --older-than 0';
   try {
+    // #3946: no shape predicates — EVERY same-source duplicate-content group
+    // surfaces (HAVING count(*) > 1 alone). Classification happens at render:
+    // a group holding BOTH a bare and a path-prefixed slug is the wrong-root
+    // import pattern (the bare slug is the accident, so the delete hint is
+    // safe); a group WITHOUT that shape (all-nested, or distinct bare slugs)
+    // is listed with NO delete hint (#3942 — either copy may be the canonical
+    // one that links point at, so deleting one automatically is a guess).
     const rows = await engine.executeRaw<{ source_id: string; content_hash: string; slugs: string }>(
       `SELECT source_id, content_hash,
               string_agg(slug, '|' ORDER BY length(slug), slug) AS slugs
@@ -222,29 +229,56 @@ export async function checkContentHashDuplicates(engine: BrainEngine): Promise<C
         WHERE deleted_at IS NULL AND content_hash IS NOT NULL AND content_hash <> ''
         GROUP BY source_id, content_hash
        HAVING count(*) > 1
-          AND count(*) FILTER (WHERE strpos(slug, '/') = 0) > 0
-          AND count(*) FILTER (WHERE strpos(slug, '/') > 0) > 0
         LIMIT 50`,
     );
     if (rows.length === 0) {
-      return { name, status: 'ok', message: 'No content-hash duplicate pairs (bare vs path-prefixed slugs)' };
+      return { name, status: 'ok', message: 'No same-source content-hash duplicate groups' };
     }
     let pairCount = 0;
     const samples: string[] = [];
+    let otherGroupCount = 0;
+    const otherSamples: string[] = [];
     for (const r of rows) {
       const slugs = String(r.slugs).split('|');
+      const bare = slugs.filter(s => !s.includes('/'));
       const prefixed = slugs.filter(s => s.includes('/'));
-      for (const bare of slugs.filter(s => !s.includes('/'))) {
-        const twin = prefixed.find(p => p.endsWith('/' + bare)) ?? prefixed[0];
-        pairCount++;
-        if (samples.length < 5) samples.push(`${bare} <-> ${twin}`);
+      if (bare.length > 0 && prefixed.length > 0) {
+        for (const b of bare) {
+          const twin = prefixed.find(p => p.endsWith('/' + b)) ?? prefixed[0];
+          pairCount++;
+          if (samples.length < 5) samples.push(`${b} <-> ${twin}`);
+        }
+      } else {
+        otherGroupCount++;
+        if (otherSamples.length < 5) otherSamples.push(slugs.join(' == '));
       }
+    }
+    const parts: string[] = [];
+    if (pairCount > 0) {
+      parts.push(
+        `${pairCount} content-hash duplicate pair(s) detected (same content, differing slug forms — ` +
+        `usually an import run from the wrong root, which drops the path prefix). ` +
+        `Sample: ${samples.join('; ')}. ${fix}`,
+      );
+    }
+    if (otherGroupCount > 0) {
+      parts.push(
+        `${otherGroupCount} duplicate-content group(s) with distinct slugs (no bare/nested wrong-root shape). ` +
+        `Sample: ${otherSamples.join('; ')}. Review which slug is canonical and consolidate manually — ` +
+        `no automatic delete hint (either copy may be the one links point at).`,
+      );
     }
     return {
       name,
       status: 'warn',
-      message: `${pairCount} content-hash duplicate pair(s) detected (same content, differing slug forms — usually an import run from the wrong root, which drops the path prefix). Sample: ${samples.join('; ')}. ${fix}`,
-      details: { pair_count: pairCount, hash_groups: rows.length, sample_pairs: samples },
+      message: parts.join(' '),
+      details: {
+        pair_count: pairCount,
+        hash_groups: rows.length,
+        sample_pairs: samples,
+        distinct_slug_group_count: otherGroupCount,
+        sample_distinct_slug_groups: otherSamples,
+      },
     };
   } catch (e) {
     return { name, status: 'warn', message: `Could not check content-hash duplicates: ${(e as Error).message}` };
