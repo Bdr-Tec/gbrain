@@ -244,7 +244,10 @@ describe('#2397: allow-list resolution ladder (engine repo beats compiled-binary
     expect(globs).toContain('wiki/personal/reflections/*');
     const remapped = bundledDreamGlobs('notes');
     expect(remapped).toContain('notes/personal/reflections/*');
-    expect(remapped).toContain('dream-cycle-summaries/*');
+    // #4387: the legacy summary glob nests under the custom root so a
+    // non-default root authorizes nothing outside its namespace.
+    expect(remapped).toContain('notes/dream-cycle-summaries/*');
+    expect(remapped).not.toContain('dream-cycle-summaries/*');
   });
 
   // #2397 review: fail-open is reserved for the NO-candidate case. A rules
