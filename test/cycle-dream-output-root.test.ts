@@ -13,8 +13,12 @@
  *   - the patterns phase gathers reflections under the configured root.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { __testing, loadAllowedSlugPrefixes, loadOutputRoot } from '../src/core/cycle/synthesize.ts';
+import { bundledDreamGlobs } from '../src/core/cycle/filing-rules.ts';
 import { runPhasePatterns } from '../src/core/cycle/patterns.ts';
 import type { DiscoveredTranscript } from '../src/core/cycle/transcript-discovery.ts';
 
@@ -70,7 +74,7 @@ describe('#2415: loadOutputRoot validation + patterns gather scope', () => {
     engine = new PGLiteEngine();
     await engine.connect({});
     await engine.initSchema();
-  });
+  }, 120_000);
 
   afterAll(async () => {
     await engine.disconnect();
@@ -114,6 +118,103 @@ describe('#2415: loadOutputRoot validation + patterns gather scope', () => {
     const result = await runPhasePatterns(engine, { brainDir: '/tmp', dryRun: true });
     expect(result.status).toBe('ok');
     expect(result.details?.reflections_considered).toBe(3);
+  });
+});
+
+describe('#2397: allow-list resolution ladder (engine repo beats compiled-binary miss)', () => {
+  // A compiled `bun --compile` binary bakes the BUILD machine's __dirname
+  // into the executable, and the dream worker's cwd is rarely the brain
+  // repo — so both legacy filesystem candidates could miss and the phase
+  // hard-failed with NO_ALLOWLIST. The loader now resolves the brain repo
+  // through the engine (sync.repo_path, else default-source local_path)
+  // and, as a last rung, falls back to the statically-bundled JSON.
+  let engine: PGLiteEngine;
+  let repoA: string;      // rung 2a: config sync.repo_path
+  let repoB: string;      // rung 2b: default-source local_path
+  let foreignCwd: string; // simulates the worker's non-brain-repo cwd
+
+  const writeRules = (repo: string, globs: string[]) => {
+    mkdirSync(join(repo, 'skills'), { recursive: true });
+    writeFileSync(
+      join(repo, 'skills', '_brain-filing-rules.json'),
+      JSON.stringify({ dream_synthesize_paths: { globs } }),
+    );
+  };
+
+  const inForeignCwd = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const prev = process.cwd();
+    process.chdir(foreignCwd);
+    try { return await fn(); } finally { process.chdir(prev); }
+  };
+
+  beforeAll(async () => {
+    // Temp dirs first so afterAll cleanup never sees undefined paths even
+    // if the (load-sensitive) PGLite init times out.
+    repoA = mkdtempSync(join(tmpdir(), 'gbrain-2397-repoA-'));
+    repoB = mkdtempSync(join(tmpdir(), 'gbrain-2397-repoB-'));
+    foreignCwd = mkdtempSync(join(tmpdir(), 'gbrain-2397-cwd-'));
+    writeRules(repoA, ['wiki/from-config-repo/*', 'config-repo-only/*']);
+    writeRules(repoB, ['wiki/from-default-source/*']);
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+  }, 120_000);
+
+  afterAll(async () => {
+    await engine?.disconnect();
+    for (const dir of [repoA, repoB, foreignCwd]) {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('default-source local_path resolves the brain repo from a foreign cwd', async () => {
+    await engine.executeRaw(`UPDATE sources SET local_path = $1 WHERE id = 'default'`, [repoB]);
+    const rows = await engine.executeRaw<{ local_path: string | null }>(
+      `SELECT local_path FROM sources WHERE id = 'default'`,
+    );
+    expect(rows[0]?.local_path).toBe(repoB);
+    const globs = await inForeignCwd(() => loadAllowedSlugPrefixes('notes', engine));
+    expect(globs).toContain('notes/from-default-source/*');
+    // The source-tree (__dirname) rung must NOT shadow the engine rung.
+    expect(globs).not.toContain('dream-cycle-summaries/*');
+  });
+
+  test('sync.repo_path wins over the default-source local_path', async () => {
+    await engine.setConfig('sync.repo_path', repoA);
+    const globs = await inForeignCwd(() => loadAllowedSlugPrefixes('notes', engine));
+    expect(globs).toContain('notes/from-config-repo/*');
+    expect(globs).toContain('config-repo-only/*');
+    expect(globs).not.toContain('notes/from-default-source/*');
+  });
+
+  test('cwd rung still wins over the engine rung (dev runs from the brain repo)', async () => {
+    // bun test runs from the gbrain repo root, so the cwd candidate exists
+    // and wins even though sync.repo_path points at repoA.
+    const globs = await loadAllowedSlugPrefixes('wiki', engine);
+    expect(globs).toContain('dream-cycle-summaries/*');
+    expect(globs).not.toContain('wiki/from-config-repo/*');
+  });
+
+  test('a broken engine fails open to the next rung', async () => {
+    const broken = {
+      getConfig: async () => { throw new Error('boom'); },
+      executeRaw: async () => { throw new Error('boom'); },
+    } as unknown as PGLiteEngine;
+    const globs = await inForeignCwd(() => loadAllowedSlugPrefixes('wiki', broken));
+    // Falls through to the __dirname source-tree rung (running from source).
+    expect(globs).toContain('wiki/personal/reflections/*');
+  });
+
+  test('bundled fallback is never empty and honors the outputRoot remap', () => {
+    // Compiled-binary last rung: both fs candidates AND the engine rung can
+    // miss; the statically-imported JSON must still yield a usable list so
+    // the phase never dies with NO_ALLOWLIST on a stock install.
+    const globs = bundledDreamGlobs();
+    expect(globs.length).toBeGreaterThan(0);
+    expect(globs).toContain('wiki/personal/reflections/*');
+    const remapped = bundledDreamGlobs('notes');
+    expect(remapped).toContain('notes/personal/reflections/*');
+    expect(remapped).toContain('dream-cycle-summaries/*');
   });
 });
 
