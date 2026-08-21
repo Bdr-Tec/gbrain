@@ -22,6 +22,12 @@ import { chunkText as recursiveChunk } from './recursive.ts';
 import { buildQualifiedName } from './qualified-names.ts';
 import { estimateTokens, estimateEmbedTokens, estimateEmbedTokensCeiling, DEFAULT_MAX_CHUNK_TOKENS } from './token-estimate.ts';
 import { safeSplitIndex } from '../text-safe.ts';
+import {
+  isComponentMarkupPath,
+  extractComponentScriptRegions,
+  maskOutsideRegion,
+  maskRegions,
+} from './component-markup.ts';
 
 // Both estimators moved to token-estimate.ts (#3477 follow-up) so
 // recursive.ts can share them without an import cycle. Re-exported here:
@@ -640,6 +646,51 @@ export async function chunkCodeTextFull(
 
   if (!source.trim()) return { chunks: [], edges: [] };
 
+  // #3768: .svelte/.astro carry real TS/JS in <script> blocks (and the Astro
+  // `---` fence) but map to 'html'. Parse each script region with the TS/JS
+  // grammar over a geometry-preserving mask (absolute line numbers AND
+  // absolute edge byte offsets for free); the markup keeps its html chunks
+  // with the script interiors blanked so text isn't double-indexed.
+  if (isComponentMarkupPath(filePath)) {
+    const componentResult = await chunkComponentMarkup(source, filePath, opts);
+    if (componentResult) return componentResult;
+  }
+
+  return chunkParsedLanguage(source, filePath, language, opts);
+}
+
+/** #3768 orchestration — returns null when the file has no script regions. */
+async function chunkComponentMarkup(
+  source: string,
+  filePath: string,
+  opts: CodeChunkOptions,
+): Promise<ChunkAndEdgeResult | null> {
+  const regions = extractComponentScriptRegions(source, filePath);
+  if (regions.length === 0) return null;
+  const chunks: CodeChunk[] = [];
+  const edges: import('./edge-extractor.ts').ExtractedEdge[] = [];
+  for (const region of regions) {
+    const masked = maskOutsideRegion(source, region);
+    const r = await chunkParsedLanguage(masked, filePath, region.language, opts);
+    chunks.push(...r.chunks);
+    edges.push(...r.edges);
+  }
+  const markup = maskRegions(source, regions);
+  if (markup.trim()) {
+    const m = await chunkParsedLanguage(markup, filePath, 'html', opts);
+    chunks.push(...m.chunks);
+    edges.push(...m.edges);
+  }
+  // Re-number so downstream chunk_index stays unique + sequential per file.
+  return { chunks: chunks.map((c, i) => ({ ...c, index: i })), edges };
+}
+
+async function chunkParsedLanguage(
+  source: string,
+  filePath: string,
+  language: SupportedCodeLanguage,
+  opts: CodeChunkOptions,
+): Promise<ChunkAndEdgeResult> {
   const largeThreshold = opts.largeChunkThresholdTokens ?? 1000;
   const chunkTarget = opts.chunkSizeTokens ?? 300;
   const timeoutMs = resolveChunkerTimeoutMs();
