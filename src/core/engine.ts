@@ -1266,8 +1266,13 @@ export interface BrainEngine {
    * value → the page stays stale → re-extracted next run, never marked
    * fresh-with-the-old-content. Sync / DB-extract sites omit per-ref values and
    * pass `now()` (the page was just imported, so `now() >= updated_at`).
+   *
+   * #3957: returns the number of pages rows actually stamped. A shortfall vs
+   * `refs.length` means some refs matched no `(slug, source_id)` pair — the
+   * classic wrong-source stamp that used to fail silently while the stale
+   * backlog grew. stampExtracted (extract.ts) logs the shortfall.
    */
-  markPagesExtractedBatch(refs: Array<{ slug: string; source_id: string; extractedAt?: string }>, defaultExtractedAt: string): Promise<void>;
+  markPagesExtractedBatch(refs: Array<{ slug: string; source_id: string; extractedAt?: string }>, defaultExtractedAt: string): Promise<number>;
 
   // Links
   /**

@@ -3584,19 +3584,24 @@ export class PGLiteEngine implements BrainEngine {
     return (rows as Record<string, unknown>[]).map(rowToStalePage);
   }
 
-  async markPagesExtractedBatch(refs: Array<{ slug: string; source_id: string; extractedAt?: string }>, defaultExtractedAt: string): Promise<void> {
-    if (refs.length === 0) return;
+  async markPagesExtractedBatch(refs: Array<{ slug: string; source_id: string; extractedAt?: string }>, defaultExtractedAt: string): Promise<number> {
+    if (refs.length === 0) return 0;
     const slugs = refs.map(r => r.slug);
     const srcs = refs.map(r => r.source_id);
     // Per-ref timestamp (D4 race fix): extract --stale passes each row's read
     // updated_at; sites that omit it fall back to defaultExtractedAt.
     const tss = refs.map(r => r.extractedAt ?? defaultExtractedAt);
-    await this.db.query(
+    // #3957: RETURNING 1 makes the stamped-row count observable so callers
+    // (stampExtracted) can surface a wrong-source shortfall instead of
+    // claiming success while every ref missed.
+    const { rows } = await this.db.query(
       `UPDATE pages p SET links_extracted_at = v.ts::timestamptz
          FROM unnest($1::text[], $2::text[], $3::text[]) AS v(slug, source_id, ts)
-         WHERE p.slug = v.slug AND p.source_id = v.source_id`,
+         WHERE p.slug = v.slug AND p.source_id = v.source_id
+         RETURNING 1`,
       [slugs, srcs, tss],
     );
+    return rows.length;
   }
 
   // Links
@@ -4526,7 +4531,7 @@ export class PGLiteEngine implements BrainEngine {
        SELECT p.id, v.date::date, v.source, v.summary, v.detail
        FROM jsonb_to_recordset(($1::jsonb)->'rows')
          AS v(slug text, date text, source text, summary text, detail text, source_id text)
-       JOIN pages p ON p.slug = v.slug AND p.source_id = v.source_id
+       JOIN pages p ON p.slug = v.slug AND p.source_id = v.source_id AND p.deleted_at IS NULL
        ON CONFLICT (page_id, date, summary, source) DO NOTHING
        RETURNING 1`,
       [],

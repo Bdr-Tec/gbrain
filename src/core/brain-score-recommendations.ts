@@ -303,7 +303,10 @@ export function computeRecommendations(
   // and noExtract:true after T5 lands → extract job is the materializer).
   // ---------------------------------------------------------------------
   if (ctx.repoPath && health.stale_pages > 0) {
-    const params = { mode: 'all', dir: ctx.repoPath };
+    // #3957: carry the source id so the extract job's fs-walk rows land in
+    // (and its watermark stamp targets) the brain source that owns repoPath —
+    // not the 'default' fallback that silently no-ops on federated brains.
+    const params = { mode: 'all', dir: ctx.repoPath, ...(ctx.sourceId ? { sourceId: ctx.sourceId } : {}) };
     out.push({
       id: 'extract.all',
       job: 'extract',

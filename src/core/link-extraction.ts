@@ -1318,15 +1318,59 @@ export interface TimelineCandidate {
   summary: string;
   /** Optional detail (subsequent lines until next entry/heading). */
   detail: string;
+  /**
+   * #3957: source label. Pipe-separated bullets split `Source — Summary`
+   * (via findTimelineSourceDelimiter, the SAME split the FS extractor in
+   * timeline-extract.ts applies), inline citations carry their `[Source: X]`
+   * label, everything else defaults to 'markdown'. Pre-fix the DB path left
+   * this unset, so callers wrote source='' while the FS path wrote the split
+   * label + trimmed summary — the (page_id, date, summary, source) dedup
+   * index saw two shapes for the same bullet and every FS-then-DB (or
+   * DB-then-FS) re-extraction duplicated the row.
+   */
+  source?: string;
+}
+
+/**
+ * #3957 (moved from timeline-extract.ts so BOTH parsers share it): index of
+ * the first dash (—, –, -) that can serve as the `Source — Summary`
+ * delimiter: it must have whitespace on both sides and sit outside every
+ * markdown-link span. Hyphens inside link targets
+ * (`../people/alice-example.md`) and dashes inside link labels
+ * (`[Deals — Q1 Review](...)`) are content, not delimiters — splitting on
+ * them shatters one entry into two fragments whose halves re-insert on
+ * every sync (the (page_id, date, summary, source) uniqueness sees each
+ * fragment shape as a new row). Returns -1 when the line has no delimiter.
+ */
+export function findTimelineSourceDelimiter(text: string): number {
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '[' || c === '(') depth++;
+    else if (c === ']' || c === ')') { if (depth > 0) depth--; }
+    else if (
+      depth === 0 &&
+      (c === '—' || c === '–' || c === '-') &&
+      i > 0 && /\s/.test(text[i - 1]) &&
+      i + 1 < text.length && /\s/.test(text[i + 1])
+    ) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 // Match: `- **YYYY-MM-DD** | summary` or `- **YYYY-MM-DD** -- summary`
 // or `- **YYYY-MM-DD** - summary` or just `**YYYY-MM-DD** | summary`.
-const TIMELINE_LINE_RE = /^\s*-?\s*\*\*(\d{4}-\d{2}-\d{2})\*\*\s*[|\-–—]+\s*(.+?)\s*$/;
+// #3957: the separator run is captured so the parser can apply the
+// `Source — Summary` split ONLY to pipe-separated bullets (the canonical
+// shape the FS extractor matches); a dash-separated bullet's rest is one
+// summary and must not be shattered on its first interior dash.
+const TIMELINE_LINE_RE = /^\s*-?\s*\*\*(\d{4}-\d{2}-\d{2})\*\*\s*([|\-–—]+)\s*(.+?)\s*$/;
 // Chinese date lines: `- 2020年1月2日 | summary` (bold optional). Requires the
 // 年/月 markers so plain ASCII `- 2020-01-02 - text` does NOT match — non-bold
 // ASCII dates were never timeline entries and must stay that way.
-const TIMELINE_LINE_RE_CN = /^\s*-?\s*(?:\*\*)?(\d{4})年(\d{1,2})月(\d{1,2})日?(?:\*\*)?\s*[|\-–—]+\s*(.+?)\s*$/;
+const TIMELINE_LINE_RE_CN = /^\s*-?\s*(?:\*\*)?(\d{4})年(\d{1,2})月(\d{1,2})日?(?:\*\*)?\s*([|\-–—]+)\s*(.+?)\s*$/;
 
 /**
  * Parse timeline entries from content. Looks at:
@@ -1347,17 +1391,33 @@ export function parseTimelineEntries(content: string): TimelineCandidate[] {
     const m = TIMELINE_LINE_RE.exec(lines[i]);
     let date: string;
     let summary: string;
+    let separator: string;
     if (m) {
       date = m[1];
-      summary = m[2].trim();
+      separator = m[2];
+      summary = m[3].trim();
     } else {
       const cm = TIMELINE_LINE_RE_CN.exec(lines[i]);
       if (!cm) { i++; continue; }
       // Normalize Chinese date to YYYY-MM-DD
       date = `${cm[1]}-${cm[2].padStart(2, '0')}-${cm[3].padStart(2, '0')}`;
-      summary = cm[4].trim();
+      separator = cm[4];
+      summary = cm[5].trim();
     }
     if (!isValidDate(date) || summary.length === 0) { i++; continue; }
+    // #3957: pipe-separated bullets carry the canonical `Source — Summary`
+    // shape; split them exactly like the FS extractor (extractTimelineFromContent
+    // Format 1) so FS- and DB-extracted rows share one (source, summary) shape
+    // and the DB dedup index collapses re-extractions instead of duplicating.
+    // Dash-separated bullets (`- **DATE** - text`) are one summary — no split.
+    let source = 'markdown';
+    if (separator.includes('|')) {
+      const at = findTimelineSourceDelimiter(summary);
+      if (at >= 0) {
+        source = summary.slice(0, at).trim();
+        summary = summary.slice(at + 1).trim();
+      }
+    }
     // Collect optional detail lines (indented, until next date or heading).
     const detailLines: string[] = [];
     let j = i + 1;
@@ -1380,7 +1440,7 @@ export function parseTimelineEntries(content: string): TimelineCandidate[] {
       }
       break;
     }
-    result.push({ date, summary, detail: detailLines.join(' ').trim() });
+    result.push({ date, summary, detail: detailLines.join(' ').trim(), source });
     i = j;
   }
 
@@ -1394,7 +1454,10 @@ export function parseTimelineEntries(content: string): TimelineCandidate[] {
   for (const entry of parseInlineCitationTimelineEntries(content, {
     skipLine: (line) => TIMELINE_LINE_RE.test(line) || TIMELINE_LINE_RE_CN.test(line),
   })) {
-    result.push({ date: entry.date, summary: entry.summary, detail: `Source: ${entry.source}` });
+    // #3957: carry the citation's source label in `source` (the dedup-key
+    // column) so the row shape matches the FS extractor's Format 3; the
+    // human-readable detail is kept for existing consumers.
+    result.push({ date: entry.date, summary: entry.summary, detail: `Source: ${entry.source}`, source: entry.source });
   }
   return result;
 }

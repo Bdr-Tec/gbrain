@@ -114,7 +114,20 @@ export async function stampExtracted(
 ): Promise<void> {
   if (refs.length === 0) return;
   try {
-    await engine.markPagesExtractedBatch(refs, at);
+    const stamped = await engine.markPagesExtractedBatch(refs, at);
+    // #3957: a shortfall means some refs matched no pages row — the classic
+    // cause is a wrong/defaulted source_id ('default' stamped while the pages
+    // live in a named source), which used to fail silently and leave the
+    // "stale" backlog growing forever while every sweep claimed success.
+    // Still best-effort (unstamped pages just stay visible to extract --stale),
+    // but now observable. stderr, never stdout (bulk-path output discipline).
+    if (stamped < refs.length) {
+      process.stderr.write(
+        `[extract] watermark stamped ${stamped}/${refs.length} page(s) — ` +
+        `${refs.length - stamped} ref(s) matched no page (wrong source_id or not yet synced); ` +
+        `they remain visible to 'gbrain extract --stale'\n`,
+      );
+    }
   } catch { /* best-effort: page stays stale, extract --stale re-sweeps it */ }
 }
 
@@ -622,6 +635,23 @@ export async function runExtractCore(engine: BrainEngine, opts: ExtractOpts): Pr
     const r = await extractTimelineFromDir(engine, opts.dir, dryRun, jsonMode, workers, opts.signal, opts.sourceId);
     result.timeline_entries_created = r.created;
     result.pages_processed = Math.max(result.pages_processed, r.pages);
+  }
+
+  // #3957: stamp the links_extracted_at watermark for the walked pages —
+  // mode 'all' only (a links- or timeline-only run hasn't done the full
+  // extraction the watermark asserts; extractForSlugs applies the same C3/D6
+  // rule). Pre-fix the full FS walk never stamped, so every walked page
+  // stayed permanently "stale" to `extract --stale` / doctor and the sweep
+  // re-extracted the whole brain on every run. Refs carry the resolved
+  // source id; files with no synced pages row simply don't match the UPDATE
+  // (stampExtracted logs the shortfall).
+  if (!dryRun && opts.mode === 'all' && !isAborted(opts.signal)) {
+    const stampSourceId = opts.sourceId ?? 'default';
+    const refs = walkMarkdownFiles(opts.dir)
+      .map(f => ({ slug: pathToSlug(f.relPath), source_id: stampSourceId }));
+    for (let i = 0; i < refs.length; i += BATCH_SIZE) {
+      await stampExtracted(engine, refs.slice(i, i + BATCH_SIZE));
+    }
   }
 
   return result;
@@ -1675,8 +1705,9 @@ async function extractTimelineFromDB(
         created++;
       } else {
         // v0.32.8 F4: thread source_id so the JOIN matches the right page
-        // when two sources share the same slug.
-        batch.push({ slug, date: entry.date, summary: entry.summary, detail: entry.detail || '', source_id });
+        // when two sources share the same slug. #3957: thread the parsed
+        // source label too — see extractStaleFromDB's twin.
+        batch.push({ slug, date: entry.date, source: entry.source, summary: entry.summary, detail: entry.detail || '', source_id });
         if (batch.length >= BATCH_SIZE) await flush();
       }
     }
@@ -1801,7 +1832,11 @@ export async function extractStaleFromDB(
         });
       }
       for (const entry of parseTimelineEntries(fullContent)) {
-        timelineRows.push({ slug: page.slug, date: entry.date, summary: entry.summary, detail: entry.detail || '', source_id: page.source_id });
+        // #3957: carry the parsed source label — omitting it wrote source=''
+        // while the FS path wrote the split label, so the same bullet
+        // extracted via both paths duplicated under the (page_id, date,
+        // summary, source) dedup index.
+        timelineRows.push({ slug: page.slug, date: entry.date, source: entry.source, summary: entry.summary, detail: entry.detail || '', source_id: page.source_id });
       }
       // EVERY processed page is stamped (incl. zero-link pages). D4 race fix:
       // stamp with the row's READ updated_at, NOT now() — a concurrent edit

@@ -2381,7 +2381,12 @@ export async function registerBuiltinHandlers(
     const dir = typeof job.data.dir === 'string'
       ? job.data.dir
       : (await engine.getConfig('sync.repo_path')) ?? '.';
-    return await runExtractCore(engine, { mode, dir, dryRun: !!job.data.dryRun });
+    // #3957: thread the job's source id into the fs-walk extractors. Without
+    // it the batch rows default to source_id='default' and the pages JOIN
+    // drops every row on a non-'default' brain (silent "created 0"), and the
+    // full-walk watermark stamp targets the wrong source.
+    const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined;
+    return await runExtractCore(engine, { mode, dir, dryRun: !!job.data.dryRun, sourceId });
   });
 
   worker.register('backlinks', async (job) => {

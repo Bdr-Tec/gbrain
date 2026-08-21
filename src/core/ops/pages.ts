@@ -498,11 +498,20 @@ const put_page: Operation = {
           const fullContent = result.parsedPage.compiled_truth + '\n' + result.parsedPage.timeline;
           const entries = parseTimelineEntries(fullContent);
           if (entries.length > 0) {
+            // #3957: thread source_id — the batch JOIN maps a missing
+            // source_id to 'default', so a put_page against a named source
+            // silently dropped every timeline row (or attached them to a
+            // same-slug page in 'default'). Also carry the parsed source
+            // label so the row shape matches the FS/db extract paths and
+            // the (page_id, date, summary, source) dedup collapses
+            // re-extractions of the same bullet.
             const batch = entries.map(e => ({
               slug,
               date: e.date,
+              source: e.source,
               summary: e.summary,
               detail: e.detail || '',
+              ...(ctx.sourceId ? { source_id: ctx.sourceId } : {}),
             }));
             // v0.41.18.0: engine self-retries on Supavisor circuit-breaker
             // recovery. auditSite label routes the audit JSONL emission so

@@ -355,10 +355,12 @@ async function runLinksTimelinePass(
     if (timelineEnabled) {
       for (const entry of parseTimelineEntries(fullContent)) {
         // Same row shape as extractTimelineFromDB's batch push (extract.ts):
-        // no explicit source (engine default applies), detail '' when empty.
+        // #3957 — parsed source label threaded so FS- and DB-extracted rows
+        // share one dedup shape; detail '' when empty.
         tlBatch.push({
           slug,
           date: entry.date,
+          source: entry.source,
           summary: entry.summary,
           detail: entry.detail || '',
           source_id: sourceId,

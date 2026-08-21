@@ -922,7 +922,7 @@ describe('parseTimelineEntries', () => {
   test('parses standard format: - **YYYY-MM-DD** | summary', () => {
     const entries = parseTimelineEntries('- **2026-01-15** | Met with Alice');
     expect(entries.length).toBe(1);
-    expect(entries[0]).toEqual({ date: '2026-01-15', summary: 'Met with Alice', detail: '' });
+    expect(entries[0]).toEqual({ date: '2026-01-15', summary: 'Met with Alice', detail: '', source: 'markdown' });
   });
 
   test('parses dash variant: - **YYYY-MM-DD** -- summary', () => {
@@ -1649,6 +1649,7 @@ Follow-up decision recorded. [Source: memo, 2025-03-20]`);
       date: '2025-03-20',
       summary: 'Follow-up decision recorded.',
       detail: 'Source: memo',
+      source: 'memo', // #3957: citation label carried in the dedup-key column
     });
   });
 
@@ -1662,6 +1663,7 @@ Real claim. [Source: memo, 2025-01-02]`);
       date: '2025-01-02',
       summary: 'Real claim.',
       detail: 'Source: memo',
+      source: 'memo', // #3957
     });
   });
 
