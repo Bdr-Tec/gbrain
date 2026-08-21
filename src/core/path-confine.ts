@@ -155,6 +155,14 @@ export async function realpathOrResolveAsync(p: string): Promise<string> {
   try {
     return await realpathAsync(p);
   } catch {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    // Same fallback as the sync `realpathOrResolve` above (unflagged there
+    // only because semgrep's diff-scoped scan doesn't re-flag pre-existing
+    // lines): `p` is not raw untrusted input here — it's a registered
+    // source's local_path or the CLI's own cwd, and this is the LEXICAL
+    // fallback for a path that already failed to realpath (ENOENT/stale
+    // registration). The security boundary is the caller's realpath-both-
+    // sides prefix/containment check afterward, not this resolve() call.
     return resolvePath(p);
   }
 }
