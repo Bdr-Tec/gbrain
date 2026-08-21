@@ -443,3 +443,111 @@ public class OrderService
     expect(text).toContain('ComputeRefund');
   });
 });
+
+// #3602 — C# nested-chunk emission. Namespace (block + file-scoped) and
+// class are parents; methods, constructors, and properties emit their own
+// chunks with the full parent path. Bodies are `declaration_list`, which
+// the shared BODY_NODE_TYPES set must descend into.
+describe('chunkCodeText — C# nested emission (#3602)', () => {
+  const BLOCK_NS = `using System;
+
+namespace Demo
+{
+    public class OrderService
+    {
+        public OrderService(decimal rate)
+        {
+            Rate = rate;
+        }
+
+        public decimal ComputeRefund(decimal amount)
+        {
+            var validated = Validate(amount);
+            return validated * Rate;
+        }
+
+        public decimal Validate(decimal amount)
+        {
+            if (amount < 0) throw new ArgumentException("negative");
+            return amount;
+        }
+
+        public decimal Rate { get; set; }
+    }
+}
+`;
+
+  test('block namespace: methods emit with [namespace, class] parent path', async () => {
+    const result = await chunkCodeText(BLOCK_NS, 'OrderService.cs');
+    const byName = new Map(result.map(c => [c.metadata.symbolName, c.metadata]));
+    expect(byName.get('ComputeRefund')?.parentSymbolPath).toEqual(['Demo', 'OrderService']);
+    expect(byName.get('Validate')?.parentSymbolPath).toEqual(['Demo', 'OrderService']);
+    // The class scope-header chunk (constructor shares the name, so match on type).
+    const classChunk = result.find(c => c.metadata.symbolName === 'OrderService' && c.metadata.symbolType === 'class');
+    expect(classChunk?.metadata.parentSymbolPath).toEqual(['Demo']);
+  });
+
+  test('block namespace: property + constructor emit as nested chunks', async () => {
+    const result = await chunkCodeText(BLOCK_NS, 'OrderService.cs');
+    const names = result.map(c => c.metadata.symbolName);
+    expect(names).toContain('Rate');
+    const ctor = result.find(c => c.metadata.symbolType.includes('constructor'));
+    expect(ctor).toBeDefined();
+    expect(ctor!.metadata.parentSymbolPath).toEqual(['Demo', 'OrderService']);
+  });
+
+  test('file-scoped namespace: methods emit with full parent path (#3601 interplay)', async () => {
+    const source = `using System;
+namespace Demo;
+
+public class OrderService
+{
+    public decimal ComputeRefund(decimal amount)
+    {
+        var validated = Validate(amount);
+        return validated * 0.9m;
+    }
+
+    public decimal Validate(decimal amount)
+    {
+        if (amount < 0) throw new ArgumentException("negative");
+        return amount;
+    }
+}
+`;
+    const result = await chunkCodeText(source, 'OrderService.cs');
+    const byName = new Map(result.map(c => [c.metadata.symbolName, c.metadata]));
+    expect(byName.get('ComputeRefund')?.parentSymbolPath).toEqual(['Demo', 'OrderService']);
+    expect(byName.get('ComputeRefund')?.symbolNameQualified).toBe('Demo.OrderService.ComputeRefund');
+  });
+});
+
+// #3602 cross-language guard: `declaration_list` joined the shared
+// BODY_NODE_TYPES set. Rust impl/trait bodies are also declaration_list —
+// before this fix, nested emission for `impl` emitted ONLY the scope-header
+// chunk and silently dropped every method chunk. Pin the fixed behavior.
+describe('chunkCodeText — Rust impl methods emit as nested chunks (#3602 regression)', () => {
+  test('impl methods carry parentSymbolPath = [TypeName]', async () => {
+    const doc = 'Documentation line long enough to keep this method above the merge threshold in the chunker output. ';
+    const src = `impl Server {
+    /// ${doc.repeat(3)}
+    pub fn alpha(&self) -> i64 {
+        let a = self.total; let b = self.count; if b == 0 { return 0; }
+        let average = a / b; average + self.beta()
+    }
+
+    /// ${doc.repeat(3)}
+    pub fn beta(&self) -> i64 {
+        let bias = 2; let scale = 3; bias * scale
+    }
+}
+`;
+    const result = await chunkCodeText(src, 's.rs');
+    const byName = new Map(result.map(c => [c.metadata.symbolName, c.metadata]));
+    expect(byName.get('alpha')?.parentSymbolPath).toEqual(['Server']);
+    expect(byName.get('beta')?.parentSymbolPath).toEqual(['Server']);
+    // The impl scope-header chunk still ships.
+    const scope = result.find(c => c.metadata.symbolType === 'impl item');
+    expect(scope).toBeDefined();
+  });
+});
