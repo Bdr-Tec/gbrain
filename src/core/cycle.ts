@@ -896,15 +896,21 @@ export function startCycleLockRefresher(
   let onExternalAbort: (() => void) | undefined;
   const stop = () => {
     clearInterval(timer);
-    if (onExternalAbort) externalSignal?.removeEventListener('abort', onExternalAbort);
+    if (onExternalAbort && typeof externalSignal?.removeEventListener === 'function') {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
   };
   if (externalSignal) {
     if (externalSignal.aborted) {
       stop();
-    } else {
+    } else if (typeof externalSignal.addEventListener === 'function') {
       onExternalAbort = stop;
       externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
+    // Signal-LIKE objects (the minion job's { aborted } shape) carry no
+    // EventTarget surface — the per-tick `externalSignal.aborted` gate above
+    // still stops refreshing within one interval, which is the #4309
+    // guarantee; only the instant-stop listener is skipped.
   }
   return stop;
 }

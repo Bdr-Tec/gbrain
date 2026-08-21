@@ -40,7 +40,7 @@ export function configuredRootImportError(dir: string, configuredRoots: string[]
   if (admitted) return null;
   return (
     `Import root ${target} is not under the configured root for the destination source ` +
-    `(${configuredRoots.map((root) => resolve(root)).join(', ')}). ` +
+    `(${configuredRoots.map((root) => resolve(root)).join(', ')}). ` + // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- error-message hint construction, no fs operation
     `Pass --allow-noncanonical-root to override deliberately.`
   );
 }

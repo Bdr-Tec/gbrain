@@ -70,7 +70,16 @@ export function scanFencedBlocks(
         break;
       }
       // Strip up to the opener's indentation from body lines (CommonMark).
-      bodyLines.push(indent > 0 ? line.replace(new RegExp(`^ {0,${indent}}`), '') : line);
+      if (indent > 0) {
+        // CommonMark: strip up to the opener's indentation. `indent` is a
+        // bounded number (0-3), so a plain count-and-slice replaces the
+        // dynamic RegExp this used to build.
+        let strip = 0;
+        while (strip < indent && strip < line.length && line[strip] === ' ') strip++;
+        bodyLines.push(line.slice(strip));
+      } else {
+        bodyLines.push(line);
+      }
     }
     const text = bodyLines.join('\n');
     if (text.trim()) {

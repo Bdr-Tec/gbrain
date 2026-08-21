@@ -143,7 +143,7 @@ export async function ownsSourceSyncAnchor(
  * `sync.ts:sameRepoDir`'s inner norm — resolve, native realpath, realpath,
  * else the resolved spelling). */
 function normRepoDir(p: string): string {
-  const abs = pathResolve(p);
+  const abs = pathResolve(p); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- this resolve IS the ownership guard (#4369): canonicalizes before same-repo containment comparison
   try {
     return realpathSync.native(abs);
   } catch {
