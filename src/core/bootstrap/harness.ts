@@ -95,6 +95,7 @@ import {
   opencodeConfigDir,
   opencodeGlobalConfigPath,
   type ClaudeHookEvent,
+  claudeConfigDir,
 } from './host-specs.ts';
 import {
   opencodeEntryKind,
@@ -282,7 +283,12 @@ function resolveDeps(deps: HarnessDeps): Required<Omit<HarnessDeps, 'gbrainBin'>
     mint: deps.mint ?? defaultMint,
     revokeById: deps.revokeById ?? defaultRevokeById,
     pgliteLiveServe: deps.pgliteLiveServe ?? defaultPgliteLiveServe,
-    detectClaude: deps.detectClaude ?? (() => whichSafe('claude') !== null),
+    // #4325: config-dir fallback mirrors detectCodex/detectOpencode below —
+    // CI runners and alias-only shells don't expose a `claude` binary on the
+    // probing process's PATH even when Claude Code is configured.
+    detectClaude:
+      deps.detectClaude ??
+      (() => whichSafe('claude') !== null || existsSync(claudeConfigDir())),
     detectCodex:
       deps.detectCodex ??
       (() => whichSafe('codex') !== null || existsSync(deps.codexConfig ?? codexConfigPath())),
@@ -297,7 +303,10 @@ function resolveDeps(deps: HarnessDeps): Required<Omit<HarnessDeps, 'gbrainBin'>
 
 function whichSafe(bin: string): string | null {
   try {
-    return Bun.which(bin);
+    // #4325: pass PATH explicitly — Bun.which's default lookup snapshots the
+    // process-start PATH and ignores runtime process.env.PATH mutations, so
+    // env-remapped test lanes (withEnv) could never sandbox detection.
+    return process.env.PATH ? Bun.which(bin, { PATH: process.env.PATH }) : Bun.which(bin);
   } catch {
     return null;
   }
