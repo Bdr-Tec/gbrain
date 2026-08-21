@@ -52,6 +52,7 @@ export const FILE_PLANE_API_KEYS: readonly string[] = [
   'voyage_api_key',
   'dashscope_api_key',
   'google_api_key',
+  'azure_openai_api_key', // #4031: mergedProviderEnv reads the file plane only
 ];
 
 export function redactConfigValue(key: string, value: string): string {
