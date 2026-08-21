@@ -735,7 +735,7 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     await closeEngine();
     deregisterEngineClose();
     try { unlinkSync(lockPath); } catch { /* already gone */ }
-    process.exit(0);
+    process.exit(sig === 'max_crashes' || sig === 'cycle-failure-cap' ? 1 : 0);
   };
   process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.on('SIGINT',  () => { void shutdown('SIGINT'); });
