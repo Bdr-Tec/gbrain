@@ -9,9 +9,11 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { buildRelationalArm } from '../src/core/search/relational-recall.ts';
+import { buildRelationalArm, ensureRelationalEvidenceSlot } from '../src/core/search/relational-recall.ts';
+import { hybridSearch } from '../src/core/search/hybrid.ts';
+import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 import { probeEmbeddingDim } from './fixtures/retrieval-quality/relational/corpus.ts';
-import type { ChunkInput } from '../src/core/types.ts';
+import type { ChunkInput, SearchResult, HybridSearchMeta } from '../src/core/types.ts';
 
 let eng: PGLiteEngine;
 
@@ -69,4 +71,154 @@ describe('buildRelationalArm', () => {
       eng.relationalFanout = original;
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// #3995 — guaranteed page-1 relational evidence slot
+// ---------------------------------------------------------------------------
+
+function mk(slug: string, score: number, extra: Partial<SearchResult> = {}): SearchResult {
+  return {
+    slug, page_id: 1, title: slug, type: 'note',
+    chunk_text: slug, chunk_source: 'compiled_truth', chunk_id: 1, chunk_index: 0,
+    score, stale: false, source_id: 'default', ...extra,
+  } as SearchResult;
+}
+
+describe('ensureRelationalEvidenceSlot (unit, #3995)', () => {
+  const rel = [mk('people/alice-example', 0, { relational_seed: 'companies/widget-co' })];
+
+  test('no-op when a relational page is already inside the limit window', () => {
+    const pool = [mk('a', 0.9), mk('people/alice-example', 0.8), mk('b', 0.7)];
+    const r = ensureRelationalEvidenceSlot(pool, rel, 2, 0);
+    expect(r.decision).toBeUndefined();
+    expect(r.pool).toBe(pool); // untouched reference on no-op
+  });
+
+  test('fusion overflow: promotes the fused relational row into slot limit-1', () => {
+    const pool = [mk('a', 0.9), mk('b', 0.8), mk('c', 0.7), mk('people/alice-example', 0.1), mk('d', 0.05)];
+    const r = ensureRelationalEvidenceSlot(pool, rel, 3, 0);
+    expect(r.decision).toEqual({ action: 'promoted', slug: 'people/alice-example', source_id: 'default', from_rank: 3 });
+    expect(r.pool.slice(0, 3).map(x => x.slug)).toEqual(['a', 'b', 'people/alice-example']);
+    // promoted row keeps its real fused score; input pool not mutated
+    expect(r.pool[2].score).toBe(0.1);
+    expect(pool[3].slug).toBe('people/alice-example');
+    expect(r.pool.length).toBe(pool.length);
+  });
+
+  test('autocut drop: injects relationalList[0] at slot limit-1 when absent from pool', () => {
+    const pool = [mk('a', 0.9), mk('b', 0.8), mk('c', 0.7)];
+    const r = ensureRelationalEvidenceSlot(pool, rel, 3, 0);
+    expect(r.decision).toEqual({ action: 'injected', slug: 'people/alice-example', source_id: 'default' });
+    expect(r.pool.map(x => x.slug)).toEqual(['a', 'b', 'people/alice-example', 'c']);
+    // injected score-0 row is clamped just below its predecessor (monotone order)
+    expect(r.pool[2].score).toBeLessThanOrEqual(r.pool[1].score);
+    expect(r.pool[2].score).toBeGreaterThan(0);
+  });
+
+  test('injection appends when the pool is shorter than the limit', () => {
+    const pool = [mk('a', 0.9)];
+    const r = ensureRelationalEvidenceSlot(pool, rel, 5, 0);
+    expect(r.decision?.action).toBe('injected');
+    expect(r.pool.map(x => x.slug)).toEqual(['a', 'people/alice-example']);
+  });
+
+  test('offset > 0 is a pure no-op (first page only)', () => {
+    const pool = [mk('a', 0.9), mk('b', 0.8), mk('c', 0.7)];
+    const r = ensureRelationalEvidenceSlot(pool, rel, 2, 2);
+    expect(r.decision).toBeUndefined();
+    expect(r.pool).toBe(pool);
+  });
+
+  test('empty relational arm is a pure no-op', () => {
+    const pool = [mk('a', 0.9)];
+    const r = ensureRelationalEvidenceSlot(pool, [], 2, 0);
+    expect(r.decision).toBeUndefined();
+    expect(r.pool).toBe(pool);
+  });
+
+  test('page-level match counts any chunk of the relational page', () => {
+    // same page surfaced by keyword under a DIFFERENT chunk id → still evidence
+    const pool = [mk('a', 0.9), mk('people/alice-example', 0.8, { chunk_id: 42 })];
+    const r = ensureRelationalEvidenceSlot(pool, rel, 2, 0);
+    expect(r.decision).toBeUndefined();
+  });
+});
+
+describe('hybridSearch guarantees page-1 relational evidence (#3995)', () => {
+  let eng2: PGLiteEngine;
+
+  beforeAll(async () => {
+    eng2 = new PGLiteEngine();
+    await eng2.connect({});
+    await eng2.initSchema();
+    // Deterministic no-embedding-provider install (noEmbed path).
+    configureGateway({ env: {} });
+
+    await eng2.putPage('companies/widget-co', { type: 'company', title: 'Widget Co', compiled_truth: 'A payments company.', timeline: '' });
+    // Relational answer: unverified auto-extracted stub (no compiled-truth
+    // boost) whose body never contains the query tokens — the #3995 shape.
+    await eng2.putPage('people/alice-example', {
+      type: 'person', title: 'Alice Example',
+      compiled_truth: 'Alice is a seed-stage backer based in Lisbon.', timeline: '',
+      frontmatter: { provenance: 'auto-extracted', status: 'unverified' },
+    });
+    await eng2.upsertChunks('people/alice-example', [{
+      chunk_index: 0, chunk_text: 'Alice is a seed-stage backer based in Lisbon.',
+      chunk_source: 'compiled_truth', embedding: null, token_count: 8,
+    }] as ChunkInput[]);
+    await eng2.addLink('people/alice-example', 'companies/widget-co', '', 'invested_in', 'manual');
+
+    // Verified keyword noise that outranks the single-arm relational row.
+    for (let i = 0; i < 12; i++) {
+      const slug = `notes/noise-${i}`;
+      const text = `Fund memo ${i}: somebody invested in widget-co adjacent themes.`;
+      await eng2.putPage(slug, { type: 'note', title: `Noise ${i}`, compiled_truth: text, timeline: '' });
+      await eng2.upsertChunks(slug, [{
+        chunk_index: 0, chunk_text: text, chunk_source: 'compiled_truth', embedding: null, token_count: 12,
+      }] as ChunkInput[]);
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    resetGateway();
+    await eng2.disconnect();
+  });
+
+  test('limit slice would drop the fired arm evidence — slot keeps it on page 1', async () => {
+    let meta: HybridSearchMeta | undefined;
+    const results = await hybridSearch(eng2, 'who invested in widget-co', {
+      limit: 2, relationalRetrieval: true, expansion: false, onMeta: m => { meta = m; },
+    });
+    expect(results.length).toBe(2);
+    expect(results.some(r => r.slug === 'people/alice-example')).toBe(true);
+    expect(meta?.relational_evidence_slot?.action).toBe('promoted');
+    expect(meta?.relational_evidence_slot?.slug).toBe('people/alice-example');
+  }, 60_000);
+
+  test('control: arm off → no slot, evidence page absent (proves non-lexical)', async () => {
+    let meta: HybridSearchMeta | undefined;
+    const results = await hybridSearch(eng2, 'who invested in widget-co', {
+      limit: 2, relationalRetrieval: false, expansion: false, onMeta: m => { meta = m; },
+    });
+    expect(results.some(r => r.slug === 'people/alice-example')).toBe(false);
+    expect(meta?.relational_evidence_slot).toBeUndefined();
+  }, 60_000);
+
+  test('offset page: slot does not repeat the evidence row', async () => {
+    let meta: HybridSearchMeta | undefined;
+    await hybridSearch(eng2, 'who invested in widget-co', {
+      limit: 2, offset: 2, relationalRetrieval: true, expansion: false, onMeta: m => { meta = m; },
+    });
+    expect(meta?.relational_evidence_slot).toBeUndefined();
+  }, 60_000);
+
+  test('evidence already on page 1 → clean run, no slot stamp', async () => {
+    let meta: HybridSearchMeta | undefined;
+    const results = await hybridSearch(eng2, 'who invested in widget-co', {
+      limit: 20, relationalRetrieval: true, expansion: false, onMeta: m => { meta = m; },
+    });
+    expect(results.some(r => r.slug === 'people/alice-example')).toBe(true);
+    expect(meta?.relational_evidence_slot).toBeUndefined();
+  }, 60_000);
 });

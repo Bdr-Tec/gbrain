@@ -31,7 +31,11 @@ import {
   type AdaptiveReturnDecision,
 } from './return-policy.ts';
 import { applyAutocut, type AutocutDecision } from './autocut.ts';
-import { buildRelationalArm } from './relational-recall.ts';
+import {
+  buildRelationalArm,
+  ensureRelationalEvidenceSlot,
+  type RelationalEvidenceSlotDecision,
+} from './relational-recall.ts';
 import { loadConfigWithEngine } from '../config.ts';
 import { dedupResults } from './dedup.ts';
 import { applyReranker } from './rerank.ts';
@@ -1460,7 +1464,18 @@ export async function hybridSearch(
       sourceIds: opts?.sourceIds,
     });
     stampEvidence(noEmbedHopped, { cosineFloor: resolvedMode.evidence_cosine_floor });
-    const noEmbedSliced = noEmbedHopped.slice(offset, offset + limit);
+    // #3995 — guaranteed page-1 relational evidence: a fired arm's answer is
+    // often lexically unrecoverable, so its single-arm fused row can land
+    // beyond the limit slice on keyword-heavy corpora. Promote/inject before
+    // slicing (first page only; pure no-op when the arm didn't fire).
+    let noEmbedPool = noEmbedHopped;
+    let noEmbedRelSlot: RelationalEvidenceSlotDecision | undefined;
+    if (relationalList.length > 0) {
+      const r = ensureRelationalEvidenceSlot(noEmbedHopped, relationalList, limit, offset);
+      noEmbedPool = r.pool;
+      noEmbedRelSlot = r.decision;
+    }
+    const noEmbedSliced = noEmbedPool.slice(offset, offset + limit);
     // v0.32.3 search-lite: budget enforcement on the no-embedding-provider path.
     const { results: noEmbedBudgeted, meta: noEmbedBudgetMeta } = enforceTokenBudget(noEmbedSliced, resolvedMode.tokenBudget);
     await stampContentFlags(engine, noEmbedBudgeted);
@@ -1486,6 +1501,7 @@ export async function hybridSearch(
       ...(resolvedMode.tokenBudget && resolvedMode.tokenBudget > 0
         ? { token_budget: noEmbedBudgetMeta }
         : {}),
+      ...(noEmbedRelSlot ? { relational_evidence_slot: noEmbedRelSlot } : {}),
     });
     return noEmbedBudgeted;
   }
@@ -2070,6 +2086,20 @@ export async function hybridSearch(
     autocutDecision = r.decision;
   }
 
+  // #3995 — guaranteed page-1 relational evidence. A fired arm's answer is
+  // often lexically unrecoverable (unverified entity stub, single-arm RRF
+  // score), so its fused row can land beyond the limit slice on multi-arm
+  // corpora, and autocut's preserve predicate only covers alias hits — the
+  // relational row (no rerank_score) is exactly what a cut drops. Promote the
+  // fused row into the page-1 window, or re-inject the arm's top candidate
+  // when it was dropped entirely. First page only; pure no-op otherwise.
+  let relationalSlotDecision: RelationalEvidenceSlotDecision | undefined;
+  if (relationalList.length > 0 && effectiveModality !== 'image') {
+    const r = ensureRelationalEvidenceSlot(returnPool, relationalList, limit, offset);
+    returnPool = r.pool;
+    relationalSlotDecision = r.decision;
+  }
+
   const sliced = returnPool.slice(offset, offset + limit);
   // v0.32.3 search-lite: budget enforcement at the main return path.
   // hybridSearchCached used to be the only place this fired; now bare
@@ -2095,6 +2125,7 @@ export async function hybridSearch(
     ...(vectorPoolUnderfill ? { vector_pool_underfilled: vectorPoolUnderfill } : {}),
     ...(adaptiveDecision ? { adaptive_return: adaptiveDecision } : {}),
     ...(autocutDecision ? { autocut: autocutDecision } : {}),
+    ...(relationalSlotDecision ? { relational_evidence_slot: relationalSlotDecision } : {}),
   });
   return budgeted;
 }

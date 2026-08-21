@@ -147,6 +147,83 @@ async function hydrate(
 }
 
 /**
+ * #3995 — decision stamp for the guaranteed page-1 relational evidence slot.
+ * Surfaced through HybridSearchMeta.relational_evidence_slot so `--explain`
+ * consumers can audit why a low-fused-score row appears on the first page.
+ */
+export interface RelationalEvidenceSlotDecision {
+  action: 'promoted' | 'injected';
+  slug: string;
+  source_id: string;
+  /** promoted only: the 0-based fused rank the row was lifted from. */
+  from_rank?: number;
+}
+
+/**
+ * #3995 — guarantee page-1 evidence for a FIRED relational arm.
+ *
+ * A relational answer is often lexically unrecoverable (unverified entity
+ * stub, single-arm RRF score), so the fused row can land beyond the `limit`
+ * slice (fusion overflow) or be dropped entirely by autocut (which only
+ * preserves alias hits). When the arm fired, at least one of its pages must
+ * survive to the first page or the feature silently no-ops.
+ *
+ * Pure (returns a new array; never mutates inputs). Page-level check on
+ * `(source_id, slug)`:
+ *   - some relational page already in the top-`limit` window → no-op;
+ *   - best-ranked fused relational row sits beyond the window → PROMOTE it
+ *     into slot `limit-1` (keeps its real fused score);
+ *   - no relational page in the pool at all (autocut/trim dropped it) →
+ *     INJECT `relationalList[0]` at slot `limit-1` (score clamped just below
+ *     its new predecessor so ordering stays monotone).
+ *
+ * First page only: `offset > 0` is a pure no-op (paginating a guaranteed
+ * slot is incoherent — the row would repeat on every page).
+ */
+export function ensureRelationalEvidenceSlot(
+  pool: SearchResult[],
+  relationalList: SearchResult[],
+  limit: number,
+  offset: number,
+): { pool: SearchResult[]; decision?: RelationalEvidenceSlotDecision } {
+  if (offset > 0 || limit <= 0 || relationalList.length === 0) return { pool };
+  const pageKey = (r: SearchResult) => `${r.source_id ?? 'default'}:${r.slug}`;
+  const relKeys = new Set(relationalList.map(pageKey));
+
+  const window = Math.min(limit, pool.length);
+  for (let i = 0; i < window; i++) {
+    if (relKeys.has(pageKey(pool[i]))) return { pool }; // evidence already on page 1
+  }
+
+  // Fusion overflow: the arm's best fused row survived ranking but sits past
+  // the slice boundary — promote it into the last page-1 slot.
+  for (let i = limit; i < pool.length; i++) {
+    if (!relKeys.has(pageKey(pool[i]))) continue;
+    const out = pool.slice();
+    const [row] = out.splice(i, 1);
+    out.splice(limit - 1, 0, row);
+    return {
+      pool: out,
+      decision: { action: 'promoted', slug: row.slug, source_id: row.source_id ?? 'default', from_rank: i },
+    };
+  }
+
+  // Dropped entirely (autocut / trim): re-inject the arm's top candidate.
+  const out = pool.slice();
+  const insertAt = Math.min(limit - 1, out.length);
+  const prev = insertAt > 0 ? out[insertAt - 1] : undefined;
+  const top = relationalList[0];
+  const row = prev && !(top.score > 0)
+    ? { ...top, score: Math.max(0, prev.score * 0.999) }
+    : top;
+  out.splice(insertAt, 0, row);
+  return {
+    pool: out,
+    decision: { action: 'injected', slug: row.slug, source_id: row.source_id ?? 'default' },
+  };
+}
+
+/**
  * Build the relational recall arm. Returns an empty list (pure no-op) when the
  * query isn't relational or no seed resolves. Never throws.
  */

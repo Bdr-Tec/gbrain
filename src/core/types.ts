@@ -1800,6 +1800,14 @@ export interface HybridSearchMeta {
    */
   autocut?: import('./search/autocut.ts').AutocutDecision;
   /**
+   * #3995 — guaranteed page-1 relational evidence slot. Present only when a
+   * fired relational arm's answer had to be promoted from beyond the limit
+   * window (fusion overflow) or re-injected after autocut/trim dropped it.
+   * Omitted on clean runs (evidence already on page 1) and when the arm
+   * didn't fire. Surfaced for `gbrain search --explain`.
+   */
+  relational_evidence_slot?: import('./search/relational-recall.ts').RelationalEvidenceSlotDecision;
+  /**
    * v0.32.x (search-lite): token budget enforcement metadata. Omitted when
    * no budget was applied (backward-compatible with pre-search-lite
    * consumers).
