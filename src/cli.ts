@@ -388,6 +388,20 @@ async function main() {
   const { cliOpts, rest: args } = parseGlobalFlags(rawArgs);
   setCliOptions(cliOpts);
 
+  // #3688: operator-configured guardrail providers load before ANY command
+  // dispatch. Fail-closed by design: when GBRAIN_GUARDRAILS_MODULE is set but
+  // broken, abort rather than silently run without the operator's firewall.
+  // (Unset → zero cost, the OSS distribution stays inert.)
+  if (process.env.GBRAIN_GUARDRAILS_MODULE) {
+    try {
+      const { loadGuardrailProvidersFromEnv } = await import('./core/guardrails.ts');
+      await loadGuardrailProvidersFromEnv();
+    } catch (err) {
+      console.error(`guardrails: ${(err as Error)?.message ?? String(err)}`);
+      process.exit(1);
+    }
+  }
+
   let command = args[0];
 
   if (!command || command === '--help' || command === '-h') {
