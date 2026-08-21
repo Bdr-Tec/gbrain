@@ -46,6 +46,7 @@ import { normalizeModelId } from '../model-id.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { GBrainError } from '../types.ts';
+import { isConfigTruthy } from '../config.ts';
 import type { OperationContext } from '../operations.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { PhaseStatus, CyclePhase } from '../cycle.ts';
@@ -160,6 +161,12 @@ export interface ProposeTakesOpts extends BasePhaseOpts {
   skipPagesWithFence?: boolean;
   /** Override the phase wall-clock deadline (tests). Default: 30 min. */
   deadlineMs?: number;
+  /**
+   * #4102 — `gbrain dream --phase propose_takes --once` bypasses the
+   * `cycle.propose_takes.enabled` off switch for THIS call only (mirrors the
+   * conversation_facts_backfill `once` semantics; never reads/writes config).
+   */
+  once?: boolean;
 }
 
 export interface ProposeTakesResult {
@@ -496,6 +503,37 @@ class ProposeTakesPhase extends BaseCyclePhase {
     _ctx: OperationContext,
     opts: ProposeTakesOpts,
   ): Promise<{ summary: string; details: Record<string, unknown>; status?: PhaseStatus }> {
+    // #4102 — off switch. The phase is ON by default (it ships in the default
+    // phase list), but `gbrain config set cycle.propose_takes.enabled false`
+    // must actually stop the LLM spend. Only an EXPLICIT falsy value skips
+    // (unset = default on, fail-open on read errors so a config-plane blip
+    // never silently disables the phase); `--once` bypasses for one run.
+    if (!opts.once) {
+      let enabledRaw: string | null = null;
+      try {
+        enabledRaw = await engine.getConfig?.('cycle.propose_takes.enabled') ?? null;
+      } catch {
+        enabledRaw = null;
+      }
+      if (enabledRaw != null && !isConfigTruthy(enabledRaw)) {
+        return {
+          summary: 'propose_takes skipped: cycle.propose_takes.enabled=false',
+          details: {
+            reason: 'disabled',
+            enable_hint: 'gbrain config set cycle.propose_takes.enabled true',
+            pages_scanned: 0,
+            cache_hits: 0,
+            cache_misses: 0,
+            proposals_inserted: 0,
+            tombstones_written: 0,
+            budget_exhausted: false,
+            warnings: [],
+          },
+          status: 'skipped',
+        };
+      }
+    }
+
     const extractor = opts.extractor ?? defaultExtractor;
     const promptVersion = opts.promptVersion ?? PROPOSE_TAKES_PROMPT_VERSION;
     const pageLimit = opts.pageLimit ?? 100;
