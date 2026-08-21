@@ -9,7 +9,12 @@ import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION }
 import { findChunkForOffset } from './chunkers/edge-extractor.ts';
 import { planEmbeddingReuse } from './embed-reuse.ts';
 import { extractCodeRefs, imageOfCandidates } from './link-extraction.ts';
-import { embedBatch, embedMultimodal, currentEmbeddingSignature } from './embedding.ts';
+import { embedMultimodal, currentEmbeddingSignature } from './embedding.ts';
+// #3374 — import-path embeds ride the shared retry loop (429 retry-after +
+// transient network backoff) instead of bare embedBatch, so one socket blip
+// mid-sync no longer aborts the whole file import. Same core→commands edge
+// precedent as embed-stale.ts.
+import { embedBatchWithBackoff } from '../commands/embed.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath, hasMalformedPathSegment } from './sync.ts';
 import type { ChunkInput, PageInput, PageType } from './types.ts';
 import { computeEffectiveDate } from './effective-date.ts';
@@ -819,7 +824,7 @@ export async function importFromContent(
     const wrappedTexts = prefix
       ? chunks.map((c) => wrapChunkForEmbedding(c.chunk_text, prefix, c.chunk_source))
       : chunks.map((c) => c.chunk_text);
-    const embeddings = await embedBatch(wrappedTexts);
+    const embeddings = await embedBatchWithBackoff(wrappedTexts);
     for (let i = 0; i < chunks.length; i++) {
       chunks[i].embedding = embeddings[i];
       // token_count tracks the wrapped string length so cost reporting
@@ -1413,7 +1418,7 @@ export async function importCodeFile(
   if (!opts.noEmbed && needsEmbedIndexes.length > 0) {
     try {
       const textsToEmbed = needsEmbedIndexes.map((i) => chunks[i]!.chunk_text);
-      const embeddings = await embedBatch(textsToEmbed);
+      const embeddings = await embedBatchWithBackoff(textsToEmbed);
       for (let j = 0; j < needsEmbedIndexes.length; j++) {
         const i = needsEmbedIndexes[j]!;
         chunks[i]!.embedding = embeddings[j]!;
@@ -1761,6 +1766,7 @@ async function readExifSafe(buf: Buffer): Promise<Record<string, unknown>> {
  * - the embedding_image_ocr config flag is off (default)
  * - the configured expansion model is unavailable (no API key)
  * - the OCR call itself fails (logged once per session)
+ * - the per-run OCR budget is exhausted (#3973 — see _ocrRunBudget below)
  *
  * Eng-1B: per-call result is reflected in counters the doctor `ocr_health`
  * check reads. Counter writes are best-effort; never fail the import.
@@ -1769,6 +1775,59 @@ async function readExifSafe(buf: Buffer): Promise<Record<string, unknown>> {
  * embedded in the image (mitigation for the OCR-as-prompt-injection vector).
  */
 let _ocrWarnedThisSession = false;
+
+// #3973: per-run OCR ceiling. A bulk import over a large image corpus with
+// OCR opted-in is an unbounded per-image LLM spend; cap it per process run.
+// Config keys (both finite by default; <= 0 disables that cap):
+//   embedding_image_ocr_max_images — max OCR calls per run (default 200)
+//   embedding_image_ocr_max_usd    — estimated-USD ceiling per run (default 1.0,
+//     estimated at OCR_EST_USD_PER_IMAGE per call — a documented constant,
+//     not a billing read; actual spend lands on the budget tracker (#4121)).
+// Over-cap: skip OCR (import continues with filename-only chunk text), warn
+// once, bump the persistent `ocr_skipped_budget` counter that doctor's
+// ocr_health check surfaces.
+const OCR_EST_USD_PER_IMAGE = 0.002;
+const OCR_MAX_IMAGES_DEFAULT = 200;
+const OCR_MAX_USD_DEFAULT = 1.0;
+const _ocrRunBudget = { images: 0, estUsd: 0, warned: false };
+
+/** Test seam: reset (and optionally preset) the per-run OCR budget state. */
+export function _resetOcrRunBudgetForTests(preset?: { images?: number; estUsd?: number }): void {
+  _ocrRunBudget.images = preset?.images ?? 0;
+  _ocrRunBudget.estUsd = preset?.estUsd ?? 0;
+  _ocrRunBudget.warned = false;
+}
+
+/** Test seam: read the per-run OCR budget state. */
+export function _getOcrRunBudgetForTests(): { images: number; estUsd: number; warned: boolean } {
+  return { ..._ocrRunBudget };
+}
+
+/** Returns a human reason when this run's OCR cap is exhausted, else null. */
+async function ocrBudgetExceeded(engine: BrainEngine): Promise<string | null> {
+  let maxImages = OCR_MAX_IMAGES_DEFAULT;
+  let maxUsd = OCR_MAX_USD_DEFAULT;
+  try {
+    const rawImages = await engine.getConfig('embedding_image_ocr_max_images');
+    if (rawImages != null && rawImages !== '') {
+      const n = Number(rawImages);
+      if (Number.isFinite(n)) maxImages = n;
+    }
+    const rawUsd = await engine.getConfig('embedding_image_ocr_max_usd');
+    if (rawUsd != null && rawUsd !== '') {
+      const n = Number(rawUsd);
+      if (Number.isFinite(n)) maxUsd = n;
+    }
+  } catch { /* config unavailable → finite defaults still apply */ }
+  if (maxImages > 0 && _ocrRunBudget.images >= maxImages) {
+    return `per-run image cap reached (${_ocrRunBudget.images}/${maxImages}; raise embedding_image_ocr_max_images to OCR more)`;
+  }
+  if (maxUsd > 0 && _ocrRunBudget.estUsd >= maxUsd) {
+    return `per-run estimated-USD cap reached (~$${_ocrRunBudget.estUsd.toFixed(3)} of $${maxUsd}; raise embedding_image_ocr_max_usd to OCR more)`;
+  }
+  return null;
+}
+
 async function maybeOcr(
   engine: BrainEngine,
   imgBuf: Buffer,
@@ -1776,6 +1835,23 @@ async function maybeOcr(
 ): Promise<string> {
   const opt = process.env.GBRAIN_EMBEDDING_IMAGE_OCR;
   if (opt !== 'true') return '';
+  return maybeOcrGated(engine, imgBuf, mime);
+}
+
+/** #3973: body of maybeOcr past the opt-in check; exported for budget tests. */
+export async function _maybeOcrGatedForTests(
+  engine: BrainEngine,
+  imgBuf: Buffer,
+  mime: string,
+): Promise<string> {
+  return maybeOcrGated(engine, imgBuf, mime);
+}
+
+async function maybeOcrGated(
+  engine: BrainEngine,
+  imgBuf: Buffer,
+  mime: string,
+): Promise<string> {
 
   // Counter helpers — quiet failure if config table is unavailable.
   async function bump(key: string) {
@@ -1784,6 +1860,20 @@ async function maybeOcr(
       await engine.setConfig(key, String((Number.isFinite(cur) ? cur : 0) + 1));
     } catch { /* non-fatal */ }
   }
+
+  // #3973: budget gate fires BEFORE the attempt counter — a budget skip is
+  // not an attempt, and the skip has its own counter for doctor ocr_health.
+  const overBudget = await ocrBudgetExceeded(engine);
+  if (overBudget) {
+    if (!_ocrRunBudget.warned) {
+      console.warn(`[gbrain] OCR skipped for the rest of this run: ${overBudget}`);
+      _ocrRunBudget.warned = true;
+    }
+    await bump('ocr_skipped_budget');
+    return '';
+  }
+  _ocrRunBudget.images += 1;
+  _ocrRunBudget.estUsd += OCR_EST_USD_PER_IMAGE;
 
   await bump('ocr_attempted');
   try {
