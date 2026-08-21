@@ -1942,12 +1942,18 @@ export async function embedBatchWithBackoff(
       return await embedBatch(texts, { maxRetries: 0, ...(signal && { abortSignal: signal }) });
     } catch (e: unknown) {
       // If the budget fired we may have been aborted mid-fetch; bubble out.
+      // This check is what keeps caller-initiated aborts out of BOTH retry
+      // branches below (#3374) — an abort is never reclassified as transient.
       if (signal?.aborted) throw e;
       const msg = e instanceof Error ? e.message : String(e);
-      if (!isEmbedRetriableError(e) || attempt === MAX_RATE_LIMIT_RETRIES) throw e;
+      const rateLimitish = isEmbedRetriableError(e);
+      // #3374 — transient NETWORK blips (socket timeout / conn reset) get a
+      // plain bounded backoff beside the 429/gateway retry-after path.
+      const netTransient = !rateLimitish && isTransientNetworkEmbedError(e);
+      if ((!rateLimitish && !netTransient) || attempt === MAX_RATE_LIMIT_RETRIES) throw e;
 
-      const delayMs = parseRetryDelayMs(msg);
-      // One label for every retriable class — 429 and gateway blips share the loop.
+      const delayMs = rateLimitish ? parseRetryDelayMs(msg) : transientBackoffMs(attempt);
+      // One label for every retriable class — 429, gateway and network blips share the loop.
       serr(`  [embed-retry] attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}, waiting ${delayMs}ms...`);
       await abortableSleep(delayMs, signal);
     }
@@ -1971,6 +1977,47 @@ function isEmbedRetriableError(e: unknown): boolean {
     /rate.?limit|429/i.test(msg) ||
     /bad gateway|502|503|504|service unavailable|gateway timeout/i.test(msg)
   );
+}
+
+/** #3374 — plain bounded backoff knobs for transient network errors. */
+export const TRANSIENT_NET_BASE_MS = 1_000;
+export const TRANSIENT_NET_MAX_MS = 15_000;
+
+/**
+ * #3374 — plain bounded exponential backoff for transient network errors.
+ * There is no retry-after header to parse on a conn-reset, and the 429
+ * fallback (60s) is wildly oversized for a socket blip: base × 2^attempt,
+ * capped, with the same ±30% jitter as the rate-limit path.
+ *
+ * @internal exported for unit tests.
+ */
+export function transientBackoffMs(attempt: number, rng: () => number = Math.random): number {
+  const raw = Math.min(TRANSIENT_NET_BASE_MS * 2 ** attempt, TRANSIENT_NET_MAX_MS);
+  const jitterFactor = 1 + (rng() * 2 - 1) * RATE_LIMIT_JITTER;
+  return Math.max(1, Math.floor(raw * jitterFactor));
+}
+
+/**
+ * #3374 — transient NETWORK failures: socket timeouts, connection resets,
+ * DNS blips. Structured detection first (error `code` / TimeoutError name
+ * through the cause chain, matching statusFromCause's walk), message-match
+ * fallback for wrappers that strip the code. Deliberately does NOT match
+ * caller-initiated aborts: the retry loop re-checks `signal.aborted` BEFORE
+ * classification, and nothing abort-shaped appears in these patterns.
+ *
+ * @internal exported for unit tests.
+ */
+export function isTransientNetworkEmbedError(e: unknown): boolean {
+  const TRANSIENT_CODES = /^(ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|EPIPE|ECONNABORTED|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|UND_ERR_SOCKET)$/;
+  let cur: unknown = e;
+  for (let depth = 0; depth < 5 && cur !== undefined && cur !== null; depth++) {
+    const obj = cur as { code?: unknown; name?: unknown; cause?: unknown };
+    if (typeof obj.code === 'string' && TRANSIENT_CODES.test(obj.code)) return true;
+    if (obj.name === 'TimeoutError') return true;
+    cur = obj.cause;
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  return /\b(ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|EPIPE|EAI_AGAIN)\b|socket hang up|fetch failed|connect(ion)? timeout|connection (reset|closed)|network (error|timeout)|request timed out|timed out/i.test(msg);
 }
 
 /** Walk the cause chain (like detect429FromCause) for the first HTTP status. */
@@ -2021,7 +2068,9 @@ async function embedPageTexts(
   } catch (e: unknown) {
     if (opts.abortSignal?.aborted) throw e; // shutdown, not a chunk problem
     if (texts.length <= 1) throw e; // nothing to isolate
-    if (isEmbedRetriableError(e) || e instanceof AITransientError) throw e;
+    // #3374 — network-transient exhaustion isn't chunk-specific either:
+    // fanning out during an outage multiplies failing calls per page.
+    if (isEmbedRetriableError(e) || isTransientNetworkEmbedError(e) || e instanceof AITransientError) throw e;
     const status = statusFromCause(e);
     if (status === 401 || status === 403) throw e;
 

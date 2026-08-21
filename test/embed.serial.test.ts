@@ -37,6 +37,10 @@ mock.module('../src/core/embedding.ts', () => ({
   // setPageEmbeddingSignature / invalidateStaleSignatureEmbeddings resolve to
   // null via the Proxy default, so the signature value is inert here.
   currentEmbeddingSignature: () => 'test:model:1536',
+  // #3374: import-file.ts (imported by the routing test below) also pulls
+  // embedMultimodal from this module; the mock must export it or the import
+  // itself throws. Inert — no test here exercises the multimodal path.
+  embedMultimodal: async (inputs: unknown[]) => inputs.map(() => new Float32Array(512)),
 }));
 
 // Import AFTER mocking.
@@ -744,6 +748,123 @@ describe('embedBatchWithBackoff (D2/D4/D4a/D8)', () => {
     expect(lastEmbedBatchOpts).toBeDefined();
     expect((lastEmbedBatchOpts as { maxRetries?: number }).maxRetries).toBe(0);
   });
+});
+
+// ────────────────────────────────────────────────────────────────
+// #3374: transient network retry branch (timeout / conn-reset)
+// beside the 429 path, plain bounded backoff, never caller aborts.
+// ────────────────────────────────────────────────────────────────
+
+describe('#3374 — transient network retry branch', () => {
+  test('classifier: structured codes, TimeoutError name, message fallback', async () => {
+    const { isTransientNetworkEmbedError } = await import('../src/commands/embed.ts');
+    // Structured code on the error itself and through the cause chain.
+    const reset = new Error('request failed');
+    (reset as any).code = 'ECONNRESET';
+    expect(isTransientNetworkEmbedError(reset)).toBe(true);
+    expect(isTransientNetworkEmbedError({ cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } })).toBe(true);
+    expect(isTransientNetworkEmbedError({ cause: { cause: { code: 'ETIMEDOUT' } } })).toBe(true);
+    expect(isTransientNetworkEmbedError({ name: 'TimeoutError' })).toBe(true);
+    // Message fallback for wrappers that strip the code.
+    expect(isTransientNetworkEmbedError(new Error('socket hang up'))).toBe(true);
+    expect(isTransientNetworkEmbedError(new Error('fetch failed'))).toBe(true);
+    expect(isTransientNetworkEmbedError(new Error('request timed out'))).toBe(true);
+    // NOT transient: plain 500, permanent 4xx, caller aborts.
+    expect(isTransientNetworkEmbedError(new Error('500 internal server error'))).toBe(false);
+    expect(isTransientNetworkEmbedError(new Error('400 invalid input'))).toBe(false);
+    expect(isTransientNetworkEmbedError(new Error('The operation was aborted.'))).toBe(false);
+    expect(isTransientNetworkEmbedError(new Error('embed budget aborted'))).toBe(false);
+  });
+
+  test('backoff: plain bounded exponential with jitter, capped', async () => {
+    const { transientBackoffMs, TRANSIENT_NET_BASE_MS, TRANSIENT_NET_MAX_MS, RATE_LIMIT_JITTER } =
+      await import('../src/commands/embed.ts');
+    const mid = () => 0.5; // jitter multiplier = 1.0
+    expect(transientBackoffMs(0, mid)).toBe(TRANSIENT_NET_BASE_MS);
+    expect(transientBackoffMs(1, mid)).toBe(TRANSIENT_NET_BASE_MS * 2);
+    expect(transientBackoffMs(2, mid)).toBe(TRANSIENT_NET_BASE_MS * 4);
+    // Cap: attempt 10 would be 1024s uncapped.
+    expect(transientBackoffMs(10, mid)).toBe(TRANSIENT_NET_MAX_MS);
+    // Jitter bounds at the cap.
+    expect(transientBackoffMs(10, () => 0)).toBe(Math.floor(TRANSIENT_NET_MAX_MS * (1 - RATE_LIMIT_JITTER)));
+    expect(transientBackoffMs(10, () => 1)).toBe(Math.floor(TRANSIENT_NET_MAX_MS * (1 + RATE_LIMIT_JITTER)));
+  });
+
+  test('conn-reset retries then succeeds (no retry-after to parse)', async () => {
+    const { embedBatchWithBackoff } = await import('../src/commands/embed.ts');
+    let calls = 0;
+    embedBatchBehavior = async () => {
+      calls++;
+      if (calls === 1) {
+        const err = new Error('socket hang up');
+        (err as any).code = 'ECONNRESET';
+        throw err;
+      }
+      return [new Float32Array(1536)];
+    };
+    const result = await embedBatchWithBackoff(['x']);
+    expect(calls).toBe(2);
+    expect(result).toHaveLength(1);
+  }, 10_000);
+
+  test('caller-initiated abort during the transient sleep bubbles out (never retried)', async () => {
+    const { embedBatchWithBackoff } = await import('../src/commands/embed.ts');
+    const controller = new AbortController();
+    let calls = 0;
+    embedBatchBehavior = async () => {
+      calls++;
+      const err = new Error('connect timeout');
+      (err as any).code = 'UND_ERR_CONNECT_TIMEOUT';
+      throw err;
+    };
+    setTimeout(() => controller.abort(), 50);
+    const t0 = Date.now();
+    await expect(embedBatchWithBackoff(['x'], { abortSignal: controller.signal })).rejects.toThrow();
+    // One attempt, abort wakes the ~1s backoff sleep early, loop exits.
+    expect(calls).toBe(1);
+    expect(Date.now() - t0).toBeLessThan(600);
+  });
+
+  test('import-file path (#3374): a one-off conn reset no longer aborts the import', async () => {
+    const { importFromContent } = await import('../src/core/import-file.ts');
+    let calls = 0;
+    embedBatchBehavior = async (texts) => {
+      calls++;
+      if (calls === 1) {
+        const err = new Error('read ECONNRESET');
+        (err as any).code = 'ECONNRESET';
+        throw err;
+      }
+      return texts.map(() => new Float32Array(1536));
+    };
+    // Minimal working-DB mock: tx.putPage lands in a store the read-back
+    // guard can see; everything else resolves null via the Proxy default.
+    const pageStore = new Map<string, any>();
+    const tx = new Proxy({} as any, {
+      get(_, prop: string) {
+        if (prop === 'putPage') {
+          return async (slug: string, page: any) => { pageStore.set(slug, page); };
+        }
+        return () => Promise.resolve(null);
+      },
+    });
+    const engine = mockEngine({
+      getPage: async (slug: string) =>
+        pageStore.has(slug) ? { slug, ...pageStore.get(slug) } : null,
+      transaction: async (cb: (t: unknown) => Promise<unknown>) => cb(tx),
+    });
+    const res = await importFromContent(
+      engine,
+      'notes/transient-net-test',
+      '# Transient\n\nSome body text long enough to produce a chunk for embedding.',
+      {},
+    );
+    // Pre-fix: bare embedBatch → the first ECONNRESET propagated and the
+    // import aborted. Post-fix: one retry, then the page lands.
+    expect(calls).toBe(2);
+    expect(pageStore.has('notes/transient-net-test')).toBe(true);
+    expect(res).toBeDefined();
+  }, 10_000);
 });
 
 // ────────────────────────────────────────────────────────────────
