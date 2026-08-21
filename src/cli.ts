@@ -2620,14 +2620,14 @@ async function handleCliOnly(command: string, args: string[]) {
 
   // Autopilot status + uninstall are filesystem-only verdicts and MUST stay
   // engine-free: a running PGLite daemon holds the exclusive DB lock, so an
-  // engine-bound status would fail to connect in exactly the scenarios the
-  // exit-code contract exists to diagnose (live daemon, DB outage). Order
-  // mirrors runAutopilot's own flag precedence (uninstall before status).
-  if (command === 'autopilot' && (args.includes('--uninstall') || args.includes('--status'))) {
-    const { runAutopilotStatus, uninstallDaemon } = await import('./commands/autopilot.ts');
-    if (args.includes('--uninstall')) uninstallDaemon();
-    else runAutopilotStatus(args);
-    return;
+  // engine-bound status would fail to connect exactly when the exit-code
+  // contract matters (live daemon, DB outage). #1525: positional spellings
+  // resolve to flags (or exit 2 on an unknown word) BEFORE connectEngine.
+  if (command === 'autopilot') {
+    const { resolveAutopilotPositionals, runAutopilotStatus, uninstallDaemon } = await import('./commands/autopilot.ts');
+    args = resolveAutopilotPositionals(args);
+    if (args.includes('--uninstall')) { uninstallDaemon(); return; }
+    if (args.includes('--status')) { runAutopilotStatus(args); return; }
   }
 
   // Thin-client `think` dispatch: runThinkCli already routes through
