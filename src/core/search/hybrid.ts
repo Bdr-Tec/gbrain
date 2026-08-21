@@ -2310,6 +2310,13 @@ export async function hybridSearchCached(
     // bare hybridSearch does (opts.detail ?? autoDetectDetail(query)) so an
     // auto-detected `high` query keys like an explicit `high` one.
     detail: opts?.detail ?? autoDetectDetail(query),
+    // #4352 follow-up — fold the private-visibility posture into the key
+    // (xp=, v=23) for BOTH the lookup and the write below (they share this
+    // one hash), instead of the original wholesale skipCache bypass. A
+    // remote-default (excludePrivate=true) caller now caches normally, on
+    // rows that can never be served to (or written by) a trusted
+    // private-included call.
+    excludePrivate: opts?.excludePrivate === true,
   });
 
   // Cache decision: opts.useCache (explicit) wins over global config; global
@@ -2356,11 +2363,12 @@ export async function hybridSearchCached(
   // gated on cacheStatus === 'miss' below, so 'disabled' covers both) for
   // offset>0 requests; offset===0 semantics are unchanged.
   const pagedRequest = (opts?.offset ?? 0) > 0;
-  // #4352 — excludePrivate is NOT part of knobsHash, so a private-included
-  // (trusted) result set could be served to an untrusted lookup, or a
-  // private-excluded set could hide pages from a trusted one. Skip the cache
-  // for enforcement-on requests (same posture as adaptiveReturn above).
-  const privateFiltered = opts?.excludePrivate === true;
+  // #4352 follow-up — excludePrivate no longer skips the cache: the posture
+  // is folded into knobsHash (xp=, v=23), so a private-included (trusted)
+  // write can never serve a private-excluding lookup and vice versa. The
+  // original wholesale skip disabled the semantic cache for every remote MCP
+  // caller (excludePrivate=true is their default) — exactly the
+  // highest-volume beneficiaries of the ~50% cache savings.
   const skipCache =
     !cache.isEnabled() ||
     (opts?.walkDepth ?? 0) > 0 ||
@@ -2369,7 +2377,6 @@ export async function hybridSearchCached(
     adaptiveReturnOn ||
     dateFiltered ||
     typeFiltered ||
-    privateFiltered ||
     pagedRequest;
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';
