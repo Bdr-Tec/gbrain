@@ -34,7 +34,7 @@ import type { EnrichCandidate, PageType } from '../core/types.ts';
 import { operations } from '../core/operations.ts';
 import type { OperationContext } from '../core/operations.ts';
 import { configureGatewayIfUninitialized, isAvailable, chat, getChatModel, withBudgetTracker } from '../core/ai/gateway.ts';
-import { BudgetTracker, BudgetExhausted } from '../core/budget/budget-tracker.ts';
+import { BudgetTracker, BudgetExhausted, type BudgetReason } from '../core/budget/budget-tracker.ts';
 import { hybridSearch } from '../core/search/hybrid.ts';
 import { serializeMarkdown } from '../core/markdown.ts';
 import { listSources } from '../core/sources-ops.ts';
@@ -149,6 +149,11 @@ export interface EnrichResult {
   would_enrich?: number;
   spent_usd?: number;
   budget_exhausted?: boolean;
+  /** Why the run aborted when budget_exhausted (#4032): BudgetExhausted.reason.
+   *  'no_pricing' means the cap was never the problem — raising --max-usd won't help. */
+  budget_exhausted_reason?: BudgetReason;
+  /** Model that triggered a no_pricing abort, when the tracker knew it (#4032). */
+  budget_exhausted_model?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +531,10 @@ export async function runEnrichCore(
   } catch (err) {
     if (err instanceof BudgetExhausted) {
       result.budget_exhausted = true;
+      // #4032: carry the reason (and model, for no_pricing) so the CLI can
+      // branch its advice instead of collapsing every abort into "raise the cap".
+      result.budget_exhausted_reason = err.reason;
+      if (err.modelId) result.budget_exhausted_model = err.modelId;
       return result; // partial run; caller surfaces it (NOT a thrown failure)
     }
     throw err;
@@ -540,6 +549,7 @@ export async function runEnrichCore(
   // tracker's read-only cap; no shared gateway.ts change.
   if (tracker.cap !== undefined && tracker.totalSpent > tracker.cap) {
     result.budget_exhausted = true;
+    result.budget_exhausted_reason ??= 'cost'; // post-hoc overage is a cost abort (#4032)
   }
 
   return result;
@@ -753,6 +763,32 @@ function addInto(agg: EnrichResult, r: EnrichResult): void {
   agg.pages_skipped_disappeared += r.pages_skipped_disappeared;
   agg.pages_failed += r.pages_failed;
   agg.would_enrich = (agg.would_enrich ?? 0) + (r.would_enrich ?? 0);
+  if (r.budget_exhausted) agg.budget_exhausted = true;
+  // #4032: no_pricing is the actionable reason — it wins over cost when
+  // per-source runs disagree; otherwise first reason seen sticks.
+  if (
+    r.budget_exhausted_reason &&
+    (agg.budget_exhausted_reason === undefined || r.budget_exhausted_reason === 'no_pricing')
+  ) {
+    agg.budget_exhausted_reason = r.budget_exhausted_reason;
+    agg.budget_exhausted_model = r.budget_exhausted_model;
+  }
+}
+
+/**
+ * #4032: the exhaustion advice must branch on WHY the tracker aborted.
+ * A no_pricing TX2 hard-fail is not a cost overrun — "raise --max-usd"
+ * sends the operator after the wrong knob. Exported for tests.
+ */
+export function budgetExhaustedMessage(reason?: BudgetReason, modelId?: string): string {
+  if (reason === 'no_pricing') {
+    const m = modelId ? ` for ${modelId}` : '';
+    return (
+      `  No pricing${m} — the cost cap cannot be enforced. ` +
+      'Add a pricing entry for the model, or re-run uncapped (--max-usd off).'
+    );
+  }
+  return '  Budget cap reached. Re-run with a higher --max-usd to continue.';
 }
 
 export async function runEnrich(engine: BrainEngine, args: string[]): Promise<void> {
@@ -909,7 +945,9 @@ export async function runEnrich(engine: BrainEngine, args: string[]): Promise<vo
       `across ${sourceIds.length} source(s). Spent ~$${totalSpent.toFixed(4)}.`,
     );
     if (anyBudgetExhausted) {
-      console.log('  Budget cap reached. Re-run with a higher --max-usd to continue.');
+      console.log(
+        budgetExhaustedMessage(aggregate.budget_exhausted_reason, aggregate.budget_exhausted_model),
+      );
     }
   }
 
