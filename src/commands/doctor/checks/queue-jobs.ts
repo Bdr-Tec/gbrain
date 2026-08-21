@@ -7,6 +7,7 @@
 import type { BrainEngine } from '../../../core/engine.ts';
 import { resolveEnvNumber } from '../../../core/env-number.ts';
 import type { Check } from '../../doctor.ts';
+import { readWorkers } from '../../../core/minions/worker-registry.ts';
 
 /** Local alias; the shared warn-once memo lives in core so it can't fork per module. */
 const _resolveEnvNumber = resolveEnvNumber;
@@ -308,7 +309,11 @@ export async function computeQueueHealthCheck(
  * Exported so `test/doctor.test.ts` drives it directly. Reads
  * GBRAIN_WEDGED_QUEUE_WARN_MINUTES (default 15).
  */
-export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Check> {
+export async function computeWedgedQueueCheck(
+  engine: BrainEngine,
+  opts: { readWorkers?: () => Array<{ queue: string }> } = {},
+): Promise<Check> {
+  const getLiveWorkers = opts.readWorkers ?? readWorkers;
   if (engine.kind !== 'postgres') {
     return { name: 'wedged_queue', status: 'ok', message: 'PGLite — no queue to check' };
   }
@@ -329,8 +334,7 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
        WHERE queue NOT LIKE 'dream-inline-%'
        GROUP BY queue`,
     );
-    const wedged: string[] = [];
-    const wedgedQueueNames: string[] = [];
+    const wedged: { queue: string; label: string }[] = [];
     for (const r of rows) {
       const activeHealthy = Number(r.active_healthy ?? 0);
       const waiting = Number(r.waiting ?? 0);
@@ -338,36 +342,77 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
       // Conservative: only flag stale-after-progress (non-null mins past
       // threshold). The null-completions case is the supervisor's job.
       if (activeHealthy === 0 && waiting > 0 && mins !== null && mins > thresholdMin) {
-        wedged.push(`'${r.queue}' (${waiting} waiting, 0 active, ${Math.round(mins)}m since last completion)`);
-        wedgedQueueNames.push(r.queue);
+        wedged.push({
+          queue: r.queue,
+          label: `'${r.queue}' (${waiting} waiting, 0 active, ${Math.round(mins)}m since last completion)`,
+        });
       }
     }
     if (wedged.length === 0) {
       return { name: 'wedged_queue', status: 'ok', message: 'No wedged queues' };
     }
-    // Queue-aware restart hint: the bare stop/start pair bounces the DEFAULT
-    // worker — for a non-default wedged queue that advice restarts the wrong
-    // process. Name the queue in the start command. Queue names are
-    // producer-controlled and this hint gets copy-pasted (by operators AND
-    // remediation agents), so embedded quotes are escaped for the shell.
-    const shellQuote = (q: string) => `'${q.replace(/'/g, String.raw`'\''`)}'`;
-    const nonDefault = wedgedQueueNames.filter(q => q !== 'default');
-    const hints: string[] = [];
-    if (nonDefault.length < wedgedQueueNames.length || nonDefault.length === 0) {
-      hints.push('`gbrain jobs supervisor stop && gbrain jobs supervisor start`');
+    // local patch 85 (2026-08-21, no upstream PR — issue #3063 closed as
+    // "valid but not on the near-term roadmap"): the message previously
+    // asserted "worker alive but not claiming work" for every wedged queue,
+    // even when no worker process was ever subscribed to it (the queue-jobs
+    // stats surface already has a liveness signal for exactly this via the
+    // local worker-registry files — see `Scheduling priority` in `jobs
+    // stats`). Split the wedged set by whether a registered live worker
+    // actually exists for that queue, so the advisory repair matches the
+    // real fault instead of misdirecting the operator toward restarting a
+    // worker that was never there.
+    let liveWorkers: { queue: string }[] = [];
+    try {
+      liveWorkers = getLiveWorkers();
+    } catch {
+      // Best-effort, same failure posture as the registry's own callers
+      // (jobs.ts). A registry read error must not turn this check red.
     }
-    for (const q of nonDefault) {
-      hints.push(`\`gbrain jobs supervisor stop && gbrain jobs supervisor start --queue ${shellQuote(q)}\``);
+    const liveQueues = new Set(liveWorkers.map((w) => w.queue));
+    const stuck = wedged.filter((w) => liveQueues.has(w.queue));
+    const stuckQueues = stuck.map((w) => w.label);
+    const noWorkerQueues = wedged.filter((w) => !liveQueues.has(w.queue)).map((w) => w.label);
+    const messageParts: string[] = [];
+    if (stuckQueues.length > 0) {
+      // Queue-aware restart hint: the bare stop/start pair bounces the DEFAULT
+      // worker — for a non-default wedged queue that advice restarts the wrong
+      // process. Name the queue in the start command. Queue names are
+      // producer-controlled and this hint gets copy-pasted (by operators AND
+      // remediation agents), so embedded quotes are escaped for the shell.
+      const shellQuote = (q: string) => `'${q.replace(/'/g, String.raw`'\''`)}'`;
+      const stuckQueueNames = stuck.map((w) => w.queue);
+      const nonDefault = stuckQueueNames.filter(q => q !== 'default');
+      const hints: string[] = [];
+      if (nonDefault.length < stuckQueueNames.length || nonDefault.length === 0) {
+        hints.push('`gbrain jobs supervisor stop && gbrain jobs supervisor start`');
+      }
+      for (const q of nonDefault) {
+        hints.push(`\`gbrain jobs supervisor stop && gbrain jobs supervisor start --queue ${shellQuote(q)}\``);
+      }
+      const restartHint = hints.join(', ');
+      messageParts.push(
+        `Wedged queue(s) — worker alive but not claiming work: ${stuckQueues.join('; ')}. ` +
+          `Restart the worker so it rebuilds a fresh DB pool: ${restartHint}, ` +
+          `then \`gbrain jobs retry <id>\` on any dead-lettered jobs.`,
+      );
     }
-    const restartHint = hints.join(', ');
+    if (noWorkerQueues.length > 0) {
+      messageParts.push(
+        `No worker subscribed to queue(s): ${noWorkerQueues.join('; ')}. ` +
+          `Start one: \`gbrain jobs supervisor start --queue <name> --detach\` ` +
+          `or \`gbrain jobs work --queue <name>\`.`,
+      );
+    }
     return {
       name: 'wedged_queue',
       status: 'fail',
-      message:
-        `Wedged queue(s) — worker alive but not claiming work: ${wedged.join('; ')}. ` +
-        `Restart the worker so it rebuilds a fresh DB pool: ${restartHint}, ` +
-        `then \`gbrain jobs retry <id>\` on any dead-lettered jobs.`,
-      details: { wedged_queues: wedged.length, threshold_minutes: thresholdMin },
+      message: messageParts.join(' '),
+      details: {
+        wedged_queues: wedged.length,
+        stuck_worker_queues: stuckQueues.length,
+        no_worker_queues: noWorkerQueues.length,
+        threshold_minutes: thresholdMin,
+      },
     };
   } catch (e) {
     // Pre-migration brains / transient errors: advisory check stays ok.

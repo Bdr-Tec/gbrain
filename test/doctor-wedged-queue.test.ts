@@ -94,6 +94,28 @@ describe('issue #1801 fix #3 — computeWedgedQueueCheck', () => {
     expect(check.message).toContain("'default'");
   });
 
+  // local patch 85 (2026-08-21, no upstream PR — issue #3063): the check
+  // must not claim "worker alive" when no worker is registered for the
+  // wedged queue, and must keep the original "worker alive but stuck"
+  // wording when one genuinely is.
+  it('says "No worker subscribed" (not "worker alive") when no live worker is registered for the wedged queue', async () => {
+    await seed('default', 'cycle', 'waiting');
+    await seed('default', 'cycle', 'completed', { updatedAtSql: "now() - interval '20 min'" });
+    const check = await computeWedgedQueueCheck(pgLike, { readWorkers: () => [] });
+    expect(check.status).toBe('fail');
+    expect(check.message).toContain('No worker subscribed');
+    expect(check.message).not.toContain('worker alive but not claiming work');
+  });
+
+  it('keeps "worker alive but not claiming work" when a live worker IS registered for the wedged queue', async () => {
+    await seed('default', 'cycle', 'waiting');
+    await seed('default', 'cycle', 'completed', { updatedAtSql: "now() - interval '20 min'" });
+    const check = await computeWedgedQueueCheck(pgLike, { readWorkers: () => [{ queue: 'default' }] });
+    expect(check.status).toBe('fail');
+    expect(check.message).toContain('worker alive but not claiming work');
+    expect(check.message).not.toContain('No worker subscribed');
+  });
+
   it('does NOT flag when a job holds a live lock (active_healthy > 0)', async () => {
     await seed('default', 'cycle', 'waiting');
     await seed('default', 'cycle', 'active', { lockUntilSql: "now() + interval '5 min'" });
@@ -132,9 +154,11 @@ describe('issue #1801 fix #3 — computeWedgedQueueCheck', () => {
   it('shell-escapes an embedded single quote in the restart hint (producer-controlled queue names)', async () => {
     // The hint is copy-pasted by operators AND remediation agents, so a
     // queue named q-wedge'd must arrive POSIX-escaped, never raw.
+    // Restart hints come from the stuck-worker bucket (patch 85), so the
+    // queue's worker must be registered live for the hint to render.
     await seed("q-wedge'd", 'cycle', 'waiting');
     await seed("q-wedge'd", 'cycle', 'completed', { updatedAtSql: "now() - interval '30 min'" });
-    const check = await computeWedgedQueueCheck(pgLike);
+    const check = await computeWedgedQueueCheck(pgLike, { readWorkers: () => [{ queue: "q-wedge'd" }] });
     expect(check.status).toBe('fail');
     expect(check.message).toContain(String.raw`--queue 'q-wedge'\''d'`);
   });
@@ -144,7 +168,11 @@ describe('issue #1801 fix #3 — computeWedgedQueueCheck', () => {
     await seed('default', 'cycle', 'completed', { updatedAtSql: "now() - interval '30 min'" });
     await seed('q-side', 'cycle', 'waiting');
     await seed('q-side', 'cycle', 'completed', { updatedAtSql: "now() - interval '30 min'" });
-    const check = await computeWedgedQueueCheck(pgLike);
+    // Both queues need live workers so both land in the stuck bucket
+    // (patch 85) — the hint union is a stuck-worker-only rendering.
+    const check = await computeWedgedQueueCheck(pgLike, {
+      readWorkers: () => [{ queue: 'default' }, { queue: 'q-side' }],
+    });
     expect(check.status).toBe('fail');
     // The bare pair (for 'default') terminates with a backtick — no --queue —
     // and the comma-join carries the per-queue variant right behind it.
