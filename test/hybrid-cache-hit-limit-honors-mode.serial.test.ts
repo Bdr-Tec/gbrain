@@ -7,14 +7,18 @@
  * shape call served from cache silently sliced that cached row down to 20 —
  * inconsistent between the miss and hit paths for the same call shape.
  * (Scope note: this fix closes that gap for `offset: 0` — the common case,
- * and the shape the first three tests below drive. A SEPARATE, pre-existing bug
- * — offset is applied twice on a hit, once already baked into what the miss
- * path stored and once again by the hit branch, AND offset isn't part of
- * the cache key at all — means a nonzero `offset` still breaks hit/miss
- * parity; see the "KNOWN LIMITATION" test near the end of this file. That
- * bug is orthogonal to the `|| 20` vs `|| resolvedMode.searchLimit`
- * substitution this PR makes and isn't fixed here — see that test's comment
- * for why.)
+ * and the shape the first three tests below drive. A SEPARATE bug — offset
+ * used to be applied twice on a hit, once already baked into what the miss
+ * path stored and once again by the hit branch — used to break hit/miss
+ * parity for a nonzero `offset` (filed as #4358); the positive-offset half
+ * of that bug is now closed by upstream's #4368 wave (this branch is
+ * rebased onto it) by skipping the cache entirely for any positive offset,
+ * so there's no cached row left to double-slice for the case the last test
+ * near the end of this file drives. A separate PR, #4414 (this account's
+ * own, still open as of this commit), widens the same skip condition to
+ * also cover negative offsets — not exercised by this file. Both fixes are
+ * orthogonal to the `|| 20` vs `|| resolvedMode.searchLimit` substitution
+ * this PR makes and neither is part of this PR's diff.)
  *
  * Companion to #4356 Site 1 (see
  * test/query-op-limit-mode-4356.serial.test.ts, the `query` op's own
@@ -181,40 +185,44 @@ describe('cache HIT — limit honors the resolved mode (#4356)', () => {
     expect(hitResults.length).toBe(3);
   });
 
-  // KNOWN LIMITATION (pre-existing, NOT introduced or worsened by this PR's
-  // `resolvedForCache.searchLimit` change — filed as #4358): the miss path
-  // stores the ALREADY offset-sliced array (`hybridSearch`'s own
-  // `returnPool.slice(offset,
-  // offset + limit)`), then the cache-hit branch applies `offset` a SECOND
-  // time on top of that already-sliced array. For offset=0 this is a no-op
-  // (slicing from 0 twice is idempotent), which is why every test above —
-  // and the miss/hit consistency this PR actually fixes — holds. For a
-  // nonzero offset it is NOT idempotent: e.g. a miss with `limit: 9,
-  // offset: 2` stores 9 rows representing pool positions [2, 11); the next
-  // hit then slices THAT 9-row array at [2, 11) again, yielding rows [2, 9)
-  // of a 9-element array — 7 rows, not 9.
+  // FIXED for POSITIVE offset (was "KNOWN LIMITATION" — the positive-offset
+  // half of #4358 landed via upstream's #4368 wave, which this branch is
+  // rebased onto; the SEPARATE negative-offset half is #4414, this
+  // account's own PR, still open/unmerged as of this commit — see below):
+  // a nonzero offset used to break hit/miss count parity, because the miss
+  // path stores the ALREADY offset-sliced array (`hybridSearch`'s own
+  // `returnPool.slice(offset, offset + limit)`) and the cache-hit branch
+  // re-applied `offset` a SECOND time on top of that already-sliced array.
+  // For offset=0 this was a no-op (slicing from 0 twice is idempotent),
+  // which is why every test above — and the miss/hit consistency this PR
+  // actually fixes — held even pre-#4358. For a nonzero offset it was NOT
+  // idempotent: e.g. a miss with `limit: 9, offset: 2` stored 9 rows
+  // representing pool positions [2, 11); a hit then re-sliced THAT 9-row
+  // array at [2, 11) again, yielding rows [2, 9) of a 9-element array — 7
+  // rows, not 9.
+  //
+  // The fix in THIS branch's `hybrid.ts` is `pagedRequest = (opts?.offset
+  // ?? 0) > 0` — positive-offset only. It skips the cache entirely (lookup
+  // AND store) for any positive offset, so the double-slice path is
+  // unreachable for this test's `offset: 2` case: a paginated request
+  // returns freshly-computed, correctly-sliced results with
+  // `cache.status: 'disabled'`, never a re-sliced cached page. (#4414 later
+  // widens this same condition to `!== 0` so negative offsets get the same
+  // protection — Array.prototype.slice's negative-index semantics mean a
+  // negative offset re-slices a stored page just as badly as a positive
+  // one, an independent gap `> 0` alone doesn't cover. That's out of scope
+  // for THIS test, which only ever calls with a positive offset.)
   //
   // (`limit: 9` here — rather than the mode default this file's other tests
-  // rely on — is deliberate, not incidental: `offset` is NOT part of
+  // rely on — is deliberate, not incidental: `offset` still isn't part of
   // `knobsHash` (mode.ts's `knobsHash()` has no `offset=` component), so a
   // lookup with a NEW offset but the SAME resolved limit as an earlier test
-  // in this file would hit an already-written row instead of missing —
-  // itself a related but distinct pre-existing gap, also out of scope here.
-  // A limit value unique to this test sidesteps that collision so the
-  // miss/hit pair below is clean.)
-  //
-  // This test pins the CURRENT (broken) behavior so a future fix shows up
-  // as an intentional test update, per the same "pin the gap" pattern the
-  // original #3995/#4355 review applied to the cache-hit relational-meta
-  // absence. Possible fixes include caching the pre-offset pool, bypassing
-  // paginated (offset>0) cache calls, or keying offset and returning the
-  // stored page without re-slicing (keying offset alone does NOT fix the
-  // double-slice — the hit branch would still need to stop re-applying
-  // `offset` to an already-offset-sliced row). A distinct concern from the
-  // `|| 20` vs `|| resolvedMode.searchLimit` substitution this PR makes, so
-  // it is deliberately NOT fixed here (would reintroduce the "bundling
-  // unrelated changes" problem that got #4355/#4357 closed).
-  test('KNOWN LIMITATION: nonzero offset breaks hit/miss count parity (offset is re-applied to an already offset-sliced cached row)', async () => {
+  // in this file could otherwise collide with an already-written row if the
+  // cache were consulted. A limit value unique to this test sidesteps that
+  // collision — though it's moot for THIS assertion, since paginated
+  // requests bypass the cache outright now; kept for robustness against
+  // future changes to the skip condition.)
+  test('positive offset never hits the cache — hit/miss count parity holds (was #4358, fixed here by #4368)', async () => {
     let missMeta: import('../src/core/types.ts').HybridSearchMeta | undefined;
     const missResults = await hybridSearchCached(engine, KEYWORD, {
       limit: 9,
@@ -223,7 +231,7 @@ describe('cache HIT — limit honors the resolved mode (#4356)', () => {
       relationalRetrieval: false,
       onMeta: (m) => { missMeta = m; },
     });
-    expect(missMeta?.cache?.status).toBe('miss');
+    expect(missMeta?.cache?.status).toBe('disabled');
     expect(missResults.length).toBe(9);
 
     await awaitPendingSearchCacheWrites();
@@ -236,11 +244,14 @@ describe('cache HIT — limit honors the resolved mode (#4356)', () => {
       relationalRetrieval: false,
       onMeta: (m) => { hitMeta = m; },
     });
-    expect(hitMeta?.cache?.status).toBe('hit');
-    // Pins the CURRENT (pre-existing, unfixed) double-offset behavior: 7,
-    // not 9. If this assertion ever fails, the underlying bug was fixed —
-    // update this test (and close #4358) rather than reverting.
-    expect(hitResults.length).toBe(7);
+    // Still 'disabled', not 'hit' — a paginated request skips the cache on
+    // EVERY call (lookup AND store), so there's never a stored row for a
+    // nonzero offset to serve back. If this assertion ever changes to
+    // 'hit', the skip-cache design changed — re-verify the double-slice
+    // fix still holds under whatever replaced it, rather than just
+    // updating the expected string.
+    expect(hitMeta?.cache?.status).toBe('disabled');
+    expect(hitResults.length).toBe(9);
   });
 
   // NOTE on `limit: 0` (not a test — documenting why one isn't here): a
