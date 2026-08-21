@@ -479,28 +479,44 @@ export async function runEnrichCore(
   const workersResolved = resolveWorkersWithClamp(engine, opts.workers, 'enrich', 0);
   const workers = workersResolved.workers;
 
+  const fp = enrichFingerprint({ sourceId, types, order, thinThreshold, model });
+  const cpKey = checkpointKey(fp);
+
+  // #3629: load the checkpoint BEFORE enumerating candidates. SKIP'd pages
+  // stay thin (nothing is written), so they re-enter the candidate list on
+  // every run — the checkpoint is the ONLY thing that stops them re-billing.
+  if (opts.force) await clearOpCheckpoint(engine, cpKey);
+  const done = new Set<string>(opts.force ? [] : await loadOpCheckpoint(engine, cpKey));
+
   // Candidate enumeration — ONE source-aware, memory-bounded SQL query.
+  // #3629: over-fetch by the number of checkpointed keys so already-done
+  // pages sitting at the top of the ranking can't wedge the limit window
+  // (limit=N with N done candidates used to yield pending=[] forever while
+  // lower-ranked candidates never got a turn), then slice back to `limit`.
   const candidates = await engine.listEnrichCandidates({
     types,
     sourceId,
     thinThreshold,
     order,
-    limit,
+    limit: limit + done.size,
     reenrichAfterMs,
   });
   result.candidates_considered = candidates.length;
   if (candidates.length === 0) return result;
 
-  const fp = enrichFingerprint({ sourceId, types, order, thinThreshold, model });
-  const cpKey = checkpointKey(fp);
+  // Filter out already-completed candidates (resume), bounded to this run's
+  // requested window.
+  const pending = candidates
+    .filter((c) => !done.has(completedKey(sourceId, c.slug)))
+    .slice(0, limit);
+  // #3629: nothing to do → return WITHOUT recordCompleted. Re-recording the
+  // same done set on every no-op run would refresh the checkpoint's activity
+  // clock and the 7-day purge TTL would never expire, making SKIP keys
+  // permanent instead of decaying (the intended retry channel; --force is
+  // the immediate one).
+  if (pending.length === 0) return result;
 
   const body = async () => {
-    if (opts.force) await clearOpCheckpoint(engine, cpKey);
-    const done = new Set<string>(opts.force ? [] : await loadOpCheckpoint(engine, cpKey));
-
-    // Filter out already-completed candidates (resume).
-    const pending = candidates.filter((c) => !done.has(completedKey(sourceId, c.slug)));
-
     const oneCtx: EnrichOneCtx = {
       engine,
       sourceId,
@@ -545,12 +561,14 @@ export async function runEnrichCore(
     result.pages_failed = pool.errored;
 
     if (!dryRun) {
+      // #3629: the checkpoint is NOT cleared on a clean run any more. The old
+      // clear made SKIP keys vanish the moment a run completed, so a page
+      // whose synthesis said SKIP (still thin, still a candidate) was
+      // re-billed on every subsequent run — the "unchanged page never
+      // re-spends" contract only held mid-run. Enriched pages drop out of the
+      // thin set anyway; SKIP keys decay via the cycle purge's 7-day TTL
+      // (purgeStaleCheckpoints) and `--force` clears immediately.
       await recordCompleted(engine, cpKey, [...done]);
-      // Clear the checkpoint only on a clean, complete run so an immediate
-      // re-run starts fresh (enriched pages drop out of the thin set anyway).
-      if (!pool.aborted && !signal?.aborted) {
-        await clearOpCheckpoint(engine, cpKey);
-      }
     }
   };
 
