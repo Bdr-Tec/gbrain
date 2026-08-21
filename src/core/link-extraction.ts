@@ -15,6 +15,7 @@ import type { BrainEngine } from './engine.ts';
 import type { PageType, EffectiveDateSource } from './types.ts';
 import { ensureWellFormed } from './text-safe.ts';
 import { slugifyPath } from './sync.ts';
+import { SLUG_WORD_CHARS } from './cjk.ts';
 
 /**
  * v0.42.7 — link-extraction version stamp. Bump this ISO timestamp whenever the
@@ -980,8 +981,24 @@ export interface SlugResolver {
  * Keying: raw tail + lowercase tail + slugified tail. A slug's tail is its
  * final `/`-segment (or the whole slug when it has no `/`).
  */
+/**
+ * #2367: mirrors slugifySegment's normalization (NFD → strip Latin accents →
+ * NFC → lowercase → SLUG_WORD_CHARS filter) instead of the old ASCII-only
+ * `[^a-z0-9\s-]` strip, which collapsed CJK/Hebrew/Cyrillic/... basenames to
+ * '' (every index lookup missed) and folded accents differently from the slug
+ * grammar ('Café' → 'caf' vs slugifySegment's 'cafe').
+ */
+const BASENAME_KEEP_RE = new RegExp(`[^${SLUG_WORD_CHARS}\\s\\-]`, 'gu');
+
 export function normalizeBasename(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-');
+  return s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(BASENAME_KEEP_RE, '')
+    .trim()
+    .replace(/\s+/g, '-');
 }
 
 /** Stable order: shorter slug first (likely closer to brain root), then lexical. */
@@ -1038,7 +1055,9 @@ export function makeResolver(
 ): SlugResolver {
   const cache = new Map<string, string | null>();
 
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-');
+  // #2367: shared normalizer (was an inline ASCII-only clone that emptied
+  // CJK names and mis-folded accents, so dir-hint candidates never matched).
+  const norm = normalizeBasename;
 
   // Issue #972: lazy-built basename → slug[] index for global-basename
   // resolution. Built on first call to `resolveBasenameMatches`; reused

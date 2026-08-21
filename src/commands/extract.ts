@@ -38,7 +38,7 @@ import {
   extractPageLinks, parseTimelineEntries, deriveTimelineAnchor, inferLinkType, makeResolver,
   extractFrontmatterLinks, isGlobalBasenameEnabled, LINK_EXTRACTOR_VERSION_TS,
   WIKILINK_BASENAME_LINK_TYPE,
-  buildBasenameIndex, queryBasenameIndex, stripCodeBlocks,
+  buildBasenameIndex, queryBasenameIndex, stripCodeBlocks, normalizeBasename,
   type UnresolvedFrontmatterRef, type LinkCandidate,
 } from '../core/link-extraction.ts';
 import { createProgress } from '../core/progress.ts';
@@ -446,7 +446,9 @@ export async function extractLinksFromFile(
   if (opts?.includeFrontmatter) {
     // Synthetic sync-ish resolver: only does step 1 (already a slug) and
     // step 2 (dir-hint + slugify), backed by the Set of all known slugs.
-    const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-');
+    // #2367: shared normalizer (was an inline ASCII-only clone that emptied
+    // CJK names and mis-folded accents, so dir-hint candidates never matched).
+    const slugify = normalizeBasename;
     const fsResolver = {
       async resolve(name: string, dirHint?: string | string[]): Promise<string | null> {
         if (!name) return null;

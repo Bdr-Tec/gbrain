@@ -13,6 +13,7 @@ import {
   unwrapWikilink,
   buildBasenameIndex,
   queryBasenameIndex,
+  normalizeBasename,
   type SlugResolver,
 } from '../src/core/link-extraction.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -1763,5 +1764,77 @@ describe('extractFrontmatterLinks — [[wikilink]] related: values (end-to-end)'
     expect(candidates).toHaveLength(0);
     expect(unresolved).toHaveLength(1);
     expect(unresolved[0]).toEqual({ field: 'related', name: '[[99-archive/does-not-exist]]' });
+  });
+});
+
+// ─── #2367: normalizeBasename must keep non-Latin scripts ──────────────
+//
+// normalizeBasename previously stripped everything outside [a-z0-9\s-],
+// so a CJK basename collapsed to '' (every lookup missed) and accented
+// names diverged from slugifySegment ('Café' → 'caf' vs 'cafe'). It now
+// mirrors slugifySegment's normalization (NFD → strip accents → NFC →
+// lowercase → SLUG_WORD_CHARS filter), so display names in any script
+// produce the same key the slug grammar produces.
+
+describe('normalizeBasename — CJK + accent folding (#2367)', () => {
+  test('Korean display name normalizes to the slugifySegment form, not empty', () => {
+    expect(normalizeBasename('루카텍 올핸즈 미팅')).toBe('루카텍-올핸즈-미팅');
+  });
+
+  test('accented name folds like slugifySegment (Café → cafe, not caf)', () => {
+    expect(normalizeBasename('Café Notes')).toBe('cafe-notes');
+  });
+
+  test('ASCII keys unchanged from the old behavior', () => {
+    expect(normalizeBasename('Fast-Weigh')).toBe('fast-weigh');
+    expect(normalizeBasename('Alice Smith')).toBe('alice-smith');
+    expect(normalizeBasename('v1.0.0_beta!')).toBe('v100beta');
+  });
+
+  test('basename index: spaced CJK display name hits the hyphenated slug tail', () => {
+    const idx = buildBasenameIndex(['meetings/루카텍-올핸즈-미팅']);
+    expect(queryBasenameIndex(idx, '루카텍 올핸즈 미팅'))
+      .toEqual(['meetings/루카텍-올핸즈-미팅']);
+  });
+
+  test('end-to-end: bare CJK wikilink resolves via the basename index', async () => {
+    const idx = buildBasenameIndex(['meetings/루카텍-올핸즈-미팅']);
+    const resolver: SlugResolver = {
+      resolve: async () => null,
+      resolveBasenameMatches: async (name) => queryBasenameIndex(idx, name),
+    };
+    const { candidates } = await extractPageLinks(
+      'notes/weekly', '어제 [[루카텍 올핸즈 미팅]] 노트 참고.',
+      {}, 'concept', resolver, { globalBasename: true },
+    );
+    const resolved = candidates.filter(c => c.linkSource === 'wikilink-resolved');
+    expect(resolved.map(c => c.targetSlug)).toEqual(['meetings/루카텍-올핸즈-미팅']);
+  });
+
+  test('makeResolver step 2 dir-hint slugifies accented names like the slug grammar', async () => {
+    // The resolver used an inline clone of the old ASCII-only normalizer for
+    // its dir-hint candidate ('Café Notes' + 'notes' → 'notes/caf-notes'),
+    // which could never match a page slugged by slugifySegment.
+    const engine = {
+      async getPage(slug: string) {
+        return slug === 'notes/cafe-notes' ? { slug } as any : null;
+      },
+      async findByTitleFuzzy() { return null; },
+      async searchKeyword() { return []; },
+    } as unknown as BrainEngine;
+    const r = makeResolver(engine, { mode: 'batch' });
+    expect(await r.resolve('Café Notes', 'notes')).toBe('notes/cafe-notes');
+  });
+
+  test('makeResolver.resolveBasenameMatches finds CJK slugs from getAllSlugs', async () => {
+    const engine = {
+      async getPage() { return null; },
+      async findByTitleFuzzy() { return null; },
+      async searchKeyword() { return []; },
+      async getAllSlugs() { return ['meetings/루카텍-올핸즈-미팅', 'people/alice']; },
+    } as unknown as BrainEngine;
+    const r = makeResolver(engine, { mode: 'batch' });
+    expect(await r.resolveBasenameMatches!('루카텍 올핸즈 미팅'))
+      .toEqual(['meetings/루카텍-올핸즈-미팅']);
   });
 });
