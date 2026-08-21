@@ -221,6 +221,26 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
           );
         }
       }
+      // Serve-delegated maintenance sweep (#677) — same posture, own
+      // try/catch so a runner failure never takes the other kinds down.
+      // Shares the GBRAIN_SERVE_SYNC_IPC kill switch (one delegation family).
+      let sweepHandlers: Pick<IpcHandlers, 'sweep_start' | 'sweep_status'> = {};
+      if (process.env.GBRAIN_SERVE_SYNC_IPC !== '0') {
+        try {
+          const sweepRunner = await import('../core/serve-sweep-runner.ts');
+          sweepHandlers = {
+            sweep_start: (req) =>
+              sweepRunner.startDelegatedSweep(engine, req.options, req.clientToken, {
+                boundSourceId: defaultSource,
+              }),
+            sweep_status: (req) => sweepRunner.getDelegatedSweepStatus(req.jobId),
+          };
+        } catch (e) {
+          process.stderr.write(
+            `[serve-sweep] handlers unavailable: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
+        }
+      }
       resolveServer = await startResolveIpcServer(
         resolveSocket,
         {
@@ -270,6 +290,7 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
           // complete-pack-only monotonic cursor advance.
           context_pack: makeContextPackIpcHandler(engine, defaultSource),
           ...syncHandlers,
+          ...sweepHandlers,
         },
         {
           // The IPC resolve path IS the ambient reflex channel. Logging happens

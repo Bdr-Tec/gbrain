@@ -1707,6 +1707,15 @@ ${generateSelfDisableGuard(repoPath, target)}exec '${safeGbrainPath}' autopilot 
 }
 
 async function installDaemon(engine: BrainEngine, args: string[]) {
+  // #677: on a PGLite brain the autopilot daemon would hold the single-writer
+  // DB lock for its lifetime — every other gbrain process (serve, search,
+  // sweep, embed) then fails to connect. Refuse with guidance; --force for
+  // operators who genuinely want a daemon-owned brain.
+  const guardMsg = pgliteDaemonGuardMessage(engine.kind, args.includes('--force'));
+  if (guardMsg) {
+    console.error(guardMsg);
+    process.exit(1);
+  }
   const rawRepoPath = parseArg(args, '--repo') || await engine.getConfig('sync.repo_path');
   if (!rawRepoPath) {
     console.error('No repo path. Use --repo or run gbrain sync --repo first.');
@@ -1749,6 +1758,28 @@ async function installDaemon(engine: BrainEngine, args: string[]) {
       process.exit(2);
     }
   }
+}
+
+/**
+ * #677 — PGLite install guard, pure (the unit-test surface). A PGLite brain
+ * is single-writer: a daemonized autopilot holds the exclusive DB lock 24/7,
+ * so every OTHER gbrain process (`serve`, `search`, `sweep --once`,
+ * `embed --stale`) fails to connect for as long as the daemon lives. The
+ * supported PGLite background story is `gbrain serve` (resident sweep +
+ * serve-delegated sync/sweep over IPC). Returns the refusal message, or null
+ * when the install may proceed (postgres engine, or explicit --force).
+ */
+export function pgliteDaemonGuardMessage(engineKind: string, force: boolean): string | null {
+  if (engineKind !== 'pglite' || force) return null;
+  return (
+    `gbrain autopilot --install: this brain runs on PGLite (single-writer). A daemonized ` +
+    `autopilot would hold the exclusive DB lock 24/7 and block every other gbrain ` +
+    `process (serve, search, sweep, embed) for as long as it runs.\n` +
+    `  Recommended: run \`gbrain serve\` instead — it owns the lock, runs the resident ` +
+    `maintenance sweep, and delegates \`gbrain sync\`/\`gbrain sweep --once\` through its ` +
+    `IPC socket.\n` +
+    `  To install the daemon anyway (dedicated-brain setups), re-run with --force.`
+  );
 }
 
 /**
