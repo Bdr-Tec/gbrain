@@ -12,12 +12,12 @@ src/commands/sync.ts	4334	ratchet	grown v0.46.25.0 fix waves: delete-slug resolv
 src/core/ai/gateway.ts	4439	ratchet	watchlist; merged: dream-wave turn permits + key-aware effective-model reconfigure + env-only worker refresh + discovery endpoint-trust docstring + #4037 prompt-cache fix
 src/cli.ts	3622	ratchet	grown v0.46.24.0 overnight wave: eval-capture flag surface (#4186) | grown v0.46.24.0: serve-delegated sync preflight hook | master merge #4362 sync delegation
 src/core/cycle.ts	3093	ratchet	grown v0.46.25.0 fix waves: refresher abort gating + keyless honesty (#4309 #2821)
-src/commands/serve-http.ts	3274	ratchet	grown v0.46.25.0 delegated wave (#4081 #3849 #3775 #3723)
+src/commands/serve-http.ts	3292	ratchet	grown v0.46.25.0 delegated wave (#4081 #3849 #3775 #3723) | grown: /ingest resolves the write source server-side from the client OAuth scope (#3791)
 src/commands/jobs.ts	3041	ratchet	grown v0.46.25.0 fix waves: jobs list/get --json (#3685)
 src/core/search/hybrid.ts	2703	ratchet	grown v0.46.25.0 fix waves: cache scope isolation + pool floor + offset bypass (#3871 #3002)
 src/core/engine.ts	2415	ratchet	grown v0.46.25.0 fix waves: timeline dedup contract + registry write contract (#3827 #1262)
 src/commands/autopilot.ts	2349	ratchet	grown v0.46.25.0 fix waves: positional validation (#1525) + liveness takeover (#4300)
-src/commands/extract.ts	2156	ratchet	grown v0.46.25.0 delegated wave (#4265 #3939); lowered: Format-3 loop delegated to timeline-citations.ts (#3892 adoption)
+src/commands/extract.ts	2161	ratchet	grown v0.46.25.0 delegated wave (#4265 #3939); lowered: Format-3 loop delegated to timeline-citations.ts (#3892 adoption)
 src/commands/extract-conversation-facts.ts	2045	ratchet	grown v0.46.x per-provider gateway-unavailable copy
 src/core/import-file.ts	2016	ratchet	grown v0.46.24.0 overnight wave: embedding_plane_split named error (#4287)
 src/core/cycle/synthesize.ts	2702	ratchet	merged: five-issue wave + dream-wave C7 peel + C8 manifest + C9 mode/telemetry/backfill + adversarial fix batches
