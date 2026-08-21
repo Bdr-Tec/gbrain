@@ -50,8 +50,11 @@ import {
   WIKILINK_BASENAME_LINK_TYPE,
   buildBasenameIndex, queryBasenameIndex, stripCodeBlocks, normalizeBasename,
   parseInlineCitationTimelineEntries,
-  type UnresolvedFrontmatterRef, type LinkCandidate,
+  type UnresolvedFrontmatterRef, type LinkCandidate, type LinkExtractionPack,
 } from '../core/link-extraction.ts';
+// #3190: pack-aware link typing on every extract surface (db/stale/fs).
+import { loadActivePackForLocalEngine } from '../core/schema-pack/best-effort.ts';
+import { inferLinkTypeFromPack } from '../core/schema-pack/link-inference.ts';
 export { extractTimelineFromContent, type ExtractedTimelineEntry } from '../core/timeline-extract.ts';
 import { extractTimelineFromContent, type ExtractedTimelineEntry } from '../core/timeline-extract.ts';
 import { createProgress } from '../core/progress.ts';
@@ -421,7 +424,7 @@ function parseFrontmatterFromContent(content: string, relPath: string): Record<s
  */
 export async function extractLinksFromFile(
   content: string, relPath: string, allSlugs: Set<string>,
-  opts?: { includeFrontmatter?: boolean; globalBasename?: boolean },
+  opts?: { includeFrontmatter?: boolean; globalBasename?: boolean; pack?: LinkExtractionPack | null },
 ): Promise<ExtractedLink[]> {
   const links: ExtractedLink[] = [];
   const slug = pathToSlug(relPath);
@@ -431,6 +434,17 @@ export async function extractLinksFromFile(
   // basename lookup against allSlugs when the ancestor walk fails. Off
   // by default for back-compat with the v0.10.1 ancestor-only behavior.
   const globalBasename = opts?.globalBasename ?? false;
+  // #3190: pack-aware typing on the FS path too. FS has no pages row, so the
+  // page type is dir-guessed (same table the frontmatter section uses); the
+  // context is name-only, so in practice pack page_type bindings (meeting →
+  // attended etc.) are what fire here. Falls through to inferTypeByDir.
+  const pack = opts?.pack ?? null;
+  const topDirForType = slug.split('/')[0];
+  const guessedPageType = topDirForType === 'people' ? 'person'
+    : topDirForType === 'companies' ? 'company'
+    : topDirForType === 'deals' || topDirForType === 'deal' ? 'deal'
+    : topDirForType === 'meetings' ? 'meeting'
+    : 'concept';
 
   // Issue #972 (codex [P2]): strip code fences before scanning so a
   // `[[name]]` inside a code block doesn't create an FS edge. Mirrors the
@@ -452,15 +466,17 @@ export async function extractLinksFromFile(
       // Issue #972 (codex [P2]): drop a basename self-loop ([[own-tail]] on
       // its own page resolving back to itself).
       if (isBasename && target === slug) continue;
+      const context = isBasename
+        ? `wikilink (basename match): [${name}]`
+        : `markdown link: [${name}]`;
       links.push({
         from_slug: slug,
         to_slug: target,
         link_type: isBasename
           ? WIKILINK_BASENAME_LINK_TYPE
-          : inferTypeByDir(fileDir, dirname(target), fm),
-        context: isBasename
-          ? `wikilink (basename match): [${name}]`
-          : `markdown link: [${name}]`,
+          : (pack ? inferLinkTypeFromPack(pack, guessedPageType, context) : null)
+            ?? inferTypeByDir(fileDir, dirname(target), fm),
+        context,
         // Issue #972: tag basename edges so the FS path matches DB/put_page
         // provenance and migration v112's widened CHECK is exercised here too.
         link_source: isBasename ? 'wikilink-resolved' : undefined,
@@ -491,15 +507,13 @@ export async function extractLinksFromFile(
         return null;
       },
     };
-    // Guess the page type from its directory for field-map filtering.
-    const topDir = slug.split('/')[0];
-    const pageType = topDir === 'people' ? 'person'
-      : topDir === 'companies' ? 'company'
-      : topDir === 'deals' || topDir === 'deal' ? 'deal'
-      : topDir === 'meetings' ? 'meeting'
-      : 'concept';
+    // Guess the page type from its directory for field-map filtering
+    // (shared with the pack typing above).
     const fm = parseFrontmatterFromContent(content, relPath);
-    const fmLinks = await extractFrontmatterLinks(slug, pageType as never, fm, fsResolver);
+    // #3190: thread the pack so pack-declared frontmatter_links fire on the
+    // FS path too (globalBasename false here — the synthetic resolver has no
+    // basename index).
+    const fmLinks = await extractFrontmatterLinks(slug, guessedPageType as never, fm, fsResolver, false, pack);
     for (const c of fmLinks.candidates) {
       links.push({
         from_slug: c.fromSlug ?? slug,
@@ -672,6 +686,11 @@ Extraction:
                           [--infer-dates] [--workers N|--concurrency N]
                           [--dry-run] [--json]
   gbrain extract <links|timeline> --by-mention --source db
+  gbrain extract links --by-mention --rebuild --source db
+      Reconcile instead of accrete: per page, delete the stale
+      link_source='mentions' rows and re-insert the current mention set in
+      one transaction (typed_ner rows whose target is still derivable
+      survive). Fixes drift the stale_mentions doctor check reports (#3674).
   gbrain extract <links|timeline|all> --ner --source db
   gbrain extract <timeline|all> --from-meetings --source db
 
@@ -783,6 +802,13 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
   // mention pass (skip default link extract). DB-source only per D7;
   // FS-source is rejected with a paste-ready fix-hint below.
   const byMention = args.includes('--by-mention');
+  // #3674: --rebuild switches the by-mention pass from additive to
+  // reconciling. Per page, ONE transaction deletes the page's
+  // link_source='mentions' rows (typed_ner rows whose target is still
+  // derivable survive — extract-ner owns their verbs and the scan can't
+  // regenerate them) and re-inserts the current mention set. Opt-in: the
+  // default pass stays additive-only.
+  const rebuildMentions = args.includes('--rebuild');
   // v0.41.18.0 (A10, T7): --ner is a NER-extraction mode dispatch. Same
   // DB-source-only posture as --by-mention. Can combine with --by-mention
   // in a single command for a shared-gazetteer walk (saves one pass).
@@ -853,6 +879,16 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
     console.error(
       `--by-mention is a links-pass only; it does not apply to timeline extraction. ` +
       `Re-run as 'gbrain extract links --by-mention' or 'gbrain extract all --by-mention'.`,
+    );
+    process.exit(2);
+  }
+  // #3674: --rebuild is a by-mention reconcile mode; without --by-mention
+  // there is nothing for it to rebuild. Fail loud rather than silently
+  // running an additive pass the operator believed was a cleanup.
+  if (rebuildMentions && !byMention) {
+    console.error(
+      `--rebuild only applies to the by-mention pass. Re-run as:\n\n` +
+      `  gbrain extract links --by-mention --rebuild --source db\n`,
     );
     process.exit(2);
   }
@@ -956,7 +992,10 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
         const { buildGazetteer: buildGz } = await import('../core/by-mention.ts');
         const sharedGazetteer = (byMention || ner) ? await buildGz(engine) : undefined;
         if (byMention) {
-          const r = await extractMentionsFromDb(engine, dryRun, jsonMode, typeFilter, since, { sourceIdFilter });
+          const r = await extractMentionsFromDb(engine, dryRun, jsonMode, typeFilter, since, {
+            sourceIdFilter,
+            rebuild: rebuildMentions,
+          });
           result.links_created += r.created;
           result.pages_processed += r.pages;
         }
@@ -1073,6 +1112,9 @@ async function extractForSlugs(
 
   // Issue #972: read the basename flag once per extract run.
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // #3190: active pack loaded once per run for pack-aware link typing +
+  // pack frontmatter_links. Null keeps legacy inference.
+  const pack = (await loadActivePackForLocalEngine(engine))?.manifest ?? null;
 
   const linkBatch: LinkBatchInput[] = [];
   const timelineBatch: TimelineBatchInput[] = [];
@@ -1130,7 +1172,7 @@ async function extractForSlugs(
         const content = readFileSync(fullPath, 'utf-8');
 
         if (doLinks) {
-          const links = await extractLinksFromFile(content, relPath, allSlugs, { globalBasename, includeFrontmatter });
+          const links = await extractLinksFromFile(content, relPath, allSlugs, { globalBasename, includeFrontmatter, pack });
           for (const link of links) {
             if (dryRun) {
               if (!jsonMode) console.log(`  ${link.from_slug} → ${link.to_slug} (${link.link_type})`);
@@ -1199,6 +1241,8 @@ async function extractLinksFromDir(
   // re-query the DB. globalBasename = true emits one edge per basename
   // match for bare wikilinks like `[[struktura]]`.
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // #3190: pack-aware typing + pack frontmatter_links (loaded once per walk).
+  const pack = (await loadActivePackForLocalEngine(engine))?.manifest ?? null;
 
   // Progress stream on stderr (separate from the action-events --json writes
   // to stdout, which tests grep for). Rate-gated; respects global --quiet /
@@ -1238,7 +1282,7 @@ async function extractLinksFromDir(
       if (isAborted(signal)) return;
       try {
         const content = readFileSync(file.path, 'utf-8');
-        const links = await extractLinksFromFile(content, file.relPath, allSlugs, { globalBasename });
+        const links = await extractLinksFromFile(content, file.relPath, allSlugs, { globalBasename, pack });
         for (const link of links) {
           if (dryRunSeen) {
             const key = `${link.from_slug}::${link.to_slug}::${link.link_type}`;
@@ -1358,13 +1402,15 @@ export async function extractLinksForSlugs(
     : undefined;
   // Issue #972: same flag as the standalone extract path.
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // #3190: pack-aware typing on the sync inline hook too.
+  const pack = (await loadActivePackForLocalEngine(engine))?.manifest ?? null;
   let created = 0;
   for (const slug of slugs) {
     const filePath = join(repoPath, slug + '.md');
     if (!existsSync(filePath)) continue;
     try {
       const content = readFileSync(filePath, 'utf-8');
-      for (const link of await extractLinksFromFile(content, slug + '.md', allSlugs, { globalBasename })) {
+      for (const link of await extractLinksFromFile(content, slug + '.md', allSlugs, { globalBasename, pack })) {
         try { await engine.addLink(link.from_slug, link.to_slug, link.context, link.link_type, link.link_source, undefined, undefined, linkOpts); created++; } catch { /* skip */ } // gbrain-allow-direct-insert: gbrain extract single-row fallback when batch path declines a row
       }
     } catch { /* skip */ }
@@ -1452,6 +1498,10 @@ async function extractLinksFromDB(
   // Issue #972: opt-in global-basename wikilink resolution. Read once
   // per extract run; threaded into each extractPageLinks call.
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // #3190: active schema pack, loaded ONCE per run — pack-declared link
+  // verbs (link_types[].inference) + frontmatter_links apply during
+  // extraction instead of being silently ignored. Null = legacy inference.
+  const pack = (await loadActivePackForLocalEngine(engine))?.manifest ?? null;
   // v0.32.8: listAllPageRefs enumerates (slug, source_id) so we can thread
   // sourceId to getPage AND build a cross-source resolution map for link
   // disambiguation. Pre-fix used getAllSlugs() which collapsed
@@ -1534,7 +1584,7 @@ async function extractLinksFromDB(
     // basename lookup; off by default for back-compat.
     const extracted = await extractPageLinks(
       slug, fullContent, page.frontmatter, page.type, resolver,
-      { skipFrontmatter: !includeFrontmatter, globalBasename },
+      { skipFrontmatter: !includeFrontmatter, globalBasename, pack },
     );
     unresolved.push(...extracted.unresolved);
 
@@ -1783,6 +1833,8 @@ export async function extractStaleFromDB(
   // extractLinksFromDB (including the codex-[P1] `sourceId` scoping).
   const resolver = makeResolver(engine, { mode: 'batch', sourceId: sourceIdFilter });
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // #3190: pack-aware verbs + frontmatter_links (see extractLinksFromDB).
+  const pack = (await loadActivePackForLocalEngine(engine))?.manifest ?? null;
   const allRefs = await engine.listAllPageRefs();
   const allSlugs = new Set<string>();
   const slugToSources = new Map<string, string[]>();
@@ -1819,7 +1871,7 @@ export async function extractStaleFromDB(
       const fullContent = page.compiled_truth + '\n' + page.timeline;
       const extracted = await extractPageLinks(
         page.slug, fullContent, page.frontmatter, page.type, resolver,
-        { skipFrontmatter: !includeFrontmatter, globalBasename },
+        { skipFrontmatter: !includeFrontmatter, globalBasename, pack },
       );
       for (const c of extracted.candidates) {
         const r = resolveCandidateSources(c, page.slug, page.source_id, allSlugs, slugToSources);
@@ -1926,9 +1978,13 @@ async function extractMentionsFromDb(
   jsonMode: boolean,
   typeFilter: PageType | undefined,
   since: string | undefined,
-  opts?: { sourceIdFilter?: string },
-): Promise<{ created: number; pages: number }> {
+  opts?: { sourceIdFilter?: string; rebuild?: boolean },
+): Promise<{ created: number; pages: number; removed: number }> {
   const sourceIdFilter = opts?.sourceIdFilter;
+  // #3674: rebuild mode reconciles instead of accreting — per page, one
+  // transaction deletes the stale link_source='mentions' rows and re-inserts
+  // the current mention set. Dry-run stays a pure preview (no deletes).
+  const rebuild = opts?.rebuild === true && !dryRun;
 
   // Build gazetteer once per run. Skip everything if there are no
   // linkable entities — vacuous truth, no mentions to find.
@@ -1939,7 +1995,7 @@ async function extractMentionsFromDb(
     } else {
       console.log('No linkable entity pages found in this brain (need pages with type IN person/company/organization/entity).');
     }
-    return { created: 0, pages: 0 };
+    return { created: 0, pages: 0, removed: 0 };
   }
 
   // v0.41.19.0 (T5): gazetteer hash is part of the checkpoint
@@ -1972,7 +2028,11 @@ async function extractMentionsFromDb(
       source: sourceIdFilter,
       type: typeFilter,
       since,
-      gazetteerHash,
+      // #3674: rebuild resumes must not reuse an additive run's checkpoint
+      // (pages the additive run "completed" still carry their stale rows).
+      // Folded into the hash input only when set so existing additive
+      // checkpoints keep their fingerprints.
+      gazetteerHash: rebuild ? `${gazetteerHash}:rebuild` : gazetteerHash,
     }),
   };
   const completed = dryRun
@@ -1988,6 +2048,7 @@ async function extractMentionsFromDb(
 
   let processed = 0;
   let created = 0;
+  let removed = 0;
   const batch: LinkBatchInput[] = [];
 
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
@@ -2056,16 +2117,68 @@ async function extractMentionsFromDb(
     // end-of-compiled token doesn't accidentally merge with a
     // start-of-timeline token into a false phrase match.
     const body = page.compiled_truth + '\n\n' + (page.timeline ?? '');
-    if (!body.trim()) {
+    const mentions = body.trim()
+      ? findMentionedEntities(body, gazetteer, {
+          fromSlug: slug,
+          fromSourceId: source_id,
+        })
+      : [];
+
+    // #3674 --rebuild: per-page delete-then-insert in ONE transaction. The
+    // delete sweeps the page's link_source='mentions' rows — INCLUDING pages
+    // whose body now yields zero mentions (those are exactly the stale ones)
+    // — while typed_ner rows whose target is still derivable survive
+    // (extract-ner owns their verbs; the scan can't regenerate them). A
+    // failed page stays UN-checkpointed so resume retries it instead of
+    // marking a half-applied sweep complete.
+    if (rebuild) {
+      const linkRows: LinkBatchInput[] = mentions.map((m) => ({
+        from_slug: slug,
+        to_slug: m.slug,
+        link_type: 'mentions',
+        link_source: 'mentions',
+        context: m.name,
+        from_source_id: source_id,
+        to_source_id: m.source_id,
+      }));
+      try {
+        let pageRemoved = 0;
+        let pageCreated = 0;
+        await engine.transaction(async (tx) => {
+          pageRemoved = await tx.removeLinksByPagesAndSource(
+            [{ slug, source_id }],
+            {
+              linkSource: 'mentions',
+              keepTypedNerPairs: mentions.map((m) => ({
+                from_slug: slug,
+                from_source_id: source_id,
+                to_slug: m.slug,
+                to_source_id: m.source_id,
+              })),
+            },
+          );
+          if (linkRows.length > 0) {
+            pageCreated = await tx.addLinksBatch(linkRows, { auditSite: 'extract.by_mention.rebuild' }); // gbrain-allow-direct-insert: gbrain extract --by-mention --rebuild — reconciling delete-then-insert of the mention scan's own rows
+          }
+        });
+        removed += pageRemoved;
+        created += pageCreated;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (jsonMode) {
+          process.stderr.write(JSON.stringify({ event: 'rebuild_error', slug, source_id, error: msg }) + '\n');
+        } else {
+          console.error(`  rebuild error on ${slug} (page will be retried on resume): ${msg}`);
+        }
+        continue;
+      }
       pendingForFlush.push(key);
       unpersistedCount++;
+      if (Date.now() - sinceLastPersistMs >= PERSIST_EVERY_MS) {
+        await flushAndCheckpoint();
+      }
       continue;
     }
-
-    const mentions = findMentionedEntities(body, gazetteer, {
-      fromSlug: slug,
-      fromSourceId: source_id,
-    });
 
     if (mentions.length === 0) {
       pendingForFlush.push(key);
@@ -2123,7 +2236,10 @@ async function extractMentionsFromDb(
 
   if (!jsonMode) {
     const label = dryRun ? '(dry run) would create' : 'created';
-    console.log(`Mentions: ${label} ${created} links from ${processed} pages against gazetteer of ${gazetteer.size} first-token buckets`);
+    const removedNote = rebuild ? `, removed ${removed} stale mention link(s)` : '';
+    console.log(`Mentions: ${label} ${created} links${removedNote} from ${processed} pages against gazetteer of ${gazetteer.size} first-token buckets`);
+  } else if (rebuild) {
+    process.stdout.write(JSON.stringify({ event: 'rebuild_summary', created, removed, pages: processed }) + '\n');
   }
-  return { created, pages: processed };
+  return { created, pages: processed, removed };
 }

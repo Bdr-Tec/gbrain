@@ -1414,3 +1414,77 @@ describeBoth('Engine parity — putPage empty-overwrite guard', () => {
     }
   });
 });
+
+// #3674 — removeLinksByPagesAndSource must behave identically on both
+// engines: same delete counts, same survivors (typed_ner keep-pairs, other
+// link_sources, other sources untouched).
+describeBoth('Engine parity — removeLinksByPagesAndSource (#3674)', () => {
+  let pgEngine: BrainEngine;
+  let pgliteEngine: PGLiteEngine;
+
+  beforeAll(async () => {
+    pgEngine = await setupDB();
+    pgliteEngine = new PGLiteEngine();
+    await pgliteEngine.connect({});
+    await pgliteEngine.initSchema();
+  }, 90_000);
+
+  afterAll(async () => {
+    await pgliteEngine.disconnect();
+    await teardownDB();
+  }, 30_000);
+
+  async function seed(eng: BrainEngine): Promise<void> {
+    await eng.putPage('rlps/from-a', { type: 'note', title: 'a', compiled_truth: 'body a', timeline: '' });
+    await eng.putPage('rlps/to-x', { type: 'person', title: 'x', compiled_truth: 'body x', timeline: '' });
+    await eng.putPage('rlps/to-y', { type: 'person', title: 'y', compiled_truth: 'body y', timeline: '' });
+    await eng.addLinksBatch([
+      // plain mentions rows (one per target)
+      { from_slug: 'rlps/from-a', to_slug: 'rlps/to-x', link_type: 'mentions', link_source: 'mentions', context: 'x', from_source_id: 'default', to_source_id: 'default' },
+      { from_slug: 'rlps/from-a', to_slug: 'rlps/to-y', link_type: 'mentions', link_source: 'mentions', context: 'y', from_source_id: 'default', to_source_id: 'default' },
+      // typed_ner verb rows: to-x kept (still derivable), to-y stale
+      { from_slug: 'rlps/from-a', to_slug: 'rlps/to-x', link_type: 'works_at', link_source: 'mentions', link_kind: 'typed_ner', context: '', from_source_id: 'default', to_source_id: 'default' },
+      { from_slug: 'rlps/from-a', to_slug: 'rlps/to-y', link_type: 'works_at', link_source: 'mentions', link_kind: 'typed_ner', context: '', from_source_id: 'default', to_source_id: 'default' },
+      // a markdown row that must survive
+      { from_slug: 'rlps/from-a', to_slug: 'rlps/to-x', link_type: 'references', link_source: 'markdown', context: '', from_source_id: 'default', to_source_id: 'default' },
+    ]);
+  }
+
+  async function survivors(eng: BrainEngine): Promise<string[]> {
+    const rows = await eng.executeRaw<{ to_slug: string; link_source: string | null; link_kind: string | null }>(
+      `SELECT tp.slug AS to_slug, l.link_source, l.link_kind
+       FROM links l
+       JOIN pages fp ON fp.id = l.from_page_id
+       JOIN pages tp ON tp.id = l.to_page_id
+       WHERE fp.slug = 'rlps/from-a'
+       ORDER BY tp.slug, l.link_source, l.link_kind NULLS FIRST`,
+      [],
+    );
+    return rows.map((r) => `${r.to_slug}|${r.link_source}|${r.link_kind ?? ''}`);
+  }
+
+  test('identical removal counts and survivors on both engines', async () => {
+    const results: Array<{ removed: number; left: string[] }> = [];
+    for (const eng of [pgEngine, pgliteEngine]) {
+      await seed(eng);
+      const removed = await eng.removeLinksByPagesAndSource(
+        [{ slug: 'rlps/from-a', source_id: 'default' }],
+        {
+          linkSource: 'mentions',
+          keepTypedNerPairs: [
+            { from_slug: 'rlps/from-a', from_source_id: 'default', to_slug: 'rlps/to-x', to_source_id: 'default' },
+          ],
+        },
+      );
+      results.push({ removed, left: await survivors(eng) });
+    }
+    // 2 plain mentions + 1 stale typed_ner deleted; kept typed_ner + markdown survive.
+    expect(results[0]!.removed).toBe(3);
+    expect(results[1]!.removed).toBe(3);
+    expect(results[0]!.left).toEqual(results[1]!.left);
+    expect(results[0]!.left).toEqual([
+      'rlps/to-x|markdown|',
+      'rlps/to-x|mentions|typed_ner',
+    ]);
+  });
+});

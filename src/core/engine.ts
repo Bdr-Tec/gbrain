@@ -1328,6 +1328,35 @@ export interface BrainEngine {
     opts?: { fromSourceId?: string; toSourceId?: string },
   ): Promise<void>;
   /**
+   * #3674 — bulk removal of derived links for a set of FROM pages, scoped to
+   * one link_source. The substrate for `extract links --by-mention --rebuild`:
+   * a per-page delete-then-insert (inside `transaction()`) replaces the
+   * additive-only write path so stale mentions rows finally die.
+   *
+   * Semantics:
+   *   - Deletes rows whose from_page is one of `pages` (composite
+   *     (slug, source_id) match — source isolation) AND
+   *     link_source = `opts.linkSource`.
+   *   - `opts.keepTypedNerPairs` protects extract-ner's verb-typed rows the
+   *     mention scan cannot regenerate: a row with link_kind = 'typed_ner'
+   *     whose (from, to) pair appears in the keep list SURVIVES. typed_ner
+   *     rows NOT in the list (target no longer derivable) are deleted with
+   *     everything else.
+   *
+   * Returns the number of rows deleted. Atomic per call (one statement).
+   * Both engines implement the identical SQL shape (parity-pinned).
+   */
+  removeLinksByPagesAndSource(
+    pages: Array<{ slug: string; source_id: string }>,
+    opts: {
+      linkSource: string;
+      keepTypedNerPairs?: Array<{
+        from_slug: string; from_source_id: string;
+        to_slug: string; to_source_id: string;
+      }>;
+    },
+  ): Promise<number>;
+  /**
    * v0.31.8 (D12 + D16): `opts.sourceId` source-scopes the from-page lookup.
    * When omitted, the read returns links from every same-slug page across
    * sources (pre-v0.31.8 behavior; preserved via two-branch query in both
