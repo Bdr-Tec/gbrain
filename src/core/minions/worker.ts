@@ -1445,7 +1445,9 @@ export class MinionWorker extends EventEmitter {
         // 1-3s jittered backoff (shared with the inline drain — one curve,
         // no silent desync). Not the exponential curve — this is "yield the
         // slot, try again soon", not "give up after a few tries."
-        const leaseBackoffMs = leaseFullBackoffMs();
+        // #4310: a caller-suggested delay (the global-LLM-halt cooldown's
+        // remaining window) wins over the short lease bounce.
+        const leaseBackoffMs = leaseErr.retryInMs ?? leaseFullBackoffMs();
         const released = await this.queue.releaseLeaseFullJob(
           job.id, lockToken, errorText, leaseBackoffMs,
         );
