@@ -1983,6 +1983,14 @@ export class PGLiteEngine implements BrainEngine {
     if (filters?.includeDeleted !== true) {
       where.push('p.deleted_at IS NULL');
     }
+    if (filters?.effective_after) {
+      params.push(filters.effective_after);
+      where.push(`p.effective_date >= $${params.length}::timestamptz`);
+    }
+    if (filters?.effective_before) {
+      params.push(filters.effective_before);
+      where.push(`p.effective_date <= $${params.length}::timestamptz`);
+    }
 
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     params.push(limit, offset);

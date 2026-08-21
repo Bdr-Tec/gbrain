@@ -1585,6 +1585,12 @@ export class PostgresEngine implements BrainEngine {
     const deletedCondition = filters?.includeDeleted === true
       ? sql``
       : sql`AND p.deleted_at IS NULL`;
+    const effectiveAfterCondition = filters?.effective_after
+      ? sql`AND p.effective_date >= ${filters.effective_after}::timestamptz`
+      : sql``;
+    const effectiveBeforeCondition = filters?.effective_before
+      ? sql`AND p.effective_date <= ${filters.effective_before}::timestamptz`
+      : sql``;
 
     // v0.29: ORDER BY threading via PAGE_SORT_SQL whitelist (no SQL injection).
     // postgres.js sql.unsafe lets us splice the literal fragment safely.
@@ -1598,7 +1604,7 @@ export class PostgresEngine implements BrainEngine {
       const rows = await tx`
         SELECT p.* FROM pages p
         ${tagJoin}
-        WHERE 1=1 ${typeCondition} ${tagCondition} ${updatedCondition} ${slugCondition} ${sourceCondition} ${deletedCondition}
+        WHERE 1=1 ${typeCondition} ${tagCondition} ${updatedCondition} ${slugCondition} ${sourceCondition} ${deletedCondition} ${effectiveAfterCondition} ${effectiveBeforeCondition}
         ORDER BY ${orderBy} LIMIT ${limit} OFFSET ${offset}
       `;
       return rows.map(rowToPage);
