@@ -193,6 +193,12 @@ const CLI_ONLY_SELF_HELP = new Set([
   // ZE interim cleanup: the retired ze-switch shim ships truthful help
   // (sunset refusal + canonical migration command); the generic stub hid it.
   'ze-switch',
+  // #3686 (the #578 residue): eval / storage / reindex each ship real usage —
+  // eval's printHelp (15 subcommands), storage's status usage, reindex's
+  // target-flag usage — that the generic one-line stub was hiding. Their
+  // engine-free --help is answered by pre-engine branches in handleCliOnly
+  // (the sync/capture pattern).
+  'eval', 'storage', 'reindex',
 ]);
 
 /**
@@ -2538,6 +2544,34 @@ async function handleCliOnly(command: string, args: string[]) {
   if (command === 'enrich' && (args.includes('--help') || args.includes('-h'))) {
     const { runEnrich } = await import('./commands/enrich.ts');
     await runEnrich(null as never, args);
+    return;
+  }
+
+  // #3686 (the #578 residue): `eval --help` reaches eval.ts's printHelp
+  // engine-free. Placed AFTER the sub-owned no-DB routes above (brainbench /
+  // longmemeval / run-all / cross-modal / chronicle / conversation-parser /
+  // takes-quality replay / whoknows) so each sub's own usage keeps winning;
+  // every remaining `eval … --help` form prints the full subcommand usage
+  // instead of the old one-line stub (or a "No brain configured" error).
+  if (command === 'eval' && (args.includes('--help') || args.includes('-h'))) {
+    const { runEvalCommand } = await import('./commands/eval.ts');
+    await runEvalCommand(null as never, ['--help']);
+    return;
+  }
+
+  // #3686: `storage --help` — runStorage's help guard returns before the
+  // engine argument is touched.
+  if (command === 'storage' && (args.includes('--help') || args.includes('-h'))) {
+    const { runStorage } = await import('./commands/storage.ts');
+    await runStorage(null as never, args);
+    return;
+  }
+
+  // #3686: `reindex --help` — the usage block (incl. the --multimodal flags
+  // the dispatcher parses) lives in reindex.ts; printing it needs no engine.
+  if (command === 'reindex' && (args.includes('--help') || args.includes('-h'))) {
+    const { printReindexHelp } = await import('./commands/reindex.ts');
+    printReindexHelp();
     return;
   }
 
