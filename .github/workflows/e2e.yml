@@ -184,7 +184,7 @@ jobs:
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d gbrain_test -c 'CREATE DATABASE gbrain_bootstrap_test'
       - name: Run Postgres bootstrap suite
         # Forward-reference bootstrap on REAL Postgres (#366/#375/#378, the
-        # v121/#2626 wedge class, v0.46.25 private-queue lifecycle incl. the
+        # v121/#2626 wedge class, v0.46.26 private-queue lifecycle incl. the
         # token-only probe). Previously reachable only via the nightly
         # coverage-full-e2e glob, so a broken PostgresEngine bootstrap block
         # could reach master with every PR lane green. Own invocation line
@@ -205,7 +205,7 @@ jobs:
         run: bun test --timeout=240000 test/e2e/sync-delegation-under-serve.serial.test.ts
       - name: Run PGLite inline subagent drain suite
         # dream-synthesize-pglite pins the inline drain's per-child lease
-        # keepalive (v0.46.25 private-queue lifecycle) — previously nightly-
+        # keepalive (v0.46.26 private-queue lifecycle) — previously nightly-
         # glob-only, where the keepalive pin broke silently. Deliberately NO
         # DATABASE_URL: the suite is PGLite-only. Named files only, no glob.
         run: bun test --timeout=120000 test/e2e/dream-synthesize-pglite.test.ts

@@ -157,7 +157,7 @@ describe.skipIf(skip)('PostgresEngine forward-reference bootstrap (E2E)', () => 
     expect(idx).toHaveLength(2);
   }, 60_000);
 
-  test('pre-v133 minion_jobs private-queue shape (dream-inline lifecycle) converges on REAL Postgres', async () => {
+  test('pre-v136 minion_jobs private-queue shape (dream-inline lifecycle) converges on REAL Postgres', async () => {
     // v0.46.25 (#4332): the private-queue owner/lease columns are migration-
     // added AND referenced by the blob partial indexes — the same wedge class
     // as v121 and pre-v7 above. Strip all three columns + both indexes, then
@@ -199,7 +199,7 @@ describe.skipIf(skip)('PostgresEngine forward-reference bootstrap (E2E)', () => 
     // Partial-upgrade shape: ONLY private_queue_owner_token is missing.
     // Neither blob index references the token, so SCHEMA_SQL replay cannot
     // crash on it, and the ledger is already at LATEST so runMigrations won't
-    // re-run v133 — the ONLY repair path is the minion_jobs_pq_token_exists
+    // re-run v136 — the ONLY repair path is the minion_jobs_pq_token_exists
     // probe (749a7dcb) triggering the bootstrap's three-column ALTER block.
     await engine.initSchema();
     const conn = (engine as any).sql;

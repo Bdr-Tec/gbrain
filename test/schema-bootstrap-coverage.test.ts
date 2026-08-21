@@ -183,7 +183,7 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // wedges the blob replay exactly like the v121 incident.
   { kind: 'column', table: 'minion_jobs', column: 'timeout_at' },
   { kind: 'column', table: 'minion_jobs', column: 'idempotency_key' },
-  // v0.46.25 private-queue lifecycle: blob indexes
+  // v0.46.26 private-queue lifecycle: blob indexes
   // idx_minion_jobs_private_queue_recovery / _owner reference the owner and
   // lease columns; a pre-upgrade minion_jobs wedges blob replay without the
   // bootstrap ALTERs (same class as v121).
@@ -294,7 +294,7 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS timeout_at;
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS idempotency_key;
 
-      -- v133 private-queue strip: owner/token/lease are migration-added and
+      -- v136 private-queue strip: owner/token/lease are migration-added and
       -- blob-indexed; without these drops the three REQUIRED_BOOTSTRAP_COVERAGE
       -- entries assert on columns initSchema already created (vacuous) and the
       -- needsMinionJobsPrivateQueue bootstrap branch never executes.
@@ -397,7 +397,7 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS timeout_at;
       ALTER TABLE minion_jobs DROP COLUMN IF EXISTS idempotency_key;
 
-      -- v133 private-queue strip: the SCHEMA_SQL replay would crash on
+      -- v136 private-queue strip: the SCHEMA_SQL replay would crash on
       -- idx_minion_jobs_private_queue_recovery / _owner without the bootstrap
       -- re-adding these migration-added columns (the v121 wedge class).
       DROP INDEX IF EXISTS idx_minion_jobs_private_queue_recovery;
@@ -1038,7 +1038,7 @@ test('extractAlterAddColumnsFromSql handles representative migration SQL shapes'
 });
 
 // ─────────────────────────────────────────────────────────────────
-// v0.46.25 private-queue guard symmetry — Postgres half (#4332).
+// v0.46.26 private-queue guard symmetry — Postgres half (#4332).
 // The PGLite bootstrap is exercised live above (strip → bootstrap →
 // assert), but PostgresEngine.applyForwardReferenceBootstrap only runs
 // against real Postgres (test/e2e/postgres-bootstrap.test.ts, DATABASE_URL-

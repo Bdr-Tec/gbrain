@@ -39,7 +39,7 @@ function normalizeSql(s: string): string {
   return s.replace(/\s+/g, ' ').replace(/\s*([(),])\s*/g, '$1');
 }
 
-// The three column definitions from migration v133 / the minion_jobs
+// The three column definitions from migration v136 / the minion_jobs
 // CREATE TABLE body. The FK must SET NULL (detach, never cascade-delete a
 // child job) when the owner row disappears.
 const COLUMN_DEFS = [
