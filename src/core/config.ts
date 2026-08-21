@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, renameSy
 import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import type { EngineConfig, EmbeddingColumnConfig } from './types.ts';
+import { applyDbPlaneReadSideMerge } from './config-db-merge.ts';
 
 /**
  * Where is the active DB URL coming from? Pure introspection, no connection
@@ -60,11 +61,10 @@ export interface GBrainConfig {
    * launchd/daemon/MCP contexts without a process-env export silently
    * failed multimodal embeds despite config.json looking complete.
    *
-   * NOTE (scoped to what this fix covers): `gbrain config set
-   * voyage_api_key X` writes the DB plane, which `loadConfigWithEngine()`
-   * does NOT merge for any `*_api_key` field (zeroentropy_api_key /
-   * openrouter_api_key have the same pre-existing gap) — only the
-   * config.json file-plane route is wired through today.
+   * NOTE: `gbrain config set voyage_api_key X` routes to the FILE plane
+   * (FILE_PLANE_API_KEYS in src/commands/config.ts); a value that landed in
+   * the DB plane anyway is still honored via the #2119 read-side merge
+   * (DB_MERGED_PROVIDER_KEY_FIELDS, env > file > DB).
    */
   voyage_api_key?: string;
   /**
@@ -374,6 +374,16 @@ export interface GBrainConfig {
       min_evidence?: number;
     };
   };
+
+  /**
+   * #2119-class read-side (also #2137/#4297) — flat map of DB-plane `cycle.*`
+   * knobs, keyed by the path UNDER the `cycle.` prefix (e.g.
+   * `cycle.extract_atoms.budget_usd` → `cycle['extract_atoms.budget_usd']`),
+   * values raw strings (each consumer owns its parse, as with
+   * `engine.getConfig()`). Populated by `loadConfigWithEngine()`; per-leaf
+   * precedence file > DB (no env layer). See src/core/config-db-merge.ts.
+   */
+  cycle?: Record<string, string>;
 
   /**
    * Thin-client mode (multi-topology v1). When set, this install does NOT
@@ -734,6 +744,9 @@ export function loadConfig(): GBrainConfig | null {
   return merged as GBrainConfig;
 }
 
+// #2119 read-side merge list re-exported so callers keep one config surface.
+export { DB_MERGED_PROVIDER_KEY_FIELDS } from './config-db-merge.ts';
+
 /**
  * v0.27.1 — async config loader that overlays DB-plane config on top of the
  * file/env config. Used by `gbrain` CLI's connectEngine() AFTER engine.connect()
@@ -743,9 +756,11 @@ export function loadConfig(): GBrainConfig | null {
  * Precedence: env > file > DB > defaults. Env stays the operator escape hatch;
  * file is the durable per-machine config; DB is the user-mutable runtime knob.
  *
- * Today only the v0.27.1 multimodal flags participate in DB-merge. Existing
- * fields (embedding_model, etc.) keep their file/env-only loading because they
- * size the schema and must be stable across engine connect.
+ * Participating DB-plane keys: multimodal/OCR flags, provider_base_urls.*,
+ * the embedding-column registry, content_sanity.*, dream.*, eval.*, and the
+ * #2119-class read-side set (provider credentials, chat/expansion pins,
+ * chat_fallback_chain, flat cycle.* — see src/core/config-db-merge.ts, which
+ * also documents why embedding_model/dims must NEVER join any list, #4287).
  */
 export async function loadConfigWithEngine(
   engine: {
@@ -1030,6 +1045,10 @@ export async function loadConfigWithEngine(
   if (Object.keys(mergedEval).length > 0) {
     merged.eval = mergedEval;
   }
+
+  // #2119-class read-side merge (also #2137/#4297): provider credentials,
+  // chat/expansion pins, chat_fallback_chain, flat cycle.* (env > file > DB).
+  await applyDbPlaneReadSideMerge(merged, dbStr, dbPrefixMap);
 
   return merged;
 }
