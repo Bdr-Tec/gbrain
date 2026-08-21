@@ -24,10 +24,16 @@
  * goes O_NONBLOCK and the console.log shape truncates the same way.
  */
 
-import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { describe, test, expect, afterEach } from 'bun:test';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  writeChunkSync,
+  resolveStdoutDrainDeadlineMs,
+  currentExitCode,
+  _resetCliExitVerdictForTests,
+} from '../src/core/cli-force-exit.ts';
 
 const HELPER = join(import.meta.dir, '..', 'src', 'core', 'cli-force-exit.ts');
 const PAYLOAD_BYTES = 200_001; // > 3x the 64KiB kernel pipe buffer
@@ -221,6 +227,54 @@ describe('installStdoutPipeDelivery (#4383)', () => {
     }
   }, 20_000);
 
+  test('bounded tail drain (D2): a stalled-open reader cannot hang the exit past GBRAIN_STDOUT_DRAIN_DEADLINE_MS', async () => {
+    // The tail drain is EPIPE-settled when a reader DIES, but a reader that
+    // stays open and never drains used to hang the exit forever. With a tiny
+    // env deadline the child must exit (code 0, one-line stderr note) long
+    // before the never-draining reader (`sleep 4`, which reads nothing)
+    // releases the pipe at ~4s. The harness stamps its wall-clock-to-exit and
+    // code into a file since its stdout is wedged by construction.
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-stdout-drain-deadline-'));
+    const script = join(dir, 'emit.ts');
+    const stamp = join(dir, 'stamp.json');
+    const errFile = join(dir, 'stderr.txt');
+    writeFileSync(
+      script,
+      `import { installStdoutPipeDelivery, flushThenExit } from ${JSON.stringify(HELPER)};\n` +
+        `import { writeFileSync } from 'node:fs';\n` +
+        `installStdoutPipeDelivery();\n` +
+        `const t0 = Date.now();\n` +
+        `process.stdout.write('x'.repeat(4_000_000));\n` + // wedges past the 64KiB pipe buffer
+        `flushThenExit(0, {\n` +
+        `  guardMs: 400,\n` +
+        `  graceMs: 100,\n` +
+        `  exit: (c) => {\n` +
+        `    writeFileSync(${JSON.stringify(stamp)}, JSON.stringify({ ms: Date.now() - t0, code: c }));\n` +
+        `    process.exit(c);\n` +
+        `  },\n` +
+        `});\n`,
+    );
+    try {
+      const proc = Bun.spawn({
+        cmd: ['sh', '-c', `"${process.execPath}" "${script}" 2> "${errFile}" | sleep 4`],
+        env: { ...process.env, GBRAIN_STDOUT_DRAIN_DEADLINE_MS: '500' },
+        stdout: 'ignore',
+        stderr: 'inherit',
+      });
+      await proc.exited;
+      const stamped = JSON.parse(readFileSync(stamp, 'utf8')) as { ms: number; code: number };
+      expect(stamped.code).toBe(0);
+      // Deadline 500ms + fence guard 400ms + grace 100ms ≈ 1s; the pre-fix
+      // behavior only exits when sleep dies at ~4s (EPIPE settles the tail).
+      expect(stamped.ms).toBeLessThan(3_000);
+      const err = readFileSync(errFile, 'utf8');
+      expect(err).toContain('stdout tail drain exceeded 500ms');
+      expect(err).toContain('GBRAIN_STDOUT_DRAIN_DEADLINE_MS');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test('interposed: multi-console.log help text survives an immediate raw process.exit (sync fast path)', async () => {
     // The regression the chain must NOT introduce: hundreds of help/usage
     // sites `console.log(...)` several lines and then call process.exit(1)
@@ -250,4 +304,122 @@ describe('installStdoutPipeDelivery (#4383)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 20_000);
+});
+
+describe('resolveStdoutDrainDeadlineMs (D2)', () => {
+  const KEY = 'GBRAIN_STDOUT_DRAIN_DEADLINE_MS';
+  const prev = process.env[KEY];
+  afterEach(() => {
+    if (prev === undefined) delete process.env[KEY];
+    else process.env[KEY] = prev;
+  });
+
+  test('default is a generous 120s cap', () => {
+    delete process.env[KEY];
+    expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
+  });
+
+  test('env override wins; 0 disables the cap; junk falls back to the default', () => {
+    process.env[KEY] = '500';
+    expect(resolveStdoutDrainDeadlineMs()).toBe(500);
+    process.env[KEY] = '0';
+    expect(resolveStdoutDrainDeadlineMs()).toBe(0);
+    process.env[KEY] = 'not-a-number';
+    expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
+    process.env[KEY] = '-1';
+    expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
+  });
+});
+
+describe('writeChunkSync errno honesty (D2)', () => {
+  function errnoThrower(code: string): (fd: number, buf: Buffer, off: number, len: number) => number {
+    return () => {
+      const e = new Error(code) as NodeJS.ErrnoException;
+      e.code = code;
+      throw e;
+    };
+  }
+
+  /** Run `fn` with process.stderr.write captured and the verdict channel clean. */
+  function withCapturedStderr(fn: () => void): { stderr: string; exitCode: number } {
+    const prevExitCode = process.exitCode;
+    const realWrite = process.stderr.write.bind(process.stderr);
+    let captured = '';
+    _resetCliExitVerdictForTests();
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      captured += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      fn();
+      return { stderr: captured, exitCode: currentExitCode() };
+    } finally {
+      process.stderr.write = realWrite;
+      _resetCliExitVerdictForTests();
+      // `?? 0`: restoring a captured `undefined` does not clear an already-set
+      // exitCode in Bun — the mirror write from setCliExitVerdict(1) would
+      // leak and fail the whole test-file run with 0 failing tests.
+      process.exitCode = prevExitCode ?? 0;
+    }
+  }
+
+  test('EPIPE still finishes the chain silently with exit verdict untouched (gone reader)', () => {
+    const buf = Buffer.from('payload');
+    const { stderr, exitCode } = withCapturedStderr(() => {
+      expect(writeChunkSync(buf, 0, errnoThrower('EPIPE'))).toBe('done');
+    });
+    expect(stderr).toBe('');
+    expect(exitCode).toBe(0);
+  });
+
+  test('EAGAIN / EINTR return the resume offset (retryable, no warning, no verdict)', () => {
+    const buf = Buffer.from('payload');
+    const { stderr, exitCode } = withCapturedStderr(() => {
+      expect(writeChunkSync(buf, 3, errnoThrower('EAGAIN'))).toBe(3);
+      expect(writeChunkSync(buf, 5, errnoThrower('EINTR'))).toBe(5);
+    });
+    expect(stderr).toBe('');
+    expect(exitCode).toBe(0);
+  });
+
+  test('ENOSPC warns on stderr naming the errno and sets a nonzero exit verdict', () => {
+    const buf = Buffer.from('payload');
+    const { stderr, exitCode } = withCapturedStderr(() => {
+      // Two bytes land, then the disk fills: the chain must still finish
+      // ('done'), but never silently with exit 0.
+      let calls = 0;
+      const partialThenEnospc = (fd: number, b: Buffer, off: number, len: number): number => {
+        calls += 1;
+        if (calls === 1) return 2;
+        return errnoThrower('ENOSPC')(fd, b, off, len);
+      };
+      expect(writeChunkSync(buf, 0, partialThenEnospc)).toBe('done');
+    });
+    expect(stderr).toContain('ENOSPC');
+    expect(stderr).toContain('at byte 2 of 7');
+    expect(stderr).toContain('output truncated');
+    expect(exitCode).toBe(1);
+  });
+
+  test('EIO warns and flips the verdict too — any non-EPIPE errno is an honest failure', () => {
+    const buf = Buffer.from('payload');
+    const { stderr, exitCode } = withCapturedStderr(() => {
+      expect(writeChunkSync(buf, 0, errnoThrower('EIO'))).toBe('done');
+    });
+    expect(stderr).toContain('EIO');
+    expect(exitCode).toBe(1);
+  });
+
+  test('an errno-less throw still warns and flips the verdict (never silent-truncate)', () => {
+    const buf = Buffer.from('payload');
+    const { stderr, exitCode } = withCapturedStderr(() => {
+      expect(
+        writeChunkSync(buf, 0, () => {
+          throw new Error('mystery failure');
+        }),
+      ).toBe('done');
+    });
+    expect(stderr).toContain('unknown errno');
+    expect(exitCode).toBe(1);
+  });
 });

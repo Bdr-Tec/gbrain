@@ -228,15 +228,18 @@ export class SemanticQueryCache {
       // #1469: fetch the top 5 candidates (not just the closest) so the
       // text guard below can skip a closer-but-different query and still
       // serve a farther row whose text actually matches.
+      //
+      // D2 remediation: the candidate select is LIGHT (id/query_text/
+      // distance/age only). Shipping five full results+meta JSONB payloads
+      // per lookup just to keep one was pure transfer overhead; the winner's
+      // payload is fetched by id in the second query below.
       const rows = await this.engine.executeRaw<{
         id: string;
         query_text: string;
-        results: unknown;
-        meta: unknown;
         distance: number;
         age_seconds: number;
       }>(
-        `SELECT qc.id, qc.query_text, qc.results, qc.meta,
+        `SELECT qc.id, qc.query_text,
                 qc.embedding <=> $1::vector AS distance,
                 EXTRACT(EPOCH FROM (now() - qc.created_at))::int AS age_seconds
          FROM query_cache qc
@@ -262,10 +265,20 @@ export class SemanticQueryCache {
           ? rows[0]
           : rows.find((r) => cacheTextGuard(queryText, r.query_text ?? ''));
       if (!row) return { hit: false };
-      const results = Array.isArray(row.results)
-        ? (row.results as SearchResult[])
-        : safeJsonParse<SearchResult[]>(row.results, []);
-      const meta = safeJsonParse<HybridSearchMeta | undefined>(row.meta, undefined);
+
+      // Second query: fetch ONLY the winner's heavy payload. A row deleted
+      // between the two statements (concurrent prune/clear) is a miss — the
+      // caller runs the real search, same posture as every other edge here.
+      const payloadRows = await this.engine.executeRaw<{
+        results: unknown;
+        meta: unknown;
+      }>(`SELECT results, meta FROM query_cache WHERE id = $1`, [row.id]);
+      if (payloadRows.length === 0) return { hit: false };
+      const payload = payloadRows[0];
+      const results = Array.isArray(payload.results)
+        ? (payload.results as SearchResult[])
+        : safeJsonParse<SearchResult[]>(payload.results, []);
+      const meta = safeJsonParse<HybridSearchMeta | undefined>(payload.meta, undefined);
       const similarity = 1 - row.distance;
 
       // Bump hit_count / last_hit_at \u2014 best-effort.

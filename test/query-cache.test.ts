@@ -356,3 +356,73 @@ describe('SemanticQueryCache \u2014 disabled', () => {
     expect(hit.hit).toBe(false);
   });
 });
+
+/**
+ * Wrap the real engine so every executeRaw SQL string is recorded (and
+ * optionally intercepted) while all other methods delegate untouched.
+ */
+function spyExecuteRaw(
+  onCall: (sql: string, params?: unknown[]) => Promise<void> | void,
+): PGLiteEngine {
+  return new Proxy(engine, {
+    get(target, prop) {
+      const v = Reflect.get(target, prop, target);
+      if (prop === 'executeRaw' && typeof v === 'function') {
+        return async (sql: string, params?: unknown[], o?: { signal?: AbortSignal }) => {
+          await onCall(sql, params);
+          return v.call(target, sql, params, o);
+        };
+      }
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  }) as unknown as PGLiteEngine;
+}
+
+describe('SemanticQueryCache \u2014 light candidates, winner-only payload fetch (D2)', () => {
+  test('lookup ships ONE heavy payload: candidate select carries no results/meta; winner fetched by id', async () => {
+    // Three near-identical embeddings so the candidate query returns
+    // multiple rows within the 0.92 threshold \u2014 pre-D2, all of their
+    // results/meta JSONB payloads shipped just to keep one.
+    const cache = new SemanticQueryCache(engine);
+    const winnerEmb = makeEmbedding(4200);
+    await cache.store('who is alice-example', winnerEmb, [makeResult('people/alice-example')], META);
+    await cache.store('who is alice example', makeEmbedding(4201), [makeResult('people/alice-two')], META);
+    await cache.store('who was alice-example', makeEmbedding(4202), [makeResult('people/alice-three')], META);
+
+    const calls: string[] = [];
+    const spyCache = new SemanticQueryCache(spyExecuteRaw((sql) => void calls.push(sql)));
+    const hit = await spyCache.lookup(winnerEmb, { queryText: 'who is alice-example' });
+
+    expect(hit.hit).toBe(true);
+    expect(hit.results?.[0]?.slug).toBe('people/alice-example');
+    expect(hit.meta?.intent).toBe('general');
+
+    const selects = calls.filter((q) => q.trimStart().toUpperCase().startsWith('SELECT'));
+    expect(selects.length).toBe(2);
+    // Candidate query is LIGHT: id/query_text/distance/age only.
+    expect(selects[0]).toContain('qc.id, qc.query_text');
+    expect(selects[0]).not.toContain('qc.results');
+    expect(selects[0]).not.toContain('qc.meta');
+    // Exactly one heavy fetch, keyed by the winner's id.
+    expect(selects[1]).toContain('SELECT results, meta FROM query_cache WHERE id = $1');
+  });
+
+  test('winner row deleted between the two statements is a miss, not a throw', async () => {
+    const cache = new SemanticQueryCache(engine);
+    const emb = makeEmbedding(4300);
+    await cache.store('race window query', emb, [makeResult('race/window')], META);
+
+    // Simulate a concurrent prune/clear landing between the candidate
+    // select and the payload fetch: delete the winner right before its
+    // by-id payload query executes.
+    const racing = new SemanticQueryCache(
+      spyExecuteRaw(async (sql, params) => {
+        if (sql.includes('SELECT results, meta FROM query_cache')) {
+          await engine.executeRaw(`DELETE FROM query_cache WHERE id = $1`, [params![0]]);
+        }
+      }),
+    );
+    const res = await racing.lookup(emb, { queryText: 'race window query' });
+    expect(res.hit).toBe(false);
+  });
+});

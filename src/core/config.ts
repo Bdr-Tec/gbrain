@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, renameSy
 import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import type { EngineConfig, EmbeddingColumnConfig } from './types.ts';
-import { applyDbPlaneReadSideMerge } from './config-db-merge.ts';
+import { applyDbPlaneReadSideMerge, type DbPlaneEngineReader } from './config-db-merge.ts';
 
 /**
  * Where is the active DB URL coming from? Pure introspection, no connection
@@ -763,10 +763,9 @@ export { DB_MERGED_PROVIDER_KEY_FIELDS } from './config-db-merge.ts';
  * also documents why embedding_model/dims must NEVER join any list, #4287).
  */
 export async function loadConfigWithEngine(
-  engine: {
-    getConfig(key: string): Promise<string | null | undefined>;
-    listConfigKeys?(prefix: string): Promise<string[]>;
-  },
+  // DbPlaneEngineReader: { getConfig; listConfigKeys?; executeRaw? } — the
+  // optional executeRaw lets the #2119 merge batch its reads in one query.
+  engine: DbPlaneEngineReader,
   base?: GBrainConfig | null,
 ): Promise<GBrainConfig | null> {
   // Codex /ship finding #3: when there's no file config AND no env DB URL,
@@ -1048,7 +1047,8 @@ export async function loadConfigWithEngine(
 
   // #2119-class read-side merge (also #2137/#4297): provider credentials,
   // chat/expansion pins, chat_fallback_chain, flat cycle.* (env > file > DB).
-  await applyDbPlaneReadSideMerge(merged, dbStr, dbPrefixMap);
+  // One batched, ~30s-memoized read per engine handle (D2 remediation).
+  await applyDbPlaneReadSideMerge(merged, engine);
 
   return merged;
 }

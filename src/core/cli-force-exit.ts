@@ -119,6 +119,29 @@ function resolveFlushGraceMs(): number {
   if (Number.isFinite(env) && env >= 0) return env;
   return FLUSH_GRACE_PIPE_MS;
 }
+/**
+ * Default cap on the exit-seam stdout tail drain (#4383's D2 remediation).
+ * The tail drain is EPIPE-settled when a reader dies, but a reader that stays
+ * OPEN and never drains (a wedged consumer holding the pipe) would otherwise
+ * hang the exit forever. Generous by design — a healthy-but-slow reader must
+ * never be truncated by an impatient cap; only a genuinely wedged one is.
+ */
+const STDOUT_DRAIN_DEADLINE_MS = 120_000;
+
+/**
+ * Resolve the stdout tail-drain cap: `GBRAIN_STDOUT_DRAIN_DEADLINE_MS` env
+ * override (same env-only pattern as GBRAIN_TEARDOWN_DEADLINE_MS) over the
+ * 120s default. `0` disables the cap entirely (pre-cap unbounded behavior).
+ * On expiry the exit seam prints a one-line stderr note and proceeds to the
+ * fence + grace — bounded truncation with a visible message beats an
+ * invisible hang.
+ */
+export function resolveStdoutDrainDeadlineMs(): number {
+  const env = Number(process.env.GBRAIN_STDOUT_DRAIN_DEADLINE_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  return STDOUT_DRAIN_DEADLINE_MS;
+}
+
 /** Default per-sink drain budget (matches drainAllBackgroundWorkForCliExit). */
 const DEFAULT_DRAIN_TIMEOUT_MS = 2_000;
 
@@ -308,14 +331,36 @@ export function flushThenExit(code: number, opts: FlushThenExitOpts = {}): void 
     // the exit cannot truncate a CLI_ONLY payload. The keepalive interval is
     // deliberately REF'D: awaiting a promise does not by itself keep Bun's
     // loop alive, and exiting naturally here would discard the very bytes the
-    // tail exists to deliver. Unbounded on purpose — same well-behaved-pipe-
-    // writer posture as writeStdoutFinal (#3423); EPIPE settles the tail when
-    // the reader dies, so a gone reader cannot hang the exit.
+    // tail exists to deliver. Same well-behaved-pipe-writer posture as
+    // writeStdoutFinal (#3423); EPIPE settles the tail when the reader dies,
+    // so a gone reader cannot hang the exit — but a STALLED-OPEN reader
+    // (alive, never draining) would, so the drain is bounded by
+    // resolveStdoutDrainDeadlineMs(): on expiry, print a one-line stderr note
+    // and proceed to the fence + grace (visible bounded truncation beats an
+    // invisible hang). 0 disables the cap.
     const keepalive = setInterval(() => {}, 500);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let proceeded = false;
     const proceed = () => {
+      if (proceeded) return;
+      proceeded = true;
       clearInterval(keepalive);
+      if (deadline) clearTimeout(deadline);
       beginFence();
     };
+    const drainDeadlineMs = resolveStdoutDrainDeadlineMs();
+    if (drainDeadlineMs > 0) {
+      deadline = setTimeout(() => {
+        try {
+          (opts.stderr ?? process.stderr).write(
+            `[cli] stdout tail drain exceeded ${drainDeadlineMs}ms (GBRAIN_STDOUT_DRAIN_DEADLINE_MS) — exiting; piped output may be truncated\n`,
+          );
+        } catch {
+          // stderr gone — still proceed to exit
+        }
+        proceed();
+      }, drainDeadlineMs);
+    }
     void stdoutTail.then(proceed, proceed);
     return;
   }
@@ -374,21 +419,45 @@ const STDOUT_EAGAIN_POLL_MS = 5;
 /**
  * Push bytes of `buf` from `off` to fd 1 until done or backpressure.
  * Returns 'done' when every byte was accepted OR the reader is gone (EPIPE
- * and any other non-EAGAIN error are swallowed — partial delivery to a gone
- * reader is not an op failure); returns the resume offset on EAGAIN
- * (non-blocking fd + full pipe). On a blocking fd this loop delivers the
- * whole payload synchronously, blocking like any well-behaved pipe writer.
+ * only — partial delivery to a gone reader is not an op failure); returns
+ * the resume offset on EAGAIN (non-blocking fd + full pipe). On a blocking
+ * fd this loop delivers the whole payload synchronously, blocking like any
+ * well-behaved pipe writer.
+ *
+ * D2 remediation: any OTHER errno (ENOSPC, EIO, ...) means the payload was
+ * genuinely lost mid-delivery — that is an honest failure, never a silent
+ * exit-0 truncation. It warns on stderr naming the errno, flips the exit
+ * verdict nonzero via setCliExitVerdict(1), and then finishes the chain
+ * ('done') so the exit seam can never hang on an unwritable fd.
+ *
+ * `write` is injectable for unit tests only; production callers use the
+ * real fd-1 writeSync.
  */
-function writeChunkSync(buf: Buffer, off: number): 'done' | number {
+export function writeChunkSync(
+  buf: Buffer,
+  off: number,
+  write: (fd: number, buffer: Buffer, offset: number, length: number) => number = writeSync,
+): 'done' | number {
   while (off < buf.length) {
     try {
-      off += writeSync(1, buf, off, buf.length - off);
+      off += write(1, buf, off, buf.length - off);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       // EINTR is retryable like EAGAIN — dropping the tail on a signal
       // interrupt would be a silent truncation.
       if (code === 'EAGAIN' || code === 'EINTR') return off;
       // EPIPE / closed reader — the operation itself already succeeded.
+      if (code === 'EPIPE') return 'done';
+      // ENOSPC / EIO / anything else: bytes were LOST with the reader still
+      // there. Say so on stderr and report failure through the exit verdict.
+      try {
+        process.stderr.write(
+          `[cli] stdout write failed (${code ?? 'unknown errno'}) at byte ${off} of ${buf.length} — output truncated; exit code set to 1\n`,
+        );
+      } catch {
+        // stderr unusable too — the verdict flip below still reports it
+      }
+      setCliExitVerdict(1);
       return 'done';
     }
   }
