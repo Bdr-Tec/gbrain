@@ -588,6 +588,20 @@ export interface FactListOpts {
    * creation-time semantics unchanged.
    */
   eventTime?: boolean;
+  /**
+   * When true, exclude the durable audit checkpoint rows that
+   * extract-conversation-facts writes into the facts table
+   * (`EXTRACTION_COMPLETE` / `EXTRACTION_NOT_APPLICABLE`). These are
+   * batch-run checkpoints, not user facts; their `created_at` is always
+   * the most recent write, so for trusted callers (no visibility filter)
+   * they dominate the newest-N fetch window right after a batch run and
+   * starve `recall` of real facts. Honored consistently by
+   * `listFactsByEntity` / `listFactsBySession` / `listFactsSince` on both
+   * engines. Off by default so existing callers that intentionally want
+   * the full row set (e.g. `gbrain doctor` checkpoint audits) are
+   * unaffected.
+   */
+  excludeAuditRows?: boolean;
 }
 
 /** Per-source operational health snapshot consumed by `gbrain doctor`. */

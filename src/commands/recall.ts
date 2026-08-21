@@ -417,12 +417,14 @@ async function fetchRowsLocal(
     return engine.listFactsByEntity(sourceId, slug, {
       activeOnly: !flags.includeExpired,
       limit: flags.limit,
+      excludeAuditRows: true,
     });
   }
   if (flags.sessionId) {
     return engine.listFactsBySession(sourceId, flags.sessionId, {
       activeOnly: !flags.includeExpired,
       limit: flags.limit,
+      excludeAuditRows: true,
     });
   }
   if (resolvedSince) {
@@ -439,12 +441,14 @@ async function fetchRowsLocal(
       eventTime: !flags.sinceLastRun,
       activeOnly: !flags.includeExpired,
       limit: flags.limit,
+      excludeAuditRows: true,
     });
   }
   return engine.listFactsSince(sourceId, new Date(0), {
     eventTime: true,
     activeOnly: !flags.includeExpired,
     limit: flags.limit,
+    excludeAuditRows: true,
   });
 }
 

@@ -22,6 +22,7 @@ import { packToBudget, estimateTokens, resultTokens } from '../search/token-budg
 import { isAvailable } from '../ai/gateway.ts';
 import { MEMORY_VERBS_VERSION } from '../verbs.ts';
 import type { SearchResult } from '../types.ts';
+import { AUDIT_ROW_SOURCES } from '../facts/audit-sources.ts';
 
 // ============================================================
 // v0.31 — Hot memory ops: extract_facts / recall / forget_fact
@@ -225,6 +226,7 @@ const recall: Operation = {
             activeOnly: !includeExpired,
             limit,
             visibility,
+            excludeAuditRows: true,
           });
         })),
         (rec) => rec.valid_from ?? rec.created_at,
@@ -236,6 +238,7 @@ const recall: Operation = {
             activeOnly: !includeExpired,
             limit,
             visibility,
+            excludeAuditRows: true,
           }),
         )),
         byCreated,
@@ -250,6 +253,7 @@ const recall: Operation = {
               activeOnly: !includeExpired,
               limit,
               visibility,
+              excludeAuditRows: true,
             }),
           )),
           byEventTime,
@@ -264,11 +268,20 @@ const recall: Operation = {
             activeOnly: !includeExpired,
             limit,
             visibility,
+            excludeAuditRows: true,
           }),
         )),
         byEventTime,
       );
     }
+
+    // extract-conversation-facts writes durable audit checkpoint rows
+    // (source = TERMINAL_AUDIT_SOURCE / NON_EXTRACTABLE_AUDIT_SOURCE) into
+    // the facts table. They are checkpoints, not user facts. Every arm
+    // above already passes excludeAuditRows: true (SQL-level, both
+    // engines, keyed on `source` not `fact` text) — this client-side
+    // filter is belt-and-braces defense in depth, not the primary guard.
+    rows = rows.filter((r) => !(AUDIT_ROW_SOURCES as readonly string[]).includes(r.source));
 
     if (grep) rows = rows.filter(r => r.fact.toLowerCase().includes(grep));
 

@@ -9,6 +9,7 @@ import type {
   NewFact, FactListOpts, FactsHealth,
 } from '../engine.ts';
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from '../engine.ts';
+import { AUDIT_ROW_SOURCES } from '../facts/audit-sources.ts';
 
 /** Narrow slice of PGLiteEngine the facts operations use. */
 export interface PgliteFactsDeps {
@@ -247,10 +248,16 @@ export async function listFactsByEntity(
     entitySlug: string,
     opts?: FactListOpts,
   ): Promise<FactRow[]> {
+    const where: string[] = [`entity_slug = $entitySlug`];
+    const whereParams: Record<string, unknown> = { entitySlug };
+    if (opts?.excludeAuditRows === true) {
+      where.push(`NOT (source = ANY($auditSources))`);
+      whereParams.auditSources = [...AUDIT_ROW_SOURCES];
+    }
     return _listFacts(deps, source_id, {
       ...opts,
-      whereClauses: [`entity_slug = $entitySlug`],
-      whereParams: { entitySlug },
+      whereClauses: where,
+      whereParams,
       order: 'valid_from DESC, id DESC',
     });
   }
@@ -268,6 +275,10 @@ export async function listFactsSince(
       where.push(`entity_slug = $entitySlug`);
       params.entitySlug = opts.entitySlug;
     }
+    if (opts?.excludeAuditRows === true) {
+      where.push(`NOT (source = ANY($auditSources))`);
+      params.auditSources = [...AUDIT_ROW_SOURCES];
+    }
     return _listFacts(deps, source_id, {
       ...opts,
       whereClauses: where,
@@ -282,10 +293,16 @@ export async function listFactsBySession(
     sessionId: string,
     opts?: FactListOpts,
   ): Promise<FactRow[]> {
+    const where: string[] = [`source_session = $sessionId`];
+    const whereParams: Record<string, unknown> = { sessionId };
+    if (opts?.excludeAuditRows === true) {
+      where.push(`NOT (source = ANY($auditSources))`);
+      whereParams.auditSources = [...AUDIT_ROW_SOURCES];
+    }
     return _listFacts(deps, source_id, {
       ...opts,
-      whereClauses: [`source_session = $sessionId`],
-      whereParams: { sessionId },
+      whereClauses: where,
+      whereParams,
       order: 'created_at DESC, id DESC',
     });
   }
