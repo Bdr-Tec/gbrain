@@ -742,3 +742,87 @@ describe('ingest_capture handler — integration with importFromContent', () => 
     expect(result.chunks).toBeGreaterThan(0);
   });
 });
+
+// #3756 — tombstone events map to a reconciler-style soft-delete behind the
+// trusted-source gate. Untrusted channels (webhook payloads) must never be
+// able to delete pages.
+describe('ingest_capture handler — tombstones (#3756)', () => {
+  test('soft-deletes an existing page and reports status deleted', async () => {
+    await engine.putPage('inbox/to-remove', {
+      type: 'note',
+      title: 'To Remove',
+      compiled_truth: '# To Remove\n\nbody',
+    } as any, { sourceId: 'default' });
+
+    const handler = makeIngestCaptureHandler(engine);
+    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/to-remove', content: 'tombstone' });
+    const result = await handler(makeJob({ event: ev }));
+    expect(result.status).toBe('deleted');
+    expect(result.slug).toBe('inbox/to-remove');
+    expect(result.chunks).toBe(0);
+
+    // Soft delete: row survives with deleted_at stamped (restorable), not a hard DELETE.
+    const rows = await engine.executeRaw<{ deleted_at: string | null }>(
+      `SELECT deleted_at FROM pages WHERE slug = $1 AND source_id = 'default'`,
+      ['inbox/to-remove'],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.deleted_at).not.toBeNull();
+  });
+
+  test('tombstone for a missing page reports skipped', async () => {
+    const handler = makeIngestCaptureHandler(engine);
+    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/never-existed', content: 'tombstone' });
+    const result = await handler(makeJob({ event: ev }));
+    expect(result.status).toBe('skipped');
+  });
+
+  test('untrusted payloads must not delete', async () => {
+    await engine.putPage('inbox/protected', {
+      type: 'note',
+      title: 'Protected',
+      compiled_truth: '# Protected\n\nbody',
+    } as any, { sourceId: 'default' });
+
+    const handler = makeIngestCaptureHandler(engine);
+    const ev = makeEvent({
+      kind: 'tombstone',
+      slug: 'inbox/protected',
+      content: 'tombstone',
+      untrusted_payload: true,
+    });
+    await expect(handler(makeJob({ event: ev }))).rejects.toThrow(/untrusted/i);
+    const page = await engine.getPage('inbox/protected', { sourceId: 'default' });
+    expect(page).not.toBeNull();
+  });
+
+  test('tombstone delete is scoped to the resolved source', async () => {
+    // Same slug in two sources; tombstone under default must not touch testsrc.
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('tombsrc', 'tombsrc') ON CONFLICT (id) DO NOTHING`,
+      [],
+    );
+    await engine.putPage('inbox/dupe', {
+      type: 'note', title: 'Dupe default', compiled_truth: '# d',
+    } as any, { sourceId: 'default' });
+    await engine.putPage('inbox/dupe', {
+      type: 'note', title: 'Dupe tombsrc', compiled_truth: '# t',
+    } as any, { sourceId: 'tombsrc' });
+
+    const handler = makeIngestCaptureHandler(engine);
+    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/dupe', content: 'tombstone' });
+    const result = await handler(makeJob({ event: ev }));
+    expect(result.status).toBe('deleted');
+
+    const other = await engine.getPage('inbox/dupe', { sourceId: 'tombsrc' });
+    expect(other).not.toBeNull();
+  });
+
+  test('event.slug wins over the generated default for upserts too', async () => {
+    const handler = makeIngestCaptureHandler(engine);
+    const ev = makeEvent({ content: 'top-level slug', slug: 'inbox/from-event-slug' });
+    const result = await handler(makeJob({ event: ev }));
+    expect(result.slug).toBe('inbox/from-event-slug');
+    expect(result.status).toBe('imported');
+  });
+});
