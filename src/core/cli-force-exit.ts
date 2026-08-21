@@ -361,7 +361,7 @@ export function flushThenExit(code: number, opts: FlushThenExitOpts = {}): void 
         proceed();
       }, drainDeadlineMs);
     }
-    void stdoutTail.then(proceed, proceed);
+    void stdoutTailIdle().then(proceed, proceed);
     return;
   }
   beginFence();
@@ -378,9 +378,17 @@ export function flushThenExit(code: number, opts: FlushThenExitOpts = {}): void 
 // seam's fence guard + grace loses its tail with exit 0 — verified truncation
 // at exactly 65,536 bytes on this exact shape. The cure: route the bytes
 // through direct fd-1 write syscalls (fs.writeSync loop below), which only
-// return/settle once the fd accepted every byte. One shared promise chain
-// (the "tail") serializes every routed write so ordering is preserved;
-// flushThenExit drains the tail before its fence + grace.
+// return/settle once the fd accepted every byte. An explicit FIFO queue of
+// {buf, offset} entries plus ONE async pump serializes every routed write so
+// ordering is preserved; flushThenExit drains the queue (awaits pump idle)
+// before its fence + grace, and a DIRECT process.exit(N) — the CLI's
+// validation paths call it without ever reaching flushThenExit (exit-2 JSON
+// envelopes, help/usage sites) — drains it SYNCHRONOUSLY via the patched
+// exit installed by installStdoutPipeDelivery. Pre-fix, a direct exit
+// discarded the whole queued tail whenever a prior bulk write had
+// EAGAIN-deferred: the small envelope written after it queued BEHIND the
+// deferred payload and both were lost (reproduced in CI + under serial-lane
+// load on the code-callers bad-pin exit-2 envelope).
 //
 // Why NOT Bun.write(Bun.stdout) (the #3423 primitive): initializing the
 // node:stream process.stdout wrapper — which patching process.stdout.write
@@ -407,11 +415,53 @@ export function flushThenExit(code: number, opts: FlushThenExitOpts = {}): void 
 // exit for those bytes to land.
 // ---------------------------------------------------------------------------
 
-/** Serialized-delivery chain: every routed stdout write settles in order. */
-let stdoutTail: Promise<void> = Promise.resolve();
-/** Writes on the tail that have not yet settled (0 ⇒ safe to start eagerly). */
+/**
+ * One queued payload awaiting delivery. `offset` is the resume point — only
+ * ever advanced by whichever drainer (the async pump or the synchronous
+ * direct-exit drain) is running; the two can never run concurrently (single
+ * thread: the sync drain only fires while the pump is parked at an await, at
+ * which point `offset` is current). `consumed` marks a fully-delivered (or
+ * EPIPE/errno-finished) entry so the pump never double-writes an entry the
+ * sync drain already delivered. `settle` resolves the per-write delivery
+ * promise (write callbacks + writeStdoutFinal awaiters).
+ */
+interface StdoutQueueEntry {
+  buf: Buffer;
+  offset: number;
+  consumed: boolean;
+  settle: () => void;
+}
+
+/** FIFO of deferred payloads: every routed stdout write settles in order. */
+const stdoutQueue: StdoutQueueEntry[] = [];
+/** Writes on the queue that have not yet settled (0 ⇒ safe to start eagerly). */
 let stdoutTailPending = 0;
+/** True while the single async pump owns the queue head. */
+let stdoutPumpRunning = false;
+/** Exit-seam waiters released when the queue fully settles (pump idle). */
+let stdoutIdleWaiters: Array<() => void> = [];
 let stdoutInterposed = false;
+
+/** Mark `entry` finished: settle its delivery promise and, when the queue
+ * goes quiet, release the exit seam's idle waiters. Idempotent — both
+ * drainers funnel completion through here. */
+function completeStdoutEntry(entry: StdoutQueueEntry): void {
+  if (entry.consumed) return;
+  entry.consumed = true;
+  stdoutTailPending -= 1;
+  entry.settle();
+  if (stdoutTailPending === 0) {
+    const waiters = stdoutIdleWaiters;
+    stdoutIdleWaiters = [];
+    for (const w of waiters) w();
+  }
+}
+
+/** Resolves once every queued write has settled (immediately when idle). */
+function stdoutTailIdle(): Promise<void> {
+  if (stdoutTailPending === 0) return Promise.resolve();
+  return new Promise((r) => stdoutIdleWaiters.push(r));
+}
 
 /** Poll interval while a non-blocking fd 1 reports EAGAIN (reader backpressure). */
 const STDOUT_EAGAIN_POLL_MS = 5;
@@ -465,27 +515,129 @@ export function writeChunkSync(
 }
 
 /**
- * Async continuation for a payload that hit EAGAIN: retry off a ref'd poll
- * timer (which also keeps Bun's loop alive until delivery) until the reader
- * drains or dies. Never rejects — the tail must always settle so the exit
- * seam can never hang on it.
+ * The single async pump: consumes the queue head-first with the old
+ * per-write continuation's semantics (writeChunkSync until done, retrying
+ * EAGAIN off a ref'd poll timer that also keeps Bun's loop alive until
+ * delivery; EPIPE/errno handling lives in writeChunkSync). Never rejects —
+ * the tail must always settle so the exit seam can never hang on it. The
+ * inner try/finally releases the running flag SYNCHRONOUSLY with the final
+ * queue-empty check (same continuation), so an enqueue can never observe a
+ * "running" pump that has already decided to stop.
  */
-async function writeAllToStdoutFd(buf: Buffer, off: number): Promise<void> {
-  let at = writeChunkSync(buf, off);
-  while (at !== 'done') {
-    await new Promise((r) => setTimeout(r, STDOUT_EAGAIN_POLL_MS));
-    at = writeChunkSync(buf, at);
+async function runStdoutPump(): Promise<void> {
+  try {
+    for (;;) {
+      const entry = stdoutQueue[0];
+      if (!entry) return;
+      if (entry.consumed) {
+        // The synchronous direct-exit drain finished this one while the pump
+        // was parked at the poll sleep — never write it again.
+        stdoutQueue.shift();
+        continue;
+      }
+      const at = writeChunkSync(entry.buf, entry.offset);
+      if (at === 'done') {
+        completeStdoutEntry(entry);
+        stdoutQueue.shift();
+        continue;
+      }
+      entry.offset = at;
+      await new Promise((r) => setTimeout(r, STDOUT_EAGAIN_POLL_MS));
+    }
+  } finally {
+    stdoutPumpRunning = false;
   }
 }
 
-/** Serialize `work` behind every write already on the tail. */
-function appendToStdoutTail(work: () => Promise<void>): Promise<void> {
+function ensureStdoutPump(): void {
+  if (stdoutPumpRunning) return;
+  stdoutPumpRunning = true;
+  void runStdoutPump();
+}
+
+/** Append a payload (with its resume `offset`) to the FIFO and make sure the
+ * pump is running. The returned promise settles on DELIVERY. */
+function enqueueStdoutEntry(buf: Buffer, offset: number): Promise<void> {
   stdoutTailPending += 1;
-  const settled = stdoutTail.then(work).then(() => {
-    stdoutTailPending -= 1;
+  return new Promise<void>((settle) => {
+    stdoutQueue.push({ buf, offset, consumed: false, settle });
+    ensureStdoutPump();
   });
-  stdoutTail = settled;
-  return settled;
+}
+
+/** Shared cell for Atomics.wait-based blocking sleeps on the direct-exit path. */
+const syncSleepCell: Int32Array<SharedArrayBuffer> | null = (() => {
+  try {
+    return new Int32Array(new SharedArrayBuffer(4));
+  } catch {
+    return null; // SharedArrayBuffer unavailable — spin fallback below
+  }
+})();
+
+/**
+ * Block the thread ~`ms` WITHOUT timers: the direct-exit path never returns
+ * to the event loop, so a setTimeout could never fire. Atomics.wait on a
+ * SharedArrayBuffer is the sanctioned main-thread blocking sleep in Bun/Node;
+ * if unavailable, a bounded spin (plain loop counter — no Date, no timers)
+ * burns a short slice instead. Either way the CALLER's deadline bounds the
+ * total wait.
+ */
+function sleepSyncMs(ms: number): void {
+  if (syncSleepCell) {
+    try {
+      Atomics.wait(syncSleepCell, 0, 0, ms);
+      return;
+    } catch {
+      // fall through to the spin
+    }
+  }
+  for (let i = 0; i < 4_000_000; i += 1) {
+    // spin — bounded busy-wait; the caller's deadline is the real cap
+  }
+}
+
+/**
+ * Synchronously drain every queued stdout entry — the direct-process.exit
+ * seam (#4383 residual). CLI validation paths print their payload and call
+ * process.exit(N) directly, never reaching flushThenExit; pre-fix, whenever a
+ * prior bulk write had EAGAIN-deferred into the queue, the payload written
+ * after it (e.g. the exit-2 JSON error envelope) queued BEHIND the deferred
+ * write and the direct exit discarded both. This loops writeChunkSync over
+ * the remaining entries with a bounded blocking EAGAIN retry (Atomics.wait
+ * micro-sleeps — no timers), marking each delivered entry consumed so the
+ * async pump never double-writes. `deadlineMs` caps the total blocking wait
+ * (default resolveStdoutDrainDeadlineMs(); 0 = uncapped, matching the async
+ * drain's contract); on expiry it prints the same one-line stderr note as
+ * the async drain and returns — visible bounded truncation beats a wedged
+ * exit. EPIPE/errno semantics are writeChunkSync's, unchanged.
+ */
+export function drainStdoutQueueSync(deadlineMs: number = resolveStdoutDrainDeadlineMs()): void {
+  const startedAt = Date.now();
+  while (stdoutQueue.length > 0) {
+    const entry = stdoutQueue[0];
+    if (entry.consumed) {
+      stdoutQueue.shift();
+      continue;
+    }
+    const at = writeChunkSync(entry.buf, entry.offset);
+    if (at === 'done') {
+      completeStdoutEntry(entry);
+      stdoutQueue.shift();
+      continue;
+    }
+    entry.offset = at; // bank partial progress for whoever drains next
+    if (deadlineMs > 0 && Date.now() - startedAt >= deadlineMs) {
+      try {
+        process.stderr.write(
+          `[cli] stdout tail drain exceeded ${deadlineMs}ms (GBRAIN_STDOUT_DRAIN_DEADLINE_MS) — exiting; piped output may be truncated\n`,
+        );
+      } catch {
+        // stderr gone — still proceed to exit
+      }
+      return;
+    }
+    sleepSyncMs(STDOUT_EAGAIN_POLL_MS);
+  }
 }
 
 /**
@@ -510,9 +662,9 @@ function chainStdoutWrite(data: string | Uint8Array, encoding?: BufferEncoding):
   if (stdoutTailPending === 0) {
     const rest = writeChunkSync(buf, 0);
     if (rest === 'done') return Promise.resolve();
-    return appendToStdoutTail(() => writeAllToStdoutFd(buf, rest));
+    return enqueueStdoutEntry(buf, rest);
   }
-  return appendToStdoutTail(() => writeAllToStdoutFd(buf, 0));
+  return enqueueStdoutEntry(buf, 0);
 }
 
 /**
@@ -550,6 +702,22 @@ export function installStdoutPipeDelivery(): void {
     return true;
   };
   process.stdout.write = interposed as typeof process.stdout.write;
+  // #4383 residual: the CLI's validation paths call process.exit(N) DIRECTLY
+  // (exit-2 JSON error envelopes, the many help/usage sites) without ever
+  // reaching flushThenExit. The fast path above delivers small payloads
+  // synchronously inside write() while the queue is idle — but once a bulk
+  // write EAGAIN-defers, every subsequent write queues BEHIND it, and a
+  // direct exit used to discard the whole queued tail (envelope included).
+  // Patch process.exit ONCE: drain the queue synchronously (bounded by
+  // resolveStdoutDrainDeadlineMs, same policy as the async drain), then call
+  // the real exit. flushThenExit is unaffected — it drains via the pump
+  // before it ever reaches exit, so the patched drain is a no-op there.
+  const realExit = process.exit.bind(process);
+  const patchedExit = ((code?: number | string | null): never => {
+    if (stdoutTailPending > 0) drainStdoutQueueSync();
+    return realExit(code as number);
+  }) as typeof process.exit;
+  process.exit = patchedExit;
   // Reroute the stdout-bound console methods through the same chain (see the
   // #4383 block comment: once the wrapper init above flips fd 1 to
   // O_NONBLOCK, Bun's own console writer EAGAINs big payloads into a queue

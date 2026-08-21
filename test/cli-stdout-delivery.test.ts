@@ -276,6 +276,103 @@ describe('installStdoutPipeDelivery (#4383)', () => {
     }
   }, 20_000);
 
+  test('direct process.exit(2) behind an EAGAIN-deferred bulk write delivers BOTH payloads in order (queued-tail sync drain)', async () => {
+    // #4383 residual: the CLI's validation paths (exit-2 JSON error
+    // envelopes — e.g. the bad .gbrain-source pin path in code-callers)
+    // print through the interposed console.log / process.stdout.write and
+    // then call process.exit(2) DIRECTLY, never reaching flushThenExit. When
+    // a prior bulk write EAGAIN-defers into the queue, the envelope appends
+    // BEHIND it — and the pre-fix direct exit discarded the whole queued
+    // tail: against a slow reader this exact shape delivered only the first
+    // 64KiB of the bulk payload, no envelope, exit 2. The patched
+    // process.exit drains the queue synchronously (blocking through reader
+    // backpressure) before the real exit.
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-stdout-direct-exit-'));
+    const script = join(dir, 'emit.ts');
+    const envelope = JSON.stringify({ error: { code: 'invalid_source_pin', message: 'not a source' } });
+    writeFileSync(
+      script,
+      `import { installStdoutPipeDelivery } from ${JSON.stringify(HELPER)};\n` +
+        `installStdoutPipeDelivery();\n` +
+        // Bulk payload > 64KiB: fills the kernel pipe buffer, EAGAIN-defers
+        // its tail into the queue.
+        `process.stdout.write('x'.repeat(${PAYLOAD_BYTES}));\n` +
+        // The victim shape: a small JSON envelope via console.log queues
+        // behind the deferred bulk write...
+        `console.log(${JSON.stringify(envelope)});\n` +
+        // ...and a DIRECT exit (no flushThenExit) must not discard the tail.
+        `process.exit(2);\n`,
+    );
+    const codeFile = join(dir, 'child-code.txt');
+    try {
+      // Slow reader: nothing drains for 1s — the sync drain must block
+      // through the backpressure instead of truncating. The pipeline's own
+      // exit code is cat's (always 0); PIPESTATUS[0] banks the CLI child's.
+      const proc = Bun.spawn({
+        cmd: [
+          'bash',
+          '-c',
+          `"${process.execPath}" "${script}" | { sleep 1; cat; }; echo "\${PIPESTATUS[0]}" > "${codeFile}"`,
+        ],
+        stdout: 'pipe',
+        stderr: 'inherit',
+      });
+      const out = await new Response(proc.stdout).text();
+      await proc.exited;
+      expect(out.length).toBe(PAYLOAD_BYTES + envelope.length + 1);
+      expect(out.slice(0, PAYLOAD_BYTES)).toBe('x'.repeat(PAYLOAD_BYTES));
+      expect(out.slice(PAYLOAD_BYTES)).toBe(envelope + '\n');
+      expect(readFileSync(codeFile, 'utf8').trim()).toBe('2'); // the direct exit's code survived
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test('direct process.exit: a stalled-open reader cannot wedge the sync drain past GBRAIN_STDOUT_DRAIN_DEADLINE_MS', async () => {
+    // Same D2 cap as the async drain, now on the synchronous direct-exit
+    // path: a reader that stays open and never drains must not block the
+    // patched exit forever. With a 500ms env deadline the drain gives up,
+    // prints the one-line stderr note, and the real exit proceeds — the
+    // process.on('exit') stamp (fires inside the real exit, AFTER the drain)
+    // captures wall-clock-to-exit and the preserved code, since stdout is
+    // wedged by construction.
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-stdout-direct-exit-deadline-'));
+    const script = join(dir, 'emit.ts');
+    const stamp = join(dir, 'stamp.json');
+    const errFile = join(dir, 'stderr.txt');
+    writeFileSync(
+      script,
+      `import { installStdoutPipeDelivery } from ${JSON.stringify(HELPER)};\n` +
+        `import { writeFileSync } from 'node:fs';\n` +
+        `installStdoutPipeDelivery();\n` +
+        `const t0 = Date.now();\n` +
+        `process.on('exit', (code) => {\n` +
+        `  writeFileSync(${JSON.stringify(stamp)}, JSON.stringify({ ms: Date.now() - t0, code }));\n` +
+        `});\n` +
+        `process.stdout.write('x'.repeat(4_000_000));\n` + // wedges past the 64KiB pipe buffer
+        `process.exit(3);\n`,
+    );
+    try {
+      const proc = Bun.spawn({
+        cmd: ['sh', '-c', `"${process.execPath}" "${script}" 2> "${errFile}" | sleep 4`],
+        env: { ...process.env, GBRAIN_STDOUT_DRAIN_DEADLINE_MS: '500' },
+        stdout: 'ignore',
+        stderr: 'inherit',
+      });
+      await proc.exited;
+      const stamped = JSON.parse(readFileSync(stamp, 'utf8')) as { ms: number; code: number };
+      expect(stamped.code).toBe(3); // the direct exit's code is preserved
+      // Deadline 500ms; the pre-cap behavior only exits when sleep dies at
+      // ~4s (EPIPE settles the queue).
+      expect(stamped.ms).toBeLessThan(3_000);
+      const err = readFileSync(errFile, 'utf8');
+      expect(err).toContain('stdout tail drain exceeded 500ms');
+      expect(err).toContain('GBRAIN_STDOUT_DRAIN_DEADLINE_MS');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test('interposed: multi-console.log help text survives an immediate raw process.exit (sync fast path)', async () => {
     // The regression the chain must NOT introduce: hundreds of help/usage
     // sites `console.log(...)` several lines and then call process.exit(1)
