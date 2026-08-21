@@ -270,7 +270,10 @@ export function decideLockAcquisition(
   lockPath: string,
   currentPid: number,
   deps: AutopilotLockProbeDeps = {},
-): { action: 'acquire' } | { action: 'exit'; holderPid: number } | { action: 'takeover'; reason: string } {
+):
+  | { action: 'acquire' }
+  | { action: 'exit'; holderPid: number; holderState: 'alive-autopilot' | 'alive-foreign' | 'alive-unknown' }
+  | { action: 'takeover'; reason: string } {
   if (!existsSync(lockPath)) return { action: 'acquire' };
 
   let raw = '';
@@ -283,15 +286,21 @@ export function decideLockAcquisition(
   const holderPid = Number.parseInt(raw, 10);
   const holder = classifyAutopilotLockHolder(holderPid, currentPid, deps);
 
-  if (holder.state === 'alive-autopilot' || holder.state === 'alive-unknown') {
-    return { action: 'exit', holderPid };
+  if (holder.state === 'alive-autopilot') {
+    return { action: 'exit', holderPid, holderState: holder.state };
   }
-  if (holder.state === 'alive-foreign') {
+  if (holder.state === 'alive-foreign' || holder.state === 'alive-unknown') {
+    // #4300: an alive PID whose command we can't identify as gbrain autopilot
+    // (recycled PID after reboot, or a /proc-less + ps-restricted host) gets
+    // the same age-gated takeover as a known-foreign holder. A fresh lock is
+    // still respected; only a stale one (past the grace window) is stolen —
+    // otherwise a single recycled PID bricks the daemon forever.
     const lockAgeMs = autopilotLockAgeMs(lockPath);
     if (lockAgeMs !== null && lockAgeMs >= AUTOPILOT_FOREIGN_PID_TAKEOVER_GRACE_MS) {
-      return { action: 'takeover', reason: `foreign pid ${raw || '<empty>'} with stale lock` };
+      const kind = holder.state === 'alive-foreign' ? 'foreign' : 'unidentifiable';
+      return { action: 'takeover', reason: `${kind} pid ${raw || '<empty>'} with stale lock` };
     }
-    return { action: 'exit', holderPid };
+    return { action: 'exit', holderPid, holderState: holder.state };
   }
   if (holder.state === 'self') {
     return { action: 'takeover', reason: `own pid ${raw || '<empty>'}` };
@@ -574,7 +583,17 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     mkdirSync(gbrainHomePath(), { recursive: true });
     const decision = decideLockAcquisition(lockPath, process.pid);
     if (decision.action === 'exit') {
-      console.error(`Another autopilot instance is running (pid ${decision.holderPid}). Exiting.`);
+      // #4300: say WHY we refused, loudly, so a bricked daemon is diagnosable
+      // from launchd/systemd logs without strace-ing the lock probe.
+      const detail =
+        decision.holderState === 'alive-autopilot'
+          ? 'a live gbrain autopilot process'
+          : decision.holderState === 'alive-unknown'
+            ? 'a live process whose command line could not be inspected (fresh lock — will become stealable once stale)'
+            : 'a live non-gbrain process holding a fresh lock (will become stealable once stale)';
+      console.error(
+        `[autopilot] refusing to start: lock ${lockPath} is held by pid ${decision.holderPid} — ${detail}. Exiting.`,
+      );
       process.exit(0);
     }
     if (decision.action === 'takeover') {
