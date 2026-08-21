@@ -23,7 +23,7 @@ import { operations, OperationError } from './core/operations.ts';
 import { resolveSourceIdEngineFree } from './core/source-resolver.ts';
 import { formatVolunteeredPage } from './core/context/volunteer.ts';
 import type { Operation, OperationContext } from './core/operations.ts';
-import { shouldForceExitAfterMain, finishCliTeardown, flushThenExit, currentExitCode, setCliExitVerdict, writeStdoutFinal } from './core/cli-force-exit.ts';
+import { shouldForceExitAfterMain, finishCliTeardown, flushThenExit, currentExitCode, setCliExitVerdict, writeStdoutFinal, installStdoutPipeDelivery } from './core/cli-force-exit.ts';
 import { serializeMarkdown } from './core/markdown.ts';
 import { parseGlobalFlags, setCliOptions, getCliOptions } from './core/cli-options.ts';
 import { conceptNudge } from './core/search/query-intent.ts';
@@ -3613,6 +3613,9 @@ if (import.meta.main) {
   // (bun test runners died mid-suite when a test emitted a synthetic SIGTERM).
   // Spawned/compiled CLI processes are entrypoints, so they still install.
   installCleanupSignalHandlers();
+  // #4383: CLI_ONLY payloads (console.log / bare process.stdout.write) get
+  // delivery-exact serialized writes; `serve` keeps native streaming stdout.
+  if (shouldForceExitAfterMain()) installStdoutPipeDelivery();
   main().then(
     () => {
       if (shouldForceExitAfterMain()) flushThenExit(currentExitCode());

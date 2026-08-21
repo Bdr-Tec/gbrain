@@ -32,10 +32,11 @@
  *           │
  *           ▼  (exactly ONE place: cli.ts import.meta.main main().then/catch)
  *   shouldForceExitAfterMain() && flushThenExit(currentExitCode())
- *     — fence stdout+stderr (write-fence raced with an unref'd guard,
- *       EPIPE-safe), hold a short REF'D aliveness grace for non-TTY stdio
- *       (Bun only delivers queued pipe writes while alive), then
- *       process.exit. Stuck sockets become irrelevant.
+ *     — drain the serialized stdout tail if any interposed write is still in
+ *       flight (#4383, ref'd keepalive), then fence stdout+stderr (write-fence
+ *       raced with an unref'd guard, EPIPE-safe), hold a short REF'D aliveness
+ *       grace for non-TTY stdio (Bun only delivers queued pipe writes while
+ *       alive), then process.exit. Stuck sockets become irrelevant.
  *
  * The hard-deadline timer is armed at TEARDOWN start, never before the op
  * handler — a slow-but-healthy handler must not erode the teardown budget
@@ -52,6 +53,8 @@
  * every path directly (cli.ts is a script entrypoint).
  */
 
+import { writeSync } from 'node:fs';
+import { formatWithOptions } from 'node:util';
 import {
   drainAllBackgroundWorkForCliExit,
   backgroundWorkSinkCount,
@@ -265,36 +268,232 @@ export function flushThenExit(code: number, opts: FlushThenExitOpts = {}): void 
   const bothTty = streams.every((s) => (s as { isTTY?: boolean }).isTTY === true);
   const graceMs = opts.graceMs ?? (bothTty ? 0 : resolveFlushGraceMs());
   process.exitCode = code;
-  let fenced = false;
-  let guard: ReturnType<typeof setTimeout> | undefined;
-  const finish = () => {
-    if (fenced) return;
-    fenced = true;
-    if (guard) clearTimeout(guard);
-    if (graceMs <= 0) {
-      exit(code);
-      return;
+  const beginFence = () => {
+    let fenced = false;
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (fenced) return;
+      fenced = true;
+      if (guard) clearTimeout(guard);
+      if (graceMs <= 0) {
+        exit(code);
+        return;
+      }
+      // Ref'd on purpose: aliveness IS the flush (Bun pipe-write semantics).
+      setTimeout(() => exit(code), graceMs);
+    };
+    let pending = streams.length;
+    const done = () => {
+      pending -= 1;
+      if (pending <= 0) finish();
+    };
+    guard = setTimeout(finish, guardMs);
+    guard.unref?.();
+    for (const s of streams) {
+      try {
+        // EPIPE on a closed pipe surfaces as an async 'error' event; swallow it —
+        // the guard or the other stream's callback still drives the exit.
+        s.once?.('error', () => {});
+        s.write('', () => done());
+      } catch {
+        done(); // sync EPIPE / destroyed stream
+      }
     }
-    // Ref'd on purpose: aliveness IS the flush (Bun pipe-write semantics).
-    setTimeout(() => exit(code), graceMs);
   };
-  let pending = streams.length;
-  const done = () => {
-    pending -= 1;
-    if (pending <= 0) finish();
-  };
-  guard = setTimeout(finish, guardMs);
-  guard.unref?.();
-  for (const s of streams) {
+  if (stdoutTailPending > 0) {
+    // #4383 — interposed/serialized stdout writes are still in flight (only
+    // possible on the EAGAIN continuation path: on a blocking pipe fd the
+    // writeSync loop completes inside the original call). Drain the tail
+    // before the fence so
+    // the exit cannot truncate a CLI_ONLY payload. The keepalive interval is
+    // deliberately REF'D: awaiting a promise does not by itself keep Bun's
+    // loop alive, and exiting naturally here would discard the very bytes the
+    // tail exists to deliver. Unbounded on purpose — same well-behaved-pipe-
+    // writer posture as writeStdoutFinal (#3423); EPIPE settles the tail when
+    // the reader dies, so a gone reader cannot hang the exit.
+    const keepalive = setInterval(() => {}, 500);
+    const proceed = () => {
+      clearInterval(keepalive);
+      beginFence();
+    };
+    void stdoutTail.then(proceed, proceed);
+    return;
+  }
+  beginFence();
+}
+
+// ---------------------------------------------------------------------------
+// #4383 — delivery-exact serialized stdout for one-shot commands.
+//
+// The #3423 fix (writeStdoutFinal) covered the shared-op paths, but CLI_ONLY
+// handlers still emit payloads through bare process.stdout.write (advisor
+// --json, eval-brainbench/eval-compare outcomes, agent results, calibration
+// reports, ...). Those writes land in Bun's queued native writer, so a payload
+// past the 64KiB kernel pipe buffer piped to a reader slower than the exit
+// seam's fence guard + grace loses its tail with exit 0 — verified truncation
+// at exactly 65,536 bytes on this exact shape. The cure: route the bytes
+// through direct fd-1 write syscalls (fs.writeSync loop below), which only
+// return/settle once the fd accepted every byte. One shared promise chain
+// (the "tail") serializes every routed write so ordering is preserved;
+// flushThenExit drains the tail before its fence + grace.
+//
+// Why NOT Bun.write(Bun.stdout) (the #3423 primitive): initializing the
+// node:stream process.stdout wrapper — which patching process.stdout.write
+// requires, and which merely reading process.stdout.isTTY already does —
+// flips fd 1 to O_NONBLOCK, and from then on Bun.write(Bun.stdout, big)
+// writes the first 64KiB and its promise NEVER settles, even after the
+// reader drains (probed on Bun 1.3.14: touch isTTY → Bun.write of 200KB
+// wedges forever at 65,536 bytes). The writeSync loop handles both regimes:
+// a blocking fd delivers synchronously inside the call; a non-blocking fd
+// partial-writes, gets EAGAIN, and resumes off a short poll timer.
+//
+// console.log (and info/debug — the stdout-bound console methods) IS rerouted
+// through the same chain, because the wrapper init above also breaks Bun's
+// console writer: with fd 1 blocking, console.log delivers sync-blocking and
+// can never truncate, but once the wrapper flips fd 1 to O_NONBLOCK — which
+// the real CLI does long before a payload prints (any process.stdout touch) —
+// console.log's write EAGAINs into a queue that process.exit discards. That
+// is precisely the `orphans --json | slow-reader` field truncation. The
+// rerouted methods keep Node's console formatting via util.formatWithOptions.
+// The many `console.log(...); process.exit(1)` help/usage sites stay safe
+// because the chain's fast path completes delivery SYNCHRONOUSLY inside the
+// call whenever the chain is idle and the pipe has room (the overwhelmingly
+// common case for small text) — no microtask has to run before a synchronous
+// exit for those bytes to land.
+// ---------------------------------------------------------------------------
+
+/** Serialized-delivery chain: every routed stdout write settles in order. */
+let stdoutTail: Promise<void> = Promise.resolve();
+/** Writes on the tail that have not yet settled (0 ⇒ safe to start eagerly). */
+let stdoutTailPending = 0;
+let stdoutInterposed = false;
+
+/** Poll interval while a non-blocking fd 1 reports EAGAIN (reader backpressure). */
+const STDOUT_EAGAIN_POLL_MS = 5;
+
+/**
+ * Push bytes of `buf` from `off` to fd 1 until done or backpressure.
+ * Returns 'done' when every byte was accepted OR the reader is gone (EPIPE
+ * and any other non-EAGAIN error are swallowed — partial delivery to a gone
+ * reader is not an op failure); returns the resume offset on EAGAIN
+ * (non-blocking fd + full pipe). On a blocking fd this loop delivers the
+ * whole payload synchronously, blocking like any well-behaved pipe writer.
+ */
+function writeChunkSync(buf: Buffer, off: number): 'done' | number {
+  while (off < buf.length) {
     try {
-      // EPIPE on a closed pipe surfaces as an async 'error' event; swallow it —
-      // the guard or the other stream's callback still drives the exit.
-      s.once?.('error', () => {});
-      s.write('', () => done());
-    } catch {
-      done(); // sync EPIPE / destroyed stream
+      off += writeSync(1, buf, off, buf.length - off);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      // EINTR is retryable like EAGAIN — dropping the tail on a signal
+      // interrupt would be a silent truncation.
+      if (code === 'EAGAIN' || code === 'EINTR') return off;
+      // EPIPE / closed reader — the operation itself already succeeded.
+      return 'done';
     }
   }
+  return 'done';
+}
+
+/**
+ * Async continuation for a payload that hit EAGAIN: retry off a ref'd poll
+ * timer (which also keeps Bun's loop alive until delivery) until the reader
+ * drains or dies. Never rejects — the tail must always settle so the exit
+ * seam can never hang on it.
+ */
+async function writeAllToStdoutFd(buf: Buffer, off: number): Promise<void> {
+  let at = writeChunkSync(buf, off);
+  while (at !== 'done') {
+    await new Promise((r) => setTimeout(r, STDOUT_EAGAIN_POLL_MS));
+    at = writeChunkSync(buf, at);
+  }
+}
+
+/** Serialize `work` behind every write already on the tail. */
+function appendToStdoutTail(work: () => Promise<void>): Promise<void> {
+  stdoutTailPending += 1;
+  const settled = stdoutTail.then(work).then(() => {
+    stdoutTailPending -= 1;
+  });
+  stdoutTail = settled;
+  return settled;
+}
+
+/**
+ * Append one payload to the serialized stdout chain.
+ *
+ * Fast path when nothing is in flight: delivery completes synchronously
+ * INSIDE this call (blocking fd: always; non-blocking fd: whenever the pipe
+ * has room), so the common `write(...); process.exit(...)` / multi-
+ * `console.log(...); process.exit(1)` shapes cannot lose their payload to a
+ * chained microtask that a synchronous exit never runs — and the chain stays
+ * idle (no pending state) for the next caller. Only genuine backpressure
+ * (EAGAIN mid-payload) or a prior in-flight write defers to the async tail,
+ * preserving order.
+ */
+function chainStdoutWrite(data: string | Uint8Array, encoding?: BufferEncoding): Promise<void> {
+  const buf =
+    typeof data === 'string'
+      ? Buffer.from(data, encoding ?? 'utf8')
+      : Buffer.isBuffer(data)
+        ? data
+        : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  if (stdoutTailPending === 0) {
+    const rest = writeChunkSync(buf, 0);
+    if (rest === 'done') return Promise.resolve();
+    return appendToStdoutTail(() => writeAllToStdoutFd(buf, rest));
+  }
+  return appendToStdoutTail(() => writeAllToStdoutFd(buf, 0));
+}
+
+/**
+ * Interpose process.stdout.write so CLI_ONLY payloads flow through the
+ * serialized fd-1 write chain (see the #4383 block comment above). Installed
+ * once per process from cli.ts's import.meta.main seam, ONLY for one-shot
+ * commands (`shouldForceExitAfterMain()`): daemons (`serve`) keep Bun's
+ * native streaming writer. TTY stdout writes synchronously already — nothing
+ * to fix — so the interposer is a no-op there.
+ *
+ * The replacement keeps the Writable#write surface the callers use: optional
+ * encoding, optional callback (fired after DELIVERY, not accept — strictly
+ * later than the native writer fired it, never earlier), boolean return
+ * (always true: the chain owns backpressure, and flushThenExit awaits it).
+ */
+export function installStdoutPipeDelivery(): void {
+  if (stdoutInterposed) return;
+  if (process.stdout.isTTY) return;
+  stdoutInterposed = true;
+  const interposed = function (
+    chunk: string | Uint8Array,
+    encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+    maybeCb?: (err?: Error | null) => void,
+  ): boolean {
+    let encoding: BufferEncoding | undefined;
+    let cb: ((err?: Error | null) => void) | undefined;
+    if (typeof encodingOrCb === 'function') {
+      cb = encodingOrCb;
+    } else {
+      encoding = encodingOrCb;
+      if (typeof maybeCb === 'function') cb = maybeCb;
+    }
+    const settled = chainStdoutWrite(chunk, encoding);
+    if (cb) void settled.then(() => cb(null));
+    return true;
+  };
+  process.stdout.write = interposed as typeof process.stdout.write;
+  // Reroute the stdout-bound console methods through the same chain (see the
+  // #4383 block comment: once the wrapper init above flips fd 1 to
+  // O_NONBLOCK, Bun's own console writer EAGAINs big payloads into a queue
+  // that process.exit discards — the `orphans --json` truncation). Formatting
+  // parity comes from util.formatWithOptions (what Node's Console uses);
+  // colors stay off — this path is non-TTY by construction. console.error /
+  // console.warn are stderr-bound and stay native.
+  const consoleToChain = (...args: unknown[]): void => {
+    void chainStdoutWrite(formatWithOptions({ colors: false }, ...args) + '\n');
+  };
+  console.log = consoleToChain;
+  console.info = consoleToChain;
+  console.debug = consoleToChain;
 }
 
 /**
@@ -304,19 +503,19 @@ export function flushThenExit(code: number, opts: FlushThenExitOpts = {}): void 
  * to the fd while the process stays alive (see FLUSH_GRACE_PIPE_MS), so a
  * payload larger than the kernel pipe buffer (64KiB) piped to a reader that
  * drains slower than the exit grace loses its tail with exit 0 (#3423) — and
- * the tail is exactly where a verify-read's fresh edit lives. Bun.write on
- * Bun.stdout resolves only after the fd accepted every byte, so awaiting it
- * here makes the exit safe at any reader pace; backpressure from a slow
+ * the tail is exactly where a verify-read's fresh edit lives. The serialized
+ * fd-1 write chain settles only after the fd accepted every byte, so awaiting
+ * it here makes the exit safe at any reader pace; backpressure from a slow
  * reader blocks like any well-behaved pipe writer instead of truncating.
  * EPIPE (reader closed early, e.g. `| head`) is swallowed — partial delivery
- * to a gone reader is not an op failure.
+ * to a gone reader is not an op failure. #4383: joins the same serialized
+ * chain as the interposed process.stdout.write, so a final payload can never
+ * overtake an earlier CLI_ONLY write — and, unlike the original
+ * Bun.write(Bun.stdout) primitive, it cannot wedge when the process.stdout
+ * wrapper has been initialized (see the #4383 block comment above).
  */
 export async function writeStdoutFinal(output: string): Promise<void> {
-  try {
-    await Bun.write(Bun.stdout, output);
-  } catch {
-    // EPIPE / closed reader — the operation itself already succeeded.
-  }
+  await chainStdoutWrite(output);
 }
 
 export interface FinishCliTeardownOpts {
