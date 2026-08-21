@@ -904,6 +904,16 @@ export interface SearchResult {
    */
   alias_hit?: boolean;
   /**
+   * #3783 — set when this result was surfaced by a LEXICAL arm (chunk-grain
+   * keyword FTS or the page-grain title arm). Stamped pre-fusion by
+   * markKeywordHits and OR-propagated through RRF fusion so a row that
+   * arrived via both vector and keyword arms keeps the flag regardless of
+   * which copy fusion saw first. `evidence: keyword_exact` fires ONLY on
+   * rows carrying this flag — a pure-vector row with a solid blended score
+   * is no longer mislabeled as a keyword match.
+   */
+  keyword_hit?: boolean;
+  /**
    * T4 — the strongest signal that surfaced this page (alias_hit >
    * exact_title_match > high_vector_match > keyword_exact > weak_semantic).
    * Computed by classifyEvidence at the end of the hybrid pipeline.

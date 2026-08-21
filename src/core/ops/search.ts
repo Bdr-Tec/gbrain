@@ -10,6 +10,7 @@ import { hybridSearchCached, stampContentFlags, stampUnverifiedExtractions } fro
 import { looksConceptShaped } from '../search/query-intent.ts';
 import { expandQuery } from '../search/expansion.ts';
 import { dedupResults } from '../search/dedup.ts';
+import { markKeywordHits } from '../search/evidence.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from '../eval-capture.ts';
 import type { HybridSearchMeta } from '../types.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
@@ -88,6 +89,9 @@ const search: Operation = {
     if (keywordOnly) {
       const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, ...scope });
       const results = dedupResults(raw);
+      // #3783 — every row here IS a keyword hit (direct FTS path); mark
+      // before stamping so evidence still reads keyword_exact.
+      markKeywordHits(results);
       stampEvidenceSafe(results);
       // #1699: the keyword-only opt-out must STILL surface the content_flag
       // agent-warning channel (hybridSearch stamps it; this branch bypasses

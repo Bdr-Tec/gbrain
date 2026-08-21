@@ -23,7 +23,7 @@ import type { BrainEngine, FactRow } from '../engine.ts';
 import { normalizeAlias } from '../search/alias-normalize.ts';
 import { slugify } from '../entities/resolve.ts';
 import { safeSynopsis } from '../context/retrieval-reflex.ts';
-import { stampEvidence } from '../search/evidence.ts';
+import { stampEvidence, markKeywordHits } from '../search/evidence.ts';
 import type { SearchResult } from '../types.ts';
 
 const EDGE_CAP = 10;
@@ -321,6 +321,8 @@ async function nearMissSuggestions(
   try {
     const raw = await engine.searchKeyword(name, { limit: SUGGESTION_CAP, sourceId });
     const results = raw as SearchResult[];
+    // #3783 — direct FTS path: every row is a keyword hit by construction.
+    markKeywordHits(results);
     stampEvidence(results);
     return results.map(r => ({
       slug: r.slug,

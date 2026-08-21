@@ -42,7 +42,7 @@ import { applyReranker } from './rerank.ts';
 import { autoDetectDetail, classifyQuery, isAmbiguousModalityQuery } from './query-intent.ts';
 import { isTitlePhraseMatch } from './title-match.ts';
 import { normalizeAlias } from './alias-normalize.ts';
-import { stampEvidence } from './evidence.ts';
+import { stampEvidence, markKeywordHits } from './evidence.ts';
 import { expandAnchors, hydrateChunks } from './two-pass.ts';
 import { enforceTokenBudget, searchSalvageEnabled, type TokenBudgetMeta } from './token-budget.ts';
 import { warnOncePerProcess } from '../utils.ts';
@@ -1337,6 +1337,12 @@ export async function hybridSearch(
             return [] as SearchResult[];
           }),
         ]);
+  // #3783 — stamp lexical-arm membership pre-fusion so evidence's
+  // keyword_exact label is earned by an actual FTS hit, never by a solid
+  // blended score alone. Both arms are the lexical-evidence class (chunk
+  // FTS + title FTS); vector/relational arms are deliberately NOT marked.
+  markKeywordHits(keywordResults);
+  markKeywordHits(titleResults);
 
   // v0.29.1: resolve salience/recency from caller (back-compat aliases for
   // PR #618's `recencyBoost` numeric scale) or fall back to the heuristic.
@@ -2585,7 +2591,7 @@ export function rrfFusionWeighted(
   lists: Array<{ list: SearchResult[]; k: number }>,
   applyBoost = true,
 ): SearchResult[] {
-  const scores = new Map<string, { result: SearchResult; score: number }>();
+  const scores = new Map<string, { result: SearchResult; score: number; keywordHit: boolean }>();
 
   for (const { list, k } of lists) {
     for (let rank = 0; rank < list.length; rank++) {
@@ -2596,8 +2602,12 @@ export function rrfFusionWeighted(
 
       if (existing) {
         existing.score += rrfScore;
+        // #3783 — OR-propagate lexical-arm membership: a row that fusion
+        // first saw via a vector list must still read keyword_hit when the
+        // keyword arm ALSO surfaced it.
+        if (r.keyword_hit === true) existing.keywordHit = true;
       } else {
-        scores.set(key, { result: r, score: rrfScore });
+        scores.set(key, { result: r, score: rrfScore, keywordHit: r.keyword_hit === true });
       }
     }
   }
@@ -2618,7 +2628,10 @@ export function rrfFusionWeighted(
 
   return entries
     .sort((a, b) => b.score - a.score)
-    .map(({ result, score }) => ({ ...result, score }));
+    .map(({ result, score, keywordHit }) =>
+      keywordHit && result.keyword_hit !== true
+        ? { ...result, score, keyword_hit: true }
+        : { ...result, score });
 }
 
 /**
@@ -2627,7 +2640,7 @@ export function rrfFusionWeighted(
  * After accumulation: normalize to 0-1, then boost compiled_truth chunks.
  */
 export function rrfFusion(lists: SearchResult[][], k: number, applyBoost = true): SearchResult[] {
-  const scores = new Map<string, { result: SearchResult; score: number }>();
+  const scores = new Map<string, { result: SearchResult; score: number; keywordHit: boolean }>();
 
   for (const list of lists) {
     for (let rank = 0; rank < list.length; rank++) {
@@ -2638,8 +2651,10 @@ export function rrfFusion(lists: SearchResult[][], k: number, applyBoost = true)
 
       if (existing) {
         existing.score += rrfScore;
+        // #3783 — OR-propagate lexical-arm membership across merge order.
+        if (r.keyword_hit === true) existing.keywordHit = true;
       } else {
-        scores.set(key, { result: r, score: rrfScore });
+        scores.set(key, { result: r, score: rrfScore, keywordHit: r.keyword_hit === true });
       }
     }
   }
@@ -2668,7 +2683,10 @@ export function rrfFusion(lists: SearchResult[][], k: number, applyBoost = true)
   // Sort by boosted score descending
   return entries
     .sort((a, b) => b.score - a.score)
-    .map(({ result, score }) => ({ ...result, score }));
+    .map(({ result, score, keywordHit }) =>
+      keywordHit && result.keyword_hit !== true
+        ? { ...result, score, keyword_hit: true }
+        : { ...result, score });
 }
 
 /**
