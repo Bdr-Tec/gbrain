@@ -245,6 +245,60 @@ describe('enrichEntity trust lane', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #3994: created stubs must land in the retrieval surface. The old CREATE
+// path wrote via bare engine.putPage, which never chunks — so every fresh
+// entity stub had zero content_chunks rows and was invisible to the keyword
+// and vector recall arms. The fix routes through serializeMarkdown +
+// importFromContent (the #2163 concept-page precedent).
+// ---------------------------------------------------------------------------
+
+describe('enrichEntity created stubs are retrieval-visible (#3994)', () => {
+  async function chunkCount(slug: string): Promise<number> {
+    const rows = await engine.executeRaw<{ n: number }>(
+      'SELECT count(*)::int AS n FROM content_chunks c JOIN pages p ON p.id = c.page_id WHERE p.slug = $1',
+      [slug],
+    );
+    return Number(rows[0]!.n);
+  }
+
+  test('fresh untrusted stub has >=1 chunk row, markers intact, keyword arm hits', async () => {
+    const r = await enrichEntity(engine, {
+      entityName: 'Charlie Example',
+      entityType: 'person',
+      context: 'Met at the zebrafish conference',
+      sourceSlug: 'meetings/2026-04-03',
+    });
+    expect(r.action).toBe('created');
+    expect(r.quarantined).toBe(true);
+
+    // Quarantine markers survive the import pipeline round-trip.
+    const page = await engine.getPage('people/charlie-example');
+    expect(page).toBeDefined();
+    expect(isUnverifiedExtraction(page!.frontmatter)).toBe(true);
+    expect(page!.frontmatter[EXTRACTION_STATUS_KEY]).toBe(STATUS_UNVERIFIED);
+
+    // The stub is chunked (pre-fix putPage path wrote zero chunk rows).
+    expect(await chunkCount('people/charlie-example')).toBeGreaterThanOrEqual(1);
+
+    // ...and therefore reachable by the keyword recall arm.
+    const hits = await engine.searchKeyword('zebrafish conference', { limit: 10 });
+    expect(hits.some((h) => h.slug === 'people/charlie-example')).toBe(true);
+  });
+
+  test('trusted stub is chunked too, without quarantine markers', async () => {
+    await enrichEntity(engine, {
+      entityName: 'Trusted Chunky',
+      entityType: 'person',
+      context: 'quarterly planning offsite',
+      sourceSlug: 'notes/daily',
+    }, { trusted: true });
+    expect(await chunkCount('people/trusted-chunky')).toBeGreaterThanOrEqual(1);
+    const page = await engine.getPage('people/trusted-chunky');
+    expect(isUnverifiedExtraction(page!.frontmatter)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ops: trust-boundary matrix + review queue
 // ---------------------------------------------------------------------------
 
