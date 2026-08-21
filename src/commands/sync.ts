@@ -102,6 +102,8 @@ import {
   writeSyncAnchor,
   readChunkerVersion,
   writeChunkerVersion,
+  resolveSlugRootMode,
+  type SlugRootMode,
 } from '../core/sync-anchor.ts';
 import {
   SyncLockBusyError,
@@ -813,7 +815,27 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // the SCOPE path, so a follow-up bare `gbrain sync` auto-discovers the same
   // scope. Unchanged (the caller's repoPath spelling) when no --src-subpath.
   const anchorPath = opts.srcSubpath ? rawScopeRoot : repoPath;
-  const fullSyncRoots = { gitContextRoot, syncScopeRoot, anchorPath };
+  // #4342 — explicit + STICKY slug namespace for scoped syncs. Pre-fix the
+  // namespace was implicit: a local_path that happened to sit inside a bigger
+  // git repo silently produced git-root-PREFIXED slugs (`notes/foo` instead
+  // of `foo`), diverging from what `gbrain import <dir>` of the same tree
+  // creates. The mode is decided once (resolveSlugRootMode: stored pin >
+  // explicit --src-subpath > auto-pin when existing pages already carry the
+  // prefix > local_path-relative) and persisted, so a live install never
+  // re-slugs and every later sync agrees.
+  let slugRootMode: SlugRootMode = 'git-root';
+  if (scoped) {
+    // Probe prefix in SLUG spelling (resolveSlugForPath), not raw path
+    // spelling — the auto-pin LIKE must match how slugs were actually minted.
+    const probeSlug = resolveSlugForPath(join(syncScopeRelPath, 'x.md'));
+    const slugPrefix = probeSlug.slice(0, probeSlug.length - '/x'.length);
+    slugRootMode = await resolveSlugRootMode(engine, {
+      sourceId: opts.sourceId,
+      explicitGitRoot: opts.srcSubpath !== undefined,
+      slugPrefix,
+    });
+  }
+  const fullSyncRoots = { gitContextRoot, syncScopeRoot, anchorPath, slugRootMode };
 
   serr(`[gbrain phase] sync.detect_head`);
   // Detect detached HEAD up front so the working-tree fallback fires for both
@@ -1241,6 +1263,24 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       .map(r => r.to),
   ]);
 
+  // #4342 'source-root' mode: translate the (git-root-relative) manifest to
+  // SOURCE-relative paths so every downstream consumer — slugs, source_path,
+  // deletes, renames, checkpoints — names pages the way `gbrain import
+  // <local_path>` would. Under 'git-root' (or an unscoped sync) this is a
+  // no-op and the pre-#4342 behavior is byte-for-byte. The file-join base
+  // below (`syncImportRoot`) moves with it so `join(base, path)` still lands
+  // on the same file.
+  const sourceRootMode = scoped && slugRootMode === 'source-root';
+  const syncImportRoot = sourceRootMode ? syncScopeRoot : gitContextRoot;
+  /** Manifest path → the mode's canonical page path (slug/source_path base). */
+  const modePath = (p: string): string => (sourceRootMode ? scopeRel(p) : p);
+  if (sourceRootMode) {
+    filtered.added = filtered.added.map(scopeRel);
+    filtered.modified = filtered.modified.map(scopeRel);
+    filtered.deleted = filtered.deleted.map(scopeRel);
+    filtered.renamed = filtered.renamed.map(r => ({ from: scopeRel(r.from), to: scopeRel(r.to) }));
+  }
+
   // NAV-4: warn when --exclude filtered out every candidate change — almost
   // always a mistyped pattern, and otherwise indistinguishable from
   // "up to date" in the output.
@@ -1327,7 +1367,9 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     if (reason === 'malformed-path' && !isPoisonedPath(path)) continue;
     // #3942: guarded resolver — never delete a page whose recorded origin is
     // a DIFFERENT file just because this path re-slugifies onto its slug.
-    const slug = await resolveRemovedPathSlug(engine, path, opts.sourceId, serr);
+    // #4342: resolve in the mode's namespace (source-relative under
+    // 'source-root'; git-root-relative otherwise).
+    const slug = await resolveRemovedPathSlug(engine, modePath(path), opts.sourceId, serr);
     if (slug === undefined) continue;
     try {
       const existing = await engine.getPage(slug, pageOpts);
@@ -1798,10 +1840,12 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       // throw here crashes the whole sync mid-run and freezes the checkpoint,
       // defeating --skip-failed. A `skipped` result carrying an error is also
       // captured so the failure is recorded rather than silently dropped.
-      // Paths from git diff are relative to gitContextRoot; join from there.
+      // Paths from git diff are relative to gitContextRoot — except under
+      // #4342's 'source-root' mode, where the filtered manifest (this loop's
+      // source) was remapped scope-relative; the join base moves with it.
       // NAV-1 TOCTOU: refuse a destination that realpath-resolves outside the
       // repo (committed symlink pointing out).
-      const filePath = join(gitContextRoot, to);
+      const filePath = join(syncImportRoot, to);
       let importResult: Awaited<ReturnType<typeof importFile>> | undefined;
       if (existsSync(filePath) && isPathSafe(filePath, gitContextRoot)) {
         try {
@@ -1958,8 +2002,10 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     progress.start('sync.imports', importsToDo.length);
 
     // Core import logic shared by serial and parallel paths.
-    // Paths from git diff are relative to gitContextRoot; join from there.
-    const syncRepoPath = gitContextRoot;
+    // Paths from git diff are relative to gitContextRoot; under #4342's
+    // 'source-root' mode the filtered manifest was remapped scope-relative,
+    // so the join base moves to syncScopeRoot with it.
+    const syncRepoPath = syncImportRoot;
     // paced-backfill (T3 / C9 / CX4): ONE shared pacer across all worker
     // engines. This is the multi-pool permit case — each parallel worker owns a
     // separate PostgresEngine, so a single worker count can't bound TOTAL
@@ -2671,15 +2717,17 @@ async function performFullSync(
   //   syncScopeRoot  — where files are walked/imported (== gitContextRoot
   //                    when no subpath scope is active)
   //   anchorPath     — what gets written back to sync.repo_path/local_path
-  roots: { gitContextRoot: string; syncScopeRoot: string; anchorPath: string },
+  //   slugRootMode   — #4342 sticky namespace anchor (git-root|source-root)
+  roots: { gitContextRoot: string; syncScopeRoot: string; anchorPath: string; slugRootMode: SlugRootMode },
   headCommit: string,
   opts: SyncOpts,
 ): Promise<SyncResult> {
-  const { gitContextRoot, syncScopeRoot, anchorPath } = roots;
-  // Scoped sync → slugs/source_path are git-root-relative (matches the
-  // incremental path's git-diff paths). Unscoped → undefined (dir-relative,
-  // the pre-#774 behavior, byte-for-byte).
-  const slugRoot = syncScopeRoot !== gitContextRoot ? gitContextRoot : undefined;
+  const { gitContextRoot, syncScopeRoot, anchorPath, slugRootMode } = roots;
+  // Scoped 'git-root' sync → slugs/source_path are git-root-relative (matches
+  // the incremental path's git-diff paths). Unscoped OR pinned 'source-root'
+  // (#4342) → undefined (dir-relative — local_path IS the slug base).
+  const slugRoot =
+    syncScopeRoot !== gitContextRoot && slugRootMode === 'git-root' ? gitContextRoot : undefined;
   // Dry-run: walk the scope, count syncable files, return without writing.
   // Fixes the silent-write-on-dry-run bug where performFullSync called
   // runImport unconditionally regardless of opts.dryRun.
