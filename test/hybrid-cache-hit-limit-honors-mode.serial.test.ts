@@ -6,6 +6,15 @@
  * omitted could return and cache up to 25 results, but the next identical-
  * shape call served from cache silently sliced that cached row down to 20 —
  * inconsistent between the miss and hit paths for the same call shape.
+ * (Scope note: this fix closes that gap for `offset: 0` — the common case,
+ * and the shape every test below drives. A SEPARATE, pre-existing bug
+ * — offset is applied twice on a hit, once already baked into what the miss
+ * path stored and once again by the hit branch, AND offset isn't part of
+ * the cache key at all — means a nonzero `offset` still breaks hit/miss
+ * parity; see the "KNOWN LIMITATION" test near the end of this file. That
+ * bug is orthogonal to the `|| 20` vs `|| resolvedMode.searchLimit`
+ * substitution this PR makes and isn't fixed here — see that test's comment
+ * for why.)
  *
  * Companion to #4356 Site 1 (see
  * test/query-op-limit-mode-4356.serial.test.ts, the `query` op's own
@@ -170,6 +179,67 @@ describe('cache HIT — limit honors the resolved mode (#4356)', () => {
     });
     expect(hitMeta?.cache?.status).toBe('hit');
     expect(hitResults.length).toBe(3);
+  });
+
+  // KNOWN LIMITATION (pre-existing, NOT introduced or worsened by this PR's
+  // `resolvedForCache.searchLimit` change — filed as #4358): the miss path
+  // stores the ALREADY offset-sliced array (`hybridSearch`'s own
+  // `returnPool.slice(offset,
+  // offset + limit)`), then the cache-hit branch applies `offset` a SECOND
+  // time on top of that already-sliced array. For offset=0 this is a no-op
+  // (slicing from 0 twice is idempotent), which is why every test above —
+  // and the miss/hit consistency this PR actually fixes — holds. For a
+  // nonzero offset it is NOT idempotent: e.g. a miss with `limit: 9,
+  // offset: 2` stores 9 rows representing pool positions [2, 11); the next
+  // hit then slices THAT 9-row array at [2, 11) again, yielding rows [2, 9)
+  // of a 9-element array — 7 rows, not 9.
+  //
+  // (`limit: 9` here — rather than the mode default this file's other tests
+  // rely on — is deliberate, not incidental: `offset` is NOT part of
+  // `knobsHash` (mode.ts's `knobsHash()` has no `offset=` component), so a
+  // lookup with a NEW offset but the SAME resolved limit as an earlier test
+  // in this file would hit an already-written row instead of missing —
+  // itself a related but distinct pre-existing gap, also out of scope here.
+  // A limit value unique to this test sidesteps that collision so the
+  // miss/hit pair below is clean.)
+  //
+  // This test pins the CURRENT (broken) behavior so a future fix shows up
+  // as an intentional test update, per the same "pin the gap" pattern the
+  // original #3995/#4355 review applied to the cache-hit relational-meta
+  // absence. Properly fixing this requires redesigning what the cache
+  // stores (e.g. cache the pre-offset pool and re-slice offset+limit fresh
+  // on every hit, key offset into the cache, or skip caching for
+  // offset>0) — a distinct concern from the `|| 20` vs
+  // `|| resolvedMode.searchLimit` substitution this PR makes, so it is
+  // deliberately NOT fixed here (would reintroduce the "bundling unrelated
+  // changes" problem that got #4355/#4357 closed).
+  test('KNOWN LIMITATION: nonzero offset breaks hit/miss count parity (offset is re-applied to an already offset-sliced cached row)', async () => {
+    let missMeta: import('../src/core/types.ts').HybridSearchMeta | undefined;
+    const missResults = await hybridSearchCached(engine, KEYWORD, {
+      limit: 9,
+      offset: 2,
+      autocut: false,
+      relationalRetrieval: false,
+      onMeta: (m) => { missMeta = m; },
+    });
+    expect(missMeta?.cache?.status).toBe('miss');
+    expect(missResults.length).toBe(9);
+
+    await awaitPendingSearchCacheWrites();
+
+    let hitMeta: import('../src/core/types.ts').HybridSearchMeta | undefined;
+    const hitResults = await hybridSearchCached(engine, KEYWORD, {
+      limit: 9,
+      offset: 2,
+      autocut: false,
+      relationalRetrieval: false,
+      onMeta: (m) => { hitMeta = m; },
+    });
+    expect(hitMeta?.cache?.status).toBe('hit');
+    // Pins the CURRENT (pre-existing, unfixed) double-offset behavior: 7,
+    // not 9. If this assertion ever fails, the underlying bug was fixed —
+    // update this test (and close #4358) rather than reverting.
+    expect(hitResults.length).toBe(7);
   });
 
   // NOTE on `limit: 0` (not a test — documenting why one isn't here): a
