@@ -17,7 +17,7 @@ src/commands/jobs.ts	3027	ratchet	grown v0.46.22.0 phone wave: github source syn
 src/core/search/hybrid.ts	2636	ratchet	grown v0.46.24.0 overnight wave (#4296)
 src/core/engine.ts	2410	ratchet	grown v0.46.25.0 delegated wave (#3987 #4095) + eventTime JSDoc (#4007) + #4008 recall-exclude-audit-rows fix
 src/commands/autopilot.ts	2301	ratchet
-src/commands/extract.ts	2167	ratchet	grown v0.46.25.0 delegated wave (#4265 #3939)
+src/commands/extract.ts	2156	ratchet	grown v0.46.25.0 delegated wave (#4265 #3939); lowered: Format-3 loop delegated to timeline-citations.ts (#3892 adoption)
 src/commands/extract-conversation-facts.ts	2045	ratchet	grown v0.46.x per-provider gateway-unavailable copy
 src/core/import-file.ts	2016	ratchet	grown v0.46.24.0 overnight wave: embedding_plane_split named error (#4287)
 src/core/cycle/synthesize.ts	2702	ratchet	merged: five-issue wave + dream-wave C7 peel + C8 manifest + C9 mode/telemetry/backfill + adversarial fix batches
@@ -31,7 +31,7 @@ src/core/minions/handlers/subagent.ts	1825	ratchet	merged: master v131 settle re
 src/commands/bootstrap.ts	2010	ratchet	grandfathered at merge (grew past the 1500 cap on master); raised for #4066 HOME_WORKSPACE_GUARD_EXEMPT (status/uninstall/harness)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
 src/commands/sources.ts	1790	ratchet	grown v0.46.22.0 phone wave: github source kind (#4104)
-src/core/link-extraction.ts	1510	ratchet	grown v0.46.25.0 delegated wave (#3939 #3723)
+src/core/link-extraction.ts	1467	ratchet	grown v0.46.25.0 delegated wave (#3939 #3723); lowered: stripCodeBlocks + citation loop peeled to markdown-code.ts/timeline-citations.ts (#3892 adoption)
 src/core/github-source.ts	1560	ratchet	new row: crossed the 1500 unlisted cap in v0.46.23.0 review fix wave (scope-state gating, client hardening, symlink containment)
 src/core/bootstrap/harness.ts	1947	ratchet
 src/commands/hook.ts	1550	ratchet	cathedral-5 heartbeat extraction offsets part of the BrainBench-seam growth
