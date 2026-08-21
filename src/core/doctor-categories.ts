@@ -209,6 +209,7 @@ export const META_CHECK_NAMES: ReadonlySet<string> = new Set([
   'minions_migration',
   'multi_source_drift',
   'pack_upgrade_available',
+  'schema_columns',
   'schema_pack_active',
   'schema_pack_consistency',
   'schema_pack_source_drift',
