@@ -866,8 +866,6 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       serr(`[gbrain phase] sync.git_pull done ${Date.now() - _t0}ms`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      // #1315: 200 chars (was 80 — a long repo path alone exhausted the
-      // budget before the stderr-first message reached its fatal line).
       serr(`[gbrain phase] sync.git_pull error ${Date.now() - _t0}ms (${msg.slice(0, 200)})`);
       // v0.41.13.0 (T3 / D-V4-mech-7): pullRepo wraps execFileSync errors
       // in GitOperationError, so `error.code === 'ETIMEDOUT'` and
@@ -898,9 +896,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       if (msg.includes('non-fast-forward') || msg.includes('diverged')) {
         serr(`Warning: git pull failed (remote diverged). Syncing from local state.`);
       } else {
-        // #1315: 200 chars so the stderr-first GitOperationError message
-        // ("git pull failed in <path>: fatal: …") keeps its fatal line.
-        serr(`Warning: git pull failed: ${msg.slice(0, 200)}`);
+        serr(`Warning: git pull failed: ${msg.slice(0, 200)}`); // #1315 stderr-first
       }
     }
   }
