@@ -45,18 +45,35 @@ describe('chat touchpoint — recipe registry', () => {
     }
   });
 
-  test('only known cache-capable recipes claim supports_prompt_cache', () => {
+  test('the set of recipes declaring supports_prompt_cache is the expected one', () => {
+    // The flag answers "does this provider cache prompts at all" — what
+    // capabilities.ts reads to decide whether the subagent loop runs hot.
+    // Explicit client-side markers (Anthropic's cache_control), automatic
+    // server-side prefix caching (OpenAI, DeepSeek), and a local server that
+    // always caches (llama-server) all count.
+    //
+    // This pins the CURRENT declarations, not a claim that every other
+    // provider is cache-less: some recipes here still declare false while
+    // their vendor does cache (moonshot). Correcting those needs per-model
+    // predicates rather than a boolean, so they are tracked separately —
+    // when one is fixed, add it here.
+    // Per-model predicate where caching depends on the model generation or the
+    // routed family — OpenRouter by routed model family (openai/* +
+    // anthropic/claude-*), Google by Gemini version (implicit caching is
+    // 2.5+), OpenAI by the gpt-4o/o-series generation; a plain boolean where
+    // it is a property of the whole provider. Anything else must declare no
+    // caching.
+    const PREDICATE = new Set(['openai', 'openrouter', 'google']);
+    const ALWAYS_CACHES = new Set(['anthropic', 'deepseek', 'llama-server']);
     for (const r of listRecipes()) {
       if (!r.touchpoints.chat) continue;
-      if (r.id === 'anthropic' || r.id === 'llama-server') {
-        expect(r.touchpoints.chat.supports_prompt_cache).toBe(true);
-      } else if (r.id === 'openrouter' || r.id === 'google') {
-        // Scoped predicates, never a blanket true: OpenRouter by routed model
-        // family (openai/* + anthropic/claude-*), Google by Gemini version
-        // (implicit caching is 2.5+). Matrices live in each recipe's test.
-        expect(typeof r.touchpoints.chat.supports_prompt_cache).toBe('function');
+      const flag = r.touchpoints.chat.supports_prompt_cache;
+      if (PREDICATE.has(r.id)) {
+        expect(typeof flag, `${r.id} should gate caching per model`).toBe('function');
+      } else if (ALWAYS_CACHES.has(r.id)) {
+        expect(flag, `${r.id} should declare caching`).toBe(true);
       } else {
-        expect(r.touchpoints.chat.supports_prompt_cache ?? false).toBe(false);
+        expect(flag ?? false, `${r.id} should not declare caching`).toBe(false);
       }
     }
   });

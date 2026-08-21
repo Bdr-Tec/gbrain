@@ -3169,8 +3169,13 @@ export interface ChatOpts {
   maxTokens?: number;
   abortSignal?: AbortSignal;
   /**
-   * Anthropic-specific: cache the system prompt + last tool def. Silently
-   * ignored on providers without `supports_prompt_cache`.
+   * Ask for the stable prefix (system prompt + last tool def) to be cached.
+   * Silently ignored on providers whose recipe declares no prompt caching.
+   *
+   * Only Anthropic reads the resulting `cache_control` markers. Providers that
+   * cache prefixes automatically (OpenAI, DeepSeek) need no markers, and the
+   * Anthropic-namespace `providerOptions` this attaches never reach their
+   * request body — the AI SDK routes provider options by provider key.
    */
   cacheSystem?: boolean;
 }
@@ -3344,8 +3349,10 @@ function mapStopReason(
 
 /**
  * Run one chat completion turn. Provider-neutral wrapper over Vercel AI SDK's
- * `generateText`. Tool-use blocks are normalized; cache_control markers are
- * applied only on Anthropic when `cacheSystem: true`.
+ * `generateText`. Tool-use blocks are normalized. `cacheSystem: true` engages
+ * the caching path on any provider whose recipe declares prompt caching; the
+ * `cache_control` markers it attaches are read only by Anthropic, and are inert
+ * on providers that cache prefixes automatically.
  *
  * Crash-resumable replay is the caller's responsibility (subagent.ts persists
  * blocks via the provider-neutral schema landing in commit 2a).
@@ -3842,7 +3849,11 @@ export interface ToolLoopOpts {
   /** Per-turn max output tokens. Default 4096. */
   maxTokens?: number;
   abortSignal?: AbortSignal;
-  /** Apply Anthropic cache_control to system + last tool. Silently ignored elsewhere. */
+  /**
+   * Ask for the stable prefix (system + last tool) to be cached. Forwarded to
+   * `chat()`; see `ChatOpts.cacheSystem` for what each provider does with it.
+   * Silently ignored on recipes that declare no prompt caching.
+   */
   cacheSystem?: boolean;
 
   /** Crash-replay state. When set, the loop resumes from the recorded position. */

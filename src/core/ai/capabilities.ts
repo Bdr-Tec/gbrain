@@ -42,9 +42,17 @@ export interface ProviderCapabilities {
   supportsSubagentLoop: boolean;
 
   /**
-   * Anthropic-style ephemeral prompt cache markers honored. When false, the
-   * loop runs hot (no cache_control injection) and per-turn costs scale
-   * linearly with conversation length. Doesn't break the loop; just costs more.
+   * The provider caches prompt prefixes at all — by either mechanism:
+   * automatically server-side (OpenAI, DeepSeek; nothing to attach, and the
+   * Anthropic-namespace marker the gateway adds is inert on them), or when the
+   * request carries explicit `cache_control` markers (Anthropic). When false,
+   * the loop runs hot and per-turn costs scale linearly with conversation
+   * length. Doesn't break the loop; just costs more.
+   *
+   * This is deliberately "does it cache", not "does it honor our markers":
+   * `enforceSubagentCapable` and `doctor` use it to decide whether to warn an
+   * operator off a provider for cost reasons, and that advice is wrong for a
+   * provider that caches without being asked.
    */
   supportsPromptCaching: boolean;
 
