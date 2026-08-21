@@ -1678,7 +1678,9 @@ async function cmdInstall(args: string[]): Promise<void> {
       const { written, manifestPath } = await installRecipeIntoHostRepo(recipeId, opts);
       console.log(`[install] ${recipeId}: copied ${written} files into ${realpathSync(opts.target)}`);
       console.log(`[install] manifest: ${manifestPath}`);
-      if (!opts.dryRun) {
+      // Gate the pointer on the hint actually existing (#4292) — a recipe
+      // without a post-install-hint.md must not send the operator to a 404.
+      if (!opts.dryRun && existsSync(join(pathDirname(manifestPath), 'post-install-hint.md'))) {
         console.log('[install] next steps: see recipes/' + recipeId + '/install/post-install-hint.md');
       }
     }

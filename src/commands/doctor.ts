@@ -23,6 +23,7 @@ import { computeEffectiveDate } from '../core/effective-date.ts';
 import { parseFrontmatter } from '../core/backfill-effective-date.ts';
 import { hnswIndexExpected, hnswMaxDimsForType } from '../core/vector-index.ts';
 import { VERSION as GBRAIN_BINARY_VERSION } from '../version.ts';
+import { zeroTotalContradictionsCheck } from '../core/eval-contradictions/run-health.ts';
 // Peeled doctor modules (containment sprint): each is a verbatim move out of
 // this file. doctor.ts re-exports every moved public symbol under its
 // original name so existing importers (tests, scripts/live-brain-first-check.ts,
@@ -57,6 +58,7 @@ export {
   resolveWhoknowsFixturePath,
   whoknowsHealthCheck,
   pgvectorCheck,
+  pagesUpsertArbiterCheck,
   jsonbIntegrityCheck,
   checkVolunteerChannels,
   takesWeightGridCheck,
@@ -120,6 +122,7 @@ export {
   checkLinksExtractionLag,
   checkUnverifiedExtractions,
   checkContentHashDuplicates,
+  checkCodeChunkMetadata,
   checkUndeclaredDbOnlyPages,
   checkDbOnlyCollectorCollision,
   computeExtractAtomsBacklogCheck,
@@ -147,6 +150,7 @@ export {
 import {
   whoknowsHealthCheck,
   pgvectorCheck,
+  pagesUpsertArbiterCheck,
   jsonbIntegrityCheck,
   checkVolunteerChannels,
   takesWeightGridCheck,
@@ -199,6 +203,7 @@ import {
   checkLinksExtractionLag,
   checkUnverifiedExtractions,
   checkContentHashDuplicates,
+  checkCodeChunkMetadata,
   checkUndeclaredDbOnlyPages,
   checkDbOnlyCollectorCollision,
   computeExtractAtomsBacklogCheck,
@@ -772,6 +777,14 @@ export async function buildChecks(
   } catch {
     // Read/parse failure is itself best-effort; skip silently.
   }
+
+  // 3b-ter. Self-upgrade health (#3747). Pure local-file check (config +
+  // upgrade cache + audit trail; no DB) that was only ever pushed by the
+  // REMOTE report (doctor/report-remote.ts) — the local `gbrain doctor`,
+  // the surface an operator actually runs on the host, never emitted it,
+  // so a wedged auto-upgrade loop was invisible exactly where it would be
+  // diagnosed. Sits beside the upgrade_errors trail it complements.
+  checks.push(checkSelfUpgradeHealth());
 
   // 3b-bis. Supervisor health (filesystem-only: PID liveness + audit log).
   // Reads the default PID file (`~/.gbrain/supervisor.pid` unless the user
@@ -1746,6 +1759,11 @@ export async function buildChecks(
   progress.heartbeat('pgvector');
   checks.push(await pgvectorCheck(engine));
 
+  // 4a-bis. #550: pages(source_id, slug) upsert arbiter — when missing, every
+  // page write fails brain-wide and the version counter can't see the drift.
+  progress.heartbeat('pages_upsert_arbiter');
+  checks.push(await pagesUpsertArbiterCheck(engine));
+
   // 4b. PgBouncer / prepared-statement compatibility.
   // URL-only inspection — no DB roundtrip — so this is cheap and works
   // regardless of whether the caller is the module singleton or a
@@ -2366,7 +2384,12 @@ export async function buildChecks(
     // that brains seeded only with code sources don't get spurious warnings
     // about missing link/timeline coverage on pages that are test fixtures, not
     // real knowledge entities.
-    const eligibleStats = (await engine.executeRaw<{ entities: number; linked_from: number; timeline: number }>(
+    // #4191: an entity counts as CONNECTED with an inbound OR outbound link.
+    // Counting outbound only (from_page_id) contradicted onboard's
+    // entity_link_coverage (inbound EXISTS, target 70%): a brain of
+    // inbound-only entities (meetings link TO people) read ok there and
+    // warn here. Same in/out predicate + 70% target both places now.
+    const eligibleStats = (await engine.executeRaw<{ entities: number; connected: number; timeline: number }>(
       `WITH eligible AS (
         SELECT id FROM pages
         WHERE deleted_at IS NULL
@@ -2376,12 +2399,14 @@ export async function buildChecks(
       )
       SELECT
         (SELECT count(*)::int FROM eligible) AS entities,
-        (SELECT count(DISTINCT from_page_id)::int FROM links WHERE from_page_id IN (SELECT id FROM eligible)) AS linked_from,
+        (SELECT count(*)::int FROM eligible e
+           WHERE EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = e.id)
+              OR EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id)) AS connected,
         (SELECT count(DISTINCT page_id)::int FROM timeline_entries WHERE page_id IN (SELECT id FROM eligible)) AS timeline`,
-    ))[0] ?? { entities: entityCount, linked_from: 0, timeline: 0 };
+    ))[0] ?? { entities: entityCount, connected: 0, timeline: 0 };
 
     const eligibleEntityCount = Number(eligibleStats.entities ?? entityCount);
-    const linkCoverage = eligibleEntityCount > 0 ? Number(eligibleStats.linked_from ?? 0) / eligibleEntityCount : 0;
+    const linkCoverage = eligibleEntityCount > 0 ? Number(eligibleStats.connected ?? 0) / eligibleEntityCount : 0;
     const timelineCoverage = eligibleEntityCount > 0 ? Number(eligibleStats.timeline ?? 0) / eligibleEntityCount : 0;
     const linkPct = (linkCoverage * 100).toFixed(0);
     const timelinePct = (timelineCoverage * 100).toFixed(0);
@@ -2399,13 +2424,13 @@ export async function buildChecks(
         status: 'ok',
         message: `Only code/test fixture entity pages found (${entityCount}); graph_coverage not applicable`,
       });
-    } else if (linkCoverage >= 0.5 && timelineCoverage >= 0.5) {
-      checks.push({ name: 'graph_coverage', status: 'ok', message: `Entity link coverage ${linkPct}%, entity timeline coverage ${timelinePct}%` });
+    } else if (linkCoverage >= 0.7 && timelineCoverage >= 0.5) {
+      checks.push({ name: 'graph_coverage', status: 'ok', message: `Entity connected coverage (in/out) ${linkPct}%, entity timeline coverage ${timelinePct}%` });
     } else {
       checks.push({
         name: 'graph_coverage',
         status: 'warn',
-        message: `Entity link coverage ${linkPct}%, entity timeline coverage ${timelinePct}% (${eligibleEntityCount} entity pages). Run: gbrain extract all`,
+        message: `Entity connected coverage (in/out) ${linkPct}% (target 70%), entity timeline coverage ${timelinePct}% (${eligibleEntityCount} entity pages). Run: gbrain extract all`,
       });
     }
 
@@ -3241,11 +3266,9 @@ export async function buildChecks(
       }
       const total = high + medium + low;
       if (total === 0) {
-        checks.push({
-          name: 'contradictions',
-          status: 'ok',
-          message: `Latest probe run (${latest.ran_at.slice(0, 10)}) found no suspected contradictions across ${latest.queries_evaluated} queries.`,
-        });
+        // #3889: warn (not ok) when the latest run judged zero pairs but
+        // errored — "0 contradictions" from an all-error run is a lie.
+        checks.push({ name: 'contradictions', ...zeroTotalContradictionsCheck(latest) });
       } else {
         const ciLow = (latest.wilson_ci_lower * 100).toFixed(0);
         const ciHigh = (latest.wilson_ci_upper * 100).toFixed(0);
@@ -3792,6 +3815,10 @@ export async function buildChecks(
     // duplicates, undeclared DB-only pages, collector-output-in-db_only.
     progress.heartbeat('content_hash_duplicates');
     checks.push(await checkContentHashDuplicates(engine));
+    // #3970: code-page chunks missing symbol metadata (unhealable without
+    // reindex-code --force — the content_hash short-circuit skips them).
+    progress.heartbeat('code_chunk_metadata');
+    checks.push(await checkCodeChunkMetadata(engine));
     progress.heartbeat('undeclared_db_only_pages');
     checks.push(await checkUndeclaredDbOnlyPages(engine));
     progress.heartbeat('db_only_collector_collision');

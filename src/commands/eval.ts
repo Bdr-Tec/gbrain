@@ -412,6 +412,26 @@ gbrain eval — measure and compare retrieval quality
 USAGE
   gbrain eval --qrels <path>
   gbrain eval --qrels <path> --config-a <path> --config-b <path>
+  gbrain eval <subcommand> [flags]     (run \`gbrain eval <subcommand> --help\` where available)
+
+SUBCOMMANDS (#3686 — each has its own flag surface)
+  replay                     Re-run captured production queries against the current config
+  retrieval-quality          Retrieval-quality suite over the calibration corpus
+  gate                       CI pass/fail gate over a saved baseline
+  compare                    Compare two saved eval runs
+  run-all                    Orchestrate every suite (works with no brain configured)
+  brainbench                 Cross-harness memory conformance suite (hermetic)
+  longmemeval                LongMemEval benchmark (brings its own in-memory brain)
+  cross-modal                Cross-modal quality gate (pure API calls, no DB)
+  code-retrieval             Code-retrieval benchmark
+  brainstorm                 Brainstorm-quality eval
+  whoknows                   whoknows ranking eval
+  suspected-contradictions   Contradiction-probe eval
+  trajectory                 Chronological claim trajectory for an entity
+  conversation-parser        Fixture-corpus CI gate for the parser registry
+  chronicle                  Chronicle suite
+  takes-quality              {run,trend,regress,replay} takes-quality harness
+  export / prune             Export or prune recorded eval results
 
 OPTIONS
   --qrels <path|json>         Path to qrels JSON file (required)

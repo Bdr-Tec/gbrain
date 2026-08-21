@@ -362,8 +362,12 @@ const recall: Operation = {
     let searchDegraded: string | undefined;
     if (queryText) {
       const searchScope = sourceScopeOpts(ctx);
+      // #4352 — recall's page-search arm enforces `visibility: private` for
+      // untrusted callers (matches the facts arms' world-only filter above).
+      const { resolveExcludePrivatePages } = await import('../search/private-visibility.ts');
+      const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
       if (!isAvailable('embedding')) {
-        const raw = await ctx.engine.searchKeyword(queryText, { limit, ...searchScope });
+        const raw = await ctx.engine.searchKeyword(queryText, { limit, excludePrivate, ...searchScope });
         searchResults = dedupResults(raw);
         // #3783 — direct FTS path: every row is a keyword hit by construction.
         markKeywordHits(searchResults);
@@ -374,6 +378,7 @@ const recall: Operation = {
         searchResults = await hybridSearchCached(ctx.engine, queryText, {
           limit,
           expansion: false,
+          excludePrivate,
           ...searchScope,
         });
       }

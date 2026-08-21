@@ -442,6 +442,14 @@ const BODY_NODE_TYPES = new Set([
   'module_body',
   'body_statement',
   'body',
+  // #3602: C# class/namespace bodies AND Rust impl/trait bodies are
+  // `declaration_list` (no `_body` suffix), so nested-emit's scan could
+  // never descend into them — Rust impl methods were silently dropped
+  // (only the scope-header chunk emitted) and C# could not nest at all.
+  // Shared set: PHP class bodies are also declaration_list, but PHP has
+  // no NESTED_EMIT_CONFIG entry and splitLargeNode prefers the `body`
+  // field, so this is additive there.
+  'declaration_list',
 ]);
 
 /**
@@ -491,6 +499,17 @@ const NESTED_EMIT_CONFIG: Partial<Record<SupportedCodeLanguage, NestedEmitConfig
   java: {
     parentTypes: new Set(['class_declaration', 'interface_declaration', 'record_declaration']),
     childTypes: new Set(['method_declaration', 'constructor_declaration']),
+  },
+  // #3602: C# nesting. Namespaces (block-scoped AND file-scoped, cf. #3601)
+  // are parents so `namespace Demo { class C { ... } }` recurses Demo → C →
+  // methods with the full parent path. Bodies are `declaration_list` (see
+  // BODY_NODE_TYPES above).
+  c_sharp: {
+    parentTypes: new Set([
+      'namespace_declaration', 'file_scoped_namespace_declaration',
+      'class_declaration', 'interface_declaration', 'struct_declaration',
+    ]),
+    childTypes: new Set(['method_declaration', 'constructor_declaration', 'property_declaration']),
   },
 };
 

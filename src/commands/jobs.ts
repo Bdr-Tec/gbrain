@@ -91,6 +91,12 @@ export function factsAbsorbShouldRetry(
   return classification === 'keyed' && factsAbsorbUnavailable(result);
 }
 
+// Job names whose handlers call the LLM gateway: registerBuiltinJob wraps
+// them with refreshGatewayForJob so file-plane keys + DB-plane model config
+// reach a long-lived worker. Drift guard: test/jobs-gateway-refresh-set.test.ts
+// pins this set against the registerBuiltinJob call sites — a gateway-using
+// handler registered via bare worker.register() runs with a stale gateway
+// (the #3387 chronicle_extract silent-no_events class).
 const GATEWAY_REFRESH_JOB_NAMES = new Set([
   'embed',
   'extract-conversation-facts',
@@ -106,6 +112,10 @@ const GATEWAY_REFRESH_JOB_NAMES = new Set([
   'embed-backfill',
   'extract-takes-from-pages',
   'embed-catch-up',
+  // #3387: chronicle_extract's judge is a gateway chat call — without the
+  // refresh a worker booted before `config set` never saw the DB-plane chat
+  // model and every extraction silently returned no_events.
+  'chronicle_extract',
 ]);
 
 function registerBuiltinJob(
@@ -2252,7 +2262,10 @@ export async function registerBuiltinHandlers(
   // LLM spend per page; no shell). Enqueued by the put_page chronicle backstop
   // and by `gbrain chronicle backfill`. Idempotent (content-addressed event
   // slugs + projection upsert), so a retry re-runs to the same state.
-  worker.register('chronicle_extract', async (job) => {
+  // #3387: registered via registerBuiltinJob (gateway-refresh wrap) — the
+  // judge is a gateway chat call, so a stale worker gateway meant silent
+  // no_events for every extraction.
+  registerBuiltinJob(worker, engine, 'chronicle_extract', async (job) => {
     const slug = typeof job.data.slug === 'string' ? job.data.slug : undefined;
     if (!slug) throw new Error('chronicle_extract job requires data.slug');
     const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined;

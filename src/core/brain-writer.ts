@@ -760,7 +760,16 @@ async function listSources(engine: BrainEngine, sourceId?: string): Promise<Sour
     );
     return rows;
   }
-  return engine.executeRaw<SourceRow>(
-    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL ORDER BY id`,
-  );
+  // #3880: archived sources are excluded from automatic all-source scanning.
+  // The archived column is v34+ — fall back on older brains (house style per
+  // pickSoleNonDefaultSource).
+  try {
+    return await engine.executeRaw<SourceRow>(
+      `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE ORDER BY id`,
+    );
+  } catch {
+    return engine.executeRaw<SourceRow>(
+      `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL ORDER BY id`,
+    );
+  }
 }

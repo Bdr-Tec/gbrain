@@ -706,7 +706,14 @@ function readSourceTextWithFallback(page: Page, chunks: ChunkInput[]): string {
     .join('\n\n');
 }
 
-async function loadSourceRow(engine: BrainEngine, sourceId: string): Promise<SourceRow> {
+/**
+ * Load one source row with the CR-relevant columns. Exported for reuse by
+ * the import path (#3885: stored `sources set-cr-mode` must apply on
+ * capture/reindex, not just the Minion backfill) and the conversation-parser
+ * body reader (#3911: relative raw_transcript resolves against the OWNING
+ * source's local_path). Throws when the source id is unknown.
+ */
+export async function loadSourceRow(engine: BrainEngine, sourceId: string): Promise<SourceRow> {
   const rows = await engine.executeRaw<SourceRow>(
     `SELECT id, name, local_path, last_commit, last_sync_at, config, created_at,
             contextual_retrieval_mode, trust_frontmatter_overrides

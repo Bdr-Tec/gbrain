@@ -350,6 +350,14 @@ export interface PageFilters {
   /** Inclusive bounds on semantic page time. NULL effective dates do not match. */
   effective_after?: string;
   effective_before?: string;
+  /**
+   * #4352 remediation — hide pages whose frontmatter carries
+   * `visibility: private` (absent visibility defaults to 'world'). Set by
+   * list_pages for untrusted callers via resolveExcludePrivatePages; trusted
+   * local listing is unchanged. Predicate matches privatePagesFilterFragment
+   * (search/private-visibility.ts) in BOTH engines.
+   */
+  excludePrivate?: boolean;
 }
 
 /** v0.26.5 — opts for getPage / softDeletePage / restorePage. */
@@ -1201,6 +1209,17 @@ export interface SearchOpts {
    * upper bound on result size.
    */
   tokenBudget?: number;
+  /**
+   * #4352 — page-level `visibility: private` enforcement for untrusted
+   * callers. When true, both engines' search paths (keyword, titles,
+   * keyword-chunks, vector) add
+   * `COALESCE(p.frontmatter->>'visibility','world') <> 'private'` to the
+   * visibility clause. Callers resolve trust + the config gate via
+   * `resolveExcludePrivatePages` (search/private-visibility.ts):
+   * ctx.remote !== false → true unless the operator opted out. Omitted /
+   * false = pre-fix behavior (trusted local reads see everything).
+   */
+  excludePrivate?: boolean;
   /**
    * v0.32.x (search-lite): enable/disable the semantic query cache for this
    * call. When undefined, the cache decision falls back to global config

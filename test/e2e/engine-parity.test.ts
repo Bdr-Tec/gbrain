@@ -629,6 +629,32 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     }
   });
 
+  test('#3754 soft-deleted pages hidden from getLinks/getBacklinks/traversePaths on both engines', async () => {
+    for (const engine of [pgEngine, pgliteEngine]) {
+      await engine.putPage('notes/sdl-from', {
+        type: 'note', title: 'sdl-from', compiled_truth: 'links out', timeline: '',
+      });
+      await engine.putPage('notes/sdl-to', {
+        type: 'note', title: 'sdl-to', compiled_truth: 'target', timeline: '',
+      });
+      await engine.addLink('notes/sdl-from', 'notes/sdl-to', 'ctx', 'wikilink');
+
+      expect((await engine.getBacklinks('notes/sdl-to')).length).toBe(1);
+      expect((await engine.getLinks('notes/sdl-from')).length).toBe(1);
+      expect((await engine.traversePaths('notes/sdl-to', { direction: 'in' })).length).toBe(1);
+
+      await engine.softDeletePage('notes/sdl-from', { sourceId: 'default' });
+
+      expect(await engine.getBacklinks('notes/sdl-to')).toEqual([]);
+      expect(await engine.getBacklinks('notes/sdl-to', { sourceId: 'default' })).toEqual([]);
+      expect(await engine.getBacklinks('notes/sdl-to', { sourceIds: ['default'] })).toEqual([]);
+      expect(await engine.getLinks('notes/sdl-from')).toEqual([]);
+      expect(await engine.traversePaths('notes/sdl-to', { direction: 'in' })).toEqual([]);
+      expect(await engine.traversePaths('notes/sdl-to', { direction: 'both' })).toEqual([]);
+      expect(await engine.traversePaths('notes/sdl-from', { direction: 'out' })).toEqual([]);
+    }
+  });
+
   test('v0.41.19.0 deletePages parity: both engines return same confirmed-deleted slugs', async () => {
     const realSlugs = ['wiki/dpp-1', 'wiki/dpp-2', 'wiki/dpp-3'];
     for (const slug of realSlugs) {
