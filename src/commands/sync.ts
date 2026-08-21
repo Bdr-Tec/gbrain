@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, statSync, realpathSync } from 
 import { join, relative, resolve as pathResolve } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
 import { DELETE_BATCH_SIZE } from '../core/engine-constants.ts';
-import { importFile } from '../core/import-file.ts';
+import { importFile, importImageFile, isImageFilePath as isImageImportPath } from '../core/import-file.ts';
 import { collectSyncableFiles } from './import.ts';
 import {
   isSyncable,
@@ -1805,7 +1805,11 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       let importResult: Awaited<ReturnType<typeof importFile>> | undefined;
       if (existsSync(filePath) && isPathSafe(filePath, gitContextRoot)) {
         try {
-          const result = await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack });
+          // #2683: dispatch renamed images to importImageFile (binary bytes
+          // through importFile threw UTF-8 errors). Same gate as import.ts.
+          const result = isImageImportPath(to) && process.env.GBRAIN_EMBEDDING_MULTIMODAL === 'true'
+            ? await importImageFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId })
+            : await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack });
           importResult = result;
           noteTypeWarning(result.type_warning);
           if (result.status === 'imported') chunksCreated += result.chunks;
@@ -2076,8 +2080,14 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         // / addLink) target (sourceId, slug). Pre-fix the schema DEFAULT
         // 'default' was applied even for non-default sources, fabricating
         // duplicate rows that crashed bare-slug subqueries with Postgres 21000.
+        // #2683: incremental adds/modifies dispatch images to importImageFile
+        // when multimodal is on (same gate as import.ts's full-sync walker).
+        // Pre-fix, a committed .png went through importFile's UTF-8 text read
+        // and failed — images only ever landed via `sync --full`.
         const result = await observed(pacer, () =>
-          importFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack }));
+          isImageImportPath(path) && process.env.GBRAIN_EMBEDDING_MULTIMODAL === 'true'
+            ? importImageFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId })
+            : importFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack }));
         noteTypeWarning(result.type_warning);
         if (result.status === 'imported') {
           chunksCreated += result.chunks;
