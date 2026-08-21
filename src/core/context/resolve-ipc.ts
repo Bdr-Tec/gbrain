@@ -219,7 +219,9 @@ export type IpcRequest =
   | ContextPackRequest
   | SyncStartRequest
   | SyncStatusRequest
-  | SyncAbortRequest;
+  | SyncAbortRequest
+  | SweepStartRequest
+  | SweepStatusRequest;
 
 export interface ResolveResponse {
   ok: boolean;
