@@ -2327,3 +2327,37 @@ describe('v117 — context_volunteer_events_table', () => {
     expect(left.map(r => r.slug)).toEqual(['people/alice-example']);
   });
 });
+
+// #4252 — v134 heal: brains whose `migrate embeddings` run predates the
+// runSchemaTransition capture/replay fix lost both `embedding IS NULL`
+// partial indexes to the DROP COLUMN cascade. v66/v103 are recorded as
+// applied on those brains, so their IF NOT EXISTS never re-runs; v134
+// re-issues both defs. No-op on healthy brains.
+describe('v134 — restore_chunks_embedding_null_partial_indexes', () => {
+  test('recreates both partial indexes lost to a pre-fix embedding transition', async () => {
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      await engine.initSchema();
+      // Simulate the pre-fix damage: both partial indexes gone.
+      await engine.executeRaw(`DROP INDEX IF EXISTS idx_chunks_embedding_null`);
+      await engine.executeRaw(`DROP INDEX IF EXISTS content_chunks_stale_idx`);
+      // Rewind so v134 re-runs.
+      await engine.setConfig('version', '133');
+      await runMigrations(engine);
+
+      const rows = await engine.executeRaw<{ indexname: string; indexdef: string }>(
+        `SELECT indexname, indexdef FROM pg_indexes
+          WHERE tablename = 'content_chunks'
+            AND indexname IN ('idx_chunks_embedding_null', 'content_chunks_stale_idx')
+          ORDER BY indexname`,
+      );
+      expect(rows.map(r => r.indexname)).toEqual(['content_chunks_stale_idx', 'idx_chunks_embedding_null']);
+      for (const r of rows) {
+        expect(r.indexdef).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
+      }
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
+});

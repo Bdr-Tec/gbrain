@@ -144,6 +144,14 @@ export function formatEnvOverrideWarning(w: EnvOverrideWarning): string {
  *   src/schema.sql:169  -> idx_chunks_embedding_image
  *   src/core/pglite-schema.ts:130 -> idx_chunks_embedding_image
  *
+ * #4252: DROP COLUMN cascades away EVERY index depending on the column, not
+ * only the ones named here — it silently discarded the partial btree indexes
+ * on `embedding IS NULL` (idx_chunks_embedding_null from migration v66,
+ * content_chunks_stale_idx from v103) that `embed --stale` needs. So the
+ * transition captures every dependent index def via pg_depend (the exact set
+ * the cascade drops) before the drop and replays it after the rebuild;
+ * hard-coded names would just recreate this bug on the next index addition.
+ *
  * IF NOT EXISTS on CREATE INDEX makes the operation safe to re-run during
  * `--resume`.
  */
@@ -168,6 +176,25 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
   // 1280d, making voyage-multimodal-3 unable to write to it. The same
   // class of bug applies to embedding_multimodal — leave both untouched.
   await engine.transaction(async (tx) => {
+    // #4252: capture every index the DROP COLUMN below will cascade-drop.
+    // pg_depend holds the exact column→index dependency edges the cascade
+    // follows, so this also catches indexes that reference the column only
+    // in a partial WHERE predicate (which a pg_indexes.indexdef text match
+    // could not do without false-matching embedding_image/_multimodal).
+    const dependentIndexes = await tx.executeRaw<{ name: string; def: string }>(
+      `SELECT DISTINCT c.relname AS name, pg_get_indexdef(d.objid) AS def
+         FROM pg_depend d
+         JOIN pg_class c ON c.oid = d.objid AND c.relkind = 'i'
+        WHERE d.classid = 'pg_class'::regclass
+          AND d.refclassid = 'pg_class'::regclass
+          AND d.deptype = 'a'
+          AND d.refobjid = to_regclass('content_chunks')
+          AND d.refobjsubid = (
+            SELECT attnum FROM pg_attribute
+             WHERE attrelid = to_regclass('content_chunks')
+               AND attname = 'embedding' AND NOT attisdropped)`,
+    );
+
     // Text embedding column — transition to target dim.
     await tx.executeRaw(`DROP INDEX IF EXISTS idx_chunks_embedding`);
     await tx.executeRaw(`ALTER TABLE content_chunks DROP COLUMN IF EXISTS embedding`);
@@ -178,6 +205,17 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
     if (hnswIndexExpected('vector', targetDim)) {
       await tx.executeRaw(
         `CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops)`,
+      );
+    }
+    // #4252: replay the captured dependent indexes the cascade dropped.
+    // idx_chunks_embedding is skipped (recreated above under the cap policy);
+    // any other HNSW def on the column obeys the same cap. Btree/partial defs
+    // are dim-agnostic and replay unconditionally.
+    for (const idx of dependentIndexes) {
+      if (idx.name === 'idx_chunks_embedding') continue;
+      if (/USING hnsw/i.test(idx.def) && !hnswIndexExpected('vector', targetDim)) continue;
+      await tx.executeRaw(
+        idx.def.replace(/^CREATE (UNIQUE )?INDEX /, 'CREATE $1INDEX IF NOT EXISTS '),
       );
     }
 
