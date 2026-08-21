@@ -838,7 +838,7 @@ export async function applyAliasHop(
   engine: import('../engine.ts').BrainEngine,
   results: SearchResult[],
   query: string,
-  opts: { sourceId?: string; sourceIds?: string[] },
+  opts: { sourceId?: string; sourceIds?: string[]; excludePrivate?: boolean },
 ): Promise<SearchResult[]> {
   if (!query) return results;
   const qNorm = normalizeAlias(query);
@@ -878,6 +878,13 @@ export async function applyAliasHop(
       continue;
     }
     if (!page) continue;
+    // #4352 — the alias inject path bypasses the engines' SQL visibility
+    // clause (getPage, not search); re-apply the private predicate here so
+    // an untrusted caller can't hop into a `visibility: private` page.
+    if (
+      opts.excludePrivate &&
+      ((page.frontmatter as Record<string, unknown> | null | undefined)?.visibility === 'private')
+    ) continue;
     injectScore += 1e-6;
     out.push({
       // #2339-sibling: include page_id. The `as SearchResult` cast hid its
@@ -1219,6 +1226,11 @@ export async function hybridSearch(
     // ordering means we can't lazy-spread the full opts).
     sourceId: opts?.sourceId,
     sourceIds: opts?.sourceIds,
+    // #4352 — page-level private-visibility enforcement is trust-scoped
+    // state, same leak class as source scoping above: dropping it here would
+    // let an untrusted caller read `visibility: private` pages through the
+    // hybrid hot path.
+    excludePrivate: opts?.excludePrivate,
     // v0.36 (D11): pass the pre-validated descriptor into the engine so
     // it never has to read config. Engines normalize string-or-descriptor
     // via normalizeEngineColumn; the descriptor path is the strict one.
@@ -1458,6 +1470,7 @@ export async function hybridSearch(
     const noEmbedHopped = await applyAliasHop(engine, dedupResults(noEmbedResults), query, {
       sourceId: opts?.sourceId,
       sourceIds: opts?.sourceIds,
+      excludePrivate: opts?.excludePrivate,
     });
     stampEvidence(noEmbedHopped, { cosineFloor: resolvedMode.evidence_cosine_floor });
     const noEmbedSliced = noEmbedHopped.slice(offset, offset + limit);
@@ -1807,6 +1820,7 @@ export async function hybridSearch(
     const kwHopped = await applyAliasHop(engine, dedupResults(fallbackResults), query, {
       sourceId: opts?.sourceId,
       sourceIds: opts?.sourceIds,
+      excludePrivate: opts?.excludePrivate,
     });
     stampEvidence(kwHopped, { cosineFloor: resolvedMode.evidence_cosine_floor });
     const kwSliced = kwHopped.slice(offset, offset + limit);
@@ -2002,6 +2016,7 @@ export async function hybridSearch(
   const aliasHopped = await applyAliasHop(engine, reranked, query, {
     sourceId: opts?.sourceId,
     sourceIds: opts?.sourceIds,
+    excludePrivate: opts?.excludePrivate,
   });
 
   // T4 — stamp evidence + create_safety so the agent's don't-duplicate
@@ -2240,6 +2255,11 @@ export async function hybridSearchCached(
   // gated on cacheStatus === 'miss' below, so 'disabled' covers both) for
   // offset>0 requests; offset===0 semantics are unchanged.
   const pagedRequest = (opts?.offset ?? 0) > 0;
+  // #4352 — excludePrivate is NOT part of knobsHash, so a private-included
+  // (trusted) result set could be served to an untrusted lookup, or a
+  // private-excluded set could hide pages from a trusted one. Skip the cache
+  // for enforcement-on requests (same posture as adaptiveReturn above).
+  const privateFiltered = opts?.excludePrivate === true;
   const skipCache =
     !cache.isEnabled() ||
     (opts?.walkDepth ?? 0) > 0 ||
@@ -2247,6 +2267,7 @@ export async function hybridSearchCached(
     isNonDefaultColumn ||
     adaptiveReturnOn ||
     dateFiltered ||
+    privateFiltered ||
     pagedRequest;
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';

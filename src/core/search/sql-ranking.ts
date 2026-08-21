@@ -169,11 +169,28 @@ export function buildHardExcludeClause(slugColumn: string, prefixes: string[]): 
  * @returns raw SQL fragment, e.g.
  *   `AND p.deleted_at IS NULL AND NOT s.archived AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'quarantine')`
  */
-export function buildVisibilityClause(pageAlias: string, sourceAlias: string): string {
+export function buildVisibilityClause(
+  pageAlias: string,
+  sourceAlias: string,
+  opts?: {
+    /**
+     * #4352 — untrusted-caller predicate: hide pages whose frontmatter
+     * carries `visibility: private` (absent visibility defaults to 'world').
+     * Set from SearchOpts.excludePrivate by both engines; callers resolve
+     * trust + the config gate via resolveExcludePrivatePages
+     * (search/private-visibility.ts). Off by default — trusted local reads
+     * are unchanged.
+     */
+    excludePrivate?: boolean;
+  },
+): string {
   // Single source of truth for the quarantine SQL lives in quarantine.ts so
   // the marker key + filter can't drift from the search filter (#1699).
   const quarantine = quarantineFilterFragment(pageAlias);
-  return `AND ${pageAlias}.deleted_at IS NULL AND NOT ${sourceAlias}.archived AND ${quarantine}`;
+  const privateClause = opts?.excludePrivate
+    ? ` AND COALESCE(${pageAlias}.frontmatter->>'visibility', 'world') <> 'private'`
+    : '';
+  return `AND ${pageAlias}.deleted_at IS NULL AND NOT ${sourceAlias}.archived AND ${quarantine}${privateClause}`;
 }
 
 // ============================================================

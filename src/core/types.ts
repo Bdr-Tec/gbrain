@@ -1165,6 +1165,17 @@ export interface SearchOpts {
    */
   tokenBudget?: number;
   /**
+   * #4352 — page-level `visibility: private` enforcement for untrusted
+   * callers. When true, both engines' search paths (keyword, titles,
+   * keyword-chunks, vector) add
+   * `COALESCE(p.frontmatter->>'visibility','world') <> 'private'` to the
+   * visibility clause. Callers resolve trust + the config gate via
+   * `resolveExcludePrivatePages` (search/private-visibility.ts):
+   * ctx.remote !== false → true unless the operator opted out. Omitted /
+   * false = pre-fix behavior (trusted local reads see everything).
+   */
+  excludePrivate?: boolean;
+  /**
    * v0.32.x (search-lite): enable/disable the semantic query cache for this
    * call. When undefined, the cache decision falls back to global config
    * (search.cache.enabled, default true). Set to `false` to force a fresh

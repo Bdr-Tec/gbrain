@@ -13,6 +13,7 @@ import { dedupResults } from '../search/dedup.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from '../eval-capture.ts';
 import type { HybridSearchMeta } from '../types.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
+import { resolveExcludePrivatePages } from '../search/private-visibility.ts';
 import { QUERY_DESCRIPTION, SEARCH_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
 import type { Operation } from './contract.ts';
@@ -75,6 +76,9 @@ const search: Operation = {
     const offset = (p.offset as number) || 0;
     // #2561: unqualified trusted-local search spans federated sources.
     const scope = federatedSearchScope(ctx);
+    // #4352 — untrusted callers never see `visibility: private` pages
+    // (config-gated; trusted local CLI unchanged).
+    const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
 
     // T4/D5 — per-call mode honored ONLY for trusted/local callers so a remote
     // OAuth client can't escalate to the costly tokenmax bundle. Local + unknown
@@ -87,7 +91,7 @@ const search: Operation = {
     const keywordOnly = (await ctx.engine.getConfig('search.mcp_keyword_only')) === 'true';
 
     if (keywordOnly) {
-      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, ...scope });
+      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, excludePrivate, ...scope });
       const results = dedupResults(raw);
       stampDeepResearchIds(results);
       stampEvidenceSafe(results);
@@ -112,6 +116,7 @@ const search: Operation = {
       limit,
       offset,
       expansion: false,
+      excludePrivate,
       ...scope,
       ...(perCallMode ? { mode: perCallMode } : {}),
       onMeta: (m) => { capturedMeta = m; },
@@ -247,6 +252,9 @@ const query: Operation = {
     // #2561: unqualified trusted-local query spans federated sources (per-call
     // source_id / remote grants still resolve through resolveRequestedScope).
     const querySourceScope = federatedSearchScope(ctx, sourceIdParam);
+    // #4352 — same enforcement for the full-control query op (both the image
+    // searchVector branch and the text hybrid path below).
+    const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
 
     // v0.27.1: image-similarity branch. Bypasses hybridSearch (which is
     // text-only); embeds the image via embedMultimodal and runs a direct
@@ -264,6 +272,7 @@ const query: Operation = {
         limit: (p.limit as number) || 20,
         offset: (p.offset as number) || 0,
         embeddingColumn: 'embedding_image',
+        excludePrivate,
         ...querySourceScope,
       });
       return results;
@@ -295,6 +304,7 @@ const query: Operation = {
     const results = await hybridSearchCached(ctx.engine, queryText, {
       limit: (p.limit as number) || 20,
       offset: (p.offset as number) || 0,
+      excludePrivate,
       expansion: expand,
       expandFn: expand ? expandQuery : undefined,
       // T4/D5 — per-call mode (local/trusted only; remote ignored).
