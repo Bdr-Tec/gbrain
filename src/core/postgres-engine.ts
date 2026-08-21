@@ -1624,18 +1624,23 @@ export class PostgresEngine implements BrainEngine {
     });
   }
 
-  async listAllPageRefs(): Promise<Array<{ slug: string; source_id: string }>> {
+  async listAllPageRefs(): Promise<Array<{ slug: string; source_id: string; updated_at: Date }>> {
     // v0.32.8: cross-source page enumeration. ORDER BY (source_id, slug) for
     // deterministic iteration (F11) — same-slug-different-source pages stay
     // grouped predictably. WHERE deleted_at IS NULL matches default getPage
-    // visibility semantics (v0.26.5).
+    // visibility semantics (v0.26.5). #4304: updated_at projected so --since
+    // walks can filter refs before any full-page fetch.
     const sql = this.sql;
     const rows = await sql`
-      SELECT slug, source_id FROM pages
+      SELECT slug, source_id, updated_at FROM pages
       WHERE deleted_at IS NULL
       ORDER BY source_id, slug
     `;
-    return rows.map((r) => ({ slug: r.slug as string, source_id: r.source_id as string }));
+    return rows.map((r) => ({
+      slug: r.slug as string,
+      source_id: r.source_id as string,
+      updated_at: r.updated_at instanceof Date ? r.updated_at : new Date(r.updated_at as string),
+    }));
   }
 
   async listAllSources(opts?: {
@@ -4899,10 +4904,11 @@ export class PostgresEngine implements BrainEngine {
   }
 
   async insertFacts(
-    rows: Array<NewFact & { row_num: number; source_markdown_slug: string }>,
+    rows: Array<NewFact & { row_num: number; source_markdown_slug: string; superseded_by_row?: number }>,
     ctx: { source_id: string },
-  ): Promise<{ inserted: number; ids: number[] }> {
-    return factsImpl.insertFacts(this.factsDeps, rows, ctx);
+    opts?: { deleteForPageFirst?: { slug: string; excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean } },
+  ): Promise<{ inserted: number; ids: number[]; warnings: string[]; deleted: number }> {
+    return factsImpl.insertFacts(this.factsDeps, rows, ctx, opts);
   }
 
   async deleteFactsForPage(

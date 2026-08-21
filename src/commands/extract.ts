@@ -26,6 +26,16 @@
  * The DB-source path uses the v0.10.3 graph extractor (typed link inference,
  * within-page dedup, snapshot iteration so concurrent writes don't corrupt
  * pagination). FS-source preserves the original v0.10.1 walker behavior.
+ *
+ * `--since DATE` semantics (#4304): the filter compares against the page's
+ * `updated_at` — the row's last DB-write time ("touched since"). Import,
+ * sync, enrichment, and extraction stamps all advance `updated_at`, so
+ * `--since` means "pages touched after DATE", NOT "pages whose content is
+ * dated after DATE" (that would be `effective_date`; a `--since-created`
+ * flag keyed on `created_at` is a filed follow-up). On the DB-source path
+ * the filter is applied to the (slug, source_id, updated_at) refs BEFORE
+ * any full-page fetch, so a narrow --since window doesn't round-trip the
+ * whole corpus through getPage.
  */
 
 import { readFileSync, readdirSync, lstatSync, existsSync } from 'fs';
@@ -634,6 +644,10 @@ Extraction:
   gbrain extract <links|timeline> --by-mention --source db
   gbrain extract <links|timeline|all> --ner --source db
   gbrain extract <timeline|all> --from-meetings --source db
+
+  --since DATE filters on updated_at — the page row's last DB-write time
+  ("touched since"): import, sync, enrich, and extraction stamps all advance
+  it. It is NOT the content's authored/effective date.
 
 Incremental sweep:
   gbrain extract --stale [--source-id <id>] [--include-frontmatter]
@@ -1359,6 +1373,24 @@ export async function extractTimelineForSlugs(
 // no local checkout (e.g. live MCP servers). Uses the typed link inference and
 // timeline parser from src/core/link-extraction.ts.
 
+/**
+ * #4304: apply the --since filter to (slug, source_id, updated_at) refs
+ * BEFORE any getPage round-trip. `--since` is a "touched since" filter on
+ * `updated_at` (last DB write), not the content's authored date — see the
+ * module header. Semantics match the old in-loop check: keep strictly-newer
+ * rows (updated_at > since); an unparseable `since` is rejected upstream in
+ * runExtract, so the pass-through here is belt-and-braces only.
+ */
+function filterRefsSince<T extends { updated_at: Date }>(
+  refs: T[],
+  since: string | undefined,
+): T[] {
+  if (!since) return refs;
+  const sinceMs = new Date(since).getTime();
+  if (!Number.isFinite(sinceMs)) return refs;
+  return refs.filter(r => r.updated_at.getTime() > sinceMs);
+}
+
 async function extractLinksFromDB(
   engine: BrainEngine,
   dryRun: boolean,
@@ -1423,6 +1455,11 @@ async function extractLinksFromDB(
     list.push(ref.source_id);
     slugToSources.set(ref.slug, list);
   }
+  // #4304: --since prunes the walk at the ref level (updated_at comes back
+  // from listAllPageRefs) instead of a getPage round-trip per corpus page.
+  // The resolver maps above are built from the UNFILTERED refs — link
+  // targets outside the window must still resolve.
+  const walkRefs = filterRefsSince(allRefs, since);
   let processed = 0, created = 0;
   // #2576: skipped-candidate counter — see extractStaleFromDB's twin.
   let skippedMissingTarget = 0;
@@ -1432,7 +1469,7 @@ async function extractLinksFromDB(
   const processedRefs: Array<{ slug: string; source_id: string }> = [];
 
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
-  progress.start('extract.links_db', allRefs.length);
+  progress.start('extract.links_db', walkRefs.length);
 
   // Dedup in dry-run only — DB enforces uniqueness via ON CONFLICT in batch writes.
   const dryRunSeen = dryRun ? new Set<string>() : null;
@@ -1454,15 +1491,10 @@ async function extractLinksFromDB(
     }
   }
 
-  for (const { slug, source_id } of allRefs) {
+  for (const { slug, source_id } of walkRefs) {
     const page = await engine.getPage(slug, { sourceId: source_id });
     if (!page) continue;
     if (typeFilter && page.type !== typeFilter) continue;
-    if (since) {
-      const updatedMs = new Date(page.updated_at).getTime();
-      const sinceMs = new Date(since).getTime();
-      if (Number.isFinite(sinceMs) && updatedMs <= sinceMs) continue;
-    }
 
     const fullContent = page.compiled_truth + '\n' + page.timeline;
     // --include-frontmatter default OFF in v0.13 (codex tension 5, back-compat).
@@ -1579,10 +1611,13 @@ async function extractTimelineFromDB(
   const allRefs = sourceIdFilter
     ? (await engine.listAllPageRefs()).filter(r => r.source_id === sourceIdFilter)
     : await engine.listAllPageRefs();
+  // #4304: --since prunes at the ref level — no getPage round-trip for
+  // pages outside the window.
+  const walkRefs = filterRefsSince(allRefs, since);
   let processed = 0, created = 0;
 
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
-  progress.start('extract.timeline_db', allRefs.length);
+  progress.start('extract.timeline_db', walkRefs.length);
 
   // Dedup in dry-run only — DB enforces uniqueness via ON CONFLICT in batch writes.
   const dryRunSeen = dryRun ? new Set<string>() : null;
@@ -1604,15 +1639,10 @@ async function extractTimelineFromDB(
     }
   }
 
-  for (const { slug, source_id } of allRefs) {
+  for (const { slug, source_id } of walkRefs) {
     const page = await engine.getPage(slug, { sourceId: source_id });
     if (!page) continue;
     if (typeFilter && page.type !== typeFilter) continue;
-    if (since) {
-      const updatedMs = new Date(page.updated_at).getTime();
-      const sinceMs = new Date(since).getTime();
-      if (Number.isFinite(sinceMs) && updatedMs <= sinceMs) continue;
-    }
 
     const fullContent = page.compiled_truth + '\n' + page.timeline;
     let entries = parseTimelineEntries(fullContent);
@@ -1886,9 +1916,16 @@ async function extractMentionsFromDb(
     .digest('hex')
     .slice(0, 8);
 
-  const allRefs = sourceIdFilter
-    ? (await engine.listAllPageRefs()).filter(r => r.source_id === sourceIdFilter)
-    : await engine.listAllPageRefs();
+  // #4304: --since prunes at the ref level BEFORE the checkpoint diff and
+  // the per-page getPage loop. Refs outside the window never enter the
+  // checkpoint either — the fingerprint below folds `since`, so a resume
+  // with the same window re-filters them just as cheaply.
+  const allRefs = filterRefsSince(
+    sourceIdFilter
+      ? (await engine.listAllPageRefs()).filter(r => r.source_id === sourceIdFilter)
+      : await engine.listAllPageRefs(),
+    since,
+  );
 
   // v0.41.19.0 (T5): load checkpoint and skip already-completed
   // (source_id, slug) pairs. Dry-run does NOT load OR persist the
@@ -1964,27 +2001,18 @@ async function extractMentionsFromDb(
     }
   }
 
-  const sinceMs = since ? new Date(since).getTime() : null;
-
   for (const { slug, source_id } of remaining) {
     const page = await engine.getPage(slug, { sourceId: source_id });
     // v0.41.19.0 (T5 — codex fix #4): even when we skip a page (filter
     // miss, missing row, empty body, no mentions), MARK IT COMPLETED so
     // resume doesn't re-fetch it. The decision NOT to create links is
-    // itself a completed decision.
+    // itself a completed decision. (#4304: the --since filter moved to the
+    // ref level above — out-of-window pages never reach this loop.)
     const key = `${source_id}::${slug}`;
     if (!page || (typeFilter && page.type !== typeFilter)) {
       pendingForFlush.push(key);
       unpersistedCount++;
       continue;
-    }
-    if (sinceMs !== null) {
-      const updatedMs = new Date(page.updated_at).getTime();
-      if (Number.isFinite(updatedMs) && updatedMs <= sinceMs) {
-        pendingForFlush.push(key);
-        unpersistedCount++;
-        continue;
-      }
     }
     processed++;
     progress.tick();

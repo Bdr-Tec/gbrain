@@ -926,11 +926,16 @@ export interface BrainEngine {
    * N+1 pattern, which silently defaulted to source_id='default' and
    * skipped non-default-source pages.
    *
-   * Cheap by design: only slug + source_id, not the full Page row. For
-   * loops that need page.compiled_truth / timeline / frontmatter, use
-   * `forEachPage` from src/core/engine-iter.ts instead.
+   * Cheap by design: only slug + source_id + updated_at, not the full Page
+   * row. For loops that need page.compiled_truth / timeline / frontmatter,
+   * use `forEachPage` from src/core/engine-iter.ts instead.
+   *
+   * #4304: `updated_at` (the row's last DB-write time — "touched since",
+   * NOT the content's authored date) is included so time-window walks like
+   * `gbrain extract --since` can filter refs BEFORE fetching full pages,
+   * instead of a getPage round-trip per page across the whole corpus.
    */
-  listAllPageRefs(): Promise<Array<{ slug: string; source_id: string }>>;
+  listAllPageRefs(): Promise<Array<{ slug: string; source_id: string; updated_at: Date }>>;
 
   /**
    * v0.38 — lean per-source enumeration for hot-loop callers (autopilot

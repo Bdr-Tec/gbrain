@@ -150,6 +150,22 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pgResults[0]?.slug).toBe(pgliteResults[0]?.slug);
   });
 
+  test('#4304 listAllPageRefs parity: updated_at is a real Date, same (source_id, slug) ordering', async () => {
+    const pg = await pgEngine.listAllPageRefs();
+    const pl = await pgliteEngine.listAllPageRefs();
+    for (const refs of [pg, pl]) {
+      expect(refs.length).toBeGreaterThan(0);
+      for (const r of refs) {
+        expect(r.updated_at instanceof Date).toBe(true);
+        expect(Number.isFinite(r.updated_at.getTime())).toBe(true);
+      }
+    }
+    // Both engines were seeded identically — the ref key list must match.
+    expect(pg.map((r) => `${r.source_id}::${r.slug}`)).toEqual(
+      pl.map((r) => `${r.source_id}::${r.slug}`),
+    );
+  });
+
   test('v0.46.15 searchVector escalation parity: a dense page cannot starve the page result on either engine', async () => {
     // One page with 120 chunks nearest the query + 8 sparse pages behind it.
     // Pre-fix, the 100-chunk inner pool was consumed entirely by the dense
