@@ -19,6 +19,7 @@ import type { Operation } from './contract.ts';
 import {
   federatedSearchScope,
   resolvePerCallMode,
+  stampDeepResearchIds,
   stampEvidenceSafe,
   maybeCaptureSearch,
 } from './context.ts';
@@ -88,6 +89,7 @@ const search: Operation = {
     if (keywordOnly) {
       const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, ...scope });
       const results = dedupResults(raw);
+      stampDeepResearchIds(results);
       stampEvidenceSafe(results);
       // #1699: the keyword-only opt-out must STILL surface the content_flag
       // agent-warning channel (hybridSearch stamps it; this branch bypasses
@@ -114,6 +116,7 @@ const search: Operation = {
       ...(perCallMode ? { mode: perCallMode } : {}),
       onMeta: (m) => { capturedMeta = m; },
     });
+    stampDeepResearchIds(results);
     const latency_ms = Date.now() - startedAt;
     bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
     maybeCaptureSearch(ctx, queryText, results, latency_ms, true, capturedMeta);

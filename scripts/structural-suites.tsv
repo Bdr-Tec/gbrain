@@ -8,6 +8,7 @@ test/agent-register.test.ts	structural guards	2	readFileSync
 test/apply-migrations.test.ts	failed migration prints phase detail (#921)	1	readFileSync
 test/apply-migrations.test.ts	resolveSchemaBehind (#1530)	5	readFileSync
 test/apply-migrations.test.ts	runApplyMigrations exit codes (v0.36.1.x #1062)	1	readFileSync
+test/archived-source-scoping.test.ts	#3880 structural pins — all-source local_path selections filter archived	2	readFileSync
 test/asymmetric-encoding-contract.test.ts	Source-text contract (cheap belt + suspenders)	3	readFileSync
 test/autopilot-auto-drain-wiring.test.ts	autopilot auto-drain wiring	8	readFileSync
 test/autopilot-cycle-failure-classification.test.ts	autopilot cycle-failure classification — only 'failed' trips the circuit breaker	2	readFileSync
@@ -138,6 +139,7 @@ test/hook-command.serial.test.ts	user-prompt	14	readFileSync
 test/integrations-install.test.ts	installRecipeIntoHostRepo — happy path	6	readFileSync
 test/integrations.test.ts	CLI integration	3	readFileSync
 test/jobs-embed-background-parity.serial.test.ts	embed job background parity (D7)	2	readFileSync
+test/jobs-gateway-refresh-set.test.ts	#3387 — GATEWAY_REFRESH_JOB_NAMES ⇔ registerBuiltinJob call sites	5	readFileSync
 test/jobs-list-get-json.serial.test.ts	help advertises --json on list/get/stats (#3685)	2	readFileSync
 test/jobs-thin-client-date-rehydration.test.ts	thin-client unpack sites route through rehydrateJobDates (source audit)	2	readFileSync
 test/migrate-stdout-clean.test.ts	migration output stays off stdout	2	readFileSync
@@ -183,10 +185,12 @@ test/redos-hardening.test.ts	#1569 --no-schema-pack + heartbeat wiring (structur
 test/register-client-source-normalize.test.ts	register-client route wiring (structural)	1	readFileSync
 test/regression-strict-source-id.test.ts	cycle reverse-write call sites use the consolidated path	4	readFileSync
 test/regression-strict-source-id.test.ts	utils.ts no longer carries an inline permissive regex	2	readFileSync
+test/reindex-code-recovery.test.ts	CLI help line (#3970 surface 1)	1	readFileSync
 test/release-workflow.test.ts	release.yml ↔ binary-self-update asset contract	10	readFileSync
 test/reranker-default-seam.test.ts	LEGACY_DEFAULT_RERANKER_MODEL seam (#3657)	4	readFileSync
 test/resolver.test.ts	RESOLVER.md trigger round-trip (D5/C)	2	readFileSync
 test/resolver.test.ts	Skill example-name validator (D13)	4	readFileSync
+test/retrieval-reflex-recipe-routing.test.ts	retrieval-reflex recipe routing is MECE with the query skill (#4292)	5	readFileSync
 test/schema-cli-contract.test.ts	v0.39 T6 — schema CLI contract	7	readFileSync
 test/schema-pack-unify-types-handler.test.ts	#1575 unify-types worker dry-run default	1	readFileSync
 test/scripts/classify-tests.test.ts	classify-tests detectors	18	bun-file,doctor-source-helper,exec-scan,readFileSync

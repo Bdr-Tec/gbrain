@@ -227,6 +227,7 @@ const OP_AREAS: Record<string, string> = {
   get_versions: 'pages', revert_version: 'pages',
   resolve_slugs: 'pages', get_chunks: 'pages',
   put_raw_data: 'pages', get_raw_data: 'pages',
+  fetch: 'pages', // #4039 deep-research read adapter (search/fetch pair)
   // search
   search: 'search', query: 'search', search_by_image: 'search',
   // tags

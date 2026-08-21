@@ -216,6 +216,68 @@ const get_page: Operation = {
   cliHints: { name: 'get', positional: ['slug'] },
 };
 
+/**
+ * #4039: OpenAI deep-research adapter. ChatGPT's deep research mode requires
+ * an MCP server to expose a `search`/`fetch` PAIR with a fixed contract:
+ * search results carry an `id`, and `fetch(id)` returns
+ * `{ id, title, text, url, metadata }`. gbrain had `search` but no `fetch`,
+ * so the connector worked in normal chat and failed in deep research. This
+ * is a thin get_page adapter: id = slug (the `search` op stamps `id: slug`
+ * on every result so the pair round-trips), same source scoping and
+ * remote-reader privacy fences as get_page, no fuzzy resolution (deep
+ * research always echoes back an id it was handed).
+ */
+const fetch_page: Operation = {
+  name: 'fetch',
+  description: "Fetch the full text of one search result by its `id` (OpenAI deep-research contract: the search/fetch pair). `id` is the page slug stamped on every `search` result. Returns { id, title, text, url, metadata } — `text` is the page's canonical markdown. For the richer gbrain-native read (fuzzy slugs, soft-delete recovery, lossless edit round-trips), use get_page.",
+  params: {
+    id: { type: 'string', required: true, description: 'Result id from a prior `search` call (= the page slug).' },
+  },
+  handler: async (ctx, p) => {
+    const id = p.id as string;
+    if (typeof id !== 'string' || !id.trim()) {
+      throw new OperationError('invalid_params', 'fetch requires a non-empty id', 'Pass the `id` field from a `search` result.');
+    }
+    const slug = id.trim();
+    // Same scope ladder as get_page's unqualified read: federated array >
+    // scalar > nothing — a remote caller only fetches what its grant spans.
+    const sourceOpts = federatedSearchScope(ctx);
+    const page = await ctx.engine.getPage(slug, sourceOpts);
+    if (!page) {
+      throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Pass an id returned by a `search` call.');
+    }
+    bumpLastRetrievedAt(ctx.engine, [page.id]);
+    const tags = await ctx.engine.getTags(page.slug, { sourceId: page.source_id });
+    // Same privacy boundary as get_page: untrusted readers (ctx.remote ===
+    // true — every MCP transport) never see takes or private facts fences.
+    const visibleBody = ctx.remote === false
+      ? page
+      : {
+          ...page,
+          compiled_truth: stripFactsFence(
+            stripTakesFence(page.compiled_truth),
+            { keepVisibility: ['world'] },
+          ),
+        };
+    return {
+      id: page.slug,
+      title: page.title,
+      text: serializePageToMarkdown(visibleBody as Page, tags),
+      // Pages have no public http home; a stable brain-local URI satisfies
+      // the contract's citation slot without inventing a fake web URL.
+      url: `gbrain://page/${page.source_id}/${page.slug}`,
+      metadata: {
+        type: page.type,
+        source_id: page.source_id,
+        updated_at: page.updated_at,
+        tags,
+      },
+    };
+  },
+  scope: 'read',
+  cliHints: { name: 'fetch', positional: ['id'] },
+};
+
 const put_page: Operation = {
   name: 'put_page',
   description: 'Write/update a page (markdown with frontmatter). Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
@@ -628,10 +690,29 @@ const put_page: Operation = {
       writerLint = { status: 'lint_error' };
     }
 
+    // #2822: a 0-chunk put looks like success but the page is unsearchable —
+    // say WHY instead of leaving the caller to discover it at query time.
+    let chunkSkipReason: string | undefined;
+    if (result.chunks === 0) {
+      if (result.status === 'skipped') {
+        chunkSkipReason = 'write_skipped'; // dedup / unchanged content — prior chunks stand
+      } else if (result.parsedPage) {
+        const { isQuarantined } = await import('../quarantine.ts');
+        const { isEmbedSkipped } = await import('../embed-skip.ts');
+        const fm = result.parsedPage.frontmatter as Record<string, unknown> | undefined;
+        const bodyBlank = `${result.parsedPage.compiled_truth ?? ''}${result.parsedPage.timeline ?? ''}`.trim() === '';
+        chunkSkipReason = isQuarantined(fm) ? 'quarantined'
+          : isEmbedSkipped(fm) ? 'embed_skip'
+          : bodyBlank ? 'empty_body'
+          : 'unknown';
+      }
+    }
+
     return {
       slug: result.slug,
       status: result.status === 'imported' ? 'created_or_updated' : result.status,
       chunks: result.chunks,
+      ...(chunkSkipReason ? { chunk_skip_reason: chunkSkipReason } : {}),
       ...(autoLinks ? { auto_links: autoLinks } : {}),
       ...(autoTimeline ? { auto_timeline: autoTimeline } : {}),
       ...(writerLint ? { writer_lint: writerLint } : {}),
@@ -1199,4 +1280,5 @@ const capture: Operation = {
 export const pagesOperations: Operation[] = [
   get_page, put_page, delete_page, list_pages,
   restore_page, purge_deleted_pages, capture,
+  fetch_page,
 ];
