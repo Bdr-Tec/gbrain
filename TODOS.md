@@ -7464,3 +7464,11 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
 - [ ] P2 (adversarial F3): a chronically-failing transcript (always times out / deterministic all-writes-failed) releases its key on dead AND suppresses the cooldown stamp — re-triaged and re-paid every nightly. Add a bounded per-content-hash failure counter (N strikes → skip + surface in doctor/advisor).
 - [ ] P3 (adversarial F6): legacy direct-Anthropic path with the CDX-6 32k thinking default can exceed the SDK's 10-min default request timeout on slow generations (flag-off deployments only; surfaces as a retryable conn error at full token cost). Set an explicit SDK timeout or cap legacy maxTokens.
 - [ ] P3: phase-end `embedStalePages` runs outside BudgetTracker (bounded to the phase's own writes + 120s; fold under the tracker if spend telemetry wants it).
+
+### Recipe routing follow-up (#4292)
+- [ ] **P3 — install-time MECE warn for resolver rows.** `gbrain integrations
+  install` appends `resolver_rows_to_append` blindly; when an appended row
+  shares trigger phrases with an existing resolver row in the host repo
+  (e.g. "who is" claimed by both a recipe skill and the query skill), routing
+  goes ambiguous with no signal. Warn at install time when a to-append row's
+  quoted phrases already appear in the target RESOLVER.md/AGENTS.md. Effort: S.
