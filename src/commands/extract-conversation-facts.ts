@@ -1084,6 +1084,12 @@ async function processPage(
         abortSignal: state.signal,
       });
       if (!extraction.ok) {
+        // #3669 — rethrow BudgetExhausted UNWRAPPED. Wrapping it in a plain
+        // Error strips the BUDGET_EXHAUSTED tag, so the worker pool's D13
+        // must-abort check never fires and every remaining page burns a
+        // reserve_denied attempt instead of the run halting with a
+        // budget_exhausted receipt (core catch → halted receipt → return).
+        if (extraction.error instanceof BudgetExhausted) throw extraction.error;
         const detail = extraction.error instanceof Error
           ? `: ${extraction.error.message}`
           : '';
