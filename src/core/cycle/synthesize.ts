@@ -945,7 +945,7 @@ export async function runPhaseSynthesize(
 
     // Summary index page (deterministic; orchestrator-written via direct
     // engine.putPage so no allow-list path needed).
-    const summarySlug = `dream-cycle-summaries/${summaryDate}`;
+    const summarySlug = buildDreamSummarySlug(config.outputRoot, summaryDate);
     // Back-compat: writeSummaryPage takes string[] for display; map refs back to slugs.
     const writtenSlugs = writtenRefs.map(r => r.slug);
     if (SUMMARY_SLUG_RE.test(summarySlug)) {
@@ -1214,6 +1214,13 @@ export interface SynthConfig {
    * Revert dial: `gbrain config set dream.synthesize.mode agentic`.
    */
   mode: 'agentic' | 'oneshot';
+}
+
+/** Keep orchestrator summaries inside a configured non-default namespace. */
+export function buildDreamSummarySlug(outputRoot: string, summaryDate: string): string {
+  return outputRoot === 'wiki'
+    ? `dream-cycle-summaries/${summaryDate}`
+    : `${outputRoot}/dream-cycle-summaries/${summaryDate}`;
 }
 
 /** #2415: shared output-root resolution (synthesize + patterns phases). */
@@ -2671,6 +2678,7 @@ function makeError(cls: string, code: string, message: string, hint?: string): P
 export const __testing = {
   collectChildPutPageSlugs,
   buildSynthesisPrompt,
+  buildDreamSummarySlug,
   stampDreamProvenance,
   reverseWriteRefs,
   runSubagentsInline,

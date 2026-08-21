@@ -22,7 +22,7 @@ import { bundledDreamGlobs, __filingRulesTesting } from '../src/core/cycle/filin
 import { runPhasePatterns } from '../src/core/cycle/patterns.ts';
 import type { DiscoveredTranscript } from '../src/core/cycle/transcript-discovery.ts';
 
-const { buildSynthesisPrompt } = __testing;
+const { buildSynthesisPrompt, buildDreamSummarySlug } = __testing;
 
 const transcript: DiscoveredTranscript = {
   filePath: '/tmp/t.txt',
@@ -56,14 +56,44 @@ describe('#2415: loadAllowedSlugPrefixes remap', () => {
     expect(globs).toContain('dream-cycle-summaries/*');
   });
 
-  test('custom root remaps only wiki/-rooted globs', async () => {
+  test('custom root remaps wiki globs and the legacy summary glob', async () => {
     const globs = await loadAllowedSlugPrefixes('notes');
     expect(globs).toContain('notes/personal/reflections/*');
     expect(globs).toContain('notes/originals/*');
     expect(globs).toContain('notes/personal/patterns/*');
-    // Non-wiki globs pass through untouched.
-    expect(globs).toContain('dream-cycle-summaries/*');
+    expect(globs).toContain('notes/dream-cycle-summaries/*');
+    expect(globs).not.toContain('dream-cycle-summaries/*');
     expect(globs.some(g => g.startsWith('wiki/'))).toBe(false);
+  });
+
+  test('custom root brain authorizes nothing outside brain/**', async () => {
+    const globs = await loadAllowedSlugPrefixes('brain');
+    expect(globs.length).toBeGreaterThan(0);
+    expect(globs.every(g => g.startsWith('brain/'))).toBe(true);
+  });
+
+  test('default root remains byte-identical to the canonical globs', async () => {
+    expect(await loadAllowedSlugPrefixes()).toEqual([
+      'wiki/personal/reflections/*',
+      'wiki/originals/*',
+      'wiki/personal/patterns/*',
+      'wiki/people/*',
+      'dream-cycle-summaries/*',
+    ]);
+  });
+});
+
+describe('orchestrator summary slug follows the output root', () => {
+  test('default wiki root preserves the legacy unrooted slug', () => {
+    expect(buildDreamSummarySlug('wiki', '2026-08-20')).toBe(
+      'dream-cycle-summaries/2026-08-20',
+    );
+  });
+
+  test('custom roots contain the summary page', () => {
+    expect(buildDreamSummarySlug('brain', '2026-08-20')).toBe(
+      'brain/dream-cycle-summaries/2026-08-20',
+    );
   });
 });
 

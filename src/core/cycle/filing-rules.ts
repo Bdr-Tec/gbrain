@@ -41,13 +41,17 @@ function globsFromDoc(doc: FilingRulesDoc): string[] | null {
 /**
  * #2415: `outputRoot` remaps the canonical `wiki/`-rooted globs to the
  * configured namespace (e.g. `notes/personal/reflections/*`). Default
- * 'wiki' returns the globs verbatim.
+ * 'wiki' returns the globs verbatim. #4387: the legacy unrooted
+ * `dream-cycle-summaries/*` glob is nested UNDER the custom root (not left
+ * verbatim) so a non-default root authorizes nothing outside its namespace.
  */
 function remapGlobs(globs: string[], outputRoot: string): string[] {
   if (outputRoot === 'wiki') return globs;
-  return globs.map(g =>
-    g.startsWith('wiki/') ? `${outputRoot}/${g.slice('wiki/'.length)}` : g,
-  );
+  return globs.map(g => {
+    if (g.startsWith('wiki/')) return `${outputRoot}/${g.slice('wiki/'.length)}`;
+    if (g.startsWith('dream-cycle-summaries/')) return `${outputRoot}/${g}`;
+    return g;
+  });
 }
 
 /**
