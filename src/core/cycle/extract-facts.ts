@@ -440,26 +440,36 @@ export async function runExtractFacts(
     // unavailable (no API key configured), facts still insert with
     // NULL embeddings — drift_score gracefully returns null and
     // clustering falls back to recency.
-    if (isAvailable('embedding') && toInsert.length > 0) {
-      try {
-        const texts = toInsert.map(e => e.fact);
-        // #1972: forward the abort signal so a cancelled cycle's in-flight
-        // batch embed (a network call) is itself abortable, not just the loop.
-        const embeddings = await embed(texts, { abortSignal: opts.signal });
-        // Defensive: embed should return one vector per input; if the
-        // gateway returns a partial array (provider partial-batch retry
-        // returning fewer than requested), only fill what we have.
-        for (let i = 0; i < toInsert.length && i < embeddings.length; i++) {
-          toInsert[i].embedding = embeddings[i];
+    if (toInsert.length > 0) {
+      if (isAvailable('embedding')) {
+        try {
+          const texts = toInsert.map(e => e.fact);
+          // #1972: forward the abort signal so a cancelled cycle's in-flight
+          // batch embed (a network call) is itself abortable, not just the loop.
+          const embeddings = await embed(texts, { abortSignal: opts.signal });
+          // Defensive: embed should return one vector per input; if the
+          // gateway returns a partial array (provider partial-batch retry
+          // returning fewer than requested), only fill what we have.
+          for (let i = 0; i < toInsert.length && i < embeddings.length; i++) {
+            toInsert[i].embedding = embeddings[i];
+          }
+        } catch (err) {
+          // Embedding failure is non-fatal — facts still get inserted, just
+          // without embeddings. The warning is NOT swallowed (#3044): the cycle
+          // wrapper folds result.warnings into a 'warn' phase status with a
+          // warning count, so a billing/auth/rate-limit embed failure surfaces
+          // in the cycle report instead of hiding behind a green 'ok'.
+          result.warnings.push(
+            `${slug}: extract_facts batch embed failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
-      } catch (err) {
-        // Embedding failure is non-fatal — facts still get inserted, just
-        // without embeddings. The warning is NOT swallowed (#3044): the cycle
-        // wrapper folds result.warnings into a 'warn' phase status with a
-        // warning count, so a billing/auth/rate-limit embed failure surfaces
-        // in the cycle report instead of hiding behind a green 'ok'.
+      } else {
+        // #2821: same fail-open contract, but never silently. Pre-fix only
+        // the embed() FAILURE path warned — an UNAVAILABLE gateway inserted
+        // NULL-embedding rows with a clean green 'ok', hiding the degraded
+        // consolidate/drift_score behavior until someone diffed the DB.
         result.warnings.push(
-          `${slug}: extract_facts batch embed failed: ${err instanceof Error ? err.message : String(err)}`,
+          `${slug}: embedding gateway unavailable — ${toInsert.length} fact(s) inserted with NULL embedding (won't cluster in consolidate until re-embedded)`,
         );
       }
     }
