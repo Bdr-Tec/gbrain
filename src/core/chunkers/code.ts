@@ -1286,8 +1286,31 @@ function extractSymbolName(node: any): string | null {
       if (v) return v;
     }
   }
+
+  // #3789: declaration wrappers hold the identifier one level down —
+  // Kotlin  `property_declaration > variable_declaration > simple_identifier`,
+  // TS/JS   `lexical_declaration > variable_declarator` (field: name),
+  // Go      `type_declaration > type_spec` / `const_declaration > const_spec`
+  //         / `var_declaration > var_spec` (field: name),
+  // C/C++   `declaration > init_declarator` (identifier child).
+  // Without this dive those chunks carry symbol_name NULL, so code-def can
+  // never surface them even with their symbol_type in DEF_TYPES. Dive is
+  // restricted to these wrapper kinds only — an arbitrary expression child
+  // must never donate a false name.
+  for (const child of node.namedChildren) {
+    if (NAME_WRAPPER_TYPES.has(child.type)) {
+      const nested = extractSymbolName(child);
+      if (nested) return nested;
+    }
+  }
   return null;
 }
+
+// See the wrapper dive in extractSymbolName (#3789).
+const NAME_WRAPPER_TYPES = new Set([
+  'variable_declaration', 'variable_declarator', 'init_declarator',
+  'type_spec', 'const_spec', 'var_spec',
+]);
 
 // SQL-specific symbol extractor. Returns:
 //   string — DDL statement: extracted target name (table/function/view/index/etc).
