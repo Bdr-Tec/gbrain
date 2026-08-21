@@ -1359,7 +1359,10 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     // loop. Probe runs even when cycleOk=false (probe may surface signal
     // explaining why the cycle is failing).
     try {
-      const { resolveProbeEnabled, resolveProbeMaxUsd, runNightlyQualityProbe } = await import('../core/cycle/nightly-quality-probe.ts');
+      const { resolveProbeEnabled, resolveProbeMaxUsd, runNightlyQualityProbe } =
+        await import('../core/cycle/nightly-quality-probe.ts');
+      const { resolveNightlyProbeSearchConfigSnapshot } =
+        await import('../core/cycle/nightly-probe-search-config.ts');
       // Dual-plane read: `gbrain config set` (what the doctor enable hint
       // prints) writes the DB plane; ~/.gbrain/config.json is the fallback.
       let dbEnabled: string | null = null;
@@ -1376,12 +1379,7 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
         const { fileURLToPath } = await import('node:url');
         const { join } = await import('node:path');
         const maxUsd = resolveProbeMaxUsd(dbMaxUsd, cfg?.autopilot?.nightly_quality_probe?.max_usd);
-        // The committed fixture (test/fixtures/longmemeval-nightly.jsonl)
-        // lives in the gbrain PACKAGE, not the brain repo — repoPath is
-        // sync.repo_path (the user's brain), where the fixture never
-        // exists, so the probe error'd on every real install. Resolve the
-        // package root from the module location; keep repoPath as the
-        // fallback for setups that vendor the fixture into the brain repo.
+        // The fixture lives in the package, not usually in the user's brain repo.
         const pkgRoot = fileURLToPath(new URL('../..', import.meta.url));
         const fixtureAtPkgRoot = existsSync(join(pkgRoot, 'test', 'fixtures', 'longmemeval-nightly.jsonl'));
         await runNightlyQualityProbe({
@@ -1389,6 +1387,7 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
           hasEmbeddingProvider: () => isAvailable('embedding'),
           resolveMaxUsd: () => maxUsd,
           resolveRepoRoot: () => (fixtureAtPkgRoot ? pkgRoot : repoPath ?? gbrainHomePath('.')),
+          resolveSearchConfigSnapshot: () => resolveNightlyProbeSearchConfigSnapshot(engine),
           runLongMemEval: runLongMemEvalForProbe,
           runCrossModalBatch: runCrossModalBatchForProbe,
           now: () => new Date(),
