@@ -292,6 +292,21 @@ export async function runExtractFacts(
       `fence backfill: \`gbrain apply-migrations --force-retry 0.32.2\` then ` +
       `\`gbrain apply-migrations --yes\`. Or drain individual rows via \`forget_fact\`.`,
     );
+    // #3683: book the halt BEFORE the early return. The end-of-run rollup
+    // write below is unreachable from this path, so pre-fix a guard-triggered
+    // run recorded NOTHING in extract_rollup_7d — halt_count was structurally
+    // 0 and doctor extract_health's `halt_rate > 10%` warning could never
+    // fire for facts.fence no matter how long the phase stayed jammed.
+    // upsertExtractRollup is best-effort internally (never throws).
+    if (!opts.dryRun) {
+      await upsertExtractRollup(engine, {
+        kind: 'facts.fence',
+        source_id: sourceId,
+        cost_delta: 0,
+        round_completed_delta: 0,
+        halt_delta: 1,
+      });
+    }
     return result;
   }
 
@@ -596,12 +611,15 @@ export async function runExtractFacts(
     }
   }
   if (!opts.dryRun) {
+    // #3683: guard-triggered runs return early above (and book their halt
+    // there), so this path is always a completed round — the old
+    // `result.guardTriggered ? … : …` ternaries were dead in their true arm.
     await upsertExtractRollup(engine, {
       kind: 'facts.fence',
       source_id: sourceId,
       cost_delta: 0,
-      round_completed_delta: result.guardTriggered ? 0 : 1,
-      halt_delta: result.guardTriggered ? 1 : 0,
+      round_completed_delta: 1,
+      halt_delta: 0,
     });
   }
 
