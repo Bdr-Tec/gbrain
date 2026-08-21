@@ -61,7 +61,7 @@ import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
   type PushLogOutcome,
 } from './brain-repo-durability.ts';
-import { extractTimelineFromContent } from '../commands/extract.ts';
+import { extractTimelineFromContent } from './timeline-extract.ts';
 
 /** Raw op params for one manual timeline entry (date pre-validated by caller). */
 export interface TimelineEntryWriteInput {
