@@ -791,14 +791,23 @@ export async function importFromContent(
   if (!opts.noEmbed) {
     const searchInput = await loadSearchModeConfig(engine);
     const knobs = resolveSearchMode(searchInput);
-    // Look up the source row for this import; default to host trust when
-    // the engine's getConfig path doesn't surface a source row (most calls).
+    // Load the stored per-source CR override (sources.set-cr-mode). A missing
+    // row — mock engines, pre-source callers — falls through to global mode.
+    const resolvedSourceId = sourceId ?? 'default';
+    const sourceRows = await engine.executeRaw<{
+      contextual_retrieval_mode: string | null;
+      trust_frontmatter_overrides: boolean | null;
+    }>(
+      `SELECT contextual_retrieval_mode, trust_frontmatter_overrides FROM sources WHERE id = $1`,
+      [resolvedSourceId],
+    );
+    const sourceRow = Array.isArray(sourceRows) ? sourceRows[0] : undefined;
     const resolution = resolveContextualRetrievalMode({
       pageFrontmatter: parsed.frontmatter,
       source: {
-        id: sourceId ?? 'default',
-        contextual_retrieval_mode: null,
-        trust_frontmatter_overrides: false,
+        id: resolvedSourceId,
+        contextual_retrieval_mode: sourceRow?.contextual_retrieval_mode ?? null,
+        trust_frontmatter_overrides: sourceRow?.trust_frontmatter_overrides === true,
       },
       globalMode: knobs.contextual_retrieval,
       killSwitchDisabled: knobs.contextual_retrieval_disabled,
