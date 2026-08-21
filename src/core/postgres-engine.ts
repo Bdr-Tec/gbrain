@@ -4298,7 +4298,7 @@ export class PostgresEngine implements BrainEngine {
     slug: string,
     entry: TimelineInput,
     opts?: { skipExistenceCheck?: boolean; sourceId?: string },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const sql = this.sql;
     const sourceId = opts?.sourceId ?? 'default';
     if (!opts?.skipExistenceCheck) {
@@ -4308,19 +4308,23 @@ export class PostgresEngine implements BrainEngine {
       }
     }
     // ON CONFLICT DO NOTHING via the (page_id, date, summary) unique index.
-    // Returning 0 rows means either page missing OR duplicate; skipExistenceCheck
-    // makes that ambiguity safe (caller asserts page exists). Source-qualify
+    // #3827: RETURNING 1 makes the outcome observable — 0 rows means either
+    // page missing OR duplicate; with the existence check above (default) the
+    // false return unambiguously means "deduplicated", and under
+    // skipExistenceCheck the caller asserts the page exists. Source-qualify
     // the page-id lookup so multi-source brains don't fan timeline rows out
     // across every source containing the slug.
     // Free-text body fields are NUL + lone-surrogate sanitized (#2011) so a
     // surrogate from sliced/imported content can't reach the (later) ::jsonb
     // batch path or corrupt the row; identity fields (slug, date) are left raw.
-    await sql`
+    const inserted = await sql`
       INSERT INTO timeline_entries (page_id, date, source, summary, detail)
       SELECT id, ${entry.date}::date, ${sanitizeForJsonb(entry.source || '')}, ${sanitizeForJsonb(entry.summary)}, ${sanitizeForJsonb(entry.detail || '')}
       FROM pages WHERE slug = ${slug} AND source_id = ${sourceId}
       ON CONFLICT (page_id, date, summary, source) DO NOTHING
+      RETURNING 1
     `;
+    return inserted.length > 0;
   }
 
   async addTimelineEntriesBatch(entries: TimelineBatchInput[], opts?: BatchOpts): Promise<number> {

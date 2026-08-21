@@ -4466,7 +4466,7 @@ export class PGLiteEngine implements BrainEngine {
     slug: string,
     entry: TimelineInput,
     opts?: { skipExistenceCheck?: boolean; sourceId?: string },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const sourceId = opts?.sourceId ?? 'default';
     if (!opts?.skipExistenceCheck) {
       const { rows } = await this.db.query(
@@ -4478,17 +4478,22 @@ export class PGLiteEngine implements BrainEngine {
       }
     }
     // ON CONFLICT DO NOTHING via the (page_id, date, summary) unique index.
-    // Source-qualify the page-id lookup so multi-source brains don't fan
-    // timeline rows out across every source containing the slug.
+    // #3827: RETURNING 1 makes the outcome observable (true = inserted,
+    // false = deduplicated or JOIN-dropped under skipExistenceCheck),
+    // mirroring the Postgres engine. Source-qualify the page-id lookup so
+    // multi-source brains don't fan timeline rows out across every source
+    // containing the slug.
     // Free-text body fields are NUL + lone-surrogate sanitized (#2011), matching
     // the batch path and the Postgres engine; identity fields (slug, date) raw.
-    await this.db.query(
+    const { rows: inserted } = await this.db.query(
       `INSERT INTO timeline_entries (page_id, date, source, summary, detail)
        SELECT id, $2::date, $3, $4, $5
        FROM pages WHERE slug = $1 AND source_id = $6
-       ON CONFLICT (page_id, date, summary, source) DO NOTHING`,
+       ON CONFLICT (page_id, date, summary, source) DO NOTHING
+       RETURNING 1`,
       [slug, entry.date, sanitizeForJsonb(entry.source || ''), sanitizeForJsonb(entry.summary), sanitizeForJsonb(entry.detail || ''), sourceId]
     );
+    return inserted.length > 0;
   }
 
   async addTimelineEntriesBatch(entries: TimelineBatchInput[], opts?: BatchOpts): Promise<number> {

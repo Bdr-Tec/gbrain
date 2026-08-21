@@ -49,13 +49,16 @@ const add_timeline_entry: Operation = {
     }
     // v0.31.8 (D7): thread ctx.sourceId.
     const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
-    await ctx.engine.addTimelineEntry(p.slug as string, { // gbrain-allow-direct-insert: add_timeline_entry MCP op is the explicit canonical surface for manual timeline entries
+    const inserted = await ctx.engine.addTimelineEntry(p.slug as string, { // gbrain-allow-direct-insert: add_timeline_entry MCP op is the explicit canonical surface for manual timeline entries
       date,
       source: (p.source as string) || '',
       summary: p.summary as string,
       detail: (p.detail as string) || '',
     }, sourceOpts);
-    return { status: 'ok' };
+    // #3827: the (page_id, date, summary, source) unique index deduplicates
+    // via ON CONFLICT DO NOTHING. Report the drop instead of lying 'ok' —
+    // an MCP caller retrying an identical entry now sees it was skipped.
+    return inserted ? { status: 'ok' } : { status: 'skipped', reason: 'duplicate' };
   },
   cliHints: { name: 'timeline-add', positional: ['slug', 'date', 'summary'] },
 };
