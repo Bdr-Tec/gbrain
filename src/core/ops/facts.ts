@@ -20,6 +20,9 @@ import { dedupResults } from '../search/dedup.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
 import { packToBudget, estimateTokens, resultTokens } from '../search/token-budget.ts';
 import { isAvailable } from '../ai/gateway.ts';
+// #4209: the named entity-hints cap — surfaced in the extract_facts param
+// description and the entity_hints_used/_dropped response fields.
+import { ENTITY_HINTS_CAP } from '../facts/extract.ts';
 import { MEMORY_VERBS_VERSION } from '../verbs.ts';
 import type { SearchResult } from '../types.ts';
 import { AUDIT_ROW_SOURCES } from '../facts/audit-sources.ts';
@@ -35,7 +38,7 @@ const extract_facts: Operation = {
   params: {
     turn_text: { type: 'string', required: true, description: 'The user message or page body to extract facts from. Sanitized via INJECTION_PATTERNS before the LLM call.' },
     session_id: { type: 'string', description: 'Opaque session id (e.g. topic-id from MCP _meta.session_id, or CLI --session). Stored on each fact for the recall --session filter. Not an auth surface.' },
-    entity_hints: { type: 'array', items: { type: 'string' }, description: 'Existing canonical entity slugs the agent has already resolved. Helps the extractor pick the right slug.' },
+    entity_hints: { type: 'array', items: { type: 'string' }, description: `Existing canonical entity slugs the agent has already resolved. Helps the extractor pick the right slug. Only the first ${ENTITY_HINTS_CAP} are forwarded to the extractor (#4209) — the response reports entity_hints_used / entity_hints_dropped; pass the most load-bearing slugs first.` },
     is_dream_generated: { type: 'boolean', description: 'When true, extraction is skipped (anti-loop). Caller flips this on for pages with dream_generated:true frontmatter.' },
     visibility: { type: 'string', description: 'Default visibility for extracted facts. private (default) | world.' },
   },
@@ -46,12 +49,21 @@ const extract_facts: Operation = {
     const { isFactsExtractionEnabled } = await import('../facts/extract.ts');
     const { runFactsPipeline } = await import('../facts/backstop.ts');
 
+    // #4209: named-cap accounting. The extractor prompt forwards only the
+    // first ENTITY_HINTS_CAP hints; report used/dropped on EVERY envelope so
+    // over-cap hints are visible in the contract instead of silently eaten.
+    const entityHints = Array.isArray(p.entity_hints) ? (p.entity_hints as string[]) : undefined;
+    const hintAccounting = {
+      entity_hints_used: Math.min(entityHints?.length ?? 0, ENTITY_HINTS_CAP),
+      entity_hints_dropped: Math.max(0, (entityHints?.length ?? 0) - ENTITY_HINTS_CAP),
+    };
+
     // D15: kill switch. Operator can disable facts extraction across the
     // brain without binary downgrade by setting `facts.extraction_enabled`
     // to false. Returns zero-counts envelope so callers see a clean
     // success rather than a 'permission_denied' false alarm.
     if (!(await isFactsExtractionEnabled(ctx.engine))) {
-      return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'extraction_disabled' };
+      return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'extraction_disabled', ...hintAccounting };
     }
 
     // v0.31.2: routed through the shared pipeline (PR1 commit 9). Anti-loop
@@ -59,7 +71,7 @@ const extract_facts: Operation = {
     // an explicit user op without a parsedPage — the eligibility predicate
     // doesn't apply, but the dream-generated guard still does.
     if (p.is_dream_generated === true) {
-      return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'dream_generated' };
+      return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'dream_generated', ...hintAccounting };
     }
 
     const sourceId = ctx.sourceId ?? 'default';
@@ -73,7 +85,7 @@ const extract_facts: Operation = {
       engine: ctx.engine,
       sourceId,
       sessionId: typeof p.session_id === 'string' ? p.session_id : null,
-      entityHints: Array.isArray(p.entity_hints) ? (p.entity_hints as string[]) : undefined,
+      entityHints,
       source: 'mcp:extract_facts',
       visibility,
       mode: 'inline',  // declarative; runFactsPipeline always inline
@@ -96,6 +108,7 @@ const extract_facts: Operation = {
     if (r.skipped_reason === 'chat_unavailable') {
       return {
         inserted: 0, duplicate: 0, superseded: 0, fact_ids: [],
+        ...hintAccounting,
         skipped: 'extraction_unavailable',
         agent_action:
           'No server-side chat model is available. You are an LLM: extract the facts ' +
@@ -110,6 +123,7 @@ const extract_facts: Operation = {
     if (r.skipped_reason) {
       return {
         inserted: 0, duplicate: 0, superseded: 0, fact_ids: [],
+        ...hintAccounting,
         skipped: 'extraction_failed',
         reason: r.skipped_reason,
         agent_action:
@@ -124,6 +138,7 @@ const extract_facts: Operation = {
       duplicate: r.duplicate,
       superseded: r.superseded,
       fact_ids: r.fact_ids,
+      ...hintAccounting,
     };
   },
 };
