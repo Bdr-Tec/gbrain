@@ -43,6 +43,7 @@ import { autoDetectDetail, classifyQuery, isAmbiguousModalityQuery } from './que
 import { isTitlePhraseMatch } from './title-match.ts';
 import { normalizeAlias } from './alias-normalize.ts';
 import { stampEvidence, markKeywordHits } from './evidence.ts';
+import { applyExactLookupTier } from './exact-lookup.ts';
 import { expandAnchors, hydrateChunks } from './two-pass.ts';
 import { enforceTokenBudget, searchSalvageEnabled, type TokenBudgetMeta } from './token-budget.ts';
 import { warnOncePerProcess } from '../utils.ts';
@@ -1473,9 +1474,15 @@ export async function hybridSearch(
     }
     // T3/T4 — alias hop + evidence stamp even without an embedding provider
     // (the named-thing fix is most valuable exactly when vector is unavailable).
-    const noEmbedHopped = await applyAliasHop(engine, dedupResults(noEmbedResults), query, {
+    const noEmbedPreExact = await applyAliasHop(engine, dedupResults(noEmbedResults), query, {
       sourceId: opts?.sourceId,
       sourceIds: opts?.sourceIds,
+    });
+    // #1663 — structural exact-lookup tier (slug / exact-title identity).
+    const noEmbedHopped = await applyExactLookupTier(engine, noEmbedPreExact, query, {
+      sourceId: opts?.sourceId,
+      sourceIds: opts?.sourceIds,
+      titleCandidates: titleResults,
     });
     stampEvidence(noEmbedHopped, { cosineFloor: resolvedMode.evidence_cosine_floor });
     // #3995 — guaranteed page-1 relational evidence: a fired arm's answer is
@@ -1847,9 +1854,15 @@ export async function hybridSearch(
       await runPostFusionStages(engine, fallbackResults, postFusionOpts);
       fallbackResults.sort((a, b) => b.score - a.score);
     }
-    const kwHopped = await applyAliasHop(engine, dedupResults(fallbackResults), query, {
+    const kwPreExact = await applyAliasHop(engine, dedupResults(fallbackResults), query, {
       sourceId: opts?.sourceId,
       sourceIds: opts?.sourceIds,
+    });
+    // #1663 — structural exact-lookup tier (slug / exact-title identity).
+    const kwHopped = await applyExactLookupTier(engine, kwPreExact, query, {
+      sourceId: opts?.sourceId,
+      sourceIds: opts?.sourceIds,
+      titleCandidates: titleResults,
     });
     stampEvidence(kwHopped, { cosineFloor: resolvedMode.evidence_cosine_floor });
     const kwSliced = kwHopped.slice(offset, offset + limit);
@@ -2042,9 +2055,21 @@ export async function hybridSearch(
   // T3 — free-text alias hop. Runs AFTER rerank so a query that is a page's
   // declared chosen name reliably surfaces that page regardless of how the
   // reranker scored body chunks. Fail-open on pre-v110 brains.
-  const aliasHopped = await applyAliasHop(engine, reranked, query, {
+  const preExact = await applyAliasHop(engine, reranked, query, {
     sourceId: opts?.sourceId,
     sourceIds: opts?.sourceIds,
+  });
+
+  // #1663 — structural exact-lookup tier: a query that IS a page identity
+  // (slug / exact normalized title) gets that page at rank-1 regardless of
+  // how the scorers ranked body chunks. Supersession-filtered inside; reuses
+  // the already-fetched title arm (no extra queries); pure no-op for
+  // non-lookup-shaped queries. Runs after the alias hop so all three
+  // identity surfaces (alias, slug, title) share the same injection shape.
+  const aliasHopped = await applyExactLookupTier(engine, preExact, query, {
+    sourceId: opts?.sourceId,
+    sourceIds: opts?.sourceIds,
+    titleCandidates: titleResults,
   });
 
   // T4 — stamp evidence + create_safety so the agent's don't-duplicate
@@ -2107,7 +2132,9 @@ export async function hybridSearch(
       // Preserve alias-hop exact matches: applyAliasHop injects the canonical
       // page AFTER reranking, so it has no rerank_score. Without this it would
       // be dropped whenever autocut cuts on the scored set (Codex P1).
-      (x) => x.alias_hit === true,
+      // #1663: same guarantee for structural exact-lookup tier hits (slug /
+      // exact-title identity matches also arrive post-rerank, unscored).
+      (x) => x.alias_hit === true || x.exact_lookup !== undefined,
     );
     returnPool = r.kept;
     autocutDecision = r.decision;

@@ -925,6 +925,14 @@ export interface SearchResult {
    */
   keyword_hit?: boolean;
   /**
+   * #1663 — set when the structural exact-lookup tier promoted/injected this
+   * result (query was the page's slug or exact normalized title). Drives the
+   * autocut preserve predicate (tier hits carry no rerank_score) and
+   * `--explain` telemetry; evidence still reads via alias_hit /
+   * title_match_boost so the frozen EVIDENCE_ENUM is untouched.
+   */
+  exact_lookup?: 'slug' | 'title';
+  /**
    * T4 — the strongest signal that surfaced this page (alias_hit >
    * exact_title_match > high_vector_match > keyword_exact > weak_semantic).
    * Computed by classifyEvidence at the end of the hybrid pipeline.

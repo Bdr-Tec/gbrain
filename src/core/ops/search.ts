@@ -7,7 +7,13 @@
  */
 
 import { hybridSearchCached, stampContentFlags, stampUnverifiedExtractions } from '../search/hybrid.ts';
-import { looksConceptShaped } from '../search/query-intent.ts';
+import { looksConceptShaped, classifyQueryShape } from '../search/query-intent.ts';
+import {
+  gradeRetrievalConfidence,
+  shouldEscalateRetrieval,
+  confidenceRank,
+  type CragMetaBlock,
+} from '../search/crag.ts';
 import { expandQuery } from '../search/expansion.ts';
 import { dedupResults } from '../search/dedup.ts';
 import { markKeywordHits } from '../search/evidence.ts';
@@ -22,6 +28,7 @@ import {
   resolvePerCallMode,
   stampEvidenceSafe,
   maybeCaptureSearch,
+  thinkSourceScopeOpts,
 } from './context.ts';
 
 // --- Search ---
@@ -293,7 +300,8 @@ const query: Operation = {
     // v0.32.x search-lite: route the query op through hybridSearchCached so
     // semantic cache + token budget + intent weighting fire automatically.
     // Plain hybridSearch remains the bare API for callers that opt out.
-    const results = await hybridSearchCached(ctx.engine, queryText, {
+    // (#1663: `let` — the CRAG gate below may swap in an escalated run.)
+    let results = await hybridSearchCached(ctx.engine, queryText, {
       limit: (p.limit as number) || 20,
       offset: (p.offset as number) || 0,
       expansion: expand,
@@ -333,6 +341,99 @@ const query: Operation = {
       // v0.43 — relational recall override. Omitted = smart default (mode bundle).
       relationalRetrieval: typeof p.relational === 'boolean' ? (p.relational as boolean) : undefined,
     });
+    // #1663 — CRAG confidence gate. Grade what retrieval returned (zero-LLM;
+    // reads the stamped honesty signals: evidence, exact_lookup, rerank
+    // score), attach grade + query shape to the retrieval meta on EVERY call,
+    // and — config-gated, default OFF — escalate a weak result once:
+    //   search.crag_escalation=true → one high-ceiling retrieval re-run
+    //     (expansion + relational + wide limit, autocut off). Filters
+    //     (scope/types/since/until/lang) are preserved; keep the better run.
+    //   search.crag_think=true → still weak + LOCAL caller → run think and
+    //     attach its synthesis to the meta (spend-gated by config + trust).
+    const queryShape = classifyQueryShape(queryText);
+    let grade = gradeRetrievalConfidence(results);
+    const crag: CragMetaBlock = {
+      confidence: grade.level,
+      reason: grade.reason,
+      query_shape: queryShape,
+      ...(grade.top_rerank_score !== undefined ? { top_rerank_score: grade.top_rerank_score } : {}),
+    };
+    if (grade.level === 'weak') {
+      const [escalationCfg, thinkCfg] = await Promise.all([
+        ctx.engine.getConfig('search.crag_escalation').catch(() => null),
+        ctx.engine.getConfig('search.crag_think').catch(() => null),
+      ]);
+      if (shouldEscalateRetrieval(grade, { enabled: escalationCfg === 'true' })) {
+        try {
+          let escalatedMeta: HybridSearchMeta | null = null;
+          const escalated = await hybridSearchCached(ctx.engine, queryText, {
+            limit: Math.max((p.limit as number) || 20, 50),
+            offset: (p.offset as number) || 0,
+            expansion: true,
+            expandFn: expandQuery,
+            relationalRetrieval: true,
+            autocut: false,
+            detail,
+            // Preserve the caller's #3985 type filter on the re-run (raw
+            // pass-through; the base call already rejected malformed input).
+            ...(Array.isArray(p.types) || typeof p.types === 'string'
+              ? {
+                  types: (Array.isArray(p.types) ? (p.types as string[]) : (p.types as string).split(','))
+                    .map((t) => t.trim())
+                    .filter(Boolean),
+                }
+              : {}),
+            language: (p.lang as string) || undefined,
+            symbolKind: (p.symbol_kind as string) || undefined,
+            ...querySourceScope,
+            since: typeof p.since === 'string' ? p.since : undefined,
+            until: typeof p.until === 'string' ? p.until : undefined,
+            crossModal: p.cross_modal as 'text' | 'image' | 'both' | 'auto' | undefined,
+            embeddingColumn: embeddingColumnParam,
+            onMeta: (m) => { escalatedMeta = m; },
+          });
+          const regraded = gradeRetrievalConfidence(escalated);
+          crag.escalated = true;
+          crag.escalated_confidence = regraded.level;
+          if (confidenceRank(regraded.level) > confidenceRank(grade.level)) {
+            results = escalated;
+            capturedMeta = escalatedMeta;
+            grade = regraded;
+            crag.confidence = regraded.level;
+            crag.reason = regraded.reason;
+          }
+        } catch {
+          // Escalation is best-effort — never fail the original result set.
+        }
+      }
+      if (grade.level === 'weak') {
+        // The honest next move for a still-weak result. Hint always; auto-run
+        // only when the operator opted in AND the caller is trusted-local
+        // (spend + privacy: think synthesizes with the configured LLM).
+        crag.escalate_to_think = true;
+        if (thinkCfg === 'true' && ctx.remote === false) {
+          try {
+            const { runThink } = await import('../think/index.ts');
+            const thinkScope = thinkSourceScopeOpts(ctx);
+            const t = await runThink(ctx.engine, {
+              question: queryText,
+              since: typeof p.since === 'string' ? p.since : undefined,
+              until: typeof p.until === 'string' ? p.until : undefined,
+              ...thinkScope,
+              remote: false,
+            });
+            crag.think = {
+              answer: t.answer,
+              citations: t.citations.length,
+              ...(t.synthesis_status ? { synthesis_status: t.synthesis_status } : {}),
+              model: t.modelUsed,
+            };
+          } catch {
+            // think escalation is best-effort; the hint above still stands.
+          }
+        }
+      }
+    }
     const latency_ms = Date.now() - startedAt;
 
     // v0.37.0 (D11): op-layer last_retrieved_at write-back. Same shape as the
@@ -366,7 +467,11 @@ const query: Operation = {
     }
 
     // WP2/D3: query never nudges toward itself — no concept hint here.
-    ctx.emitResponseMeta?.('retrieval', buildRetrievalResponseMeta(queryText, results, capturedMeta));
+    // #1663: the CRAG grade rides the same retrieval meta channel.
+    ctx.emitResponseMeta?.('retrieval', {
+      ...buildRetrievalResponseMeta(queryText, results, capturedMeta),
+      crag,
+    });
     return results;
   },
   scope: 'read',
