@@ -1658,6 +1658,22 @@ function instantiateEmbedding(recipe: Recipe, modelId: string, cfg: AIGatewayCon
 const MIN_SUB_BATCH = 1;
 
 /**
+ * #3875: default per-call item cap for `no_batch_cap` recipes (Ollama,
+ * LiteLLM proxy). These recipes declare no static token/item cap because the
+ * backend's capacity is user-launched — but the per-SDK-call
+ * AI_EMBED_TIMEOUT_MS (60s default) then bounded a whole FILE's chunks in one
+ * request. A slow local model (CPU Ollama) embedding a large file timed out
+ * deterministically and every retry re-sent the same oversized batch. Capping
+ * items per sub-batch makes the 60s timeout a per-BATCH budget: 16 chunks per
+ * call finishes comfortably even on CPU-bound local models, and a genuinely
+ * wedged provider still surfaces the timeout loudly on the first sub-batch.
+ * An explicit `max_batch_items` on the recipe always wins over this default.
+ *
+ * @internal exported for tests; not part of the public gateway API.
+ */
+export const NO_BATCH_CAP_SUB_BATCH_ITEMS = 16;
+
+/**
  * Embed many texts. Truncates to MAX_CHARS, then dispatches based on whether
  * the recipe declares a per-batch token budget.
  *
@@ -1803,7 +1819,18 @@ export async function embed(texts: string[], opts?: EmbedOpts): Promise<Float32A
 
   // Hard COUNT cap (e.g. llama-server's "maximum allowed batch size 32").
   // Token budget can't bound item count, so re-split any oversized batch.
-  const maxBatchItems = embedding?.max_batch_items;
+  //
+  // #3875: recipes that declare `no_batch_cap` (Ollama, LiteLLM proxy) have
+  // NO static token cap AND no item cap, so a large file used to ride to the
+  // provider as ONE request — and the 60s AI_EMBED_TIMEOUT_MS (per SDK call)
+  // became a per-FILE budget. A slow local model embedding hundreds of chunks
+  // hit the timeout deterministically, and no amount of retrying could ever
+  // succeed. Default those recipes to a conservative item cap so the per-call
+  // timeout bounds a fixed amount of work; an explicit max_batch_items still
+  // wins.
+  const maxBatchItems =
+    embedding?.max_batch_items ??
+    (embedding?.no_batch_cap === true ? NO_BATCH_CAP_SUB_BATCH_ITEMS : undefined);
   const batches = maxBatchItems
     ? tokenBatches.flatMap(b => capBatchItems(b, maxBatchItems))
     : tokenBatches;

@@ -18,6 +18,8 @@ import {
   applySyncFailureGate,
   isSkippablePath,
   resolveAutoSkipThreshold,
+  summarizeFailuresByCode,
+  isEmbeddingInfraCode,
   DEFAULT_SOURCE_ID,
 } from '../core/sync.ts';
 import {
@@ -226,6 +228,14 @@ export interface SyncResult {
   embedded: number;
   pagesAffected: string[];
   failedFiles?: number; // count of parse failures (Bug 9)
+  /**
+   * #3875: code breakdown of the blocking failures (set on
+   * `blocked_by_failures` only). Lets printSyncResult (and --json consumers)
+   * distinguish provider-infra failures (EMBEDDING_TIMEOUT / RATE_LIMIT /
+   * QUOTA — retry after fixing the provider) from genuine file poison
+   * (--skip-failed territory).
+   */
+  failureCodes?: Array<{ code: string; count: number }>;
   /**
    * Files skipped because their FILENAME contains bracket/control characters
    * (SyncableReason 'malformed-path'). Informational — these never gate
@@ -2349,13 +2359,29 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       );
     } else {
       const fileFailCount = failedFiles.filter(f => isSkippablePath(f.path)).length;
-      serr(
-        `\nSync blocked: ${fileFailCount} file(s) failed to parse:\n` +
-        `${codeBreakdown}\n\n` +
-        `Fix the frontmatter and re-run, or use 'gbrain sync --skip-failed' to ` +
-        `acknowledge and move on. A file that keeps failing auto-skips after ` +
-        `${resolveAutoSkipThreshold()} consecutive syncs.`,
-      );
+      // #3875: code-aware copy. Provider-infra failures (embed timeout /
+      // rate limit / quota) are NOT bad files — suggesting --skip-failed for
+      // them acknowledges away perfectly good content. Point at provider
+      // health + a plain re-run (or --full to rebuild) instead.
+      const infraCodes = summarizeFailuresByCode(failedFiles).filter(c => isEmbeddingInfraCode(c.code));
+      if (infraCodes.length > 0) {
+        serr(
+          `\nSync blocked: ${fileFailCount} file(s) failed — embedding provider errors:\n` +
+          `${codeBreakdown}\n\n` +
+          `These are provider-health failures (timeout / rate limit / quota), not bad ` +
+          `files — do NOT use --skip-failed for them. Check the embedding provider ` +
+          `(is it running? out of quota?), then re-run 'gbrain sync' (only the failed ` +
+          `files are re-attempted), or 'gbrain sync --full' to rebuild.`,
+        );
+      } else {
+        serr(
+          `\nSync blocked: ${fileFailCount} file(s) failed to parse:\n` +
+          `${codeBreakdown}\n\n` +
+          `Fix the frontmatter and re-run, or use 'gbrain sync --skip-failed' to ` +
+          `acknowledge and move on. A file that keeps failing auto-skips after ` +
+          `${resolveAutoSkipThreshold()} consecutive syncs.`,
+        );
+      }
     }
     // Update last_run + repo_path (progress on infra) but NOT last_commit. The
     // checkpoint is INTENTIONALLY left in place — the banked completed set lets
@@ -2380,6 +2406,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       embedded: 0,
       pagesAffected,
       failedFiles: failedFiles.length,
+      failureCodes: summarizeFailuresByCode(failedFiles),
       bankedFiles,
     };
   }
@@ -2754,12 +2781,25 @@ async function performFullSync(
       serr(`\nFull sync blocked: repository history changed during sync.\n${codeBreakdown}`);
     } else {
       const fileFailCount = result.failures.filter(f => isSkippablePath(f.path)).length;
-      serr(
-        `\nFull sync blocked: ${fileFailCount} file(s) failed:\n` +
-        `${codeBreakdown}\n\n` +
-        `Fix the YAML in those files and re-run, or use '--skip-failed'. A file ` +
-        `that keeps failing auto-skips after ${resolveAutoSkipThreshold()} consecutive syncs.`,
-      );
+      // #3875: code-aware copy — provider-infra failures must not be routed
+      // to --skip-failed (same rationale as the incremental gate above).
+      const infraCodes = summarizeFailuresByCode(result.failures).filter(c => isEmbeddingInfraCode(c.code));
+      if (infraCodes.length > 0) {
+        serr(
+          `\nFull sync blocked: ${fileFailCount} file(s) failed — embedding provider errors:\n` +
+          `${codeBreakdown}\n\n` +
+          `These are provider-health failures (timeout / rate limit / quota), not bad ` +
+          `files — do NOT use --skip-failed for them. Check the embedding provider, ` +
+          `then re-run 'gbrain sync --full'.`,
+        );
+      } else {
+        serr(
+          `\nFull sync blocked: ${fileFailCount} file(s) failed:\n` +
+          `${codeBreakdown}\n\n` +
+          `Fix the YAML in those files and re-run, or use '--skip-failed'. A file ` +
+          `that keeps failing auto-skips after ${resolveAutoSkipThreshold()} consecutive syncs.`,
+        );
+      }
     }
     await engine.setConfig('sync.last_run', new Date().toISOString());
     await writeSyncAnchor(engine, opts.sourceId, 'repo_path', anchorPath);
@@ -2772,6 +2812,7 @@ async function performFullSync(
       embedded: 0,
       pagesAffected: [],
       failedFiles: result.failures.length,
+      failureCodes: summarizeFailuresByCode(result.failures),
     };
   }
   if (fullGate.acknowledged > 0) {
@@ -4301,11 +4342,23 @@ export function printSyncResult(result: SyncResult, sink: NodeJS.WriteStream = p
       break;
     case 'dry_run':
       break; // already printed in performSync
-    case 'blocked_by_failures':
-      write(`Sync BLOCKED at ${result.toCommit.slice(0, 8)}: ${result.failedFiles ?? 0} file(s) failed to parse.`);
+    case 'blocked_by_failures': {
+      write(`Sync BLOCKED at ${result.toCommit.slice(0, 8)}: ${result.failedFiles ?? 0} file(s) failed.`);
       write(`  See ~/.gbrain/sync-failures.jsonl for details, or run 'gbrain doctor'.`);
-      write(`  Fix the files then re-run 'gbrain sync', or 'gbrain sync --skip-failed' to move on.`);
+      // #3875: code-aware recovery hint — provider-infra failures are not
+      // fixed by --skip-failed (that would silently unindex good files).
+      const infraCodes = (result.failureCodes ?? []).filter(c => isEmbeddingInfraCode(c.code));
+      if (infraCodes.length > 0) {
+        write(
+          `  Embedding provider errors (${infraCodes.map(c => `${c.code} x${c.count}`).join(', ')}): ` +
+          `check provider health, then re-run 'gbrain sync' (or 'gbrain sync --full'). ` +
+          `Do NOT use --skip-failed for provider errors.`,
+        );
+      } else {
+        write(`  Fix the files then re-run 'gbrain sync', or 'gbrain sync --skip-failed' to move on.`);
+      }
       break;
+    }
     case 'partial':
       // #3068: a failed (non-timeout) pull with zero imports gets its own
       // message — "imported 0 of 0" reads like success, but the local

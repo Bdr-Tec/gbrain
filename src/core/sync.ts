@@ -667,6 +667,8 @@ export {
   resolveAutoSkipThreshold,
   isSkippablePath,
   decideGateAction,
+  EMBEDDING_INFRA_CODES,
+  isEmbeddingInfraCode,
   decideSyncFailureSeverity,
   applySyncFailureGate,
   DEFAULT_SOURCE_ID,
