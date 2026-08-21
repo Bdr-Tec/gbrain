@@ -1809,12 +1809,14 @@ async function embedAllStale(
 
 /**
  * v0.33.3: rate-limit-aware embedBatch wrapper.
+ * #3966: also retries transient gateway errors (502/503/504) that NIM and
+ * similar providers emit under sustained bulk load.
  *
  * The OpenAI SDK has built-in retry with exponential backoff, but its
  * backoff window (max ~4s) is too short for TPM (tokens-per-minute)
  * rate limits on large pages (~90K tokens).  This wrapper catches
- * 429-shaped errors, parses the retry delay from the error message
- * (e.g. "Please try again in 248ms"), and sleeps before retrying.
+ * 429-shaped and gateway-overload errors, parses the retry delay from
+ * the error message (e.g. "Please try again in 248ms"), and sleeps before retrying.
  *
  * v0.33.4 hardening (codex + re-review findings):
  *   - D4: detect 429 via the wrapped error's `cause.status` (the gateway's
@@ -1856,6 +1858,26 @@ export function detect429FromCause(e: unknown): boolean {
   for (let depth = 0; depth < 5 && cur !== undefined && cur !== null; depth++) {
     const obj = cur as { status?: unknown; statusCode?: unknown; cause?: unknown };
     if (obj.status === 429 || obj.statusCode === 429) return true;
+    cur = obj.cause;
+  }
+  return false;
+}
+
+/** Gateway overload statuses retried with the same backoff as 429 (#3966). */
+const RETRIABLE_GATEWAY_STATUSES = new Set([502, 503, 504]);
+
+/**
+ * Walk the cause chain looking for 502/503/504. Same depth bound as
+ * detect429FromCause — one normalizeAIError wrap is typical.
+ *
+ * @internal exported for unit tests.
+ */
+export function detectGatewayErrorFromCause(e: unknown): boolean {
+  let cur: unknown = e;
+  for (let depth = 0; depth < 5 && cur !== undefined && cur !== null; depth++) {
+    const obj = cur as { status?: unknown; statusCode?: unknown; cause?: unknown };
+    const status = obj.status ?? obj.statusCode;
+    if (typeof status === 'number' && RETRIABLE_GATEWAY_STATUSES.has(status)) return true;
     cur = obj.cause;
   }
   return false;
@@ -1922,10 +1944,11 @@ export async function embedBatchWithBackoff(
       // If the budget fired we may have been aborted mid-fetch; bubble out.
       if (signal?.aborted) throw e;
       const msg = e instanceof Error ? e.message : String(e);
-      if (!isRateLimitError(e) || attempt === MAX_RATE_LIMIT_RETRIES) throw e;
+      if (!isEmbedRetriableError(e) || attempt === MAX_RATE_LIMIT_RETRIES) throw e;
 
       const delayMs = parseRetryDelayMs(msg);
-      serr(`  [rate-limit] attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}, waiting ${delayMs}ms...`);
+      // One label for every retriable class — 429 and gateway blips share the loop.
+      serr(`  [embed-retry] attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}, waiting ${delayMs}ms...`);
       await abortableSleep(delayMs, signal);
     }
   }
@@ -1934,14 +1957,20 @@ export async function embedBatchWithBackoff(
 }
 
 /**
- * 429 judgment shared by embedBatchWithBackoff (retry decision) and
+ * Retriable embed errors: 429 rate limits plus transient gateway overload
+ * (502/503/504). Shared by embedBatchWithBackoff (retry decision) and
  * embedPageTexts (fan-out decision). D4: structured detection first
  * (gateway-wrapped errors via cause chain); message-match as fallback for
  * providers whose wrappers strip `cause.status`.
  */
-function isRateLimitError(e: unknown): boolean {
+function isEmbedRetriableError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
-  return detect429FromCause(e) || /rate.?limit|429/i.test(msg);
+  return (
+    detect429FromCause(e) ||
+    detectGatewayErrorFromCause(e) ||
+    /rate.?limit|429/i.test(msg) ||
+    /bad gateway|502|503|504|service unavailable|gateway timeout/i.test(msg)
+  );
 }
 
 /** Walk the cause chain (like detect429FromCause) for the first HTTP status. */
@@ -1992,7 +2021,7 @@ async function embedPageTexts(
   } catch (e: unknown) {
     if (opts.abortSignal?.aborted) throw e; // shutdown, not a chunk problem
     if (texts.length <= 1) throw e; // nothing to isolate
-    if (isRateLimitError(e) || e instanceof AITransientError) throw e;
+    if (isEmbedRetriableError(e) || e instanceof AITransientError) throw e;
     const status = statusFromCause(e);
     if (status === 401 || status === 403) throw e;
 
