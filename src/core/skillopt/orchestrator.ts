@@ -337,8 +337,12 @@ async function runOptimizationLoop(
   let baselineSelScore = 0;
   let testScore: number | undefined;
   let baselineTestScore: number | undefined;
-  // maxRuntimeMin enforcement: wall-clock deadline checked between steps. A
-  // breach throws `skillopt_runtime_exceeded`, caught below → outcome 'aborted'
+  // maxRuntimeMin enforcement (#4119): wall-clock deadline checked between
+  // steps AND inside every gate's rollout loop (deadlineMs is threaded into
+  // runValidationGate / scoreSkillOnTasks / runHeldOutGate, checked before
+  // each individual rollout) — a long batch can no longer blow past
+  // --max-runtime by a whole gate's worth of rollouts. A breach throws
+  // `skillopt_runtime_exceeded`, caught below → outcome 'aborted'
   // (no partial commit beyond whatever already passed every gate).
   const deadline = Date.now() + opts.maxRuntimeMin * 60_000;
 
@@ -353,6 +357,7 @@ async function runOptimizationLoop(
         bestScore: -1, // any score > -1 + 0.05 accepts; we just want the score.
         targetModel: opts.targetModel,
         judgeModel: opts.judgeModel,
+        deadlineMs: deadline,
       });
       if (checkpoint!.best_sel_score === 0) {
         // Fresh run; set baseline.
@@ -378,6 +383,7 @@ async function runOptimizationLoop(
           targetModel: opts.targetModel,
           judgeModel: opts.judgeModel,
           runsPerTask: 1,
+          deadlineMs: deadline,
         });
         const rewrite = await runOneShotRewrite({
           skillBodyText: baselineBody,
@@ -397,6 +403,7 @@ async function runOptimizationLoop(
               candidateSkillText: candidate,
               baselineSkillText: baselineText,
               heldOutTasks,
+              deadlineMs: deadline,
               targetModel: opts.targetModel,
               judgeModel: opts.judgeModel,
             });
@@ -409,6 +416,7 @@ async function runOptimizationLoop(
               tasks: split.sel,
               targetModel: opts.targetModel,
               judgeModel: opts.judgeModel,
+              deadlineMs: deadline,
             });
             checkpoint!.best_sel_score = score;
             checkpoint!.best_skill_text = candidate;
@@ -458,6 +466,7 @@ async function runOptimizationLoop(
             targetModel: opts.targetModel,
             judgeModel: opts.judgeModel,
             runsPerTask: 1,
+            deadlineMs: deadline,
           });
           // Partition into successes vs failures (>= 0.5 threshold). Reflect
           // gets the actual scored trajectories so failure-mode + success-mode
@@ -517,6 +526,7 @@ async function runOptimizationLoop(
             bestScore: checkpoint!.best_sel_score,
             targetModel: opts.targetModel,
             judgeModel: opts.judgeModel,
+            deadlineMs: deadline,
           });
 
           // Ablation (cat31 config D): disableValidationGate greedy-accepts any
@@ -537,6 +547,7 @@ async function runOptimizationLoop(
                 candidateSkillText: applied.newText,
                 baselineSkillText: baselineText,
                 heldOutTasks,
+                deadlineMs: deadline,
                 targetModel: opts.targetModel,
                 judgeModel: opts.judgeModel,
               });
@@ -659,6 +670,7 @@ async function runOptimizationLoop(
           tasks: split.test,
           targetModel: opts.targetModel,
           judgeModel: opts.judgeModel,
+          deadlineMs: deadline,
         });
         baselineTestScore = await scoreSkillOnTasks({
           engine: opts.engine,
@@ -666,6 +678,7 @@ async function runOptimizationLoop(
           tasks: split.test,
           targetModel: opts.targetModel,
           judgeModel: opts.judgeModel,
+          deadlineMs: deadline,
         });
       }
     });
