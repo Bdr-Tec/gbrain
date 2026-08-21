@@ -387,3 +387,111 @@ describe('issue #2446 — body H1 fallback for missing frontmatter title', () =>
     expect(parsed.title).toBe('Closed ATX Heading');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2225 — silent timeline destruction on naive get/put reassembly.
+// A bare `## Timeline` / `## History` heading (no sentinel, no preceding ---)
+// is what a naive MCP client produces when it concatenates get_page's
+// compiled_truth + timeline fields and put_pages the result. Pre-fix,
+// splitBody buried the whole timeline inside compiled_truth (timeline → 0B).
+// The fallback splits at the first bare heading — heading KEPT in the
+// timeline half — outside code fences, only when a non-empty prefix exists.
+// ---------------------------------------------------------------------------
+
+describe('splitBody bare-heading fallback (#2225)', () => {
+  test('splits at a bare ## Timeline heading (no --- and no sentinel), heading kept in timeline', () => {
+    const body = 'Article content\n\n## Timeline\n\n- 2024-01-01: Event happened';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toContain('Article content');
+    expect(compiled_truth).not.toContain('Event happened');
+    expect(timeline).toContain('## Timeline');
+    expect(timeline).toContain('Event happened');
+  });
+
+  test('splits at a bare ## History heading (case-insensitive)', () => {
+    const body = 'Company overview\n\n## history\n\n- 2020: Founded';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toContain('Company overview');
+    expect(timeline).toContain('## history');
+    expect(timeline).toContain('Founded');
+  });
+
+  test('explicit sentinel still wins over an earlier bare heading', () => {
+    const body = 'Intro\n\n<!-- timeline -->\n\n## Timeline\n\n- 2024: entry';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toBe('Intro\n');
+    expect(timeline).toContain('## Timeline');
+    expect(timeline).toContain('- 2024: entry');
+  });
+
+  test('a ## Timeline inside a fenced code block does NOT split', () => {
+    const body = 'Docs about markdown:\n\n```md\n## Timeline\n- example\n```\n\nMore prose.';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toBe(body);
+    expect(timeline).toBe('');
+  });
+
+  test('heading-first body (empty prefix) does not split', () => {
+    const body = '## Timeline\n\n- 2024: only content on the page';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toBe(body);
+    expect(timeline).toBe('');
+  });
+
+  test('### Timeline (h3) is not a split point', () => {
+    const body = 'Prose\n\n### Timeline\n\n- 2024: nested subsection';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toBe(body);
+    expect(timeline).toBe('');
+  });
+
+  test('## Timelines (word-boundary) is not a split point', () => {
+    const body = 'Prose\n\n## Timelines of various projects\n\ncontent';
+    const { compiled_truth, timeline } = splitBody(body);
+    // \b after (timeline|history) — "Timelines" must not match
+    expect(timeline).toBe('');
+  });
+
+  test('naive get→edit→put reassembly round-trips the timeline', () => {
+    // 1. Canonical page as gbrain writes it.
+    const original = `---
+type: company
+title: Acme Example
+---
+
+Acme builds widgets.
+
+<!-- timeline -->
+
+- 2024-05-01: Series A closed
+`;
+    const first = parseMarkdown(original, 'companies/acme-example.md');
+    expect(first.timeline).toContain('Series A closed');
+
+    // 2. A naive MCP client reassembles fields with a plain heading (the
+    //    #2225 report shape) and put_pages it back.
+    const naive = `---
+type: company
+title: Acme Example
+---
+
+${first.compiled_truth}
+
+## Timeline
+
+${first.timeline}
+`;
+    const second = parseMarkdown(naive, 'companies/acme-example.md');
+    expect(second.timeline).toContain('Series A closed');
+    expect(second.compiled_truth).not.toContain('Series A closed');
+    expect(second.compiled_truth).toContain('Acme builds widgets.');
+
+    // 3. And the canonical serializer keeps it stable from there.
+    const reserialized = serializeMarkdown({}, second.compiled_truth, second.timeline, {
+      type: 'company', title: 'Acme Example', tags: [],
+    });
+    const third = parseMarkdown(reserialized, 'companies/acme-example.md');
+    expect(third.timeline).toContain('Series A closed');
+    expect(third.compiled_truth).not.toContain('Series A closed');
+  });
+});

@@ -424,6 +424,12 @@ function hasFrontmatterFieldSyntax(fmBody: string): boolean {
  *   2. `--- timeline ---` — decorated separator
  *   3. `---` ONLY when the next non-empty line is `## Timeline` or `## History`
  *      (backward-compat fallback for older gbrain-written files)
+ *   4. #2225 fallback (no sentinel anywhere): the first bare `## Timeline` /
+ *      `## History` heading, outside code fences, with a non-empty prefix.
+ *      Unlike sentinels 1-3 the heading line is KEPT in the timeline half —
+ *      it is content, not a separator. This rescues the naive MCP get/put
+ *      reassembly (compiled_truth + '## Timeline' + timeline) that used to
+ *      silently bury the whole timeline inside compiled_truth.
  *
  * A plain `---` line is a markdown horizontal rule, NOT a timeline separator.
  * Treating bare `---` as a separator caused 83% content truncation on wiki corpora.
@@ -432,13 +438,22 @@ export function splitBody(body: string): { compiled_truth: string; timeline: str
   const lines = body.split('\n');
   const splitIndex = findTimelineSplitIndex(lines);
 
-  if (splitIndex === -1) {
-    return { compiled_truth: body, timeline: '' };
+  if (splitIndex !== -1) {
+    const compiled_truth = lines.slice(0, splitIndex).join('\n');
+    const timeline = lines.slice(splitIndex + 1).join('\n');
+    return { compiled_truth, timeline };
   }
 
-  const compiled_truth = lines.slice(0, splitIndex).join('\n');
-  const timeline = lines.slice(splitIndex + 1).join('\n');
-  return { compiled_truth, timeline };
+  const headingIndex = findBareTimelineHeadingIndex(lines);
+  if (headingIndex !== -1) {
+    return {
+      compiled_truth: lines.slice(0, headingIndex).join('\n'),
+      // Heading line kept: it belongs to the timeline content.
+      timeline: lines.slice(headingIndex).join('\n'),
+    };
+  }
+
+  return { compiled_truth: body, timeline: '' };
 }
 
 function findTimelineSplitIndex(lines: string[]): number {
@@ -463,6 +478,31 @@ function findTimelineSplitIndex(lines: string[]): number {
         if (/^##\s+(timeline|history)\b/i.test(next)) return i;
         break;
       }
+    }
+  }
+  return -1;
+}
+
+/**
+ * #2225 fallback scan: the first bare `## Timeline` / `## History` H2 heading
+ * with no sentinel before it. Lines inside fenced code blocks (```/~~~) are
+ * skipped (same fence tracking as inferTitleFromBody), and a heading with an
+ * empty prefix is skipped too — a heading-first body would split into an
+ * empty compiled_truth, which is worse than not splitting.
+ */
+function findBareTimelineHeadingIndex(lines: string[]): number {
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const fence = /^\s*(`{3,}|~{3,})/.exec(lines[i]);
+    if (fence) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (/^##\s+(timeline|history)\b/i.test(lines[i].trim())) {
+      const beforeContent = lines.slice(0, i).join('\n').trim();
+      if (beforeContent.length === 0) continue;
+      return i;
     }
   }
   return -1;

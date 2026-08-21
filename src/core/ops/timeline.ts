@@ -13,7 +13,10 @@ import { enforceSubagentSlugFence, enforceClientSlugFence, sourceScopeOpts } fro
 
 const add_timeline_entry: Operation = {
   name: 'add_timeline_entry',
-  description: 'Add timeline entry to a page',
+  // #2225 recon: entries land in the timeline_entries TABLE (the surface
+  // get_timeline reads), NOT the pages.timeline markdown blob that get_page
+  // returns — the two are reconciled by file write-through (#1856), not here.
+  description: 'Add timeline entry to a page. Writes a row to the structured timeline store read by get_timeline; it does not edit the pages.timeline markdown returned by get_page.',
   params: {
     slug: { type: 'string', required: true, description: 'Slug of the page whose timeline to append to.' },
     date: { type: 'string', required: true, description: "Entry date, strict YYYY-MM-DD (e.g. '2026-04-03'). Timestamps and non-calendar dates are rejected." },

@@ -9,8 +9,9 @@
 
 import type { BrainEngine } from '../engine.ts';
 import { clampSearchLimit } from '../engine.ts';
-import type { PageType } from '../types.ts';
+import type { Page, PageType } from '../types.ts';
 import { importFromContent } from '../import-file.ts';
+import { serializePageToMarkdown } from '../markdown.ts';
 import { writePageThrough, type WriteThroughResult } from '../write-through.ts';
 import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from '../link-extraction.ts';
 import { isFactsBackstopEligible } from '../facts/eligibility.ts';
@@ -97,7 +98,7 @@ function assertSourceInWriteGrant(ctx: OperationContext, sourceId: string): void
 
 const get_page: Operation = {
   name: 'get_page',
-  description: 'Read a page by slug (supports optional fuzzy matching). Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
+  description: 'Read a page by slug (supports optional fuzzy matching). The result\'s `content` field is the canonical full markdown (frontmatter + body + timeline sentinel) — edit THAT and pass it back to put_page to round-trip losslessly; reassembling compiled_truth/timeline by hand risks dropping sections. Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
   params: {
     slug: { type: 'string', required: true, description: 'Page slug' },
     fuzzy: { type: 'boolean', description: 'Enable fuzzy slug resolution (default: false)' },
@@ -192,9 +193,17 @@ const get_page: Operation = {
     // it" signal it would get from search. The marker is also in frontmatter;
     // this is the clean, documented accessor.
     const content_flag = getContentFlag(page.frontmatter as Record<string, unknown> | null);
+    // #2225: `content` is the canonical serialized markdown (frontmatter +
+    // compiled_truth + `<!-- timeline -->` sentinel + timeline). Clients that
+    // edit-and-put_page this field round-trip losslessly; hand-concatenating
+    // compiled_truth + timeline without the sentinel used to silently destroy
+    // pages.timeline on the next write. Built from visibleBody so the
+    // privacy-fence strip above applies to untrusted readers here too.
+    const content = serializePageToMarkdown(visibleBody as Page, tags);
     return {
       ...visibleBody,
       tags,
+      content,
       ...(resolved_slug ? { resolved_slug } : {}),
       ...(content_flag ? { content_flag } : {}),
     };
