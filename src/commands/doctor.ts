@@ -774,6 +774,14 @@ export async function buildChecks(
     // Read/parse failure is itself best-effort; skip silently.
   }
 
+  // 3b-ter. Self-upgrade health (#3747). Pure local-file check (config +
+  // upgrade cache + audit trail; no DB) that was only ever pushed by the
+  // REMOTE report (doctor/report-remote.ts) — the local `gbrain doctor`,
+  // the surface an operator actually runs on the host, never emitted it,
+  // so a wedged auto-upgrade loop was invisible exactly where it would be
+  // diagnosed. Sits beside the upgrade_errors trail it complements.
+  checks.push(checkSelfUpgradeHealth());
+
   // 3b-bis. Supervisor health (filesystem-only: PID liveness + audit log).
   // Reads the default PID file (`~/.gbrain/supervisor.pid` unless the user
   // overrode with GBRAIN_SUPERVISOR_PID_FILE) and the latest audit file
