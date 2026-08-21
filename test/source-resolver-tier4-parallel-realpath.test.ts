@@ -33,9 +33,19 @@ import type { BrainEngine } from '../src/core/engine.ts';
 function makeStub(paths: Array<{ id: string; local_path: string }>): BrainEngine {
   return {
     kind: 'pglite',
-    executeRaw: async <T>(sql: string): Promise<T[]> => {
-      if (sql.includes('SELECT id, local_path FROM sources')) {
+    executeRaw: async <T>(sql: string, params?: unknown[]): Promise<T[]> => {
+      // Matches both query shapes of listRegisteredLocalPathSources (#3880):
+      // the archived-column query and its pre-v34 column-less fallback. Rows
+      // carry no `archived` key here → treated as active.
+      if (sql.includes('FROM sources WHERE local_path IS NOT NULL')) {
         return paths as unknown as T[];
+      }
+      // #4368-added archival gate: resolveSourceId/resolveSourceWithTier call
+      // assertSourceExists on the tier-4 match before returning it. This test
+      // only exercises resolution ordering/concurrency, not archival — every
+      // id the resolver checks is treated as active.
+      if (sql.includes('SELECT id FROM sources WHERE id = $1 AND archived = false')) {
+        return [{ id: params?.[0] }] as unknown as T[];
       }
       return [] as unknown as T[];
     },

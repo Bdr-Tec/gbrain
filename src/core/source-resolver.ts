@@ -18,7 +18,7 @@ import { join, dirname, resolve } from 'path';
 import type { BrainEngine } from './engine.ts';
 import { isSourceFederated, parseSourceConfig } from './sources-load.ts';
 import { SOURCE_ID_RE, isValidSourceId, ALL_SOURCES } from './source-id.ts';
-import { isTrustedDotfile, realpathOrResolveAsync } from './path-confine.ts';
+import { isTrustedDotfile, realpathOrResolve, realpathOrResolveAsync } from './path-confine.ts';
 
 // Re-export so scope-resolution call sites can import the sentinel from
 // either module (#1712).
