@@ -1,7 +1,10 @@
 /**
  * #3911 — relative `raw_transcript` resolves against the page's OWNING
  * source's local_path (not just the brain-global sync.repo_path), and
- * `../` traversal outside the resolved root is rejected.
+ * `../` traversal outside the resolved root is rejected. Follow-up: an
+ * ABSOLUTE raw_transcript is the same untrusted frontmatter — it must land
+ * inside a registered root (source local_path or sync.repo_path) or it is
+ * rejected too (no /etc/passwd reads via synced frontmatter).
  *
  * Pre-fix: readConversationBodyForParsing only consulted sync.repo_path, so
  * a multi-source brain whose transcripts live per-source silently read the
@@ -115,13 +118,41 @@ describe('#3911 raw_transcript source-root resolution', () => {
     expect(body).toBe('SUMMARY body');
   });
 
-  test('absolute raw_transcript path is used as-is (pre-existing behavior)', async () => {
+  test('absolute path inside the owning source root is read', async () => {
     const engine = stubEngine({ sourceLocalPath: sourceRepo, repoPath: null });
+    const body = await readConversationBodyForParsing(
+      engine,
+      pageWith(join(sourceRepo, 'transcripts', 'meeting.txt')),
+    );
+    expect(body).toBe('SOURCE transcript body');
+  });
+
+  test('absolute path inside sync.repo_path is read (source root set but not containing it)', async () => {
+    const engine = stubEngine({ sourceLocalPath: sourceRepo, repoPath: globalRepo });
     const body = await readConversationBodyForParsing(
       engine,
       pageWith(join(globalRepo, 'transcripts', 'meeting.txt')),
     );
     expect(body).toBe('GLOBAL transcript body');
+  });
+
+  test('#3911 follow-up: absolute path OUTSIDE every registered root is rejected — summary body wins', async () => {
+    const engine = stubEngine({ sourceLocalPath: sourceRepo, repoPath: globalRepo });
+    const body = await readConversationBodyForParsing(
+      engine,
+      pageWith(join(outsideDir, 'secret.txt')),
+    );
+    expect(body).toBe('SUMMARY body');
+    expect(body).not.toContain('OUTSIDE THE ROOT');
+  });
+
+  test('absolute path with NO registered roots is rejected (fail-closed, same as relative)', async () => {
+    const engine = stubEngine({ sourceLocalPath: null, repoPath: null });
+    const body = await readConversationBodyForParsing(
+      engine,
+      pageWith(join(sourceRepo, 'transcripts', 'meeting.txt')),
+    );
+    expect(body).toBe('SUMMARY body');
   });
 
   test('missing transcript file falls back to summary body', async () => {

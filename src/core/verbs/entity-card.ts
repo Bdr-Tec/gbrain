@@ -109,11 +109,11 @@ export async function buildEntityCard(
   // a card (or a near-miss suggestion). Trust + config gate resolve through
   // the shared helper; local (remote:false) callers are unchanged. Covers
   // entity, context_pack, and delta (all route through buildEntityCard).
-  const { resolveExcludePrivatePages } = await import('../search/private-visibility.ts');
+  const { resolveExcludePrivatePages, privatePagesFilterFragment } = await import('../search/private-visibility.ts');
   const excludePrivate = await resolveExcludePrivatePages(engine, opts.remote ? undefined : false);
-  const privatePredicate = excludePrivate
-    ? ` AND COALESCE(frontmatter->>'visibility', 'world') <> 'private'`
-    : '';
+  // Predicate text lives ONCE (private-visibility.ts) — both card queries
+  // below select `FROM pages` unaliased, so qualify with the table name.
+  const privatePredicate = excludePrivate ? ` AND ${privatePagesFilterFragment('pages')}` : '';
 
   const norm = normalizeAlias(trimmed);
   const titleLc = trimmed.toLowerCase();

@@ -5,7 +5,10 @@
  * verb documents "private: local CLI reads only"), but nothing on the READ
  * side ever enforced it for pages: a remote/MCP caller could retrieve a
  * `visibility: private` page through search, recall's query arm, entity
- * cards, and context_pack. This module is the single trust+config resolver:
+ * cards, context_pack — and the sibling read ops (get_page/fetch/list_pages,
+ * get_chunks/get_versions/get_timeline/get_raw_data, resolve_slugs,
+ * get_links/get_backlinks/traverse_graph). This module is the single
+ * trust+config resolver:
  *
  *   ctx.remote === false          → see everything (trusted local CLI)
  *   GBRAIN_REMOTE_PRIVATE_PAGES=1 → operator escape hatch, see everything
@@ -44,6 +47,65 @@ export function isPrivatePage(frontmatter: unknown): boolean {
     frontmatter !== null &&
     (frontmatter as Record<string, unknown>).visibility === 'private'
   );
+}
+
+/**
+ * Slugs an untrusted caller must not see enumerated: every in-scope page row
+ * for the slug is `visibility: private`. A slug with at least one non-private
+ * in-scope page stays visible (multi-source: private in one source, world in
+ * another). Slugs with no page row at all (dangling link endpoints) are not
+ * returned — they reveal nothing private. Shared by the #4352 read-op gates
+ * (get_page fuzzy candidates, resolve_slugs, link/graph endpoint filtering,
+ * and the content-op probes via slugHiddenFromCaller). `scope` follows the
+ * canonical precedence (federated array > scalar > nothing); with
+ * `includeDeleted` unset, only live rows are considered.
+ */
+export async function findPrivateOnlySlugs(
+  engine: BrainEngine,
+  slugs: string[],
+  scope: { sourceId?: string; sourceIds?: string[] } = {},
+  opts: { includeDeleted?: boolean } = {},
+): Promise<Set<string>> {
+  if (slugs.length === 0) return new Set();
+  const params: unknown[] = [slugs];
+  let scopeClause = '';
+  if (scope.sourceIds && scope.sourceIds.length > 0) {
+    params.push(scope.sourceIds);
+    scopeClause = `AND p.source_id = ANY($${params.length}::text[])`;
+  } else if (scope.sourceId) {
+    params.push(scope.sourceId);
+    scopeClause = `AND p.source_id = $${params.length}`;
+  }
+  const rows = await engine.executeRaw<{ slug: string }>(
+    `SELECT p.slug FROM pages p
+      WHERE p.slug = ANY($1::text[])
+        ${opts.includeDeleted ? '' : 'AND p.deleted_at IS NULL'}
+        ${scopeClause}
+      GROUP BY p.slug
+      HAVING bool_and(NOT (${privatePagesFilterFragment('p')}))`,
+    params,
+  );
+  return new Set(rows.map(r => r.slug));
+}
+
+/**
+ * One-slug trust + probe combo for the sibling content ops (#4352
+ * remediation: get_chunks / get_versions / get_timeline / get_raw_data).
+ * True ⇒ the caller's read of `slug` must behave exactly like a missing
+ * page (no existence oracle). Trusted local + the operator opt-outs resolve
+ * to false via resolveExcludePrivatePages before any query runs. The probe
+ * considers DELETED rows too (fail-closed: a soft-deleted private page's
+ * history/timeline/raw data stays hidden).
+ */
+export async function slugHiddenFromCaller(
+  engine: BrainEngine,
+  remote: boolean | undefined,
+  slug: string,
+  scope: { sourceId?: string; sourceIds?: string[] } = {},
+): Promise<boolean> {
+  if (!(await resolveExcludePrivatePages(engine, remote))) return false;
+  const hidden = await findPrivateOnlySlugs(engine, [slug], scope, { includeDeleted: true });
+  return hidden.has(slug);
 }
 
 const CACHE_TTL_MS = 30_000;

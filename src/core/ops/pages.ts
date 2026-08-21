@@ -21,7 +21,7 @@ import { stripFactsFence } from '../facts-fence.ts';
 import { getContentFlag } from '../quarantine.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
 import { isValidSourceId, ALL_SOURCES } from '../source-id.ts';
-import { resolveExcludePrivatePages, isPrivatePage, privatePagesFilterFragment } from '../search/private-visibility.ts';
+import { resolveExcludePrivatePages, isPrivatePage, findPrivateOnlySlugs } from '../search/private-visibility.ts';
 import { LIST_PAGES_DESCRIPTION, CAPTURE_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
 import type { Operation, OperationContext } from './contract.ts';
@@ -98,9 +98,11 @@ function assertSourceInWriteGrant(ctx: OperationContext, sourceId: string): void
 }
 
 /**
- * #4352 remediation — filter fuzzy-resolution candidates down to slugs that
- * have at least one non-private in-scope page, so get_page's ambiguous_slug
- * candidate list can't enumerate private slugs to an untrusted caller.
+ * #4352 remediation — filter fuzzy-resolution candidates so get_page's
+ * ambiguous_slug candidate list can't enumerate private slugs to an
+ * untrusted caller. Probe SQL lives ONCE in findPrivateOnlySlugs (a slug
+ * with at least one non-private in-scope page stays visible; candidates
+ * come from resolveSlugs, so every slug has a live page row).
  * Order-preserving (resolveSlugs returns ranked candidates). Read-only,
  * scope-threaded — not a getPage/putPage pair (no unscoped-check/scoped-write
  * hazard).
@@ -111,25 +113,8 @@ async function dropPrivateSlugs(
   scope: { sourceId?: string; sourceIds?: string[] },
   includeDeleted: boolean,
 ): Promise<string[]> {
-  const params: unknown[] = [candidates];
-  let scopeClause = '';
-  if (scope.sourceIds && scope.sourceIds.length > 0) {
-    params.push(scope.sourceIds);
-    scopeClause = `AND p.source_id = ANY($${params.length}::text[])`;
-  } else if (scope.sourceId) {
-    params.push(scope.sourceId);
-    scopeClause = `AND p.source_id = $${params.length}`;
-  }
-  const rows = await engine.executeRaw<{ slug: string }>(
-    `SELECT DISTINCT p.slug FROM pages p
-      WHERE p.slug = ANY($1::text[])
-        AND ${privatePagesFilterFragment('p')}
-        ${includeDeleted ? '' : 'AND p.deleted_at IS NULL'}
-        ${scopeClause}`,
-    params,
-  );
-  const visible = new Set(rows.map(r => r.slug));
-  return candidates.filter(c => visible.has(c));
+  const hidden = await findPrivateOnlySlugs(engine, candidates, scope, { includeDeleted });
+  return candidates.filter(c => !hidden.has(c));
 }
 
 const get_page: Operation = {
@@ -907,11 +892,11 @@ async function runAutoLink(
   if (candidateSlugs.length > 0) {
     const rows = opts?.sourceId
       ? await engine.executeRaw<{ slug: string }>(
-          `SELECT slug FROM pages WHERE slug = ANY($1) AND source_id = $2`,
+          `SELECT slug FROM pages WHERE slug = ANY($1::text[]) AND source_id = $2`,
           [candidateSlugs, opts.sourceId],
         )
       : await engine.executeRaw<{ slug: string }>(
-          `SELECT slug FROM pages WHERE slug = ANY($1)`,
+          `SELECT slug FROM pages WHERE slug = ANY($1::text[])`,
           [candidateSlugs],
         );
     existingSlugs = new Set(rows.map(r => r.slug));

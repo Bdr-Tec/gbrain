@@ -439,6 +439,25 @@ async function verifyFiles(engine: BrainEngine) {
     ? await (await import('../core/storage.ts')).createStorage(config.storage as any).catch(() => null)
     : null;
   const repoPath = await engine.getConfig('sync.repo_path').catch(() => null);
+  // Git-lane root resolution mirrors upload-raw's resolvePageWriteTarget:
+  // storage_path was banked relative to the row's OWNING source's local_path
+  // when that source has its own working tree, with sync.repo_path only as
+  // the fallback. Joining every row against sync.repo_path falsely reported
+  // MISSING (or hash-checked the wrong file) for separate-tree sources.
+  const sourceLocalPathCache = new Map<string, string | null>();
+  const gitRootFor = async (sourceId: unknown): Promise<string | null> => {
+    const sid = typeof sourceId === 'string' && sourceId ? sourceId : null;
+    if (!sid) return repoPath ? String(repoPath) : null;
+    if (!sourceLocalPathCache.has(sid)) {
+      let localPath: string | null = null;
+      try {
+        const srcRows = await sql`SELECT local_path FROM sources WHERE id = ${sid}`;
+        localPath = srcRows[0]?.local_path ? String(srcRows[0].local_path) : null;
+      } catch { /* sources table unavailable — fall back to sync.repo_path */ }
+      sourceLocalPathCache.set(sid, localPath);
+    }
+    return sourceLocalPathCache.get(sid) ?? (repoPath ? String(repoPath) : null);
+  };
   const HASH_CHECK_MAX_BYTES = 10 * 1024 * 1024;
   const normalizeHash = (h: string) => h.replace(/^sha256:/, '');
 
@@ -451,7 +470,8 @@ async function verifyFiles(engine: BrainEngine) {
     const storagePath = String(row.storage_path);
     const meta = (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) as Record<string, unknown> | null;
     if (meta?.storage === 'git') {
-      const local = repoPath ? join(repoPath, storagePath) : null;
+      const gitRoot = await gitRootFor(row.source_id);
+      const local = gitRoot ? join(gitRoot, storagePath) : null;
       if (!local || !existsSync(local)) {
         missing++;
         console.error(`  MISSING: ${row.storage_path} (git-storage file not in brain repo)`);

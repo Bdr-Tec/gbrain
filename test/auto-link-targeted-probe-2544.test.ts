@@ -4,8 +4,9 @@
  * Pre-fix, EVERY put_page with auto-link enabled materialized the whole
  * brain's slug set (getAllSlugs = full pages scan) just to validate a
  * handful of candidate link targets. The check now probes exactly the
- * candidate target/from slugs (`slug = ANY($1) AND source_id = $2`, the
- * proven oneshot pattern) and skips the query when there are no candidates.
+ * candidate target/from slugs (`slug = ANY($1::text[]) AND source_id = $2`,
+ * the proven oneshot pattern) and skips the query when there are no
+ * candidates.
  *
  * These tests pin the BEHAVIOR through put_page: resolvable references
  * still create links, references to nonexistent pages are still dropped
@@ -14,6 +15,8 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { operations } from '../src/core/operations.ts';
@@ -112,6 +115,17 @@ describe('#2544 — auto-link behavior through put_page (targeted probe)', () =>
     expect(links.created).toBe(0);
     const rows = await engine.getLinks('meetings/cross-source', { sourceId: 'source-b' });
     expect(rows).toHaveLength(0);
+  });
+
+  test('probe binds the slug array with an explicit ::text[] cast (postgres.js parity)', () => {
+    // The PGLite behavior tests above can't see this: postgres.js binds a JS
+    // array parameter without server-side type context, so a bare ANY($1)
+    // relies on inference the house style never does (cf. dropPrivateSlugs in
+    // the same file). Pin the cast on EVERY slug-array probe in pages.ts.
+    const src = readFileSync(join(import.meta.dir, '../src/core/ops/pages.ts'), 'utf8');
+    const probes = src.match(/slug = ANY\(\$1[^)]*\)/g) ?? [];
+    expect(probes.length).toBeGreaterThanOrEqual(2); // both runAutoLink branches
+    for (const probe of probes) expect(probe).toContain('::text[]');
   });
 
   test('stale-link removal still works (reconciliation unaffected)', async () => {

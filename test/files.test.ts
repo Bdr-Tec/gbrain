@@ -363,3 +363,89 @@ describe2297('files upload-raw git-storage branch (#2297)', () => {
     expect2297(cap.errs.join('\n')).toContain('--page');
   });
 });
+
+// ---- verify git lane resolves each row via its OWNING source's local_path ----
+// upload-raw (#2297) banks storage_path relative to target.writeRoot — the
+// source's OWN local_path for sources with a separate working tree. verify
+// used to join every git row against sync.repo_path only, so those rows
+// falsely reported MISSING (or hash-checked the wrong file).
+describe2297('files verify git lane (per-source root resolution)', () => {
+  let engine: PGLiteEngine;
+  let repo: string;    // sync.repo_path — the brain-global repo
+  let vault: string;   // the 'vault' source's separate working tree
+
+  beforeAll2297(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+    repo = mkdtempSync(join(tmpdir(), 'gbrain-verify-repo-'));
+    vault = mkdtempSync(join(tmpdir(), 'gbrain-verify-vault-'));
+    await engine.setConfig('sync.repo_path', repo);
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config, created_at)
+       VALUES ('vault', 'vault', $1, '{}'::jsonb, NOW())
+       ON CONFLICT (id) DO NOTHING`,
+      [vault],
+    );
+    await engine.putPage('notes/vault-doc', {
+      title: 'Vault Doc', type: 'concept', frontmatter: {},
+      compiled_truth: 'body', timeline: '',
+    }, { sourceId: 'vault' });
+    await engine.putPage('notes/default-doc', {
+      title: 'Default Doc', type: 'concept', frontmatter: {},
+      compiled_truth: 'body', timeline: '',
+    });
+  });
+
+  afterAll2297(async () => {
+    if (engine) await engine.disconnect();
+    if (repo) rmSync(repo, { recursive: true, force: true });
+    if (vault) rmSync(vault, { recursive: true, force: true });
+  });
+
+  function captureLogs() {
+    const logs: string[] = [];
+    const errs: string[] = [];
+    const logSpy = spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    const errSpy = spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errs.push(a.join(' ')); });
+    return { logs, errs, restore: () => { logSpy.mockRestore(); errSpy.mockRestore(); } };
+  }
+
+  test2297('rows banked under a source-owned working tree verify against that tree, not sync.repo_path', async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), 'gbrain-verify-src-'));
+    const exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`EXIT:${code}`);
+    }) as never);
+    const cap = captureLogs();
+    try {
+      // One git row in the vault source (separate working tree), one in the
+      // default source (sync.repo_path fallback).
+      const vaultFile = join(srcDir, 'vault-report.txt');
+      writeFileSync(vaultFile, 'vault numbers');
+      await runFiles(engine, ['upload-raw', vaultFile, '--page', 'notes/vault-doc', '--source', 'vault']);
+      const defaultFile = join(srcDir, 'default-report.txt');
+      writeFileSync(defaultFile, 'default numbers');
+      await runFiles(engine, ['upload-raw', defaultFile, '--page', 'notes/default-doc', '--source', 'default']);
+
+      // Sanity: the vault row's storage_path is relative to the VAULT tree —
+      // it does not exist under sync.repo_path.
+      const rows = await engine.executeRaw<{ storage_path: string; source_id: string }>(
+        `SELECT storage_path, source_id FROM files WHERE filename = 'vault-report.txt'`,
+      );
+      expect2297(rows.length).toBe(1);
+      expect2297(rows[0].source_id).toBe('vault');
+      expect2297(existsSync2297(join(vault, rows[0].storage_path))).toBe(true);
+      expect2297(existsSync2297(join(repo, rows[0].storage_path))).toBe(false);
+
+      await runFiles(engine, ['verify']);
+      const all = [...cap.logs, ...cap.errs].join('\n');
+      expect2297(all).not.toContain('MISSING');
+      expect2297(all).not.toContain('MISMATCH');
+      expect2297(all).toContain('2 files verified, 0 mismatches, 0 missing');
+    } finally {
+      cap.restore();
+      exitSpy.mockRestore();
+      rmSync(srcDir, { recursive: true, force: true });
+    }
+  });
+});

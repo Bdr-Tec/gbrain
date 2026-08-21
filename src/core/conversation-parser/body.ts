@@ -39,30 +39,47 @@ function resolveWithinRoot(root: string, rel: string): string | null {
  * global repo path silently read the wrong file (or nothing) for any page
  * outside that one repo. Resolution order:
  *
- *   1. absolute path — used as-is (pre-existing behavior);
+ *   1. absolute path — accepted only when it lands INSIDE a registered root
+ *      (the owning source's `local_path`, else `sync.repo_path`). Frontmatter
+ *      is untrusted data, so an absolute `/etc/passwd`-style path is rejected
+ *      the same as `../` traversal (#3911 follow-up);
  *   2. page.source_id's source row `local_path` — escape-checked;
  *   3. `sync.repo_path` fallback (source row missing / no local_path) —
  *      also escape-checked.
  *
- * A path that ESCAPES its root is rejected outright (returns null → caller
- * falls back to the summary body); it does not retry lower tiers.
+ * A RELATIVE path that ESCAPES its root is rejected outright (returns null →
+ * caller falls back to the summary body); it does not retry lower tiers.
+ * An ABSOLUTE path may sit in either root (containment, not resolution).
  */
 async function resolveTranscriptPath(
   engine: BrainEngine,
   page: Page,
   rawTranscript: string,
 ): Promise<string | null> {
-  if (isAbsolute(rawTranscript)) return rawTranscript;
+  let sourceLocalPath: string | null = null;
   if (page.source_id) {
-    let sourceLocalPath: string | null = null;
     try {
       sourceLocalPath = (await loadSourceRow(engine, page.source_id)).local_path;
     } catch {
       // Unknown source id / sources table unavailable — fall through to the
       // brain-global repo path, the pre-#3911 behavior.
     }
-    if (sourceLocalPath) return resolveWithinRoot(sourceLocalPath, rawTranscript);
   }
+  if (isAbsolute(rawTranscript)) {
+    // resolveWithinRoot handles absolute candidates: resolve(root, abs) is
+    // abs itself, so this is a pure containment check against each root.
+    if (sourceLocalPath) {
+      const contained = resolveWithinRoot(sourceLocalPath, rawTranscript);
+      if (contained) return contained;
+    }
+    const repoPath = await engine.getConfig('sync.repo_path');
+    if (repoPath) {
+      const contained = resolveWithinRoot(repoPath, rawTranscript);
+      if (contained) return contained;
+    }
+    return null; // outside every registered root — fail closed
+  }
+  if (sourceLocalPath) return resolveWithinRoot(sourceLocalPath, rawTranscript);
   const repoPath = await engine.getConfig('sync.repo_path');
   if (repoPath) return resolveWithinRoot(repoPath, rawTranscript);
   return null;
