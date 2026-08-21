@@ -113,6 +113,7 @@ import {
   DEFAULT_EMBEDDING_MODEL,
   DEFAULT_EMBEDDING_DIMENSIONS,
   NEW_INSTALL_DEFAULT_EMBEDDING_MODEL,
+  LEGACY_DEFAULT_RERANKER_MODEL,
   renderCanonicalMigrationCommands,
 } from './defaults.ts';
 const DEFAULT_EXPANSION_MODEL = 'anthropic:claude-haiku-4-5-20251001';
@@ -120,12 +121,11 @@ const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
 // v0.35.0.0+: reranker default. Used only when search.reranker.enabled is set
 // AND no explicit reranker_model is configured. Mode bundles' per-mode
 // `reranker_model` default to this same value but can be overridden.
-// v0.46.3: stays on the LEGACY zerank-2 until the September removal (reranker
-// split-default: existing ZE-keyed brains keep their working reranker until
-// the API dies; voyage-keyed NEW installs get an explicit
-// `search.reranker.model voyage:rerank-2.5` override written at init, and
-// keyed non-voyage installs get explicit `search.reranker.enabled false`).
-const DEFAULT_RERANKER_MODEL = 'zeroentropyai:zerank-2';
+// v0.46.3: stays on the LEGACY zerank-2 until the September removal (split-default: existing
+// ZE-keyed brains keep their working reranker until the API dies; NEW installs get explicit
+// `search.reranker.*` config at init — `voyage:rerank-2.5` with a Voyage key, `enabled false`
+// otherwise). #3657 seam: ONE constant in defaults.ts, shared with the mode bundles.
+const DEFAULT_RERANKER_MODEL = LEGACY_DEFAULT_RERANKER_MODEL;
 
 let _config: AIGatewayConfig | null = null;
 const _modelCache = new Map<string, any>();
