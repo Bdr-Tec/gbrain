@@ -430,13 +430,14 @@ describe('#2922: submit-time source resolution', () => {
       await withEnv({ GBRAIN_SOURCE: undefined }, async () => {
         try {
           await runAgentRun(engine, ['--detach', '--source', 'does-not-exist', 'write', 'a', 'page']);
-          throw new Error('expected runAgentRun to exit');
+          throw new Error('expected runAgentRun to reject');
         } catch (e: any) {
-          expect(e.message).toBe('EXIT');
+          // New contract: the resolver throws the actionable error; the CLI's
+          // central catch prints it and sets verdict 1 (no in-handler exit).
+          expect(e.message).toMatch(/not found or is archived/);
+          expect(e.message).toMatch(/gbrain sources list/);
         }
       });
-      expect(spy).toHaveBeenCalledWith(1);
-      expect(errSpy.mock.calls.some(call => String(call[0]).includes('not found'))).toBe(true);
       const rows = await engine.executeRaw<{ id: number }>(
         `SELECT id FROM minion_jobs WHERE name = 'subagent'`,
       );
@@ -455,13 +456,12 @@ describe('#2922: submit-time source resolution', () => {
       await withEnv({ GBRAIN_SOURCE: undefined }, async () => {
         try {
           await runAgentRun(engine, ['--detach', '--source', 'corporate', 'write', 'a', 'page']);
-          throw new Error('expected runAgentRun to exit');
+          throw new Error('expected runAgentRun to reject');
         } catch (e: any) {
-          expect(e.message).toBe('EXIT');
+          expect(e.message).toMatch(/not found or is archived/);
+          expect(e.message).toMatch(/restore|sources list/);
         }
       });
-      expect(spy).toHaveBeenCalledWith(1);
-      expect(errSpy.mock.calls.some(call => String(call[0]).includes('archived'))).toBe(true);
       const rows = await engine.executeRaw<{ id: number }>(
         `SELECT id FROM minion_jobs WHERE name = 'subagent'`,
       );
