@@ -151,9 +151,22 @@ describe('resolveCodeReadiness — source scoping', () => {
     await importCodeFile(engine, 'src/sample.ts', SAMPLE, { noEmbed: true });
   });
 
-  test('scoped to a source with no code → not_built', async () => {
+  // #3707: pre-fix this reported `not_built` — indistinguishable from a
+  // never-synced brain — and the hint misdirected to `gbrain sync`. Code
+  // exists brain-wide (the beforeEach import), so a scoped miss is a
+  // scope/grant problem, not an indexing one.
+  test('scoped to a source with no code while code exists brain-wide → out_of_scope (symbol)', async () => {
     const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0, sourceId: 'no-such-source' });
-    expect(r.status).toBe('not_built');
+    expect(r.status).toBe('out_of_scope');
+    expect(r.ready).toBe(false);
+    expect(r.has_code).toBe(false);
+    expect(r.scoped_source_id).toBe('no-such-source');
+  });
+
+  test('scoped to a source with no code while code exists brain-wide → out_of_scope (edge)', async () => {
+    const r = await resolveCodeReadiness(engine, { kind: 'edge', count: 0, sourceId: 'no-such-source' });
+    expect(r.status).toBe('out_of_scope');
+    expect(r.scoped_source_id).toBe('no-such-source');
   });
 
   test('scoped to the default source (where code lives) → ready (symbol)', async () => {
@@ -166,6 +179,31 @@ describe('resolveCodeReadiness — source scoping', () => {
       kind: 'symbol', count: 0, sourceId: 'no-such-source', allSources: true,
     });
     expect(r.status).toBe('ready');
+  });
+});
+
+describe('resolveCodeReadiness — #3707 out_of_scope vs not_built', () => {
+  test('scoped miss on a genuinely empty brain stays not_built (no code anywhere)', async () => {
+    const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0, sourceId: 'no-such-source' });
+    expect(r.status).toBe('not_built');
+    expect(r.scoped_source_id).toBeUndefined();
+  });
+
+  test('unscoped miss never reports out_of_scope', async () => {
+    await importCodeFile(engine, 'src/sample.ts', SAMPLE, { noEmbed: true });
+    const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0 });
+    expect(r.status).toBe('ready'); // brain-wide probe sees the code
+  });
+
+  test('out_of_scope hint names the scope and does NOT recommend gbrain sync', () => {
+    const hint = readinessHint({
+      status: 'out_of_scope', ready: false, has_code: false,
+      pending_edges: false, scoped_source_id: 'default',
+    });
+    expect(hint).toContain("source 'default'");
+    expect(hint).toContain('scope/grant problem');
+    expect(hint).toContain('federated_read');
+    expect(hint).not.toMatch(/Run `gbrain sync`/);
   });
 });
 

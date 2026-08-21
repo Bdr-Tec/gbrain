@@ -150,8 +150,13 @@ export async function runCodeCallers(engine: BrainEngine, args: string[]): Promi
         symbol: sym, source_id: envelopeSourceId, scope, count: edges.length,
         status: readiness.status, ready: readiness.ready, callers: edges,
       };
+      // #3707: out_of_scope names the empty scope so "grant/scope problem" is
+      // distinguishable from "graph never built" in machine output.
+      if (readiness.scoped_source_id) out.scoped_source_id = readiness.scoped_source_id;
       if (edges.length === 0 && !allSources && sourceId) {
-        out.hint = `No callers in source '${sourceId}'. Try --all-sources to search every source.`;
+        out.hint = readiness.status === 'out_of_scope'
+          ? (readinessHint(readiness) ?? `No callers in source '${sourceId}'.`)
+          : `No callers in source '${sourceId}'. Try --all-sources to search every source.`;
       }
       console.log(JSON.stringify(out, null, 2));
     } else if (edges.length === 0) {

@@ -131,8 +131,12 @@ export async function runCodeCallees(engine: BrainEngine, args: string[]): Promi
         symbol: sym, source_id: envelopeSourceId, scope, count: edges.length,
         status: readiness.status, ready: readiness.ready, callees: edges,
       };
+      // #3707: see code-callers.ts — scope problem vs never-built.
+      if (readiness.scoped_source_id) out.scoped_source_id = readiness.scoped_source_id;
       if (edges.length === 0 && !allSources && sourceId) {
-        out.hint = `No callees in source '${sourceId}'. Try --all-sources to search every source.`;
+        out.hint = readiness.status === 'out_of_scope'
+          ? (readinessHint(readiness) ?? `No callees in source '${sourceId}'.`)
+          : `No callees in source '${sourceId}'. Try --all-sources to search every source.`;
       }
       console.log(JSON.stringify(out, null, 2));
     } else if (edges.length === 0) {

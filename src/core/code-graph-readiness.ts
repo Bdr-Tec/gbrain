@@ -30,6 +30,12 @@
  * EDGE_EXTRACTOR_VERSION_TS`. Counting only `IS NULL` would falsely report
  * `ready` after a resolver-version bump (the graph is stale, not done).
  *
+ * Both grains share one more state (#3707): when the SCOPED probe finds no
+ * code but an unscoped rerun finds code brain-wide, the status is
+ * `out_of_scope` — the graph is built, the caller's resolved scope (per-call
+ * source_id / source pin / remote federated_read grant) just excludes it.
+ * The hint names the scope instead of misdirecting to `gbrain sync`.
+ *
  * Cost: callers run this ONLY when `count === 0` (see `resolveCodeReadiness`);
  * a non-empty result short-circuits to `ready: true` with no query. Probes use
  * `EXISTS` (short-circuits on first row) rather than `COUNT(*)` because the
@@ -45,7 +51,7 @@
 import type { BrainEngine } from './engine.ts';
 import { EDGE_EXTRACTOR_VERSION_TS } from './chunkers/symbol-resolver.ts';
 
-export type CodeGraphStatus = 'not_built' | 'no_symbols' | 'indexing' | 'ready' | 'unknown';
+export type CodeGraphStatus = 'not_built' | 'no_symbols' | 'indexing' | 'ready' | 'out_of_scope' | 'unknown';
 
 export interface CodeGraphReadiness {
   /** Coarse machine-readable state. */
@@ -56,6 +62,12 @@ export interface CodeGraphReadiness {
   has_code: boolean;
   /** Whether unresolved/stale edge chunks remain in scope (edge kind only). */
   pending_edges: boolean;
+  /**
+   * #3707: set ONLY for `out_of_scope` — the resolved source scope that was
+   * probed and found to hold no code (while code exists brain-wide), so
+   * hints/envelopes can name the scope instead of misdirecting to `gbrain sync`.
+   */
+  scoped_source_id?: string;
 }
 
 /** Scope for a readiness probe. Omit `sourceId` (or set `allSources`) for brain-wide. */
@@ -155,6 +167,20 @@ export async function resolveCodeReadiness(
   try {
     const hasCode = await codeChunksExist(engine, sourceId);
     if (!hasCode) {
+      // #3707: "no code in scope" conflated two very different situations —
+      // the graph was never built, vs. the graph IS built but the caller's
+      // resolved scope (per-call source_id, .gbrain-source pin, or a remote
+      // client's federated_read grant) excludes every code-bearing source.
+      // The old `not_built` hint then misdirected operators to `gbrain sync`
+      // on a fully-indexed brain. When a scope was applied, rerun the probe
+      // brain-wide: code elsewhere → out_of_scope, a scope/grant problem,
+      // not an indexing one.
+      if (sourceId !== undefined && (await codeChunksExist(engine, undefined))) {
+        return {
+          status: 'out_of_scope', ready: false, has_code: false,
+          pending_edges: false, scoped_source_id: sourceId,
+        };
+      }
       return { status: 'not_built', ready: false, has_code: false, pending_edges: false };
     }
     if (opts.kind === 'symbol') {
@@ -182,6 +208,11 @@ export function readinessHint(r: CodeGraphReadiness): string | null {
   switch (r.status) {
     case 'not_built':
       return 'Symbol graph not built (no code indexed in scope). Run `gbrain sync` to index code.';
+    case 'out_of_scope':
+      return `Code IS indexed in this brain, but none of it is inside your resolved source scope${
+        r.scoped_source_id ? ` (source '${r.scoped_source_id}')` : ''
+      }. This is a scope/grant problem, not an indexing one — do NOT re-run \`gbrain sync\`. ` +
+        `Pass a source_id that holds code (or --all-sources locally); remote clients: check the client's federated_read grant.`;
     case 'no_symbols':
       return 'Code is indexed but carries no symbol metadata (chunks predate symbol-aware chunking). Run `gbrain reindex-code` to rebuild the symbol graph.';
     case 'indexing':
