@@ -1182,3 +1182,44 @@ describe('embed --stale contextual-retrieval wrapping (#3507)', () => {
     expect(restamps).toHaveLength(0);
   });
 });
+
+describe('#3796 — attempt-scaled 429 wait floors (rolling TPM window)', () => {
+  const mid = () => 0.5; // jitterFactor = 1 → deterministic
+
+  test('tiny provider hints get floored, and the floor escalates per attempt', async () => {
+    const { rateLimitDelayMs, RATE_LIMIT_ATTEMPT_FLOOR_MS } = await import('../src/commands/embed.ts');
+    // 'try again in 100ms' → hint = 600ms at mid jitter; every attempt floors above it.
+    const waits = [0, 1, 2, 3, 4].map((attempt) => rateLimitDelayMs('try again in 100ms', attempt, mid));
+    expect(waits).toEqual([...RATE_LIMIT_ATTEMPT_FLOOR_MS]);
+    // Strictly escalating ladder.
+    for (let i = 1; i < waits.length; i++) expect(waits[i]).toBeGreaterThan(waits[i - 1]);
+  });
+
+  test('a larger provider hint wins over the floor (Retry-After must be honored)', async () => {
+    const { rateLimitDelayMs, RATE_LIMIT_PAD_MS } = await import('../src/commands/embed.ts');
+    const hinted = 240_000 + RATE_LIMIT_PAD_MS;
+    for (const attempt of [0, 2, 4]) {
+      expect(rateLimitDelayMs('try again in 240s', attempt, mid)).toBe(hinted);
+    }
+  });
+
+  test('cumulative floored wait spans the rolling TPM minute even at worst-case jitter', async () => {
+    const { rateLimitDelayMs } = await import('../src/commands/embed.ts');
+    const low = () => 0; // jitterFactor = 1 - RATE_LIMIT_JITTER (worst case)
+    let total = 0;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      total += rateLimitDelayMs('try again in 132ms', attempt, low);
+    }
+    // Pre-fix: 5 × ~442ms ≈ 2.2s — every retry burned inside the same TPM
+    // minute. Post-fix the ladder must span it.
+    expect(total).toBeGreaterThan(60_000);
+  });
+
+  test('attempts past the ladder clamp to the last floor', async () => {
+    const { rateLimitDelayMs, RATE_LIMIT_ATTEMPT_FLOOR_MS } = await import('../src/commands/embed.ts');
+    const last = RATE_LIMIT_ATTEMPT_FLOOR_MS[RATE_LIMIT_ATTEMPT_FLOOR_MS.length - 1];
+    expect(rateLimitDelayMs('429 slow down', 10, mid)).toBe(Math.max(last, rateLimitDelayMs('429 slow down', 4, mid)));
+    // Negative attempt (defensive) clamps to the first rung.
+    expect(rateLimitDelayMs('try again in 1ms', -1, mid)).toBe(RATE_LIMIT_ATTEMPT_FLOOR_MS[0]);
+  });
+});

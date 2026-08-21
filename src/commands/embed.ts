@@ -1903,6 +1903,49 @@ export function parseRetryDelayMs(msg: string, rng: () => number = Math.random):
 }
 
 /**
+ * #3796 — attempt-scaled floor for 429 waits. Providers with ROLLING
+ * per-minute token budgets (TPM) return tiny Retry-After hints ("try again
+ * in 132ms") that are honest about the next REQUEST slot but not about the
+ * token budget: five hint-sized waits burn every retry inside the same TPM
+ * minute and the batch fails despite the limit being about to clear.
+ * Escalating floors guarantee the retry ladder spans the rolling window
+ * (sum ≈ 120s ≫ 60s even at -30% jitter) while a LARGER provider hint still
+ * wins (a 4-minute Retry-After must be honored, not floored down).
+ */
+export const RATE_LIMIT_ATTEMPT_FLOOR_MS = [1_000, 4_000, 10_000, 30_000, 75_000] as const;
+
+let _rateLimitFloorsMs: readonly number[] = RATE_LIMIT_ATTEMPT_FLOOR_MS;
+
+/**
+ * Test seam: shrink the #3796 floors so sustained-429 exhaustion tests don't
+ * spend ~2min of real wall clock (the production ladder's whole point).
+ * Pass null to restore. @internal
+ */
+export function _setRateLimitFloorsForTests(floors: readonly number[] | null): void {
+  _rateLimitFloorsMs = floors ?? RATE_LIMIT_ATTEMPT_FLOOR_MS;
+}
+
+/**
+ * #3796 — the effective 429 wait: max(jittered provider hint, jittered
+ * attempt-scaled floor). Keeps parseRetryDelayMs's contract (hint + pad +
+ * jitter) intact for its other consumers/tests; the floor gets its own
+ * jitter so a floored herd doesn't resynchronize.
+ *
+ * @internal exported for unit tests.
+ */
+export function rateLimitDelayMs(
+  msg: string,
+  attempt: number,
+  rng: () => number = Math.random,
+): number {
+  const hinted = parseRetryDelayMs(msg, rng);
+  const floorIdx = Math.min(Math.max(attempt, 0), _rateLimitFloorsMs.length - 1);
+  const jitterFactor = 1 + (rng() * 2 - 1) * RATE_LIMIT_JITTER;
+  const floored = Math.max(1, Math.floor(_rateLimitFloorsMs[floorIdx] * jitterFactor));
+  return Math.max(hinted, floored);
+}
+
+/**
  * Sleep for `ms` milliseconds. Resolves early (not rejects) when `signal`
  * fires, so the retry loop's caller can re-check `signal.aborted` and
  * exit cleanly without an unhandled rejection.
@@ -1952,7 +1995,9 @@ export async function embedBatchWithBackoff(
       const netTransient = !rateLimitish && isTransientNetworkEmbedError(e);
       if ((!rateLimitish && !netTransient) || attempt === MAX_RATE_LIMIT_RETRIES) throw e;
 
-      const delayMs = rateLimitish ? parseRetryDelayMs(msg) : transientBackoffMs(attempt);
+      // #3796: 429s take the attempt-floored wait (rolling-TPM-aware);
+      // network blips keep their own bounded exponential ladder.
+      const delayMs = rateLimitish ? rateLimitDelayMs(msg, attempt) : transientBackoffMs(attempt);
       // One label for every retriable class — 429, gateway and network blips share the loop.
       serr(`  [embed-retry] attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}, waiting ${delayMs}ms...`);
       await abortableSleep(delayMs, signal);
