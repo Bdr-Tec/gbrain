@@ -37,9 +37,11 @@ const extract_facts: Operation = {
     'v0.31: extract personal-knowledge facts (events, preferences, commitments, beliefs) from a conversation turn into the per-source hot memory. Sanitizes turn_text via INJECTION_PATTERNS, calls the configured extraction model (key-aware: any servable provider — OpenAI or Anthropic key both work), runs the cosine fast-path + classifier dedup pipeline, INSERTs into facts. Returns counts by status. With NO servable chat model, returns skipped: extraction_unavailable + an agent_action telling YOU to extract and write via `remember` (visibility: "private"). Skips extraction when the turn is dream-generated content (anti-loop). For agent memory writes of a SINGLE already-formed fact, prefer the `remember` verb (zero LLM, mandatory provenance).',
   params: {
     turn_text: { type: 'string', required: true, description: 'The user message or page body to extract facts from. Sanitized via INJECTION_PATTERNS before the LLM call.' },
-    session_id: { type: 'string', description: 'Opaque session id (e.g. topic-id from MCP _meta.session_id, or CLI --session). Stored on each fact for the recall --session filter. Not an auth surface.' },
+    session_id: { type: 'string', description: 'Opaque session id (e.g. topic-id from MCP _meta.session_id, or CLI --session). Stored on each fact for the recall --session filter. Not an auth surface. NOTE (#4206): the session survives on the DB row at insert time, but the `## Facts` fence has no session column — a fence rebuild/reconcile re-derives rows session-less. Treat fence-backed facts as session-less across rebuilds.' },
     entity_hints: { type: 'array', items: { type: 'string' }, description: `Existing canonical entity slugs the agent has already resolved. Helps the extractor pick the right slug. Only the first ${ENTITY_HINTS_CAP} are forwarded to the extractor (#4209) — the response reports entity_hints_used / entity_hints_dropped; pass the most load-bearing slugs first.` },
     is_dream_generated: { type: 'boolean', description: 'When true, extraction is skipped (anti-loop). Caller flips this on for pages with dream_generated:true frontmatter.' },
+    valid_from: { type: 'string', description: '#4206: ISO 8601 event time for the extracted facts — use when the turn is historical (importing an old transcript) so facts do not get stamped with import time. Fallback only: a date the extractor derives from the turn itself wins. Default: now().' },
+    source_slug: { type: 'string', description: "#4206: slug of the page/transcript this turn came from (e.g. 'meetings/2026-04-03'). Written to facts.context so recall/context_pack/delta consumers see the provenance." },
     visibility: { type: 'string', description: 'Default visibility for extracted facts. private (default) | world.' },
   },
   mutating: true,
@@ -81,6 +83,25 @@ const extract_facts: Operation = {
     const { resolveVisibilityParam } = await import('../facts/visibility.ts');
     const visibility: 'private' | 'world' = await resolveVisibilityParam(ctx.engine, p.visibility);
 
+    // #4206: optional event-time + provenance threading. An unparseable
+    // valid_from fails LOUD — silently defaulting to now() is exactly the
+    // wrong-timestamp bug the param exists to fix.
+    let validFrom: Date | undefined;
+    if (p.valid_from !== undefined && p.valid_from !== null) {
+      const d = new Date(p.valid_from as string);
+      if (!Number.isFinite(d.getTime())) {
+        throw new OperationError(
+          'invalid_params',
+          `invalid valid_from: "${String(p.valid_from)}" — expected a parseable ISO 8601 datetime`,
+        );
+      }
+      validFrom = d;
+    }
+    const sourceSlug =
+      typeof p.source_slug === 'string' && p.source_slug.trim().length > 0
+        ? p.source_slug.trim()
+        : undefined;
+
     const r = await runFactsPipeline(p.turn_text as string, {
       engine: ctx.engine,
       sourceId,
@@ -88,6 +109,8 @@ const extract_facts: Operation = {
       entityHints,
       source: 'mcp:extract_facts',
       visibility,
+      validFrom,
+      sourceSlug,
       mode: 'inline',  // declarative; runFactsPipeline always inline
     });
 
@@ -394,6 +417,9 @@ const recall: Operation = {
         consolidated_into: r.consolidated_into,
         source: r.source,
         source_session: r.source_session,
+        // #4206: provenance context (e.g. extract_facts' source_slug) rides
+        // the recall projection like every other provenance field.
+        context: r.context,
         confidence: r.confidence,
         created_at: r.created_at.toISOString(),
         // MEMORY_VERBS v1 additive fields (G1B). `fact_id` is the opaque
@@ -530,6 +556,8 @@ const context_pack: Operation = {
         kind: f.kind,
         entity_slug: f.entity_slug,
         valid_from: f.valid_from,
+        // #4206: provenance context (parity with the recall projection).
+        context: f.context ?? null,
         confidence: f.confidence,
       })),
       text,
@@ -712,6 +740,8 @@ const delta: Operation = {
         kind: f.kind,
         entity_slug: f.entity_slug,
         valid_from: f.valid_from,
+        // #4206: provenance context (parity with the recall projection).
+        context: f.context ?? null,
         confidence: f.confidence,
       })),
       threads,
