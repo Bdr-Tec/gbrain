@@ -1223,6 +1223,8 @@ export async function importFromFile(
   const expectedSlug = slugifyPath(relativePath);
   let resolvedSlug = expectedSlug;
   let usedFrontmatterFallback = false;
+  let fallbackReason: 'path slugified empty' | 'normalization-equivalent identity restore' =
+    'path slugified empty';
 
   if (frontmatterError) {
     return {
@@ -1254,22 +1256,36 @@ export async function importFromFile(
       };
     }
   } else if (parsed.slug !== expectedSlug) {
-    // Anti-spoof preserved: path DOES derive a slug, but the frontmatter slug
-    // claims a different one. Reject.
-    return {
-      slug: expectedSlug,
-      status: 'skipped',
-      chunks: 0,
-      error:
-        `Frontmatter slug "${parsed.slug}" does not match path-derived slug "${expectedSlug}" ` +
-        `(from ${relativePath}). Remove the frontmatter "slug:" line or move the file.`,
-    };
+    if (slugifyPath(parsed.slug) === expectedSlug) {
+      // #3772: normalization-equivalent — the frontmatter slug is a stored
+      // identity whose slugified spelling IS the path-derived slug. Export
+      // writes files at <slug>.md and stamps the original slug whenever it
+      // isn't a slugifyPath fixed point (legacy/hand-keyed slugs with case,
+      // apostrophes, accents…); accepting it here is what makes an
+      // export → import round-trip preserve page keys instead of silently
+      // re-keying. Anti-spoof holds: a slug claiming a DIFFERENT page
+      // normalizes to a different path and still rejects below.
+      resolvedSlug = parsed.slug;
+      usedFrontmatterFallback = true;
+      fallbackReason = 'normalization-equivalent identity restore';
+    } else {
+      // Anti-spoof preserved: path DOES derive a slug, but the frontmatter slug
+      // claims a different one. Reject.
+      return {
+        slug: expectedSlug,
+        status: 'skipped',
+        chunks: 0,
+        error:
+          `Frontmatter slug "${parsed.slug}" does not match path-derived slug "${expectedSlug}" ` +
+          `(from ${relativePath}). Remove the frontmatter "slug:" line or move the file.`,
+      };
+    }
   }
 
   // Emit the dual-channel audit entry AFTER we know we're not going to
   // short-circuit, so we don't log noise for failed imports.
   if (usedFrontmatterFallback) {
-    logSlugFallback(resolvedSlug, relativePath);
+    logSlugFallback(resolvedSlug, relativePath, fallbackReason);
   }
 
   // Pass the resolved slug explicitly so that any future change to

@@ -312,7 +312,11 @@ export function autoFixFrontmatter(
     // the slug field is present and mismatched.
     const re = /^slug:\s*(.+?)\s*$/m;
     const m = working.match(re);
-    if (m && m[1].replace(/^["']|["']$/g, '') !== expectedSlug) {
+    // #3772: keep a normalization-equivalent slug (its slugified spelling IS
+    // the path-derived slug) — export stamps these to preserve legacy page
+    // identities, and stripping it here would re-key the page on next import.
+    const declaredSlug = m ? m[1].replace(/^["']|["']$/g, '') : '';
+    if (m && declaredSlug !== expectedSlug && slugifyPath(declaredSlug) !== expectedSlug) {
       working = working.replace(re, '').replace(/\n{3,}/g, '\n\n');
       fixes.push({
         code: 'SLUG_MISMATCH',
