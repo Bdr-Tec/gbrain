@@ -139,7 +139,7 @@ const recall: Operation = {
     since: { type: 'string', description: 'ISO 8601 datetime or duration shorthand (e.g. "8 hours ago"). Filters the FACTS arm only.' },
     session_id: { type: 'string', description: 'Source session id (e.g. topic-A). Returns facts captured in that session.' },
     include_expired: { type: 'boolean', description: 'When true, include expired_at IS NOT NULL rows. Default false.' },
-    supersessions: { type: 'boolean', description: 'When true, return only the supersession audit log (expired_at + superseded_by both set).' },
+    supersessions: { type: 'boolean', description: 'When true, return only the supersession audit log (facts with superseded_by set), newest first by COALESCE(expired_at, valid_until).' },
     limit: { type: 'number', description: 'Per-arm cap: max fact rows AND max search results. Default 50, cap 100.' },
     grep: { type: 'string', description: 'Substring filter on fact text (case-insensitive). Applied client-side after recall.' },
     include_pending: { type: 'boolean', description: 'v0.32: when true, response includes pending_consolidation_count (facts not yet promoted to takes by the dream-cycle consolidate phase). One round trip; backward-compatible (field omitted when false).' },
@@ -180,7 +180,8 @@ const recall: Operation = {
     type FactRows = Awaited<ReturnType<typeof ctx.engine.listFactsByEntity>>;
     type FactRowItem = FactRows[number];
     // Per-arm merge key: each arm's engine query ORDERs by a different column
-    // (supersessions by expired_at, entity by valid_from, the rest by
+    // (supersessions by COALESCE(expired_at, valid_until) — #3014, entity by
+    // valid_from, the rest by
     // created_at) — the cross-source merge must sort by the SAME key or the
     // truncation at `limit` silently drops the wrong rows. Decorate-sort-
     // undecorate: the key is computed once per row.
@@ -215,7 +216,9 @@ const recall: Operation = {
         await Promise.all(factSources.map(src =>
           ctx.engine.listSupersessions(src, { since: since ?? undefined, limit, visibility }),
         )),
-        (rec) => rec.expired_at ?? rec.created_at,
+        // v0.46 (#3014): matches the engine's ORDER BY COALESCE(expired_at,
+        // valid_until) — ontology supersessions carry valid_until only.
+        (rec) => rec.expired_at ?? rec.valid_until ?? rec.created_at,
       );
     } else if (typeof p.entity === 'string' && p.entity.length > 0) {
       const { resolveEntitySlug } = await import('../entities/resolve.ts');

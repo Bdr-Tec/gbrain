@@ -536,6 +536,16 @@ export interface NewFact {
   context?: string | null;
   valid_from?: Date;                   // default now()
   valid_until?: Date | null;
+  /**
+   * v0.46 (#3014) — explicit expiry timestamp. When set, the row is
+   * inactive: excluded from active views (recall, listFactsByEntity's
+   * activeOnly default) and eligible for listSupersessions. The fence
+   * mapper stamps this for struck rows (superseded / forgotten /
+   * inactive-unrecognized) because no DB derivation from `valid_until`
+   * exists — no trigger, sweep, or read-time coalesce populates it.
+   * Active-row callers leave it undefined; insertFacts defaults it to NULL.
+   */
+  expired_at?: Date | null;
   source: string;                       // 'mcp:put_page' | 'mcp:extract_facts' | 'cli:think' | etc
   source_session?: string | null;
   confidence?: number;                  // [0,1], default 1.0
@@ -1910,11 +1920,31 @@ export interface BrainEngine {
    *
    * Returns the inserted ids in input-order so callers can correlate
    * fence-row → DB-id without a separate lookup.
+   *
+   * v0.46 (#3014): `superseded_by_row` carries a struck row's page-local
+   * `superseded by #N` reference. A second pass in the same transaction
+   * resolves it to `facts.superseded_by` (a FK to facts.id), keyed on
+   * (source_id, source_markdown_slug, row_num). Unresolvable references
+   * (self / dangling / chained) leave `superseded_by` NULL and surface a
+   * `warnings` entry — never an FK to a guessed id (resolver:
+   * `src/core/facts/supersede-resolve.ts`).
+   *
+   * v0.46 (#3014): `opts.deleteForPageFirst` makes the wipe-then-reinsert
+   * reconcile atomic. When set, the page's fence-owned rows are DELETEd as
+   * the first statement of the SAME transaction that inserts `rows`, so a
+   * failing insert rolls the delete back and the page is never left
+   * emptied. (A standalone `deleteFactsForPage` call before `insertFacts`
+   * self-commits, so an insert throw would permanently lose the page's
+   * facts.) `slug` / `excludeSourcePrefixes` / `preserveExpiredLegacy`
+   * mirror `deleteFactsForPage`; the deleted count is returned as
+   * `deleted`. Callers that omit it get the standalone insert
+   * (deleted: 0), unchanged.
    */
   insertFacts(
-    rows: Array<NewFact & { row_num: number; source_markdown_slug: string }>,
+    rows: Array<NewFact & { row_num: number; source_markdown_slug: string; superseded_by_row?: number }>,
     ctx: { source_id: string },
-  ): Promise<{ inserted: number; ids: number[] }>;
+    opts?: { deleteForPageFirst?: { slug: string; excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean } },
+  ): Promise<{ inserted: number; ids: number[]; warnings: string[]; deleted: number }>;
 
   /**
    * v0.32.2: hard-delete every fact row scoped to a single fence page.
@@ -1991,10 +2021,16 @@ export interface BrainEngine {
   ): Promise<FactRow[]>;
 
   /**
-   * Audit log: facts that were superseded (expired_at + superseded_by both set),
-   * newest first. Drives `gbrain recall --supersessions`. `visibility` filters
-   * BEFORE the LIMIT (same contract as FactListOpts.visibility) so a remote
-   * world-only caller can't have a private row consume a limit slot.
+   * Audit log: facts that were superseded (superseded_by set), newest
+   * first. Drives `gbrain recall --supersessions`. v0.46 (#3014): the
+   * filter requires only `superseded_by IS NOT NULL`, not `expired_at`
+   * too — the ontology-dimension writer closes a superseded row via
+   * `valid_until` (not `expired_at`) so `--asof` time-travel still sees
+   * it, so requiring `expired_at` here would drop every ontology
+   * supersession. Ordering / `since` use COALESCE(expired_at, valid_until).
+   * `visibility` filters BEFORE the LIMIT (same contract as
+   * FactListOpts.visibility) so a remote world-only caller can't have a
+   * private row consume a limit slot.
    */
   listSupersessions(
     source_id: string,
