@@ -267,6 +267,29 @@ page_types:
     extractable: true
     expert_routing: false
 
+  # #2184 — conversation-shaped types carried over from gbrain-base.
+  # The conversation-facts pipeline (ALLOWED_TYPES in
+  # src/core/facts/conversation-types.ts) walks pages by these exact
+  # type names; leaving them undeclared sent them through the D12
+  # catch-all (→ note), silently emptying the extraction backlog after
+  # a pack upgrade.
+  - name: meeting
+    primitive: temporal
+    path_prefixes:
+      - meetings/
+      - meeting/
+    aliases: []
+    extractable: true
+    expert_routing: false
+
+  - name: conversation
+    primitive: temporal
+    path_prefixes:
+      - conversations/
+    aliases: []
+    extractable: true
+    expert_routing: false
+
   - name: writing
     primitive: media
     path_prefixes:
