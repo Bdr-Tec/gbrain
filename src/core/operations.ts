@@ -107,6 +107,7 @@ import { schemaPacksOperations } from './ops/schema-packs.ts';
 import { skilloptOperations } from './ops/skillopt.ts';
 import { chronicleOperations } from './ops/chronicle.ts';
 import { extractionOperations } from './ops/extraction.ts';
+import { entityIdentityOperations } from './ops/entity-identity.ts';
 import { requestToolsOperations } from './ops/request-tools.ts';
 
 // parseTtlParam moved to ops/facts.ts with the facts cluster; the `remember`
@@ -181,6 +182,9 @@ export const operations: Operation[] = [
   // Extraction quarantine lane (#160): gated entity extraction + review
   // queue — ops/extraction.ts
   ...extractionOperations,
+  // #4224: cross-source entity identity groups (v1 manual-only) —
+  // ops/entity-identity.ts
+  ...entityIdentityOperations,
   // v0.31: hot memory (extract_facts, recall, context_pack, delta,
   // forget_fact) — ops/facts.ts
   ...factsOperations,
@@ -276,6 +280,9 @@ const OP_AREAS: Record<string, string> = {
   // entity extraction lane
   extract_entities: 'entities', extraction_pending: 'entities',
   extraction_review: 'entities',
+  // #4224 cross-source entity identity (v1 manual-only)
+  entity_identity_link: 'entities', entity_identity_unlink: 'entities',
+  entity_identity_list: 'entities',
   // insight / signal reads
   get_recent_salience: 'insights', find_anomalies: 'insights',
   find_contradictions: 'insights', find_experts: 'insights',

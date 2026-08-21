@@ -9,6 +9,8 @@
 
 import type { Operation } from './contract.ts';
 import { enforceClientSlugFence, linkReadScopeOpts, sourceScopeOpts } from './context.ts';
+// #4224: flag-gated cross-source identity union for the link read ops.
+import { unionLinksAcrossIdentity } from '../entity-identity.ts';
 
 // --- Links ---
 
@@ -108,7 +110,13 @@ const get_links: Operation = {
     // scalar scope (promoted to sourceIds[]) — reaches the engine's all-endpoint
     // branch. Trusted local/internal callers keep the scalar cross-source view.
     const sourceOpts = linkReadScopeOpts(ctx);
-    return ctx.engine.getLinks(p.slug as string, sourceOpts);
+    const links = await ctx.engine.getLinks(p.slug as string, sourceOpts);
+    // #4224: flag-gated identity union — merge edges from the page's identity
+    // co-members (entity_identity.union config, default off; pure no-op then).
+    // Member visibility never widens past the caller's grant.
+    return unionLinksAcrossIdentity(ctx.engine, p.slug as string, links, 'out', {
+      allowedSources: sourceOpts.sourceIds,
+    });
   },
   scope: 'read',
 };
@@ -123,7 +131,11 @@ const get_backlinks: Operation = {
     // #2200: linkReadScopeOpts — federated grant + untrusted remote scalar
     // (promoted to sourceIds[]) reach the engine's all-endpoint branch.
     const sourceOpts = linkReadScopeOpts(ctx);
-    return ctx.engine.getBacklinks(p.slug as string, sourceOpts);
+    const links = await ctx.engine.getBacklinks(p.slug as string, sourceOpts);
+    // #4224: flag-gated identity union (see get_links).
+    return unionLinksAcrossIdentity(ctx.engine, p.slug as string, links, 'in', {
+      allowedSources: sourceOpts.sourceIds,
+    });
   },
   scope: 'read',
   cliHints: { name: 'backlinks', positional: ['slug'] },

@@ -18,6 +18,7 @@ import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import type { ChunkInput, SearchResult } from '../../src/core/types.ts';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { getSessionContextState, upsertSessionContextState } from '../../src/core/context/session-state.ts';
+import { linkEntityIdentity, listEntityIdentities } from '../../src/core/entity-identity.ts';
 import { hasDatabase, setupDB, teardownDB, getEngine } from './helpers.ts';
 
 const SKIP_PG = !hasDatabase();
@@ -164,6 +165,24 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pg.map((r) => `${r.source_id}::${r.slug}`)).toEqual(
       pl.map((r) => `${r.source_id}::${r.slug}`),
     );
+  });
+
+  test('#4224 entity identity helpers: one SQL text, identical behavior on both engines', async () => {
+    for (const eng of [pgEngine, pgliteEngine]) {
+      await linkEntityIdentity(eng, {
+        entityId: 'parity-founder', slug: 'people/example-founder', sourceId: 'default', canonical: true,
+      });
+      await linkEntityIdentity(eng, {
+        entityId: 'parity-founder', slug: 'concepts/fat-code-thin-harness', sourceId: 'default',
+      });
+    }
+    const pg = await listEntityIdentities(pgEngine, { entityId: 'parity-founder' });
+    const pl = await listEntityIdentities(pgliteEngine, { entityId: 'parity-founder' });
+    const key = (m: { source_id: string; slug: string; canonical: boolean; established_by: string }) =>
+      `${m.source_id}:${m.slug}:${m.canonical}:${m.established_by}`;
+    expect(pg.map(key)).toEqual(pl.map(key));
+    expect(pg).toHaveLength(2);
+    expect(pg.filter(m => m.canonical)).toHaveLength(1);
   });
 
   test('v0.46.15 searchVector escalation parity: a dense page cannot starve the page result on either engine', async () => {
