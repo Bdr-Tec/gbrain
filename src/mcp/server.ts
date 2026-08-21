@@ -363,13 +363,16 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
 
 // Backward compat: used by `gbrain call` command (trusted local path).
 // v0.31.8 (D22): accept opts.sourceId so `gbrain call --source X <op> <json>`
-// can scope the op handler to that source. resolveSourceId() in call.ts is
-// the upstream resolver; this layer just passes the resolved id through.
+// can scope the op handler to that source. resolveSourceWithTier() in call.ts
+// is the upstream resolver; this layer just passes the resolved id through.
+// #3874: also accept opts.localFederatedSourceIds so an ambient-tier
+// resolution widens unqualified reads across federated sources exactly like
+// the direct CLI path (cli.ts makeContext) does.
 export async function handleToolCall(
   engine: BrainEngine,
   tool: string,
   params: Record<string, unknown>,
-  opts?: { sourceId?: string },
+  opts?: { sourceId?: string; localFederatedSourceIds?: string[] },
 ): Promise<unknown> {
   const op = operations.find(o => o.name === tool);
   if (!op) throw new Error(`Unknown tool: ${tool}`);
@@ -381,6 +384,9 @@ export async function handleToolCall(
     remote: false,
     logger: { info: console.log, warn: console.warn, error: console.error },
     ...(opts?.sourceId ? { sourceId: opts.sourceId } : {}),
+    ...(opts?.localFederatedSourceIds
+      ? { localFederatedSourceIds: opts.localFederatedSourceIds }
+      : {}),
   });
 
   return op.handler(ctx, params);
