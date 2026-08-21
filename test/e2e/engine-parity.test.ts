@@ -1379,3 +1379,71 @@ describeBoth('Engine parity — putPage empty-overwrite guard', () => {
     }
   });
 });
+
+describeBoth('Engine parity — CJK keyword fallback (#3986)', () => {
+  let pgEngine: BrainEngine;
+  let pgliteEngine: PGLiteEngine;
+
+  const CJK_PAGES = [
+    { slug: 'notes/tokyo-meeting', title: '東京 会議メモ', body: '東京オフィスでの会議メモ。次回の議題は予算です。' },
+    { slug: 'notes/kimdaeri', title: '김대리 미팅', body: '김대리 미팅 노트. 다음 주 일정 조율이 필요합니다.' },
+    { slug: 'notes/ascii-decoy', title: 'ASCII decoy', body: 'plain english content that must not match cjk queries' },
+  ];
+
+  async function seedCJK(eng: BrainEngine) {
+    for (const [i, p] of CJK_PAGES.entries()) {
+      await eng.putPage(p.slug, { type: 'note', title: p.title, compiled_truth: p.body, timeline: '' });
+      await eng.upsertChunks(p.slug, [{
+        chunk_index: 0,
+        chunk_text: p.body,
+        chunk_source: 'compiled_truth' as const,
+        embedding: basisEmbedding(200 + i),
+        token_count: 8,
+      }]);
+    }
+  }
+
+  beforeAll(async () => {
+    pgEngine = await setupDB();
+    await seedCJK(pgEngine);
+    pgliteEngine = new PGLiteEngine();
+    await pgliteEngine.connect({});
+    await pgliteEngine.initSchema();
+    await seedCJK(pgliteEngine);
+  }, 90_000);
+
+  afterAll(async () => {
+    await pgliteEngine.disconnect();
+    await teardownDB();
+  }, 30_000);
+
+  // Pre-#3986, Postgres returned [] here (websearch_to_tsquery('english')
+  // can't tokenize CJK) while PGLite's v0.32.7 ILIKE fallback found the page.
+  test('searchKeyword: CJK query recalls the CJK page on BOTH engines', async () => {
+    const pg = await pgEngine.searchKeyword('東京 会議', { limit: 5 });
+    const pglite = await pgliteEngine.searchKeyword('東京 会議', { limit: 5 });
+    expect(pg.map(r => r.slug)).toEqual(pglite.map(r => r.slug));
+    expect(pg[0]?.slug).toBe('notes/tokyo-meeting');
+  });
+
+  test('searchKeyword: term-order-insensitive Korean recall matches across engines', async () => {
+    const pg = await pgEngine.searchKeyword('미팅 김대리', { limit: 5 });
+    const pglite = await pgliteEngine.searchKeyword('미팅 김대리', { limit: 5 });
+    expect(pg.map(r => r.slug)).toEqual(pglite.map(r => r.slug));
+    expect(pg[0]?.slug).toBe('notes/kimdaeri');
+  });
+
+  test('searchKeywordChunks: chunk-grain CJK fallback matches across engines', async () => {
+    const pg = await pgEngine.searchKeywordChunks('予算', { limit: 5 });
+    const pglite = await pgliteEngine.searchKeywordChunks('予算', { limit: 5 });
+    expect(pg.map(r => `${r.slug}#${r.chunk_index}`)).toEqual(pglite.map(r => `${r.slug}#${r.chunk_index}`));
+    expect(pg[0]?.slug).toBe('notes/tokyo-meeting');
+  });
+
+  test('searchKeyword: CJK fallback honors source isolation on both engines', async () => {
+    const pg = await pgEngine.searchKeyword('東京 会議', { limit: 5, sourceIds: ['nonexistent-source'] });
+    const pglite = await pgliteEngine.searchKeyword('東京 会議', { limit: 5, sourceIds: ['nonexistent-source'] });
+    expect(pg).toEqual([]);
+    expect(pglite).toEqual([]);
+  });
+});

@@ -101,6 +101,9 @@ import * as codeEdgesImpl from './postgres-engine/code-edges.ts';
 import type { PgCodeEdgesDeps } from './postgres-engine/code-edges.ts';
 import * as salienceImpl from './postgres-engine/salience.ts';
 import type { PgSalienceDeps } from './postgres-engine/salience.ts';
+import { hasCJK } from './cjk.ts';
+import { searchKeywordCJK as searchKeywordCJKImpl } from './postgres-engine/cjk-search.ts';
+import type { CjkKeywordCtx } from './search/cjk-keyword-sql.ts';
 
 function escapeSqlStringLiteral(value: string): string {
   return value.replace(/'/g, "''");
@@ -1945,6 +1948,19 @@ export class PostgresEngine implements BrainEngine {
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
     const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
 
+    // #3986: CJK query branch — engine parity with PGLite's v0.32.7
+    // fallback. websearch_to_tsquery with an ASCII-stemming config can't
+    // tokenize CJK, so the FTS path below returns empty; route to the
+    // shared term-by-term ILIKE fallback instead. ASCII path unchanged.
+    if (hasCJK(query)) {
+      return this._searchKeywordCJK(query, {
+        limit, offset, innerLimit, sourceFactorCase, hardExcludeClause,
+        visibilityClause: buildVisibilityClause('p', 's'),
+        detailFilter: detailLow ? `AND cc.chunk_source = 'compiled_truth'` : '',
+        opts, dedup: true,
+      });
+    }
+
     const params: unknown[] = [query];
     let typeClause = '';
     if (type) {
@@ -2259,6 +2275,19 @@ export class PostgresEngine implements BrainEngine {
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
     const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
 
+    // #3986: CJK branch — same fallback as searchKeyword but chunk-grain
+    // (no page-dedup). Parity with PGLite searchKeywordChunks.
+    if (hasCJK(query)) {
+      return this._searchKeywordCJK(query, {
+        limit, offset,
+        innerLimit: 0,             // unused on chunk-grain (no inner CTE)
+        sourceFactorCase, hardExcludeClause,
+        visibilityClause: buildVisibilityClause('p', 's'),
+        detailFilter: detailLow ? `AND cc.chunk_source = 'compiled_truth'` : '',
+        opts, dedup: false,
+      });
+    }
+
     const params: unknown[] = [query];
     let typeClause = '';
     if (type) {
@@ -2359,6 +2388,24 @@ export class PostgresEngine implements BrainEngine {
       return await tx.unsafe(rawQuery, params as Parameters<typeof tx.unsafe>[1]);
     }, { alwaysTransaction: true });
     return rows.map(rowToSearchResult);
+  }
+
+  /**
+   * #3986: CJK keyword fallback (parity port of PGLite's v0.32.7 branch).
+   * SQL builds in the shared cjk-keyword-sql.ts; execution goes through the
+   * same scoped read transaction (RLS scope binding + 8s statement timeout)
+   * as the FTS keyword paths. See src/core/postgres-engine/cjk-search.ts.
+   */
+  private async _searchKeywordCJK(query: string, ctx: CjkKeywordCtx): Promise<SearchResult[]> {
+    return searchKeywordCJKImpl(
+      async (sqlText, params) =>
+        await this.withScopedReadTransaction(ctx.opts?.sourceIds, ctx.opts?.sourceId, async (tx) => {
+          await tx`SET LOCAL statement_timeout = '8s'`;
+          return await tx.unsafe(sqlText, params as Parameters<typeof tx.unsafe>[1]) as unknown as Record<string, unknown>[];
+        }, { alwaysTransaction: true }),
+      query,
+      ctx,
+    );
   }
 
   async searchVector(embedding: Float32Array, opts?: SearchOpts): Promise<SearchResult[]> {
@@ -4137,18 +4184,30 @@ export class PostgresEngine implements BrainEngine {
     return result;
   }
 
-  async getUnverifiedExtractionPageIds(pageIds: number[]): Promise<Set<number>> {
-    if (pageIds.length === 0) return new Set();
+  async getUnverifiedExtractionPageIds(
+    pageIds: number[],
+  ): Promise<Map<number, { unverified: boolean; status: string }>> {
+    const result = new Map<number, { unverified: boolean; status: string }>();
+    if (pageIds.length === 0) return result;
     const sql = this.sql;
-    // Predicate is the shared unverifiedExtractionFragment (issue #160) so
-    // this query and the SQL-side source-boost guard can never drift.
+    // Quarantine predicate is the shared unverifiedExtractionFragment (issue
+    // #160) so this query and the SQL-side source-boost guard can never
+    // drift. #4220 widened the projection: any page with a frontmatter
+    // `status` value is returned (draft/superseded/restricted/... surface on
+    // SearchResult.status); the fragment match stays the quarantine flag.
     const rows = await sql.unsafe(
-      `SELECT id FROM pages
+      `SELECT id,
+              (COALESCE(frontmatter, '{}'::jsonb) ->> 'status') AS status,
+              (${unverifiedExtractionFragment('pages')}) AS unverified
+       FROM pages
        WHERE id = ANY($1::int[])
-         AND ${unverifiedExtractionFragment('pages')}`,
+         AND (COALESCE(frontmatter, '{}'::jsonb) ->> 'status') IS NOT NULL`,
       [pageIds] as never,
     );
-    return new Set((rows as unknown as { id: number }[]).map((r) => Number(r.id)));
+    for (const r of rows as unknown as { id: number; status: string; unverified: boolean }[]) {
+      result.set(Number(r.id), { unverified: r.unverified === true, status: r.status });
+    }
+    return result;
   }
 
   async getPageTimestamps(slugs: string[]): Promise<Map<string, Date>> {

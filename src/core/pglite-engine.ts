@@ -2544,8 +2544,9 @@ export class PGLiteEngine implements BrainEngine {
    *   - Symmetric: no asymmetric whitespace strip on chunk_text.
    *   - Empty-query guard returns no results without binding SQL.
    *
-   * Postgres engine is intentionally untouched (multi-tenant deployments
-   * can install pgroonga / zhparser when needed; out of scope here).
+   * #3986: the Postgres engine carries the same fallback (shared SQL
+   * builder in src/core/search/cjk-keyword-sql.ts), pinned by the
+   * DATABASE_URL-gated engine-parity e2e.
    */
   private async _searchKeywordCJK(
     query: string,
@@ -4311,18 +4312,30 @@ export class PGLiteEngine implements BrainEngine {
     return result;
   }
 
-  async getUnverifiedExtractionPageIds(pageIds: number[]): Promise<Set<number>> {
-    if (pageIds.length === 0) return new Set();
-    // Parity with PostgresEngine.getUnverifiedExtractionPageIds (issue #160).
-    // Predicate is the shared unverifiedExtractionFragment so this query and
-    // the SQL-side source-boost guard can never drift.
+  async getUnverifiedExtractionPageIds(
+    pageIds: number[],
+  ): Promise<Map<number, { unverified: boolean; status: string }>> {
+    const result = new Map<number, { unverified: boolean; status: string }>();
+    if (pageIds.length === 0) return result;
+    // Parity with PostgresEngine.getUnverifiedExtractionPageIds (issue #160,
+    // widened for #4220). Quarantine predicate is the shared
+    // unverifiedExtractionFragment so this query and the SQL-side
+    // source-boost guard can never drift; any page with a frontmatter
+    // `status` value is returned so draft/superseded/restricted surface on
+    // SearchResult.status.
     const { rows } = await this.db.query(
-      `SELECT id FROM pages
+      `SELECT id,
+              (COALESCE(frontmatter, '{}'::jsonb) ->> 'status') AS status,
+              (${unverifiedExtractionFragment('pages')}) AS unverified
+       FROM pages
        WHERE id = ANY($1::int[])
-         AND ${unverifiedExtractionFragment('pages')}`,
+         AND (COALESCE(frontmatter, '{}'::jsonb) ->> 'status') IS NOT NULL`,
       [pageIds]
     );
-    return new Set((rows as { id: number }[]).map((r) => Number(r.id)));
+    for (const r of rows as { id: number; status: string; unverified: boolean }[]) {
+      result.set(Number(r.id), { unverified: r.unverified === true, status: r.status });
+    }
+    return result;
   }
 
   async getPageTimestamps(slugs: string[]): Promise<Map<string, Date>> {
