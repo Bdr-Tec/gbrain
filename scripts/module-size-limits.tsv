@@ -15,7 +15,7 @@ src/core/cycle.ts	3080	ratchet	grown v0.46.20.0 phase-boundary split (resolveCyc
 src/commands/serve-http.ts	3274	ratchet	grown v0.46.25.0 delegated wave (#4081 #3849 #3775 #3723)
 src/commands/jobs.ts	3027	ratchet	grown v0.46.22.0 phone wave: github source sync job (#4104)
 src/core/search/hybrid.ts	2636	ratchet	grown v0.46.24.0 overnight wave (#4296)
-src/core/engine.ts	2383	ratchet	grown v0.46.25.0 delegated wave (#3987 #4095)
+src/core/engine.ts	2396	ratchet	grown v0.46.25.0 delegated wave (#3987 #4095) + eventTime JSDoc (#4007)
 src/commands/autopilot.ts	2301	ratchet
 src/commands/extract.ts	2167	ratchet	grown v0.46.25.0 delegated wave (#4265 #3939)
 src/commands/extract-conversation-facts.ts	2045	ratchet	grown v0.46.x per-provider gateway-unavailable copy

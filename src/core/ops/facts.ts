@@ -197,6 +197,11 @@ const recall: Operation = {
       return decorated.slice(0, limit).map(d => d.r);
     };
     const byCreated = (rec: Record<string, unknown>) => rec.created_at ?? rec.since_date;
+    // The since-arms below pass eventTime:true (COALESCE(valid_from,
+    // created_at) — see FactListOpts.eventTime), so their per-source ORDER BY
+    // is event time, not creation time. The federated merge key has to match
+    // or truncation at `limit` drops the wrong rows across sources.
+    const byEventTime = (rec: Record<string, unknown>) => rec.valid_from ?? rec.created_at;
 
     let rows: FactRows = [];
 
@@ -241,12 +246,13 @@ const recall: Operation = {
         rows = mergeNewest(
           await Promise.all(factSources.map(src =>
             ctx.engine.listFactsSince(src, since, {
+              eventTime: true,
               activeOnly: !includeExpired,
               limit,
               visibility,
             }),
           )),
-          byCreated,
+          byEventTime,
         );
       }
     } else {
@@ -254,12 +260,13 @@ const recall: Operation = {
       rows = mergeNewest(
         await Promise.all(factSources.map(src =>
           ctx.engine.listFactsSince(src, new Date(0), {
+            eventTime: true,
             activeOnly: !includeExpired,
             limit,
             visibility,
           }),
         )),
-        byCreated,
+        byEventTime,
       );
     }
 
