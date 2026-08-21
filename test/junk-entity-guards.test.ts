@@ -198,7 +198,7 @@ describe('junk_entity_hubs doctor check (#4222)', () => {
       type: 'person', title: 'Notable Person', compiled_truth: 'real content', timeline: '',
     });
     await engine.upsertChunks('people/notable', [0, 1, 2].map(i => ({
-      chunk_index: i, chunk_text: `chunk ${i}`, chunk_source: 'compiled_truth', embedding: null, token_count: 2,
+      chunk_index: i, chunk_text: `chunk ${i}`, chunk_source: 'compiled_truth' as const, token_count: 2,
     })));
     const batch: LinkBatchInput[] = [];
     for (let i = 0; i < 4; i++) {
