@@ -248,3 +248,118 @@ describe('collectFiles (production import)', () => {
     }
   });
 });
+
+// ---- #2297: upload-raw !needsCloud (git storage) must actually bank the file ----
+// Before the fix, the small-text branch printed {success:true, storage:'git',
+// path:<input>} and returned — no repo copy, no files row. These tests pin the
+// real behavior: sidecar copy under <pageDir>/.raw/<page-name>/, a files row
+// with a repo-relative storage_path + {storage:'git'} metadata, and a hard
+// exit 1 when no brain repo is resolvable.
+import { describe as describe2297, test as test2297, expect as expect2297, beforeAll as beforeAll2297, afterAll as afterAll2297 } from 'bun:test';
+import { readFileSync as readFileSync2297, existsSync as existsSync2297 } from 'fs';
+import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { runFiles } from '../src/commands/files.ts';
+
+describe2297('files upload-raw git-storage branch (#2297)', () => {
+  let engine: PGLiteEngine;
+  let repo: string;
+  let srcDir: string;
+
+  beforeAll2297(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+    repo = mkdtempSync(join(tmpdir(), 'gbrain-2297-repo-'));
+    srcDir = mkdtempSync(join(tmpdir(), 'gbrain-2297-src-'));
+    await engine.putPage('notes/small-doc', {
+      title: 'Small Doc', type: 'concept', frontmatter: {},
+      compiled_truth: 'body', timeline: '',
+    });
+  });
+
+  afterAll2297(async () => {
+    if (engine) await engine.disconnect();
+    if (repo) rmSync(repo, { recursive: true, force: true });
+    if (srcDir) rmSync(srcDir, { recursive: true, force: true });
+  });
+
+  function captureLogs() {
+    const logs: string[] = [];
+    const errs: string[] = [];
+    const logSpy = spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    const errSpy = spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errs.push(a.join(' ')); });
+    return { logs, errs, restore: () => { logSpy.mockRestore(); errSpy.mockRestore(); } };
+  }
+
+  test2297('small text file: sidecar copy + files row + dest path in JSON', async () => {
+    await engine.setConfig('sync.repo_path', repo);
+    const src = join(srcDir, 'report.txt');
+    writeFileSync(src, 'quarterly numbers');
+    const cap = captureLogs();
+    try {
+      await runFiles(engine, ['upload-raw', src, '--page', 'notes/small-doc', '--type', 'report']);
+    } finally {
+      cap.restore();
+    }
+    const out = JSON.parse(cap.logs.find((l) => l.trim().startsWith('{'))!);
+    expect2297(out.success).toBe(true);
+    expect2297(out.storage).toBe('git');
+    // Dest is INSIDE the brain repo (not the input path).
+    const expectedDest = join(repo, 'notes', '.raw', 'small-doc', 'report.txt');
+    expect2297(out.path).toBe(expectedDest);
+    expect2297(existsSync2297(expectedDest)).toBe(true);
+    expect2297(readFileSync2297(expectedDest, 'utf8')).toBe('quarterly numbers');
+    // files row exists, storage_path repo-relative, metadata {storage:'git'}.
+    const rows = await engine.executeRaw<{ storage_path: string; page_slug: string; metadata: Record<string, unknown> }>(
+      `SELECT storage_path, page_slug, metadata FROM files WHERE filename = 'report.txt'`,
+    );
+    expect2297(rows.length).toBe(1);
+    expect2297(rows[0].storage_path).toBe(join('notes', '.raw', 'small-doc', 'report.txt'));
+    expect2297(rows[0].page_slug).toBe('notes/small-doc');
+    const meta = typeof rows[0].metadata === 'string' ? JSON.parse(rows[0].metadata as unknown as string) : rows[0].metadata;
+    expect2297(meta.storage).toBe('git');
+    expect2297(meta.type).toBe('report');
+  });
+
+  test2297('no repo configured: exits 1 instead of lying success', async () => {
+    await engine.executeRaw(`DELETE FROM config WHERE key = 'sync.repo_path'`);
+    const src = join(srcDir, 'orphan.txt');
+    writeFileSync(src, 'nowhere to go');
+    const exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`EXIT:${code}`);
+    }) as never);
+    const cap = captureLogs();
+    try {
+      await runFiles(engine, ['upload-raw', src, '--page', 'notes/small-doc']);
+      throw new Error('expected exit 1');
+    } catch (e) {
+      expect2297((e as Error).message).toBe('EXIT:1');
+    } finally {
+      cap.restore();
+      exitSpy.mockRestore();
+    }
+    expect2297(cap.errs.join('\n')).toContain('cannot resolve a brain-repo destination');
+    // No success JSON was printed.
+    expect2297(cap.logs.find((l) => l.includes('"success":true'))).toBeUndefined();
+  });
+
+  test2297('missing --page for a git-storage file: exits 1', async () => {
+    await engine.setConfig('sync.repo_path', repo);
+    const src = join(srcDir, 'pageless.txt');
+    writeFileSync(src, 'no page');
+    const exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`EXIT:${code}`);
+    }) as never);
+    const cap = captureLogs();
+    try {
+      await runFiles(engine, ['upload-raw', src]);
+      throw new Error('expected exit 1');
+    } catch (e) {
+      expect2297((e as Error).message).toBe('EXIT:1');
+    } finally {
+      cap.restore();
+      exitSpy.mockRestore();
+    }
+    expect2297(cap.errs.join('\n')).toContain('--page');
+  });
+});

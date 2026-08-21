@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync, statSync, lstatSync, existsSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
-import { join, relative, extname, basename, dirname } from 'path';
+import { readFileSync, readdirSync, statSync, lstatSync, existsSync, writeFileSync, unlinkSync, mkdirSync, copyFileSync } from 'fs';
+import { join, relative, extname, basename, dirname, resolve } from 'path';
 import { createHash } from 'crypto';
 import type { BrainEngine } from '../core/engine.ts';
 import { sqlQueryForEngine, executeRawJsonb } from '../core/sql-query.ts';
@@ -204,13 +204,59 @@ async function uploadRaw(engine: BrainEngine, args: string[]) {
   const needsCloud = stat.size >= SIZE_THRESHOLD || isMedia;
 
   if (!needsCloud) {
-    // Small text/PDF files stay in git
+    // #2297: small text/PDF files "stay in git" — which used to mean the
+    // command did NOTHING (no repo copy, no files row) while printing
+    // success:true. Actually bank the file: copy it into the page's .raw/
+    // sidecar dir inside the brain repo and record a files row so
+    // `gbrain files list` / `verify` can see it.
+    if (!pageSlug) {
+      console.error('files upload-raw: --page <slug> is required for git-storage (small text/PDF) files.');
+      process.exit(1);
+    }
+    const { resolveSourceId } = await import('../core/source-resolver.ts');
+    const { resolvePageWriteTarget } = await import('../core/write-through.ts');
+    const sourceArg = args.find((a, i) => args[i - 1] === '--source') || null;
+    const sourceId = await resolveSourceId(engine, sourceArg);
+    const target = await resolvePageWriteTarget(engine, pageSlug, sourceId);
+    if (!target.ok) {
+      console.error(
+        `files upload-raw: cannot resolve a brain-repo destination for page "${pageSlug}" ` +
+        `(${target.skipped}). Configure sync.repo_path (or the source's local_path), ` +
+        `or use \`gbrain files upload\` with a cloud storage backend.`,
+      );
+      process.exit(1);
+    }
+    // <pageDir>/.raw/<page-name>/<basename> — sidecar layout next to the
+    // page's canonical markdown artifact.
+    const pageDir = dirname(target.filePath);
+    const pageName = basename(target.filePath).replace(/\.md$/i, '');
+    const destDir = join(pageDir, '.raw', pageName);
+    const dest = join(destDir, filename);
+    if (resolve(dest) !== resolve(filePath)) {
+      mkdirSync(destDir, { recursive: true });
+      copyFileSync(filePath, dest);
+    }
+    const hash = fileHash(filePath);
+    const storagePath = relative(target.writeRoot, dest);
+    await executeRawJsonb(
+      engine,
+      `INSERT INTO files (source_id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+       ON CONFLICT (storage_path) DO UPDATE SET
+         content_hash = EXCLUDED.content_hash,
+         size_bytes = EXCLUDED.size_bytes,
+         mime_type = EXCLUDED.mime_type`,
+      [sourceId, pageSlug, filename, storagePath, mimeType, stat.size, 'sha256:' + hash],
+      [{ storage: 'git', type: fileType }],
+    );
     console.log(JSON.stringify({
       success: true,
       storage: 'git',
-      path: filePath,
+      path: dest,
+      storagePath,
       size: stat.size,
       size_human: humanSize(stat.size),
+      hash: `sha256:${hash}`,
     }));
     return;
   }
