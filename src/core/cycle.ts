@@ -2286,7 +2286,7 @@ export async function runCycle(
           phase: 'extract_atoms',
           status: 'skipped',
           duration_ms: 0,
-          summary: 'extract_atoms: active pack does not declare this phase (run `gbrain dream --phase extract_atoms --drain` to drain a backlog)',
+          summary: 'extract_atoms: active pack does not declare this phase in its phases: list — add it or activate a lens pack that ships it (gbrain-creator / gbrain-everything); run `gbrain dream --phase extract_atoms --drain` to drain a backlog',
           details: { reason: 'not_in_active_pack', pack_gated: true },
         });
       } else {
@@ -2412,7 +2412,7 @@ export async function runCycle(
           phase: 'synthesize_concepts',
           status: 'skipped',
           duration_ms: 0,
-          summary: 'synthesize_concepts: active pack does not declare this phase',
+          summary: 'synthesize_concepts: active pack does not declare this phase in its phases: list — add it or activate a lens pack that ships it (gbrain-creator / gbrain-everything)',
           details: { reason: 'not_in_active_pack', pack_gated: true },
         });
       } else {
