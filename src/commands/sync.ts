@@ -3368,8 +3368,33 @@ See also:
   // surfaces the auto-route to stderr so the user knows what happened
   // and can pass --source to override if needed.
   const explicitSource = args.find((a, i) => args[i - 1] === '--source') || null;
-  const { resolveSourceWithTier, formatSoleNonDefaultNudge } = await import('../core/source-resolver.ts');
-  const resolved = await resolveSourceWithTier(engine, explicitSource);
+  const { resolveSourceWithTier, resolveSourceForRepoPath, formatSoleNonDefaultNudge } =
+    await import('../core/source-resolver.ts');
+  // #3765: an explicit --repo anchors source resolution at the REPO dir, not
+  // the caller's cwd. Pre-fix, `gbrain sync --repo ~/other-vault` parsed the
+  // path but resolved the source from cwd — anchors, page writes, and the
+  // per-source lock (`syncLockId(sourceId)`) all followed the WRONG source.
+  // Precedence: --source flag > repo-derived (dotfile/local_path at the repo
+  // dir) > the ambient chain. A conflicting GBRAIN_SOURCE refuses loudly.
+  let resolved: { source_id: string; tier: string; detail?: string } | null = null;
+  if (!explicitSource && repoPath) {
+    const derived = await resolveSourceForRepoPath(engine, repoPath);
+    if (derived) {
+      const envSource = process.env.GBRAIN_SOURCE;
+      if (envSource && envSource !== derived.source_id) {
+        console.error(
+          `--repo resolves to source '${derived.source_id}' (via ${derived.tier}) but ` +
+          `GBRAIN_SOURCE='${envSource}' is set. Pass --source <id> to disambiguate.`,
+        );
+        process.exit(1);
+      }
+      resolved = derived;
+      process.stderr.write(
+        `[gbrain] routing sync to source '${derived.source_id}' (resolved from --repo via ${derived.tier}).\n`,
+      );
+    }
+  }
+  if (!resolved) resolved = await resolveSourceWithTier(engine, explicitSource);
   const sourceId: string = resolved.source_id;
   if (resolved.tier === 'sole_non_default') {
     const nudge = formatSoleNonDefaultNudge(sourceId);

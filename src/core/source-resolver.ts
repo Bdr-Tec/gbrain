@@ -307,6 +307,55 @@ async function assertSourceExists(engine: BrainEngine, id: string): Promise<void
 }
 
 /**
+ * #3765 — resolve the source id for an EXPLICIT repo path (`sync --repo <dir>`
+ * / the sync_brain op's `repo` param), anchored at the REPO DIR instead of
+ * process.cwd(). Without this, `gbrain sync --repo ~/other-vault` parsed the
+ * path but resolved the SOURCE from the caller's cwd — anchors, page writes,
+ * and the per-source sync lock all routed to whatever source the cwd implied.
+ *
+ * Two tiers, mirroring resolveSourceId's dotfile + local_path tiers but
+ * rooted at `dir`:
+ *   1. `.gbrain-source` dotfile walk up from the repo dir (same trust rules)
+ *   2. registered source whose local_path contains the repo dir
+ *      (longest-prefix match; realpath both sides — codex #9 rationale)
+ *
+ * Returns null when neither tier fires — the caller falls back to its ambient
+ * resolution (cwd chain / ctx.sourceId). Never consults env/cwd: an explicit
+ * repo path is a statement of intent about THAT tree.
+ */
+export async function resolveSourceForRepoPath(
+  engine: BrainEngine,
+  dir: string,
+): Promise<{ source_id: string; tier: 'dotfile' | 'local_path'; detail: string } | null> {
+  // 1. Dotfile pinned in (or above) the repo tree.
+  const dotfile = readDotfileWalk(dir);
+  if (dotfile) {
+    await assertSourceExists(engine, dotfile);
+    return { source_id: dotfile, tier: 'dotfile', detail: `.gbrain-source under ${dir}` };
+  }
+
+  // 2. Registered local_path containing the repo dir (longest prefix wins).
+  const registered = await engine.executeRaw<{ id: string; local_path: string }>(
+    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
+  );
+  const dirResolved = realpathOrResolve(dir);
+  let best: { id: string; path: string; pathLen: number } | null = null;
+  for (const r of registered) {
+    const p = realpathOrResolve(r.local_path);
+    if (dirResolved === p || dirResolved.startsWith(p + '/')) {
+      if (!best || p.length > best.pathLen) {
+        best = { id: r.id, path: p, pathLen: p.length };
+      }
+    }
+  }
+  if (best) {
+    await assertSourceExists(engine, best.id);
+    return { source_id: best.id, tier: 'local_path', detail: best.path };
+  }
+  return null;
+}
+
+/**
  * Get the local_path of the resolved source (per the resolveSourceId chain).
  *
  * Returns the on-disk brain repo path for the source the user is currently
