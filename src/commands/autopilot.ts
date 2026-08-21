@@ -20,7 +20,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, utimesSync, unlinkSync, chmodSync, statSync } from 'fs';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { detectExecutionEnvironment } from '../core/execution-env.ts';
-import { join, dirname, isAbsolute } from 'path';
+import { join, dirname, isAbsolute, resolve as resolvePath } from 'path';
 import { execSync } from 'child_process';
 import type { BrainEngine } from '../core/engine.ts';
 import { loadPreferences } from '../core/preferences.ts';
@@ -988,6 +988,16 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
             const now = Date.now();
             for (const src of sources) {
               if (!src.local_path) continue;
+              // #3696: a RELATIVE local_path is meaningless in the daemon
+              // (cwd is launchd's, not the registering shell's) — dispatching
+              // it would sync a phantom path. Skip loudly; the fix is
+              // re-registering with an absolute path (sources add now
+              // resolves) or one successful `gbrain sync` (anchor self-heal).
+              const relWarn = relativeLocalPathSkipWarning(src.id, src.local_path);
+              if (relWarn) {
+                process.stderr.write(relWarn + '\n');
+                continue;
+              }
               const lastSyncMs = src.last_sync_at ? new Date(src.last_sync_at).getTime() : 0;
               const ageMs = now - lastSyncMs;
               if (ageMs < intervalMs) continue; // fresh enough
@@ -1081,6 +1091,12 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
                   for (const src of sources) {
                     if (submittedToday >= maxJobsToday) break; // brain-wide daily cap (fairness)
                     if (!src.local_path) continue;
+                    // #3696: same relative-path skip as the freshness loop.
+                    const relWarn = relativeLocalPathSkipWarning(src.id, src.local_path);
+                    if (relWarn) {
+                      process.stderr.write(relWarn + '\n');
+                      continue;
+                    }
                     const backlog = await countExtractAtomsBacklog(engine, src.id);
                     if (backlog === null || backlog <= threshold) continue;
                     // Time-sloted key (CODEX #2): a static key would block the
@@ -1691,11 +1707,15 @@ ${generateSelfDisableGuard(repoPath, target)}exec '${safeGbrainPath}' autopilot 
 }
 
 async function installDaemon(engine: BrainEngine, args: string[]) {
-  const repoPath = parseArg(args, '--repo') || await engine.getConfig('sync.repo_path');
-  if (!repoPath) {
+  const rawRepoPath = parseArg(args, '--repo') || await engine.getConfig('sync.repo_path');
+  if (!rawRepoPath) {
     console.error('No repo path. Use --repo or run gbrain sync --repo first.');
     process.exit(1);
   }
+  // #3696: the daemon runs with an arbitrary cwd (launchd: `/`), so a
+  // relative `--repo .` baked into the wrapper script resolves to a phantom
+  // path at daemon runtime. Resolve NOW, against the installer's cwd.
+  const repoPath = resolvePath(rawRepoPath);
 
   const forcedTarget = parseArg(args, '--target') as InstallTarget | undefined;
   const target: InstallTarget = forcedTarget ?? detectInstallTarget();
@@ -1731,9 +1751,30 @@ async function installDaemon(engine: BrainEngine, args: string[]) {
   }
 }
 
+/**
+ * #3696 — the autopilot dispatch loops refuse to enqueue work for a source
+ * whose local_path is RELATIVE: the daemon's cwd is launchd's (typically `/`),
+ * not the shell that registered the source, so the path would resolve to a
+ * phantom directory and the sync/extract job would fail (or worse, walk the
+ * wrong tree). Returns the stderr warning line when the path must be skipped,
+ * or null when it is dispatchable. Pure — the unit-test surface.
+ */
+export function relativeLocalPathSkipWarning(sourceId: string, localPath: string): string | null {
+  if (isAbsolute(localPath)) return null;
+  return (
+    `[autopilot] skipping source '${sourceId}': relative local_path ` +
+    `'${localPath}' cannot be resolved from a daemon. Re-register with an ` +
+    `absolute --path or run 'gbrain sync --source ${sourceId}' once to self-heal.`
+  );
+}
+
 // v0.37.7.0 #1162 — pure function for plist generation so tests can
 // assert ThrottleInterval/KeepAlive shape without an installed daemon.
-export function generateLaunchdPlist(wrapperPath: string, home: string): string {
+// #3696: WorkingDirectory pins the daemon's cwd (launchd defaults to `/`),
+// so any legacy RELATIVE sources.local_path / sync.repo_path row still
+// resolves against the repo instead of a phantom path under `/`. Falls back
+// to $HOME when no repoPath is supplied (older callers/tests).
+export function generateLaunchdPlist(wrapperPath: string, home: string, repoPath?: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1742,6 +1783,7 @@ export function generateLaunchdPlist(wrapperPath: string, home: string): string 
   <key>ProgramArguments</key><array>
     <string>${escapeXml(wrapperPath)}</string>
   </array>
+  <key>WorkingDirectory</key><string>${escapeXml(repoPath ?? home)}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <!--
@@ -1761,7 +1803,7 @@ export function generateLaunchdPlist(wrapperPath: string, home: string): string 
 }
 
 function installLaunchd(wrapperPath: string, home: string, repoPath: string) {
-  const plist = generateLaunchdPlist(wrapperPath, home);
+  const plist = generateLaunchdPlist(wrapperPath, home, repoPath);
 
   try {
     const agentsDir = join(home, 'Library', 'LaunchAgents');

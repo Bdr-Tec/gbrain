@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, statSync, realpathSync } from 'fs';
-import { join, relative } from 'path';
+import { join, relative, resolve as pathResolve } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
 import { DELETE_BATCH_SIZE } from '../core/engine-constants.ts';
 import { importFile } from '../core/import-file.ts';
@@ -587,13 +587,20 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   serr(`[gbrain phase] sync.resolve_repo`);
   opts.onProgress?.({ phase: 'resolve_repo' });
   // Resolve repo path
-  const repoPath = opts.repoPath || await readSyncAnchor(engine, opts.sourceId, 'repo_path');
-  if (!repoPath) {
+  const rawRepoPath = opts.repoPath || await readSyncAnchor(engine, opts.sourceId, 'repo_path');
+  if (!rawRepoPath) {
     const hint = opts.sourceId
       ? `Source "${opts.sourceId}" has no local_path. Run: gbrain sources add ${opts.sourceId} --path <path>`
       : `No repo path specified. Use --repo or run gbrain init with --repo first.`;
     throw new Error(hint);
   }
+  // #3696: resolve to ABSOLUTE at entry. A relative path (legacy relative
+  // sources.local_path row, or a caller-passed `--repo .`) breaks the moment
+  // any consumer runs from a different cwd (launchd daemon at cwd=/). Since
+  // writeSyncAnchor('repo_path', anchorPath) re-persists this value below,
+  // one successful sync from the right cwd self-heals a legacy relative row
+  // to absolute.
+  const repoPath = pathResolve(rawRepoPath);
 
   serr(`[gbrain phase] sync.load_active_pack`);
   // v0.39 T1.5: load active pack ONCE at sync entry; pass to every per-file
