@@ -214,6 +214,14 @@ export interface PageInput {
   compiled_truth: string;
   timeline?: string;
   frontmatter?: Record<string, unknown>;
+  /**
+   * #3694: page tags for content-hash parity with the importer. The importer
+   * (parseMarkdown) hoists `tags` out of frontmatter; putPage callers usually
+   * leave them inside `frontmatter.tags`. `contentHash` accepts either
+   * (`page.tags ?? frontmatter.tags`, sorted) so both spellings hash the same.
+   * Optional — omitting it keeps existing callers source-compatible.
+   */
+  tags?: string[];
   content_hash?: string;
   /**
    * v0.19.0: distinguishes markdown vs code pages at the DB level. Defaults

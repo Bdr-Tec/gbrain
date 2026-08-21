@@ -37,7 +37,7 @@ import {
 } from './embedding-context.ts';
 import { loadSearchModeConfig, resolveSearchMode } from './search/mode.ts';
 import { normalizeAliasList } from './search/alias-normalize.ts';
-import { isUndefinedTableError, warnOncePerProcess, validateSlug } from './utils.ts';
+import { isUndefinedTableError, warnOncePerProcess, validateSlug, contentHash, contentHashLegacy } from './utils.ts';
 import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { computeCorpusGeneration } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
@@ -642,28 +642,24 @@ export async function importFromContent(
     }
   }
 
-  const HASH_EPHEMERAL_FRONTMATTER_KEYS = [
-    'captured_at',
-    'ingested_at',
-    QUARANTINE_KEY,
-    CONTENT_FLAG_KEY,
-    EMBED_SKIP_KEY,
-  ];
-  const stableFrontmatter: Record<string, unknown> = { ...parsed.frontmatter };
-  for (const k of HASH_EPHEMERAL_FRONTMATTER_KEYS) {
-    delete stableFrontmatter[k];
-  }
-  // Hash includes all meaningful fields for idempotency.
-  const hash = createHash('sha256')
-    .update(JSON.stringify({
-      title: parsed.title,
-      type: parsed.type,
-      compiled_truth: parsed.compiled_truth,
-      timeline: parsed.timeline,
-      frontmatter: stableFrontmatter,
-      tags: parsed.tags.sort(),
-    }))
-    .digest('hex');
+  // #3694: the hash formula lives in ONE place — utils.contentHash — shared
+  // with both engines' putPage fallback, so a page written via putPage and
+  // the same page re-imported by sync produce the SAME hash (pre-fix they
+  // diverged and every putPage→sync roundtrip re-chunked + re-embedded).
+  // The helper strips HASH_EPHEMERAL_FRONTMATTER_KEYS + the tags key from a
+  // frontmatter copy and folds sorted tags in — the exact former inline
+  // formula (byte-parity pinned by test/content-hash-parity-3694.test.ts).
+  // Sort tags in place first to preserve the pre-#3694 downstream behavior
+  // (parsedPage.tags was sorted by the old inline `.sort()` mutation).
+  parsed.tags.sort();
+  const hash = contentHash({
+    title: parsed.title,
+    type: parsed.type,
+    compiled_truth: parsed.compiled_truth,
+    timeline: parsed.timeline,
+    frontmatter: parsed.frontmatter,
+    tags: parsed.tags,
+  });
 
   const parsedPage: ParsedPage = {
     type: parsed.type,
@@ -676,6 +672,31 @@ export async function importFromContent(
 
   if (existing?.content_hash === hash && !opts.forceRechunk) {
     return { slug, status: 'skipped', chunks: 0, parsedPage, ...(typeWarning ? { type_warning: typeWarning } : {}) };
+  }
+
+  // #3694 one-time reconcile: a row written by the PRE-fix putPage formula
+  // carries the legacy hash. When the parsed file matches that legacy hash,
+  // the content is unchanged — stamp the canonical hash via the narrow
+  // refreshPageBody UPDATE (no chunk churn, no re-embed, no version snapshot)
+  // and skip. The next import then hits the fast path above.
+  if (existing && !opts.forceRechunk && typeof engine.refreshPageBody === 'function') {
+    const legacyHash = contentHashLegacy({
+      title: parsed.title,
+      type: parsed.type,
+      compiled_truth: parsed.compiled_truth,
+      timeline: parsed.timeline,
+      frontmatter: parsed.frontmatter,
+    });
+    if (existing.content_hash === legacyHash) {
+      await engine.refreshPageBody(
+        slug,
+        sourceId ?? 'default',
+        parsed.compiled_truth,
+        parsed.timeline || '',
+        hash,
+      );
+      return { slug, status: 'skipped', chunks: 0, parsedPage, ...(typeWarning ? { type_warning: typeWarning } : {}) };
+    }
   }
 
   // v0.41.13 (#1309) — identity-based cross-slug dedup pre-check.
