@@ -857,16 +857,25 @@ export function buildYieldDuringPhase(
  * the next tick). On a fenced refresh returning false, aborts `controller`
  * with a LockStolenError; a thrown (transient) refresh error is logged and
  * retried next tick — the TTL is the backstop.
+ *
+ * #4309: the tick also gates on `externalSignal` (the caller's abort, i.e.
+ * runCycle's opts.signal). An externally-aborted run whose current phase
+ * ignores the abort never reaches runCycle's finally, so without this gate
+ * the leaked timer kept renewing the fenced lock forever and no successor
+ * could ever take over. The once-listener stops the interval the moment the
+ * external abort fires; stop() detaches it so the autopilot daemon's reused
+ * shutdown signal doesn't accumulate one listener per tick.
  */
 export function startCycleLockRefresher(
   lock: LockHandle,
   controller: AbortController,
   lockId: string,
   intervalMs: number = resolveCycleLockRefreshMs(),
+  externalSignal?: AbortSignal,
 ): () => void {
   let inFlight = false;
   const timer = setInterval(() => {
-    if (inFlight || controller.signal.aborted) return;
+    if (inFlight || controller.signal.aborted || externalSignal?.aborted) return;
     inFlight = true;
     void (async () => {
       try {
@@ -884,7 +893,20 @@ export function startCycleLockRefresher(
   }, intervalMs);
   // Don't let the refresher pin the event loop open past real work.
   (timer as unknown as { unref?: () => void }).unref?.();
-  return () => clearInterval(timer);
+  let onExternalAbort: (() => void) | undefined;
+  const stop = () => {
+    clearInterval(timer);
+    if (onExternalAbort) externalSignal?.removeEventListener('abort', onExternalAbort);
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      stop();
+    } else {
+      onExternalAbort = stop;
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  return stop;
 }
 
 /** Refresh 6x per TTL window (~50s at the 5-min TTL), matching withRefreshingLock's cadence. */
@@ -1987,8 +2009,10 @@ export async function runCycle(
   // `cycleLockIdFor` throw here crashed `--source __all__` runs that never
   // needed a lock id). Real acquisition validated above via acquireDbCycleLock.
   const cycleLockId = cycleLockIdLabelFor(opts.sourceId);
+  // #4309: pass the caller's signal so an external abort stops lock renewal
+  // even when a hung phase never lets the run reach the finally's stopRefresher.
   const stopRefresher: (() => void) | undefined = lock && stolen
-    ? startCycleLockRefresher(lock, stolen, cycleLockId)
+    ? startCycleLockRefresher(lock, stolen, cycleLockId, undefined, externalSignal)
     : undefined;
   const onStolen = stolen ? (e: LockStolenError) => { if (!stolen.signal.aborted) stolen.abort(e); } : undefined;
   // The reason can arrive as undefined (see isLockStolenAbort); rejecting a
