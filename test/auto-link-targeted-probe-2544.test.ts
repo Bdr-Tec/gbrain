@@ -13,12 +13,16 @@
  * scoping still confines resolution to the write's source.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { operations } from '../src/core/operations.ts';
 import type { OperationContext } from '../src/core/operations.ts';
 import { resetGateway } from '../src/core/ai/gateway.ts';
+
+// PGLite schema init (130 migrations) exceeds the 5s default hook timeout on
+// a loaded machine — same mitigation as hybrid-cache-scope-poison.serial.
+setDefaultTimeout(30_000);
 
 let engine: PGLiteEngine;
 

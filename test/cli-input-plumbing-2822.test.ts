@@ -12,7 +12,7 @@
  *      explanation — the response now carries chunk_skip_reason.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -22,6 +22,10 @@ import type { OperationContext } from '../src/core/operations.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { resetGateway } from '../src/core/ai/gateway.ts';
+
+// PGLite schema init (130 migrations) exceeds the 5s default hook timeout on
+// a loaded machine — same mitigation as hybrid-cache-scope-poison.serial.
+setDefaultTimeout(30_000);
 
 // ── Part 2: flag-overwrites-positional warning ────────────────────────────
 
