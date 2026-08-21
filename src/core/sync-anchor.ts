@@ -422,6 +422,10 @@ function escapeLike(s: string): string {
  * `slugPrefix` is the SLUGIFIED git-root-relative scope prefix WITHOUT a
  * trailing slash (callers derive it via resolveSlugForPath so the probe
  * matches slug spelling, not raw path spelling).
+ *
+ * `dryRun: true` resolves the mode in-memory only and skips the persist —
+ * a `sync --dry-run` must never mutate config (#4342 review fix). The pin
+ * is written by the first REAL sync instead.
  */
 export async function resolveSlugRootMode(
   engine: BrainEngine,
@@ -429,6 +433,7 @@ export async function resolveSlugRootMode(
     sourceId: string | undefined;
     explicitGitRoot: boolean;
     slugPrefix: string;
+    dryRun?: boolean;
   },
 ): Promise<SlugRootMode> {
   const stored = await readSlugRootMode(engine, opts.sourceId);
@@ -444,6 +449,8 @@ export async function resolveSlugRootMode(
     );
     mode = rows.length > 0 ? 'git-root' : 'source-root';
   }
-  await writeSlugRootMode(engine, opts.sourceId, mode);
+  if (opts.dryRun !== true) {
+    await writeSlugRootMode(engine, opts.sourceId, mode);
+  }
   return mode;
 }

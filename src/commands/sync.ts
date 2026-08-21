@@ -833,6 +833,9 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       sourceId: opts.sourceId,
       explicitGitRoot: opts.srcSubpath !== undefined,
       slugPrefix,
+      // #4342 review fix: a --dry-run must not persist the sticky pin —
+      // resolve in-memory only; the first real sync writes it.
+      dryRun: opts.dryRun === true,
     });
   }
   const fullSyncRoots = { gitContextRoot, syncScopeRoot, anchorPath, slugRootMode };

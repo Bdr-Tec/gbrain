@@ -196,3 +196,147 @@ describe('#3737 md5-keyed dedup index', () => {
     expect(parseInt(rows[0].n, 10)).toBe(2);
   });
 });
+
+// ─── #3957: legacy (source='') row shape repair ──────────────────────────
+
+import { repairLegacyTimelineSourceRows } from '../src/core/timeline-dedup-repair.ts';
+import { MIGRATIONS } from '../src/core/migrate.ts';
+import { extractStaleFromDB } from '../src/commands/extract.ts';
+
+describe("#3957 legacy-row (source='') shape repair", () => {
+  const PIPE_BULLET = '- **2026-01-05** | meeting — Discussed the wiki';
+  const DASH_BULLET = '- **2026-01-06** - moved to Berlin - permanently';
+
+  async function resetLegacyState() {
+    // Canonical md5 index back in place (earlier describe blocks regress it),
+    // then a clean slate for rows + repair-target pages.
+    await repairTimelineDedupIndex(engine);
+    await engine.executeRaw(`DELETE FROM timeline_entries`);
+    await engine.executeRaw(`DELETE FROM pages WHERE slug LIKE 'legacy/%'`);
+  }
+
+  async function seedLegacyPage(slug: string, content: string): Promise<string> {
+    await engine.executeRaw(
+      `INSERT INTO pages (slug, source_id, type, title, compiled_truth, timeline)
+       VALUES ($1, 'default', 'note', $1, $2, '')`,
+      [slug, content],
+    );
+    const rows = await engine.executeRaw<{ id: string }>(
+      `SELECT id::text AS id FROM pages WHERE slug = $1 AND source_id = 'default'`,
+      [slug],
+    );
+    return rows[0]!.id;
+  }
+
+  async function timelineRowsFor(pid: string) {
+    return engine.executeRaw<{ source: string; summary: string }>(
+      `SELECT source, summary FROM timeline_entries WHERE page_id = $1 ORDER BY id`,
+      [pid],
+    );
+  }
+
+  test('THE review case: legacy pipe-bullet row + re-extract → exactly one split row after repair', async () => {
+    await resetLegacyState();
+    const pid = await seedLegacyPage('legacy/pipe', `# Pipe\n\n${PIPE_BULLET}\n`);
+    // Pre-#3957 DB-path shape: source='' + the UNSPLIT `Source — Summary`.
+    await engine.executeRaw(
+      `INSERT INTO timeline_entries (page_id, date, source, summary, detail)
+       VALUES ($1, '2026-01-05', '', 'meeting — Discussed the wiki', '')`,
+      [pid],
+    );
+
+    const r = await repairLegacyTimelineSourceRows(engine);
+    expect(r.rowsRewritten).toBe(1);
+    expect(r.rowsDeleted).toBe(0);
+
+    // Rewritten in place to the split shape the new parser emits.
+    let rows = await timelineRowsFor(pid);
+    expect(rows).toEqual([{ source: 'meeting', summary: 'Discussed the wiki' }]);
+
+    // Re-extract (the stale sweep) now DEDUPS onto the repaired row instead
+    // of duplicating — pre-repair this left TWO rows.
+    await extractStaleFromDB(engine, {
+      dryRun: false, jsonMode: true, includeFrontmatter: false, catchUp: false,
+    });
+    rows = await timelineRowsFor(pid);
+    expect(rows).toEqual([{ source: 'meeting', summary: 'Discussed the wiki' }]);
+  });
+
+  test('dash-bullet legacy row gets source=markdown and is NEVER split on interior dashes', async () => {
+    await resetLegacyState();
+    const pid = await seedLegacyPage('legacy/dash', `# Dash\n\n${DASH_BULLET}\n`);
+    await engine.executeRaw(
+      `INSERT INTO timeline_entries (page_id, date, source, summary, detail)
+       VALUES ($1, '2026-01-06', '', 'moved to Berlin - permanently', '')`,
+      [pid],
+    );
+
+    const r = await repairLegacyTimelineSourceRows(engine);
+    expect(r.rowsRewritten).toBe(1);
+    const rows = await timelineRowsFor(pid);
+    // A blind split would have produced ('moved to Berlin', 'permanently').
+    expect(rows).toEqual([{ source: 'markdown', summary: 'moved to Berlin - permanently' }]);
+
+    await extractStaleFromDB(engine, {
+      dryRun: false, jsonMode: true, includeFrontmatter: false, catchUp: false,
+    });
+    expect(await timelineRowsFor(pid)).toEqual([
+      { source: 'markdown', summary: 'moved to Berlin - permanently' },
+    ]);
+  });
+
+  test('legacy row whose new-shape duplicate already landed is deleted, not collided', async () => {
+    await resetLegacyState();
+    const pid = await seedLegacyPage('legacy/dupe', `# Dupe\n\n${PIPE_BULLET}\n`);
+    await engine.executeRaw(
+      `INSERT INTO timeline_entries (page_id, date, source, summary, detail)
+       VALUES ($1, '2026-01-05', '', 'meeting — Discussed the wiki', ''),
+              ($1, '2026-01-05', 'meeting', 'Discussed the wiki', '')`,
+      [pid],
+    );
+
+    const r = await repairLegacyTimelineSourceRows(engine);
+    expect(r.rowsDeleted).toBe(1);
+    expect(r.rowsRewritten).toBe(0);
+    expect(await timelineRowsFor(pid)).toEqual([{ source: 'meeting', summary: 'Discussed the wiki' }]);
+  });
+
+  test('legacy row with no matching bullet in current content is left untouched', async () => {
+    await resetLegacyState();
+    const pid = await seedLegacyPage('legacy/stale-content', `# Edited\n\nNo timeline lines anymore.\n`);
+    await engine.executeRaw(
+      `INSERT INTO timeline_entries (page_id, date, source, summary, detail)
+       VALUES ($1, '2026-01-05', '', 'meeting — Removed from content', '')`,
+      [pid],
+    );
+
+    const r = await repairLegacyTimelineSourceRows(engine);
+    expect(r.rowsSkipped).toBe(1);
+    expect(r.rowsRewritten).toBe(0);
+    expect(await timelineRowsFor(pid)).toEqual([
+      { source: '', summary: 'meeting — Removed from content' },
+    ]);
+  });
+
+  test('idempotent — a second repair pass finds nothing to do', async () => {
+    await resetLegacyState();
+    const pid = await seedLegacyPage('legacy/idem', `# Idem\n\n${PIPE_BULLET}\n`);
+    await engine.executeRaw(
+      `INSERT INTO timeline_entries (page_id, date, source, summary, detail)
+       VALUES ($1, '2026-01-05', '', 'meeting — Discussed the wiki', '')`,
+      [pid],
+    );
+    await repairLegacyTimelineSourceRows(engine);
+    const second = await repairLegacyTimelineSourceRows(engine);
+    expect(second).toEqual({ pagesScanned: 0, rowsRewritten: 0, rowsDeleted: 0, rowsSkipped: 0 });
+  });
+
+  test('migration v138 ships the repair (handler-only, idempotent)', () => {
+    const m = MIGRATIONS.find(x => x.version === 138);
+    expect(m).toBeDefined();
+    expect(m!.name).toBe('timeline_legacy_source_split_repair');
+    expect(typeof m!.handler).toBe('function');
+    expect(m!.sql).toBe('');
+    expect(m!.idempotent).toBe(true);
+  });
+});

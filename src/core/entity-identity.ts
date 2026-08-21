@@ -149,10 +149,17 @@ export async function unlinkEntityIdentity(
  * List identity members. Filters compose (AND). `allowedSources` restricts
  * MEMBER VISIBILITY (federated read grant) — a caller who can't read source
  * X never learns X's member pages, even when another member matched.
+ *
+ * The identity key is (source_id, slug), so the `slug` filter alone is
+ * ambiguous: pass `slugSourceId` to seed group resolution from exactly the
+ * (slug, source) page the caller is reading. Without it, the seed sub-select
+ * is scoped to `allowedSources` when provided (a caller must not discover a
+ * group through a seed page outside their grant), and only a trusted
+ * unscoped caller (neither given) seeds from any source.
  */
 export async function listEntityIdentities(
   engine: BrainEngine,
-  opts: { entityId?: string; slug?: string; allowedSources?: string[] } = {},
+  opts: { entityId?: string; slug?: string; slugSourceId?: string; allowedSources?: string[] } = {},
 ): Promise<EntityIdentityMember[]> {
   const where: string[] = [];
   const params: unknown[] = [];
@@ -162,10 +169,26 @@ export async function listEntityIdentities(
   }
   if (opts.slug) {
     params.push(opts.slug);
+    const slugParam = params.length;
+    // #4224 review fix: the seed sub-select must be source-scoped — an
+    // unscoped `p2.slug = $` matches ANY source's page with that slug, so a
+    // read against a NON-member page unioned a foreign same-slug member's
+    // group.
+    let seedScope = '';
+    if (opts.slugSourceId) {
+      params.push(opts.slugSourceId);
+      seedScope = ` AND ei2.source_id = $${params.length}`;
+    } else if (opts.allowedSources && opts.allowedSources.length > 0) {
+      const ph = opts.allowedSources.map((s) => {
+        params.push(s);
+        return `$${params.length}`;
+      });
+      seedScope = ` AND ei2.source_id IN (${ph.join(', ')})`;
+    }
     where.push(`ei.entity_id IN (
       SELECT ei2.entity_id FROM entity_identities ei2
       JOIN pages p2 ON p2.id = ei2.page_id
-      WHERE p2.slug = $${params.length} AND p2.deleted_at IS NULL
+      WHERE p2.slug = $${slugParam} AND p2.deleted_at IS NULL${seedScope}
     )`);
   }
   if (opts.allowedSources && opts.allowedSources.length > 0) {
@@ -243,19 +266,30 @@ export async function unionLinksAcrossIdentity(
   slug: string,
   links: Link[],
   direction: 'out' | 'in',
-  opts: { allowedSources?: string[] } = {},
+  opts: { sourceId?: string; allowedSources?: string[] } = {},
 ): Promise<Link[]> {
   if (!(await isIdentityUnionEnabled(engine))) return links;
   let members: EntityIdentityMember[];
   try {
     members = await listEntityIdentities(engine, {
       slug,
+      // #4224 review fix: seed group resolution from the BASE page's
+      // (slug, source) — never from a foreign same-slug page.
+      slugSourceId: opts.sourceId,
       allowedSources: opts.allowedSources,
     });
   } catch {
     return links; // never let the union break the base read
   }
-  const coMembers = members.filter(m => m.slug !== slug);
+  // #4224 review fix: the identity key is (source_id, slug) — exclude only
+  // the BASE pair. A same-slug co-member in ANOTHER source is a real
+  // co-member whose edges the scalar-scoped base read did not fetch. When
+  // the base source is unknown (trusted unscoped / federated multi-grant),
+  // the base read already spanned every visible same-slug page, so
+  // slug-level exclusion is exact there.
+  const coMembers = opts.sourceId
+    ? members.filter(m => !(m.slug === slug && m.source_id === opts.sourceId))
+    : members.filter(m => m.slug !== slug);
   if (coMembers.length === 0) return links;
 
   const merged: Link[] = [...links];

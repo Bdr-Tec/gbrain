@@ -135,6 +135,64 @@ export async function stampExtracted(
 }
 
 /**
+ * #3957 review (D4 rule): snapshot each ref's CURRENT `pages.updated_at`
+ * BEFORE extraction reads content, so the eventual watermark stamp carries
+ * the row's read updated_at instead of now(). A now() stamp is a FUTURE
+ * watermark relative to the row — a concurrent edit landing between the
+ * content read and the stamp would be masked (page reads fresh with stale
+ * extraction). Stamping the pre-read value keeps the race honest: the edit
+ * advances updated_at past the stamp and the page re-extracts next run.
+ *
+ * Values are the full-µs `to_char` projection (#1768 — a ms-truncated JS
+ * Date stays strictly below the DB value on Postgres and the page never
+ * clears) and are lifted to LINK_EXTRACTOR_VERSION_TS when older
+ * (GREATEST(updated_at, versionTs) — same rule as extractStaleFromDB, so an
+ * old page can't be stamped below the version clause and loop forever).
+ *
+ * Returns a map keyed `${source_id}\u0000${slug}`. Refs with no live pages
+ * row at snapshot time are ABSENT — callers must skip stamping them (a row
+ * created mid-run was never read; it stays stale and is swept later).
+ */
+async function snapshotStampTimes(
+  engine: BrainEngine,
+  refs: Array<{ slug: string; source_id: string }>,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const versionTs = LINK_EXTRACTOR_VERSION_TS;
+  const versionMs = Date.parse(versionTs);
+  for (let i = 0; i < refs.length; i += BATCH_SIZE) {
+    const batch = refs.slice(i, i + BATCH_SIZE);
+    const rows = await engine.executeRaw<{ slug: string; source_id: string; updated_at_iso: string }>(
+      `SELECT p.slug, p.source_id,
+              to_char(p.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at_iso
+         FROM pages p
+         JOIN unnest($1::text[], $2::text[]) AS v(slug, source_id)
+           ON p.slug = v.slug AND p.source_id = v.source_id
+        WHERE p.deleted_at IS NULL`,
+      [batch.map(r => r.slug), batch.map(r => r.source_id)],
+    );
+    for (const r of rows) {
+      const iso = Date.parse(r.updated_at_iso) >= versionMs ? r.updated_at_iso : versionTs;
+      out.set(`${r.source_id}\u0000${r.slug}`, iso);
+    }
+  }
+  return out;
+}
+
+/** Attach snapshot stamps to refs, dropping refs the snapshot never saw. */
+function refsWithSnapshotStamps(
+  refs: Array<{ slug: string; source_id: string }>,
+  stamps: Map<string, string>,
+): Array<{ slug: string; source_id: string; extractedAt: string }> {
+  const out: Array<{ slug: string; source_id: string; extractedAt: string }> = [];
+  for (const r of refs) {
+    const at = stamps.get(`${r.source_id}\u0000${r.slug}`);
+    if (at) out.push({ slug: r.slug, source_id: r.source_id, extractedAt: at });
+  }
+  return out;
+}
+
+/**
  * v0.42.7 (#1696): pure cross-source resolution for one extracted link
  * candidate. Validates both endpoints exist (else the batch JOIN drops the row),
  * then picks from_source_id / to_source_id: prefer the origin page's source,
@@ -640,6 +698,17 @@ export async function runExtractCore(engine: BrainEngine, opts: ExtractOpts): Pr
   }
 
   // Full walk path: CLI `gbrain extract` or first-run.
+  //
+  // #3957 review (D4): snapshot the walked pages' updated_at BEFORE the walk
+  // reads any content, so the post-walk stamp carries the pre-read value —
+  // never now(), which is a future watermark that masks concurrent edits.
+  let stampRefs: Array<{ slug: string; source_id: string; extractedAt: string }> = [];
+  if (!dryRun && opts.mode === 'all') {
+    const stampSourceId = opts.sourceId ?? 'default';
+    const walkRefs = walkMarkdownFiles(opts.dir)
+      .map(f => ({ slug: pathToSlug(f.relPath), source_id: stampSourceId }));
+    stampRefs = refsWithSnapshotStamps(walkRefs, await snapshotStampTimes(engine, walkRefs));
+  }
   if (opts.mode === 'links' || opts.mode === 'all') {
     const r = await extractLinksFromDir(engine, opts.dir, dryRun, jsonMode, workers, opts.signal, opts.sourceId);
     result.links_created = r.created;
@@ -657,14 +726,12 @@ export async function runExtractCore(engine: BrainEngine, opts: ExtractOpts): Pr
   // rule). Pre-fix the full FS walk never stamped, so every walked page
   // stayed permanently "stale" to `extract --stale` / doctor and the sweep
   // re-extracted the whole brain on every run. Refs carry the resolved
-  // source id; files with no synced pages row simply don't match the UPDATE
-  // (stampExtracted logs the shortfall).
+  // source id + the row's pre-read updated_at (D4); files with no pages row
+  // at snapshot time are skipped (nothing to stamp — they stay visible to
+  // `extract --stale` once synced).
   if (!dryRun && opts.mode === 'all' && !isAborted(opts.signal)) {
-    const stampSourceId = opts.sourceId ?? 'default';
-    const refs = walkMarkdownFiles(opts.dir)
-      .map(f => ({ slug: pathToSlug(f.relPath), source_id: stampSourceId }));
-    for (let i = 0; i < refs.length; i += BATCH_SIZE) {
-      await stampExtracted(engine, refs.slice(i, i + BATCH_SIZE));
+    for (let i = 0; i < stampRefs.length; i += BATCH_SIZE) {
+      await stampExtracted(engine, stampRefs.slice(i, i + BATCH_SIZE));
     }
   }
 
@@ -1109,6 +1176,15 @@ async function extractForSlugs(
   // stamped after the final flush (mode 'all' only — a partial-mode run
   // hasn't done the full extraction the watermark asserts).
   const processedRefs: Array<{ slug: string; source_id: string }> = [];
+  // #3957 review (D4): snapshot updated_at BEFORE the pool reads any file so
+  // the stamp carries the pre-read value, not now() (a future watermark that
+  // would mask an edit landing mid-run).
+  const stampSnapshot = (!dryRun && mode === 'all')
+    ? await snapshotStampTimes(
+        engine,
+        slugs.map(slug => ({ slug, source_id: sourceId ?? 'default' })),
+      )
+    : new Map<string, string>();
 
   // Issue #972: read the basename flag once per extract run.
   const globalBasename = await isGlobalBasenameEnabled(engine);
@@ -1211,9 +1287,11 @@ async function extractForSlugs(
   // #2636: the Dream cycle disables sync's inline extraction and routes
   // changed slugs through this incremental path — without a stamp here,
   // those pages never get links_extracted_at and stay permanently visible
-  // to `extract --stale` / doctor. Stamp only after BOTH batches flushed.
+  // to `extract --stale` / doctor. Stamp only after BOTH batches flushed,
+  // with the pre-read updated_at snapshot (D4) — refs the snapshot never
+  // saw (row created mid-run) are skipped and stay stale.
   if (!dryRun && mode === 'all') {
-    await stampExtracted(engine, processedRefs);
+    await stampExtracted(engine, refsWithSnapshotStamps(processedRefs, stampSnapshot));
   }
   progress.finish();
 
@@ -1797,9 +1875,18 @@ export async function extractStaleFromDB(
     includeFrontmatter: boolean;
     sourceIdFilter?: string;
     catchUp: boolean;
+    /**
+     * Wall-clock cap for the sweep (checked between keyset batches).
+     * Defaults to STALE_TIME_BUDGET_MS (~30 min). Embedded callers (the
+     * cycle's in-line stale drain) pass a much smaller cap so one drain
+     * can't consume the whole cycle — the full budget stays with the
+     * explicit `gbrain extract --stale` command. Ignored when catchUp.
+     */
+    timeBudgetMs?: number;
   },
 ): Promise<{ linksCreated: number; timelineCreated: number; pagesProcessed: number; staleRemaining: number; skippedMissingTarget?: number }> {
   const { dryRun, jsonMode, includeFrontmatter, sourceIdFilter, catchUp } = opts;
+  const timeBudgetMs = opts.timeBudgetMs ?? STALE_TIME_BUDGET_MS;
   const versionTs = LINK_EXTRACTOR_VERSION_TS;
 
   // Pre-flight count — cheap indexed COUNT. dry-run reports and returns.
@@ -1932,7 +2019,7 @@ export async function extractStaleFromDB(
     progress.tick(rows.length);
     afterPageId = rows[rows.length - 1]!.id;
 
-    if (!catchUp && Date.now() - startMs > STALE_TIME_BUDGET_MS) { budgetHit = true; break; }
+    if (!catchUp && Date.now() - startMs > timeBudgetMs) { budgetHit = true; break; }
   }
 
   progress.finish();

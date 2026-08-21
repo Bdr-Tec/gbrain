@@ -24,7 +24,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
-import { parseTimelineEntries } from '../src/core/link-extraction.ts';
+import { parseTimelineEntries, LINK_EXTRACTOR_VERSION_TS } from '../src/core/link-extraction.ts';
 import { extractTimelineFromContent } from '../src/core/timeline-extract.ts';
 import { runExtractCore, extractStaleFromDB, stampExtracted } from '../src/commands/extract.ts';
 import { operations, type Operation, type OperationContext } from '../src/core/operations.ts';
@@ -154,6 +154,48 @@ describe('#3957 full FS walk stamps the watermark (mode all)', () => {
 
     const after = await engine.countStalePagesForExtraction({});
     expect(after).toBe(0);
+  });
+
+  test('full walk stamps the row\'s READ updated_at (clamped to versionTs), never now() (D4)', async () => {
+    mkdirSync(join(tempDir, 'people'), { recursive: true });
+    writeFileSync(join(tempDir, 'people', 'alice.md'), `# Alice\n\n${CANON_BULLET}\n`);
+    await engine.executeRaw(
+      `INSERT INTO pages (slug, source_id, type, title, compiled_truth, timeline)
+       VALUES ('people/alice', 'default', 'person', 'Alice', 'x', '')`,
+    );
+
+    await runExtractCore(engine, { mode: 'all', dir: tempDir });
+
+    // Pre-fix the stamp was now() — a FUTURE watermark strictly greater than
+    // updated_at, which masks a concurrent edit landing between the content
+    // read and the stamp. The D4-correct stamp equals the pre-read
+    // GREATEST(updated_at, versionTs).
+    const rows = await engine.executeRaw<{ ok: boolean }>(
+      `SELECT links_extracted_at = GREATEST(updated_at, $1::timestamptz) AS ok
+       FROM pages WHERE slug = 'people/alice' AND source_id = 'default'`,
+      [LINK_EXTRACTOR_VERSION_TS],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ok).toBe(true);
+  });
+
+  test('incremental (slugs) walk stamps the pre-read updated_at too (D4)', async () => {
+    mkdirSync(join(tempDir, 'people'), { recursive: true });
+    writeFileSync(join(tempDir, 'people', 'alice.md'), '# Alice\n');
+    await engine.executeRaw(
+      `INSERT INTO pages (slug, source_id, type, title, compiled_truth, timeline)
+       VALUES ('people/alice', 'default', 'person', 'Alice', 'x', '')`,
+    );
+
+    await runExtractCore(engine, { mode: 'all', dir: tempDir, slugs: ['people/alice'] });
+
+    const rows = await engine.executeRaw<{ ok: boolean }>(
+      `SELECT links_extracted_at = GREATEST(updated_at, $1::timestamptz) AS ok
+       FROM pages WHERE slug = 'people/alice' AND source_id = 'default'`,
+      [LINK_EXTRACTOR_VERSION_TS],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ok).toBe(true);
   });
 
   test('links- or timeline-only walks do NOT stamp (C3/D6 rule)', async () => {

@@ -755,7 +755,7 @@ describe('ingest_capture handler — tombstones (#3756)', () => {
     } as any, { sourceId: 'default' });
 
     const handler = makeIngestCaptureHandler(engine);
-    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/to-remove', content: 'tombstone' });
+    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/to-remove', content: 'tombstone', untrusted_payload: false });
     const result = await handler(makeJob({ event: ev }));
     expect(result.status).toBe('deleted');
     expect(result.slug).toBe('inbox/to-remove');
@@ -772,7 +772,7 @@ describe('ingest_capture handler — tombstones (#3756)', () => {
 
   test('tombstone for a missing page reports skipped', async () => {
     const handler = makeIngestCaptureHandler(engine);
-    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/never-existed', content: 'tombstone' });
+    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/never-existed', content: 'tombstone', untrusted_payload: false });
     const result = await handler(makeJob({ event: ev }));
     expect(result.status).toBe('skipped');
   });
@@ -796,6 +796,23 @@ describe('ingest_capture handler — tombstones (#3756)', () => {
     expect(page).not.toBeNull();
   });
 
+  test('tombstone with the flag OMITTED is rejected (fail-closed, explicit trusted marker required)', async () => {
+    await engine.putPage('inbox/also-protected', {
+      type: 'note',
+      title: 'Also Protected',
+      compiled_truth: '# Also Protected\n\nbody',
+    } as any, { sourceId: 'default' });
+
+    const handler = makeIngestCaptureHandler(engine);
+    // No untrusted_payload at all — pre-fix this fell OPEN (treated as
+    // trusted); the gate now requires the explicit `untrusted_payload: false`.
+    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/also-protected', content: 'tombstone' });
+    expect(ev.untrusted_payload).toBeUndefined();
+    await expect(handler(makeJob({ event: ev }))).rejects.toThrow(/trusted/i);
+    const page = await engine.getPage('inbox/also-protected', { sourceId: 'default' });
+    expect(page).not.toBeNull();
+  });
+
   test('tombstone delete is scoped to the resolved source', async () => {
     // Same slug in two sources; tombstone under default must not touch testsrc.
     await engine.executeRaw(
@@ -810,7 +827,7 @@ describe('ingest_capture handler — tombstones (#3756)', () => {
     } as any, { sourceId: 'tombsrc' });
 
     const handler = makeIngestCaptureHandler(engine);
-    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/dupe', content: 'tombstone' });
+    const ev = makeEvent({ kind: 'tombstone', slug: 'inbox/dupe', content: 'tombstone', untrusted_payload: false });
     const result = await handler(makeJob({ event: ev }));
     expect(result.status).toBe('deleted');
 

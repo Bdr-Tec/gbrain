@@ -265,3 +265,92 @@ describe('flag-gated retrieval union (#4224 v1: link read ops)', () => {
     expect(backs.some(l => l.from_slug === 'notes/n2')).toBe(true);
   });
 });
+
+describe('#4224 review — the identity key is (source_id, slug) in the union too', () => {
+  // SAME slug in two sources: `people/alice` exists in BOTH default and
+  // team-brain, each with its own outgoing edge.
+  beforeEach(async () => {
+    await engine.setConfig(ENTITY_IDENTITY_UNION_CONFIG_KEY, 'true');
+    await engine.putPage('people/alice', {
+      type: 'person', title: 'Alice (wiki)', compiled_truth: 'wiki alice', timeline: '',
+    }, { sourceId: 'default' });
+    await engine.putPage('people/alice', {
+      type: 'person', title: 'Alice (team)', compiled_truth: 'team alice', timeline: '',
+    }, { sourceId: 'team-brain' });
+    await engine.putPage('companies/acme', {
+      type: 'company', title: 'Acme', compiled_truth: 'acme', timeline: '',
+    }, { sourceId: 'default' });
+    await engine.putPage('companies/widget-co', {
+      type: 'company', title: 'Widget Co', compiled_truth: 'widget', timeline: '',
+    }, { sourceId: 'team-brain' });
+    await engine.addLinksBatch([
+      { from_slug: 'people/alice', to_slug: 'companies/acme', link_source: 'manual', from_source_id: 'default', to_source_id: 'default' },
+      { from_slug: 'people/alice', to_slug: 'companies/widget-co', link_source: 'manual', from_source_id: 'team-brain', to_source_id: 'team-brain' },
+    ]);
+  });
+
+  test('same-slug co-member in ANOTHER source IS unioned (only the base pair is excluded)', async () => {
+    await linkEntityIdentity(engine, { entityId: 'alice', slug: 'people/alice', sourceId: 'default' });
+    await linkEntityIdentity(engine, { entityId: 'alice', slug: 'people/alice', sourceId: 'team-brain' });
+
+    // Helper-level: base = (default, people/alice); the team-brain member
+    // shares the slug but is a REAL co-member — pre-fix `m.slug !== slug`
+    // dropped it and its edges never merged.
+    const base = await engine.getLinks('people/alice', { sourceId: 'default' });
+    const out = await unionLinksAcrossIdentity(engine, 'people/alice', base, 'out', { sourceId: 'default' });
+    expect(out.some(l => l.to_slug === 'companies/acme')).toBe(true);
+    expect(out.some(l => l.to_slug === 'companies/widget-co')).toBe(true);
+
+    // Op-level: the scalar ctx scope threads through as the base source.
+    const links = await operationsByName.get_links!.handler(
+      localCtx({ sourceId: 'default' }), { slug: 'people/alice' },
+    ) as Array<{ to_slug: string }>;
+    expect(links.some(l => l.to_slug === 'companies/widget-co')).toBe(true);
+  });
+
+  test('NON-member base page with a same-slug member elsewhere is NOT unioned', async () => {
+    // Only the TEAM alice is a member, grouped with a third page that has
+    // its own edge. The default alice is NOT a member.
+    await engine.putPage('people/alicia', {
+      type: 'person', title: 'Alicia', compiled_truth: 'alicia', timeline: '',
+    }, { sourceId: 'team-brain' });
+    await engine.addLinksBatch([
+      { from_slug: 'people/alicia', to_slug: 'companies/widget-co', link_source: 'manual', from_source_id: 'team-brain', to_source_id: 'team-brain' },
+    ]);
+    await linkEntityIdentity(engine, { entityId: 'alice', slug: 'people/alice', sourceId: 'team-brain' });
+    await linkEntityIdentity(engine, { entityId: 'alice', slug: 'people/alicia', sourceId: 'team-brain' });
+
+    // Pre-fix the unscoped slug sub-select matched the TEAM alice's group and
+    // unioned foreign edges into a read of the (default) NON-member page.
+    const base = await engine.getLinks('people/alice', { sourceId: 'default' });
+    const out = await unionLinksAcrossIdentity(engine, 'people/alice', base, 'out', { sourceId: 'default' });
+    expect(out).toEqual(base);
+
+    const links = await operationsByName.get_links!.handler(
+      localCtx({ sourceId: 'default' }), { slug: 'people/alice' },
+    ) as Array<{ to_slug: string }>;
+    expect(links.some(l => l.to_slug === 'companies/acme')).toBe(true);
+    expect(links.some(l => l.to_slug === 'companies/widget-co')).toBe(false);
+  });
+
+  test('listEntityIdentities slugSourceId pins group resolution to the (slug, source) pair', async () => {
+    await linkEntityIdentity(engine, { entityId: 'alice', slug: 'people/alice', sourceId: 'team-brain' });
+    // Unscoped slug lookup still finds the group (trusted cross-source view)…
+    expect(await listEntityIdentities(engine, { slug: 'people/alice' })).toHaveLength(1);
+    // …but the source-scoped lookup only matches the member pair.
+    expect(await listEntityIdentities(engine, { slug: 'people/alice', slugSourceId: 'default' })).toHaveLength(0);
+    expect(await listEntityIdentities(engine, { slug: 'people/alice', slugSourceId: 'team-brain' })).toHaveLength(1);
+  });
+
+  test('without slugSourceId, the seed sub-select is confined to allowedSources', async () => {
+    await linkEntityIdentity(engine, { entityId: 'alice', slug: 'people/alice', sourceId: 'team-brain' });
+    // A grant that cannot see team-brain must not discover the group through
+    // the team-brain seed page.
+    expect(await listEntityIdentities(engine, {
+      slug: 'people/alice', allowedSources: ['default'],
+    })).toHaveLength(0);
+    expect(await listEntityIdentities(engine, {
+      slug: 'people/alice', allowedSources: ['team-brain'],
+    })).toHaveLength(1);
+  });
+});

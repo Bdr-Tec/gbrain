@@ -570,6 +570,15 @@ export interface CycleOpts {
  * existing dispatch + every existing minion job in flight at upgrade
  * time use this row in `gbrain_cycle_locks`.
  */
+/**
+ * #4062 review: wall-clock cap for the extract phase's IN-CYCLE stale drain.
+ * Deliberately small — the drain is a backlog nibbler that must not starve
+ * the phases behind it; the full STALE_TIME_BUDGET_MS (~30 min) belongs to
+ * the explicit `gbrain extract --stale` command. A backlog bigger than one
+ * cap's worth drains incrementally across cycles (staleRemaining reports it).
+ */
+export const CYCLE_STALE_DRAIN_BUDGET_MS = 3 * 60 * 1000;
+
 const LEGACY_CYCLE_LOCK_ID = 'gbrain-cycle';
 // v0.41.19.0 (T2 of ops-fix-wave): dropped from 30 min to 5 min so a
 // crashed cycle releases the lock within 5 min instead of holding it for
@@ -1369,9 +1378,13 @@ async function runPhaseExtract(
     // version bump, DB-only writes, a prior aborted sweep) never re-extracted
     // on the cycle, so the links_extracted_at backlog grew unboundedly until
     // someone hand-ran `gbrain extract --stale`. Drain it here: DB-source,
-    // source-scoped, bounded by STALE_TIME_BUDGET_MS (catchUp: false), no-op
-    // when nothing is stale. Failures degrade to details (the targeted pass
-    // already succeeded — a drain hiccup must not fail the phase).
+    // source-scoped, capped at CYCLE_STALE_DRAIN_BUDGET_MS per cycle (the
+    // full ~30-min STALE_TIME_BUDGET_MS stays with the explicit
+    // `gbrain extract --stale` command — an unbounded in-cycle drain would
+    // starve every later phase behind a big backlog; the remainder drains
+    // across subsequent cycles), no-op when nothing is stale. Failures
+    // degrade to details (the targeted pass already succeeded — a drain
+    // hiccup must not fail the phase).
     let staleRemaining: number | undefined;
     let staleDetails: Record<string, unknown> = {};
     try {
@@ -1382,6 +1395,7 @@ async function runPhaseExtract(
         includeFrontmatter,
         sourceIdFilter: sourceId,
         catchUp: false,
+        timeBudgetMs: CYCLE_STALE_DRAIN_BUDGET_MS,
       });
       staleRemaining = drained.staleRemaining;
       staleDetails = {

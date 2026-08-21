@@ -107,13 +107,18 @@ export function makeIngestCaptureHandler(engine: BrainEngine) {
     // delete. Content-type gating below is an import concern; skip it.
     const isTombstone = event.kind === 'tombstone';
 
-    if (isTombstone && untrustedPayload) {
+    if (isTombstone && event.untrusted_payload !== false) {
       // Trusted-source gate: an untrusted channel (webhook payload, URL
-      // fetcher) must never be able to delete pages. Fail the job loud so
-      // the attempt is visible in the jobs ledger, not silently dropped.
+      // fetcher) must never be able to delete pages. FAIL-CLOSED: deletes
+      // require the EXPLICIT trusted marker (untrusted_payload: false) —
+      // rejecting only `=== true` left an omitted flag treated as trusted,
+      // so any emitter that forgot the field could tombstone pages. Fail
+      // the job loud so the attempt is visible in the jobs ledger, not
+      // silently dropped.
       throw new Error(
-        'ingest_capture: refusing tombstone from an untrusted payload — ' +
-          'deletes are only honored from trusted local emitters',
+        'ingest_capture: refusing tombstone without an explicit trusted marker — ' +
+          'deletes are only honored from trusted local emitters that set ' +
+          'untrusted_payload: false on the event',
       );
     }
 

@@ -113,8 +113,10 @@ const get_links: Operation = {
     const links = await ctx.engine.getLinks(p.slug as string, sourceOpts);
     // #4224: flag-gated identity union — merge edges from the page's identity
     // co-members (entity_identity.union config, default off; pure no-op then).
-    // Member visibility never widens past the caller's grant.
+    // Member visibility never widens past the caller's grant. The scalar base
+    // scope (when present) pins group resolution to the page actually read.
     return unionLinksAcrossIdentity(ctx.engine, p.slug as string, links, 'out', {
+      sourceId: sourceOpts.sourceId,
       allowedSources: sourceOpts.sourceIds,
     });
   },
@@ -134,6 +136,7 @@ const get_backlinks: Operation = {
     const links = await ctx.engine.getBacklinks(p.slug as string, sourceOpts);
     // #4224: flag-gated identity union (see get_links).
     return unionLinksAcrossIdentity(ctx.engine, p.slug as string, links, 'in', {
+      sourceId: sourceOpts.sourceId,
       allowedSources: sourceOpts.sourceIds,
     });
   },

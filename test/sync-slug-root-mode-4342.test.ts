@@ -157,4 +157,32 @@ describe('#4342 slug_root_mode', () => {
     await writeSlugRootMode(engine, undefined, 'git-root');
     expect(await readSlugRootMode(engine, undefined)).toBe('git-root');
   });
+
+  test('--dry-run never persists the sticky pin (review fix: a preview must not mutate config)', async () => {
+    await runSources(engine, ['add', 'vault-dry', '--path', subdir, '--no-federated']);
+
+    // resolver-level: dryRun resolves the mode in-memory only.
+    const mode = await resolveSlugRootMode(engine, {
+      sourceId: 'vault-dry',
+      explicitGitRoot: false,
+      slugPrefix: 'notes',
+      dryRun: true,
+    });
+    expect(mode).toBe('source-root');
+    expect(await readSlugRootMode(engine, 'vault-dry')).toBeNull();
+
+    // end-to-end: a full `sync --dry-run` on a fresh scoped source leaves the
+    // pin unset — pre-fix it persisted slug_root_mode before the dry-run
+    // early-returned.
+    await performSync(engine, {
+      repoPath: subdir, sourceId: 'vault-dry', noEmbed: true, noPull: true, dryRun: true,
+    });
+    expect(await readSlugRootMode(engine, 'vault-dry')).toBeNull();
+
+    // The first REAL sync still pins it.
+    await performSync(engine, {
+      repoPath: subdir, sourceId: 'vault-dry', noEmbed: true, noPull: true,
+    });
+    expect(await readSlugRootMode(engine, 'vault-dry')).toBe('source-root');
+  }, 120_000);
 });
