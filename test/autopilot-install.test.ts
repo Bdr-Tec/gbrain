@@ -15,7 +15,7 @@
  *   - Linux crontab still writes the same every-5-min line.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
@@ -190,7 +190,9 @@ describe('autopilot wrapper script — gbrain-owned env file (#2608)', () => {
       // gbrain-owned home, rather than hand-assuming ~/.gbrain — this is what
       // makes the assertion honor a GBRAIN_HOME override too.
       const envFilePath = gbrainPath('env');
-      expect(src).toContain(`[ -f '${envFilePath}' ] && source '${envFilePath}' 2>/dev/null`);
+      // set -a wrap: plain KEY=value lines (no `export`) must reach the
+      // exec'd daemon too — bare `source` leaves them unexported.
+      expect(src).toContain(`[ -f '${envFilePath}' ] && { set -a; source '${envFilePath}' 2>/dev/null; set +a; }`);
 
       // Existing rc-file sourcing is UNCHANGED (additive fix, not a
       // replacement) and still runs in the same order: zshenv, then
@@ -227,7 +229,7 @@ describe('autopilot wrapper script — gbrain-owned env file (#2608)', () => {
       const wrapperPath = writeWrapperScript(repoDir, 'linux-cron');
       const src = readFileSync(wrapperPath, 'utf8');
       const expectedEnvFile = join(customHome, '.gbrain', 'env');
-      expect(src).toContain(`[ -f '${expectedEnvFile}' ] && source '${expectedEnvFile}' 2>/dev/null`);
+      expect(src).toContain(`[ -f '${expectedEnvFile}' ] && { set -a; source '${expectedEnvFile}' 2>/dev/null; set +a; }`);
       // Must NOT fall back to a bare ~/.gbrain/env guess that ignores GBRAIN_HOME.
       expect(src).not.toContain(`[ -f '${join(tmp, '.gbrain', 'env')}'`);
     } finally {
@@ -275,7 +277,91 @@ describe('autopilot wrapper script — gbrain-owned env file (#2608)', () => {
       const present = runPreamble();
       expect(present.status).toBe(0);
       expect(present.stdout).toContain('MARKER=[from-envfile]');
+
+      // Dotenv-style case: a plain KEY=value line (no `export`) must ALSO
+      // reach the exec'd daemon — the #2608 reporter's env file is exactly
+      // this shape. Only the set -a wrap makes the assignment exported.
+      writeFileSync(envFilePath, 'GBRAIN_TEST_MARKER_2608=dotenv-style\n');
+      const dotenv = runPreamble();
+      expect(dotenv.status).toBe(0);
+      expect(dotenv.stdout).toContain('MARKER=[dotenv-style]');
     } finally {
+      fakeBin.restore();
+    }
+  });
+
+  // #2608 hardening: --install writes a fully-commented 0600 template at
+  // <gbrainDir>/env so the boot warning points at a file that exists, with
+  // secret-safe perms from birth. GBRAIN_HOME (not HOME) scopes these tests:
+  // config's homedir() fallback ignores runtime HOME mutation under bun, but
+  // GBRAIN_HOME is read at call time — proven by the test above.
+  test('install creates a 0600 fully-commented env template (no GBRAIN_HOME example), never overwrites', () => {
+    const fakeBin = makeFakeGbrainOnPath();
+    const customHome = mkdtempSync(join(tmpdir(), 'gbrain-tpl-home-'));
+    const originalGbrainHome = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = customHome;
+    try {
+      const repoDir = join(tmp, 'repo-template');
+      mkdirSync(repoDir, { recursive: true });
+      writeWrapperScript(repoDir, 'linux-cron');
+
+      const envFile = join(customHome, '.gbrain', 'env');
+      expect(existsSync(envFile)).toBe(true);
+      expect(statSync(envFile).mode & 0o777).toBe(0o600);
+
+      const body = readFileSync(envFile, 'utf8');
+      // Every non-empty line is a comment: the install must never ship a
+      // live secret or a live assignment.
+      for (const line of body.split('\n')) {
+        if (line.trim() === '') continue;
+        expect(line.startsWith('#')).toBe(true);
+      }
+      // Names the key lanes and the process-level vars that justify the file.
+      expect(body).toContain('ANTHROPIC_API_KEY');
+      expect(body).toContain('NODE_EXTRA_CA_CERTS');
+      // GBRAIN_HOME must NOT be offered as an example: the wrapper bakes it
+      // AFTER sourcing this file, so a value here is clobbered/divergent.
+      expect(body).toContain('Do NOT set GBRAIN_HOME here');
+      expect(body).not.toMatch(/^#?\s*export GBRAIN_HOME=/m);
+
+      // Reinstall must never overwrite a user's existing env file.
+      writeFileSync(envFile, '# user-owned sentinel\nexport USER_KEY=real\n', { mode: 0o600 });
+      writeWrapperScript(repoDir, 'linux-cron');
+      expect(readFileSync(envFile, 'utf8')).toContain('user-owned sentinel');
+    } finally {
+      if (originalGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = originalGbrainHome;
+      rmSync(customHome, { recursive: true, force: true });
+      fakeBin.restore();
+    }
+  });
+
+  test('install warns on a loose-permission pre-existing env file but never chmods it', () => {
+    const fakeBin = makeFakeGbrainOnPath();
+    const customHome = mkdtempSync(join(tmpdir(), 'gbrain-perm-home-'));
+    const originalGbrainHome = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = customHome;
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const repoDir = join(tmp, 'repo-perms');
+      mkdirSync(repoDir, { recursive: true });
+      const gbrainDir = join(customHome, '.gbrain');
+      mkdirSync(gbrainDir, { recursive: true });
+      const envFile = join(gbrainDir, 'env');
+      writeFileSync(envFile, 'export USER_KEY=real\n', { mode: 0o644 });
+
+      writeWrapperScript(repoDir, 'linux-cron');
+
+      // File untouched: content AND mode are the user's business.
+      expect(readFileSync(envFile, 'utf8')).toContain('USER_KEY=real');
+      expect(statSync(envFile).mode & 0o777).toBe(0o644);
+      const warned = errSpy.mock.calls.some((c) => String(c[0]).includes('group/world-readable'));
+      expect(warned).toBe(true);
+    } finally {
+      errSpy.mockRestore();
+      if (originalGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = originalGbrainHome;
+      rmSync(customHome, { recursive: true, force: true });
       fakeBin.restore();
     }
   });
@@ -286,17 +372,26 @@ describe('autopilot wrapper script — gbrain-owned env file (#2608)', () => {
 // gives the operator zero signal that the daemon has no LLM credentials.
 describe('chatBootWarning (#2608)', () => {
   test('returns null when a chat provider is available', () => {
-    expect(chatBootWarning(true)).toBeNull();
+    expect(chatBootWarning(true, '/custom/.gbrain')).toBeNull();
   });
 
   test('returns a warning naming the failure mode and the fix when unavailable', () => {
-    const warn = chatBootWarning(false);
+    const warn = chatBootWarning(false, '/custom/.gbrain');
     expect(warn).not.toBeNull();
     expect(warn).toContain('[autopilot]');
     expect(warn).toMatch(/no chat provider/i);
-    // Names both remediation paths so the operator isn't left guessing.
-    expect(warn).toContain('gbrain config set anthropic_api_key');
-    expect(warn).toContain('~/.gbrain/env');
+    // Names both remediation paths so the operator isn't left guessing —
+    // derived from the passed gbrain dir, never a literal ~/.gbrain guess
+    // that lies on GBRAIN_HOME installs.
+    expect(warn).toContain('/custom/.gbrain/env');
+    expect(warn).toContain('/custom/.gbrain/config.json');
+    expect(warn).not.toContain('~/.gbrain');
+    // `gbrain config set` is banned for API keys by the canonical install
+    // docs — the warning must not teach it.
+    expect(warn).not.toContain('config set');
+    // Load-bearing: the wrapper sources the env file only at exec and the
+    // gateway folds env once pre-dispatch — without a reload nothing changes.
+    expect(warn).toContain('gbrain autopilot --install');
   });
 });
 
@@ -318,8 +413,54 @@ describe('autopilot wiring: chat-unavailable boot warning (#2608)', () => {
     expect(loopModeIdx).toBeGreaterThan(chatCheckIdx);
 
     expect(src).toContain('chatBootWarning(isAvailable(');
-    expect(src).toMatch(/if \(warn\) console\.error\(warn\)/);
+    // console.log, NOT console.error: launchd/systemd route stderr to
+    // autopilot.err, which install output and showStatus never reference —
+    // stdout is the autopilot.log sink on all four install targets.
+    expect(src).toMatch(/if \(warn\) console\.log\(warn\)/);
     // Diagnostic-only: a gateway import failure must never block the loop.
     expect(src).toMatch(/diagnostic only — never blocks the loop/);
+  });
+});
+
+// #2608 hardening: the boot warning tells users to re-run --install to
+// reload the daemon — these pins keep that instruction TRUE. Source-shape
+// style (same rationale as the wiring test above): the install functions
+// shell out to launchctl/systemctl/crontab, which a unit test cannot drive.
+describe('autopilot install — reload-safety (#2608)', () => {
+  test('launchd unloads before load, systemd try-restarts, cron/container explain the residual process', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/commands/autopilot.ts', 'utf8');
+
+    // installLaunchd: bare `launchctl load` on an already-loaded agent errors
+    // (aborting reinstall) and never relaunches the running daemon. The
+    // unload must precede the load INSIDE installLaunchd — anchor on the
+    // function body, not the file-wide first occurrence (uninstall also
+    // unloads, much later in the file).
+    const launchdFnIdx = src.indexOf('function installLaunchd(');
+    expect(launchdFnIdx).toBeGreaterThan(-1);
+    const launchdBody = src.slice(launchdFnIdx, src.indexOf('function generateSystemdUnit'));
+    // Anchor on the execSync calls, not bare command names — the explanatory
+    // comment above the unload also says "launchctl load".
+    const unloadIdx = launchdBody.indexOf('execSync(`launchctl unload');
+    const loadIdx = launchdBody.indexOf('execSync(`launchctl load');
+    expect(unloadIdx).toBeGreaterThan(-1);
+    expect(loadIdx).toBeGreaterThan(-1);
+    expect(unloadIdx).toBeLessThan(loadIdx);
+
+    // installSystemd: enable --now does not restart an active unit; only
+    // try-restart bounces a running daemon onto the regenerated wrapper.
+    const systemdFnIdx = src.indexOf('function installSystemd(');
+    expect(systemdFnIdx).toBeGreaterThan(-1);
+    const systemdBody = src.slice(systemdFnIdx, src.indexOf('function installEphemeralContainer'));
+    const enableIdx = systemdBody.indexOf('enable --now');
+    const tryRestartIdx = systemdBody.indexOf('try-restart');
+    expect(enableIdx).toBeGreaterThan(-1);
+    expect(tryRestartIdx).toBeGreaterThan(enableIdx);
+
+    // cron + container cannot reload a running loop — install must say so
+    // (and how to end it) rather than silently pretending the reinstall
+    // took effect.
+    expect(src).toMatch(/keeps its old environment until it exits/);
+    expect(src).toMatch(/keeps its old environment until the container/);
   });
 });
