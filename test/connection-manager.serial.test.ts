@@ -454,6 +454,43 @@ describe('ConnectionManager — session-pooler retry on unreachable direct host 
     expect(attempts.length).toBe(2);
   }, 20000);
 
+  test('concurrent callers of a rejected direct init share the session-pooler single-flight (no premature kill-switch)', async () => {
+    const cm = new ConnectionManager({ url: POOLER_URL }); // no override → auto-derived
+    const fakeReadPool = {} as Pool;
+    cm.setReadPool(fakeReadPool);
+    const fakeSessionPool = { __session: true } as unknown as Pool;
+
+    const attempts: string[] = [];
+    let releaseSession!: (p: Pool) => void;
+    const sessionGate = new Promise<Pool>(res => { releaseSession = res; });
+    (cm as unknown as { initDirectPool: () => Promise<Pool> }).initDirectPool =
+      async function (this: { _directUrl: string }) {
+        attempts.push(this._directUrl);
+        if (attempts.length === 1) throw unreachable();
+        // Session attempt stays in flight until the test releases it, so the
+        // second caller resumes while the retry is pending — the race window
+        // where caller 1 has already mutated _directUrl to the session URL.
+        return sessionGate;
+      };
+
+    // Both callers await the SAME rejected _directInit; caller 1 mutates
+    // _directUrl before caller 2's continuation runs. Pre-fix, caller 2's
+    // `sessionUrl !== this._directUrl` guard saw them equal, skipped the
+    // in-flight _sessionInit, and tripped the read-pool kill-switch.
+    const p1 = cm.ddl();
+    const p2 = cm.ddl();
+    await new Promise(res => setTimeout(res, 10)); // let both reach the retry logic
+    releaseSession(fakeSessionPool);
+    const [pool1, pool2] = await Promise.all([p1, p2]);
+    expect(pool1).toBe(fakeSessionPool);
+    expect(pool2).toBe(fakeSessionPool); // pre-fix: fakeReadPool + kill-switch
+    expect(attempts.length).toBe(2); // direct once, session once — single-flight held
+    expect(cm.isKillSwitchActive()).toBe(false);
+    expect(cm.isDualPoolActive()).toBe(true);
+    expect(errLines.filter(l => l.toLowerCase().includes('session pooler')).length).toBe(1);
+    expect(errLines.filter(l => l.includes('falling back to the pooler')).length).toBe(0);
+  }, 20000);
+
   test('direct AND session pooler unreachable → #1641 read-pool fallback (kill-switch)', async () => {
     const cm = new ConnectionManager({ url: POOLER_URL });
     const fakeReadPool = {} as Pool;

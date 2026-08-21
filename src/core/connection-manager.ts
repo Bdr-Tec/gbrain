@@ -424,32 +424,38 @@ export class ConnectionManager {
         // the transaction pooler's ~8s statement_timeout (cold-start init
         // failures). Auto-derived URLs only — operator overrides are final.
         if (this._directUrlAutoDerived) {
-          const sessionUrl = deriveSessionPoolerUrl(this.opts.url);
-          if (sessionUrl && sessionUrl !== this._directUrl) {
-            try {
-              if (!this._sessionInit) {
-                const prevHost = this._directUrl ? this.hostOnly(this._directUrl) : 'unknown host';
-                this._directUrl = sessionUrl;
-                this._sessionInit = this.initDirectPool().then(p => {
-                  this._directPool = p;
-                  return p;
-                });
-                const p = await this._sessionInit;
-                if (!this._sessionFallbackLogged) {
-                  this._sessionFallbackLogged = true;
-                  console.error(
-                    `gbrain: direct connection to ${prevHost} unreachable; using the Supabase session pooler ` +
-                    `(${this.hostOnly(sessionUrl)}) for DDL/bulk instead — long-timeout settings still apply. ` +
-                    'Set GBRAIN_DIRECT_DATABASE_URL to override.',
-                  );
-                }
-                return p;
-              }
+          try {
+            // Single-flight FIRST, URL-equality guard second: caller 1 of a
+            // rejected _directInit mutates _directUrl to the session URL
+            // before starting the retry, so a concurrent caller 2 that
+            // checked `sessionUrl !== this._directUrl` first would see them
+            // equal, skip the in-flight retry entirely, and trip the
+            // read-pool kill-switch while caller 1's session pooler connects.
+            if (this._sessionInit) {
               return await this._sessionInit;
-            } catch {
-              // Session pooler also failed → fall through to the #1641
-              // read-pool kill-switch below (the original behavior).
             }
+            const sessionUrl = deriveSessionPoolerUrl(this.opts.url);
+            if (sessionUrl && sessionUrl !== this._directUrl) {
+              const prevHost = this._directUrl ? this.hostOnly(this._directUrl) : 'unknown host';
+              this._directUrl = sessionUrl;
+              this._sessionInit = this.initDirectPool().then(p => {
+                this._directPool = p;
+                return p;
+              });
+              const p = await this._sessionInit;
+              if (!this._sessionFallbackLogged) {
+                this._sessionFallbackLogged = true;
+                console.error(
+                  `gbrain: direct connection to ${prevHost} unreachable; using the Supabase session pooler ` +
+                  `(${this.hostOnly(sessionUrl)}) for DDL/bulk instead — long-timeout settings still apply. ` +
+                  'Set GBRAIN_DIRECT_DATABASE_URL to override.',
+                );
+              }
+              return p;
+            }
+          } catch {
+            // Session pooler also failed → fall through to the #1641
+            // read-pool kill-switch below (the original behavior).
           }
         }
         const alreadyWarned = this._killSwitch;

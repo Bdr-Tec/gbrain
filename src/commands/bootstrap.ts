@@ -1555,9 +1555,7 @@ async function runVerify(ws: string, rest: string[], home: string): Promise<numb
   const engine = await createEngine(engineConfig);
   await engine.connect(engineConfig);
   try {
-    // #4328 — initialized manifest wins; an uninitialized workspace resolves
-    // through the standard source chain (never the unregistered 'workspace'
-    // literal, whose probe writes died on the sources FK).
+    // #4328 — initialized manifest wins; uninit resolves via the standard source chain (never the unregistered 'workspace' literal, whose probe writes died on the sources FK).
     const sourceId = await resolveVerifySourceId(engine, ws);
     const result = await verifyWorkspace(engine, ws, { sourceId, gbrainHomeDir: home });
     if (jsonMode) {

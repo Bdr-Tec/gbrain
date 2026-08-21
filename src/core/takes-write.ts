@@ -53,7 +53,7 @@ import {
 import { withPageLock } from './page-lock.ts';
 import { resolvePageFilePath, resolveSourceLocalFilePath } from './markdown.ts';
 import { sanitizeRecordedSourcePath, recordedPathFromFileUri } from './write-through.ts';
-import { isWriteTargetContained } from './path-confine.ts';
+import { isWriteTargetContained, msysToNativePath } from './path-confine.ts';
 import { atomicWriteFileSync } from './atomic-write.ts';
 
 export type TakesWriteErrorCode =
@@ -160,7 +160,10 @@ async function resolveTakesFilePath(
       LIMIT 1`,
     [src, slug],
   );
-  const sourceLocalPath = rows[0]?.local_path ?? null;
+  // #2955: heal Git Bash/MSYS-recorded local_path (`/c/Users/x`) before any
+  // join/containment math — same normalization as write-through.ts. Without
+  // it the writeRoot resolves to a phantom `<cwd-drive>:\c\...` on Windows.
+  const sourceLocalPath = rows[0]?.local_path ? msysToNativePath(rows[0].local_path) : null;
   const recordedSourcePath = rows[0]?.source_path ?? null;
   const recordedUri = rows[0]?.source_uri ?? null;
   if (sourceLocalPath) {
@@ -183,6 +186,9 @@ async function resolveTakesFilePath(
     : resolvePageFilePath(brainDir, slug, src);
   return { path, writeRoot: brainDir };
 }
+
+/** Test seam: pins the #2955 msys local_path healing at THIS read site. */
+export const __takesWriteTesting = { resolveTakesFilePath };
 
 async function getPageId(engine: BrainEngine, slug: string, sourceId?: string): Promise<number> {
   const rows = sourceId

@@ -70,6 +70,7 @@ import {
   type OpCheckpointKey,
 } from '../core/op-checkpoint.ts';
 import { registerCleanup } from '../core/process-cleanup.ts';
+import { msysToNativePath } from '../core/path-confine.ts';
 import { type DbPacer, createDbPacer, createNoopPacer, observed } from '../core/db-pacer.ts';
 import { resolvePaceMode, loadPaceModeConfig, readPaceEnv } from '../core/pace-mode.ts';
 import { AbortError } from '../core/abort-check.ts';
@@ -3511,7 +3512,7 @@ See also:
         : undefined;
       timer?.unref?.();
       const repoOpts: SyncOpts = {
-        repoPath: src.local_path!,
+        repoPath: msysToNativePath(src.local_path!), // #2955: heal MSYS /c/... before joins
         dryRun, full, noPull,
         noEmbed: effectiveNoEmbed,
         noExtract,
@@ -4050,7 +4051,7 @@ export async function syncOneSource(
   const cfg = (src.config || {}) as { strategy?: 'markdown' | 'code' | 'auto' };
   const log = `\n--- Syncing source: ${src.name} ---\n`;
   const repoOpts: SyncOpts = {
-    repoPath: src.local_path!,
+    repoPath: msysToNativePath(src.local_path!), // #2955: heal MSYS /c/... before joins
     dryRun: shared.dryRun,
     full: shared.full,
     noPull: shared.noPull,
@@ -4063,8 +4064,7 @@ export async function syncOneSource(
     sourceId: src.id,
     strategy: cfg.strategy,
     concurrency: shared.concurrency,
-    // lockId defaults to `gbrain-sync:${src.id}` via the invariant in
-    // performSync (no explicit override needed — sourceId triggers it).
+    // lockId defaults to `gbrain-sync:${src.id}` via the performSync invariant (sourceId triggers it).
   };
   const result = await withSourcePrefix(src.id, () => performSync(engine, repoOpts));
   return { result, log };

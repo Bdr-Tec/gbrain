@@ -146,10 +146,16 @@ export async function enrichEntity(
         noEmbed: !isAvailable('embedding'),
         ...(opts?.sourceId ? { sourceId: opts.sourceId } : {}),
       });
-    } catch {
+    } catch (e) {
       // Fail-open fallback: a pipeline error (parse edge case, size guard)
       // must never regress the batch — the pre-#3994 direct write still
-      // produces a page (unchunked, but present + reviewable).
+      // produces a page (unchunked, but present + reviewable). Warn loudly:
+      // silence here would hide that the stub is invisible to vector recall
+      // until the next `gbrain embed --stale` / re-import sweep.
+      process.stderr.write(
+        `[enrich] import pipeline failed for stub ${slug} (${e instanceof Error ? e.message : String(e)}); ` +
+        'falling back to a direct unchunked write — the page exists but is not chunked/embedded until re-imported.\n',
+      );
       await engine.putPage(slug, {
         title,
         type,

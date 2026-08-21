@@ -296,6 +296,49 @@ describe('enrichEntity created stubs are retrieval-visible (#3994)', () => {
     const page = await engine.getPage('people/trusted-chunky');
     expect(isUnverifiedExtraction(page!.frontmatter)).toBe(false);
   });
+
+  test('pipeline failure: stderr-warns the downgrade, then the unchunked fallback still lands the page', async () => {
+    // importFromContent runs inside engine.transaction; the fallback putPage
+    // does not. Breaking transaction() forces the fallback arm only.
+    const failingEngine = new Proxy(engine, {
+      get(target, prop) {
+        if (prop === 'transaction') {
+          return async () => { throw new Error('simulated pipeline boom'); };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    }) as typeof engine;
+
+    const errChunks: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      errChunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let r: Awaited<ReturnType<typeof enrichEntity>>;
+    try {
+      r = await enrichEntity(failingEngine, {
+        entityName: 'Fallback Freddy',
+        entityType: 'person',
+        context: 'silent downgrade regression check',
+        sourceSlug: 'notes/daily',
+      }, { trusted: true });
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    expect(r.action).toBe('created');
+    // The downgrade is LOUD (#3994 review): import error + unchunked warning.
+    const warn = errChunks.join('');
+    expect(warn).toContain('[enrich] import pipeline failed for stub people/fallback-freddy');
+    expect(warn).toContain('simulated pipeline boom');
+    expect(warn).toContain('not chunked/embedded');
+    // The page still exists (fail-open), just without chunk rows.
+    const page = await engine.getPage('people/fallback-freddy');
+    expect(page).toBeDefined();
+    expect(await chunkCount('people/fallback-freddy')).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

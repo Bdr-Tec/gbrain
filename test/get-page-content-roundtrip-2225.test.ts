@@ -5,8 +5,11 @@
  * with no canonical serialized form; a naive MCP client reassembling them
  * (or putting compiled_truth back alone) destroyed pages.timeline on the
  * next put_page. Post-fix:
- *   - get_page returns `content` — serializeMarkdown output with the
- *     `<!-- timeline -->` sentinel — so get→edit→put preserves the timeline.
+ *   - get_page with include_content: true returns `content` — serializeMarkdown
+ *     output with the `<!-- timeline -->` sentinel — so get→edit→put preserves
+ *     the timeline. Opt-in: `content` roughly duplicates compiled_truth +
+ *     timeline, and get_page is the most-called read op, so read-only callers
+ *     don't pay double payload by default.
  *   - splitBody's bare `## Timeline` heading fallback (see markdown.test.ts)
  *     rescues clients that still hand-concatenate.
  *
@@ -62,10 +65,10 @@ Acme builds widgets and has 42 employees.
 `;
 
 describe('get_page content round-trip (#2225)', () => {
-  test('get_page returns canonical `content` with the timeline sentinel', async () => {
+  test('get_page with include_content: true returns canonical `content` with the timeline sentinel', async () => {
     await putPage.handler(localCtx(), { slug: 'companies/acme-example', content: ORIGINAL });
 
-    const page = (await getPage.handler(localCtx(), { slug: 'companies/acme-example' })) as Record<string, unknown>;
+    const page = (await getPage.handler(localCtx(), { slug: 'companies/acme-example', include_content: true })) as Record<string, unknown>;
     expect(typeof page.content).toBe('string');
     const content = page.content as string;
     expect(content).toContain('<!-- timeline -->');
@@ -73,10 +76,20 @@ describe('get_page content round-trip (#2225)', () => {
     expect(content).toContain('Acme builds widgets');
   }, 30_000);
 
+  test('content is opt-in: absent by default so the hot read path does not double its payload', async () => {
+    await putPage.handler(localCtx(), { slug: 'companies/optin-example', content: ORIGINAL });
+
+    const page = (await getPage.handler(localCtx(), { slug: 'companies/optin-example' })) as Record<string, unknown>;
+    expect('content' in page).toBe(false);
+    // The split fields are still there for read-only consumers.
+    expect(page.compiled_truth as string).toContain('Acme builds widgets');
+    expect(page.timeline as string).toContain('Series A closed');
+  }, 30_000);
+
   test('naive get_page.content → put_page preserves pages.timeline', async () => {
     await putPage.handler(localCtx(), { slug: 'companies/roundtrip-example', content: ORIGINAL });
 
-    const before = (await getPage.handler(localCtx(), { slug: 'companies/roundtrip-example' })) as Record<string, unknown>;
+    const before = (await getPage.handler(localCtx(), { slug: 'companies/roundtrip-example', include_content: true })) as Record<string, unknown>;
     expect((before.timeline as string)).toContain('Series A closed');
 
     // The naive client edit: take `content` verbatim (or with a body edit

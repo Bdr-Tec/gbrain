@@ -9,7 +9,9 @@
  * worker's cwd is rarely the brain repo — so the synthesize + patterns
  * phases hard-failed every cycle with NO_ALLOWLIST.
  *
- * Resolution ladder (first hit wins; each rung fails open to the next):
+ * Resolution ladder (first EXISTING file wins and is authoritative — an
+ * absent file falls open to the next rung, but a present-yet-invalid file
+ * keeps the legacy NO_ALLOWLIST hard failure instead of being shadowed):
  *   1. `<cwd>/skills/_brain-filing-rules.json` — dev runs from the repo.
  *   2. Engine-resolved brain repo — `sync.repo_path` config, else the
  *      default source's `local_path` (compiled worker with a foreign cwd).
@@ -78,6 +80,28 @@ async function resolveBrainRepoPath(engine: BrainEngine): Promise<string | null>
 }
 
 /**
+ * Resolve globs from an ordered candidate list. The FIRST existing file is
+ * authoritative: unreadable/invalid JSON or a missing/malformed
+ * `dream_synthesize_paths.globs` returns [] — the legacy NO_ALLOWLIST hard
+ * failure the phases turn into a loud error — rather than silently
+ * shadowing a present operator file with a later rung or the bundled
+ * defaults. Fail-open to the bundled JSON happens ONLY when no candidate
+ * file exists at all (compiled binary, foreign cwd).
+ */
+function loadFromCandidates(candidates: string[], outputRoot: string): string[] {
+  for (const path of candidates) {
+    if (!existsSync(path)) continue; // absent → next rung
+    try {
+      const globs = globsFromDoc(JSON.parse(readFileSync(path, 'utf8')) as FilingRulesDoc);
+      return globs ? remapGlobs(globs, outputRoot) : [];
+    } catch {
+      return []; // present but unreadable/unparseable → hard failure
+    }
+  }
+  return bundledDreamGlobs(outputRoot);
+}
+
+/**
  * Load the dream trusted-workspace allow-list, remapped by `outputRoot`.
  * Shared by the synthesize and patterns phases (the two must enforce the
  * same allow-list). Pass the engine so a compiled binary running with a
@@ -94,13 +118,8 @@ export async function loadAllowedSlugPrefixes(
     if (repo) candidates.push(join(repo, 'skills', '_brain-filing-rules.json'));
   }
   candidates.push(join(__dirname, '..', '..', '..', 'skills', '_brain-filing-rules.json'));
-
-  for (const path of candidates) {
-    if (!existsSync(path)) continue;
-    try {
-      const globs = globsFromDoc(JSON.parse(readFileSync(path, 'utf8')) as FilingRulesDoc);
-      if (globs) return remapGlobs(globs, outputRoot);
-    } catch { /* unreadable/invalid candidate — try the next rung */ }
-  }
-  return bundledDreamGlobs(outputRoot);
+  return loadFromCandidates(candidates, outputRoot);
 }
+
+/** Test seam for the candidate-ladder semantics (both fail arms). */
+export const __filingRulesTesting = { loadFromCandidates };

@@ -25,6 +25,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlin
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { __takesWriteTesting } from '../src/core/takes-write.ts';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
 import { parseTakesFence, TAKES_FENCE_BEGIN, TAKES_FENCE_END } from '../src/core/takes-fence.ts';
 
@@ -216,6 +217,36 @@ describe('takes_resolve', () => {
       const res = await dispatchToolCall(engine, op, args as Record<string, unknown>, { ...STDIO_WORLD });
       expect(parsed(res).error).toBe('invalid_params');
     }
+  });
+
+  test('#2955: resolveTakesFilePath heals a Git Bash /c/... local_path before join/containment (win32)', async () => {
+    // Raw, an msys-recorded local_path join-resolves to a phantom
+    // C:\c\Users\... on Windows — the take file lands nowhere real.
+    const msysEngine = {
+      executeRaw: async () => [{ local_path: '/c/Users/Tiger/Vault', source_path: null, source_uri: null }],
+    } as unknown as PGLiteEngine;
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const { path, writeRoot } = await __takesWriteTesting.resolveTakesFilePath(
+        msysEngine, '/unused-brain-dir', 'notes/msys-heal',
+      );
+      expect(writeRoot).toBe('C:\\Users\\Tiger\\Vault'); // healed, NOT the raw /c/... shape
+      expect(path.startsWith('C:\\Users\\Tiger\\Vault')).toBe(true);
+      expect(path).toContain('notes/msys-heal');
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+    }
+  });
+
+  test('#2955: identity on POSIX — a legitimate /c/... directory name is preserved', async () => {
+    const posixEngine = {
+      executeRaw: async () => [{ local_path: '/c/legit-posix-dir', source_path: null, source_uri: null }],
+    } as unknown as PGLiteEngine;
+    const { writeRoot } = await __takesWriteTesting.resolveTakesFilePath(
+      posixEngine, '/unused-brain-dir', 'notes/msys-heal',
+    );
+    expect(writeRoot).toBe('/c/legit-posix-dir');
   });
 
   test('resolves a Git-root source_path when local_path is a repo subdirectory', async () => {

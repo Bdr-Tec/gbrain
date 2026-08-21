@@ -452,6 +452,52 @@ describe('splitBody bare-heading fallback (#2225)', () => {
     expect(timeline).toBe('');
   });
 
+  test('ordinary wiki page: prose ## History + later unrelated H2 stays fully intact', () => {
+    // The gate: '## History' whose section is prose (not dated bullets) is a
+    // normal wiki section, NOT a gbrain timeline. Pre-gate, EVERYTHING after
+    // the heading — including '## Architecture' — was eaten into timeline.
+    const body = 'Widget Co overview.\n\n## History\n\nFounded in a garage. Grew steadily.\n\n## Architecture\n\nThree services and a queue.';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toBe(body);
+    expect(timeline).toBe('');
+  });
+
+  test('split stops at the next H2: later unrelated sections stay in compiled_truth', () => {
+    const body = 'Overview prose.\n\n## Timeline\n\n- 2024-01-01: Event one\n- 2024-06-01: Event two\n\n## References\n\n- [spec](https://example.com)';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(timeline).toContain('## Timeline');
+    expect(timeline).toContain('Event one');
+    expect(timeline).toContain('Event two');
+    expect(timeline).not.toContain('## References');
+    expect(compiled_truth).toContain('Overview prose.');
+    expect(compiled_truth).toContain('## References');
+    expect(compiled_truth).toContain('example.com');
+    expect(compiled_truth).not.toContain('Event one');
+  });
+
+  test('prose ## History is skipped but a later timeline-shaped ## Timeline still splits', () => {
+    const body = 'Intro.\n\n## History\n\nProse paragraph, no dates.\n\n## Timeline\n\n- 2023-03-03: Dated entry';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(timeline).toContain('## Timeline');
+    expect(timeline).toContain('Dated entry');
+    expect(compiled_truth).toContain('## History');
+    expect(compiled_truth).toContain('Prose paragraph, no dates.');
+  });
+
+  test('wrapped dated bullets (indented continuations) still count as timeline-shaped', () => {
+    const body = 'Prose.\n\n## Timeline\n\n- 2024-05-01: A long entry that\n  wraps onto a second line';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(timeline).toContain('wraps onto a second line');
+    expect(compiled_truth).toBe('Prose.\n');
+  });
+
+  test('undated bullets under ## History do not split (not timeline-shaped)', () => {
+    const body = 'Prose.\n\n## History\n\n- first thing that happened\n- second thing';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toBe(body);
+    expect(timeline).toBe('');
+  });
+
   test('naive get→edit→put reassembly round-trips the timeline', () => {
     // 1. Canonical page as gbrain writes it.
     const original = `---

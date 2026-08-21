@@ -30,12 +30,12 @@ import { SLUG_WORD_CHARS } from './cjk.ts';
  * OR updated_at > links_extracted_at`. It is an ISO-8601 string (NOT a number) —
  * the column is TIMESTAMPTZ and the predicate binds it as `::timestamptz`.
  */
-// 2026-08-19 (merge-day midnight): re-bumped — the shipped 08-04 stamp
-// pre-dated this wave's landing, exempting two weeks of pre-fix extractions
-// from re-extraction. Covers the fix-wave-i batch: #3466 (unevidenced
-// people/ -> companies/ adjacency infers 'mentions', not 'works_at') and
-// #2576 bug-2 (DIR_PATTERN whitelist no longer drops markdown links /
-// bare-slug refs / slash-shaped wikilinks in non-whitelisted directories).
+// 2026-08-21: re-bumped for #2367 — normalizeBasename semantics changed
+// (non-Latin scripts kept, accents folded like the slug grammar), so
+// pre-#2367 extractions must re-run to pick up the newly-resolvable links.
+// Subsumes the 2026-08-19 fix-wave-i bump (#3466 unevidenced people/ ->
+// companies/ adjacency infers 'mentions', not 'works_at'; #2576 bug-2
+// DIR_PATTERN whitelist no longer drops non-whitelisted-directory links).
 // The watermark MUST NOT be in the future: the stamp path clamps
 // links_extracted_at up to the watermark (so a fresh extraction isn't
 // immediately re-listed), which means a future watermark masks concurrent
@@ -44,7 +44,7 @@ import { SLUG_WORD_CHARS } from './cjk.ts';
 // PRE-wave code after this date reads as fresh and won't re-extract until
 // the page is next edited; no fixed watermark can cover code that keeps
 // running past it.
-export const LINK_EXTRACTOR_VERSION_TS = '2026-08-19T00:00:00Z';
+export const LINK_EXTRACTOR_VERSION_TS = '2026-08-21T00:00:00Z';
 
 // ─── Entity references ──────────────────────────────────────────
 

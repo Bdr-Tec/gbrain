@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { __testing, loadAllowedSlugPrefixes, loadOutputRoot } from '../src/core/cycle/synthesize.ts';
-import { bundledDreamGlobs } from '../src/core/cycle/filing-rules.ts';
+import { bundledDreamGlobs, __filingRulesTesting } from '../src/core/cycle/filing-rules.ts';
 import { runPhasePatterns } from '../src/core/cycle/patterns.ts';
 import type { DiscoveredTranscript } from '../src/core/cycle/transcript-discovery.ts';
 
@@ -215,6 +215,54 @@ describe('#2397: allow-list resolution ladder (engine repo beats compiled-binary
     const remapped = bundledDreamGlobs('notes');
     expect(remapped).toContain('notes/personal/reflections/*');
     expect(remapped).toContain('dream-cycle-summaries/*');
+  });
+
+  // #2397 review: fail-open is reserved for the NO-candidate case. A rules
+  // file that EXISTS is authoritative — invalid JSON or malformed globs keep
+  // the legacy NO_ALLOWLIST hard failure ([] → the phases' loud error)
+  // instead of silently shadowing the operator's file with bundled defaults.
+  test('present-but-invalid operator file keeps the hard failure (end-to-end via the engine rung)', async () => {
+    const badRepo = mkdtempSync(join(tmpdir(), 'gbrain-2397-bad-'));
+    try {
+      mkdirSync(join(badRepo, 'skills'), { recursive: true });
+      writeFileSync(join(badRepo, 'skills', '_brain-filing-rules.json'), '{ not json');
+      await engine.setConfig('sync.repo_path', badRepo);
+      const globs = await inForeignCwd(() => loadAllowedSlugPrefixes('wiki', engine));
+      expect(globs).toEqual([]); // NOT the bundled defaults, NOT the __dirname rung
+    } finally {
+      await engine.setConfig('sync.repo_path', repoA); // restore for later tests
+      rmSync(badRepo, { recursive: true, force: true });
+    }
+  });
+
+  test('present file with valid JSON but malformed globs also hard-fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-2397-malformed-'));
+    try {
+      const path = join(dir, '_brain-filing-rules.json');
+      writeFileSync(path, JSON.stringify({ dream_synthesize_paths: { globs: 'not-an-array' } }));
+      expect(__filingRulesTesting.loadFromCandidates([path], 'wiki')).toEqual([]);
+      // And unparseable JSON through the same seam.
+      writeFileSync(path, '{{{');
+      expect(__filingRulesTesting.loadFromCandidates([path], 'wiki')).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('fail-open to the bundled defaults ONLY when no candidate file exists', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-2397-absent-'));
+    try {
+      const absent = [join(dir, 'nope', '_brain-filing-rules.json'), join(dir, 'also-nope.json')];
+      const globs = __filingRulesTesting.loadFromCandidates(absent, 'notes');
+      expect(globs.length).toBeGreaterThan(0);
+      expect(globs).toContain('notes/personal/reflections/*');
+      // An absent first rung still falls through to a valid later rung.
+      const validLater = join(dir, 'valid.json');
+      writeFileSync(validLater, JSON.stringify({ dream_synthesize_paths: { globs: ['wiki/x/*'] } }));
+      expect(__filingRulesTesting.loadFromCandidates([absent[0], validLater], 'wiki')).toEqual(['wiki/x/*']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

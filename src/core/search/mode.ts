@@ -859,7 +859,16 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // expects the floor) — same contamination class as ac=/acj=. The PR
 // authored this as v=16; master had already reached 18, so it sequences
 // here per the D8 convention. Same one-time global cold-miss pattern.
-export const KNOBS_HASH_VERSION = 19;
+//
+// bump 19→21 (#895): recency DEFAULT_FALLBACK coefficient lowered 0.5→0.3
+// (recency-decay.ts) so unmapped notes can't out-boost entity pages under
+// --recency. The fallback is a compile-time constant (not a per-call knob),
+// but it reorders every recency-weighted result set, so pre-fix cache rows
+// must become unreachable — version bump, no new key part. Skips v=20
+// deliberately: that slot is claimed by the wave-D branch shipping in the
+// same release (D8 sequencing convention, see the v=4/v=5 note above).
+// Same one-time global cold-miss pattern as the bumps above.
+export const KNOBS_HASH_VERSION = 21;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The

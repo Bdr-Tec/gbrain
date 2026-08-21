@@ -1117,6 +1117,25 @@ describe('addSource --path — #3903 attach to existing path-less source', () =>
     expect((row.config as any).federated).toBe(true);
   });
 
+  test('attach applies explicitly-passed --name and --federated (review: not silently dropped)', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config)
+         VALUES ('attach-flags', 'Old Name', NULL, '{"federated":true,"other":"kept"}'::jsonb)`,
+    );
+    const gitDir = makeGitRepo('attach-flags');
+    const row = await addSource(engine, {
+      id: 'attach-flags',
+      localPath: gitDir,
+      name: 'New Name',
+      federated: false, // explicit false must override the stored true
+    });
+    expect(row.local_path).toBe(gitDir);
+    expect(row.name).toBe('New Name');
+    expect((row.config as any).federated).toBe(false);
+    // Merge, not replace: unrelated config keys survive the attach.
+    expect((row.config as any).other).toBe('kept');
+  });
+
   test('attach still runs the #2707 git validation (not_a_git_repo unless --force)', async () => {
     await engine.executeRaw(
       `INSERT INTO sources (id, name, local_path, config)
