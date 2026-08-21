@@ -1364,6 +1364,35 @@ async function runPhaseExtract(
     const linksCreated = result?.links_created ?? 0;
     const timelineCreated = result?.timeline_entries_created ?? 0;
     const incremental = changedSlugs !== undefined;
+    // #4062: the targeted pass above only covers what sync reported (or the
+    // fs walk found) — pages left stale for any OTHER reason (extractor
+    // version bump, DB-only writes, a prior aborted sweep) never re-extracted
+    // on the cycle, so the links_extracted_at backlog grew unboundedly until
+    // someone hand-ran `gbrain extract --stale`. Drain it here: DB-source,
+    // source-scoped, bounded by STALE_TIME_BUDGET_MS (catchUp: false), no-op
+    // when nothing is stale. Failures degrade to details (the targeted pass
+    // already succeeded — a drain hiccup must not fail the phase).
+    let staleRemaining: number | undefined;
+    let staleDetails: Record<string, unknown> = {};
+    try {
+      const { extractStaleFromDB } = await import('../commands/extract.ts');
+      const drained = await extractStaleFromDB(engine, {
+        dryRun: false,
+        jsonMode: false,
+        includeFrontmatter,
+        sourceIdFilter: sourceId,
+        catchUp: false,
+      });
+      staleRemaining = drained.staleRemaining;
+      staleDetails = {
+        stale_pages_drained: drained.pagesProcessed,
+        stale_links_created: drained.linksCreated,
+        stale_timeline_created: drained.timelineCreated,
+        staleRemaining: drained.staleRemaining,
+      };
+    } catch (e) {
+      staleDetails = { stale_drain_error: e instanceof Error ? e.message : String(e) };
+    }
     return {
       phase: 'extract',
       status: 'ok',
@@ -1376,6 +1405,8 @@ async function runPhaseExtract(
         pages_processed: result?.pages_processed ?? 0,
         incremental,
         ...(incremental ? { slugs_targeted: changedSlugs.length } : {}),
+        ...staleDetails,
+        ...(staleRemaining !== undefined && staleRemaining > 0 ? { stale_backlog: true } : {}),
       },
     };
   } catch (e) {

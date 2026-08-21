@@ -356,7 +356,7 @@ export function extractEntityRefs(content: string): EntityRef[] {
   const qualPattern = new RegExp(QUALIFIED_WIKILINK_RE.source, QUALIFIED_WIKILINK_RE.flags);
   while ((match = qualPattern.exec(stripped)) !== null) {
     const sourceId = match[1];
-    let slug = match[2].trim();
+    let slug = stripEscapedPipeTail(match[2].trim());
     if (!slug) continue;
     if (slug.includes('://')) continue;
     if (slug.endsWith('.md')) slug = slug.slice(0, -3);
@@ -372,7 +372,7 @@ export function extractEntityRefs(content: string): EntityRef[] {
   const unmasked = maskRanges(stripped, qualifiedRanges);
   const wikiPattern = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
   while ((match = wikiPattern.exec(unmasked)) !== null) {
-    let slug = match[1].trim();
+    let slug = stripEscapedPipeTail(match[1].trim());
     if (!slug) continue;
     if (slug.includes('://')) continue;
     if (slug.endsWith('.md')) slug = slug.slice(0, -3);
@@ -403,7 +403,7 @@ export function extractEntityRefs(content: string): EntityRef[] {
   );
   const genericPattern = new RegExp(WIKILINK_GENERIC_RE.source, WIKILINK_GENERIC_RE.flags);
   while ((match = genericPattern.exec(genericMasked)) !== null) {
-    let slug = match[1].trim();
+    let slug = stripEscapedPipeTail(match[1].trim());
     if (!slug) continue;
     if (slug.includes('://')) continue;
     if (slug.includes(':')) continue; // qualified-syntax token; 2a owns these
@@ -414,6 +414,20 @@ export function extractEntityRefs(content: string): EntityRef[] {
   }
 
   return refs;
+}
+
+/**
+ * #4062: strip the trailing backslash(es) an escaped pipe leaves on a
+ * wikilink target. Inside a markdown table cell the pipe separating the
+ * target from its display alias MUST be escaped (`[[dir/slug\|Alias]]`,
+ * Obsidian's own table syntax) or it would end the cell. The wikilink
+ * slug captures stop at the literal `|`, so the escape backslash lands as
+ * the final character of the captured target — a slug shape that can
+ * never match a real page. Slugs never legitimately contain backslashes,
+ * so stripping the trailing run is lossless. Applied to passes 2a/2b/2c.
+ */
+function stripEscapedPipeTail(slug: string): string {
+  return slug.replace(/\\+$/, '');
 }
 
 /**
@@ -556,6 +570,30 @@ export async function extractPageLinks(
           linkSource: 'markdown',
         });
       }
+      // #4062: a bare `[[name]]` (no slash) gets a direct verb-typed
+      // candidate for its root-exact slugified form, emitted regardless of
+      // the global_basename flag — mirroring the FS path, where resolveSlug's
+      // ancestor walk resolves `[[x]]` to a root page `x` before the
+      // basename fallback ever runs. Pre-fix the DB path dropped these
+      // entirely flag-off (0 candidates) while the FS path linked them.
+      // Downstream existence checks (resolveCandidateSources / put_page's
+      // allSlugs filter / addLinksBatch's INNER JOINs) drop the candidate
+      // when no root page exists, exactly as for slash-shaped refs above.
+      let bareDirect = '';
+      if (slashIdx === -1) {
+        bareDirect = slugifyPath(ref.slug);
+        // Self-loop guard: `[[own-basename]]` on the root page itself.
+        if (bareDirect && bareDirect !== slug) {
+          const litIdx = content.indexOf(ref.slug);
+          const litContext = litIdx >= 0 ? excerpt(content, litIdx, 240) : ref.name;
+          candidates.push({
+            targetSlug: bareDirect,
+            linkType: inferLinkType(pageType, litContext, content, bareDirect),
+            context: litContext,
+            linkSource: 'markdown',
+          });
+        }
+      }
       if (typeof resolver.resolveBasenameMatches !== 'function') continue;
       // Issue #972 (codex): resolve by the wikilink TARGET (ref.slug — the
       // text inside `[[...]]` before any `|`), NOT the display alias
@@ -579,7 +617,11 @@ export async function extractPageLinks(
         matches = (await resolver.resolveBasenameMatches(tail))
           .filter(m => m !== ref.slug && (m === slugified || m.endsWith(`/${slugified}`)));
       } else if (opts.globalBasename) {
-        matches = await resolver.resolveBasenameMatches(ref.slug);
+        // #4062: exclude the root-exact slugified form — the direct typed
+        // candidate above already covers it (same rule the dir-qualified
+        // branch applies to its raw literal). Keeping it would double-emit.
+        matches = (await resolver.resolveBasenameMatches(ref.slug))
+          .filter(m => m !== bareDirect);
       }
       if (matches.length === 0) continue;
       const idx = content.indexOf(ref.slug);
