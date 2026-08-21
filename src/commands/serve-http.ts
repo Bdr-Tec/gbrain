@@ -2652,6 +2652,8 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     // gets parseable JSON back.
     try {
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined as any });
+      // #2844: per-request teardown (SDK stateless pattern) — without it every POST /mcp leaks the transport+Server pair (~3GB/day RSS). Registered BEFORE connect/handleRequest so early disconnects and handleRequest throws still clean up; best-effort catches so cleanup never surfaces an unhandledRejection.
+      res.on('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (e) {
