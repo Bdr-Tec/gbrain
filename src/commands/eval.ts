@@ -120,6 +120,14 @@ export async function runEvalCommand(engine: BrainEngine, args: string[]): Promi
     const { runEvalCompare } = await import('./eval-compare.ts');
     return runEvalCompare(args.slice(1));
   }
+  if (sub === 'synthesize-concepts') {
+    // #4198: honest not-implemented scaffold. The user-facing path routes
+    // through the cli.ts pre-engine branch; this re-entry branch exists so
+    // the generic qrels flow below can never recapture the subcommand.
+    const { runEvalSynthesizeConceptsCli } = await import('./eval-synthesize-concepts.ts');
+    process.exitCode = await runEvalSynthesizeConceptsCli(args.slice(1));
+    return;
+  }
 
   const opts = parseArgs(args);
 
