@@ -38,7 +38,7 @@
 
 import { existsSync, mkdirSync, renameSync, rmSync, lstatSync } from 'fs';
 import { join, dirname, basename, resolve as resolvePath } from 'path';
-import { isPathContained } from './path-confine.ts';
+import { isPathContained, msysToNativePath } from './path-confine.ts';
 import { randomBytes } from 'crypto';
 import type { BrainEngine } from './engine.ts';
 import {
@@ -370,6 +370,15 @@ export async function addSource(
   opts: AddSourceOpts,
 ): Promise<SourceRow> {
   validateSourceId(opts.id);
+
+  // gbrain#2955: normalize a Git Bash / MSYS drive path (`/c/Users/x`,
+  // `/cygdrive/c/x`) to native Windows form BEFORE the overlap check and the
+  // INSERT — otherwise the recorded local_path later join-resolves to a
+  // phantom `C:\c\Users\x` and sync/write-through silently miss the real
+  // directory. Identity on POSIX and for already-native paths.
+  if (opts.localPath) {
+    opts = { ...opts, localPath: msysToNativePath(opts.localPath) };
+  }
 
   // Q4: pre-flight collision check before any clone work.
   const existing = await engine.executeRaw<{ id: string; local_path: string | null }>(

@@ -26,7 +26,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { randomBytes } from 'crypto';
 import type { BrainEngine } from './engine.ts';
 import { serializePageToMarkdown, resolvePageFilePath, resolveSourceLocalFilePath } from './markdown.ts';
-import { isWriteTargetContained } from './path-confine.ts';
+import { isWriteTargetContained, msysToNativePath } from './path-confine.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
   type PushLogOutcome,
@@ -246,7 +246,12 @@ export async function resolvePageWriteTarget(
     `SELECT local_path FROM sources WHERE id = $1`,
     [sourceId],
   );
-  const sourceLocalPath = srcRows[0]?.local_path ?? null;
+  // gbrain#2955: heal an msys-style local_path (`/c/Users/x`, recorded by a
+  // Git Bash `sources add --path` on Windows) before it is joined — raw, it
+  // resolves to a phantom `C:\c\Users\x` and every write silently misses the
+  // real vault. Identity on POSIX and for already-native paths.
+  const rawLocalPath = srcRows[0]?.local_path ?? null;
+  const sourceLocalPath = rawLocalPath ? msysToNativePath(rawLocalPath) : null;
 
   const pathRows = await engine.executeRaw<{ source_path: string | null; source_uri: string | null }>(
     `SELECT source_path, source_uri FROM pages WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL LIMIT 1`,
