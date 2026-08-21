@@ -10,7 +10,7 @@ src/core/pglite-engine.ts	5971	ratchet	grown v0.46.24.0 overnight wave: registry
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4334	ratchet	grown v0.46.25.0 fix waves: delete-slug resolver + msys healing (#3942 #2955)
 src/core/ai/gateway.ts	4439	ratchet	watchlist; merged: dream-wave turn permits + key-aware effective-model reconfigure + env-only worker refresh + discovery endpoint-trust docstring + #4037 prompt-cache fix
-src/cli.ts	3622	ratchet	grown v0.46.24.0 overnight wave: eval-capture flag surface (#4186) | grown v0.46.24.0: serve-delegated sync preflight hook | master merge #4362 sync delegation
+src/cli.ts	3625	ratchet	grown v0.46.25.0 final landings (#3830)
 src/core/cycle.ts	3093	ratchet	grown v0.46.25.0 fix waves: refresher abort gating + keyless honesty (#4309 #2821)
 src/commands/serve-http.ts	3292	ratchet	grown v0.46.25.0 delegated wave (#4081 #3849 #3775 #3723) | grown: /ingest resolves the write source server-side from the client OAuth scope (#3791)
 src/commands/jobs.ts	3041	ratchet	grown v0.46.25.0 fix waves: jobs list/get --json (#3685)
