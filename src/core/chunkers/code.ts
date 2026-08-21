@@ -119,7 +119,14 @@ import G_ZIG from '../../assets/wasm/grammars/tree-sitter-zig.wasm' with { type:
 // chunks get the new columns populated. Without this, the v28 backfill
 // gives every existing chunk a search_vector but subsequent Layer 5 AST
 // work would silently no-op.
-export const CHUNKER_VERSION = 4;
+//
+// v5 (#3821): Python `decorated_definition` handling. A decorated top-level
+// function or class (and a decorated method inside a class) parses as a
+// `decorated_definition` wrapper around the def — previously unmatched by
+// TOP_LEVEL_TYPES / NESTED_EMIT_CONFIG, so decorated code emitted ZERO
+// semantic chunks and its text vanished from the index entirely. The bump
+// forces a full re-chunk so existing Python pages recover the lost symbols.
+export const CHUNKER_VERSION = 5;
 
 // Lazy-loaded tree-sitter module (v0.22.x API: Parser is default export)
 let Parser: typeof import('web-tree-sitter') | null = null;
@@ -327,6 +334,19 @@ function chunkEndNode(node: any, language: SupportedCodeLanguage): any {
   return next && next.type === 'function_body' ? next : node;
 }
 
+/**
+ * #3821: Python wraps a decorated function/class in a `decorated_definition`
+ * node whose actual def hangs off field 'definition'. Symbol NAME/TYPE come
+ * from the inner def; chunk RANGES stay on the outer wrapper so decorator
+ * text survives in the emitted chunk. Identity for non-wrapper nodes.
+ */
+function unwrapDecorated(node: any): any {
+  if (node?.type === 'decorated_definition') {
+    return node.childForFieldName?.('definition') ?? node;
+  }
+  return node;
+}
+
 // Per-language top-level AST node types that count as semantic units.
 // Languages not in this map fall through to the recursive text chunker
 // when the grammar loads but no semantic nodes match — correct behavior.
@@ -356,6 +376,11 @@ const TOP_LEVEL_TYPES: Partial<Record<SupportedCodeLanguage, Set<string>>> = {
   ]),
   python: new Set([
     'function_definition', 'class_definition',
+    // #3821: a decorated fn/class parses as decorated_definition wrapping the
+    // def via field 'definition' — without this entry decorated code emitted
+    // zero chunks. Symbol name/type unwrap the wrapper (unwrapDecorated);
+    // the chunk keeps the OUTER range so decorator text survives.
+    'decorated_definition',
     'import_statement', 'import_from_statement', 'assignment',
   ]),
   ruby: new Set(['class', 'module', 'method', 'singleton_method', 'assignment']),
@@ -445,7 +470,9 @@ const NESTED_EMIT_CONFIG: Partial<Record<SupportedCodeLanguage, NestedEmitConfig
   },
   python: {
     parentTypes: new Set(['class_definition']),
-    childTypes: new Set(['function_definition']),
+    // #3821: decorated methods (@property, @staticmethod, ...) parse as
+    // decorated_definition — emit them as leaves too, decorators included.
+    childTypes: new Set(['function_definition', 'decorated_definition']),
   },
   ruby: {
     parentTypes: new Set(['class', 'module']),
@@ -709,7 +736,9 @@ export async function chunkCodeTextFull(
       // For SQL `statement` wrappers, the meaningful type lives on the inner
       // child. extractSymbolName already dives in for the name; mirror that
       // here so chunk headers say "table users" not "statement users".
-      const typeNode = (nestableNode ?? node);
+      // #3821: same for Python decorated_definition — the header must say
+      // "function cached_fn" / "class Config", not "decorated definition".
+      const typeNode = unwrapDecorated(nestableNode ?? node);
       const symbolType = (typeNode.type === 'statement' && typeNode.namedChildCount === 1)
         ? normalizeSymbolType(typeNode.namedChild(0).type)
         : normalizeSymbolType(typeNode.type);
@@ -1103,6 +1132,11 @@ function buildChunk(input: {
 function findNestableParent(node: any, config: NestedEmitConfig | undefined): any | null {
   if (!config) return null;
   if (config.parentTypes.has(node.type)) return node;
+  // #3821: a decorated Python class (`@dataclass class Config`) wraps the
+  // class_definition in decorated_definition. Return the OUTER node so the
+  // scope-header chunk's range keeps the decorator text; emitNestedScoped
+  // unwraps for name/type/children.
+  if (config.parentTypes.has(unwrapDecorated(node).type)) return node;
   // One-level unwrap — TS export_statement wraps a class_declaration.
   // We don't go deeper because that would accidentally treat a method
   // inside a class as a top-level parent.
@@ -1158,8 +1192,12 @@ function emitNestedScoped(
 ): void {
   const name = extractSymbolName(node);
   if (!name) return;
-  const symbolType = normalizeSymbolType(node.type);
-  const { parents, leaves } = collectImmediateNestedChildren(node, config);
+  // #3821: unwrap decorated_definition for type + child collection (the
+  // class body hangs off the inner def); ranges below stay on `node` so a
+  // decorated class's scope header keeps its decorator line.
+  const def = unwrapDecorated(node);
+  const symbolType = normalizeSymbolType(def.type);
+  const { parents, leaves } = collectImmediateNestedChildren(def, config);
 
   // Parent scope-header chunk: declaration + member digest.
   const digestNames = [
@@ -1167,7 +1205,7 @@ function emitNestedScoped(
     ...leaves.map(l => extractSymbolName(l)).filter((n): n is string => Boolean(n)),
   ];
   chunks.push(buildChunk({
-    body: buildScopeHeaderBody(node, source, digestNames),
+    body: buildScopeHeaderBody(node, source, digestNames, def),
     filePath, language, symbolName: name, symbolType,
     startLine: node.startPosition.row + 1,
     endLine: node.endPosition.row + 1,
@@ -1182,10 +1220,12 @@ function emitNestedScoped(
     emitNestedScoped(p, newParentPath, source, filePath, language, config, chunks);
   }
 
-  // Leaf children: methods / functions / fields.
+  // Leaf children: methods / functions / fields. #3821: a decorated method
+  // is a decorated_definition leaf — type from the inner def, range from the
+  // outer node so the decorator line ships in the chunk.
   for (const leaf of leaves) {
     const leafName = extractSymbolName(leaf);
-    const leafType = normalizeSymbolType(leaf.type);
+    const leafType = normalizeSymbolType(unwrapDecorated(leaf).type);
     const leafText = source.slice(leaf.startIndex, leaf.endIndex).trim();
     if (!leafText) continue;
     chunks.push(buildChunk({
@@ -1205,10 +1245,15 @@ function emitNestedScoped(
  * declaration line + a digest of member names so class-level queries
  * still hit something.
  */
-function buildScopeHeaderBody(node: any, source: string, memberNames: string[]): string {
+function buildScopeHeaderBody(node: any, source: string, memberNames: string[], declNode: any = node): string {
   const full = source.slice(node.startIndex, node.endIndex);
-  const firstLineBreak = full.indexOf('\n');
-  const declaration = firstLineBreak > 0 ? full.slice(0, firstLineBreak) : full.slice(0, 120);
+  // #3821: when `node` is a decorated_definition wrapper, `declNode` is the
+  // inner def — the declaration must run THROUGH the def's first line so a
+  // decorated class header reads "@dataclass\nclass Config:" instead of
+  // stopping at the bare decorator line.
+  const declOffset = Math.max(0, (declNode?.startIndex ?? node.startIndex) - node.startIndex);
+  const firstLineBreak = full.indexOf('\n', declOffset);
+  const declaration = firstLineBreak > 0 ? full.slice(0, firstLineBreak) : full.slice(0, declOffset + 120);
   if (memberNames.length === 0) return declaration;
   return `${declaration}\n\n// Members: ${memberNames.slice(0, 20).join(', ')}`;
 }
@@ -1221,9 +1266,12 @@ interface SplitRange {
 }
 
 function splitLargeNode(node: any, source: string, chunkTarget: number): SplitRange[] {
+  // #3821: a large decorated def's body hangs off the INNER definition —
+  // dive through the wrapper or the splitter finds no body and emits whole.
+  const inner = unwrapDecorated(node);
   const body =
-    node.childForFieldName('body') ||
-    node.namedChildren.find((c: any) => BODY_NODE_TYPES.has(c.type)) ||
+    inner.childForFieldName('body') ||
+    inner.namedChildren.find((c: any) => BODY_NODE_TYPES.has(c.type)) ||
     null;
 
   if (!body || body.namedChildren.length < 2) return [];
@@ -1277,6 +1325,14 @@ function extractSymbolName(node: any): string | null {
   const declaration = node.childForFieldName('declaration');
   if (declaration) {
     const nested = extractSymbolName(declaration);
+    if (nested) return nested;
+  }
+
+  // #3821: Python decorated_definition exposes the wrapped def via field
+  // 'definition' (mirrors the TS export_statement 'declaration' dive above).
+  const definition = node.childForFieldName('definition');
+  if (definition) {
+    const nested = extractSymbolName(definition);
     if (nested) return nested;
   }
 
