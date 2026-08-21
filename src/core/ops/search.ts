@@ -472,6 +472,11 @@ const query: Operation = {
               : {}),
             language: (p.lang as string) || undefined,
             symbolKind: (p.symbol_kind as string) || undefined,
+            // Preserve the caller's symbol-proximity constraints too — an
+            // escalated set that ignores --near-symbol/--walk-depth must not
+            // replace correctly-filtered weak results.
+            nearSymbol: (p.near_symbol as string) || undefined,
+            walkDepth: typeof p.walk_depth === 'number' ? (p.walk_depth as number) : undefined,
             ...querySourceScope,
             since: typeof p.since === 'string' ? p.since : undefined,
             until: typeof p.until === 'string' ? p.until : undefined,

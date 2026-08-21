@@ -878,7 +878,14 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // unreachable. Both bumps ship in the same release; no new key parts —
 // the version bump alone invalidates. Same one-time global cold-miss
 // pattern as the bumps above; refills within cache.ttl_seconds (3600s).
-export const KNOBS_HASH_VERSION = 21;
+//
+// bump 21→22 (mw2 wave): result-affecting stamp/injection changes for
+// identical knobs — #1663 exact-lookup injection, #3995 relational page-1
+// evidence slot, #3783 keyword_hit stamps, #4220 status. Pre-upgrade rows
+// (≤1h TTL) would be served missing the injected identity page + honesty
+// stamps, and CRAG then mis-grades them weak_semantic. Version-only
+// invalidation; one-time cold-miss spike on upgrade.
+export const KNOBS_HASH_VERSION = 22;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The

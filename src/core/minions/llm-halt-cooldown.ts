@@ -99,9 +99,13 @@ function trackerFor(key: string): CooldownState['tracker'] {
   return fresh.tracker;
 }
 
-function armCooldown(key: string, cls: GlobalLlmErrorClass, now: number): void {
+function armCooldown(key: string, cls: GlobalLlmErrorClass, now: number, escalate: boolean): void {
   const s = cooldowns.get(key);
-  const strikes = (s?.strikes ?? 0) + 1;
+  // Strikes escalate per halted PROBE (the documented policy), not per
+  // concurrent in-flight failure — a burst of N jobs failing on the same
+  // outage is ONE strike, not an instant jump to the 30-min max cooldown.
+  const prior = s?.strikes ?? 0;
+  const strikes = prior === 0 ? 1 : escalate ? prior + 1 : prior;
   const base = HALT_COOLDOWN_BASE_MS[cls];
   const durationMs = Math.min(base * 2 ** (strikes - 1), HALT_COOLDOWN_MAX_MS);
   cooldowns.set(key, {
@@ -171,12 +175,25 @@ export function withGlobalLlmHaltCooldown(
       return result;
     } catch (err) {
       // Deferrals thrown by a nested wrapper must pass through untouched.
-      if (err instanceof RateLeaseUnavailableError) throw err;
+      if (err instanceof RateLeaseUnavailableError) {
+        // But a PROBE that deferred never settled the outage question: release
+        // the probe slot (and the lapsed gate) or probeInFlight stays latched
+        // forever and every later job — including the requeued probe itself —
+        // defers on the 15s cadence until worker restart.
+        if (isProbe) {
+          const s = cooldowns.get(key);
+          if (s) {
+            s.probeInFlight = false;
+            s.until = 0;
+          }
+        }
+        throw err;
+      }
       const tracker = trackerFor(key);
       const decision = tracker.observe(err);
       const cls = haltedClassOf(decision);
       if (cls) {
-        armCooldown(key, cls, now());
+        armCooldown(key, cls, now(), isProbe);
       } else if (isProbe) {
         // Non-halt failure settles the probe without re-arming — the outage
         // condition is gone even though this item failed on its own merits.

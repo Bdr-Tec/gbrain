@@ -29,6 +29,7 @@ import type { SearchResult, PageType, RelationalFanoutRow } from '../types.ts';
 import { createAuditWriter } from '../audit/audit-writer.ts';
 import { resolveEntitySlugWithSource } from '../entities/resolve.ts';
 import { parseRelationalQuery, type RelationalQuery, type RelationVocab } from './relational-intent.ts';
+import { stampEvidence, type EvidenceOpts } from './evidence.ts';
 
 export interface RelationalArmOpts {
   sourceId?: string;
@@ -185,6 +186,7 @@ export function ensureRelationalEvidenceSlot(
   relationalList: SearchResult[],
   limit: number,
   offset: number,
+  evidenceOpts?: EvidenceOpts,
 ): { pool: SearchResult[]; decision?: RelationalEvidenceSlotDecision } {
   if (offset > 0 || limit <= 0 || relationalList.length === 0) return { pool };
   const pageKey = (r: SearchResult) => `${r.source_id ?? 'default'}:${r.slug}`;
@@ -213,9 +215,16 @@ export function ensureRelationalEvidenceSlot(
   const insertAt = Math.min(limit - 1, out.length);
   const prev = insertAt > 0 ? out[insertAt - 1] : undefined;
   const top = relationalList[0];
-  const row = prev && !(top.score > 0)
-    ? { ...top, score: Math.max(0, prev.score * 0.999) }
-    : top;
+  // Clamp just below the predecessor when the raw arm score is non-positive
+  // OR would exceed it — the returned page must stay monotone.
+  const row =
+    prev && (!(top.score > 0) || top.score > prev.score)
+      ? { ...top, score: Math.max(0, prev.score * 0.999) }
+      : { ...top };
+  // The injected row is a raw arm row that never saw the pipeline's
+  // stampEvidence pass (which runs before this slot) — stamp it here so every
+  // page-1 row carries the evidence/create_safety contract.
+  stampEvidence([row], evidenceOpts);
   out.splice(insertAt, 0, row);
   return {
     pool: out,

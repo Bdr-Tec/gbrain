@@ -14,7 +14,7 @@ import { embedMultimodal, currentEmbeddingSignature } from './embedding.ts';
 // transient network backoff) instead of bare embedBatch, so one socket blip
 // mid-sync no longer aborts the whole file import. Same core→commands edge
 // precedent as embed-stale.ts.
-import { embedBatchWithBackoff } from '../commands/embed.ts';
+import { embedBatchWithBackoff } from './embed-retry.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath, hasMalformedPathSegment } from './sync.ts';
 import type { ChunkInput, PageInput, PageType } from './types.ts';
 import { computeEffectiveDate } from './effective-date.ts';

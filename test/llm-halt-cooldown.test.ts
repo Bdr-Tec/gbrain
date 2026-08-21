@@ -166,6 +166,45 @@ describe('probe on expiry', () => {
     release();
     expect(await probe).toEqual({ ok: true });
   });
+
+  test('a nested deferral from the probe releases the probe slot (no permanent wedge)', async () => {
+    let t = 1_000_000;
+    let mode: 'halt' | 'nested-defer' | 'ok' = 'halt';
+    const handler = async () => {
+      if (mode === 'halt') throw authError();
+      if (mode === 'nested-defer') throw new RateLeaseUnavailableError('model-lease', 1, 1, 500);
+      return { ok: true };
+    };
+    const run = withGlobalLlmHaltCooldown(() => 'prov-a', handler, { now: () => t });
+    await run(job()).catch(() => {}); // arms the cooldown
+    t += HALT_COOLDOWN_BASE_MS.auth + 1;
+    mode = 'nested-defer';
+    // The admitted probe defers via a nested lease wrapper — passes through.
+    await expect(run(job())).rejects.toBeInstanceOf(RateLeaseUnavailableError);
+    // Pre-fix: probeInFlight stayed latched forever, so this job (and the
+    // requeued probe itself) deferred on the 15s cadence until worker restart.
+    mode = 'ok';
+    expect(await run(job())).toEqual({ ok: true });
+  });
+});
+
+describe('strikes escalate per probe, not per concurrent failure', () => {
+  test('a burst of concurrent halt-class failures arms ONE strike (base cooldown, not escalated)', async () => {
+    let t = 1_000_000;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const handler = async () => { await gate; throw authError(); };
+    const run = withGlobalLlmHaltCooldown(() => 'prov-a', handler, { now: () => t });
+    // Three jobs in flight BEFORE any cooldown exists — all fail together.
+    const a = run(job()).catch(() => {});
+    const b = run(job()).catch(() => {});
+    const c = run(job()).catch(() => {});
+    release();
+    await Promise.all([a, b, c]);
+    // Pre-fix: each concurrent failure incremented strikes (3 → 20min).
+    // The documented policy is consecutive halted PROBES → exponential re-arm.
+    expect(llmHaltCooldownRemainingMs('prov-a', t)).toBe(HALT_COOLDOWN_BASE_MS.auth);
+  });
 });
 
 describe('isolation + hatches', () => {

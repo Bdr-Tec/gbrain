@@ -34,7 +34,12 @@ const get_usage: Operation = {
   params: {
     days: { type: 'number', description: 'Window in days (default 30, max 365).' },
   },
-  scope: 'read',
+  // admin, not read: chat_usage_log has no source dimension, so this is the
+  // one read-side surface that CANNOT route through sourceScopeOpts — a
+  // source-restricted/federated read token must not see brain-wide spend
+  // telemetry (models, job-phase names, USD totals). OP_AREAS already groups
+  // it under admin.
+  scope: 'admin',
   handler: async (ctx, p) => {
     const daysRaw = Number(p.days ?? 30);
     const days = Number.isFinite(daysRaw) ? Math.min(365, Math.max(1, Math.round(daysRaw))) : 30;

@@ -1492,7 +1492,9 @@ export async function hybridSearch(
     let noEmbedPool = noEmbedHopped;
     let noEmbedRelSlot: RelationalEvidenceSlotDecision | undefined;
     if (relationalList.length > 0) {
-      const r = ensureRelationalEvidenceSlot(noEmbedHopped, relationalList, limit, offset);
+      const r = ensureRelationalEvidenceSlot(noEmbedHopped, relationalList, limit, offset, {
+        cosineFloor: resolvedMode.evidence_cosine_floor,
+      });
       noEmbedPool = r.pool;
       noEmbedRelSlot = r.decision;
     }
@@ -1510,7 +1512,7 @@ export async function hybridSearch(
     // human never saw it — mirror the embed-failure warn (once per process,
     // stderr) with the diagnose reason so a silently keyword-only brain is
     // visible the first time it ships results.
-    {
+    try {
       const { diagnoseEmbedding } = await import('../ai/gateway.ts');
       const diag = diagnoseEmbedding(providerProbe);
       const reason = diag.ok ? 'provider_unreachable' : (diag.reason ?? 'provider_unreachable');
@@ -1518,6 +1520,10 @@ export async function hybridSearch(
         'search-vector-leg-unavailable',
         `[gbrain] vector search unavailable (${reason}) — results are keyword-only. Run \`gbrain doctor\` to diagnose.`,
       );
+    } catch {
+      // Fail-open like every sibling stage: the warning is best-effort and a
+      // gateway import/diagnose throw must never fail the already-computed
+      // keyword-only degraded results it exists to explain.
     }
     if (keywordResults.length === 0 && earlyModality !== 'image') {
       pushDegraded(degraded, 'keyword_zero');
@@ -2149,7 +2155,9 @@ export async function hybridSearch(
   // when it was dropped entirely. First page only; pure no-op otherwise.
   let relationalSlotDecision: RelationalEvidenceSlotDecision | undefined;
   if (relationalList.length > 0 && effectiveModality !== 'image') {
-    const r = ensureRelationalEvidenceSlot(returnPool, relationalList, limit, offset);
+    const r = ensureRelationalEvidenceSlot(returnPool, relationalList, limit, offset, {
+      cosineFloor: resolvedMode.evidence_cosine_floor,
+    });
     returnPool = r.pool;
     relationalSlotDecision = r.decision;
   }

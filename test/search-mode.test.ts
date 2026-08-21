@@ -435,7 +435,9 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // #3621: bumped 18→19 to fold the autocut minKeep floor (ack=).
     // #895: bumped 19→21 — recency DEFAULT_FALLBACK 0.5→0.3 reorders cached
     // rows (19→20 pool floor #3002, 20→21 recency fallback #895, same release).
-    expect(KNOBS_HASH_VERSION).toBe(21);
+    // mw2: 21→22 — #1663 exact-lookup injection + #3995 relational slot +
+    // #3783/#4220 stamps alter stored rows for identical knobs.
+    expect(KNOBS_HASH_VERSION).toBe(22);
   });
 
   test('#3515: detail set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -455,7 +457,8 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // v0.46.15 (#1863): 17→18 — autocut weak-top floor folds in (acm=).
     // #3621: 18→19 — autocut minKeep floor folds in (ack=).
     // 19→20 pool floor (#3002); 20→21 recency fallback re-key (#895).
-    expect(KNOBS_HASH_VERSION).toBe(21);
+    // mw2: 21→22 result-stamp/injection epoch (#1663 #3995 #3783 #4220).
+    expect(KNOBS_HASH_VERSION).toBe(22);
   });
 
   test('T1 (codex): floor_ratio set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -620,8 +623,8 @@ describe('v0.40.4 — graph_signals knob', () => {
 });
 
 describe('v0.42.3.0 — autocut knobs', () => {
-  test('KNOBS_HASH_VERSION is 21 (17→18 autocut weak-top floor #1863; 18→19 autocut minKeep floor #3621; 19→21 recency fallback re-key #895, v=20 claimed by wave-D)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(21);
+  test('KNOBS_HASH_VERSION is 22 (19→21 recency fallback re-key #895, v=20 claimed by wave-D; 21→22 result-stamp/injection epoch #1663 #3995 #3783 #4220)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(22);
   });
 
   test('bundle defaults: conservative off, balanced/tokenmax on @0.20', () => {
