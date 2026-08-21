@@ -1004,6 +1004,17 @@ const list_pages: Operation = {
       description: 'Sort order. Default updated_desc (matches pre-v0.29). Options: updated_desc, updated_asc, created_desc, slug.',
     },
     include_deleted: { type: 'boolean', description: 'v0.26.5: include soft-deleted pages (default: false). Used by restore workflows and operator diagnostics.' },
+    // #4400 — list_pages had no source-scoping param at all: unlike
+    // search/query it silently ignored any caller-supplied source and always
+    // fell back to whatever federatedSearchScope() resolved from ctx alone,
+    // so a non-federated source's pages could never be enumerated remotely
+    // (get_stats counts them; list_pages could not list them). Mirrors the
+    // `source_id` param already on search/query, same '__all__' semantics.
+    source_id: {
+      type: 'string',
+      description:
+        "v0.46.25: scope listing to a single source. Defaults to OperationContext.sourceId / federated scope. Pass '__all__' to span every source for trusted local callers; for remote callers '__all__' spans only your granted sources.",
+    },
   },
   handler: async (ctx, p) => {
     // Whitelist the sort enum at the handler before passing to the engine.
@@ -1018,9 +1029,12 @@ const list_pages: Operation = {
     // enumerate src-B pages. Pre-fix, ctx.sourceId / ctx.auth?.allowedSources
     // were ignored at this op handler and the engine returned every source's
     // pages indiscriminately.
-    // #3242: federatedSearchScope so unqualified listing spans federated
-    // sources (same visibility set as search / get_page). Grants still win.
-    const scope = federatedSearchScope(ctx);
+    // #3242 / #4400: federatedSearchScope so unqualified listing spans
+    // federated sources (same visibility set as search / get_page); an
+    // explicit per-call source_id (including '__all__') wins, same contract
+    // as search/query's sourceIdParam.
+    const sourceIdParam = typeof p.source_id === 'string' ? p.source_id : undefined;
+    const scope = federatedSearchScope(ctx, sourceIdParam);
     // The 100-row cap exists to protect remote MCP/OAuth transports from
     // unbounded result dumps. Local CLI callers (ctx.remote === false — the
     // same trust boundary that already bypasses scope enforcement, see the
