@@ -712,6 +712,12 @@ const put_page: Operation = {
       slug: result.slug,
       status: result.status === 'imported' ? 'created_or_updated' : result.status,
       chunks: result.chunks,
+      // #3984: a skipped/error status without the reason is a silent no-op to
+      // MCP callers (e.g. the >5MB size guard returned bare status 'skipped'
+      // and the agent had no idea why the page never appeared). Thread
+      // importFromContent's error text through. capture delegates here, so
+      // it inherits the reason too.
+      ...(result.error ? { error: result.error } : {}),
       ...(chunkSkipReason ? { chunk_skip_reason: chunkSkipReason } : {}),
       ...(autoLinks ? { auto_links: autoLinks } : {}),
       ...(autoTimeline ? { auto_timeline: autoTimeline } : {}),
@@ -826,12 +832,31 @@ async function runAutoLink(
   );
 
   // Resolve which targets exist (skip refs to non-existent pages to avoid FK
-  // violation churn in addLink). One getAllSlugs call upfront, O(1) lookup.
-  // v0.31.8 (D12): scoped to the source when opts.sourceId is set so wikilink
-  // resolution doesn't span unrelated sources.
-  const allSlugs = await engine.getAllSlugs(sourceOpts);
+  // violation churn in addLink). #2544: targeted membership probe over just
+  // the candidate target/from slugs instead of materializing the whole slug
+  // set — getAllSlugs was a full-table scan on EVERY put_page while the
+  // candidates are typically a handful. Mirrors the proven oneshot probe
+  // (subagent-oneshot.ts). Deliberately does NOT filter deleted_at: the
+  // getAllSlugs it replaces included soft-deleted pages, and changing link
+  // visibility is out of scope here. Skips the query entirely when there are
+  // no candidates. v0.31.8 (D12): scoped to the source when opts.sourceId is
+  // set so wikilink resolution doesn't span unrelated sources.
+  const candidateSlugs = [...new Set(candidates.flatMap(c => (c.fromSlug ? [c.targetSlug, c.fromSlug] : [c.targetSlug])))];
+  let existingSlugs = new Set<string>();
+  if (candidateSlugs.length > 0) {
+    const rows = opts?.sourceId
+      ? await engine.executeRaw<{ slug: string }>(
+          `SELECT slug FROM pages WHERE slug = ANY($1) AND source_id = $2`,
+          [candidateSlugs, opts.sourceId],
+        )
+      : await engine.executeRaw<{ slug: string }>(
+          `SELECT slug FROM pages WHERE slug = ANY($1)`,
+          [candidateSlugs],
+        );
+    existingSlugs = new Set(rows.map(r => r.slug));
+  }
   const valid = candidates.filter(c =>
-    allSlugs.has(c.targetSlug) && (!c.fromSlug || allSlugs.has(c.fromSlug))
+    existingSlugs.has(c.targetSlug) && (!c.fromSlug || existingSlugs.has(c.fromSlug))
   );
 
   // Split candidates by direction. Outgoing (fromSlug === slug or unset) are
