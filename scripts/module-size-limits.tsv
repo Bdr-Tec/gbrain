@@ -9,10 +9,10 @@ src/core/postgres-engine.ts	5989	ratchet	grown v0.46.25.0 fix waves: registry pl
 src/core/pglite-engine.ts	5971	ratchet	grown v0.46.24.0 overnight wave: registry-aware writes + stale/invalidate plane unification (#1262); peeled cjk-search (#4299)
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4334	ratchet	grown v0.46.25.0 fix waves: delete-slug resolver + msys healing (#3942 #2955)
-src/core/ai/gateway.ts	4439	ratchet	watchlist; merged: dream-wave turn permits + key-aware effective-model reconfigure + env-only worker refresh + discovery endpoint-trust docstring + #4037 prompt-cache fix
-src/cli.ts	3625	ratchet	grown v0.46.25.0 final landings (#3830)
+src/core/ai/gateway.ts	4441	ratchet	grown v0.46.25.0 D2: env-key snapshot stash (#2119)
+src/cli.ts	3628	ratchet	grown v0.46.25.0 D2: stdout interposer install (#4383)
 src/core/cycle.ts	3093	ratchet	grown v0.46.25.0 fix waves: refresher abort gating + keyless honesty (#4309 #2821)
-src/commands/serve-http.ts	3292	ratchet	grown v0.46.25.0 delegated wave (#4081 #3849 #3775 #3723) | grown: /ingest resolves the write source server-side from the client OAuth scope (#3791)
+src/commands/serve-http.ts	3294	ratchet	grown v0.46.25.0 D2: /mcp per-request teardown (#2844)
 src/commands/jobs.ts	3041	ratchet	grown v0.46.25.0 fix waves: jobs list/get --json (#3685)
 src/core/search/hybrid.ts	2703	ratchet	grown v0.46.25.0 fix waves: cache scope isolation + pool floor + offset bypass (#3871 #3002)
 src/core/engine.ts	2415	ratchet	grown v0.46.25.0 fix waves: timeline dedup contract + registry write contract (#3827 #1262)
