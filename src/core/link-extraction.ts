@@ -971,34 +971,19 @@ export interface SlugResolver {
 }
 
 /**
- * Issue #972 (codex [P2] DRY): the ONE basename matcher. Before this, three
- * surfaces (makeResolver, FS `resolveBasenameMatchesFromSlugs`, the doctor
- * `link_resolution_opportunity` check) each hand-rolled their own key set +
- * sort, and they drifted — the doctor omitted the slugified key, so its
- * "N would resolve" estimate undercounted what extraction actually produces.
- * All three now build/query through these two functions so they cannot drift.
+ * Issue #972 (codex [P2] DRY): the ONE basename matcher. makeResolver, the
+ * FS resolver, and the doctor `link_resolution_opportunity` check all
+ * build/query through these two functions so they cannot drift.
  *
- * Keying: raw tail + lowercase tail + slugified tail. A slug's tail is its
- * final `/`-segment (or the whole slug when it has no `/`).
- */
-/**
- * #2367: mirrors slugifySegment's normalization (NFD → strip Latin accents →
- * NFC → lowercase → SLUG_WORD_CHARS filter) instead of the old ASCII-only
- * `[^a-z0-9\s-]` strip, which collapsed CJK/Hebrew/Cyrillic/... basenames to
- * '' (every index lookup missed) and folded accents differently from the slug
- * grammar ('Café' → 'caf' vs slugifySegment's 'cafe').
+ * Keying: raw tail + lowercase tail + slugified tail (the final `/`-segment,
+ * or the whole slug when it has no `/`). #2367: slugified keys mirror
+ * slugifySegment (NFD → strip accents → NFC → lowercase → SLUG_WORD_CHARS
+ * filter); the old ASCII-only strip emptied CJK basenames.
  */
 const BASENAME_KEEP_RE = new RegExp(`[^${SLUG_WORD_CHARS}\\s\\-]`, 'gu');
-
 export function normalizeBasename(s: string): string {
-  return s
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .normalize('NFC')
-    .toLowerCase()
-    .replace(BASENAME_KEEP_RE, '')
-    .trim()
-    .replace(/\s+/g, '-');
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').normalize('NFC')
+    .toLowerCase().replace(BASENAME_KEEP_RE, '').trim().replace(/\s+/g, '-');
 }
 
 /** Stable order: shorter slug first (likely closer to brain root), then lexical. */
@@ -1054,10 +1039,6 @@ export function makeResolver(
   opts: { mode: 'batch' | 'live'; sourceId?: string } = { mode: 'live' },
 ): SlugResolver {
   const cache = new Map<string, string | null>();
-
-  // #2367: shared normalizer (was an inline ASCII-only clone that emptied
-  // CJK names and mis-folded accents, so dir-hint candidates never matched).
-  const norm = normalizeBasename;
 
   // Issue #972: lazy-built basename → slug[] index for global-basename
   // resolution. Built on first call to `resolveBasenameMatches`; reused
@@ -1130,7 +1111,7 @@ export function makeResolver(
       }
 
       // Step 2: dir-hint + slugify → exact getPage
-      const slugified = norm(trimmed);
+      const slugified = normalizeBasename(trimmed); // #2367: shared normalizer
       for (const hint of hints) {
         if (!hint) continue;
         const candidate = `${hint}/${slugified}`;

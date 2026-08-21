@@ -445,10 +445,8 @@ export async function extractLinksFromFile(
 
   if (opts?.includeFrontmatter) {
     // Synthetic sync-ish resolver: only does step 1 (already a slug) and
-    // step 2 (dir-hint + slugify), backed by the Set of all known slugs.
-    // #2367: shared normalizer (was an inline ASCII-only clone that emptied
-    // CJK names and mis-folded accents, so dir-hint candidates never matched).
-    const slugify = normalizeBasename;
+    // step 2 (dir-hint + slugify via normalizeBasename — #2367: was an inline
+    // ASCII-only clone that emptied CJK names and mis-folded accents).
     const fsResolver = {
       async resolve(name: string, dirHint?: string | string[]): Promise<string | null> {
         if (!name) return null;
@@ -462,7 +460,7 @@ export async function extractLinksFromFile(
         const hints = Array.isArray(dirHint) ? dirHint : (dirHint ? [dirHint] : []);
         for (const hint of hints) {
           if (!hint) continue;
-          const candidate = `${hint}/${slugify(trimmed)}`;
+          const candidate = `${hint}/${normalizeBasename(trimmed)}`;
           if (allSlugs.has(candidate)) return candidate;
         }
         return null;
