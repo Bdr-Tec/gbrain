@@ -164,6 +164,9 @@ export interface EnrichResult {
   budget_exhausted_reason?: BudgetReason;
   /** Model that triggered a no_pricing abort, when the tracker knew it (#4032). */
   budget_exhausted_model?: string;
+  /** #2504 — first pool failure ('slug: message'), so pages_failed > 0 always
+   *  carries a WHY (pool.failures was previously write-only). */
+  first_failure?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -560,6 +563,19 @@ export async function runEnrichCore(
 
     result.pages_failed = pool.errored;
 
+    // #2504 — pool.failures used to be write-only: an operator saw
+    // pages_failed:N with zero reason anywhere (the pricing hard-fail looked
+    // like a model/route problem). Log the first failure loud and carry it on
+    // the result so cycle/JSON consumers see WHY.
+    if (pool.failures.length > 0) {
+      const f = pool.failures[0];
+      const fMsg = f.error instanceof Error ? f.error.message : String(f.error);
+      result.first_failure = `${f.label}: ${fMsg}`;
+      process.stderr.write(
+        `[enrich:${sourceId}] ${pool.errored} page(s) failed; first: ${f.label}: ${fMsg}\n`,
+      );
+    }
+
     if (!dryRun) {
       // #3629: the checkpoint is NOT cleared on a clean run any more. The old
       // clear made SKIP keys vanish the moment a run completed, so a page
@@ -840,6 +856,10 @@ function addInto(agg: EnrichResult, r: EnrichResult): void {
   ) {
     agg.budget_exhausted_reason = r.budget_exhausted_reason;
     agg.budget_exhausted_model = r.budget_exhausted_model;
+  }
+  // #2504 — first failure seen across sources sticks (a sample, not a log).
+  if (r.first_failure && agg.first_failure === undefined) {
+    agg.first_failure = r.first_failure;
   }
 }
 

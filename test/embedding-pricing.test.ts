@@ -106,6 +106,50 @@ describe('lookupEmbeddingPrice — azure-openai alias (#4032)', () => {
   });
 });
 
+describe('lookupEmbeddingPrice — nested gateway ids (#2504)', () => {
+  // Router providers (openrouter, generic gateways) wrap the upstream vendor
+  // in the model segment. The router bills the vendor's per-token rate, so
+  // the vendor row is the honest estimate on a miss.
+  test.each([
+    ['openrouter:openai/text-embedding-3-large', 0.13, 'openai:text-embedding-3-large'],
+    ['openrouter:voyage/voyage-4', 0.06, 'voyage:voyage-4'],
+    ['openrouter:mistral/mistral-embed', 0.10, 'mistral:mistral-embed'],
+  ])('%s falls back to the nested vendor row', (model, expected, key) => {
+    const r = lookupEmbeddingPrice(model as string);
+    expect(r.kind).toBe('known');
+    if (r.kind === 'known') {
+      expect(r.pricePerMTok).toBe(expected as number);
+      expect(r.key).toBe(key as string);
+    }
+  });
+
+  test('nested provider aliases still apply (router → azure-openai → openai)', () => {
+    const r = lookupEmbeddingPrice('openrouter:azure-openai/text-embedding-3-small');
+    expect(r.kind).toBe('known');
+    if (r.kind === 'known') expect(r.key).toBe('openai:text-embedding-3-small');
+  });
+
+  test('bare slash form assumes openai wrapper then unnests', () => {
+    const r = lookupEmbeddingPrice('openai/text-embedding-3-small');
+    expect(r.kind).toBe('known');
+    if (r.kind === 'known') expect(r.key).toBe('openai:text-embedding-3-small');
+  });
+
+  test('nested unknown vendor stays unknown (fail closed, never fabricate)', () => {
+    const r = lookupEmbeddingPrice('openrouter:madeup/model-9000');
+    expect(r.kind).toBe('unknown');
+    if (r.kind === 'unknown') {
+      expect(r.provider).toBe('openrouter');
+      expect(r.model).toBe('madeup/model-9000');
+    }
+  });
+
+  test('trailing/leading slash does not recurse into an empty key', () => {
+    expect(lookupEmbeddingPrice('openrouter:model-9000/').kind).toBe('unknown');
+    expect(lookupEmbeddingPrice('openrouter:/model-9000').kind).toBe('unknown');
+  });
+});
+
 describe('EMBEDDING_PRICING — table integrity', () => {
   test('all entries have pricePerMTok as a non-negative finite number', () => {
     for (const [key, val] of Object.entries(EMBEDDING_PRICING)) {

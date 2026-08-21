@@ -100,6 +100,18 @@ export function lookupEmbeddingPrice(modelString: string): PriceLookupResult {
     const aliasHit = EMBEDDING_PRICING[aliasKey];
     if (aliasHit) return { kind: 'known', pricePerMTok: aliasHit.pricePerMTok, key: aliasKey };
   }
+  // #2504 — nested gateway ids: router providers wrap the upstream vendor in
+  // the model segment ('openrouter:openai/text-embedding-3-large'). On a
+  // miss, re-key on the nested vendor prefix and retry (provider aliases
+  // included via the recursion) — routers bill the upstream vendor's
+  // per-token rate, so the vendor row is the honest estimate. No nested
+  // match → still `unknown` (fail closed, never fabricate). Bounded: each
+  // recursion strips one '/segment'.
+  const slash = model.indexOf('/');
+  if (slash > 0 && slash < model.length - 1) {
+    const nested = lookupEmbeddingPrice(`${model.slice(0, slash)}:${model.slice(slash + 1)}`);
+    if (nested.kind === 'known') return nested;
+  }
   return { kind: 'unknown', provider, model };
 }
 

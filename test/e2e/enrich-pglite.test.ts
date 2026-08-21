@@ -256,6 +256,26 @@ describe('runEnrichCore', () => {
     expect(page!.compiled_truth.trim()).toBe(STUB);
   }, 30000);
 
+  test('#2504: a failing page surfaces first_failure (pool.failures no longer write-only)', async () => {
+    await seedStub('people/fiona-example', 'Fiona Example', 'person');
+    await seedLinkInto('people/fiona-example', 'meetings/kickoff', RICH_CONTEXT);
+    const failingSynth: SynthesizeFn = async () => {
+      throw new Error('no pricing entry for model "example:example-chat" (kind=chat)');
+    };
+
+    const r = await runEnrichCore(engine, {
+      sourceId: 'default',
+      types: ['person'],
+      model: 'test:model',
+      synthesizeFn: failingSynth,
+    });
+    // Pre-fix: pages_failed:1 with zero reason anywhere. Post-fix the result
+    // carries slug + message so the operator sees WHY instead of guessing.
+    expect(r.pages_failed).toBe(1);
+    expect(r.first_failure).toContain('people/fiona-example');
+    expect(r.first_failure).toContain('no pricing entry');
+  }, 30000);
+
   test('resume: pre-seeded checkpoint skips an already-completed page', async () => {
     await seedStub('people/alice-example', 'Alice Example', 'person');
     await seedStub('people/bob-example', 'Bob Example', 'person');
