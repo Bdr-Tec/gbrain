@@ -165,7 +165,7 @@ describe('hybridSearch guarantees page-1 relational evidence (#3995)', () => {
     });
     await eng2.upsertChunks('people/alice-example', [{
       chunk_index: 0, chunk_text: 'Alice is a seed-stage backer based in Lisbon.',
-      chunk_source: 'compiled_truth', embedding: null, token_count: 8,
+      chunk_source: 'compiled_truth', token_count: 8,
     }] as ChunkInput[]);
     await eng2.addLink('people/alice-example', 'companies/widget-co', '', 'invested_in', 'manual');
 
@@ -175,7 +175,7 @@ describe('hybridSearch guarantees page-1 relational evidence (#3995)', () => {
       const text = `Fund memo ${i}: somebody invested in widget-co adjacent themes.`;
       await eng2.putPage(slug, { type: 'note', title: `Noise ${i}`, compiled_truth: text, timeline: '' });
       await eng2.upsertChunks(slug, [{
-        chunk_index: 0, chunk_text: text, chunk_source: 'compiled_truth', embedding: null, token_count: 12,
+        chunk_index: 0, chunk_text: text, chunk_source: 'compiled_truth', token_count: 12,
       }] as ChunkInput[]);
     }
   }, 60_000);
