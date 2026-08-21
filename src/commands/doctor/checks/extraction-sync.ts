@@ -21,7 +21,7 @@ import {
   DERIVE_PHASE_DB_ONLY_DEFAULTS,
   findDbOnlyCollisions,
 } from '../../../core/storage-config.ts';
-import { slugifyPath } from '../../../core/sync.ts';
+import { slugifyPath, slugifyCodePath, isCodeFilePath } from '../../../core/sync.ts';
 import { resolveSourceLocalFilePath } from '../../../core/markdown.ts';
 import { unverifiedExtractionFragment } from '../../../core/extraction-review.ts';
 import type { Check } from '../../doctor.ts';
@@ -312,6 +312,11 @@ function collectMarkdownSlugs(root: string): Set<string> {
       const childRel = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) stack.push(childRel);
       else if (/\.mdx?$/i.test(e.name)) out.add(slugifyPath(childRel).toLowerCase());
+      // #3766: code files are pages too (code-slug shape). Legacy code rows
+      // backfilled by migration 25 carry page_kind='markdown' without a
+      // type='code' re-stamp, so their slugs must count as file-backed or
+      // every one of them false-positives as "DB-only".
+      else if (isCodeFilePath(e.name)) out.add(slugifyCodePath(childRel).toLowerCase());
     }
   }
   return out;
@@ -359,8 +364,13 @@ export async function checkUndeclaredDbOnlyPages(engine: BrainEngine): Promise<C
         // already surfaces the config error itself.
       }
       const dbOnlyDirs = effectiveDbOnlyDirs(declared);
+      // #3766: skip properly-stamped code pages (type='code') — they live on
+      // the code lane, not the markdown backup story. Legacy code rows from
+      // the migration-25 backfill (page_kind='markdown', type never
+      // re-stamped) still flow through and match via the code-slug backed
+      // set collected below.
       const rows = await engine.executeRaw<{ slug: string; source_path: string | null }>(
-        `SELECT slug, source_path FROM pages WHERE deleted_at IS NULL AND source_id = $1 AND page_kind = 'markdown'`,
+        `SELECT slug, source_path FROM pages WHERE deleted_at IS NULL AND source_id = $1 AND page_kind = 'markdown' AND type IS DISTINCT FROM 'code'`,
         [src.id],
       );
       if (rows.length === 0) continue;
