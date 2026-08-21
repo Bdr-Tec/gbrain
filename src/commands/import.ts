@@ -57,10 +57,10 @@ export async function listConfiguredRoots(
       `SELECT local_path FROM sources WHERE id = $1`,
       [destinationSourceId],
     );
-    for (const row of rows) if (row.local_path) roots.push(resolve(row.local_path));
+    for (const row of rows) if (row.local_path) roots.push(resolve(row.local_path)); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- resolves REGISTERED roots to build the containment allowlist (#4388 guard)
     if (destinationSourceId === 'default') {
       const legacyRoot = await engine.getConfig('sync.repo_path');
-      if (legacyRoot) roots.push(resolve(legacyRoot));
+      if (legacyRoot) roots.push(resolve(legacyRoot)); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- same: registered root canonicalization for the guard allowlist
     }
   } catch (error) {
     throw new Error(

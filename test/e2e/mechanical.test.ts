@@ -323,12 +323,12 @@ describeE2E('E2E: Timeline', () => {
       source: 'e2e-test',
     };
     const first = await callOp('add_timeline_entry', entryParams);
-    expect(first).toEqual({ status: 'ok' });
+    expect(first).toMatchObject({ status: 'ok' }); // #1856: result also carries write_through
 
     // #3827: an identical retry is deduplicated by the unique index — the op
     // must report the drop instead of a silent 'ok'.
     const dup = await callOp('add_timeline_entry', entryParams);
-    expect(dup).toEqual({ status: 'skipped', reason: 'duplicate' });
+    expect(dup).toMatchObject({ status: 'skipped', reason: 'duplicate' });
 
     const timeline = await callOp('get_timeline', { slug: 'people/sarah-chen' }) as any[];
     expect(timeline.length).toBeGreaterThanOrEqual(1);
