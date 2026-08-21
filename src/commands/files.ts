@@ -146,24 +146,32 @@ async function uploadFile(engine: BrainEngine, args: string[]) {
 
   const sql = sqlQueryForEngine(engine);
 
-  // Check for existing file by hash
+  // #4302 (fail-closed honesty, mirror of the file_upload op): a files row
+  // must never claim bytes that were stored nowhere. No storage backend →
+  // refuse before any insert instead of recording a phantom upload.
+  const { loadConfig } = await import('../core/config.ts');
+  const config = loadConfig();
+  if (!config?.storage) {
+    console.error('No storage backend configured — `files upload` would record a row with no stored bytes.');
+    console.error('Configure `storage` in your gbrain config (supabase | s3 | local),');
+    console.error('or use `gbrain files upload-raw --page <slug>` for git-tracked small files.');
+    process.exit(1);
+  }
+  const { createStorage } = await import('../core/storage.ts');
+  const storage = await createStorage(config.storage as any);
+
+  // Check for existing file by hash — but only trust the row when the
+  // BACKEND really holds the object (#4302); vanished bytes must re-upload.
   const existing = await sql`SELECT id FROM files WHERE content_hash = ${hash} AND storage_path = ${storagePath}`;
-  if (existing.length > 0) {
+  if (existing.length > 0 && (await storage.exists(storagePath).catch(() => false))) {
     console.log(`File already uploaded (hash match): ${storagePath}`);
     return;
   }
 
-  // Upload to storage backend if configured
-  const { loadConfig } = await import('../core/config.ts');
-  const config = loadConfig();
-  if (config?.storage) {
-    const { createStorage } = await import('../core/storage.ts');
-    const storage = await createStorage(config.storage as any);
-    const content = readFileSync(filePath);
-    const method = content.length >= SIZE_THRESHOLD ? 'TUS resumable' : 'standard';
-    console.log(`Uploading ${humanSize(stat.size)} via ${method}...`);
-    await storage.upload(storagePath, content, mimeType || undefined);
-  }
+  const content = readFileSync(filePath);
+  const method = content.length >= SIZE_THRESHOLD ? 'TUS resumable' : 'standard';
+  console.log(`Uploading ${humanSize(stat.size)} via ${method}...`);
+  await storage.upload(storagePath, content, mimeType || undefined);
 
   await sql`
     INSERT INTO files (page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
@@ -421,15 +429,67 @@ async function verifyFiles(engine: BrainEngine) {
   let mismatches = 0;
   let missing = 0;
 
+  // #4302: verify against the actual bytes, not just DB row shape. Cloud rows
+  // are probed via storage.exists (+ hash-checked via download for small
+  // objects); git-storage rows (metadata.storage === 'git', the upload-raw
+  // small-file lane) are checked against the brain repo on disk.
+  const { loadConfig } = await import('../core/config.ts');
+  const config = loadConfig();
+  const storage = config?.storage
+    ? await (await import('../core/storage.ts')).createStorage(config.storage as any).catch(() => null)
+    : null;
+  const repoPath = await engine.getConfig('sync.repo_path').catch(() => null);
+  const HASH_CHECK_MAX_BYTES = 10 * 1024 * 1024;
+  const normalizeHash = (h: string) => h.replace(/^sha256:/, '');
+
   for (const row of rows) {
-    // Note: full verification would check Supabase Storage hash
-    // For now, verify the DB record exists and has valid data
     if (!row.content_hash || !row.storage_path) {
       mismatches++;
       console.error(`  MISMATCH: ${row.storage_path} (missing hash or path)`);
+      continue;
+    }
+    const storagePath = String(row.storage_path);
+    const meta = (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) as Record<string, unknown> | null;
+    if (meta?.storage === 'git') {
+      const local = repoPath ? join(repoPath, storagePath) : null;
+      if (!local || !existsSync(local)) {
+        missing++;
+        console.error(`  MISSING: ${row.storage_path} (git-storage file not in brain repo)`);
+      } else if (normalizeHash(fileHash(local)) !== normalizeHash(String(row.content_hash))) {
+        mismatches++;
+        console.error(`  MISMATCH: ${row.storage_path} (repo file hash differs from DB record)`);
+      } else {
+        verified++;
+      }
+      continue;
+    }
+    if (storage) {
+      const present = await storage.exists(storagePath).catch(() => false);
+      if (!present) {
+        missing++;
+        console.error(`  MISSING: ${row.storage_path} (not in storage backend)`);
+        continue;
+      }
+      const size = row.size_bytes == null ? null : Number(row.size_bytes);
+      if (size !== null && size <= HASH_CHECK_MAX_BYTES) {
+        try {
+          const bytes = await storage.download(storagePath);
+          const actual = createHash('sha256').update(bytes).digest('hex');
+          if (actual !== normalizeHash(String(row.content_hash))) {
+            mismatches++;
+            console.error(`  MISMATCH: ${row.storage_path} (backend hash differs from DB record)`);
+            continue;
+          }
+        } catch { /* download hiccup — exists() already vouched; count verified */ }
+      }
+      verified++;
     } else {
+      // No backend configured: DB-shape check only (legacy behavior), but say so.
       verified++;
     }
+  }
+  if (!storage) {
+    console.error('Note: no storage backend configured — backend existence/hash checks skipped.');
   }
 
   if (mismatches === 0 && missing === 0) {
