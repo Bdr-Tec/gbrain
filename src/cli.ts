@@ -3543,12 +3543,12 @@ CODE INDEXING (v0.19.0 / v0.20.0 Cathedral II)
 
 JOBS (Minions)
   jobs submit <name> [--params JSON]  Submit background job [--follow] [--dry-run]
-  jobs list [--status S] [--limit N]  List jobs
-  jobs get <id>                       Job details + history
+  jobs list [--status S] [--limit N]  List jobs [--json]
+  jobs get <id> [--json]              Job details + history
   jobs cancel <id>                    Cancel job
   jobs retry <id>                     Re-queue failed/dead job
   jobs prune [--older-than 30d]       Clean old jobs
-  jobs stats                          Job health dashboard
+  jobs stats [--json]                 Job health dashboard
   jobs watch [--follow]               Live queue dashboard
   jobs work [--queue Q]               Start worker daemon (Postgres only)
   jobs supervisor [start|status|stop] Auto-restarting worker wrapper
