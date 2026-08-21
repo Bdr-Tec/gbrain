@@ -30,6 +30,9 @@ import type { BrainEngine } from './engine.ts';
 import { isUndefinedTableError } from './utils.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import { stripCodeBlocks } from './link-extraction.ts';
+// #4222: shared generic-token reject list — same list gates enrichEntity
+// minting and drives the junk_entity_hubs doctor check.
+import { isGenericEntityToken } from './entity-name-quality.ts';
 
 /** D2: hardcoded entity types for v1. Pack-aware extension is TODO-1. */
 export const LINKABLE_ENTITY_TYPES = ['person', 'company', 'organization', 'entity'] as const;
@@ -372,8 +375,8 @@ export async function buildGazetteer(
   opts: BuildGazetteerOpts = {},
 ): Promise<Gazetteer> {
   const typeList = LINKABLE_ENTITY_TYPES.map(t => `'${t}'`).join(', ');
-  const rows = await engine.executeRaw<{ slug: string; source_id: string | null; title: string | null }>(
-    `SELECT slug, source_id, title
+  const rows = await engine.executeRaw<{ slug: string; source_id: string | null; title: string | null; type: string | null }>(
+    `SELECT slug, source_id, title, type
      FROM pages
      WHERE type IN (${typeList})
        AND deleted_at IS NULL`,
@@ -404,6 +407,15 @@ export async function buildGazetteer(
     const tokens = tokenizeTitle(row.title);
     if (tokens.length === 0) continue;
     if (tokens[0]!.length < MIN_NAME_LENGTH && tokens.length === 1) continue;
+    // #4222: a single-generic-token PERSON title ("Will", "Chief") is a
+    // junk-hub magnet — every prose occurrence of the word would accrete
+    // another mention edge onto a near-empty page. Dropped from the
+    // gazetteer even though the page exists (unlike the CK12 ignore-list
+    // rule above, which trusts user-created pages: these titles are
+    // overwhelmingly extractor-minted, and the page itself stays intact —
+    // only the auto-link accretion stops). Multi-token titles ("Will
+    // Smith") and non-person types are unaffected.
+    if (tokens.length === 1 && row.type === 'person' && isGenericEntityToken(tokens[0]!)) continue;
 
     const entry: GazetteerEntry = {
       slug: row.slug,

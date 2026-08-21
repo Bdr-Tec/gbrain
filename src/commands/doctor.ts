@@ -90,6 +90,9 @@ export {
   checkProviderSunset,
   checkEmbeddingWidthConsistency,
   checkFactsEmbeddingWidthConsistency,
+  checkJunkEntityHubs,
+  JUNK_HUB_EDGE_THRESHOLD,
+  JUNK_HUB_MAX_CHUNKS,
 } from './doctor/checks/graph-embedding.ts';
 export {
   checkSourceRoutingHealth,
@@ -171,6 +174,7 @@ import {
   checkProviderSunset,
   checkEmbeddingWidthConsistency,
   checkFactsEmbeddingWidthConsistency,
+  checkJunkEntityHubs,
 } from './doctor/checks/graph-embedding.ts';
 import {
   checkSourceRoutingHealth,
@@ -3807,6 +3811,10 @@ export async function buildChecks(
     // graph_signals is enabled in the active mode bundle.
     progress.heartbeat('graph_signals_coverage');
     checks.push(await checkGraphSignalsCoverage(engine));
+    // #4222 junk_entity_hubs — near-empty entity pages that accreted huge
+    // edge counts (generic-token names like "Will"). Warn + list only.
+    progress.heartbeat('junk_entity_hubs');
+    checks.push(await checkJunkEntityHubs(engine));
     // v0.37.0 brainstorm_health — migration v79, track_retrieval, calibration cold-start.
     progress.heartbeat('brainstorm_health');
     checks.push(await checkBrainstormHealth(engine));
