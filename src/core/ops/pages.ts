@@ -21,6 +21,7 @@ import { stripFactsFence } from '../facts-fence.ts';
 import { getContentFlag } from '../quarantine.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
 import { isValidSourceId, ALL_SOURCES } from '../source-id.ts';
+import { resolveExcludePrivatePages, isPrivatePage, privatePagesFilterFragment } from '../search/private-visibility.ts';
 import { LIST_PAGES_DESCRIPTION, CAPTURE_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
 import type { Operation, OperationContext } from './contract.ts';
@@ -96,6 +97,41 @@ function assertSourceInWriteGrant(ctx: OperationContext, sourceId: string): void
   );
 }
 
+/**
+ * #4352 remediation — filter fuzzy-resolution candidates down to slugs that
+ * have at least one non-private in-scope page, so get_page's ambiguous_slug
+ * candidate list can't enumerate private slugs to an untrusted caller.
+ * Order-preserving (resolveSlugs returns ranked candidates). Read-only,
+ * scope-threaded — not a getPage/putPage pair (no unscoped-check/scoped-write
+ * hazard).
+ */
+async function dropPrivateSlugs(
+  engine: BrainEngine,
+  candidates: string[],
+  scope: { sourceId?: string; sourceIds?: string[] },
+  includeDeleted: boolean,
+): Promise<string[]> {
+  const params: unknown[] = [candidates];
+  let scopeClause = '';
+  if (scope.sourceIds && scope.sourceIds.length > 0) {
+    params.push(scope.sourceIds);
+    scopeClause = `AND p.source_id = ANY($${params.length}::text[])`;
+  } else if (scope.sourceId) {
+    params.push(scope.sourceId);
+    scopeClause = `AND p.source_id = $${params.length}`;
+  }
+  const rows = await engine.executeRaw<{ slug: string }>(
+    `SELECT DISTINCT p.slug FROM pages p
+      WHERE p.slug = ANY($1::text[])
+        AND ${privatePagesFilterFragment('p')}
+        ${includeDeleted ? '' : 'AND p.deleted_at IS NULL'}
+        ${scopeClause}`,
+    params,
+  );
+  const visible = new Set(rows.map(r => r.slug));
+  return candidates.filter(c => visible.has(c));
+}
+
 const get_page: Operation = {
   name: 'get_page',
   description: 'Read a page by slug (supports optional fuzzy matching). To edit a page, pass include_content: true — the returned `content` field is the canonical full markdown (frontmatter + body + timeline sentinel); edit THAT and pass it back to put_page to round-trip losslessly. Reassembling compiled_truth/timeline by hand risks dropping sections. Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
@@ -126,14 +162,32 @@ const get_page: Operation = {
     const sourceOpts = federatedSearchScope(ctx, sourceIdParam);
     const fuzzyScope = sourceOpts;
 
+    // #4352 remediation: untrusted callers never read `visibility: private`
+    // bodies — the same resolveExcludePrivatePages gate search/recall/entity
+    // already apply (trusted local + the operator opt-outs resolve to false).
+    // A gated private page behaves exactly like a missing one (no existence
+    // oracle), composing with — not replacing — the source-grant scope above.
+    const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
+
     let page = await ctx.engine.getPage(slug, { includeDeleted, ...sourceOpts });
+    if (page && excludePrivate && isPrivatePage(page.frontmatter)) page = null;
     let resolved_slug: string | undefined;
 
     if (!page && fuzzy) {
-      const candidates = await ctx.engine.resolveSlugs(slug, fuzzyScope);
+      let candidates = await ctx.engine.resolveSlugs(slug, fuzzyScope);
+      // #4352: the ambiguous_slug candidate list must not enumerate private slugs.
+      if (excludePrivate && candidates.length > 0) {
+        candidates = await dropPrivateSlugs(ctx.engine, candidates, fuzzyScope, includeDeleted);
+      }
       if (candidates.length === 1) {
-        page = await ctx.engine.getPage(candidates[0], { includeDeleted, ...sourceOpts });
-        resolved_slug = candidates[0];
+        const fuzzyPage = await ctx.engine.getPage(candidates[0], { includeDeleted, ...sourceOpts });
+        // Multi-source backstop: the slug may still resolve to a private
+        // variant (same slug private in one source, world in another —
+        // getPage returns the first in-scope match).
+        if (fuzzyPage && !(excludePrivate && isPrivatePage(fuzzyPage.frontmatter))) {
+          page = fuzzyPage;
+          resolved_slug = candidates[0];
+        }
       } else if (candidates.length > 1) {
         return { error: 'ambiguous_slug', candidates };
       }
@@ -242,7 +296,14 @@ const fetch_page: Operation = {
     // Same scope ladder as get_page's unqualified read: federated array >
     // scalar > nothing — a remote caller only fetches what its grant spans.
     const sourceOpts = federatedSearchScope(ctx);
-    const page = await ctx.engine.getPage(slug, sourceOpts);
+    let page = await ctx.engine.getPage(slug, sourceOpts);
+    // #4352 remediation: a `visibility: private` page reads as missing for
+    // untrusted callers (same resolveExcludePrivatePages gate as get_page —
+    // fetch is remote-facing by design, every MCP transport). Cheap row
+    // check first; the resolver short-circuits for trusted local callers.
+    if (page && isPrivatePage(page.frontmatter) && (await resolveExcludePrivatePages(ctx.engine, ctx.remote))) {
+      page = null;
+    }
     if (!page) {
       throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Pass an id returned by a `search` call.');
     }
@@ -1141,6 +1202,12 @@ const list_pages: Operation = {
     // as search/query's sourceIdParam.
     const sourceIdParam = typeof p.source_id === 'string' ? p.source_id : undefined;
     const scope = federatedSearchScope(ctx, sourceIdParam);
+    // #4352 remediation: untrusted listing never enumerates
+    // `visibility: private` pages (slugs + titles are the leak surface here).
+    // Composes with the #4400 per-call source_id and the v0.34.1 grant scope
+    // above — an ADDITIONAL predicate threaded into PageFilters, never a
+    // replacement for the source filter. Trusted local enumeration unchanged.
+    const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
     // The 100-row cap exists to protect remote MCP/OAuth transports from
     // unbounded result dumps. Local CLI callers (ctx.remote === false — the
     // same trust boundary that already bypasses scope enforcement, see the
@@ -1180,6 +1247,7 @@ const list_pages: Operation = {
       includeDeleted: (p.include_deleted as boolean) === true,
       updated_after: typeof p.updated_after === 'string' ? p.updated_after : undefined,
       sort,
+      excludePrivate,
       ...scope,
     });
     const truncated = rows.length > limit;

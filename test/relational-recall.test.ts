@@ -10,6 +10,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { buildRelationalArm } from '../src/core/search/relational-recall.ts';
+import { hybridSearch } from '../src/core/search/hybrid.ts';
 import { probeEmbeddingDim } from './fixtures/retrieval-quality/relational/corpus.ts';
 import type { ChunkInput } from '../src/core/types.ts';
 
@@ -29,6 +30,17 @@ beforeAll(async () => {
     chunk_source: 'compiled_truth', embedding: new Float32Array(dim), token_count: 8,
   }] satisfies ChunkInput[]);
   await eng.addLink('people/alice-example', 'companies/widget-co', '', 'invested_in', 'manual');
+
+  // #4352 fixture: a `visibility: private` investor whose ONLY connection to
+  // the company is the typed edge. Pre-remediation the arm hydrated its title
+  // + compiled_truth snippet for ANY caller (hybrid.ts built the arm without
+  // excludePrivate; hydrate() filtered on deleted_at alone).
+  await eng.putPage('people/mallory-secret', {
+    type: 'person', title: 'Mallory Secret',
+    frontmatter: { visibility: 'private' },
+    compiled_truth: 'Mallory runs a stealth family office in Zurich.', timeline: '',
+  });
+  await eng.addLink('people/mallory-secret', 'companies/widget-co', '', 'invested_in', 'manual');
 }, 60_000);
 
 afterAll(async () => { await eng.disconnect(); });
@@ -55,6 +67,45 @@ describe('buildRelationalArm', () => {
   test('unresolvable seed → no-op (never traverse from a guess)', async () => {
     const list = await buildRelationalArm(eng, 'who invested in nonexistent-phantom-xyz');
     expect(list).toEqual([]);
+  });
+
+  test('#4352: excludePrivate hides private pages from the arm; default keeps them (trusted)', async () => {
+    const trusted = await buildRelationalArm(eng, 'who invested in widget-co');
+    expect(trusted.map(r => r.slug)).toContain('people/mallory-secret');
+
+    const gated = await buildRelationalArm(eng, 'who invested in widget-co', { excludePrivate: true });
+    const slugs = gated.map(r => r.slug);
+    expect(slugs).not.toContain('people/mallory-secret');
+    expect(slugs).toContain('people/alice-example'); // non-private candidates survive
+    // Neither the private title nor the compiled_truth snippet leaks anywhere.
+    for (const r of gated) {
+      expect(r.title).not.toContain('Mallory');
+      expect(r.chunk_text).not.toContain('stealth family office');
+    }
+  });
+
+  test('#4352: hybridSearch threads excludePrivate into the relational arm', async () => {
+    const remoteLike = await hybridSearch(eng, 'who invested in widget-co', {
+      relationalRetrieval: true, excludePrivate: true, limit: 20,
+    });
+    const remoteSlugs = remoteLike.map(r => r.slug);
+    expect(remoteSlugs).not.toContain('people/mallory-secret');
+    expect(remoteSlugs).toContain('people/alice-example');
+
+    const localLike = await hybridSearch(eng, 'who invested in widget-co', {
+      relationalRetrieval: true, limit: 20,
+    });
+    expect(localLike.map(r => r.slug)).toContain('people/mallory-secret');
+  });
+
+  test('#4352: hydrate hides pages in archived sources (all callers)', async () => {
+    await eng.executeRaw(`UPDATE sources SET archived = true WHERE id = 'default'`, []);
+    try {
+      const list = await buildRelationalArm(eng, 'who invested in widget-co');
+      expect(list).toEqual([]);
+    } finally {
+      await eng.executeRaw(`UPDATE sources SET archived = false WHERE id = 'default'`, []);
+    }
   });
 
   test('fail-open: fanout error returns [] + errored meta, never throws', async () => {

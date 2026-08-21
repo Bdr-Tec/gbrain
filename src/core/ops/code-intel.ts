@@ -54,8 +54,9 @@ const code_callers: Operation = {
       sourceId,
     });
     const { resolveCodeReadiness } = await import('../code-graph-readiness.ts');
+    // #4352: thread trust — the out_of_scope brain-wide rerun is local-only.
     const readiness = await resolveCodeReadiness(ctx.engine, {
-      kind: 'edge', count: edges.length, sourceId, allSources,
+      kind: 'edge', count: edges.length, sourceId, allSources, remote: ctx.remote,
     });
     return {
       symbol, count: edges.length, status: readiness.status, ready: readiness.ready,
@@ -90,8 +91,9 @@ const code_callees: Operation = {
       sourceId,
     });
     const { resolveCodeReadiness } = await import('../code-graph-readiness.ts');
+    // #4352: thread trust — see code_callers.
     const readiness = await resolveCodeReadiness(ctx.engine, {
-      kind: 'edge', count: edges.length, sourceId, allSources,
+      kind: 'edge', count: edges.length, sourceId, allSources, remote: ctx.remote,
     });
     return {
       symbol, count: edges.length, status: readiness.status, ready: readiness.ready,

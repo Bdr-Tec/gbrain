@@ -35,6 +35,11 @@
  * `out_of_scope` — the graph is built, the caller's resolved scope (per-call
  * source_id / source pin / remote federated_read grant) just excludes it.
  * The hint names the scope instead of misdirecting to `gbrain sync`.
+ * #4352 remediation: that unscoped rerun probes code existence OUTSIDE the
+ * caller's resolved scope, so it runs ONLY for trusted local callers
+ * (`remote === false`, the repo trust convention — anything else is
+ * untrusted, fail-closed). A scoped remote caller sees `not_built`, never
+ * a brain-wide code-existence disclosure.
  *
  * Cost: callers run this ONLY when `count === 0` (see `resolveCodeReadiness`);
  * a non-empty result short-circuits to `ready: true` with no query. Probes use
@@ -158,7 +163,18 @@ async function pendingEdgeChunksExist(engine: BrainEngine, sourceId: string | un
  */
 export async function resolveCodeReadiness(
   engine: BrainEngine,
-  opts: { kind: 'symbol' | 'edge'; count: number } & ReadinessScope,
+  opts: {
+    kind: 'symbol' | 'edge';
+    count: number;
+    /**
+     * #4352 remediation: trust gate for the #3707 out_of_scope brain-wide
+     * rerun. Pass `ctx.remote` (ops) or `false` (local CLI commands).
+     * Omitted/unset is treated as untrusted — the rerun is skipped and a
+     * scoped miss stays `not_built` (fail-closed, per the repo trust
+     * convention: only strict `false` is trusted).
+     */
+    remote?: boolean;
+  } & ReadinessScope,
 ): Promise<CodeGraphReadiness> {
   if (opts.count > 0) {
     return { status: 'ready', ready: true, has_code: true, pending_edges: false };
@@ -174,8 +190,10 @@ export async function resolveCodeReadiness(
       // The old `not_built` hint then misdirected operators to `gbrain sync`
       // on a fully-indexed brain. When a scope was applied, rerun the probe
       // brain-wide: code elsewhere → out_of_scope, a scope/grant problem,
-      // not an indexing one.
-      if (sourceId !== undefined && (await codeChunksExist(engine, undefined))) {
+      // not an indexing one. #4352: trusted local callers only — the rerun
+      // reads outside the resolved scope, so a remote caller never learns
+      // whether code exists beyond its grant.
+      if (sourceId !== undefined && opts.remote === false && (await codeChunksExist(engine, undefined))) {
         return {
           status: 'out_of_scope', ready: false, has_code: false,
           pending_edges: false, scoped_source_id: sourceId,

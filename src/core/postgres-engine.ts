@@ -85,6 +85,7 @@ import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
 import { validateSlug, contentHash, isBlankBody, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery } from './search/sql-ranking.ts';
+import { privatePagesFilterFragment } from './search/private-visibility.ts';
 import { unverifiedExtractionFragment } from './extraction-review.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
 import { DELETE_BATCH_SIZE } from './engine-constants.ts';
@@ -1590,6 +1591,12 @@ export class PostgresEngine implements BrainEngine {
     const deletedCondition = filters?.includeDeleted === true
       ? sql``
       : sql`AND p.deleted_at IS NULL`;
+    // #4352: untrusted-caller private-page filter (see PageFilters.excludePrivate).
+    // Static code-provided fragment (never user input) — same sql.unsafe
+    // pattern as the PAGE_SORT_SQL whitelist below.
+    const privateCondition = filters?.excludePrivate === true
+      ? sql.unsafe(`AND ${privatePagesFilterFragment('p')}`)
+      : sql``;
     const effectiveAfterCondition = filters?.effective_after
       ? sql`AND p.effective_date >= ${filters.effective_after}::timestamptz`
       : sql``;
@@ -1609,7 +1616,7 @@ export class PostgresEngine implements BrainEngine {
       const rows = await tx`
         SELECT p.* FROM pages p
         ${tagJoin}
-        WHERE 1=1 ${typeCondition} ${tagCondition} ${updatedCondition} ${slugCondition} ${sourceCondition} ${deletedCondition} ${effectiveAfterCondition} ${effectiveBeforeCondition}
+        WHERE 1=1 ${typeCondition} ${tagCondition} ${updatedCondition} ${slugCondition} ${sourceCondition} ${deletedCondition} ${privateCondition} ${effectiveAfterCondition} ${effectiveBeforeCondition}
         ORDER BY ${orderBy} LIMIT ${limit} OFFSET ${offset}
       `;
       return rows.map(rowToPage);

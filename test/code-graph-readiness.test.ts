@@ -154,9 +154,10 @@ describe('resolveCodeReadiness — source scoping', () => {
   // #3707: pre-fix this reported `not_built` — indistinguishable from a
   // never-synced brain — and the hint misdirected to `gbrain sync`. Code
   // exists brain-wide (the beforeEach import), so a scoped miss is a
-  // scope/grant problem, not an indexing one.
+  // scope/grant problem, not an indexing one. #4352 remediation: the
+  // brain-wide rerun is a trusted-local-only signal (remote: false).
   test('scoped to a source with no code while code exists brain-wide → out_of_scope (symbol)', async () => {
-    const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0, sourceId: 'no-such-source' });
+    const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0, sourceId: 'no-such-source', remote: false });
     expect(r.status).toBe('out_of_scope');
     expect(r.ready).toBe(false);
     expect(r.has_code).toBe(false);
@@ -164,7 +165,7 @@ describe('resolveCodeReadiness — source scoping', () => {
   });
 
   test('scoped to a source with no code while code exists brain-wide → out_of_scope (edge)', async () => {
-    const r = await resolveCodeReadiness(engine, { kind: 'edge', count: 0, sourceId: 'no-such-source' });
+    const r = await resolveCodeReadiness(engine, { kind: 'edge', count: 0, sourceId: 'no-such-source', remote: false });
     expect(r.status).toBe('out_of_scope');
     expect(r.scoped_source_id).toBe('no-such-source');
   });
@@ -184,7 +185,7 @@ describe('resolveCodeReadiness — source scoping', () => {
 
 describe('resolveCodeReadiness — #3707 out_of_scope vs not_built', () => {
   test('scoped miss on a genuinely empty brain stays not_built (no code anywhere)', async () => {
-    const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0, sourceId: 'no-such-source' });
+    const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0, sourceId: 'no-such-source', remote: false });
     expect(r.status).toBe('not_built');
     expect(r.scoped_source_id).toBeUndefined();
   });
@@ -204,6 +205,32 @@ describe('resolveCodeReadiness — #3707 out_of_scope vs not_built', () => {
     expect(hint).toContain('scope/grant problem');
     expect(hint).toContain('federated_read');
     expect(hint).not.toMatch(/Run `gbrain sync`/);
+  });
+});
+
+describe('resolveCodeReadiness — #4352 remediation: out_of_scope rerun is trusted-local only', () => {
+  beforeEach(async () => {
+    await importCodeFile(engine, 'src/sample.ts', SAMPLE, { noEmbed: true });
+  });
+
+  // The #3707 rerun probes code existence OUTSIDE the caller's resolved scope.
+  // A scoped remote caller must not learn that code exists brain-wide.
+  test('remote scoped miss stays not_built (no brain-wide existence disclosure)', async () => {
+    const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0, sourceId: 'no-such-source', remote: true });
+    expect(r.status).toBe('not_built');
+    expect(r.scoped_source_id).toBeUndefined();
+  });
+
+  test('unset trust is untrusted (fail-closed): scoped miss stays not_built', async () => {
+    const r = await resolveCodeReadiness(engine, { kind: 'edge', count: 0, sourceId: 'no-such-source' });
+    expect(r.status).toBe('not_built');
+    expect(r.scoped_source_id).toBeUndefined();
+  });
+
+  test('trusted local (remote === false) keeps the #3707 out_of_scope signal', async () => {
+    const r = await resolveCodeReadiness(engine, { kind: 'symbol', count: 0, sourceId: 'no-such-source', remote: false });
+    expect(r.status).toBe('out_of_scope');
+    expect(r.scoped_source_id).toBe('no-such-source');
   });
 });
 

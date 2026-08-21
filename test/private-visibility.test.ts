@@ -172,3 +172,78 @@ describe('entity card (#4352 — covers entity/context_pack/delta)', () => {
     expect(localRes.card?.entity.slug).toBe('notes/private-page');
   });
 });
+
+describe('page read ops (#4352 remediation — list_pages / get_page / fetch)', () => {
+  function mkCtx(remote: boolean) {
+    return {
+      engine,
+      config: { engine: 'pglite' },
+      logger: { info() {}, warn() {}, error() {} },
+      dryRun: false,
+      remote,
+      sourceId: 'default',
+    } as never;
+  }
+
+  test('list_pages: remote listing omits private pages; local enumerates them', async () => {
+    __resetPrivateVisibilityCacheForTests();
+    const op = operationsByName['list_pages'];
+    const remoteRows = (await op.handler(mkCtx(true), { limit: 100 })) as Array<{ slug: string }>;
+    const remoteSlugs = remoteRows.map((r) => r.slug);
+    expect(remoteSlugs).not.toContain('notes/private-page');
+    expect(remoteSlugs).toContain('notes/world-page');
+    // Absent visibility defaults to world — still listed remotely.
+    expect(remoteSlugs).toContain('notes/unmarked-page');
+
+    const localRows = (await op.handler(mkCtx(false), { limit: 100 })) as Array<{ slug: string }>;
+    expect(localRows.map((r) => r.slug)).toContain('notes/private-page');
+  });
+
+  test('get_page: remote read of a private page is page_not_found; local reads the body', async () => {
+    __resetPrivateVisibilityCacheForTests();
+    const op = operationsByName['get_page'];
+    await expect(op.handler(mkCtx(true), { slug: 'notes/private-page' })).rejects.toThrow(/Page not found/);
+    // No over-blocking: world pages stay readable remotely.
+    const world = (await op.handler(mkCtx(true), { slug: 'notes/world-page' })) as { slug: string };
+    expect(world.slug).toBe('notes/world-page');
+
+    const local = (await op.handler(mkCtx(false), { slug: 'notes/private-page' })) as { compiled_truth: string };
+    expect(local.compiled_truth).toContain('secret');
+  });
+
+  test('get_page fuzzy: remote fuzzy resolution cannot surface a private page; local can', async () => {
+    __resetPrivateVisibilityCacheForTests();
+    const op = operationsByName['get_page'];
+    await expect(
+      op.handler(mkCtx(true), { slug: 'notes/private-pag', fuzzy: true }),
+    ).rejects.toThrow(/Page not found/);
+
+    const local = (await op.handler(mkCtx(false), { slug: 'notes/private-pag', fuzzy: true })) as { slug: string };
+    expect(local.slug).toBe('notes/private-page');
+  });
+
+  test('fetch: remote fetch of a private page is page_not_found; local returns full text', async () => {
+    __resetPrivateVisibilityCacheForTests();
+    const op = operationsByName['fetch'];
+    await expect(op.handler(mkCtx(true), { id: 'notes/private-page' })).rejects.toThrow(/Page not found/);
+
+    const local = (await op.handler(mkCtx(false), { id: 'notes/private-page' })) as { text: string };
+    expect(local.text).toContain('secret');
+  });
+
+  test('config opt-out restores remote reads on all three ops', async () => {
+    await engine.setConfig(REMOTE_PRIVATE_PAGES_KEY, 'visible');
+    __resetPrivateVisibilityCacheForTests();
+    try {
+      const got = (await operationsByName['get_page'].handler(mkCtx(true), { slug: 'notes/private-page' })) as { slug: string };
+      expect(got.slug).toBe('notes/private-page');
+      const rows = (await operationsByName['list_pages'].handler(mkCtx(true), { limit: 100 })) as Array<{ slug: string }>;
+      expect(rows.map((r) => r.slug)).toContain('notes/private-page');
+      const fetched = (await operationsByName['fetch'].handler(mkCtx(true), { id: 'notes/private-page' })) as { id: string };
+      expect(fetched.id).toBe('notes/private-page');
+    } finally {
+      await engine.setConfig(REMOTE_PRIVATE_PAGES_KEY, '');
+      __resetPrivateVisibilityCacheForTests();
+    }
+  });
+});

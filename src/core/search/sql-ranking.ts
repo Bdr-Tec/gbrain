@@ -19,6 +19,7 @@
 
 import { quarantineFilterFragment } from '../quarantine.ts';
 import { unverifiedExtractionFragment } from '../extraction-review.ts';
+import { privatePagesFilterFragment } from './private-visibility.ts';
 
 /**
  * Escape `%`, `_`, and `\` so a string can be used as a LIKE prefix literal.
@@ -187,8 +188,10 @@ export function buildVisibilityClause(
   // Single source of truth for the quarantine SQL lives in quarantine.ts so
   // the marker key + filter can't drift from the search filter (#1699).
   const quarantine = quarantineFilterFragment(pageAlias);
+  // #4352 remediation: the predicate text lives ONCE in private-visibility.ts
+  // (shared with listPages + the relational-arm hydrate) so it cannot drift.
   const privateClause = opts?.excludePrivate
-    ? ` AND COALESCE(${pageAlias}.frontmatter->>'visibility', 'world') <> 'private'`
+    ? ` AND ${privatePagesFilterFragment(pageAlias)}`
     : '';
   return `AND ${pageAlias}.deleted_at IS NULL AND NOT ${sourceAlias}.archived AND ${quarantine}${privateClause}`;
 }

@@ -93,6 +93,7 @@ import { PAGE_SORT_SQL, MIN_ENTITY_PAGES_FOR_COVERAGE } from './types.ts';
 import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery } from './search/sql-ranking.ts';
+import { privatePagesFilterFragment } from './search/private-visibility.ts';
 import { unverifiedExtractionFragment } from './extraction-review.ts';
 import { shouldExcludeFromOrphanReporting, loadOrphanPolicyOverrides } from './orphan-policy.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
@@ -1982,6 +1983,10 @@ export class PGLiteEngine implements BrainEngine {
     // v0.26.5: hide soft-deleted by default; opt in via filters.includeDeleted.
     if (filters?.includeDeleted !== true) {
       where.push('p.deleted_at IS NULL');
+    }
+    // #4352: untrusted-caller private-page filter (see PageFilters.excludePrivate).
+    if (filters?.excludePrivate === true) {
+      where.push(privatePagesFilterFragment('p'));
     }
     if (filters?.effective_after) {
       params.push(filters.effective_after);

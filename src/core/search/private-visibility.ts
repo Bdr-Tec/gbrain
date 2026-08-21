@@ -21,6 +21,31 @@ import type { BrainEngine } from '../engine.ts';
 
 export const REMOTE_PRIVATE_PAGES_KEY = 'search.remote_private_pages';
 
+/**
+ * Raw SQL predicate hiding `visibility: private` pages (absent visibility
+ * defaults to 'world'). Single source of truth for the fragment — consumed by
+ * buildVisibilityClause (search paths), both engines' listPages, the
+ * relational-arm hydrate, and get_page's fuzzy-candidate filter. `pageAlias`
+ * is a code-provided literal, never user input.
+ */
+export function privatePagesFilterFragment(pageAlias: string): string {
+  return `COALESCE(${pageAlias}.frontmatter->>'visibility', 'world') <> 'private'`;
+}
+
+/**
+ * Row-side twin of privatePagesFilterFragment for pages already fetched
+ * (get_page / fetch read one row by slug; re-querying just to filter would
+ * be a second round-trip). Same semantics: only the exact string 'private'
+ * hides a page; absent/other values default to world-visible.
+ */
+export function isPrivatePage(frontmatter: unknown): boolean {
+  return (
+    typeof frontmatter === 'object' &&
+    frontmatter !== null &&
+    (frontmatter as Record<string, unknown>).visibility === 'private'
+  );
+}
+
 const CACHE_TTL_MS = 30_000;
 let cache = new WeakMap<BrainEngine, { at: number; expose: boolean }>();
 

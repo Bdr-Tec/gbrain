@@ -1408,6 +1408,10 @@ export async function hybridSearch(
       sourceIds: opts?.sourceIds,
       depth: resolvedMode.relational_retrieval_depth,
       limit: opts?.limit ?? resolvedMode.searchLimit,
+      // #4352 remediation: the arm hydrates titles + compiled_truth snippets
+      // straight from pages — thread the caller's private-page gate or a
+      // remote relational query bypasses the keyword/vector visibility clause.
+      excludePrivate: opts?.excludePrivate,
       onMeta: opts?.onRelationalMeta,
     });
   }
