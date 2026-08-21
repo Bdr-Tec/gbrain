@@ -439,8 +439,9 @@ function pickMax(current: number, max: number, status: RemediationStatus | undef
 
 // ---------------------------------------------------------------------
 // Idempotency key construction (D9 — content-hash, no time-slot).
-// Same params produce the same key across runs. Failed-row replay
-// appends `:r<N>` (caller responsibility — handled by --remediate loop).
+// Same params produce the same key across runs. Terminal-row replay
+// (a completed/failed row holds the key forever) rotates the key to
+// `:r:<doctor_run_id>` in the --remediate loop (#3626, remediation/run.ts).
 // ---------------------------------------------------------------------
 
 function idemKey(source: string, job: string, params: Record<string, unknown>): string {

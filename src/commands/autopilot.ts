@@ -473,7 +473,56 @@ async function attemptAutopilotSelfUpgrade(
   }
 }
 
+/** Flags that consume the following argv token as their value (#1525). */
+const AUTOPILOT_VALUE_FLAGS = new Set(['--repo', '--interval', '--target']);
+
+/** Positional spellings → their canonical flags. A Map (not a plain object)
+ * so prototype-chain words like `constructor` stay unknown positionals. */
+const AUTOPILOT_POSITIONAL_ALIASES = new Map<string, string>([
+  ['status', '--status'],
+  ['install', '--install'],
+  ['uninstall', '--uninstall'],
+  ['help', '--help'],
+]);
+
+/**
+ * #1525 — positional args were never validated, so `gbrain autopilot status`
+ * fell through every flag branch and STARTED the daemon in the foreground: a
+ * status CHECK silently became a daemon LAUNCH. Map the natural subcommand
+ * spellings onto their canonical flags, drop the redundant `start` (daemon
+ * start is already the default action), and refuse anything unrecognized
+ * with exit 2 before any engine or daemon work happens. Value-taking flags
+ * keep their argument verbatim (`--repo status` names a directory, not a
+ * subcommand). cli.ts resolves BEFORE connectEngine so `autopilot status`
+ * rides the same engine-free short-circuit as `--status`; the call in
+ * runAutopilot keeps direct callers safe and is a no-op on resolved argv.
+ */
+export function resolveAutopilotPositionals(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith('-')) {
+      out.push(a);
+      if (AUTOPILOT_VALUE_FLAGS.has(a) && i + 1 < args.length) out.push(args[++i]);
+      continue;
+    }
+    const alias = AUTOPILOT_POSITIONAL_ALIASES.get(a);
+    if (alias) {
+      out.push(alias);
+      continue;
+    }
+    if (a === 'start') continue; // daemon start is the default action
+    console.error(
+      `Unknown autopilot argument '${a}'. Expected one of: status, install, uninstall, start, help.\n` +
+      `Run 'gbrain autopilot --help' for usage.`,
+    );
+    process.exit(2);
+  }
+  return out;
+}
+
 export async function runAutopilot(engine: BrainEngine, args: string[]) {
+  args = resolveAutopilotPositionals(args);
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
       'Usage: gbrain autopilot [--repo <path>] [--interval N] [--json] [--no-worker]\n' +

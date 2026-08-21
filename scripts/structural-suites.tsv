@@ -62,6 +62,7 @@ test/cycle-abort.test.ts	CycleOpts.signal contract (v0.20.5)	4	readFileSync
 test/cycle-abort.test.ts	autopilot-cycle handler contract (v0.20.5)	3	readFileSync
 test/cycle-drain-renewal.test.ts	db-lock heartbeat wiring (structural — issue #6 cancellation)	1	readFileSync
 test/cycle-drain-renewal.test.ts	drain-loop wiring (structural — the shape guard only covers worker.ts)	1	readFileSync
+test/cycle-pack-gating.test.ts	#2117: pack-gated skip summaries are actionable	2	readFileSync
 test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: NEEDS_LOCK_PHASES contract (source-shape)	2	readFileSync
 test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: dispatch result envelope	2	readFileSync
 test/cycle-pack-gating.test.ts	v0.41 T9 R-GATE: orchestrator dispatch wires the pack-gate	5	readFileSync
@@ -119,8 +120,10 @@ test/extract-atoms-drain.test.ts	extract-atoms-drain Minion handler retries on p
 test/extract-atoms-drain.test.ts	shared wiring helper holds the cycle lock (5A)	2	readFileSync
 test/extract-workers.test.ts	extract.ts → workers wiring (T7)	10	readFileSync
 test/features.test.ts	CLI routing	2	bun-file
+test/fence-extraction.test.ts	Layer 8 D2 — markdown fence extraction	18	readFileSync
 test/filing-rules-resolution.serial.test.ts	per-source filing-rules resolution	3	readFileSync
 test/fix-wave-structural.test.ts	#2084 — cli.ts owns process-exit teardown via finishCliTeardown	4	readFileSync
+test/fix-wave-structural.test.ts	#2955 — sync multi-source repoPath routes through msysToNativePath	1	readFileSync
 test/fix-wave-structural.test.ts	WAL-repair wave structural pins (#223/#2575)	4	readFileSync
 test/fix-wave-structural.test.ts	five-issue fix wave — integrity progress is (source_id, slug)-keyed	1	readFileSync
 test/fix-wave-structural.test.ts	v0.36.1.x #1077 — admin register-client supports PKCE public clients	1	readFileSync
@@ -135,6 +138,7 @@ test/hook-command.serial.test.ts	user-prompt	14	readFileSync
 test/integrations-install.test.ts	installRecipeIntoHostRepo — happy path	6	readFileSync
 test/integrations.test.ts	CLI integration	3	readFileSync
 test/jobs-embed-background-parity.serial.test.ts	embed job background parity (D7)	2	readFileSync
+test/jobs-list-get-json.serial.test.ts	help advertises --json on list/get/stats (#3685)	2	readFileSync
 test/jobs-thin-client-date-rehydration.test.ts	thin-client unpack sites route through rehydrateJobDates (source audit)	2	readFileSync
 test/migrate-stdout-clean.test.ts	migration output stays off stdout	2	readFileSync
 test/migrate.test.ts	PR #356 + #363 — session timeouts applied via startup parameters	1	readFileSync

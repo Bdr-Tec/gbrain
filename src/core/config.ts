@@ -84,6 +84,13 @@ export interface GBrainConfig {
    * caveat) as voyage_api_key above.
    */
   google_api_key?: string;
+  /**
+   * Azure OpenAI API key (#4031). File-plane slot folded into the gateway env
+   * as AZURE_OPENAI_API_KEY (the name the azure-openai recipe reads). Same
+   * fold pattern (and same DB-plane caveat) as voyage_api_key above. Key-based
+   * auth alternative to the Entra flow below.
+   */
+  azure_openai_api_key?: string;
   /** Azure OpenAI (keyless/Entra). Non-secret endpoint + deployment + Entra opt-in,
    * folded into the gateway env so the azure-openai recipe works in any shell.
    * The bearer token is minted at request time via `az` — no secret stored here. */
@@ -1054,6 +1061,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'voyage_api_key',
   'dashscope_api_key',
   'google_api_key',
+  'azure_openai_api_key',
   'azure_openai_endpoint',
   'azure_openai_deployment',
   'azure_openai_use_entra',

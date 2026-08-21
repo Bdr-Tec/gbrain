@@ -553,6 +553,57 @@ describe('migration v35 — auto_rls_event_trigger structural guards', () => {
     expect(sql).toMatch(/rolbypassrls/);
     expect(sql).toMatch(/RAISE\s+EXCEPTION/i);
   });
+
+  // ── #3603: managed Postgres (RDS/Aurora) has NO reachable superuser role
+  // (rds_superuser is not enough for CREATE EVENT TRIGGER), so the original
+  // unconditional DROP+CREATE could never apply — config.version stalled at 34
+  // and every later migration silently never ran while the server kept
+  // serving. Pins: create-if-absent for BOTH objects (so a master-user
+  // pre-create converges — CREATE OR REPLACE / DROP would fail on
+  // master-owned objects), plus an actionable privilege message.
+  test('does NOT issue a bare DROP EVENT TRIGGER (#3603)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql.toUpperCase()).not.toContain('DROP EVENT TRIGGER');
+  });
+
+  test('event trigger is create-if-absent via a pg_event_trigger probe (#3603)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).toMatch(
+      /IF NOT EXISTS\s*\(\s*SELECT 1 FROM pg_event_trigger WHERE evtname = 'auto_rls_on_create_table'\s*\)/,
+    );
+    expect(sql).toMatch(/CREATE EVENT TRIGGER auto_rls_on_create_table/);
+  });
+
+  test('trigger function is create-if-absent so a master-pre-created function converges (#3603)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).not.toMatch(/CREATE\s+OR\s+REPLACE\s+FUNCTION\s+auto_enable_rls/i);
+    expect(sql).toMatch(/pg_proc/);
+    expect(sql).toMatch(/proname = 'auto_enable_rls'/);
+  });
+
+  test('CREATE EVENT TRIGGER failure raises an actionable insufficient_privilege message (#3603)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).toMatch(/EXCEPTION\s+WHEN\s+insufficient_privilege/i);
+    expect(sql).toMatch(/master user/);
+    // Still no blanket swallow — only the privilege error is translated.
+    expect(sql.toUpperCase()).not.toContain('EXCEPTION WHEN OTHERS');
+  });
+
+  test('BYPASSRLS gate messages carry the achievable ALTER ROLE grant hint (#3603)', () => {
+    // "Re-run as postgres" is unachievable on managed Postgres (the master
+    // user is not BYPASSRLS either); the achievable fix is granting it.
+    const sqlOf = (v: number): string => {
+      const m = MIGRATIONS.find(x => x.version === v);
+      return ((m?.sqlFor as any)?.postgres ?? m?.sql ?? '') as string;
+    };
+    for (const v of [24, 29, 31, 32, 35]) {
+      expect(sqlOf(v)).toMatch(/ALTER ROLE % BYPASSRLS/);
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────

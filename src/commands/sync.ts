@@ -70,6 +70,7 @@ import {
   type OpCheckpointKey,
 } from '../core/op-checkpoint.ts';
 import { registerCleanup } from '../core/process-cleanup.ts';
+import { msysToNativePath } from '../core/path-confine.ts';
 import { type DbPacer, createDbPacer, createNoopPacer, observed } from '../core/db-pacer.ts';
 import { resolvePaceMode, loadPaceModeConfig, readPaceEnv } from '../core/pace-mode.ts';
 import { AbortError } from '../core/abort-check.ts';
@@ -869,7 +870,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       serr(`[gbrain phase] sync.git_pull done ${Date.now() - _t0}ms`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      serr(`[gbrain phase] sync.git_pull error ${Date.now() - _t0}ms (${msg.slice(0, 80)})`);
+      serr(`[gbrain phase] sync.git_pull error ${Date.now() - _t0}ms (${msg.slice(0, 200)})`);
       // v0.41.13.0 (T3 / D-V4-mech-7): pullRepo wraps execFileSync errors
       // in GitOperationError, so `error.code === 'ETIMEDOUT'` and
       // `error.signal === 'SIGTERM'` live on `.cause`, NOT on the top-
@@ -899,7 +900,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       if (msg.includes('non-fast-forward') || msg.includes('diverged')) {
         serr(`Warning: git pull failed (remote diverged). Syncing from local state.`);
       } else {
-        serr(`Warning: git pull failed: ${msg.slice(0, 100)}`);
+        serr(`Warning: git pull failed: ${msg.slice(0, 200)}`); // #1315 stderr-first
       }
     }
   }
@@ -3518,7 +3519,7 @@ See also:
         : undefined;
       timer?.unref?.();
       const repoOpts: SyncOpts = {
-        repoPath: src.local_path!,
+        repoPath: msysToNativePath(src.local_path!), // #2955: heal MSYS /c/... before joins
         dryRun, full, noPull,
         noEmbed: effectiveNoEmbed,
         noExtract,
@@ -4057,7 +4058,7 @@ export async function syncOneSource(
   const cfg = (src.config || {}) as { strategy?: 'markdown' | 'code' | 'auto' };
   const log = `\n--- Syncing source: ${src.name} ---\n`;
   const repoOpts: SyncOpts = {
-    repoPath: src.local_path!,
+    repoPath: msysToNativePath(src.local_path!), // #2955: heal MSYS /c/... before joins
     dryRun: shared.dryRun,
     full: shared.full,
     noPull: shared.noPull,
@@ -4070,8 +4071,7 @@ export async function syncOneSource(
     sourceId: src.id,
     strategy: cfg.strategy,
     concurrency: shared.concurrency,
-    // lockId defaults to `gbrain-sync:${src.id}` via the invariant in
-    // performSync (no explicit override needed — sourceId triggers it).
+    // lockId defaults to `gbrain-sync:${src.id}` via the performSync invariant (sourceId triggers it).
   };
   const result = await withSourcePrefix(src.id, () => performSync(engine, repoOpts));
   return { result, log };

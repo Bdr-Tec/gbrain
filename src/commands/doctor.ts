@@ -2736,23 +2736,25 @@ export async function buildChecks(
   progress.heartbeat('markdown_body_completeness');
   const mbcHb = startHeartbeat(progress, 'scanning pages for truncation…');
   try {
-    const sql = db.getConnection();
-    const rows = await sql`
-      SELECT p.slug,
-             length(p.compiled_truth) AS body_len,
-             length(rd.data ->> 'content') AS raw_len
-      FROM pages p
-      JOIN raw_data rd ON rd.page_id = p.id
-      WHERE rd.data ? 'content'
-        AND length(rd.data ->> 'content') > 1000
-        AND length(p.compiled_truth) < length(rd.data ->> 'content') * 0.3
-        AND (rd.data ->> 'content') ~ '(^|\n)##+ '
-      LIMIT 100
-    `;
+    // #1871: engine.executeRaw (NOT db.getConnection() — that's the postgres
+    // singleton, dead on the default PGLite engine; this check silently
+    // reported "Skipped" on every PGLite brain).
+    const rows = await engine.executeRaw<{ slug: string; body_len: number; raw_len: number }>(
+      `SELECT p.slug,
+              length(p.compiled_truth) AS body_len,
+              length(rd.data ->> 'content') AS raw_len
+       FROM pages p
+       JOIN raw_data rd ON rd.page_id = p.id
+       WHERE rd.data ? 'content'
+         AND length(rd.data ->> 'content') > 1000
+         AND length(p.compiled_truth) < length(rd.data ->> 'content') * 0.3
+         AND (rd.data ->> 'content') ~ '(^|\n)##+ '
+       LIMIT 100`,
+    );
     if (rows.length === 0) {
       checks.push({ name: 'markdown_body_completeness', status: 'ok', message: 'No truncated bodies detected' });
     } else {
-      const sample = rows.slice(0, 3).map((r: any) => r.slug).join(', ');
+      const sample = rows.slice(0, 3).map((r) => r.slug).join(', ');
       checks.push({
         name: 'markdown_body_completeness',
         status: 'warn',
@@ -2787,7 +2789,6 @@ export async function buildChecks(
   const fullContentAudit = args.includes('--content-audit');
   progress.heartbeat('oversized_pages');
   try {
-    const sql = db.getConnection();
     // Read effective bytes_block from the cached effectiveCfg loaded
     // earlier in this doctor run if available; otherwise default.
     // (We re-read here per-check to avoid threading config through
@@ -2796,15 +2797,17 @@ export async function buildChecks(
     const { loadConfig: _loadCfg } = await import('../core/config.ts');
     const _cfg = _loadCfg();
     const bytesBlock = _cfg?.content_sanity?.bytes_block ?? 500_000;
-    const rows = await sql`
-      SELECT p.slug, p.source_id,
-             octet_length(p.compiled_truth) + octet_length(COALESCE(p.timeline, '')) AS bytes
-      FROM pages p
-      WHERE p.deleted_at IS NULL
-        AND (octet_length(p.compiled_truth) + octet_length(COALESCE(p.timeline, ''))) > ${bytesBlock}
-      ORDER BY bytes DESC
-      LIMIT 100
-    `;
+    // #1871: engine.executeRaw, not the dead-on-PGLite postgres singleton.
+    const rows = await engine.executeRaw<{ slug: string; source_id: string; bytes: number }>(
+      `SELECT p.slug, p.source_id,
+              octet_length(p.compiled_truth) + octet_length(COALESCE(p.timeline, '')) AS bytes
+       FROM pages p
+       WHERE p.deleted_at IS NULL
+         AND (octet_length(p.compiled_truth) + octet_length(COALESCE(p.timeline, ''))) > $1
+       ORDER BY bytes DESC
+       LIMIT 100`,
+      [bytesBlock],
+    );
     if (rows.length === 0) {
       checks.push({
         name: 'oversized_pages',
@@ -2833,30 +2836,31 @@ export async function buildChecks(
 
   progress.heartbeat('scraper_junk_pages');
   try {
-    const sql = db.getConnection();
     const { assessContentSanity } = await import('../core/content-sanity.ts');
     const { loadOperatorLiterals } = await import('../core/content-sanity-literals.ts');
     const literals = loadOperatorLiterals();
     const scanLimit = fullContentAudit ? null : 1000;
+    // #1871: engine.executeRaw, not the dead-on-PGLite postgres singleton.
     const rows = scanLimit
-      ? await sql`
-          SELECT p.slug, p.source_id, p.title,
-                 LEFT(p.compiled_truth, 2048) AS body_head,
-                 LEFT(COALESCE(p.timeline, ''), 1024) AS tl_head,
-                 p.frontmatter
-            FROM pages p
-           WHERE p.deleted_at IS NULL
-           ORDER BY p.updated_at DESC
-           LIMIT ${scanLimit}
-        `
-      : await sql`
-          SELECT p.slug, p.source_id, p.title,
-                 LEFT(p.compiled_truth, 2048) AS body_head,
-                 LEFT(COALESCE(p.timeline, ''), 1024) AS tl_head,
-                 p.frontmatter
-            FROM pages p
-           WHERE p.deleted_at IS NULL
-        `;
+      ? await engine.executeRaw(
+          `SELECT p.slug, p.source_id, p.title,
+                  LEFT(p.compiled_truth, 2048) AS body_head,
+                  LEFT(COALESCE(p.timeline, ''), 1024) AS tl_head,
+                  p.frontmatter
+             FROM pages p
+            WHERE p.deleted_at IS NULL
+            ORDER BY p.updated_at DESC
+            LIMIT $1`,
+          [scanLimit],
+        )
+      : await engine.executeRaw(
+          `SELECT p.slug, p.source_id, p.title,
+                  LEFT(p.compiled_truth, 2048) AS body_head,
+                  LEFT(COALESCE(p.timeline, ''), 1024) AS tl_head,
+                  p.frontmatter
+             FROM pages p
+            WHERE p.deleted_at IS NULL`,
+        );
     const hits: Array<{ slug: string; matched: string[] }> = [];
     const scanRows = rows as unknown as Array<{ slug: string; source_id: string; title: string; body_head: string; tl_head: string; frontmatter: Record<string, unknown> | null }>;
     for (const r of scanRows) {
@@ -4322,7 +4326,17 @@ export async function runRemediate(
     console.log(JSON.stringify(result, null, 2));
   } else if (result.submitted.length > 0) {
     console.log(`\nBrain score: ${result.brain_score_initial} → ${result.brain_score_final} (target ${targetScore})`);
-    console.log(`Submitted: ${result.submitted.length} job(s), ${result.aborted_count} aborted/failed`);
+    // #3626: split the count honestly — a step that deduped onto an in-flight
+    // job did not submit new work; a rotated re-run did.
+    const coalesced = result.submitted.filter((s) => s.coalesced).length;
+    const rotated = result.submitted.filter((s) => s.deduped_job_id !== undefined).length;
+    const notes = [
+      ...(rotated > 0 ? [`${rotated} re-ran under a rotated key (prior terminal row held it)`] : []),
+      ...(coalesced > 0 ? [`${coalesced} coalesced onto in-flight job(s)`] : []),
+    ];
+    console.log(
+      `Submitted: ${result.submitted.length - coalesced} job(s)${notes.length > 0 ? ` (${notes.join('; ')})` : ''}, ${result.aborted_count} aborted/failed`,
+    );
   }
 
   const anyFailed = result.submitted.some(

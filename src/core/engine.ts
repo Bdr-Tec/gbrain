@@ -1549,12 +1549,17 @@ export interface BrainEngine {
    * is already known to exist. `opts.sourceId` source-scopes both the existence
    * check AND the page-id lookup inside the INSERT — required for multi-source
    * brains where the slug exists in 2+ sources.
+   *
+   * #3827: returns true when a row was actually inserted, false when the
+   * (page_id, date, summary, source) unique index deduplicated it (ON CONFLICT
+   * DO NOTHING) or the page-id subquery matched nothing under
+   * skipExistenceCheck — so callers can surface "skipped" instead of lying "ok".
    */
   addTimelineEntry(
     slug: string,
     entry: TimelineInput,
     opts?: { skipExistenceCheck?: boolean; sourceId?: string },
-  ): Promise<void>;
+  ): Promise<boolean>;
   /**
    * Bulk insert timeline entries via a single multi-row INSERT...SELECT FROM (VALUES)
    * JOIN pages statement with ON CONFLICT DO NOTHING. Returns the count of rows

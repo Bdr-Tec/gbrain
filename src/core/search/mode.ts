@@ -865,14 +865,20 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // authored this as v=16; master had already reached 18, so it sequences
 // here per the D8 convention. Same one-time global cold-miss pattern.
 //
-// bump 19→20 (D-3002): pre-fusion pool floor. hybridSearch's innerLimit
+// bump 19→20 (#3002): pre-fusion pool floor. hybridSearch's innerLimit
 // gains a floor (PRE_FUSION_POOL_FLOOR=50, and at least offset+limit), so
 // every recall arm fetches a wider candidate pool at small limits — same
 // knobs, different result set. A cache row written under the old limit*2
-// pool math must NOT be served post-upgrade. No new key part; the version
-// bump alone invalidates. Same one-time global cold-miss pattern as the
-// bumps above; refills within cache.ttl_seconds (3600s default).
-export const KNOBS_HASH_VERSION = 20;
+// pool math must NOT be served post-upgrade.
+//
+// bump 20→21 (#895): recency DEFAULT_FALLBACK coefficient lowered 0.5→0.3
+// (recency-decay.ts) so unmapped notes can't out-boost entity pages under
+// --recency. A compile-time constant, not a per-call knob, but it reorders
+// every recency-weighted result set, so pre-fix cache rows must become
+// unreachable. Both bumps ship in the same release; no new key parts —
+// the version bump alone invalidates. Same one-time global cold-miss
+// pattern as the bumps above; refills within cache.ttl_seconds (3600s).
+export const KNOBS_HASH_VERSION = 21;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The

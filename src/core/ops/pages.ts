@@ -9,8 +9,9 @@
 
 import type { BrainEngine } from '../engine.ts';
 import { clampSearchLimit } from '../engine.ts';
-import type { PageType } from '../types.ts';
+import type { Page, PageType } from '../types.ts';
 import { importFromContent } from '../import-file.ts';
+import { serializePageToMarkdown } from '../markdown.ts';
 import { writePageThrough, type WriteThroughResult } from '../write-through.ts';
 import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from '../link-extraction.ts';
 import { isFactsBackstopEligible } from '../facts/eligibility.ts';
@@ -97,10 +98,11 @@ function assertSourceInWriteGrant(ctx: OperationContext, sourceId: string): void
 
 const get_page: Operation = {
   name: 'get_page',
-  description: 'Read a page by slug (supports optional fuzzy matching). Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
+  description: 'Read a page by slug (supports optional fuzzy matching). To edit a page, pass include_content: true — the returned `content` field is the canonical full markdown (frontmatter + body + timeline sentinel); edit THAT and pass it back to put_page to round-trip losslessly. Reassembling compiled_truth/timeline by hand risks dropping sections. Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
   params: {
     slug: { type: 'string', required: true, description: 'Page slug' },
     fuzzy: { type: 'boolean', description: 'Enable fuzzy slug resolution (default: false)' },
+    include_content: { type: 'boolean', description: '#2225: include the canonical serialized `content` field (frontmatter + body + timeline sentinel) for lossless get→edit→put_page round-trips. Default false — it roughly duplicates compiled_truth + timeline, so read-only callers should not pay for it.' },
     include_deleted: { type: 'boolean', description: 'v0.26.5: surface soft-deleted pages with deleted_at populated (default: false). Used by restore workflows.' },
     source_id: { type: 'string', description: "#4329: scope the lookup to a single source (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId / the caller's grant. '__all__' spans every source for trusted local callers, your granted sources for remote callers." },
   },
@@ -108,6 +110,7 @@ const get_page: Operation = {
     const slug = p.slug as string;
     const fuzzy = (p.fuzzy as boolean) || false;
     const includeDeleted = (p.include_deleted as boolean) === true;
+    const includeContent = (p.include_content as boolean) === true;
     // #4329: honor a per-call source_id (pre-fix it was silently dropped).
     // resolveRequestedScope (inside federatedSearchScope) enforces the remote
     // caller's grant on the explicit value.
@@ -192,9 +195,19 @@ const get_page: Operation = {
     // it" signal it would get from search. The marker is also in frontmatter;
     // this is the clean, documented accessor.
     const content_flag = getContentFlag(page.frontmatter as Record<string, unknown> | null);
+    // #2225: `content` is the canonical serialized markdown (frontmatter +
+    // compiled_truth + `<!-- timeline -->` sentinel + timeline). Clients that
+    // edit-and-put_page this field round-trip losslessly; hand-concatenating
+    // compiled_truth + timeline without the sentinel used to silently destroy
+    // pages.timeline on the next write. Built from visibleBody so the
+    // privacy-fence strip above applies to untrusted readers here too.
+    // Opt-in (include_content: true): get_page is the most-called read op, and
+    // `content` roughly duplicates compiled_truth + timeline — always emitting
+    // it would double every reader's payload for the round-trip minority.
     return {
       ...visibleBody,
       tags,
+      ...(includeContent ? { content: serializePageToMarkdown(visibleBody as Page, tags) } : {}),
       ...(resolved_slug ? { resolved_slug } : {}),
       ...(content_flag ? { content_flag } : {}),
     };

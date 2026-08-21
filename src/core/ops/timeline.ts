@@ -14,7 +14,10 @@ import { writeTimelineEntryThrough } from '../timeline-write-through.ts';
 
 const add_timeline_entry: Operation = {
   name: 'add_timeline_entry',
-  description: 'Add timeline entry to a page',
+  // #2225 recon: entries land in the timeline_entries TABLE (the surface
+  // get_timeline reads), NOT the pages.timeline markdown blob that get_page
+  // returns — the two are reconciled by file write-through (#1856), not here.
+  description: 'Add timeline entry to a page. Writes a row to the structured timeline store read by get_timeline; it does not edit the pages.timeline markdown returned by get_page.',
   params: {
     slug: { type: 'string', required: true, description: 'Slug of the page whose timeline to append to.' },
     date: { type: 'string', required: true, description: "Entry date, strict YYYY-MM-DD (e.g. '2026-04-03'). Timestamps and non-calendar dates are rejected." },
@@ -50,7 +53,6 @@ const add_timeline_entry: Operation = {
     }
     // v0.31.8 (D7): thread ctx.sourceId.
     const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
-
     // #1856: on an FS/git-canonical brain (a disk target resolves for this
     // page), route the entry through the page/facts write-through seam so the
     // canonical markdown gains the bullet too — a DB-only insert stranded the
@@ -97,20 +99,22 @@ const add_timeline_entry: Operation = {
     // raw input tuple would recreate the duplicate class on the error path
     // (raw row now + re-extracted canonical row later).
     const canonical = writeThrough?.entry;
-    await ctx.engine.addTimelineEntry(p.slug as string, { // gbrain-allow-direct-insert: add_timeline_entry MCP op is the explicit canonical surface for manual timeline entries on DB-only brains; FS-canonical brains route through writeTimelineEntryThrough above
+    const inserted = await ctx.engine.addTimelineEntry(p.slug as string, { // gbrain-allow-direct-insert: add_timeline_entry MCP op is the explicit canonical surface for manual timeline entries on DB-only brains; FS-canonical brains route through writeTimelineEntryThrough above
       date: canonical?.date ?? date,
       source: canonical ? canonical.source : entryInput.source,
       summary: canonical ? canonical.summary : entryInput.summary,
       detail: entryInput.detail,
     }, sourceOpts);
-    return {
-      status: 'ok',
-      write_through: {
-        written: false,
-        skipped: isSandboxSubagent ? 'subagent_sandbox' : (writeThrough?.skipped ?? 'db_only'),
-        ...(writeThrough?.error ? { error: writeThrough.error } : {}),
-      },
+    const writeThroughReport = {
+      written: false,
+      skipped: isSandboxSubagent ? 'subagent_sandbox' : (writeThrough?.skipped ?? 'db_only'),
+      ...(writeThrough?.error ? { error: writeThrough.error } : {}),
     };
+    // #3827: the (page_id, date, summary, source) unique index deduplicates
+    // via ON CONFLICT DO NOTHING. Report the drop instead of lying 'ok' —
+    // an MCP caller retrying an identical entry now sees it was skipped.
+    if (!inserted) return { status: 'skipped', reason: 'duplicate', write_through: writeThroughReport };
+    return { status: 'ok', write_through: writeThroughReport };
   },
   cliHints: { name: 'timeline-add', positional: ['slug', 'date', 'summary'] },
 };

@@ -315,18 +315,25 @@ describeE2E('E2E: Timeline', () => {
   afterAll(teardownDB);
 
   test('add_timeline_entry + get_timeline round trip', async () => {
-    await callOp('add_timeline_entry', {
+    const entryParams = {
       slug: 'people/sarah-chen',
       date: '2025-04-01',
       summary: 'Test timeline entry',
       detail: 'Added via E2E test',
       source: 'e2e-test',
-    });
+    };
+    const first = await callOp('add_timeline_entry', entryParams);
+    expect(first).toEqual({ status: 'ok' });
+
+    // #3827: an identical retry is deduplicated by the unique index — the op
+    // must report the drop instead of a silent 'ok'.
+    const dup = await callOp('add_timeline_entry', entryParams);
+    expect(dup).toEqual({ status: 'skipped', reason: 'duplicate' });
 
     const timeline = await callOp('get_timeline', { slug: 'people/sarah-chen' }) as any[];
     expect(timeline.length).toBeGreaterThanOrEqual(1);
-    const entry = timeline.find((e: any) => e.summary === 'Test timeline entry');
-    expect(entry).toBeDefined();
+    const matching = timeline.filter((e: any) => e.summary === 'Test timeline entry');
+    expect(matching.length).toBe(1);
   }, 30_000);
 });
 

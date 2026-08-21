@@ -98,7 +98,7 @@ import {
   statusReport,
   type StatusReport,
 } from '../core/bootstrap/status.ts';
-import { verifyWorkspace, deriveWorkspaceSourceId } from '../core/bootstrap/verify.ts';
+import { verifyWorkspace, resolveVerifySourceId, deriveWorkspaceSourceId } from '../core/bootstrap/verify.ts';
 
 export const BOOTSTRAP_HELP = `gbrain bootstrap — paste-in agent install (Claude Code / Codex / opencode)
 
@@ -1555,8 +1555,8 @@ async function runVerify(ws: string, rest: string[], home: string): Promise<numb
   const engine = await createEngine(engineConfig);
   await engine.connect(engineConfig);
   try {
-    const state = readManifest(ws);
-    const sourceId = state.state === 'initialized' ? state.manifest.source_id : 'workspace';
+    // #4328 — initialized manifest wins; uninit resolves via the standard source chain (never the unregistered 'workspace' literal, whose probe writes died on the sources FK).
+    const sourceId = await resolveVerifySourceId(engine, ws);
     const result = await verifyWorkspace(engine, ws, { sourceId, gbrainHomeDir: home });
     if (jsonMode) {
       console.log(JSON.stringify({ ok: result.ok, checks: result.checks, capability: result.capability, tour: result.tour, handoff: result.handoff }, null, 2));
