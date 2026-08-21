@@ -2372,7 +2372,12 @@ export async function buildChecks(
     // that brains seeded only with code sources don't get spurious warnings
     // about missing link/timeline coverage on pages that are test fixtures, not
     // real knowledge entities.
-    const eligibleStats = (await engine.executeRaw<{ entities: number; linked_from: number; timeline: number }>(
+    // #4191: an entity counts as CONNECTED with an inbound OR outbound link.
+    // Counting outbound only (from_page_id) contradicted onboard's
+    // entity_link_coverage (inbound EXISTS, target 70%): a brain of
+    // inbound-only entities (meetings link TO people) read ok there and
+    // warn here. Same in/out predicate + 70% target both places now.
+    const eligibleStats = (await engine.executeRaw<{ entities: number; connected: number; timeline: number }>(
       `WITH eligible AS (
         SELECT id FROM pages
         WHERE deleted_at IS NULL
@@ -2382,12 +2387,14 @@ export async function buildChecks(
       )
       SELECT
         (SELECT count(*)::int FROM eligible) AS entities,
-        (SELECT count(DISTINCT from_page_id)::int FROM links WHERE from_page_id IN (SELECT id FROM eligible)) AS linked_from,
+        (SELECT count(*)::int FROM eligible e
+           WHERE EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = e.id)
+              OR EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id)) AS connected,
         (SELECT count(DISTINCT page_id)::int FROM timeline_entries WHERE page_id IN (SELECT id FROM eligible)) AS timeline`,
-    ))[0] ?? { entities: entityCount, linked_from: 0, timeline: 0 };
+    ))[0] ?? { entities: entityCount, connected: 0, timeline: 0 };
 
     const eligibleEntityCount = Number(eligibleStats.entities ?? entityCount);
-    const linkCoverage = eligibleEntityCount > 0 ? Number(eligibleStats.linked_from ?? 0) / eligibleEntityCount : 0;
+    const linkCoverage = eligibleEntityCount > 0 ? Number(eligibleStats.connected ?? 0) / eligibleEntityCount : 0;
     const timelineCoverage = eligibleEntityCount > 0 ? Number(eligibleStats.timeline ?? 0) / eligibleEntityCount : 0;
     const linkPct = (linkCoverage * 100).toFixed(0);
     const timelinePct = (timelineCoverage * 100).toFixed(0);
@@ -2405,13 +2412,13 @@ export async function buildChecks(
         status: 'ok',
         message: `Only code/test fixture entity pages found (${entityCount}); graph_coverage not applicable`,
       });
-    } else if (linkCoverage >= 0.5 && timelineCoverage >= 0.5) {
-      checks.push({ name: 'graph_coverage', status: 'ok', message: `Entity link coverage ${linkPct}%, entity timeline coverage ${timelinePct}%` });
+    } else if (linkCoverage >= 0.7 && timelineCoverage >= 0.5) {
+      checks.push({ name: 'graph_coverage', status: 'ok', message: `Entity connected coverage (in/out) ${linkPct}%, entity timeline coverage ${timelinePct}%` });
     } else {
       checks.push({
         name: 'graph_coverage',
         status: 'warn',
-        message: `Entity link coverage ${linkPct}%, entity timeline coverage ${timelinePct}% (${eligibleEntityCount} entity pages). Run: gbrain extract all`,
+        message: `Entity connected coverage (in/out) ${linkPct}% (target 70%), entity timeline coverage ${timelinePct}% (${eligibleEntityCount} entity pages). Run: gbrain extract all`,
       });
     }
 
