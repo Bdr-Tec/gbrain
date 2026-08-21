@@ -2435,7 +2435,16 @@ export async function hybridSearchCached(
       // displace legitimate ones off the offset/limit window either.
       const scopedResults = filterResultsByCallerScope(hit.results, opts);
 
-      const limit = opts?.limit || 20;
+      // #4356 — was a hard `|| 20`, independent of the mode-resolution the
+      // miss path uses (`opts?.limit || resolvedMode.searchLimit` above, in
+      // bare hybridSearch): a balanced-mode miss could cache 25 results,
+      // then the next identical-shape hit sliced that row down to 20.
+      // `resolvedForCache` is already the same resolved-mode knob set the
+      // miss path uses (its own `searchLimit` already folds `opts?.limit`
+      // through the per-call resolver above, including 0 — see mode.ts
+      // `resolveSearchMode`'s `pick()`), so mirroring it here keeps
+      // hit/miss consistent without re-resolving the mode.
+      const limit = opts?.limit || resolvedForCache.searchLimit;
       const offset = opts?.offset || 0;
       const sliced = scopedResults.slice(offset, offset + limit);
 
