@@ -93,6 +93,7 @@ import { shouldExcludeFromOrphanReporting, loadOrphanPolicyOverrides } from './o
 import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
 import { EMBED_SKIP_FILTER_FRAGMENT } from './embed-skip.ts';
 import { QUARANTINE_FILTER_FRAGMENT } from './quarantine.ts';
+import { acquireInitSchemaAdvisoryLock } from './postgres-engine/init-schema-lock.ts';
 import * as factsImpl from './postgres-engine/facts.ts';
 import type { PgFactsDeps } from './postgres-engine/facts.ts';
 import * as takesImpl from './postgres-engine/takes.ts';
@@ -453,7 +454,11 @@ export class PostgresEngine implements BrainEngine {
       caller: 'PostgresEngine.initSchema',
     });
     // Lock-census (PR6 D5): INTENTIONALLY brain-global (session lock, fixed key 42) — initSchema DDL mutates the whole database; a per-source key would let two initSchema calls deadlock on shared DDL.
-    await conn`SELECT pg_advisory_lock(42)`;
+    // #2898: deadlined pg_try_advisory_lock loop + stderr heartbeat instead of
+    // an unbounded pg_advisory_lock — a leaked pooler session holding key 42
+    // hung every gbrain invocation forever with no output. On timeout the
+    // error names the holder pid with pg_terminate_backend recovery guidance.
+    await acquireInitSchemaAdvisoryLock((q) => conn.unsafe(q));
     try {
       // Pre-schema bootstrap: add forward-referenced state the embedded schema
       // blob requires but that older brains don't have yet (issues #366/#375/
