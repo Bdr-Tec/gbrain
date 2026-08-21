@@ -15,9 +15,11 @@
  * Two grains, because the four commands read different data:
  *   - `code-def` / `code-refs` read `content_chunks.symbol_name` /
  *     `chunk_text`, which are populated at CHUNK time (during sync/import),
- *     independent of edge resolution. Their readiness is 2-state: code chunks
- *     exist → `ready`, else `not_built`. They never report `indexing` (edge
- *     resolution is irrelevant to them).
+ *     independent of edge resolution. Their readiness is 3-state: no code
+ *     chunks → `not_built`; code chunks but none carry `symbol_name` →
+ *     `no_symbols` (#3640 — chunks predate symbol extraction; hint at
+ *     `reindex-code`); symbol-bearing chunks exist → `ready`. They never
+ *     report `indexing` (edge resolution is irrelevant to them).
  *   - `code-callers` / `code-callees` read the call graph (`code_edges_*`).
  *     Their readiness is 3-state: no code chunks → `not_built`; code chunks
  *     but edges not yet resolved → `indexing`; all resolved → `ready`.
@@ -43,7 +45,7 @@
 import type { BrainEngine } from './engine.ts';
 import { EDGE_EXTRACTOR_VERSION_TS } from './chunkers/symbol-resolver.ts';
 
-export type CodeGraphStatus = 'not_built' | 'indexing' | 'ready' | 'unknown';
+export type CodeGraphStatus = 'not_built' | 'no_symbols' | 'indexing' | 'ready' | 'unknown';
 
 export interface CodeGraphReadiness {
   /** Coarse machine-readable state. */
@@ -79,6 +81,34 @@ async function codeChunksExist(engine: BrainEngine, sourceId: string | undefined
        SELECT 1 FROM content_chunks cc
          JOIN pages p ON p.id = cc.page_id
         WHERE p.page_kind = 'code' ${scopeClause}
+     ) AS e`,
+    params,
+  );
+  return Boolean(rows[0]?.e);
+}
+
+/**
+ * EXISTS probe: does any SYMBOL-BEARING code chunk exist in scope (#3640)?
+ * Code chunks can exist without symbol metadata (chunks written before
+ * symbol-aware chunking, or a chunker fallback that skipped extraction);
+ * `code-def` / `code-refs` match on `symbol_name`, so bare code-chunk
+ * existence would falsely report `ready` while every lookup returns 0.
+ * Rides the partial `idx_chunks_symbol_name` index.
+ */
+async function symbolChunksExist(engine: BrainEngine, sourceId: string | undefined): Promise<boolean> {
+  const params: unknown[] = [];
+  let scopeClause = '';
+  if (sourceId) {
+    params.push(sourceId);
+    scopeClause = `AND p.source_id = $${params.length}`;
+  }
+  const rows = await engine.executeRaw<{ e: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+        WHERE p.page_kind = 'code'
+          AND cc.symbol_name IS NOT NULL
+          ${scopeClause}
      ) AS e`,
     params,
   );
@@ -128,8 +158,14 @@ export async function resolveCodeReadiness(
       return { status: 'not_built', ready: false, has_code: false, pending_edges: false };
     }
     if (opts.kind === 'symbol') {
-      // Symbol metadata is set at chunk time; code chunks exist ⇒ genuinely none.
-      return { status: 'ready', ready: true, has_code: true, pending_edges: false };
+      // Symbol metadata is set at chunk time — but only when the chunker
+      // actually extracted symbols. Probe for symbol-bearing chunks (#3640):
+      // code chunks without any symbol_name mean every def/refs lookup will
+      // return 0 no matter the symbol, which is "not built", not "no match".
+      const hasSymbols = await symbolChunksExist(engine, sourceId);
+      return hasSymbols
+        ? { status: 'ready', ready: true, has_code: true, pending_edges: false }
+        : { status: 'no_symbols', ready: false, has_code: true, pending_edges: false };
     }
     const pending = await pendingEdgeChunksExist(engine, sourceId);
     return pending
@@ -146,6 +182,8 @@ export function readinessHint(r: CodeGraphReadiness): string | null {
   switch (r.status) {
     case 'not_built':
       return 'Symbol graph not built (no code indexed in scope). Run `gbrain sync` to index code.';
+    case 'no_symbols':
+      return 'Code is indexed but carries no symbol metadata (chunks predate symbol-aware chunking). Run `gbrain reindex-code` to rebuild the symbol graph.';
     case 'indexing':
       return 'Symbol graph still building (edges pending resolution). Re-run after the next `gbrain dream` cycle / autopilot tick.';
     case 'unknown':
