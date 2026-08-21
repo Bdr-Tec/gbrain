@@ -17,6 +17,13 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
     expect(caps.maxContext).toBe(1_050_000); // gpt-5.6 family window (recipe-driven)
   });
 
+  it('returns local chat capabilities for Ollama without tool-loop support', () => {
+    const caps = getProviderCapabilities('ollama:qwen3:8b');
+    expect(caps.supportsToolCalling).toBe(false);
+    expect(caps.supportsPromptCaching).toBe(false);
+    expect(caps.supportsParallelTools).toBe(false);
+  });
+
   it('returns capabilities for Google Gemini', () => {
     const caps = getProviderCapabilities('google:gemini-1.5-pro');
     expect(caps.supportsToolCalling).toBe(true);
@@ -96,6 +103,10 @@ describe('classifyCapabilities (D6 — three-tier capability verdict)', () => {
 
   it('returns degraded:no_caching for OpenAI (tools yes, caching no)', () => {
     expect(classifyCapabilities('openai:gpt-5.2')).toBe('degraded:no_caching');
+  });
+
+  it('returns unusable:no_tools for Ollama subagent loops', () => {
+    expect(classifyCapabilities('ollama:qwen3:8b')).toBe('unusable:no_tools');
   });
 
   it('returns degraded:no_caching for Google Gemini', () => {

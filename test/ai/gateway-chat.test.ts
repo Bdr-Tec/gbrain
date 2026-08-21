@@ -72,6 +72,8 @@ describe('chat touchpoint — recipe registry', () => {
     expect(chat!.supports_tools).toBe(false);
     expect(chat!.supports_subagent_loop).toBe(false);
     expect(chat!.supports_prompt_cache).toBe(false);
+    expect(chat!.cost_per_1m_input_usd).toBe(0);
+    expect(chat!.cost_per_1m_output_usd).toBe(0);
   });
 
   test('openai-compat chat recipes have base_url_default', () => {

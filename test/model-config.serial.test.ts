@@ -409,7 +409,7 @@ describe('providerKeyReady + resolveEffectiveChatModel (shared runtime/report re
     // embedding-only pin as chat_model would install a model
     // isAvailable('chat') rejects instead of falling back to the key-aware
     // default. (voyage is embedding-only, hence false despite a live key.
-    // ollama gained a local chat touchpoint in #4073, so keyless → ready.)
+    // ollama gained a local chat touchpoint in #4073/#4315, so keyless → ready.)
     expect(providerKeyReady('voyage:voyage-4-large', { VOYAGE_API_KEY: 'x' })).toBe(false);
     expect(providerKeyReady('ollama:llama3', {})).toBe(true);
   });
