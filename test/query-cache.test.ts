@@ -17,7 +17,7 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { SemanticQueryCache, cacheRowId } from '../src/core/search/query-cache.ts';
+import { SemanticQueryCache, cacheRowId, cacheTextGuard } from '../src/core/search/query-cache.ts';
 import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 import type { SearchResult, HybridSearchMeta } from '../src/core/types.ts';
 
@@ -245,6 +245,104 @@ describe('SemanticQueryCache \u2014 management', () => {
     expect(stats.fresh_rows).toBe(1);
     expect(stats.stale_rows).toBe(0);
     expect(stats.total_hits).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('cacheTextGuard (#1469)', () => {
+  test('verbatim equality after NFKC / case / whitespace normalization', () => {
+    expect(cacheTextGuard('what is foo', 'what is foo')).toBe(true);
+    expect(cacheTextGuard('What  is\tFoo ', 'what is foo')).toBe(true);
+    // NFKC folds full-width Latin to half-width.
+    expect(cacheTextGuard('\uff57\uff48\uff41\uff54 \uff49\uff53 \uff46\uff4f\uff4f', 'what is foo')).toBe(true);
+  });
+
+  test('unrelated queries fail the guard', () => {
+    expect(cacheTextGuard('quarterly revenue projections', 'kimchi fried rice recipe')).toBe(false);
+  });
+
+  test('near-paraphrase passes via char-bigram Dice >= 0.5', () => {
+    expect(cacheTextGuard('what is the foo bar', 'what is foo bar')).toBe(true);
+  });
+
+  test('distinct Korean queries fail the guard (CJK-safe, no token boundary needed)', () => {
+    expect(cacheTextGuard('\uae40\uce58 \ub9cc\ub4dc\ub294 \ubc29\ubc95', '\uc11c\uc6b8 \ub0a0\uc528 \uc608\ubcf4')).toBe(false);
+  });
+
+  test('near-identical Korean queries pass the guard', () => {
+    // "how to make kimchi" vs the shorter "\ubc95" form \u2014 high bigram overlap.
+    expect(cacheTextGuard('\uae40\uce58 \ub9cc\ub4dc\ub294 \ubc29\ubc95', '\uae40\uce58 \ub9cc\ub4dc\ub294 \ubc95')).toBe(true);
+  });
+
+  test('degenerate short strings: equality only, no spurious Dice pass', () => {
+    expect(cacheTextGuard('a', 'a')).toBe(true);
+    expect(cacheTextGuard('a', 'b')).toBe(false);
+    expect(cacheTextGuard('', '')).toBe(true);
+    expect(cacheTextGuard('', 'foo')).toBe(false);
+  });
+});
+
+describe('SemanticQueryCache \u2014 text guard on lookup (#1469)', () => {
+  test('degenerate embedding space: unrelated query text is a MISS even at cosine ~1.0', async () => {
+    const cache = new SemanticQueryCache(engine);
+    const emb = makeEmbedding(200);
+    await cache.store('quarterly revenue projections', emb, [makeResult('finance')], META);
+    // Same (collapsed) embedding, totally different query \u2014 must NOT be served.
+    const hit = await cache.lookup(emb, { queryText: 'kimchi fried rice recipe' });
+    expect(hit.hit).toBe(false);
+  });
+
+  test('verbatim query text is a hit through the guard', async () => {
+    const cache = new SemanticQueryCache(engine);
+    const emb = makeEmbedding(201);
+    await cache.store('quarterly revenue projections', emb, [makeResult('finance')], META);
+    const hit = await cache.lookup(emb, { queryText: 'Quarterly  Revenue Projections' });
+    expect(hit.hit).toBe(true);
+    expect(hit.results?.[0].slug).toBe('finance');
+  });
+
+  test('paraphrase (bigram Dice >= 0.5) is a hit', async () => {
+    const cache = new SemanticQueryCache(engine);
+    const emb = makeEmbedding(202);
+    await cache.store('what is foo bar', emb, [makeResult('foobar')], META);
+    const hit = await cache.lookup(emb, { queryText: 'what is the foo bar' });
+    expect(hit.hit).toBe(true);
+    expect(hit.results?.[0].slug).toBe('foobar');
+  });
+
+  test('legacy path: no queryText preserves pre-guard behavior', async () => {
+    const cache = new SemanticQueryCache(engine);
+    const emb = makeEmbedding(203);
+    await cache.store('some cached query', emb, [makeResult('legacy')], META);
+    const hit = await cache.lookup(emb);
+    expect(hit.hit).toBe(true);
+    expect(hit.results?.[0].slug).toBe('legacy');
+  });
+
+  test('Korean distinct queries do not collapse; guard scans past the closest candidate', async () => {
+    const cache = new SemanticQueryCache(engine);
+    const embA = makeEmbedding(300);
+    // Near-neighbor for the second row: cosine > 0.92 vs embA but strictly
+    // farther than embA itself, so the WRONG row sorts first.
+    const embB = new Float32Array(embA);
+    for (let i = 0; i < 10; i++) embB[i] += 0.005;
+    let mag = 0;
+    for (let i = 0; i < DIM; i++) mag += embB[i] * embB[i];
+    mag = Math.sqrt(mag);
+    for (let i = 0; i < DIM; i++) embB[i] /= mag;
+
+    // "Seoul weather forecast" (closest to lookup emb) vs "how to make kimchi".
+    await cache.store('\uc11c\uc6b8 \ub0a0\uc528 \uc608\ubcf4', embA, [makeResult('weather')], META);
+    await cache.store('\uae40\uce58 \ub9cc\ub4dc\ub294 \ubc29\ubc95', embB, [makeResult('kimchi')], META);
+
+    // Lookup with the kimchi TEXT but an embedding closest to the weather row:
+    // the guard must skip the closer non-matching candidate and serve kimchi.
+    const hit = await cache.lookup(embA, { queryText: '\uae40\uce58 \ub9cc\ub4dc\ub294 \ubc29\ubc95' });
+    expect(hit.hit).toBe(true);
+    expect(hit.results?.[0].slug).toBe('kimchi');
+
+    // A third, unrelated Korean query matches NEITHER cached text \u2192 miss.
+    const miss = await cache.lookup(embA, { queryText: '\uc8fc\uc2dd \uc2dc\uc7a5 \ubd84\uc11d' });
+    expect(miss.hit).toBe(false);
   });
 });
 
