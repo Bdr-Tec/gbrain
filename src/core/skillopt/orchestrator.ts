@@ -321,8 +321,13 @@ async function runOptimizationLoop(
 
   // Budget tracker for the whole run. BudgetExhausted propagates as
   // MUST_ABORT through every gateway.chat call.
+  //
+  // #3516: maxCostUsd === 0 means "no cap" (--no-max-cost / --max-cost-usd 0).
+  // Passing undefined switches the tracker's pricing-miss behavior from a
+  // hard BudgetExhausted(no_pricing) abort to the legacy warn-once path, so
+  // unpriced model ids (openrouter:*, litellm:*) can run at the user's own risk.
   const tracker = new BudgetTracker({
-    maxCostUsd: opts.maxCostUsd,
+    ...(opts.maxCostUsd > 0 ? { maxCostUsd: opts.maxCostUsd } : {}),
     label: `skillopt:${skillName}`,
   });
 
@@ -331,6 +336,10 @@ async function runOptimizationLoop(
 
   // Run the loop inside withBudgetTracker so every nested gateway call composes.
   let outcome: 'accepted' | 'no_improvement' | 'aborted' | 'errored' = 'no_improvement';
+  // #3516: why a run aborted/errored — surfaced on the receipt + CLI, not
+  // just the audit JSONL, so a failed run is never a silent "Outcome: errored".
+  let abortReason: 'budget_exhausted' | 'runtime_exceeded' | 'sigint' | 'error' | undefined;
+  let abortDetail: string | undefined;
   let finalText = checkpoint.best_skill_text;
   let totalStepsRun = 0;
   // Hoisted for the receipt (computed inside the budget-tracker closure).
@@ -673,32 +682,31 @@ async function runOptimizationLoop(
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('BudgetExhausted') || msg.includes('budget_exhausted')) {
       outcome = 'aborted';
-      logEvent({
-        kind: 'abort',
-        run_id: runId,
-        skill: skillName,
-        reason: 'budget_exhausted',
-        detail: msg,
-      } as never);
+      abortReason = 'budget_exhausted';
+      abortDetail = msg;
     } else if (msg.includes('skillopt_runtime_exceeded')) {
       outcome = 'aborted';
-      logEvent({
-        kind: 'abort',
-        run_id: runId,
-        skill: skillName,
-        reason: 'runtime_exceeded',
-        detail: `exceeded --max-runtime-min ${opts.maxRuntimeMin}`,
-      } as never);
+      abortReason = 'runtime_exceeded';
+      abortDetail = `exceeded --max-runtime-min ${opts.maxRuntimeMin}`;
+    } else if (msg.includes('SIGINT')) {
+      outcome = 'aborted';
+      abortReason = 'sigint';
+      abortDetail = msg;
     } else {
+      // #3516: truthful catch-all. Pre-fix this logged reason:'sigint' for
+      // EVERY unrecognized error (provider failures, no_pricing hard-fails),
+      // which made the audit trail lie about why the run died.
       outcome = 'errored';
-      logEvent({
-        kind: 'abort',
-        run_id: runId,
-        skill: skillName,
-        reason: 'sigint',
-        detail: msg,
-      } as never);
+      abortReason = 'error';
+      abortDetail = msg;
     }
+    logEvent({
+      kind: 'abort',
+      run_id: runId,
+      skill: skillName,
+      reason: abortReason,
+      detail: abortDetail,
+    } as never);
   }
 
   // If --no-mutate or bundled+!allowMutateBundled: write proposed.md instead.
@@ -732,6 +740,10 @@ async function runOptimizationLoop(
     started_at: checkpoint.started_at,
     ended_at: new Date().toISOString(),
     outcome,
+    // #3516: abort/error detail rides the receipt so --json consumers and the
+    // CLI's stderr summary both see WHY, not just that the run died.
+    ...(abortReason !== undefined ? { abort_reason: abortReason } : {}),
+    ...(abortDetail !== undefined ? { abort_detail: abortDetail } : {}),
     baseline_sel_score: baselineSelScore,
     best_sel_score: checkpoint.best_sel_score,
     ...(testScore !== undefined ? { test_score: testScore } : {}),
