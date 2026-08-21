@@ -108,7 +108,7 @@ export interface WritePageThroughOpts {
  * still re-checked by `isWriteTargetContained` after the join; this is the
  * cheap structural filter in front of it.
  */
-function sanitizeRecordedSourcePath(raw: string | null | undefined): string | null {
+export function sanitizeRecordedSourcePath(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const value = raw.trim();
   if (!value || value.includes('\0')) return null;
@@ -131,7 +131,7 @@ function sanitizeRecordedSourcePath(raw: string | null | undefined): string | nu
  * Returns null for anything not a contained `.md` file so the caller falls back
  * to the slug path.
  */
-function recordedPathFromFileUri(sourceUri: string | null | undefined, pageRoot: string): string | null {
+export function recordedPathFromFileUri(sourceUri: string | null | undefined, pageRoot: string): string | null {
   if (!sourceUri || !sourceUri.startsWith('file://')) return null;
   let abs = sourceUri.slice('file://'.length);
   if (!abs) return null;

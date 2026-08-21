@@ -543,3 +543,79 @@ describe('concurrency [ENG-E4/EV11]', () => {
     expect(fence.takes.length).toBe(rows.length);
   });
 });
+
+// #3605: shared-repo pages whose on-disk file name differs from the slug.
+// The recorded `source_path` (or a contained `file://` `source_uri` from
+// `gbrain capture --file`) is the file of record; the slug-derived path
+// minted a stray twin on add and refused update/resolve with
+// takes_mirror_unavailable even though the page's file was right there.
+describe('takes-write recorded source_path routing (#3605)', () => {
+  test('add/update/resolve hit the recorded source_path file; no slug-derived stray', async () => {
+    const slug = 'people/jane-doe-3605';
+    const recorded = 'people/Jane Doe 3605.md';
+    const filePath = join(repo, recorded);
+    mkdirSync(join(repo, 'people'), { recursive: true });
+    writeFileSync(filePath, '# Jane Doe\n\nabout jane\n', 'utf-8');
+    await engine.putPage(slug, { type: 'person', title: 'Jane Doe', compiled_truth: 'about jane' });
+    await engine.executeRaw(
+      `UPDATE pages SET source_path = $1 WHERE source_id = 'default' AND slug = $2`,
+      [recorded, slug],
+    );
+
+    const add = parsed(await dispatchToolCall(engine, 'takes_add', {
+      slug, claim: 'Jane ships weekly', kind: 'take', holder: 'world', weight: 0.6,
+    }, { ...STDIO_WORLD }));
+    expect(add.row_num).toBe(1);
+    // The fence landed in the recorded file, not a slug-derived twin.
+    expect(readFileSync(filePath, 'utf-8')).toContain('Jane ships weekly');
+    expect(existsSync(join(repo, `${slug}.md`))).toBe(false);
+
+    // update + resolve read the SAME file instead of refusing mirror_unavailable.
+    const upd = await dispatchToolCall(engine, 'takes_update', {
+      slug, row_num: add.row_num, weight: 0.9,
+    }, { ...STDIO_WORLD });
+    expect(upd.isError ?? false).toBe(false);
+    const fence = parseTakesFence(readFileSync(filePath, 'utf-8'));
+    expect(fence.takes[0].weight).toBeCloseTo(0.9);
+
+    const res = await dispatchToolCall(engine, 'takes_resolve', {
+      slug, row_num: add.row_num, quality: 'correct', evidence: 'verified',
+    }, { ...STDIO_WORLD });
+    expect(res.isError ?? false).toBe(false);
+    expect(readFileSync(filePath, 'utf-8')).toContain('| correct |');
+    expect(existsSync(join(repo, `${slug}.md`))).toBe(false);
+  });
+
+  test('a hostile recorded source_path is ignored — slug-derived fallback, nothing escapes', async () => {
+    const slug = 'notes/hostile-3605';
+    await engine.putPage(slug, { type: 'note', title: slug, compiled_truth: 'x' });
+    await engine.executeRaw(
+      `UPDATE pages SET source_path = $1 WHERE source_id = 'default' AND slug = $2`,
+      ['../outside-3605.md', slug],
+    );
+    const add = parsed(await dispatchToolCall(engine, 'takes_add', {
+      slug, claim: 'falls back safely', kind: 'take', holder: 'world',
+    }, { ...STDIO_WORLD }));
+    expect(add.row_num).toBe(1);
+    expect(readFileSync(join(repo, `${slug}.md`), 'utf-8')).toContain('falls back safely');
+    expect(existsSync(join(repo, '..', 'outside-3605.md'))).toBe(false);
+  });
+
+  test('a captured page (file:// source_uri, no source_path) appends to the captured file', async () => {
+    const slug = 'notes/captured-3605';
+    const capturedAbs = join(repo, 'notes', 'Captured Note 3605.md');
+    mkdirSync(join(repo, 'notes'), { recursive: true });
+    writeFileSync(capturedAbs, '# Captured\n\nbody\n', 'utf-8');
+    await engine.putPage(slug, { type: 'note', title: slug, compiled_truth: 'body' });
+    await engine.executeRaw(
+      `UPDATE pages SET source_uri = $1 WHERE source_id = 'default' AND slug = $2`,
+      [`file://${capturedAbs}`, slug],
+    );
+    const add = parsed(await dispatchToolCall(engine, 'takes_add', {
+      slug, claim: 'captured file is the file of record', kind: 'take', holder: 'world',
+    }, { ...STDIO_WORLD }));
+    expect(add.row_num).toBe(1);
+    expect(readFileSync(capturedAbs, 'utf-8')).toContain('captured file is the file of record');
+    expect(existsSync(join(repo, `${slug}.md`))).toBe(false);
+  });
+});
