@@ -18,12 +18,12 @@ import {
   installPid1OrphanReaper,
   _uninstallPid1OrphanReaperForTests,
 } from '../src/core/pid1-reaper.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   _uninstallPid1OrphanReaperForTests();
   for (const fn of cleanups.splice(0)) fn();
-  delete process.env.GBRAIN_PID1_REAP;
 });
 
 /** Build a fixture procDir: { pid: statLine } (plus junk entries). */
@@ -122,9 +122,10 @@ describe('installPid1OrphanReaper — gates', () => {
     expect(installPid1OrphanReaper({ platform: 'linux', selfPid: 4242 })).toBe(false);
   });
 
-  test('GBRAIN_PID1_REAP=0 off-switch wins', () => {
-    process.env.GBRAIN_PID1_REAP = '0';
-    expect(installPid1OrphanReaper({ platform: 'linux', selfPid: 1 })).toBe(false);
+  test('GBRAIN_PID1_REAP=0 off-switch wins', async () => {
+    await withEnv({ GBRAIN_PID1_REAP: '0' }, () => {
+      expect(installPid1OrphanReaper({ platform: 'linux', selfPid: 1 })).toBe(false);
+    });
   });
 
   test('linux + pid 1 → installs, ticks on the interval, idempotent', async () => {

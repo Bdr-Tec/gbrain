@@ -21,6 +21,7 @@ import {
 import { RateLeaseUnavailableError } from '../src/core/minions/rate-leases.ts';
 import { RATE_LIMIT_HALT_STREAK } from '../src/core/ai/errors.ts';
 import type { MinionJobContext } from '../src/core/minions/types.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 const job = (data: Record<string, unknown> = {}): MinionJobContext =>
   ({
@@ -40,7 +41,6 @@ const rateLimitError = () => Object.assign(new Error('slow down'), { status: 429
 beforeEach(() => _resetLlmHaltCooldownsForTests());
 afterEach(() => {
   _resetLlmHaltCooldownsForTests();
-  delete process.env.GBRAIN_LLM_HALT_COOLDOWN;
 });
 
 function makeWrapped(opts: {
@@ -223,11 +223,12 @@ describe('isolation + hatches', () => {
   });
 
   test('GBRAIN_LLM_HALT_COOLDOWN=0 disables the mechanism', async () => {
-    process.env.GBRAIN_LLM_HALT_COOLDOWN = '0';
-    const { run, calls } = makeWrapped({ fail: authError });
-    await run(job()).catch(() => {});
-    await run(job()).catch(() => {});
-    expect(calls.count).toBe(2); // no deferral — pre-#4310 behavior
+    await withEnv({ GBRAIN_LLM_HALT_COOLDOWN: '0' }, async () => {
+      const { run, calls } = makeWrapped({ fail: authError });
+      await run(job()).catch(() => {});
+      await run(job()).catch(() => {});
+      expect(calls.count).toBe(2); // no deferral — pre-#4310 behavior
+    });
   });
 });
 

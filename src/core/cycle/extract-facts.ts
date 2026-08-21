@@ -571,11 +571,11 @@ export async function runExtractFacts(
 
     if (toInsert.length === 0) continue;
 
-    const inserted = await engine.insertFacts(
+    const inserted = await engine.insertFacts( // gbrain-allow-direct-insert: extract_facts cycle phase reconciles fence → DB
       toInsert,
       { source_id: sourceId },
       deleteForPageFirst ? { deleteForPageFirst } : undefined,
-    ); // gbrain-allow-direct-insert: extract_facts cycle phase reconciles fence → DB
+    );
     result.factsInserted += inserted.inserted;
     // v0.46 (#3014) — the wipe (when needed) ran inside insertFacts' txn;
     // count it here from the atomic result rather than a separate delete.

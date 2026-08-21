@@ -5,9 +5,10 @@
  * `gbrain call resolve_slugs ...` on a federated multi-source brain silently
  * saw only the scalar source while `gbrain query` spanned the federated set.
  */
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import { runCall } from '../src/commands/call.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 type SourceRow = { id: string; local_path: string | null; archived: boolean; config: Record<string, unknown> };
 
@@ -46,40 +47,35 @@ function makeEngine(capture: { resolveSlugsOpts: unknown[] }): BrainEngine {
   } as unknown as BrainEngine;
 }
 
-let savedEnvSource: string | undefined;
-beforeAll(() => {
-  savedEnvSource = process.env.GBRAIN_SOURCE;
-  delete process.env.GBRAIN_SOURCE;
-});
-afterAll(() => {
-  if (savedEnvSource !== undefined) process.env.GBRAIN_SOURCE = savedEnvSource;
-});
-
 describe('#3874 gbrain call federated scope parity', () => {
   test('ambient-tier resolution widens unqualified reads across federated sources', async () => {
-    const capture = { resolveSlugsOpts: [] as unknown[] };
-    const engine = makeEngine(capture);
-    const outs: string[] = [];
-    await runCall(engine, ['resolve_slugs', JSON.stringify({ partial: 'foo' })], async (s) => {
-      outs.push(s);
+    await withEnv({ GBRAIN_SOURCE: undefined }, async () => {
+      const capture = { resolveSlugsOpts: [] as unknown[] };
+      const engine = makeEngine(capture);
+      const outs: string[] = [];
+      await runCall(engine, ['resolve_slugs', JSON.stringify({ partial: 'foo' })], async (s) => {
+        outs.push(s);
+      });
+      expect(capture.resolveSlugsOpts.length).toBe(1);
+      const opts = capture.resolveSlugsOpts[0] as { sourceId?: string; sourceIds?: string[] };
+      // Pre-fix: { sourceId: 'vault' } (scalar). Post-fix: the federated set.
+      expect(opts.sourceIds).toEqual(['vault', 'wiki']);
     });
-    expect(capture.resolveSlugsOpts.length).toBe(1);
-    const opts = capture.resolveSlugsOpts[0] as { sourceId?: string; sourceIds?: string[] };
-    // Pre-fix: { sourceId: 'vault' } (scalar). Post-fix: the federated set.
-    expect(opts.sourceIds).toEqual(['vault', 'wiki']);
   });
 
   test('explicit --source keeps the scalar scope (no widening)', async () => {
-    const capture = { resolveSlugsOpts: [] as unknown[] };
-    const engine = makeEngine(capture);
-    await runCall(
-      engine,
-      ['--source', 'vault', 'resolve_slugs', JSON.stringify({ partial: 'foo' })],
-      async () => {},
-    );
-    expect(capture.resolveSlugsOpts.length).toBe(1);
-    const opts = capture.resolveSlugsOpts[0] as { sourceId?: string; sourceIds?: string[] };
-    expect(opts.sourceIds).toBeUndefined();
-    expect(opts.sourceId).toBe('vault');
+    await withEnv({ GBRAIN_SOURCE: undefined }, async () => {
+      const capture = { resolveSlugsOpts: [] as unknown[] };
+      const engine = makeEngine(capture);
+      await runCall(
+        engine,
+        ['--source', 'vault', 'resolve_slugs', JSON.stringify({ partial: 'foo' })],
+        async () => {},
+      );
+      expect(capture.resolveSlugsOpts.length).toBe(1);
+      const opts = capture.resolveSlugsOpts[0] as { sourceId?: string; sourceIds?: string[] };
+      expect(opts.sourceIds).toBeUndefined();
+      expect(opts.sourceId).toBe('vault');
+    });
   });
 });

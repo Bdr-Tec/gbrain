@@ -11,11 +11,11 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import type { SearchResult } from '../src/core/types.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 const searchOp = operations.find((o) => o.name === 'search')!;
 const queryOp = operations.find((o) => o.name === 'query')!;
-const savedKey = process.env.OPENAI_API_KEY;
 
 function ctxOf(overrides: Partial<OperationContext> = {}): OperationContext {
   return {
@@ -54,8 +54,6 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  if (savedKey === undefined) delete process.env.OPENAI_API_KEY;
-  else process.env.OPENAI_API_KEY = savedKey;
   if (engine) await engine.disconnect();
 }, 60_000);
 
@@ -94,19 +92,21 @@ describe('search op — types param (#3985)', () => {
 
 describe('query op — types param (#3985)', () => {
   test('types filter applies on the no-provider hybrid path', async () => {
-    delete process.env.OPENAI_API_KEY;
-    const out = await queryOp.handler(ctxOf(), {
-      query: 'zebra telescope',
-      expand: false,
-      types: ['company'],
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const out = await queryOp.handler(ctxOf(), {
+        query: 'zebra telescope',
+        expand: false,
+        types: ['company'],
+      });
+      expect(slugsOf(out)).toEqual(['companies/acme-example']);
     });
-    expect(slugsOf(out)).toEqual(['companies/acme-example']);
   });
 
   test('query without types keeps full recall', async () => {
-    delete process.env.OPENAI_API_KEY;
-    const out = await queryOp.handler(ctxOf(), { query: 'zebra telescope', expand: false });
-    expect(slugsOf(out)).toEqual(['companies/acme-example', 'notes/telescope-note', 'people/alice-example']);
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const out = await queryOp.handler(ctxOf(), { query: 'zebra telescope', expand: false });
+      expect(slugsOf(out)).toEqual(['companies/acme-example', 'notes/telescope-note', 'people/alice-example']);
+    });
   });
 
   test('junk types reject before any retrieval work', async () => {

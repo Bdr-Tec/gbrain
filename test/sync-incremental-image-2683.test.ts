@@ -23,10 +23,10 @@ import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { performSync } from '../src/commands/sync.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 let repo: string;
-let envSave: string | undefined;
 
 function git(cmd: string) {
   execSync(cmd, { cwd: repo, stdio: 'pipe' });
@@ -44,7 +44,6 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetPgliteState(engine);
-  envSave = process.env.GBRAIN_EMBEDDING_MULTIMODAL;
   repo = mkdtempSync(join(tmpdir(), 'gbrain-2683-'));
   git('git init');
   git('git config user.email "t@t.com"');
@@ -54,8 +53,6 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  if (envSave === undefined) delete process.env.GBRAIN_EMBEDDING_MULTIMODAL;
-  else process.env.GBRAIN_EMBEDDING_MULTIMODAL = envSave;
   if (repo) rmSync(repo, { recursive: true, force: true });
 });
 
@@ -79,44 +76,45 @@ async function syncOnce(extra: Record<string, unknown> = {}) {
 for (const strategy of [undefined, 'auto'] as const) {
   const label = strategy ?? 'default (markdown)';
   test(`incremental png imports under ${label} strategy when multimodal is on`, async () => {
-    process.env.GBRAIN_EMBEDDING_MULTIMODAL = 'true';
-    const strategyOpts = strategy ? { strategy } : {};
+    await withEnv({ GBRAIN_EMBEDDING_MULTIMODAL: 'true' }, async () => {
+      const strategyOpts = strategy ? { strategy } : {};
 
-    const first = await syncOnce(strategyOpts);
-    expect(['first_sync', 'synced']).toContain(first.status);
-    expect(await pageSlugs()).toContain('note');
+      const first = await syncOnce(strategyOpts);
+      expect(['first_sync', 'synced']).toContain(first.status);
+      expect(await pageSlugs()).toContain('note');
 
-    // Commit an image AFTER the first sync — only the INCREMENTAL path sees it.
-    copyFileSync('test/fixtures/images/tiny.avif', join(repo, 'photo.png'));
-    git('git add -A && git commit -m add-image');
+      // Commit an image AFTER the first sync — only the INCREMENTAL path sees it.
+      copyFileSync('test/fixtures/images/tiny.avif', join(repo, 'photo.png'));
+      git('git add -A && git commit -m add-image');
 
-    const second = await syncOnce(strategyOpts);
-    // Pre-fix: default strategy returned 'up_to_date'/'synced' with the image
-    // silently excluded; 'auto' recorded a UTF-8 failure and blocked. Both are
-    // wrong — the image page must land and the anchor must advance.
-    expect(second.status).toBe('synced');
-    expect(second.added).toBe(1);
-    const slugs = await pageSlugs();
-    expect(slugs.some(s => s.endsWith('photo.png'))).toBe(true);
+      const second = await syncOnce(strategyOpts);
+      // Pre-fix: default strategy returned 'up_to_date'/'synced' with the image
+      // silently excluded; 'auto' recorded a UTF-8 failure and blocked. Both are
+      // wrong — the image page must land and the anchor must advance.
+      expect(second.status).toBe('synced');
+      expect(second.added).toBe(1);
+      const slugs = await pageSlugs();
+      expect(slugs.some(s => s.endsWith('photo.png'))).toBe(true);
 
-    // Anchor advanced: a third sync has nothing to do.
-    const third = await syncOnce(strategyOpts);
-    expect(third.status).toBe('up_to_date');
+      // Anchor advanced: a third sync has nothing to do.
+      const third = await syncOnce(strategyOpts);
+      expect(third.status).toBe('up_to_date');
+    });
   }, 90_000);
 }
 
 test('gate off: a committed png stays excluded (no image page, no failure)', async () => {
-  delete process.env.GBRAIN_EMBEDDING_MULTIMODAL;
+  await withEnv({ GBRAIN_EMBEDDING_MULTIMODAL: undefined }, async () => {
+    const first = await syncOnce();
+    expect(['first_sync', 'synced']).toContain(first.status);
 
-  const first = await syncOnce();
-  expect(['first_sync', 'synced']).toContain(first.status);
+    copyFileSync('test/fixtures/images/tiny.avif', join(repo, 'photo.png'));
+    git('git add -A && git commit -m add-image');
 
-  copyFileSync('test/fixtures/images/tiny.avif', join(repo, 'photo.png'));
-  git('git add -A && git commit -m add-image');
-
-  const second = await syncOnce();
-  // The png is filtered by strategy; nothing to import, no block.
-  expect(['up_to_date', 'synced']).toContain(second.status);
-  const slugs = await pageSlugs();
-  expect(slugs.some(s => s.endsWith('photo.png'))).toBe(false);
+    const second = await syncOnce();
+    // The png is filtered by strategy; nothing to import, no block.
+    expect(['up_to_date', 'synced']).toContain(second.status);
+    const slugs = await pageSlugs();
+    expect(slugs.some(s => s.endsWith('photo.png'))).toBe(false);
+  });
 }, 90_000);

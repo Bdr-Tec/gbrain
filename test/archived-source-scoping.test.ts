@@ -20,6 +20,7 @@ import {
   SourceTargetError,
 } from '../src/core/source-resolver.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 type StubSource = { id: string; local_path: string | null; archived?: boolean };
 
@@ -52,7 +53,6 @@ let root: string;
 let activeParent: string;
 let archivedChild: string;
 let archivedOnly: string;
-let savedEnvSource: string | undefined;
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'gbrain-3880-'));
@@ -61,37 +61,38 @@ beforeAll(() => {
   archivedOnly = join(root, 'graveyard');
   mkdirSync(join(archivedChild, 'notes'), { recursive: true });
   mkdirSync(join(archivedOnly, 'notes'), { recursive: true });
-  savedEnvSource = process.env.GBRAIN_SOURCE;
-  delete process.env.GBRAIN_SOURCE;
 });
 
 afterAll(() => {
-  if (savedEnvSource !== undefined) process.env.GBRAIN_SOURCE = savedEnvSource;
   rmSync(root, { recursive: true, force: true });
 });
 
 describe('#3880 tier-4 cwd resolution vs archived sources', () => {
   test('archived deeper registration does NOT shadow an active parent source', async () => {
-    const engine = stubEngine([
-      { id: 'vault', local_path: activeParent },
-      { id: 'old-sub', local_path: archivedChild, archived: true },
-    ]);
-    const cwd = join(archivedChild, 'notes');
-    // Pre-fix: 'old-sub' won the longest-prefix match and assertSourceExists
-    // threw. Post-fix: the active parent resolves.
-    expect(await resolveSourceId(engine, null, cwd)).toBe('vault');
-    const withTier = await resolveSourceWithTier(engine, null, cwd);
-    expect(withTier.source_id).toBe('vault');
-    expect(withTier.tier).toBe('local_path');
+    await withEnv({ GBRAIN_SOURCE: undefined }, async () => {
+      const engine = stubEngine([
+        { id: 'vault', local_path: activeParent },
+        { id: 'old-sub', local_path: archivedChild, archived: true },
+      ]);
+      const cwd = join(archivedChild, 'notes');
+      // Pre-fix: 'old-sub' won the longest-prefix match and assertSourceExists
+      // threw. Post-fix: the active parent resolves.
+      expect(await resolveSourceId(engine, null, cwd)).toBe('vault');
+      const withTier = await resolveSourceWithTier(engine, null, cwd);
+      expect(withTier.source_id).toBe('vault');
+      expect(withTier.tier).toBe('local_path');
+    });
   });
 
   test('cwd ONLY inside an archived tree still throws (explicit unavailable target)', async () => {
-    const engine = stubEngine([
-      { id: 'vault', local_path: activeParent },
-      { id: 'graveyard', local_path: archivedOnly, archived: true },
-    ]);
-    const cwd = join(archivedOnly, 'notes');
-    await expect(resolveSourceId(engine, null, cwd)).rejects.toThrow(SourceTargetError);
+    await withEnv({ GBRAIN_SOURCE: undefined }, async () => {
+      const engine = stubEngine([
+        { id: 'vault', local_path: activeParent },
+        { id: 'graveyard', local_path: archivedOnly, archived: true },
+      ]);
+      const cwd = join(archivedOnly, 'notes');
+      await expect(resolveSourceId(engine, null, cwd)).rejects.toThrow(SourceTargetError);
+    });
   });
 });
 

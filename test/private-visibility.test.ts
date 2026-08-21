@@ -25,6 +25,7 @@ import {
 } from '../src/core/search/private-visibility.ts';
 import { buildEntityCard } from '../src/core/verbs/entity-card.ts';
 import { operationsByName } from '../src/core/operations.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 
@@ -123,12 +124,9 @@ describe('resolveExcludePrivatePages gate (#4352)', () => {
 
   test('GBRAIN_REMOTE_PRIVATE_PAGES=1 env escape hatch disables enforcement', async () => {
     __resetPrivateVisibilityCacheForTests();
-    process.env.GBRAIN_REMOTE_PRIVATE_PAGES = '1';
-    try {
+    await withEnv({ GBRAIN_REMOTE_PRIVATE_PAGES: '1' }, async () => {
       expect(await resolveExcludePrivatePages(engine, true)).toBe(false);
-    } finally {
-      delete process.env.GBRAIN_REMOTE_PRIVATE_PAGES;
-    }
+    });
   });
 });
 

@@ -10,6 +10,7 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { applySnippetCap, buildSnippetMarker, DEFAULT_AGENT_SNIPPET_CHARS } from '../src/core/search/snippet-cap.ts';
 import type { SearchResult } from '../src/core/types.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 const searchOp = operations.find((o) => o.name === 'search')!;
@@ -120,24 +121,20 @@ describe('search op snippet cap (#3800)', () => {
 
 describe('query op snippet cap (#3800)', () => {
   const queryOp = operations.find((o) => o.name === 'query')!;
-  const savedKey = process.env.OPENAI_API_KEY;
-
-  afterAll(() => {
-    if (savedKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = savedKey;
-  });
 
   test('subagent default cap applies on the query op (no-provider hybrid path)', async () => {
-    delete process.env.OPENAI_API_KEY;
-    const out = (await queryOp.handler(ctxOf({ viaSubagent: true }), { query: 'walrus fanfare', expand: false })) as SearchResult[];
-    expect(out.length).toBe(1);
-    expect(out[0].chunk_text!.length).toBeLessThan(LONG_TEXT.length);
-    expect(out[0].chunk_text!).toContain('get_page notes/walrus');
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const out = (await queryOp.handler(ctxOf({ viaSubagent: true }), { query: 'walrus fanfare', expand: false })) as SearchResult[];
+      expect(out.length).toBe(1);
+      expect(out[0].chunk_text!.length).toBeLessThan(LONG_TEXT.length);
+      expect(out[0].chunk_text!).toContain('get_page notes/walrus');
+    });
   });
 
   test('non-subagent query keeps full text', async () => {
-    delete process.env.OPENAI_API_KEY;
-    const out = (await queryOp.handler(ctxOf(), { query: 'walrus fanfare', expand: false })) as SearchResult[];
-    expect(out[0].chunk_text).toBe(LONG_TEXT);
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const out = (await queryOp.handler(ctxOf(), { query: 'walrus fanfare', expand: false })) as SearchResult[];
+      expect(out[0].chunk_text).toBe(LONG_TEXT);
+    });
   });
 });

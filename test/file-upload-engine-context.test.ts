@@ -17,12 +17,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 let fixtureDir: string;
 let sandboxHome: string;
 let storageDir: string;
-let priorGbrainHome: string | undefined;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
@@ -45,13 +45,9 @@ beforeAll(async () => {
       storage: { backend: 'local', bucket: 'test-bucket', localPath: storageDir },
     }),
   );
-  priorGbrainHome = process.env.GBRAIN_HOME;
-  process.env.GBRAIN_HOME = sandboxHome;
 });
 
 afterAll(async () => {
-  if (priorGbrainHome === undefined) delete process.env.GBRAIN_HOME;
-  else process.env.GBRAIN_HOME = priorGbrainHome;
   if (engine) await engine.disconnect();
   for (const d of [fixtureDir, sandboxHome, storageDir]) {
     if (d) rmSync(d, { recursive: true, force: true });
@@ -60,6 +56,7 @@ afterAll(async () => {
 
 describe('file_upload engine ownership', () => {
   test('uses the MCP context engine instead of the module-global DB singleton', async () => {
+    await withEnv({ GBRAIN_HOME: sandboxHome }, async () => {
     const fixture = join(fixtureDir, 'capture.json');
     writeFileSync(fixture, '{"source":"camofox"}\n');
 
@@ -103,5 +100,6 @@ describe('file_upload engine ownership', () => {
     expect(parsed.storage_path).toBe('concepts/example-board/capture.json');
     // LocalStorage canonicalizes its base (macOS /var → /private/var).
     expect(parsed.url).toBe(`file://${join(realpathSync(storageDir), 'concepts/example-board/capture.json')}`);
+    });
   });
 });

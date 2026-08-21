@@ -16,6 +16,7 @@ import {
   waitForDbLockTakeover,
 } from '../src/core/db-lock.ts';
 import { resolveSupervisorLockWaitSeconds } from '../src/core/minions/supervisor.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let eng: PGLiteEngine;
 
@@ -130,26 +131,25 @@ describe('waitForDbLockTakeover (#2308)', () => {
 
 describe('resolveSupervisorLockWaitSeconds — env hatch', () => {
   const KEY = 'GBRAIN_SUPERVISOR_LOCK_WAIT_SECONDS';
-  const orig = process.env[KEY];
-  afterAll(() => {
-    if (orig === undefined) delete process.env[KEY];
-    else process.env[KEY] = orig;
+
+  test('unset → -1 (derived TTL+grace bound)', async () => {
+    await withEnv({ [KEY]: undefined }, () => {
+      expect(resolveSupervisorLockWaitSeconds()).toBe(-1);
+    });
   });
 
-  test('unset → -1 (derived TTL+grace bound)', () => {
-    delete process.env[KEY];
-    expect(resolveSupervisorLockWaitSeconds()).toBe(-1);
+  test('0 disables the wait', async () => {
+    await withEnv({ [KEY]: '0' }, () => {
+      expect(resolveSupervisorLockWaitSeconds()).toBe(0);
+    });
   });
 
-  test('0 disables the wait', () => {
-    process.env[KEY] = '0';
-    expect(resolveSupervisorLockWaitSeconds()).toBe(0);
-  });
-
-  test('positive integer is the hard bound; junk falls back to derived', () => {
-    process.env[KEY] = '90';
-    expect(resolveSupervisorLockWaitSeconds()).toBe(90);
-    process.env[KEY] = 'nonsense';
-    expect(resolveSupervisorLockWaitSeconds()).toBe(-1);
+  test('positive integer is the hard bound; junk falls back to derived', async () => {
+    await withEnv({ [KEY]: '90' }, () => {
+      expect(resolveSupervisorLockWaitSeconds()).toBe(90);
+    });
+    await withEnv({ [KEY]: 'nonsense' }, () => {
+      expect(resolveSupervisorLockWaitSeconds()).toBe(-1);
+    });
   });
 });
