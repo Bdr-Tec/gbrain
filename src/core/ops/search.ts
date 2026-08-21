@@ -20,9 +20,10 @@ import { markKeywordHits } from '../search/evidence.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from '../eval-capture.ts';
 import type { HybridSearchMeta } from '../types.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
+import { applySnippetCap, DEFAULT_AGENT_SNIPPET_CHARS } from '../search/snippet-cap.ts';
 import { QUERY_DESCRIPTION, SEARCH_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
-import type { Operation } from './contract.ts';
+import type { Operation, OperationContext } from './contract.ts';
 import {
   federatedSearchScope,
   resolvePerCallMode,
@@ -66,6 +67,69 @@ function buildRetrievalResponseMeta(
   };
 }
 
+/**
+ * #3985: normalize the `types` param. MCP passes a real array; the CLI
+ * passes `--types person,company` as one string. Rejects non-string entries
+ * and an all-empty list loudly (invalid_params) instead of silently
+ * dropping the filter. The SQL-level plumbing (SearchOpts.types → both
+ * engines' keyword/title/vector legs) has existed since v0.33 (whoknows);
+ * this just exposes it on the public search/query ops.
+ */
+function normalizeTypesParam(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const arr = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(',')
+      : null;
+  if (arr === null || arr.some((t) => typeof t !== 'string')) {
+    throw new OperationError(
+      'invalid_params',
+      '`types` must be an array of page-type strings (CLI: --types person,company).',
+    );
+  }
+  const types = [...new Set((arr as string[]).map((t) => t.trim()).filter(Boolean))];
+  if (types.length === 0) {
+    throw new OperationError(
+      'invalid_params',
+      '`types` was provided but contained no usable page-type strings (CLI: --types person,company).',
+    );
+  }
+  return types;
+}
+
+const TYPES_PARAM_DESCRIPTION =
+  "Filter results to pages whose `type` is in this list (e.g. ['person','company']). " +
+  'CLI: --types person,company. Applied at SQL level on every retrieval leg — the same ' +
+  'filter `whoknows` uses. Stacks with all other filters.';
+
+const SNIPPET_CHARS_PARAM_DESCRIPTION =
+  'Cap each result\'s chunk_text at N characters (a "… [truncated]" marker names the ' +
+  'get_page recovery move). 0 forces full text. Unset: subagent tool loops default to ' +
+  'the agent.search_snippet_chars config (300; 0=full); every other caller gets full text. (#3800)';
+
+/**
+ * #3800: resolve the effective snippet cap for one call. Explicit
+ * `snippet_chars` param wins (0 = full text); else subagent callers
+ * (ctx.viaSubagent — fail-closed dispatcher flag) read the
+ * `agent.search_snippet_chars` config, defaulting to 300; every other
+ * caller gets full text (cap 0 = no-op).
+ */
+async function resolveSnippetCap(ctx: OperationContext, p: Record<string, unknown>): Promise<number> {
+  if (typeof p.snippet_chars === 'number' && Number.isFinite(p.snippet_chars)) {
+    return Math.max(0, Math.floor(p.snippet_chars as number));
+  }
+  if (ctx.viaSubagent !== true) return 0;
+  try {
+    const raw = await ctx.engine.getConfig('agent.search_snippet_chars');
+    if (raw != null && raw !== '') {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    }
+  } catch { /* fail-open to the default */ }
+  return DEFAULT_AGENT_SNIPPET_CHARS;
+}
+
 const search: Operation = {
   name: 'search',
   description: SEARCH_DESCRIPTION,
@@ -74,12 +138,20 @@ const search: Operation = {
     limit: { type: 'number', description: 'Max results (default 20)' },
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
     mode: { type: 'string', description: 'Search mode (conservative|balanced|tokenmax). Local callers only.' },
+    // #3985: multi-type filter (plumbing shipped v0.33; exposed here).
+    types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
+    // #3800: subagent token economy — per-call snippet cap.
+    snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
   },
   handler: async (ctx, p) => {
     const startedAt = Date.now();
     const queryText = p.query as string;
     const limit = (p.limit as number) || 20;
     const offset = (p.offset as number) || 0;
+    // #3985: validated multi-type filter, threaded into both branches below.
+    const types = normalizeTypesParam(p.types);
+    // #3800: snippet cap (param > subagent config default > full text).
+    const snippetCap = await resolveSnippetCap(ctx, p);
     // #2561: unqualified trusted-local search spans federated sources.
     const scope = federatedSearchScope(ctx);
 
@@ -94,7 +166,7 @@ const search: Operation = {
     const keywordOnly = (await ctx.engine.getConfig('search.mcp_keyword_only')) === 'true';
 
     if (keywordOnly) {
-      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, ...scope });
+      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, ...(types ? { types } : {}), ...scope });
       const results = dedupResults(raw);
       // #3783 — every row here IS a keyword hit (direct FTS path); mark
       // before stamping so evidence still reads keyword_exact.
@@ -111,7 +183,8 @@ const search: Operation = {
       bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
       maybeCaptureSearch(ctx, queryText, results, Date.now() - startedAt, false);
       ctx.emitResponseMeta?.('retrieval', buildRetrievalResponseMeta(queryText, results, null, { conceptHint: true }));
-      return results;
+      // #3800: cap AFTER capture/meta so eval + cache see the real payload.
+      return applySnippetCap(results, snippetCap);
     }
 
     // Cheap-hybrid (D4/D15): full vector+keyword+RRF+pool+title+alias, but
@@ -121,6 +194,7 @@ const search: Operation = {
       limit,
       offset,
       expansion: false,
+      ...(types ? { types } : {}),
       ...scope,
       ...(perCallMode ? { mode: perCallMode } : {}),
       onMeta: (m) => { capturedMeta = m; },
@@ -129,7 +203,8 @@ const search: Operation = {
     bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
     maybeCaptureSearch(ctx, queryText, results, latency_ms, true, capturedMeta);
     ctx.emitResponseMeta?.('retrieval', buildRetrievalResponseMeta(queryText, results, capturedMeta, { conceptHint: true }));
-    return results;
+    // #3800: cap AFTER capture/meta so eval + cache see the real payload.
+    return applySnippetCap(results, snippetCap);
   },
   scope: 'read',
   cliHints: { name: 'search', positional: ['query'] },
@@ -152,6 +227,10 @@ const query: Operation = {
     image_mime: { type: 'string', description: 'MIME type for the image bytes (auto-derived from path on CLI; required when calling op directly).' },
     limit: { type: 'number', description: 'Max results (default 20)' },
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
+    // #3985: multi-type filter (plumbing shipped v0.33; exposed here).
+    types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
+    // #3800: subagent token economy — per-call snippet cap.
+    snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
     expand: { type: 'boolean', description: 'Enable multi-query expansion (default: true)' },
     detail: { type: 'string', description: 'Result detail level: low (compiled truth only), medium (default, all with dedup), high (all chunks)' },
     mode: { type: 'string', description: 'Search mode (conservative|balanced|tokenmax). Local callers only; remote uses configured mode.' },
@@ -239,6 +318,11 @@ const query: Operation = {
     const expand = p.expand !== false;
     const detail = (p.detail as 'low' | 'medium' | 'high') || undefined;
     const queryText = p.query as string | undefined;
+    // #3985: validated multi-type filter (text path; the image-similarity
+    // branch below also honors it — searchVector filters types at SQL level).
+    const types = normalizeTypesParam(p.types);
+    // #3800: snippet cap (param > subagent config default > full text).
+    const snippetCap = await resolveSnippetCap(ctx, p);
     const imageData = p.image as string | undefined;
     const imageMime = (p.image_mime as string) || 'image/jpeg';
     const embeddingColumnParam =
@@ -272,9 +356,10 @@ const query: Operation = {
         limit: (p.limit as number) || 20,
         offset: (p.offset as number) || 0,
         embeddingColumn: 'embedding_image',
+        ...(types ? { types } : {}),
         ...querySourceScope,
       });
-      return results;
+      return applySnippetCap(results, snippetCap);
     }
 
     if (!queryText) {
@@ -309,6 +394,8 @@ const query: Operation = {
       // T4/D5 — per-call mode (local/trusted only; remote ignored).
       ...((): { mode?: string } => { const m = resolvePerCallMode(ctx, p.mode); return m ? { mode: m } : {}; })(),
       detail,
+      // #3985: multi-type filter — SearchOpts.types reaches every leg.
+      types,
       language: (p.lang as string) || undefined,
       symbolKind: (p.symbol_kind as string) || undefined,
       nearSymbol: (p.near_symbol as string) || undefined,
@@ -472,7 +559,9 @@ const query: Operation = {
       ...buildRetrievalResponseMeta(queryText, results, capturedMeta),
       crag,
     });
-    return results;
+    // #3800: cap AFTER capture/meta/CRAG so every internal consumer graded
+    // and recorded the real payload; only the returned envelope is snipped.
+    return applySnippetCap(results, snippetCap);
   },
   scope: 'read',
   cliHints: { name: 'query', positional: ['query'] },

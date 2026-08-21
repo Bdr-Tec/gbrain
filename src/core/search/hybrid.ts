@@ -2315,6 +2315,10 @@ export async function hybridSearchCached(
   // now-relative timestamp, which a persisted cache row can't express.
   const dateFiltered =
     Boolean(opts?.since ?? opts?.afterDate) || Boolean(opts?.until ?? opts?.beforeDate);
+  // #3985: type-filtered requests skip the cache — `types` is not part of
+  // knobsHash, so a filtered result set could be served to an unfiltered
+  // lookup (and vice versa). Mirrors the #3442 date-filter bypass.
+  const typeFiltered = (opts?.types?.length ?? 0) > 0;
   // Offset pages are cache-hostile until the pre-slice POOL itself is what's
   // stored: the cache holds the already offset/limit-sliced page (bare
   // hybridSearch slices before returning), so a hit for any other offset
@@ -2332,6 +2336,7 @@ export async function hybridSearchCached(
     isNonDefaultColumn ||
     adaptiveReturnOn ||
     dateFiltered ||
+    typeFiltered ||
     pagedRequest;
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';
