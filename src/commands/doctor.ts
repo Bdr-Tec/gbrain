@@ -23,6 +23,7 @@ import { computeEffectiveDate } from '../core/effective-date.ts';
 import { parseFrontmatter } from '../core/backfill-effective-date.ts';
 import { hnswIndexExpected, hnswMaxDimsForType } from '../core/vector-index.ts';
 import { VERSION as GBRAIN_BINARY_VERSION } from '../version.ts';
+import { zeroTotalContradictionsCheck } from '../core/eval-contradictions/run-health.ts';
 // Peeled doctor modules (containment sprint): each is a verbatim move out of
 // this file. doctor.ts re-exports every moved public symbol under its
 // original name so existing importers (tests, scripts/live-brain-first-check.ts,
@@ -117,6 +118,7 @@ export {
   checkLinksExtractionLag,
   checkUnverifiedExtractions,
   checkContentHashDuplicates,
+  checkCodeChunkMetadata,
   checkUndeclaredDbOnlyPages,
   checkDbOnlyCollectorCollision,
   computeExtractAtomsBacklogCheck,
@@ -195,6 +197,7 @@ import {
   checkLinksExtractionLag,
   checkUnverifiedExtractions,
   checkContentHashDuplicates,
+  checkCodeChunkMetadata,
   checkUndeclaredDbOnlyPages,
   checkDbOnlyCollectorCollision,
   computeExtractAtomsBacklogCheck,
@@ -3225,11 +3228,9 @@ export async function buildChecks(
       }
       const total = high + medium + low;
       if (total === 0) {
-        checks.push({
-          name: 'contradictions',
-          status: 'ok',
-          message: `Latest probe run (${latest.ran_at.slice(0, 10)}) found no suspected contradictions across ${latest.queries_evaluated} queries.`,
-        });
+        // #3889: warn (not ok) when the latest run judged zero pairs but
+        // errored — "0 contradictions" from an all-error run is a lie.
+        checks.push({ name: 'contradictions', ...zeroTotalContradictionsCheck(latest) });
       } else {
         const ciLow = (latest.wilson_ci_lower * 100).toFixed(0);
         const ciHigh = (latest.wilson_ci_upper * 100).toFixed(0);
@@ -3767,6 +3768,10 @@ export async function buildChecks(
     // duplicates, undeclared DB-only pages, collector-output-in-db_only.
     progress.heartbeat('content_hash_duplicates');
     checks.push(await checkContentHashDuplicates(engine));
+    // #3970: code-page chunks missing symbol metadata (unhealable without
+    // reindex-code --force — the content_hash short-circuit skips them).
+    progress.heartbeat('code_chunk_metadata');
+    checks.push(await checkCodeChunkMetadata(engine));
     progress.heartbeat('undeclared_db_only_pages');
     checks.push(await checkUndeclaredDbOnlyPages(engine));
     progress.heartbeat('db_only_collector_collision');

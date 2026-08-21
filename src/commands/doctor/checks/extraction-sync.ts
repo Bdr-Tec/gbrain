@@ -251,6 +251,48 @@ export async function checkContentHashDuplicates(engine: BrainEngine): Promise<C
   }
 }
 
+/**
+ * issue #3970 — code_chunk_metadata.
+ *
+ * Code pages whose chunks carry NO symbol metadata (symbol_name IS NULL AND
+ * language IS NULL) were chunked before the v0.19/v0.21 code chunker or
+ * re-imported through the markdown path — `code-def`, `code-refs`, and
+ * `query --lang/--symbol-kind` silently miss them. A plain sync or
+ * `reindex-code` never heals them (importCodeFile's content_hash
+ * short-circuit skips unchanged pages), so the cure is
+ * `gbrain reindex-code --force`. Raw SQL only (works on both engines).
+ */
+export async function checkCodeChunkMetadata(engine: BrainEngine): Promise<Check> {
+  const name = 'code_chunk_metadata';
+  try {
+    const rows = await engine.executeRaw<{ chunks: string | number; pages: string | number }>(
+      `SELECT COUNT(*)::text AS chunks, COUNT(DISTINCT c.page_id)::text AS pages
+         FROM content_chunks c
+         JOIN pages p ON p.id = c.page_id
+        WHERE p.type = 'code' AND p.deleted_at IS NULL
+          AND c.symbol_name IS NULL AND c.language IS NULL`,
+    );
+    const chunks = Number(rows[0]?.chunks ?? 0);
+    const pages = Number(rows[0]?.pages ?? 0);
+    if (chunks === 0) {
+      return { name, status: 'ok', message: 'All code-page chunks carry symbol metadata' };
+    }
+    return {
+      name,
+      status: 'warn',
+      message:
+        `${chunks} chunk(s) on ${pages} code page(s) have no symbol metadata ` +
+        `(symbol_name and language both NULL) — code-def/code-refs and ` +
+        `--lang/--symbol-kind filters miss them. A plain sync/reindex skips ` +
+        `unchanged pages via the content_hash short-circuit. ` +
+        `Fix: gbrain reindex-code --force`,
+      details: { chunks_missing_metadata: chunks, pages_affected: pages },
+    };
+  } catch (e) {
+    return { name, status: 'warn', message: `Could not check code chunk metadata: ${(e as Error).message}` };
+  }
+}
+
 /** Walk a repo for markdown files and return their slugified (lowercased) slugs. */
 function collectMarkdownSlugs(root: string): Set<string> {
   const out = new Set<string>();

@@ -425,6 +425,26 @@ export function buildCostRefusal(opts: {
 }
 
 /**
+ * issue #3970 — recovery hint for the "0 reindexed, N skipped" wall. Without
+ * --force, importCodeFile's content_hash short-circuit skips every unchanged
+ * page, so a user trying to backfill symbol metadata (or re-embed) sees an
+ * all-skipped pass with no pointer at the cure. Pure + exported for tests.
+ * Returns null when the hint doesn't apply (something reindexed, nothing
+ * skipped, or --force already passed).
+ */
+export function reindexForceHint(
+  result: Pick<ReindexCodeResult, 'reindexed' | 'skipped'>,
+  force: boolean | undefined,
+): string | null {
+  if (force || result.reindexed > 0 || result.skipped === 0) return null;
+  return (
+    `All ${result.skipped} page(s) were skipped by the content_hash short-circuit ` +
+    `(content unchanged since last index). To force a full re-chunk + re-embed pass ` +
+    `(e.g. to backfill symbol metadata), re-run with --force.`
+  );
+}
+
+/**
  * CLI entrypoint. Parses argv, wires cost-preview gate + JSON/TTY branching,
  * delegates to runReindexCode. Exit codes: 0 on success/dry-run, 2 on
  * ConfirmationRequired (matches sync --all), 1 on runtime error.
@@ -555,6 +575,10 @@ export async function runReindexCodeCli(engine: BrainEngine, args: string[]): Pr
         `(${result.codePages} total code pages, ~${result.totalTokens.toLocaleString()} tokens, ` +
         `est. $${result.costUsd.toFixed(2)}).`,
     );
+    // #3970: an all-skipped pass without --force is usually someone trying to
+    // heal missing chunk metadata — point at the flag that actually does it.
+    const hint = reindexForceHint(result, force);
+    if (hint) console.log(hint);
     if (result.failures && result.failures.length > 0) {
       console.log(`\n${result.failures.length} failure(s):`);
       for (const f of result.failures.slice(0, 10)) {
