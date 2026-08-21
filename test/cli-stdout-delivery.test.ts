@@ -28,6 +28,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { withEnv } from './helpers/with-env.ts';
 import {
   writeChunkSync,
   resolveStdoutDrainDeadlineMs,
@@ -308,26 +309,26 @@ describe('installStdoutPipeDelivery (#4383)', () => {
 
 describe('resolveStdoutDrainDeadlineMs (D2)', () => {
   const KEY = 'GBRAIN_STDOUT_DRAIN_DEADLINE_MS';
-  const prev = process.env[KEY];
-  afterEach(() => {
-    if (prev === undefined) delete process.env[KEY];
-    else process.env[KEY] = prev;
+
+  test('default is a generous 120s cap', async () => {
+    await withEnv({ [KEY]: undefined }, () => {
+      expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
+    });
   });
 
-  test('default is a generous 120s cap', () => {
-    delete process.env[KEY];
-    expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
-  });
-
-  test('env override wins; 0 disables the cap; junk falls back to the default', () => {
-    process.env[KEY] = '500';
-    expect(resolveStdoutDrainDeadlineMs()).toBe(500);
-    process.env[KEY] = '0';
-    expect(resolveStdoutDrainDeadlineMs()).toBe(0);
-    process.env[KEY] = 'not-a-number';
-    expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
-    process.env[KEY] = '-1';
-    expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
+  test('env override wins; 0 disables the cap; junk falls back to the default', async () => {
+    await withEnv({ [KEY]: '500' }, () => {
+      expect(resolveStdoutDrainDeadlineMs()).toBe(500);
+    });
+    await withEnv({ [KEY]: '0' }, () => {
+      expect(resolveStdoutDrainDeadlineMs()).toBe(0);
+    });
+    await withEnv({ [KEY]: 'not-a-number' }, () => {
+      expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
+    });
+    await withEnv({ [KEY]: '-1' }, () => {
+      expect(resolveStdoutDrainDeadlineMs()).toBe(120_000);
+    });
   });
 });
 

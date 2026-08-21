@@ -21,7 +21,7 @@
  *   - the batched SQL is valid on a real engine (PGLite)
  */
 
-import { describe, test, expect, afterEach } from 'bun:test';
+import { describe, test, expect, afterEach, beforeAll, afterAll } from 'bun:test';
 import {
   applyDbPlaneReadSideMerge,
   DB_MERGE_MEMO_TTL_MS,
@@ -245,23 +245,28 @@ describe('applyDbPlaneReadSideMerge — per-key fallback (no executeRaw)', () =>
 });
 
 describe('batched SQL shape on a real engine (PGLite)', () => {
-  test(`key = ANY($1) OR key LIKE 'cycle.%' round-trips through PGLite`, async () => {
+  let engine: import('../src/core/pglite-engine.ts').PGLiteEngine;
+
+  beforeAll(async () => {
     const { PGLiteEngine } = await import('../src/core/pglite-engine.ts');
-    const engine = new PGLiteEngine();
+    engine = new PGLiteEngine();
     await engine.connect({});
-    try {
-      await engine.initSchema();
-      await engine.setConfig('chat_model', 'anthropic:claude-haiku-4-5');
-      await engine.setConfig('cycle.auto_think.enabled', 'true');
-      await engine.setConfig('cycle.empty_value', ''); // dbStr semantics: unset
+    await engine.initSchema();
+  });
 
-      const merged: GBrainConfig = { engine: 'pglite' };
-      await applyDbPlaneReadSideMerge(merged, engine);
+  afterAll(async () => {
+    await engine.disconnect();
+  });
 
-      expect(merged.chat_model).toBe('anthropic:claude-haiku-4-5');
-      expect(merged.cycle).toEqual({ 'auto_think.enabled': 'true' });
-    } finally {
-      await engine.disconnect();
-    }
+  test(`key = ANY($1) OR key LIKE 'cycle.%' round-trips through PGLite`, async () => {
+    await engine.setConfig('chat_model', 'anthropic:claude-haiku-4-5');
+    await engine.setConfig('cycle.auto_think.enabled', 'true');
+    await engine.setConfig('cycle.empty_value', ''); // dbStr semantics: unset
+
+    const merged: GBrainConfig = { engine: 'pglite' };
+    await applyDbPlaneReadSideMerge(merged, engine);
+
+    expect(merged.chat_model).toBe('anthropic:claude-haiku-4-5');
+    expect(merged.cycle).toEqual({ 'auto_think.enabled': 'true' });
   }, 60_000);
 });
