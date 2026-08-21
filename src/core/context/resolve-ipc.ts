@@ -42,7 +42,7 @@
  */
 
 import net from 'node:net';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   existsSync,
   unlinkSync,
@@ -53,6 +53,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { configDir } from '../config.ts';
 import type { EntityCandidate } from './entity-salience.ts';
 import type { WindowTurn } from './entity-salience.ts';
 import type { PointerBlock } from './retrieval-reflex.ts';
@@ -283,6 +284,94 @@ export function resolveSocketPath(dataDir: string): string {
   return join(dataDir, SOCK_NAME);
 }
 
+// -- Engine-uniform paths (#4245, TODOS "engine-uniform IPC listener") --
+
+/**
+ * IPC home for brains with no data dir: `~/.gbrain/run` (GBRAIN_HOME
+ * honored via configDir). Created 0700 by the server bind / secret
+ * provision paths — never world-visible.
+ */
+export function ipcRunDir(): string {
+  return join(configDir(), 'run');
+}
+
+/** First 12 hex chars of sha256(value) — path key that never embeds the URL's credentials. */
+function hash12(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 12);
+}
+
+/** Minimal config slice the engine-uniform path resolvers key on (loadConfig's shape). */
+export interface IpcPathConfig {
+  engine?: 'postgres' | 'pglite';
+  database_path?: string;
+  database_url?: string;
+}
+
+/**
+ * Canonical socket path for a brain CONFIG (engine-uniform, #4245).
+ * PGLite keeps the data-dir socket (wire location unchanged — old serves
+ * and hooks keep pairing); Postgres gets
+ * `~/.gbrain/run/resolve-<hash12(database_url)>.sock` so two brains on one
+ * machine never share a socket. Returns null when the config carries no
+ * keying material (no config at all, thin-client remote, or a postgres
+ * config with no URL) — callers degrade, never guess.
+ *
+ * Engine is checked FIRST: a postgres config carrying a LEFTOVER
+ * database_path must not key off the path — there is no PGLite brain (and
+ * no serve) behind it (v0.45.7 gate, preserved).
+ *
+ * Multi-serve note: on Postgres several serves for the SAME database_url
+ * share this path; the newest bind wins (same last-serve-wins posture as
+ * the PGLite socket after a stale-socket cleanup). Bound-source rejection
+ * [CX2-10] still applies per request.
+ */
+export function resolveSocketPathForConfig(cfg: IpcPathConfig | null | undefined): string | null {
+  if (!cfg) return null;
+  if (cfg.engine === 'pglite' && cfg.database_path) return resolveSocketPath(cfg.database_path);
+  if (cfg.engine === 'postgres' && cfg.database_url) {
+    return join(ipcRunDir(), `resolve-${hash12(cfg.database_url)}.sock`);
+  }
+  return null;
+}
+
+/**
+ * Canonical shared-secret path for a brain config — same engine-uniform
+ * keying as resolveSocketPathForConfig (data dir on PGLite, hash12-keyed
+ * run-dir file on Postgres). Null = no keying material.
+ */
+export function ipcSecretPathForConfig(cfg: IpcPathConfig | null | undefined): string | null {
+  if (!cfg) return null;
+  if (cfg.engine === 'pglite' && cfg.database_path) return ipcSecretPath(cfg.database_path);
+  if (cfg.engine === 'postgres' && cfg.database_url) {
+    return join(ipcRunDir(), `secret-${hash12(cfg.database_url)}`);
+  }
+  return null;
+}
+
+/**
+ * Server-side (engine-uniform): ensure the secret at the config-keyed path.
+ * Null = no keying material (caller starts no listener); throws only when
+ * the file can neither be read nor created (turn_context disabled, never
+ * "skip auth" — same contract as ensureIpcSecret).
+ */
+export function ensureIpcSecretForConfig(cfg: IpcPathConfig | null | undefined): string | null {
+  const p = ipcSecretPathForConfig(cfg);
+  if (!p) return null;
+  return ensureIpcSecretAtPath(p);
+}
+
+/** Client-side (engine-uniform): read the config-keyed secret; null when absent. */
+export function readIpcSecretForConfig(cfg: IpcPathConfig | null | undefined): string | null {
+  const p = ipcSecretPathForConfig(cfg);
+  if (!p) return null;
+  try {
+    const s = readFileSync(p, 'utf8').trim();
+    return s || null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Shared secret [S3#6] ──────────────────────────────────────────────────
 
 /** Canonical shared-secret file path for a PGLite data dir. */
@@ -297,7 +386,11 @@ export function ipcSecretPath(dataDir: string): string {
  * "turn_context disabled", never as "skip auth").
  */
 export function ensureIpcSecret(dataDir: string): string {
-  const p = ipcSecretPath(dataDir);
+  return ensureIpcSecretAtPath(ipcSecretPath(dataDir));
+}
+
+/** Path-keyed body shared by the data-dir and config-keyed secret provisioners. */
+function ensureIpcSecretAtPath(p: string): string {
   try {
     const existing = readFileSync(p, 'utf8').trim();
     if (existing) {

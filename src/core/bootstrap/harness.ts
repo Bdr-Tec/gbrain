@@ -1331,9 +1331,10 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   // 11. Degradation + skew honesty.
   if (health.engine === 'postgres') {
     d.log(
-      '\nNote: this brain runs on Postgres — per-turn hook injection is degraded (no_pglite_path: the hook IPC ' +
-        'socket is PGLite-only today). MCP tools are the active seam: sessions search/read/write the brain on ' +
-        'demand; the hooks are pre-wired and light up when the engine-uniform listener lands (tracked in TODOS.md).',
+      '\nNote: this brain runs on Postgres — per-turn hook injection needs a running `gbrain serve` for this ' +
+        'brain (hooks heartbeat no_pglite_path/no_serve until one is up; the engine-uniform IPC listener keys its ' +
+        'socket off the connection URL under ~/.gbrain/run). MCP tools are the active seam: sessions ' +
+        'search/read/write the brain on demand; the pre-wired hooks light up whenever a serve runs.',
     );
   }
   if (health.version && flags.token === undefined && isServeOlderThanScopes(health.version)) {
@@ -1739,7 +1740,7 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
       d.log(`  pending: ${receipt.token.previous_ids.length} previous token(s) await revocation (re-run to converge): ${receipt.token.previous_ids.join(', ')}`);
     }
     if (degraded) {
-      d.log('per-turn injection: degraded on Postgres (MCP tools are the active seam).');
+      d.log('per-turn injection: needs a running gbrain serve on Postgres (MCP tools are the active seam).');
     }
     if (skew) d.log(`note: ${skew}`);
   }

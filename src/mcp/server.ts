@@ -13,10 +13,10 @@ import type { Operation } from '../core/operations.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import {
-  resolveSocketPath,
+  resolveSocketPathForConfig,
   startResolveIpcServer,
   cleanupStaleSocket,
-  ensureIpcSecret,
+  ensureIpcSecretForConfig,
   type IpcHandlers,
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
@@ -180,22 +180,25 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
   // Retrieval Reflex (#1981, D9=C): on a PGLite brain, serve owns the single
   // connection, so the context engine (and the per-prompt hook command)
   // resolve salient entities THROUGH us over a local unix socket rather than
-  // opening a second (impossible) connection.
+  // opening a second (impossible) connection. Engine-uniform since #4245:
+  // Postgres brains listen too (the hook lane is engine-free by design, so
+  // IPC through a serve is its only DB path there) — socket + secret key off
+  // hash12(database_url) under ~/.gbrain/run via resolveSocketPathForConfig.
   // Best-effort; failure to bind never blocks the MCP server.
   let resolveServer: import('node:net').Server | null = null;
   let resolveSocket: string | null = null;
   try {
     const cfg = loadConfig();
-    if (cfg?.engine === 'pglite' && cfg.database_path) {
-      resolveSocket = resolveSocketPath(cfg.database_path);
+    resolveSocket = resolveSocketPathForConfig(cfg);
+    if (resolveSocket) {
       const { sourceId: defaultSource } = await resolveMcpStdioSourceScope(engine);
-      // [S3#6] turn_context requires the shared secret from the data dir
-      // (created 0600 here if absent). If the secret can't be provisioned,
-      // turn_context stays fail-closed ('unauthorized') while the secret-free
-      // resolve kind keeps working.
+      // [S3#6] turn_context requires the shared secret from the config-keyed
+      // path (created 0600 here if absent). If the secret can't be
+      // provisioned, turn_context stays fail-closed ('unauthorized') while
+      // the secret-free resolve kind keeps working.
       let ipcSecret: string | undefined;
       try {
-        ipcSecret = ensureIpcSecret(cfg.database_path);
+        ipcSecret = ensureIpcSecretForConfig(cfg) ?? undefined;
       } catch { /* turn_context disabled; resolve unaffected */ }
       // Serve-delegated sync kinds — built in their OWN try/catch so a
       // runner import/registration failure can never take resolve /
