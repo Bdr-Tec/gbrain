@@ -24,13 +24,22 @@
 // GBRAIN_SCHEMA_PACK (tier 2, which outranks both the DB config at tier 4 and
 // the home config at tier 6) inside `withEnv`, and sandboxes GBRAIN_HOME.
 //
-// Fixture packs, verified on disk:
-//   - gbrain-base     → 4 inference.regex rules  → capability 'supported'
-//   - gbrain-base-v2  → 0 inference.regex rules  → capability 'no_rules'
+// Fixture packs:
+//   - gbrain-base (bundled)         → 4 inference.regex rules → capability 'supported'
+//   - no-ner-fixture-pack (written  → 0 inference.regex rules → capability 'no_rules'
+//     below into a sandboxed GBRAIN_HOME's schema-packs dir)
 // Both directions are asserted. The one-directional version of this test is
 // exactly what let the environment dependence go unnoticed.
+//
+// The regex-less fixture is a synthetic user pack, NOT a bundled one: #2117
+// ported the NER inference regexes into gbrain-base-v2 (this file's original
+// regex-less pin), and every other bundled pack `extends` gbrain-base and
+// inherits its rules through the merge — so no bundled pack is regex-less
+// anymore. The pin sanity check below caught that drift exactly as designed.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { emptyHome, withEnv } from './helpers/with-env.ts';
@@ -65,9 +74,48 @@ beforeEach(async () => {
   _resetPackLocatorForTests();
 });
 
+// Regex-less fixture pack, installed once into a dedicated sandboxed home.
+// Same minimal shape as `seedPack` in test/operations-schema-pack.test.ts
+// (proven to validate); `link_types: []` → packSupportsNerInference is false.
+const REGEXLESS_PACK = 'no-ner-fixture-pack';
+const regexlessHome = emptyHome();
+{
+  const dir = join(regexlessHome, '.gbrain', 'schema-packs', REGEXLESS_PACK);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'pack.yaml'), `api_version: gbrain-schema-pack-v1
+name: ${REGEXLESS_PACK}
+version: 1.0.0
+description: ""
+gbrain_min_version: 0.38.0
+extends: null
+borrow_from: []
+page_types:
+  - name: person
+    primitive: entity
+    path_prefixes:
+      - people/
+    aliases: []
+    extractable: false
+    expert_routing: false
+link_types: []
+frontmatter_links: []
+takes_kinds:
+  - fact
+  - take
+  - bet
+  - hunch
+enrichable_types: []
+filing_rules: []
+`, 'utf-8');
+}
+
 /** Pin the pack-resolution chain at tier 2 and sandbox the home config. */
 async function withPack<T>(packName: string | undefined, fn: () => Promise<T>): Promise<T> {
-  return await withEnv({ GBRAIN_HOME: emptyHome(), GBRAIN_SCHEMA_PACK: packName }, fn);
+  // The regex-less fixture must resolve from disk, so its pin uses the home
+  // that carries it; every other pin gets a fresh empty home. Neither home
+  // holds a config.json, so both stay hermetic at tier 6.
+  const home = packName === REGEXLESS_PACK ? regexlessHome : emptyHome();
+  return await withEnv({ GBRAIN_HOME: home, GBRAIN_SCHEMA_PACK: packName }, fn);
 }
 
 async function seedEntities(n: number) {
@@ -113,14 +161,16 @@ describe('packSupportsNerInference (shared recommender/handler gate)', () => {
 
 describe('checkEntityLinkCoverage — NER capability gate', () => {
   it('the regex-less fixture pack really does lack NER rules (pin sanity check)', async () => {
-    // Guards the two cases below: if gbrain-base-v2 ever gains an
+    // Guards the two cases below: if the fixture ever gains an
     // inference.regex rule, the withheld-rec test would start passing
-    // vacuously. Assert the fixture premise directly.
-    await withPack('gbrain-base-v2', async () => {
+    // vacuously. Assert the fixture premise directly. (This check is what
+    // caught gbrain-base-v2 — the original regex-less pin — gaining NER
+    // rules in #2117.)
+    await withPack(REGEXLESS_PACK, async () => {
       const { loadActivePack } = await import('../src/core/schema-pack/load-active.ts');
       const { loadConfigFileOnly } = await import('../src/core/config.ts');
       const pack = await loadActivePack({ cfg: loadConfigFileOnly(), remote: false });
-      expect(pack.manifest.name).toBe('gbrain-base-v2');
+      expect(pack.manifest.name).toBe(REGEXLESS_PACK);
       expect(packSupportsNerInference(pack)).toBe(false);
     });
   });
@@ -137,7 +187,7 @@ describe('checkEntityLinkCoverage — NER capability gate', () => {
 
   it('low coverage + pack WITHOUT NER rules → WARN but NO extract-ner rec, with a reason', async () => {
     await seedEntities(3); // entity pages, zero inbound links → coverage 0%
-    await withPack('gbrain-base-v2', async () => {
+    await withPack(REGEXLESS_PACK, async () => {
       const { check, remediations } = await checkEntityLinkCoverage(engine);
       expect(check.status).toBe('warn');
       expect(remediations).toHaveLength(0);
@@ -181,7 +231,7 @@ describe('recommender / handler parity (the anti-drift invariant)', () => {
   // both now go through loadActivePackForLocalEngine. Asserted as a paired
   // invariant rather than two independent expectations, so a future change to
   // either side that breaks the pairing fails here.
-  for (const [pack, expectRec] of [['gbrain-base', true], ['gbrain-base-v2', false]] as const) {
+  for (const [pack, expectRec] of [['gbrain-base', true], [REGEXLESS_PACK, false]] as const) {
     it(`agree on ${pack}: rec emitted=${expectRec} ⇔ handler can run`, async () => {
       await seedEntities(3);
       await withPack(pack, async () => {
@@ -200,21 +250,22 @@ describe('recommender / handler parity (the anti-drift invariant)', () => {
   it('agree after a DB-side pack flip that the file plane cannot see', async () => {
     // The case that proves sharing the RESOLVER matters, not just the
     // predicate. Flip the pack at tier 4 (brain-wide DB config) with no env
-    // var and an empty home, so the two sides only agree if both read the
-    // engine's schema_pack. With the handler on the old
+    // var and a config-less home, so the two sides only agree if both read
+    // the engine's schema_pack. With the handler on the old
     // `loadActivePackBestEffort({ engine } as never)` path this fails:
-    // the recommender sees gbrain-base-v2 and withholds, while the handler
-    // resolves the tier-7 default gbrain-base and would happily run —
-    // a MISSED recommendation, the phantom bug's mirror image.
+    // the recommender sees the regex-less pack and withholds, while the
+    // handler resolves the tier-7 default gbrain-base and would happily run —
+    // a MISSED recommendation, the phantom bug's mirror image. (The home must
+    // be regexlessHome so the DB-named pack resolves from disk at all.)
     await seedEntities(3);
-    await engine.setConfig('schema_pack', 'gbrain-base-v2');
-    await withEnv({ GBRAIN_HOME: emptyHome(), GBRAIN_SCHEMA_PACK: undefined }, async () => {
+    await engine.setConfig('schema_pack', REGEXLESS_PACK);
+    await withEnv({ GBRAIN_HOME: regexlessHome, GBRAIN_SCHEMA_PACK: undefined }, async () => {
       const { extractNerLinks } = await import('../src/core/extract-ner.ts');
       const { remediations } = await checkEntityLinkCoverage(engine);
       const handler = await extractNerLinks(engine, { dryRun: true });
       const recommended = remediations.some((r) => r.job === 'extract-ner');
       expect(recommended).toBe(handler.pack_unavailable !== true);
-      expect(recommended).toBe(false); // v2 declares no regex rules
+      expect(recommended).toBe(false); // the fixture declares no regex rules
     });
   });
 });
