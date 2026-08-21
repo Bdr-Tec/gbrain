@@ -61,7 +61,7 @@ import { runGuardrails, hasGuardrails, type GuardrailHook } from '../guardrails.
 import { loadConfig } from '../config.ts';
 import type { GBrainConfig } from '../config.ts';
 import { mergedProviderEnv } from './provider-env.ts';
-import { buildGatewayConfig } from './build-gateway-config.ts';
+import { buildGatewayConfig, foldNativeBaseUrlsFromFilePlane } from './build-gateway-config.ts';
 
 // ---- Gateway-wide AI-HTTP timeout (v0.42.20.0, #1762/#1775) ----
 //
@@ -502,7 +502,12 @@ export function refreshGatewayEnvFromFilePlane(): void {
   } catch {
     cfg = null;
   }
-  _config = { ..._config, env: mergedProviderEnv(cfg, process.env) };
+  // #3350: re-apply the file-plane native base-URL fold — without it a worker
+  // refresh would silently drop ANTHROPIC_BASE_URL/OPENAI_BASE_URL that the
+  // boot fold installed from provider_base_urls.{anthropic,openai}. File-plane
+  // only (cfg is loadConfig() here), preserving the mount-safety rule that
+  // DB-plane base_urls never steer native keys.
+  _config = { ..._config, env: foldNativeBaseUrlsFromFilePlane(cfg, mergedProviderEnv(cfg, process.env)) };
   _modelCache.clear();
 }
 
