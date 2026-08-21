@@ -270,7 +270,10 @@ export function decideLockAcquisition(
   lockPath: string,
   currentPid: number,
   deps: AutopilotLockProbeDeps = {},
-): { action: 'acquire' } | { action: 'exit'; holderPid: number } | { action: 'takeover'; reason: string } {
+):
+  | { action: 'acquire' }
+  | { action: 'exit'; holderPid: number; holderState: 'alive-autopilot' | 'alive-foreign' | 'alive-unknown' }
+  | { action: 'takeover'; reason: string } {
   if (!existsSync(lockPath)) return { action: 'acquire' };
 
   let raw = '';
@@ -283,15 +286,21 @@ export function decideLockAcquisition(
   const holderPid = Number.parseInt(raw, 10);
   const holder = classifyAutopilotLockHolder(holderPid, currentPid, deps);
 
-  if (holder.state === 'alive-autopilot' || holder.state === 'alive-unknown') {
-    return { action: 'exit', holderPid };
+  if (holder.state === 'alive-autopilot') {
+    return { action: 'exit', holderPid, holderState: holder.state };
   }
-  if (holder.state === 'alive-foreign') {
+  if (holder.state === 'alive-foreign' || holder.state === 'alive-unknown') {
+    // #4300: an alive PID whose command we can't identify as gbrain autopilot
+    // (recycled PID after reboot, or a /proc-less + ps-restricted host) gets
+    // the same age-gated takeover as a known-foreign holder. A fresh lock is
+    // still respected; only a stale one (past the grace window) is stolen —
+    // otherwise a single recycled PID bricks the daemon forever.
     const lockAgeMs = autopilotLockAgeMs(lockPath);
     if (lockAgeMs !== null && lockAgeMs >= AUTOPILOT_FOREIGN_PID_TAKEOVER_GRACE_MS) {
-      return { action: 'takeover', reason: `foreign pid ${raw || '<empty>'} with stale lock` };
+      const kind = holder.state === 'alive-foreign' ? 'foreign' : 'unidentifiable';
+      return { action: 'takeover', reason: `${kind} pid ${raw || '<empty>'} with stale lock` };
     }
-    return { action: 'exit', holderPid };
+    return { action: 'exit', holderPid, holderState: holder.state };
   }
   if (holder.state === 'self') {
     return { action: 'takeover', reason: `own pid ${raw || '<empty>'}` };
@@ -574,7 +583,17 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     mkdirSync(gbrainHomePath(), { recursive: true });
     const decision = decideLockAcquisition(lockPath, process.pid);
     if (decision.action === 'exit') {
-      console.error(`Another autopilot instance is running (pid ${decision.holderPid}). Exiting.`);
+      // #4300: say WHY we refused, loudly, so a bricked daemon is diagnosable
+      // from launchd/systemd logs without strace-ing the lock probe.
+      const detail =
+        decision.holderState === 'alive-autopilot'
+          ? 'a live gbrain autopilot process'
+          : decision.holderState === 'alive-unknown'
+            ? 'a live process whose command line could not be inspected (fresh lock — will become stealable once stale)'
+            : 'a live non-gbrain process holding a fresh lock (will become stealable once stale)';
+      console.error(
+        `[autopilot] refusing to start: lock ${lockPath} is held by pid ${decision.holderPid} — ${detail}. Exiting.`,
+      );
       process.exit(0);
     }
     if (decision.action === 'takeover') {
@@ -744,6 +763,11 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
   // Parser-probe fixture warning is once-per-process, not once-per-cycle
   // (compiled-binary installs have no source tree; don't spam the log).
   let parserProbeFixtureWarned = false;
+  // #2608: once-per-process no-chat-provider warning. A keyless daemon used
+  // to run every cycle "green" while all LLM phases silently no-op'd
+  // (chronicle reported no_events, propose_takes skipped, …) — the operator
+  // had no signal that shell-profile keys never reached launchd/systemd.
+  let noChatProviderWarned = false;
   // v0.37.7.0 #1162 — counter for consecutive reconnect failures.
   // Reset on every successful health probe or reconnect. Threshold
   // controlled by GBRAIN_AUTOPILOT_MAX_RECONNECT_FAILS env (default 30).
@@ -779,6 +803,24 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     // Refresh the lock mtime so another cron-fired autopilot doesn't
     // declare the instance stale after 10 minutes (Codex C).
     try { utimesSync(lockPath, new Date(), new Date()); } catch { /* best-effort */ }
+
+    // #2608: loud once-per-process signal when no chat provider is servable.
+    // Without this a keyless daemon looks healthy forever while every LLM
+    // phase quietly skips.
+    if (!noChatProviderWarned) {
+      noChatProviderWarned = true;
+      try {
+        const { isAvailable } = await import('../core/ai/gateway.ts');
+        if (!isAvailable('chat')) {
+          console.error(
+            `[autopilot] WARN: no chat provider is available to this daemon — LLM-dependent ` +
+            `phases (chronicle event extraction, propose_takes, synthesize, …) will skip. ` +
+            `Shell-profile exports often do not reach launchd/systemd: put KEY=value lines in ` +
+            `${join(gbrainHomePath(), 'keys.env')} (sourced by the wrapper) and restart autopilot.`,
+          );
+        }
+      } catch { /* gateway unconfigured — the cycle surfaces its own errors */ }
+    }
 
     // Post-migration convergence: if the file-plane engine identity changed
     // since boot, this process is connected to the wrong engine. Exit through
@@ -1653,7 +1695,10 @@ rm -f '${q(strikes)}' 2>/dev/null || true
 `;
 }
 
-function writeWrapperScript(repoPath: string, target: InstallTarget): string {
+// Exported for tests (#2608): the emitted wrapper text is the contract —
+// key-channel regressions (rc-file || chains, missing keys.env sourcing)
+// must be pinnable without installing a daemon.
+export function writeWrapperScript(repoPath: string, target: InstallTarget): string {
   // gbrainHomePath, not raw $HOME: the daemon writes its lock/markers through
   // it and the status command reads through it, so a GBRAIN_HOME install must
   // keep its wrapper (and the start-script detection that looks for it) in
@@ -1688,7 +1733,20 @@ function writeWrapperScript(repoPath: string, target: InstallTarget): string {
 # subprocess). Source it first so secrets like GBRAIN_DATABASE_URL or any
 # OPENAI/ANTHROPIC keys exported in zshenv reach autopilot.
 [ -f ~/.zshenv ] && source ~/.zshenv 2>/dev/null
-source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null || true
+# #2608: source zshrc AND bashrc independently. The old \`zshrc || bashrc\`
+# chain only reached bashrc when sourcing zshrc FAILED — on a machine with
+# both files (default macOS + a bash-managed key setup) the bashrc keys
+# never loaded and every LLM phase silently no-op'd.
+[ -f ~/.zshrc ] && source ~/.zshrc 2>/dev/null
+[ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null
+# #2608: deterministic key channel no interactive-shell guard can swallow:
+# plain KEY=value lines in keys.env under the gbrain home are auto-exported
+# (set -a) into the daemon environment.
+if [ -f '${gbrainDir.replace(/'/g, "'\\''")}/keys.env' ]; then
+  set -a
+  source '${gbrainDir.replace(/'/g, "'\\''")}/keys.env' 2>/dev/null
+  set +a
+fi
 # Belt-and-suspenders PATH fix. ~/.bashrc ships with a non-interactive guard
 # (\`case $- in *i*) ;; *) return;; esac\`) that exits early when launched from
 # cron/systemd/launchd — so its PATH exports never reach this subprocess.
@@ -1733,6 +1791,15 @@ async function installDaemon(engine: BrainEngine, args: string[]) {
   const noInject = args.includes('--no-inject');
 
   const wrapperPath = writeWrapperScript(repoPath, target);
+  // #2608: tell the operator about the deterministic key channel — launchd/
+  // systemd don't inherit the login shell env, and rc-file interactive guards
+  // routinely swallow exports, so "it works in my terminal" keys often never
+  // reach the daemon.
+  console.log(
+    `API keys: the daemon sources ${join(gbrainHomePath(), 'keys.env')} (plain KEY=value lines, ` +
+    `auto-exported) in addition to your shell profile. If LLM phases report no provider, put ` +
+    `ANTHROPIC_API_KEY=... (or your provider's key) there and restart autopilot.`,
+  );
   // A fresh install clears any prior self-disable AND any leaked pause, so a
   // reinstall does not report "disabled" forever or park itself from day one
   // on a marker some dead migration left behind.

@@ -144,7 +144,32 @@ export async function performDump(engine: BrainEngine, slug: string): Promise<Br
 `;
   await importCodeFile(engine, 'src/engine.ts', brainEngineSrc, { noEmbed: true });
   await importCodeFile(engine, 'src/sync.ts', consumerSrc, { noEmbed: true });
-}, 60000);
+
+  // #3821: decorated Python defs parse as decorated_definition wrappers.
+  // Pre-fix they emitted zero chunks, so code-def could never resolve them.
+  const pythonDecoratedSrc = `import functools
+
+@functools.lru_cache(maxsize=64)
+def cached_lookup(key):
+    """Resolve a pricing key from the canonical table with memoization."""
+    table = {"base": 100, "premium": 250, "enterprise": 900}
+    if key not in table:
+        raise KeyError("unknown pricing key: " + key)
+    return table[key]
+
+@dataclass
+class PricingConfig:
+    currency: str = "usd"
+
+    def describe(self):
+        return self.currency.upper()
+
+    @property
+    def symbol(self):
+        return "$" if self.currency == "usd" else "?"
+`;
+  await importCodeFile(engine, 'src/pricing.py', pythonDecoratedSrc, { noEmbed: true });
+}, 120_000);
 
 afterAll(async () => {
   await engine.disconnect();
@@ -181,6 +206,22 @@ describe('findCodeDef', () => {
   test('language filter with non-matching language returns empty', async () => {
     const results = await findCodeDef(engine, 'BrainEngine', { language: 'python' });
     expect(results).toEqual([]);
+  });
+
+  test('resolves a decorated python function definition (#3821)', async () => {
+    const results = await findCodeDef(engine, 'cached_lookup', { language: 'python' });
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    const match = results.find((r) => r.slug === 'src-pricing-py');
+    expect(match).toBeDefined();
+    expect(match!.symbol_type).toBe('function');
+  });
+
+  test('resolves a decorated python class definition (#3821)', async () => {
+    const results = await findCodeDef(engine, 'PricingConfig', { language: 'python' });
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    const match = results.find((r) => r.slug === 'src-pricing-py');
+    expect(match).toBeDefined();
+    expect(match!.symbol_type).toBe('class');
   });
 });
 

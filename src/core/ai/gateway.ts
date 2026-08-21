@@ -47,6 +47,7 @@ import type {
   TouchpointKind,
 } from './types.ts';
 import { resolveRecipe, assertTouchpoint, parseModelId, embeddingDimsForModel } from './model-resolver.ts';
+import { recordChatUsage } from './chat-usage.ts';
 import {
   OPENROUTER_CACHE_HEADER,
   openrouterRequiresExplicitPromptCache,
@@ -3589,6 +3590,18 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     let threw: unknown = null;
     try {
       res = await _chatTransport(opts);
+      // #4218 success boundary (test-transport lane): same accounting call as
+      // the production path below so transport-driven tests exercise it.
+      recordChatUsage({
+        model: res.model ?? modelStrEarly,
+        provider: res.providerId ?? null,
+        usage: {
+          input_tokens: res.usage.input_tokens,
+          output_tokens: res.usage.output_tokens,
+          cache_read_tokens: res.usage.cache_read_tokens,
+          cache_write_tokens: res.usage.cache_creation_tokens,
+        },
+      });
       return res;
     } catch (err) {
       threw = err;
@@ -3802,19 +3815,27 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     const { inputTokens: inTok, outputTokens: outTok } = normalizeSdkUsage(usage);
     _recordBudget(`${recipe.id}:${modelId}`, inTok, outTok);
 
+    const usageOut = {
+      input_tokens: inTok,
+      output_tokens: outTok,
+      // `usage.cachedInputTokens` is the AI SDK's provider-neutral cache-read
+      // count — it's how OpenAI-compatible routes (OpenRouter's
+      // prompt_tokens_details.cached_tokens) surface cache hits.
+      cache_read_tokens: Number(anthropicCache.cacheReadInputTokens ?? anthropicCache.cache_read_input_tokens ?? usage.cachedInputTokens ?? 0),
+      cache_creation_tokens: Number(anthropicCache.cacheCreationInputTokens ?? anthropicCache.cache_creation_input_tokens ?? 0),
+    };
+    // #4218 success boundary: durable usage ledger (fire-and-forget, fail-open).
+    recordChatUsage({
+      model: `${recipe.id}:${modelId}`,
+      provider: recipe.id,
+      usage: { ...usageOut, cache_write_tokens: usageOut.cache_creation_tokens },
+    });
+
     return {
       text: blocks.filter(b => b.type === 'text').map(b => (b as { type: 'text'; text: string }).text).join(''),
       blocks,
       stopReason: mapStopReason((result as any).finishReason, providerMetadata),
-      usage: {
-        input_tokens: inTok,
-        output_tokens: outTok,
-        // `usage.cachedInputTokens` is the AI SDK's provider-neutral cache-read
-        // count — it's how OpenAI-compatible routes (OpenRouter's
-        // prompt_tokens_details.cached_tokens) surface cache hits.
-        cache_read_tokens: Number(anthropicCache.cacheReadInputTokens ?? anthropicCache.cache_read_input_tokens ?? usage.cachedInputTokens ?? 0),
-        cache_creation_tokens: Number(anthropicCache.cacheCreationInputTokens ?? anthropicCache.cache_creation_input_tokens ?? 0),
-      },
+      usage: usageOut,
       model: `${recipe.id}:${modelId}`,
       providerId: recipe.id,
       providerMetadata,

@@ -3735,7 +3735,9 @@ export async function buildChecks(
       const succeeded = parseInt((await engine.getConfig('ocr_succeeded')) ?? '0', 10);
       const failedNoKey = parseInt((await engine.getConfig('ocr_failed_no_key')) ?? '0', 10);
       const failedOther = parseInt((await engine.getConfig('ocr_failed_other')) ?? '0', 10);
-      if (attempted === 0) {
+      // #3973: images skipped by the per-run OCR budget cap (maybeOcr).
+      const skippedBudget = parseInt((await engine.getConfig('ocr_skipped_budget')) ?? '0', 10);
+      if (attempted === 0 && skippedBudget === 0) {
         checks.push({ name: 'ocr_health', status: 'ok', message: 'OCR not in use (or no images ingested with OCR opt-in)' });
       } else if (succeeded === 0 && (failedNoKey > 0 || failedOther > 0)) {
         const reasons: string[] = [];
@@ -3746,6 +3748,13 @@ export async function buildChecks(
           status: 'warn',
           message: `OCR is opted-in but no calls succeeded (${attempted} attempted, ${reasons.join(', ')}). ` +
                    `Fix: verify OPENAI_API_KEY is set, or set embedding_image_ocr=false to disable.`,
+        });
+      } else if (skippedBudget > 0) {
+        checks.push({
+          name: 'ocr_health',
+          status: 'warn',
+          message: `OCR budget cap skipped ${skippedBudget} image(s) (${succeeded}/${attempted} attempted calls succeeded). ` +
+                   `Fix: raise embedding_image_ocr_max_images / embedding_image_ocr_max_usd and re-import, or ignore if the cap is intentional.`,
         });
       } else {
         checks.push({

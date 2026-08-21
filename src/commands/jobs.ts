@@ -15,6 +15,7 @@ import {
   JOB_CHILD_EXIT_USAGE,
 } from '../core/minions/worker-exit-codes.ts';
 import { CHILD_ENV, resolveChildCliInvocation } from '../core/minions/job-isolation.ts';
+import { withFactsAbsorbHaltCooldown } from '../core/minions/llm-halt-cooldown.ts';
 import { runChildJobEntry } from '../core/minions/run-child.ts';
 import type { MinionHandler, MinionJob, MinionJobStatus } from '../core/minions/types.ts';
 import type { PaceKeyOverrides } from '../core/pace-mode.ts';
@@ -2407,12 +2408,12 @@ export async function registerBuiltinHandlers(
   // Local patch 2026-06-11: durable facts:absorb. One-shot CLI processes
   // (capture/put/sync) can't finish the extraction chat before their exit
   // drain aborts it, so backstop.ts submits this job instead and the
-  // long-lived worker does the LLM work here. Inline mode: errors throw,
-  // so minion retry/backoff handles transient gateway failures and real
-  // failures stay visible in `gbrain jobs list --status failed`. In the
-  // gateway-refresh set so the worker re-stamps model config (and re-folds
-  // file-plane keys) before every extraction job.
-  registerBuiltinJob(worker, engine, 'facts-absorb', async (job) => {
+  // long-lived worker does the LLM work here. Inline mode: errors throw, so
+  // minion retry/backoff handles transient failures and real ones stay visible
+  // in `gbrain jobs list --status failed`. In the gateway-refresh set (model
+  // config re-stamped per job). #4310: wrapped in the provider-halt cooldown
+  // (llm-halt-cooldown.ts) — a globally-broken provider defers the queue.
+  registerBuiltinJob(worker, engine, 'facts-absorb', withFactsAbsorbHaltCooldown(async (job) => {
     const slug = typeof job.data.slug === 'string' ? job.data.slug : '';
     if (!slug) throw new Error('facts-absorb job requires data.slug');
     const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : 'default';
@@ -2444,14 +2445,13 @@ export async function registerBuiltinHandlers(
     // Execution-time chat_unavailable in a KEYED worker is config drift —
     // throw (typed) so minion retry/backoff parks it as a VISIBLE, re-runnable
     // failure instead of consuming the job and silently losing the facts. A
-    // KEYLESS worker completes the job as a calm skip (its execution-time
-    // gate already printed the keyless note; a retry loop would turn every
-    // page write into failed-job noise). The retry conversion lives HERE, not
-    // in the shared pipeline — the same pipeline serves the extract_facts op,
+    // KEYLESS worker completes the job as a calm skip (its execution-time gate
+    // already printed the keyless note; a retry loop would turn every page
+    // write into failed-job noise). The retry conversion lives HERE, not in
+    // the shared pipeline — the same pipeline serves the extract_facts op,
     // which must return its keyless envelope instead of throwing. The
-    // classification runs in the WORKER process: availability decisions
-    // belong to the process that executes (the submitting hook subprocess may
-    // have a deliberately neutered env).
+    // classification runs in the WORKER process (the submitting hook
+    // subprocess may have a deliberately neutered env).
     if (factsAbsorbUnavailable(result)) {
       const { classifyUnavailable } = await import('../core/facts/backstop.ts');
       const jobModel = typeof job.data.model === 'string' && job.data.model ? job.data.model : undefined;
@@ -2461,7 +2461,7 @@ export async function registerBuiltinHandlers(
       }
     }
     return result;
-  });
+  }));
 
   // Autopilot-cycle handler: delegates to runCycle. Shares the exact same
   // phase set and ordering as `gbrain dream` and autopilot's inline path —

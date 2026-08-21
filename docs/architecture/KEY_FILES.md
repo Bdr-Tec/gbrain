@@ -384,8 +384,8 @@ v0.46: the `sync` handler forwards `job.data.github_item` ({repo, number, kind})
 - `scripts/llms-config.ts` + `scripts/build-llms.ts` — Generator for `llms.txt` (llmstxt.org-spec web index) + `llms-full.txt` (inlined single-fetch bundle). Curated config drives both. Run `bun run build:llms` after adding a new doc. `LLMS_REPO_BASE` env lets forks regenerate with their own URL base. `FULL_SIZE_BUDGET` (600KB) caps the inline bundle; generator WARNs if exceeded. Committed output has no runtime consumer; committed for GitHub browsing and fork-safe fetching.
 - `AGENTS.md` — Local-clone entry point for non-Claude agents (Codex, Cursor, OpenClaw, Aider). Mirrors `CLAUDE.md` intent via relative links. Claude Code keeps using `CLAUDE.md`.
 - `docs/UPGRADING_DOWNSTREAM_AGENTS.md` — Patches for downstream agent skill forks to apply when upgrading. Each release appends a new section; includes diffs for brain-ops, meeting-ingestion, signal-detector, enrich.
-- `src/core/schema-embedded.ts` — AUTO-GENERATED from schema.sql (run `bun run build:schema`)
-- `src/schema.sql` — Full Postgres + pgvector DDL (source of truth, generates schema-embedded.ts)
+- `src/core/schema-embedded.generated.ts` — AUTO-GENERATED from schema.sql (run `bun run build:schema`; the `.generated.ts` suffix exempts it from the module-size ratchet's new-file cap, per the guard's generated-file carve-out)
+- `src/schema.sql` — Full Postgres + pgvector DDL (source of truth, generates schema-embedded.generated.ts)
 - `src/core/search/expansion.ts` — Multi-query expansion via Haiku. Exports `sanitizeQueryForPrompt` + `sanitizeExpansionOutput` (prompt-injection defense-in-depth). Sanitized query is only used for the LLM channel; the original query still drives search.
 - `recipes/` — Integration recipe files (YAML frontmatter + markdown setup instructions)
 - `docs/guides/` — Individual SKILLPACK guides (broken out from monolith)

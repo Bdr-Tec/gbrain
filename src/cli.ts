@@ -2408,6 +2408,18 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // #4198: `gbrain eval synthesize-concepts` gets a dedicated branch (mirror
+  // of the chronicle branch above) so the generic qrels eval can't recapture
+  // it — pre-fix it fell through to "Error: --qrels <path|json> is required".
+  // The scaffold needs no DB and exits nonzero with an honest
+  // {ok:false, status:'not_implemented'} envelope until the real evaluator
+  // lands.
+  if (command === 'eval' && args[0] === 'synthesize-concepts') {
+    const { runEvalSynthesizeConceptsCli } = await import('./commands/eval-synthesize-concepts.ts');
+    setCliExitVerdict(await runEvalSynthesizeConceptsCli(args.slice(1)));
+    return;
+  }
+
   // v0.41.13.0: `gbrain eval conversation-parser` is pure-function
   // (parses fixture JSONL, runs parseConversation, scores results).
   // No DB access; bypass connectEngine entirely so the CI fixture

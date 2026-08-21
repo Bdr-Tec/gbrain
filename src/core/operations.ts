@@ -80,6 +80,7 @@ import { syncStatusOperations } from './ops/sync-status.ts';
 import { rawDataOperations } from './ops/raw-data.ts';
 import { chunksOperations } from './ops/chunks.ts';
 import { ingestLogOperations } from './ops/ingest-log.ts';
+import { usageOperations } from './ops/usage.ts';
 import { filesOperations } from './ops/files.ts';
 import { jobsOperations } from './ops/jobs.ts';
 import { orphansOperations } from './ops/orphans.ts';
@@ -152,6 +153,8 @@ export const operations: Operation[] = [
   ...chunksOperations,
   // Ingest log (log_ingest, get_ingest_log) — ops/ingest-log.ts
   ...ingestLogOperations,
+  // Usage accounting (get_usage, #4218) — ops/usage.ts
+  ...usageOperations,
   // Files (file_list, file_upload, file_url) — ops/files.ts
   ...filesOperations,
   // Jobs (Minions: submit_job, get_job, list_jobs, cancel_job, retry_job,
@@ -265,6 +268,7 @@ const OP_AREAS: Record<string, string> = {
   sync_brain: 'sync',
   // ingest log
   log_ingest: 'ingest', get_ingest_log: 'ingest',
+  get_usage: 'admin',
   // files (localOnly)
   file_list: 'files', file_upload: 'files', file_url: 'files',
   // jobs (Minions + agent lane)

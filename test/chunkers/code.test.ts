@@ -10,8 +10,8 @@ import { describe, test, expect } from 'bun:test';
 import { chunkCodeText, detectCodeLanguage, CHUNKER_VERSION } from '../../src/core/chunkers/code.ts';
 
 describe('CHUNKER_VERSION', () => {
-  test('v0.20.0 Cathedral II Layer 12 bumped to 4', () => {
-    expect(CHUNKER_VERSION).toBe(4);
+  test('#3821 python decorated_definition support bumped to 5', () => {
+    expect(CHUNKER_VERSION).toBe(5);
   });
 });
 
@@ -271,6 +271,97 @@ def pet_the_dog():
     expect(result.length).toBeGreaterThanOrEqual(1);
     const allLanguages = result.map(c => c.metadata.language);
     for (const lang of allLanguages) expect(lang).toBe('python');
+  });
+
+  // #3821: decorated fns/classes parse as decorated_definition wrappers.
+  // Pre-fix they matched neither TOP_LEVEL_TYPES nor NESTED_EMIT_CONFIG, so
+  // decorated code emitted ZERO chunks — the text vanished from the index.
+  test('decorated top-level function emits a chunk with decorator text (#3821)', async () => {
+    // Bodies are deliberately large enough (>15% of the 300-token target) to
+    // stay independent under small-sibling merging (and no tiny leading
+    // import — a sub-threshold first chunk greedily merges its followers).
+    const src = `@functools.cache
+def decorated_fn(x):
+    """Cached doubler with validation, logging and a deliberately verbose body.
+
+    This docstring plus the statements below keep the chunk above the
+    small-sibling merge threshold so the symbol survives as its own chunk.
+    """
+    if not isinstance(x, int):
+        raise TypeError("decorated_fn expects an int, got " + type(x).__name__)
+    doubled = x * 2
+    print("decorated_fn doubling", x, "->", doubled)
+    return doubled
+
+def plain_one():
+    """Plain function with enough body text to avoid the sibling merge pass.
+
+    Returns the integer one after a redundant computation for padding.
+    """
+    value = 1
+    for _ in range(3):
+        value = value * 1
+    return value
+`;
+    const result = await chunkCodeText(src, 'decorated.py');
+    const dec = result.find(c => c.metadata.symbolName === 'decorated_fn');
+    expect(dec).toBeDefined();
+    expect(dec!.metadata.symbolType).toBe('function');
+    // Outer range keeps the decorator line in the chunk body.
+    expect(dec!.text).toContain('@functools.cache');
+    expect(dec!.text).toContain('def decorated_fn');
+  });
+
+  test('decorated class emits scope header + methods, decorated methods included (#3821)', async () => {
+    const src = `@dataclass
+class Config:
+    name: str = "x"
+
+    def plain_method(self):
+        return self.name
+
+    @property
+    def decorated_method(self):
+        return self.name.upper()
+`;
+    const result = await chunkCodeText(src, 'config.py');
+    const cls = result.find(c => c.metadata.symbolName === 'Config' && c.metadata.symbolType === 'class');
+    expect(cls).toBeDefined();
+    // Scope header carries the decorator AND the class declaration line.
+    expect(cls!.text).toContain('@dataclass');
+    expect(cls!.text).toContain('class Config:');
+
+    const plain = result.find(c => c.metadata.symbolName === 'plain_method');
+    expect(plain).toBeDefined();
+    expect(plain!.metadata.parentSymbolPath).toEqual(['Config']);
+    expect(plain!.metadata.symbolType).toBe('function');
+
+    const decorated = result.find(c => c.metadata.symbolName === 'decorated_method');
+    expect(decorated).toBeDefined();
+    expect(decorated!.metadata.parentSymbolPath).toEqual(['Config']);
+    expect(decorated!.metadata.symbolType).toBe('function');
+    expect(decorated!.text).toContain('@property');
+  });
+
+  test('no python source text is silently dropped when decorators are present (#3821)', async () => {
+    const src = `@functools.cache
+def decorated_fn(x):
+    return x * 2
+
+@dataclass
+class Config:
+    def plain_method(self):
+        return 1
+
+def plain_one():
+    return 1
+`;
+    const result = await chunkCodeText(src, 'coverage.py');
+    const names = result.map(c => c.metadata.symbolName);
+    expect(names).toContain('decorated_fn');
+    expect(names).toContain('Config');
+    expect(names).toContain('plain_method');
+    expect(names).toContain('plain_one');
   });
 });
 

@@ -15,6 +15,7 @@
 import type { Operation } from './contract.ts';
 import { OperationError, verbError } from './contract.ts';
 import { sourceScopeOpts, stampEvidenceSafe } from './context.ts';
+import { markKeywordHits } from '../search/evidence.ts';
 import { hybridSearchCached, stampContentFlags } from '../search/hybrid.ts';
 import { dedupResults } from '../search/dedup.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
@@ -364,6 +365,8 @@ const recall: Operation = {
       if (!isAvailable('embedding')) {
         const raw = await ctx.engine.searchKeyword(queryText, { limit, ...searchScope });
         searchResults = dedupResults(raw);
+        // #3783 — direct FTS path: every row is a keyword hit by construction.
+        markKeywordHits(searchResults);
         stampEvidenceSafe(searchResults);
         await stampContentFlags(ctx.engine, searchResults);
         searchDegraded = 'keyword_only_no_embedding_provider';

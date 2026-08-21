@@ -148,3 +148,41 @@ describe('autopilot showStatus — wrapper-path detection', () => {
     expect(src).toMatch(/crontabIndicatesAutopilotInstall\(crontab\)/);
   });
 });
+
+// #2608: the wrapper's key channel. The old `source ~/.zshrc || source
+// ~/.bashrc` chain only reached bashrc when zshrc FAILED — on machines with
+// both files the bash-managed keys never loaded, every LLM phase silently
+// no-op'd, and chronicle reported clean no_events runs forever. The wrapper
+// now sources both rc files independently AND auto-exports a deterministic
+// keys.env from the gbrain home that no interactive-shell guard can swallow.
+describe('autopilot wrapper script — key sourcing (#2608)', () => {
+  test('wrapper sources zshrc AND bashrc independently (no || chain)', async () => {
+    const { writeWrapperScript } = await import('../src/commands/autopilot.ts');
+    const path = writeWrapperScript(join(tmp, 'fake-repo'), 'macos');
+    const text = readFileSync(path, 'utf8');
+    expect(text).toContain('[ -f ~/.zshrc ] && source ~/.zshrc');
+    expect(text).toContain('[ -f ~/.bashrc ] && source ~/.bashrc');
+    expect(text).not.toContain('|| source ~/.bashrc');
+  });
+
+  test('wrapper auto-exports keys.env (set -a) before the exec', async () => {
+    const { writeWrapperScript } = await import('../src/commands/autopilot.ts');
+    const path = writeWrapperScript(join(tmp, 'fake-repo'), 'macos');
+    const text = readFileSync(path, 'utf8');
+    const keysIdx = text.indexOf('/keys.env');
+    const setAIdx = text.indexOf('set -a');
+    const setPlusAIdx = text.indexOf('set +a');
+    const execIdx = text.lastIndexOf('exec ');
+    expect(keysIdx).toBeGreaterThan(0);
+    expect(setAIdx).toBeGreaterThan(0);
+    expect(setPlusAIdx).toBeGreaterThan(setAIdx);
+    expect(execIdx).toBeGreaterThan(keysIdx); // keys load before gbrain runs
+  });
+
+  test('keys.env sourcing is guarded on existence (missing file is not an error)', async () => {
+    const { writeWrapperScript } = await import('../src/commands/autopilot.ts');
+    const path = writeWrapperScript(join(tmp, 'fake-repo'), 'macos');
+    const text = readFileSync(path, 'utf8');
+    expect(text).toMatch(/if \[ -f '[^']*\/keys\.env' \]; then/);
+  });
+});
