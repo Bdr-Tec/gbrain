@@ -9,6 +9,7 @@ import {
   isRetryableConnError,
 } from './retry-matcher.ts';
 import { repairTimelineDedupIndex } from './timeline-dedup-repair.ts';
+import { repairPagesUpsertArbiter } from './pages-upsert-arbiter.ts';
 
 /**
  * When true, per-migration explanatory notices (e.g. the v123/v124 "here is
@@ -634,12 +635,24 @@ export const MIGRATIONS: Migration[] = [
         // 0b. Swap pages.UNIQUE(slug) → UNIQUE(source_id, slug).
         //     Deferred from v21 so PR #356 closes the integrity
         //     window. PGLite already did this swap in its v21 path.
+        //     #550: guard by index SHAPE (any non-partial unique index on
+        //     exactly {source_id, slug}), not by constraint NAME — a
+        //     name-only guard skips the ADD when the name is squatted by a
+        //     misshapen constraint, leaving every putPage ON CONFLICT broken.
         await tx.runMigration(23, `
           ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_slug_key;
           DO $$ BEGIN
             IF NOT EXISTS (
-              SELECT 1 FROM pg_constraint WHERE conname = 'pages_source_slug_key'
+              SELECT 1 FROM pg_index i
+               WHERE i.indrelid = 'pages'::regclass
+                 AND i.indisunique
+                 AND i.indpred IS NULL
+                 AND (SELECT array_agg(a.attname::text ORDER BY a.attname)
+                        FROM pg_attribute a
+                       WHERE a.attrelid = i.indrelid
+                         AND a.attnum = ANY (i.indkey::int2[])) = ARRAY['slug','source_id']
             ) THEN
+              ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_source_slug_key;
               ALTER TABLE pages ADD CONSTRAINT pages_source_slug_key
                 UNIQUE (source_id, slug);
             END IF;
@@ -791,10 +804,19 @@ export const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);
 
         ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_slug_key;
+        -- #550: guard by index SHAPE, not constraint NAME (see v23 twin).
         DO $$ BEGIN
           IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint WHERE conname = 'pages_source_slug_key'
+            SELECT 1 FROM pg_index i
+             WHERE i.indrelid = 'pages'::regclass
+               AND i.indisunique
+               AND i.indpred IS NULL
+               AND (SELECT array_agg(a.attname::text ORDER BY a.attname)
+                      FROM pg_attribute a
+                     WHERE a.attrelid = i.indrelid
+                       AND a.attnum = ANY (i.indkey::int2[])) = ARRAY['slug','source_id']
           ) THEN
+            ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_source_slug_key;
             ALTER TABLE pages ADD CONSTRAINT pages_source_slug_key
               UNIQUE (source_id, slug);
           END IF;
@@ -6360,6 +6382,24 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
         `[migrate] healed idx_timeline_dedup drift (#2038): ${r.before.join(',') || '(absent)'} ` +
         `→ page_id,date,summary,source` +
         (r.collapsedDuplicates > 0 ? ` (collapsed ${r.collapsedDuplicates} duplicate row(s))` : ''),
+      );
+    }
+  } catch { /* best-effort; doctor reports the drift if this couldn't run */ }
+
+  // #550: same drift class for the pages upsert arbiter. When the
+  // UNIQUE(source_id, slug) constraint vanishes (partial restore, manual DDL,
+  // name-only migration guards), EVERY putPage fails with "no unique or
+  // exclusion constraint" and neither re-initSchema nor the version counter
+  // can see it. ADD-only self-heal; refuses (loudly) on duplicate rows.
+  try {
+    const p = await repairPagesUpsertArbiter(engine);
+    if (p.repaired) {
+      console.error(`[migrate] restored pages_source_slug_key UNIQUE(source_id, slug) (#550)`);
+    } else if (p.reason === 'duplicates') {
+      console.error(
+        `[migrate] cannot restore pages_source_slug_key: ${p.duplicateGroups} duplicate ` +
+        `(source_id, slug) group(s) exist — page upserts will keep failing until the ` +
+        `duplicates are resolved (#550). See \`gbrain doctor\`.`,
       );
     }
   } catch { /* best-effort; doctor reports the drift if this couldn't run */ }

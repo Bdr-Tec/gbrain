@@ -58,6 +58,7 @@ export {
   resolveWhoknowsFixturePath,
   whoknowsHealthCheck,
   pgvectorCheck,
+  pagesUpsertArbiterCheck,
   jsonbIntegrityCheck,
   checkVolunteerChannels,
   takesWeightGridCheck,
@@ -146,6 +147,7 @@ export {
 import {
   whoknowsHealthCheck,
   pgvectorCheck,
+  pagesUpsertArbiterCheck,
   jsonbIntegrityCheck,
   checkVolunteerChannels,
   takesWeightGridCheck,
@@ -1744,6 +1746,11 @@ export async function buildChecks(
   // 4. pgvector extension
   progress.heartbeat('pgvector');
   checks.push(await pgvectorCheck(engine));
+
+  // 4a-bis. #550: pages(source_id, slug) upsert arbiter — when missing, every
+  // page write fails brain-wide and the version counter can't see the drift.
+  progress.heartbeat('pages_upsert_arbiter');
+  checks.push(await pagesUpsertArbiterCheck(engine));
 
   // 4b. PgBouncer / prepared-statement compatibility.
   // URL-only inspection — no DB roundtrip — so this is cheap and works

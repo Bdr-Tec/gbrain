@@ -155,6 +155,14 @@ export async function doctorReportRemote(
     checks.push({ name: 'timeline_dedup_index', status: 'warn', message: 'Could not check idx_timeline_dedup shape' });
   }
 
+  // 2c. #550: pages(source_id, slug) upsert arbiter — same drift class as 2b.
+  // When the arbiter is missing, EVERY putPage fails with "no unique or
+  // exclusion constraint" and the version counter can't see it.
+  {
+    const { pagesUpsertArbiterCheck } = await import('./checks/core-health.ts');
+    checks.push(await pagesUpsertArbiterCheck(engine));
+  }
+
   // v0.42.x — Life Chronicle (#2390): orphaned event projections. Reads already
   // hide projections whose event page is soft-deleted (read-time correctness);
   // this always-run probe surfaces the cleanup backlog. Keyed off the real
