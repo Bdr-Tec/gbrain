@@ -90,6 +90,8 @@ export const BATCH_AUDIT_SITES = [
   'extract.by_mention.rebuild',
   // v0.42.7 (#1696): extract --stale incremental sweep.
   'extract.stale',
+  // #3961: atom-provenance edges banked after the completion-receipt flip.
+  'cycle.extract_atoms.provenance',
   // operations.ts MCP put_page auto-link path.
   'mcp.put_page.autolink',
   // sync.ts/reindex.ts orchestrator labels.
