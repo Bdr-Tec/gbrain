@@ -4,7 +4,7 @@ All notable changes to GBrain will be documented in this file.
 
 ## [0.46.25.0] - 2026-08-20
 
-**The overnight backlog wave: 23 community fixes merged, plus an embedding-integrity pass that stops your brain from quietly un-embedding itself.** If you ever ran an embedding backfill that reported success while search quietly got worse, this release is the one that makes that impossible: backfills now prove the embedder works before touching anything, refuse to null what they cannot re-embed, and report honest counts. On top of that, 23 community pull requests landed in one pass, each individually trial-merged and tested before inclusion.
+**The backlog release: 62 community pull requests merged, ~50 maintainer fixes, and 87 open issues closed in one landing.** Every pull request was individually trial-merged and tested before inclusion; every fix started from a reproduced bug and shipped with a failing-first test. The headline classes: embedding backfills can no longer quietly destroy vectors (probe-gated invalidation, honest counts, content-revision staleness, registry-aware writes end to end), sync can no longer delete the wrong page or be repointed by a foreign repo, search caching can no longer serve one source's rows to another or one query's rows to a different query, page timelines survive filesystem rebuilds, large piped CLI output is delivered to the last byte on every path, and the DB config plane is finally read at runtime.
 
 ### Added
 - Ops accept an explicit per-call `source_id` on `get_page`/`delete_page`/`restore_page` — honored or rejected, never silently ignored. Destructive ops act only within the caller's write authority; federated read grants confer no delete access.
@@ -20,6 +20,14 @@ All notable changes to GBrain will be documented in this file.
 - 23 community fixes, each trial-merged in isolation and tested before landing: C# file-scoped namespace indexing (@gregario), a $HOME bootstrap guard and unknown-flag rejection on `config set` and subagent-loop capability classification and DB-plane `eval.*` gating and doctor effective-date re-parsing and inert-fallback-chain warning and latest-model cache invalidation (@Masashi-Ono0611), chat probe token floor (@ethanbeard), `models.dream.synthesize` honored in concept synthesis (@awilhite), recipe secret-name matching (@rayers), two unregisterable config keys (@JavanC), source-aware backlog drain hints and trigger-only skills dirs (@javieraldape), keyword-arm fail-open in hybrid search (@Jinstronda), wasm-embed check under pipefail and skillpack binary path resolution (@abhiramasonny), conversation-miner facts in verify and thin-client think routing (@mdcruz88), win32 resolve-ipc client gate (@oscampo), stub entity-page types from the active pack (@marmikcfc), image assets by source root and chronicle backfill source ids (@frxiaobei).
 - Facts fences and page writes now compute the identical target file, and an unresolvable target routes to a DB-only insert instead of being dropped — closing a fact-wipe class. Co-authored with @harjothkhara.
 - A facts-only target brain refuses a destructive engine-migration overwrite instead of losing its memory.
+
+### Also landed (the full wave)
+- 39 further community PRs beyond the first 23, each trial-merged and tested: contributions by @gregario, @Masashi-Ono0611, @ethanbeard, @awilhite, @rayers, @JavanC, @javieraldape, @Jinstronda, @abhiramasonny, @mdcruz88, @oscampo, @marmikcfc, @frxiaobei, @herove-successor accounts and more — every author is credited on their merged PR. The oldest open PR in the repo (June) landed in this pass.
+- The remaining P0s: sync delete-by-approximation (a page with a trailing-hyphen path could delete a DIFFERENT page), cross-host page-lock stealing, and stranded manual timeline entries on filesystem-canonical brains.
+- Retrieval correctness: the long-standing ranking inversion, a pre-fusion candidate floor so exact matches at rank >20 are reachable at default limits, per-source cache isolation, and a same-text guard so near-identical embeddings (worst in CJK) can't serve one query's cached rows to a different query.
+- Serve hardening: per-request MCP transport teardown (multi-GB RSS growth gone), an opt-in event-loop stall watchdog, SIGTERM/SIGHUP cleanup, and default-deny CORS on the auth endpoints.
+- Ops honesty: `jobs list/get --json`, duplicate timeline entries report `skipped` instead of lying `ok`, doctor stops recommending a sunsetting reranker default, and CLI output over 64KiB is delivered to the last byte on every emission path — including `console.log`-shaped `--json` handlers.
+- Windows: git sync credentials, msys path healing, and resolve-IPC client gating.
 
 ## To take advantage of v0.46.25.0
 
