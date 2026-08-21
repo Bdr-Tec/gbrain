@@ -235,6 +235,15 @@ export async function runExtractFacts(
   // legacy row in any mounted source jammed extract_facts for every
   // source — a cross-source leak of one source's migration state into
   // another's cycle (CLAUDE.md source-isolation invariant).
+  //
+  // #2763: the count also requires the source to have a `local_path` —
+  // mirroring the v0_32_2 Phase B fenceability rule (its backfill SKIPS
+  // rows whose source has no local_path, `skipped_no_local_path`, yet
+  // still returns complete). On a thin-client / DB-only source the
+  // backstop writer keeps producing row_num-NULL rows whose entity_slug
+  // maps to a LIVE page; without the local_path check those rows
+  // tripped the guard forever with drain advice (`apply-migrations
+  // --force-retry 0.32.2`) that is a structural no-op for them.
   const legacy = await engine.executeRaw<{ n: string }>(
     `SELECT COUNT(*) AS n
        FROM facts f
@@ -247,6 +256,11 @@ export async function runExtractFacts(
            WHERE p.source_id = f.source_id
              AND p.slug = f.entity_slug
              AND p.deleted_at IS NULL
+        )
+        AND EXISTS (
+          SELECT 1 FROM sources s
+           WHERE s.id = f.source_id
+             AND s.local_path IS NOT NULL
         )`,
     [sourceId],
   );
