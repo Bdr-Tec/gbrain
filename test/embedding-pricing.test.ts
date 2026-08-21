@@ -178,3 +178,35 @@ describe('estimateCostFromChars', () => {
     expect(c).toBeLessThan(3.8);
   });
 });
+
+// #4344 — hosted-recipe coverage gate: every embedding model the voyage
+// recipe offers as HOSTED must have a pricing row, so `gbrain upgrade`'s
+// cost estimate never says "unavailable" for a model we ship in the picker.
+// voyage-4-nano is the documented exception (open-weight, no hosted rate —
+// a fabricated 0 would under-estimate hosted-API users).
+describe('#4344 — every hosted voyage recipe model has a pricing entry', () => {
+  test('recipe models ⊆ pricing table (minus the open-weight exception)', async () => {
+    const { voyage } = await import('../src/core/ai/recipes/voyage.ts');
+    const OPEN_WEIGHT_EXCEPTIONS = new Set(['voyage-4-nano']);
+    const models: string[] = (voyage as any).touchpoints.embedding.models;
+    expect(models.length).toBeGreaterThan(0);
+    const missing = models
+      .filter((m) => !OPEN_WEIGHT_EXCEPTIONS.has(m))
+      .filter((m) => lookupEmbeddingPrice(`voyage:${m}`).kind !== 'known');
+    expect(missing).toEqual([]);
+  });
+
+  test.each([
+    ['voyage:voyage-3.5', 0.06],
+    ['voyage:voyage-3.5-lite', 0.02],
+    ['voyage:voyage-3-lite', 0.02],
+    ['voyage:voyage-code-3', 0.18],
+    ['voyage:voyage-finance-2', 0.12],
+    ['voyage:voyage-law-2', 0.12],
+    ['voyage:voyage-multimodal-3', 0.12],
+  ])('%s at $%d/MTok (docs.voyageai.com/docs/pricing, verified 2026-08-21)', (model, expected) => {
+    const r = lookupEmbeddingPrice(model);
+    expect(r.kind).toBe('known');
+    if (r.kind === 'known') expect(r.pricePerMTok).toBe(expected);
+  });
+});
