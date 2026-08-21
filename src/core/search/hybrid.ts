@@ -132,6 +132,11 @@ export async function stampContentFlags(engine: BrainEngine, results: SearchResu
  * One batched query over the candidate arms' page_ids. Fail-open on the
  * fetch (a marker-fetch failure must not break retrieval) — the boost then
  * applies, but the SQL-side source-boost guard still holds.
+ *
+ * #4220: the same batched query now surfaces the page's raw
+ * `frontmatter.status` value, stamped on `SearchResult.status` for EVERY
+ * result whose page carries one (draft/superseded/restricted/verified/...).
+ * `unverified` remains the special case requiring the full quarantine pair.
  */
 export async function stampUnverifiedExtractions(
   engine: BrainEngine,
@@ -143,10 +148,13 @@ export async function stampUnverifiedExtractions(
       results.map((r) => r.page_id).filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
     )];
     if (ids.length === 0) return;
-    const unverified = await engine.getUnverifiedExtractionPageIds(ids);
-    if (unverified.size === 0) return;
+    const marks = await engine.getUnverifiedExtractionPageIds(ids);
+    if (marks.size === 0) return;
     for (const r of results) {
-      if (unverified.has(r.page_id)) r.unverified = true;
+      const m = marks.get(r.page_id);
+      if (!m) continue;
+      r.status = m.status;
+      if (m.unverified) r.unverified = true;
     }
   } catch {
     // best-effort: never break retrieval.

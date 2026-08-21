@@ -1462,15 +1462,20 @@ export interface BrainEngine {
     pageIds: number[],
   ): Promise<Map<number, { reason: string; detail: string }>>;
   /**
-   * Extraction quarantine lane (issue #160): for a list of page_ids, return
-   * the subset that are unverified auto-extracted entity stubs (frontmatter
+   * Extraction quarantine lane (issue #160), widened for #4220: for a list
+   * of page_ids, return a map for every page that carries a
+   * `frontmatter.status` value. Each entry reports the raw status string plus
+   * whether the page is an unverified auto-extracted entity stub (frontmatter
    * `provenance: 'auto-extracted'` + `status: 'unverified'`). Used by hybrid
-   * search to stamp `SearchResult.unverified` pre-fusion so the fusion-level
-   * compiled-truth boost skips them. Single SQL query, not N+1. Empty input
-   * → empty set (no query). SQL predicate is the shared
-   * `unverifiedExtractionFragment` (src/core/extraction-review.ts).
+   * search to stamp `SearchResult.status` (always) and
+   * `SearchResult.unverified` (quarantine special case) pre-fusion so the
+   * fusion-level compiled-truth boost skips stubs. Single SQL query, not
+   * N+1. Empty input → empty map (no query). The quarantine predicate is the
+   * shared `unverifiedExtractionFragment` (src/core/extraction-review.ts).
    */
-  getUnverifiedExtractionPageIds(pageIds: number[]): Promise<Set<number>>;
+  getUnverifiedExtractionPageIds(
+    pageIds: number[],
+  ): Promise<Map<number, { unverified: boolean; status: string }>>;
   /**
    * v0.27.0: for a list of slugs, return their updated_at timestamps (or created_at fallback).
    * Used by hybrid search recency boost. Single SQL query, not N+1.

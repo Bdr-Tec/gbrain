@@ -758,6 +758,17 @@ export interface SearchResult {
    */
   unverified?: boolean;
   /**
+   * #4220: the page's raw `frontmatter.status` value (e.g. 'draft',
+   * 'superseded', 'restricted', 'unverified', 'verified'), surfaced so agents
+   * can weigh lifecycle state without a follow-up page fetch. Stamped
+   * pre-fusion by `stampUnverifiedExtractions` (hybrid.ts) from the same
+   * batched query that powers the quarantine lane. Absent when the page has
+   * no status frontmatter. NOTE: `unverified` stays the load-bearing
+   * quarantine flag (requires provenance='auto-extracted' too); `status`
+   * alone is informational.
+   */
+  status?: string;
+  /**
    * v0.36 (cross-modal wave): the chunk's modality discriminator from
    * content_chunks.modality. 'text' for the existing text-embedding rows,
    * 'image' for rows populated by importImageFile. Surfaced so callers /
