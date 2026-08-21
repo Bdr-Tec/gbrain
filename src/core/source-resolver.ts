@@ -128,9 +128,11 @@ export async function resolveSourceId(
   // 4. Registered source whose local_path contains CWD.
   //    Uses longest-prefix match so nested-path configurations (e.g.
   //    gstack at ~/gstack + plans at ~/gstack/plans) pick the deepest.
-  const registered = await engine.executeRaw<{ id: string; local_path: string }>(
-    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
-  );
+  //    #3880: ACTIVE sources win the prefix match — an archived (deeper)
+  //    registration must not shadow an active parent source. When cwd lands
+  //    ONLY in archived trees, the assertSourceExists below still throws
+  //    (explicit unavailable target — never silent continuation).
+  const registered = await listRegisteredLocalPathSources(engine);
   // realpath BOTH sides (not bare resolve) so a symlinked CWD can't forge a
   // prefix match against a registered local_path it doesn't really live under
   // (codex #9). realpathOrResolve falls back to lexical resolve() for a stale
@@ -138,13 +140,19 @@ export async function resolveSourceId(
   // legitimately symlinked vault matching — only one-sided symlinks break.
   const cwdResolved = realpathOrResolve(cwd);
   let best: { id: string; pathLen: number } | null = null;
-  for (const r of registered) {
-    const p = realpathOrResolve(r.local_path);
-    if (cwdResolved === p || cwdResolved.startsWith(p + '/')) {
-      if (!best || p.length > best.pathLen) {
-        best = { id: r.id, pathLen: p.length };
+  for (const tier of [
+    registered.filter((r) => r.archived !== true),
+    registered.filter((r) => r.archived === true),
+  ]) {
+    for (const r of tier) {
+      const p = realpathOrResolve(r.local_path);
+      if (cwdResolved === p || cwdResolved.startsWith(p + '/')) {
+        if (!best || p.length > best.pathLen) {
+          best = { id: r.id, pathLen: p.length };
+        }
       }
     }
+    if (best) break;
   }
   if (best) {
     // A local_path registration can outlive source archival. Treat landing in
@@ -239,6 +247,26 @@ export function resolveSourceIdEngineFree(
  * (#1434, pinned by test/sync-sole-non-default-routing.test.ts). The
  * unfederate read fix lives in `localFederatedSourceIds` below.
  */
+/**
+ * #3880: list registered local_path sources WITH their archived flag so the
+ * tier-4 cwd prefix match can prefer active sources. The archived column is
+ * v34+ — fall back to the column-less query on older brains (rows then carry
+ * no `archived` key and are treated as active, the pre-v34 behavior).
+ */
+async function listRegisteredLocalPathSources(
+  engine: BrainEngine,
+): Promise<Array<{ id: string; local_path: string; archived?: boolean }>> {
+  try {
+    return await engine.executeRaw<{ id: string; local_path: string; archived?: boolean }>(
+      `SELECT id, local_path, archived FROM sources WHERE local_path IS NOT NULL`,
+    );
+  } catch {
+    return engine.executeRaw<{ id: string; local_path: string }>(
+      `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
+    );
+  }
+}
+
 async function pickSoleNonDefaultSource(engine: BrainEngine): Promise<string | null> {
   // archived column was added in v34 (v0.26.5). Older brains may not have
   // it — fall back to the un-archived query in that case via try/catch.
@@ -409,19 +437,24 @@ export async function resolveSourceWithTier(
   }
 
   // 4. Registered source whose local_path contains CWD.
-  const registered = await engine.executeRaw<{ id: string; local_path: string }>(
-    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
-  );
+  //    #3880: active-over-archived tiering — see resolveSourceId's block.
+  const registered = await listRegisteredLocalPathSources(engine);
   // realpath both sides — see the matching block in resolveSourceId (codex #9).
   const cwdResolved = realpathOrResolve(cwd);
   let best: { id: string; path: string; pathLen: number } | null = null;
-  for (const r of registered) {
-    const p = realpathOrResolve(r.local_path);
-    if (cwdResolved === p || cwdResolved.startsWith(p + '/')) {
-      if (!best || p.length > best.pathLen) {
-        best = { id: r.id, path: p, pathLen: p.length };
+  for (const tier of [
+    registered.filter((r) => r.archived !== true),
+    registered.filter((r) => r.archived === true),
+  ]) {
+    for (const r of tier) {
+      const p = realpathOrResolve(r.local_path);
+      if (cwdResolved === p || cwdResolved.startsWith(p + '/')) {
+        if (!best || p.length > best.pathLen) {
+          best = { id: r.id, path: p, pathLen: p.length };
+        }
       }
     }
+    if (best) break;
   }
   if (best) {
     await assertSourceExists(engine, best.id);

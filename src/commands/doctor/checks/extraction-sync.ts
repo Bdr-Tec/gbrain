@@ -331,9 +331,18 @@ function collectMarkdownSlugs(root: string): Set<string> {
 export async function checkUndeclaredDbOnlyPages(engine: BrainEngine): Promise<Check> {
   const name = 'undeclared_db_only_pages';
   try {
-    const sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
-      `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
-    );
+    // #3880: archived sources are out of scope for filesystem audits (v34
+    // legacy fallback, house style per pickSoleNonDefaultSource).
+    let sources: Array<{ id: string; local_path: string | null }>;
+    try {
+      sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
+        `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE`,
+      );
+    } catch {
+      sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
+        `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
+      );
+    }
     const checkable = sources.filter(s => s.local_path && existsSync(s.local_path));
     if (checkable.length === 0) {
       return { name, status: 'ok', message: 'Not applicable (no sources with a local repo path on this host)' };
@@ -412,9 +421,17 @@ export async function checkDbOnlyCollectorCollision(
     if (collectors.length === 0) {
       return { name, status: 'ok', message: 'No configured collectors declare output paths' };
     }
-    const sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
-      `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
-    );
+    // #3880: skip archived sources (v34 legacy fallback).
+    let sources: Array<{ id: string; local_path: string | null }>;
+    try {
+      sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
+        `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE`,
+      );
+    } catch {
+      sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
+        `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
+      );
+    }
     const hits: string[] = [];
     for (const src of sources) {
       if (!src.local_path || !existsSync(src.local_path)) continue;
@@ -730,7 +747,7 @@ export async function checkSyncFreshness(
     // `gbrain sync`'s up-to-date predicate at sync.ts:1057+1075 checks.
     // Columns existed pre-v0.41 (writeSyncAnchor / writeChunkerVersion);
     // no schema migration needed.
-    const sources = await engine.executeRaw<{
+    type FreshnessSourceRow = {
       id: string;
       name: string;
       local_path: string | null;
@@ -738,11 +755,21 @@ export async function checkSyncFreshness(
       last_commit: string | null;
       chunker_version: string | null;
       newest_content_at: Date | null;
-    }>(
-      // v0.41.32.0: newest_content_at feeds the REMOTE (non-localOnly) lag so
-      // doctorReportRemote never shells out to git on a DB-supplied local_path.
-      `SELECT id, name, local_path, last_sync_at, last_commit, chunker_version, newest_content_at FROM sources WHERE local_path IS NOT NULL`,
-    );
+    };
+    // v0.41.32.0: newest_content_at feeds the REMOTE (non-localOnly) lag so
+    // doctorReportRemote never shells out to git on a DB-supplied local_path.
+    // #3880: archived sources don't participate in freshness health (v34
+    // legacy fallback).
+    let sources: FreshnessSourceRow[];
+    try {
+      sources = await engine.executeRaw<FreshnessSourceRow>(
+        `SELECT id, name, local_path, last_sync_at, last_commit, chunker_version, newest_content_at FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE`,
+      );
+    } catch {
+      sources = await engine.executeRaw<FreshnessSourceRow>(
+        `SELECT id, name, local_path, last_sync_at, last_commit, chunker_version, newest_content_at FROM sources WHERE local_path IS NOT NULL`,
+      );
+    }
 
     if (sources.length === 0) {
       return {
