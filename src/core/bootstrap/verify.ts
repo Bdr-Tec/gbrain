@@ -48,6 +48,7 @@ import { BOOTSTRAP_TEMPLATES, loadQuestionBank } from './assets.ts';
 import { readManifest, writeManifest } from './format.ts';
 import { status as interviewStatus } from './interview.ts';
 import { gitOriginUrl, hooksInstalled } from './status.ts';
+import { resolveSourceId } from '../source-resolver.ts';
 import {
   ensureIpcSecret,
   resolveSocketPath,
@@ -594,6 +595,27 @@ export function deriveWorkspaceSourceId(ws: string): string {
 }
 
 /**
+ * Resolve the source id a verify run should exercise (#4328). An initialized
+ * manifest is authoritative (that's the id hooks/attach/status all follow).
+ * An UNINITIALIZED workspace has no manifest to consult — the old hardcoded
+ * 'workspace' fallback pointed the probe writes at a source no one ever
+ * registered, so put_page died on its sources FK. Instead, run the standard
+ * source-resolution chain rooted at the workspace (registered local_path →
+ * brain default → seeded 'default'), which always lands on a real source.
+ * Any resolver surprise degrades to 'default' (seeded by migration) rather
+ * than failing verify before it can print a report.
+ */
+export async function resolveVerifySourceId(engine: BrainEngine, ws: string): Promise<string> {
+  const state = readManifest(ws);
+  if (state.state === 'initialized') return state.manifest.source_id;
+  try {
+    return await resolveSourceId(engine, null, ws);
+  } catch {
+    return 'default';
+  }
+}
+
+/**
  * source_id collision resolution [engine seam]. Render is ENGINE-FREE and the
  * sources registry lives ONLY in the DB (no registry file exists), so verify —
  * the one bootstrap subcommand holding an engine — is where a manifest
@@ -1028,6 +1050,7 @@ export async function verifyWorkspace(
   checks.push(await checkDoctorGreen(engine));
   const engineHealthy = checks.find((c) => c.id === 'doctor_green')?.ok === true;
 
+  let sourceRegistered = true;
   if (engineHealthy) {
     // Transient-engine work while we hold the engine (before/independent of
     // host registration): the CX-P1.1 visibility posture and the source-id
@@ -1036,6 +1059,17 @@ export async function verifyWorkspace(
     const collision = await resolveSourceIdCollision(engine, ws);
     if (collision.sourceId !== null) sourceId = collision.sourceId;
     if (collision.check !== null) checks.push(collision.check);
+    // #4328 — registration probe. Probe writes against an UNREGISTERED source
+    // die on their sources FK with a raw constraint error that names nothing a
+    // user can act on. Detect the gap up front so the roundtrip/hooks-smoke
+    // report the one command that fixes it instead. Probe failure fails OPEN
+    // (the roundtrip owns surfacing real engine errors).
+    try {
+      const rows = await engine.executeRaw<{ one: number }>(`SELECT 1 AS one FROM sources WHERE id = $1`, [sourceId]);
+      sourceRegistered = rows.length > 0;
+    } catch {
+      sourceRegistered = true;
+    }
   }
 
   checks.push(checkTokenSweep(ws));
@@ -1052,7 +1086,18 @@ export async function verifyWorkspace(
   // diagnosis before the roundtrip's put surfaces the raw dimension error —
   // and so a keyless-passing roundtrip can never certify a brain whose keyed
   // writes all fail.
-  if (engineHealthy) {
+  if (engineHealthy && !sourceRegistered) {
+    checks.push(await checkEmbeddingPlane(engine, caps));
+    // #4328 — a put against the unregistered source would only surface the
+    // raw FK constraint text. Name the actual gap + the one-command fix.
+    checks.push({
+      id: 'roundtrip',
+      ok: false,
+      detail:
+        `skipped — source '${sourceId}' is not registered in this brain, so probe writes cannot land. ` +
+        `Register it (gbrain sources add ${sourceId} --path ${join(ws, 'brain')}) and re-run \`gbrain bootstrap verify\`.`,
+    });
+  } else if (engineHealthy) {
     checks.push(await checkEmbeddingPlane(engine, caps));
     const rt = await runRoundtrip(engine, ws, sourceId, { ...opts, capabilities: caps });
     checks.push(...rt.checks);
@@ -1065,6 +1110,10 @@ export async function verifyWorkspace(
 
   if (opts.skipHooksSmoke) {
     checks.push({ id: 'hooks_smoke', ok: true, detail: 'skipped by caller' });
+  } else if (!sourceRegistered) {
+    // #4328 — the smoke binds GBRAIN_SOURCE to the workspace source; against
+    // an unregistered id it can only rediscover the roundtrip's finding.
+    checks.push({ id: 'hooks_smoke', ok: true, detail: `skipped — source '${sourceId}' is not registered (see roundtrip)` });
   } else {
     checks.push(await checkHooksSmoke(engine, ws, sourceId));
   }
