@@ -3,7 +3,7 @@ import { join, relative } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
 import { DELETE_BATCH_SIZE } from '../core/engine-constants.ts';
 import { importFile } from '../core/import-file.ts';
-import { collectSyncableFiles } from './import.ts';
+import { collectSyncableFiles, shouldLogIngest } from './import.ts';
 import {
   isSyncable,
   isPoisonedPath,
@@ -283,6 +283,12 @@ export interface SyncOpts {
   noPull?: boolean;
   noEmbed?: boolean;
   noExtract?: boolean;
+  /**
+   * #3969: opt back into per-poll ingest_log rows. By default a sync that
+   * landed nothing (no pages written, no chunks, no failures acknowledged)
+   * skips the ingest_log write — mirrors runImport's shouldLogIngest gate.
+   */
+  logNoop?: boolean;
   /** Bug 9 — acknowledge + skip past current failure set (CLI --skip-failed). */
   skipFailed?: boolean;
   /** Bug 9 — re-attempt unacknowledged failures explicitly (CLI --retry-failed). */
@@ -2398,16 +2404,28 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     );
   }
 
-  // Log ingest
-  await engine.logIngest({
-    // #3242 (attribution sub-bug): credit the sync to the source it wrote
-    // to, not the shared 'default' bucket.
-    ...(opts.sourceId ? { source_id: opts.sourceId } : {}),
-    source_type: 'git_sync',
-    source_ref: `${repoPath} @ ${headCommit.slice(0, 8)}`,
-    pages_updated: pagesAffected,
-    summary: `Sync: +${filtered.added.length} ~${filtered.modified.length} -${filtered.deleted.length} R${filtered.renamed.length}, ${chunksCreated} chunks, ${elapsed}ms`,
-  });
+  // Log ingest. #3969: mirror runImport's shouldLogIngest gate — a run that
+  // landed nothing (no pages written, no chunks, no failures acknowledged or
+  // auto-skipped) is a poll, not an ingest event; skip the row unless
+  // opts.logNoop opts back in.
+  if (shouldLogIngest(
+    {
+      imported: pagesAffected.length,
+      errors: gate.acknowledged + gate.autoSkipped.length,
+      chunksCreated,
+    },
+    opts.logNoop === true,
+  )) {
+    await engine.logIngest({
+      // #3242 (attribution sub-bug): credit the sync to the source it wrote
+      // to, not the shared 'default' bucket.
+      ...(opts.sourceId ? { source_id: opts.sourceId } : {}),
+      source_type: 'git_sync',
+      source_ref: `${repoPath} @ ${headCommit.slice(0, 8)}`,
+      pages_updated: pagesAffected,
+      summary: `Sync: +${filtered.added.length} ~${filtered.modified.length} -${filtered.deleted.length} R${filtered.renamed.length}, ${chunksCreated} chunks, ${elapsed}ms`,
+    });
+  }
 
   // Auto-extract links + timeline (cheap CPU, but skip-inline for LARGE syncs).
   // Thread opts.sourceId so the extract phase reconciles edges + timeline
