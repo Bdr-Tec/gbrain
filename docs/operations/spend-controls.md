@@ -105,6 +105,37 @@ estimate is `delta + stale backlog`, labeled as such.
   under-counted may now hit their ceiling; the new number is the honest one, so
   raise the cap rather than assuming a regression.
 
+## Operator price overrides (`pricing.overrides`)
+
+Cost caps are fail-closed: when `--max-cost` (or a phase's default cap) is set
+and a model has no shipped pricing row, the budget tracker aborts with
+`no_pricing` rather than pretend the call is free. Proxy routes hit this by
+design — a LiteLLM endpoint can front a paid provider, so `litellm:*` models
+are deliberately absent from both the pricing tables and the free-local sets.
+
+Declare your real rate in the config plane instead:
+
+```bash
+# Scalar = one USD-per-1M-token rate for input AND output (natural for embeddings):
+gbrain config set pricing.overrides '{"litellm:text-embedding-3-large": 0.13}'
+
+# Object form for chat models with distinct input/output rates:
+gbrain config set pricing.overrides \
+  '{"litellm:gpt-4o": {"input": 2.5, "output": 10}, "litellm:text-embedding-3-large": 0.13}'
+```
+
+Semantics:
+
+- Keys are full `provider:model` strings (case-insensitive, exact match).
+- Overrides win over shipped tables — you own your bill (negotiated rates,
+  markup-charging proxies).
+- Models with neither a table row nor an override stay fail-closed under a cap.
+- Invalid entries (negative, non-numeric) are dropped; those models keep the
+  fail-closed behavior.
+- Consumed by `BudgetTracker` construction (enrich and the cycle's
+  `enrich_thin` phase load it automatically); both chat and embed routes price
+  through it.
+
 ## Escape hatches at a glance
 
 ```bash

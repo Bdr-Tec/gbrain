@@ -34,7 +34,7 @@ import type { EnrichCandidate, PageType } from '../core/types.ts';
 import { operations } from '../core/operations.ts';
 import type { OperationContext } from '../core/operations.ts';
 import { configureGatewayIfUninitialized, isAvailable, chat, getChatModel, withBudgetTracker } from '../core/ai/gateway.ts';
-import { BudgetTracker, BudgetExhausted, type BudgetReason } from '../core/budget/budget-tracker.ts';
+import { BudgetTracker, BudgetExhausted, loadPricingOverrides, type BudgetReason } from '../core/budget/budget-tracker.ts';
 import { hybridSearch } from '../core/search/hybrid.ts';
 import { serializeMarkdown } from '../core/markdown.ts';
 import { listSources } from '../core/sources-ops.ts';
@@ -596,9 +596,15 @@ export async function runEnrichCore(
   // would serialize to null in audit rows). undefined-when-unset still → DEFAULT.
   const resolvedCap =
     opts.maxCostUsd === Infinity ? undefined : (opts.maxCostUsd ?? DEFAULT_MAX_COST_USD);
+  // #4312: operator price overrides (config `pricing.overrides`) reach the
+  // tracker at construction, so proxy-routed models (litellm chat AND embed)
+  // with a declared rate price normally instead of TX2 no_pricing-aborting.
+  // Loaded only on the internal-tracker path (`??` short-circuits); an
+  // externally-supplied tracker (cycle phase) carries its own overrides.
   const tracker = opts.budgetTracker ?? new BudgetTracker({
     maxCostUsd: resolvedCap,
     label: `enrich:${sourceId}`,
+    pricingOverrides: await loadPricingOverrides(engine),
   });
   try {
     if (opts.budgetTracker) {
