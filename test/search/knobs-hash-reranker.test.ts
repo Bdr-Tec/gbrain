@@ -79,7 +79,10 @@ describe('KNOBS_HASH_VERSION + version invariants', () => {
     // rows survive the cut, so writes and lookups must agree on it.
     // D-3002: 19→20 pre-fusion pool floor — innerLimit widens the candidate
     // pool for identical knobs (no new key part; version-only invalidation).
-    expect(KNOBS_HASH_VERSION).toBe(21);
+    // #4358 residual: 21→22 — negative-offset requests could read/write the
+    // same cache row an offset=0 request shares (pagedRequest previously
+    // skipped only offset>0).
+    expect(KNOBS_HASH_VERSION).toBe(22);
   });
 
   test('hash is 16 hex chars regardless of reranker config', () => {
