@@ -39,7 +39,7 @@ import { loadSearchModeConfig, resolveSearchMode } from './search/mode.ts';
 import { normalizeAliasList } from './search/alias-normalize.ts';
 import { isUndefinedTableError, warnOncePerProcess, validateSlug } from './utils.ts';
 import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
-import { computeCorpusGeneration } from './contextual-retrieval-service.ts';
+import { computeCorpusGeneration, loadSourceRow } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
 import { runGuardrails } from './guardrails.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from './facts-fence.ts';
@@ -791,15 +791,36 @@ export async function importFromContent(
   if (!opts.noEmbed) {
     const searchInput = await loadSearchModeConfig(engine);
     const knobs = resolveSearchMode(searchInput);
-    // Look up the source row for this import; default to host trust when
-    // the engine's getConfig path doesn't surface a source row (most calls).
+    // #3885: load the REAL source row so a stored `gbrain sources
+    // set-cr-mode <id> <mode>` (and the mount trust flag) applies on the
+    // inline import path — capture + reindex --markdown — not just the
+    // Minion backfill. The prior hardcoded stub (contextual_retrieval_mode:
+    // null / trust_frontmatter_overrides: false) silently ignored the
+    // per-source override. Unknown source id / pre-sources-table brains
+    // keep the stub (host-trust defaults).
+    let sourceRow: {
+      id: string;
+      contextual_retrieval_mode?: string | null;
+      trust_frontmatter_overrides?: boolean;
+    } = {
+      id: sourceId ?? 'default',
+      contextual_retrieval_mode: null,
+      trust_frontmatter_overrides: false,
+    };
+    try {
+      const row = await loadSourceRow(engine, sourceId ?? 'default');
+      sourceRow = {
+        id: row.id,
+        contextual_retrieval_mode: row.contextual_retrieval_mode ?? null,
+        trust_frontmatter_overrides: row.trust_frontmatter_overrides === true,
+      };
+    } catch {
+      // Source row missing ('default' not seeded on a fresh brain) — the
+      // stub stands, matching pre-#3885 behavior.
+    }
     const resolution = resolveContextualRetrievalMode({
       pageFrontmatter: parsed.frontmatter,
-      source: {
-        id: sourceId ?? 'default',
-        contextual_retrieval_mode: null,
-        trust_frontmatter_overrides: false,
-      },
+      source: sourceRow,
       globalMode: knobs.contextual_retrieval,
       killSwitchDisabled: knobs.contextual_retrieval_disabled,
     });
