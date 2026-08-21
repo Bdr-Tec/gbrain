@@ -708,7 +708,11 @@ export async function computeExtractHealthCheck(
       return {
         name,
         status: 'warn',
-        message: `${totalRollupFailures} rollup write failure(s) in last 7d (audit JSONL is source of truth; rebuild via gbrain extract status --rebuild-rollup)`,
+        // #3697: this hint used to name `gbrain extract status --rebuild-rollup`,
+        // which does not exist (the JSONL→rollup rebuild is a planned self-heal,
+        // not a shipped command). Say what is true instead of sending the
+        // operator to a usage error.
+        message: `${totalRollupFailures} rollup write failure(s) in last 7d. The rollup table is a best-effort cache — the audit JSONL under ~/.gbrain/audit/ is the source of truth, and counts here may undercount until the 7-day window rolls past the failures. No action needed unless failures keep accumulating (then check DB connectivity/permissions).`,
         details: {
           schema_version: 1,
           kinds,
