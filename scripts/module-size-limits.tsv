@@ -5,8 +5,8 @@
 # Columns: path	max_lines	policy	note
 src/commands/doctor.ts	4341	ratchet	+34: schema_columns check (gbrain#4421) — read-only detectMissingColumns() verification, adjacent to schema_version; lowered: conversation_format_coverage peeled to doctor/checks/conversation-coverage.ts (#4193)
 src/core/operations.ts	303	ratchet	peel target: containment sprint C4-C7
-src/core/postgres-engine.ts	6016	ratchet	grown v0.46.25.0 fix waves (#1262 #3827 #4389) + v0.46.26.0: private-queue token bootstrap probe
-src/core/pglite-engine.ts	5971	ratchet	grown v0.46.24.0 overnight wave: registry-aware writes + stale/invalidate plane unification (#1262); peeled cjk-search (#4299)
+src/core/postgres-engine.ts	6018	ratchet	grown v0.46.25.0 fix waves (#1262 #3827 #4389) + v0.46.26.0: private-queue token bootstrap probe + semantic takes retrieval PR (2 lines)
+src/core/pglite-engine.ts	5972	ratchet	grown v0.46.24.0 overnight wave: registry-aware writes + stale/invalidate plane unification (#1262); peeled cjk-search (#4299); +1: semantic takes retrieval delegate (#3776)
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	5297	ratchet	grown v0.46.25.0 fix waves: delete-slug resolver + msys healing (#3942 #2955) + #3570 rename-sentinel operator-exit safety (cross-source-scoped resolve, tracked-file liveness index, orphaned-sentinel self-heal) + semgrep path-containment guard + tracked-file liveness index untracked-file gap fix; +33: #4027 --include-hidden dot-prune waiver (opts threading + help text)
 src/core/ai/gateway.ts	4441	ratchet	grown v0.46.25.0 D2: env-key snapshot stash (#2119)

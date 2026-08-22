@@ -4,6 +4,13 @@ All notable changes to GBrain will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Semantic takes retrieval: `gbrain takes embed` populates take embeddings and
+  `think` gains a vector retrieval arm alongside keyword takes search (#3776).
+  Migration v137 resizes `takes.embedding` to the configured embedding
+  dimension; any pre-existing take vectors (including manually embedded ones)
+  are cleared by design and repopulate on the next `gbrain takes embed`.
+
 **`gbrain smoke-test` no longer starts a surprise shell-enabled worker.** The
 worker check now asks the native supervisor status surface, which understands
 brain-scoped PID files and the queue's live database lock. A healthy managed
