@@ -29,6 +29,14 @@ worker therefore passes without creating a second unmanaged process.
   text-path miss and the semantic-cache hit — the two paths now agree for the
   same call shape. Pass `limit` explicitly for a mode-independent count.
   (#4356)
+- Page-retrieval metrics can no longer exceed their mathematical bounds when
+  search returns multiple chunks from one page: Precision@k, Recall@k, MRR,
+  nDCG@k, NamedThingBench, and the qrels correctness gate now share one
+  unique-page ranking primitive that keeps only the first/best occurrence of
+  each ranked page before any cutoff. Duplicate non-relevant chunks no longer
+  consume page-level ranks, and qrels ground-truth duplicates count as one
+  relevant page. Historical baselines that included duplicate page hits may
+  decrease and should be reviewed before changing quality thresholds. (#4184)
 
 No migration or configuration change is required.
 
