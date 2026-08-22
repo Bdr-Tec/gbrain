@@ -588,7 +588,9 @@ const pause_job: Operation = {
     id: { type: 'number', required: true, description: 'Job ID' },
   },
   scope: 'admin',
+  mutating: true,
   handler: async (ctx, p) => {
+    if (ctx.dryRun) return { dry_run: true, action: 'pause_job', id: p.id };
     const { MinionQueue } = await import('../minions/queue.ts');
     const queue = new MinionQueue(ctx.engine);
     const job = await queue.pauseJob(p.id as number);
@@ -604,7 +606,9 @@ const resume_job: Operation = {
     id: { type: 'number', required: true, description: 'Job ID' },
   },
   scope: 'admin',
+  mutating: true,
   handler: async (ctx, p) => {
+    if (ctx.dryRun) return { dry_run: true, action: 'resume_job', id: p.id };
     const { MinionQueue } = await import('../minions/queue.ts');
     const queue = new MinionQueue(ctx.engine);
     const job = await queue.resumeJob(p.id as number);
@@ -621,6 +625,7 @@ const replay_job: Operation = {
     data_overrides: { type: 'object', required: false, description: 'Data fields to override (merged with original)' },
   },
   scope: 'admin',
+  mutating: true,
   handler: async (ctx, p) => {
     if (ctx.dryRun) return { dry_run: true, action: 'replay_job', id: p.id };
     const { MinionQueue } = await import('../minions/queue.ts');
@@ -640,6 +645,7 @@ const send_job_message: Operation = {
     sender: { type: 'string', required: false, description: 'Sender identity (default: admin)' },
   },
   scope: 'admin',
+  mutating: true,
   handler: async (ctx, p) => {
     if (ctx.dryRun) return { dry_run: true, action: 'send_job_message', id: p.id };
     const { MinionQueue } = await import('../minions/queue.ts');
