@@ -10,7 +10,7 @@ src/core/pglite-engine.ts	5971	ratchet	grown v0.46.24.0 overnight wave: registry
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	5264	ratchet	grown v0.46.25.0 fix waves: delete-slug resolver + msys healing (#3942 #2955) + #3570 rename-sentinel operator-exit safety (cross-source-scoped resolve, tracked-file liveness index, orphaned-sentinel self-heal) + semgrep path-containment guard + tracked-file liveness index untracked-file gap fix
 src/core/ai/gateway.ts	4441	ratchet	grown v0.46.25.0 D2: env-key snapshot stash (#2119)
-src/cli.ts	3628	ratchet	grown v0.46.25.0 D2: stdout interposer install (#4383)
+src/cli.ts	3652	ratchet	grown v0.46.25.0 D2: stdout interposer install (#4383); +24 for #4083 auth self-help entry + top-level auth usage lines
 src/core/cycle.ts	3123	ratchet	grown v0.46.25.0 fix waves (#4309 #2821) + v0.46.26.0: cycle-start orphan recovery
 src/commands/serve-http.ts	3294	ratchet	grown v0.46.25.0 D2: /mcp per-request teardown (#2844)
 src/commands/jobs.ts	3093	ratchet	grown v0.46.25.0 (--json #3685) + v0.46.26.0: maybeRunWorkerStartupRecovery extraction + stats gating + help text
