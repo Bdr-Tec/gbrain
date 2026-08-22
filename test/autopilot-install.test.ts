@@ -51,6 +51,23 @@ afterEach(() => {
   try { rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }
 });
 
+function makeFakeGbrainOnPath(): { binDir: string; restore: () => void } {
+  // writeWrapperScript() calls resolveGbrainCliPath(), which shells out to
+  // `which gbrain`. Put a harmless shim on PATH so the test is deterministic
+  // regardless of whether the CI/dev machine has a real gbrain on PATH.
+  const binDir = mkdtempSync(join(tmpdir(), 'gbrain-fake-bin-'));
+  writeFileSync(join(binDir, 'gbrain'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${originalPath ?? ''}`;
+  return {
+    binDir,
+    restore: () => {
+      process.env.PATH = originalPath;
+      rmSync(binDir, { recursive: true, force: true });
+    },
+  };
+}
+
 describe('detectInstallTarget', () => {
   test('returns "macos" on darwin regardless of env', () => {
     if (process.platform !== 'darwin') return; // Skip on non-mac CI
@@ -160,12 +177,19 @@ describe('autopilot showStatus — wrapper-path detection', () => {
 // the gbrain-owned env file pinned by the suite below.
 describe('autopilot wrapper script — key sourcing (#2608)', () => {
   test('wrapper sources zshrc AND bashrc independently (no || chain)', async () => {
-    const { writeWrapperScript } = await import('../src/commands/autopilot.ts');
-    const path = writeWrapperScript(join(tmp, 'fake-repo'), 'macos');
-    const text = readFileSync(path, 'utf8');
-    expect(text).toContain('[ -f ~/.zshrc ] && source ~/.zshrc');
-    expect(text).toContain('[ -f ~/.bashrc ] && source ~/.bashrc');
-    expect(text).not.toContain('|| source ~/.bashrc');
+    // PATH shim like the env-file suite below: writeWrapperScript resolves
+    // the gbrain CLI path and throws on CI runners with no gbrain on PATH.
+    const fakeBin = makeFakeGbrainOnPath();
+    try {
+      const { writeWrapperScript } = await import('../src/commands/autopilot.ts');
+      const path = writeWrapperScript(join(tmp, 'fake-repo'), 'linux-cron');
+      const text = readFileSync(path, 'utf8');
+      expect(text).toContain('[ -f ~/.zshrc ] && source ~/.zshrc');
+      expect(text).toContain('[ -f ~/.bashrc ] && source ~/.bashrc');
+      expect(text).not.toContain('|| source ~/.bashrc');
+    } finally {
+      fakeBin.restore();
+    }
   });
 });
 
@@ -178,23 +202,6 @@ describe('autopilot wrapper script — key sourcing (#2608)', () => {
 // GBRAIN_HOME) after the profiles, and silently no-ops when that file is
 // absent.
 describe('autopilot wrapper script — gbrain-owned env file (#2608)', () => {
-  function makeFakeGbrainOnPath(): { binDir: string; restore: () => void } {
-    // writeWrapperScript() calls resolveGbrainCliPath(), which shells out to
-    // `which gbrain`. Put a harmless shim on PATH so the test is deterministic
-    // regardless of whether the CI/dev machine has a real gbrain on PATH.
-    const binDir = mkdtempSync(join(tmpdir(), 'gbrain-fake-bin-'));
-    writeFileSync(join(binDir, 'gbrain'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${binDir}:${originalPath ?? ''}`;
-    return {
-      binDir,
-      restore: () => {
-        process.env.PATH = originalPath;
-        rmSync(binDir, { recursive: true, force: true });
-      },
-    };
-  }
-
   test('wrapper additively sources <gbrainDir>/env after the rc-file profiles, before PATH export/exec', () => {
     const fakeBin = makeFakeGbrainOnPath();
     try {
