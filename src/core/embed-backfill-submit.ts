@@ -19,10 +19,12 @@
  * the same window. Multi-hour push activity racks up unbounded calls.
  *
  * D19 layered defenses (composed here):
- *   1. Per-source cooldown (default 10min). Refuses submission if the most
+ *   1. Worker-surface gate. PGLite has no persistent worker, so it refuses
+ *      instead of accepting a job that cannot drain after submission returns.
+ *   2. Per-source cooldown (default 10min). Refuses submission if the most
  *      recent embed-backfill for this source finished or is still active
  *      inside the window.
- *   2. Per-source 24h rolling spend cap (default $25). Computed from the
+ *   3. Per-source 24h rolling spend cap (default $25). Computed from the
  *      embed-backfill-tagged rows in the budget audit JSONL. Refuses
  *      submission when spend has hit the cap.
  *
@@ -46,7 +48,8 @@ const DEFAULT_SPEND_CAP_USD = 25;
 export type SubmitEmbedBackfillStatus =
   | 'submitted'
   | 'cooldown'
-  | 'spend_capped';
+  | 'spend_capped'
+  | 'no_worker_surface';
 
 export interface SubmitEmbedBackfillResult {
   status: SubmitEmbedBackfillStatus;
@@ -58,6 +61,8 @@ export interface SubmitEmbedBackfillResult {
   spend24hUsd?: number;
   /** Set when status === 'spend_capped'. Active cap. */
   spendCapUsd?: number;
+  /** Set when status === 'no_worker_surface'. */
+  engineKind?: 'pglite';
   /**
    * Set true when `spend.posture=tokenmax` waved the job past the 24h spend
    * cap (#2139). The spend is still LEDGERED by the per-job BudgetTracker —
@@ -139,6 +144,14 @@ export async function submitEmbedBackfill(
   sourceId: string,
   opts: SubmitEmbedBackfillOpts,
 ): Promise<SubmitEmbedBackfillResult> {
+  // PGLite has no persistent worker process: a queued job cannot be drained
+  // after this submission call returns. Refuse before reading gates or writing
+  // a row so the undrainable job cannot also cooldown-block a later attempt.
+  const engineKind = engine.kind;
+  if (engineKind === 'pglite') {
+    return { status: 'no_worker_surface', engineKind };
+  }
+
   const now = opts.nowMs ?? Date.now();
   const cooldownMin =
     opts.cooldownMinOverride ??

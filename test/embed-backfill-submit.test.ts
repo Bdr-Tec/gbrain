@@ -10,21 +10,31 @@
  *   - Override knobs in opts honored (test seam)
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import type { BrainEngine } from '../src/core/engine.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import {
   submitEmbedBackfill,
   COOLDOWN_CONFIG_KEY,
   SPEND_CAP_CONFIG_KEY,
+  type SubmitEmbedBackfillOpts,
 } from '../src/core/embed-backfill-submit.ts';
 import { MinionQueue } from '../src/core/minions/queue.ts';
 
 let engine: PGLiteEngine;
+let workerBackedEngine: BrainEngine;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  workerBackedEngine = new Proxy(engine, {
+    get(target, prop) {
+      if (prop === 'kind') return 'postgres';
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as unknown as BrainEngine;
 }, 30000); // 30s — PGLite WASM cold-start + 89 migrations exceeds 5s default
 
 afterAll(async () => {
@@ -37,9 +47,33 @@ beforeEach(async () => {
   await engine.executeRaw('DELETE FROM minion_jobs');
 });
 
+function submitWithWorker(
+  sourceId: string,
+  opts: SubmitEmbedBackfillOpts,
+) {
+  return submitEmbedBackfill(workerBackedEngine, sourceId, opts);
+}
+
+describe('submitEmbedBackfill — worker-surface gate', () => {
+  test('refuses PGLite without leaving an undrainable waiting job', async () => {
+    const result = await submitEmbedBackfill(engine, 'default', { reason: 'unit' });
+
+    expect(result).toEqual({
+      status: 'no_worker_surface',
+      engineKind: 'pglite',
+    });
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n
+         FROM minion_jobs
+        WHERE name = 'embed-backfill'`,
+    );
+    expect(Number(rows[0]?.n ?? 0)).toBe(0);
+  });
+});
+
 describe('submitEmbedBackfill — happy path', () => {
   test('submits with priority 5 + idempotency key on a clean source', async () => {
-    const result = await submitEmbedBackfill(engine, 'default', { reason: 'unit' });
+    const result = await submitWithWorker('default', { reason: 'unit' });
     expect(result.status).toBe('submitted');
     expect(result.jobId).toBeDefined();
 
@@ -52,7 +86,7 @@ describe('submitEmbedBackfill — happy path', () => {
   });
 
   test('respects opts.priority override', async () => {
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       priority: -10,
     });
@@ -72,7 +106,7 @@ describe('submitEmbedBackfill — cooldown gate', () => {
       `UPDATE minion_jobs SET status='active' WHERE name='embed-backfill'`,
     );
 
-    const result = await submitEmbedBackfill(engine, 'default', { reason: 'unit' });
+    const result = await submitWithWorker('default', { reason: 'unit' });
     expect(result.status).toBe('cooldown');
     expect(result.cooldownRemainingSeconds).toBeUndefined();
   });
@@ -86,7 +120,7 @@ describe('submitEmbedBackfill — cooldown gate', () => {
       [job.id],
     );
 
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       cooldownMinOverride: 10, // 10min cooldown; 1min elapsed → blocked
     });
@@ -104,7 +138,7 @@ describe('submitEmbedBackfill — cooldown gate', () => {
       [job.id],
     );
 
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       cooldownMinOverride: 10,
     });
@@ -120,14 +154,14 @@ describe('submitEmbedBackfill — cooldown gate', () => {
       [job.id],
     );
 
-    const result = await submitEmbedBackfill(engine, 'default', { reason: 'unit' });
+    const result = await submitWithWorker('default', { reason: 'unit' });
     expect(result.status).toBe('cooldown');
   });
 });
 
 describe('submitEmbedBackfill — 24h spend cap', () => {
   test('refuses when spend24hFn returns >= cap', async () => {
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       spendCapUsdOverride: 25,
       spend24hFn: async () => 25,
@@ -138,7 +172,7 @@ describe('submitEmbedBackfill — 24h spend cap', () => {
   });
 
   test('admits when spend24hFn returns < cap', async () => {
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       spendCapUsdOverride: 25,
       spend24hFn: async () => 24.99,
@@ -148,7 +182,7 @@ describe('submitEmbedBackfill — 24h spend cap', () => {
 
   test('config-overridable spend cap (via embed.backfill_max_usd_per_source_24h)', async () => {
     await engine.setConfig(SPEND_CAP_CONFIG_KEY, '5');
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       spend24hFn: async () => 5,
     });
@@ -159,7 +193,7 @@ describe('submitEmbedBackfill — 24h spend cap', () => {
   // v0.42.42.0 (#2139): off-switch + tokenmax bypass.
   test('cap "off" → submits even at huge spend (Infinity cap never tripped)', async () => {
     await engine.setConfig(SPEND_CAP_CONFIG_KEY, 'off');
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       spend24hFn: async () => 1e9,
     });
@@ -168,7 +202,7 @@ describe('submitEmbedBackfill — 24h spend cap', () => {
 
   test('0 falls back to the default cap (off semantics ≠ 0)', async () => {
     await engine.setConfig(SPEND_CAP_CONFIG_KEY, '0');
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       spend24hFn: async () => 25, // == default $25 → capped
     });
@@ -177,7 +211,7 @@ describe('submitEmbedBackfill — 24h spend cap', () => {
   });
 
   test('spend.posture=tokenmax bypasses the cap, marks spendCapBypassed', async () => {
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       postureOverride: 'tokenmax',
       spendCapUsdOverride: 25,
@@ -195,7 +229,7 @@ describe('submitEmbedBackfill — 24h spend cap', () => {
       `UPDATE minion_jobs SET status='completed', finished_at=NOW() - INTERVAL '1 minute' WHERE id=$1`,
       [job.id],
     );
-    const result = await submitEmbedBackfill(engine, 'default', {
+    const result = await submitWithWorker('default', {
       reason: 'unit',
       postureOverride: 'tokenmax',
       cooldownMinOverride: 10,
@@ -216,7 +250,7 @@ describe('submitEmbedBackfill — source isolation', () => {
     await engine.executeRaw(`UPDATE minion_jobs SET status='active' WHERE name='embed-backfill'`);
 
     // Submit for 'other' — should NOT be blocked
-    const result = await submitEmbedBackfill(engine, 'other', { reason: 'unit' });
+    const result = await submitWithWorker('other', { reason: 'unit' });
     expect(result.status).toBe('submitted');
   });
 });

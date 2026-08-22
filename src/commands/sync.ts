@@ -3741,10 +3741,9 @@ See also:
           const sub = await submitEmbedBackfill(engine, src.id, { reason: 'sync_all' });
           if (sub.status === 'submitted') {
             writeHuman(`  → embed-backfill job ${sub.jobId} queued for ${src.name}`);
-          } else if (sub.status === 'cooldown') {
-            writeHuman(`  → embed-backfill skipped (cooldown) for ${src.name}`);
-          } else if (sub.status === 'spend_capped') {
-            writeHuman(`  → embed-backfill skipped (24h spend cap $${sub.spendCapUsd}) for ${src.name}`);
+          } else {
+            const detail = sub.status === 'cooldown' ? 'cooldown' : sub.status === 'spend_capped' ? `24h spend cap $${sub.spendCapUsd}` : `PGLite has no persistent worker; run \`gbrain embed --stale --source ${src.id}\` to drain now`;
+            writeHuman(`  → embed-backfill ${sub.status === 'no_worker_surface' ? 'not queued' : 'skipped'} (${detail}) for ${src.name}`);
           }
         } catch (e) {
           process.stderr.write(`  → embed-backfill submission failed for ${src.name}: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -4036,8 +4035,9 @@ See also:
         const sub = await submitEmbedBackfill(engine, sourceId, { reason: 'sync_autodefer' });
         if (sub.status === 'submitted') {
           process.stderr.write(`  → embed-backfill job ${sub.jobId} queued (deferred inline embed).\n`);
-        } else if (sub.status === 'cooldown') {
-          process.stderr.write(`  → embed-backfill skipped (cooldown); run \`gbrain embed --stale\` to drain now.\n`);
+        } else {
+          const detail = sub.status === 'no_worker_surface' ? `not queued (PGLite has no persistent worker); run \`gbrain embed --stale --source ${sourceId}\` to drain now` : `skipped (${sub.status}); run \`gbrain embed --stale\` to drain now`;
+          process.stderr.write(`  → embed-backfill ${detail}.\n`);
         }
       } catch (e) {
         process.stderr.write(`  → embed-backfill submission failed: ${e instanceof Error ? e.message : String(e)}\n`);

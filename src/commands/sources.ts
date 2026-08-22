@@ -1026,6 +1026,8 @@ async function runFederate(engine: BrainEngine, args: string[], value: boolean):
       console.log(`  → embed-backfill skipped (cooldown). Manually trigger with: gbrain jobs submit embed-backfill --params '{"sourceId":"${id}"}'`);
     } else if (sub.status === 'spend_capped') {
       console.log(`  → embed-backfill skipped (24h spend cap $${sub.spendCapUsd} reached for this source).`);
+    } else {
+      console.log(`  → embed-backfill not queued (PGLite has no persistent worker); run: gbrain embed --stale --source ${id}`);
     }
   } catch (err) {
     // Federation flip already succeeded; embed-backfill is a follow-up nicety.
