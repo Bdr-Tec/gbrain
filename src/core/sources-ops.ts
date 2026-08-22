@@ -382,6 +382,7 @@ export async function addSource(
     // that runs from a different cwd (launchd daemon at cwd=/, autopilot
     // dispatch, sync anchors) then join-resolved a phantom path and silently
     // missed the real directory.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- localPath only flows here from the trusted local CLI: the sources_add op hard-rejects `path` unless ctx.remote === false (remote callers get null), so this is the operator registering their own directory; absolutizing it is the #3696 fix
     opts = { ...opts, localPath: resolvePath(msysToNativePath(opts.localPath)) };
   }
 

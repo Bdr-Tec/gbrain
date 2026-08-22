@@ -238,8 +238,11 @@ async function uploadRaw(engine: BrainEngine, args: string[]) {
     // page's canonical markdown artifact.
     const pageDir = dirname(target.filePath);
     const pageName = basename(target.filePath).replace(/\.md$/i, '');
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- pageDir/pageName derive from resolvePageWriteTarget's brain-repo target for the operator's own --page slug; upload-raw is a trusted-local CLI lane (runFiles is wired only from cli.ts, remote:false — the MCP file_upload op is a separate localOnly handler)
     const destDir = join(pageDir, '.raw', pageName);
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- filename is basename() of the operator's own CLI file arg (basename yields a single separator-free segment), joined under the brain-repo sidecar dir above
     const dest = join(destDir, filename);
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- identity comparison only (skip self-copy when source already IS the dest); no fs path is derived from this expression
     if (resolve(dest) !== resolve(filePath)) {
       mkdirSync(destDir, { recursive: true });
       copyFileSync(filePath, dest);
@@ -471,6 +474,7 @@ async function verifyFiles(engine: BrainEngine) {
     const meta = (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) as Record<string, unknown> | null;
     if (meta?.storage === 'git') {
       const gitRoot = await gitRootFor(row.source_id);
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- gitRoot is the operator-written sources.local_path / sync.repo_path config; storage_path rows are banked exclusively by trusted-local writers (upload-raw's relative(writeRoot, dest) on the CLI, plus the localOnly file_upload op) — files verify is itself a CLI-only read that hash-compares and reports, never serves content
       const local = gitRoot ? join(gitRoot, storagePath) : null;
       if (!local || !existsSync(local)) {
         missing++;

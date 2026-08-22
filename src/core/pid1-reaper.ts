@@ -63,6 +63,7 @@ export function scanZombieChildren(procDir: string, selfPid: number): number[] {
     const pid = Number(name);
     if (pid === selfPid) continue;
     try {
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- name is a readdir entry gated by /^\d+$/ two lines up (single numeric segment, no separators or ..); procDir is a trusted injectable ('/proc' default, test fixture dirs otherwise), never user input
       const raw = readFileSync(join(procDir, name, 'stat'), 'utf8');
       const close = raw.lastIndexOf(')');
       if (close < 0) continue;

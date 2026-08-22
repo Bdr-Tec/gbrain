@@ -1902,6 +1902,7 @@ async function installDaemon(engine: BrainEngine, args: string[]) {
   // #3696: the daemon runs with an arbitrary cwd (launchd: `/`), so a
   // relative `--repo .` baked into the wrapper script resolves to a phantom
   // path at daemon runtime. Resolve NOW, against the installer's cwd.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- rawRepoPath is the local operator's own --repo CLI arg or the operator-written sync.repo_path config row; installDaemon is reachable only via `gbrain autopilot --install` on the trusted local CLI (never MCP/remote), and absolutizing it here IS the #3696 fix
   const repoPath = resolvePath(rawRepoPath);
 
   const forcedTarget = parseArg(args, '--target') as InstallTarget | undefined;

@@ -200,6 +200,7 @@ export function runRegexBounded(
     throw new RegexCatastrophicPatternError(pattern);
   }
   try {
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- this function IS the bounded-exec chokepoint for community pack regexes: input is capped at MAX_REGEX_INPUT_CHARS and nested-quantifier (catastrophic-backtracking) shapes are refused above BEFORE exec, and every caller routes through PageRegexBudget's per-page cumulative budget (see header: the vm-watchdog alternative wedges Bun+PGLite)
     return new RegExp(pattern).exec(text);
   } catch {
     // Malformed pattern (compile error). Treat as a degrade signal — the

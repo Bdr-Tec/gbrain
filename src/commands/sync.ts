@@ -608,6 +608,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // writeSyncAnchor('repo_path', anchorPath) re-persists this value below,
   // one successful sync from the right cwd self-heals a legacy relative row
   // to absolute.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- rawRepoPath is the local operator's --repo CLI arg or the operator-written sync anchor (sync.repo_path / sources.local_path); the sync_brain op is localOnly:true so no remote caller reaches this path, and absolutizing it here IS the #3696 fix
   const repoPath = pathResolve(rawRepoPath);
 
   serr(`[gbrain phase] sync.load_active_pack`);
@@ -833,6 +834,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   if (scoped) {
     // Probe prefix in SLUG spelling (resolveSlugForPath), not raw path
     // spelling — the auto-pin LIKE must match how slugs were actually minted.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- syncScopeRelPath is relative() of the realpath'd scope already proven inside the realpath'd git root by the isWithinRoot guard above (so it carries no ..); the join output only mints an in-memory slug probe string, no fs operation
     const probeSlug = resolveSlugForPath(join(syncScopeRelPath, 'x.md'));
     const slugPrefix = probeSlug.slice(0, probeSlug.length - '/x'.length);
     slugRootMode = await resolveSlugRootMode(engine, {
@@ -1854,6 +1856,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       // source) was remapped scope-relative; the join base moves with it.
       // NAV-1 TOCTOU: refuse a destination that realpath-resolves outside the
       // repo (committed symlink pointing out).
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- `to` is a git-diff rename path from the synced repo (repo content can be hostile), but the joined path is used ONLY inside the isPathSafe(filePath, gitContextRoot) realpath containment check on the next line — a path escaping the repo root (dot-dot or committed symlink) is refused before any read
       const filePath = join(syncImportRoot, to);
       let importResult: Awaited<ReturnType<typeof importFile>> | undefined;
       if (existsSync(filePath) && isPathSafe(filePath, gitContextRoot)) {
