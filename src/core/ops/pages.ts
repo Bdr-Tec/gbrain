@@ -20,7 +20,6 @@ import type { WriterLintPayload } from '../output/post-write.ts';
 import { stripFactsFence } from '../facts-fence.ts';
 import { getContentFlag } from '../quarantine.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
-import { isValidSourceId, ALL_SOURCES } from '../source-id.ts';
 import { LIST_PAGES_DESCRIPTION, CAPTURE_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
 import type { Operation, OperationContext } from './contract.ts';
@@ -30,44 +29,11 @@ import {
   enforceClientSlugFence,
   federatedSearchScope,
   normalizeSlugPrefix,
+  parseSourceIdParam,
   validatePageSlug,
 } from './context.ts';
 
 // --- Page CRUD ---
-
-/**
- * #4329: parse a per-call `source_id` param. Pre-fix, get_page / delete_page /
- * restore_page had NO source_id in their contracts, so an agent-passed
- * source_id was SILENTLY dropped and the op acted on ctx.sourceId —
- * soft-deleting the WRONG row on a multi-source brain while returning a
- * success that named the requested slug. A caller-supplied value is either
- * honored or rejected loudly — never ignored. `allowAll` admits the
- * `__all__` sentinel for read ops (resolveRequestedScope collapses it per
- * trust); destructive ops target exactly one source and reject it.
- */
-function parseSourceIdParam(
-  raw: unknown,
-  opName: string,
-  opts?: { allowAll?: boolean },
-): string | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw === 'string') {
-    if (raw === ALL_SOURCES) {
-      if (opts?.allowAll === true) return raw;
-      throw new OperationError(
-        'invalid_params',
-        `${opName}: source_id '${ALL_SOURCES}' is not a valid target — this op acts on exactly one source.`,
-        'Pass the single source_id of the row to target, or omit source_id to use the ambient source scope.',
-      );
-    }
-    if (isValidSourceId(raw)) return raw;
-  }
-  throw new OperationError(
-    'invalid_params',
-    `${opName}: invalid source_id ${JSON.stringify(raw)} — must be 1-32 lowercase alnum chars with optional interior hyphens.`,
-    'Pass a registered source id (see list_sources), or omit source_id to use the ambient source scope.',
-  );
-}
 
 /**
  * #4329 (S1-tightened): write-authority gate for a per-call source_id on the
