@@ -1763,7 +1763,16 @@ fi
 # or which init file the OS loaded.
 export PATH=${runtimePathPrefix}"$HOME/.bun/bin:$PATH"
 ${process.env.GBRAIN_HOME ? `# Baked at install: the supervisor does not pass the installer's env, and\n# without this the daemon would read/write a different home than the\n# install that configured it.\nexport GBRAIN_HOME='${(process.env.GBRAIN_HOME).replace(/'/g, "'\\''")}'\n` : ''}
-${generateSelfDisableGuard(repoPath, target)}exec '${safeGbrainPath}' autopilot --repo '${safeRepoPath}'
+${generateSelfDisableGuard(repoPath, target)}# #3696: daemon cwd = the repo, so any legacy RELATIVE sources.local_path /
+# sync.repo_path row resolves against it instead of a phantom path under the
+# supervisor's cwd. Done HERE — after the guard has proven the repo exists —
+# and NOT via launchd's plist WorkingDirectory: launchd chdir()s before exec,
+# so a deleted repo would fail every respawn and the self-disable guard above
+# could never run. Fail-open (|| true): a repo deleted between the guard and
+# this line still starts the daemon, and the dispatch loops skip relative
+# paths loudly.
+cd '${safeRepoPath}' 2>/dev/null || true
+exec '${safeGbrainPath}' autopilot --repo '${safeRepoPath}'
 `;
   writeFileSync(wrapperPath, wrapper, { mode: 0o755 });
   return wrapperPath;
@@ -1873,11 +1882,17 @@ export function relativeLocalPathSkipWarning(sourceId: string, localPath: string
 
 // v0.37.7.0 #1162 — pure function for plist generation so tests can
 // assert ThrottleInterval/KeepAlive shape without an installed daemon.
-// #3696: WorkingDirectory pins the daemon's cwd (launchd defaults to `/`),
-// so any legacy RELATIVE sources.local_path / sync.repo_path row still
-// resolves against the repo instead of a phantom path under `/`. Falls back
-// to $HOME when no repoPath is supplied (older callers/tests).
-export function generateLaunchdPlist(wrapperPath: string, home: string, repoPath?: string): string {
+// #3696: WorkingDirectory pins the daemon's cwd away from launchd's `/`
+// default — but it MUST be a spawn-safe path, NEVER the repo. launchd
+// chdir()s before exec, so a WorkingDirectory that stops existing makes
+// every (re)spawn fail: after a repo deletion the wrapper — and its
+// self-disable guard — would never run again, leaving a zombie KeepAlive
+// job that can never take itself out of rotation. $HOME exists for the
+// job's whole lifetime; the WRAPPER cd's into the repo AFTER the guard has
+// proven it exists (writeWrapperScript), which is what makes legacy
+// RELATIVE sources.local_path / sync.repo_path rows resolve against the
+// repo instead of a phantom path.
+export function generateLaunchdPlist(wrapperPath: string, home: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1886,7 +1901,7 @@ export function generateLaunchdPlist(wrapperPath: string, home: string, repoPath
   <key>ProgramArguments</key><array>
     <string>${escapeXml(wrapperPath)}</string>
   </array>
-  <key>WorkingDirectory</key><string>${escapeXml(repoPath ?? home)}</string>
+  <key>WorkingDirectory</key><string>${escapeXml(home)}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <!--
@@ -1906,7 +1921,7 @@ export function generateLaunchdPlist(wrapperPath: string, home: string, repoPath
 }
 
 function installLaunchd(wrapperPath: string, home: string, repoPath: string) {
-  const plist = generateLaunchdPlist(wrapperPath, home, repoPath);
+  const plist = generateLaunchdPlist(wrapperPath, home);
 
   try {
     const agentsDir = join(home, 'Library', 'LaunchAgents');

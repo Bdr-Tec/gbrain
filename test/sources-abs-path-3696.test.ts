@@ -5,8 +5,10 @@
  *      against the registering shell's cwd) — pre-fix the relative string was
  *      inserted verbatim and every daemon-context consumer (launchd cwd=/)
  *      join-resolved a phantom path.
- *   2. generateLaunchdPlist emits a WorkingDirectory key (repo dir when
- *      given; $HOME fallback) so the daemon never runs at cwd=/.
+ *   2. generateLaunchdPlist emits a WorkingDirectory key pinned to $HOME
+ *      (spawn-safe — NEVER the repo: launchd chdir()s before exec, so a
+ *      deleted repo would fail every respawn and the self-disable guard
+ *      could never run). The wrapper cd's into the repo after the guard.
  *   3. The autopilot dispatch loops skip (with a loud warning) any source
  *      whose stored local_path is still relative (legacy rows).
  */
@@ -69,18 +71,17 @@ describe('#3696 addSource stores absolute local_path', () => {
 });
 
 describe('#3696 generateLaunchdPlist WorkingDirectory', () => {
-  test('emits WorkingDirectory = repo path when provided', () => {
-    const plist = generateLaunchdPlist('/Users/me/.gbrain/autopilot-run.sh', '/Users/me', '/Users/me/brain');
-    expect(plist).toContain('<key>WorkingDirectory</key><string>/Users/me/brain</string>');
-  });
-
-  test('falls back to $HOME when no repo path is given', () => {
+  test('emits WorkingDirectory = $HOME (spawn-safe), never the repo', () => {
+    // launchd chdir()s into WorkingDirectory BEFORE exec: pinning the repo
+    // here means a deleted repo fails every respawn, so the wrapper's
+    // self-disable guard can never fire — a zombie KeepAlive job forever.
+    // The repo cwd lives in the wrapper, after the guard proves it exists.
     const plist = generateLaunchdPlist('/Users/me/.gbrain/autopilot-run.sh', '/Users/me');
     expect(plist).toContain('<key>WorkingDirectory</key><string>/Users/me</string>');
   });
 
-  test('XML-escapes the repo path', () => {
-    const plist = generateLaunchdPlist('/w.sh', '/home', '/data/a&b');
+  test('XML-escapes the WorkingDirectory path', () => {
+    const plist = generateLaunchdPlist('/w.sh', '/data/a&b');
     expect(plist).toContain('<key>WorkingDirectory</key><string>/data/a&amp;b</string>');
   });
 });
