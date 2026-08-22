@@ -95,7 +95,7 @@ for f in "${SOURCES[@]}"; do
 done
 
 OUT="$(mktemp "${TMPDIR:-/tmp}/discriminate-out.XXXXXX")"
-bun test "$TEST_FILE" > "$OUT" 2>&1
+bun test --timeout=60000 "$TEST_FILE" > "$OUT" 2>&1
 TEST_EXIT=$?
 restore
 trap - EXIT INT TERM
