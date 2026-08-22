@@ -125,7 +125,10 @@ export async function runEvalCommand(engine: BrainEngine, args: string[]): Promi
     // through the cli.ts pre-engine branch; this re-entry branch exists so
     // the generic qrels flow below can never recapture the subcommand.
     const { runEvalSynthesizeConceptsCli } = await import('./eval-synthesize-concepts.ts');
-    process.exitCode = await runEvalSynthesizeConceptsCli(args.slice(1));
+    const { setCliExitVerdict } = await import('../core/cli-force-exit.ts');
+    // Exit-verdict ownership: never assign process.exitCode raw — PGLite
+    // teardown can scribble over it; the owned verdict survives (cli-force-exit).
+    setCliExitVerdict(await runEvalSynthesizeConceptsCli(args.slice(1)));
     return;
   }
 
