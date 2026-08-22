@@ -3,7 +3,7 @@
  *
  * Pins the full loop: gateway.chat() success boundary → recordChatUsage →
  * phase attribution (direct vs job callers) → canonical cost math incl.
- * cache tokens → engine sink INSERT into chat_usage_log (migration v136) →
+ * cache tokens → engine sink INSERT into chat_usage_log (migration v140) →
  * the admin-scope get_usage op with explicit coverage fields (admin: the
  * ledger has no source dimension, so source-scoped read tokens are fenced). Failure paths:
  * a failed chat writes NO row; a throwing sink never breaks a chat call;
@@ -157,7 +157,7 @@ describe('gateway.chat() success boundary — direct vs job callers', () => {
   });
 });
 
-describe('engine sink + get_usage op (PGLite, migration v136 schema)', () => {
+describe('engine sink + get_usage op (PGLite, migration v140 schema)', () => {
   let engine: PGLiteEngine;
 
   beforeAll(async () => {

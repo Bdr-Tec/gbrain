@@ -6032,6 +6032,27 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     version: 136,
+    name: 'minion_private_queue_owner_metadata',
+    // issue #4332: durable ownership/liveness metadata for parent-owned
+    // dream-inline queues. Startup recovery uses these columns to cancel only
+    // orphaned private queues (terminal/missing owner or expired lease), never
+    // live queues and never legacy unowned rows.
+    idempotent: true,
+    sql: `
+      ALTER TABLE minion_jobs ADD COLUMN IF NOT EXISTS private_queue_owner_job_id INTEGER REFERENCES minion_jobs(id) ON DELETE SET NULL;
+      ALTER TABLE minion_jobs ADD COLUMN IF NOT EXISTS private_queue_owner_token TEXT;
+      ALTER TABLE minion_jobs ADD COLUMN IF NOT EXISTS private_queue_lease_until TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS idx_minion_jobs_private_queue_recovery
+        ON minion_jobs (queue, private_queue_lease_until)
+        WHERE queue LIKE 'dream-inline-%'
+          AND status IN ('waiting','active','delayed','waiting-children','paused');
+      CREATE INDEX IF NOT EXISTS idx_minion_jobs_private_queue_owner
+        ON minion_jobs (private_queue_owner_job_id)
+        WHERE private_queue_owner_job_id IS NOT NULL;
+    `,
+  },
+  {
+    version: 137,
     name: 'entity_identities',
     // #4224 — cross-source entity identity groups (federation v1).
     //
@@ -6079,7 +6100,7 @@ export const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    version: 137,
+    version: 138,
     name: 'timeline_dedup_md5_summary',
     // #3737 — idx_timeline_dedup keyed the RAW summary, so any incompressible
     // summary over the btree v4 row cap ("index row size N exceeds btree
@@ -6100,7 +6121,7 @@ export const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    version: 138,
+    version: 139,
     name: 'timeline_legacy_source_split_repair',
     // #3957 follow-up — one-time legacy-row shape repair. The pre-#3957
     // DB-path parser wrote timeline rows with source='' and the UNSPLIT
@@ -6122,7 +6143,7 @@ export const MIGRATIONS: Migration[] = [
       const r = await repairLegacyTimelineSourceRows(engine);
       if (r.rowsRewritten > 0 || r.rowsDeleted > 0) {
         migrationNotice(
-          `  NOTICE: v138 rewrote ${r.rowsRewritten} legacy timeline row(s) to the split ` +
+          `  NOTICE: v139 rewrote ${r.rowsRewritten} legacy timeline row(s) to the split ` +
           `(source, summary) shape` +
           (r.rowsDeleted > 0 ? ` and removed ${r.rowsDeleted} already-duplicated row(s)` : '') +
           ` across ${r.pagesScanned} page(s), so re-extraction dedups instead of duplicating (#3957).\n`,
@@ -6131,7 +6152,7 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   {
-    version: 139,
+    version: 140,
     name: 'chat_usage_log',
     // #4218 (revives the #3392 shape): durable per-call chat usage ledger.
     // gateway.chat() inserts one row per SUCCESSFUL call (fire-and-forget via

@@ -15,14 +15,17 @@ test/autopilot-auto-drain-wiring.test.ts	autopilot auto-drain wiring	8	readFileS
 test/autopilot-cycle-failure-classification.test.ts	autopilot cycle-failure classification — only 'failed' trips the circuit breaker	2	readFileSync
 test/autopilot-cycle-failure-classification.test.ts	runPhaseOrphans ratio threshold — no more absolute count > 20	3	readFileSync
 test/autopilot-fanout-wiring.test.ts	autopilot.ts ↔ dispatchPerSource wiring	13	readFileSync
+test/autopilot-install.test.ts	autopilot install — reload-safety (#2608)	1	readFileSync
 test/autopilot-install.test.ts	autopilot showStatus — wrapper-path detection	1	readFileSync
+test/autopilot-install.test.ts	autopilot wiring: chat-unavailable boot warning (#2608)	1	readFileSync
 test/autopilot-install.test.ts	autopilot wrapper script — bun PATH export (v0.42.x regression)	1	readFileSync
 test/autopilot-install.test.ts	autopilot wrapper script — env source order (v0.36.1.x #966)	1	readFileSync
-test/autopilot-install.test.ts	autopilot wrapper script — key sourcing (#2608)	3	readFileSync
+test/autopilot-install.test.ts	autopilot wrapper script — gbrain-owned env file (#2608)	5	readFileSync
+test/autopilot-install.test.ts	autopilot wrapper script — key sourcing (#2608)	1	readFileSync
 test/autopilot-pause-marker.test.ts	pause marker fences minion job pickup	1	readFileSync
 test/autopilot-self-upgrade.test.ts	autopilot self-upgrade static-shape regressions	4	readFileSync
 test/autopilot-shutdown-engine-close.test.ts	autopilot.ts graceful engine shutdown (#1872)	6	readFileSync
-test/autopilot-supervisor-wiring.test.ts	autopilot.ts ↔ ChildWorkerSupervisor wiring	6	readFileSync
+test/autopilot-supervisor-wiring.test.ts	autopilot.ts ↔ ChildWorkerSupervisor wiring	7	readFileSync
 test/backlinks-job-default.test.ts	backlinks Minion handler — empty payload defaults to check, not fix	3	readFileSync
 test/book-mirror.test.ts	gbrain book-mirror — source file invariants	7	readFileSync
 test/bootstrap-codex-door.test.ts	Codex door — rendered AGENTS.md pull protocol (Gate 3)	2	readFileSync
@@ -148,6 +151,7 @@ test/jobs-embed-background-parity.serial.test.ts	embed job background parity (D7
 test/jobs-gateway-refresh-set.test.ts	#3387 — GATEWAY_REFRESH_JOB_NAMES ⇔ registerBuiltinJob call sites	5	readFileSync
 test/jobs-list-get-json.serial.test.ts	help advertises --json on list/get/stats (#3685)	2	readFileSync
 test/jobs-thin-client-date-rehydration.test.ts	thin-client unpack sites route through rehydrateJobDates (source audit)	2	readFileSync
+test/jobs-worker-startup-recovery.test.ts	work-handler recovery placement (structural)	1	readFileSync
 test/migrate-stdout-clean.test.ts	migration output stays off stdout	2	readFileSync
 test/migrate.test.ts	PR #356 + #363 — session timeouts applied via startup parameters	1	readFileSync
 test/migrate.test.ts	PR #356 — LATEST_VERSION is max(versions), not array[-1]	2	readFileSync
@@ -190,6 +194,7 @@ test/postgres-engine.test.ts	postgres-engine / search path timeout isolation	7	r
 test/private-visibility.test.ts	shared private predicate lives once (#4352 remediation)	1	readFileSync
 test/readme-hero-anchors.test.ts	README hero anchors (D9 regression guard)	5	readFileSync
 test/redos-hardening.test.ts	#1569 --no-schema-pack + heartbeat wiring (structural)	2	readFileSync
+test/redos-hardening.test.ts	megawave vm-watchdog removal (bootstrap-verify freeze)	5	readFileSync
 test/register-client-source-normalize.test.ts	register-client route wiring (structural)	1	readFileSync
 test/regression-strict-source-id.test.ts	cycle reverse-write call sites use the consolidated path	4	readFileSync
 test/regression-strict-source-id.test.ts	utils.ts no longer carries an inline permissive regex	2	readFileSync
@@ -225,6 +230,7 @@ test/skillpack-scaffold.test.ts	runScaffold — happy path	3	readFileSync
 test/skillpack-scrub-legacy.test.ts	runScrubLegacy	8	readFileSync
 test/sources-webhook.test.ts	Webhook sync job extraction contract	1	readFileSync
 test/spend-off-switch.test.ts	reindex / onboard off-switch dispatch (regression guards)	3	bun-file
+test/supervisor.test.ts	recovery hook timeout bound (structural)	1	readFileSync
 test/sync-failures.test.ts	Bug 9 — doctor surfaces sync failures	2	doctor-source-helper
 test/sync-failures.test.ts	Bug 9 — sync.ts CLI flag wiring	6	bun-file,doctor-source-helper
 test/sync.test.ts	buildSyncManifest	9	bun-file

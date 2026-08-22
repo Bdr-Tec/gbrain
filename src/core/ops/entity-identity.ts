@@ -1,7 +1,7 @@
 /**
  * #4224 — entity identity ops (federation v1, MANUAL-ONLY).
  *
- * Three ops over the entity_identities table (migration v136):
+ * Three ops over the entity_identities table (migration v137):
  *   - entity_identity_link   (write, localOnly) — link a page into a group
  *   - entity_identity_unlink (write, localOnly) — remove a page from a group
  *   - entity_identity_list   (read)             — inspect groups/members

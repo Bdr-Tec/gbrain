@@ -6,7 +6,7 @@
  * (`wiki:people/alice` vs `team-brain:people/alice-chen`). Nothing else in
  * gbrain asserts "these pages are the same entity" — slugs are only unique
  * per source, and titles collide freely. The `entity_identities` table
- * (migration v136) records that assertion explicitly: member pages grouped
+ * (migration v137) records that assertion explicitly: member pages grouped
  * under an opaque `entity_id` handle, one optional canonical member per
  * group.
  *
@@ -228,7 +228,7 @@ export async function listEntityIdentities(
       canonical: r.canonical === true,
     }));
   } catch (e) {
-    // Pre-v136 brain (table missing): identity is simply "not set up yet".
+    // Pre-v137 brain (table missing): identity is simply "not set up yet".
     if (isUndefinedTableError(e)) return [];
     throw e;
   }

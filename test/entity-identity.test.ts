@@ -1,7 +1,7 @@
 /**
  * #4224 — cross-source entity identity (federation v1).
  *
- * Covers: the v136 entity_identities migration, the manual-only helpers
+ * Covers: the v137 entity_identities migration, the manual-only helpers
  * (link/unlink/list, identity key = (source_id, slug)), the three ops
  * (localOnly writes, source-scoped list), and the flag-gated retrieval
  * union on get_links/get_backlinks (default OFF; never widens a federated
@@ -63,7 +63,7 @@ async function seedTwoSourceAlice() {
   }, { sourceId: 'team-brain' });
 }
 
-describe('entity_identities migration (v136)', () => {
+describe('entity_identities migration (v137)', () => {
   test('table exists with the documented shape', async () => {
     const rows = await engine.executeRaw<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns WHERE table_name = 'entity_identities'`,

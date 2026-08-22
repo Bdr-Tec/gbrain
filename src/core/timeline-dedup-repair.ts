@@ -26,7 +26,7 @@ const INDEX_NAME = 'idx_timeline_dedup';
 // ON CONFLICT (page_id, date, md5(summary), source) against this shape, so
 // the self-heal MUST expect (and rebuild to) the md5 form — an
 // EXPECTED_COLUMNS of the raw shape would make this repair revert migration
-// v137 on every migrate pass.
+// v138 on every migrate pass.
 const EXPECTED_COLUMNS = ['page_id', 'date', 'md5(summary)', 'source'];
 
 export interface TimelineDedupStatus {
@@ -106,7 +106,7 @@ export interface TimelineDedupRepairResult {
 }
 
 /**
- * Heal the index if it's missing the canonical shape (v137: (page_id, date,
+ * Heal the index if it's missing the canonical shape (v138: (page_id, date,
  * md5(summary), source)). Dedupes FIRST — the loose 3-column index let rows
  * differing only by `source` coexist, and `CREATE UNIQUE INDEX` would throw
  * on those collisions otherwise. Keeps the earliest row (min id) of each
@@ -146,7 +146,7 @@ export async function repairTimelineDedupIndex(engine: BrainEngine): Promise<Tim
   const collapsedDuplicates = parseInt(del[0]?.n ?? '0', 10);
 
   await engine.executeRaw(`DROP INDEX IF EXISTS ${INDEX_NAME}`);
-  // #3737: rebuild to the md5-keyed shape (matches migration v137 + both
+  // #3737: rebuild to the md5-keyed shape (matches migration v138 + both
   // engines' ON CONFLICT inference) — rebuilding the raw-summary shape here
   // would revert the btree-overflow fix on the next migrate pass.
   await engine.executeRaw(

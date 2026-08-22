@@ -21,7 +21,7 @@
  * Coverage contract (surfaced verbatim by the `get_usage` op): only
  * gateway.chat() calls are logged. The subagent raw-SDK path, embeddings
  * (embedding-pricing.ts owns those), and calls made before the sink was
- * registered or before migration v136 are NOT covered. Failed chat calls are
+ * registered or before migration v140 are NOT covered. Failed chat calls are
  * not logged either — the budget tracker (budget-tracker.ts) remains the
  * pessimistic in-flight spend gate; this table is the after-the-fact ledger.
  *

@@ -331,8 +331,8 @@ describe("#3957 legacy-row (source='') shape repair", () => {
     expect(second).toEqual({ pagesScanned: 0, rowsRewritten: 0, rowsDeleted: 0, rowsSkipped: 0 });
   });
 
-  test('migration v138 ships the repair (handler-only, idempotent)', () => {
-    const m = MIGRATIONS.find(x => x.version === 138);
+  test('migration v139 ships the repair (handler-only, idempotent)', () => {
+    const m = MIGRATIONS.find(x => x.version === 139);
     expect(m).toBeDefined();
     expect(m!.name).toBe('timeline_legacy_source_split_repair');
     expect(typeof m!.handler).toBe('function');
