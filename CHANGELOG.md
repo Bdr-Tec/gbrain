@@ -23,6 +23,12 @@ worker therefore passes without creating a second unmanaged process.
   processes or global PID files.
 - Doctor health-score extraction uses POSIX `sed` instead of GNU-only
   `grep -P`, eliminating the macOS warning and `?/100` fallback.
+- The public `query` op's default result count now derives from the resolved
+  search mode (10 conservative / 25 balanced / 50 tokenmax, or the
+  `search.searchLimit` config override) instead of a flat 20, on both the
+  text-path miss and the semantic-cache hit — the two paths now agree for the
+  same call shape. Pass `limit` explicitly for a mode-independent count.
+  (#4356)
 
 No migration or configuration change is required.
 
