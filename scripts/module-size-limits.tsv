@@ -8,7 +8,7 @@ src/core/operations.ts	303	ratchet	peel target: containment sprint C4-C7
 src/core/postgres-engine.ts	6016	ratchet	grown v0.46.25.0 fix waves (#1262 #3827 #4389) + v0.46.26.0: private-queue token bootstrap probe
 src/core/pglite-engine.ts	5971	ratchet	grown v0.46.24.0 overnight wave: registry-aware writes + stale/invalidate plane unification (#1262); peeled cjk-search (#4299)
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
-src/commands/sync.ts	4334	ratchet	grown v0.46.25.0 fix waves: delete-slug resolver + msys healing (#3942 #2955)
+src/commands/sync.ts	5264	ratchet	grown v0.46.25.0 fix waves: delete-slug resolver + msys healing (#3942 #2955) + #3570 rename-sentinel operator-exit safety (cross-source-scoped resolve, tracked-file liveness index, orphaned-sentinel self-heal) + semgrep path-containment guard + tracked-file liveness index untracked-file gap fix
 src/core/ai/gateway.ts	4441	ratchet	grown v0.46.25.0 D2: env-key snapshot stash (#2119)
 src/cli.ts	3628	ratchet	grown v0.46.25.0 D2: stdout interposer install (#4383)
 src/core/cycle.ts	3123	ratchet	grown v0.46.25.0 fix waves (#4309 #2821) + v0.46.26.0: cycle-start orphan recovery
