@@ -2051,7 +2051,7 @@ Data flowing into the brain. Each integration is a recipe — markdown + setup h
 - **Rerankers**: Voyage `rerank-2.5` hosted (the new-install default; reranking is on in `balanced` and `tokenmax` modes, same `VOYAGE_API_KEY` as embeddings), ZeroEntropy `zerank-2` (deprecated — hosted API ends 2026-09-04; still the fallback for brains that never set `search.reranker.model`), plus the `llama-server-reranker` recipe for fully-local cross-encoder rerank via llama.cpp — runs Qwen3-Reranker or self-hosted zerank weights against the same `gateway.rerank()` seam. Setup walkthrough in [`docs/ai-providers/llama-server-reranker.md`](docs/ai-providers/llama-server-reranker.md).
 - **Credential gateway**: vault-aware secret distribution. [`docs/integrations/credential-gateway.md`](docs/integrations/credential-gateway.md).
 - **MCP clients**: every major MCP client is supported. [`docs/mcp/`](docs/mcp/) per-client setup.
-- **Memorable (procedural memory)**: optional, off by default. Turns a finished session's tool-call trace into a replayable *procedure* stored in **your own** brain database. See the section below.
+- **Memorable (procedural memory)**: optional, off by default. Turns a finished session's tool-call trace into a replayable *procedure* stored in **your own** brain database. See the section below, and [`docs/memorable-agents.md`](docs/memorable-agents.md) for the agent-facing detail.
 
 ### Memorable — procedures from your sessions (optional)
 
@@ -2066,7 +2066,7 @@ How it fits gbrain's model:
 - **The store prunes itself, and you can prune it too.** Re-recording a task refreshes its stored revision when the steps are identical, and keeps a genuinely different approach beside it as a new revision, so a worse attempt never overwrites a working one. Recall surfaces whichever revision the evidence favours. `memorable list` shows what is stored and how often each revision actually helped; `memorable prune` removes one, or sweeps ones whose files no longer exist (`--stale`) or revisions that were measured and lost (`--superseded`). Pruning works even with consent set to deny — a store you cannot empty is not one you can trust.
 - **On/off is explicit and sticky.** `memorable enable | disable | forget` sets a fail-closed consent flag stored on the source row itself; anything other than an explicit opt-in refuses writes. The gbrain-side relay is additionally gated behind `integrations.memorable.enabled` in your gbrain config (default: absent = off) and the `GBRAIN_MEMORABLE=0` kill switch.
 
-Install and connect: the `memorable` CLI ([memorable.sh/docs](https://www.memorable.sh/docs/api)) resolves your existing gbrain connection automatically — same config file, same env vars; there is nothing new to authenticate against your database. Setup is `memorable init gbrain && memorable enable`, and consent starts OFF.
+Install and connect: the `memorable` CLI ([memorable.sh/docs](https://www.memorable.sh/docs/api)) resolves your existing gbrain connection automatically — same config file, same env vars; there is nothing new to authenticate against your database. Setup is `memorable init gbrain && memorable enable`, and consent starts OFF. The receipt shape, the gbrain-side gate and exactly what leaves the machine are documented in [`docs/memorable-agents.md`](docs/memorable-agents.md).
 
 
 ## Architecture

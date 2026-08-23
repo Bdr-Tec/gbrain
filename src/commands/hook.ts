@@ -1507,7 +1507,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           // Additive signal for a local third-party consumer (never gbrain
           // itself): the corpus file above is done, hashed post-redaction so
           // the hash can never fingerprint pre-scrub content. See
-          // session-receipts.ts.
+          // hook-heartbeat.ts's session-receipts section.
           if (memorableAllowed) await appendSessionReceipt({
             session_id: sessionId,
             harness: io.harness ?? 'claude-code',
