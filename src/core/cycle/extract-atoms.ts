@@ -57,6 +57,7 @@ import { chat as gatewayChat, withBudgetTracker, isAvailable } from '../ai/gatew
 import { createGlobalLlmHaltTracker, haltedClassOf, type GlobalLlmErrorClass } from '../ai/errors.ts';
 import { importFromContent } from '../import-file.ts';
 import { serializeMarkdown } from '../markdown.ts';
+import { truncateUtf8 } from '../text-safe.ts';
 import { BudgetExhausted, BudgetTracker, isModelPriceable } from '../budget/budget-tracker.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
@@ -714,7 +715,7 @@ export async function runPhaseExtractAtoms(
         messages: [
           {
             role: 'user',
-            content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, 50_000)}`,
+            content: `Source: ${originLabel}\n\n---\n\n${truncateUtf8(item.content, 50_000)}`,
           },
         ],
         maxTokens: 4096,
