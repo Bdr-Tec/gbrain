@@ -444,6 +444,44 @@ export function checkSelfUpgradeHealth(): Check {
 }
 
 /**
+ * Upgrade-error trail (v0.13+). `gbrain upgrade` silently swallows
+ * best-effort failures in `gbrain post-upgrade`; the failure record is
+ * appended to `~/.gbrain/upgrade-errors.jsonl` so we can surface it here
+ * with a paste-ready recovery hint. Without this, users end up with
+ * half-upgraded brains and no signal.
+ *
+ * #4517: a failure record on its own doesn't mean the brain is STILL
+ * broken — the recovery hint (e.g. `apply-migrations --yes`) may have
+ * already fixed it. The installed binary's own version is proof the
+ * failed upgrade did complete filesystem-side: if it's already at or past
+ * the record's `to_version`, the target was reached and this entry is
+ * stale. Returns null (stays silent) rather than downgrading to 'ok' so a
+ * clean doctor report doesn't grow a permanent "resolved" line for every
+ * past hiccup. File-plane only (no DB), matching checkSelfUpgradeHealth.
+ */
+export function checkUpgradeErrors(): Check | null {
+  try {
+    const errPath = gbrainPath('upgrade-errors.jsonl');
+    if (!existsSync(errPath)) return null;
+    const lines = readFileSync(errPath, 'utf-8').split('\n').filter(l => l.trim());
+    if (lines.length === 0) return null;
+    const latest = JSON.parse(lines[lines.length - 1]) as {
+      ts: string; phase: string; from_version: string; to_version: string; hint: string;
+    };
+    if (compareVersions(GBRAIN_BINARY_VERSION, latest.to_version) >= 0) return null;
+    const date = latest.ts.slice(0, 10);
+    return {
+      name: 'upgrade_errors',
+      status: 'warn',
+      message: `Post-upgrade failure on ${date} (${latest.from_version} → ${latest.to_version}, phase: ${latest.phase}). Recovery: ${latest.hint}`,
+    };
+  } catch {
+    // Read/parse failure is itself best-effort; skip silently.
+    return null;
+  }
+}
+
+/**
  * Re-exported from `src/core/env-number.ts`, which now owns the implementation
  * AND the warn-once memo. `source-health.ts` needs the hours resolver for the
  * staleness ceiling, and doctor already imports from source-health — so the
@@ -752,31 +790,9 @@ export async function buildChecks(
     // handles the "schema v7+ but no prefs" case.
   }
 
-  // 3b. Upgrade-error trail (v0.13+). `gbrain upgrade` silently swallows
-  // best-effort failures in `gbrain post-upgrade`; the failure record is
-  // appended to ~/.gbrain/upgrade-errors.jsonl so we can surface it here
-  // with a paste-ready recovery hint. Without this, users end up with
-  // half-upgraded brains and no signal.
-  try {
-    const home = process.env.HOME || '';
-    const errPath = join(home, '.gbrain', 'upgrade-errors.jsonl');
-    if (existsSync(errPath)) {
-      const lines = readFileSync(errPath, 'utf-8').split('\n').filter(l => l.trim());
-      if (lines.length > 0) {
-        const latest = JSON.parse(lines[lines.length - 1]) as {
-          ts: string; phase: string; from_version: string; to_version: string; hint: string;
-        };
-        const date = latest.ts.slice(0, 10);
-        checks.push({
-          name: 'upgrade_errors',
-          status: 'warn',
-          message: `Post-upgrade failure on ${date} (${latest.from_version} → ${latest.to_version}, phase: ${latest.phase}). Recovery: ${latest.hint}`,
-        });
-      }
-    }
-  } catch {
-    // Read/parse failure is itself best-effort; skip silently.
-  }
+  // 3b. Upgrade-error trail (v0.13+).
+  const upgradeErrorsCheck = checkUpgradeErrors();
+  if (upgradeErrorsCheck) checks.push(upgradeErrorsCheck);
 
   // 3b-ter. Self-upgrade health (#3747). Pure local-file check (config +
   // upgrade cache + audit trail; no DB) that was only ever pushed by the
