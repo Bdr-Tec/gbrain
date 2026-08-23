@@ -222,10 +222,24 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
     // `sources push` child) via loadConfigFileOnly, which never sees the DB
     // plane — and the DB plane is unreadable anyway while a `gbrain serve`
     // holds the single-writer lock. Route them to ~/.gbrain/config.json.
-    if (key === 'push.allow_unverified_remote' || key === 'hooks.stop_push_debounce_min') {
+    if (key === 'push.allow_unverified_remote' || key === 'hooks.stop_push_debounce_min' || key === 'integrations.memorable.enabled') {
       const { loadConfigFileOnly, saveConfig, isConfigTruthy } = await import('../core/config.ts');
       const cfg = (loadConfigFileOnly() ?? { engine: 'pglite' }) as Parameters<typeof saveConfig>[0];
-      if (key === 'push.allow_unverified_remote') {
+      if (key === 'integrations.memorable.enabled') {
+        // Same file-plane rule as the other hook-lane keys: the session-end
+        // relay gate is read by engine-free hook children via loadConfig.
+        const on = isConfigTruthy(value);
+        cfg.integrations = { ...(cfg.integrations ?? {}), memorable: { ...(cfg.integrations?.memorable ?? {}), enabled: on } };
+        saveConfig(cfg);
+        console.log(`Set ${key} = ${on} (file plane: ~/.gbrain/config.json)`);
+        if (on) {
+          console.log(
+            'Session-end traces will now be offered to a locally-installed `memorable` CLI ' +
+              '(best-effort, nothing sent off-machine by gbrain itself). ' +
+              'Turn off: gbrain config set integrations.memorable.enabled false',
+          );
+        }
+      } else if (key === 'push.allow_unverified_remote') {
         const on = isConfigTruthy(value);
         cfg.push = { ...(cfg.push ?? {}), allow_unverified_remote: on };
         saveConfig(cfg);

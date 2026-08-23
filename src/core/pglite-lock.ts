@@ -204,6 +204,38 @@ function pgliteLockTimeoutError(lockDir: string): Error {
   }
 }
 
+export interface LockPeekResult {
+  held: boolean;
+  isServe?: boolean;
+  pid?: number;
+}
+
+/**
+ * Pure read of the PGLite lock: no mkdir, no acquire side effect, never
+ * throws LiveServeLockError. For a third-party caller deciding whether to
+ * even attempt a connection (e.g. Memorable's local hook against a PGLite
+ * brain) — not part of gbrain's own acquisition path, which is unchanged.
+ * "Not held" covers: no lock dir, a dead-PID holder, or a corrupt/unreadable
+ * lock file (left to a real connect attempt to sort out, same as acquireLock
+ * does today).
+ */
+export function peekLock(dataDir: string | undefined): LockPeekResult {
+  const lockDir = getLockDir(dataDir);
+  if (!lockDir || !existsSync(lockDir)) return { held: false };
+  let lockData: { pid?: unknown; subcommand?: unknown; command?: unknown };
+  try {
+    // lockDir comes from getLockDir (the engine's own configured data dir),
+    // LOCK_FILE is a module constant — no user-controlled path segment.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    lockData = JSON.parse(readFileSync(join(lockDir, LOCK_FILE), 'utf-8'));
+  } catch {
+    return { held: false };
+  }
+  const pid = lockData.pid as number;
+  if (!isProcessAlive(pid)) return { held: false };
+  return { held: true, isServe: isServeCommand(lockData), pid };
+}
+
 /**
  * Attempt to acquire an exclusive lock on the PGLite data directory.
  * Returns { acquired: true } if the lock was obtained, { acquired: false } otherwise.

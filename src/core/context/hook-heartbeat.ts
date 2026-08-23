@@ -75,7 +75,7 @@ function ensureDir0700(dir: string): string {
   return dir;
 }
 
-async function hooksTelemetryDir(): Promise<string> {
+export async function hooksTelemetryDir(): Promise<string> {
   const home = await resolveHome();
   ensureDir0700(join(home, 'integrations'));
   return ensureDir0700(join(home, 'integrations', 'hooks'));
@@ -165,6 +165,90 @@ export async function readHeartbeatTail(n: number): Promise<HookHeartbeatEntry[]
     for (const line of lines.slice(-Math.max(0, n))) {
       try {
         out.push(JSON.parse(line) as HookHeartbeatEntry);
+      } catch {
+        /* torn line — skip */
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+// ── Session receipts (memorable integration) ────────────────────────────────
+//
+// Folded in here rather than given its own module: it shares this file's
+// directory, its 0700/0600 permissions, its tail-rewrite compaction and its
+// never-throw contract, and it is written from the same session-end path.
+// Redaction is NOT reimplemented — the caller runs the corpus text and the
+// tool calls through the one existing secret-scan pass in core/secret-scan.ts
+// before anything reaches these functions.
+//
+// Nothing here runs unless the operator has turned the integration on; see
+// the single `memorableAllowed` gate in commands/hook.ts.
+
+export const SESSION_RECEIPTS_MAX_LINES = 2000;
+
+export interface SessionReceiptEntry {
+  ts: string;
+  session_id: string;
+  harness: 'claude-code' | 'codex' | 'opencode';
+  corpus_path: string;
+  content_hash: string;
+  turn_count: number;
+  workspace_root: string;
+  /**
+   * Secret-scanned JSON array of {name, input} for every tool_use block in
+   * the parsed window (see ToolCallRecord in claude-code-jsonl.ts) — the
+   * actual command/arguments, not the placeholder-only rendering the corpus
+   * text itself carries. '[]' when scanning failed or nothing ran.
+   */
+  tool_calls_json: string;
+  /** false when the secret-scan import failed and the corpus was written unscanned — see hook.ts's scan_unavailable degrade. */
+  secret_scan_ok: boolean;
+}
+
+export async function sessionReceiptsPath(): Promise<string> {
+  return join(await hooksTelemetryDir(), 'session-receipts.jsonl');
+}
+
+const RECEIPTS_COMPACT_CHECK_BYTES = 2 * SESSION_RECEIPTS_MAX_LINES * 80;
+
+/** Append one receipt line. Never throws — a receipt-write failure must never break session-end. */
+export async function appendSessionReceipt(entry: Omit<SessionReceiptEntry, 'ts'>): Promise<void> {
+  try {
+    const p = await sessionReceiptsPath();
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
+    appendFileSync(p, line + '\n', { mode: 0o600 });
+    let size = 0;
+    try {
+      size = statSync(p).size;
+    } catch {
+      /* just appended — best effort */
+    }
+    if (size > RECEIPTS_COMPACT_CHECK_BYTES) {
+      const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+      if (lines.length > 2 * SESSION_RECEIPTS_MAX_LINES) {
+        const tmp = `${p}.tmp-${process.pid}`;
+        writeFileSync(tmp, lines.slice(-SESSION_RECEIPTS_MAX_LINES).join('\n') + '\n', { mode: 0o600 });
+        renameSync(tmp, p);
+      }
+    }
+  } catch {
+    /* a receipt is an optional signal — never break the hook it describes */
+  }
+}
+
+/** Last `n` receipt entries (oldest → newest). Callers should take the newest per session_id. */
+export async function readSessionReceiptsTail(n: number): Promise<SessionReceiptEntry[]> {
+  try {
+    const p = await sessionReceiptsPath();
+    const raw = readFileSync(p, 'utf8');
+    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+    const out: SessionReceiptEntry[] = [];
+    for (const line of lines.slice(-Math.max(0, n))) {
+      try {
+        out.push(JSON.parse(line) as SessionReceiptEntry);
       } catch {
         /* torn line — skip */
       }

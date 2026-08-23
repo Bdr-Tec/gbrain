@@ -70,7 +70,9 @@ import {
   decideCorpusMode,
   gcCorpusArtifacts,
   HARVEST_RECEIPT_SUFFIX,
+  segmentHash,
 } from '../core/context/corpus-segments.ts';
+import { appendSessionReceipt } from '../core/context/hook-heartbeat.ts';
 import {
   heartbeatPath,
   hookStatusPath,
@@ -1465,12 +1467,29 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           // [S3#2] Secret-scan AT WRITE TIME. Scanner absent → still write
           // (the corpus is 0700-local), but say so in the heartbeat.
           let text = toCorpusText(corpusTurns);
+          // ONE gate for the whole Memorable integration, checked before any
+          // of it does anything: the receipt is not written, tool calls are
+          // not collected, and nothing is spawned unless the operator has
+          // explicitly opted in. Off (the default) means gbrain behaves
+          // exactly as it does today — no new files, no new work.
+          const memorableAllowed =
+            process.env.GBRAIN_MEMORABLE !== '0' &&
+            cfg?.integrations?.memorable?.enabled === true;
+          // The actual tool name + args, redacted through the SAME secret-scan
+          // pass as the corpus text rather than a second implementation of it.
+          // Covers the parsed window; the local consumer minimizes further to
+          // an allow-list of argument fields before anything leaves the
+          // machine. Only computed when the integration is on.
+          let toolCallsJson = '[]';
           try {
             const scan = await import('../core/secret-scan.ts');
             const redacted = scan.redactFindings(text);
             text = redacted.text;
             // COUNT only — the findings themselves never land in telemetry [S3#7].
             redactionsN = redacted.redactions.length;
+            if (memorableAllowed) {
+              toolCallsJson = scan.redactFindings(JSON.stringify(parsed.toolCalls)).text;
+            }
           } catch {
             degrade('scan_unavailable');
           }
@@ -1485,6 +1504,42 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           const tmpCorpus = `${corpusFile}.tmp-${process.pid}`;
           writeFileSync(tmpCorpus, text, { mode: 0o600 });
           renameSync(tmpCorpus, corpusFile);
+          // Additive signal for a local third-party consumer (never gbrain
+          // itself): the corpus file above is done, hashed post-redaction so
+          // the hash can never fingerprint pre-scrub content. See
+          // session-receipts.ts.
+          if (memorableAllowed) await appendSessionReceipt({
+            session_id: sessionId,
+            harness: io.harness ?? 'claude-code',
+            corpus_path: corpusFile,
+            content_hash: segmentHash(text),
+            turn_count: turnsN,
+            workspace_root: ws ?? process.cwd(),
+            tool_calls_json: toolCallsJson,
+            secret_scan_ok: redactionsN !== undefined,
+          });
+          // Optional Memorable relay — OFF unless config carries the literal
+          // `integrations.memorable.enabled: true` (fail-closed), with a
+          // GBRAIN_MEMORABLE=0 kill switch. Fire-and-forget detached spawn of
+          // the locally-installed `memorable` CLI (same pattern as
+          // spawnDetachedPush): the child reads THIS receipt and does its own
+          // consent/toggle checks; gbrain never blocks on it, never fails on
+          // it, and sends nothing off-machine itself.
+          try {
+            if (memorableAllowed) {
+              const child = spawn('memorable', ['record', '--session', sessionId], {
+                detached: true,
+                stdio: 'ignore',
+              });
+              // A missing executable surfaces as an ASYNC 'error' event, not a
+              // synchronous throw — without this handler the whole session-end
+              // hook process dies on uncaught ENOENT when the CLI is absent.
+              child.on('error', () => { /* best-effort by contract */ });
+              child.unref();
+            }
+          } catch {
+            /* CLI not installed or spawn refused — the relay is best-effort */
+          }
           try {
             rmSync(corpusFile + CORPUS_INGESTED_SUFFIX, { force: true });
           } catch {
