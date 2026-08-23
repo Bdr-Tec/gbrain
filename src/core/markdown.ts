@@ -550,7 +550,7 @@ export function findTimelineSplitIndex(lines: string[]): number {
       for (let j = i + 1; j < lines.length; j++) {
         const next = lines[j].trim();
         if (next.length === 0) continue;
-        if (/^##\s+(timeline|history)\b/i.test(next)) return i;
+        if (/^##\s+(timeline|history)\s*$/i.test(next)) return i;
         break;
       }
     }
