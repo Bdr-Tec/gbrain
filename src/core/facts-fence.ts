@@ -345,6 +345,34 @@ export function renderFactsTable(facts: ParsedFact[]): string {
 }
 
 /**
+ * #3625 P1/P2 fix (adversarial review round 2, replacing the original
+ * #2044 whole-block-swap): compute the merged row set for a privacy-boundary
+ * restoration, or null if nothing needs restoring. Returns null (no-op)
+ * whenever either parse produced warnings (non-authoritative — mirrors the
+ * caution the rest of import-file.ts and extract-facts.ts already take with
+ * a warning-bearing fence) or when there are no hidden rows missing from the
+ * incoming set.
+ *
+ * "Hidden" = not 'world'-visibility: those are the only rows a remote,
+ * untrusted caller could never have seen via get_page/fetch (stripFactsFence
+ * keeps 'world' rows, drops everything else). A row the caller COULD see
+ * and chose to remove or relocate is never a restoration candidate — that
+ * edit is the caller's, honored as written.
+ */
+export function restoreHiddenFactRows(
+  incoming: { facts: ParsedFact[]; warnings: string[] },
+  existing: { facts: ParsedFact[]; warnings: string[] },
+): ParsedFact[] | null {
+  if (incoming.warnings.length > 0 || existing.warnings.length > 0) return null;
+  const hidden = existing.facts.filter((f) => f.visibility !== 'world');
+  if (hidden.length === 0) return null;
+  const incomingRowNums = new Set(incoming.facts.map((f) => f.rowNum));
+  const missing = hidden.filter((f) => !incomingRowNums.has(f.rowNum));
+  if (missing.length === 0) return null;
+  return [...incoming.facts, ...missing].sort((a, b) => a.rowNum - b.rowNum);
+}
+
+/**
  * Append a new fact row to the body. If a fenced facts table exists, the
  * row is added to the end of it. If not, a new `## Facts` section + fence
  * is created at the end of the body.
