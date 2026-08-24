@@ -139,6 +139,25 @@ describe('splitBody', () => {
     expect(timeline).toContain('## History');
   });
 
+  // rule 3's heading match used \b, which matches any heading that
+  // merely STARTS with "Timeline"/"History" ("## History & Reach",
+  // "## Timeline of Events"). That silently moved the rest of an ordinary
+  // article into the timeline half. Rule 3 is a back-compat shim for pages
+  // gbrain itself wrote, so it takes the exact heading only.
+  test('does NOT split at --- when the heading only STARTS with History', () => {
+    const body = 'Article content\n\n---\n\n## History & Reach\n\n- item';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toBe(body);
+    expect(timeline).toBe('');
+  });
+
+  test('does NOT split at --- when the heading only STARTS with Timeline', () => {
+    const body = 'Article content\n\n---\n\n## Timeline of Events\n\ntext';
+    const { compiled_truth, timeline } = splitBody(body);
+    expect(compiled_truth).toBe(body);
+    expect(timeline).toBe('');
+  });
+
   test('does NOT split at plain --- (horizontal rule in article body)', () => {
     const body = 'Above the line\n\n---\n\nBelow the line';
     const { compiled_truth, timeline } = splitBody(body);
@@ -255,6 +274,42 @@ Second section.
     expect(parsed.compiled_truth).toContain('Second section.');
     expect(parsed.compiled_truth).not.toContain('Timeline entry');
     expect(parsed.timeline).toContain('Timeline entry');
+  });
+
+  test('keeps the whole body when a section heading merely starts with History', () => {
+    // Real shape from an imported chat transcript: HR-separated sections,
+    // one of them '## History & Reach'. Pre-fix the page was cut at the HR
+    // and everything below it landed in the timeline column.
+    const md = `---
+type: source
+title: Example show
+---
+
+Here's a breakdown of how it works.
+
+---
+
+## Format & Premise
+
+- 30 singles date in pods.
+
+---
+
+## History & Reach
+
+- The show premiered in 2020.
+
+---
+
+## Reception
+
+- Critics noted the format.`;
+    const parsed = parseMarkdown(md);
+    expect(parsed.timeline).toBe('');
+    expect(parsed.compiled_truth).toContain('## Format & Premise');
+    expect(parsed.compiled_truth).toContain('## History & Reach');
+    expect(parsed.compiled_truth).toContain('premiered in 2020');
+    expect(parsed.compiled_truth).toContain('## Reception');
   });
 
   test('handles frontmatter without type or title', () => {
