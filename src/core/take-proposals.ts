@@ -112,6 +112,17 @@ async function loadProposal(
   }
   const row = rows[0];
   if (row.status !== 'pending') {
+    // wave-g (#4480 follow-up): a crash between the accept CAS and the fence
+    // write (or a failed rollback) strands the row as status='accepted' with
+    // no promoted take — invisible in the pending list, so surface the
+    // repairable shape exactly where a human retry lands.
+    if (row.status === 'accepted' && row.promoted_row_num == null) {
+      throw new TakeProposalError(
+        'not_pending',
+        `Proposal #${id} is stranded: claimed 'accepted' but no take was promoted (crash between claim and fence write, or an accept finishing right now). ` +
+        `If no accept is in flight, repair with: UPDATE take_proposals SET status='pending', acted_at=NULL, acted_by=NULL WHERE id=${id} AND status='accepted'; then re-run accept.`,
+      );
+    }
     throw new TakeProposalError(
       'not_pending',
       `Proposal #${id} is already '${row.status}' (acted on) — only pending proposals can be accepted or rejected.`,
@@ -188,8 +199,10 @@ export async function acceptProposal(
     ));
   } catch (e) {
     // Fence write failed — release the claim so the row stays actionable.
-    // Best-effort: a failed rollback leaves status='accepted' with no
-    // promoted_row_num, which `takes proposals` output surfaces for a human.
+    // Best-effort: a failed rollback (or a crash before this catch) leaves
+    // status='accepted' with no promoted_row_num — loadProposal detects that
+    // stranded shape on the next accept/reject attempt and prints the exact
+    // repair SQL (wave-g).
     try {
       await engine.executeRaw(
         `UPDATE take_proposals

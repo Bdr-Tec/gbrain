@@ -196,6 +196,23 @@ describe('acceptProposal', () => {
     }
   });
 
+  test('wave-g: stranded claim (accepted, no promoted take) surfaces the repair SQL on retry', async () => {
+    // The crash-between-CAS-and-fence-write shape (#4480 residual): the row
+    // is status='accepted' with promoted_row_num NULL — invisible in the
+    // pending list, so the retry path must name it and print the repair.
+    const id = await insertProposal({ slug: 'people/strand-example', claim: 'stranded claim', status: 'accepted' });
+    try {
+      await acceptProposal({ engine, brainDir: repo }, id);
+      throw new Error('expected acceptProposal to throw for the stranded row');
+    } catch (e) {
+      expect(e).toBeInstanceOf(TakeProposalError);
+      expect((e as TakeProposalError).code).toBe('not_pending');
+      expect((e as Error).message).toContain('stranded');
+      expect((e as Error).message).toContain(`SET status='pending'`);
+      expect((e as Error).message).toContain(String(id));
+    }
+  });
+
   test('source scope: accepting an out-of-scope proposal reads as not_found', async () => {
     const id = await insertProposal({
       slug: 'companies/acme-example', claim: 'scope: other-source only', sourceId: 'other',
