@@ -188,6 +188,33 @@ export interface VerifyResult {
 }
 
 /**
+ * #4421: READ-ONLY column diff — the detection half of verifySchema without
+ * the self-heal. Doctor's schema_version check calls this so a ledger that
+ * says "current" can't mask physically missing columns (the PgBouncer
+ * swallowed-ALTER class: version counter advanced, table narrower than the
+ * code expects). Never mutates; never throws on missing columns.
+ */
+export async function diffSchemaColumns(
+  engine: BrainEngine,
+): Promise<{ checked: number; missing: Array<{ table: string; column: string }> }> {
+  const expected = parseExpectedColumns();
+  const actualColumns = await getActualColumns(engine);
+  const actualTables = await getActualTables(engine);
+  let checked = 0;
+  const missing: Array<{ table: string; column: string }> = [];
+  for (const col of expected) {
+    // Same table-existence rule as verifySchema: only diff columns on tables
+    // that DO exist (a wholly absent table is a different failure class).
+    if (!actualTables.has(col.table)) continue;
+    checked++;
+    if (!actualColumns.has(`${col.table}.${col.column}`)) {
+      missing.push({ table: col.table, column: col.column });
+    }
+  }
+  return { checked, missing };
+}
+
+/**
  * Verify that every column defined in schema-embedded.ts actually exists
  * in the database. Self-heals missing columns via ALTER TABLE ADD COLUMN.
  *

@@ -1976,7 +1976,36 @@ export async function buildChecks(
     const version = await engine.getConfig('version');
     schemaVersion = parseInt(version || '0', 10);
     if (schemaVersion >= LATEST_VERSION) {
-      checks.push({ name: 'schema_version', status: 'ok', message: `Version ${schemaVersion} (latest: ${LATEST_VERSION})` });
+      // #4421: the ledger counter alone can lie — a PgBouncer transaction-
+      // mode pooler can swallow an ALTER TABLE while the migration runner
+      // still advances config.version, leaving the ledger "current" over a
+      // physically narrower table. Add a READ-ONLY column diff (the
+      // detection half of schema-verify.ts's verifySchema, no self-heal):
+      // when live columns are missing, downgrade to warn naming them with
+      // the migrate-only re-run hint. Diff failure is best-effort — the
+      // ledger ok stands.
+      let columnDiffWarned = false;
+      try {
+        const { diffSchemaColumns } = await import('../core/schema-verify.ts');
+        const diff = await diffSchemaColumns(engine);
+        if (diff.missing.length > 0) {
+          const sample = diff.missing.slice(0, 5).map(m => `${m.table}.${m.column}`).join(', ');
+          const more = diff.missing.length > 5 ? ` (+${diff.missing.length - 5} more)` : '';
+          checks.push({
+            name: 'schema_version',
+            status: 'warn',
+            message:
+              `Version ${schemaVersion} (latest: ${LATEST_VERSION}) but ${diff.missing.length} expected column(s) ` +
+              `are missing from the live schema: ${sample}${more}. The migration ledger advanced past a swallowed ` +
+              `ALTER TABLE (PgBouncer transaction-mode is the usual cause). Fix: gbrain init --migrate-only ` +
+              `(runs the schema self-heal); if it persists, connect directly to Postgres (not the pooler) first.`,
+          });
+          columnDiffWarned = true;
+        }
+      } catch { /* read-only diff is best-effort; ledger ok stands */ }
+      if (!columnDiffWarned) {
+        checks.push({ name: 'schema_version', status: 'ok', message: `Version ${schemaVersion} (latest: ${LATEST_VERSION})` });
+      }
     } else if (schemaVersion === 0) {
       checks.push({
         name: 'schema_version',
