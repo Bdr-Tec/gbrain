@@ -131,18 +131,11 @@ const PROVIDER_MATRIX: ProviderShape[] = [
       providerId: 'google',
     },
   },
-  {
-    providerId: 'openrouter',
-    modelId: 'openrouter:anthropic/claude-sonnet-4-6',
-    finalResponse: {
-      text: 'openrouter resumed: proxied claude response',
-      blocks: [{ type: 'text', text: 'openrouter resumed: proxied claude response' }] as ChatBlock[],
-      stopReason: 'end',
-      usage: { input_tokens: 50, output_tokens: 7, cache_read_tokens: 0, cache_creation_tokens: 0 },
-      model: 'openrouter:anthropic/claude-sonnet-4-6',
-      providerId: 'openrouter',
-    },
-  },
+  // #4478: openrouter left the replay matrix when its recipe declared
+  // `supports_subagent_loop: false` — the handler's capability gate now
+  // refuses openrouter jobs BEFORE the replay path, so the provider can
+  // never reach reconciliation. The typed rejection is pinned by the
+  // dedicated describe below instead.
   {
     providerId: 'deepseek',
     modelId: 'deepseek:deepseek-chat',
@@ -345,6 +338,34 @@ describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD
       expect(result.result).toBe(provider.finalResponse.text);
       expect(result.stop_reason).toBe('end_turn');
     });
+  });
+
+  describe('openrouter: refused by the supports_subagent_loop gate before replay (#4478)', () => {
+    // The enforcement's own regression coverage: a crashed openrouter job
+    // must NOT resume through the replay path — the capability gate throws
+    // the typed no_subagent_loop rejection first, and the prior tool row is
+    // never re-executed. Covers both persisted shapes so a future
+    // shape-specific bypass can't sneak past the gate.
+    const OPENROUTER_MODEL = 'openrouter:anthropic/claude-sonnet-4-6';
+
+    for (const shape of ['v2', 'v1'] as const) {
+      it(`typed no_subagent_loop rejection instead of replay (${shape} shape)`, async () => {
+        __setChatTransportForTests(async () => {
+          throw new Error('transport must not be reached for a loop-refused provider');
+        });
+
+        const executions: Array<{ name: string; input: unknown }> = [];
+        const tools = makeStubTools(executions);
+        const handler = buildHandler(tools);
+
+        const { jobId } = await seedCrashedState(`find foo (openrouter ${shape})`, shape);
+        const ctx = await makeCrashedCtx(jobId, `find foo (openrouter ${shape})`, OPENROUTER_MODEL);
+
+        await expect(handler(ctx)).rejects.toThrow(/supports_subagent_loop: false/);
+        // The refusal fires BEFORE reconciliation/dispatch: nothing re-executes.
+        expect(executions.length).toBe(0);
+      });
+    }
   });
 
   describe('non-idempotent tool with pending status (unrecoverable error)', () => {
