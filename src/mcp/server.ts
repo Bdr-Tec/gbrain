@@ -85,6 +85,31 @@ export async function stdioVisibleTools(
   return surfacedOps.filter(op => !gateDisabled.has(op.name));
 }
 
+// ─── #4409: in-flight stdio RPC tracking ────────────────────────────────
+// A one-shot MCP client can write a batch of frames and close stdin
+// immediately; the SDK parses every frame during the 'data' events (handler
+// start is queued as a microtask), so at stdin-'end' time requests can be
+// in flight with no response written yet. serve.ts's EOF path consults this
+// counter and drains before its graceful exit instead of dropping the
+// response on the floor. Module-level because one process runs one stdio
+// server (matches the serve-sync-runner singleton posture).
+let _stdioRpcsInFlight = 0;
+
+/** Live count of stdio JSON-RPC requests whose handlers have not settled. */
+export function stdioRpcsInFlightCount(): number {
+  return _stdioRpcsInFlight;
+}
+
+/** Wrap one request handler invocation in the in-flight counter. @internal */
+export async function trackStdioRpc<T>(work: () => Promise<T>): Promise<T> {
+  _stdioRpcsInFlight++;
+  try {
+    return await work();
+  } finally {
+    _stdioRpcsInFlight--;
+  }
+}
+
 export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpSurface; sourceGuard?: boolean } = {}) {
   const server = new Server(
     { name: 'gbrain', version: VERSION },
@@ -116,16 +141,16 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
   // subtraction happens per request (stdioVisibleTools) — no caching, so a
   // `gbrain config set mcp.publish_skills true` takes effect on the next
   // tools/list without a serve restart (matches the HTTP transports).
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler(ListToolsRequestSchema, async () => trackStdioRpc(async () => ({
     tools: buildToolDefs(await stdioVisibleTools(engine, surfacedOps), { strictParams }),
-  }));
+  })));
 
   // Dispatch tool calls via shared dispatch.ts (parity with HTTP transport).
   // MCP stdio callers are remote/untrusted; dispatch defaults remote=true.
   // The MCP SDK's response type widened in 1.29 to allow a managed-task wrapper;
   // gbrain ops are synchronous, so we return the legacy `{ content, isError? }`
   // shape and cast through `any` (the SDK accepts it via the ServerResult union).
-  server.setRequestHandler(CallToolRequestSchema, async (request: any): Promise<any> => {
+  server.setRequestHandler(CallToolRequestSchema, async (request: any): Promise<any> => trackStdioRpc(async () => {
     const { name, arguments: params } = request.params;
     // #3242 / #3906: stdio resolves its source through the same ambient chain
     // as local CLI dispatch: GBRAIN_SOURCE, then .gbrain-source, then the
@@ -172,7 +197,7 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
       // request_tools bounds its catalog by (persist no-ops without auth).
       surfaceCeiling: surface,
     });
-  });
+  }));
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

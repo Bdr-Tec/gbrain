@@ -3609,6 +3609,8 @@ BRAIN (capture / ideate / explore — v0.37/v0.38)
         [--save|--no-save] [--limit N]
   lsd <question> [--json]            Lateral Synaptic Drift: inverted-judge brainstorm
         [--save|--no-save] [--limit N]    rewarding far-from-obvious + axiomatic inversions
+  think "<question>" [--anchor <s>]  Multi-hop cited synthesis across pages + takes + graph
+        [--save] [--source <id>]          Full flags: gbrain think --help
 
 SOURCES (multi-repo / multi-brain)
   sources list                       Show registered sources
