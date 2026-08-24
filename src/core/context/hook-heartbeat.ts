@@ -11,7 +11,7 @@
  * allowlist is enforced by construction, not by trust. Never throws.
  */
 
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, appendFileSync, chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { ensureGbrainHome, resolveGbrainHome } from '../gbrain-home.ts';
 
@@ -361,16 +361,31 @@ export async function readSessionReceiptsTail(n: number): Promise<SessionReceipt
  */
 export function resolveMemorableBin(): string | null {
   const explicit = process.env.MEMORABLE_BIN;
-  if (explicit) return existsSync(explicit) ? explicit : null;
+  // The env branch used bare existsSync, so a DIRECTORY named in MEMORABLE_BIN
+  // resolved "successfully" and the hook reported outcome: ok while nothing
+  // ran. Neither branch checked the execute bit either, so a non-executable
+  // file on PATH did the same. Both are the exact failure this function was
+  // added to make visible, so both are checked here rather than at one branch.
+  if (explicit) return runnable(explicit) ? explicit : null;
   const exts = process.platform === 'win32' ? ['.cmd', '.exe', ''] : [''];
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir) continue;
     for (const ext of exts) {
-      try {
-        const candidate = join(dir, 'memorable' + ext);
-        if (statSync(candidate).isFile()) return candidate;
-      } catch { /* not here — next candidate */ }
+      const candidate = join(dir, 'memorable' + ext);
+      if (runnable(candidate)) return candidate;
     }
   }
   return null;
+}
+
+/** A real file this process can actually execute. On win32 the execute bit is
+ * not meaningful, so being a file is the whole test there. */
+function runnable(p: string): boolean {
+  try {
+    if (!statSync(p).isFile()) return false;
+    if (process.platform !== 'win32') accessSync(p, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }

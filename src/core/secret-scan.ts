@@ -123,6 +123,12 @@ export const PEM_BLOCK_RE =
 // segments before the assignment, or `AWS_SECRET_ACCESS_KEY=` cannot match:
 // the keyword `SECRET` is not adjacent to the `=`, `_ACCESS_KEY` is. The
 // entropy gate still decides, so a wider anchor costs nothing on prose.
+//
+// The value floor is 12, not 20. A 16-character SMTP password sat under the
+// old floor and stayed plaintext in the receipt on disk even once the keyword
+// matched — the value length was doing gating the entropy check is there to
+// do. Real passwords are frequently 12-16 characters; secrets that long with
+// 3.5 bits/char of entropy are not prose.
 const HIGH_ENTROPY_MIN_BITS_PER_CHAR = 3.5;
 
 function compilePatterns(opts: ScanOpts): CompiledPattern[] {
@@ -137,7 +143,7 @@ function compilePatterns(opts: ScanOpts): CompiledPattern[] {
     out.push({
       name: 'high_entropy_assignment',
       re: new RegExp(
-        `((?:^|[^A-Za-z0-9])(?:secret|token|passwd|password|passphrase|credential|api[_-]?key|apikey)[A-Za-z0-9_-]*["']?\\s*[:=]\\s*["']?)([A-Za-z0-9+/_=-]{20,})`,
+        `((?:^|[^A-Za-z0-9])(?:secret|token|passwd|password|passphrase|credential|api[_-]?key|apikey)[A-Za-z0-9_-]*["']?\\s*[:=]\\s*["']?)([A-Za-z0-9+/_=-]{12,})`,
         'gi',
       ),
       entropyGated: true,

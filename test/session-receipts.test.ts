@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
@@ -232,6 +232,50 @@ describe('a resumed session does not re-record what it already recorded', () => 
         // and the first session can still be re-checked correctly afterwards
         expect(await appendSessionReceipt({ ...base, content_hash: 'hash-A' })).toBe(false);
         expect((await readSessionReceiptsTail(50)).length).toBe(2);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('resolveMemorableBin rejects what it cannot actually run', () => {
+  /** Cases E and F from the independent report. The function exists so an
+   * enabled-but-broken relay is VISIBLE; a directory or a non-executable file
+   * resolving "successfully" reproduced the exact silence it was added to
+   * remove — the hook reported outcome: ok and nothing ever ran. */
+  test('a directory named in MEMORABLE_BIN is not a binary', async () => {
+    const home = tempHome();
+    try {
+      const dir = join(home, 'not-a-binary');
+      mkdirSync(dir, { recursive: true });
+      await withEnv({ MEMORABLE_BIN: dir }, async () => {
+        expect(resolveMemorableBin()).toBe(null);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('a non-executable file named memorable on PATH is not a binary', async () => {
+    const home = tempHome();
+    try {
+      const bin = join(home, 'memorable');
+      writeFileSync(bin, '#!/bin/sh\necho hi\n');
+      chmodSync(bin, 0o644);
+      await withEnv({ PATH: home, MEMORABLE_BIN: '' }, async () => {
+        expect(resolveMemorableBin()).toBe(null);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('an executable file IS resolved, so the check is not just refusing everything', async () => {
+    const home = tempHome();
+    try {
+      const bin = join(home, 'memorable');
+      writeFileSync(bin, '#!/bin/sh\necho hi\n');
+      chmodSync(bin, 0o755);
+      await withEnv({ PATH: home, MEMORABLE_BIN: '' }, async () => {
+        expect(resolveMemorableBin()).toBe(bin);
+      });
+      await withEnv({ MEMORABLE_BIN: bin }, async () => {
+        expect(resolveMemorableBin()).toBe(bin);
       });
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
