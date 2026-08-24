@@ -21,6 +21,8 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { chunkText } from '../src/core/chunkers/recursive.ts';
 import { forgetFactInFence } from '../src/core/facts/forget.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from '../src/core/facts-fence.ts';
+import { operations } from '../src/core/operations.ts';
+import type { OperationContext } from '../src/core/ops/contract.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
@@ -133,6 +135,139 @@ describe('Layer B — get_page strip trigger (Codex R2-#5)', () => {
     const stripped = stripFactsFence(body, { keepVisibility: ['world'] });
     expect(stripped).toContain('WORLD_ROW');
     expect(stripped).not.toContain('PRIVATE_ROW');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// #2044 row-level restoration merge (row-level, visibility-aware merge
+// replacing the original whole-block swap)
+// ─────────────────────────────────────────────────────────────────
+//
+// The old restoration only fired when the incoming fence had gone to
+// EXACTLY zero facts, and re-appended the ENTIRE old fence block. Two bugs
+// follow: (P1) a mixed world+private fence's hidden row is never restored
+// once the visible world row survives stripping (incoming length is 1+,
+// not 0); (P2) a fully-visible world-only fence's legitimate deletion is
+// silently undone (the whole-block swap can't distinguish "caller couldn't
+// see this row" from "caller saw and deleted this row").
+describe('#2044 row-level restoration merge (P1 mixed-fence / P2 world-only-deletion fix)', () => {
+  function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
+    return {
+      engine,
+      config: { engine: 'pglite' as const },
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      dryRun: false,
+      remote: false,
+      sourceId: 'default',
+      deferEmbeds: true,
+      ...opts,
+    };
+  }
+
+  test('all-private Facts fence survives a remote get_page -> edit -> put_page round-trip (baseline, unchanged behavior)', async () => {
+    const putPageOp = operations.find((o) => o.name === 'put_page')!;
+    const getPageOp = operations.find((o) => o.name === 'get_page')!;
+    const slug = 'people/allprivate-roundtrip';
+    const fence = FENCE_BODY(
+      '| 1 | PRIVATE_ONLY_FACT | fact | 1.0 | private | high | 2026-01-01 |  | s |  |',
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+
+    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content).not.toContain('PRIVATE_ONLY_FACT');
+    const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
+    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_ONLY_FACT');
+  });
+
+  test('P1 fix: a MIXED world+private Facts fence preserves the private row on round-trip (previously lost — old restoration only fired at incoming.facts.length===0)', async () => {
+    const putPageOp = operations.find((o) => o.name === 'put_page')!;
+    const getPageOp = operations.find((o) => o.name === 'get_page')!;
+    const slug = 'people/mixed-roundtrip';
+    const fence = FENCE_BODY(
+      `| 1 | PUBLIC_MIXED_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | PRIVATE_MIXED_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+
+    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content).toContain('PUBLIC_MIXED_FACT');
+    expect(remote.content).not.toContain('PRIVATE_MIXED_FACT');
+    const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
+    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect((raw?.compiled_truth ?? '')).toContain('PUBLIC_MIXED_FACT');
+    expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_MIXED_FACT');
+  });
+
+  test('P2 fix: deleting a fully-visible world-only fence is honored, not silently undone (previously the whole-block swap re-appended every old row)', async () => {
+    const putPageOp = operations.find((o) => o.name === 'put_page')!;
+    const getPageOp = operations.find((o) => o.name === 'get_page')!;
+    const slug = 'people/world-only-delete';
+    const fence = FENCE_BODY(
+      '| 1 | WORLD_ONLY_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |',
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+
+    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content).toContain('WORLD_ONLY_FACT');
+    // The caller saw the fence in full and deletes it entirely — remove
+    // just the `## Facts` section (heading + fence block), keeping the
+    // rest of the page (and its non-blank body) intact, mirroring a real
+    // caller's edit.
+    const body = remote.content ?? '';
+    const factsHeadingIdx = body.indexOf('## Facts');
+    const fenceEndIdx = body.indexOf(FACTS_FENCE_END) + FACTS_FENCE_END.length;
+    const edited = body.slice(0, factsHeadingIdx).replace('Some text.', 'Some text, fence removed.')
+      + body.slice(fenceEndIdx);
+    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect((raw?.compiled_truth ?? '')).not.toContain('WORLD_ONLY_FACT');
+  });
+
+  test('a LOCAL (non-remote) write that deletes a private row is honored — restoration only applies to remote writes', async () => {
+    // Guards against an over-eager merge firing regardless of trust
+    // boundary: a local caller (ctx.remote === false) sees the fence in
+    // full via get_page, so a subsequent local put_page that omits a row
+    // is a genuine, fully-informed deletion — never a restoration
+    // candidate, since restoration exists specifically to protect rows a
+    // caller structurally could not have seen.
+    const putPageOp = operations.find((o) => o.name === 'put_page')!;
+    const getPageOp = operations.find((o) => o.name === 'get_page')!;
+    const slug = 'people/local-full-delete';
+    const fence = FENCE_BODY(
+      `| 1 | LOCAL_KEEP_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | LOCAL_DELETE_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+
+    const local = await getPageOp.handler(makeCtx({ remote: false }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(local.content).toContain('LOCAL_DELETE_FACT');
+    const edited = (local.content ?? '').replace(
+      /\| 2 \| LOCAL_DELETE_FACT[^\n]*\n/,
+      '',
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect((raw?.compiled_truth ?? '')).toContain('LOCAL_KEEP_FACT');
+    expect((raw?.compiled_truth ?? '')).not.toContain('LOCAL_DELETE_FACT');
   });
 });
 

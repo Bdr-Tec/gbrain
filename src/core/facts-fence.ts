@@ -345,6 +345,42 @@ export function renderFactsTable(facts: ParsedFact[]): string {
 }
 
 /**
+ * #2044 row-level restoration merge, replacing the original whole-block
+ * swap. Returns the merged row set for a privacy-boundary restoration, or
+ * null if nothing needs restoring.
+ *
+ * The whole-block swap (`incoming.facts.length === 0` -> re-append the
+ * entire old fence) has two bugs: (P1) a MIXED world+private fence never
+ * triggers it once the visible world row survives stripping (incoming
+ * length is 1+, not 0), silently losing the private row on write-back;
+ * (P2) a fully-visible world-only fence's legitimate deletion (caller saw
+ * every row and genuinely removed them) is silently undone, since the old
+ * incoming-length-0 check can't distinguish "caller couldn't see this row"
+ * from "caller saw and deleted this row."
+ *
+ * Fix: only rows that are NOT 'world'-visible are ever restoration
+ * candidates — those are the only rows a remote caller structurally could
+ * not have seen via get_page/fetch's privacy strip (stripFactsFence keeps
+ * 'world' rows, drops everything else). A row the caller COULD see
+ * (world-visible) and chose to remove or relocate is never restored — that
+ * edit is the caller's, honored as written. Returns null (no-op) whenever
+ * either parse produced warnings (non-authoritative fence) or there are no
+ * hidden rows missing from the incoming set.
+ */
+export function restoreHiddenFactRows(
+  incoming: { facts: ParsedFact[]; warnings: string[] },
+  existing: { facts: ParsedFact[]; warnings: string[] },
+): ParsedFact[] | null {
+  if (incoming.warnings.length > 0 || existing.warnings.length > 0) return null;
+  const hidden = existing.facts.filter((f) => f.visibility !== 'world');
+  if (hidden.length === 0) return null;
+  const incomingRowNums = new Set(incoming.facts.map((f) => f.rowNum));
+  const missing = hidden.filter((f) => !incomingRowNums.has(f.rowNum));
+  if (missing.length === 0) return null;
+  return [...incoming.facts, ...missing].sort((a, b) => a.rowNum - b.rowNum);
+}
+
+/**
  * Append a new fact row to the body. If a fenced facts table exists, the
  * row is added to the end of it. If not, a new `## Facts` section + fence
  * is created at the end of the body.
