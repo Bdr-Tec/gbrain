@@ -21,6 +21,8 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { chunkText } from '../src/core/chunkers/recursive.ts';
 import { forgetFactInFence } from '../src/core/facts/forget.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from '../src/core/facts-fence.ts';
+import { operations } from '../src/core/operations.ts';
+import type { OperationContext } from '../src/core/operations.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
@@ -133,6 +135,247 @@ describe('Layer B — get_page strip trigger (Codex R2-#5)', () => {
     const stripped = stripFactsFence(body, { keepVisibility: ['world'] });
     expect(stripped).toContain('WORLD_ROW');
     expect(stripped).not.toContain('PRIVATE_ROW');
+  });
+
+  // #3625 Codex review Critical finding: get_page/fetch_page only ever
+  // stripped compiled_truth. A `## Facts` fence written below the
+  // `<!-- timeline -->` sentinel (splitBody's split boundary) lands in the
+  // `timeline` column instead — pre-existing, independent of the #3625
+  // reconciliation guard — and was returned to remote/untrusted callers
+  // completely unstripped, leaking private fact rows through both the
+  // `timeline` field and the serialized `content` round-trip field.
+  describe('#3625 Critical: get_page/fetch_page must ALSO strip the timeline column', () => {
+    function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
+      return {
+        engine,
+        config: { engine: 'pglite' as const },
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+        dryRun: false,
+        remote: false,
+        sourceId: 'default',
+        // Cross-file gateway-state hermeticity (see put-page-provenance.test.ts's
+        // beforeAll comment): put_page's noEmbed = ctx.deferEmbeds === true ||
+        // !isAvailable('embedding') — relying on the ambient isAvailable() check
+        // means a sibling file sharing this shard's process that configured a
+        // live embedding provider makes put_page attempt a real embed call here,
+        // which hangs without a stubbed transport. Force it off explicitly.
+        deferEmbeds: true,
+        ...opts,
+      };
+    }
+
+    const MISPLACED_FENCE_CONTENT = `---
+title: alice
+type: person
+---
+
+Some body content.
+
+<!-- timeline -->
+
+## Facts
+
+${FACTS_FENCE_BEGIN}
+| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
+|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|
+| 1 | PUBLIC_TIMELINE_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | PRIVATE_TIMELINE_FACT | fact | 1.0 | private | high | 2026-01-01 |  | s |  |
+${FACTS_FENCE_END}
+`;
+
+    test('get_page: remote caller sees the world row but never the private row, in timeline OR content', async () => {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      await putPageOp.handler(makeCtx({ remote: false }), {
+        slug: 'people/alice-timeline-leak',
+        content: MISPLACED_FENCE_CONTENT,
+      });
+
+      // Sanity: confirm the fence really landed in timeline, not
+      // compiled_truth — otherwise this test would pass for the wrong
+      // reason (the pre-existing compiled_truth strip would cover it).
+      const raw = await engine.getPage('people/alice-timeline-leak');
+      expect(parseFactsFence(raw!.compiled_truth ?? '').facts).toHaveLength(0);
+      expect((raw!.timeline ?? '')).toContain('PRIVATE_TIMELINE_FACT');
+
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug: 'people/alice-timeline-leak',
+        include_content: true,
+      }) as { timeline?: string; content?: string };
+      expect(remote.timeline).toContain('PUBLIC_TIMELINE_FACT');
+      expect(remote.timeline).not.toContain('PRIVATE_TIMELINE_FACT');
+      expect(remote.content).not.toContain('PRIVATE_TIMELINE_FACT');
+
+      // Control: a trusted local caller still sees everything, unstripped.
+      const local = await getPageOp.handler(makeCtx({ remote: false }), {
+        slug: 'people/alice-timeline-leak',
+      }) as { timeline?: string };
+      expect(local.timeline).toContain('PRIVATE_TIMELINE_FACT');
+    });
+
+    test('fetch_page: remote caller\'s serialized text never contains the private timeline row', async () => {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const fetchPageOp = operations.find((o) => o.name === 'fetch')!;
+      await putPageOp.handler(makeCtx({ remote: false }), {
+        slug: 'people/bob-timeline-leak',
+        content: MISPLACED_FENCE_CONTENT.replace('alice', 'bob'),
+      });
+
+      const remote = await fetchPageOp.handler(makeCtx({ remote: true }), {
+        id: 'people/bob-timeline-leak',
+      }) as { text?: string };
+      expect(remote.text).toContain('PUBLIC_TIMELINE_FACT');
+      expect(remote.text).not.toContain('PRIVATE_TIMELINE_FACT');
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// #3625 residual: #2044 restoration extended to `timeline`
+// ─────────────────────────────────────────────────────────────────
+//
+// Adversarial review on #3625's own PR caught this: the Critical fix above
+// (stripping private fences from `timeline`, not just `compiled_truth`)
+// closed a read-side leak but opened a write-side hazard identical to the
+// one #2044 already exists to prevent for `compiled_truth` — a remote
+// get_page -> edit -> put_page round-trip on a page whose canonical fence
+// lives in `timeline` now arrives with the private row(s) missing there,
+// for the exact same privacy-boundary reason. import-file.ts's `#2044`
+// restoration block is mirrored for `timeline`.
+//
+// Scope note: #2044's restoration (both the original compiled_truth block
+// and this timeline mirror) only fires when the INCOMING fence has gone to
+// ZERO facts — a fence that still has SOME rows (e.g. a mixed world+private
+// fence where only the private row was stripped) is not restored. This is
+// a pre-existing #2044 design limitation for compiled_truth (confirmed by
+// direct test below, unrelated to #3625) that the timeline mirror
+// necessarily inherits — not a regression #3625 introduces. A Takes fence
+// in EITHER column has no restoration mechanism at all today (#2044 only
+// ever covered Facts) — also pre-existing, also out of this PR's scope.
+describe('#3625 residual — #2044 restoration mirrored to timeline', () => {
+  function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
+    return {
+      engine,
+      config: { engine: 'pglite' as const },
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      dryRun: false,
+      remote: false,
+      sourceId: 'default',
+      deferEmbeds: true,
+      ...opts,
+    };
+  }
+
+  test('an all-private Facts fence in timeline (matches #2044\'s existing precondition: incoming goes to zero) survives a remote get_page -> edit -> put_page round-trip', async () => {
+    const putPageOp = operations.find((o) => o.name === 'put_page')!;
+    const getPageOp = operations.find((o) => o.name === 'get_page')!;
+    const slug = 'people/timeline-allprivate-roundtrip';
+    const fence = FENCE_BODY(
+      '| 1 | PRIVATE_ONLY_TIMELINE_FACT | fact | 1.0 | private | high | 2026-01-01 |  | s |  |',
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), {
+      slug,
+      content: `---\ntitle: ${slug}\ntype: person\n---\n\nBody.\n\n<!-- timeline -->\n\n${fence}`,
+    });
+
+    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content).not.toContain('PRIVATE_ONLY_TIMELINE_FACT');
+    const edited = (remote.content ?? '').replace('Body.', 'Body edited.');
+    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect((raw?.timeline ?? '')).toContain('PRIVATE_ONLY_TIMELINE_FACT');
+  });
+
+  test('#3625 P1 fix (adversarial review round 2): a MIXED world+private Facts fence in compiled_truth now preserves the private row on round-trip', async () => {
+    // Prior to the row-level merge fix, restoration only fired when the
+    // incoming fence went to exactly zero facts — a mixed fence where the
+    // world row survives stripping (incoming.facts.length===1, not 0) never
+    // triggered the old whole-block-swap, silently losing the private row.
+    const putPageOp = operations.find((o) => o.name === 'put_page')!;
+    const getPageOp = operations.find((o) => o.name === 'get_page')!;
+    const slug = 'people/compiled-mixed-roundtrip';
+    const fence = FENCE_BODY(
+      `| 1 | PUBLIC_COMPILED_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | PRIVATE_COMPILED_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), {
+      slug,
+      content: `---\ntitle: ${slug}\ntype: person\n---\n\nBody.\n\n${fence}`,
+    });
+
+    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content).toContain('PUBLIC_COMPILED_FACT');
+    expect(remote.content).not.toContain('PRIVATE_COMPILED_FACT');
+    const edited = (remote.content ?? '').replace('Body.', 'Body edited.');
+    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect((raw?.compiled_truth ?? '')).toContain('PUBLIC_COMPILED_FACT');
+    expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_COMPILED_FACT');
+  });
+
+  test('#3625 P1 fix, timeline variant: a MIXED world+private Facts fence in timeline now preserves the private row on round-trip', async () => {
+    const putPageOp = operations.find((o) => o.name === 'put_page')!;
+    const getPageOp = operations.find((o) => o.name === 'get_page')!;
+    const slug = 'people/timeline-mixed-roundtrip';
+    const fence = FENCE_BODY(
+      `| 1 | PUBLIC_TIMELINE_MIXED_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | PRIVATE_TIMELINE_MIXED_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), {
+      slug,
+      content: `---\ntitle: ${slug}\ntype: person\n---\n\nBody.\n\n<!-- timeline -->\n\n${fence}`,
+    });
+
+    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content).toContain('PUBLIC_TIMELINE_MIXED_FACT');
+    expect(remote.content).not.toContain('PRIVATE_TIMELINE_MIXED_FACT');
+    const edited = (remote.content ?? '').replace('Body.', 'Body edited.');
+    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect((raw?.timeline ?? '')).toContain('PUBLIC_TIMELINE_MIXED_FACT');
+    expect((raw?.timeline ?? '')).toContain('PRIVATE_TIMELINE_MIXED_FACT');
+  });
+
+  test('#3625 P2 fix (adversarial review round 2): deleting a fully-visible world-only fence is honored, not silently undone', async () => {
+    // The old whole-block-swap restored EVERY existing row whenever the
+    // incoming fence went to zero — including a world-only fence the
+    // caller could see in full and genuinely chose to delete. The
+    // row-level merge only ever restores rows the caller could NOT see
+    // (non-'world'), so a world-only deletion has nothing to restore.
+    const putPageOp = operations.find((o) => o.name === 'put_page')!;
+    const getPageOp = operations.find((o) => o.name === 'get_page')!;
+    const slug = 'people/world-only-delete';
+    const fence = FENCE_BODY(
+      '| 1 | WORLD_ONLY_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |',
+    );
+    await putPageOp.handler(makeCtx({ remote: false }), {
+      slug,
+      content: `---\ntitle: ${slug}\ntype: person\n---\n\nBody.\n\n${fence}`,
+    });
+
+    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content).toContain('WORLD_ONLY_FACT');
+    // The caller saw the fence in full and deletes it entirely.
+    const edited = (remote.content ?? '').replace(fence, '').replace('Body.', 'Body, fence removed.');
+    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect((raw?.compiled_truth ?? '')).not.toContain('WORLD_ONLY_FACT');
   });
 });
 

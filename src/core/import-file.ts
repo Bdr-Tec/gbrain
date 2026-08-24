@@ -47,7 +47,7 @@ import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { computeCorpusGeneration, loadSourceRow } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
 import { runGuardrails } from './guardrails.ts';
-import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from './facts-fence.ts';
+import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, renderFactsTable, type ParsedFact } from './facts-fence.ts';
 import { scanFencedBlocks, MAX_FENCES_PER_PAGE } from './fence-scan.ts';
 
 /**
@@ -109,12 +109,32 @@ function fenceTagToPseudoPath(lang: string | undefined): string | null {
 // MAX_FENCES_PER_PAGE (fence-bomb DOS cap, GBRAIN_MAX_FENCES_PER_PAGE env
 // override) moved to fence-scan.ts with the #2862 linear scanner.
 
-function extractFactsFenceBlock(body: string): string | null {
-  const beginIdx = body.indexOf(FACTS_FENCE_BEGIN);
-  if (beginIdx === -1) return null;
-  const endIdx = body.indexOf(FACTS_FENCE_END, beginIdx + FACTS_FENCE_BEGIN.length);
-  if (endIdx === -1) return null;
-  return body.slice(beginIdx, endIdx + FACTS_FENCE_END.length);
+/**
+ * #3625 P1/P2 fix (adversarial review round 2, replacing the original
+ * #2044 whole-block-swap): compute the merged row set for a privacy-boundary
+ * restoration, or null if nothing needs restoring. Returns null (no-op)
+ * whenever either parse produced warnings (non-authoritative — mirrors the
+ * caution the rest of this file and extract-facts.ts already take with a
+ * warning-bearing fence) or when there are no hidden rows missing from the
+ * incoming set.
+ *
+ * "Hidden" = not 'world'-visibility: those are the only rows a remote,
+ * untrusted caller could never have seen via get_page/fetch (stripFactsFence
+ * keeps 'world' rows, drops everything else). A row the caller COULD see
+ * and chose to remove or relocate is never a restoration candidate — that
+ * edit is the caller's, honored as written.
+ */
+function restoreHiddenFactRows(
+  incoming: { facts: ParsedFact[]; warnings: string[] },
+  existing: { facts: ParsedFact[]; warnings: string[] },
+): ParsedFact[] | null {
+  if (incoming.warnings.length > 0 || existing.warnings.length > 0) return null;
+  const hidden = existing.facts.filter((f) => f.visibility !== 'world');
+  if (hidden.length === 0) return null;
+  const incomingRowNums = new Set(incoming.facts.map((f) => f.rowNum));
+  const missing = hidden.filter((f) => !incomingRowNums.has(f.rowNum));
+  if (missing.length === 0) return null;
+  return [...incoming.facts, ...missing].sort((a, b) => a.rowNum - b.rowNum);
 }
 
 function replaceOrAppendFactsFence(body: string, fenceBlock: string): string {
@@ -602,23 +622,39 @@ export async function importFromContent(
   // unscoped-check/scoped-write bug class).
   const existing = await engine.getPage(slug, { sourceId: sourceId ?? 'default' });
 
-  // #2044: remote get_page intentionally strips private facts rows. A
-  // documented get_page -> edit -> put_page round-trip can therefore arrive
-  // with an empty/missing Facts fence even though the existing page still has
-  // canonical fence rows. Preserve the old fence in that narrow case so the
-  // system-of-record markdown is not truncated by the privacy boundary.
+  // #2044 (+ #3625 P1/P2 fix, adversarial review round 2): remote get_page
+  // intentionally strips non-'world' facts rows before an untrusted caller
+  // ever sees them. A documented get_page -> edit -> put_page round-trip can
+  // therefore arrive missing rows the caller structurally could never have
+  // seen, let alone intentionally deleted. Restore those specific rows —
+  // scoped to compiled_truth here, and identically to timeline below (the
+  // #3625 fix made get_page/fetch_page strip timeline's fences too, opening
+  // the same hazard there).
+  //
+  // Row-level, visibility-aware merge (not the original whole-block swap):
+  // only rows that are NOT 'world'-visible are ever restoration candidates
+  // — a caller who saw a row (world-visible) and removed it, or moved it
+  // elsewhere in the body, has that edit honored. This fixes two review
+  // findings against the original block-swap approach: (P1) a MIXED
+  // fence's hidden rows were never restored once ANY visible row survived
+  // in the incoming write (block-swap's incoming.facts.length===0 gate
+  // never fired); (P2) deleting or relocating a fully-visible world-only
+  // fence was silently undone by re-appending the entire old block.
   if (opts.remote === true && existing?.compiled_truth) {
     const incomingFacts = parseFactsFence(parsed.compiled_truth);
     const existingFacts = parseFactsFence(existing.compiled_truth);
-    const existingFenceBlock = extractFactsFenceBlock(existing.compiled_truth);
-    if (
-      incomingFacts.facts.length === 0 &&
-      incomingFacts.warnings.length === 0 &&
-      existingFacts.warnings.length === 0 &&
-      existingFacts.facts.length > 0 &&
-      existingFenceBlock
-    ) {
-      parsed.compiled_truth = replaceOrAppendFactsFence(parsed.compiled_truth, existingFenceBlock);
+    const merged = restoreHiddenFactRows(incomingFacts, existingFacts);
+    if (merged) {
+      parsed.compiled_truth = replaceOrAppendFactsFence(parsed.compiled_truth, renderFactsTable(merged));
+    }
+  }
+
+  if (opts.remote === true && existing?.timeline) {
+    const incomingTimelineFacts = parseFactsFence(parsed.timeline ?? '');
+    const existingTimelineFacts = parseFactsFence(existing.timeline);
+    const mergedTimeline = restoreHiddenFactRows(incomingTimelineFacts, existingTimelineFacts);
+    if (mergedTimeline) {
+      parsed.timeline = replaceOrAppendFactsFence(parsed.timeline ?? '', renderFactsTable(mergedTimeline));
     }
   }
 
