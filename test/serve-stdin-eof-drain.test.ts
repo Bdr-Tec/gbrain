@@ -179,6 +179,9 @@ describe('in-flight RPC counter (#4409)', () => {
 
 describe('serve-sync-runner stays off the boot path (#4409)', () => {
   test('serve.ts has no static import of serve-sync-runner', () => {
+    // test-reads-source-ok: structural module-graph guard — a static import
+    // is invisible at runtime once loaded; only the source text can prove
+    // the runner stays off the serve boot path (#4409).
     const src = readFileSync(join(import.meta.dir, '../src/commands/serve.ts'), 'utf8');
     // A static `import { x } from '.../serve-sync-runner.ts'` puts the runner
     // module graph on every serve boot and defeats GBRAIN_SERVE_SYNC_IPC=0.
