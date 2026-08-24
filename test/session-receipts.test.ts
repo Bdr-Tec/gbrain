@@ -4,13 +4,14 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
 import {
   appendSessionReceipt,
   readSessionReceiptsTail,
+  resolveMemorableBin,
   sessionReceiptsPath,
 } from '../src/core/context/hook-heartbeat.ts';
 
@@ -101,6 +102,40 @@ describe('session-receipts', () => {
       });
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // The relay must be able to tell "not installed" from "nothing to do" BEFORE
+  // it spawns: spawn's ENOENT is async and lands after the heartbeat is written.
+  test('resolveMemorableBin finds the CLI on PATH, and reports absence', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-bin-'));
+    try {
+      await withEnv({ PATH: dir, MEMORABLE_BIN: undefined }, async () => {
+        expect(resolveMemorableBin()).toBeNull();
+        const bin = join(dir, 'memorable');
+        writeFileSync(bin, '#!/bin/sh\nexit 0\n');
+        chmodSync(bin, 0o755);
+        expect(resolveMemorableBin()).toBe(bin);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('MEMORABLE_BIN wins when it exists and is refused when it does not', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-bin-'));
+    try {
+      const explicit = join(dir, 'memorable-custom');
+      writeFileSync(explicit, '#!/bin/sh\nexit 0\n');
+      chmodSync(explicit, 0o755);
+      await withEnv({ PATH: '', MEMORABLE_BIN: explicit }, async () => {
+        expect(resolveMemorableBin()).toBe(explicit);
+      });
+      await withEnv({ PATH: '', MEMORABLE_BIN: join(dir, 'nope') }, async () => {
+        expect(resolveMemorableBin()).toBeNull();
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

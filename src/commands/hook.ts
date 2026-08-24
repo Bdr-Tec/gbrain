@@ -72,7 +72,7 @@ import {
   HARVEST_RECEIPT_SUFFIX,
   segmentHash,
 } from '../core/context/corpus-segments.ts';
-import { appendSessionReceipt } from '../core/context/hook-heartbeat.ts';
+import { appendSessionReceipt, resolveMemorableBin } from '../core/context/hook-heartbeat.ts';
 import {
   heartbeatPath,
   hookStatusPath,
@@ -1527,18 +1527,21 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           // it, and sends nothing off-machine itself.
           try {
             if (memorableAllowed) {
-              const child = spawn('memorable', ['record', '--session', sessionId], {
-                detached: true,
-                stdio: 'ignore',
-              });
-              // A missing executable surfaces as an ASYNC 'error' event, not a
-              // synchronous throw — without this handler the whole session-end
-              // hook process dies on uncaught ENOENT when the CLI is absent.
-              child.on('error', () => { /* best-effort by contract */ });
-              child.unref();
+              // Enabled-but-not-installed is a real state: the config key gets
+              // set before `npm i -g memorable-cli`. Name it in the heartbeat
+              // instead of spawning into an ENOENT nobody ever sees.
+              const bin = resolveMemorableBin();
+              if (!bin) degrade('memorable_cli_missing');
+              else {
+                const child = spawn(bin, ['record', '--session', sessionId], { detached: true, stdio: 'ignore' });
+                // ENOENT still arrives as an async 'error' event; without this
+                // handler an uncaught one kills the session-end hook.
+                child.on('error', () => { /* best-effort by contract */ });
+                child.unref();
+              }
             }
           } catch {
-            /* CLI not installed or spawn refused — the relay is best-effort */
+            /* spawn refused — the relay is best-effort and never fails the hook */
           }
           try {
             rmSync(corpusFile + CORPUS_INGESTED_SUFFIX, { force: true });

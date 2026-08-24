@@ -11,8 +11,8 @@
  * allowlist is enforced by construction, not by trust. Never throws.
  */
 
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import { ensureGbrainHome, resolveGbrainHome } from '../gbrain-home.ts';
 
 /** Heartbeat file line cap [S3#7]. */
@@ -257,4 +257,30 @@ export async function readSessionReceiptsTail(n: number): Promise<SessionReceipt
   } catch {
     return [];
   }
+}
+
+/**
+ * Resolve the `memorable` CLI on PATH ourselves before spawning it.
+ *
+ * spawn() reports a missing executable as an ASYNC 'error' event, which lands
+ * after this hook has already written its heartbeat and exited — so an
+ * enabled-but-not-installed integration looks exactly like a working one that
+ * had nothing to do. Checking first is what makes that state visible in
+ * `gbrain doctor` (heartbeat reason `memorable_cli_missing`) instead of
+ * silently doing nothing. Honors MEMORABLE_BIN for installs outside PATH.
+ */
+export function resolveMemorableBin(): string | null {
+  const explicit = process.env.MEMORABLE_BIN;
+  if (explicit) return existsSync(explicit) ? explicit : null;
+  const exts = process.platform === 'win32' ? ['.cmd', '.exe', ''] : [''];
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      try {
+        const candidate = join(dir, 'memorable' + ext);
+        if (statSync(candidate).isFile()) return candidate;
+      } catch { /* not here — next candidate */ }
+    }
+  }
+  return null;
 }
