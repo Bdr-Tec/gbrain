@@ -438,11 +438,18 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // #3621: bumped 18→19 to fold the autocut minKeep floor (ack=).
     // #895: bumped 19→21 — recency DEFAULT_FALLBACK 0.5→0.3 reorders cached
     // rows (19→20 pool floor #3002, 20→21 recency fallback #895, same release).
-    // #4358 residual: 21→22 — negative-offset requests could read/write the
+    // mw2: 21→22 — #1663 exact-lookup injection + #3995 relational slot +
+    // #3783/#4220 stamps alter stored rows for identical knobs.
+    // #4352 follow-up: bumped 22→23 to fold the private-visibility posture
+    // (xp=) — replaces the wholesale skipCache bypass that disabled the
+    // semantic cache for every remote MCP caller (excludePrivate=true is
+    // their default). A private-included write must not serve a
+    // private-excluding lookup and vice versa.
+    // #4358 residual: 23→24 — negative-offset requests could read/write the
     // same cache row an offset=0 request shares (pagedRequest previously
     // skipped only offset>0).
-    // #3617: 22→23 — kof= (keyword AND→OR fallback knob) joins the key.
-    expect(KNOBS_HASH_VERSION).toBe(23);
+    // #3617: 24→25 — kof= (keyword AND→OR fallback knob) joins the key.
+    expect(KNOBS_HASH_VERSION).toBe(25);
   });
 
   test('#3515: detail set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -461,10 +468,29 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // carry degraded[]/retrieved_count; pre-stamp rows must not claim clean.
     // v0.46.15 (#1863): 17→18 — autocut weak-top floor folds in (acm=).
     // #3621: 18→19 — autocut minKeep floor folds in (ack=).
-    // 19→20 pool floor (#3002); 20→21 recency fallback re-key (#895);
-    // 21→22 negative-offset cache-skip gap (#4358 residual).
-    // 22→23 (#3617): kof= (keyword AND→OR fallback knob) joins the key.
-    expect(KNOBS_HASH_VERSION).toBe(23);
+    // 19→20 pool floor (#3002); 20→21 recency fallback re-key (#895).
+    // mw2: 21→22 result-stamp/injection epoch (#1663 #3995 #3783 #4220).
+    // #4352 follow-up: 22→23 private-visibility posture fold (xp=).
+    // #4358 residual: 23→24 negative-offset cache-skip gap.
+    // #3617: 24→25 kof= (keyword AND→OR fallback knob) joins the key.
+    expect(KNOBS_HASH_VERSION).toBe(25);
+  });
+
+  test('#4352 follow-up: excludePrivate true vs false produces DIFFERENT hashes (cache contamination prevention)', () => {
+    // The private-visibility posture folds into the key (xp=) instead of
+    // wholesale-skipping the cache: excludePrivate=true is the DEFAULT for
+    // every remote MCP caller, so the skip disabled the semantic cache for
+    // exactly the highest-volume beneficiaries. A private-included (trusted)
+    // write must never serve a private-excluding lookup and vice versa.
+    const knobs = resolveSearchMode({ mode: 'balanced' });
+    const excluding = knobsHash(knobs, { excludePrivate: true });
+    const including = knobsHash(knobs, { excludePrivate: false });
+    const unset = knobsHash(knobs);
+    expect(excluding).not.toBe(including);
+    // Undefined hashes like false (private included) — mirrors enforcement's
+    // strict `=== true` predicate, so legacy callers that don't thread the
+    // posture share the trusted (private-included) rows.
+    expect(unset).toBe(including);
   });
 
   test('T1 (codex): floor_ratio set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -629,9 +655,9 @@ describe('v0.40.4 — graph_signals knob', () => {
 });
 
 describe('v0.42.3.0 — autocut knobs', () => {
-  test('KNOBS_HASH_VERSION is 23 (17→18 autocut weak-top floor #1863; 18→19 autocut minKeep floor #3621; 19→21 recency fallback re-key #895, v=20 claimed by wave-D; 21→22 negative-offset cache-skip gap #4358 residual; 22→23 keywordOrFallback knob #3617)', () => {
-    // 22→23 (#3617): kof= (keyword AND→OR fallback knob) joins the key.
-    expect(KNOBS_HASH_VERSION).toBe(23);
+  test('KNOBS_HASH_VERSION is 25 (21→22 result-stamp/injection epoch #1663 #3995 #3783 #4220; 22→23 excludePrivate posture fold #4352; 23→24 negative-offset cache-skip gap #4358 residual; 24→25 keywordOrFallback knob #3617)', () => {
+    // 24→25 (#3617): kof= (keyword AND→OR fallback knob) joins the key.
+    expect(KNOBS_HASH_VERSION).toBe(25);
   });
 
   test('bundle defaults: conservative off, balanced/tokenmax on @0.20', () => {
@@ -820,7 +846,7 @@ describe('v0.46.15 — retrieval-wave knobs (evidence_cosine_floor + autocut_min
   });
 });
 
-describe('keywordOrFallback knob (v=23)', () => {
+describe('keywordOrFallback knob (v=25)', () => {
   test('config override turns the fallback off; bundle default stays on', () => {
     expect(resolveSearchMode({ mode: 'balanced' }).keywordOrFallback).toBe(true);
     const off = resolveSearchMode({ mode: 'balanced', overrides: { keywordOrFallback: false } });

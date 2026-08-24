@@ -896,7 +896,25 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // the version bump alone invalidates. Same one-time global cold-miss
 // pattern as the bumps above; refills within cache.ttl_seconds (3600s).
 //
-// bump 21→22 (#4358 residual): hybrid.ts's `pagedRequest` skip-cache gate
+// bump 21→22 (mw2 wave): result-affecting stamp/injection changes for
+// identical knobs — #1663 exact-lookup injection, #3995 relational page-1
+// evidence slot, #3783 keyword_hit stamps, #4220 status. Pre-upgrade rows
+// (≤1h TTL) would be served missing the injected identity page + honesty
+// stamps, and CRAG then mis-grades them weak_semantic. Version-only
+// invalidation; one-time cold-miss spike on upgrade.
+//
+// bump 22→23 folds excludePrivate (#4352): the private-visibility posture
+// joins the key via ctx.excludePrivate (xp=). #4352 originally shipped a
+// wholesale cache skip for excludePrivate=true — but that posture is the
+// DEFAULT for every remote MCP caller, so the skip disabled the semantic
+// cache for exactly the highest-volume beneficiaries. Folding it instead
+// means cache rows written with private rows included can never serve a
+// private-excluding lookup and vice versa, and remote callers get their
+// ~50% cache savings back. Same contamination class as detail (v=16) and
+// hardExcludes (v=12); same one-time global cold-miss pattern as the bumps
+// above, refills within cache.ttl_seconds (3600s default).
+//
+// bump 23→24 (#4358 residual): hybrid.ts's `pagedRequest` skip-cache gate
 // only bypassed the cache for offset>0 (the #4368 wave absorbed the
 // positive-offset half of the original #4358 fix, which used `!== 0`, as
 // `> 0`). A negative offset re-slices an already-sliced stored page just as
@@ -904,16 +922,19 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // negative-offset request could read OR write the same cache row an
 // offset=0 (or any other offset) request shares. Any row written while that
 // gap was live may hold a wrong page under a knobsHash a clean request can
-// still reach. No new key part; the bump alone invalidates. Same one-time
-// global cold-miss pattern as the bumps above; refills within
-// cache.ttl_seconds (3600s).
+// still reach. No new key part; the bump alone invalidates. (Merge note:
+// this wave and the megawave both claimed v=22/23 in flight; the merge
+// sequences the megawave's mw2/xp= bumps as 22/23 and this one as 24 per
+// the D8 convention.) Same one-time global cold-miss pattern as the bumps
+// above; refills within cache.ttl_seconds (3600s).
 //
-// bump 22→23 (#3617): `kof=` (keyword AND→OR fallback knob) joins the key.
+// bump 24→25 (#3617): `kof=` (keyword AND→OR fallback knob) joins the key.
 // The PR authored this as 18→19; 19 (ack=), 20 (pool floor), 21 (recency
-// fallback) and 22 (#4358 residual) were claimed upstream while it was open,
-// so it takes the next free number per the D8 sequencing convention. Same
-// one-time global cold-miss pattern as the bumps above.
-export const KNOBS_HASH_VERSION = 23;
+// fallback), 22/23 (megawave mw2 + xp=) and 24 (#4358 residual) were claimed
+// upstream while it was open, so it takes the next free number per the D8
+// sequencing convention. Same one-time global cold-miss pattern as the
+// bumps above.
+export const KNOBS_HASH_VERSION = 25;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
@@ -963,6 +984,16 @@ export interface KnobsHashContext {
    * as col=/prov=. Undefined falls back to 'medium' (the documented default).
    */
   detail?: 'low' | 'medium' | 'high';
+  /**
+   * v=23 (#4352 follow-up): the private-visibility posture for this call.
+   * `excludePrivate=true` (the default for every remote MCP caller) filters
+   * `visibility: private` pages out of every recall arm, so the result set
+   * differs from a trusted private-included run. Lives in ctx (not
+   * ResolvedSearchKnobs) because it's per-call trust posture, not a mode
+   * knob — same path as detail/hardExcludes. Undefined hashes like `false`
+   * (private included), matching enforcement's strict `=== true` semantics.
+   */
+  excludePrivate?: boolean;
 }
 
 export function knobsHash(
@@ -1082,7 +1113,15 @@ export function knobsHash(
     // weak-top floor (v=18) already owns `acm=`. `?? 1` mirrors the defensive
     // read of acj= above for partial-knobs callers.
     `ack=${Math.max(1, Math.floor(knobs.autocut_min_keep ?? 1))}`,
-    // v=23 addition (#3617, append-only): keyword AND→OR fallback knob. A
+    // v=23 addition (#4352 follow-up, append-only): private-visibility
+    // posture. A private-included (trusted) write must never serve a
+    // private-excluding (remote-default) lookup and vice versa. Replaces
+    // #4352's wholesale skipCache bypass, which disabled the semantic cache
+    // for every remote MCP caller (excludePrivate=true is their default).
+    // Strict `=== true` mirrors the enforcement predicate so undefined and
+    // false (both private-included) hash identically.
+    `xp=${ctx?.excludePrivate === true ? 1 : 0}`,
+    // v=25 addition (#3617, append-only): keyword AND→OR fallback knob. A
     // fallback-on write (OR-relaxed rows blended in) must not be served
     // to a fallback-off lookup — the zero-strict-recall result sets are
     // disjoint (relaxed rows vs empty keyword arm). `?? true` mirrors the

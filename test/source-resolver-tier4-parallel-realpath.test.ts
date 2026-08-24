@@ -34,7 +34,11 @@ function makeStub(paths: Array<{ id: string; local_path: string }>): BrainEngine
   return {
     kind: 'pglite',
     executeRaw: async <T>(sql: string, params?: unknown[]): Promise<T[]> => {
-      if (sql.includes('SELECT id, local_path FROM sources')) {
+      // Post-#3880 merge the tier-4 listing selects the archived flag too
+      // (`SELECT id, local_path, archived FROM sources …`) — match on the
+      // shared WHERE clause so both query shapes hit the stub. Rows carry no
+      // `archived` key and are treated as active (the pre-v34 behavior).
+      if (sql.includes('FROM sources WHERE local_path IS NOT NULL')) {
         return paths as unknown as T[];
       }
       // #4368-added archival gate: resolveSourceId/resolveSourceWithTier call
