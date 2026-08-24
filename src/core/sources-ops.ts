@@ -385,6 +385,25 @@ export async function addSource(
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- localPath only flows here from the trusted local CLI: the sources_add op hard-rejects `path` unless ctx.remote === false (remote callers get null), so this is the operator registering their own directory; absolutizing it is the #3696 fix
     opts = { ...opts, localPath: resolvePath(msysToNativePath(opts.localPath)) };
   }
+  if (opts.cloneDir) {
+    // #3696 residual: same phantom-path class as localPath above — a relative
+    // `--clone-dir clones/x` was stored verbatim as local_path, so every
+    // consumer running from a different cwd (launchd daemon at cwd=/,
+    // autopilot dispatch, sync anchors) join-resolved a path that does not
+    // exist and silently missed the clone.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- cloneDir only flows here from the trusted local CLI (sources_add hard-rejects it unless ctx.remote === false); absolutizing the operator's own directory is the #3696 fix
+    opts = { ...opts, cloneDir: resolvePath(msysToNativePath(opts.cloneDir)) };
+  }
+  if (opts.github) {
+    // #3696 residual (sibling of the cloneDir case above): `--kind github
+    // --dir clones/x` stores opts.github.dir verbatim as local_path (Path C
+    // below never resolves it), so the same phantom-path class survives
+    // through the github-kind registration path — a launchd daemon at
+    // cwd=/, autopilot dispatch, or a sync anchor running from a different
+    // cwd than the CLI join-resolves a path that does not exist.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- opts.github.dir only flows here from the trusted local CLI (sources_add hard-rejects opts.github unless ctx.remote === false); absolutizing the operator's own directory is the #3696 fix
+    opts = { ...opts, github: { ...opts.github, dir: resolvePath(msysToNativePath(opts.github.dir)) } };
+  }
 
   // Q4: pre-flight collision check before any clone work.
   const existing = await engine.executeRaw<{ id: string; local_path: string | null }>(
