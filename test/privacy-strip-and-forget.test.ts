@@ -12,7 +12,7 @@
  * Real PGLite + tempdir filesystem.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,8 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { chunkText } from '../src/core/chunkers/recursive.ts';
 import { forgetFactInFence } from '../src/core/facts/forget.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from '../src/core/facts-fence.ts';
+import { operations } from '../src/core/operations.ts';
+import type { OperationContext } from '../src/core/ops/contract.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
@@ -133,6 +135,119 @@ describe('Layer B — get_page strip trigger (Codex R2-#5)', () => {
     const stripped = stripFactsFence(body, { keepVisibility: ['world'] });
     expect(stripped).toContain('WORLD_ROW');
     expect(stripped).not.toContain('PRIVATE_ROW');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// #2044 surfacing-only P2 gap warning (a fully-visible world-only fence's
+// legitimate deletion is silently undone by the whole-block restore) —
+// data behavior is UNCHANGED; these tests confirm the diagnostic actually
+// fires under the gap condition, and does NOT fire for the unaffected
+// baseline/local-write cases (positive control for the guard, both
+// directions). The sibling P1 gap (mixed-fence hidden row dropped) is a
+// separate PR.
+// ─────────────────────────────────────────────────────────────────
+
+describe('#2044 P2 gap warning (console.warn diagnostic, no behavior change)', () => {
+  function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
+    return {
+      engine,
+      config: { engine: 'pglite' as const },
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      dryRun: false,
+      remote: false,
+      sourceId: 'default',
+      deferEmbeds: true,
+      ...opts,
+    };
+  }
+
+  test('P2 gap: deleting a world-only fence — warns that the deletion was undone, and the row IS still restored (unchanged pre-existing behavior)', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      const slug = 'people/p2-worldonly-warn';
+      const fence = FENCE_BODY(
+        '| 1 | WORLD_ONLY_P2_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |',
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug,
+        include_content: true,
+      }) as { content?: string };
+      const body = remote.content ?? '';
+      const factsHeadingIdx = body.indexOf('## Facts');
+      const fenceEndIdx = body.indexOf(FACTS_FENCE_END) + FACTS_FENCE_END.length;
+      const edited = body.slice(0, factsHeadingIdx).replace('Some text.', 'Some text, fence removed.')
+        + body.slice(fenceEndIdx);
+      warnSpy.mockClear();
+      await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+      const warnedRestoration = warnSpy.mock.calls.some(
+        (c) => String(c[0]).includes('#2044 restoration') && String(c[0]).includes(slug),
+      );
+      expect(warnedRestoration).toBe(true);
+      // Unchanged pre-existing behavior: the deletion is still undone.
+      const raw = await engine.getPage(slug, { sourceId: 'default' });
+      expect((raw?.compiled_truth ?? '')).toContain('WORLD_ONLY_P2_FACT');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('no warning: an all-private fence round-trip (restored, but no world rows involved) does not fire the gap warning', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      const slug = 'people/no-warn-allprivate';
+      const fence = FENCE_BODY(
+        '| 1 | PRIVATE_NOWARN_FACT | fact | 1.0 | private | high | 2026-01-01 |  | s |  |',
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug,
+        include_content: true,
+      }) as { content?: string };
+      warnSpy.mockClear();
+      const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
+      await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+      const anyGapWarning = warnSpy.mock.calls.some((c) => String(c[0]).includes('#2044'));
+      expect(anyGapWarning).toBe(false);
+      // The row is restored (unchanged pre-existing #2044 behavior) but
+      // it was never 'world'-visible, so nothing to flag.
+      const raw = await engine.getPage(slug, { sourceId: 'default' });
+      expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_NOWARN_FACT');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('no warning: a normal local (non-remote) edit never triggers the diagnostic', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const slug = 'people/no-warn-local';
+      const fence = FENCE_BODY(
+        '| 1 | LOCAL_WORLD_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |',
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+      warnSpy.mockClear();
+      // Local write that drops the fence entirely -- fully-informed, no diagnostic.
+      await putPageOp.handler(makeCtx({ remote: false }), {
+        slug,
+        content: '# Page\n\nSome text edited.\n',
+      });
+
+      const anyGapWarning = warnSpy.mock.calls.some((c) => String(c[0]).includes('#2044'));
+      expect(anyGapWarning).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
