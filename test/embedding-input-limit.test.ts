@@ -23,14 +23,21 @@ import { nvidia } from '../src/core/ai/recipes/nvidia.ts';
 import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 import { isEmbedRetriableError, isTransientNetworkEmbedError } from '../src/core/embed-retry.ts';
 import { normalizeAIError, AIConfigError } from '../src/core/ai/errors.ts';
+import { withEnv } from './helpers/with-env.ts';
+
+/**
+ * resolveMaxChunkTokens() defaults to process.env; tests that exercise the
+ * no-arg path clear GBRAIN_MAX_CHUNK_TOKENS via withEnv (restores the prior
+ * ambient value — never mutates shard-global env permanently).
+ */
+const withoutChunkTokenEnv = <T>(fn: () => T | Promise<T>) =>
+  withEnv({ GBRAIN_MAX_CHUNK_TOKENS: undefined }, fn);
 
 beforeEach(() => {
   resetGateway();
-  delete process.env.GBRAIN_MAX_CHUNK_TOKENS;
 });
 
 afterAll(() => {
-  delete process.env.GBRAIN_MAX_CHUNK_TOKENS;
   // Shard hygiene: restore the legacy embedding pin (truncation-test precedent).
   resetGateway();
   configureGateway({
@@ -44,35 +51,43 @@ const NV_MODEL = 'nvidia:nvidia/nv-embedqa-e5-v5';
 const NV_EXPECTED = Math.floor(512 * EMBED_INPUT_SAFETY); // 307
 
 describe('resolveMaxChunkTokens (#4530)', () => {
-  test('default stays DEFAULT_MAX_CHUNK_TOKENS when no model limit is declared', () => {
-    configureGateway({
-      embedding_model: 'openai:text-embedding-3-large',
-      embedding_dimensions: 1536,
-      env: { OPENAI_API_KEY: 'sk-test' },
+  test('default stays DEFAULT_MAX_CHUNK_TOKENS when no model limit is declared', async () => {
+    await withoutChunkTokenEnv(() => {
+      configureGateway({
+        embedding_model: 'openai:text-embedding-3-large',
+        embedding_dimensions: 1536,
+        env: { OPENAI_API_KEY: 'sk-test' },
+      });
+      expect(resolveMaxChunkTokens()).toBe(DEFAULT_MAX_CHUNK_TOKENS);
     });
-    expect(resolveMaxChunkTokens()).toBe(DEFAULT_MAX_CHUNK_TOKENS);
   });
 
-  test('gateway unconfigured falls back to the default (fail-open)', () => {
-    expect(resolveMaxChunkTokens()).toBe(DEFAULT_MAX_CHUNK_TOKENS);
+  test('gateway unconfigured falls back to the default (fail-open)', async () => {
+    await withoutChunkTokenEnv(() => {
+      expect(resolveMaxChunkTokens()).toBe(DEFAULT_MAX_CHUNK_TOKENS);
+    });
   });
 
-  test('nv-embedqa-e5-v5 resolves 512 x safety', () => {
-    configureGateway({
-      embedding_model: NV_MODEL,
-      embedding_dimensions: 1024,
-      env: { NVIDIA_API_KEY: 'nvapi-test' },
+  test('nv-embedqa-e5-v5 resolves 512 x safety', async () => {
+    await withoutChunkTokenEnv(() => {
+      configureGateway({
+        embedding_model: NV_MODEL,
+        embedding_dimensions: 1024,
+        env: { NVIDIA_API_KEY: 'nvapi-test' },
+      });
+      expect(resolveMaxChunkTokens()).toBe(NV_EXPECTED);
     });
-    expect(resolveMaxChunkTokens()).toBe(NV_EXPECTED);
   });
 
-  test('the short alias form resolves the same limit', () => {
-    configureGateway({
-      embedding_model: 'nvidia:nv-embedqa-e5-v5',
-      embedding_dimensions: 1024,
-      env: { NVIDIA_API_KEY: 'nvapi-test' },
+  test('the short alias form resolves the same limit', async () => {
+    await withoutChunkTokenEnv(() => {
+      configureGateway({
+        embedding_model: 'nvidia:nv-embedqa-e5-v5',
+        embedding_dimensions: 1024,
+        env: { NVIDIA_API_KEY: 'nvapi-test' },
+      });
+      expect(resolveMaxChunkTokens()).toBe(NV_EXPECTED);
     });
-    expect(resolveMaxChunkTokens()).toBe(NV_EXPECTED);
   });
 
   test('GBRAIN_MAX_CHUNK_TOKENS escape hatch wins, clamped to the default ceiling', () => {

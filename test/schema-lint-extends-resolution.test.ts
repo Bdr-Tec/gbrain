@@ -15,6 +15,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runSchema } from '../src/commands/schema.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 /** Extends gbrain-base-v2 and declares NO page types of its own. */
 const CHILD_PACK = `api_version: gbrain-schema-pack-v1
@@ -33,20 +34,15 @@ frontmatter_links:
 `;
 
 let home: string;
-let prevHome: string | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'gbrain-lint-extends-'));
   const dir = join(home, '.gbrain', 'schema-packs', 'extends-child-test');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'pack.yaml'), CHILD_PACK);
-  prevHome = process.env.GBRAIN_HOME;
-  process.env.GBRAIN_HOME = home;
 });
 
 afterEach(() => {
-  if (prevHome === undefined) delete process.env.GBRAIN_HOME;
-  else process.env.GBRAIN_HOME = prevHome;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -65,7 +61,7 @@ describe('schema lint resolves the extends chain for a named pack', () => {
     }) as never;
 
     try {
-      await runSchema(['lint', 'extends-child-test', '--json']);
+      await withEnv({ GBRAIN_HOME: home }, () => runSchema(['lint', 'extends-child-test', '--json']));
     } catch (e) {
       if ((e as Error).message !== '__exit__') throw e;
     } finally {

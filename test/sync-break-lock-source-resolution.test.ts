@@ -20,6 +20,7 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { runSync } from '../src/commands/sync.ts';
 import { addSource } from '../src/core/sources-ops.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 
@@ -33,26 +34,19 @@ class ExitSentinel extends Error {
 /** Run `runSync` with process.exit trapped; returns the exit code it requested. */
 async function runSyncTrapped(args: string[], env: Record<string, string>): Promise<number> {
   const savedExit = process.exit;
-  const savedEnv: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(env)) {
-    savedEnv[k] = process.env[k];
-    process.env[k] = v;
-  }
   (process as unknown as { exit: (code?: number) => never }).exit = ((code?: number) => {
     throw new ExitSentinel(code ?? 0);
   }) as never;
   try {
-    await runSync(engine, args);
-    return 0; // returned without exiting
+    return await withEnv(env, async () => {
+      await runSync(engine, args);
+      return 0; // returned without exiting
+    });
   } catch (e) {
     if (e instanceof ExitSentinel) return e.code;
     throw e;
   } finally {
     (process as unknown as { exit: typeof savedExit }).exit = savedExit;
-    for (const [k, v] of Object.entries(savedEnv)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
   }
 }
 
