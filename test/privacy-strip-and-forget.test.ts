@@ -136,6 +136,98 @@ describe('Layer B — get_page strip trigger (Codex R2-#5)', () => {
     expect(stripped).toContain('WORLD_ROW');
     expect(stripped).not.toContain('PRIVATE_ROW');
   });
+
+  // #3625 Codex review Critical finding: get_page/fetch_page only ever
+  // stripped compiled_truth. A `## Facts` fence written below the
+  // `<!-- timeline -->` sentinel (splitBody's split boundary) lands in the
+  // `timeline` column instead — pre-existing, independent of the #3625
+  // reconciliation guard — and was returned to remote/untrusted callers
+  // completely unstripped, leaking private fact rows through both the
+  // `timeline` field and the serialized `content` round-trip field.
+  describe('#3625 Critical: get_page/fetch_page must ALSO strip the timeline column', () => {
+    function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
+      return {
+        engine,
+        config: { engine: 'pglite' as const },
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+        dryRun: false,
+        remote: false,
+        sourceId: 'default',
+        // Cross-file gateway-state hermeticity (see put-page-provenance.test.ts's
+        // beforeAll comment): put_page's noEmbed = ctx.deferEmbeds === true ||
+        // !isAvailable('embedding') — relying on the ambient isAvailable() check
+        // means a sibling file sharing this shard's process that configured a
+        // live embedding provider makes put_page attempt a real embed call here,
+        // which hangs without a stubbed transport. Force it off explicitly.
+        deferEmbeds: true,
+        ...opts,
+      };
+    }
+
+    const MISPLACED_FENCE_CONTENT = `---
+title: alice
+type: person
+---
+
+Some body content.
+
+<!-- timeline -->
+
+## Facts
+
+${FACTS_FENCE_BEGIN}
+| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
+|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|
+| 1 | PUBLIC_TIMELINE_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | PRIVATE_TIMELINE_FACT | fact | 1.0 | private | high | 2026-01-01 |  | s |  |
+${FACTS_FENCE_END}
+`;
+
+    test('get_page: remote caller sees the world row but never the private row, in timeline OR content', async () => {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      await putPageOp.handler(makeCtx({ remote: false }), {
+        slug: 'people/alice-timeline-leak',
+        content: MISPLACED_FENCE_CONTENT,
+      });
+
+      // Sanity: confirm the fence really landed in timeline, not
+      // compiled_truth — otherwise this test would pass for the wrong
+      // reason (the pre-existing compiled_truth strip would cover it).
+      const raw = await engine.getPage('people/alice-timeline-leak');
+      expect(parseFactsFence(raw!.compiled_truth ?? '').facts).toHaveLength(0);
+      expect((raw!.timeline ?? '')).toContain('PRIVATE_TIMELINE_FACT');
+
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug: 'people/alice-timeline-leak',
+        include_content: true,
+      }) as { timeline?: string; content?: string };
+      expect(remote.timeline).toContain('PUBLIC_TIMELINE_FACT');
+      expect(remote.timeline).not.toContain('PRIVATE_TIMELINE_FACT');
+      expect(remote.content).not.toContain('PRIVATE_TIMELINE_FACT');
+
+      // Control: a trusted local caller still sees everything, unstripped.
+      const local = await getPageOp.handler(makeCtx({ remote: false }), {
+        slug: 'people/alice-timeline-leak',
+      }) as { timeline?: string };
+      expect(local.timeline).toContain('PRIVATE_TIMELINE_FACT');
+    });
+
+    test('fetch_page: remote caller\'s serialized text never contains the private timeline row', async () => {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const fetchPageOp = operations.find((o) => o.name === 'fetch')!;
+      await putPageOp.handler(makeCtx({ remote: false }), {
+        slug: 'people/bob-timeline-leak',
+        content: MISPLACED_FENCE_CONTENT.replace('alice', 'bob'),
+      });
+
+      const remote = await fetchPageOp.handler(makeCtx({ remote: true }), {
+        id: 'people/bob-timeline-leak',
+      }) as { text?: string };
+      expect(remote.text).toContain('PUBLIC_TIMELINE_FACT');
+      expect(remote.text).not.toContain('PRIVATE_TIMELINE_FACT');
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────

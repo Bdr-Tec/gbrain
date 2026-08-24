@@ -119,6 +119,30 @@ async function dropPrivateSlugs(
   return candidates.filter(c => !hidden.has(c));
 }
 
+/**
+ * #3625: strip the takes/private-facts fences from BOTH compiled_truth and
+ * timeline before a page reaches an untrusted reader. Pre-#3625 this only
+ * covered compiled_truth — a `## Facts` fence written below the
+ * `<!-- timeline -->` sentinel lands in the `timeline` column (splitBody's
+ * split boundary), which get_page/fetch_page returned verbatim, unstripped.
+ * A private fact fence misplaced there was fully readable by any remote MCP
+ * caller. Same stripping rule as compiled_truth: takes fence dropped
+ * entirely, facts fence keeps only `world`-visibility rows.
+ */
+function stripPrivacyFencesForRemoteReader(page: Page): Page {
+  return {
+    ...page,
+    compiled_truth: stripFactsFence(
+      stripTakesFence(page.compiled_truth),
+      { keepVisibility: ['world'] },
+    ),
+    timeline: stripFactsFence(
+      stripTakesFence(page.timeline ?? ''),
+      { keepVisibility: ['world'] },
+    ),
+  };
+}
+
 const get_page: Operation = {
   name: 'get_page',
   description: 'Read a page by slug (supports optional fuzzy matching). To edit a page, pass include_content: true — the returned `content` field is the canonical full markdown (frontmatter + body + timeline sentinel); edit THAT and pass it back to put_page to round-trip losslessly. Reassembling compiled_truth/timeline by hand risks dropping sections. Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
@@ -222,13 +246,7 @@ const get_page: Operation = {
     //    untrusted readers see them. Private facts never cross the boundary.
     const isUntrustedReader = ctx.remote === true;
     const visibleBody = isUntrustedReader
-      ? {
-          ...page,
-          compiled_truth: stripFactsFence(
-            stripTakesFence(page.compiled_truth),
-            { keepVisibility: ['world'] },
-          ),
-        }
+      ? stripPrivacyFencesForRemoteReader(page)
       : page;
     // v0.42 (#1699) agent-warning channel: surface the page's content_flag
     // marker as a top-level field (parallel to SearchResult.content_flag) so
@@ -300,13 +318,7 @@ const fetch_page: Operation = {
     // true — every MCP transport) never see takes or private facts fences.
     const visibleBody = ctx.remote === false
       ? page
-      : {
-          ...page,
-          compiled_truth: stripFactsFence(
-            stripTakesFence(page.compiled_truth),
-            { keepVisibility: ['world'] },
-          ),
-        };
+      : stripPrivacyFencesForRemoteReader(page);
     return {
       id: page.slug,
       title: page.title,
