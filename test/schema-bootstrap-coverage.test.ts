@@ -1058,7 +1058,10 @@ test('extractAlterAddColumnsFromSql handles representative migration SQL shapes'
 test('postgres-engine.ts bootstrap carries the private-queue ALTERs and probes (guard symmetry with pglite-engine.ts)', async () => {
   const { readFileSync } = await import('fs');
   const { resolve: resolvePath } = await import('path');
-  const enginePath = resolvePath(process.cwd(), 'src/core/postgres-engine.ts');
+  // #4477 peeled the Postgres forward-reference bootstrap out of the
+  // postgres-engine.ts façade into its module dir; the guard follows the
+  // block to its current home.
+  const enginePath = resolvePath(process.cwd(), 'src/core/postgres-engine/forward-reference-bootstrap.ts');
   const engineSrc = readFileSync(enginePath, 'utf-8');
   const normalized = engineSrc.replace(/\s+/g, ' ');
 
