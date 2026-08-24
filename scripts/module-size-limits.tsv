@@ -11,7 +11,7 @@ src/core/migrate.ts	687	region-exempt	append-only MIGRATIONS array grows freely;
 src/commands/sync.ts	4530	ratchet	grown v0.46.26.0 megawave: image sync, ingest-log gating, dry-run purity, checkpoint honesty (#2683 #4342 #3875) + 3 nosemgrep dataflow annotations (path-traversal audit); +#2683 residual: status-error failure recording at both import sites
 src/core/ai/gateway.ts	4494	ratchet	grown v0.46.26.0 megawave: config-plane probes + halt telemetry (#3387 #4312)
 src/cli.ts	3723	ratchet	grown v0.46.26.0 megawave: SIGCHLD reaper install, silent-failure surfacing, confirm-race gate (#2443 #2898 #2297)
-src/core/cycle.ts	3175	ratchet	grown v0.46.26.0 megawave (#4102 #2608) + master v0.46.26.0 cycle-start orphan recovery; +4 wave G: thread cycle's resolved source into synthesize_concepts writes (#4417)
+src/core/cycle.ts	3171	ratchet	grown v0.46.26.0 megawave (#4102 #2608) + master v0.46.26.0 cycle-start orphan recovery
 src/commands/serve-http.ts	3294	ratchet	grown v0.46.25.0 D2: /mcp per-request teardown (#2844)
 src/commands/jobs.ts	3115	ratchet	grown v0.46.26.0 megawave (#4098 #2308) + master v0.46.26.0 worker startup recovery + stats gating; +typed provider-failure logging on the facts-absorb catch (#4308)
 src/core/search/hybrid.ts	2876	ratchet	grown v0.46.26.0 megawave: CRAG escalation seam, degradation visibility, excludePrivate knobs-fold v23 (#1663 #3873 #4352); grown #4356: semantic-cache-hit slice honors resolved mode searchLimit (double-resolution caveat); grown #4414: offset!==0 cache-skip widening + knobs-hash v24
