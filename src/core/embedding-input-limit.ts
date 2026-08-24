@@ -37,6 +37,14 @@ export const EMBED_INPUT_SAFETY = 0.6;
 const MIN_CHUNK_TOKENS = 64;
 
 /**
+ * wave-g: warn once per distinct invalid value, not once per call — the
+ * resolver runs per chunkText site, so a typo'd env var would otherwise
+ * emit one stderr line per page across a whole backfill. Keyed by value so
+ * a CHANGED (still-invalid) value warns again.
+ */
+let warnedInvalidRaw: string | undefined;
+
+/**
  * Per-model `max_input_tokens` lookup, mirroring model_dims' case-fold rule
  * (#4123): exact match first, then a case-insensitive scan; configured ids
  * arrive cased and recipe tables can carry cased keys.
@@ -67,9 +75,13 @@ export function resolveMaxChunkTokens(env: Record<string, string | undefined> = 
       return Math.min(DEFAULT_MAX_CHUNK_TOKENS, Math.max(MIN_CHUNK_TOKENS, Math.floor(n)));
     }
     // Lenient: a typo'd env var must not change chunking silently mid-vault.
-    console.error(
-      `[chunker] ignoring invalid GBRAIN_MAX_CHUNK_TOKENS=${JSON.stringify(raw)} — using model/default resolution`,
-    );
+    // Once per process per value (wave-g) — not once per chunkText call.
+    if (warnedInvalidRaw !== raw) {
+      warnedInvalidRaw = raw;
+      console.error(
+        `[chunker] ignoring invalid GBRAIN_MAX_CHUNK_TOKENS=${JSON.stringify(raw)} — using model/default resolution`,
+      );
+    }
   }
   try {
     const { parsed, recipe } = resolveRecipe(getEmbeddingModel());

@@ -88,6 +88,26 @@ describe('resolveMaxChunkTokens (#4530)', () => {
     expect(resolveMaxChunkTokens({ GBRAIN_MAX_CHUNK_TOKENS: 'banana' })).toBe(NV_EXPECTED);
   });
 
+  test('wave-g: invalid GBRAIN_MAX_CHUNK_TOKENS warns once per process per value, not per call', () => {
+    // The resolver runs per chunkText site — a typo'd env var must not emit
+    // one stderr line per page across a whole backfill.
+    const seen: string[] = [];
+    const orig = console.error;
+    console.error = (...args: unknown[]) => { seen.push(args.join(' ')); };
+    try {
+      resolveMaxChunkTokens({ GBRAIN_MAX_CHUNK_TOKENS: 'warn-once-probe' });
+      resolveMaxChunkTokens({ GBRAIN_MAX_CHUNK_TOKENS: 'warn-once-probe' });
+      resolveMaxChunkTokens({ GBRAIN_MAX_CHUNK_TOKENS: 'warn-once-probe' });
+      expect(seen.filter((l) => l.includes('warn-once-probe')).length).toBe(1);
+      // A CHANGED (still-invalid) value warns again — once.
+      resolveMaxChunkTokens({ GBRAIN_MAX_CHUNK_TOKENS: 'warn-once-probe-2' });
+      resolveMaxChunkTokens({ GBRAIN_MAX_CHUNK_TOKENS: 'warn-once-probe-2' });
+      expect(seen.filter((l) => l.includes('warn-once-probe-2')).length).toBe(1);
+    } finally {
+      console.error = orig;
+    }
+  });
+
   test('maxInputTokensForModel is case-insensitive (model_dims #4123 parity)', () => {
     expect(maxInputTokensForModel(nvidia, 'nvidia/nv-embedqa-e5-v5')).toBe(512);
     expect(maxInputTokensForModel(nvidia, 'NVIDIA/NV-EmbedQA-E5-V5')).toBe(512);
