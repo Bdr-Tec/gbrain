@@ -25,6 +25,8 @@ import {
   classifyQueryWithBrainPatterns,
   applyIntentPatternConfig,
   clearIntentPatternConfigForTests,
+  intentPatternFingerprint,
+  loadEngineIntentPatterns,
   INTENT_PATTERN_BANKS,
 } from '../src/core/search/query-intent.ts';
 import { operations } from '../src/core/operations.ts';
@@ -129,6 +131,50 @@ describe('classifyQueryWithBrainPatterns (#4415)', () => {
     const s = await classifyQueryWithBrainPatterns(engine, HEBREW_RECENCY_QUERY);
     expect(s.suggestedRecency).toBe('off');
     expect((await classifyQueryWithBrainPatterns(engine, 'what happened recently')).suggestedRecency).toBe('on');
+  });
+});
+
+describe('loadEngineIntentPatterns — per-engine cache (wave-g)', () => {
+  const RAW = JSON.stringify({ recency_on: ['לאחרונה'] });
+
+  test('two engines keep their own banks — no cross-brain contamination', async () => {
+    const engineA = { getConfig: async () => RAW };
+    const engineB = { getConfig: async () => null };
+    expect((await classifyQueryWithBrainPatterns(engineA, HEBREW_RECENCY_QUERY)).suggestedRecency).toBe('on');
+    expect((await classifyQueryWithBrainPatterns(engineB, HEBREW_RECENCY_QUERY)).suggestedRecency).toBe('off');
+    // A's banks survive B's classify (pre-wave-g the process-global state
+    // let the LAST engine's config win for every engine in the process).
+    expect((await classifyQueryWithBrainPatterns(engineA, HEBREW_RECENCY_QUERY)).suggestedRecency).toBe('on');
+  });
+
+  test('engine.getConfig is TTL-cached — one read per window, not one per classify', async () => {
+    let reads = 0;
+    const engine = { getConfig: async () => { reads++; return RAW; } };
+    await classifyQueryWithBrainPatterns(engine, HEBREW_RECENCY_QUERY);
+    await classifyQueryWithBrainPatterns(engine, HEBREW_RECENCY_QUERY);
+    await classifyQueryWithBrainPatterns(engine, HEBREW_RECENCY_QUERY);
+    expect(reads).toBe(1);
+  });
+
+  test('fingerprint: none when unset; stable 12-hex when set; exposed on the state', async () => {
+    expect(intentPatternFingerprint(null)).toBe('none');
+    expect(intentPatternFingerprint(undefined)).toBe('none');
+    expect(intentPatternFingerprint('')).toBe('none');
+    expect(intentPatternFingerprint(RAW)).toMatch(/^[0-9a-f]{12}$/);
+    expect(intentPatternFingerprint(RAW)).toBe(intentPatternFingerprint(RAW));
+    const state = await loadEngineIntentPatterns({ getConfig: async () => RAW });
+    expect(state.fingerprint).toBe(intentPatternFingerprint(RAW));
+    expect(state.errors).toEqual([]);
+  });
+
+  test('a throwing engine fail-opens per engine and still stamps the TTL anchor', async () => {
+    let reads = 0;
+    const engine = { getConfig: async () => { reads++; throw new Error('db down'); } };
+    const s1 = await loadEngineIntentPatterns(engine);
+    expect(s1.fingerprint).toBe('none');
+    // Within the TTL the down config plane is not hammered again.
+    await loadEngineIntentPatterns(engine);
+    expect(reads).toBe(1);
   });
 });
 

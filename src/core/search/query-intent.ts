@@ -29,8 +29,20 @@
  * the shipped banks; `classifyQueryWithBrainPatterns` is the async
  * config-loading wrapper hybridSearch calls. classifyQuery itself stays
  * sync + deterministic for a given applied config.
+ *
+ * wave-g: the config-backed extensions are cached PER ENGINE (WeakMap +
+ * short TTL — no config-write invalidation seam exists), so hybridSearch's
+ * hot path pays one engine.getConfig round-trip per TTL window instead of
+ * one per call, and a multi-engine process (migrate source+target, tests)
+ * can't apply one brain's patterns to another brain's queries. The
+ * process-global `applyIntentPatternConfig` seam remains for sync callers
+ * and tests. `loadEngineIntentPatterns` also exposes a fingerprint of the
+ * applied config for the query-cache knobs hash (a pattern-config change
+ * changes classification → results, so it must key cache rows).
  * Tested in test/query-intent.test.ts + test/query-intent-config.test.ts.
  */
+
+import { createHash } from 'node:crypto';
 
 export type QueryIntent = 'entity' | 'temporal' | 'event' | 'concept' | 'general';
 
@@ -275,77 +287,158 @@ let appliedRaw: string | null | undefined;
 let appliedErrors: string[] = [];
 
 /**
- * Compile + install the `search.intent_patterns` config value (raw string
- * from engine.getConfig; null/undefined/'' clears the extensions). Returns
- * the per-entry compile errors (empty = fully applied). Never throws.
- * Process-wide state, matching the one-brain-per-process deployment model.
+ * Compile the raw `search.intent_patterns` config value INTO a bank set
+ * (cleared first; null/undefined/'' leaves it empty). Returns per-entry
+ * compile errors (empty = fully applied). Never throws. Shared by the
+ * process-global seam and the per-engine cache.
  */
-export function applyIntentPatternConfig(raw: string | null | undefined): string[] {
-  if (raw === appliedRaw) return appliedErrors;
-  appliedRaw = raw;
-  appliedErrors = [];
-  for (const bank of INTENT_PATTERN_BANKS) EXTENSIONS[bank].length = 0;
-  if (!raw) return appliedErrors;
+function compileIntentPatternConfig(
+  raw: string | null | undefined,
+  into: Record<IntentPatternBank, RegExp[]>,
+): string[] {
+  const errors: string[] = [];
+  for (const bank of INTENT_PATTERN_BANKS) into[bank].length = 0;
+  if (!raw) return errors;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    appliedErrors.push(`search.intent_patterns is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
-    return appliedErrors;
+    errors.push(`search.intent_patterns is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+    return errors;
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    appliedErrors.push('search.intent_patterns must be a JSON object of bank-name → array of regex sources');
-    return appliedErrors;
+    errors.push('search.intent_patterns must be a JSON object of bank-name → array of regex sources');
+    return errors;
   }
   for (const [bank, sources] of Object.entries(parsed as Record<string, unknown>)) {
     if (!(INTENT_PATTERN_BANKS as readonly string[]).includes(bank)) {
-      appliedErrors.push(`unknown pattern bank '${bank}' (valid: ${INTENT_PATTERN_BANKS.join(', ')})`);
+      errors.push(`unknown pattern bank '${bank}' (valid: ${INTENT_PATTERN_BANKS.join(', ')})`);
       continue;
     }
     if (!Array.isArray(sources)) {
-      appliedErrors.push(`bank '${bank}' must be an array of regex sources`);
+      errors.push(`bank '${bank}' must be an array of regex sources`);
       continue;
     }
     for (const src of sources) {
       if (typeof src !== 'string' || src.length === 0) {
-        appliedErrors.push(`bank '${bank}': entries must be non-empty strings`);
+        errors.push(`bank '${bank}': entries must be non-empty strings`);
         continue;
       }
       try {
-        EXTENSIONS[bank as IntentPatternBank].push(new RegExp(src, 'iu'));
+        into[bank as IntentPatternBank].push(new RegExp(src, 'iu'));
       } catch {
         try {
-          EXTENSIONS[bank as IntentPatternBank].push(new RegExp(src, 'i'));
+          into[bank as IntentPatternBank].push(new RegExp(src, 'i'));
         } catch (e) {
-          appliedErrors.push(`bank '${bank}': invalid regex '${src}': ${e instanceof Error ? e.message : String(e)}`);
+          errors.push(`bank '${bank}': invalid regex '${src}': ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     }
   }
+  return errors;
+}
+
+/**
+ * Compile + install the `search.intent_patterns` config value (raw string
+ * from engine.getConfig; null/undefined/'' clears the extensions). Returns
+ * the per-entry compile errors (empty = fully applied). Never throws.
+ * Process-wide DEFAULT state — sync classifyQuery callers that don't thread
+ * a bank set read it. Engine-bound callers use loadEngineIntentPatterns.
+ */
+export function applyIntentPatternConfig(raw: string | null | undefined): string[] {
+  if (raw === appliedRaw) return appliedErrors;
+  appliedRaw = raw;
+  appliedErrors = compileIntentPatternConfig(raw, EXTENSIONS);
   return appliedErrors;
 }
 
-/** Test seam: reset the process-wide extension state. */
+/** Test seam: reset the process-wide extension state AND the per-engine cache. */
 export function clearIntentPatternConfigForTests(): void {
   appliedRaw = undefined;
   appliedErrors = [];
   for (const bank of INTENT_PATTERN_BANKS) EXTENSIONS[bank].length = 0;
+  engineIntentStates = new WeakMap();
+}
+
+/**
+ * Short stable fingerprint of a raw `search.intent_patterns` config value —
+ * folded into the query-cache knobs hash (mode.ts `ipat=`) because the
+ * patterns change classification (intent weights + auto salience/recency/
+ * detail) and therefore results. 'none' for unset/empty config so legacy
+ * and pattern-less brains hash identically.
+ */
+export function intentPatternFingerprint(raw: string | null | undefined): string {
+  if (!raw) return 'none';
+  return createHash('sha256').update(raw).digest('hex').slice(0, 12);
+}
+
+/** Per-engine compiled pattern state (wave-g). */
+export interface EngineIntentPatternState {
+  banks: Record<IntentPatternBank, RegExp[]>;
+  /** intentPatternFingerprint of the applied raw config. */
+  fingerprint: string;
+  /** Per-entry compile errors from the last (re)compile. */
+  errors: string[];
+  /** Raw config value the banks were compiled from. */
+  raw: string | null | undefined;
+  /** Last successful-or-attempted fetch time (ms epoch) — TTL anchor. */
+  fetchedAt: number;
+}
+
+/**
+ * How long a per-engine compiled pattern set is trusted before the next
+ * classify re-reads `search.intent_patterns`. There is no config-write
+ * invalidation seam (engines have no write hooks), so a short TTL bounds
+ * both the hot-path getConfig rate AND the staleness window after a
+ * `gbrain config set`.
+ */
+export const INTENT_PATTERN_TTL_MS = 30_000;
+
+let engineIntentStates = new WeakMap<object, EngineIntentPatternState>();
+
+/**
+ * The engine's compiled `search.intent_patterns` state, cached per engine
+ * object with a short TTL (see INTENT_PATTERN_TTL_MS). Fail-open: a
+ * throwing getConfig keeps the last-compiled banks (shipped-only on first
+ * failure) and still advances the TTL anchor so a down config plane isn't
+ * hammered per query. Never throws.
+ */
+export async function loadEngineIntentPatterns(
+  engine: { getConfig(key: string): Promise<string | null> },
+): Promise<EngineIntentPatternState> {
+  const now = Date.now();
+  let state = engineIntentStates.get(engine);
+  if (state && now - state.fetchedAt < INTENT_PATTERN_TTL_MS) return state;
+  if (!state) {
+    state = { banks: emptyBankSet(), fingerprint: 'none', errors: [], raw: undefined, fetchedAt: now };
+    engineIntentStates.set(engine, state);
+  }
+  state.fetchedAt = now;
+  try {
+    const raw = await engine.getConfig('search.intent_patterns');
+    if (raw !== state.raw) {
+      state.raw = raw;
+      state.errors = compileIntentPatternConfig(raw, state.banks);
+      state.fingerprint = intentPatternFingerprint(raw);
+    }
+  } catch { /* fail-open: keep the last-compiled banks */ }
+  return state;
 }
 
 /**
  * classifyQuery with the brain's `search.intent_patterns` merged over the
  * shipped banks — the wrapper hybridSearch calls (it has the engine; the
- * classifier stays sync). Fail-open: an unreadable config leaves the shipped
- * banks in force.
+ * classifier stays sync). Per-engine banks (wave-g): a multi-engine process
+ * never applies one brain's patterns to another brain's queries, and the
+ * config read is TTL-cached off the hot path. Fail-open: an unreadable
+ * config leaves the shipped banks in force.
  */
 export async function classifyQueryWithBrainPatterns(
   engine: { getConfig(key: string): Promise<string | null> },
   query: string,
 ): Promise<QuerySuggestions> {
-  try {
-    applyIntentPatternConfig(await engine.getConfig('search.intent_patterns'));
-  } catch { /* fail-open: shipped banks */ }
-  return classifyQuery(query);
+  const state = await loadEngineIntentPatterns(engine);
+  return classifyQuery(query, state.banks);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -357,9 +450,15 @@ function matches(patterns: RegExp[], q: string): boolean {
   return false;
 }
 
-/** Shipped bank OR the brain's configured extension bank (#4415). */
-function matchesBank(bank: IntentPatternBank, shipped: RegExp[], q: string): boolean {
-  return matches(shipped, q) || matches(EXTENSIONS[bank], q);
+/** Shipped bank OR the configured extension bank (#4415). Defaults to the
+ * process-global extensions; engine-bound callers thread their own set. */
+function matchesBank(
+  bank: IntentPatternBank,
+  shipped: RegExp[],
+  q: string,
+  ext: Record<IntentPatternBank, RegExp[]> = EXTENSIONS,
+): boolean {
+  return matches(shipped, q) || matches(ext[bank], q);
 }
 
 /**
@@ -378,15 +477,18 @@ function matchesBank(bank: IntentPatternBank, shipped: RegExp[], q: string): boo
  * recency='strong' but salience='off' (the user wants newest, not
  * emotionally-weighted).
  */
-export function classifyQuery(query: string): QuerySuggestions {
-  const intent = classifyQueryIntent(query);
+export function classifyQuery(
+  query: string,
+  ext: Record<IntentPatternBank, RegExp[]> = EXTENSIONS,
+): QuerySuggestions {
+  const intent = classifyQueryIntent(query, ext);
   const suggestedDetail = intentToDetail(intent);
 
-  const hasCanonical = matchesBank('canonical', CANONICAL_PATTERNS, query);
-  const hasTemporalBound = matchesBank('explicit_temporal_bound', EXPLICIT_TEMPORAL_BOUND_PATTERNS, query);
-  const hasStrongRecency = matchesBank('strong_recency', STRONG_RECENCY_PATTERNS, query);
-  const hasRecencyOn = matchesBank('recency_on', RECENCY_ON_PATTERNS, query);
-  const hasSalienceOn = matchesBank('salience_on', SALIENCE_ON_PATTERNS, query);
+  const hasCanonical = matchesBank('canonical', CANONICAL_PATTERNS, query, ext);
+  const hasTemporalBound = matchesBank('explicit_temporal_bound', EXPLICIT_TEMPORAL_BOUND_PATTERNS, query, ext);
+  const hasStrongRecency = matchesBank('strong_recency', STRONG_RECENCY_PATTERNS, query, ext);
+  const hasRecencyOn = matchesBank('recency_on', RECENCY_ON_PATTERNS, query, ext);
+  const hasSalienceOn = matchesBank('salience_on', SALIENCE_ON_PATTERNS, query, ext);
 
   // Recency axis
   let suggestedRecency: RecencyMode;
@@ -451,17 +553,20 @@ export function isAmbiguousModalityQuery(query: string): boolean {
 // ─────────────────────────────────────────────────────────
 
 /** v0.29.0 intent type. Preserved verbatim for back-compat. */
-export function classifyQueryIntent(query: string): QueryIntent {
-  if (matchesBank('full_context', FULL_CONTEXT_PATTERNS, query)) return 'temporal';
-  if (matchesBank('temporal', TEMPORAL_PATTERNS, query)) return 'temporal';
-  if (matchesBank('event', EVENT_PATTERNS, query)) return 'event';
+export function classifyQueryIntent(
+  query: string,
+  ext: Record<IntentPatternBank, RegExp[]> = EXTENSIONS,
+): QueryIntent {
+  if (matchesBank('full_context', FULL_CONTEXT_PATTERNS, query, ext)) return 'temporal';
+  if (matchesBank('temporal', TEMPORAL_PATTERNS, query, ext)) return 'temporal';
+  if (matchesBank('event', EVENT_PATTERNS, query, ext)) return 'event';
   // v0.46.15 (Cat 13): concept BEFORE entity — definitional paraphrases
   // ("What is the ownership economy?") previously classified entity and got
   // the keyword tilt, making hybrid LOSE to its own vector arm on
   // paraphrase queries. Full-context/temporal/event keep their queries;
   // only entity/general-bound queries can re-route here.
   if (isConceptShapedQuery(query)) return 'concept';
-  if (matchesBank('entity', ENTITY_PATTERNS, query)) return 'entity';
+  if (matchesBank('entity', ENTITY_PATTERNS, query, ext)) return 'entity';
   return 'general';
 }
 

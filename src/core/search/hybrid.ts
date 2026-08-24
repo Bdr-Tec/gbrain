@@ -1208,8 +1208,11 @@ export async function hybridSearch(
     ? weightsForIntent(suggestions.intent)
     : weightsForIntent('general');
 
-  // Auto-detect detail level from query intent when caller doesn't specify
-  const detail = opts?.detail ?? autoDetectDetail(query);
+  // Auto-detect detail level from query intent when caller doesn't specify.
+  // wave-g: read the pattern-aware suggestion computed above (per-engine
+  // banks) rather than the pattern-less autoDetectDetail — the two drifted
+  // on the first query of a fresh process before the config was applied.
+  const detail = opts?.detail ?? suggestions.suggestedDetail;
   const detailResolved: 'low' | 'medium' | 'high' | null = detail ?? null;
   const searchOpts: SearchOpts = {
     limit: innerLimit,
