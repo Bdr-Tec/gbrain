@@ -1319,6 +1319,11 @@ export interface BrainEngine {
    * constrains the delete to a specific provenance ('frontmatter', 'markdown',
    * 'manual') — used by runAutoLink reconciliation to avoid deleting edges from
    * other provenances when pruning frontmatter-derived edges.
+   *
+   * #4527: returns the number of rows actually deleted (via RETURNING) so
+   * callers can distinguish a real removal from a no-op (typo'd slug, wrong
+   * type/provenance, already-removed edge) instead of both looking like
+   * success.
    */
   removeLink(
     from: string,
@@ -1326,7 +1331,7 @@ export interface BrainEngine {
     linkType?: string,
     linkSource?: string,
     opts?: { fromSourceId?: string; toSourceId?: string },
-  ): Promise<void>;
+  ): Promise<number>;
   /**
    * #3674 — bulk removal of derived links for a set of FROM pages, scoped to
    * one link_source. The substrate for `extract links --by-mention --rebuild`:

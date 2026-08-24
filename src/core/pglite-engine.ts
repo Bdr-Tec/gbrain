@@ -3769,43 +3769,53 @@ export class PGLiteEngine implements BrainEngine {
     linkType?: string,
     linkSource?: string,
     opts?: { fromSourceId?: string; toSourceId?: string },
-  ): Promise<void> {
+  ): Promise<number> {
     const fromSrc = opts?.fromSourceId ?? 'default';
     const toSrc = opts?.toSourceId ?? 'default';
     // Each branch source-qualifies page-id subqueries so a delete only targets
     // the intended edge between per-source slug rows.
+    // #4527: RETURNING 1 so the caller learns how many edges actually died —
+    // a zero-match delete must be distinguishable from a real removal.
     if (linkType !== undefined && linkSource !== undefined) {
-      await this.db.query(
+      const { rows } = await this.db.query(
         `DELETE FROM links
          WHERE from_page_id = (SELECT id FROM pages WHERE slug = $1 AND source_id = $2)
            AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)
            AND link_type = $5
-           AND link_source IS NOT DISTINCT FROM $6`,
+           AND link_source IS NOT DISTINCT FROM $6
+         RETURNING 1`,
         [from, fromSrc, to, toSrc, linkType, linkSource]
       );
+      return rows.length;
     } else if (linkType !== undefined) {
-      await this.db.query(
+      const { rows } = await this.db.query(
         `DELETE FROM links
          WHERE from_page_id = (SELECT id FROM pages WHERE slug = $1 AND source_id = $2)
            AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)
-           AND link_type = $5`,
+           AND link_type = $5
+         RETURNING 1`,
         [from, fromSrc, to, toSrc, linkType]
       );
+      return rows.length;
     } else if (linkSource !== undefined) {
-      await this.db.query(
+      const { rows } = await this.db.query(
         `DELETE FROM links
          WHERE from_page_id = (SELECT id FROM pages WHERE slug = $1 AND source_id = $2)
            AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)
-           AND link_source IS NOT DISTINCT FROM $5`,
+           AND link_source IS NOT DISTINCT FROM $5
+         RETURNING 1`,
         [from, fromSrc, to, toSrc, linkSource]
       );
+      return rows.length;
     } else {
-      await this.db.query(
+      const { rows } = await this.db.query(
         `DELETE FROM links
          WHERE from_page_id = (SELECT id FROM pages WHERE slug = $1 AND source_id = $2)
-           AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)`,
+           AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)
+         RETURNING 1`,
         [from, fromSrc, to, toSrc]
       );
+      return rows.length;
     }
   }
 

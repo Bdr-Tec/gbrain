@@ -434,6 +434,23 @@ export async function copyPageToTarget(
     content_hash: page.content_hash,
   }), { ...sourceOpts, allowEmptyOverwrite: true });
 
+  // #4527: putPage stamps created_at/updated_at with now() (PageInput has no
+  // timestamp fields), so without this every migrated page loses its
+  // chronology — recency ranking, `--since` filters, and timeline ordering
+  // all silently reset to the migration date. Restore the source row's
+  // timestamps directly; COALESCE keeps the putPage-stamped value if the
+  // source engine ever hands back a NULL (never expected, but a copy must
+  // not null out a NOT NULL column).
+  if (page.created_at != null || page.updated_at != null) {
+    await target.executeRaw(
+      `UPDATE pages
+          SET created_at = COALESCE($1, created_at),
+              updated_at = COALESCE($2, updated_at)
+        WHERE slug = $3 AND source_id = $4`,
+      [page.created_at ?? null, page.updated_at ?? null, page.slug, page.source_id ?? 'default'],
+    );
+  }
+
   // Copy chunks with embeddings.
   const chunks = await source.getChunksWithEmbeddings(page.slug, sourceOpts);
   if (chunks.length > 0) {

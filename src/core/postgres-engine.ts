@@ -3638,34 +3638,44 @@ export class PostgresEngine implements BrainEngine {
     // optional constraints; all four combinations are valid. Each branch's
     // page-id subquery is source-qualified so multi-source brains don't
     // delete the wrong (from, to) pair.
+    // #4527: RETURNING 1 so the caller learns how many edges actually died —
+    // a zero-match delete must be distinguishable from a real removal.
     if (linkType !== undefined && linkSource !== undefined) {
-      await sql`
+      const rows = await sql`
         DELETE FROM links
         WHERE from_page_id = (SELECT id FROM pages WHERE slug = ${from} AND source_id = ${fromSrc})
           AND to_page_id = (SELECT id FROM pages WHERE slug = ${to} AND source_id = ${toSrc})
           AND link_type = ${linkType}
           AND link_source IS NOT DISTINCT FROM ${linkSource}
+        RETURNING 1
       `;
+      return rows.length;
     } else if (linkType !== undefined) {
-      await sql`
+      const rows = await sql`
         DELETE FROM links
         WHERE from_page_id = (SELECT id FROM pages WHERE slug = ${from} AND source_id = ${fromSrc})
           AND to_page_id = (SELECT id FROM pages WHERE slug = ${to} AND source_id = ${toSrc})
           AND link_type = ${linkType}
+        RETURNING 1
       `;
+      return rows.length;
     } else if (linkSource !== undefined) {
-      await sql`
+      const rows = await sql`
         DELETE FROM links
         WHERE from_page_id = (SELECT id FROM pages WHERE slug = ${from} AND source_id = ${fromSrc})
           AND to_page_id = (SELECT id FROM pages WHERE slug = ${to} AND source_id = ${toSrc})
           AND link_source IS NOT DISTINCT FROM ${linkSource}
+        RETURNING 1
       `;
+      return rows.length;
     } else {
-      await sql`
+      const rows = await sql`
         DELETE FROM links
         WHERE from_page_id = (SELECT id FROM pages WHERE slug = ${from} AND source_id = ${fromSrc})
           AND to_page_id = (SELECT id FROM pages WHERE slug = ${to} AND source_id = ${toSrc})
+        RETURNING 1
       `;
+      return rows.length;
     }
   }
 
