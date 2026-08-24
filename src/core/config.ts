@@ -1219,6 +1219,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'dream.triage.max_tokens',
   'dream.triage.max_ms',
   'dream.triage.concurrency',
+  // #4494: propose_takes extractor output caps (defaults 2048/4096, floor
+  // 256, retry clamped >= base). Thinking models spend reasoning tokens
+  // inside maxTokens, so the hardcoded defaults truncated every dense page.
+  'dream.propose_takes.max_tokens',
+  'dream.propose_takes.retry_max_tokens',
   'dream.patterns.lookback_days',
   'dream.patterns.min_evidence',
   // #2782-family: patterns-phase subagent timeouts (mirror of the
