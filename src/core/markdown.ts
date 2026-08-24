@@ -187,6 +187,52 @@ function quoteAmbiguousFrontmatterScalars(content: string): string {
   return `---\n${fixedBody}\n---${closer}${rest}`;
 }
 
+/**
+ * #4526: gray-matter only recognizes a frontmatter fence at byte 0, but the
+ * rest of the pipeline (frontmatterBodyOffset above, collectValidationErrors'
+ * MISSING_OPEN check below) tolerates leading blank lines before the opener.
+ * A content blob with a single leading newline therefore silently lost its
+ * whole frontmatter block: empty data, the block left embedded in the body,
+ * and the title humanized from the slug — a raw UUID for `fact/<uuid>`
+ * pages. Strip leading blank lines when (and only when) the first non-empty
+ * line is a fence, so the parse matches what the validators already accept.
+ */
+function stripLeadingBlanksBeforeFence(content: string): string {
+  if (!/^[ \t\r]*\n/.test(content)) return content; // fast path: first line non-blank
+  const lines = content.split('\n');
+  let i = 0;
+  while (i < lines.length && lines[i].trim().length === 0) i++;
+  if (i === 0 || i >= lines.length || lines[i].trim() !== '---') return content;
+  return lines.slice(i).join('\n');
+}
+
+/**
+ * #4526 (second arm): pages already corrupted by the pre-fix parse carry
+ * their real frontmatter EMBEDDED at the top of the body (double-frontmatter
+ * after a get→put round-trip). When the normal precedence found no title
+ * (no frontmatter `title:`, no body H1) and the alternative is humanizing
+ * the slug/filename, promote a `title:` from the embedded leading fence
+ * block instead. Deliberately last-before-fallback: it never overrides a
+ * real title, it only rescues the junk-title case.
+ */
+function inferTitleFromEmbeddedFrontmatter(body: string): string {
+  const m = body.match(/^\s*---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
+  if (!m) return '';
+  for (const line of m[1]!.split('\n')) {
+    const kv = line.match(/^title:[ \t]+(.+?)[ \t\r]*$/);
+    if (!kv) continue;
+    let value = kv[1]!;
+    if (
+      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+    ) {
+      value = value.slice(1, -1);
+    }
+    return value.trim();
+  }
+  return '';
+}
+
 export function parseMarkdown(
   content: string,
   filePath?: string,
@@ -206,7 +252,9 @@ export function parseMarkdown(
   // so there's no failure signal to react to after the fact. Pre-quoting
   // ambiguous values keeps that input from ever reaching gray-matter in
   // its broken shape.
-  const safeContent = quoteAmbiguousFrontmatterScalars(content);
+  // #4526: lift the fence to byte 0 first (leading blank lines are legal per
+  // the validators), THEN quote ambiguous scalars (whose regex anchors ^---).
+  const safeContent = quoteAmbiguousFrontmatterScalars(stripLeadingBlanksBeforeFence(content));
   let parsed: ReturnType<typeof matter> | null = null;
   let yamlParseError: Error | null = null;
   try {
@@ -248,9 +296,13 @@ export function parseMarkdown(
   // the H1 fallback they get junk titles humanized from the slug
   // (`Contact 20170928 5 John Defalco`), which also breaks anything keyed on
   // the title (e.g. the by-mention gazetteer's first-token bucketing).
+  // #4526: an embedded leading fence block's `title:` outranks only the
+  // humanized-filename fallback — it rescues pages the pre-fix parse left
+  // with their frontmatter stuck in the body, without overriding real titles.
   const title =
     coerceFrontmatterString(frontmatter.title).trim() ||
     inferTitleFromBody(body) ||
+    inferTitleFromEmbeddedFrontmatter(body) ||
     inferTitle(filePath);
   const tags = extractTags(frontmatter);
   const slug = coerceFrontmatterString(frontmatter.slug) || inferSlug(filePath);
