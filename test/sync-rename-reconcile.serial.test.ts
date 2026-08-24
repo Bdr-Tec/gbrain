@@ -2267,7 +2267,9 @@ describe('#3583 review: GATE13 — chunker_version is acknowledged only by a com
       `UPDATE sources SET chunker_version = 'gate13-stale' WHERE id = 'default'`,
     );
     // Corrupt the tracked working copy so the forced full re-chunk fails.
-    writeFileSync(join(repo, 'people/alpha.md'), '---' + String.fromCharCode(0) + 'garbage');
+    // Invalid YAML frontmatter, NOT a NUL byte: #3998 NUL-sanitizes page
+    // bodies at write time, so a NUL now ingests cleanly instead of failing.
+    writeFileSync(join(repo, 'people/alpha.md'), '---\ntitle: [unclosed\n---\ngarbage\n');
     const blocked = await performSync(engine, { repoPath: repo, ...SYNC_OPTS });
     expect(blocked.status).toBe('blocked_by_failures');
     const staleVersion = await engine.executeRaw<{ chunker_version: string | null }>(
