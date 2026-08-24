@@ -1500,6 +1500,10 @@ export async function hybridSearch(
       sourceId: opts?.sourceId,
       sourceIds: opts?.sourceIds,
       titleCandidates: titleResults,
+      // #4480: gate tier injections on the caller's shape filters.
+      type: opts?.type,
+      types: opts?.types,
+      excludeSlugs: opts?.exclude_slugs,
     });
     stampEvidence(noEmbedHopped, { cosineFloor: resolvedMode.evidence_cosine_floor });
     // #3995 — guaranteed page-1 relational evidence: a fired arm's answer is
@@ -1887,6 +1891,10 @@ export async function hybridSearch(
       sourceId: opts?.sourceId,
       sourceIds: opts?.sourceIds,
       titleCandidates: titleResults,
+      // #4480: gate tier injections on the caller's shape filters.
+      type: opts?.type,
+      types: opts?.types,
+      excludeSlugs: opts?.exclude_slugs,
     });
     stampEvidence(kwHopped, { cosineFloor: resolvedMode.evidence_cosine_floor });
     const kwSliced = kwHopped.slice(offset, offset + limit);
@@ -2095,6 +2103,10 @@ export async function hybridSearch(
     sourceId: opts?.sourceId,
     sourceIds: opts?.sourceIds,
     titleCandidates: titleResults,
+    // #4480: gate tier injections on the caller's shape filters.
+    type: opts?.type,
+    types: opts?.types,
+    excludeSlugs: opts?.exclude_slugs,
   });
 
   // T4 — stamp evidence + create_safety so the agent's don't-duplicate

@@ -131,10 +131,16 @@ export interface ProposalActionTarget {
 }
 
 /**
- * Promote a pending proposal into the page's takes fence, then mark the row
- * accepted. The fence write happens FIRST (addTakeToPage: lock → resolve page
- * → write .md → DB mirror); the status flip is fenced on status='pending' so
- * a concurrent accept can't double-stamp.
+ * Promote a pending proposal into the page's takes fence.
+ *
+ * #4480 (TOCTOU): the row is CLAIMED FIRST via a CAS
+ * (`status='pending' → 'accepted'` with the rowcount CHECKED), and only the
+ * claim winner performs the fence write. The old order (fence write first,
+ * status flip after, rowcount ignored) let two concurrent accepts both pass
+ * the pending check and both append the take to the .md — the loser's no-op
+ * UPDATE reported success anyway. If the fence write fails after a
+ * successful claim, the claim is rolled back (best-effort compensation) so
+ * a retry can act on the row.
  */
 export async function acceptProposal(
   target: ProposalActionTarget,
@@ -148,43 +154,80 @@ export async function acceptProposal(
       'Accept requires a brain directory (takes are markdown-canonical). Pass --dir or configure sync.repo_path.',
     );
   }
-  const { rowNum } = await addTakeToPage(
-    {
-      engine,
-      slug: proposal.page_slug,
-      brainDir: target.brainDir,
-      // The row's OWN source, never the caller's — the scoped load above
-      // already proved they agree when a caller scope was provided.
-      sourceId: proposal.source_id,
-    },
-    {
-      claim: proposal.claim_text,
-      kind: coerceProposalKind(proposal.kind),
-      holder: proposal.holder,
-      weight: typeof proposal.weight === 'number' ? proposal.weight : Number(proposal.weight),
-    },
-  );
-  await engine.executeRaw(
+  // Claim-first CAS: exactly one caller wins the pending row.
+  const claimed = await engine.executeRaw<{ id: number }>(
     `UPDATE take_proposals
-        SET status = 'accepted', acted_at = now(), acted_by = $2, promoted_row_num = $3
-      WHERE id = $1 AND status = 'pending'`,
-    [id, target.actedBy ?? 'cli', rowNum],
+        SET status = 'accepted', acted_at = now(), acted_by = $2
+      WHERE id = $1 AND status = 'pending'
+      RETURNING id`,
+    [id, target.actedBy ?? 'cli'],
+  );
+  if (claimed.length === 0) {
+    throw new TakeProposalError(
+      'not_pending',
+      `Proposal #${id} was acted on concurrently — only one accept/reject can win a pending row.`,
+    );
+  }
+  let rowNum: number;
+  try {
+    ({ rowNum } = await addTakeToPage(
+      {
+        engine,
+        slug: proposal.page_slug,
+        brainDir: target.brainDir,
+        // The row's OWN source, never the caller's — the scoped load above
+        // already proved they agree when a caller scope was provided.
+        sourceId: proposal.source_id,
+      },
+      {
+        claim: proposal.claim_text,
+        kind: coerceProposalKind(proposal.kind),
+        holder: proposal.holder,
+        weight: typeof proposal.weight === 'number' ? proposal.weight : Number(proposal.weight),
+      },
+    ));
+  } catch (e) {
+    // Fence write failed — release the claim so the row stays actionable.
+    // Best-effort: a failed rollback leaves status='accepted' with no
+    // promoted_row_num, which `takes proposals` output surfaces for a human.
+    try {
+      await engine.executeRaw(
+        `UPDATE take_proposals
+            SET status = 'pending', acted_at = NULL, acted_by = NULL, promoted_row_num = NULL
+          WHERE id = $1 AND status = 'accepted'`,
+        [id],
+      );
+    } catch { /* compensation is best-effort */ }
+    throw e;
+  }
+  await engine.executeRaw(
+    `UPDATE take_proposals SET promoted_row_num = $2 WHERE id = $1`,
+    [id, rowNum],
   );
   return { proposal, rowNum };
 }
 
-/** Mark a pending proposal rejected. No markdown write. */
+/** Mark a pending proposal rejected. No markdown write. #4480: rowcount is
+ * CHECKED — a reject that loses a race (row already accepted/rejected) now
+ * reports the truth instead of claiming a rejection it never performed. */
 export async function rejectProposal(
   target: Pick<ProposalActionTarget, 'engine' | 'sourceId' | 'actedBy'>,
   id: number,
 ): Promise<TakeProposalRow> {
   const { engine } = target;
   const proposal = await loadProposal(engine, id, target.sourceId);
-  await engine.executeRaw(
+  const rejected = await engine.executeRaw<{ id: number }>(
     `UPDATE take_proposals
         SET status = 'rejected', acted_at = now(), acted_by = $2
-      WHERE id = $1 AND status = 'pending'`,
+      WHERE id = $1 AND status = 'pending'
+      RETURNING id`,
     [id, target.actedBy ?? 'cli'],
   );
+  if (rejected.length === 0) {
+    throw new TakeProposalError(
+      'not_pending',
+      `Proposal #${id} was acted on concurrently — only one accept/reject can win a pending row.`,
+    );
+  }
   return proposal;
 }

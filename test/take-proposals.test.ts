@@ -154,6 +154,37 @@ describe('acceptProposal', () => {
     expect(row.acted_at).not.toBeNull();
   });
 
+  test('#4480 TOCTOU: concurrent accepts — exactly one wins, one fence write, loser gets not_pending', async () => {
+    const id = await insertProposal({
+      slug: 'companies/acme-example', claim: 'Acme signs exactly one concurrent deal', kind: 'take',
+    });
+    // Pre-fix (fence write first, status flip after, rowcount ignored) BOTH
+    // callers passed the pending check, BOTH appended the take to the .md,
+    // and BOTH reported success. Post-fix the claim CAS runs first, so only
+    // the winner touches the fence.
+    const results = await Promise.allSettled([
+      acceptProposal({ engine, brainDir: repo, sourceId: 'default', actedBy: 'racer-a' }, id),
+      acceptProposal({ engine, brainDir: repo, sourceId: 'default', actedBy: 'racer-b' }, id),
+    ]);
+    const wins = results.filter((r) => r.status === 'fulfilled');
+    const losses = results.filter((r) => r.status === 'rejected');
+    expect(wins.length).toBe(1);
+    expect(losses.length).toBe(1);
+    const lossReason = (losses[0] as PromiseRejectedResult).reason;
+    expect(lossReason).toBeInstanceOf(TakeProposalError);
+    expect((lossReason as TakeProposalError).code).toBe('not_pending');
+
+    // Exactly ONE copy of the claim in the markdown fence.
+    const fence = parseTakesFence(readFileSync(join(repo, 'companies/acme-example.md'), 'utf-8'));
+    const copies = fence.takes.filter((t) => t.claim === 'Acme signs exactly one concurrent deal');
+    expect(copies.length).toBe(1);
+
+    // Row is stamped once, with the winner's identity + promoted_row_num.
+    const row = await proposalRow(id);
+    expect(row.status).toBe('accepted');
+    expect(row.promoted_row_num).not.toBeNull();
+  });
+
   test('double-accept refuses with not_pending', async () => {
     const id = await insertProposal({ slug: 'companies/widget-co', claim: 'Widget-co raises fund-a next year' });
     await acceptProposal({ engine, brainDir: repo, sourceId: 'default' }, id);
@@ -215,6 +246,20 @@ describe('rejectProposal', () => {
     } catch (err) {
       expect((err as TakeProposalError).code).toBe('not_pending');
     }
+  });
+
+  test('#4480 TOCTOU: concurrent rejects — exactly one wins the CAS', async () => {
+    const id = await insertProposal({ slug: 'companies/widget-co', claim: 'reject: raced claim' });
+    const results = await Promise.allSettled([
+      rejectProposal({ engine, sourceId: 'default', actedBy: 'racer-a' }, id),
+      rejectProposal({ engine, sourceId: 'default', actedBy: 'racer-b' }, id),
+    ]);
+    // Pre-fix both resolved (the loser's no-op UPDATE went unchecked).
+    expect(results.filter((r) => r.status === 'fulfilled').length).toBe(1);
+    const loss = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect((loss.reason as TakeProposalError).code).toBe('not_pending');
+    const row = await proposalRow(id);
+    expect(row.status).toBe('rejected');
   });
 });
 
