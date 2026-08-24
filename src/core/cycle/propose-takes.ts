@@ -44,7 +44,7 @@ import { chat as gatewayChat, getChatModel, probeChatModel } from '../ai/gateway
 import { createGlobalLlmHaltTracker, haltedClassOf, type GlobalLlmErrorClass } from '../ai/errors.ts';
 import { normalizeModelId } from '../model-id.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
-import { upsertExtractRollup } from '../extract/rollup-writer.ts';
+import { upsertExtractRollup, classifyRunStop } from '../extract/rollup-writer.ts';
 import { GBrainError } from '../types.ts';
 import { isConfigTruthy } from '../config.ts';
 import type { OperationContext } from '../operations.ts';
@@ -950,9 +950,14 @@ class ProposeTakesPhase extends BaseCyclePhase {
         console.error(`[propose_takes] receipt write failed: ${(err as Error).message}`);
       }
     }
-    // A deadline-hit run halted mid-list the same way a budget-exhausted one
-    // does — record it as a halt, not a completed round. A global-error
-    // abort (#3044) is the same posture: the round did not complete.
+    // #4482: three-way stop classification. A budget/deadline cap is the
+    // extractor working as designed (partial progress banked; the rest
+    // drains over future runs) — recorded as expected_limit_delta, a
+    // capacity signal doctor's failure rate excludes. A global-error abort
+    // (#3044) or an all-failures streak (#3763) is a REAL halt, unchanged
+    // from today. An error alongside a cap counts as the error.
+    // `halted` (any incomplete round, caps included) is kept for the phase
+    // result's status/details below — the diagnostic split is rollup-only.
     const halted =
       result.budget_exhausted ||
       result.deadline_hit === true ||
@@ -961,8 +966,13 @@ class ProposeTakesPhase extends BaseCyclePhase {
     await upsertExtractRollup(engine, {
       kind: 'takes.proposed',
       source_id: sourceIdForReceipt,
-      round_completed_delta: halted ? 0 : 1,
-      halt_delta: halted ? 1 : 0,
+      ...classifyRunStop({
+        budget_exhausted: result.budget_exhausted === true,
+        deadline_hit: result.deadline_hit === true,
+        error:
+          result.aborted_global_error !== undefined ||
+          result.aborted_failure_streak === true,
+      }),
     });
 
     // Status folds warnings in (the extract_facts precedent from #1928): a
