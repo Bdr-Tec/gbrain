@@ -5,6 +5,7 @@ import type { BrainEngine, FileSpec } from './engine.ts';
 import { parseMarkdown } from './markdown.ts';
 import { classifyStoredType } from './schema-pack/type-usage.ts';
 import { chunkText } from './chunkers/recursive.ts';
+import { resolveMaxChunkTokens } from './embedding-input-limit.ts';
 import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION } from './chunkers/code.ts';
 import { findChunkForOffset } from './chunkers/edge-extractor.ts';
 import { planEmbeddingReuse } from './embed-reuse.ts';
@@ -780,13 +781,18 @@ export async function importFromContent(
   // warning marker.)
   const embedSkipped = isEmbedSkipped(parsed.frontmatter) || isQuarantined(parsed.frontmatter);
   if (!embedSkipped) {
+    // #4530: cap chunk tokens at the ACTIVE embedding model's per-input
+    // limit (recipe max_input_tokens x safety; default unchanged) so strict
+    // encoders like nvidia/nv-embedqa-e5-v5 (512) never see an unembeddable
+    // chunk. Split, not truncated.
+    const chunkOpts = { maxTokens: resolveMaxChunkTokens() };
     if (parsed.compiled_truth.trim()) {
-      for (const c of chunkText(parsed.compiled_truth)) {
+      for (const c of chunkText(parsed.compiled_truth, chunkOpts)) {
         chunks.push({ chunk_index: chunks.length, chunk_text: c.text, chunk_source: 'compiled_truth' });
       }
     }
     if (parsed.timeline?.trim()) {
-      for (const c of chunkText(parsed.timeline)) {
+      for (const c of chunkText(parsed.timeline, chunkOpts)) {
         chunks.push({ chunk_index: chunks.length, chunk_text: c.text, chunk_source: 'timeline' });
       }
     }
