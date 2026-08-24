@@ -3349,7 +3349,16 @@ See also:
       process.exit(worstExit);
     }
     const sourceArg = args.find((a, i) => args[i - 1] === '--source');
-    const sourceId = sourceArg ?? 'default';
+    // #4412: this branch used to hardcode `sourceArg ?? 'default'` while the
+    // sync itself resolves through the full ambient chain (--source >
+    // GBRAIN_SOURCE > dotfile > cwd > sole-non-default). Under
+    // GBRAIN_SOURCE=<src>, `sync --force-break-lock` inspected
+    // gbrain-sync:default — absent — printed "nothing to break", exit 0, and
+    // left the dead holder's row on gbrain-sync:<src>; the follow-up sync
+    // then refused for the 60s takeover grace. Resolve the SAME source the
+    // sync would lock.
+    const { resolveSourceWithTier: resolveBreakSource } = await import('../core/source-resolver.ts');
+    const sourceId = (await resolveBreakSource(engine, sourceArg || null)).source_id;
     const lockKey = `gbrain-sync:${sourceId}`;
     const exit = await runBreakLock(engine, lockKey, sourceId, {
       force: forceBreakLock,
