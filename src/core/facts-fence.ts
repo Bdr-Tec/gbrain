@@ -345,39 +345,49 @@ export function renderFactsTable(facts: ParsedFact[]): string {
 }
 
 /**
- * #2044 row-level restoration merge, replacing the original whole-block
- * swap. Returns the merged row set for a privacy-boundary restoration, or
- * null if nothing needs restoring.
+ * Surfacing-only diagnostic for #2044's two known gaps in the compiled_truth
+ * restoration guard (import-file.ts). Returns a warning string, or null if
+ * nothing to flag. Pure and side-effect-free — the caller decides how to
+ * surface it (console.warn today); no restoration behavior is changed here.
  *
- * The whole-block swap (`incoming.facts.length === 0` -> re-append the
- * entire old fence) has two bugs: (P1) a MIXED world+private fence never
- * triggers it once the visible world row survives stripping (incoming
- * length is 1+, not 0), silently losing the private row on write-back;
- * (P2) a fully-visible world-only fence's legitimate deletion (caller saw
- * every row and genuinely removed them) is silently undone, since the old
- * incoming-length-0 check can't distinguish "caller couldn't see this row"
- * from "caller saw and deleted this row."
- *
- * Fix: only rows that are NOT 'world'-visible are ever restoration
- * candidates — those are the only rows a remote caller structurally could
- * not have seen via get_page/fetch's privacy strip (stripFactsFence keeps
- * 'world' rows, drops everything else). A row the caller COULD see
- * (world-visible) and chose to remove or relocate is never restored — that
- * edit is the caller's, honored as written. Returns null (no-op) whenever
- * either parse produced warnings (non-authoritative fence) or there are no
- * hidden rows missing from the incoming set.
+ * - `restored` case: the whole-block restore just re-appended EVERY old
+ *   row, including any the caller could see ('world'-visible) and may have
+ *   genuinely, intentionally deleted in full. It can't distinguish that
+ *   from "caller never saw this row" -- flag when a restored row was
+ *   'world'-visible.
+ * - not-`restored` case: the restoration only fires when the incoming
+ *   fence went to exactly zero facts. A fence that still has SOME rows
+ *   (e.g. a mixed world+private fence where only the visible world row
+ *   survives stripping) never triggers it -- flag when non-'world' rows
+ *   present before the write are missing from the incoming write.
  */
-export function restoreHiddenFactRows(
+export function factsRestorationWarning(
+  slug: string,
   incoming: { facts: ParsedFact[]; warnings: string[] },
   existing: { facts: ParsedFact[]; warnings: string[] },
-): ParsedFact[] | null {
+  restored: boolean,
+): string | null {
   if (incoming.warnings.length > 0 || existing.warnings.length > 0) return null;
-  const hidden = existing.facts.filter((f) => f.visibility !== 'world');
-  if (hidden.length === 0) return null;
+  if (existing.facts.length === 0) return null;
+
+  if (restored) {
+    const worldRows = existing.facts.filter((f) => f.visibility === 'world').length;
+    if (worldRows === 0) return null;
+    return `[gbrain] #2044 restoration on ${slug}: a remote write emptied the Facts fence and ` +
+      `${existing.facts.length} old row(s) were restored, including ${worldRows} 'world'-visible ` +
+      `row(s) the caller could have seen and may have genuinely deleted. If so, that deletion has ` +
+      `been undone -- verify.`;
+  }
+
   const incomingRowNums = new Set(incoming.facts.map((f) => f.rowNum));
-  const missing = hidden.filter((f) => !incomingRowNums.has(f.rowNum));
-  if (missing.length === 0) return null;
-  return [...incoming.facts, ...missing].sort((a, b) => a.rowNum - b.rowNum);
+  const dropped = existing.facts.filter(
+    (f) => f.visibility !== 'world' && !incomingRowNums.has(f.rowNum),
+  ).length;
+  if (dropped === 0) return null;
+  return `[gbrain] #2044 gap on ${slug}: ${dropped} non-'world' fact row(s) present before this ` +
+    `remote write are missing from the incoming write and were NOT restored (#2044 only restores ` +
+    `when the incoming fence goes to exactly zero facts). If these rows were dropped by a caller ` +
+    `who never saw them, they are now lost.`;
 }
 
 /**

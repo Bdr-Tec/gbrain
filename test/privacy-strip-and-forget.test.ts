@@ -12,7 +12,7 @@
  * Real PGLite + tempdir filesystem.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -139,18 +139,14 @@ describe('Layer B — get_page strip trigger (Codex R2-#5)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// #2044 row-level restoration merge (row-level, visibility-aware merge
-// replacing the original whole-block swap)
+// #2044 surfacing-only gap warnings (P1 mixed-fence / P2 world-only-
+// deletion) — data behavior is UNCHANGED; these tests confirm the
+// diagnostic actually fires under the two known gap conditions, and does
+// NOT fire for the unaffected baseline/local-write cases (positive
+// control for the guard, both directions).
 // ─────────────────────────────────────────────────────────────────
-//
-// The old restoration only fired when the incoming fence had gone to
-// EXACTLY zero facts, and re-appended the ENTIRE old fence block. Two bugs
-// follow: (P1) a mixed world+private fence's hidden row is never restored
-// once the visible world row survives stripping (incoming length is 1+,
-// not 0); (P2) a fully-visible world-only fence's legitimate deletion is
-// silently undone (the whole-block swap can't distinguish "caller couldn't
-// see this row" from "caller saw and deleted this row").
-describe('#2044 row-level restoration merge (P1 mixed-fence / P2 world-only-deletion fix)', () => {
+
+describe('#2044 gap warnings (console.warn diagnostics, no behavior change)', () => {
   function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
     return {
       engine,
@@ -164,110 +160,123 @@ describe('#2044 row-level restoration merge (P1 mixed-fence / P2 world-only-dele
     };
   }
 
-  test('all-private Facts fence survives a remote get_page -> edit -> put_page round-trip (baseline, unchanged behavior)', async () => {
-    const putPageOp = operations.find((o) => o.name === 'put_page')!;
-    const getPageOp = operations.find((o) => o.name === 'get_page')!;
-    const slug = 'people/allprivate-roundtrip';
-    const fence = FENCE_BODY(
-      '| 1 | PRIVATE_ONLY_FACT | fact | 1.0 | private | high | 2026-01-01 |  | s |  |',
-    );
-    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+  test('P1 gap: mixed world+private fence — warns that the private row was dropped, and the row IS still dropped (unchanged pre-existing behavior)', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      const slug = 'people/p1-mixed-warn';
+      const fence = FENCE_BODY(
+        `| 1 | PUBLIC_P1_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | PRIVATE_P1_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
 
-    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
-      slug,
-      include_content: true,
-    }) as { content?: string };
-    expect(remote.content).not.toContain('PRIVATE_ONLY_FACT');
-    const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
-    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug,
+        include_content: true,
+      }) as { content?: string };
+      warnSpy.mockClear(); // only assert on the put_page call below
+      const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
+      await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
 
-    const raw = await engine.getPage(slug, { sourceId: 'default' });
-    expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_ONLY_FACT');
+      const warnedGap = warnSpy.mock.calls.some((c) => String(c[0]).includes('#2044 gap') && String(c[0]).includes(slug));
+      expect(warnedGap).toBe(true);
+      // Unchanged pre-existing behavior: the row is still actually dropped
+      // (this PR is diagnostics-only, not a data-behavior fix).
+      const raw = await engine.getPage(slug, { sourceId: 'default' });
+      expect((raw?.compiled_truth ?? '')).not.toContain('PRIVATE_P1_FACT');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
-  test('P1 fix: a MIXED world+private Facts fence preserves the private row on round-trip (previously lost — old restoration only fired at incoming.facts.length===0)', async () => {
-    const putPageOp = operations.find((o) => o.name === 'put_page')!;
-    const getPageOp = operations.find((o) => o.name === 'get_page')!;
-    const slug = 'people/mixed-roundtrip';
-    const fence = FENCE_BODY(
-      `| 1 | PUBLIC_MIXED_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
-| 2 | PRIVATE_MIXED_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
-    );
-    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+  test('P2 gap: deleting a world-only fence — warns that the deletion was undone, and the row IS still restored (unchanged pre-existing behavior)', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      const slug = 'people/p2-worldonly-warn';
+      const fence = FENCE_BODY(
+        '| 1 | WORLD_ONLY_P2_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |',
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
 
-    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
-      slug,
-      include_content: true,
-    }) as { content?: string };
-    expect(remote.content).toContain('PUBLIC_MIXED_FACT');
-    expect(remote.content).not.toContain('PRIVATE_MIXED_FACT');
-    const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
-    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug,
+        include_content: true,
+      }) as { content?: string };
+      const body = remote.content ?? '';
+      const factsHeadingIdx = body.indexOf('## Facts');
+      const fenceEndIdx = body.indexOf(FACTS_FENCE_END) + FACTS_FENCE_END.length;
+      const edited = body.slice(0, factsHeadingIdx).replace('Some text.', 'Some text, fence removed.')
+        + body.slice(fenceEndIdx);
+      warnSpy.mockClear();
+      await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
 
-    const raw = await engine.getPage(slug, { sourceId: 'default' });
-    expect((raw?.compiled_truth ?? '')).toContain('PUBLIC_MIXED_FACT');
-    expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_MIXED_FACT');
+      const warnedRestoration = warnSpy.mock.calls.some(
+        (c) => String(c[0]).includes('#2044 restoration') && String(c[0]).includes(slug),
+      );
+      expect(warnedRestoration).toBe(true);
+      // Unchanged pre-existing behavior: the deletion is still undone.
+      const raw = await engine.getPage(slug, { sourceId: 'default' });
+      expect((raw?.compiled_truth ?? '')).toContain('WORLD_ONLY_P2_FACT');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
-  test('P2 fix: deleting a fully-visible world-only fence is honored, not silently undone (previously the whole-block swap re-appended every old row)', async () => {
-    const putPageOp = operations.find((o) => o.name === 'put_page')!;
-    const getPageOp = operations.find((o) => o.name === 'get_page')!;
-    const slug = 'people/world-only-delete';
-    const fence = FENCE_BODY(
-      '| 1 | WORLD_ONLY_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |',
-    );
-    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+  test('no warning: an all-private fence round-trip (no world rows involved) does not fire the P2 warning', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      const slug = 'people/no-warn-allprivate';
+      const fence = FENCE_BODY(
+        '| 1 | PRIVATE_NOWARN_FACT | fact | 1.0 | private | high | 2026-01-01 |  | s |  |',
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
 
-    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
-      slug,
-      include_content: true,
-    }) as { content?: string };
-    expect(remote.content).toContain('WORLD_ONLY_FACT');
-    // The caller saw the fence in full and deletes it entirely — remove
-    // just the `## Facts` section (heading + fence block), keeping the
-    // rest of the page (and its non-blank body) intact, mirroring a real
-    // caller's edit.
-    const body = remote.content ?? '';
-    const factsHeadingIdx = body.indexOf('## Facts');
-    const fenceEndIdx = body.indexOf(FACTS_FENCE_END) + FACTS_FENCE_END.length;
-    const edited = body.slice(0, factsHeadingIdx).replace('Some text.', 'Some text, fence removed.')
-      + body.slice(fenceEndIdx);
-    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug,
+        include_content: true,
+      }) as { content?: string };
+      warnSpy.mockClear();
+      const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
+      await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
 
-    const raw = await engine.getPage(slug, { sourceId: 'default' });
-    expect((raw?.compiled_truth ?? '')).not.toContain('WORLD_ONLY_FACT');
+      const anyGapWarning = warnSpy.mock.calls.some((c) => String(c[0]).includes('#2044'));
+      expect(anyGapWarning).toBe(false);
+      // The row is restored (unchanged pre-existing #2044 behavior).
+      const raw = await engine.getPage(slug, { sourceId: 'default' });
+      expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_NOWARN_FACT');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
-  test('a LOCAL (non-remote) write that deletes a private row is honored — restoration only applies to remote writes', async () => {
-    // Guards against an over-eager merge firing regardless of trust
-    // boundary: a local caller (ctx.remote === false) sees the fence in
-    // full via get_page, so a subsequent local put_page that omits a row
-    // is a genuine, fully-informed deletion — never a restoration
-    // candidate, since restoration exists specifically to protect rows a
-    // caller structurally could not have seen.
-    const putPageOp = operations.find((o) => o.name === 'put_page')!;
-    const getPageOp = operations.find((o) => o.name === 'get_page')!;
-    const slug = 'people/local-full-delete';
-    const fence = FENCE_BODY(
-      `| 1 | LOCAL_KEEP_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
-| 2 | LOCAL_DELETE_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
-    );
-    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+  test('no warning: a normal local (non-remote) edit never triggers either diagnostic', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const slug = 'people/no-warn-local';
+      const fence = FENCE_BODY(
+        `| 1 | LOCAL_WORLD_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | LOCAL_PRIVATE_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+      warnSpy.mockClear();
+      // Local write that drops both rows -- fully-informed, no diagnostic.
+      await putPageOp.handler(makeCtx({ remote: false }), {
+        slug,
+        content: '# Page\n\nSome text edited.\n',
+      });
 
-    const local = await getPageOp.handler(makeCtx({ remote: false }), {
-      slug,
-      include_content: true,
-    }) as { content?: string };
-    expect(local.content).toContain('LOCAL_DELETE_FACT');
-    const edited = (local.content ?? '').replace(
-      /\| 2 \| LOCAL_DELETE_FACT[^\n]*\n/,
-      '',
-    );
-    await putPageOp.handler(makeCtx({ remote: false }), { slug, content: edited });
-
-    const raw = await engine.getPage(slug, { sourceId: 'default' });
-    expect((raw?.compiled_truth ?? '')).toContain('LOCAL_KEEP_FACT');
-    expect((raw?.compiled_truth ?? '')).not.toContain('LOCAL_DELETE_FACT');
+      const anyGapWarning = warnSpy.mock.calls.some((c) => String(c[0]).includes('#2044'));
+      expect(anyGapWarning).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
