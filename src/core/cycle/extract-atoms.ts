@@ -62,9 +62,15 @@ import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { createHash } from 'crypto';
 import { slugifySegment } from '../sync.ts';
+import { truncateUtf8 } from '../text-safe.ts';
 
 const DEFAULT_BUDGET_USD = 0.3;
 const DEFAULT_EXTRACT_ATOMS_MODEL = 'anthropic:claude-haiku-4-5';
+// #4540: per-item extractor caps, overridable via cycle.extract_atoms.*
+// config keys (max_input_chars / max_output_tokens / pacing_ms). Exported
+// so tests pin the defaults instead of re-hardcoding the literals.
+export const DEFAULT_EXTRACT_MAX_INPUT_CHARS = 50_000;
+export const DEFAULT_EXTRACT_MAX_OUTPUT_TOKENS = 4096;
 
 /**
  * gbrain#4148: consecutive same-content failures of a content-deterministic
@@ -592,6 +598,12 @@ export async function runPhaseExtractAtoms(
   let budgetExhausted = false;
   let extractModel = DEFAULT_EXTRACT_ATOMS_MODEL;
   let budgetCap = DEFAULT_BUDGET_USD;
+  // #4540: the per-item input/output caps were hardcoded (slice(0, 50_000) +
+  // maxTokens: 4096). Operators on small-context or thinking models need to
+  // shrink/grow both without a code change; defaults are unchanged.
+  let maxInputChars = DEFAULT_EXTRACT_MAX_INPUT_CHARS;
+  let maxOutputTokens = DEFAULT_EXTRACT_MAX_OUTPUT_TOKENS;
+  let pacingMs = 0;
   try {
     const configuredModel = await engine.getConfig('models.dream.extract_atoms');
     if (configuredModel) extractModel = configuredModel;
@@ -599,6 +611,27 @@ export async function runPhaseExtractAtoms(
     if (configuredBudget) {
       const n = Number(configuredBudget);
       if (Number.isFinite(n) && n > 0) budgetCap = n;
+    }
+    const configuredMaxInput = await engine.getConfig('cycle.extract_atoms.max_input_chars');
+    if (configuredMaxInput) {
+      const n = Number(configuredMaxInput);
+      // Floor of 1000 chars: below that the extractor sees a fragment too
+      // small to yield atoms and every page burns budget for nothing.
+      if (Number.isFinite(n) && n >= 1_000) maxInputChars = Math.floor(n);
+    }
+    const configuredMaxOutput = await engine.getConfig('cycle.extract_atoms.max_output_tokens');
+    if (configuredMaxOutput) {
+      const n = Number(configuredMaxOutput);
+      // Floor of 256 tokens mirrors dream.triage.max_tokens: a smaller cap
+      // truncates every response into the malformed-output failure path.
+      if (Number.isFinite(n) && n >= 256) maxOutputTokens = Math.floor(n);
+    }
+    // Optional per-item pacing sleep (ms) so a large backlog doesn't hammer
+    // a local/self-hosted provider back-to-back. 0 (default) = no pacing.
+    const configuredPacing = await engine.getConfig('cycle.extract_atoms.pacing_ms');
+    if (configuredPacing) {
+      const n = Number(configuredPacing);
+      if (Number.isFinite(n) && n > 0) pacingMs = Math.min(60_000, Math.floor(n));
     }
   } catch {
     // Keep safe defaults: Haiku + $0.30.
@@ -714,16 +747,21 @@ export async function runPhaseExtractAtoms(
         messages: [
           {
             role: 'user',
-            content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, 50_000)}`,
+            // #4540: configurable input cap, cut UTF-8-safely (a bare
+            // .slice() can split a surrogate pair at the boundary).
+            content: `Source: ${originLabel}\n\n---\n\n${truncateUtf8(item.content, maxInputChars)}`,
           },
         ],
-        maxTokens: 4096,
+        maxTokens: maxOutputTokens,
       });
       // Post-await yield: closes the "long LLM call past TTL" hazard
       // codex flagged. The 30s throttle inside maybeYield bounds the
       // actual refresh rate so this is cheap when calls are fast.
       await maybeYield();
       llmHalt.reset();
+      // #4540: optional per-item pacing between successful LLM calls.
+      // setTimeout (not setImmediate) so the lock-refresh interval fires.
+      if (pacingMs > 0) await new Promise<void>((r) => setTimeout(r, pacingMs));
 
       estimatedSpendUsd = budgetTracker.totalSpent;
 

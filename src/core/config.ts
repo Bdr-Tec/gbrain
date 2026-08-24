@@ -1151,6 +1151,12 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.dream.synthesize',
   'models.dream.extract_atoms',
   'cycle.extract_atoms.budget_usd',
+  // #4540: per-item extractor caps (defaults 50000 chars / 4096 tokens) plus
+  // an optional between-item pacing sleep (ms, default 0). Read via
+  // engine.getConfig in src/core/cycle/extract-atoms.ts.
+  'cycle.extract_atoms.max_input_chars',
+  'cycle.extract_atoms.max_output_tokens',
+  'cycle.extract_atoms.pacing_ms',
   'models.dream.patterns',
   'models.dream.synthesize_verdict',
   // #4152: preferred triage-model key (explicit pre-read in loadSynthConfig;
