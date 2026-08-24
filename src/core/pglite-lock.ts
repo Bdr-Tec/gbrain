@@ -215,9 +215,13 @@ export interface LockPeekResult {
  * throws LiveServeLockError. For a third-party caller deciding whether to
  * even attempt a connection (e.g. Memorable's local hook against a PGLite
  * brain) — not part of gbrain's own acquisition path, which is unchanged.
- * "Not held" covers: no lock dir, a dead-PID holder, or a corrupt/unreadable
- * lock file (left to a real connect attempt to sort out, same as acquireLock
- * does today).
+ * "Not held" covers: no lock dir, a dead-PID holder, or a lock file that does
+ * not parse (left to a real connect attempt to sort out, same as acquireLock
+ * does today). A lock file that DOES parse but carries no usable `pid` reads
+ * as HELD with `pid: undefined` — `isProcessAlive` treats an unprovable pid as
+ * alive on purpose, and reporting "not held" there would invite a caller to
+ * steal a live holder's lock. Erring toward held costs a retry; erring the
+ * other way corrupted catalogs (#2348).
  */
 export function peekLock(dataDir: string | undefined): LockPeekResult {
   const lockDir = getLockDir(dataDir);

@@ -1471,9 +1471,9 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           // of it does anything: the receipt is not written, tool calls are
           // not collected, and nothing is spawned unless the operator has
           // explicitly opted in. Off (the default) means gbrain behaves
-          // exactly as it does today — no new files, no new work.
+          // exactly as it does today. Any of 0/false/off/no kills the relay.
           const memorableAllowed =
-            process.env.GBRAIN_MEMORABLE !== '0' &&
+            !/^(0|false|off|no)$/i.test(process.env.GBRAIN_MEMORABLE ?? '') &&
             cfg?.integrations?.memorable?.enabled === true;
           // The actual tool name + args, redacted through the SAME secret-scan
           // pass as the corpus text rather than a second implementation of it.
@@ -1488,7 +1488,10 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
             // COUNT only — the findings themselves never land in telemetry [S3#7].
             redactionsN = redacted.redactions.length;
             if (memorableAllowed) {
-              toolCallsJson = scan.redactFindings(JSON.stringify(parsed.toolCalls)).text;
+              // highEntropy ON here only: these args are the one artifact that
+              // leaves the machine, and without it only vendor-prefixed keys
+              // redact — two live credentials reached the API through that gap.
+              toolCallsJson = scan.redactFindings(JSON.stringify(parsed.toolCalls), { highEntropy: true }).text;
             }
           } catch {
             degrade('scan_unavailable');

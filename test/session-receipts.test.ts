@@ -8,6 +8,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
+import { statSync } from 'node:fs';
 import {
   appendSessionReceipt,
   readSessionReceiptsTail,
@@ -138,4 +139,47 @@ describe('session-receipts', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe('receipt compaction is bounded by bytes, not only by lines', () => {
+  /**
+   * The line count was never the binding constraint. Real receipts carry
+   * tool_calls_json and measure ~110 KB (max 353 KB), so a few thousand of
+   * them are hundreds of megabytes across far fewer than 4000 lines — under
+   * the old trigger, never compacted, and read whole into memory on every
+   * session end.
+   */
+  test('a few huge receipts compact even though the line count is tiny', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        const fat = 'x'.repeat(4 * 1024 * 1024); // 4 MB of tool calls per receipt
+        for (let i = 0; i < 12; i++) {
+          await appendSessionReceipt({
+            session_id: `sess-${i}`,
+            harness: 'claude-code',
+            corpus_path: `/tmp/sess-${i}.txt`,
+            content_hash: `hash-${i}`,
+            turn_count: 1,
+            workspace_root: '/repo',
+            tool_calls_json: fat,
+            secret_scan_ok: true,
+          });
+        }
+        const p = await sessionReceiptsPath();
+        const { size } = statSync(p);
+        // 12 x 4 MB is 48 MB unbounded; the ceiling is 32 MB.
+        expect(size).toBeLessThan(32 * 1024 * 1024);
+
+        // Trimming keeps the NEWEST entries, and above all the one just
+        // written — a compaction that dropped it would break the relay it
+        // exists to feed.
+        const tail = await readSessionReceiptsTail(50);
+        expect(tail.length).toBeGreaterThan(0);
+        expect(tail[tail.length - 1]!.session_id).toBe('sess-11');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

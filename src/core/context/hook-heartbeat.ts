@@ -214,6 +214,23 @@ export async function sessionReceiptsPath(): Promise<string> {
 
 const RECEIPTS_COMPACT_CHECK_BYTES = 2 * SESSION_RECEIPTS_MAX_LINES * 80;
 
+/**
+ * Byte ceiling, because the line count was never the binding constraint.
+ *
+ * A receipt carries tool_calls_json, and measured against real sessions those
+ * lines average 110 KB and reach 353 KB. So 3000 receipts are ~315 MB across
+ * 3000 lines: comfortably under the 4000-line trigger, never compacted, and
+ * re-read whole into memory on every session end (maxRSS 443 MB, oscillating
+ * between ~210 MB and ~420 MB on disk in steady state). The check above fires
+ * at 320 KB and then declined to act, which is the worst of both.
+ *
+ * Trimming now honours whichever limit binds first. The ceiling also bounds
+ * the readFileSync itself: the file can only exceed it by one append.
+ */
+const RECEIPTS_MAX_BYTES = 32 * 1024 * 1024;
+/** What a compaction leaves behind, so the next append does not re-trigger it. */
+const RECEIPTS_TARGET_BYTES = RECEIPTS_MAX_BYTES / 2;
+
 /** Append one receipt line. Never throws — a receipt-write failure must never break session-end. */
 export async function appendSessionReceipt(entry: Omit<SessionReceiptEntry, 'ts'>): Promise<void> {
   try {
@@ -228,9 +245,22 @@ export async function appendSessionReceipt(entry: Omit<SessionReceiptEntry, 'ts'
     }
     if (size > RECEIPTS_COMPACT_CHECK_BYTES) {
       const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim().length > 0);
-      if (lines.length > 2 * SESSION_RECEIPTS_MAX_LINES) {
+      if (lines.length > 2 * SESSION_RECEIPTS_MAX_LINES || size > RECEIPTS_MAX_BYTES) {
+        // Newest first, stopping at whichever budget binds. The newest entry
+        // is always kept even if it alone exceeds the byte target — a
+        // compaction that dropped the receipt just written would break the
+        // relay it exists to feed.
+        const kept: string[] = [];
+        let bytes = 0;
+        for (let i = lines.length - 1; i >= 0 && kept.length < SESSION_RECEIPTS_MAX_LINES; i--) {
+          const b = Buffer.byteLength(lines[i]!, 'utf8') + 1;
+          if (bytes + b > RECEIPTS_TARGET_BYTES && kept.length > 0) break;
+          kept.push(lines[i]!);
+          bytes += b;
+        }
+        kept.reverse();
         const tmp = `${p}.tmp-${process.pid}`;
-        writeFileSync(tmp, lines.slice(-SESSION_RECEIPTS_MAX_LINES).join('\n') + '\n', { mode: 0o600 });
+        writeFileSync(tmp, kept.join('\n') + '\n', { mode: 0o600 });
         renameSync(tmp, p);
       }
     }
