@@ -183,3 +183,56 @@ describe('receipt compaction is bounded by bytes, not only by lines', () => {
     }
   }, 60_000);
 });
+
+describe('a resumed session does not re-record what it already recorded', () => {
+  const base = {
+    session_id: 'resumed-1',
+    harness: 'claude-code' as const,
+    corpus_path: '/tmp/resumed-1.txt',
+    turn_count: 4,
+    workspace_root: '/repo',
+    tool_calls_json: '[{"name":"Bash","input":{"command":"bun test"}}]',
+    secret_scan_ok: true,
+  };
+
+  /** session-end runs again on resume. The corpus file is session-id-keyed
+   * and overwritten, so it dedupes by construction — the receipt did not, and
+   * every append fired the relay again. A session resumed five times paid for
+   * five extractions of one trace. */
+  test('an identical re-emission writes nothing and reports it', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        expect(await appendSessionReceipt({ ...base, content_hash: 'hash-A' })).toBe(true);
+        expect(await appendSessionReceipt({ ...base, content_hash: 'hash-A' })).toBe(false);
+        expect(await appendSessionReceipt({ ...base, content_hash: 'hash-A' })).toBe(false);
+        expect((await readSessionReceiptsTail(50)).length).toBe(1);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('genuinely appended work has a new hash, and is still recorded and relayed', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        expect(await appendSessionReceipt({ ...base, content_hash: 'hash-A' })).toBe(true);
+        expect(await appendSessionReceipt({ ...base, content_hash: 'hash-B' })).toBe(true);
+        const tail = await readSessionReceiptsTail(50);
+        expect(tail.map((e) => e.content_hash)).toEqual(['hash-A', 'hash-B']);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('deduplication is per session, so a different session is never suppressed', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        expect(await appendSessionReceipt({ ...base, content_hash: 'hash-A' })).toBe(true);
+        expect(await appendSessionReceipt({ ...base, session_id: 'other', content_hash: 'hash-A' })).toBe(true);
+        // and the first session can still be re-checked correctly afterwards
+        expect(await appendSessionReceipt({ ...base, content_hash: 'hash-A' })).toBe(false);
+        expect((await readSessionReceiptsTail(50)).length).toBe(2);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});

@@ -1475,11 +1475,9 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           const memorableAllowed =
             !/^(0|false|off|no)$/i.test(process.env.GBRAIN_MEMORABLE ?? '') &&
             cfg?.integrations?.memorable?.enabled === true;
-          // The actual tool name + args, redacted through the SAME secret-scan
-          // pass as the corpus text rather than a second implementation of it.
-          // Covers the parsed window; the local consumer minimizes further to
-          // an allow-list of argument fields before anything leaves the
-          // machine. Only computed when the integration is on.
+          // Tool name + args for the SAME SPAN the corpus covers, through the
+          // same secret-scan pass. In remainder mode the corpus is the
+          // post-boundary tail while these were the whole parsed window.
           let toolCallsJson = '[]';
           try {
             const scan = await import('../core/secret-scan.ts');
@@ -1491,7 +1489,8 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
               // highEntropy ON here only: these args are the one artifact that
               // leaves the machine, and without it only vendor-prefixed keys
               // redact — two live credentials reached the API through that gap.
-              toolCallsJson = scan.redactFindings(JSON.stringify(parsed.toolCalls), { highEntropy: true }).text;
+              toolCallsJson = scan.redactFindings(JSON.stringify(parsed.toolCalls.filter(
+                (_c, i) => (parsed.toolCallTurnIndexes[i] ?? 0) >= decided.startTurnIndex)), { highEntropy: true }).text;
             }
           } catch {
             degrade('scan_unavailable');
@@ -1511,7 +1510,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           // itself): the corpus file above is done, hashed post-redaction so
           // the hash can never fingerprint pre-scrub content. See
           // hook-heartbeat.ts's session-receipts section.
-          if (memorableAllowed) await appendSessionReceipt({
+          const recorded = memorableAllowed && await appendSessionReceipt({
             session_id: sessionId,
             harness: io.harness ?? 'claude-code',
             corpus_path: corpusFile,
@@ -1529,10 +1528,11 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           // consent/toggle checks; gbrain never blocks on it, never fails on
           // it, and sends nothing off-machine itself.
           try {
-            if (memorableAllowed) {
-              // Enabled-but-not-installed is a real state: the config key gets
-              // set before `npm i -g memorable-cli`. Name it in the heartbeat
-              // instead of spawning into an ENOENT nobody ever sees.
+            // `recorded`: an identical resumed session writes no receipt.
+            if (recorded) {
+              // Enabled-but-not-installed is real: the config key gets set
+              // before `npm i -g memorable-cli`. Name it in the heartbeat
+              // rather than spawning into an ENOENT nobody ever sees.
               const bin = resolveMemorableBin();
               if (!bin) degrade('memorable_cli_missing');
               else {

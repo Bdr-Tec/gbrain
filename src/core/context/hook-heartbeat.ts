@@ -11,7 +11,7 @@
  * allowlist is enforced by construction, not by trust. Never throws.
  */
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { ensureGbrainHome, resolveGbrainHome } from '../gbrain-home.ts';
 
@@ -231,10 +231,27 @@ const RECEIPTS_MAX_BYTES = 32 * 1024 * 1024;
 /** What a compaction leaves behind, so the next append does not re-trigger it. */
 const RECEIPTS_TARGET_BYTES = RECEIPTS_MAX_BYTES / 2;
 
-/** Append one receipt line. Never throws — a receipt-write failure must never break session-end. */
-export async function appendSessionReceipt(entry: Omit<SessionReceiptEntry, 'ts'>): Promise<void> {
+/**
+ * Append one receipt line, unless it says exactly what the last one for this
+ * session already said. Never throws — a receipt-write failure must never
+ * break session-end.
+ *
+ * Returns true when a receipt was written. A RESUMED session runs session-end
+ * again, and the corpus file is session-id-keyed and overwritten, so the
+ * corpus deduplicates by construction — but the receipt was appended
+ * unconditionally, and every append fired the relay again. A session resumed
+ * five times paid for five extractions of the same trace.
+ *
+ * `content_hash` is the exact discriminator: it is the post-redaction hash of
+ * the corpus just written, so an identical hash means identical content and
+ * genuinely nothing new to record. A CHANGED hash is real appended work and
+ * must still be recorded and relayed — the at-least-once contract for new
+ * content is unchanged; only exact re-emissions are dropped.
+ */
+export async function appendSessionReceipt(entry: Omit<SessionReceiptEntry, 'ts'>): Promise<boolean> {
   try {
     const p = await sessionReceiptsPath();
+    if (await lastReceiptMatches(entry.session_id, entry.content_hash)) return false;
     const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
     appendFileSync(p, line + '\n', { mode: 0o600 });
     let size = 0;
@@ -264,9 +281,52 @@ export async function appendSessionReceipt(entry: Omit<SessionReceiptEntry, 'ts'
         renameSync(tmp, p);
       }
     }
+    return true;
   } catch {
     /* a receipt is an optional signal — never break the hook it describes */
+    return false;
   }
+}
+
+/** Newest receipt for this session, compared by content hash.
+ *
+ * Reads a BOUNDED tail rather than the whole file: receipts carry
+ * tool_calls_json and the file is allowed to reach 32 MB, so a full read on
+ * every session end is exactly the cost the byte ceiling above exists to
+ * avoid. A resumed session's previous receipt is by construction among the
+ * most recent, and a miss here only means a duplicate is written — the
+ * failure mode is the old behaviour, never a lost receipt. */
+const RECEIPT_DEDUP_TAIL_BYTES = 1024 * 1024;
+async function lastReceiptMatches(sessionId: string, contentHash: string): Promise<boolean> {
+  try {
+    const p = await sessionReceiptsPath();
+    const size = statSync(p).size;
+    const start = Math.max(0, size - RECEIPT_DEDUP_TAIL_BYTES);
+    const fd = openSync(p, 'r');
+    let raw: string;
+    try {
+      const buf = Buffer.alloc(size - start);
+      readSync(fd, buf, 0, buf.length, start);
+      raw = buf.toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+    // A tail read can slice a line in half; that first fragment is unparseable
+    // and is skipped by the try/catch below rather than trusted.
+    if (start > 0) lines.shift();
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const e = JSON.parse(lines[i]!) as SessionReceiptEntry;
+        if (e.session_id === sessionId) return e.content_hash === contentHash;
+      } catch {
+        /* torn or malformed line — skip */
+      }
+    }
+  } catch {
+    /* no file yet, or unreadable — treat as "not a duplicate" */
+  }
+  return false;
 }
 
 /** Last `n` receipt entries (oldest → newest). Callers should take the newest per session_id. */

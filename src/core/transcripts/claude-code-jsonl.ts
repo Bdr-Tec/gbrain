@@ -208,6 +208,11 @@ export interface ParsedTranscript {
    * behavior change.
    */
   toolCalls: ToolCallRecord[];
+  /** Parallel to `toolCalls`: the turn index each call sits at, so a caller
+   * writing only part of the transcript can restrict the calls to the same
+   * span. Kept alongside rather than on ToolCallRecord, which deliberately
+   * carries no transcript-internal positions. */
+  toolCallTurnIndexes: number[];
 }
 
 /**
@@ -247,6 +252,7 @@ export function parseTranscript(
   const injectedContextBlocks: string[] = [];
   const boundaryTurnIndexes: number[] = [];
   const toolCalls: ToolCallWithId[] = [];
+  const toolCallTurnIndexes: number[] = [];
   const toolResults = new Map<string, boolean>();
   let parsedLines = 0;
   let skippedLines = 0;
@@ -276,7 +282,9 @@ export function parseTranscript(
       injectedContextBlocks.push(injected);
       continue;
     }
-    toolCalls.push(...entryToToolCalls(entry));
+    // turns.length is this entry's own index in turn space (entryToTurn runs
+    // just below), so a call is stamped with the turn it belongs to.
+    for (const c of entryToToolCalls(entry)) { toolCalls.push(c); toolCallTurnIndexes.push(turns.length); }
     for (const r of entryToToolResults(entry)) toolResults.set(r.tool_use_id, r.ok);
     const turn = entryToTurn(entry);
     if (turn) turns.push(turn);
@@ -288,7 +296,7 @@ export function parseTranscript(
     const ok = c.id !== undefined ? toolResults.get(c.id) : undefined;
     return { name: c.name, input: c.input, ...(ok !== undefined ? { result: { ok } } : {}) };
   });
-  return { turns, injectedContextBlocks, bytesRead, parsedLines, skippedLines, compactBoundaries, boundaryTurnIndexes, toolCalls: joinedToolCalls };
+  return { turns, injectedContextBlocks, bytesRead, parsedLines, skippedLines, compactBoundaries, boundaryTurnIndexes, toolCalls: joinedToolCalls, toolCallTurnIndexes };
 }
 
 /** {type:'system', subtype:'compact_boundary'} — Claude Code's on-disk compaction marker (v0.45.7). */
