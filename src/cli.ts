@@ -736,6 +736,22 @@ async function main() {
     // tail to a slow pipe reader when the exit grace lapses — see
     // writeStdoutFinal.
     if (output) await writeStdoutFinal(output);
+    // #4488: an op that reports failure IN-BAND (`{status: 'error'}` — e.g.
+    // put_page over unparseable frontmatter) used to print the envelope and
+    // exit 0, so scripts read a never-written page as success. Echo the error
+    // to stderr and set the failure verdict. No-op statuses ('skipped',
+    // 'unchanged', …) stay exit 0 — a no-op is not a failure.
+    if (
+      typeof result === 'object' && result !== null && !Array.isArray(result) &&
+      (result as { status?: unknown }).status === 'error'
+    ) {
+      const detail = (result as { error?: unknown }).error;
+      console.error(
+        `gbrain ${command}: operation reported status 'error'` +
+        (typeof detail === 'string' && detail ? ` — ${detail}` : '') + '.',
+      );
+      setCliExitVerdict(1);
+    }
     maybePrintConceptNudge(op.name, params);
   } catch (e: unknown) {
     // v0.42.20.0 (codex D4): on error, set exitCode + return so the `finally`
