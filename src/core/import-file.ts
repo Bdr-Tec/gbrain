@@ -48,7 +48,7 @@ import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { computeCorpusGeneration, loadSourceRow } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
 import { runGuardrails } from './guardrails.ts';
-import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, factsRestoredVisibleRowsWarning, factsGapWarning } from './facts-fence.ts';
+import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, renderFactsTable, restoreHiddenFactRows, factsGapWarning } from './facts-fence.ts';
 import { scanFencedBlocks, MAX_FENCES_PER_PAGE } from './fence-scan.ts';
 
 /**
@@ -110,14 +110,6 @@ function fenceTagToPseudoPath(lang: string | undefined): string | null {
 // MAX_FENCES_PER_PAGE (fence-bomb DOS cap, GBRAIN_MAX_FENCES_PER_PAGE env
 // override) moved to fence-scan.ts with the #2862 linear scanner.
 
-function extractFactsFenceBlock(body: string): string | null {
-  const beginIdx = body.indexOf(FACTS_FENCE_BEGIN);
-  if (beginIdx === -1) return null;
-  const endIdx = body.indexOf(FACTS_FENCE_END, beginIdx + FACTS_FENCE_BEGIN.length);
-  if (endIdx === -1) return null;
-  return body.slice(beginIdx, endIdx + FACTS_FENCE_END.length);
-}
-
 function replaceOrAppendFactsFence(body: string, fenceBlock: string): string {
   const beginIdx = body.indexOf(FACTS_FENCE_BEGIN);
   if (beginIdx !== -1) {
@@ -129,6 +121,46 @@ function replaceOrAppendFactsFence(body: string, fenceBlock: string): string {
 
   const sep = body.endsWith('\n') ? '\n' : '\n\n';
   return `${body}${sep}## Facts\n\n${fenceBlock}\n`;
+}
+
+/**
+ * #2044 / #4548: row-level, visibility-aware fence merge for one page
+ * column on the remote write-back boundary. Restores non-'world' fence
+ * rows that are missing from the incoming body (a remote get_page/fetch
+ * stripped them before the caller ever saw them, so their absence is not
+ * an intentional delete). World-visible rows are never restored — the
+ * caller saw those in full, so an edit/deletion is honored as written.
+ * See restoreHiddenFactRows() in facts-fence.ts for the merge rules
+ * (stable rowNums, collision renumbering, idempotence, warnings gate).
+ *
+ * Returns the (possibly merged) body. Emits console.warn for the two
+ * surfaced conditions: a caller-authored row renumbered off a hidden
+ * rowNum, and the residual malformed-fence case where the merge could not
+ * run and hidden rows are genuinely dropped (factsGapWarning).
+ */
+function mergeHiddenFactRowsIntoBody(
+  slug: string,
+  incomingBody: string,
+  existingBody: string | null | undefined,
+): string {
+  if (!existingBody) return incomingBody;
+  const incomingFacts = parseFactsFence(incomingBody);
+  const existingFacts = parseFactsFence(existingBody);
+  const merge = restoreHiddenFactRows(incomingFacts, existingFacts);
+  if (merge) {
+    if (merge.renumbered.length > 0) {
+      console.warn(
+        `[gbrain] #2044 merge on ${slug}: ${merge.renumbered.length} incoming fact row(s) reused ` +
+        `row number(s) belonging to privacy-hidden row(s) and were renumbered ` +
+        `(${merge.renumbered.map((r) => `#${r.from}->#${r.to}`).join(', ')}); ` +
+        `the hidden row(s) keep their original numbers.`,
+      );
+    }
+    return replaceOrAppendFactsFence(incomingBody, renderFactsTable(merge.merged));
+  }
+  const gapWarning = factsGapWarning(slug, incomingFacts, existingFacts, false);
+  if (gapWarning) console.warn(gapWarning);
+  return incomingBody;
 }
 
 /**
@@ -603,26 +635,18 @@ export async function importFromContent(
   // unscoped-check/scoped-write bug class).
   const existing = await engine.getPage(slug, { sourceId: sourceId ?? 'default' });
 
-  // #2044: remote get_page intentionally strips private facts rows. A
-  // documented get_page -> edit -> put_page round-trip can therefore arrive
-  // with an empty/missing Facts fence even though the existing page still has
-  // canonical fence rows. Preserve the old fence in that narrow case so the
-  // system-of-record markdown is not truncated by the privacy boundary.
-  if (opts.remote === true && existing?.compiled_truth) {
-    const incomingFacts = parseFactsFence(parsed.compiled_truth);
-    const existingFacts = parseFactsFence(existing.compiled_truth);
-    const existingFenceBlock = extractFactsFenceBlock(existing.compiled_truth);
-    const restored = incomingFacts.facts.length === 0 && incomingFacts.warnings.length === 0
-      && existingFacts.warnings.length === 0 && existingFacts.facts.length > 0 && !!existingFenceBlock;
-    if (restored) {
-      parsed.compiled_truth = replaceOrAppendFactsFence(parsed.compiled_truth, existingFenceBlock as string);
-      // Surfacing-only: see factsRestoredVisibleRowsWarning() in facts-fence.ts. No behavior change.
-      const warning = factsRestoredVisibleRowsWarning(slug, existingFacts);
-      if (warning) console.warn(warning);
-    }
-    // Surfacing-only: see factsGapWarning() in facts-fence.ts. No behavior change.
-    const gapWarning = factsGapWarning(slug, incomingFacts, existingFacts, restored);
-    if (gapWarning) console.warn(gapWarning);
+  // #2044 / #4548: remote get_page/fetch intentionally strip non-'world'
+  // facts rows before an untrusted caller ever sees them. A documented
+  // get_page -> edit -> put_page round-trip therefore arrives MISSING rows
+  // the caller structurally could never have seen — their absence is not an
+  // intentional delete. Restore exactly those rows via the row-level,
+  // visibility-aware merge (restoreHiddenFactRows): world-visible rows the
+  // caller saw in full are never restored, so a legitimate edit/deletion of
+  // a visible row — including deleting a pure-world fence outright — is
+  // honored as written (#4554). Trusted local writers see everything, so
+  // the merge never fires for them.
+  if (opts.remote === true && existing) {
+    parsed.compiled_truth = mergeHiddenFactRowsIntoBody(slug, parsed.compiled_truth, existing.compiled_truth);
   }
 
   // #1035: absence of an explicit frontmatter `type:` on an EXISTING page
