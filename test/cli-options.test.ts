@@ -86,6 +86,40 @@ describe('parseGlobalFlags', () => {
     expect(r.cliOpts.explain).toBe(true);
     expect(r.rest).toEqual(['search', 'test query']);
   });
+
+  // #4541 — the global claim is scoped to the search/query formatter commands.
+  // Pre-fix, parseGlobalFlags claimed --explain for EVERY command, starving
+  // extract (`extract --explain timeline` fell through to the WRITE-pass
+  // extraction), whoknows, and onboard, which parse the flag themselves.
+  test('#4541: extract keeps its own --explain (handed back in place)', () => {
+    const r = parseGlobalFlags(['extract', '--explain', 'timeline']);
+    expect(r.cliOpts.explain).toBe(false);
+    expect(r.rest).toEqual(['extract', '--explain', 'timeline']);
+  });
+
+  test('#4541: whoknows keeps its own --explain', () => {
+    const r = parseGlobalFlags(['whoknows', 'fintech compliance', '--explain']);
+    expect(r.cliOpts.explain).toBe(false);
+    expect(r.rest).toEqual(['whoknows', 'fintech compliance', '--explain']);
+  });
+
+  test('#4541: onboard keeps its own --explain', () => {
+    const r = parseGlobalFlags(['onboard', '--check', '--explain']);
+    expect(r.cliOpts.explain).toBe(false);
+    expect(r.rest).toEqual(['onboard', '--check', '--explain']);
+  });
+
+  test('#4541: query still claims --explain globally', () => {
+    const r = parseGlobalFlags(['query', 'who is alice-example', '--explain']);
+    expect(r.cliOpts.explain).toBe(true);
+    expect(r.rest).toEqual(['query', 'who is alice-example']);
+  });
+
+  test('#4541: ask (query alias) still claims --explain globally', () => {
+    const r = parseGlobalFlags(['ask', 'who is alice-example', '--explain']);
+    expect(r.cliOpts.explain).toBe(true);
+    expect(r.rest).toEqual(['ask', 'who is alice-example']);
+  });
 });
 
 describe('getCliOptions / setCliOptions singleton', () => {
