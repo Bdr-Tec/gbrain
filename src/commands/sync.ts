@@ -14,7 +14,7 @@ import {
   unacknowledgedSyncFailures,
   acknowledgeFailures,
   loadSyncFailures,
-  formatCodeBreakdown,
+  formatCodeBreakdown, formatFailedFileList,
   applySyncFailureGate,
   isSkippablePath,
   resolveAutoSkipThreshold,
@@ -2593,8 +2593,9 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       } else {
         serr(
           `\nSync blocked: ${fileFailCount} file(s) failed to parse:\n` +
-          `${codeBreakdown}\n\n` +
-          `Fix the frontmatter and re-run, or use 'gbrain sync --skip-failed' to ` +
+          `${codeBreakdown}\n${formatFailedFileList(failedFiles)}\n\n` +
+          `Pinpoint a file with 'gbrain frontmatter validate <path>' (--fix auto-repairs), ` +
+          `fix the frontmatter and re-run, or use 'gbrain sync --skip-failed' to ` +
           `acknowledge and move on. A file that keeps failing auto-skips after ` +
           `${resolveAutoSkipThreshold()} consecutive syncs.`,
         );
@@ -3028,8 +3029,9 @@ async function performFullSync(
       } else {
         serr(
           `\nFull sync blocked: ${fileFailCount} file(s) failed:\n` +
-          `${codeBreakdown}\n\n` +
-          `Fix the YAML in those files and re-run, or use '--skip-failed'. A file ` +
+          `${codeBreakdown}\n${formatFailedFileList(result.failures)}\n\n` +
+          `Pinpoint a file with 'gbrain frontmatter validate <path>' (--fix auto-repairs), ` +
+          `fix the YAML and re-run, or use '--skip-failed'. A file ` +
           `that keeps failing auto-skips after ${resolveAutoSkipThreshold()} consecutive syncs.`,
         );
       }
@@ -3486,7 +3488,16 @@ See also:
       process.exit(worstExit);
     }
     const sourceArg = args.find((a, i) => args[i - 1] === '--source');
-    const sourceId = sourceArg ?? 'default';
+    // #4412: this branch used to hardcode `sourceArg ?? 'default'` while the
+    // sync itself resolves through the full ambient chain (--source >
+    // GBRAIN_SOURCE > dotfile > cwd > sole-non-default). Under
+    // GBRAIN_SOURCE=<src>, `sync --force-break-lock` inspected
+    // gbrain-sync:default — absent — printed "nothing to break", exit 0, and
+    // left the dead holder's row on gbrain-sync:<src>; the follow-up sync
+    // then refused for the 60s takeover grace. Resolve the SAME source the
+    // sync would lock.
+    const { resolveSourceWithTier: resolveBreakSource } = await import('../core/source-resolver.ts');
+    const sourceId = (await resolveBreakSource(engine, sourceArg || null)).source_id;
     const lockKey = `gbrain-sync:${sourceId}`;
     const exit = await runBreakLock(engine, lockKey, sourceId, {
       force: forceBreakLock,
@@ -4641,7 +4652,7 @@ export function printSyncResult(result: SyncResult, sink: NodeJS.WriteStream = p
           `Do NOT use --skip-failed for provider errors.`,
         );
       } else {
-        write(`  Fix the files then re-run 'gbrain sync', or 'gbrain sync --skip-failed' to move on.`);
+        write(`  Pinpoint with 'gbrain frontmatter validate <path>', fix, then re-run 'gbrain sync', or 'gbrain sync --skip-failed' to move on.`);
       }
       break;
     }

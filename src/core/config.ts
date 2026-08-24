@@ -1141,6 +1141,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'search.image_query.max_bytes',
   'search.reranker.enabled',
   'search.track_retrieval',
+  // #4415: per-brain query-intent pattern extensions (JSON bank→regex[]),
+  // merged over the shipped banks in src/core/search/query-intent.ts.
+  'search.intent_patterns',
   // Models tier system (v0.31.12)
   'models.default',
   'models.tier.utility',
@@ -1153,6 +1156,12 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'cycle.extract_atoms.budget_usd',
   'cycle.extract_atoms.max_source_chars',
   'cycle.extract_atoms.page_discovery_budget',
+  // #4540: per-item extractor caps (defaults 50000 chars / 4096 tokens) plus
+  // an optional between-item pacing sleep (ms, default 0). Read via
+  // engine.getConfig in src/core/cycle/extract-atoms.ts.
+  'cycle.extract_atoms.max_input_chars',
+  'cycle.extract_atoms.max_output_tokens',
+  'cycle.extract_atoms.pacing_ms',
   'models.dream.patterns',
   'models.dream.synthesize_verdict',
   // #4152: preferred triage-model key (explicit pre-read in loadSynthConfig;
@@ -1215,6 +1224,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'dream.triage.max_tokens',
   'dream.triage.max_ms',
   'dream.triage.concurrency',
+  // #4494: propose_takes extractor output caps (defaults 2048/4096, floor
+  // 256, retry clamped >= base). Thinking models spend reasoning tokens
+  // inside maxTokens, so the hardcoded defaults truncated every dense page.
+  'dream.propose_takes.max_tokens',
+  'dream.propose_takes.retry_max_tokens',
   'dream.patterns.lookback_days',
   'dream.patterns.min_evidence',
   // #2782-family: patterns-phase subagent timeouts (mirror of the

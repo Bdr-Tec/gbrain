@@ -1978,23 +1978,23 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
       const cliPath = parseFlag(args, '--cli-path') ?? resolveGbrainCliPath();
 
       // --detach: fork a background supervisor, print PID payload, exit 0.
-      // Implementation: re-exec the same CLI as a detached child without --detach,
-      // inheriting stderr (so JSONL events still flow to the parent's tail-f
-      // if they wanted to follow logs) but detaching stdin/stdout.
+      // #4418: the child gets a DURABLE stderr sink (audit-dir log, null-device
+      // fallback) instead of inheriting the invoker's stderr — an inherited
+      // capture pipe closing killed the worker (SIGPIPE 141) and then the
+      // supervisor itself on their next stderr write. See detached-stderr.ts.
       if (detach) {
-        const { spawn } = await import('child_process');
-        const childArgs = process.argv.slice(2).filter(a => a !== '--detach');
-        const child = spawn(process.execPath, [process.argv[1], ...childArgs], {
-          detached: true,
-          stdio: ['ignore', 'ignore', 'inherit'],
-          env: process.env,
-        });
-        child.unref();
+        const { spawnDetachedSupervisor } = await import('../core/minions/detached-stderr.ts');
+        const started = spawnDetachedSupervisor(
+          process.execPath,
+          process.argv[1],
+          process.argv.slice(2).filter(a => a !== '--detach'),
+        );
         const payload = {
           event: 'started',
-          supervisor_pid: child.pid,
+          supervisor_pid: started.pid,
           pid_file: pidFile,
           detached: true,
+          ...(started.stderrPath ? { stderr_log: started.stderrPath } : {}),
         };
         console.log(JSON.stringify(payload));
         process.exit(0);

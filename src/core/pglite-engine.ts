@@ -3769,43 +3769,53 @@ export class PGLiteEngine implements BrainEngine {
     linkType?: string,
     linkSource?: string,
     opts?: { fromSourceId?: string; toSourceId?: string },
-  ): Promise<void> {
+  ): Promise<number> {
     const fromSrc = opts?.fromSourceId ?? 'default';
     const toSrc = opts?.toSourceId ?? 'default';
     // Each branch source-qualifies page-id subqueries so a delete only targets
     // the intended edge between per-source slug rows.
+    // #4527: RETURNING 1 so the caller learns how many edges actually died —
+    // a zero-match delete must be distinguishable from a real removal.
     if (linkType !== undefined && linkSource !== undefined) {
-      await this.db.query(
+      const { rows } = await this.db.query(
         `DELETE FROM links
          WHERE from_page_id = (SELECT id FROM pages WHERE slug = $1 AND source_id = $2)
            AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)
            AND link_type = $5
-           AND link_source IS NOT DISTINCT FROM $6`,
+           AND link_source IS NOT DISTINCT FROM $6
+         RETURNING 1`,
         [from, fromSrc, to, toSrc, linkType, linkSource]
       );
+      return rows.length;
     } else if (linkType !== undefined) {
-      await this.db.query(
+      const { rows } = await this.db.query(
         `DELETE FROM links
          WHERE from_page_id = (SELECT id FROM pages WHERE slug = $1 AND source_id = $2)
            AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)
-           AND link_type = $5`,
+           AND link_type = $5
+         RETURNING 1`,
         [from, fromSrc, to, toSrc, linkType]
       );
+      return rows.length;
     } else if (linkSource !== undefined) {
-      await this.db.query(
+      const { rows } = await this.db.query(
         `DELETE FROM links
          WHERE from_page_id = (SELECT id FROM pages WHERE slug = $1 AND source_id = $2)
            AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)
-           AND link_source IS NOT DISTINCT FROM $5`,
+           AND link_source IS NOT DISTINCT FROM $5
+         RETURNING 1`,
         [from, fromSrc, to, toSrc, linkSource]
       );
+      return rows.length;
     } else {
-      await this.db.query(
+      const { rows } = await this.db.query(
         `DELETE FROM links
          WHERE from_page_id = (SELECT id FROM pages WHERE slug = $1 AND source_id = $2)
-           AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)`,
+           AND to_page_id = (SELECT id FROM pages WHERE slug = $3 AND source_id = $4)
+         RETURNING 1`,
         [from, fromSrc, to, toSrc]
       );
+      return rows.length;
     }
   }
 
@@ -4505,6 +4515,7 @@ export class PGLiteEngine implements BrainEngine {
   async findOrphanPages(opts?: {
     sourceId?: string;
     sourceIds?: string[];
+    mode?: 'inbound' | 'islanded';
   }): Promise<Array<{ slug: string; title: string; domain: string | null }>> {
     // Soft-delete filter on BOTH sides:
     //   - candidate: p.deleted_at IS NULL — soft-deleted pages aren't orphan candidates
@@ -4526,6 +4537,20 @@ export class PGLiteEngine implements BrainEngine {
       params.push(opts.sourceId);
       sourceFilter = `AND p.source_id = $${params.length}`;
     }
+    // #4524: default mode 'islanded' — identical predicate to getHealth's
+    // orphan_pages (no live inbound AND no live outbound; outbound counts
+    // only when its TARGET page is live, per gbrain#4153 endpoint liveness).
+    // mode 'inbound' preserves the legacy no-inbound-only view.
+    const outboundFilter =
+      (opts?.mode ?? 'islanded') === 'islanded'
+        ? `AND NOT EXISTS (
+             SELECT 1
+             FROM links l
+             JOIN pages tgt ON tgt.id = l.to_page_id
+             WHERE l.from_page_id = p.id
+               AND tgt.deleted_at IS NULL
+           )`
+        : '';
     const { rows } = await this.db.query(
       `SELECT
          p.slug,
@@ -4541,6 +4566,7 @@ export class PGLiteEngine implements BrainEngine {
            WHERE l.to_page_id = p.id
              AND src.deleted_at IS NULL
          )
+         ${outboundFilter}
        ORDER BY p.slug`,
       params
     );

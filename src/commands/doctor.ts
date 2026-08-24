@@ -6,7 +6,6 @@ import { ALLOWED_TYPES } from '../core/facts/conversation-types.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import * as db from '../core/db.ts';
 import { LATEST_VERSION, getIdleBlockers } from '../core/migrate.ts';
-import { detectMissingColumns } from '../core/schema-verify.ts';
 import { checkResolvable } from '../core/check-resolvable.ts';
 import { autoFixDryViolations, type AutoFixReport } from '../core/dry-fix.ts';
 import { autoDetectSkillsDirReadOnly } from '../core/repo-root.ts';
@@ -385,6 +384,36 @@ export function computeDoctorReport(checks: Check[]): DoctorReport {
  */
 
 /**
+ * #4517: is the latest upgrade-errors.jsonl record superseded? True when the
+ * running binary version is at/past the version the failed upgrade was moving
+ * to AND the schema ledger is current (no pending migrations) — i.e. a later
+ * (or retried) upgrade demonstrably finished the job. Pure + exported for
+ * tests. Compares ALL dot-segments (the canonical `compareVersions` stops at
+ * 3, which would treat 0.31.4.1 == 0.31.4.0); a malformed version fails
+ * closed (keeps warning).
+ */
+export function upgradeErrorResolved(
+  failedToVersion: string,
+  binaryVersion: string,
+  schemaCurrent: boolean,
+): boolean {
+  if (!schemaCurrent) return false;
+  if (typeof failedToVersion !== 'string' || typeof binaryVersion !== 'string') return false;
+  const a = binaryVersion.replace(/^v/, '').split('.');
+  const b = failedToVersion.replace(/^v/, '').split('.');
+  if (a.length === 0 || b.length === 0) return false;
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const da = parseInt(a[i] ?? '0', 10);
+    const db = parseInt(b[i] ?? '0', 10);
+    if (!Number.isFinite(da) || !Number.isFinite(db) || Number.isNaN(da) || Number.isNaN(db)) return false;
+    if (da > db) return true;
+    if (da < db) return false;
+  }
+  return true; // equal → the failed target version is now running
+}
+
+/**
  * v0.42 self_upgrade_health. Surfaces the self-upgrade mode, whether an update
  * is pending (from the cache), and any recent failed auto-upgrade attempts.
  * File-plane only (no DB) so it runs on thin clients. Three-state: warn on
@@ -454,14 +483,21 @@ export function checkSelfUpgradeHealth(): Check {
  *
  * #4517: a failure record on its own doesn't mean the brain is STILL
  * broken — the recovery hint (e.g. `apply-migrations --yes`) may have
- * already fixed it. The installed binary's own version is proof the
- * failed upgrade did complete filesystem-side: if it's already at or past
- * the record's `to_version`, the target was reached and this entry is
- * stale. Returns null (stays silent) rather than downgrading to 'ok' so a
- * clean doctor report doesn't grow a permanent "resolved" line for every
- * past hiccup. File-plane only (no DB), matching checkSelfUpgradeHealth.
+ * already fixed it. Suppression requires BOTH proofs: the installed
+ * binary's own version is at/past the record's `to_version` (the failed
+ * upgrade demonstrably completed filesystem-side) AND the schema ledger is
+ * current (`config.version >= LATEST_VERSION` — the DB half of the upgrade
+ * also finished). A binary alone can lie: `self-upgrade` swaps the binary
+ * before `post-upgrade` runs migrations, which is exactly the failure this
+ * trail records. When the schema can't be verified (no engine, unreadable
+ * version), the warn stays — fail-closed. A superseded record downgrades to
+ * an explicit status:'ok' line (rather than silence) so the operator sees
+ * the past failure was resolved, not swallowed.
+ * `upgradeErrorResolved` above is the pure decision fn.
  */
-export function checkUpgradeErrors(): Check | null {
+export async function checkUpgradeErrors(
+  engine: Pick<BrainEngine, 'getConfig'> | null,
+): Promise<Check | null> {
   try {
     const errPath = gbrainPath('upgrade-errors.jsonl');
     if (!existsSync(errPath)) return null;
@@ -470,8 +506,21 @@ export function checkUpgradeErrors(): Check | null {
     const latest = JSON.parse(lines[lines.length - 1]) as {
       ts: string; phase: string; from_version: string; to_version: string; hint: string;
     };
-    if (compareVersions(GBRAIN_BINARY_VERSION, latest.to_version) >= 0) return null;
     const date = latest.ts.slice(0, 10);
+    let schemaCurrent = false;
+    if (engine) {
+      try {
+        const v = parseInt((await engine.getConfig('version')) || '0', 10);
+        schemaCurrent = v >= LATEST_VERSION;
+      } catch { /* unverifiable → keep warning */ }
+    }
+    if (upgradeErrorResolved(latest.to_version, GBRAIN_BINARY_VERSION, schemaCurrent)) {
+      return {
+        name: 'upgrade_errors',
+        status: 'ok',
+        message: `Past post-upgrade failure on ${date} (${latest.from_version} → ${latest.to_version}) superseded: binary now ${GBRAIN_BINARY_VERSION}, schema current.`,
+      };
+    }
     return {
       name: 'upgrade_errors',
       status: 'warn',
@@ -792,8 +841,9 @@ export async function buildChecks(
     // handles the "schema v7+ but no prefs" case.
   }
 
-  // 3b. Upgrade-error trail (v0.13+).
-  const upgradeErrorsCheck = checkUpgradeErrors();
+  // 3b. Upgrade-error trail (v0.13+). See checkUpgradeErrors for the #4517
+  // staleness re-verification semantics (binary version + schema ledger).
+  const upgradeErrorsCheck = await checkUpgradeErrors(engine);
   if (upgradeErrorsCheck) checks.push(upgradeErrorsCheck);
 
   // 3b-ter. Self-upgrade health (#3747). Pure local-file check (config +
@@ -1941,20 +1991,54 @@ export async function buildChecks(
   try {
     const version = await engine.getConfig('version');
     schemaVersion = parseInt(version || '0', 10);
-    if (schemaVersion === LATEST_VERSION) {
-      checks.push({ name: 'schema_version', status: 'ok', message: `Version ${schemaVersion} (latest: ${LATEST_VERSION})` });
-    } else if (schemaVersion > LATEST_VERSION) {
+    if (schemaVersion > LATEST_VERSION) {
       // Forward skew: another node migrated the shared DB past what this
       // client knows (multi-node brain, hub + spokes on one Postgres). This
       // client will read/write tables, columns, and indexes it doesn't know
       // about — more dangerous than backward skew, which at least blocks on
-      // the next `apply-migrations`. See #2036.
+      // the next `apply-migrations`. See #2036. Takes precedence over the
+      // column diff below: an ahead DB is a superset of this client's
+      // expected columns, and "upgrade this client" is the real fix.
       checks.push({
         name: 'schema_version',
         status: 'warn',
         message: `Version ${schemaVersion} is AHEAD of this client's latest known version (${LATEST_VERSION}). ` +
                  `Another node migrated this DB past what this client knows — upgrade this client before writing.`,
       });
+    } else if (schemaVersion >= LATEST_VERSION) {
+      // #4421: the ledger counter alone can lie — a PgBouncer transaction-
+      // mode pooler can swallow an ALTER TABLE while the migration runner
+      // still advances config.version, leaving the ledger "current" over a
+      // physically narrower table. Add a READ-ONLY column diff via
+      // detectMissingColumns (#4425 — the detection half of
+      // schema-verify.ts's verifySchema, no self-heal): when live columns
+      // are missing, downgrade to warn naming them with the migrate-only
+      // re-run hint. Diff failure is best-effort — the ledger ok stands.
+      // Dynamic import is deliberate: the positional source guard in
+      // test/doctor-schema-column-diff.test.ts pins that the diff consult
+      // lives INSIDE this ledger-current branch.
+      let columnDiffWarned = false;
+      try {
+        const { detectMissingColumns } = await import('../core/schema-verify.ts');
+        const diff = await detectMissingColumns(engine);
+        if (diff.missing.length > 0) {
+          const sample = diff.missing.slice(0, 5).map(m => `${m.table}.${m.column}`).join(', ');
+          const more = diff.missing.length > 5 ? ` (+${diff.missing.length - 5} more)` : '';
+          checks.push({
+            name: 'schema_version',
+            status: 'warn',
+            message:
+              `Version ${schemaVersion} (latest: ${LATEST_VERSION}) but ${diff.missing.length} expected column(s) ` +
+              `are missing from the live schema: ${sample}${more}. The migration ledger advanced past a swallowed ` +
+              `ALTER TABLE (PgBouncer transaction-mode is the usual cause). Fix: gbrain init --migrate-only ` +
+              `(runs the schema self-heal); if it persists, connect directly to Postgres (not the pooler) first.`,
+          });
+          columnDiffWarned = true;
+        }
+      } catch { /* read-only diff is best-effort; ledger ok stands */ }
+      if (!columnDiffWarned) {
+        checks.push({ name: 'schema_version', status: 'ok', message: `Version ${schemaVersion} (latest: ${LATEST_VERSION})` });
+      }
     } else if (schemaVersion === 0) {
       checks.push({
         name: 'schema_version',
@@ -1973,38 +2057,9 @@ export async function buildChecks(
     checks.push({ name: 'schema_version', status: 'warn', message: 'Could not check schema version' });
   }
 
-  // 6b. Schema columns — gbrain#4421. schema_version above only compares the
-  // migrations-ledger counter; it reads as "ok" even when a migration's DDL
-  // never landed (the ledger row got written as applied, but e.g. PgBouncer
-  // transaction-mode silently swallowed the ALTER TABLE — see schema-verify.ts's
-  // module docstring). detectMissingColumns() does the same live-column check
-  // `gbrain init --migrate-only` already self-heals with, but read-only: a
-  // plain diagnostic run should never issue DDL on its own.
-  progress.heartbeat('schema_columns');
-  try {
-    const detected = await detectMissingColumns(engine);
-    if (detected.missing.length === 0) {
-      checks.push({ name: 'schema_columns', status: 'ok', message: `${detected.checked} column(s) verified against live schema` });
-    } else {
-      const cols = detected.missing.map(m => `${m.table}.${m.column}`).join(', ');
-      // Codex review (2026-08-22): only claim "despite schema_version being
-      // current" when it actually is — a DB that's genuinely behind
-      // (schema_version warn/fail above) is expected to have missing
-      // columns from migrations that haven't run yet, and that's a
-      // different, already-covered situation (see the check above's own
-      // "Fix: gbrain apply-migrations --yes").
-      const context = schemaVersion >= LATEST_VERSION
-        ? 'despite schema_version reporting up to date'
-        : '(schema_version above also reports pending migrations)';
-      checks.push({
-        name: 'schema_columns',
-        status: 'warn',
-        message: `${detected.missing.length} column(s) missing ${context}: ${cols}. Fix: gbrain init --migrate-only`,
-      });
-    }
-  } catch {
-    checks.push({ name: 'schema_columns', status: 'warn', message: 'Could not verify live schema columns' });
-  }
+  // Note: the #4421/#4425 live-column drift diff (detectMissingColumns) is
+  // wired INSIDE the schema_version ledger-current branch above — one
+  // column-drift wiring, not a separate check.
 
   // Note: we intentionally DO NOT fail on "schema v7+ but no preferences.json".
   // That's a valid fresh-install state after `gbrain init` — the migration
