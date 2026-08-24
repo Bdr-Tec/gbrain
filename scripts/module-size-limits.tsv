@@ -14,7 +14,7 @@ src/cli.ts	3723	ratchet	grown v0.46.26.0 megawave: SIGCHLD reaper install, silen
 src/core/cycle.ts	3175	ratchet	grown v0.46.26.0 megawave (#4102 #2608) + master v0.46.26.0 cycle-start orphan recovery; +4 wave G: thread cycle's resolved source into synthesize_concepts writes (#4417)
 src/commands/serve-http.ts	3294	ratchet	grown v0.46.25.0 D2: /mcp per-request teardown (#2844)
 src/commands/jobs.ts	3115	ratchet	grown v0.46.26.0 megawave (#4098 #2308) + master v0.46.26.0 worker startup recovery + stats gating; +typed provider-failure logging on the facts-absorb catch (#4308)
-src/core/search/hybrid.ts	2866	ratchet	grown v0.46.26.0 megawave: CRAG escalation seam, degradation visibility, excludePrivate knobs-fold v23 (#1663 #3873 #4352); grown #4356: semantic-cache-hit slice now honors resolved mode's searchLimit instead of a hard `|| 20` + round-1 review comment accuracy fixes (double-resolution caveat)
+src/core/search/hybrid.ts	2876	ratchet	grown v0.46.26.0 megawave: CRAG escalation seam, degradation visibility, excludePrivate knobs-fold v23 (#1663 #3873 #4352); grown #4356: semantic-cache-hit slice honors resolved mode searchLimit (double-resolution caveat); grown #4414: offset!==0 cache-skip widening + knobs-hash v24
 src/core/engine.ts	2495	ratchet	grown v0.46.26.0 megawave: relational/visibility/usage contract surface (#4352 #4218)
 src/commands/autopilot.ts	2641	ratchet	grown v0.46.26.0 megawave (#4300 #4285 #3696) + master v0.46.27.0 env-file lane + boot warning + reload-safe install (#2608 #4443) + 1 nosemgrep dataflow annotation (path-traversal audit)
 src/commands/extract.ts	2332	ratchet	grown v0.46.26.0 megawave: FS-walk stamp snapshot + legacy timeline repair wiring (#3957 D4)
