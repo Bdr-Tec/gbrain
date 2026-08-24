@@ -60,6 +60,7 @@ describe('SEARCH_MODES + MODE_BUNDLES canonical shape', () => {
       cache_similarity_threshold: 0.92,
       cache_ttl_seconds: 3600,
       intentWeighting: true,
+      keywordOrFallback: true,
       tokenBudget: 4000,
       expansion: false,
       searchLimit: 10,
@@ -94,6 +95,7 @@ describe('SEARCH_MODES + MODE_BUNDLES canonical shape', () => {
       cache_similarity_threshold: 0.92,
       cache_ttl_seconds: 3600,
       intentWeighting: true,
+      keywordOrFallback: true,
       tokenBudget: 12000,
       expansion: false,
       searchLimit: 25,
@@ -127,6 +129,7 @@ describe('SEARCH_MODES + MODE_BUNDLES canonical shape', () => {
       cache_similarity_threshold: 0.92,
       cache_ttl_seconds: 3600,
       intentWeighting: true,
+      keywordOrFallback: true,
       tokenBudget: undefined,
       expansion: true,
       searchLimit: 50,
@@ -445,7 +448,8 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // #4358 residual: bumped 23→24 — negative-offset requests could
     // read/write the same cache row an offset=0 request shares
     // (pagedRequest previously skipped only offset>0).
-    expect(KNOBS_HASH_VERSION).toBe(24);
+    // 24→25: kof= (keyword AND→OR fallback knob) joins the key.
+    expect(KNOBS_HASH_VERSION).toBe(25);
   });
 
   test('#3515: detail set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -468,7 +472,8 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // mw2: 21→22 result-stamp/injection epoch (#1663 #3995 #3783 #4220).
     // #4352 follow-up: 22→23 private-visibility posture fold (xp=).
     // #4358 residual: 23→24 negative-offset cache-skip gap.
-    expect(KNOBS_HASH_VERSION).toBe(24);
+    // 24→25: kof= (keyword AND→OR fallback knob) joins the key.
+    expect(KNOBS_HASH_VERSION).toBe(25);
   });
 
   test('#4352 follow-up: excludePrivate true vs false produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -650,8 +655,8 @@ describe('v0.40.4 — graph_signals knob', () => {
 });
 
 describe('v0.42.3.0 — autocut knobs', () => {
-  test('KNOBS_HASH_VERSION is 24 (21→22 result-stamp/injection epoch #1663 #3995 #3783 #4220; 22→23 excludePrivate posture fold #4352; 23→24 negative-offset cache-skip gap #4358 residual)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(24);
+  test('KNOBS_HASH_VERSION is 25 (21→22 result-stamp/injection epoch #1663 #3995 #3783 #4220; 22→23 excludePrivate posture fold #4352; 23→24 negative-offset cache-skip gap #4358 residual; 24→25 keywordOrFallback knob kof=)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(25);
   });
 
   test('bundle defaults: conservative off, balanced/tokenmax on @0.20', () => {
@@ -837,5 +842,27 @@ describe('v0.46.15 — retrieval-wave knobs (evidence_cosine_floor + autocut_min
     const base = knobsHash(resolveSearchMode({ mode: 'balanced' }));
     const relabeled = knobsHash(resolveSearchMode({ mode: 'balanced', overrides: { evidence_cosine_floor: 0.5 } }));
     expect(relabeled).toBe(base);
+  });
+});
+
+describe('keywordOrFallback knob (v=25)', () => {
+  test('config override turns the fallback off; bundle default stays on', () => {
+    expect(resolveSearchMode({ mode: 'balanced' }).keywordOrFallback).toBe(true);
+    const off = resolveSearchMode({ mode: 'balanced', overrides: { keywordOrFallback: false } });
+    expect(off.keywordOrFallback).toBe(false);
+  });
+
+  test('loadOverridesFromConfig parses search.keywordOrFallback', () => {
+    expect(loadOverridesFromConfig({ 'search.keywordOrFallback': 'false' }).keywordOrFallback).toBe(false);
+    expect(loadOverridesFromConfig({ 'search.keywordOrFallback': '0' }).keywordOrFallback).toBe(false);
+    expect(loadOverridesFromConfig({ 'search.keywordOrFallback': '1' }).keywordOrFallback).toBe(true);
+    expect(loadOverridesFromConfig({ 'search.keywordOrFallback': 'true' }).keywordOrFallback).toBe(true);
+    expect(loadOverridesFromConfig({}).keywordOrFallback).toBeUndefined();
+  });
+
+  test('kof participates in knobsHash — a fallback-on row cannot serve a fallback-off lookup', () => {
+    const on = knobsHash(resolveSearchMode({ mode: 'balanced' }));
+    const off = knobsHash(resolveSearchMode({ mode: 'balanced', overrides: { keywordOrFallback: false } }));
+    expect(on).not.toBe(off);
   });
 });
