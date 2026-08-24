@@ -17,6 +17,7 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
+import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { createProgress, startHeartbeat } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import {
@@ -245,7 +246,7 @@ export async function runOrphans(engine: BrainEngine, args: string[]) {
       const raw = args[++i];
       if (raw !== 'inbound' && raw !== 'islanded') {
         console.error(`Invalid --mode "${raw}". Use: inbound or islanded`);
-        process.exitCode = 1;
+        setCliExitVerdict(1);
         return;
       }
       mode = raw;
