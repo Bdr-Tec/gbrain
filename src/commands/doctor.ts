@@ -383,6 +383,36 @@ export function computeDoctorReport(checks: Check[]): DoctorReport {
  */
 
 /**
+ * #4517: is the latest upgrade-errors.jsonl record superseded? True when the
+ * running binary version is at/past the version the failed upgrade was moving
+ * to AND the schema ledger is current (no pending migrations) — i.e. a later
+ * (or retried) upgrade demonstrably finished the job. Pure + exported for
+ * tests. Compares ALL dot-segments (the canonical `compareVersions` stops at
+ * 3, which would treat 0.31.4.1 == 0.31.4.0); a malformed version fails
+ * closed (keeps warning).
+ */
+export function upgradeErrorResolved(
+  failedToVersion: string,
+  binaryVersion: string,
+  schemaCurrent: boolean,
+): boolean {
+  if (!schemaCurrent) return false;
+  if (typeof failedToVersion !== 'string' || typeof binaryVersion !== 'string') return false;
+  const a = binaryVersion.replace(/^v/, '').split('.');
+  const b = failedToVersion.replace(/^v/, '').split('.');
+  if (a.length === 0 || b.length === 0) return false;
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const da = parseInt(a[i] ?? '0', 10);
+    const db = parseInt(b[i] ?? '0', 10);
+    if (!Number.isFinite(da) || !Number.isFinite(db) || Number.isNaN(da) || Number.isNaN(db)) return false;
+    if (da > db) return true;
+    if (da < db) return false;
+  }
+  return true; // equal → the failed target version is now running
+}
+
+/**
  * v0.42 self_upgrade_health. Surfaces the self-upgrade mode, whether an update
  * is pending (from the cache), and any recent failed auto-upgrade attempts.
  * File-plane only (no DB) so it runs on thin clients. Three-state: warn on
@@ -757,6 +787,13 @@ export async function buildChecks(
   // appended to ~/.gbrain/upgrade-errors.jsonl so we can surface it here
   // with a paste-ready recovery hint. Without this, users end up with
   // half-upgraded brains and no signal.
+  //
+  // #4517: the file is APPEND-ONLY and was never re-verified, so a record
+  // from a long-since-recovered upgrade warned on every doctor run forever.
+  // The warning is now suppressed (downgraded to ok) when the running binary
+  // is at/past the version the failed upgrade was moving to AND the schema
+  // has no pending migrations — both signals doctor already computes. When
+  // either can't be verified (no engine, unreadable version), the warn stays.
   try {
     const home = process.env.HOME || '';
     const errPath = join(home, '.gbrain', 'upgrade-errors.jsonl');
@@ -767,11 +804,26 @@ export async function buildChecks(
           ts: string; phase: string; from_version: string; to_version: string; hint: string;
         };
         const date = latest.ts.slice(0, 10);
-        checks.push({
-          name: 'upgrade_errors',
-          status: 'warn',
-          message: `Post-upgrade failure on ${date} (${latest.from_version} → ${latest.to_version}, phase: ${latest.phase}). Recovery: ${latest.hint}`,
-        });
+        let schemaCurrent = false;
+        if (engine) {
+          try {
+            const v = parseInt((await engine.getConfig('version')) || '0', 10);
+            schemaCurrent = v >= LATEST_VERSION;
+          } catch { /* unverifiable → keep warning */ }
+        }
+        if (upgradeErrorResolved(latest.to_version, GBRAIN_BINARY_VERSION, schemaCurrent)) {
+          checks.push({
+            name: 'upgrade_errors',
+            status: 'ok',
+            message: `Past post-upgrade failure on ${date} (${latest.from_version} → ${latest.to_version}) superseded: binary now ${GBRAIN_BINARY_VERSION}, schema current.`,
+          });
+        } else {
+          checks.push({
+            name: 'upgrade_errors',
+            status: 'warn',
+            message: `Post-upgrade failure on ${date} (${latest.from_version} → ${latest.to_version}, phase: ${latest.phase}). Recovery: ${latest.hint}`,
+          });
+        }
       }
     }
   } catch {
