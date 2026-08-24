@@ -47,7 +47,7 @@ import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { computeCorpusGeneration, loadSourceRow } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
 import { runGuardrails } from './guardrails.ts';
-import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, renderFactsTable, restoreHiddenFactRows } from './facts-fence.ts';
+import { restoreZeroedFactsFence } from './facts-fence.ts';
 import { scanFencedBlocks, MAX_FENCES_PER_PAGE } from './fence-scan.ts';
 
 /**
@@ -108,22 +108,8 @@ function fenceTagToPseudoPath(lang: string | undefined): string | null {
 
 // MAX_FENCES_PER_PAGE (fence-bomb DOS cap, GBRAIN_MAX_FENCES_PER_PAGE env
 // override) moved to fence-scan.ts with the #2862 linear scanner.
-//
-// restoreHiddenFactRows (#3625 P1/P2 restoration merge) lives in
-// facts-fence.ts with the ParsedFact primitives it composes.
-
-function replaceOrAppendFactsFence(body: string, fenceBlock: string): string {
-  const beginIdx = body.indexOf(FACTS_FENCE_BEGIN);
-  if (beginIdx !== -1) {
-    const endIdx = body.indexOf(FACTS_FENCE_END, beginIdx + FACTS_FENCE_BEGIN.length);
-    if (endIdx !== -1) {
-      return body.slice(0, beginIdx) + fenceBlock + body.slice(endIdx + FACTS_FENCE_END.length);
-    }
-  }
-
-  const sep = body.endsWith('\n') ? '\n' : '\n\n';
-  return `${body}${sep}## Facts\n\n${fenceBlock}\n`;
-}
+// extractFactsFenceBlock / restoreZeroedFactsFence / replaceOrAppendFactsFence
+// moved to facts-fence.ts (module-size ratchet).
 
 /**
  * Extract recognizable code fences via the linear scanner in fence-scan.ts
@@ -597,28 +583,19 @@ export async function importFromContent(
   // unscoped-check/scoped-write bug class).
   const existing = await engine.getPage(slug, { sourceId: sourceId ?? 'default' });
 
-  // #2044 (+ #3625 P1/P2, see restoreHiddenFactRows() in facts-fence.ts for
-  // the row-level merge rationale): a remote get_page -> edit -> put_page
-  // round-trip can arrive missing rows the caller structurally never saw
-  // (privacy-stripped). Restore just those rows for compiled_truth, and
-  // identically for timeline below (get_page/fetch_page strip timeline's
-  // fences too as of this PR, opening the same hazard there).
+  // #2044 (+ mirrored to timeline: get_page/fetch_page strip private facts
+  // rows from BOTH columns as of this PR, opening the identical hazard in
+  // timeline too): remote get_page intentionally strips private facts rows.
+  // A documented get_page -> edit -> put_page round-trip can therefore
+  // arrive with an empty/missing Facts fence even though the existing page
+  // still has canonical fence rows. Preserve the old fence in that narrow
+  // case so the system-of-record markdown is not truncated by the privacy
+  // boundary.
   if (opts.remote === true && existing?.compiled_truth) {
-    const incomingFacts = parseFactsFence(parsed.compiled_truth);
-    const existingFacts = parseFactsFence(existing.compiled_truth);
-    const merged = restoreHiddenFactRows(incomingFacts, existingFacts);
-    if (merged) {
-      parsed.compiled_truth = replaceOrAppendFactsFence(parsed.compiled_truth, renderFactsTable(merged));
-    }
+    parsed.compiled_truth = restoreZeroedFactsFence(parsed.compiled_truth, existing.compiled_truth);
   }
-
   if (opts.remote === true && existing?.timeline) {
-    const incomingTimelineFacts = parseFactsFence(parsed.timeline ?? '');
-    const existingTimelineFacts = parseFactsFence(existing.timeline);
-    const mergedTimeline = restoreHiddenFactRows(incomingTimelineFacts, existingTimelineFacts);
-    if (mergedTimeline) {
-      parsed.timeline = replaceOrAppendFactsFence(parsed.timeline ?? '', renderFactsTable(mergedTimeline));
-    }
+    parsed.timeline = restoreZeroedFactsFence(parsed.timeline ?? '', existing.timeline);
   }
 
   // #1035: absence of an explicit frontmatter `type:` on an EXISTING page

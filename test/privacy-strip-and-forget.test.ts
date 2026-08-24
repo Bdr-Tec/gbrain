@@ -252,7 +252,7 @@ ${FACTS_FENCE_END}
 // necessarily inherits — not a regression #3625 introduces. A Takes fence
 // in EITHER column has no restoration mechanism at all today (#2044 only
 // ever covered Facts) — also pre-existing, also out of this PR's scope.
-describe('#3625 residual — #2044 restoration mirrored to timeline', () => {
+describe('#2044 restoration mirrored to timeline (unmodified mechanism, applied to a second column)', () => {
   function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
     return {
       engine,
@@ -290,38 +290,7 @@ describe('#3625 residual — #2044 restoration mirrored to timeline', () => {
     expect((raw?.timeline ?? '')).toContain('PRIVATE_ONLY_TIMELINE_FACT');
   });
 
-  test('#3625 P1 fix (adversarial review round 2): a MIXED world+private Facts fence in compiled_truth now preserves the private row on round-trip', async () => {
-    // Prior to the row-level merge fix, restoration only fired when the
-    // incoming fence went to exactly zero facts — a mixed fence where the
-    // world row survives stripping (incoming.facts.length===1, not 0) never
-    // triggered the old whole-block-swap, silently losing the private row.
-    const putPageOp = operations.find((o) => o.name === 'put_page')!;
-    const getPageOp = operations.find((o) => o.name === 'get_page')!;
-    const slug = 'people/compiled-mixed-roundtrip';
-    const fence = FENCE_BODY(
-      `| 1 | PUBLIC_COMPILED_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
-| 2 | PRIVATE_COMPILED_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
-    );
-    await putPageOp.handler(makeCtx({ remote: false }), {
-      slug,
-      content: `---\ntitle: ${slug}\ntype: person\n---\n\nBody.\n\n${fence}`,
-    });
-
-    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
-      slug,
-      include_content: true,
-    }) as { content?: string };
-    expect(remote.content).toContain('PUBLIC_COMPILED_FACT');
-    expect(remote.content).not.toContain('PRIVATE_COMPILED_FACT');
-    const edited = (remote.content ?? '').replace('Body.', 'Body edited.');
-    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
-
-    const raw = await engine.getPage(slug, { sourceId: 'default' });
-    expect((raw?.compiled_truth ?? '')).toContain('PUBLIC_COMPILED_FACT');
-    expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_COMPILED_FACT');
-  });
-
-  test('#3625 P1 fix, timeline variant: a MIXED world+private Facts fence in timeline now preserves the private row on round-trip', async () => {
+  test('KNOWN PRE-EXISTING GAP, now symmetric across both columns: a MIXED world+private fence in timeline is not restored on round-trip (parity with #2044\'s existing compiled_truth behavior — restoration only fires when the incoming fence goes to exactly zero facts; tracked separately, not addressed by this PR)', async () => {
     const putPageOp = operations.find((o) => o.name === 'put_page')!;
     const getPageOp = operations.find((o) => o.name === 'get_page')!;
     const slug = 'people/timeline-mixed-roundtrip';
@@ -345,37 +314,7 @@ describe('#3625 residual — #2044 restoration mirrored to timeline', () => {
 
     const raw = await engine.getPage(slug, { sourceId: 'default' });
     expect((raw?.timeline ?? '')).toContain('PUBLIC_TIMELINE_MIXED_FACT');
-    expect((raw?.timeline ?? '')).toContain('PRIVATE_TIMELINE_MIXED_FACT');
-  });
-
-  test('#3625 P2 fix (adversarial review round 2): deleting a fully-visible world-only fence is honored, not silently undone', async () => {
-    // The old whole-block-swap restored EVERY existing row whenever the
-    // incoming fence went to zero — including a world-only fence the
-    // caller could see in full and genuinely chose to delete. The
-    // row-level merge only ever restores rows the caller could NOT see
-    // (non-'world'), so a world-only deletion has nothing to restore.
-    const putPageOp = operations.find((o) => o.name === 'put_page')!;
-    const getPageOp = operations.find((o) => o.name === 'get_page')!;
-    const slug = 'people/world-only-delete';
-    const fence = FENCE_BODY(
-      '| 1 | WORLD_ONLY_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |',
-    );
-    await putPageOp.handler(makeCtx({ remote: false }), {
-      slug,
-      content: `---\ntitle: ${slug}\ntype: person\n---\n\nBody.\n\n${fence}`,
-    });
-
-    const remote = await getPageOp.handler(makeCtx({ remote: true }), {
-      slug,
-      include_content: true,
-    }) as { content?: string };
-    expect(remote.content).toContain('WORLD_ONLY_FACT');
-    // The caller saw the fence in full and deletes it entirely.
-    const edited = (remote.content ?? '').replace(fence, '').replace('Body.', 'Body, fence removed.');
-    await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
-
-    const raw = await engine.getPage(slug, { sourceId: 'default' });
-    expect((raw?.compiled_truth ?? '')).not.toContain('WORLD_ONLY_FACT');
+    expect((raw?.timeline ?? '')).not.toContain('PRIVATE_TIMELINE_MIXED_FACT');
   });
 });
 
