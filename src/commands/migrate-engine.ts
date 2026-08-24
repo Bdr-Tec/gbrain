@@ -470,8 +470,11 @@ export async function copyPageToTarget(
     await target.addTag(page.slug, tag, sourceOpts);
   }
 
-  // Copy timeline
-  const timeline = await source.getTimeline(page.slug, sourceOpts);
+  // Copy timeline. #4485: getTimeline defaults to LIMIT 100 (newest-first)
+  // in both engines, so a page with a longer history silently lost everything
+  // past its newest 100 entries — pass an explicit unbounded limit (max int4,
+  // safely above any real per-page timeline).
+  const timeline = await source.getTimeline(page.slug, { ...sourceOpts, limit: 2_147_483_647 });
   for (const entry of timeline) {
     await target.addTimelineEntry(page.slug, {
       date: entry.date,
@@ -1088,7 +1091,18 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
   // warnings and keeps going so the user sees the full picture.
   console.log('\nVerifying target...');
   try {
-    await verifyTarget(targetEngine, sourceStats.page_count);
+    // #4485: compare total timeline counts too — the LIMIT-100 truncation
+    // class of bug (a bounded read inside the copy) is invisible to the
+    // page-count check, so verify pins the row-level tables it can count
+    // cheaply on both sides.
+    let sourceTimelineCount: number | undefined;
+    try {
+      const rows = await sourceEngine.executeRaw<{ count: string }>(
+        'SELECT count(*)::text AS count FROM timeline_entries');
+      sourceTimelineCount = Number(rows[0]?.count ?? NaN);
+      if (!Number.isFinite(sourceTimelineCount)) sourceTimelineCount = undefined;
+    } catch { /* older schema: skip the timeline parity check */ }
+    await verifyTarget(targetEngine, sourceStats.page_count, sourceTimelineCount);
   } catch (e) {
     console.warn(`  Verification could not complete: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -1101,12 +1115,30 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
  * Prints a small table of signals; does not exit. Callers own engine
  * lifecycle.
  */
-async function verifyTarget(engine: BrainEngine, expectedPages: number): Promise<void> {
+async function verifyTarget(engine: BrainEngine, expectedPages: number, expectedTimelineEntries?: number): Promise<void> {
   const stats = await engine.getStats();
   if (stats.page_count === expectedPages) {
     console.log(`  ok  pages: ${stats.page_count} (matches source)`);
   } else {
     console.warn(`  WARN pages: ${stats.page_count} (source had ${expectedPages})`);
+  }
+
+  // #4485: row-level parity for the timeline table — a bounded read inside
+  // the copy (the old LIMIT-100 truncation) passes the page-count check just
+  // fine, so the verify step counts the rows themselves.
+  if (expectedTimelineEntries !== undefined) {
+    try {
+      const rows = await engine.executeRaw<{ count: string }>(
+        'SELECT count(*)::text AS count FROM timeline_entries');
+      const targetTimeline = Number(rows[0]?.count ?? NaN);
+      if (targetTimeline === expectedTimelineEntries) {
+        console.log(`  ok  timeline entries: ${targetTimeline} (matches source)`);
+      } else {
+        console.warn(`  WARN timeline entries: ${targetTimeline} (source had ${expectedTimelineEntries})`);
+      }
+    } catch (e) {
+      console.warn(`  WARN timeline entries: could not count (${e instanceof Error ? e.message : String(e)})`);
+    }
   }
 
   try {
