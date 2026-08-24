@@ -253,9 +253,21 @@ export const INTENT_PATTERN_BANKS = [
 ] as const;
 export type IntentPatternBank = (typeof INTENT_PATTERN_BANKS)[number];
 
-const EXTENSIONS: Record<IntentPatternBank, RegExp[]> = Object.fromEntries(
-  INTENT_PATTERN_BANKS.map((b) => [b, []]),
-) as Record<IntentPatternBank, RegExp[]>;
+/**
+ * Typed builder for an empty per-bank pattern record. A plain
+ * `Object.fromEntries(...) as Record<...>` is rejected by tsc 5.9 (TS2352:
+ * fromEntries returns `{ [k: string]: never[] }`, which doesn't overlap the
+ * literal-keyed Record). The loop below assigns EVERY member of
+ * INTENT_PATTERN_BANKS, so the narrowing assertion on the empty literal is
+ * safe by construction.
+ */
+function emptyBankSet(): Record<IntentPatternBank, RegExp[]> {
+  const out = {} as Record<IntentPatternBank, RegExp[]>;
+  for (const b of INTENT_PATTERN_BANKS) out[b] = [];
+  return out;
+}
+
+const EXTENSIONS: Record<IntentPatternBank, RegExp[]> = emptyBankSet();
 
 // Idempotence cache: recompile only when the raw config value changes
 // (applyIntentPatternConfig runs per search on the hot path).
