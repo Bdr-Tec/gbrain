@@ -65,6 +65,49 @@ describe('query-intent — suggestedModality regex (D6 + D14)', () => {
   }
 });
 
+describe('query-intent — suggestedModality is multilingual (CJK)', () => {
+  // Discrimination: `\b` is an ASCII word boundary, so the English bank can
+  // never match a Han/Kana query. Every positive below returns 'text' against
+  // the English-only patterns.
+  const cjkImagePhrasings = [
+    '找一下那张蓝色羽绒服的照片',   // verb + measure word + 的 + 照片
+    '小花笑的图片',                 // 的 + 图片
+    '那张截图',                     // measure word + 截图
+    '搜索去年的相片',               // verb + 的 + 相片
+    '找一下蓝色羽绒服照片',         // verb-initial, no possessive
+    '这件衣服长什么样',             // "what does X look like"
+    '幫我找那張截圖',               // traditional Chinese
+    '猫の写真を見せて',             // Japanese, particle の
+    '画像を探して',                 // Japanese, verb-final
+  ];
+
+  for (const query of cjkImagePhrasings) {
+    test(`CJK image phrasing: "${query}" → image`, () => {
+      expect(classifyQuery(query).suggestedModality).toBe('image');
+    });
+  }
+
+  const cjkTextPhrasings = [
+    '图书馆的开放时间',   // 图书馆 is not a visual noun
+    '图片压缩算法的原理', // visual noun with no request structure around it
+    '截图',               // bare visual noun — parity with bare "screenshot"
+    '这个项目的进展',
+    '影像科的报告在哪',   // 影像科 is a department, not a request for images
+    '写真集の出版年',     // Japanese, no request verb
+  ];
+
+  for (const query of cjkTextPhrasings) {
+    test(`CJK text phrasing: "${query}" → text`, () => {
+      expect(classifyQuery(query).suggestedModality).toBe('text');
+    });
+  }
+
+  test('English classification is unchanged by the CJK bank', () => {
+    expect(classifyQuery('show me photos of acme').suggestedModality).toBe('image');
+    expect(classifyQuery('who is acme corp').suggestedModality).toBe('text');
+  });
+});
+
 describe('isAmbiguousModalityQuery (Commit 4 prep)', () => {
   // Genuinely ambiguous = visual noun present + reference marker present BUT
   // CROSS_MODAL_PATTERNS doesn't catch it (otherwise regex already classified

@@ -191,6 +191,38 @@ const SALIENCE_ON_PATTERNS = [
 // where text might have worked." False negatives cost nothing (the legacy
 // text path still runs). The LLM-intent escalation in Commit 4 catches
 // genuinely ambiguous phrasings.
+//
+// CJK note: the English patterns are unreachable for Chinese and Japanese
+// queries, because JavaScript's `\b` is an ASCII word boundary.
+// A Han or Kana character is not a `\w` character, so no boundary ever exists
+// beside it — /\b照片\b/ cannot match the string "照片". CJK queries therefore
+// always fell through to 'text' and never reached the embedding_image column,
+// however many image chunks the brain holds.
+//
+// The CJK bank anchors on structure instead of word boundaries: the possessive
+// 的 / の, a picture measure word (张/幅/组), or an action verb next to the
+// visual noun. Conservatism matches the English bank on purpose — a bare
+// visual noun ("截图", like a bare "screenshot") stays 'text', because 'image'
+// modality is exclusive (D9 skips keyword search), so a false positive drops
+// text results rather than merely adding an image search.
+const CJK_VISUAL_NOUNS =
+  '照片|相片|图片|圖片|图像|圖像|截图|截圖|截屏|画面|畫面|影像|图表|圖表|' +
+  '写真|画像|イラスト|スクショ|スクリーンショット';
+
+const CJK_VISUAL_VERBS =
+  '找|搜|搜索|查找|翻出|给我|給我|看看|显示|顯示|展示';
+
+const CROSS_MODAL_PATTERNS_CJK: RegExp[] = [
+  // "蓝色羽绒服的照片" / "小花笑的图片" / "那张截图" / "猫の写真"
+  new RegExp(`(的|の|[张張幅组組])\\s*(${CJK_VISUAL_NOUNS})`),
+  // verb-initial (zh): "找一下蓝色羽绒服照片"
+  new RegExp(`(${CJK_VISUAL_VERBS})[^\\n]{0,20}?(${CJK_VISUAL_NOUNS})`),
+  // verb-final (ja): "写真を見せて" / "画像を探して"
+  new RegExp(`(${CJK_VISUAL_NOUNS})\\s*(を|が|は)?\\s*(見せ|見たい|探し|見つけ)`),
+  // "X 长什么样" — the CJK form of "what does X look like"
+  /长(得)?(什么|甚么|啥)样|長(得)?(什麼|甚麼)樣/,
+];
+
 const CROSS_MODAL_PATTERNS: RegExp[] = [
   /\b(show|find|get|pull)\s+(me\s+)?(the\s+)?(photos?|images?|pictures?|pics?|screenshots?)\b/i,
   /\b(photos?|images?|pictures?|pics?|screenshots?)\s+(of|from|at|with|showing|featuring)\b/i,
@@ -198,6 +230,7 @@ const CROSS_MODAL_PATTERNS: RegExp[] = [
   /\b(whiteboard|diagram|slide|screenshot|infographic|chart)s?\s+(of|from|about|showing)\b/i,
   /\bdiagram\s+(of|for|showing)\b/i,
   /\bvisual(s|ly)?\s+(of|from|about|showing|representation)\b/i,
+  ...CROSS_MODAL_PATTERNS_CJK,
 ];
 
 // v0.36 cross-modal wave (Commit 4 prep): visual nouns that combined with
