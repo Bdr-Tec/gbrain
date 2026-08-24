@@ -139,14 +139,16 @@ describe('Layer B — get_page strip trigger (Codex R2-#5)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// #2044 surfacing-only gap warnings (P1 mixed-fence / P2 world-only-
-// deletion) — data behavior is UNCHANGED; these tests confirm the
-// diagnostic actually fires under the two known gap conditions, and does
-// NOT fire for the unaffected baseline/local-write cases (positive
-// control for the guard, both directions).
+// #2044 surfacing-only P1 gap warning (mixed world+private fence — the
+// hidden row is silently dropped because restoration only fires when the
+// incoming fence goes to exactly zero facts) — data behavior is
+// UNCHANGED; these tests confirm the diagnostic actually fires under the
+// gap condition, and does NOT fire for the unaffected baseline/local-write
+// cases (positive control for the guard, both directions). The sibling P2
+// gap (world-only deletion silently undone) is a separate PR.
 // ─────────────────────────────────────────────────────────────────
 
-describe('#2044 gap warnings (console.warn diagnostics, no behavior change)', () => {
+describe('#2044 P1 gap warning (console.warn diagnostic, no behavior change)', () => {
   function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
     return {
       engine,
@@ -191,42 +193,7 @@ describe('#2044 gap warnings (console.warn diagnostics, no behavior change)', ()
     }
   });
 
-  test('P2 gap: deleting a world-only fence — warns that the deletion was undone, and the row IS still restored (unchanged pre-existing behavior)', async () => {
-    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const putPageOp = operations.find((o) => o.name === 'put_page')!;
-      const getPageOp = operations.find((o) => o.name === 'get_page')!;
-      const slug = 'people/p2-worldonly-warn';
-      const fence = FENCE_BODY(
-        '| 1 | WORLD_ONLY_P2_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |',
-      );
-      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
-
-      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
-        slug,
-        include_content: true,
-      }) as { content?: string };
-      const body = remote.content ?? '';
-      const factsHeadingIdx = body.indexOf('## Facts');
-      const fenceEndIdx = body.indexOf(FACTS_FENCE_END) + FACTS_FENCE_END.length;
-      const edited = body.slice(0, factsHeadingIdx).replace('Some text.', 'Some text, fence removed.')
-        + body.slice(fenceEndIdx);
-      warnSpy.mockClear();
-      await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
-
-      const warnedRestoration = warnSpy.mock.calls.some(
-        (c) => String(c[0]).includes('#2044 restoration') && String(c[0]).includes(slug),
-      );
-      expect(warnedRestoration).toBe(true);
-      // Unchanged pre-existing behavior: the deletion is still undone.
-      const raw = await engine.getPage(slug, { sourceId: 'default' });
-      expect((raw?.compiled_truth ?? '')).toContain('WORLD_ONLY_P2_FACT');
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  test('no warning: an all-private fence round-trip (no world rows involved) does not fire the P2 warning', async () => {
+  test('no warning: an all-private fence round-trip (incoming goes to exactly zero, restoration fires normally) does not fire the gap warning', async () => {
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const putPageOp = operations.find((o) => o.name === 'put_page')!;
@@ -255,7 +222,7 @@ describe('#2044 gap warnings (console.warn diagnostics, no behavior change)', ()
     }
   });
 
-  test('no warning: a normal local (non-remote) edit never triggers either diagnostic', async () => {
+  test('no warning: a normal local (non-remote) edit never triggers the diagnostic', async () => {
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const putPageOp = operations.find((o) => o.name === 'put_page')!;

@@ -47,7 +47,7 @@ import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { computeCorpusGeneration, loadSourceRow } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
 import { runGuardrails } from './guardrails.ts';
-import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, factsRestorationWarning } from './facts-fence.ts';
+import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, factsGapWarning } from './facts-fence.ts';
 import { scanFencedBlocks, MAX_FENCES_PER_PAGE } from './fence-scan.ts';
 
 /**
@@ -614,8 +614,8 @@ export async function importFromContent(
     const restored = incomingFacts.facts.length === 0 && incomingFacts.warnings.length === 0
       && existingFacts.warnings.length === 0 && existingFacts.facts.length > 0 && !!existingFenceBlock;
     if (restored) parsed.compiled_truth = replaceOrAppendFactsFence(parsed.compiled_truth, existingFenceBlock as string);
-    // Surfacing-only: see factsRestorationWarning() in facts-fence.ts. No behavior change.
-    const gapWarning = factsRestorationWarning(slug, incomingFacts, existingFacts, restored);
+    // Surfacing-only: see factsGapWarning() in facts-fence.ts. No behavior change.
+    const gapWarning = factsGapWarning(slug, incomingFacts, existingFacts, restored);
     if (gapWarning) console.warn(gapWarning);
   }
 

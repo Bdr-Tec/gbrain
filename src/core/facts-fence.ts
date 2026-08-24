@@ -345,39 +345,30 @@ export function renderFactsTable(facts: ParsedFact[]): string {
 }
 
 /**
- * Surfacing-only diagnostic for #2044's two known gaps in the compiled_truth
- * restoration guard (import-file.ts). Returns a warning string, or null if
- * nothing to flag. Pure and side-effect-free — the caller decides how to
- * surface it (console.warn today); no restoration behavior is changed here.
+ * Surfacing-only diagnostic for #2044's compiled_truth restoration guard
+ * (import-file.ts): the restoration only fires when the incoming fence
+ * went to exactly zero facts. A fence that still has SOME rows (e.g. a
+ * mixed world+private fence where only the visible world row survives
+ * stripping) never triggers it -- non-'world' rows present before the
+ * write that are missing from the incoming write are silently dropped,
+ * even though the caller structurally could never have seen them.
  *
- * - `restored` case: the whole-block restore just re-appended EVERY old
- *   row, including any the caller could see ('world'-visible) and may have
- *   genuinely, intentionally deleted in full. It can't distinguish that
- *   from "caller never saw this row" -- flag when a restored row was
- *   'world'-visible.
- * - not-`restored` case: the restoration only fires when the incoming
- *   fence went to exactly zero facts. A fence that still has SOME rows
- *   (e.g. a mixed world+private fence where only the visible world row
- *   survives stripping) never triggers it -- flag when non-'world' rows
- *   present before the write are missing from the incoming write.
+ * Returns a warning string, or null if nothing to flag. Pure and
+ * side-effect-free — the caller decides how to surface it (console.warn
+ * today); no restoration behavior is changed here. Only applies when
+ * `restored` is false (the restoration guard did not fire) — see #4553's
+ * sibling PR for the `restored === true` gap (a fully-visible deletion
+ * silently undone).
  */
-export function factsRestorationWarning(
+export function factsGapWarning(
   slug: string,
   incoming: { facts: ParsedFact[]; warnings: string[] },
   existing: { facts: ParsedFact[]; warnings: string[] },
   restored: boolean,
 ): string | null {
+  if (restored) return null;
   if (incoming.warnings.length > 0 || existing.warnings.length > 0) return null;
   if (existing.facts.length === 0) return null;
-
-  if (restored) {
-    const worldRows = existing.facts.filter((f) => f.visibility === 'world').length;
-    if (worldRows === 0) return null;
-    return `[gbrain] #2044 restoration on ${slug}: a remote write emptied the Facts fence and ` +
-      `${existing.facts.length} old row(s) were restored, including ${worldRows} 'world'-visible ` +
-      `row(s) the caller could have seen and may have genuinely deleted. If so, that deletion has ` +
-      `been undone -- verify.`;
-  }
 
   const incomingRowNums = new Set(incoming.facts.map((f) => f.rowNum));
   const dropped = existing.facts.filter(
