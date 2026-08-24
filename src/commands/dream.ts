@@ -576,7 +576,7 @@ async function runDrain(
   if (opts.dryRun) {
     const remaining = await countExtractAtomsBacklog(engine, extractionSourceId);
     if (opts.json) {
-      console.log(JSON.stringify({ phase: 'extract_atoms', status: 'ok', dry_run: true, extracted: 0, skipped: 0, remaining, batches: 0, stopped: 'window' }, null, 2));
+      console.log(JSON.stringify({ phase: 'extract_atoms', status: 'ok', dry_run: true, extracted: 0, skipped: 0, remaining, batches: 0, stopped: 'window', failure_count: 0, last_error: null }, null, 2));
     } else {
       console.log(`[drain] dry-run: ${remaining ?? '?'} page(s) eligible for atom extraction (no work done)`);
     }
@@ -611,6 +611,16 @@ async function runDrain(
     throw e;
   }
 
+  // #4539: surface WHY the drain underperformed. Pre-fix the phase's
+  // failures[] was collapsed to bare counts inside the drain adapter, so a
+  // run that failed on every item printed only `stopped: no_progress` and the
+  // operator had to re-run the phase by hand to see the provider/parse error.
+  // Stderr (not stdout): progress/diagnostics never pollute the data stream.
+  if (result.failure_count > 0) {
+    process.stderr.write(
+      `[drain] ${result.failure_count} item failure(s)${result.last_error ? `; last error: ${result.last_error}` : ''}\n`,
+    );
+  }
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
