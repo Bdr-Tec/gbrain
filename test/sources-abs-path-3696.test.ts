@@ -135,3 +135,42 @@ describe('#3696 residual — a relative --clone-dir is absolutized before use', 
     }
   });
 });
+
+describe('#3696 residual — a relative --kind github --dir is absolutized before use', () => {
+  test('relative github.dir is resolved against cwd before INSERT', async () => {
+    // Path C (--kind github) never went through the cloneDir/localPath
+    // absolutization above — `finalPath = opts.github.dir` was used verbatim
+    // for both mkdirSync and the local_path INSERT, so the same phantom-path
+    // class #3696 fixed for --path/--clone-dir survived through --dir.
+    const parent = mkdtempSync(join(tmpdir(), 'gbrain-3696-ghdir-'));
+    const origCwd = process.cwd();
+    try {
+      process.chdir(parent);
+      const relDir = 'clones/gh-rel-3696';
+      expect(isAbsolute(relDir)).toBe(false);
+      const expected = resolve(relDir);
+
+      await addSource(engine, {
+        id: 'gh-rel-3696',
+        github: {
+          tokenEnv: 'GH_TOKEN',
+          handle: '',
+          scope: 'auto',
+          repos: [],
+          dir: relDir,
+          involvement: true,
+        },
+      });
+
+      const rows = await engine.executeRaw<{ local_path: string }>(
+        `SELECT local_path FROM sources WHERE id = 'gh-rel-3696'`,
+      );
+      expect(rows.length).toBe(1);
+      expect(isAbsolute(rows[0]!.local_path)).toBe(true);
+      expect(rows[0]!.local_path).toBe(expected);
+    } finally {
+      process.chdir(origCwd);
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+});
