@@ -239,3 +239,97 @@ describe('confineTranscriptPath [S3#8]', () => {
     expect(confineTranscriptPath(dirAsFile, { root })).toEqual({ ok: false, reason: 'not_file' });
   });
 });
+
+describe('confineTranscriptPath — cross-OS WSL translation (#4522)', () => {
+  /** Simulated automount tree: <tmp>/mnt plays /mnt; c/Users/u/.claude/projects holds the transcript. */
+  function wslFixture(): { mountRoot: string; winPath: string; translated: string } {
+    const base = tdir();
+    const mountRoot = join(base, 'mnt');
+    const proj = join(mountRoot, 'c', 'Users', 'u', '.claude', 'projects', 'proj-a');
+    mkdirSync(proj, { recursive: true });
+    const translated = join(proj, 'sess.jsonl');
+    writeFileSync(translated, '{}\n');
+    return { mountRoot, winPath: 'C:\\Users\\u\\.claude\\projects\\proj-a\\sess.jsonl', translated };
+  }
+
+  test('Windows drive literal translates and confines to its own .claude/projects tree', () => {
+    const { mountRoot, winPath, translated } = wslFixture();
+    // No explicit root: the default (WSL-side $HOME/.claude/projects) cannot
+    // contain the Windows-home transcript — the translated tree must.
+    const r = confineTranscriptPath(winPath, { wslMountRoot: mountRoot });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.path).toBe(translated);
+      expect(r.size).toBeGreaterThan(0);
+    }
+  });
+
+  test('forward-slash drive literal translates too', () => {
+    const { mountRoot, translated } = wslFixture();
+    const r = confineTranscriptPath('C:/Users/u/.claude/projects/proj-a/sess.jsonl', {
+      wslMountRoot: mountRoot,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.path).toBe(translated);
+  });
+
+  test('a Windows-literal containment root (CLAUDE_CONFIG_DIR shape, #4324) translates alongside', () => {
+    const { mountRoot, winPath } = wslFixture();
+    const r = confineTranscriptPath(winPath, {
+      wslMountRoot: mountRoot,
+      root: 'C:\\Users\\u\\.claude\\projects',
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test('rejects: translated path with no .claude/projects ancestor', () => {
+    const { mountRoot } = wslFixture();
+    const evil = join(mountRoot, 'c', 'evil');
+    mkdirSync(evil, { recursive: true });
+    writeFileSync(join(evil, 'secrets.jsonl'), '{}\n');
+    expect(confineTranscriptPath('C:\\evil\\secrets.jsonl', { wslMountRoot: mountRoot })).toEqual({
+      ok: false,
+      reason: 'outside_projects_dir',
+    });
+  });
+
+  test('rejects: .. traversal escaping the derived projects root', () => {
+    const { mountRoot } = wslFixture();
+    // Resolves to …/.claude/secret.jsonl — outside the projects tree.
+    writeFileSync(join(mountRoot, 'c', 'Users', 'u', '.claude', 'secret.jsonl'), '{}\n');
+    const r = confineTranscriptPath('C:\\Users\\u\\.claude\\projects\\..\\secret.jsonl', {
+      wslMountRoot: mountRoot,
+    });
+    expect(r).toEqual({ ok: false, reason: 'outside_projects_dir' });
+  });
+
+  test('rejects: explicit root is honored strictly — no derived-tree fallback', () => {
+    const { mountRoot, winPath } = wslFixture();
+    const pinned = join(tmpdir(), `gb-pinned-${process.pid}`);
+    mkdirSync(pinned, { recursive: true });
+    try {
+      expect(confineTranscriptPath(winPath, { wslMountRoot: mountRoot, root: pinned })).toEqual({
+        ok: false,
+        reason: 'outside_projects_dir',
+      });
+    } finally {
+      rmSync(pinned, { recursive: true, force: true });
+    }
+  });
+
+  test('non-WSL host (mountRoot null): drive literal stays unreadable, as before', () => {
+    expect(
+      confineTranscriptPath('C:\\Users\\u\\.claude\\projects\\p\\s.jsonl', { wslMountRoot: null }),
+    ).toEqual({ ok: false, reason: 'unreadable' });
+  });
+
+  test('translated symlink is still seen and rejected', () => {
+    const { mountRoot, translated } = wslFixture();
+    const dir = join(mountRoot, 'c', 'Users', 'u', '.claude', 'projects', 'proj-a');
+    symlinkSync(translated, join(dir, 'link.jsonl'));
+    const r = confineTranscriptPath('C:\\Users\\u\\.claude\\projects\\proj-a\\link.jsonl', {
+      wslMountRoot: mountRoot,
+    });
+    expect(r).toEqual({ ok: false, reason: 'symlink' });
+  });
+});
