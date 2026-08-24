@@ -39,7 +39,7 @@ import {
 import { loadConfigWithEngine } from '../config.ts';
 import { dedupResults } from './dedup.ts';
 import { applyReranker } from './rerank.ts';
-import { autoDetectDetail, classifyQuery, isAmbiguousModalityQuery } from './query-intent.ts';
+import { autoDetectDetail, classifyQueryWithBrainPatterns, isAmbiguousModalityQuery } from './query-intent.ts';
 import { isTitlePhraseMatch } from './title-match.ts';
 import { normalizeAlias } from './alias-normalize.ts';
 import { stampEvidence, markKeywordHits } from './evidence.ts';
@@ -1199,10 +1199,10 @@ export async function hybridSearch(
 
   // v0.32.x search-lite: classify intent once up front. Drives BOTH the
   // legacy auto-detail / salience / recency suggestions AND the new
-  // weight-adjustment path. Intent weighting is on by default and can
-  // be disabled via `opts.intentWeighting = false`. The mode bundle
-  // supplies the default when neither per-call nor per-key sets it.
-  const suggestions = classifyQuery(query);
+  // weight-adjustment path. Intent weighting is on by default (off via
+  // `opts.intentWeighting = false`; mode bundle supplies the default).
+  // #4415: merges the brain's `search.intent_patterns` config over the banks.
+  const suggestions = await classifyQueryWithBrainPatterns(engine, query);
   const intentWeightingOn = resolvedMode.intentWeighting;
   const intentWeights = intentWeightingOn
     ? weightsForIntent(suggestions.intent)

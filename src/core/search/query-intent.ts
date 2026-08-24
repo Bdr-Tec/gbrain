@@ -21,7 +21,15 @@
  * "who is X right now" → suggestedRecency='on' even though "who is" is a
  * canonical pattern.
  *
- * Pure module. No DB, no LLM, no async. Tested in test/query-intent.test.ts.
+ * Pure module. No DB, no LLM, no async — with ONE seam: the shipped banks
+ * are English-only regex, so a brain queried in another language never fired
+ * the recency/salience stages at all (#4415). `applyIntentPatternConfig`
+ * merges per-brain pattern extensions (the `search.intent_patterns` config
+ * key, same operator-extension shape as `emotional_weight.high_tags`) over
+ * the shipped banks; `classifyQueryWithBrainPatterns` is the async
+ * config-loading wrapper hybridSearch calls. classifyQuery itself stays
+ * sync + deterministic for a given applied config.
+ * Tested in test/query-intent.test.ts + test/query-intent-config.test.ts.
  */
 
 export type QueryIntent = 'entity' | 'temporal' | 'event' | 'concept' | 'general';
@@ -221,12 +229,125 @@ const AMBIGUOUS_REFERENCE_MARKERS: RegExp[] = [
 ];
 
 // ─────────────────────────────────────────────────────────
+// #4415 — per-brain pattern extensions (search.intent_patterns)
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Every shipped bank above is English-only `\b`-anchored regex, so a brain
+ * queried in another language classified 'general' with recency AND salience
+ * permanently 'off' — the ranking stages never executed at all. The
+ * `search.intent_patterns` config key (same operator-extension shape as
+ * `emotional_weight.high_tags`) merges per-brain patterns OVER the shipped
+ * banks: a JSON object of bank-name → array of regex sources, e.g.
+ *
+ *   {"recency_on": ["לאחרונה", "מה חדש"], "strong_recency": ["היום"]}
+ *
+ * Sources compile with the 'iu' flags ('i' fallback when 'u' rejects the
+ * source). Extensions only ever ADD matches — the shipped banks stay in
+ * force, and a bad config (unparseable JSON, unknown bank, invalid regex)
+ * fail-opens to the shipped behavior per entry.
+ */
+export const INTENT_PATTERN_BANKS = [
+  'temporal', 'event', 'entity', 'full_context', 'canonical',
+  'strong_recency', 'recency_on', 'salience_on', 'explicit_temporal_bound',
+] as const;
+export type IntentPatternBank = (typeof INTENT_PATTERN_BANKS)[number];
+
+const EXTENSIONS: Record<IntentPatternBank, RegExp[]> = Object.fromEntries(
+  INTENT_PATTERN_BANKS.map((b) => [b, []]),
+) as Record<IntentPatternBank, RegExp[]>;
+
+// Idempotence cache: recompile only when the raw config value changes
+// (applyIntentPatternConfig runs per search on the hot path).
+let appliedRaw: string | null | undefined;
+let appliedErrors: string[] = [];
+
+/**
+ * Compile + install the `search.intent_patterns` config value (raw string
+ * from engine.getConfig; null/undefined/'' clears the extensions). Returns
+ * the per-entry compile errors (empty = fully applied). Never throws.
+ * Process-wide state, matching the one-brain-per-process deployment model.
+ */
+export function applyIntentPatternConfig(raw: string | null | undefined): string[] {
+  if (raw === appliedRaw) return appliedErrors;
+  appliedRaw = raw;
+  appliedErrors = [];
+  for (const bank of INTENT_PATTERN_BANKS) EXTENSIONS[bank].length = 0;
+  if (!raw) return appliedErrors;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    appliedErrors.push(`search.intent_patterns is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+    return appliedErrors;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    appliedErrors.push('search.intent_patterns must be a JSON object of bank-name → array of regex sources');
+    return appliedErrors;
+  }
+  for (const [bank, sources] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!(INTENT_PATTERN_BANKS as readonly string[]).includes(bank)) {
+      appliedErrors.push(`unknown pattern bank '${bank}' (valid: ${INTENT_PATTERN_BANKS.join(', ')})`);
+      continue;
+    }
+    if (!Array.isArray(sources)) {
+      appliedErrors.push(`bank '${bank}' must be an array of regex sources`);
+      continue;
+    }
+    for (const src of sources) {
+      if (typeof src !== 'string' || src.length === 0) {
+        appliedErrors.push(`bank '${bank}': entries must be non-empty strings`);
+        continue;
+      }
+      try {
+        EXTENSIONS[bank as IntentPatternBank].push(new RegExp(src, 'iu'));
+      } catch {
+        try {
+          EXTENSIONS[bank as IntentPatternBank].push(new RegExp(src, 'i'));
+        } catch (e) {
+          appliedErrors.push(`bank '${bank}': invalid regex '${src}': ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+  }
+  return appliedErrors;
+}
+
+/** Test seam: reset the process-wide extension state. */
+export function clearIntentPatternConfigForTests(): void {
+  appliedRaw = undefined;
+  appliedErrors = [];
+  for (const bank of INTENT_PATTERN_BANKS) EXTENSIONS[bank].length = 0;
+}
+
+/**
+ * classifyQuery with the brain's `search.intent_patterns` merged over the
+ * shipped banks — the wrapper hybridSearch calls (it has the engine; the
+ * classifier stays sync). Fail-open: an unreadable config leaves the shipped
+ * banks in force.
+ */
+export async function classifyQueryWithBrainPatterns(
+  engine: { getConfig(key: string): Promise<string | null> },
+  query: string,
+): Promise<QuerySuggestions> {
+  try {
+    applyIntentPatternConfig(await engine.getConfig('search.intent_patterns'));
+  } catch { /* fail-open: shipped banks */ }
+  return classifyQuery(query);
+}
+
+// ─────────────────────────────────────────────────────────
 // Classifier
 // ─────────────────────────────────────────────────────────
 
 function matches(patterns: RegExp[], q: string): boolean {
   for (const re of patterns) if (re.test(q)) return true;
   return false;
+}
+
+/** Shipped bank OR the brain's configured extension bank (#4415). */
+function matchesBank(bank: IntentPatternBank, shipped: RegExp[], q: string): boolean {
+  return matches(shipped, q) || matches(EXTENSIONS[bank], q);
 }
 
 /**
@@ -249,11 +370,11 @@ export function classifyQuery(query: string): QuerySuggestions {
   const intent = classifyQueryIntent(query);
   const suggestedDetail = intentToDetail(intent);
 
-  const hasCanonical = matches(CANONICAL_PATTERNS, query);
-  const hasTemporalBound = matches(EXPLICIT_TEMPORAL_BOUND_PATTERNS, query);
-  const hasStrongRecency = matches(STRONG_RECENCY_PATTERNS, query);
-  const hasRecencyOn = matches(RECENCY_ON_PATTERNS, query);
-  const hasSalienceOn = matches(SALIENCE_ON_PATTERNS, query);
+  const hasCanonical = matchesBank('canonical', CANONICAL_PATTERNS, query);
+  const hasTemporalBound = matchesBank('explicit_temporal_bound', EXPLICIT_TEMPORAL_BOUND_PATTERNS, query);
+  const hasStrongRecency = matchesBank('strong_recency', STRONG_RECENCY_PATTERNS, query);
+  const hasRecencyOn = matchesBank('recency_on', RECENCY_ON_PATTERNS, query);
+  const hasSalienceOn = matchesBank('salience_on', SALIENCE_ON_PATTERNS, query);
 
   // Recency axis
   let suggestedRecency: RecencyMode;
@@ -319,16 +440,16 @@ export function isAmbiguousModalityQuery(query: string): boolean {
 
 /** v0.29.0 intent type. Preserved verbatim for back-compat. */
 export function classifyQueryIntent(query: string): QueryIntent {
-  if (matches(FULL_CONTEXT_PATTERNS, query)) return 'temporal';
-  if (matches(TEMPORAL_PATTERNS, query)) return 'temporal';
-  if (matches(EVENT_PATTERNS, query)) return 'event';
+  if (matchesBank('full_context', FULL_CONTEXT_PATTERNS, query)) return 'temporal';
+  if (matchesBank('temporal', TEMPORAL_PATTERNS, query)) return 'temporal';
+  if (matchesBank('event', EVENT_PATTERNS, query)) return 'event';
   // v0.46.15 (Cat 13): concept BEFORE entity — definitional paraphrases
   // ("What is the ownership economy?") previously classified entity and got
   // the keyword tilt, making hybrid LOSE to its own vector arm on
   // paraphrase queries. Full-context/temporal/event keep their queries;
   // only entity/general-bound queries can re-route here.
   if (isConceptShapedQuery(query)) return 'concept';
-  if (matches(ENTITY_PATTERNS, query)) return 'entity';
+  if (matchesBank('entity', ENTITY_PATTERNS, query)) return 'entity';
   return 'general';
 }
 

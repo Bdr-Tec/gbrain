@@ -1141,6 +1141,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'search.image_query.max_bytes',
   'search.reranker.enabled',
   'search.track_retrieval',
+  // #4415: per-brain query-intent pattern extensions (JSON bank→regex[]),
+  // merged over the shipped banks in src/core/search/query-intent.ts.
+  'search.intent_patterns',
   // Models tier system (v0.31.12)
   'models.default',
   'models.tier.utility',

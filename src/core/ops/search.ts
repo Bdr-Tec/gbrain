@@ -144,6 +144,32 @@ const search: Operation = {
     types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
     // #3800: subagent token economy — per-call snippet cap.
     snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
+    // #4398: per-call source scope, mirroring `query` — MCP clients passed it
+    // here, got 'unknown parameter ignored', and read UNSCOPED results.
+    source_id: {
+      type: 'string',
+      description:
+        "Scope search to a single source. Defaults to OperationContext.sourceId (set from CLI --source / GBRAIN_SOURCE / .gbrain-source dotfile). Pass '__all__' to span every source for trusted local callers; for remote callers '__all__' spans only your granted sources.",
+    },
+    // #4415: explicit ranking-axis overrides (the same knobs `query` has had
+    // since v0.29.1). The auto-detect banks are English regex, so on a
+    // non-English brain the recency/salience stages never fire — these flags
+    // (CLI: --salience / --recency) are the per-call override; the
+    // search.intent_patterns config is the per-brain fix.
+    salience: {
+      type: 'string',
+      enum: ['off', 'on', 'strong'],
+      description:
+        "Salience boost (emotional_weight + take_count, no time component): 'off' | 'on' | 'strong'. " +
+        'Omit and gbrain auto-detects from query text. Independent of `recency`.',
+    },
+    recency: {
+      type: 'string',
+      enum: ['off', 'on', 'strong'],
+      description:
+        "Recency boost (per-prefix age decay, no mattering signal): 'off' | 'on' | 'strong'. " +
+        'Omit and gbrain auto-detects. Independent of `salience`. Ignored on the keyword-only opt-out path.',
+    },
   },
   handler: async (ctx, p) => {
     const startedAt = Date.now();
@@ -154,8 +180,12 @@ const search: Operation = {
     const types = normalizeTypesParam(p.types);
     // #3800: snippet cap (param > subagent config default > full text).
     const snippetCap = await resolveSnippetCap(ctx, p);
-    // #2561: unqualified trusted-local search spans federated sources.
-    const scope = federatedSearchScope(ctx);
+    // #4398: explicit per-call source_id wins over ctx.sourceId, resolved
+    // through the single trust+grant resolver (resolveRequestedScope inside
+    // federatedSearchScope) — out-of-grant ids throw permission_denied, and
+    // #2561's unqualified trusted-local federated span is unchanged.
+    const sourceIdParam = typeof p.source_id === 'string' ? p.source_id : undefined;
+    const scope = federatedSearchScope(ctx, sourceIdParam);
     // #4352 — untrusted callers never see `visibility: private` pages
     // (config-gated; trusted local CLI unchanged).
     const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
@@ -204,6 +234,9 @@ const search: Operation = {
       ...(types ? { types } : {}),
       ...scope,
       ...(perCallMode ? { mode: perCallMode } : {}),
+      // #4415: agent-explicit recency + salience (same posture as `query`).
+      salience: p.salience as 'off' | 'on' | 'strong' | undefined,
+      recency: p.recency as 'off' | 'on' | 'strong' | undefined,
       onMeta: (m) => { capturedMeta = m; },
     });
     stampDeepResearchIds(results);
