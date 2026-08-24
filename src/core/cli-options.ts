@@ -102,8 +102,13 @@ export const TIMEOUT_OWNING_COMMANDS = new Set(['sync', 'remote']);
  * parse it themselves, and the blanket claim starved them: `extract
  * --explain timeline` fell through to the WRITE-pass extraction instead of
  * the explain view.
+ *
+ * wave-g: `call` claims it too — `gbrain call <op>` maps leftover argv into
+ * op params, so a handed-back --explain would surface as an
+ * unknown-parameter error instead of being ignored (the pre-#4541 global
+ * behavior for `call query --explain`).
  */
-export const EXPLAIN_CLAIMING_COMMANDS = new Set(['query', 'search', 'ask']);
+export const EXPLAIN_CLAIMING_COMMANDS = new Set(['query', 'search', 'ask', 'call']);
 
 export function parseGlobalFlags(argv: string[]): { cliOpts: CliOptions; rest: string[] } {
   const cliOpts: CliOptions = { ...DEFAULT_CLI_OPTIONS };

@@ -120,6 +120,15 @@ describe('parseGlobalFlags', () => {
     expect(r.cliOpts.explain).toBe(true);
     expect(r.rest).toEqual(['ask', 'who is alice-example']);
   });
+
+  test('wave-g: call claims --explain — never handed into op positional args', () => {
+    // `gbrain call <op>` maps leftover argv into op params; a handed-back
+    // --explain would surface as an unknown-parameter error instead of
+    // being ignored (the pre-#4541 global behavior).
+    const r = parseGlobalFlags(['call', 'query', '--explain']);
+    expect(r.cliOpts.explain).toBe(true);
+    expect(r.rest).toEqual(['call', 'query']);
+  });
 });
 
 describe('getCliOptions / setCliOptions singleton', () => {
