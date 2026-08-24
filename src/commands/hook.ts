@@ -72,7 +72,7 @@ import {
   HARVEST_RECEIPT_SUFFIX,
   segmentHash,
 } from '../core/context/corpus-segments.ts';
-import { appendSessionReceipt, resolveMemorableBin } from '../core/context/hook-heartbeat.ts';
+import { appendSessionReceipt, priorRelayFailure, resolveMemorableBin } from '../core/context/hook-heartbeat.ts';
 import {
   heartbeatPath,
   hookStatusPath,
@@ -1530,9 +1530,9 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           try {
             // `recorded`: an identical resumed session writes no receipt.
             if (recorded) {
-              // Enabled-but-not-installed is real: the config key gets set
-              // before `npm i -g memorable-cli`. Name it in the heartbeat
-              // rather than spawning into an ENOENT nobody ever sees.
+              // gbrain verified the binary existed, never that it WORKED.
+              const priorFail = await priorRelayFailure(); if (priorFail) degrade(priorFail);
+              // Enabled-but-not-installed is named, not spawned into an ENOENT.
               const bin = resolveMemorableBin();
               if (!bin) degrade('memorable_cli_missing');
               else {

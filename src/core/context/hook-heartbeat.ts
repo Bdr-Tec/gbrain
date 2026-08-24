@@ -212,6 +212,60 @@ export async function sessionReceiptsPath(): Promise<string> {
   return join(await hooksTelemetryDir(), 'session-receipts.jsonl');
 }
 
+/**
+ * Where the relay child reports what it did.
+ *
+ * The relay is spawned detached with stdio ignored, which is deliberate — a
+ * session-end hook must never block on, or fail because of, an external tool.
+ * But the consequence was that gbrain only ever verified the binary EXISTS. A
+ * `memorable record` that exited non-zero — refused consent, failed
+ * extraction, API down, malformed receipt — was indistinguishable from
+ * success, so `gbrain doctor` could report a healthy relay indefinitely while
+ * nothing had been recorded for weeks.
+ *
+ * The child writes its own outcome here instead. gbrain reads the PREVIOUS
+ * run's line at the next session end, so nothing is ever waited on and the
+ * fire-and-forget contract is untouched — a failure simply becomes visible one
+ * session later rather than never.
+ */
+export async function relayResultsPath(): Promise<string> {
+  return join(await hooksTelemetryDir(), 'memorable-relay.jsonl');
+}
+
+export interface RelayResult {
+  ts: string;
+  session_id: string;
+  ok: boolean;
+  /** Short machine-readable cause when ok is false. Never free text from a
+   * subprocess: this reaches the heartbeat, which is counters and reasons. */
+  reason?: string;
+}
+
+/** The heartbeat reason for the PREVIOUS relay run, or null when it succeeded
+ * or never reported. Nothing is waited on here — the answer describes the last
+ * run, so a failed relay becomes visible one session later rather than never,
+ * and the fire-and-forget contract is untouched. */
+export async function priorRelayFailure(): Promise<string | null> {
+  const last = await lastRelayResult();
+  return last && !last.ok ? `memorable_relay_${last.reason ?? 'failed'}` : null;
+}
+
+/** The newest relay outcome, or null when the child has never reported. Never
+ * throws: a missing or corrupt file means "nothing to say", never a broken
+ * session end. */
+export async function lastRelayResult(): Promise<RelayResult | null> {
+  try {
+    const lines = readFileSync(await relayResultsPath(), 'utf8').split('\n').filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const e = JSON.parse(lines[i]!) as RelayResult;
+        if (typeof e.ok === 'boolean') return e;
+      } catch { /* torn line — keep looking back */ }
+    }
+  } catch { /* never reported */ }
+  return null;
+}
+
 const RECEIPTS_COMPACT_CHECK_BYTES = 2 * SESSION_RECEIPTS_MAX_LINES * 80;
 
 /**

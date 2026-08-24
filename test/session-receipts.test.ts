@@ -6,12 +6,14 @@
 import { describe, test, expect } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
 import { statSync } from 'node:fs';
 import {
   appendSessionReceipt,
   readSessionReceiptsTail,
+  priorRelayFailure,
+  relayResultsPath,
   resolveMemorableBin,
   sessionReceiptsPath,
 } from '../src/core/context/hook-heartbeat.ts';
@@ -276,6 +278,62 @@ describe('resolveMemorableBin rejects what it cannot actually run', () => {
       });
       await withEnv({ MEMORABLE_BIN: bin }, async () => {
         expect(resolveMemorableBin()).toBe(bin);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('a failed relay becomes visible instead of silent', () => {
+  /** The relay is spawned detached with stdio ignored, so gbrain could only
+   * ever verify the binary EXISTED. A `memorable record` that refused consent
+   * or hit a dead API was indistinguishable from success, and `gbrain doctor`
+   * could report a healthy relay while nothing had been recorded for weeks.
+   * The child reports its own outcome; gbrain reads the PREVIOUS one, so
+   * nothing is waited on and fire-and-forget is intact. */
+  async function seed(home: string, lines: string[]): Promise<void> {
+    const p = await relayResultsPath();
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, lines.join('\n') + (lines.length ? '\n' : ''), { mode: 0o600 });
+  }
+  const rec = (o: Record<string, unknown>) => JSON.stringify({ ts: 't', session_id: 's', ...o });
+
+  test('silence when the relay has never reported, or last succeeded', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        expect(await priorRelayFailure()).toBe(null);
+        await seed(home, [rec({ ok: true })]);
+        expect(await priorRelayFailure()).toBe(null);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('a refusal surfaces as a heartbeat reason carrying its cause', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        await seed(home, [rec({ ok: true }), rec({ ok: false, reason: 'consent' })]);
+        expect(await priorRelayFailure()).toBe('memorable_relay_consent');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('a failure with no cause still surfaces, and a torn line never hides one', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        await seed(home, [rec({ ok: false }), '{"torn']);
+        expect(await priorRelayFailure()).toBe('memorable_relay_failed');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('a later success clears it, so the signal tracks the last run', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        await seed(home, [rec({ ok: false, reason: 'consent' }), rec({ ok: true })]);
+        expect(await priorRelayFailure()).toBe(null);
       });
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
