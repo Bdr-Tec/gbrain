@@ -523,6 +523,58 @@ describe('#4554 world-only fence deletion honored (no resurrection, no misfiring
       warnSpy.mockRestore();
     }
   });
+
+  test('partial deletion of a world-only fence: exactly the kept rows remain, deleted ones stay deleted', async () => {
+    const slug = 'people/p2-worldonly-partial';
+    const fence = FENCE_BODY(
+      `| 1 | WORLD_KEEP_A | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | WORLD_DROP_B | fact | 1.0 | world | high | 2026-01-02 |  | s |  |
+| 3 | WORLD_KEEP_C | fact | 1.0 | world | high | 2026-01-03 |  | s |  |`,
+    );
+    await putPageOp().handler(makeCtx({ remote: false }), { slug, content: fence });
+
+    const remote = await getPageOp().handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    const edited = (remote.content ?? '')
+      .split('\n').filter((l) => !l.includes('WORLD_DROP_B')).join('\n');
+    await putPageOp().handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    const parsed = parseFactsFence(raw?.compiled_truth ?? '');
+    expect(parsed.facts.map((f) => [f.rowNum, f.claim])).toEqual([
+      [1, 'WORLD_KEEP_A'],
+      [3, 'WORLD_KEEP_C'],
+    ]);
+  });
+
+  test('restoration preserves forget history: an inactive (struck, forgotten) private row round-trips intact', async () => {
+    const slug = 'people/p2-forgotten-roundtrip';
+    const fence = FENCE_BODY(
+      `| 1 | WORLD_VISIBLE_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | ~~FORGOTTEN_SECRET~~ | fact | 0.9 | private | low | 2026-01-02 | 2026-02-01 | s | forgotten: user asked to remove |`,
+    );
+    await putPageOp().handler(makeCtx({ remote: false }), { slug, content: fence });
+
+    const remote = await getPageOp().handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content ?? '').not.toContain('FORGOTTEN_SECRET'); // stripped for remote readers
+    await putPageOp().handler(makeCtx({ remote: true }), {
+      slug,
+      content: (remote.content ?? '').replace('Some text.', 'Some text edited.'),
+    });
+
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    const parsed = parseFactsFence(raw?.compiled_truth ?? '');
+    const restoredRow = parsed.facts.find((f) => f.rowNum === 2);
+    expect(restoredRow?.claim).toBe('FORGOTTEN_SECRET');
+    expect(restoredRow?.active).toBe(false);       // strikethrough survives the merge
+    expect(restoredRow?.forgotten).toBe(true);     // forget-as-fence history survives
+    expect(restoredRow?.validUntil).toBe('2026-02-01');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────
