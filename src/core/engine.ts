@@ -1573,9 +1573,18 @@ export interface BrainEngine {
    * `opts` for the brain-wide behavior (unchanged). When both are set,
    * `sourceIds` wins (mirrors `sourceScopeOpts` precedence).
    */
+  /**
+   * #4524: `mode` selects the orphan definition. 'islanded' (the DEFAULT)
+   * matches get_health.orphan_pages — no live inbound AND no live outbound
+   * link — so every consumer (orphans CLI, find_orphans op, doctor
+   * orphan_ratio, health) agrees by construction. 'inbound' is the legacy
+   * no-inbound-only view (a page that links out but is never linked TO still
+   * counts as an orphan there).
+   */
   findOrphanPages(opts?: {
     sourceId?: string;
     sourceIds?: string[];
+    mode?: 'inbound' | 'islanded';
   }): Promise<Array<{ slug: string; title: string; domain: string | null }>>;
 
   // Tags
