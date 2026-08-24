@@ -8,10 +8,10 @@ src/core/operations.ts	315	ratchet	peel target: containment sprint C4-C7; grown 
 src/core/postgres-engine.ts	6166	ratchet	grown v0.46.26.0 megawave (#4218 #3986 #4352) + master v0.46.26.0 private-queue token bootstrap probe
 src/core/pglite-engine.ts	6062	ratchet	grown v0.46.26.0 megawave parity twins + master v0.46.26.0 private-queue columns
 src/core/migrate.ts	687	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted — grown v0.46.26.0: repair-handler hooks (#3957 pages-upsert-arbiter)
-src/commands/sync.ts	4530	ratchet	grown v0.46.26.0 megawave: image sync, ingest-log gating, dry-run purity, checkpoint honesty (#2683 #4342 #3875) + 3 nosemgrep dataflow annotations (path-traversal audit); +#2683 residual: status-error failure recording at both import sites
+src/commands/sync.ts	4673	ratchet	grown v0.46.26.0 megawave: image sync, ingest-log gating, dry-run purity, checkpoint honesty (#2683 #4342 #3875) + 3 nosemgrep dataflow annotations (path-traversal audit); +#2683 residual: status-error failure recording at both import sites; +143 wave G #3974: working-tree drift surfacing + opt-in --working-tree import
 src/core/ai/gateway.ts	4494	ratchet	grown v0.46.26.0 megawave: config-plane probes + halt telemetry (#3387 #4312)
 src/cli.ts	3723	ratchet	grown v0.46.26.0 megawave: SIGCHLD reaper install, silent-failure surfacing, confirm-race gate (#2443 #2898 #2297)
-src/core/cycle.ts	3171	ratchet	grown v0.46.26.0 megawave (#4102 #2608) + master v0.46.26.0 cycle-start orphan recovery
+src/core/cycle.ts	3181	ratchet	grown v0.46.26.0 megawave (#4102 #2608) + master v0.46.26.0 cycle-start orphan recovery; +10 wave G #3974: cycle-sync uncommitted-drift warn
 src/commands/serve-http.ts	3294	ratchet	grown v0.46.25.0 D2: /mcp per-request teardown (#2844)
 src/commands/jobs.ts	3115	ratchet	grown v0.46.26.0 megawave (#4098 #2308) + master v0.46.26.0 worker startup recovery + stats gating; +typed provider-failure logging on the facts-absorb catch (#4308)
 src/core/search/hybrid.ts	2876	ratchet	grown v0.46.26.0 megawave: CRAG escalation seam, degradation visibility, excludePrivate knobs-fold v23 (#1663 #3873 #4352); grown #4356: semantic-cache-hit slice honors resolved mode searchLimit (double-resolution caveat); grown #4414: offset!==0 cache-skip widening + knobs-hash v24
@@ -37,4 +37,4 @@ src/core/github-source.ts	1560	ratchet	new row: crossed the 1500 unlisted cap in
 src/core/bootstrap/harness.ts	1947	ratchet
 src/commands/hook.ts	1559	ratchet	cathedral-5 heartbeat extraction offsets part of the BrainBench-seam growth; grown v0.46.26.0 megawave hooks-ipc (#4245)
 src/core/chunkers/code.ts	1556	ratchet	new row: crossed the 1500 unlisted cap in v0.46.26.0 megawave (decorated-python defs #3821, version-gate + timeout chunker fixes)
-src/core/config.ts	1503	ratchet	new row: crossed the 1500 unlisted cap in v0.46.26.0 megawave (spend-controls hint #3703, config-set validation)
+src/core/config.ts	1506	ratchet	new row: crossed the 1500 unlisted cap in v0.46.26.0 megawave (spend-controls hint #3703, config-set validation); +3 wave G #3974: sync.include_working_tree key
