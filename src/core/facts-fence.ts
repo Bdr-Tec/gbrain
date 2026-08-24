@@ -371,6 +371,43 @@ export function factsRestoredVisibleRowsWarning(
 }
 
 /**
+ * Surfacing-only diagnostic for #2044's compiled_truth restoration guard
+ * (import-file.ts): the restoration only fires when the incoming fence
+ * went to exactly zero facts. A fence that still has SOME rows (e.g. a
+ * mixed world+private fence where only the visible world row survives
+ * stripping) never triggers it -- non-'world' rows present before the
+ * write that are missing from the incoming write are silently dropped,
+ * even though the caller structurally could never have seen them.
+ *
+ * Returns a warning string, or null if nothing to flag. Pure and
+ * side-effect-free — the caller decides how to surface it (console.warn
+ * today); no restoration behavior is changed here. Only applies when
+ * `restored` is false (the restoration guard did not fire) — see #4553's
+ * sibling PR for the `restored === true` gap (a fully-visible deletion
+ * silently undone).
+ */
+export function factsGapWarning(
+  slug: string,
+  incoming: { facts: ParsedFact[]; warnings: string[] },
+  existing: { facts: ParsedFact[]; warnings: string[] },
+  restored: boolean,
+): string | null {
+  if (restored) return null;
+  if (incoming.warnings.length > 0 || existing.warnings.length > 0) return null;
+  if (existing.facts.length === 0) return null;
+
+  const incomingRowNums = new Set(incoming.facts.map((f) => f.rowNum));
+  const dropped = existing.facts.filter(
+    (f) => f.visibility !== 'world' && !incomingRowNums.has(f.rowNum),
+  ).length;
+  if (dropped === 0) return null;
+  return `[gbrain] #2044 gap on ${slug}: ${dropped} non-'world' fact row(s) present before this ` +
+    `remote write are missing from the incoming write and were NOT restored (#2044 only restores ` +
+    `when the incoming fence goes to exactly zero facts). If these rows were dropped by a caller ` +
+    `who never saw them, they are now lost.`;
+}
+
+/**
  * Append a new fact row to the body. If a fenced facts table exists, the
  * row is added to the end of it. If not, a new `## Facts` section + fence
  * is created at the end of the body.

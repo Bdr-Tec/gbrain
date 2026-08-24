@@ -47,7 +47,7 @@ import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { computeCorpusGeneration, loadSourceRow } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
 import { runGuardrails } from './guardrails.ts';
-import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, factsRestoredVisibleRowsWarning } from './facts-fence.ts';
+import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, factsRestoredVisibleRowsWarning, factsGapWarning } from './facts-fence.ts';
 import { scanFencedBlocks, MAX_FENCES_PER_PAGE } from './fence-scan.ts';
 
 /**
@@ -619,6 +619,9 @@ export async function importFromContent(
       const warning = factsRestoredVisibleRowsWarning(slug, existingFacts);
       if (warning) console.warn(warning);
     }
+    // Surfacing-only: see factsGapWarning() in facts-fence.ts. No behavior change.
+    const gapWarning = factsGapWarning(slug, incomingFacts, existingFacts, restored);
+    if (gapWarning) console.warn(gapWarning);
   }
 
   // #1035: absence of an explicit frontmatter `type:` on an EXISTING page

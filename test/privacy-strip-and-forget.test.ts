@@ -252,6 +252,115 @@ describe('#2044 P2 gap warning (console.warn diagnostic, no behavior change)', (
 });
 
 // ─────────────────────────────────────────────────────────────────
+// #2044 surfacing-only P1 gap warning (mixed world+private fence — the
+// hidden row is silently dropped because restoration only fires when the
+// incoming fence goes to exactly zero facts) — data behavior is
+// UNCHANGED; these tests confirm the diagnostic actually fires under the
+// gap condition, and does NOT fire for the unaffected baseline/local-write
+// cases (positive control for the guard, both directions). The sibling P2
+// gap (world-only deletion silently undone) is a separate PR.
+// ─────────────────────────────────────────────────────────────────
+
+describe('#2044 P1 gap warning (console.warn diagnostic, no behavior change)', () => {
+  function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
+    return {
+      engine,
+      config: { engine: 'pglite' as const },
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      dryRun: false,
+      remote: false,
+      sourceId: 'default',
+      deferEmbeds: true,
+      ...opts,
+    };
+  }
+
+  test('P1 gap: mixed world+private fence — warns that the private row was dropped, and the row IS still dropped (unchanged pre-existing behavior)', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      const slug = 'people/p1-mixed-warn';
+      const fence = FENCE_BODY(
+        `| 1 | PUBLIC_P1_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | PRIVATE_P1_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug,
+        include_content: true,
+      }) as { content?: string };
+      warnSpy.mockClear(); // only assert on the put_page call below
+      const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
+      await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+      const warnedGap = warnSpy.mock.calls.some((c) => String(c[0]).includes('#2044 gap') && String(c[0]).includes(slug));
+      expect(warnedGap).toBe(true);
+      // Unchanged pre-existing behavior: the row is still actually dropped
+      // (this PR is diagnostics-only, not a data-behavior fix).
+      const raw = await engine.getPage(slug, { sourceId: 'default' });
+      expect((raw?.compiled_truth ?? '')).not.toContain('PRIVATE_P1_FACT');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('no warning: an all-private fence round-trip (incoming goes to exactly zero, restoration fires normally) does not fire the gap warning', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const getPageOp = operations.find((o) => o.name === 'get_page')!;
+      const slug = 'people/no-warn-allprivate';
+      const fence = FENCE_BODY(
+        '| 1 | PRIVATE_NOWARN_FACT | fact | 1.0 | private | high | 2026-01-01 |  | s |  |',
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+
+      const remote = await getPageOp.handler(makeCtx({ remote: true }), {
+        slug,
+        include_content: true,
+      }) as { content?: string };
+      warnSpy.mockClear();
+      const edited = (remote.content ?? '').replace('Some text.', 'Some text edited.');
+      await putPageOp.handler(makeCtx({ remote: true }), { slug, content: edited });
+
+      const anyGapWarning = warnSpy.mock.calls.some((c) => String(c[0]).includes('#2044'));
+      expect(anyGapWarning).toBe(false);
+      // The row is restored (unchanged pre-existing #2044 behavior).
+      const raw = await engine.getPage(slug, { sourceId: 'default' });
+      expect((raw?.compiled_truth ?? '')).toContain('PRIVATE_NOWARN_FACT');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('no warning: a normal local (non-remote) edit never triggers the diagnostic', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const putPageOp = operations.find((o) => o.name === 'put_page')!;
+      const slug = 'people/no-warn-local';
+      const fence = FENCE_BODY(
+        `| 1 | LOCAL_WORLD_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | LOCAL_PRIVATE_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |`,
+      );
+      await putPageOp.handler(makeCtx({ remote: false }), { slug, content: fence });
+      warnSpy.mockClear();
+      // Local write that drops both rows -- fully-informed, no diagnostic.
+      await putPageOp.handler(makeCtx({ remote: false }), {
+        slug,
+        content: '# Page\n\nSome text edited.\n',
+      });
+
+      const anyGapWarning = warnSpy.mock.calls.some((c) => String(c[0]).includes('#2044'));
+      expect(anyGapWarning).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
 // Forget-as-fence (Codex R2-#3)
 // ─────────────────────────────────────────────────────────────────
 
