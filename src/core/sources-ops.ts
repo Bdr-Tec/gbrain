@@ -729,16 +729,28 @@ export async function resolveScopedSourceOrThrow(
 
 export async function listSources(
   engine: BrainEngine,
-  opts: { includeArchived?: boolean } = {},
+  opts: { includeArchived?: boolean; allowedSourceIds?: readonly string[] } = {},
 ): Promise<SourceListEntry[]> {
   // v0.28.1 codex finding (MEDIUM): the prior version ignored the
   // includeArchived flag and returned every row. That leaked archived
   // sources' ids, local_paths, and remote_urls to read-scoped MCP callers
   // who shouldn't see soft-deleted state. Filter at the SQL level so the
   // archived rows never reach the wire by default.
-  const archivedFilter = opts.includeArchived
-    ? ''
-    : 'WHERE archived IS NOT TRUE';
+  //
+  // #4433: `allowedSourceIds` row-filters to the caller's source grant —
+  // a scoped remote MCP caller must not enumerate other sources' ids,
+  // local_paths, or remote_urls. Row-filter (not field redaction) so
+  // out-of-grant rows never reach the wire; undefined = unscoped (trusted
+  // local CLI, or a remote caller with no source grant — matching the
+  // fail-open posture of every other unscoped read).
+  const conds: string[] = [];
+  const params: unknown[] = [];
+  if (!opts.includeArchived) conds.push('archived IS NOT TRUE');
+  if (opts.allowedSourceIds !== undefined) {
+    params.push([...opts.allowedSourceIds]);
+    conds.push(`id = ANY($${params.length})`);
+  }
+  const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
   const rows = await engine.executeRaw<{
     id: string;
     name: string;
@@ -747,7 +759,8 @@ export async function listSources(
     config: unknown;
   }>(
     `SELECT id, name, local_path, last_sync_at, config
-       FROM sources ${archivedFilter} ORDER BY (id = 'default') DESC, id`,
+       FROM sources ${where} ORDER BY (id = 'default') DESC, id`,
+    params,
   );
   const out: SourceListEntry[] = [];
   for (const r of rows) {
