@@ -896,7 +896,28 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // ~50% cache savings back. Same contamination class as detail (v=16) and
 // hardExcludes (v=12); same one-time global cold-miss pattern as the bumps
 // above, refills within cache.ttl_seconds (3600s default).
-export const KNOBS_HASH_VERSION = 23;
+//
+// 23→24 folds salience/recency + intent_patterns (#4415) — wave-g. Three
+// new ctx parts:
+//   sal=/rec= — the EFFECTIVE per-call salience/recency modes (explicit
+//     SearchOpts ?? auto-suggested, resolved by the same chain bare
+//     hybridSearch uses — see hybrid.ts resolveEffectiveSalience/
+//     resolveEffectiveRecency). #4415 extended the per-call knobs to the
+//     default MCP `search` surface, so a salience:'strong' write (reordered
+//     result set) could be served to a salience:'off' lookup of the same
+//     query for the whole TTL — same contamination class as det= (v=16).
+//   ipat= — fingerprint of the applied `search.intent_patterns` config.
+//     The patterns change classification (intent weights + auto salience/
+//     recency/detail) and therefore results; without the fold, a config
+//     edit kept serving old-classification rows for up to the TTL.
+// Same one-time global cold-miss pattern as the bumps above; refills
+// within cache.ttl_seconds (3600s default).
+// INTEGRATION NOTE: the PR-collector branch independently carries #4414,
+// which also bumps 23→24 with different semantics — at integration these
+// resolve to a single v25 with merged lineage (D8 sequencing convention,
+// same as the v=16/17 merge note above). This side records wave-g's fold
+// only.
+export const KNOBS_HASH_VERSION = 24;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
@@ -956,6 +977,28 @@ export interface KnobsHashContext {
    * (private included), matching enforcement's strict `=== true` semantics.
    */
   excludePrivate?: boolean;
+  /**
+   * v=24 (#4415, wave-g): the EFFECTIVE salience/recency boost modes for
+   * this call — per-call SearchOpts, or the classifier's auto-suggestion
+   * when the caller didn't specify (hybridSearchCached resolves them with
+   * the same chain bare hybridSearch uses). Both reorder the post-fusion
+   * result set, so a 'strong' write must never serve an 'off' lookup.
+   * Undefined falls back to 'off' (the classifier's default for unmatched
+   * queries) so legacy callers hash stably.
+   */
+  salience?: 'off' | 'on' | 'strong';
+  recency?: 'off' | 'on' | 'strong';
+  /**
+   * v=24 (#4415, wave-g): fingerprint of the applied `search.intent_patterns`
+   * config (query-intent.ts intentPatternFingerprint — 'none' when unset).
+   * The patterns change classification (intent weights + auto salience/
+   * recency/detail) and therefore results; folding the fingerprint makes a
+   * config edit invalidate immediately instead of after the TTL. Threaded
+   * through ctx (not read process-globally like fts=) because the applied
+   * config is PER ENGINE (wave-g) — a process-global read would key one
+   * brain's rows under another brain's patterns in a multi-engine process.
+   */
+  intentPatterns?: string;
 }
 
 export function knobsHash(
@@ -1083,6 +1126,15 @@ export function knobsHash(
     // Strict `=== true` mirrors the enforcement predicate so undefined and
     // false (both private-included) hash identically.
     `xp=${ctx?.excludePrivate === true ? 1 : 0}`,
+    // v=24 additions (#4415, wave-g, append-only): effective salience/
+    // recency boost modes + applied intent-pattern config fingerprint. A
+    // salience/recency-boosted (reordered) write must never serve a lookup
+    // under different modes, and a `search.intent_patterns` edit changes
+    // classification → results, so it must change the key. 'off'/'none'
+    // fallbacks keep legacy callers stable.
+    `sal=${ctx?.salience ?? 'off'}`,
+    `rec=${ctx?.recency ?? 'off'}`,
+    `ipat=${ctx?.intentPatterns ?? 'none'}`,
   ];
   const h = createHash('sha256');
   h.update(parts.join('|'));

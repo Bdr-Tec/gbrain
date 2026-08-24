@@ -39,7 +39,13 @@ import {
 import { loadConfigWithEngine } from '../config.ts';
 import { dedupResults } from './dedup.ts';
 import { applyReranker } from './rerank.ts';
-import { autoDetectDetail, classifyQueryWithBrainPatterns, isAmbiguousModalityQuery } from './query-intent.ts';
+import {
+  classifyQuery,
+  classifyQueryWithBrainPatterns,
+  isAmbiguousModalityQuery,
+  loadEngineIntentPatterns,
+  type QuerySuggestions,
+} from './query-intent.ts';
 import { isTitlePhraseMatch } from './title-match.ts';
 import { normalizeAlias } from './alias-normalize.ts';
 import { stampEvidence, markKeywordHits } from './evidence.ts';
@@ -1371,32 +1377,13 @@ export async function hybridSearch(
   // v0.29.1: resolve salience/recency from caller (back-compat aliases for
   // PR #618's `recencyBoost` numeric scale) or fall back to the heuristic.
   // The wrapper fires from ALL THREE return paths (codex pass-1 #2 + pass-2 #4).
-  //
-  // v0.32.x search-lite: when caller hasn't set recency and the intent
-  // classifier suggests one, prefer that (suggestedRecency on temporal /
-  // event intents). The legacy heuristic still wins when intent weighting
-  // is off.
-  // Back-compat: recencyBoost: 1|2 → 'on'|'strong'; 0 → 'off'.
-  const legacyRecency: 'off' | 'on' | 'strong' | undefined =
-    opts?.recencyBoost === 2 ? 'strong' :
-    opts?.recencyBoost === 1 ? 'on' :
-    opts?.recencyBoost === 0 ? 'off' :
-    undefined;
-  const salienceMode: 'off' | 'on' | 'strong' = opts?.salience ?? suggestions.suggestedSalience;
-  // Intent-weighting recency suggestion is a NUDGE — it only fires when
-  // the caller left recency unspecified AND the legacy heuristic also
-  // didn't fire. The classifier's own suggestedRecency (from v0.29.1)
-  // still wins when it's set; the new intent suggestion is a fallback.
-  const intentRecency =
-    intentWeightingOn && intentWeights.suggestedRecency != null
-      ? intentWeights.suggestedRecency
-      : null;
+  // wave-g: extracted to resolveEffectiveSalience/resolveEffectiveRecency so
+  // hybridSearchCached's knobs-hash key parts (sal=/rec=, v=24) resolve
+  // through the IDENTICAL chain — drift here would key cache rows under a
+  // different mode than the stored results used.
+  const salienceMode: 'off' | 'on' | 'strong' = resolveEffectiveSalience(opts, suggestions);
   const recencyMode: 'off' | 'on' | 'strong' =
-    opts?.recency
-    ?? legacyRecency
-    ?? (suggestions.suggestedRecency !== 'off'
-        ? suggestions.suggestedRecency
-        : (intentRecency ?? suggestions.suggestedRecency));
+    resolveEffectiveRecency(opts, suggestions, intentWeightingOn);
   const postFusionOpts: PostFusionOpts = {
     applyBacklinks: true,
     salience: salienceMode,
@@ -2231,6 +2218,50 @@ export async function hybridSearch(
 // ----------------------------------------------------------------------
 
 /**
+ * wave-g (#4415 knobs-hash fold) — the ONE salience resolution chain, shared
+ * by bare hybridSearch (post-fusion boost) and hybridSearchCached (the
+ * `sal=` cache-key part). Explicit per-call opt wins; otherwise the
+ * classifier's pattern-aware suggestion.
+ */
+function resolveEffectiveSalience(
+  opts: HybridSearchOpts | undefined,
+  suggestions: QuerySuggestions,
+): 'off' | 'on' | 'strong' {
+  return opts?.salience ?? suggestions.suggestedSalience;
+}
+
+/**
+ * wave-g (#4415 knobs-hash fold) — the ONE recency resolution chain, shared
+ * by bare hybridSearch and hybridSearchCached (the `rec=` cache-key part).
+ *
+ * Back-compat: recencyBoost: 1|2 → 'on'|'strong'; 0 → 'off'.
+ * Intent-weighting recency suggestion is a NUDGE — it only fires when the
+ * caller left recency unspecified AND the classifier's own suggestedRecency
+ * (v0.29.1) didn't fire; it stays null when intent weighting is off.
+ */
+function resolveEffectiveRecency(
+  opts: HybridSearchOpts | undefined,
+  suggestions: QuerySuggestions,
+  intentWeightingOn: boolean,
+): 'off' | 'on' | 'strong' {
+  const legacyRecency: 'off' | 'on' | 'strong' | undefined =
+    opts?.recencyBoost === 2 ? 'strong' :
+    opts?.recencyBoost === 1 ? 'on' :
+    opts?.recencyBoost === 0 ? 'off' :
+    undefined;
+  const intentRecency = intentWeightingOn
+    ? (weightsForIntent(suggestions.intent).suggestedRecency ?? null)
+    : null;
+  return (
+    opts?.recency
+    ?? legacyRecency
+    ?? (suggestions.suggestedRecency !== 'off'
+        ? suggestions.suggestedRecency
+        : (intentRecency ?? suggestions.suggestedRecency))
+  );
+}
+
+/**
  * Public wrapper around hybridSearch that adds the v0.32.x search-lite
  * features: semantic query cache + token budget enforcement. Both are
  * additive and backward-compatible; callers that don't opt in see the
@@ -2307,6 +2338,15 @@ export async function hybridSearchCached(
   const resolvedColCached = resolveEmbeddingColumn(opts, cfgCached);
   const isNonDefaultColumn = !isCacheSafe(resolvedColCached, cfgCached);
 
+  // wave-g (#4415): classify ONCE with the brain's `search.intent_patterns`
+  // applied (loadEngineIntentPatterns is per-engine + TTL-cached) so the
+  // det=/sal=/rec= key parts reflect the SAME classification bare
+  // hybridSearch resolves. Pre-fix, det= was computed via the pattern-less
+  // global classifier, so a fresh process keyed its first cache row under a
+  // pattern-less detail while the stored results used the pattern-aware one.
+  const intentStateForCache = await loadEngineIntentPatterns(engine);
+  const cacheSuggestions = classifyQuery(query, intentStateForCache.banks);
+
   // Cache key carries the column + provider so different embedding spaces
   // never collide on the same `(source_id, query_text)` row.
   const cacheKnobsHash = knobsHash(resolvedForCache, {
@@ -2322,9 +2362,21 @@ export async function hybridSearchCached(
     // gates dedup, chunk-source filtering, and the compiled_truth boost, so
     // a `--detail low` write (compiled-truth-only result set) must never be
     // served to a default `medium` lookup. Resolve auto-detect the same way
-    // bare hybridSearch does (opts.detail ?? autoDetectDetail(query)) so an
+    // bare hybridSearch does (opts.detail ?? pattern-aware suggestion) so an
     // auto-detected `high` query keys like an explicit `high` one.
-    detail: opts?.detail ?? autoDetectDetail(query),
+    detail: opts?.detail ?? cacheSuggestions.suggestedDetail,
+    // #4415 (wave-g, v=24) — fold the EFFECTIVE salience/recency modes.
+    // Both reorder the post-fusion result set, and #4415 put the per-call
+    // overrides on the default MCP `search` surface, so a salience:'strong'
+    // write must never serve a salience:'off' lookup of the same query.
+    // Resolved by the SAME chain bare hybridSearch uses (helpers above).
+    salience: resolveEffectiveSalience(opts, cacheSuggestions),
+    recency: resolveEffectiveRecency(opts, cacheSuggestions, resolvedForCache.intentWeighting),
+    // #4415 (wave-g, v=24) — fold the applied intent-pattern config
+    // fingerprint: a `search.intent_patterns` edit changes classification
+    // (and thus results), so it must change the key immediately instead of
+    // serving old-classification rows for the rest of the cache TTL.
+    intentPatterns: intentStateForCache.fingerprint,
     // #4352 follow-up — fold the private-visibility posture into the key
     // (xp=, v=23) for BOTH the lookup and the write below (they share this
     // one hash), instead of the original wholesale skipCache bypass. A
