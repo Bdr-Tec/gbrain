@@ -144,6 +144,7 @@ cannot empty is not one they can trust.
 | `stored WITHOUT an embedding` on stderr | The extraction API could not return a vector | The procedure is stored and recall still works on exact + lexical. `memorable doctor` prints why |
 | `record` says no session receipt found | The gbrain relay is off, or this harness is not Claude Code | Enable it with `gbrain config set integrations.memorable.enabled true`, or use `memorable ingest -` with your own trace |
 | A consent error on write | The human has not opted in | `memorable enable`. Never work around a consent refusal |
+| Commands hang, then time out against the brain | Something else holds gbrain's single-writer PGLite lock — often a long-running process like a viewer or `gbrain serve` | `cat <data-dir>/.gbrain-lock/lock` names the holder's PID and subcommand. Stop that process; the lock releases. A live holder is deliberately never stolen — the old steal-on-stale behavior corrupted data directories |
 
 `memorable doctor` checks every integration point at once and prints a support
 bundle; run it before reporting anything as broken.
