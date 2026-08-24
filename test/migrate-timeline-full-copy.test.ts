@@ -11,7 +11,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { copyPageToTarget } from '../src/commands/migrate-engine.ts';
+import { copyPageToTarget, COPIED_TIMELINE_COUNT_SQL } from '../src/commands/migrate-engine.ts';
 
 let source: PGLiteEngine;
 let target: PGLiteEngine;
@@ -55,5 +55,24 @@ describe('copyPageToTarget — full timeline copy (#4485)', () => {
 
     const copied = await target.getTimeline('people/long-history', { limit: 1000 });
     expect(copied.length).toBe(TOTAL);
+  }, 60000);
+
+  test('wave-g: verify parity count is scoped to live pages — soft-deleted timeline rows excluded', async () => {
+    // The migration copies listPages() output (soft-deleted excluded), so a
+    // soft-deleted source page that still owns timeline rows must NOT count
+    // toward the source side of the parity check (false WARN pre-fix).
+    await source.putPage('people/gone-example', {
+      type: 'person', title: 'Gone', compiled_truth: 'body', timeline: '', frontmatter: {},
+    });
+    await source.addTimelineEntry('people/gone-example', {
+      date: '2024-01-01', source: 'test', summary: 'orphaned-by-soft-delete',
+    });
+    const before = Number((await source.executeRaw<{ count: string }>(COPIED_TIMELINE_COUNT_SQL))[0].count);
+    await source.executeRaw(`UPDATE pages SET deleted_at = now() WHERE slug = 'people/gone-example'`);
+    const whole = Number((await source.executeRaw<{ count: string }>(
+      'SELECT count(*)::text AS count FROM timeline_entries'))[0].count);
+    const scoped = Number((await source.executeRaw<{ count: string }>(COPIED_TIMELINE_COUNT_SQL))[0].count);
+    expect(scoped).toBe(before - 1); // the soft-deleted page's row left the copied set
+    expect(whole).toBe(before);      // whole-table count still includes it (the old false-WARN source)
   }, 60000);
 });
