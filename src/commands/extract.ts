@@ -760,6 +760,9 @@ Extraction:
       survive). Fixes drift the stale_mentions doctor check reports (#3674).
   gbrain extract <links|timeline|all> --ner --source db
   gbrain extract <timeline|all> --from-meetings --source db
+      Scans only meeting pages (type 'meeting', or 'note' with
+      frontmatter.legacy_type 'meeting'). REPLACES the default timeline
+      pass — it does not add to it.
 
   --since DATE filters on updated_at — the page row's last DB-write time
   ("touched since"): import, sync, enrich, and extraction stamps all advance
@@ -1040,6 +1043,20 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
         result.pages_processed = r.meetings_scanned;
         if (!jsonMode) {
           console.log(`Timeline from meetings: ${r.entries_created} entries on ${r.entities_touched} entity pages from ${r.meetings_scanned} meetings`);
+        }
+        // #4542: a zero-meeting brain used to print "0 entries ... from 0
+        // meetings" and exit 0 — indistinguishable from success. Easy to hit
+        // because --from-meetings REPLACES the default timeline pass (this
+        // branch runs solo), so users expecting "meetings AND the usual pass"
+        // silently got neither. Warn on stderr, name the predicate, and point
+        // at the way out.
+        if (r.meetings_scanned === 0) {
+          console.error(
+            `[extract timeline] WARN: 0 meetings matched — --from-meetings only scans pages ` +
+            `WHERE type = 'meeting' (or type = 'note' with frontmatter.legacy_type = 'meeting'). ` +
+            `Note this flag REPLACES the default timeline pass (it does not add to it); ` +
+            `omit --from-meetings to extract timeline entries from all pages.`,
+          );
         }
         // #2057 (codex): batch failures are no longer swallowed silently — make
         // them visible at the command surface (and non-zero exit) instead of
