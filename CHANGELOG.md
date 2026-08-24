@@ -2,7 +2,22 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [Unreleased]
+## [0.46.29.0] - 2026-08-22
+
+**The community train: 54 contributor PRs absorbed in one release.** Wave K
+triaged all 141 open PRs against the live codebase, verified each fix still
+real at HEAD, and absorbed the 54 that complement the v0.46.28.0 megawave —
+one commit per PR, contributor authorship preserved via Co-authored-by
+trailers, fixups applied where master had drifted. 32 community authors
+credited; ~30 open issues close with this release.
+
+### Credits
+Absorbed with thanks from: @Masashi-Ono0611 (13 incl. #4459 whose
+implementation was superseded mid-flight by the megawave's #3885 fix — its
+e2e tests ship here), @avs-io (5), @calebhicks (4), @frxiaobei,
+@alexey-metaengage, @harjothkhara (2 each), and 26 more contributors — full
+per-PR attribution in the release PR body and each commit's trailers.
+
 
 ### Added
 - Semantic takes retrieval: `gbrain takes embed` populates take embeddings and
@@ -24,6 +39,14 @@ worker therefore passes without creating a second unmanaged process.
   when nothing manages workers.
 
 ### Fixed
+- `gbrain takes --help` and `gbrain auth --help` print full subcommand usage
+  without an engine (#3780, #4083); `think --take` records a take end-to-end
+  instead of silently no-oping (#4469, fixes #2556).
+- Bun 1.3.10 warm-transpiler-cache poisoning of `test/doctor.test.ts` (59-test
+  cascade on any warm re-run): sync `require()` sites converted to
+  `await import`. KNOBS_HASH_VERSION advances to 25 across the megawave merge
+  (remote query caches re-key once).
+
 - Page ingest no longer aborts an entire document (or batch run) when the body
   or a chunk contains a raw NUL byte or lone UTF-16 surrogate: pages body
   columns and chunk_text are sanitized at write time in both engines, the same
