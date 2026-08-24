@@ -645,8 +645,15 @@ export async function importFromContent(
   // a visible row — including deleting a pure-world fence outright — is
   // honored as written (#4554). Trusted local writers see everything, so
   // the merge never fires for them.
+  // The same hazard covers the `timeline` column (#4546): a Facts fence
+  // below the `<!-- timeline -->` sentinel is a normal placement, and #4547
+  // strips its non-'world' rows for remote readers too — so a round-trip
+  // write-back arrives missing those rows as well. Each column merges
+  // against its own existing counterpart (fences don't migrate between
+  // columns here; splitBody keeps them where the caller wrote them).
   if (opts.remote === true && existing) {
     parsed.compiled_truth = mergeHiddenFactRowsIntoBody(slug, parsed.compiled_truth, existing.compiled_truth);
+    parsed.timeline = mergeHiddenFactRowsIntoBody(slug, parsed.timeline, existing.timeline);
   }
 
   // #1035: absence of an explicit frontmatter `type:` on an EXISTING page

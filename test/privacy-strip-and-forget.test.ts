@@ -578,6 +578,127 @@ describe('#4554 world-only fence deletion honored (no resurrection, no misfiring
 });
 
 // ─────────────────────────────────────────────────────────────────
+// #4546 round-trip hazard: #4547 strips takes/facts fences from the
+// `timeline` column for remote readers, so a remote get_page -> edit ->
+// put_page round-trip arrives with the timeline fence's non-'world' rows
+// missing too. The same row-level merge that protects compiled_truth
+// (#4548) must cover the timeline-embedded fence, or the write-back
+// silently drops the private timeline rows.
+// ─────────────────────────────────────────────────────────────────
+
+describe('#4546 timeline-embedded fence survives a remote round-trip', () => {
+  function makeCtx(opts: Partial<OperationContext> = {}): OperationContext {
+    return {
+      engine,
+      config: { engine: 'pglite' as const },
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      dryRun: false,
+      remote: false,
+      sourceId: 'default',
+      deferEmbeds: true,
+      ...opts,
+    };
+  }
+  const putPageOp = () => operations.find((o) => o.name === 'put_page')!;
+  const getPageOp = () => operations.find((o) => o.name === 'get_page')!;
+
+  const TIMELINE_FENCE_CONTENT = (slug: string) => `---
+title: ${slug}
+type: person
+---
+
+Body content.
+
+<!-- timeline -->
+
+## Facts
+
+${FACTS_FENCE_BEGIN}
+| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
+|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|
+| 1 | TL_PUBLIC_FACT | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
+| 2 | TL_SECRET_FACT | fact | 1.0 | private | high | 2026-01-02 |  | s |  |
+${FACTS_FENCE_END}
+`;
+
+  test('remote prose-edit round-trip restores the hidden private row into the timeline column', async () => {
+    const slug = 'people/tl-roundtrip-restore';
+    await putPageOp().handler(makeCtx({ remote: false }), {
+      slug,
+      content: TIMELINE_FENCE_CONTENT(slug),
+    });
+    // Sanity: the fence really lives in timeline, and the remote reader
+    // never sees the private row (#4547's read-side strip).
+    const raw = await engine.getPage(slug, { sourceId: 'default' });
+    expect(parseFactsFence(raw!.compiled_truth ?? '').facts).toHaveLength(0);
+    expect(raw!.timeline ?? '').toContain('TL_SECRET_FACT');
+    const remote = await getPageOp().handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    expect(remote.content ?? '').not.toContain('TL_SECRET_FACT');
+
+    await putPageOp().handler(makeCtx({ remote: true }), {
+      slug,
+      content: (remote.content ?? '').replace('Body content.', 'Body content, edited remotely.'),
+    });
+
+    const after = await engine.getPage(slug, { sourceId: 'default' });
+    const parsed = parseFactsFence(after?.timeline ?? '');
+    expect(parsed.facts.map((f) => [f.rowNum, f.claim])).toEqual([
+      [1, 'TL_PUBLIC_FACT'],
+      [2, 'TL_SECRET_FACT'], // restored into timeline, not lost, not moved
+    ]);
+    // The restored row stays in the timeline column; compiled_truth gains no fence.
+    expect(parseFactsFence(after?.compiled_truth ?? '').facts).toHaveLength(0);
+    expect(after?.compiled_truth ?? '').toContain('Body content, edited remotely.');
+  });
+
+  test('deleting the visible world row of the timeline fence sticks; the hidden row is still restored', async () => {
+    const slug = 'people/tl-roundtrip-world-delete';
+    await putPageOp().handler(makeCtx({ remote: false }), {
+      slug,
+      content: TIMELINE_FENCE_CONTENT(slug),
+    });
+    const remote = await getPageOp().handler(makeCtx({ remote: true }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    const edited = (remote.content ?? '')
+      .split('\n').filter((l) => !l.includes('TL_PUBLIC_FACT')).join('\n');
+    await putPageOp().handler(makeCtx({ remote: true }), { slug, content: edited });
+
+    const after = await engine.getPage(slug, { sourceId: 'default' });
+    const parsed = parseFactsFence(after?.timeline ?? '');
+    expect(parsed.facts.map((f) => [f.rowNum, f.claim])).toEqual([
+      [2, 'TL_SECRET_FACT'],
+    ]);
+    expect(after?.timeline ?? '').not.toContain('TL_PUBLIC_FACT');
+  });
+
+  test('local trusted round-trip of a timeline fence is untouched by the merge', async () => {
+    const slug = 'people/tl-local-untouched';
+    await putPageOp().handler(makeCtx({ remote: false }), {
+      slug,
+      content: TIMELINE_FENCE_CONTENT(slug),
+    });
+    // Local caller deletes the ENTIRE timeline fence — fully informed, honored.
+    const local = await getPageOp().handler(makeCtx({ remote: false }), {
+      slug,
+      include_content: true,
+    }) as { content?: string };
+    const fenceBegin = (local.content ?? '').indexOf('## Facts');
+    const fenceEnd = (local.content ?? '').indexOf(FACTS_FENCE_END) + FACTS_FENCE_END.length;
+    const edited = (local.content ?? '').slice(0, fenceBegin) + (local.content ?? '').slice(fenceEnd);
+    await putPageOp().handler(makeCtx({ remote: false }), { slug, content: edited });
+
+    const after = await engine.getPage(slug, { sourceId: 'default' });
+    expect(after?.timeline ?? '').not.toContain('TL_SECRET_FACT');
+    expect(after?.timeline ?? '').not.toContain('TL_PUBLIC_FACT');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
 // Forget-as-fence (Codex R2-#3)
 // ─────────────────────────────────────────────────────────────────
 
