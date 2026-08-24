@@ -80,11 +80,16 @@ export type ConfineTranscriptResult =
  * non-WSL host `detectWslMountRoot()` is null and the path is used verbatim
  * (native Windows lstats drive paths fine; macOS/plain Linux keep failing
  * `unreadable` as before). The containment root translates the same way (a
- * CLAUDE_CONFIG_DIR carrying a Windows literal, the #4324 interaction), and
- * when no explicit root is in play the translated path must sit inside its
- * own `.claude/projects` tree on the mounted drive — still transcripts-dir
+ * CLAUDE_CONFIG_DIR carrying a Windows literal, the #4324 interaction).
+ * When no explicit root is in play, the ONLY accepted fallback root is the
+ * session's known config tree on the mounted drive: the Windows
+ * user-profile pattern `<mount>/<drive>/Users/<profile>/.claude/projects`
+ * (wave-g tightening — the earlier first-`.claude/projects`-marker
+ * derivation let an attacker-controlled hook stdin pass under ANY such dir,
+ * e.g. `C:\evil\.claude\projects\x.jsonl`). Still transcripts-dir
  * confinement [S3#8], just rooted Windows-side, since the WSL-side
- * `$HOME/.claude/projects` can never contain a Windows-home transcript.
+ * `$HOME/.claude/projects` can never contain a Windows-home transcript;
+ * anything outside CLAUDE_CONFIG_DIR / that profile tree is rejected.
  *
  * `opts.root` and `opts.wslMountRoot` are TEST SEAMS — production callers use
  * the defaults (`wslMountRoot: null` means "not under WSL").
@@ -114,7 +119,9 @@ export function confineTranscriptPath(
     // Cross-OS fallback (#4522): only for a path we translated ourselves and
     // only when the caller didn't pin an explicit root.
     const derived =
-      translated !== null && opts.root === undefined ? deriveTranslatedProjectsRoot(translated) : null;
+      mountRoot !== null && translated !== null && opts.root === undefined
+        ? deriveTranslatedProjectsRoot(translated, mountRoot)
+        : null;
     if (derived === null || !isPathContained(candidate, derived)) {
       return { ok: false, reason: 'outside_projects_dir' };
     }
@@ -123,17 +130,32 @@ export function confineTranscriptPath(
 }
 
 /**
- * The `…/.claude/projects` prefix of a TRANSLATED Windows transcript path
- * (posix separators by construction), or null when the path has no such
- * segment. Uses the FIRST occurrence so a crafted deeper `.claude/projects`
- * substring can't widen the root; `isPathContained` then realpaths both sides,
- * so `..` traversal and planted symlinks past the prefix still fail.
+ * The Windows user-profile `.claude/projects` root of a TRANSLATED Windows
+ * transcript path (posix separators by construction), or null when the path
+ * doesn't sit inside one. wave-g tightening: the root is pinned to the
+ * session's known config-tree shape —
+ * `<mountRoot>/<drive>/Users/<profile>/.claude/projects` — never derived
+ * from the path's own first `.claude/projects` marker, which accepted an
+ * attacker-controlled tree anywhere on a mounted drive
+ * (`C:\evil\.claude\projects\x.jsonl`). The `Users` segment is
+ * case-insensitive (Windows filesystems are); the profile segment must be a
+ * real component (`.`/`..` refused so `C:\Users\..\.claude\projects` can't
+ * widen the root); `.claude/projects` stays exact. `isPathContained` then
+ * realpaths both sides, so `..` traversal and planted symlinks past the
+ * prefix still fail.
  */
-function deriveTranslatedProjectsRoot(translated: string): string | null {
-  const marker = '/.claude/projects/';
-  const i = translated.indexOf(marker);
-  if (i < 0) return null;
-  return translated.slice(0, i + marker.length - 1);
+function deriveTranslatedProjectsRoot(translated: string, mountRoot: string): string | null {
+  const base = mountRoot.replace(/\/+$/, '');
+  if (!translated.startsWith(base + '/')) return null;
+  const segments = translated.slice(base.length + 1).split('/');
+  // [drive, 'Users', profile, '.claude', 'projects', ...at least one more]
+  if (segments.length < 6) return null;
+  const [drive, users, profile, dotClaude, projects] = segments;
+  if (!/^[a-z]$/i.test(drive)) return null;
+  if (users.toLowerCase() !== 'users') return null;
+  if (!profile || profile === '.' || profile === '..') return null;
+  if (dotClaude !== '.claude' || projects !== 'projects') return null;
+  return [base, drive, users, profile, dotClaude, projects].join('/');
 }
 
 // ── Parsing [G3, A6] ────────────────────────────────────────────────────────

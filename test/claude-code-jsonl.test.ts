@@ -282,6 +282,34 @@ describe('confineTranscriptPath — cross-OS WSL translation (#4522)', () => {
     expect(r.ok).toBe(true);
   });
 
+  test('rejects: .claude/projects tree OUTSIDE the Windows user-profile pattern (wave-g tightening)', () => {
+    // The fallback root must come from the session's known config tree
+    // (the Windows user-profile `<drive>:\\Users\\<u>\\.claude\\projects`),
+    // never from the supplied path's own `.claude/projects` segment — an
+    // attacker-controlled hook stdin under ANY such dir on a mounted drive
+    // (C:\\evil\\.claude\\projects\\x.jsonl) must stay fail-closed.
+    const { mountRoot } = wslFixture();
+    const evilProjects = join(mountRoot, 'c', 'evil', '.claude', 'projects');
+    mkdirSync(evilProjects, { recursive: true });
+    writeFileSync(join(evilProjects, 'x.jsonl'), '{}\n');
+    expect(
+      confineTranscriptPath('C:\\evil\\.claude\\projects\\x.jsonl', { wslMountRoot: mountRoot }),
+    ).toEqual({ ok: false, reason: 'outside_projects_dir' });
+  });
+
+  test('rejects: dot-dot profile segment cannot widen the derived root (wave-g tightening)', () => {
+    // C:\\Users\\..\\.claude\\projects\\x.jsonl resolves to the drive root's
+    // .claude tree — NOT a user profile. The profile segment must be a real
+    // path component, so `..`/`.` are refused before containment ever runs.
+    const { mountRoot } = wslFixture();
+    const driveRootProjects = join(mountRoot, 'c', '.claude', 'projects');
+    mkdirSync(driveRootProjects, { recursive: true });
+    writeFileSync(join(driveRootProjects, 'x.jsonl'), '{}\n');
+    expect(
+      confineTranscriptPath('C:\\Users\\..\\.claude\\projects\\x.jsonl', { wslMountRoot: mountRoot }),
+    ).toEqual({ ok: false, reason: 'outside_projects_dir' });
+  });
+
   test('rejects: translated path with no .claude/projects ancestor', () => {
     const { mountRoot } = wslFixture();
     const evil = join(mountRoot, 'c', 'evil');
