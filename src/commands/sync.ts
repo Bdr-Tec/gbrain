@@ -14,7 +14,7 @@ import {
   unacknowledgedSyncFailures,
   acknowledgeFailures,
   loadSyncFailures,
-  formatCodeBreakdown,
+  formatCodeBreakdown, formatFailedFileList,
   applySyncFailureGate,
   isSkippablePath,
   resolveAutoSkipThreshold,
@@ -2469,8 +2469,9 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       } else {
         serr(
           `\nSync blocked: ${fileFailCount} file(s) failed to parse:\n` +
-          `${codeBreakdown}\n\n` +
-          `Fix the frontmatter and re-run, or use 'gbrain sync --skip-failed' to ` +
+          `${codeBreakdown}\n${formatFailedFileList(failedFiles)}\n\n` +
+          `Pinpoint a file with 'gbrain frontmatter validate <path>' (--fix auto-repairs), ` +
+          `fix the frontmatter and re-run, or use 'gbrain sync --skip-failed' to ` +
           `acknowledge and move on. A file that keeps failing auto-skips after ` +
           `${resolveAutoSkipThreshold()} consecutive syncs.`,
         );
@@ -2902,8 +2903,9 @@ async function performFullSync(
       } else {
         serr(
           `\nFull sync blocked: ${fileFailCount} file(s) failed:\n` +
-          `${codeBreakdown}\n\n` +
-          `Fix the YAML in those files and re-run, or use '--skip-failed'. A file ` +
+          `${codeBreakdown}\n${formatFailedFileList(result.failures)}\n\n` +
+          `Pinpoint a file with 'gbrain frontmatter validate <path>' (--fix auto-repairs), ` +
+          `fix the YAML and re-run, or use '--skip-failed'. A file ` +
           `that keeps failing auto-skips after ${resolveAutoSkipThreshold()} consecutive syncs.`,
         );
       }
@@ -4498,7 +4500,7 @@ export function printSyncResult(result: SyncResult, sink: NodeJS.WriteStream = p
           `Do NOT use --skip-failed for provider errors.`,
         );
       } else {
-        write(`  Fix the files then re-run 'gbrain sync', or 'gbrain sync --skip-failed' to move on.`);
+        write(`  Pinpoint with 'gbrain frontmatter validate <path>', fix, then re-run 'gbrain sync', or 'gbrain sync --skip-failed' to move on.`);
       }
       break;
     }
