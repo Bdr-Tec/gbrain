@@ -305,6 +305,7 @@ const REAP_CLAIM_TTL_MS = 30_000;
 function breakStaleClaim(claimDir: string): boolean {
   let stale: boolean;
   try {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- claimDir derives from getLockDir(dataDir) (internal brain dir) + LOCK_FILE constant — no user input
     const raw = JSON.parse(readFileSync(join(claimDir, LOCK_FILE), 'utf-8'));
     const alive = typeof raw.pid === 'number' && isProcessAlive(raw.pid);
     const fresh = typeof raw.at === 'number' && Date.now() - raw.at < REAP_CLAIM_TTL_MS;
@@ -359,8 +360,10 @@ function tryReapLockDir(lockDir: string, victimToken: string | null): boolean {
       mkdirSync(claimDir);
       // Publish ownership atomically (tmp+rename) — a concurrent stale-claim
       // breaker must never see a claimed dir with missing/torn metadata.
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- same: internal lock dir + constant + own pid
       const tmp = join(claimDir, `${LOCK_FILE}.tmp-${process.pid}`);
       writeFileSync(tmp, JSON.stringify({ pid: process.pid, at: Date.now() }), { mode: 0o644 });
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- same: internal lock dir + constant
       renameSync(tmp, join(claimDir, LOCK_FILE));
       return true;
     } catch {
@@ -374,6 +377,7 @@ function tryReapLockDir(lockDir: string, victimToken: string | null): boolean {
     if (victimToken !== null) {
       let current: string;
       try {
+        // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- lockDir = getLockDir(dataDir), internal + constant
         current = tokenOf(JSON.parse(readFileSync(join(lockDir, LOCK_FILE), 'utf-8')));
       } catch {
         return false; // vanished (another outcome already resolved it)
@@ -381,6 +385,7 @@ function tryReapLockDir(lockDir: string, victimToken: string | null): boolean {
       if (current !== victimToken) return false; // a NEW holder's lock — leave it
     } else {
       try {
+        // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- same: internal lock dir + constant
         JSON.parse(readFileSync(join(lockDir, LOCK_FILE), 'utf-8'));
         return false; // became parseable — not the corrupt lock we classified
       } catch (err) {
