@@ -47,7 +47,7 @@ import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { computeCorpusGeneration, loadSourceRow } from './contextual-retrieval-service.ts';
 import { DEFAULT_SYNOPSIS_MODEL } from './page-summary.ts';
 import { runGuardrails } from './guardrails.ts';
-import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from './facts-fence.ts';
+import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, factsRestoredVisibleRowsWarning } from './facts-fence.ts';
 import { scanFencedBlocks, MAX_FENCES_PER_PAGE } from './fence-scan.ts';
 
 /**
@@ -611,14 +611,13 @@ export async function importFromContent(
     const incomingFacts = parseFactsFence(parsed.compiled_truth);
     const existingFacts = parseFactsFence(existing.compiled_truth);
     const existingFenceBlock = extractFactsFenceBlock(existing.compiled_truth);
-    if (
-      incomingFacts.facts.length === 0 &&
-      incomingFacts.warnings.length === 0 &&
-      existingFacts.warnings.length === 0 &&
-      existingFacts.facts.length > 0 &&
-      existingFenceBlock
-    ) {
-      parsed.compiled_truth = replaceOrAppendFactsFence(parsed.compiled_truth, existingFenceBlock);
+    const restored = incomingFacts.facts.length === 0 && incomingFacts.warnings.length === 0
+      && existingFacts.warnings.length === 0 && existingFacts.facts.length > 0 && !!existingFenceBlock;
+    if (restored) {
+      parsed.compiled_truth = replaceOrAppendFactsFence(parsed.compiled_truth, existingFenceBlock as string);
+      // Surfacing-only: see factsRestoredVisibleRowsWarning() in facts-fence.ts. No behavior change.
+      const warning = factsRestoredVisibleRowsWarning(slug, existingFacts);
+      if (warning) console.warn(warning);
     }
   }
 

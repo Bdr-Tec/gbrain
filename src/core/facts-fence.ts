@@ -345,6 +345,32 @@ export function renderFactsTable(facts: ParsedFact[]): string {
 }
 
 /**
+ * Surfacing-only diagnostic for #2044's compiled_truth restoration guard
+ * (import-file.ts): when the guard fires (the incoming write emptied the
+ * Facts fence), it re-appends the ENTIRE old fence block — including any
+ * row that was `'world'`-visible, which the caller could have seen in
+ * full and may have genuinely, intentionally deleted. The guard can't
+ * distinguish that from "caller never saw this row," so a real deletion
+ * gets silently undone.
+ *
+ * Only call this once the restoration guard has actually fired. Returns
+ * a warning string, or null if nothing to flag. Pure and side-effect-free
+ * — the caller decides how to surface it (console.warn today); no
+ * restoration behavior is changed here.
+ */
+export function factsRestoredVisibleRowsWarning(
+  slug: string,
+  restoredFrom: { facts: ParsedFact[] },
+): string | null {
+  const worldRows = restoredFrom.facts.filter((f) => f.visibility === 'world').length;
+  if (worldRows === 0) return null;
+  return `[gbrain] #2044 restoration on ${slug}: a remote write emptied the Facts fence and ` +
+    `${restoredFrom.facts.length} old row(s) were restored, including ${worldRows} 'world'-visible ` +
+    `row(s) the caller could have seen and may have genuinely deleted. If so, that deletion has ` +
+    `been undone -- verify.`;
+}
+
+/**
  * Append a new fact row to the body. If a fenced facts table exists, the
  * row is added to the end of it. If not, a new `## Facts` section + fence
  * is created at the end of the body.
