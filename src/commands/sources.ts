@@ -272,6 +272,25 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
       console.error(`Error: unknown --services entries: ${bad.join(', ')}. Valid: gmail, calendar, contacts`);
       process.exit(2);
     }
+    // Duplicate-account guard: a second source for the same account would
+    // duplicate every page/loop in federated reads and coalesce the two
+    // sources' loops_extract jobs. Warn loudly (not refuse — split-window
+    // setups are conceivable) so the duplication is a choice, not a surprise.
+    try {
+      const dupRows = await engine.executeRaw<{ id: string; config: unknown }>(
+        `SELECT id, config FROM sources WHERE archived IS NOT TRUE`,
+        [],
+      );
+      const dup = dupRows.find((r) => {
+        const c = typeof r.config === 'string' ? (JSON.parse(r.config) as Record<string, unknown>) : ((r.config ?? {}) as Record<string, unknown>);
+        return c.kind === 'google' && c.g_account === gAccount;
+      });
+      if (dup) {
+        console.error(
+          `Warning: source "${dup.id}" already syncs ${gAccount} — a second source for the same account duplicates its pages and loops in federated reads.`,
+        );
+      }
+    } catch { /* preflight is best-effort */ }
     // Fail fast at registration when the account has no vault entry — the
     // alternative is a source that errors on every sync.
     const { openVault, credentialId } = await import('../core/creds/vault.ts');

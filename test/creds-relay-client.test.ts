@@ -311,6 +311,107 @@ describe('pollClaim', () => {
   });
 });
 
+describe('pollClaim hardening', () => {
+  it('a wrong claim_secret (401) fails closed as relay_unreachable — existence is not revealed', async () => {
+    const r = relay({ pollsUntilConsent: 0 });
+    const session = await createSession(r.base, {
+      provider: 'google',
+      scopes: RELAY_SCOPES,
+      client_kind: 'cli',
+    });
+    const { sleep } = instantSleep();
+    await expectCode(
+      pollClaim(
+        r.base,
+        { session_id: session.session_id, claim_secret: 'claim-secret-wrong' },
+        { sleep },
+      ),
+      'relay_unreachable',
+    );
+    // The tokens were never handed over: the right secret can still claim.
+    const claim = await pollClaim(r.base, session, { sleep });
+    expect(claim.access_token).toBe(RELAY_ACCESS_TOKEN);
+  });
+
+  it('deadline expiry while the relay keeps 202ing → relay_session_expired (before sleeping past it)', async () => {
+    const always202: FetchImpl = async () => new Response('', { status: 202 });
+    const { sleep, delays } = instantSleep();
+    await expectCode(
+      pollClaim(
+        'http://relay.invalid',
+        { session_id: 'sess-slow', claim_secret: 'claim-secret-sess-slow' },
+        { timeoutMs: 1, sleep },
+        always202,
+      ),
+      'relay_session_expired',
+    );
+    // The client gives up when the NEXT sleep would cross the deadline —
+    // it never burns a sleep it can't afford.
+    expect(delays).toHaveLength(0);
+  });
+
+  it('an aborted signal → consent_timeout, checked before any request fires', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    let fetched = false;
+    const neverFetch: FetchImpl = async () => {
+      fetched = true;
+      throw new Error('must not fetch after abort');
+    };
+    const { sleep } = instantSleep();
+    await expectCode(
+      pollClaim(
+        'http://relay.invalid',
+        { session_id: 'sess-abort', claim_secret: 'claim-secret-sess-abort' },
+        { signal: ac.signal, sleep },
+        neverFetch,
+      ),
+      'consent_timeout',
+    );
+    expect(fetched).toBe(false);
+  });
+
+  it('200 with a malformed claim body → relay_unreachable (fail closed, no partial claim)', async () => {
+    // Missing refresh_token and email — a non-conformant server.
+    const malformed: FetchImpl = async () => Response.json({ access_token: 'ya29.only' });
+    const { sleep } = instantSleep();
+    await expectCode(
+      pollClaim(
+        'http://relay.invalid',
+        { session_id: 'sess-bad', claim_secret: 'claim-secret-sess-bad' },
+        { sleep },
+        malformed,
+      ),
+      'relay_unreachable',
+    );
+  });
+
+  it('backoff doubles from initialDelayMs and plateaus at maxDelayMs', async () => {
+    let polls = 0;
+    const fiveThenClaim: FetchImpl = async () => {
+      polls++;
+      if (polls <= 5) return new Response('', { status: 202 });
+      return Response.json({
+        access_token: RELAY_ACCESS_TOKEN,
+        refresh_token: RELAY_REFRESH_TOKEN,
+        expiry: RELAY_EXPIRY,
+        scopes: RELAY_SCOPES,
+        email: 'a@example.com',
+      });
+    };
+    const { sleep, delays } = instantSleep();
+    const claim = await pollClaim(
+      'http://relay.invalid',
+      { session_id: 'sess-plateau', claim_secret: 'claim-secret-sess-plateau' },
+      { initialDelayMs: 1_000, maxDelayMs: 5_000, sleep },
+      fiveThenClaim,
+    );
+    expect(claim.email).toBe('a@example.com');
+    // 1s → 2s → 4s → capped at 5s, 5s (never past maxDelayMs).
+    expect(delays).toEqual([1_000, 2_000, 4_000, 5_000, 5_000]);
+  });
+});
+
 // ── refreshViaRelay ──────────────────────────────────────────────────────────
 
 describe('refreshViaRelay', () => {

@@ -46,8 +46,18 @@ export interface ThreadLoopSpec {
 }
 
 export interface ThreadLoopVerdict {
-  /** Desired end-state; anything not listed here gets closed. */
+  /** Loops that should be open (suppression-filtered). */
   open: ThreadLoopSpec[];
+  /**
+   * Loops that genuinely stopped holding — a TURN FLIP happened (I replied →
+   * inbound closes; they replied → outbound closes). Everything else is a
+   * HOLD: neither opened nor closed. Grace windows, CC-only delivery, list
+   * mail, and suppressions must never close an existing loop — a fresh
+   * counterparty nudge inside the grace window is NOT a reply (red-team:
+   * closing it as 'reply_detected' hid the loop for 24h exactly while the
+   * counterparty was most impatient).
+   */
+  close: Array<'unanswered_inbound' | 'unanswered_outbound'>;
 }
 
 function isMine(m: GmailMessageMeta, myAddresses: Set<string>): boolean {
@@ -56,10 +66,6 @@ function isMine(m: GmailMessageMeta, myAddresses: Set<string>): boolean {
 
 function ageHours(ms: number, now: Date): number {
   return (now.getTime() - ms) / 3_600_000;
-}
-
-function daysAgo(ms: number, now: Date): number {
-  return Math.floor((now.getTime() - ms) / 86_400_000);
 }
 
 function quote(m: GmailMessageMeta): string {
@@ -78,14 +84,24 @@ export function detectThreadLoop(
   suppressions?: SuppressionSet,
 ): ThreadLoopVerdict {
   const messages = thread.messages.filter((m) => m.internalDateMs > 0);
-  if (messages.length === 0) return { open: [] };
+  if (messages.length === 0) return { open: [], close: [] };
 
-  // Substantive = not from a noise sender. Noise threads carry no loops.
+  // Substantive = not from a noise sender. Noise threads carry no loops —
+  // and can't close any either (no turn flip is observable).
   const substantive = messages.filter((m) => !isNoiseSender(m.fromAddress));
-  if (substantive.length === 0) return { open: [] };
+  if (substantive.length === 0) return { open: [], close: [] };
 
   const last = substantive[substantive.length - 1];
   const subject = (last.subject || substantive[0].subject || '(no subject)').replace(/^((re|fwd?|aw):\s*)+/i, '');
+  const lastIsMine = isMine(last, myAddresses);
+
+  // The turn flip is the ONLY close signal: my reply answers an inbound
+  // loop; their reply answers an outbound one. Every gate below (grace,
+  // CC-only, list mail, FYI, suppression) can withhold a NEW open but must
+  // never fabricate a 'reply_detected' close.
+  const close: ThreadLoopVerdict['close'] = lastIsMine
+    ? ['unanswered_inbound']
+    : ['unanswered_outbound'];
 
   // Self-thread: every participant is me (notes-to-self, drafts).
   const participants = new Set<string>();
@@ -94,50 +110,55 @@ export function detectThreadLoop(
     for (const a of [...m.to, ...m.cc]) participants.add(a);
   }
   const external = [...participants].filter((p) => !myAddresses.has(p));
-  if (external.length === 0) return { open: [] };
+  if (external.length === 0) return { open: [], close: [] };
 
   const threadSuppressed = suppressions?.threads.has(thread.threadId) ?? false;
 
-  if (!isMine(last, myAddresses)) {
+  if (!lastIsMine) {
     // ── Last word is theirs: do I owe a reply? ──
     // List mail never owes a reply.
-    if (last.listUnsubscribe) return { open: [] };
+    if (last.listUnsubscribe) return { open: [], close };
     // CC-only (or bcc/list delivery with no To: match) does not owe a reply.
     const inTo = last.to.some((a) => myAddresses.has(a));
-    if (!inTo) return { open: [] };
-    if (threadSuppressed || suppressions?.senders.has(last.fromAddress)) return { open: [] };
-    if (ageHours(last.internalDateMs, now) < INBOUND_GRACE_HOURS) return { open: [] };
+    if (!inTo) return { open: [], close };
+    if (threadSuppressed || suppressions?.senders.has(last.fromAddress)) return { open: [], close };
+    if (ageHours(last.internalDateMs, now) < INBOUND_GRACE_HOURS) return { open: [], close };
     return {
       open: [
         {
           loopType: 'unanswered_inbound',
+          // No age in the stored summary — it would freeze at detection time
+          // and lie on the trust-critical surface; readers render age from
+          // last_activity_at.
+          summary: `Reply owed to ${last.fromAddress}: "${subject}"`,
           counterpartyEmail: last.fromAddress,
-          summary: `Reply owed to ${last.fromAddress}: "${subject}" (${daysAgo(last.internalDateMs, now)}d)`,
           evidence: [{ message_id: last.id, quote: quote(last) }],
           lastActivityMs: last.internalDateMs,
         },
       ],
+      close,
     };
   }
 
   // ── Last word is mine: am I waiting on them? ──
   // No question mark → FYI/forward, not an ask.
-  if (!last.bodyText.includes('?')) return { open: [] };
+  if (!last.bodyText.includes('?')) return { open: [], close };
   const recipients = last.to.filter((a) => !myAddresses.has(a));
-  if (recipients.length === 0) return { open: [] };
+  if (recipients.length === 0) return { open: [], close };
   const counterparty = recipients[0];
-  if (threadSuppressed || suppressions?.senders.has(counterparty)) return { open: [] };
-  if (ageHours(last.internalDateMs, now) < OUTBOUND_GRACE_HOURS) return { open: [] };
+  if (threadSuppressed || suppressions?.senders.has(counterparty)) return { open: [], close };
+  if (ageHours(last.internalDateMs, now) < OUTBOUND_GRACE_HOURS) return { open: [], close };
   return {
     open: [
       {
         loopType: 'unanswered_outbound',
         counterpartyEmail: counterparty,
-        summary: `Waiting on ${counterparty}: "${subject}" (asked ${daysAgo(last.internalDateMs, now)}d ago)`,
+        summary: `Waiting on ${counterparty}: "${subject}"`,
         evidence: [{ message_id: last.id, quote: quote(last) }],
         lastActivityMs: last.internalDateMs,
       },
     ],
+    close,
   };
 }
 
@@ -172,21 +193,14 @@ export async function applyThreadLoopVerdict(
   now: Date = new Date(),
 ): Promise<void> {
   const suppressions = await suppressionsFor(engine, sourceId);
-  // Two verdicts, two jobs: the RAW verdict (no suppressions) decides what
-  // genuinely stopped holding (a reply landed) and may CLOSE; the suppressed
-  // verdict decides what may OPEN. Muting must never close an existing loop
-  // — "suppressed senders/threads never open NEW loops; existing loops keep
-  // their state" — and must never stamp closed_by:'reply_detected' on a
-  // loop nobody replied to.
-  const rawVerdict = detectThreadLoop(thread, myAddresses, now);
+  // One verdict, two lanes: `close` is the turn-flip set (suppression- and
+  // grace-independent — only a genuine reply closes, and only the answered
+  // type); `open` is suppression-filtered. A held loop (grace window,
+  // CC-only nudge, muted sender) is neither opened nor closed.
   const verdict = detectThreadLoop(thread, myAddresses, now, suppressions);
 
-  const stillHolding = new Set(rawVerdict.open.map((s) => s.loopType));
-  const allTypes: Array<'unanswered_inbound' | 'unanswered_outbound'> = [
-    'unanswered_inbound',
-    'unanswered_outbound',
-  ];
-  const toClose = allTypes.filter((t) => !stillHolding.has(t));
+  const desired = new Set(verdict.open.map((s) => s.loopType));
+  const toClose = verdict.close.filter((t) => !desired.has(t));
   if (toClose.length > 0) {
     await closeThreadLoops(engine, sourceId, thread.threadId, 'reply_detected', toClose);
   }

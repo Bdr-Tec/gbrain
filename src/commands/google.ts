@@ -345,7 +345,6 @@ async function finishConnect(
     },
   };
   await vault.put(entry);
-  clearPending();
   appendGoogleHeartbeat('consent_ok', 'ok', { account_hash: hashish(email), client_ref: clientRef });
   return entry;
 }
@@ -425,6 +424,10 @@ export async function runGoogleConnect(args: string[]): Promise<void> {
         // invocation's default f.services.
         pending.scopes,
       );
+      // Only the flow that CONSUMED the pending record clears it — a
+      // parallel loopback/relay connect completing must not delete an
+      // unrelated in-flight paste flow's state.
+      clearPending();
       printConnected(f.json, entry);
       return;
     }

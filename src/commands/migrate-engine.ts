@@ -281,6 +281,15 @@ export async function copyMigrationSimpleTable(
     }
     onRow?.();
   }
+  // Explicit-id copy leaves the BIGSERIAL sequence at 1 — the first new
+  // insert would collide with a copied row's PRIMARY KEY (and the ON
+  // CONFLICT dedup arbiter does NOT absorb a pkey 23505). Mirror the facts
+  // copy's setval.
+  try {
+    await target.executeRaw(
+      `SELECT setval(pg_get_serial_sequence('${table}', 'id'), (SELECT COALESCE(MAX(id), 0) + 1 FROM ${table}), false)`,
+    );
+  } catch { /* sequence bump is best-effort on exotic schemas */ }
   return result;
 }
 

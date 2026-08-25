@@ -23,7 +23,7 @@
  * reuses this module unmodified.
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 
 import { atomicWriteFileSync } from '../atomic-write.ts';
 import { gbrainPath } from '../config.ts';
@@ -163,6 +163,49 @@ export function parseVaultFile(raw: string): VaultFileShape {
   };
 }
 
+/**
+ * Cross-process mutation lock: the vault is read-modify-write, and a sync's
+ * token refresh racing a `connect`/`disconnect` would lose one side's update
+ * (worst case resurrecting a deleted credential). O_EXCL lockfile with a
+ * stale-takeover after 10s (crashed holders).
+ */
+function withVaultLock<T>(vaultPath: string, fn: () => T): T {
+  const lockPath = `${vaultPath}.lock`;
+  const deadline = Date.now() + 5_000;
+  // The vault dir may not exist yet (first write on a fresh GBRAIN_HOME) —
+  // an ENOENT from openSync must not read as "lock held".
+  mkdirSync(gbrainPath(), { recursive: true });
+  for (;;) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      closeSync(fd);
+      break;
+    } catch (e) {
+      // Only EEXIST means contention; any other failure (permissions, odd
+      // fs) fails open — the atomic write still guarantees no torn file.
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') break;
+      try {
+        const age = Date.now() - statSync(lockPath).mtimeMs;
+        if (age > 10_000) {
+          rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch { /* lock vanished between attempts */ }
+      if (Date.now() > deadline) {
+        process.stderr.write(`[creds] vault lock busy >5s (${lockPath}); proceeding without it\n`);
+        break;
+      }
+      const until = Date.now() + 50;
+      while (Date.now() < until) { /* brief sync spin — CLI-scale contention */ }
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lockPath, { force: true });
+  }
+}
+
 export class FileVaultBackend implements CredentialVault {
   constructor(private readonly path: string = credentialsPath()) {}
 
@@ -200,9 +243,11 @@ export class FileVaultBackend implements CredentialVault {
   }
 
   async put(entry: CredentialEntry): Promise<void> {
-    const shape = this.read();
-    shape.credentials[entry.id] = entry;
-    this.write(shape);
+    withVaultLock(this.path, () => {
+      const shape = this.read();
+      shape.credentials[entry.id] = entry;
+      this.write(shape);
+    });
   }
 
   async list(filter?: { provider?: string }): Promise<CredentialMeta[]> {
@@ -214,11 +259,13 @@ export class FileVaultBackend implements CredentialVault {
   }
 
   async delete(id: string): Promise<boolean> {
-    const shape = this.read();
-    if (!(id in shape.credentials)) return false;
-    delete shape.credentials[id];
-    this.write(shape);
-    return true;
+    return withVaultLock(this.path, () => {
+      const shape = this.read();
+      if (!(id in shape.credentials)) return false;
+      delete shape.credentials[id];
+      this.write(shape);
+      return true;
+    });
   }
 
   async getClient(provider: string): Promise<ProviderClientRecord | null> {
@@ -226,19 +273,23 @@ export class FileVaultBackend implements CredentialVault {
   }
 
   async putClient(rec: ProviderClientRecord): Promise<void> {
-    const shape = this.read();
-    shape.clients = shape.clients.filter((c) => c.provider !== rec.provider);
-    shape.clients.push(rec);
-    this.write(shape);
+    withVaultLock(this.path, () => {
+      const shape = this.read();
+      shape.clients = shape.clients.filter((c) => c.provider !== rec.provider);
+      shape.clients.push(rec);
+      this.write(shape);
+    });
   }
 
   async deleteClient(provider: string): Promise<boolean> {
-    const shape = this.read();
-    const before = shape.clients.length;
-    shape.clients = shape.clients.filter((c) => c.provider !== provider);
-    if (shape.clients.length === before) return false;
-    this.write(shape);
-    return true;
+    return withVaultLock(this.path, () => {
+      const shape = this.read();
+      const before = shape.clients.length;
+      shape.clients = shape.clients.filter((c) => c.provider !== provider);
+      if (shape.clients.length === before) return false;
+      this.write(shape);
+      return true;
+    });
   }
 }
 

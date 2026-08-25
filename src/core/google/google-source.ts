@@ -35,6 +35,7 @@ import { credentialId, openVault, type CredentialEntry, type CredentialVault } f
 import { createProgress, startHeartbeat } from '../progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../cli-options.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
+import { atomicWriteFileSync } from '../atomic-write.ts';
 import {
   CalendarClient,
   GmailClient,
@@ -111,17 +112,31 @@ function emptyState(): GoogleSourceState {
 }
 
 export function readGoogleState(dir: string): GoogleSourceState {
+  const file = googleStateFile(dir);
+  if (!existsSync(file)) return emptyState();
   try {
-    const parsed = JSON.parse(readFileSync(googleStateFile(dir), 'utf-8')) as Partial<GoogleSourceState>;
+    const parsed = JSON.parse(readFileSync(file, 'utf-8')) as Partial<GoogleSourceState>;
     return { ...emptyState(), ...parsed };
-  } catch {
+  } catch (e) {
+    // A CORRUPT existing state file is not a fresh install: silently
+    // returning emptyState() would re-run the entire backfill with zero
+    // diagnostic. Quarantine for forensics and say so loudly.
+    try {
+      renameSync(file, `${file}.corrupt`);
+    } catch { /* best-effort */ }
+    process.stderr.write(
+      `[google] state file ${file} was corrupt (${e instanceof Error ? e.message : String(e)}); ` +
+        `quarantined to .corrupt — cursors reset, the next sync re-anchors and resumes.\n`,
+    );
     return emptyState();
   }
 }
 
 function writeGoogleState(dir: string, state: GoogleSourceState): void {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(googleStateFile(dir), JSON.stringify(state, null, 2), 'utf-8');
+  // Atomic (tmp+fsync+rename): this file is written once per backfill batch;
+  // a torn write would silently reset every cursor (full re-backfill).
+  atomicWriteFileSync(googleStateFile(dir), JSON.stringify(state, null, 2));
 }
 
 /** The "my addresses" identity set: account + Gmail sendAs aliases. */
@@ -253,27 +268,39 @@ async function sweepContacts(
       throw e;
     }
   }
+  // Ownership is keyed on google_contact_id, not path alone: a page owned by
+  // a DIFFERENT contact (name collision — two "John Smith"s) must neither be
+  // rewritten nor deleted; the colliding contact gets a disambiguated slug.
+  const ownerOf = (relPath: string): string | null => {
+    const filePath = join(deps.cfg.dir, relPath);
+    if (!existsSync(filePath)) return null;
+    const m = readFileSync(filePath, 'utf-8').match(/^google_contact_id:\s*"([^"]+)"/m);
+    return m ? m[1] : 'hand-authored';
+  };
   for (const c of result.contacts) {
     if (deps.opts.signal?.aborted) return;
-    const slug = personSlugFromContact(c);
-    if (!slug) continue;
-    const relPath = `${slug}.md`;
+    const baseSlug = personSlugFromContact(c);
+    if (!baseSlug) continue;
+    const baseOwner = ownerOf(`${baseSlug}.md`);
+    const collides = baseOwner !== null && baseOwner !== 'hand-authored' && baseOwner !== c.resourceName;
+    const rendered = renderPersonPage(c, collides);
     if (c.deleted) {
-      await deletePageByRelPath(deps, relPath, summary);
+      // Delete only the page THIS contact owns.
+      for (const candidate of [
+        `${personSlugFromContact(c, false)}.md`,
+        `${personSlugFromContact(c, true)}.md`,
+      ]) {
+        if (candidate && ownerOf(candidate) === c.resourceName) {
+          await deletePageByRelPath(deps, candidate, summary);
+        }
+      }
       continue;
     }
-    const rendered = renderPersonPage(c);
     if (!rendered) continue;
-    // Ownership guard: a page at this path that the connector did not write
-    // (no google_contact_id marker) is never rewritten — hand-authored person
-    // pages keep their body; the alias projection comes from OUR pages only.
-    const filePath = join(deps.cfg.dir, rendered.relPath);
-    if (existsSync(filePath)) {
-      const existing = readFileSync(filePath, 'utf-8');
-      if (!existing.includes('google_contact_id:')) {
-        deps.log(`[google] skipping hand-authored ${rendered.relPath}`);
-        continue;
-      }
+    const owner = ownerOf(rendered.relPath);
+    if (owner === 'hand-authored') {
+      deps.log(`[google] skipping hand-authored ${rendered.relPath}`);
+      continue;
     }
     await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
   }
@@ -282,6 +309,27 @@ async function sweepContacts(
 }
 
 // ── Calendar sweep ───────────────────────────────────────────────────────────
+
+/** Existing calendar page's source_path for an event id, or null. */
+async function calendarPageRelPathByEventId(
+  deps: GoogleSyncDeps,
+  eventId: string,
+): Promise<string | null> {
+  try {
+    const rows = await deps.engine.executeRaw<{ source_path: string | null }>(
+      `SELECT source_path FROM pages
+       WHERE source_id = $1 AND deleted_at IS NULL AND slug LIKE 'calendar/%'
+         AND frontmatter->>'event_id' = $2
+       LIMIT 1`,
+      [deps.sourceId, eventId],
+    );
+    return rows[0]?.source_path ?? null;
+  } catch {
+    return null;
+  }
+}
+
+
 
 async function sweepCalendar(
   deps: GoogleSyncDeps,
@@ -316,11 +364,19 @@ async function sweepCalendar(
   }
   for (const ev of result.events) {
     if (deps.opts.signal?.aborted) return;
+    // The page path derives from MUTABLE fields (start date, summary) while
+    // identity is the immutable event id — look up the existing page by
+    // frontmatter event_id so reschedules move (old page deleted) and
+    // cancelled skeletons (id + status only, per the Calendar API) still
+    // find their page instead of computing a 1970 ghost path.
+    const existingPath = await calendarPageRelPathByEventId(deps, ev.id);
     const rendered = renderCalendarEventPage(ev);
     if (!rendered) {
-      // Cancelled instance → remove its page if one exists.
-      await deletePageByRelPath(deps, calendarRelPath(ev), summary);
+      await deletePageByRelPath(deps, existingPath ?? calendarRelPath(ev), summary);
       continue;
+    }
+    if (existingPath && existingPath !== rendered.relPath) {
+      await deletePageByRelPath(deps, existingPath, summary); // rescheduled → moved
     }
     await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
   }
@@ -380,7 +436,7 @@ async function enqueueLoopsExtraction(deps: GoogleSyncDeps): Promise<void> {
         {
           priority: 5,
           // Page-revision keyed: a re-sweep of an unchanged thread is a no-op.
-          idempotency_key: `loops:${c.slug}:${c.newestMs}`,
+          idempotency_key: `loops:${deps.sourceId}:${c.slug}:${c.newestMs}`,
           maxWaiting: LOOPS_EXTRACT_MAX_PER_SWEEP * 2,
         },
       );
@@ -525,15 +581,24 @@ async function sweepGmail(
   } catch (e) {
     if (!(e instanceof GoogleCursorExpiredError)) throw e;
     // History expired (~1 week idle): windowed fallback from the newest
-    // imported message, then re-anchor a fresh historyId.
+    // imported message. BOUNDED like the backfill (the same >cap population
+    // exists here) — and the fresh historyId is only re-anchored when the
+    // listing was COMPLETE; a capped partial listing keeps the fallback lane
+    // active (gmail_newest_ms advances per processed thread, converging).
     deps.log('[google] historyId expired; falling back to bookmark window');
     const sinceSec = Math.floor(((state.gmail_newest_ms ?? cutoffMs) - 86_400_000) / 1000);
+    const FALLBACK_MAX_PAGES = 20;
     const ids = await gmail.listMessageIds(`after:${sinceSec}`, {
+      maxPages: FALLBACK_MAX_PAGES,
+      partialOk: true,
       ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
     });
     threadIds = [...new Set(ids.map((m) => m.threadId))];
-    const profile = await gmail.getProfile({ ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
-    newHistoryId = profile.historyId;
+    const likelyCapped = ids.length >= FALLBACK_MAX_PAGES * 100;
+    if (!likelyCapped) {
+      const profile = await gmail.getProfile({ ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
+      newHistoryId = profile.historyId;
+    }
   }
   let failed = 0;
   for (const tid of threadIds) {
@@ -714,6 +779,23 @@ export async function runGoogleSync(
     } catch { /* legacy prefix typing */ }
   }
 
+  // Scope preflight: a source configured for a service the credential's
+  // grant doesn't cover (connect --scopes gmail, source defaults to all
+  // three) must fail that service with the catalog's scope_missing fix —
+  // not an opaque per-sweep 403 forever.
+  const grantedScopes = entry.meta.scopes ?? [];
+  const scopeFor: Record<GoogleService, string> = {
+    gmail: 'https://www.googleapis.com/auth/gmail.readonly',
+    calendar: 'https://www.googleapis.com/auth/calendar.readonly',
+    contacts: 'https://www.googleapis.com/auth/contacts.readonly',
+  };
+  const grantedServices = cfg.services.filter((svc) => grantedScopes.includes(scopeFor[svc]));
+  const missingServices = cfg.services.filter((svc) => !grantedScopes.includes(scopeFor[svc]));
+  if (grantedScopes.length > 0 && missingServices.length > 0) {
+    log(new CredentialError('scope_missing', undefined, `services without grant: ${missingServices.join(', ')}`).toHuman());
+  }
+  const activeServices = grantedScopes.length > 0 ? grantedServices : cfg.services;
+
   const state = readGoogleState(cfg.dir);
   const firstRun = !state.gmail_backfill_done && state.gmail_history_id === null;
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
@@ -723,7 +805,7 @@ export async function runGoogleSync(
   try {
     const serviceErrors: string[] = [];
 
-    if (cfg.services.includes('contacts')) {
+    if (activeServices.includes('contacts')) {
       const stop = startHeartbeat(progress, 'contacts sweep');
       try {
         await sweepContacts(deps, people, state, activePack, summary, countedSlugs);
@@ -737,7 +819,7 @@ export async function runGoogleSync(
       }
     }
 
-    if (cfg.services.includes('calendar')) {
+    if (activeServices.includes('calendar')) {
       const stop = startHeartbeat(progress, 'calendar sweep');
       try {
         await sweepCalendar(deps, calendar, state, activePack, summary, countedSlugs);
@@ -751,11 +833,13 @@ export async function runGoogleSync(
       }
     }
 
-    if (cfg.services.includes('gmail')) {
+    let gmailSweepOk = !activeServices.includes('gmail'); // gmail not active = not gating freshness
+    if (activeServices.includes('gmail')) {
       const stop = startHeartbeat(progress, 'gmail sweep');
       try {
         await sweepGmail(deps, gmail, state, activePack, summary, countedSlugs, tick);
         if (opts.full) await reconcileGmailDeletes(deps, gmail, summary);
+        gmailSweepOk = true;
       } catch (e) {
         serviceErrors.push(`gmail: ${e instanceof Error ? e.message : String(e)}`);
         summary.status = 'partial';
@@ -767,13 +851,19 @@ export async function runGoogleSync(
     }
 
     summary.pagesAffected = [...new Set(summary.pagesAffected)];
+    if (grantedScopes.length > 0 && missingServices.length > 0) summary.status = 'partial';
     if (opts.signal?.aborted) summary.status = 'partial';
     if (opts.full && summary.status === 'synced') state.last_full_at = new Date().toISOString();
 
     // Per-service cursors were advanced in-place only on success; persist.
     writeGoogleState(cfg.dir, state);
-    await runExtractAndEmbed(deps, summary);
-    await enqueueLoopsExtraction(deps);
+    // An aborted run (wall-clock budget, serve-delegation timeout) skips the
+    // extract/embed/extraction tails — the deferred backfill machinery picks
+    // them up on the next full run instead of overshooting the budget.
+    if (!opts.signal?.aborted) {
+      await runExtractAndEmbed(deps, summary);
+      await enqueueLoopsExtraction(deps);
+    }
 
     // Commitment-loop staleness pass (v1 close semantics): overdue >14d or
     // >90d inactive → 'stale'. Cheap indexed UPDATE, once per sweep.
@@ -782,12 +872,18 @@ export async function runGoogleSync(
       await markStaleLoops(engine, sourceId);
     } catch { /* best-effort */ }
 
-    try {
-      await engine.executeRaw(
-        `UPDATE sources SET last_sync_at = now(), newest_content_at = $1::timestamptz WHERE id = $2`,
-        [new Date(state.gmail_newest_ms ?? Date.now()).toISOString(), sourceId],
-      );
-    } catch { /* best-effort */ }
+    // last_sync_at feeds the trust-critical staleness gate (`gbrain waiting`
+    // refuses on stale sources). A sync whose GMAIL sweep failed did not
+    // refresh the loops' data — stamping it would let a revoked token +
+    // frequent cron keep the gate green forever (red-team F2 bypass).
+    if (gmailSweepOk) {
+      try {
+        await engine.executeRaw(
+          `UPDATE sources SET last_sync_at = now(), newest_content_at = $1::timestamptz WHERE id = $2`,
+          [new Date(state.gmail_newest_ms ?? Date.now()).toISOString(), sourceId],
+        );
+      } catch { /* best-effort */ }
+    }
 
     const changed = summary.added + summary.modified + summary.deleted > 0;
     return {

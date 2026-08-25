@@ -116,6 +116,7 @@ async function deepLinksFor(
 interface LoopView {
   id: number;
   loop_type: LoopType;
+  status: LoopStatus;
   summary: string;
   due_at: string | null;
   opened_at: string;
@@ -134,6 +135,7 @@ function loopView(l: OpenLoopRow, trusted: boolean, deepLinks: Map<string, strin
   const base: LoopView = {
     id: l.id,
     loop_type: l.loop_type,
+    status: l.status,
     summary: l.summary,
     due_at: l.due_at,
     opened_at: l.opened_at,
@@ -157,6 +159,9 @@ interface CounterpartyGroup {
   counterparty: string;
   counterparty_slug: string | null;
   counterparty_email: string | null;
+  /** The loops' home source — entity cards/aliases live THERE, not in the
+   *  caller's (often 'default') scope. */
+  source_id: string;
   loop_count: number;
   oldest_opened_at: string;
   nearest_due_at: string | null;
@@ -191,7 +196,11 @@ function renderText(groups: CounterpartyGroup[], stale: boolean): string {
     lines.push('', `## ${g.counterparty} (${g.loop_count} open)`);
     for (const l of g.loops) {
       const due = l.due_at ? ` — due ${l.due_at.slice(0, 10)}` : '';
-      lines.push(`- [${l.loop_type}] ${l.summary}${due}`);
+      // Age renders at READ time from last_activity_at — stored summaries
+      // deliberately carry no age (it would freeze at detection time).
+      const ageDays = Math.max(0, Math.floor((Date.now() - Date.parse(l.last_activity_at)) / 86_400_000));
+      const age = Number.isFinite(ageDays) ? ` (${ageDays}d)` : '';
+      lines.push(`- [${l.loop_type}] ${l.summary}${age}${due}`);
       if (l.quote) lines.push(`  > "${l.quote}"`);
       if (l.deep_link) lines.push(`  ${l.deep_link}`);
     }
@@ -222,6 +231,16 @@ const open_loops: Operation = {
     const groupBy = (p.group_by as string | undefined) ?? 'counterparty';
     const status = ((p.status as string | undefined) ?? 'open') as LoopStatus;
     const scope = sourceScopeOpts(ctx);
+    // Fail-closed invariant: an untrusted caller must arrive with a resolved
+    // scope. Shipped transports refuse unscoped remote calls upstream, but
+    // the op must not rely on them — an unscoped remote read here would span
+    // every source (the cross-source leak class).
+    if (!trusted && !scope.sourceId && !scope.sourceIds) {
+      throw new OperationError(
+        'permission_denied',
+        'open_loops: remote callers need a resolved source scope',
+      );
+    }
     const loops = await listOpenLoops(ctx.engine, {
       ...(scope.sourceIds ? { sourceIds: scope.sourceIds } : {}),
       ...(scope.sourceId ? { sourceIds: [scope.sourceId] } : {}),
@@ -255,6 +274,7 @@ const open_loops: Operation = {
           counterparty: key,
           counterparty_slug: l.counterparty_slug,
           counterparty_email: l.counterparty_email,
+          source_id: l.source_id,
           loop_count: 0,
           oldest_opened_at: l.opened_at,
           nearest_due_at: null,
@@ -285,8 +305,11 @@ const open_loops: Operation = {
       for (const g of groups) {
         if (!g.counterparty_slug) continue;
         try {
-          const sourceId = scope.sourceId ?? scope.sourceIds?.[0] ?? ctx.sourceId ?? 'default';
-          const card = await buildEntityCard(ctx.engine, sourceId, g.counterparty_slug, { remote: false });
+          // The card resolves in the LOOP's source (where the person page +
+          // alias rows live), never the caller's scope — an unqualified
+          // `gbrain waiting` would otherwise look in 'default' and silently
+          // never attach context (same bug class as deepLinksFor's fix).
+          const card = await buildEntityCard(ctx.engine, g.source_id, g.counterparty_slug, { remote: false });
           if (card.found) g.context = card.card;
         } catch { /* context is best-effort */ }
       }

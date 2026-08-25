@@ -823,7 +823,9 @@ describe('google-source materialize', () => {
           `SELECT id, idempotency_key FROM minion_jobs WHERE name = 'loops_extract'`,
         );
         expect(jobs1.length).toBe(1);
-        expect(jobs1[0].idempotency_key).toMatch(/^loops:emails\//);
+        // Key folds the SOURCE first (red-team: the same account registered
+        // twice must not coalesce source B's job onto source A's).
+        expect(jobs1[0].idempotency_key).toMatch(/^loops:[^:]+:emails\//);
 
         // History touches the thread again with NO content change: the
         // page-revision-keyed idempotency key dedupes the enqueue.

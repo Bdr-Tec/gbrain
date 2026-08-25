@@ -271,7 +271,7 @@ export function renderCalendarEventPage(ev: CalendarEventData): RenderedPage | n
 
 // ── Person page (contacts) ───────────────────────────────────────────────────
 
-export function personSlugFromContact(c: ContactData): string | null {
+export function personSlugFromContact(c: ContactData, disambiguate = false): string | null {
   const base = c.displayName ?? c.emails[0]?.split('@')[0] ?? null;
   if (!base) return null;
   const slug = base
@@ -279,7 +279,11 @@ export function personSlugFromContact(c: ContactData): string | null {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64);
-  return slug ? `people/${slug}` : null;
+  if (!slug) return null;
+  // Two different contacts named "John Smith" must not fight over one page —
+  // the caller requests disambiguation when the base slug is already owned
+  // by a DIFFERENT google_contact_id.
+  return disambiguate ? `people/${slug}-${sha8(c.resourceName)}` : `people/${slug}`;
 }
 
 /**
@@ -288,8 +292,8 @@ export function personSlugFromContact(c: ContactData): string | null {
  * marker are connector-owned and fully re-rendered; hand-authored pages at
  * the same path are skipped entirely — body AND frontmatter untouched.
  */
-export function renderPersonPage(c: ContactData): RenderedPage | null {
-  const slug = personSlugFromContact(c);
+export function renderPersonPage(c: ContactData, disambiguate = false): RenderedPage | null {
+  const slug = personSlugFromContact(c, disambiguate);
   if (!slug || c.emails.length === 0) return null;
   const name = c.displayName ?? c.emails[0];
   const aliases = [...new Set([...c.emails, ...(c.displayName ? [c.displayName] : [])])];

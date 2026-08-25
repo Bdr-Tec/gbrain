@@ -84,6 +84,7 @@ interface GroupsResult {
     counterparty: string;
     loop_count: number;
     loops: Array<Record<string, unknown>>;
+    context?: unknown;
   }>;
   count: number;
   stale: boolean;
@@ -243,6 +244,108 @@ describe('open_loops grouped', () => {
     expect(json).not.toContain('"quote"');
     expect(json).not.toContain('"deep_link"');
     expect(json).not.toContain('Can you review the plan?');
+  });
+});
+
+describe('open_loops deep links + context (trusted local)', () => {
+  const EMAIL_SLUG = 'emails/2026/08/2026-08-20-plan-review-abcd1234.md';
+
+  test('deep_link regenerates from the page account + hex message-id evidence', async () => {
+    // The thread page carries the account in frontmatter; the loop points at
+    // it via page_slug and carries a hex message_id in evidence.
+    await engine.putPage(
+      EMAIL_SLUG,
+      {
+        type: 'email',
+        title: 'Plan review',
+        compiled_truth: 'Synthetic thread body.',
+        frontmatter: { account: 'a@example.com', thread_id: '18c2f4a9b3d21e07' },
+      },
+      { sourceId: 'g1' },
+    );
+    await upsertOpenLoop(
+      engine,
+      loop({ counterpartyEmail: 'bob@example.com', pageSlug: EMAIL_SLUG }),
+    );
+    const res = (await openLoopsOp.handler(ctx({ remote: false }), {})) as GroupsResult;
+    expect(res.groups).toHaveLength(1);
+    const view = res.groups[0].loops[0] as { deep_link?: string; quote?: string };
+    expect(view.deep_link).toBeDefined();
+    // Code-generated Gmail deep link: the evidence message id + authuser account.
+    expect(view.deep_link!).toContain('#inbox/18c2f4a9b3d21e07');
+    expect(view.deep_link!).toContain('authuser=a%40example.com');
+    // The injectable text digest carries the link too.
+    expect(res.text!).toContain('mail.google.com');
+  });
+
+  test('no deep_link without a page account (link degrades to none, loop still lands)', async () => {
+    await upsertOpenLoop(
+      engine,
+      loop({ counterpartyEmail: 'bob@example.com', pageSlug: 'emails/never-imported.md' }),
+    );
+    const res = (await openLoopsOp.handler(ctx({ remote: false }), {})) as GroupsResult;
+    const view = res.groups[0].loops[0] as { deep_link?: string; quote?: string };
+    expect(view.deep_link).toBeUndefined();
+    expect(view.quote).toBe('Can you review the plan?'); // quote is independent of the link
+  });
+
+  test('include_context attaches the counterparty entity card when the person page exists', async () => {
+    await engine.putPage(
+      'people/bob-example',
+      { type: 'person', title: 'Bob Example', compiled_truth: 'A synthetic person page for context.' },
+      { sourceId: 'g1' },
+    );
+    await upsertOpenLoop(
+      engine,
+      loop({ counterpartyEmail: 'bob@example.com', counterpartySlug: 'people/bob-example' }),
+    );
+    const withCtx = (await openLoopsOp.handler(ctx({ remote: false }), {})) as GroupsResult;
+    expect(withCtx.groups).toHaveLength(1);
+    expect(withCtx.groups[0].context).toBeDefined();
+    // include_context: false omits the card.
+    const without = (await openLoopsOp.handler(
+      ctx({ remote: false }),
+      { include_context: false },
+    )) as GroupsResult;
+    expect(without.groups[0].context).toBeUndefined();
+  });
+});
+
+describe('open_loops unscoped remote read (fail-closed)', () => {
+  test('remote ctx with NO sourceId and NO allowedSources is denied (permission_denied)', async () => {
+    // The CLAUDE.md "Trust is fail-closed" invariant, enforced at the op
+    // layer: an untrusted caller with no resolved scope must see NOTHING —
+    // shipped transports refuse unscoped remote calls upstream, but the op
+    // does not rely on them. Before this guard, {} from sourceScopeOpts()
+    // spanned EVERY source in the brain (redacted but cross-source).
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, config) VALUES ('g2', 'g2', '{"kind":"google"}'::jsonb)
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await upsertOpenLoop(
+      engine,
+      loop({ threadId: '18c2f4a9b3d21e01', counterpartyEmail: 'alice@example.com' }),
+    ); // lands in g1
+    await upsertOpenLoop(
+      engine,
+      loop({
+        sourceId: 'g2',
+        threadId: '18c2f4a9b3d21e02',
+        counterpartyEmail: 'eve@example.com',
+      }),
+    );
+    await expect(
+      openLoopsOp.handler(ctx({ remote: true, sourceId: undefined }), { group_by: 'none' }),
+    ).rejects.toThrow(/resolved source scope/);
+    // A scoped remote caller still reads (redacted) within its grant.
+    const scoped = (await openLoopsOp.handler(
+      ctx({ remote: true, sourceId: 'g2' }),
+      { group_by: 'none' },
+    )) as { loops: Array<{ counterparty_email: string }>; count: number; redacted: boolean; sources: Array<{ id: string }> };
+    expect(scoped.count).toBe(1);
+    expect(scoped.loops[0].counterparty_email).toBe('eve@example.com');
+    expect(scoped.redacted).toBe(true);
+    expect(scoped.sources.map((s) => s.id)).toEqual(['g2']);
   });
 });
 

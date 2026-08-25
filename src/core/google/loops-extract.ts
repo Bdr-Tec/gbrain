@@ -195,15 +195,23 @@ export async function runLoopsExtract(
     if (res.stopReason === 'refusal' || res.stopReason === 'content_filter') {
       return { ...empty, reason: 'refused' };
     }
-    if (res.stopReason === 'length') return { ...empty, status: 'failed', reason: 'truncated' };
+    // TRANSIENT failures THROW so the minion queue's attempt/backoff
+    // machinery retries — a swallowed return would complete the job
+    // "successfully" and permanently consume the idempotency slot
+    // (`loops:<src>:<slug>:<newestMs>` only regenerates when the thread is
+    // touched again), silently never extracting that revision's commitments.
+    if (res.stopReason === 'length') {
+      throw new Error('loops_extract: model output truncated (stopReason=length) — retryable');
+    }
     text = res.text;
   } catch (err) {
-    if ((err as Error)?.name === 'AbortError') throw err;
-    return { ...empty, status: 'failed', reason: 'llm_error' };
+    throw err instanceof Error ? err : new Error(String(err));
   }
 
   const extraction = parseLoopsJson(text);
-  if (extraction === null) return { ...empty, status: 'failed', reason: 'parse_failed' };
+  if (extraction === null) {
+    throw new Error('loops_extract: model response failed the all-or-nothing parse barrier — retryable');
+  }
 
   const loopIds: number[] = [];
   const messageDate = typeof fm.date === 'string' ? fm.date : new Date().toISOString();

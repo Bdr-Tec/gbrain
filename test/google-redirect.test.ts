@@ -105,6 +105,20 @@ describe('parsePastedRedirect', () => {
     );
   });
 
+  it('a full-URL paste MISSING the state param → state_mismatch (CSRF binding); bare code stays accepted', () => {
+    // A full redirect URL / querystring paste MUST carry the matching state.
+    expectCodeSync(
+      () => parsePastedRedirect('http://127.0.0.1:41999/?code=4%2Fabc', 'st'),
+      'state_mismatch',
+    );
+    expectCodeSync(() => parsePastedRedirect('code=4%2Fabc', 'st'), 'state_mismatch');
+    // Only a bare-code paste legitimately has no state — PKCE's code-verifier
+    // binding is the remaining defense there.
+    const bare = parsePastedRedirect('4/xyz', 'st');
+    expect(bare.code).toBe('4/xyz');
+    expect(bare.state).toBeNull();
+  });
+
   it('error=access_denied in the query → access_denied_test_user', () => {
     expectCodeSync(
       () => parsePastedRedirect('http://127.0.0.1:41999/?error=access_denied&state=st', 'st'),
@@ -123,86 +137,45 @@ describe('parsePastedRedirect', () => {
 
 // ── startLoopback ────────────────────────────────────────────────────────────
 //
-// TWO KNOWN src QUIRKS these tests must accommodate (both reported upstream;
-// simplify this section when redirect.ts fixes them):
-//
-// 1. `close()` calls `server.stop(true)` (force), and `void
-//    codePromise.finally(close)` fires it on the microtask right after the
-//    fetch handler settles the promise — BEFORE Bun flushes the final HTTP
-//    response. The redirect request that carries the code therefore gets
-//    ECONNRESET instead of the SUCCESS_HTML/DENIED_HTML page (verified
-//    deterministic on Bun 1.3.10; a graceful `server.stop()` delivers it).
-//    Tests use tryFetch() and only assert on the body WHEN it is delivered,
-//    so they stay green after the src fix too.
-//
-// 2. `void codePromise.finally(close)` creates a derived promise nobody
-//    handles. Whenever codePromise REJECTS (mismatch/denial/timeout), that
-//    internal derived promise rejects unhandled and bun test fails the
-//    surrounding test. startLoopbackQuiet() patches Promise.prototype.finally
-//    for the SYNCHRONOUS duration of the startLoopback() call so the internal
-//    derived promise gets a no-op rejection handler; behavior is otherwise
-//    byte-identical and the patch window cannot interleave with other code.
-
-const originalFinally = Promise.prototype.finally;
-
-function startLoopbackQuiet(opts: Parameters<typeof startLoopback>[0]): ReturnType<typeof startLoopback> {
-  Promise.prototype.finally = function quietFinally(
-    this: Promise<unknown>,
-    onfinally?: (() => void) | null,
-  ): Promise<unknown> {
-    const derived = originalFinally.call(this, onfinally);
-    void derived.catch(() => {});
-    return derived;
-  } as typeof Promise.prototype.finally;
-  try {
-    return startLoopback(opts);
-  } finally {
-    Promise.prototype.finally = originalFinally;
-  }
-}
-
-/** Fetch that tolerates the known close-before-flush reset (quirk 1 above). */
-async function tryFetch(
-  url: string,
-): Promise<{ delivered: true; status: number; text: string } | { delivered: false }> {
-  try {
-    const res = await fetch(url);
-    return { delivered: true, status: res.status, text: await res.text() };
-  } catch {
-    return { delivered: false };
-  }
-}
+// The src fix landed: close() is a graceful `server.stop()` (the final HTTP
+// response flushes before the listener dies) and the promise-settled cleanup
+// handles BOTH arms via `.then(close, close)` (no derived unhandled
+// rejection). The success/denied page-body assertions below are therefore
+// unconditional, and no Promise.prototype.finally patching is needed.
 
 describe('startLoopback', () => {
-  it('resolves the code on a matching state (success page when delivered)', async () => {
-    const handle = startLoopbackQuiet({ state: 'st-good' });
+  it('resolves the code on a matching state and delivers the success page', async () => {
+    const handle = startLoopback({ state: 'st-good' });
     try {
       expect(handle.redirectUri).toBe(`http://127.0.0.1:${handle.port}/`);
-      const res = await tryFetch(`http://127.0.0.1:${handle.port}/?code=abc&state=st-good`);
-      if (res.delivered) expect(res.text).toContain('Connected');
+      const res = await fetch(`http://127.0.0.1:${handle.port}/?code=abc&state=st-good`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('Connected');
       await expect(handle.codePromise).resolves.toBe('abc');
     } finally {
       handle.close();
     }
   });
 
-  it('rejects with state_mismatch on a wrong state', async () => {
-    const handle = startLoopbackQuiet({ state: 'st-expected' });
+  it('rejects with state_mismatch on a wrong state and delivers the denied page', async () => {
+    const handle = startLoopback({ state: 'st-expected' });
     try {
-      const res = await tryFetch(`http://127.0.0.1:${handle.port}/?code=abc&state=st-wrong`);
-      // The browser gets the "not connected" page, never the success page.
-      if (res.delivered) expect(res.text).not.toContain('Connected');
+      const res = await fetch(`http://127.0.0.1:${handle.port}/?code=abc&state=st-wrong`);
+      // The browser gets the "Not connected" page, never the success page.
+      const body = await res.text();
+      expect(body).toContain('Not connected');
+      expect(body).not.toContain('>Connected<');
       await expectRejectsCode(handle.codePromise, 'state_mismatch');
     } finally {
       handle.close();
     }
   });
 
-  it('rejects with access_denied_test_user on ?error=access_denied', async () => {
-    const handle = startLoopbackQuiet({ state: 'st-denied' });
+  it('rejects with access_denied_test_user on ?error=access_denied (denied page delivered)', async () => {
+    const handle = startLoopback({ state: 'st-denied' });
     try {
-      const res = await tryFetch(`http://127.0.0.1:${handle.port}/?error=access_denied&state=st-denied`);
-      if (res.delivered) expect(res.text).not.toContain('Connected');
+      const res = await fetch(`http://127.0.0.1:${handle.port}/?error=access_denied&state=st-denied`);
+      expect(await res.text()).toContain('Not connected');
       await expectRejectsCode(handle.codePromise, 'access_denied_test_user');
     } finally {
       handle.close();
@@ -210,10 +183,9 @@ describe('startLoopback', () => {
   });
 
   it('a favicon probe (no code param) gets a 404 and leaves the promise pending', async () => {
-    const handle = startLoopbackQuiet({ state: 'st-favicon' });
+    const handle = startLoopback({ state: 'st-favicon' });
     try {
-      // The probe does not settle the promise, so no close() race here:
-      // this response is always delivered and must be a 404.
+      // The probe does not settle the promise; this response must be a 404.
       const res = await fetch(`http://127.0.0.1:${handle.port}/favicon.ico`);
       expect(res.status).toBe(404);
       // The code promise must NOT have settled — race it against a short delay.
@@ -226,8 +198,8 @@ describe('startLoopback', () => {
       ]);
       expect(outcome).toBe('pending');
       // The listener is still live after the probe: a real redirect still works.
-      const res2 = await tryFetch(`http://127.0.0.1:${handle.port}/?code=late&state=st-favicon`);
-      if (res2.delivered) expect(res2.text).toContain('Connected');
+      const res2 = await fetch(`http://127.0.0.1:${handle.port}/?code=late&state=st-favicon`);
+      expect(await res2.text()).toContain('Connected');
       await expect(handle.codePromise).resolves.toBe('late');
     } finally {
       handle.close();
@@ -235,11 +207,21 @@ describe('startLoopback', () => {
   });
 
   it('rejects with consent_timeout when nothing arrives within timeoutMs', async () => {
-    const handle = startLoopbackQuiet({ state: 'st-timeout', timeoutMs: 50 });
+    const handle = startLoopback({ state: 'st-timeout', timeoutMs: 50 });
     try {
       await expectRejectsCode(handle.codePromise, 'consent_timeout');
     } finally {
       handle.close();
+    }
+  });
+
+  it('a busy port → CredentialError port_in_use (thrown synchronously)', () => {
+    // Squat an ephemeral port first, then ask startLoopback for exactly it.
+    const squatter = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('') });
+    try {
+      expectCodeSync(() => startLoopback({ state: 'st-busy', port: squatter.port }), 'port_in_use');
+    } finally {
+      squatter.stop(true);
     }
   });
 });

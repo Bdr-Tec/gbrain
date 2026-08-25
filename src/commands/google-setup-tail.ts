@@ -60,11 +60,22 @@ export async function runGoogleSetupTail(input: SetupTailInput): Promise<void> {
       const historyIdx = input.args.indexOf('--history-days');
       const historyDays = historyIdx !== -1 ? Number(input.args[historyIdx + 1]) || 90 : 90;
       const { addSource, defaultCloneDir } = await import('../core/sources-ops.ts');
+      // Register only the services the credential's grant actually covers —
+      // a connect --scopes gmail must not create a source whose calendar/
+      // contacts sweeps fail scope_missing forever.
+      const { openVault, credentialId } = await import('../core/creds/vault.ts');
+      const { GOOGLE_SERVICE_SCOPES } = await import('../core/creds/providers/google.ts');
+      const entry = await openVault().get(credentialId('google', input.account));
+      const granted = entry?.meta.scopes ?? [];
+      const allServices = ['gmail', 'calendar', 'contacts'] as const;
+      const services = granted.length > 0
+        ? allServices.filter((svc) => granted.includes(GOOGLE_SERVICE_SCOPES[svc]))
+        : [...allServices];
       await addSource(engine, {
         id: sourceId,
         google: {
           account: input.account,
-          services: ['gmail', 'calendar', 'contacts'],
+          services: services.length > 0 ? [...services] : [...allServices],
           historyDays,
           dir: defaultCloneDir(`${sourceId}-google`),
         },

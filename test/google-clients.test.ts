@@ -241,6 +241,80 @@ describe('GoogleApiClient request core', () => {
   });
 });
 
+describe('GoogleApiClient retry exhaustion + 403 mapping', () => {
+  test("always-429 (Retry-After: 0) exhausts the retries and maps to 'rate_limited'", async () => {
+    let apiCalls = 0;
+    const h = makeHarness(() => {
+      apiCalls++;
+      return json({ error: { message: 'rate limit' } }, 429, { 'retry-after': '0' });
+    });
+    const gmail = new GmailClient(h.tokens, h.fetchImpl, () => {}, CLIENT_ID);
+    let thrown: unknown;
+    try {
+      await gmail.getProfile();
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(CredentialError);
+    expect((thrown as CredentialError).code).toBe('rate_limited');
+    // Default retries=2: attempts 0 and 1 are retried, attempt 2 throws.
+    expect(apiCalls).toBe(3);
+    expect(h.tokenPosts()).toBe(0); // a rate limit never triggers a token refresh
+  });
+
+  test("403 with a non-rate, non-quota reason maps to 'upstream' WITHOUT a retry", async () => {
+    let apiCalls = 0;
+    const h = makeHarness(() => {
+      apiCalls++;
+      return json(
+        {
+          error: {
+            code: 403,
+            status: 'PERMISSION_DENIED',
+            message: 'Access blocked by admin policy.',
+            errors: [{ reason: 'domainPolicy' }],
+          },
+        },
+        403,
+      );
+    });
+    const gmail = new GmailClient(h.tokens, h.fetchImpl, () => {}, CLIENT_ID);
+    let thrown: unknown;
+    try {
+      await gmail.getProfile();
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(CredentialError);
+    expect((thrown as CredentialError).code).toBe('upstream');
+    expect((thrown as CredentialError).message).toContain('domainPolicy');
+    expect(apiCalls).toBe(1); // fail-fast: no retry loop for a hard 403
+    expect(h.tokenPosts()).toBe(0);
+  });
+
+  test('drainPages partialOk: returns the partial batch at maxPages instead of throwing', async () => {
+    const h = makeHarness(() => json({ items: ['x'], nextPageToken: 'again' }));
+    const client = new GoogleApiClient(h.tokens, h.fetchImpl);
+    const build = (t: string | null): string =>
+      `https://gmail.googleapis.com/gmail/v1/fake${t ? `?pageToken=${t}` : ''}`;
+    const pick = (body: Record<string, unknown>) => ({
+      items: (body.items as string[] | undefined) ?? [],
+      nextPageToken: (body.nextPageToken as string | undefined) ?? null,
+    });
+    const partial = await client.drainPages<string>(build, pick, 'gmail', {
+      maxPages: 2,
+      partialOk: true,
+    });
+    // One item per page, two pages drained — the truncated batch comes back.
+    expect(partial).toEqual(['x', 'x']);
+    // Contrast: the SAME shape without partialOk still throws (reconciling
+    // callers must never treat a truncated listing as complete).
+    await expect(
+      client.drainPages<string>(build, pick, 'gmail', { maxPages: 2 }),
+    ).rejects.toThrow(/pagination cap/);
+  });
+});
+
 // ── GmailClient ──────────────────────────────────────────────────────────────
 
 describe('GmailClient', () => {

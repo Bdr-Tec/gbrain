@@ -337,11 +337,24 @@ describe('markStaleLoops', () => {
     const now = Date.now();
     const daysAgo = (d: number) => new Date(now - d * 86_400_000).toISOString();
 
-    // Overdue llm_extract (due 20d ago, active recently) → stale.
+    // Overdue AND inactive llm_extract (due 20d ago, silent 20d) → stale.
+    // Overdue alone must NOT stale an actively-discussed commitment — that
+    // would ping-pong stale→open→stale against the upsert's reopen (red-team).
     await upsertOpenLoop(
       engine,
       loop({
         dedupKey: 'commit:11111111',
+        loopType: 'commitment_owed_by_me',
+        detector: 'llm_extract',
+        dueAt: daysAgo(20),
+        lastActivityAt: daysAgo(20),
+      }),
+    );
+    // Overdue but ACTIVE (due 20d ago, message yesterday) → stays open.
+    await upsertOpenLoop(
+      engine,
+      loop({
+        dedupKey: 'commit:44444444',
         loopType: 'commitment_owed_by_me',
         detector: 'llm_extract',
         dueAt: daysAgo(20),
@@ -382,6 +395,7 @@ describe('markStaleLoops', () => {
     const open = await listOpenLoops(engine, { sourceIds: ['g1'], status: 'open' });
     expect(open.map((l) => l.dedup_key).sort()).toEqual([
       'commit:33333333',
+      'commit:44444444', // overdue but actively discussed — stays open
       'thread:18c2f4a9b3d21e07:unanswered_inbound',
     ]);
   });

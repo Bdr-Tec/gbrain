@@ -373,16 +373,23 @@ export class GoogleTokenProvider {
       token = await refreshAccessToken(e, client, this.fetchImpl);
     }
     const nowIso = new Date().toISOString();
+    // RE-READ before persisting: the network round-trip is long enough for a
+    // concurrent connect/disconnect to have changed the entry. Merging only
+    // the token fields into the FRESH entry prevents (a) reverting a
+    // re-connect's new scopes/refresh_token with this stale spread and
+    // (b) resurrecting a credential the user just disconnected.
+    const fresh = await this.vault.get(this.credentialIdValue);
+    if (!fresh) throw new CredentialError('not_connected', ` for ${this.credentialIdValue} (removed mid-refresh)`);
     const updated: CredentialEntry = {
-      ...e,
+      ...fresh,
       secret: {
-        ...e.secret,
+        ...fresh.secret,
         access_token: token.access_token,
         expiry: new Date(Date.now() + token.expires_in * 1000).toISOString(),
         // Google may rotate the refresh token; persist the new one.
         ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),
       },
-      meta: { ...e.meta, last_refresh_ok_at: nowIso },
+      meta: { ...fresh.meta, last_refresh_ok_at: nowIso },
     };
     await this.vault.put(updated);
     return token.access_token;

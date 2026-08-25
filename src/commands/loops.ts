@@ -14,12 +14,38 @@
  *   gbrain loops mute <sender|thread> <value> [--source <id>]
  *
  * All paths dispatch through the trusted-local op layer (handleToolCall,
- * remote:false) so CLI and MCP share one behavior.
+ * remote:false) so CLI and MCP share one behavior. Reads default to the
+ * `__all__` brain span (loops live in google sources, not 'default' — an
+ * unqualified dispatch would silently scope to 'default' and answer "You are
+ * clean" while people wait); `--source <id>` narrows explicitly.
  */
 
 import type { BrainEngine } from '../core/engine.ts';
 import { handleToolCall } from '../mcp/server.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
+import { ALL_SOURCES } from '../core/source-id.ts';
+
+function sourceFlag(args: string[]): string | undefined {
+  const i = args.indexOf('--source');
+  return i !== -1 ? args[i + 1] : undefined;
+}
+
+/** Non-archived sources whose config says kind=google (mute's default scope). */
+async function googleSourceIds(engine: BrainEngine): Promise<string[]> {
+  const rows = await engine.executeRaw<{ id: string; config: unknown }>(
+    `SELECT id, config FROM sources WHERE archived IS NOT TRUE`,
+    [],
+  );
+  return rows
+    .filter((r) => {
+      const c =
+        typeof r.config === 'string'
+          ? (JSON.parse(r.config) as Record<string, unknown>)
+          : ((r.config ?? {}) as Record<string, unknown>);
+      return c.kind === 'google';
+    })
+    .map((r) => r.id);
+}
 
 interface WaitingResult {
   groups: Array<{
@@ -48,9 +74,10 @@ export async function runWaiting(engine: BrainEngine, args: string[]): Promise<v
     process.stdout.write(
       [
         'gbrain waiting — who is waiting on you, what you promised, the context to respond',
-        '  --top N       max counterparties (default 3)',
-        '  --json        agent envelope (groups, staleness, sources)',
-        '  --stale-ok    show possibly-outdated loops even when google sources have not synced in 24h',
+        '  --top N        max counterparties (default 3)',
+        '  --source <id>  scope to one source (default: every source in the brain)',
+        '  --json         agent envelope (groups, staleness, sources)',
+        '  --stale-ok     show possibly-outdated loops even when google sources have not synced in 24h',
         '',
         'Manage loops: gbrain loops --help · Setup: gbrain google setup · Docs: docs/guides/open-loops.md',
       ].join('\n') + '\n',
@@ -62,11 +89,12 @@ export async function runWaiting(engine: BrainEngine, args: string[]): Promise<v
   const topIdx = args.indexOf('--top');
   const top = topIdx !== -1 ? Number(args[topIdx + 1]) || 3 : 3;
 
-  const result = (await handleToolCall(engine, 'open_loops', {
-    group_by: 'counterparty',
-    limit: top,
-    include_context: true,
-  })) as WaitingResult;
+  const result = (await handleToolCall(
+    engine,
+    'open_loops',
+    { group_by: 'counterparty', limit: top, include_context: true },
+    { sourceId: sourceFlag(args) ?? ALL_SOURCES },
+  )) as WaitingResult;
 
   if (result.stale && !staleOk) {
     const staleSrc = result.sources.filter((s) => s.stale);
@@ -112,7 +140,7 @@ export async function runLoops(engine: BrainEngine, args: string[]): Promise<voi
     process.stdout.write(
       [
         'gbrain loops — inspect and manage open loops',
-        '  list  [--status open|done|dropped|stale] [--type <loop_type>] [--json]',
+        '  list  [--status open|done|dropped|stale] [--type <loop_type>] [--source <id>] [--json]',
         '  show  <id> [--json]',
         '  done  <id>        mark handled',
         '  drop  <id>        not going to do it',
@@ -127,12 +155,17 @@ export async function runLoops(engine: BrainEngine, args: string[]): Promise<voi
   if (sub === 'list' || sub === 'show') {
     const statusIdx = rest.indexOf('--status');
     const typeIdx = rest.indexOf('--type');
-    const result = (await handleToolCall(engine, 'open_loops', {
-      group_by: 'none',
-      limit: 200,
-      ...(statusIdx !== -1 ? { status: rest[statusIdx + 1] } : {}),
-      ...(typeIdx !== -1 ? { loop_type: rest[typeIdx + 1] } : {}),
-    })) as { loops: Array<Record<string, unknown>>; count: number };
+    const result = (await handleToolCall(
+      engine,
+      'open_loops',
+      {
+        group_by: 'none',
+        limit: 200,
+        ...(statusIdx !== -1 ? { status: rest[statusIdx + 1] } : {}),
+        ...(typeIdx !== -1 ? { loop_type: rest[typeIdx + 1] } : {}),
+      },
+      { sourceId: sourceFlag(rest) ?? ALL_SOURCES },
+    )) as { loops: Array<Record<string, unknown>>; count: number };
     if (sub === 'show') {
       const id = Number(rest.find((a) => /^\d+$/.test(a)));
       const loop = result.loops.find((l) => l.id === id);
@@ -174,12 +207,28 @@ export async function runLoops(engine: BrainEngine, args: string[]): Promise<voi
       console.error(`Usage: gbrain loops ${sub} <id>`);
       process.exit(2);
     }
-    const result = (await handleToolCall(engine, 'loops_close', {
-      id,
-      status: sub === 'done' ? 'done' : 'dropped',
-    })) as { closed: boolean; reason?: string };
+    const result = (await handleToolCall(
+      engine,
+      'loops_close',
+      { id, status: sub === 'done' ? 'done' : 'dropped' },
+      { sourceId: ALL_SOURCES },
+    )) as { closed: boolean; reason?: string; status?: string };
     if (json) {
-      process.stdout.write(JSON.stringify({ ok: result.closed, status: result.closed ? 'closed' : 'not_closed', ...result }, null, 2) + '\n');
+      // Envelope `status` is the outcome; the loop's terminal state rides as
+      // `loop_status` (spreading the op result last would clobber the envelope).
+      const { status: loopStatus, ...opResult } = result;
+      process.stdout.write(
+        JSON.stringify(
+          {
+            ok: result.closed,
+            ...opResult,
+            status: result.closed ? 'closed' : 'not_closed',
+            ...(loopStatus !== undefined ? { loop_status: loopStatus } : {}),
+          },
+          null,
+          2,
+        ) + '\n',
+      );
     } else {
       process.stdout.write(result.closed ? `Loop ${id} ${sub === 'done' ? 'done' : 'dropped'}.\n` : `Not closed: ${result.reason}\n`);
     }
@@ -194,11 +243,25 @@ export async function runLoops(engine: BrainEngine, args: string[]): Promise<voi
       console.error('Usage: gbrain loops mute sender <email> | thread <thread-id> [--source <id>]');
       process.exit(2);
     }
-    const srcIdx = rest.indexOf('--source');
+    // A suppression row is only consulted by the detector inside ITS source —
+    // an unqualified mute must land in the google source, never 'default'.
+    let sourceId = sourceFlag(rest);
+    if (!sourceId) {
+      const gs = await googleSourceIds(engine);
+      if (gs.length === 1) sourceId = gs[0];
+      else {
+        console.error(
+          gs.length === 0
+            ? 'No google source found — pass --source <id> to scope the mute (gbrain sources list).'
+            : `Multiple google sources — pass --source <id> (one of: ${gs.join(', ')}).`,
+        );
+        process.exit(2);
+      }
+    }
     const result = (await handleToolCall(engine, 'loops_mute', {
       kind,
       value,
-      ...(srcIdx !== -1 ? { source_id: rest[srcIdx + 1] } : {}),
+      source_id: sourceId,
     })) as { muted: boolean; reason?: string };
     if (json) {
       process.stdout.write(JSON.stringify({ ok: result.muted, status: result.muted ? 'muted' : 'not_muted', ...result }, null, 2) + '\n');

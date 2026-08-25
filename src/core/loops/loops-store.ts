@@ -225,7 +225,11 @@ export async function markStaleLoops(engine: BrainEngine, sourceId: string): Pro
        SET status = 'stale', closed_at = now(), closed_by = 'staleness', updated_at = now()
      WHERE source_id = $1 AND status = 'open' AND detector = 'llm_extract'
        AND (
-         (due_at IS NOT NULL AND due_at < now() - interval '14 days')
+         -- Overdue alone isn't stale: an actively-discussed commitment
+         -- (fresh last_activity_at) must not ping-pong stale->open->stale
+         -- against the upsert's reopen on every sweep.
+         (due_at IS NOT NULL AND due_at < now() - interval '14 days'
+            AND last_activity_at < now() - interval '14 days')
          OR last_activity_at < now() - interval '90 days'
        )
      RETURNING id`,
