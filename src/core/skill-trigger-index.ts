@@ -92,6 +92,7 @@ function loadFrontmatterEntries(skillsDir: string): SkillTriggerEntry[] {
     const isDir = dirent.isDirectory()
       || (dirent.isSymbolicLink() && (() => {
         try {
+          // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- `name` is a readdirSync(skillsDir) dirent name: a single separator-free component of the operator's own skills tree, never remote/user input (same pattern as the sibling SKILL.md join below)
           return statSync(join(skillsDir, name)).isDirectory();
         } catch {
           return false;
