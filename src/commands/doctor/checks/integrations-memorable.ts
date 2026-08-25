@@ -22,7 +22,10 @@
  * ~/.gbrain/config.json can be flipped by the external CLI, which is exactly
  * why the gate also demands the gbrain-authored stamp.
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { loadConfig } from '../../../core/config.ts';
+import { CODEX_HOOK_OWNERSHIP_TOKEN } from '../../../core/bootstrap/codex-hooks.ts';
+import { codexHooksPath } from '../../../core/bootstrap/host-specs.ts';
 import {
   lastRelayResult,
   memorableConsentEvidence,
@@ -110,8 +113,33 @@ export async function buildMemorableRelayCheck(): Promise<Check> {
         details: { ...details, reason: 'relay_never_reported' },
       };
     }
+    // Codex hooks are TRUST-GATED and fail silently on 0.147.0 (a stale trust
+    // index after the user reorders their own SessionEnd groups looks exactly
+    // like "nothing happened") — wired-but-zero-receipts is the one signal
+    // that failure mode leaves behind [OV8c].
+    if (codexHooksWired() && !receipts.some((r) => r.harness === 'codex')) {
+      return {
+        name: NAME,
+        status: 'warn',
+        message:
+          'codex SessionEnd hook is wired but no codex-harness receipt has ever landed — codex hooks fail ' +
+          'SILENTLY when their config.toml trust entry is stale/missing. Re-run `gbrain bootstrap hooks --harness codex` to re-trust.',
+        details: { ...details, reason: 'codex_hooks_never_fired' },
+      };
+    }
     return { name: NAME, status: 'ok', message: 'memorable relay healthy (consented, installed, last run ok)', details };
   } catch {
     return { name: NAME, status: 'warn', message: 'memorable relay state unreadable', details: { out_of_band_settable: true } };
+  }
+}
+
+/** True when a gbrain-owned SessionEnd entry sits in the codex hooks file. */
+function codexHooksWired(): boolean {
+  try {
+    const p = codexHooksPath();
+    if (!existsSync(p)) return false;
+    return readFileSync(p, 'utf8').includes(CODEX_HOOK_OWNERSHIP_TOKEN);
+  } catch {
+    return false;
   }
 }

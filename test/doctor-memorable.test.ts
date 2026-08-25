@@ -185,3 +185,33 @@ describe('memorable_relay_health rung ladder', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
+
+describe('codex hooks wired but never fired [OV8c]', () => {
+  test('wired + zero codex receipts → warn naming the silent trust-gate failure; a codex receipt clears it', async () => {
+    const home = tempHome();
+    try {
+      seedGbrainConfig(home, true);
+      const ev = seedEvidence(home, { backend: 'local', consent: 'read-write' });
+      const codexHome = join(home, 'codex-home');
+      mkdirSync(codexHome, { recursive: true });
+      writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify({
+        hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: 'x gbrain hook session-end --harness codex y', timeout: 3 }] }] },
+      }));
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined, GBRAIN_MEMORABLE_CONFIG: ev, PATH: stubBinDir(home), MEMORABLE_BIN: '', CODEX_HOME: codexHome }, async () => {
+        await writeMemorableConsent();
+        // A claude receipt + a healthy relay report: everything green EXCEPT codex never fired.
+        await appendSessionReceipt(RECEIPT);
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify({ ts: 't', session_id: 'doc-sess', ok: true }) + '\n');
+        let c = await buildMemorableRelayCheck();
+        expect(c.status).toBe('warn');
+        expect(c.details?.reason).toBe('codex_hooks_never_fired');
+        // One codex-harness receipt clears the rung.
+        await appendSessionReceipt({ ...RECEIPT, session_id: 'cdx-1', harness: 'codex', content_hash: 'cdx-h' });
+        c = await buildMemorableRelayCheck();
+        expect(c.status).toBe('ok');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
