@@ -42,7 +42,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { HostSpecTarget } from './host-specs.ts';
 import { codexConfigPath, codexHooksPath } from './host-specs.ts';
 
@@ -214,6 +215,8 @@ export function writeCodexHooks(opts: {
   // 3. Write both, hooks.json first (a trust entry for a missing file is
   //    inert; a hooks file without trust is silently skipped — either partial
   //    state is safe, this order just minimizes the skipped window).
+  mkdirSync(dirname(hooksPath), { recursive: true });
+  mkdirSync(dirname(configPath), { recursive: true });
   if (existed) {
     copyFileSync(hooksPath, `${hooksPath}.bak`);
     chmodSync(`${hooksPath}.bak`, 0o600);
@@ -223,8 +226,12 @@ export function writeCodexHooks(opts: {
   renameSync(tmpHooks, hooksPath);
 
   if (configText) {
-    copyFileSync(configPath, `${configPath}.bak`);
-    chmodSync(`${configPath}.bak`, statSync(configPath).mode & 0o777);
+    // DISTINCT suffix: config.toml.bak is the MCP block writer's rollback
+    // anchor (harness lane [X5] restores it on a failed smoke) — reusing it
+    // here would clobber that anchor and make the rollback restore THIS
+    // write's post-state instead of the pre-run config.
+    copyFileSync(configPath, `${configPath}.hooks.bak`);
+    chmodSync(`${configPath}.hooks.bak`, statSync(configPath).mode & 0o777);
   }
   const tmpCfg = `${configPath}.tmp-${process.pid}`;
   writeFileSync(tmpCfg, crlf ? nextConfig.replace(/\n/g, '\r\n') : nextConfig, { mode: 0o600 });

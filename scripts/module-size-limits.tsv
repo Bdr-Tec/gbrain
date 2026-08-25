@@ -28,13 +28,13 @@ src/core/minions/queue.ts	2442	ratchet	grown #4078 + megawave probe-liveness unl
 src/commands/init.ts	1950	ratchet	grown v0.46.x keyless capability notices
 src/commands/integrations.ts	1736	ratchet	grown v0.46.26.0 megawave (#4039 connector compat) + 1 nosemgrep dataflow annotation (path-traversal audit)
 src/core/minions/handlers/subagent.ts	1834	ratchet	merged: master v131 settle rework + dream-wave C5 peel + C6 accounting + C7 lease heartbeats/lost-lease aborts + C9 oneshot dispatch + adversarial fix batches; grown by #4078 subagent-loop capability fix; +6 lines (reasoning-item replay: adaptContentBlocksToChatBlocks handles 'reasoning' blocks); +3 wave G #4514: Anthropic-via-OpenRouter allowed on the subagent loop
-src/commands/bootstrap.ts	2010	ratchet	grandfathered at merge (grew past the 1500 cap on master); raised for #4066 HOME_WORKSPACE_GUARD_EXEMPT (status/uninstall/harness)
+src/commands/bootstrap.ts	2042	ratchet	grandfathered at merge (grew past the 1500 cap on master); raised for #4066 HOME_WORKSPACE_GUARD_EXEMPT (status/uninstall/harness); +32 memorable wave: codex SessionEnd hooks consent branch + uninstall arm (codex-hooks.ts owns the writers)
 src/core/minions/worker.ts	1560	ratchet	grandfathered at merge (grew past the 1500 cap on master, #4170); grown v0.46.11.0 five-issue wave
 src/commands/sources.ts	1790	ratchet	grown v0.46.22.0 phone wave: github source kind (#4104)
 src/core/link-extraction.ts	1681	ratchet	grown v0.46.26.0 megawave: link-aware timeline split + delimiter-outside-links (#3957 #4062 #3737)
 src/core/embedding-migration.ts	1545	ratchet	new row: crossed 1500 in v0.46.25.0 fix waves (#4305 #4306 chunk-model truth helpers)
 src/core/github-source.ts	1560	ratchet	new row: crossed the 1500 unlisted cap in v0.46.23.0 review fix wave (scope-state gating, client hardening, symlink containment)
-src/core/bootstrap/harness.ts	1947	ratchet
+src/core/bootstrap/harness.ts	1965	ratchet	grown memorable wave: codex SessionEnd hook wiring + removeHarness arm (target-derived paths)
 src/commands/hook.ts	1620	ratchet	cathedral-5 heartbeat extraction offsets part of the BrainBench-seam growth; grown v0.46.26.0 megawave hooks-ipc (#4245); additive session-end corpus-ready receipt call site
 src/core/chunkers/code.ts	1575	ratchet	new row: crossed the 1500 unlisted cap in v0.46.26.0 megawave (decorated-python defs #3821, version-gate + timeout chunker fixes); grown wave-g (#4511): named defs never folded into merged chunks
 src/core/config.ts	1534	ratchet	new row: crossed the 1500 unlisted cap in v0.46.26.0 megawave (spend-controls hint #3703, config-set validation); +3 wave G #3974: sync.include_working_tree key; grown wave-g (#4540 #4494 #4415): extractor caps + intent-pattern config keys; +10 for the optional Memorable seam's file-plane keys (integrations.memorable.enabled); +4 consent-stamp doc on the integrations gate (stamp lives OUTSIDE this file — see hook-heartbeat.ts)
