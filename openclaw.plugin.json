@@ -45,6 +45,7 @@
     "skills/briefing",
     "skills/bulk-ingestion",
     "skills/capture",
+    "skills/chat-connectors",
     "skills/citation-fixer",
     "skills/citation-graph-ingest",
     "skills/cold-start",

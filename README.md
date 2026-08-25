@@ -254,6 +254,21 @@ gbrain transcripts ingest --max-bytes 4gb <store>          # oversized store; om
 gbrain transcripts status                    # found vs imported, per harness
 ```
 
+Or connect the account and skip the manual export entirely. `gbrain connectors`
+syncs your ChatGPT and Claude conversation history live, using your own browser
+session cookie — incrementally (a durable per-provider watermark, plus a
+trailing-window gap-heal), through the same redaction + idempotency pipeline, and
+optionally on a schedule. Credentials stay on your machine (`~/.gbrain/connectors/*.json`,
+0600) and are sent only to the provider's own host:
+
+```bash
+gbrain connectors auth chatgpt --cookie -    # paste the Cookie header (stdin keeps it out of argv)
+gbrain connectors sync chatgpt --dry-run     # preview, then --limit 5, then --full
+gbrain config set connectors.chatgpt.auto_sync true   # opt-in daily auto-sync (+ gbrain autopilot --install)
+```
+
+Full contract, automation lanes, and the Cloudflare caveat: [docs/guides/chat-connectors.md](docs/guides/chat-connectors.md).
+
 Third-party skillpacks can ship custom ingestion sources (Granola, Linear,
 voice, OCR) against the versioned `IngestionSource` contract at
 `gbrain/ingestion`. See [`docs/skillpack-anatomy.md`](docs/skillpack-anatomy.md).
