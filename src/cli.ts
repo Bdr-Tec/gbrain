@@ -3655,6 +3655,13 @@ TOOLS
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)
   report --type <name> --content ... Save timestamped report to brain/reports/
 
+OPEN LOOPS (Gmail/Calendar/Contacts connector — v0.47)
+  google setup [--account <email>]   One command: BYO OAuth → source → first sync → first digest
+  google connect|status|disconnect   Connect/inspect/remove a Google account (idempotent; --json)
+  waiting [--top N] [--json]         Who is waiting on you, what you promised, context to respond
+  loops list|show|done|drop|mute     Inspect and manage open loops (mute sender <email>)
+  creds list|remove|export|import    Generic credential vault (redacted output; encrypted bundles)
+
 BRAIN (capture / ideate / explore — v0.37/v0.38)
   capture [content] [--file PATH]    Single entrypoint for getting content into the brain
         [--stdin] [--slug s] [--type t]   Inline content / file / stdin; writes to inbox/ by default

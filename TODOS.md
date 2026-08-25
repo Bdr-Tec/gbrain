@@ -72,6 +72,17 @@
   backfill floor can be skipped across the cap boundary (rare; needs
   overlap-by-1s on the `before:` bound).
 
+- [ ] **P2 — Recipe readiness checks don't see the credential vault.**
+  **What:** the email/calendar/credential recipes' `any_of` readiness gate
+  only recognizes `GOOGLE_CLIENT_ID` in the env
+  (`src/commands/integrations.ts` branchSatisfiedByEnv +
+  `src/commands/features.ts` RECIPE_META), so a vault-only connect
+  (`--client-json`) leaves all three recipes showing "not configured" in
+  `gbrain integrations list` while the connector works fine. Add a
+  `credential_exists` check type that consults the vault
+  (`src/core/creds/vault.ts` list()). **Effort:** S (flagged by
+  /document-release on the v0.47.0.0 wave).
+
 - [ ] **P3 — Per-loop staleness marker for mixed-freshness brains.**
   **What:** `open_loops.stale` is true only when EVERY google source is
   stale; a brain with one fresh and one 3-week-dead source presents the dead
