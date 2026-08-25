@@ -346,6 +346,21 @@ export function codexSessionsDir(): string {
 }
 
 /**
+ * Codex hooks file — (CODEX_HOME || ~/.codex)/hooks.json, USER-GLOBAL (no
+ * per-project scope for the user layer gbrain writes). Written by
+ * codex-hooks.ts together with its config.toml trust-state entry; see
+ * CODEX_HOOKS_SPEC_TARGET there for the verified 0.147.0 facts.
+ */
+export function codexHooksPath(): string {
+  const codexHome = process.env.CODEX_HOME?.trim();
+  return join(codexHome || join(homedir(), '.codex'), 'hooks.json');
+}
+
+/** Codex hook events gbrain wires (v1: session-end capture only — a
+ * SessionStart greeting lane is a filed follow-up). */
+export const CODEX_HOOK_EVENTS = ['SessionEnd'] as const;
+
+/**
  * Whether gbrain WIRES codex hooks. False = not yet: codex 0.147.0 ships a
  * real hook system (hooks.json; PreToolUse…SessionEnd — see the TARGETS
  * note), but gbrain's codex hook lane is a filed follow-up; per-turn context
