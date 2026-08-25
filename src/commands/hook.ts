@@ -1469,8 +1469,9 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
           let text = toCorpusText(corpusTurns);
           // ONE gate for the whole Memorable integration (memorableGateAllowed
           // — shared with the openclaw lane and doctor): nothing below is
-          // collected, written, or spawned unless the operator opted in.
-          const memorableAllowed = memorableGateAllowed(cfg).allowed;
+          // collected, written, or spawned unless the operator opted in AND
+          // accepted the gbrain-authored disclosure (consent stamp).
+          const memorableAllowed = (await memorableGateAllowed(cfg)).allowed;
           let toolCallsJson = '[]';
           try {
             const scan = await import('../core/secret-scan.ts');
@@ -1513,7 +1514,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
               workspace_root: ws ?? process.cwd(),
               tool_calls_json: toolCallsJson,
               secret_scan_ok: redactionsN !== undefined,
-            });
+            }, { trimRelayFile: true }); // hook lane is the ONE trimmer of memorable-relay.jsonl
             for (const r of relay.degradeReasons) degrade(r);
           }
           try {

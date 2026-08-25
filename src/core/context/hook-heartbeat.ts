@@ -12,7 +12,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { accessSync, appendFileSync, chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { accessSync, appendFileSync, chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import type { ToolCallRecord } from '../transcripts/claude-code-jsonl.ts';
 import { ensureGbrainHome, resolveGbrainHome } from '../gbrain-home.ts';
@@ -252,20 +254,105 @@ export async function priorRelayFailure(): Promise<string | null> {
   return last && !last.ok ? `memorable_relay_${last.reason ?? 'failed'}` : null;
 }
 
+/**
+ * Bounded tail read of a JSONL file — THE one implementation for every reader
+ * in this module (`lastReceiptMatches`, `lastRelayResult`,
+ * `readSessionReceiptsTail`). Receipts carry tool_calls_json and the files are
+ * allowed to reach tens of MB; a full readFileSync on every session end (or
+ * every `gbrain doctor` run) is exactly the cost the byte ceilings exist to
+ * avoid. A tail read can slice its first line in half; that fragment is
+ * dropped here rather than trusted. Never throws — missing/unreadable = [].
+ */
+const JSONL_TAIL_MAX_BYTES = 1024 * 1024;
+/** A single receipt line can exceed the window (tool_calls_json), and a tail
+ * that contains no COMPLETE line must not read as "empty file" — double the
+ * window until at least one complete line fits, capped well under the 32 MB
+ * file ceiling. Real receipts average ~110 KB, so the first window wins in
+ * practice and the retries exist for the pathological tail. */
+const JSONL_TAIL_HARD_CAP_BYTES = 16 * 1024 * 1024;
+function readJsonlTailLines(path: string, maxBytes = JSONL_TAIL_MAX_BYTES): string[] {
+  try {
+    const size = statSync(path).size;
+    for (let window = maxBytes; ; window *= 2) {
+      const start = Math.max(0, size - window);
+      const fd = openSync(path, 'r');
+      let raw: string;
+      try {
+        const buf = Buffer.alloc(size - start);
+        readSync(fd, buf, 0, buf.length, start);
+        raw = buf.toString('utf8');
+      } finally {
+        closeSync(fd);
+      }
+      const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+      // A tail read can slice its first line in half; drop the fragment
+      // rather than trust it.
+      if (start > 0) lines.shift();
+      if (lines.length > 0 || start === 0 || window >= JSONL_TAIL_HARD_CAP_BYTES) return lines;
+    }
+  } catch {
+    return [];
+  }
+}
+
 /** The newest relay outcome, or null when the child has never reported. Never
  * throws: a missing or corrupt file means "nothing to say", never a broken
- * session end. */
+ * session end. Bounded: only the newest ~1 MB is ever read. */
 export async function lastRelayResult(): Promise<RelayResult | null> {
-  try {
-    const lines = readFileSync(await relayResultsPath(), 'utf8').split('\n').filter((l) => l.trim());
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const e = JSON.parse(lines[i]!) as RelayResult;
-        if (typeof e.ok === 'boolean') return e;
-      } catch { /* torn line — keep looking back */ }
-    }
-  } catch { /* never reported */ }
+  const lines = readJsonlTailLines(await relayResultsPath());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const e = JSON.parse(lines[i]!) as RelayResult;
+      if (typeof e.ok === 'boolean') return e;
+    } catch { /* torn line — keep looking back */ }
+  }
   return null;
+}
+
+// ── Relay-results trim (gbrain-owned bound on a foreign-appended file) ──────
+//
+// The memorable child appends one outcome line per relay run and never trims;
+// unbounded growth here is the same defect class the receipts file had. Trim
+// discipline: (a) ONLY the session-end hook lane trims (the openclaw
+// context-engine lane is append/read-only), so two gbrain writers can never
+// race each other's tmp+rename; (b) prefer trimming when the file is
+// mtime-stale (no child wrote recently), but FORCE the trim at a hard ceiling
+// regardless — on busy machines (per-compaction openclaw traffic) the mtime
+// never goes stale and the file would otherwise grow forever behind the
+// bounded tail read; (c) cut on LINE boundaries keeping the newest complete
+// lines — a lost `ok:false` line is precisely the observability signal the
+// doctor ladder is built on, so never byte-cut. Residual race: the child
+// writes via appendFileSync (open-by-path per write, 0.3.4 decompile), so an
+// append landing after our rename opens the NEW file — the loss window is a
+// single write in flight during the rename itself, near-zero and accepted.
+
+const RELAY_TRIM_THRESHOLD_BYTES = 1024 * 1024;
+const RELAY_FORCE_TRIM_BYTES = 8 * 1024 * 1024;
+const RELAY_TRIM_TARGET_BYTES = 512 * 1024;
+const RELAY_TRIM_STALE_MS = 60_000;
+
+/** Opportunistically bound memorable-relay.jsonl. Hook lane only. Never throws. */
+export async function maybeTrimRelayResults(nowMs = Date.now()): Promise<void> {
+  try {
+    const p = await relayResultsPath();
+    const st = statSync(p);
+    if (st.size <= RELAY_TRIM_THRESHOLD_BYTES) return;
+    const stale = nowMs - st.mtimeMs > RELAY_TRIM_STALE_MS;
+    if (!stale && st.size <= RELAY_FORCE_TRIM_BYTES) return;
+    const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+    const kept: string[] = [];
+    let bytes = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const b = Buffer.byteLength(lines[i]!, 'utf8') + 1;
+      if (bytes + b > RELAY_TRIM_TARGET_BYTES && kept.length > 0) break;
+      kept.push(lines[i]!);
+      bytes += b;
+    }
+    kept.reverse();
+    const tmp = `${p}.tmp-${process.pid}`;
+    writeFileSync(tmp, kept.join('\n') + '\n', { mode: 0o600 });
+    renameSync(tmp, p);
+  } catch { /* missing file or fs refusal — a trim is never load-bearing */ }
 }
 
 const RECEIPTS_COMPACT_CHECK_BYTES = 2 * SESSION_RECEIPTS_MAX_LINES * 80;
@@ -352,57 +439,139 @@ export async function appendSessionReceipt(entry: Omit<SessionReceiptEntry, 'ts'
  * avoid. A resumed session's previous receipt is by construction among the
  * most recent, and a miss here only means a duplicate is written — the
  * failure mode is the old behaviour, never a lost receipt. */
-const RECEIPT_DEDUP_TAIL_BYTES = 1024 * 1024;
 async function lastReceiptMatches(sessionId: string, contentHash: string): Promise<boolean> {
-  try {
-    const p = await sessionReceiptsPath();
-    const size = statSync(p).size;
-    const start = Math.max(0, size - RECEIPT_DEDUP_TAIL_BYTES);
-    const fd = openSync(p, 'r');
-    let raw: string;
+  // A resumed session's previous receipt is by construction among the most
+  // recent, and a miss only means a duplicate is written — the failure mode is
+  // the old behaviour, never a lost receipt.
+  const lines = readJsonlTailLines(await sessionReceiptsPath());
+  for (let i = lines.length - 1; i >= 0; i--) {
     try {
-      const buf = Buffer.alloc(size - start);
-      readSync(fd, buf, 0, buf.length, start);
-      raw = buf.toString('utf8');
-    } finally {
-      closeSync(fd);
+      const e = JSON.parse(lines[i]!) as SessionReceiptEntry;
+      if (e.session_id === sessionId) return e.content_hash === contentHash;
+    } catch {
+      /* torn or malformed line — skip */
     }
-    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-    // A tail read can slice a line in half; that first fragment is unparseable
-    // and is skipped by the try/catch below rather than trusted.
-    if (start > 0) lines.shift();
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const e = JSON.parse(lines[i]!) as SessionReceiptEntry;
-        if (e.session_id === sessionId) return e.content_hash === contentHash;
-      } catch {
-        /* torn or malformed line — skip */
-      }
-    }
-  } catch {
-    /* no file yet, or unreadable — treat as "not a duplicate" */
   }
   return false;
 }
 
-/** Last `n` receipt entries (oldest → newest). Callers should take the newest per session_id. */
+/** Last `n` receipt entries (oldest → newest) from the newest ~1 MB of the
+ * file — a bounded read, because receipts carry tool_calls_json and the file
+ * is allowed to reach 32 MB (doctor calls this on every run). Callers should
+ * take the newest per session_id. */
 export async function readSessionReceiptsTail(n: number): Promise<SessionReceiptEntry[]> {
-  try {
-    const p = await sessionReceiptsPath();
-    const raw = readFileSync(p, 'utf8');
-    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-    const out: SessionReceiptEntry[] = [];
-    for (const line of lines.slice(-Math.max(0, n))) {
-      try {
-        out.push(JSON.parse(line) as SessionReceiptEntry);
-      } catch {
-        /* torn line — skip */
-      }
+  const lines = readJsonlTailLines(await sessionReceiptsPath());
+  const out: SessionReceiptEntry[] = [];
+  for (const line of lines.slice(-Math.max(0, n))) {
+    try {
+      out.push(JSON.parse(line) as SessionReceiptEntry);
+    } catch {
+      /* torn line — skip */
     }
-    return out;
-  } catch {
-    return [];
   }
+  return out;
+}
+
+// ── Consent stamp (gbrain-authored disclosure evidence) ─────────────────────
+//
+// The relay gate requires TWO things: the config boolean AND this stamp. The
+// stamp deliberately does NOT live in ~/.gbrain/config.json — the external
+// memorable CLI full-file-rewrites that file on `memorable enable|disable|
+// setup` (verified against the 0.3.4 decompile), which would allow stamp
+// forgery-by-habit, loss to a lockless rewrite race, and resurrection after
+// revocation (a stale CLI snapshot restoring cleared keys). It lives here, in
+// a gbrain-private 0600 file the CLI has never written; forging it would
+// require the CLI to start writing a file it has never touched — a visible
+// escalation, not an existing habit.
+//
+// Scope-binding: the stamp records WHICH disclosure text was accepted (hash)
+// and WHICH capture lanes existed at acceptance. A release that widens the
+// egress surface (a new harness lane) changes MEMORABLE_CAPTURE_HARNESSES,
+// the stamp stops validating, the relay turns off, and `gbrain doctor` names
+// the re-disclosure command — consent never silently stretches over egress
+// the user was never shown.
+
+/** The capture lanes the CURRENT build can relay. Widening this list is a
+ * deliberate consent event: old stamps stop validating until the user re-runs
+ * the disclosure. */
+export const MEMORABLE_CAPTURE_HARNESSES: readonly string[] = ['claude-code'];
+
+/** Canonical enable-time disclosure — the one text the user consents to.
+ * Rendered by `gbrain config set integrations.memorable.enabled true` and
+ * hashed into the consent stamp; editing it invalidates existing stamps. */
+export const MEMORABLE_DISCLOSURE_TEXT = `═══════════════════════════════════════════════════════════════
+[gbrain] Enable the Memorable session-end relay?
+[gbrain]
+[gbrain] What this does, mechanically:
+[gbrain]  - At the end of a captured session (${MEMORABLE_CAPTURE_HARNESSES.join(', ')}),
+[gbrain]    gbrain writes a local receipt and spawns the locally-installed
+[gbrain]    third-party \`memorable\` CLI (closed source, published on npm by
+[gbrain]    Memorable — not by gbrain, not auditable by gbrain).
+[gbrain]  - That CLI sends the session's REDACTED tool calls (commands, file
+[gbrain]    paths, URLs, queries + success/failure booleans) and a <=200-char
+[gbrain]    task line to Memorable's extraction API. Redaction runs first
+[gbrain]    (vendor-key + high-entropy secret scan), but redaction is
+[gbrain]    best-effort, not a guarantee.
+[gbrain]  - In gbrain-backend mode the CLI has FULL access to your brain
+[gbrain]    database (it stores procedures via direct DB access). Prefer its
+[gbrain]    standalone mode for sensitive brains.
+[gbrain]  - Memorable's own consent (\`memorable enable\`) is separate and also
+[gbrain]    required; that CLI can flip gbrain's enable flag, but it can never
+[gbrain]    write this consent stamp — only this command can.
+[gbrain]
+[gbrain] Off switches: gbrain config set integrations.memorable.enabled false
+[gbrain]               GBRAIN_MEMORABLE=0 (env kill switch)
+═══════════════════════════════════════════════════════════════`;
+
+export function memorableDisclosureSha256(): string {
+  return createHash('sha256').update(MEMORABLE_DISCLOSURE_TEXT, 'utf8').digest('hex');
+}
+
+export interface MemorableConsentStamp {
+  accepted_disclosure: string;
+  disclosure_sha256: string;
+  harnesses: string[];
+}
+
+export async function memorableConsentPath(): Promise<string> {
+  return join(await hooksTelemetryDir(), 'memorable-consent.json');
+}
+
+/** Write the stamp — called ONLY by the enable-time disclosure flow in
+ * commands/config.ts. Returns the path for the confirmation message. */
+export async function writeMemorableConsent(): Promise<string> {
+  const p = await memorableConsentPath();
+  const stamp: MemorableConsentStamp = {
+    accepted_disclosure: new Date().toISOString(),
+    disclosure_sha256: memorableDisclosureSha256(),
+    harnesses: [...MEMORABLE_CAPTURE_HARNESSES],
+  };
+  writeFileSync(p, JSON.stringify(stamp, null, 2) + '\n', { mode: 0o600 });
+  return p;
+}
+
+/** Revocation — `config set …enabled false` and `config unset` both call this. */
+export async function clearMemorableConsent(): Promise<void> {
+  try {
+    rmSync(await memorableConsentPath(), { force: true });
+  } catch { /* best effort — a leftover stamp without the enable flag is inert */ }
+}
+
+export async function readMemorableConsent(): Promise<MemorableConsentStamp | null> {
+  try {
+    const raw = JSON.parse(readFileSync(await memorableConsentPath(), 'utf8')) as MemorableConsentStamp;
+    if (typeof raw?.accepted_disclosure === 'string' && typeof raw?.disclosure_sha256 === 'string' && Array.isArray(raw?.harnesses)) return raw;
+  } catch { /* missing or unreadable — no consent evidence */ }
+  return null;
+}
+
+/** Valid = the CURRENT disclosure text was accepted AND every current capture
+ * lane was already listed at acceptance. Fail-closed on any mismatch. */
+export async function memorableConsentValid(): Promise<boolean> {
+  const stamp = await readMemorableConsent();
+  if (!stamp) return false;
+  if (stamp.disclosure_sha256 !== memorableDisclosureSha256()) return false;
+  return MEMORABLE_CAPTURE_HARNESSES.every((h) => stamp.harnesses.includes(h));
 }
 
 /** Why the Memorable gate said no — one vocabulary for hook, context-engine,
@@ -410,7 +579,7 @@ export async function readSessionReceiptsTail(n: number): Promise<SessionReceipt
  * the same state. */
 export interface MemorableGate {
   allowed: boolean;
-  reason?: 'kill_switch' | 'disabled';
+  reason?: 'kill_switch' | 'disabled' | 'disclosure_missing';
 }
 
 /**
@@ -419,16 +588,58 @@ export interface MemorableGate {
  * nothing is spawned unless the operator has explicitly opted in. Off (the
  * default) means gbrain behaves exactly as it does today. Any of 0/false/off/no
  * in GBRAIN_MEMORABLE kills the relay; the env can only ever DISABLE — there is
- * no env value that bypasses the config gate.
+ * no env value that bypasses the config gate or the consent stamp.
+ *
+ * `disclosure_missing`: the config boolean is on but the gbrain-authored
+ * consent stamp is absent or stale — the state `memorable enable`'s
+ * out-of-band config write produces. The relay stays off until the user runs
+ * `gbrain config set integrations.memorable.enabled true` and accepts the
+ * disclosure (surfaced as a doctor FAIL with exactly that command).
  *
  * Structural param (not GBrainConfig) so this module never imports config.ts —
  * the hook lane, the openclaw context-engine lane, and doctor all pass whatever
  * config object they already hold.
  */
-export function memorableGateAllowed(cfg?: { integrations?: { memorable?: { enabled?: boolean } } } | null): MemorableGate {
+export async function memorableGateAllowed(cfg?: { integrations?: { memorable?: { enabled?: boolean } } } | null): Promise<MemorableGate> {
   if (/^(0|false|off|no)$/i.test(process.env.GBRAIN_MEMORABLE ?? '')) return { allowed: false, reason: 'kill_switch' };
   if (cfg?.integrations?.memorable?.enabled !== true) return { allowed: false, reason: 'disabled' };
+  if (!(await memorableConsentValid())) return { allowed: false, reason: 'disclosure_missing' };
   return { allowed: true };
+}
+
+// ── Memorable-side consent evidence (the CLI's own opt-in state) ─────────────
+//
+// SPEC TARGET (provisional, dated): ~/.memorable/config.json as written by
+// memorable-cli 0.3.4 (decompile-verified 2026-08-25). Fields this check
+// reads: `backend` ('local' | 'gbrain') and, for the local backend, `consent`
+// ('read-write' | 'read-only' | 'deny'; absent = unset = deny). In gbrain-
+// backend mode the CLI stores consent on the brain's source row (unreadable
+// from this engine-free lane) and mirrors enable/disable into gbrain's config
+// gate — so there the gbrain-authored consent stamp above is the required
+// evidence instead. Unknown shape = no evidence = skip the spawn, fail-closed
+// and doctor-visible (never a guessed yes).
+
+export type MemorableConsentEvidence =
+  | { ok: true }
+  | { ok: false; reason: 'memorable_not_initialized' | 'memorable_consent_off' };
+
+/** TEST SEAM: GBRAIN_MEMORABLE_CONFIG overrides the directory holding the
+ * CLI's config.json (never settable to widen anything — it only tells the
+ * evidence check where to LOOK, and a wrong path fails closed). */
+function memorableCliConfigPath(): string {
+  const dir = process.env.GBRAIN_MEMORABLE_CONFIG || join(homedir(), '.memorable');
+  return join(dir, 'config.json');
+}
+
+export function memorableConsentEvidence(): MemorableConsentEvidence {
+  try {
+    const raw = JSON.parse(readFileSync(memorableCliConfigPath(), 'utf8')) as { backend?: unknown; consent?: unknown };
+    if (raw?.backend === 'gbrain') return { ok: true };
+    if (raw?.backend === 'local') {
+      return raw?.consent === 'read-write' ? { ok: true } : { ok: false, reason: 'memorable_consent_off' };
+    }
+  } catch { /* missing or unparseable — not initialized */ }
+  return { ok: false, reason: 'memorable_not_initialized' };
 }
 
 /**
@@ -470,16 +681,26 @@ export interface RelayReceiptResult {
  */
 export async function recordAndRelayReceipt(
   entry: Omit<SessionReceiptEntry, 'ts'>,
-  opts: { spawnFn?: typeof spawn } = {},
+  opts: { spawnFn?: typeof spawn; trimRelayFile?: boolean } = {},
 ): Promise<RelayReceiptResult> {
   const degradeReasons: string[] = [];
   try {
+    if (opts.trimRelayFile) await maybeTrimRelayResults();
     const recorded = await appendSessionReceipt(entry);
     if (!recorded) return { recorded: false, degradeReasons };
     // gbrain verified the binary existed, never that it WORKED — surface the
     // PREVIOUS run's self-reported outcome (see relayResultsPath).
     const priorFail = await priorRelayFailure();
     if (priorFail) degradeReasons.push(priorFail);
+    // Consent-before-egress: the receipt above is a local artifact and is
+    // always written; the SPAWN is what leads to egress, so it additionally
+    // requires positive evidence that Memorable's own consent exists. No
+    // evidence => no child process, fail-closed and doctor-visible.
+    const evidence = memorableConsentEvidence();
+    if (!evidence.ok) {
+      degradeReasons.push(evidence.reason);
+      return { recorded: true, degradeReasons };
+    }
     // Enabled-but-not-installed is named, not spawned into an ENOENT.
     const bin = resolveMemorableBin();
     if (!bin) {

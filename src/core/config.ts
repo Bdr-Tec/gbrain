@@ -36,8 +36,12 @@ export interface GBrainConfig {
    * Third-party integration gates, file-plane (read by engine-free hook
    * children). `integrations.memorable.enabled` gates the optional
    * session-end relay to a locally-installed `memorable` CLI — absent or
-   * anything other than literal `true` means OFF (fail-closed). See
-   * hook.ts's session-end handler.
+   * anything other than literal `true` means OFF (fail-closed). The boolean
+   * alone is NOT sufficient: the gate also requires the gbrain-authored
+   * consent stamp (`~/.gbrain/integrations/hooks/memorable-consent.json`,
+   * written only by `gbrain config set`'s disclosure flow — deliberately
+   * outside this file, which the external CLI rewrites). See
+   * memorableGateAllowed in core/context/hook-heartbeat.ts.
    */
   integrations?: { memorable?: { enabled?: boolean } };
   database_url?: string;

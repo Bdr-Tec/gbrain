@@ -4,13 +4,16 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
 import { statSync } from 'node:fs';
 import {
   appendSessionReceipt,
+  clearMemorableConsent,
+  maybeTrimRelayResults,
+  memorableConsentEvidence,
   memorableGateAllowed,
   recordAndRelayReceipt,
   readSessionReceiptsTail,
@@ -18,6 +21,7 @@ import {
   relayResultsPath,
   resolveMemorableBin,
   sessionReceiptsPath,
+  writeMemorableConsent,
 } from '../src/core/context/hook-heartbeat.ts';
 
 function tempHome(): string {
@@ -344,29 +348,123 @@ describe('a failed relay becomes visible instead of silent', () => {
 // ── A-1 refactor seams: the shared gate + relay helper ──────────────────────
 
 describe('memorableGateAllowed — one gate vocabulary for hook, engine, doctor', () => {
-  test('kill switch beats config, in all four spellings; env can never enable', async () => {
-    const on = { integrations: { memorable: { enabled: true } } };
-    for (const v of ['0', 'false', 'off', 'no', 'FALSE', 'Off']) {
-      await withEnv({ GBRAIN_MEMORABLE: v }, async () => {
-        expect(memorableGateAllowed(on)).toEqual({ allowed: false, reason: 'kill_switch' });
+  const on = { integrations: { memorable: { enabled: true } } };
+
+  test('kill switch beats config AND stamp, in all spellings; env can never enable', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        await writeMemorableConsent();
+        for (const v of ['0', 'false', 'off', 'no', 'FALSE', 'Off']) {
+          await withEnv({ GBRAIN_MEMORABLE: v }, async () => {
+            expect(await memorableGateAllowed(on)).toEqual({ allowed: false, reason: 'kill_switch' });
+          });
+        }
+        // A truthy env value does NOT bypass a disabled config — env only disables.
+        await withEnv({ GBRAIN_MEMORABLE: '1' }, async () => {
+          expect(await memorableGateAllowed({})).toEqual({ allowed: false, reason: 'disabled' });
+          expect(await memorableGateAllowed(on)).toEqual({ allowed: true });
+        });
       });
-    }
-    // A truthy env value does NOT bypass a disabled config — env only disables.
-    await withEnv({ GBRAIN_MEMORABLE: '1' }, async () => {
-      expect(memorableGateAllowed({})).toEqual({ allowed: false, reason: 'disabled' });
-      expect(memorableGateAllowed(on)).toEqual({ allowed: true });
-    });
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   test('anything but literal true is disabled — absent, null, string, false', async () => {
-    await withEnv({ GBRAIN_MEMORABLE: undefined }, async () => {
-      expect(memorableGateAllowed(undefined).reason).toBe('disabled');
-      expect(memorableGateAllowed(null).reason).toBe('disabled');
-      expect(memorableGateAllowed({}).reason).toBe('disabled');
-      expect(memorableGateAllowed({ integrations: { memorable: { enabled: false } } }).reason).toBe('disabled');
-      expect(memorableGateAllowed({ integrations: { memorable: { enabled: 'true' as unknown as boolean } } }).reason).toBe('disabled');
-      expect(memorableGateAllowed({ integrations: { memorable: { enabled: true } } })).toEqual({ allowed: true });
-    });
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined }, async () => {
+        expect((await memorableGateAllowed(undefined)).reason).toBe('disabled');
+        expect((await memorableGateAllowed(null)).reason).toBe('disabled');
+        expect((await memorableGateAllowed({})).reason).toBe('disabled');
+        expect((await memorableGateAllowed({ integrations: { memorable: { enabled: false } } })).reason).toBe('disabled');
+        expect((await memorableGateAllowed({ integrations: { memorable: { enabled: 'true' as unknown as boolean } } })).reason).toBe('disabled');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('enabled WITHOUT the gbrain-authored stamp is off — the `memorable enable` out-of-band state', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined }, async () => {
+        expect(await memorableGateAllowed(on)).toEqual({ allowed: false, reason: 'disclosure_missing' });
+        await writeMemorableConsent();
+        expect(await memorableGateAllowed(on)).toEqual({ allowed: true });
+        await clearMemorableConsent();
+        expect(await memorableGateAllowed(on)).toEqual({ allowed: false, reason: 'disclosure_missing' });
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('scope-binding: a stale disclosure hash or a missing harness invalidates the stamp', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined }, async () => {
+        const p = await writeMemorableConsent();
+        // Stale hash: the user consented to a DIFFERENT disclosure text.
+        const stamp = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
+        writeFileSync(p, JSON.stringify({ ...stamp, disclosure_sha256: 'deadbeef' }));
+        expect((await memorableGateAllowed(on)).reason).toBe('disclosure_missing');
+        // Missing harness: a new capture lane shipped after acceptance.
+        writeFileSync(p, JSON.stringify({ ...stamp, harnesses: [] }));
+        expect((await memorableGateAllowed(on)).reason).toBe('disclosure_missing');
+        // Superset is fine — extra listed harnesses never invalidate.
+        writeFileSync(p, JSON.stringify({ ...stamp, harnesses: [...(stamp.harnesses as string[]), 'future-harness'] }));
+        expect(await memorableGateAllowed(on)).toEqual({ allowed: true });
+        // Garbage stamp file reads as no consent, never a crash.
+        writeFileSync(p, '{not json');
+        expect((await memorableGateAllowed(on)).reason).toBe('disclosure_missing');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('memorableConsentEvidence — the CLI-side opt-in, read fail-closed', () => {
+  function seedCliConfig(dir: string, body: string | null): void {
+    mkdirSync(dir, { recursive: true });
+    if (body !== null) writeFileSync(join(dir, 'config.json'), body);
+  }
+
+  test('missing, unparseable, or unknown-backend config is not_initialized', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_MEMORABLE_CONFIG: join(home, 'nope') }, async () => {
+        expect(memorableConsentEvidence()).toEqual({ ok: false, reason: 'memorable_not_initialized' });
+      });
+      seedCliConfig(join(home, 'm1'), '{broken');
+      await withEnv({ GBRAIN_MEMORABLE_CONFIG: join(home, 'm1') }, async () => {
+        expect(memorableConsentEvidence()).toEqual({ ok: false, reason: 'memorable_not_initialized' });
+      });
+      seedCliConfig(join(home, 'm2'), JSON.stringify({ backend: 'mystery' }));
+      await withEnv({ GBRAIN_MEMORABLE_CONFIG: join(home, 'm2') }, async () => {
+        expect(memorableConsentEvidence()).toEqual({ ok: false, reason: 'memorable_not_initialized' });
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('local backend requires read-write; deny/read-only/unset are consent_off', async () => {
+    const home = tempHome();
+    try {
+      for (const consent of ['deny', 'read-only', undefined]) {
+        seedCliConfig(join(home, 'mc'), JSON.stringify({ backend: 'local', ...(consent ? { consent } : {}) }));
+        await withEnv({ GBRAIN_MEMORABLE_CONFIG: join(home, 'mc') }, async () => {
+          expect(memorableConsentEvidence()).toEqual({ ok: false, reason: 'memorable_consent_off' });
+        });
+      }
+      seedCliConfig(join(home, 'mc'), JSON.stringify({ backend: 'local', consent: 'read-write' }));
+      await withEnv({ GBRAIN_MEMORABLE_CONFIG: join(home, 'mc') }, async () => {
+        expect(memorableConsentEvidence()).toEqual({ ok: true });
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('gbrain backend is ok — the gbrain-authored stamp is the evidence there', async () => {
+    const home = tempHome();
+    try {
+      seedCliConfig(join(home, 'mg'), JSON.stringify({ backend: 'gbrain' }));
+      await withEnv({ GBRAIN_MEMORABLE_CONFIG: join(home, 'mg') }, async () => {
+        expect(memorableConsentEvidence()).toEqual({ ok: true });
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
 
@@ -400,11 +498,18 @@ describe('recordAndRelayReceipt — shared receipt + fire-and-forget relay', () 
     chmodSync(bin, 0o755);
     return dir;
   }
+  /** CLI-side consent evidence (local backend, opted in) via the test seam. */
+  function evidenceDir(home: string, body = JSON.stringify({ backend: 'local', consent: 'read-write' })): string {
+    const dir = join(home, 'memorable-cli');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'config.json'), body);
+    return dir;
+  }
 
   test('records, surfaces the prior failure, and spawns record --session <id>', async () => {
     const home = tempHome();
     try {
-      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '' }, async () => {
+      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '', GBRAIN_MEMORABLE_CONFIG: evidenceDir(home) }, async () => {
         const relayFile = join(home, '.gbrain', 'integrations', 'hooks', 'memorable-relay.jsonl');
         mkdirSync(dirname(relayFile), { recursive: true });
         writeFileSync(relayFile, JSON.stringify({ ts: 'x', session_id: 'old', ok: false, reason: 'consent' }) + '\n');
@@ -421,7 +526,7 @@ describe('recordAndRelayReceipt — shared receipt + fire-and-forget relay', () 
   test('an identical re-emission is deduplicated and never spawns twice', async () => {
     const home = tempHome();
     try {
-      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '' }, async () => {
+      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '', GBRAIN_MEMORABLE_CONFIG: evidenceDir(home) }, async () => {
         const { calls, fn } = fakeSpawn();
         expect((await recordAndRelayReceipt(entry(), { spawnFn: fn })).recorded).toBe(true);
         const second = await recordAndRelayReceipt(entry(), { spawnFn: fn });
@@ -434,7 +539,7 @@ describe('recordAndRelayReceipt — shared receipt + fire-and-forget relay', () 
   test('missing binary records the receipt but degrades memorable_cli_missing, no spawn', async () => {
     const home = tempHome();
     try {
-      await withEnv({ GBRAIN_HOME: home, PATH: home, MEMORABLE_BIN: '' }, async () => {
+      await withEnv({ GBRAIN_HOME: home, PATH: home, MEMORABLE_BIN: '', GBRAIN_MEMORABLE_CONFIG: evidenceDir(home) }, async () => {
         const { calls, fn } = fakeSpawn();
         const res = await recordAndRelayReceipt(entry({ content_hash: 'hash-2' }), { spawnFn: fn });
         expect(res.recorded).toBe(true);
@@ -447,7 +552,7 @@ describe('recordAndRelayReceipt — shared receipt + fire-and-forget relay', () 
   test('a spawn that throws synchronously never throws out of the helper', async () => {
     const home = tempHome();
     try {
-      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '' }, async () => {
+      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '', GBRAIN_MEMORABLE_CONFIG: evidenceDir(home) }, async () => {
         const boom = (() => { throw new Error('EPERM'); }) as unknown as typeof import('node:child_process').spawn;
         const res = await recordAndRelayReceipt(entry({ content_hash: 'hash-3' }), { spawnFn: boom });
         expect(res.recorded).toBe(true);
@@ -455,3 +560,135 @@ describe('recordAndRelayReceipt — shared receipt + fire-and-forget relay', () 
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
+
+describe('consent-before-egress: no CLI-side evidence, no spawn (receipt still local)', () => {
+  const entry2 = {
+    session_id: 'evidence-sess',
+    harness: 'claude-code' as const,
+    corpus_path: '/tmp/evidence-sess.txt',
+    content_hash: 'ev-1',
+    turn_count: 1,
+    workspace_root: '/repo',
+    tool_calls_json: '[]',
+    secret_scan_ok: true,
+  };
+  function spy() {
+    const calls: unknown[] = [];
+    const fn = ((...a: unknown[]) => { calls.push(a); return { on: () => {}, unref: () => {} }; }) as unknown as typeof import('node:child_process').spawn;
+    return { calls, fn };
+  }
+
+  test('not initialized: receipt written, spawn skipped, reason surfaced', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE_CONFIG: join(home, 'absent') }, async () => {
+        const { calls, fn } = spy();
+        const res = await recordAndRelayReceipt(entry2, { spawnFn: fn });
+        expect(res.recorded).toBe(true);
+        expect(res.degradeReasons).toContain('memorable_not_initialized');
+        expect(calls.length).toBe(0);
+        expect((await readSessionReceiptsTail(5)).some((e) => e.session_id === 'evidence-sess')).toBe(true);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('local backend with consent off: spawn skipped with memorable_consent_off', async () => {
+    const home = tempHome();
+    try {
+      const dir = join(home, 'mcli');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({ backend: 'local', consent: 'deny' }));
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE_CONFIG: dir }, async () => {
+        const { calls, fn } = spy();
+        const res = await recordAndRelayReceipt({ ...entry2, content_hash: 'ev-2' }, { spawnFn: fn });
+        expect(res.recorded).toBe(true);
+        expect(res.degradeReasons).toContain('memorable_consent_off');
+        expect(calls.length).toBe(0);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('memorable-relay.jsonl is bounded: tail reads + hook-lane trim', () => {
+  const line = (i: number, ok = true) => JSON.stringify({ ts: `t${i}`, session_id: `s${i}`, ok, pad: 'x'.repeat(200) });
+
+  test('lastRelayResult stays correct when the file exceeds the 1MB tail window', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        const rows: string[] = [];
+        for (let i = 0; i < 10_000; i++) rows.push(line(i, true));
+        rows.push(JSON.stringify({ ts: 'last', session_id: 'newest', ok: false, reason: 'consent' }));
+        writeFileSync(p, rows.join('\n') + '\n');
+        expect((await relayFileSizeOver(p, 1024 * 1024))).toBe(true);
+        expect(await priorRelayFailure()).toBe('memorable_relay_consent');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('no trim while small or freshly-written under the force ceiling', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, line(1) + '\n');
+        await maybeTrimRelayResults();
+        expect(readFileSync(p, 'utf8')).toBe(line(1) + '\n');
+        // >1MB but mtime fresh and under 8MB: left alone (a child may be mid-run).
+        const rows: string[] = [];
+        for (let i = 0; i < 8_000; i++) rows.push(line(i));
+        writeFileSync(p, rows.join('\n') + '\n');
+        const before = statSync(p).size;
+        await maybeTrimRelayResults();
+        expect(statSync(p).size).toBe(before);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('mtime-stale file above the threshold trims to the newest complete lines', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        const rows: string[] = [];
+        for (let i = 0; i < 8_000; i++) rows.push(line(i));
+        writeFileSync(p, rows.join('\n') + '\n');
+        const old = new Date(Date.now() - 10 * 60_000);
+        utimesSync(p, old, old);
+        await maybeTrimRelayResults();
+        const after = readFileSync(p, 'utf8');
+        expect(statSync(p).size).toBeLessThan(600 * 1024);
+        const lines = after.trimEnd().split('\n');
+        // Newest line survives intact; every kept line parses (line-boundary cut).
+        expect(lines[lines.length - 1]).toBe(line(7_999));
+        for (const l of lines) expect(() => JSON.parse(l)).not.toThrow();
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('force-trim fires at the hard ceiling even with a fresh mtime', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        const fat = (i: number) => JSON.stringify({ ts: `t${i}`, session_id: `s${i}`, ok: true, pad: 'y'.repeat(4000) });
+        const rows: string[] = [];
+        for (let i = 0; i < 2_300; i++) rows.push(fat(i)); // ~9MB, mtime = now
+        writeFileSync(p, rows.join('\n') + '\n');
+        await maybeTrimRelayResults();
+        expect(statSync(p).size).toBeLessThan(600 * 1024);
+        expect(readFileSync(p, 'utf8').trimEnd().split('\n').pop()).toBe(fat(2_299));
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+/** Tiny helper: size check without importing more of fs into every test above. */
+async function relayFileSizeOver(path: string, bytes: number): Promise<boolean> {
+  return statSync(path).size > bytes;
+}
