@@ -73,6 +73,7 @@ import {
   segmentHash,
 } from '../core/context/corpus-segments.ts';
 import { memorableGateAllowed, recordAndRelayReceipt, redactedToolCallsJson } from '../core/context/hook-heartbeat.ts';
+import { captureSpecFor } from '../core/transcripts/capture-spec.ts';
 import {
   heartbeatPath,
   hookStatusPath,
@@ -1421,24 +1422,38 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
   let sessionId = 'unknown';
   let ws: string | undefined;
   let segmentMode: string | undefined;
-  // Prior-run relay failures (memorable_relay_*) describe a PREVIOUS session.
-  // Under first-degrade-wins they must not mask THIS session's reasons (e.g.
-  // push_unavailable, set later in this function), so they are held here and
-  // applied just before the heartbeat write.
-  const staleRelayReasons: string[] = [];
+  // Apply-LAST reasons: entries here describe something other than THIS
+  // session's own capture health — prior-run relay failures (memorable_relay_*)
+  // and a discovery-fallback note — so under first-degrade-wins they must not
+  // mask a current-session reason (e.g. push_unavailable, scan_unavailable).
+  // Held here and applied just before the heartbeat write.
+  const deferredReasons: string[] = [];
   try {
     const j = await readStdinJson(io, 500);
     sessionId = sanitizeSessionId(j?.session_id);
     ws = io.cwd ?? (typeof j?.cwd === 'string' ? (j.cwd as string) : process.cwd());
     const cfg = loadConfig();
 
-    const conf = confineTranscriptPath(j?.transcript_path, {
-      ...(io.transcriptRoot ? { root: io.transcriptRoot } : {}),
-    });
+    // Per-harness capture seam: claude-code and codex each pin their OWN
+    // confinement root + parser; unknown harnesses resolve to the claude spec
+    // (today's behavior, pinned by the capture-spec golden test).
+    const spec = captureSpecFor(io.harness);
+    const rootOpt = io.transcriptRoot ? { root: io.transcriptRoot } : {};
+    let conf = spec.confine(j?.transcript_path, { ...rootOpt });
+    if (!conf.ok && conf.reason === 'missing_path' && spec.discover) {
+      // A codex SessionEnd payload can carry transcript_path:null (no local
+      // rollout); the bounded newest-first discovery keeps the lane useful —
+      // LOUDLY (typed deferred reason, never a silent guess).
+      const found = spec.discover(sessionId === 'unknown' ? null : sessionId, { ...rootOpt });
+      if (found) {
+        deferredReasons.push(found.degrade);
+        conf = spec.confine(found.path, { ...rootOpt });
+      }
+    }
     if (!conf.ok) {
       degrade(`transcript_${conf.reason}`);
     } else {
-      const parsed = parseTranscript(conf.path);
+      const parsed = spec.parse(conf.path);
       turnsN = parsed.turns.length;
       bytesN = parsed.bytesRead;
       if (bytesN > 0 && turnsN === 0) {
@@ -1521,7 +1536,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
               secret_scan_ok: redactionsN !== undefined,
             }, { trimRelayFile: true }); // hook lane is the ONE trimmer of memorable-relay.jsonl
             for (const r of relay.degradeReasons) {
-              if (r.startsWith('memorable_relay_')) staleRelayReasons.push(r);
+              if (r.startsWith('memorable_relay_')) deferredReasons.push(r);
               else degrade(r);
             }
           }
@@ -1584,9 +1599,9 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
     /* best effort */
   }
 
-  // Stale relay failures apply LAST — visible when nothing about THIS session
+  // Deferred reasons apply LAST — visible when nothing about THIS session
   // degraded, never masking a current-session reason.
-  for (const r of staleRelayReasons) degrade(r);
+  for (const r of deferredReasons) degrade(r);
 
   await writeHeartbeat(io, {
     ts: new Date().toISOString(),

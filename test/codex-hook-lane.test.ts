@@ -53,7 +53,7 @@ describe('parseCodexHookTranscript', () => {
     expect(parsed.toolCallTurnIndexes).toEqual([1]);
     expect(parsed.skippedLines).toBe(1); // the torn line
     // No result join: 0.147.0 persists no success flag on *_output rows.
-    expect('result' in (parsed.toolCalls[0] as Record<string, unknown>)).toBe(false);
+    expect('result' in (parsed.toolCalls[0] as unknown as Record<string, unknown>)).toBe(false);
   });
 
   test('function_call args key is `arguments` (source-verified); non-JSON args stay the raw string', () => {
@@ -161,8 +161,8 @@ describe('captureSpecFor — the dispatch golden rule', () => {
     expect(captureSpecFor('anything-else')).toBe(CAPTURE_SPECS['claude-code']);
     expect(captureSpecFor('codex')).toBe(CAPTURE_SPECS.codex);
     // Only the codex lane has a discovery fallback.
-    expect(CAPTURE_SPECS.codex.discover).toBeDefined();
-    expect(CAPTURE_SPECS['claude-code'].discover).toBeUndefined();
+    expect(captureSpecFor('codex').discover).toBeDefined();
+    expect(captureSpecFor('claude-code').discover).toBeUndefined();
   });
 });
 

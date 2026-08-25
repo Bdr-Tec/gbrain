@@ -31,8 +31,10 @@ export interface HarnessCaptureSpec {
   confine(p: unknown, opts?: { root?: string; maxBytes?: number }): ConfineTranscriptResult;
   /** Parse to the hook lane's shared ParsedTranscript shape. */
   parse(path: string, opts?: { maxBytes?: number }): ParsedTranscript;
-  /** Optional bounded fallback when the payload carries no usable path. */
-  discover?: (sessionId: string | null) => { path: string; degrade: string } | null;
+  /** Optional bounded fallback when the payload carries no usable path.
+   * `opts.root` is the same TEST SEAM as confine's — production callers walk
+   * the harness's pinned store. */
+  discover?: (sessionId: string | null, opts?: { root?: string }) => { path: string; degrade: string } | null;
 }
 
 export const CAPTURE_SPECS = {
@@ -43,7 +45,7 @@ export const CAPTURE_SPECS = {
   codex: {
     confine: (p, opts) => confineCodexTranscriptPath(p, opts),
     parse: (path, opts) => parseCodexHookTranscript(path, opts),
-    discover: (sessionId) => discoverNewestCodexRollout(sessionId),
+    discover: (sessionId, opts) => discoverNewestCodexRollout(sessionId, opts),
   },
 } as const satisfies Record<CaptureHarness, HarnessCaptureSpec>;
 
