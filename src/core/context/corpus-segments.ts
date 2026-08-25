@@ -33,7 +33,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { WindowTurn } from './entity-salience.ts';
-import { toCorpusText } from '../transcripts/claude-code-jsonl.ts';
+import { toCorpusText, type ToolCallRecord } from '../transcripts/claude-code-jsonl.ts';
 import { mapOpenclawLine } from '../transcripts/openclaw.ts';
 
 /** Length of the hex content-hash slice in segment filenames. */
@@ -239,7 +239,7 @@ export async function coverageComplete(
 export function readOpenclawBoundaryTail(
   path: string,
   opts: { maxBytes?: number } = {},
-): { turns: WindowTurn[]; boundaryTurnIndexes: number[] } | null {
+): { turns: WindowTurn[]; boundaryTurnIndexes: number[]; toolCalls: ToolCallRecord[]; toolCallTurnIndexes: number[] } | null {
   const maxBytes = Math.max(1, Math.floor(opts.maxBytes ?? 2 * 1024 * 1024));
   let raw: string;
   try {
@@ -261,6 +261,13 @@ export function readOpenclawBoundaryTail(
   }
   const turns: WindowTurn[] = [];
   const boundaryTurnIndexes: number[] = [];
+  // Memorable integration: tool calls stamped with the turn slot they sit at
+  // (turns.length BEFORE the line's own turn is pushed — same semantics as the
+  // claude-code parser), so a caller writing only a window span can filter the
+  // calls to the same origin. A `skip` line can still carry calls (a
+  // placeholder-only message has no text but its calls are real work).
+  const toolCalls: ToolCallRecord[] = [];
+  const toolCallTurnIndexes: number[] = [];
   let mappedAnything = false;
   for (const line of raw.split('\n')) {
     const t = line.trim();
@@ -272,6 +279,12 @@ export function readOpenclawBoundaryTail(
       continue; // includes a tail read's partial first line
     }
     const mapped = mapOpenclawLine(entry);
+    if (mapped.kind === 'message' || mapped.kind === 'skip') {
+      for (const c of mapped.toolCalls ?? []) {
+        toolCalls.push(c);
+        toolCallTurnIndexes.push(turns.length);
+      }
+    }
     if (mapped.kind === 'session') {
       mappedAnything = true;
     } else if (mapped.kind === 'boundary') {
@@ -282,7 +295,7 @@ export function readOpenclawBoundaryTail(
       turns.push({ role: mapped.message.role, text: mapped.message.text });
     }
   }
-  return mappedAnything ? { turns, boundaryTurnIndexes } : null;
+  return mappedAnything ? { turns, boundaryTurnIndexes, toolCalls, toolCallTurnIndexes } : null;
 }
 
 /**
