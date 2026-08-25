@@ -56,8 +56,10 @@ last 30 days of mail (the deep backfill is never extracted), kill switch
 gbrain waiting [--top N] [--json] [--stale-ok]
     Ranked counterparties: what you owe them / they owe you, evidence
     quotes, Gmail deep links, entity-card context, a paste-ready digest.
-    REFUSES on stale data (no successful google sync in 24h) and prints the
-    exact fix — stale-but-confident output is worse than none.
+    REFUSES when every google source has gone >24h without a successful
+    sync, printing the exact fix — stale-but-confident output is worse than
+    none. (One fresh account keeps output flowing; per-source sync ages are
+    always reported.)
 
 gbrain loops list|show <id>          inspect
 gbrain loops done <id> | drop <id>   close (a closed commitment expires its
@@ -91,8 +93,9 @@ carry additive optional fields (`direction`, `due`, `counterparty`,
 
 - Thread loops close deterministically when a reply lands.
 - Commitment loops close manually (`gbrain loops done`) or by staleness
-  (overdue >14 days, or >90 days without activity → `stale`, aligned with
-  the commitment fact decay halflife).
+  (overdue >14 days AND no activity in 14 days — an actively-discussed
+  overdue commitment stays open — or >90 days without any activity →
+  `stale`, aligned with the commitment fact decay halflife).
 - **Closed means closed.** A closed loop (done, dropped, or stale) only
   reopens on genuinely newer thread activity — a routine sweep re-seeing the
   same thread never resurrects a loop you closed by hand.

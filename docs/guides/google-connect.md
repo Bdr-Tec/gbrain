@@ -105,8 +105,12 @@ Google sources are ordinary gbrain sources: `gbrain sync --source <id>`,
 `gbrain sync --all`, autopilot, and the dream cycle all pick them up. A bare
 un-targeted `gbrain sync` (repo mode) does not — target it or use `--all`.
 Health: `gbrain google status` (live refresh probe per account) and
-`gbrain doctor` (the `google_oauth` check warns at day ~6 of a Testing-mode
-consent screen, before Google kills the tokens at day 7).
+`gbrain doctor` (the `google_oauth` check warns from day 5 of a Testing-mode
+consent screen, before Google kills the tokens at day 7). Once you publish
+the app to Production, record it — `gbrain google connect --consent-state
+production` — so the weekly-expiry warning stops firing. Less-common flags
+(`--via`, `--no-browser`, `--no-probe`, `--purge-client`, and setup's
+`--history-days` / `--sync-budget-ms`): `gbrain google --help`.
 
 Sync freshness is honest by construction: a sweep only stamps the source as
 synced when it fully succeeds, so `gbrain waiting`'s staleness gate can trust
@@ -123,6 +127,7 @@ attached. The catalog (also emitted as structured JSON with `--json`):
 | Code | What happened | Fix |
 |---|---|---|
 | `client_json_wrong_type` | The downloaded JSON is a **Web application** client (top-level `"web"` key) | Create a **Desktop app** client and download its JSON |
+| `client_json_unreadable` | The client JSON path doesn't exist or isn't the Google Cloud download | Re-download from Credentials → your Desktop app client → Download JSON, pass with `--client-json <path>` |
 | `client_shape_invalid` | Pasted ID/secret malformed (smart quotes, truncation) | Re-copy, or use `--client-json` |
 | `redirect_uri_mismatch` | Google rejected the redirect | Almost always a Web-type client — use a Desktop app client |
 | `access_denied_test_user` | Consent blocked (External + Testing, you're not a test user — or you clicked Cancel) | Add yourself under Audience → Test users, retry the same URL |
@@ -143,6 +148,7 @@ attached. The catalog (also emitted as structured JSON with `--json`):
 | `scope_missing` | Connected with narrower `--scopes` than needed | `gbrain google connect --reauth <email>` |
 | `relay_unreachable` / `relay_session_expired` / `claim_already_used` / `relay_disabled` | Hosted fast-path (gbrain.io relay) issues | BYO connect always works: `gbrain google connect` |
 | `not_connected` | No vault entry for the account | `gbrain google connect` |
+| `upstream` | Google returned an unexpected error | Retry; if it persists, run `gbrain google status --json` and file the output |
 
 Cursor expiries (`historyId` older than ~a week, calendar/contacts
 `syncToken` 410) are handled automatically with bounded re-lists — never
@@ -155,8 +161,8 @@ user-facing.
 - Disconnect: `gbrain google disconnect <email>` removes local tokens; revoke
   Google-side at <https://myaccount.google.com/permissions>.
 - Upgrade/transfer: `gbrain creds export` produces a passphrase-encrypted
-  bundle (per-credential confirm; warns when a Testing-mode consent screen
-  would travel with it).
+  bundle (a loud per-credential warning when a Testing-mode consent screen
+  would travel with it — those tokens die within 7 days on the target).
 - LLM spend: commitment extraction sends recent email text (last 30 days,
   capped per sweep) to your configured chat provider. Kill switch:
   `gbrain config set loops.extraction_enabled false`. The deterministic

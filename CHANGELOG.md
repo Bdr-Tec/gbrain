@@ -41,7 +41,7 @@ promised, and the context needed to respond.
   sync, and your first `gbrain waiting` digest in the same session.
   `gbrain google connect/status/disconnect` are idempotent state machines —
   re-running is always safe and is the documented fix for most errors.
-- **Generic credential vault** (`gbrain creds list/show/remove/export/import`):
+- **Generic credential vault** (`gbrain creds list/remove/export/import`):
   one provider-agnostic home for OAuth tokens and future bearer/API-key
   credentials, file-backed (0600, atomic, lock-guarded) with an engine-backend
   seam and passphrase-encrypted export bundles for moving credentials between
@@ -61,7 +61,8 @@ promised, and the context needed to respond.
   ops + troubleshooting), `docs/guides/google-connect.md`,
   `docs/guides/open-loops.md`; the email/calendar/credential recipes now name
   real commands instead of prose collectors; `gbrain doctor` gains a
-  `google_oauth` check (refresh probe + proactive weekly-expiry warning).
+  `google_oauth` check (zero-network vault token health + a proactive
+  weekly-expiry warning; the live refresh probe is `gbrain google status`).
 
 ### Changed
 - Schema migration v142 adds the `open_loops` and `loop_suppressions` tables

@@ -148,8 +148,8 @@ This is YOUR job (the agent). For each person who appears in calendar events:
 4. **Relationship tracking**: note meeting frequency in compiled truth:
    "Met 12 times in last 6 months. Regular 1:1 cadence."
 
-Attendee lists are pre-filtered by the connector (conference rooms and group
-calendars don't pollute them), so what you see is actual people.
+Attendee lists render as they appear on the event (entries without an email
+address are dropped); conference-room/resource filtering is not yet applied.
 
 ## What the Agent Should Test After Setup
 
