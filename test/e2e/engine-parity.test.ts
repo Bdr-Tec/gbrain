@@ -817,27 +817,46 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
       );
     }
 
-    const scoped = async (eng: BrainEngine, opts: { sourceId?: string; sourceIds?: string[] }) =>
+    const scoped = async (
+      eng: BrainEngine,
+      opts: { sourceId?: string; sourceIds?: string[]; mode?: 'inbound' | 'islanded' },
+    ) =>
       (await eng.findOrphanPages(opts)).map(r => r.slug).filter(s => s.startsWith('people/op-')).sort();
 
-    // Scalar scope to src-a: op-orphan-a is an orphan; op-target-a is saved
-    // by the cross-source inbound (A2). Parity on both engines.
-    const pgA = await scoped(pgEngine, { sourceId: 'orphan-src-a' });
-    const pgliteA = await scoped(pgliteEngine, { sourceId: 'orphan-src-a' });
-    expect(pgA).toEqual(['people/op-orphan-a']);
-    expect(pgliteA).toEqual(pgA);
+    // #4524: the default mode is 'islanded' (no live inbound AND no live
+    // outbound — health's definition). op-linker-b has a live outbound link,
+    // so it is NOT an orphan by default; mode 'inbound' preserves the legacy
+    // no-inbound-only view where it IS one. Both modes pinned on both engines.
 
-    // Scalar scope to src-b.
+    // Scalar scope to src-a: op-orphan-a is an orphan in BOTH modes (no links
+    // at all); op-target-a is saved by the cross-source inbound (A2).
+    for (const mode of ['islanded', 'inbound'] as const) {
+      const pgA = await scoped(pgEngine, { sourceId: 'orphan-src-a', mode });
+      const pgliteA = await scoped(pgliteEngine, { sourceId: 'orphan-src-a', mode });
+      expect(pgA).toEqual(['people/op-orphan-a']);
+      expect(pgliteA).toEqual(pgA);
+    }
+
+    // Scalar scope to src-b: islanded default excludes op-linker-b (live
+    // outbound); legacy inbound mode includes it.
     const pgB = await scoped(pgEngine, { sourceId: 'orphan-src-b' });
     const pgliteB = await scoped(pgliteEngine, { sourceId: 'orphan-src-b' });
-    expect(pgB).toEqual(['people/op-linker-b']);
+    expect(pgB).toEqual([]);
     expect(pgliteB).toEqual(pgB);
+    const pgBIn = await scoped(pgEngine, { sourceId: 'orphan-src-b', mode: 'inbound' });
+    const pgliteBIn = await scoped(pgliteEngine, { sourceId: 'orphan-src-b', mode: 'inbound' });
+    expect(pgBIn).toEqual(['people/op-linker-b']);
+    expect(pgliteBIn).toEqual(pgBIn);
 
-    // Federated array scope (= ANY binding) → union.
+    // Federated array scope (= ANY binding) → union, in both modes.
     const pgFed = await scoped(pgEngine, { sourceIds: ['orphan-src-a', 'orphan-src-b'] });
     const pgliteFed = await scoped(pgliteEngine, { sourceIds: ['orphan-src-a', 'orphan-src-b'] });
-    expect(pgFed).toEqual(['people/op-linker-b', 'people/op-orphan-a']);
+    expect(pgFed).toEqual(['people/op-orphan-a']);
     expect(pgliteFed).toEqual(pgFed);
+    const pgFedIn = await scoped(pgEngine, { sourceIds: ['orphan-src-a', 'orphan-src-b'], mode: 'inbound' });
+    const pgliteFedIn = await scoped(pgliteEngine, { sourceIds: ['orphan-src-a', 'orphan-src-b'], mode: 'inbound' });
+    expect(pgFedIn).toEqual(['people/op-linker-b', 'people/op-orphan-a']);
+    expect(pgliteFedIn).toEqual(pgFedIn);
   });
 
   // v0.42.7 (#1696): stale-page extraction watermark parity. Isolated under a
