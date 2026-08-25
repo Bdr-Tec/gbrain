@@ -11,6 +11,8 @@ import { withEnv } from './helpers/with-env.ts';
 import { statSync } from 'node:fs';
 import {
   appendSessionReceipt,
+  memorableGateAllowed,
+  recordAndRelayReceipt,
   readSessionReceiptsTail,
   priorRelayFailure,
   relayResultsPath,
@@ -334,6 +336,121 @@ describe('a failed relay becomes visible instead of silent', () => {
       await withEnv({ GBRAIN_HOME: home }, async () => {
         await seed(home, [rec({ ok: false, reason: 'consent' }), rec({ ok: true })]);
         expect(await priorRelayFailure()).toBe(null);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+// ── A-1 refactor seams: the shared gate + relay helper ──────────────────────
+
+describe('memorableGateAllowed — one gate vocabulary for hook, engine, doctor', () => {
+  test('kill switch beats config, in all four spellings; env can never enable', async () => {
+    const on = { integrations: { memorable: { enabled: true } } };
+    for (const v of ['0', 'false', 'off', 'no', 'FALSE', 'Off']) {
+      await withEnv({ GBRAIN_MEMORABLE: v }, async () => {
+        expect(memorableGateAllowed(on)).toEqual({ allowed: false, reason: 'kill_switch' });
+      });
+    }
+    // A truthy env value does NOT bypass a disabled config — env only disables.
+    await withEnv({ GBRAIN_MEMORABLE: '1' }, async () => {
+      expect(memorableGateAllowed({})).toEqual({ allowed: false, reason: 'disabled' });
+      expect(memorableGateAllowed(on)).toEqual({ allowed: true });
+    });
+  });
+
+  test('anything but literal true is disabled — absent, null, string, false', async () => {
+    await withEnv({ GBRAIN_MEMORABLE: undefined }, async () => {
+      expect(memorableGateAllowed(undefined).reason).toBe('disabled');
+      expect(memorableGateAllowed(null).reason).toBe('disabled');
+      expect(memorableGateAllowed({}).reason).toBe('disabled');
+      expect(memorableGateAllowed({ integrations: { memorable: { enabled: false } } }).reason).toBe('disabled');
+      expect(memorableGateAllowed({ integrations: { memorable: { enabled: 'true' as unknown as boolean } } }).reason).toBe('disabled');
+      expect(memorableGateAllowed({ integrations: { memorable: { enabled: true } } })).toEqual({ allowed: true });
+    });
+  });
+});
+
+describe('recordAndRelayReceipt — shared receipt + fire-and-forget relay', () => {
+  const entry = (over: Partial<Parameters<typeof appendSessionReceipt>[0]> = {}) => ({
+    session_id: 'relay-sess',
+    harness: 'claude-code' as const,
+    corpus_path: '/tmp/relay-sess.txt',
+    content_hash: 'hash-1',
+    turn_count: 2,
+    workspace_root: '/repo',
+    tool_calls_json: '[]',
+    secret_scan_ok: true,
+    ...over,
+  });
+  /** A fake spawn that records argv and returns an inert child. */
+  function fakeSpawn() {
+    const calls: Array<{ bin: string; args: string[] }> = [];
+    const fn = ((bin: string, args: string[]) => {
+      calls.push({ bin, args });
+      return { on: () => {}, unref: () => {} };
+    }) as unknown as typeof import('node:child_process').spawn;
+    return { calls, fn };
+  }
+  /** An executable stub so resolveMemorableBin succeeds. */
+  function stubBin(home: string): string {
+    const dir = join(home, 'bin');
+    mkdirSync(dir, { recursive: true });
+    const bin = join(dir, 'memorable');
+    writeFileSync(bin, '#!/bin/sh\nexit 0\n');
+    chmodSync(bin, 0o755);
+    return dir;
+  }
+
+  test('records, surfaces the prior failure, and spawns record --session <id>', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '' }, async () => {
+        const relayFile = join(home, '.gbrain', 'integrations', 'hooks', 'memorable-relay.jsonl');
+        mkdirSync(dirname(relayFile), { recursive: true });
+        writeFileSync(relayFile, JSON.stringify({ ts: 'x', session_id: 'old', ok: false, reason: 'consent' }) + '\n');
+        const { calls, fn } = fakeSpawn();
+        const res = await recordAndRelayReceipt(entry(), { spawnFn: fn });
+        expect(res.recorded).toBe(true);
+        expect(res.degradeReasons).toContain('memorable_relay_consent');
+        expect(calls.length).toBe(1);
+        expect(calls[0]!.args).toEqual(['record', '--session', 'relay-sess']);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('an identical re-emission is deduplicated and never spawns twice', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '' }, async () => {
+        const { calls, fn } = fakeSpawn();
+        expect((await recordAndRelayReceipt(entry(), { spawnFn: fn })).recorded).toBe(true);
+        const second = await recordAndRelayReceipt(entry(), { spawnFn: fn });
+        expect(second.recorded).toBe(false);
+        expect(calls.length).toBe(1);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('missing binary records the receipt but degrades memorable_cli_missing, no spawn', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home, PATH: home, MEMORABLE_BIN: '' }, async () => {
+        const { calls, fn } = fakeSpawn();
+        const res = await recordAndRelayReceipt(entry({ content_hash: 'hash-2' }), { spawnFn: fn });
+        expect(res.recorded).toBe(true);
+        expect(res.degradeReasons).toContain('memorable_cli_missing');
+        expect(calls.length).toBe(0);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('a spawn that throws synchronously never throws out of the helper', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home, PATH: stubBin(home), MEMORABLE_BIN: '' }, async () => {
+        const boom = (() => { throw new Error('EPERM'); }) as unknown as typeof import('node:child_process').spawn;
+        const res = await recordAndRelayReceipt(entry({ content_hash: 'hash-3' }), { spawnFn: boom });
+        expect(res.recorded).toBe(true);
       });
     } finally { rmSync(home, { recursive: true, force: true }); }
   });

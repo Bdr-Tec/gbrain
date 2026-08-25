@@ -11,8 +11,10 @@
  * allowlist is enforced by construction, not by trust. Never throws.
  */
 
+import { spawn } from 'node:child_process';
 import { accessSync, appendFileSync, chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
+import type { ToolCallRecord } from '../transcripts/claude-code-jsonl.ts';
 import { ensureGbrainHome, resolveGbrainHome } from '../gbrain-home.ts';
 
 /** Heartbeat file line cap [S3#7]. */
@@ -401,6 +403,99 @@ export async function readSessionReceiptsTail(n: number): Promise<SessionReceipt
   } catch {
     return [];
   }
+}
+
+/** Why the Memorable gate said no — one vocabulary for hook, context-engine,
+ * and doctor, so the three surfaces can never drift apart on what they call
+ * the same state. */
+export interface MemorableGate {
+  allowed: boolean;
+  reason?: 'kill_switch' | 'disabled';
+}
+
+/**
+ * ONE gate for the whole Memorable integration, checked before any of it does
+ * anything: the receipt is not written, tool calls are not collected, and
+ * nothing is spawned unless the operator has explicitly opted in. Off (the
+ * default) means gbrain behaves exactly as it does today. Any of 0/false/off/no
+ * in GBRAIN_MEMORABLE kills the relay; the env can only ever DISABLE — there is
+ * no env value that bypasses the config gate.
+ *
+ * Structural param (not GBrainConfig) so this module never imports config.ts —
+ * the hook lane, the openclaw context-engine lane, and doctor all pass whatever
+ * config object they already hold.
+ */
+export function memorableGateAllowed(cfg?: { integrations?: { memorable?: { enabled?: boolean } } } | null): MemorableGate {
+  if (/^(0|false|off|no)$/i.test(process.env.GBRAIN_MEMORABLE ?? '')) return { allowed: false, reason: 'kill_switch' };
+  if (cfg?.integrations?.memorable?.enabled !== true) return { allowed: false, reason: 'disabled' };
+  return { allowed: true };
+}
+
+/**
+ * Secret-scanned JSON of the tool calls covering EXACTLY the span the corpus
+ * covers (in remainder mode the corpus is the post-boundary tail while the
+ * calls were the whole parsed window). highEntropy is ALWAYS on here: these
+ * args are the one artifact that leaves the machine, and without it only
+ * vendor-prefixed keys redact — two live credentials reached the API through
+ * that gap. Shared by hookSessionEnd and the openclaw context-engine lane so
+ * the two capture paths cannot drift on redaction posture.
+ *
+ * Throws when the scanner import fails — each caller owns its failure mode
+ * (the hook degrades `scan_unavailable`; the context-engine lane skips the
+ * receipt entirely, fail-closed).
+ */
+export async function redactedToolCallsJson(calls: ToolCallRecord[], turnIndexes: number[], startTurnIndex: number): Promise<string> {
+  const scan = await import('../secret-scan.ts');
+  const span = calls.filter((_c, i) => (turnIndexes[i] ?? 0) >= startTurnIndex);
+  return scan.redactFindings(JSON.stringify(span), { highEntropy: true }).text;
+}
+
+export interface RelayReceiptResult {
+  recorded: boolean;
+  degradeReasons: string[];
+}
+
+/**
+ * Record a session receipt and fire-and-forget the Memorable relay — the ONE
+ * implementation shared by the Claude Code session-end hook and the openclaw
+ * context-engine compaction lane. Never throws; never blocks on the child;
+ * sends nothing off-machine itself (the spawned CLI does its own consent and
+ * toggle checks and owns all egress).
+ *
+ * The GATE STAYS AT THE CALL SITES (`memorableGateAllowed`) — callers need the
+ * gate answer earlier than this call (tool-call collection is itself gated).
+ * `recorded: false` means an identical resumed emission was deduplicated (or
+ * the receipt write failed) — the relay is skipped, so a session resumed five
+ * times pays for one extraction, not five.
+ */
+export async function recordAndRelayReceipt(
+  entry: Omit<SessionReceiptEntry, 'ts'>,
+  opts: { spawnFn?: typeof spawn } = {},
+): Promise<RelayReceiptResult> {
+  const degradeReasons: string[] = [];
+  try {
+    const recorded = await appendSessionReceipt(entry);
+    if (!recorded) return { recorded: false, degradeReasons };
+    // gbrain verified the binary existed, never that it WORKED — surface the
+    // PREVIOUS run's self-reported outcome (see relayResultsPath).
+    const priorFail = await priorRelayFailure();
+    if (priorFail) degradeReasons.push(priorFail);
+    // Enabled-but-not-installed is named, not spawned into an ENOENT.
+    const bin = resolveMemorableBin();
+    if (!bin) {
+      degradeReasons.push('memorable_cli_missing');
+      return { recorded: true, degradeReasons };
+    }
+    const doSpawn = opts.spawnFn ?? spawn;
+    const child = doSpawn(bin, ['record', '--session', entry.session_id], { detached: true, stdio: 'ignore' });
+    // ENOENT still arrives as an async 'error' event; without this handler an
+    // uncaught one kills the caller.
+    child.on('error', () => { /* best-effort by contract */ });
+    child.unref();
+  } catch {
+    /* spawn refused — the relay is best-effort and never fails the caller */
+  }
+  return { recorded: true, degradeReasons };
 }
 
 /**
