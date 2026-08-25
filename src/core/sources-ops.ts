@@ -174,6 +174,22 @@ export interface AddSourceOpts {
     /** Installation id; optional, first installation is used when absent. */
     appInstallId?: number;
   };
+  /**
+   * v0.47: register a google-kind source (Gmail/Calendar/Contacts sync).
+   * API-backed like github; credentials come from the vault
+   * (`gbrain google connect`), and `account` is only a pointer into it —
+   * no secret ever lands in sources.config. See src/core/google/google-source.ts.
+   */
+  google?: {
+    /** Connected account email (vault credential pointer). */
+    account: string;
+    /** Subset of gmail,calendar,contacts (comma-joined into config). */
+    services: string[];
+    /** Backfill/reconcile window in days. */
+    historyDays: number;
+    /** Managed dir where pages are materialized. */
+    dir: string;
+  };
 }
 
 export interface RemoveSourceOpts {
@@ -404,6 +420,11 @@ export async function addSource(
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- opts.github.dir only flows here from the trusted local CLI (sources_add hard-rejects opts.github unless ctx.remote === false); absolutizing the operator's own directory is the #3696 fix
     opts = { ...opts, github: { ...opts.github, dir: resolvePath(msysToNativePath(opts.github.dir)) } };
   }
+  if (opts.google) {
+    // Same #3696 phantom-path class as the github dir above.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- opts.google.dir only flows here from the trusted local CLI (sources_add hard-rejects opts.google unless ctx.remote === false); absolutizing the operator's own directory is the #3696 fix
+    opts = { ...opts, google: { ...opts.google, dir: resolvePath(msysToNativePath(opts.google.dir)) } };
+  }
 
   // Q4: pre-flight collision check before any clone work.
   const existing = await engine.executeRaw<{ id: string; local_path: string | null }>(
@@ -421,7 +442,8 @@ export async function addSource(
     existing[0]!.local_path === null &&
     !!opts.localPath &&
     !opts.remoteUrl &&
-    !opts.github;
+    !opts.github &&
+    !opts.google;
   if (existing.length > 0 && !attachPath) {
     const pathNote = existing[0]!.local_path
       ? ` with local_path ${existing[0]!.local_path}`
@@ -573,6 +595,29 @@ export async function addSource(
         config.gh_app_install_id = opts.github.appInstallId;
       }
     }
+    const displayName = opts.name ?? opts.id;
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config)
+           VALUES ($1, $2, $3, $4::text::jsonb)`,
+      [opts.id, displayName, finalPath, JSON.stringify(config)],
+    );
+  } else if (opts.google) {
+    // ── Path D: --kind google (v0.47) ─────────────────────────────────────
+    // API-backed source: no git repo, no clone. Credentials live in the
+    // vault; config carries only the account POINTER (mirrors gh_token_env
+    // storing an env NAME — check:source-config-leak stays trivially green).
+    const finalPath = opts.google.dir;
+    mkdirSync(finalPath, { recursive: true });
+    const config: Record<string, unknown> = {
+      kind: 'google',
+      g_account: opts.google.account,
+      g_services: opts.google.services.join(','),
+      g_history_days: opts.google.historyDays,
+      g_managed: finalPath === defaultCloneDir(`${opts.id}-google`),
+      // Same default as github mirrors: a fresh google source participates
+      // in unqualified reads unless --no-federated opts out.
+      federated: opts.federated ?? true,
+    };
     const displayName = opts.name ?? opts.id;
     await engine.executeRaw(
       `INSERT INTO sources (id, name, local_path, config)

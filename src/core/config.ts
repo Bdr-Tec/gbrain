@@ -1184,6 +1184,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // `gbrain config set facts.extraction_enabled false` — which was rejected
   // as an unknown key until this registration.
   'facts.extraction_enabled',
+  // Open-loop engine kill switch: LLM commitment/decision extraction over
+  // google-source email pages (default ON for google sources; deterministic
+  // thread detection is unaffected). `gbrain config set loops.extraction_enabled false`.
+  'loops.extraction_enabled',
   // #2113: output-token cap for the per-turn facts extractor (default 4000).
   'facts.extraction_max_tokens',
   // [ENG-8] Brain-level default visibility for facts writes when the caller

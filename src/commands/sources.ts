@@ -131,11 +131,13 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
   const id = args[0];
   if (!id) {
     console.error(
-      'Usage: gbrain sources add <id> [--path <path> | --url <https-url> | --kind github] ' +
+      'Usage: gbrain sources add <id> [--path <path> | --url <https-url> | --kind github|google] ' +
         '[--name <display>] [--federated|--no-federated] [--clone-dir <path>] [--force]\n' +
         '       github kind: [--token-env <env>] [--scope auto|repos] ' +
         '[--repos owner/name,...] [--dir <path>] ' +
-        '[--app-id <n> --app-pem <path>] [--app-install <n>]',
+        '[--app-id <n> --app-pem <path>] [--app-install <n>]\n' +
+        '       google kind: --account <email> [--services gmail,calendar,contacts] ' +
+        '[--history-days <n>] [--dir <path>]   (connect first: gbrain google connect)',
     );
     process.exit(2);
   }
@@ -157,6 +159,11 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
   let ghAppId: number | undefined;
   let ghAppPem: string | undefined;
   let ghAppInstall: number | undefined;
+  // v0.47 google-kind flags.
+  let gKind = false;
+  let gAccount: string | undefined;
+  let gServices: string[] = ['gmail', 'calendar', 'contacts'];
+  let gHistoryDays = 90;
 
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
@@ -171,11 +178,31 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
     if (a === '--force') { force = true; continue; }
     if (a === '--kind') {
       const kind = args[++i];
-      if (kind !== 'github') {
-        console.error(`Unknown source kind: ${kind}. Only "github" is supported.`);
+      if (kind === 'github') {
+        ghKind = true;
+      } else if (kind === 'google') {
+        gKind = true;
+      } else {
+        console.error(`Unknown source kind: ${kind}. Supported: "github", "google".`);
         process.exit(2);
       }
-      ghKind = true;
+      continue;
+    }
+    if (a === '--account') { gAccount = args[++i]?.trim().toLowerCase(); continue; }
+    if (a === '--services') {
+      gServices = (args[++i] ?? '')
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      continue;
+    }
+    if (a === '--history-days') {
+      const v = Number(args[++i]);
+      if (!Number.isInteger(v) || v <= 0) {
+        console.error('--history-days must be a positive integer.');
+        process.exit(2);
+      }
+      gHistoryDays = v;
       continue;
     }
     if (a === '--token-env') { ghTokenEnv = args[++i]; continue; }
@@ -227,6 +254,37 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
     console.error('Error: --kind github is mutually exclusive with --url and --path.');
     process.exit(2);
   }
+  if (gKind && (remoteUrl || localPath || ghKind)) {
+    console.error('Error: --kind google is mutually exclusive with --url, --path, and --kind github.');
+    process.exit(2);
+  }
+  if (gKind && !gAccount) {
+    console.error(
+      'Error: --kind google requires --account <email> (a connected Google account).\n' +
+        'Connect one first: gbrain google connect',
+    );
+    process.exit(2);
+  }
+  if (gKind) {
+    const valid = ['gmail', 'calendar', 'contacts'];
+    const bad = gServices.filter((s) => !valid.includes(s));
+    if (bad.length > 0) {
+      console.error(`Error: unknown --services entries: ${bad.join(', ')}. Valid: ${valid.join(', ')}`);
+      process.exit(2);
+    }
+    // Fail fast at registration when the account has no vault entry — the
+    // alternative is a source that errors on every sync.
+    const { openVault, credentialId } = await import('../core/creds/vault.ts');
+    const entry = await openVault().get(credentialId('google', gAccount!));
+    if (!entry) {
+      console.error(
+        `Error: no connected Google account "${gAccount}" in the credential vault.\n` +
+          `Connect it first: gbrain google connect --account ${gAccount}\n` +
+          `(or check what's connected: gbrain google status)`,
+      );
+      process.exit(2);
+    }
+  }
   if (ghKind && ghScope === 'repos' && ghRepos.length === 0) {
     console.error('Error: --scope repos requires --repos owner/name,owner/name.');
     process.exit(2);
@@ -267,6 +325,16 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
             appId: ghAppId,
             appPemPath: ghAppPem,
             appInstallId: ghAppInstall,
+          },
+        }
+      : {}),
+    ...(gKind
+      ? {
+          google: {
+            account: gAccount!,
+            services: gServices,
+            historyDays: gHistoryDays,
+            dir: ghDir ?? defaultCloneDir(`${id}-google`),
           },
         }
       : {}),

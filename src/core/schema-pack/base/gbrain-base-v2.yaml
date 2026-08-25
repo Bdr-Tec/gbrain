@@ -355,6 +355,10 @@ link_types:
     inverse: relates_to
   - name: mentions
   - name: discusses
+  # Open-loop engine (google source kind): thread-page → person-page edges,
+  # written by src/core/google/loops-extract.ts (link_source google-loops).
+  - name: owes_to
+  - name: awaiting_reply_from
   # #2117 — NER inference regexes carried over verbatim from gbrain-base
   # (v1). Without them extract-ner has no patterns to match and returns
   # pack_unavailable, leaving the NER pipeline inert on this pack.

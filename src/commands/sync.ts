@@ -687,6 +687,16 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         const cfg = parseGitHubSourceConfig(rawCfg, fallbackDir);
         return await runGitHubSync(engine, srcId, cfg, opts);
       }
+      // v0.47: google source kind (Gmail/Calendar/Contacts). Same shape as
+      // the github branch: API-backed materializer, standard import pipeline.
+      if (rawCfg.kind === 'google') {
+        serr(`[gbrain phase] sync.google_materialize`);
+        const { parseGoogleSourceConfig, runGoogleSync } = await import('../core/google/google-source.ts');
+        const { defaultCloneDir } = await import('../core/sources-ops.ts');
+        const fallbackDir = cfgRows[0].local_path ?? defaultCloneDir(`${srcId}-google`);
+        const cfg = parseGoogleSourceConfig(rawCfg, fallbackDir);
+        return await runGoogleSync(engine, srcId, cfg, opts);
+      }
       if (opts.githubItem) {
         throw new Error(
           `github_item refresh requires a github-kind source, but "${srcId}" is not github-kind.`,
