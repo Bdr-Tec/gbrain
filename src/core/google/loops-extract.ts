@@ -21,10 +21,9 @@
  *     historical backfill is never extracted unless opted in
  */
 
-import { createHash } from 'node:crypto';
-
 import type { BrainEngine } from '../engine.ts';
 import { upsertOpenLoop, type LoopType } from '../loops/loops-store.ts';
+import { sha8 } from './google-render.ts';
 
 export const LOOPS_EXTRACT_JOB = 'loops_extract';
 export const LOOPS_EXTRACT_MAX_PER_SWEEP = 50;
@@ -141,10 +140,6 @@ export function parseLoopsJson(text: string): LoopsExtraction | null {
       quote: d.quote.slice(0, 200),
     })),
   };
-}
-
-function sha8(input: string): string {
-  return createHash('sha256').update(input).digest('hex').slice(0, 8);
 }
 
 // ── Job handler core ─────────────────────────────────────────────────────────

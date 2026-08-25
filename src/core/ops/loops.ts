@@ -18,7 +18,7 @@
  * stale unless --stale-ok.
  */
 
-import type { Operation, OperationContext } from './contract.ts';
+import { OperationError, type Operation, type OperationContext } from './contract.ts';
 import { sourceScopeOpts } from './context.ts';
 import { validateSourceId } from '../utils.ts';
 import {
@@ -80,10 +80,14 @@ async function deepLinksFor(
   const accounts = new Map<string, string>();
   if (slugs.length > 0) {
     try {
+      // source-scoped so the composite (source_id, slug) unique index serves
+      // the lookup — a slug-only predicate would sequential-scan pages.
+      const sourceIds = [...new Set(loops.map((l) => l.source_id))];
       const rows = await ctx.engine.executeRaw<{ slug: string; account: string | null; source_id: string }>(
         `SELECT slug, source_id, frontmatter->>'account' AS account FROM pages
-         WHERE slug = ANY(string_to_array($1, E'\\n')) AND deleted_at IS NULL`,
-        [slugs.join('\n')],
+         WHERE source_id = ANY(string_to_array($2, E'\\n'))
+           AND slug = ANY(string_to_array($1, E'\\n')) AND deleted_at IS NULL`,
+        [slugs.join('\n'), sourceIds.join('\n')],
       );
       for (const r of rows) if (r.account) accounts.set(`${r.source_id}:${r.slug}`, r.account);
     } catch { /* links degrade to none */ }
@@ -208,7 +212,7 @@ const open_loops: Operation = {
     status: { type: 'string', enum: ['open', 'done', 'dropped', 'stale'], description: "Default 'open'." },
     loop_type: { type: 'string', enum: ['commitment_owed_by_me', 'commitment_owed_to_me', 'unanswered_inbound', 'unanswered_outbound', 'decision_pending'], description: 'Filter to one loop type.' },
     counterparty: { type: 'string', description: 'Filter to one counterparty (slug or email).' },
-    limit: { type: 'number', description: 'Grouped: max groups (default 3). Flat: max loops (default 50).' },
+    limit: { type: 'number', description: 'Grouped: max groups (default 3). Flat: max loops (default 50). The internal fetch is capped at 500 rows; `truncated: true` marks a hit.' },
     include_context: { type: 'boolean', description: 'Attach the counterparty entity card per group (trusted local only). Default true.' },
   },
   scope: 'read',
@@ -229,11 +233,13 @@ const open_loops: Operation = {
     const freshness = await googleSourceFreshness(ctx);
     const deepLinks = trusted ? await deepLinksFor(ctx, loops) : new Map<string, string>();
 
+    const truncated = loops.length >= 500;
     if (groupBy === 'none') {
       const limit = Math.min(Math.max((p.limit as number | undefined) ?? 50, 1), 500);
       return {
         loops: loops.slice(0, limit).map((l) => loopView(l, trusted, deepLinks)),
         count: loops.length,
+        truncated,
         stale: freshness.stale,
         sources: freshness.sources,
         redacted: !trusted,
@@ -289,6 +295,7 @@ const open_loops: Operation = {
     return {
       groups,
       count: loops.length,
+      truncated,
       stale: freshness.stale,
       sources: freshness.sources,
       redacted: !trusted,
@@ -317,7 +324,12 @@ const loops_close: Operation = {
     if (ctx.remote !== false) {
       sourceId = scope.sourceId ?? (scope.sourceIds && scope.sourceIds.length === 1 ? scope.sourceIds[0] : null);
       if (!sourceId) {
-        return { closed: false, reason: 'permission_denied: remote loops_close requires a single-source scope' };
+        // Enumerated error envelope (dispatch classifies + request-logs it),
+        // never a success-shaped { closed:false } payload.
+        throw new OperationError(
+          'permission_denied',
+          'loops_close: remote callers need a single-source scope',
+        );
       }
     }
     if (ctx.dryRun) return { dry_run: true, action: 'loops_close', id: p.id, status: p.status };
@@ -358,9 +370,22 @@ const loops_mute: Operation = {
   handler: async (ctx, p) => {
     const sourceId = (p.source_id as string | undefined) ?? ctx.sourceId ?? 'default';
     validateSourceId(sourceId);
-    const scope = sourceScopeOpts(ctx);
-    if (ctx.remote !== false && scope.sourceIds && !scope.sourceIds.includes(sourceId)) {
-      return { muted: false, reason: 'permission_denied: source outside caller scope' };
+    // Remote callers stay strictly inside their grant (mirrors loops_close):
+    // a scalar-scoped caller may only mute within its own source; federated
+    // grants must include the target. Trusting p.source_id for a remote
+    // WRITE would let any remote client plant suppression rows into
+    // arbitrary sources (targeted denial-of-loop-detection).
+    if (ctx.remote !== false) {
+      const scope = sourceScopeOpts(ctx);
+      const granted =
+        (scope.sourceId && scope.sourceId === sourceId) ||
+        (scope.sourceIds?.includes(sourceId) ?? false);
+      if (!granted) {
+        throw new OperationError(
+          'permission_denied',
+          `loops_mute: source "${sourceId}" is outside the caller's scope`,
+        );
+      }
     }
     if (ctx.dryRun) return { dry_run: true, action: 'loops_mute', kind: p.kind, value: p.value };
     await addSuppression(ctx.engine, sourceId, p.kind as 'sender' | 'thread', p.value as string);

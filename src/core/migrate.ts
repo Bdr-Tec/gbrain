@@ -6246,6 +6246,8 @@ export const MIGRATIONS: Migration[] = [
         ON open_loops (source_id, status, last_activity_at DESC);
       CREATE INDEX IF NOT EXISTS open_loops_counterparty_idx
         ON open_loops (source_id, counterparty_slug) WHERE status = 'open';
+      CREATE INDEX IF NOT EXISTS open_loops_thread_idx
+        ON open_loops (source_id, thread_id) WHERE status = 'open';
       CREATE TABLE IF NOT EXISTS loop_suppressions (
         id         BIGSERIAL PRIMARY KEY,
         source_id  TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,

@@ -54,7 +54,7 @@ async function runList(args: string[]): Promise<void> {
   const vault = openVault();
   const metas = await vault.list(provider ? { provider } : undefined);
   if (json) {
-    process.stdout.write(JSON.stringify({ ok: true, credentials: metas }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ ok: true, status: 'ok', credentials: metas }, null, 2) + '\n');
     return;
   }
   if (metas.length === 0) {
@@ -80,7 +80,7 @@ async function runRemove(args: string[]): Promise<void> {
   const vault = openVault();
   const deleted = await vault.delete(id);
   if (json) {
-    process.stdout.write(JSON.stringify({ ok: deleted, status: deleted ? 'removed' : 'not_found' }) + '\n');
+    process.stdout.write(JSON.stringify({ ok: deleted, status: deleted ? 'removed' : 'not_found' }, null, 2) + '\n');
   } else {
     process.stdout.write(deleted ? `Removed ${id}.\n` : `No credential ${id}.\n`);
   }
@@ -88,6 +88,7 @@ async function runRemove(args: string[]): Promise<void> {
 }
 
 async function runExport(args: string[]): Promise<void> {
+  const json = args.includes('--json');
   const outIdx = args.indexOf('--out');
   const out = outIdx !== -1 ? args[outIdx + 1] : undefined;
   if (!out) {
@@ -133,6 +134,19 @@ async function runExport(args: string[]): Promise<void> {
   const passphrase = await passphraseFrom(args);
   const bundle = exportBundle({ credentials: entries, clients }, passphrase);
   writeFileSync(out, JSON.stringify(bundle, null, 2) + '\n', { mode: 0o600 });
+  if (json) {
+    process.stdout.write(
+      JSON.stringify({
+        ok: true,
+        status: 'exported',
+        out,
+        credentials: entries.map((e) => e.id),
+        clients: clients.map((c) => c.provider),
+        next_action: { command: `gbrain creds import ${out}` },
+      }, null, 2) + '\n',
+    );
+    return;
+  }
   process.stdout.write(
     `Exported ${entries.length} credential(s) + ${clients.length} client record(s) to ${out} (encrypted).\n` +
       `Import on the target with: gbrain creds import ${out}\n`,
@@ -146,20 +160,26 @@ async function runImport(args: string[]): Promise<void> {
     console.error('Usage: gbrain creds import <bundle-file> [--passphrase-env VAR] [--json]');
     process.exit(2);
   }
+  const fail = (message: string): never => {
+    if (json) {
+      process.stdout.write(JSON.stringify({ ok: false, status: 'error', error: { message } }, null, 2) + '\n');
+    } else {
+      console.error(message);
+    }
+    process.exit(1);
+  };
   let bundle: EncryptedBundle;
   try {
     bundle = JSON.parse(readFileSync(file, 'utf-8')) as EncryptedBundle;
   } catch (e) {
-    console.error(`Could not read bundle: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(1);
+    return fail(`Could not read bundle: ${e instanceof Error ? e.message : String(e)}`);
   }
   const passphrase = await passphraseFrom(args);
   let payload;
   try {
     payload = importBundle(bundle, passphrase);
   } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
-    process.exit(1);
+    return fail(e instanceof Error ? e.message : String(e));
   }
   const vault = openVault();
   for (const c of payload.clients) await vault.putClient(c);
@@ -168,6 +188,7 @@ async function runImport(args: string[]): Promise<void> {
     process.stdout.write(
       JSON.stringify({
         ok: true,
+        status: 'imported',
         imported: payload.credentials.map((c) => c.id),
         clients: payload.clients.map((c) => c.provider),
       }, null, 2) + '\n',
@@ -183,7 +204,7 @@ const HELP = `gbrain creds — the credential vault (provider-agnostic)
 
   list     [--provider p] [--json]        redacted inventory
   remove   <id> [--json]                  delete one credential
-  export   --out <file> [--ids a,b] [--passphrase-env VAR]
+  export   --out <file> [--ids a,b] [--passphrase-env VAR] [--json]
                                           encrypted transfer bundle (hosted upgrade)
   import   <file> [--passphrase-env VAR]  inverse of export
 

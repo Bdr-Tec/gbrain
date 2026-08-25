@@ -107,12 +107,19 @@ export class GoogleApiClient {
     throw new CredentialError('upstream', `: unreachable ${apiHint}`);
   }
 
-  /** Drain a pageToken-paginated endpoint. `build(pageToken)` returns the URL. */
+  /**
+   * Drain a pageToken-paginated endpoint. `build(pageToken)` returns the URL.
+   * At the page cap: throws by default (callers that RECONCILE must never
+   * treat a truncated list as complete), or returns the partial batch when
+   * `partialOk` is set (callers with their own resume cursor — the Gmail
+   * backfill — make forward progress from whatever landed instead of
+   * wedging forever on a >cap window).
+   */
   async drainPages<T>(
     build: (pageToken: string | null) => string,
     pick: (body: Record<string, unknown>) => { items: T[]; nextPageToken: string | null },
     apiHint: ApiHint,
-    opts: { signal?: AbortSignal; maxPages?: number } = {},
+    opts: { signal?: AbortSignal; maxPages?: number; partialOk?: boolean } = {},
   ): Promise<T[]> {
     const out: T[] = [];
     let pageToken: string | null = null;
@@ -124,6 +131,7 @@ export class GoogleApiClient {
       if (!nextPageToken) return out;
       pageToken = nextPageToken;
     }
+    if (opts.partialOk) return out;
     throw new CredentialError('upstream', `: pagination cap (${cap}) hit on ${apiHint}`);
   }
 }
@@ -208,7 +216,7 @@ export class GmailClient extends GoogleApiClient {
   /** Message ids matching a Gmail search query (includes SENT; excludes SPAM/TRASH). */
   async listMessageIds(
     q: string,
-    opts: { signal?: AbortSignal; maxPages?: number } = {},
+    opts: { signal?: AbortSignal; maxPages?: number; partialOk?: boolean } = {},
   ): Promise<Array<{ id: string; threadId: string }>> {
     return this.drainPages(
       (t) =>
@@ -269,7 +277,11 @@ export class GmailClient extends GoogleApiClient {
     const cap = opts.bodyCapChars ?? 8_000;
     const messages: GmailMessageMeta[] = (raw.messages ?? []).map((m) => {
       const fromRaw = header(m, 'From');
-      const { text, isHtml } = extractBody(m.payload);
+      const { text: rawText, isHtml } = extractBody(m.payload);
+      // Pre-truncate before conversion: only the first `cap` output chars
+      // survive, so a multi-hundred-KB marketing email must not pay ~15
+      // full-body regex passes in htmlToText inside the per-thread hot loop.
+      const text = rawText.length > cap * 16 ? rawText.slice(0, cap * 16) : rawText;
       let bodyText = isHtml ? htmlToText(text) : text;
       bodyText = trimQuotedReply(bodyText);
       if (bodyText.length > cap) bodyText = bodyText.slice(0, cap) + '\n[truncated]';

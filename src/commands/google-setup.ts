@@ -1,16 +1,12 @@
 /**
  * gbrain google setup — the one-command orchestrator (approved D1-A).
  *
- * connect (if needed) → register the google source (if needed) → first
- * bounded sync (7 days, fast) → queue the full backfill in the background →
- * print the first `gbrain waiting` digest. The magical moment arrives in the
- * same session as consent; every step is idempotent, so re-running resumes
- * wherever the last run stopped.
- *
- * NOTE: filled in across the implementation phases — connect works now;
- * source registration lands with the google source kind (Phase 2) and the
- * waiting digest with the loops ops (Phase 6). Until those land this command
- * completes the steps that exist and names the next one honestly.
+ * connect (skipped when tokens exist) → register the google source (if
+ * needed) → wall-clock-budgeted first sync (newest mail first; the
+ * remainder resumes automatically on later syncs) → the first
+ * `gbrain waiting` digest. The magical moment arrives in the same session
+ * as consent; every step is idempotent, so re-running resumes wherever the
+ * last run stopped.
  */
 
 import { credentialId, openVault } from '../core/creds/vault.ts';
@@ -29,7 +25,15 @@ export async function runGoogleSetup(args: string[]): Promise<void> {
     ? (await vault.get(credentialId(GOOGLE_PROVIDER, account)))?.meta.account ?? null
     : ((await vault.list({ provider: GOOGLE_PROVIDER }))[0]?.account ?? null);
   if (!existingAccount) {
-    await runGoogleConnect(args.filter((a) => a !== 'setup'));
+    // Strip tail-only flags before delegating: parseConnectFlags hard-exits
+    // on unknown flags, so `setup --history-days 180` must not kill connect.
+    const TAIL_FLAGS = new Set(['--history-days', '--sync-budget-ms']);
+    const connectArgs: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      if (TAIL_FLAGS.has(args[i])) { i++; continue; }
+      connectArgs.push(args[i]);
+    }
+    await runGoogleConnect(connectArgs);
     // connect exits non-zero when it needs user input; a completed connect
     // falls through here. Re-resolve the account it landed.
     const metas = await vault.list({ provider: GOOGLE_PROVIDER });

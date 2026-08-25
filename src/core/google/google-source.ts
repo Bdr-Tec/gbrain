@@ -135,7 +135,8 @@ export function myAddressSet(entry: CredentialEntry): Set<string> {
 // ── Sync runner ──────────────────────────────────────────────────────────────
 
 interface GoogleSyncSummary {
-  status: 'synced' | 'up_to_date' | 'first_sync' | 'partial';
+  /** 'up_to_date'/'first_sync' are computed on the SyncResult, never here. */
+  status: 'synced' | 'partial';
   added: number;
   modified: number;
   deleted: number;
@@ -151,7 +152,6 @@ interface GoogleSyncDeps {
   sourceId: string;
   cfg: GoogleSourceConfig;
   opts: SyncOpts;
-  vault: CredentialVault;
   entry: CredentialEntry;
   log: (msg: string) => void;
   /** Threads whose newest message falls in the recent window — LLM
@@ -222,7 +222,10 @@ async function deletePageByRelPath(
     await deps.engine.deletePages(rows.map((r) => r.slug), { sourceId: deps.sourceId });
     summary.deleted += rows.length;
   }
-  rmSync(join(deps.cfg.dir, relPath), { force: true });
+  // Same containment guard as the write path: a hostile/corrupt DB path
+  // carrying `../` must never unlink outside the managed dir.
+  const target = join(deps.cfg.dir, relPath);
+  if (isWriteTargetContained(target, deps.cfg.dir)) rmSync(target, { force: true });
 }
 
 // ── Contacts sweep ───────────────────────────────────────────────────────────
@@ -430,7 +433,17 @@ async function sweepGmail(
     for (;;) {
       if (deps.opts.signal?.aborted) return;
       const q = `after:${Math.floor(cutoffMs / 1000)} before:${Math.ceil(floorMs / 1000)}`;
-      const ids = await gmail.listMessageIds(q, { ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
+      // Page-BOUNDED listing (partialOk): a busy inbox can hold far more ids
+      // than the client's 500-page safety cap; an unbounded drain would
+      // throw before any thread processed and wedge the backfill forever.
+      // The floor cursor makes partial listings safe — each iteration takes
+      // the newest ~2,000 messages in the window, processes them, drops the
+      // floor, and re-queries.
+      const ids = await gmail.listMessageIds(q, {
+        maxPages: 20,
+        partialOk: true,
+        ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
+      });
       if (ids.length === 0) break;
       // Newest-first listing → unique threads in newest-first order.
       const threadIds = [...new Set(ids.map((m) => m.threadId))];
@@ -592,7 +605,10 @@ async function reconcileGmailDeletes(
   }
   await deps.engine.deletePages(stale.map((s) => s.slug), { sourceId: deps.sourceId });
   for (const s of stale) {
-    if (s.source_path) rmSync(join(deps.cfg.dir, s.source_path), { force: true });
+    if (!s.source_path) continue;
+    // Containment guard mirrors the write path (defense-in-depth on DB rows).
+    const target = join(deps.cfg.dir, s.source_path);
+    if (isWriteTargetContained(target, deps.cfg.dir)) rmSync(target, { force: true });
   }
   summary.deleted += stale.length;
 }
@@ -672,7 +688,7 @@ export async function runGoogleSync(
   const gmail = new GmailClient(...clientArgs);
   const calendar = new CalendarClient(...clientArgs);
   const people = new PeopleClient(...clientArgs);
-  const deps: GoogleSyncDeps = { engine, sourceId, cfg, opts, vault, entry, log, extractCandidates: [] };
+  const deps: GoogleSyncDeps = { engine, sourceId, cfg, opts, entry, log, extractCandidates: [] };
 
   const summary: GoogleSyncSummary = {
     status: 'synced',
@@ -714,7 +730,7 @@ export async function runGoogleSync(
       } catch (e) {
         serviceErrors.push(`contacts: ${e instanceof Error ? e.message : String(e)}`);
         summary.status = 'partial';
-        if (isCredentialError(e) && (e.code === 'api_not_enabled' || e.code === 'scope_missing')) log(e.toHuman());
+        if (isCredentialError(e)) log(e.toHuman());
         else log(`[google] contacts sweep failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         stop();

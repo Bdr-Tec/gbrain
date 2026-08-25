@@ -93,7 +93,7 @@ export async function runWaiting(engine: BrainEngine, args: string[]): Promise<v
   }
 
   if (json) {
-    process.stdout.write(JSON.stringify({ ok: true, ...result }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ ok: true, status: 'ok', ...result }, null, 2) + '\n');
     return;
   }
   process.stdout.write((result.text ?? 'No open loops.') + '\n');
@@ -141,11 +141,20 @@ export async function runLoops(engine: BrainEngine, args: string[]): Promise<voi
         setCliExitVerdict(1);
         return;
       }
-      process.stdout.write(JSON.stringify(loop, null, 2) + '\n');
+      if (json) {
+        process.stdout.write(JSON.stringify({ ok: true, status: 'ok', loop }, null, 2) + '\n');
+        return;
+      }
+      const due = loop.due_at ? `  due ${String(loop.due_at).slice(0, 10)}` : '';
+      process.stdout.write(`#${String(loop.id)} [${String(loop.loop_type)}] ${String(loop.status)}${due}\n${String(loop.summary)}\n`);
+      const quote = (loop as { quote?: string }).quote;
+      if (quote) process.stdout.write(`> "${quote}"\n`);
+      const link = (loop as { deep_link?: string }).deep_link;
+      if (link) process.stdout.write(`${link}\n`);
       return;
     }
     if (json) {
-      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      process.stdout.write(JSON.stringify({ ok: true, status: 'ok', ...result }, null, 2) + '\n');
       return;
     }
     if (result.loops.length === 0) {
@@ -170,7 +179,7 @@ export async function runLoops(engine: BrainEngine, args: string[]): Promise<voi
       status: sub === 'done' ? 'done' : 'dropped',
     })) as { closed: boolean; reason?: string };
     if (json) {
-      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      process.stdout.write(JSON.stringify({ ok: result.closed, status: result.closed ? 'closed' : 'not_closed', ...result }, null, 2) + '\n');
     } else {
       process.stdout.write(result.closed ? `Loop ${id} ${sub === 'done' ? 'done' : 'dropped'}.\n` : `Not closed: ${result.reason}\n`);
     }
@@ -192,7 +201,7 @@ export async function runLoops(engine: BrainEngine, args: string[]): Promise<voi
       ...(srcIdx !== -1 ? { source_id: rest[srcIdx + 1] } : {}),
     })) as { muted: boolean; reason?: string };
     if (json) {
-      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      process.stdout.write(JSON.stringify({ ok: result.muted, status: result.muted ? 'muted' : 'not_muted', ...result }, null, 2) + '\n');
     } else {
       process.stdout.write(result.muted ? `Muted ${kind} ${value}. New loops won't open for it (existing loops keep their state).\n` : `Not muted: ${result.reason}\n`);
     }

@@ -12,6 +12,7 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
+import { deriveSourceId } from '../core/google/types.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 
 export interface SetupTailInput {
@@ -20,11 +21,8 @@ export interface SetupTailInput {
   args: string[];
 }
 
-function deriveSourceId(account: string): string {
-  const local = account.split('@')[0] ?? 'gmail';
-  const id = `gmail-${local}`.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 32).replace(/-+$/, '');
-  return id || 'gmail';
-}
+// deriveSourceId is shared with connect's next-step hint (types.ts) so the
+// printed suggestion and the created id can never diverge.
 
 export async function runGoogleSetupTail(input: SetupTailInput): Promise<void> {
   const { loadConfig, toEngineConfig } = await import('../core/config.ts');

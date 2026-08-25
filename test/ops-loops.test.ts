@@ -368,22 +368,24 @@ describe('loops_close', () => {
     expect(expired[0].expired_at).not.toBeNull();
   });
 
-  test('remote ctx without a single-source scope → permission_denied, loop untouched', async () => {
+  test('remote ctx without a single-source scope → throws permission_denied, loop untouched', async () => {
     const { id } = await upsertOpenLoop(engine, loop());
-    const res = (await loopsCloseOp.handler(
-      ctx({
-        remote: true,
-        auth: {
-          token: 't',
-          clientId: 'c',
-          scopes: ['write'],
-          allowedSources: ['g1', 'g2'], // multi-source grant → no single scope
-        },
-      }),
-      { id, status: 'done' },
-    )) as { closed: boolean; reason: string };
-    expect(res.closed).toBe(false);
-    expect(res.reason).toStartWith('permission_denied');
+    // Denials are thrown OperationErrors (enumerated error envelope via
+    // dispatch), never success-shaped { closed: false } payloads.
+    await expect(
+      loopsCloseOp.handler(
+        ctx({
+          remote: true,
+          auth: {
+            token: 't',
+            clientId: 'c',
+            scopes: ['write'],
+            allowedSources: ['g1', 'g2'], // multi-source grant → no single scope
+          },
+        }),
+        { id, status: 'done' },
+      ),
+    ).rejects.toThrow(/permission_denied|single-source scope/);
     const rows = await listOpenLoops(engine, { sourceIds: ['g1'], status: 'open' });
     expect(rows).toHaveLength(1);
   });
@@ -441,17 +443,38 @@ describe('loops_mute', () => {
     expect(set.senders.size).toBe(0);
   });
 
-  test('remote caller cannot mute outside its granted scope', async () => {
-    const res = (await loopsMuteOp.handler(
-      ctx({
-        remote: true,
-        auth: { token: 't', clientId: 'c', scopes: ['write'], allowedSources: ['other-src'] },
-      }),
-      { kind: 'sender', value: 'bob@example.com' },
-    )) as { muted: boolean; reason: string };
-    expect(res.muted).toBe(false);
-    expect(res.reason).toStartWith('permission_denied');
+  test('remote caller cannot mute outside its granted scope (throws)', async () => {
+    await expect(
+      loopsMuteOp.handler(
+        ctx({
+          remote: true,
+          auth: { token: 't', clientId: 'c', scopes: ['write'], allowedSources: ['other-src'] },
+        }),
+        { kind: 'sender', value: 'bob@example.com' },
+      ),
+    ).rejects.toThrow(/permission_denied|outside the caller's scope/);
     const set = await loadSuppressions(engine, 'g1');
     expect(set.senders.size).toBe(0);
+  });
+
+  test('REGRESSION: scalar-scoped remote caller cannot mute a DIFFERENT source via p.source_id', async () => {
+    // The shipped default transport shape is a scalar scope (ctx.sourceId,
+    // no allowedSources). Before the fix, the guard only checked federated
+    // arrays, so this wrote a suppression row into an arbitrary source —
+    // targeted denial-of-loop-detection outside the caller's grant.
+    await expect(
+      loopsMuteOp.handler(
+        ctx({ remote: true, sourceId: 'g1' }),
+        { kind: 'sender', value: 'bob@example.com', source_id: 'g2' },
+      ),
+    ).rejects.toThrow(/permission_denied|outside the caller's scope/);
+    const set = await loadSuppressions(engine, 'g2');
+    expect(set.senders.size).toBe(0);
+    // Within its own scalar scope, the mute still works.
+    const ok = (await loopsMuteOp.handler(
+      ctx({ remote: true, sourceId: 'g1' }),
+      { kind: 'sender', value: 'bob@example.com' },
+    )) as { muted: boolean };
+    expect(ok.muted).toBe(true);
   });
 });

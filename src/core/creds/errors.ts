@@ -210,7 +210,9 @@ export class CredentialError extends Error {
     this.problem = problem;
     this.cause_text = entry.cause;
     this.fix = fix;
-    this.doc_url = `${DOC_BASE}#${code.replace(/_/g, '-')}`;
+    // The guide's troubleshooting entries are table rows under one heading,
+    // not per-code headings — anchor to the section so links land somewhere.
+    this.doc_url = `${DOC_BASE}#troubleshooting`;
     if (causeErr !== undefined) (this as { cause?: unknown }).cause = causeErr;
   }
 

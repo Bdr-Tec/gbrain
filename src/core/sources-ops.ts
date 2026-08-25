@@ -908,12 +908,14 @@ export async function removeSource(
   // v0.46: github-kind mirrors at the default clone location are owned by
   // gbrain (gh_managed marker) and get the same cleanup as --url clones.
   const ghManaged = ghCfg.kind === 'github' && ghCfg.gh_managed === true;
+  // v0.47: google-kind mirrors mark g_managed the same way.
+  const gManaged = ghCfg.kind === 'google' && ghCfg.g_managed === true;
   const cloneRoot = gbrainPath('clones');
   let cloneRemoved = false;
   if (
     !opts.keepStorage &&
     src.local_path &&
-    (remoteUrl || ghManaged) && // only auto-clean when gbrain managed the dir
+    (remoteUrl || ghManaged || gManaged) && // only auto-clean when gbrain managed the dir
     isPathContained(src.local_path, cloneRoot)
   ) {
     try {

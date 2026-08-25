@@ -52,13 +52,16 @@ import {
 } from '../core/creds/redirect.ts';
 import { createSession, pollClaim, relayUrl } from '../core/creds/relay-client.ts';
 import { gbrainPath } from '../core/config.ts';
+import { deriveSourceId } from '../core/google/types.ts';
 import { readLineSafe } from './init.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 
 // ── Shared bits ──────────────────────────────────────────────────────────────
 
-export const GOOGLE_SERVICES = ['gmail', 'calendar', 'contacts'] as const;
-export type GoogleService = (typeof GOOGLE_SERVICES)[number];
+import { ALL_GOOGLE_SERVICES, type GoogleService } from '../core/google/types.ts';
+
+export const GOOGLE_SERVICES = ALL_GOOGLE_SERVICES;
+export type { GoogleService };
 
 export function parseServicesCsv(csv: string): GoogleService[] {
   const parts = csv
@@ -218,7 +221,6 @@ interface ConnectFlags {
   port?: number;
   services: GoogleService[];
   json: boolean;
-  yes: boolean;
   via?: string;
   timeoutMs: number;
   consentState?: 'production' | 'testing';
@@ -230,7 +232,6 @@ function parseConnectFlags(args: string[]): ConnectFlags {
     paste: false,
     services: [...GOOGLE_SERVICES],
     json: false,
-    yes: false,
     timeoutMs: 600_000,
   };
   for (let i = 0; i < args.length; i++) {
@@ -250,7 +251,6 @@ function parseConnectFlags(args: string[]): ConnectFlags {
     if (a === '--port') { f.port = Number(args[++i]); continue; }
     if (a === '--scopes' || a === '--services') { f.services = parseServicesCsv(args[++i] ?? ''); continue; }
     if (a === '--json') { f.json = true; continue; }
-    if (a === '--yes') { f.yes = true; continue; }
     if (a === '--via') { f.via = args[++i]; continue; }
     if (a === '--timeout-ms') { f.timeoutMs = Number(args[++i]) || 600_000; continue; }
     if (a === '--consent-state') {
@@ -310,10 +310,11 @@ async function finishConnect(
   clientRef: 'byo' | 'hosted-relay',
   fetchImpl: typeof fetch,
   knownEmail?: string,
+  scopesOverride?: string[],
 ): Promise<CredentialEntry> {
   const email = knownEmail ?? (await fetchUserinfoEmail(tokens.access_token, fetchImpl));
   if (f.account && email !== f.account) {
-    appendGoogleHeartbeat('connect_error', 'error', { code: 'wrong_account_consented' });
+    // handleCredError is the single connect_error funnel emission point.
     throw new CredentialError('wrong_account_consented', undefined, `consented: ${email}`);
   }
   const sendasAliases = await fetchSendAsAliases(tokens.access_token, fetchImpl);
@@ -335,7 +336,7 @@ async function finishConnect(
     },
     meta: {
       account: email,
-      scopes: scopesForServices(f.services),
+      scopes: scopesOverride ?? scopesForServices(f.services),
       ...(clientId ? { client_id: clientId } : {}),
       connected_at: prior?.meta.connected_at ?? nowIso,
       last_refresh_ok_at: nowIso,
@@ -365,9 +366,14 @@ export async function runGoogleConnect(args: string[]): Promise<void> {
   try {
     // Relay fast path (hosted verified client; tokens still stored locally).
     if (f.via) {
-      const base = f.via === 'gbrain.io' ? (relayUrl() ?? 'https://gbrain.io') : f.via.replace(/\/+$/, '');
-      if (!relayUrl() && f.via === 'gbrain.io' && !process.env.GBRAIN_OAUTH_RELAY_ENABLE) {
-        throw new CredentialError('relay_disabled');
+      // Token custody rides this URL: whatever host it names brokers the
+      // consent AND receives the claim. https only, and the 'gbrain.io'
+      // shorthand resolves exclusively through the GBRAIN_OAUTH_RELAY_URL
+      // feature gate — no hardcoded default that could go live by surprise.
+      const base = f.via === 'gbrain.io' ? relayUrl() : f.via.replace(/\/+$/, '');
+      if (!base) throw new CredentialError('relay_disabled');
+      if (!/^https:\/\//i.test(base)) {
+        throw new CredentialError('relay_unreachable', undefined, `refusing non-https relay base: ${base}`);
       }
       const session = await createSession(
         base,
@@ -412,7 +418,13 @@ export async function runGoogleConnect(args: string[]): Promise<void> {
         },
         fetchImpl,
       );
-      const entry = await finishConnect(vault, f, tokens, client.client_id, 'byo', fetchImpl);
+      const entry = await finishConnect(
+        vault, f, tokens, client.client_id, 'byo', fetchImpl,
+        undefined,
+        // Step 1's (possibly narrowed) scope grant is the truth, not this
+        // invocation's default f.services.
+        pending.scopes,
+      );
       printConnected(f.json, entry);
       return;
     }
@@ -542,7 +554,8 @@ export async function runGoogleConnect(args: string[]): Promise<void> {
 
 function printConnected(json: boolean, entry: CredentialEntry): void {
   const email = entry.meta.account ?? entry.id;
-  const nextCmd = `gbrain sources add gmail-${email.split('@')[0]} --kind google --account ${email}`;
+  const suggestedId = deriveSourceId(email);
+  const nextCmd = `gbrain sources add ${suggestedId} --kind google --account ${email}`;
   emit(
     json,
     {
@@ -561,7 +574,7 @@ function printConnected(json: boolean, entry: CredentialEntry): void {
       '',
       `Next: register it as a source and sync:`,
       `  ${nextCmd}`,
-      `  gbrain sync --source gmail-${email.split('@')[0]}`,
+      `  gbrain sync --source ${suggestedId}`,
     ],
   );
 }
@@ -663,6 +676,9 @@ export async function runGoogleStatus(args: string[]): Promise<void> {
         2,
       ) + '\n',
     );
+    // Same exit semantics as the human path: not-connected is verdict 1 in
+    // BOTH output modes, so agents branching on exit code get one answer.
+    if (accounts.length === 0) setCliExitVerdict(1);
     return;
   }
   if (accounts.length === 0) {
@@ -741,7 +757,7 @@ Subcommands:
                --port <n>               fixed loopback port
                --via gbrain.io          hosted fast path (no GCP setup; feature-gated)
                --consent-state production|testing   record your consent screen's state
-               --json --yes
+               --json
   setup        connect + register source + first sync + first 'waiting' (one command)
   status       accounts, scopes, refresh probe, linked sources  [--json] [--no-probe]
   disconnect   remove an account's tokens  <email> [--purge-client]

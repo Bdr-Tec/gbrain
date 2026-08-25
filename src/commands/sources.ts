@@ -266,10 +266,10 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
     process.exit(2);
   }
   if (gKind) {
-    const valid = ['gmail', 'calendar', 'contacts'];
-    const bad = gServices.filter((s) => !valid.includes(s));
+    const { ALL_GOOGLE_SERVICES } = await import('../core/google/types.ts');
+    const bad = gServices.filter((s) => !(ALL_GOOGLE_SERVICES as readonly string[]).includes(s));
     if (bad.length > 0) {
-      console.error(`Error: unknown --services entries: ${bad.join(', ')}. Valid: ${valid.join(', ')}`);
+      console.error(`Error: unknown --services entries: ${bad.join(', ')}. Valid: gmail, calendar, contacts`);
       process.exit(2);
     }
     // Fail fast at registration when the account has no vault entry — the

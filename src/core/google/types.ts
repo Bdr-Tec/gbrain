@@ -39,6 +39,23 @@ export interface GoogleSourceState {
   last_full_at: string | null;
 }
 
+/**
+ * Derive the suggested/created source id for a connected account. Shared by
+ * `gbrain google setup` (which creates it) and connect's next-step hint
+ * (which prints it) so the two can never diverge — SOURCE_ID_RE rejects
+ * dots, so a dotted Gmail local part must be sanitized identically in both.
+ */
+export function deriveSourceId(account: string): string {
+  const local = account.split('@')[0] ?? 'gmail';
+  const id = `gmail-${local}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 32)
+    .replace(/-+$/, '');
+  return id || 'gmail';
+}
+
 export interface GmailMessageMeta {
   id: string;
   threadId: string;
@@ -65,8 +82,8 @@ export interface GmailThreadData {
 }
 
 export interface CalendarEventData {
-  id: string;
   /** Recurrence-instance id when expanded (singleEvents=true). */
+  id: string;
   summary: string;
   description: string;
   startIso: string;

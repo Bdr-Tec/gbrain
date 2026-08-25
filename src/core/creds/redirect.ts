@@ -91,8 +91,14 @@ export function parsePastedRedirect(pasted: string, expectedState?: string): Par
   }
 
   if (!code) throw new CredentialError('pasted_wrong_url');
-  if (expectedState && state !== null && state !== expectedState) {
-    throw new CredentialError('state_mismatch');
+  if (expectedState) {
+    // A full redirect URL / querystring paste MUST carry the matching state
+    // (CSRF binding). Only a bare-code paste legitimately has no state —
+    // there, PKCE's code-verifier binding is the remaining defense.
+    const pastedUrlOrQuery = /^https?:\/\//i.test(raw) || raw.includes('code=');
+    if (pastedUrlOrQuery && state !== expectedState) {
+      throw new CredentialError('state_mismatch');
+    }
   }
   return { code: decodeURIComponent(code), state };
 }

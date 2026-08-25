@@ -850,6 +850,8 @@ CREATE INDEX IF NOT EXISTS open_loops_status_idx
   ON open_loops (source_id, status, last_activity_at DESC);
 CREATE INDEX IF NOT EXISTS open_loops_counterparty_idx
   ON open_loops (source_id, counterparty_slug) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS open_loops_thread_idx
+  ON open_loops (source_id, thread_id) WHERE status = 'open';
 
 -- loop_suppressions (migration v142): \`gbrain loops mute <sender|thread>\` —
 -- the detector's user feedback loop. Suppressed senders/threads never open

@@ -118,7 +118,7 @@ export function trimQuotedReply(text: string): string {
 
 // ── Thread page ──────────────────────────────────────────────────────────────
 
-function sha8(input: string): string {
+export function sha8(input: string): string {
   return createHash('sha256').update(input).digest('hex').slice(0, 8);
 }
 
@@ -283,9 +283,10 @@ export function personSlugFromContact(c: ContactData): string | null {
 }
 
 /**
- * Render a NEW person page for a contact. Existing pages are never rewritten
- * by the connector — the caller merges aliases into frontmatter only
- * (unscoped-check/scoped-write discipline lives in google-source.ts).
+ * Render a person page for a contact. Ownership rule (enforced in
+ * google-source.ts:sweepContacts): pages carrying the google_contact_id
+ * marker are connector-owned and fully re-rendered; hand-authored pages at
+ * the same path are skipped entirely — body AND frontmatter untouched.
  */
 export function renderPersonPage(c: ContactData): RenderedPage | null {
   const slug = personSlugFromContact(c);
