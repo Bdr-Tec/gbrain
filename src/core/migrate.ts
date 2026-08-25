@@ -6200,6 +6200,62 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS expected_limit_count INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 142,
+    name: 'open_loops',
+    // Gmail-first open-loop engine: the structured record behind
+    // "who is waiting on you, what you promised". One row per open loop,
+    // deduped per source on dedup_key:
+    //   'thread:<threadId>:<loop_type>'  — deterministic thread-state loops
+    //   'commit:<sha8(canonical json)>'  — LLM-extracted commitments
+    // Loops CLOSE by state transition (done/dropped/stale), never delete —
+    // reply-driven auto-close flips status and keeps the audit trail.
+    // fact_id points at the projected facts row (kind=commitment) so entity
+    // cards / recall see the same commitment through the existing read paths.
+    // Written by src/core/google/loop-detect.ts + loops-extract.ts; read by
+    // the open_loops op (src/core/ops/loops.ts). Same DDL on both engines.
+    idempotent: true,
+    sql: `
+      CREATE TABLE IF NOT EXISTS open_loops (
+        id                 BIGSERIAL PRIMARY KEY,
+        source_id          TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        dedup_key          TEXT NOT NULL,
+        loop_type          TEXT NOT NULL CHECK (loop_type IN (
+                             'commitment_owed_by_me','commitment_owed_to_me',
+                             'unanswered_inbound','unanswered_outbound','decision_pending')),
+        counterparty_slug  TEXT,
+        counterparty_email TEXT,
+        summary            TEXT NOT NULL,
+        evidence           JSONB NOT NULL DEFAULT '[]'::jsonb,
+        thread_id          TEXT,
+        page_slug          TEXT,
+        due_at             TIMESTAMPTZ,
+        status             TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done','dropped','stale')),
+        detector           TEXT NOT NULL CHECK (detector IN ('deterministic_thread','llm_extract','manual')),
+        confidence         REAL NOT NULL DEFAULT 1.0,
+        fact_id            BIGINT,
+        opened_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_activity_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        closed_at          TIMESTAMPTZ,
+        closed_by          TEXT,
+        created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT open_loops_dedup UNIQUE (source_id, dedup_key)
+      );
+      CREATE INDEX IF NOT EXISTS open_loops_status_idx
+        ON open_loops (source_id, status, last_activity_at DESC);
+      CREATE INDEX IF NOT EXISTS open_loops_counterparty_idx
+        ON open_loops (source_id, counterparty_slug) WHERE status = 'open';
+      CREATE TABLE IF NOT EXISTS loop_suppressions (
+        id         BIGSERIAL PRIMARY KEY,
+        source_id  TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        kind       TEXT NOT NULL CHECK (kind IN ('sender','thread')),
+        value      TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT loop_suppressions_uniq UNIQUE (source_id, kind, value)
+      );
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
