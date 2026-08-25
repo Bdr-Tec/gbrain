@@ -7711,3 +7711,52 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   like the main keyword arm; (c) the chat-usage sink is a registry stack with
   deregister-on-disconnect (records route to the top LIVE entry), so a
   multi-engine process no longer loses its ledger to a closed engine.
+
+## Privacy-sweep follow-ups (filed from the remote-privacy-sweep branch)
+
+- [ ] **P2 — write-side privacy sweep (put_page round-trip class).** The
+  read-side sweep (`test/remote-privacy-sweep.test.ts`) covers what remote
+  callers can READ; it deliberately does not cover the erase-on-write hazard
+  class (#2044 family: a remote get_page → edit → put_page round-trip
+  silently erasing rows the caller never saw) NOR the write-triggered
+  restoration ECHO class (a remote put_page INTO a fence-bearing page whose
+  response envelope echoes #2044-restored private rows — the sweep's phase W
+  targets fresh slugs only, by design, so an echo requires a dedicated
+  harness). Build: put_page round-trips over seeded private corpora with
+  response-echo assertions, anchored on `src/core/import-file.ts`'s
+  restoration mechanism. **Why now-ish:** the read-side sweep found 4 live
+  read leaks on its first runs; the write side has had zero equivalent
+  sweep pressure. Effort: M. Depends on: nothing (read-side sweep already
+  landed as the pattern to copy).
+- [ ] **P2 — source-scope + row-grain hardening for the salience/anomaly/expert
+  arms.** Four classes surfaced by the read-side sweep's review and deferred
+  from the leak PR because each is a family-wide semantics change: (a)
+  `get_recent_salience`/`find_anomalies` never thread `sourceScopeOpts(ctx)`
+  into the engine reads (pre-existing v0.34.1 source-isolation class — a
+  source-bound remote client sees every source's world rows); (b) the whole
+  `findPrivateOnlySlugs` family is slug-grain, so a slug world-in-source-A /
+  private-in-source-B serves the PRIVATE row's own title through row-grain
+  arms (rows carry source_id — a composite-key filter fixes it, but must land
+  family-wide or semantics diverge across ops); (c) the private post-filters
+  run AFTER the engine's LIMIT, so remote callers can get fewer than `limit`
+  rows while world rows exist below the cutoff (push the
+  `privatePagesFilterFragment` predicate into the engine reads, or over-fetch);
+  (d) the two unscoped private-visibility probes are slug-only queries
+  with no slug-leading index (`pages_source_slug_key` leads on source_id) —
+  add a `pages(slug)` btree index when (a)-(c) land; (e) `find_anomalies`
+  baselines (`baseline_mean`/`baseline_stddev`) are computed private-inclusive
+  in both engines, so a mixed cohort's baseline discloses aggregate private
+  activity volume AND a genuinely-anomalous world spike can be suppressed when
+  concurrent private activity inflated the baseline — world-only cohort
+  aggregation belongs in the same engine pass as (a). Effort: M-L. Depends on:
+  nothing, but coordinate with the P3 chokepoint below rather than duplicating.
+- [ ] **P3 — runtime chokepoint for world-only filtering.** Privacy is
+  enforced per-arm/per-column at N call sites (get_page/fetch strip, delta
+  page arm, find_orphans/get_recent_salience/find_anomalies post-filters,
+  context_pack/delta include_private gating); each new remote surface leaks
+  until someone notices — the class has now recurred five times. Move the
+  world-only filter to a single dispatch-layer interceptor (or an
+  engine-level read-scope wrapper) so new ops are world-only BY DEFAULT.
+  High blast radius: touches every read op; do NOT attempt until both
+  sweeps (read-side, landed; write-side, P2 above) are in place as safety
+  nets. Effort: L. Depends on: the P2 write-side sweep.
