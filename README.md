@@ -269,6 +269,11 @@ gbrain config set connectors.chatgpt.auto_sync true   # opt-in daily auto-sync (
 
 Full contract, automation lanes, and the Cloudflare caveat: [docs/guides/chat-connectors.md](docs/guides/chat-connectors.md).
 
+(Not to be confused with the **inbound** "Connectors" above — those add gbrain
+as an MCP connector *inside* ChatGPT/Claude/Perplexity so those assistants can
+search your brain. `gbrain connectors` goes the other way: it pulls your
+conversation history *from* those accounts *into* the brain.)
+
 Third-party skillpacks can ship custom ingestion sources (Granola, Linear,
 voice, OCR) against the versioned `IngestionSource` contract at
 `gbrain/ingestion`. See [`docs/skillpack-anatomy.md`](docs/skillpack-anatomy.md).
