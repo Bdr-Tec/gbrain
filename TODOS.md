@@ -1,5 +1,51 @@
 # TODOS
 
+## Gmail open-loop engine follow-ups (filed 2026-08-25, follow-up from the gmail-open-loop-engine wave)
+
+- [ ] **P1 — gbrain.io hosted OAuth relay: server build + CASA clock.**
+  **What:** implement the consent relay specified in
+  `docs/designs/HOSTED_OAUTH_RELAY.md` (session create → server-side exchange
+  → one-time claim, zero retention; refresh endpoint; `/api/creds/import`).
+  The CLI half already ships (`src/core/creds/relay-client.ts`, gated by
+  `GBRAIN_OAUTH_RELAY_URL`; conformance spec = `test/creds-relay-client.test.ts`).
+  **Why:** cuts "connect Gmail" from ~8 min (BYO console dance) to ~30 s.
+  **Blocker to start NOW regardless of build order:** Google CASA security
+  assessment for the restricted `gmail.readonly` scope — weeks-to-months lead
+  time; brand verification + privacy policy + scope justification.
+  **Effort:** server M; verification track L (calendar time).
+
+- [ ] **P2 — Gmail Pub/Sub push lane.** **What:** `users.watch` + a webhook
+  route beside `POST /webhooks/github` for instant thread refresh (the third
+  freshness layer github already has). **Where to start:**
+  `src/commands/serve-http.ts` webhook cluster; `runGoogleSync` already
+  supports targeted thread processing. **Effort:** M.
+
+- [ ] **P2 — Fulfillment-by-reply auto-close for commitment loops.**
+  **What:** v1 closes commitment loops manually or by staleness; detect
+  "I sent the deck" replies and close `commitment_owed_by_me` loops
+  automatically (LLM judge over the closing message, all-or-nothing barrier).
+  **Where to start:** `src/core/google/loops-extract.ts` (extend the judge
+  schema with `fulfills` references). **Effort:** M.
+
+- [ ] **P3 — Dropbox + Mac-companion credential providers.** **What:** the
+  vault + provider registry (`src/core/creds/`) ship Google-only; add
+  `providers/dropbox.ts` (OAuth2) and a bearer-token provider for the Mac
+  companion app (iMessage/Photos/Health context). The vault schema already
+  carries `kind: 'bearer' | 'api_key'`. **Effort:** S each.
+
+- [ ] **P3 — Remote `open_loops` auth predicate refinement.** **What:** v1
+  redacts verbatim quotes for every `ctx.remote !== false` caller; hosted
+  gbrain.io will want an "authenticated owner" predicate that widens evidence
+  for the brain's own user over HTTP. **Where to start:**
+  `src/core/ops/loops.ts` redaction seam; OAuth scopes in
+  `src/core/oauth-provider.ts`. **Effort:** M.
+
+- [ ] **P3 — Co-recipient-reply configurability + loop-detect corpus growth.**
+  **What:** the detector treats any later message as answering an inbound ask;
+  make co-recipient replies configurable (`loops.corecipient_answers`) and
+  keep growing the labeled fixture corpus (`test/google-loop-detect.test.ts`)
+  with every observed false-positive class. **Effort:** S, ongoing.
+
 ## Daemon env-file lane follow-ups (#2608 / #4443 takeover, filed 2026-08-21)
 
 - [ ] **P3 — Fix the stale `config set` DB-plane claim in the install docs.**

@@ -1,0 +1,93 @@
+# The Open-Loop Engine
+
+The point of ingesting your email is not "search my email." It is:
+
+> **Here are the three people waiting on you, what you promised, and the
+> context needed to respond.**
+
+```bash
+gbrain waiting
+```
+
+The open-loop engine maintains a structured record (`open_loops` table) of
+commitments, unanswered messages, and pending decisions over the
+[google source kind](google-connect.md)'s data, kept current on every sync.
+
+## Two detectors
+
+**1. The deterministic thread-state machine** (`src/core/google/loop-detect.ts`,
+zero LLM, free, always on). For every synced Gmail thread:
+
+- last substantive message is **theirs**, you're in To:, unanswered ≥24h →
+  `unanswered_inbound` — *they are waiting on you*.
+- last substantive message is **yours**, contains a question, unanswered
+  ≥72h → `unanswered_outbound` — *you are waiting on them*.
+- a reply lands → the loop **closes itself** (`closed_by: reply_detected`).
+  Loops close by state transition, never delete — the audit trail stays.
+
+Precision rules (pinned by a labeled fixture corpus in
+`test/google-loop-detect.test.ts` — every false-positive class gets a
+fixture before its fix): noise senders (noreply/notifications), list mail
+(`List-Unsubscribe`), CC-only delivery, FYI/forwards without a question,
+self-threads, and muted senders/threads never open loops. Sent-mail
+ingestion is what makes "unanswered" honest — your own replies are the
+negative filter.
+
+**2. The LLM commitment extractor** (`src/core/google/loops-extract.ts`, one
+model call per recent thread, default ON for google sources). Extracts
+commitments with direction ("I'll send the deck by Friday" →
+`commitment_owed_by_me`, counterparty, due date, verbatim quote) and pending
+decisions. One extractor, three projections per item:
+
+- the `open_loops` row itself
+- a `facts` row (`kind=commitment`, fence-first, deduped) — so `entity`,
+  `context_pack`, and `recall` see it through existing read paths
+- a typed edge thread-page → person-page (`owes_to` / `awaiting_reply_from`)
+  — so relational search can traverse it
+
+Guardrails: injection-hardened input, ALL-or-nothing parse barrier (a
+malformed model response writes nothing), 50 threads/sweep cap, only the
+last 30 days of mail (the deep backfill is never extracted), kill switch
+`gbrain config set loops.extraction_enabled false`.
+
+## The surfaces
+
+```bash
+gbrain waiting [--top N] [--json] [--stale-ok]
+    Ranked counterparties: what you owe them / they owe you, evidence
+    quotes, Gmail deep links, entity-card context, a paste-ready digest.
+    REFUSES on stale data (no successful google sync in 24h) and prints the
+    exact fix — stale-but-confident output is worse than none.
+
+gbrain loops list|show <id>          inspect
+gbrain loops done <id> | drop <id>   close (a closed commitment expires its
+                                     projected fact too)
+gbrain loops mute sender <email>     never open loops for this sender again
+gbrain loops mute thread <id>        ...or this thread (existing loops keep
+                                     their state)
+```
+
+MCP: the `open_loops`, `loops_close`, `loops_mute` ops. `open_loops` is
+served to remote callers with **fail-closed evidence redaction** — counts,
+counterparty, summary, due date; verbatim quotes, deep links, and the
+injectable `text` digest are trusted-local only.
+
+Memory verbs: entity cards' `open_threads[]` entries backed by loop rows
+carry additive optional fields (`direction`, `due`, `counterparty`,
+`status`, `loop_id`) — visible through `entity`, `context_pack`, and
+`delta` on any harness.
+
+## Close semantics (v1, honest)
+
+- Thread loops close deterministically when a reply lands.
+- Commitment loops close manually (`gbrain loops done`) or by staleness
+  (overdue >14 days, or >90 days without activity → `stale`, aligned with
+  the commitment fact decay halflife).
+- Fulfillment-by-reply detection for commitments is future work, not
+  pretended at.
+
+## Ranking
+
+Counterparties rank by open-loop count, due-date proximity, age of the
+oldest loop, and how connected the person is in your brain (backlink
+count). Deterministic — same data, same order.
