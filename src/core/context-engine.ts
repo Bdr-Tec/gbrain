@@ -951,6 +951,43 @@ export function createGBrainContextEngine(ctx: {
     memo.settled = false;
     memoSet(sessionId, memo);
 
+    // Memorable receipt (additive, opt-in, memorableGateAllowed-gated): the
+    // segment above is SPOOLED, i.e. durable, so the receipt describes real
+    // banked work. OpenClaw has no session end — capture is per-compaction by
+    // design (documented as compaction-only coverage; the post-last-compaction
+    // tail is never captured). One receipt per distinct window hash; a retried
+    // identical compaction dedups on content_hash inside the helper. The
+    // whole block is fail-open for the checkpoint: any refusal in here can
+    // never change the checkpoint's status. cfg was loaded fresh THIS call,
+    // so `gbrain config set …enabled false` applies on the next compaction
+    // without a gateway restart (GBRAIN_MEMORABLE, an env, needs one).
+    // This lane never trims the relay file and defers the receipts-file
+    // rewrite when the host's compact() deadline is near — appends only
+    // inside a latency-sensitive callback.
+    try {
+      const hb = await import('./context/hook-heartbeat.ts');
+      if ((await hb.memorableGateAllowed(cfg)).allowed) {
+        // Same span rule as the hook lane: windowTurns is a suffix of
+        // tail.turns, so calls are filtered to the window's origin.
+        const startTurnIndex = tail.turns.length - windowTurns.length;
+        const toolCallsJson = await hb.redactedToolCallsJson(tail.toolCalls, tail.toolCallTurnIndexes, startTurnIndex);
+        await hb.recordAndRelayReceipt({
+          session_id: sessionId,
+          harness: 'openclaw',
+          corpus_path: `${dir}/${segs.segmentFileName(sessionId, w.hash)}`,
+          content_hash: w.hash,
+          turn_count: windowTurns.length,
+          workspace_root: workspaceDir,
+          // Structurally true here: renderSegmentText returned non-null above
+          // (scan_unavailable already skipped this whole path), and
+          // redactedToolCallsJson throws into this catch on scanner failure —
+          // an unscanned payload can never reach the receipt on this lane.
+          tool_calls_json: toolCallsJson,
+          secret_scan_ok: true,
+        }, { skipReceiptsCompaction: deadlineHit() });
+      }
+    } catch { /* receipt is additive — never fails the checkpoint */ }
+
     // Segment is spooled (durable); a deadline from here on degrades to
     // 'banked' — the sweep backstop extracts it later.
     if (deadlineHit()) return { status: 'banked', reason: 'deadline' };

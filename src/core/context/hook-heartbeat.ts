@@ -196,7 +196,15 @@ export const SESSION_RECEIPTS_MAX_LINES = 2000;
 export interface SessionReceiptEntry {
   ts: string;
   session_id: string;
-  harness: 'claude-code' | 'codex' | 'opencode';
+  /**
+   * Producers today: 'claude-code' (session-end hook) and 'openclaw'
+   * (context-engine compaction lane). 'codex'/'opencode' are declared ahead
+   * of their capture lanes. NOTE: this union is NOT HookIo.harness — widening
+   * THAT union also requires widening HARNESS_CHANNELS in volunteer-events.ts
+   * (hook.ts's user-prompt path silently maps unknown channels to
+   * 'claude-code', a misattribution, not a compile error).
+   */
+  harness: 'claude-code' | 'codex' | 'opencode' | 'openclaw';
   corpus_path: string;
   content_hash: string;
   turn_count: number;
@@ -397,12 +405,19 @@ const RECEIPTS_TARGET_BYTES = RECEIPTS_MAX_BYTES / 2;
  * must still be recorded and relayed — the at-least-once contract for new
  * content is unchanged; only exact re-emissions are dropped.
  */
-export async function appendSessionReceipt(entry: Omit<SessionReceiptEntry, 'ts'>): Promise<boolean> {
+export async function appendSessionReceipt(
+  entry: Omit<SessionReceiptEntry, 'ts'>,
+  opts: { skipCompaction?: boolean } = {},
+): Promise<boolean> {
   try {
     const p = await sessionReceiptsPath();
     if (await lastReceiptMatches(entry.session_id, entry.content_hash)) return false;
     const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
     appendFileSync(p, line + '\n', { mode: 0o600 });
+    // skipCompaction: the openclaw lane runs inside the host's latency-
+    // sensitive compact() callback — when its deadline is near, the append
+    // lands but the (up to 32 MB) rewrite is deferred to a quieter caller.
+    if (opts.skipCompaction) return true;
     let size = 0;
     try {
       size = statSync(p).size;
@@ -500,7 +515,7 @@ export async function readSessionReceiptsTail(n: number): Promise<SessionReceipt
 /** The capture lanes the CURRENT build can relay. Widening this list is a
  * deliberate consent event: old stamps stop validating until the user re-runs
  * the disclosure. */
-export const MEMORABLE_CAPTURE_HARNESSES: readonly string[] = ['claude-code'];
+export const MEMORABLE_CAPTURE_HARNESSES: readonly string[] = ['claude-code', 'openclaw'];
 
 /** Canonical enable-time disclosure — the one text the user consents to.
  * Rendered by `gbrain config set integrations.memorable.enabled true` and
@@ -687,13 +702,13 @@ export interface RelayReceiptResult {
  */
 export async function recordAndRelayReceipt(
   entry: Omit<SessionReceiptEntry, 'ts'>,
-  opts: { spawnFn?: typeof spawn; trimRelayFile?: boolean } = {},
+  opts: { spawnFn?: typeof spawn; trimRelayFile?: boolean; skipReceiptsCompaction?: boolean } = {},
 ): Promise<RelayReceiptResult> {
   const degradeReasons: string[] = [];
   let priorFail: string | null = null;
   try {
     if (opts.trimRelayFile) await maybeTrimRelayResults();
-    const recorded = await appendSessionReceipt(entry);
+    const recorded = await appendSessionReceipt(entry, { skipCompaction: opts.skipReceiptsCompaction });
     if (!recorded) return { recorded: false, degradeReasons };
     // gbrain verified the binary existed, never that it WORKED — surface the
     // PREVIOUS run's self-reported outcome (see relayResultsPath). Collected
