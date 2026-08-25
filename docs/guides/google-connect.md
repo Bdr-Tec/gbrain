@@ -66,6 +66,10 @@ You can also paste the JSON contents on stdin (`--client-json -`), export
 Pasted values are sanitized (smart quotes, stray whitespace) and validated
 by shape before anything talks to Google.
 
+gbrain records the scopes Google *actually granted* (the consent screen lets
+you uncheck scopes), so a narrower-than-needed grant surfaces immediately as
+`scope_missing` with the reauth fix attached — never as opaque per-sweep 403s.
+
 During consent Google shows **"Google hasn't verified this app."** That is
 YOUR app — click *Advanced → Continue*.
 
@@ -103,6 +107,13 @@ un-targeted `gbrain sync` (repo mode) does not — target it or use `--all`.
 Health: `gbrain google status` (live refresh probe per account) and
 `gbrain doctor` (the `google_oauth` check warns at day ~6 of a Testing-mode
 consent screen, before Google kills the tokens at day 7).
+
+Sync freshness is honest by construction: a sweep only stamps the source as
+synced when it fully succeeds, so `gbrain waiting`'s staleness gate can trust
+it. A single thread that repeatedly fails to fetch is skipped after a few
+consecutive failures instead of wedging the sync forever;
+`gbrain sync --source <id> --full` retries skipped threads with a fresh
+ledger.
 
 ## Troubleshooting
 

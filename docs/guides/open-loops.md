@@ -67,10 +67,20 @@ gbrain loops mute thread <id>        ...or this thread (existing loops keep
                                      their state)
 ```
 
+`gbrain waiting` and `gbrain loops list` read across **every source in the
+brain** by default (loops live in google sources, not `default` — a
+default-scoped read would say "all clean" while people wait); `--source <id>`
+narrows explicitly. An unqualified `loops mute` resolves to the brain's
+google source automatically, and refuses with the exact fix when there is
+none or more than one (`--source` disambiguates).
+
 MCP: the `open_loops`, `loops_close`, `loops_mute` ops. `open_loops` is
 served to remote callers with **fail-closed evidence redaction** — counts,
 counterparty, summary, due date; verbatim quotes, deep links, and the
-injectable `text` digest are trusted-local only.
+injectable `text` digest are trusted-local only. Remote callers also need a
+resolved source scope: an unscoped remote read is refused outright rather
+than spanning the brain, and the two write ops require a single-source scope
+that matches the caller's grants.
 
 Memory verbs: entity cards' `open_threads[]` entries backed by loop rows
 carry additive optional fields (`direction`, `due`, `counterparty`,
@@ -83,6 +93,9 @@ carry additive optional fields (`direction`, `due`, `counterparty`,
 - Commitment loops close manually (`gbrain loops done`) or by staleness
   (overdue >14 days, or >90 days without activity → `stale`, aligned with
   the commitment fact decay halflife).
+- **Closed means closed.** A closed loop (done, dropped, or stale) only
+  reopens on genuinely newer thread activity — a routine sweep re-seeing the
+  same thread never resurrects a loop you closed by hand.
 - Fulfillment-by-reply detection for commitments is future work, not
   pretended at.
 
